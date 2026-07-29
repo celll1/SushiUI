@@ -106,7 +106,14 @@ def resolve_vae_training_config(
 
     train_section = process_config.get("train") or {}
     save_section = process_config.get("save") or {}
-    vae_section = process_config.get("vae") or {}
+    # `or {}` would be wrong here: an empty-but-malformed section (``vae: []``,
+    # ``vae: ""``) is falsy, so it would silently become "no options given" and
+    # the run would train with defaults the user never wrote. Only an ABSENT or
+    # explicitly-null section means "use the defaults"; anything else must be a
+    # mapping. (Found by mutation-testing the type guard, 2026-07-29.)
+    vae_section = process_config.get("vae")
+    if vae_section is None:
+        vae_section = {}
 
     if not isinstance(vae_section, dict):
         raise VaeConfigError(

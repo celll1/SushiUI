@@ -9613,9 +9613,59 @@ components:
           minimum: 64
           default: 512
           description: |
-            Square random-crop size for training. No bucketing: a fixed square
-            crop makes every batch the same shape by construction.
+            Square random-crop size for training. No aspect-ratio bucketing: the
+            decoder's only non-local terms (one flattened mid-block attention and
+            30 GroupNorms) reduce over the spatial axes, so they observe latent
+            AREA and never aspect — and constant-area bucketing would leave that
+            unchanged.
           example: 512
+        crop_scale_policy:
+          type: string
+          enum: ["downscale", "native", "mixed"]
+          default: "downscale"
+          description: |
+            How much an image is resampled BEFORE the square crop is taken —
+            measured to be the dominant control on what the fine-tune learns.
+
+            - `downscale` (default, the historical behaviour): the short side is
+              scaled to exactly `resolution`. Over the 22 datasets in use
+              (3,842,897 items) that downscales 95.79% of images by a median
+              2.30x. LANCZOS downscaling *concentrates* high frequency rather
+              than blunting it (the resulting crop carries 4.06x the top-octave
+              power of a native crop), and the measured cost is calibration: the
+              fine-tune's accuracy gain is ~30% smaller on native-resolution
+              content (edge residual -7.7% vs -12.5%, positive on 19/19).
+            - `native`: never downscale — crop a `resolution`-sized window out of
+              the full-size pixels, upscaling only images whose short side is
+              genuinely below `resolution` (4.21% of the corpus).
+            - `mixed`: draw the downscale factor per sample, log-uniformly over
+              `[1, min(short/resolution, crop_scale_max_downscale)]`, so the
+              decoder sees the whole range including 1x (what inference presents).
+
+            Free either way: a native crop is 44% cheaper in the dataloader
+            (17.4 vs 30.8 ms) and every policy has 8-30x headroom over the GPU;
+            `mixed` is ~15% dearer than `downscale`. Validation is unaffected —
+            it is always a deterministic centre crop under the `downscale`
+            policy, so `vae_val_psnr` keeps one meaning.
+
+            Every figure here is measured and recorded, with its method and
+            sample size, in `scratchpad/vae_training/results_crop_geometry.md`
+            (corpus census §1.2, mechanism §2, dose-response §3, loader cost
+            §5.2 and §8.4); see also `docs/guides/VAE_TRAINING.md`.
+          example: "downscale"
+        crop_scale_max_downscale:
+          type: number
+          minimum: 0
+          default: 0.0
+          description: |
+            Upper bound on the per-sample downscale factor under
+            `crop_scale_policy: mixed`; `0` means the image's own
+            `short/resolution` ratio (unbounded). Must be `0` or `>= 1.0`.
+
+            REFUSED when `crop_scale_policy` is not `mixed`: only the per-sample
+            draw consults it, so under the other policies it would be a knob the
+            caller set and nothing read.
+          example: 0.0
         dtype:
           type: string
           enum: ["bf16", "fp32"]
@@ -9765,8 +9815,20 @@ components:
           type: integer
           multipleOf: 8
           minimum: 64
-          default: 512
-          example: 512
+          default: 1024
+          description: |
+            Resolution of the deterministic held-out centre crops. 1024 rather
+            than 512: validation always uses the `downscale` policy (so the
+            metric cannot change meaning when `crop_scale_policy` does), and at
+            1024 the corpus's median 1131 px source is downscaled only ~1.1x,
+            i.e. nearly native — whereas 512 measures the most flattering and
+            least representative regime available (the same fine-tune gains
+            +1.15 dB there against +0.81 dB on native content). Native crops from
+            512 to 1536 showed the PSNR advantage holding at +0.93..+1.20 dB with
+            no significant trend, so the change costs nothing in signal quality.
+
+            Changing this MID-RUN puts a step in the `vae_val_psnr` chart.
+          example: 1024
       example:
         batch_size: 1
         total_steps: 2000
@@ -9790,6 +9852,8 @@ components:
         acknowledge_latent_space_break: false
         encoder_blocks: "all"
         resolution: 512
+        crop_scale_policy: "downscale"
+        crop_scale_max_downscale: 0.0
         dtype: "bf16"
         ema_enabled: true
         ema_decay: 0.999
@@ -9807,7 +9871,7 @@ components:
         export_bare_ldm: false
         validation_every: 100
         validation_num_images: 8
-        validation_resolution: 512
+        validation_resolution: 1024
     TaggerTrainingRunCreateRequest:
       type: object
       properties:

@@ -22,10 +22,10 @@ that is *not* a drop-in replacement — see
 | `backend/core/training/vae/vae_trainer.py` | `VaeTrainer` — load, freeze, train loop, EMA, checkpoints, validation, export. |
 | `backend/core/training/vae/vae_config.py` | `resolve_vae_training_config` + the refusal gate. |
 | `backend/core/training/vae/vae_losses.py` | `VaeLossBank`, `PatternLoss`, `psnr`, `blockiness`. |
-| `backend/core/training/vae/vae_dataset.py` | Raw-pixel dataset (random square crop to `resolution`, `[-1,1]`, `[B,3,H,W]`). |
+| `backend/core/training/vae/vae_dataset.py` | Raw-pixel dataset (random square crop to `resolution`, `[-1,1]`, `[B,3,H,W]`) + the [crop scale policy](#crop-scale-policy-which-pixels-the-decoder-sees). |
 | `backend/core/training/train_runner.py` | The `network_type == 'vae_decoder'` branch that dispatches to it. |
 | `backend/core/training/training_config.py` | `TrainingConfigGenerator.generate_vae_config` — request dict to YAML. |
-| `backend/api/param_defaults.py` | `VAE_TRAINING_DEFAULTS` (40 keys, the SSOT). |
+| `backend/api/param_defaults.py` | `VAE_TRAINING_DEFAULTS` (42 keys, the SSOT). |
 | `frontend/src/components/training/vae/VaeTrainingConfig.tsx` | The config panel. |
 | `backend/tests/test_vae_refusal_matrix.py` | Executable form of the toggle matrix — every accepted and refused combination. |
 
@@ -72,6 +72,8 @@ config:
         kl_weight: 1.0e-6                   # only constructed when the encoder trains
         export_bare_ldm: false              # refused together with train_encoder
         resolution: 512
+        crop_scale_policy: downscale        # downscale | native | mixed
+        crop_scale_max_downscale: 0.0       # bounds the 'mixed' draw; 0 = unbounded
         dtype: bf16
         ema_enabled: true
         ema_decay: 0.999
@@ -82,6 +84,7 @@ config:
         seed: 42
         num_workers: 2
         validation_every: 100
+        validation_resolution: 1024
         ...
 ```
 
@@ -117,12 +120,114 @@ This matters at scale: measured over three datasets on the run-113 config, the
 item-loading phase dropped from 8.20s to 2.38s (43k items), 42.07s to 5.22s
 (101k items) and 27.28s to 10.35s (199k items).
 
+### Crop scale policy: which pixels the decoder sees
+
+Every crop is square, at `resolution`, with the aspect ratio preserved (nothing
+is squashed) — randomly placed for training, centred for validation.
+`crop_scale_policy` decides how much the image is **resampled before that crop**,
+which the crop-geometry study
+(`scratchpad/vae_training/results_crop_geometry.md`) measured to be the dominant
+control on what the fine-tune learns.
+
+Every figure in the table below is from `results_crop_geometry.md` **§8**
+(n = 400 items, `resolution: 512`, dated 2026-07-30, reproducible via
+`scratchpad/vae_training/harness/crop_policy_verify.py`; method, sampling rule
+and limitations recorded there). Loader cost is §8.4 and is quoted as a **ratio**,
+because the absolutes move with machine load.
+
+| policy | geometry | realised downscale factor (§8.2) | loader cost (§8.4) |
+|---|---|---|---|
+| `downscale` (**default**) | short side scaled to exactly `resolution`, up or down | median **2.17x**, mean 2.51x, p95 5.35x; **95.0%** downscaled, 0.5% already exactly at `resolution` | baseline |
+| `native` | crop out of the full-size pixels; upscale only when the short side is genuinely below `resolution` | **95.5% at exactly 1x**; the remaining 4.50% are upscaled | **−42 to −43%** (no LANCZOS pass over a multi-megapixel image) |
+| `mixed` | draw the factor per sample, log-uniformly over `[1, f_max]` | median **1.35x**, mean 1.60x, p95 3.13x; the whole range is covered, 1x is a limit of the support | +14 to +16% |
+| `mixed` + `crop_scale_max_downscale: 2.0` | as above with `f_max` capped | median 1.28x, max 1.99x | ~+15% |
+
+The corpus-wide census is **§1.2**, not this table: over all 3,842,897 items
+95.79% are downscaled by a median 2.30x and 4.21% are upscaled. §8's 95.0% /
+2.17x / 4.50% is the same quantity on a 400-item sample and agrees within
+sampling noise. The `openapi.yaml` and `param_defaults.py` comments quote §1.2
+and §5.2's loader absolutes (30.8 / 17.4 ms, n = 120) — the same measurement on a
+different sample and a less loaded machine; its 44% ratio is what §8.4
+reproduces.
+
+`crop_scale_max_downscale` bounds `f_max` for `mixed` (`0` = the image's own
+`short/resolution`). It is **refused** under any other policy rather than
+silently ignored, since only the per-sample draw reads it; the panel clears it
+when you switch away from `mixed`.
+
+**Why this is a knob at all.** The historical behaviour downscales 95.79% of the
+corpus (3,842,897 items) by a median 2.30x. The original suspicion was that this
+starves the decoder of high frequency; measured, it is the **opposite** — a
+LANCZOS downscale *concentrates* high frequency, so the production crop carries
+**4.06x** the top-octave power of a native crop (n=300, 93.3% of images,
+t=+21.6), and the fine-tune consequently softens native content ~8-9x *less*
+than training-distribution content (−0.44% vs −3.79% Sobel). The real, measured
+cost is **calibration**: the fine-tune's accuracy gain is ~30% smaller on
+native-resolution content (edge residual −7.7% vs −12.5%, positive on 19/19,
+t=+7.49; PSNR +0.81 vs +1.15 dB), because it never sees any. That is what
+`native` / `mixed` address.
+
+**Why the `mixed` draw is log-uniform, not linear.** The dose-response is
+monotone in the downscale factor and inference presents ~1x, so the mass belongs
+near 1x. Under linear-uniform sampling the realised distribution would depend
+strongly on source size — a 5120 px source (`f_max` = 10) would put 90% of its
+draws above 2x while a 600 px source puts all of its draws near 1x — dragging
+the corpus towards exactly the heavily-resampled regime the knob exists to get
+away from. Log-uniform gives equal weight per octave of resampling: the median
+draw is `sqrt(f_max)`, which is why the measured `mixed` median lands at 1.35x
+against `downscale`'s 2.17x. Nothing about the numbers *forces* log-uniform —
+the family (vs linear-uniform, beta, or a two-point mixture) is the one
+judgement call the study did not settle, and it is recorded as such in
+`results_crop_geometry.md` §8.2.
+
+**Cost.** None: the loader has 8-30x headroom over the GPU either way (measured
+loader wait 0.15 ms/step, 0.04%, `results_batchsize.md`), VRAM and step time are
+untouched (the tensor shape is identical), and `native` is *cheaper* than the
+default. `mixed` is ~15% dearer than `downscale` because it resizes to an
+intermediate size *larger* than the crop — `results_crop_geometry.md` §5.3
+predicted its cost would sit between the other two rows and that turned out to be
+wrong (§8.4) — still ~10x the GPU's demand at 2 workers.
+
+**The default stays `downscale`**, so no existing run changes what it trains on:
+run 113 has 52k steps of history under that geometry, and `downscale` is
+**pixel-identical** to the pre-policy loader (`results_crop_geometry.md` §8.3:
+`torch.equal` on 400/400 real dataset images in both random-crop and centre-crop
+mode — the branch reuses the same `resolution / min(w, h)` expression, and
+`resolve_crop_scale` returns before touching the RNG on both non-`mixed` paths,
+so the crop-offset draw sees an unchanged stream).
+
+**Validation ignores the policy, deliberately.** `make_validation_batch` is
+pinned to `downscale` and takes no policy argument at all, so:
+
+- it stays deterministic (no RNG — `mixed` would redraw per call and make the
+  held-out series noisy for a reason unrelated to the model), and
+- `vae_val_psnr` keeps ONE meaning. PSNR is strongly scale-dependent here (the
+  same fine-tune measures +1.15 dB on downscaled content and +0.81 dB on
+  native), so a validation set that followed the training policy would put a
+  step in the chart that no model change caused.
+
+Representativeness is addressed on the other axis instead — see
+[validation resolution](#validation-resolution-is-1024-not-512).
+
+No aspect-ratio bucketing, and that is now a measured decision rather than a
+statement about batch collation (the old docstring's reasoning was circular:
+bucketing exists precisely to avoid forcing a fixed shape). The decoder's only
+non-local terms are **one flattened mid-block self-attention** and **30
+GroupNorms**; `AttnProcessor2_0` reshapes `[B,C,H,W]` to `[B,H*W,C]` before
+attending and GroupNorm reduces over `(C_group, H, W)`, so both observe latent
+**area** and never aspect, and everything else is convolution. Constant-area
+bucketing would therefore change nothing this architecture can perceive. The
+area gap it would not fix is genuinely large (the median generation gives the
+decoder 5.06x the training token count) and was measured **harmless**: from
+4,096 to 36,864 latent tokens the fine-tune's PSNR advantage held at +0.93 to
++1.20 dB with no significant trend in any sharpness metric.
+
 ### API surface
 
 - `POST /training/runs` with `training_method: "vae_decoder"` and the VAE knobs
   nested in the `vae_config` request field (an object with the
   `VaeTrainingDefaults` key set).
-- `GET /schema/vae-training-defaults` returns the 40 defaults (fourth sibling of
+- `GET /schema/vae-training-defaults` returns the 42 defaults (fourth sibling of
   `/schema/generation-defaults`, `/schema/training-defaults`,
   `/schema/tagger-training-defaults`).
 - Create / start / stop / status / metrics / checkpoints routes are the existing
@@ -235,6 +340,50 @@ curves that are the only quality signal this modality has
 `validation_every` steps on a fixed held-out split. **That chart is the only
 signal that a fine-tune is going wrong** — a decoder fine-tune has no sample
 images and no obvious loss landmark.
+
+#### Validation resolution is 1024, not 512
+
+`validation_resolution` defaults to **1024**. Validation is always a
+deterministic centre crop under the `downscale` policy (see
+[crop scale policy](#crop-scale-policy-which-pixels-the-decoder-sees)), so this
+is the only axis on which the held-out metric can be made representative — and at
+512 it was not: that is the most flattering and least representative regime
+available, the one where the fine-tune's accuracy gain is largest (+1.15 dB,
+against +0.81 dB on native content) and where the content carries ~4x the
+near-Nyquist energy of anything generation produces. At 1024 the corpus's median
+1131 px source is downscaled only ~1.1x, i.e. nearly native, and it reports the
+regime generation actually runs in (median generated short side 960 px, >= 1024
+in 49.1% of images). It costs nothing in signal quality: native crops from 512 to
+1536 showed the PSNR advantage holding at +0.93..+1.20 dB with no significant
+trend (n1536 vs n512: t = −1.75, n.s.). All of the above is
+`results_crop_geometry.md` §1.2, §1.4, §3.2, §4.2 and §6.6.
+
+**Changing `validation_resolution` mid-run puts a step in the `vae_val_psnr`
+chart** — the metric is computed on different content, so the values before and
+after are not comparable, and because `global_step != 0` on a resume no fresh
+baseline point is emitted to separate the two regimes. It is the same hazard as
+changing `lpips_weight` mid-run (which already cost run 113 −0.17 dB across 140
+steps, with the correct sign).
+
+The trainer now says so on resume: `VaeTrainer._warn_measurement_changes`
+compares the checkpoint's `train_state.json` config against the resumed run and
+prints a **non-fatal warning** when `validation_resolution` or
+`crop_scale_policy` differs — a warning and not a refusal, because changing
+either is a legitimate deliberate act, and the fatal component-set check
+(`train_decoder` / `train_encoder` / `decoder_blocks` / `encoder_blocks`) is
+untouched. A key the checkpoint never recorded is treated as *absent*, not as
+changed, so pre-policy checkpoints do not warn about `crop_scale_policy`.
+
+That warning matters because of exactly one asymmetry: a run created through the
+UI or `generate_vae_config` pins every key in its own YAML and is therefore
+unaffected by the default moving, but a **hand-written `process.vae` that omits
+`validation_resolution` now resolves to 1024 where it used to resolve to 512**.
+Run 113 is in the first category — its stored YAML pins 512 and carries no crop
+keys, so resuming it is bit-for-bit unaffected.
+
+Independently of the resolution: **`vae_val_psnr` is anti-correlated with
+sharpness here**, so it must not be used on its own to decide whether an
+LPIPS-weight change worked.
 
 ## The loss bank, and why each default is what it is
 
@@ -378,7 +527,9 @@ that will not start. All live in `vae_config.py::_validate` unless noted.
 | All loss weights 0 | No training signal. |
 | `lpips_weight > 0` with `lpips` not importable | Fails before the run starts, never mid-run. |
 | Unknown key in `vae_config` / `process.vae` | Caught in `generate_vae_config` and in `resolve_vae_training_config`; a typo must not silently resolve to the default. |
-| Out-of-enum `vae_source` / `decoder_blocks` / `encoder_blocks` / `dtype` / `lpips_net`; empty `vae_path`; `vae_source: store` with no `vae_arch`; `resolution` not a multiple of 8 or < 64; `batch_size`/`total_steps`/`gradient_accumulation_steps` < 1; `ema_decay` outside (0,1); negative or non-numeric loss weight or `kl_weight` | Ordinary validation, same fail-early principle. |
+| `crop_scale_max_downscale > 0` with `crop_scale_policy` not `mixed` | The bound is consulted only by the per-sample draw, so under `downscale` / `native` it would be a knob the caller set, the YAML recorded, and nothing read. Refused rather than ignored. |
+| `crop_scale_max_downscale` between 0 and 1 | It names a *downscale* factor, so a sub-1 value would mean an upscale bound. Clamping it to 1 silently would train on a distribution nobody asked for; `crop_scale_policy: native` is how "never downscale" is spelled. |
+| Out-of-enum `crop_scale_policy` / `vae_source` / `decoder_blocks` / `encoder_blocks` / `dtype` / `lpips_net`; empty `vae_path`; `vae_source: store` with no `vae_arch`; `resolution` not a multiple of 8 or < 64; `batch_size`/`total_steps`/`gradient_accumulation_steps` < 1; `ema_decay` outside (0,1); negative or non-numeric loss weight or `kl_weight` | Ordinary validation, same fail-early principle. |
 
 ### Strict booleans on the gate keys
 
@@ -397,7 +548,11 @@ resolver.
 ### The tests
 
 Every row above is asserted in **`backend/tests/test_vae_refusal_matrix.py`**
-(48 cases), which is the executable form of design.md §4:
+(68 cases), which is the executable form of design.md §4 plus, in
+`VaeCropScalePolicyTest`, the loader side of the crop scale policy — including a
+verbatim copy of the pre-policy loader that `downscale` is pixel-compared
+against, and an `inspect.signature` assertion that `make_validation_batch` takes
+no policy argument:
 
 ```
 venv/Scripts/python.exe -m pytest backend/tests/test_vae_refusal_matrix.py -v
@@ -423,7 +578,10 @@ Two properties of that suite are load-bearing and easy to lose:
   a *different* guard happens to contain both key names — and likewise that
   asserting `"fp16"` was satisfied by the out-of-enum `dtype` message that
   follows it. With distinctive fragments, neutralising each of the 11 guards in
-  turn is caught 11/11.
+  turn is caught 11/11 — and the 5 crop-scale guards added later were
+  mutation-swept the same way, caught 5/5 (the enum row is the important one:
+  without its guard an unknown policy resolves cleanly and the *loader* becomes
+  the first thing to notice, after the model load).
 
 ## Two structural invariants
 
@@ -533,5 +691,3 @@ epochs control would silently do nothing.
   inference time (non-locality decomposition, tiling, invented high frequency).
 - `docs/guides/ADD_A_PARAMETER.md` — the parameter checklist, including the
   `model_fields_set` and dtype-coverage lessons this work produced.
-</content>
-</invoke>

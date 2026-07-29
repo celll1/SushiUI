@@ -232,6 +232,24 @@ metric definition are gone. What *did* reproduce from that record is SDXL's edge
 residual being **3.7×** Qwen's (9.44 vs 2.54 /255), which is broadband
 softness/ringing, not grid structure.
 
+**The decoder perceives latent AREA, never aspect ratio.** Both non-local terms
+reduce over the spatial axes: `AttnProcessor2_0` flattens `[B, C, H, W] →
+[B, H·W, C]` before attending, and GroupNorm reduces over `(C_group, H, W)`.
+Everything else is convolution. So a 64×64 latent and a 32×128 latent are the
+same problem to every layer, and no shape-dependent parameter exists anywhere in
+the decoder. INFERRED from code (the matched-token-count experiment was written
+but never ran); the only genuine shape sensitivity is second-order, via the
+zero-pad border band covering more of a long thin canvas. This is why a
+decoder-only VAE fine-tune skips aspect-ratio bucketing, and it is measurably
+insensitive to the *area* gap too — see
+`docs/guides/VAE_TRAINING_RESOLUTION.md`.
+
+**Decoder time scales as ~res^2.27, not res².** The single mid-block attention is
+O(tokens²) with tokens = (res/8)², so from 512 to 2048 the convolutions grow 16×
+while the attention grows 256× (MEASURED on the training forward+backward, fit
+over 7 resolutions; see the training-resolution guide, which also records that
+splitting a decode into tiles cuts that term ~11× at 2048).
+
 **SDXL converts latent noise into pixel HF ~70× more efficiently than Qwen**
 (and ~3× more than FLUX.1) at ε = 0.10 of latent std. This is why latent-side
 mottle *reads* worse through the SDXL decoder: the same latent perturbation buys
@@ -303,5 +321,4 @@ tiling penalty (0.31–0.77 → 0.06–0.17 mean |Δ|).
   their raw artifacts and exact metric definitions are gone. Treat those as
   non-reproductions, not as proofs of error, and do not let the numbers *here*
   lose their conditions the same way.
-</content>
-</invoke>
+

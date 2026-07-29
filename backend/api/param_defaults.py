@@ -1777,6 +1777,30 @@ VAE_TRAINING_DEFAULTS: Dict[str, Any] = {
 
     # --- optimisation shape -------------------------------------------------
     "resolution": 512,
+    # How much an image is resampled BEFORE the square crop is taken. Measured
+    # to be the dominant control on what the fine-tune learns
+    # (scratchpad/vae_training/results_crop_geometry.md):
+    #   "downscale" - the historical behaviour: short side scaled to exactly
+    #                 `resolution`, so 95.79% of the corpus is downscaled by a
+    #                 median 2.30x. LANCZOS downscaling CONCENTRATES high
+    #                 frequency (4.06x the top-octave power of a native crop,
+    #                 n=300, t=+21.6), and the measured cost is calibration: the
+    #                 fine-tune's accuracy gain is ~30% smaller on native content
+    #                 (edge residual -7.7% vs -12.5%, 19/19, t=+7.49).
+    #   "native"    - crop out of the full-size pixels; upscale only when the
+    #                 short side is genuinely below `resolution` (4.21%).
+    #   "mixed"     - draw the factor per sample, log-uniformly over [1, f_max]
+    #                 (the study's recommendation). Costs nothing: the native
+    #                 crop is 44% CHEAPER in the dataloader (17.4 vs 30.8 ms,
+    #                 study §5.2; ratio reproduced in §8.4) and every policy has
+    #                 8-30x headroom over the GPU. "mixed" itself is ~15% dearer
+    #                 than "downscale" (§8.4), still ~10x the GPU's demand.
+    # Default stays "downscale" so no existing run changes what it trains on.
+    "crop_scale_policy": "downscale",
+    # Upper bound on the per-sample downscale factor under "mixed"; 0 = the
+    # image's own short/resolution ratio (no bound). Read ONLY under "mixed" —
+    # a non-zero value with any other policy is REFUSED rather than ignored.
+    "crop_scale_max_downscale": 0.0,
     # bf16 compute over an fp32 master copy of the weights. fp16 is refused
     # outright (SDXL-family activation overflow; no gradient scaler anywhere in
     # this trainer for the other families).
@@ -1825,5 +1849,15 @@ VAE_TRAINING_DEFAULTS: Dict[str, Any] = {
     # --- validation (the only signal that a fine-tune is going wrong) -------
     "validation_every": 100,
     "validation_num_images": 8,
-    "validation_resolution": 512,
+    # 1024, not 512. Validation is always a DETERMINISTIC centre crop under the
+    # "downscale" policy regardless of crop_scale_policy (see
+    # vae_dataset.make_validation_batch), so this is the only axis on which the
+    # held-out metric can be made representative. 512 measures the most
+    # flattering and least representative regime available (the fine-tune gains
+    # +1.15 dB there vs +0.81 dB on native content); at 1024 the median 1131 px
+    # source is downscaled only ~1.1x, i.e. nearly native, and native crops from
+    # 512 to 1536 showed the PSNR advantage holding at +0.93..+1.20 dB with no
+    # significant trend, so the change costs nothing in signal quality.
+    # Changing it MID-RUN puts a step in the vae_val_psnr chart.
+    "validation_resolution": 1024,
 }

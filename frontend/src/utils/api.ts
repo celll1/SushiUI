@@ -3675,6 +3675,14 @@ export interface VaeTrainingConfig {
   encoder_blocks: "all" | "down_blocks" | "mid_block" | "conv_out";
   // Optimisation shape
   resolution: number;
+  // How much an image is resampled before the square crop. "downscale" is the
+  // historical behaviour (short side -> resolution, which downscales 95.8% of
+  // the corpus by a median 2.30x); "native" crops out of the full-size pixels;
+  // "mixed" draws the factor per sample. crop_scale_max_downscale bounds the
+  // "mixed" draw (0 = unbounded) and is REFUSED by the backend under any other
+  // policy, so the panel clears it when leaving "mixed".
+  crop_scale_policy: "downscale" | "native" | "mixed";
+  crop_scale_max_downscale: number;
   dtype: "bf16" | "fp32";
   ema_enabled: boolean;
   ema_decay: number;

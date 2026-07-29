@@ -91,7 +91,13 @@ export default function TrainingList({ runs, selectedRunId, onSelectRun, onRefre
 
               <div className="text-xs text-gray-400 space-y-0.5">
                 <div className="flex items-center justify-between">
-                  <span>{run.training_method === "lora" ? "LoRA" : "Full"}</span>
+                  <span>
+                    {run.training_method === "lora"
+                      ? "LoRA"
+                      : run.training_method === "vae_decoder"
+                        ? "VAE Decoder"
+                        : "Full"}
+                  </span>
                   <span>{run.current_step} / {run.total_steps}</span>
                 </div>
 

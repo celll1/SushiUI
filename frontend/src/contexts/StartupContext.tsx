@@ -5,6 +5,7 @@ import {
   fetchGenerationDefaults,
   fetchTrainingDefaults,
   fetchTaggerTrainingDefaults,
+  fetchVaeTrainingDefaults,
   fetchTimestepDefaultsByArch,
   fetchBundleVaeDefaultsByArch,
   GenerationDefaultsResponse,
@@ -35,6 +36,7 @@ interface StartupContextType {
   generationDefaults: GenerationDefaultsResponse | null;
   trainingDefaults: Record<string, unknown> | null;
   taggerTrainingDefaults: Record<string, unknown> | null;
+  vaeTrainingDefaults: Record<string, unknown> | null;
   timestepDefaultsByArch: Record<string, Record<string, unknown>> | null;
   bundleVaeDefaultsByArch: Record<string, boolean> | null;
 }
@@ -49,6 +51,7 @@ const StartupContext = createContext<StartupContextType>({
   generationDefaults: null,
   trainingDefaults: null,
   taggerTrainingDefaults: null,
+  vaeTrainingDefaults: null,
   timestepDefaultsByArch: null,
   bundleVaeDefaultsByArch: null,
 });
@@ -70,6 +73,7 @@ export function StartupProvider({ children }: StartupProviderProps) {
   const [generationDefaults, setGenerationDefaults] = useState<GenerationDefaultsResponse | null>(null);
   const [trainingDefaults, setTrainingDefaults] = useState<Record<string, unknown> | null>(null);
   const [taggerTrainingDefaults, setTaggerTrainingDefaults] = useState<Record<string, unknown> | null>(null);
+  const [vaeTrainingDefaults, setVaeTrainingDefaults] = useState<Record<string, unknown> | null>(null);
   const [timestepDefaultsByArch, setTimestepDefaultsByArch] = useState<Record<string, Record<string, unknown>> | null>(null);
   const [bundleVaeDefaultsByArch, setBundleVaeDefaultsByArch] = useState<Record<string, boolean> | null>(null);
 
@@ -117,16 +121,18 @@ export function StartupProvider({ children }: StartupProviderProps) {
 
           // Fetch param schema defaults from backend (single source of truth)
           try {
-            const [genDef, trainDef, taggerDef, tsByArch, bvByArch] = await Promise.all([
+            const [genDef, trainDef, taggerDef, vaeDef, tsByArch, bvByArch] = await Promise.all([
               fetchGenerationDefaults(),
               fetchTrainingDefaults(),
               fetchTaggerTrainingDefaults(),
+              fetchVaeTrainingDefaults(),
               fetchTimestepDefaultsByArch(),
               fetchBundleVaeDefaultsByArch(),
             ]);
             setGenerationDefaults(genDef);
             setTrainingDefaults(trainDef);
             setTaggerTrainingDefaults(taggerDef);
+            setVaeTrainingDefaults(vaeDef);
             setTimestepDefaultsByArch(tsByArch);
             setBundleVaeDefaultsByArch(bvByArch);
             console.log("[StartupContext] Param defaults loaded from backend");
@@ -165,6 +171,7 @@ export function StartupProvider({ children }: StartupProviderProps) {
       generationDefaults,
       trainingDefaults,
       taggerTrainingDefaults,
+      vaeTrainingDefaults,
       timestepDefaultsByArch,
       bundleVaeDefaultsByArch,
     }}>

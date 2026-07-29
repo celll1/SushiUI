@@ -8,6 +8,7 @@ import TrainingConfig from "@/components/training/TrainingConfig";
 import TrainingMonitor from "@/components/training/TrainingMonitor";
 import TaggerTrainingConfig from "@/components/training/tagger/TaggerTrainingConfig";
 import TaggerTrainingMonitor from "@/components/training/tagger/TaggerTrainingMonitor";
+import VaeTrainingConfig from "@/components/training/vae/VaeTrainingConfig";
 import { listTrainingRuns, listTaggerTrainingRuns, TrainingRun, TaggerTrainingRun } from "@/utils/api";
 
 export default function TrainingPage() {
@@ -19,7 +20,7 @@ export default function TrainingPage() {
 }
 
 function TrainingPageContent() {
-  const [trainingMode, setTrainingMode] = useState<"model" | "tagger">("model");
+  const [trainingMode, setTrainingMode] = useState<"model" | "tagger" | "vae">("model");
 
   // Model training state
   const [runs, setRuns] = useState<TrainingRun[]>([]);
@@ -34,6 +35,13 @@ function TrainingPageContent() {
   const [showTaggerConfig, setShowTaggerConfig] = useState(false);
   const [editingTaggerRun, setEditingTaggerRun] = useState<TaggerTrainingRun | null>(null);
   const [taggerLoading, setTaggerLoading] = useState(true);
+
+  // VAE training state. VAE runs are ordinary TrainingRun rows in the same
+  // /training/runs list, so they share `runs` / loadRuns / the polling effect
+  // with model training and are split by training_method below.
+  const [selectedVaeRunId, setSelectedVaeRunId] = useState<number | null>(null);
+  const [showVaeConfig, setShowVaeConfig] = useState(false);
+  const [editVaeRunId, setEditVaeRunId] = useState<number | null>(null);
 
   const [isMobile, setIsMobile] = useState(false);
   const [showMobileDetail, setShowMobileDetail] = useState(false);
@@ -212,20 +220,68 @@ function TrainingPageContent() {
     );
   };
 
+  // VAE training handlers
+  const handleCreateVaeRun = () => {
+    setSelectedVaeRunId(null);
+    setEditVaeRunId(null);
+    setShowVaeConfig(true);
+    if (isMobile) setShowMobileDetail(true);
+  };
+
+  const handleEditVaeRun = (runId: number) => {
+    setEditVaeRunId(runId);
+    setShowVaeConfig(true);
+  };
+
+  const handleSelectVaeRun = (id: number) => {
+    setSelectedVaeRunId(id);
+    setShowVaeConfig(false);
+    if (isMobile) setShowMobileDetail(true);
+  };
+
+  const handleVaeRunCreated = (newRun: TrainingRun) => {
+    setRuns([newRun, ...runs]);
+    setShowVaeConfig(false);
+    setEditVaeRunId(null);
+    setSelectedVaeRunId(newRun.id);
+  };
+
+  const handleVaeRunUpdated = (updatedRun: TrainingRun) => {
+    setRuns((prevRuns) =>
+      prevRuns.map((r) => (r.id === updatedRun.id ? updatedRun : r))
+    );
+    setShowVaeConfig(false);
+    setEditVaeRunId(null);
+    setSelectedVaeRunId(updatedRun.id);
+  };
+
+  const handleVaeDelete = (deletedRunId: number) => {
+    setRuns((prevRuns) => prevRuns.filter((r) => r.id !== deletedRunId));
+    setSelectedVaeRunId(null);
+    if (isMobile) setShowMobileDetail(false);
+  };
+
   const handleTaggerDelete = (deletedRunId: string) => {
     setTaggerRuns((prev) => prev.filter((r) => r.run_id !== deletedRunId));
     setSelectedTaggerRunId(null);
     if (isMobile) setShowMobileDetail(false);
   };
 
-  const selectedRun = runs.find(r => r.id === selectedRunId);
-  const selectedTaggerRun = taggerRuns.find(r => r.run_id === selectedTaggerRunId);
+  // VAE runs are excluded from the model list and vice versa: they are the same
+  // row type but have no denoiser, no samples and a different config form.
+  const modelRuns = runs.filter(r => r.training_method !== "vae_decoder");
+  const vaeRuns = runs.filter(r => r.training_method === "vae_decoder");
 
-  const handleTabChange = (mode: "model" | "tagger") => {
+  const selectedRun = modelRuns.find(r => r.id === selectedRunId);
+  const selectedTaggerRun = taggerRuns.find(r => r.run_id === selectedTaggerRunId);
+  const selectedVaeRun = vaeRuns.find(r => r.id === selectedVaeRunId);
+
+  const handleTabChange = (mode: "model" | "tagger" | "vae") => {
     setTrainingMode(mode);
     setShowMobileDetail(false);
     setShowConfig(false);
     setShowTaggerConfig(false);
+    setShowVaeConfig(false);
   };
 
   return (
@@ -269,6 +325,16 @@ function TrainingPageContent() {
               >
                 {isMobile ? "Tagger" : "Tagger Training"}
               </button>
+              <button
+                onClick={() => handleTabChange("vae")}
+                className={`px-3 py-1.5 text-xs sm:text-sm transition-colors border-l border-gray-600 ${
+                  trainingMode === "vae"
+                    ? "bg-blue-600 text-white"
+                    : "bg-gray-800 text-gray-300 hover:bg-gray-700"
+                }`}
+              >
+                {isMobile ? "VAE" : "VAE Training"}
+              </button>
             </div>
 
             <div className="flex-1" />
@@ -281,12 +347,19 @@ function TrainingPageContent() {
               >
                 {isMobile ? "New" : "New Training Run"}
               </button>
-            ) : (
+            ) : trainingMode === "tagger" ? (
               <button
                 onClick={handleCreateTaggerRun}
                 className="px-2 sm:px-3 py-1.5 bg-blue-600 hover:bg-blue-500 rounded text-xs sm:text-sm transition-colors whitespace-nowrap"
               >
                 {isMobile ? "New" : "New Tagger Run"}
+              </button>
+            ) : (
+              <button
+                onClick={handleCreateVaeRun}
+                className="px-2 sm:px-3 py-1.5 bg-blue-600 hover:bg-blue-500 rounded text-xs sm:text-sm transition-colors whitespace-nowrap"
+              >
+                {isMobile ? "New" : "New VAE Run"}
               </button>
             )}
           </div>
@@ -299,7 +372,7 @@ function TrainingPageContent() {
               {/* Model Training Runs List */}
               <div className={`${isMobile && showMobileDetail ? 'hidden' : 'flex'} ${isMobile ? 'w-full' : 'w-64 lg:w-80'} flex-shrink-0 ${!isMobile && 'border-r border-gray-700'} overflow-y-auto`}>
                 <TrainingList
-                  runs={runs}
+                  runs={modelRuns}
                   selectedRunId={selectedRunId}
                   onSelectRun={handleSelectRun}
                   onRefresh={loadRuns}
@@ -336,6 +409,55 @@ function TrainingPageContent() {
                   <div className="flex items-center justify-center h-full text-gray-400">
                     <div className="text-center p-4">
                       <p className="text-base sm:text-lg font-medium">No training run selected</p>
+                      <p className="text-xs sm:text-sm mt-2">Select a run from the list or create a new one</p>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </>
+          ) : trainingMode === "vae" ? (
+            <>
+              {/* VAE Training Runs List (same TrainingRun rows, filtered) */}
+              <div className={`${isMobile && showMobileDetail ? 'hidden' : 'flex'} ${isMobile ? 'w-full' : 'w-64 lg:w-80'} flex-shrink-0 ${!isMobile && 'border-r border-gray-700'} overflow-y-auto`}>
+                <TrainingList
+                  runs={vaeRuns}
+                  selectedRunId={selectedVaeRunId}
+                  onSelectRun={handleSelectVaeRun}
+                  onRefresh={loadRuns}
+                  loading={loading}
+                />
+              </div>
+
+              {/* VAE Training Config or Monitor */}
+              <div className={`${isMobile && !showMobileDetail ? 'hidden' : 'flex-1'} overflow-y-auto`}>
+                {showVaeConfig ? (
+                  <VaeTrainingConfig
+                    key={editVaeRunId ?? "new"}
+                    onClose={() => {
+                      setShowVaeConfig(false);
+                      setEditVaeRunId(null);
+                      if (isMobile) setShowMobileDetail(false);
+                    }}
+                    onRunCreated={handleVaeRunCreated}
+                    onRunUpdated={handleVaeRunUpdated}
+                    editRunId={editVaeRunId}
+                  />
+                ) : selectedVaeRun ? (
+                  <TrainingMonitor
+                    key={selectedVaeRun.id}
+                    run={selectedVaeRun}
+                    onClose={() => {
+                      setSelectedVaeRunId(null);
+                      if (isMobile) setShowMobileDetail(false);
+                    }}
+                    onStatusChange={handleStatusChange}
+                    onDelete={() => handleVaeDelete(selectedVaeRun.id)}
+                    onEditConfig={() => handleEditVaeRun(selectedVaeRun.id)}
+                  />
+                ) : (
+                  <div className="flex items-center justify-center h-full text-gray-400">
+                    <div className="text-center p-4">
+                      <p className="text-base sm:text-lg font-medium">No VAE training run selected</p>
                       <p className="text-xs sm:text-sm mt-2">Select a run from the list or create a new one</p>
                     </div>
                   </div>

@@ -514,7 +514,11 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 sm:gap-2">
               <div>
                 <span className="text-gray-400">Method:</span>{" "}
-                <span className="capitalize">{currentRun.training_method}</span>
+                {currentRun.training_method === "vae_decoder" ? (
+                  <span>VAE Decoder</span>
+                ) : (
+                  <span className="capitalize">{currentRun.training_method}</span>
+                )}
               </div>
               <div>
                 <span className="text-gray-400">Total Steps:</span> {currentRun.total_steps}

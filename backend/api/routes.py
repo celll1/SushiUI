@@ -4984,22 +4984,84 @@ def _override_scan_dirs(db: Session) -> List[str]:
     return out
 
 
+def _training_vae_export_dirs() -> List[str]:
+    """Diffusers VAE directories exported by a SushiUI VAE fine-tune.
+
+    The training base dir (``get_training_base_dir()``) is NOT one of the
+    configured model dirs, so a VAE the user just trained would otherwise be
+    unreachable from the VAE-override picker except by typing its path.
+
+    Recursion is bounded to EXACTLY two levels — ``<training_base>/<run>/<dir>``
+    — which is where ``VaeTrainer._save_vae`` writes (``<run_name>_vae``,
+    ``<run_name>_vae_noema``, ``<run_name>_vae_encoder_trained``[``_noema``]).
+    Nothing deeper is listed, so the per-run ``checkpoints/`` (one subdir plus
+    several multi-GB files per save), ``.dataset_cache/``, ``samples/`` and
+    ``logs/`` trees are never walked: those names are skipped by name before
+    any listdir, and a candidate directory is confirmed with two ``isfile``
+    probes rather than by enumerating it.
+    """
+    skip_names = {"checkpoints", "samples", "logs", "sample", "optimizer"}
+    out: List[str] = []
+    try:
+        from core.training.training_utils import get_training_base_dir
+        from api.generation_overrides import VAE_TRAINING_SIDECAR
+        base = get_training_base_dir()
+    except Exception as e:
+        print(f"[VAEs] training base dir unavailable: {e}")
+        return out
+    if not base or not os.path.isdir(base):
+        return out
+    try:
+        run_names = os.listdir(base)
+    except OSError:
+        return out
+    for run_name in run_names:
+        if run_name.startswith("."):
+            continue
+        run_dir = os.path.join(base, run_name)
+        if not os.path.isdir(run_dir):
+            continue
+        try:
+            entries = os.listdir(run_dir)
+        except OSError:
+            continue
+        for name in entries:
+            if name.startswith(".") or name.lower() in skip_names:
+                continue
+            cand_dir = os.path.join(run_dir, name)
+            # A SushiUI VAE export == diffusers config.json + our provenance
+            # sidecar. Requiring the sidecar keeps this scan to VAE fine-tune
+            # outputs only (a diffusion run's export dirs are not VAEs).
+            if (os.path.isfile(os.path.join(cand_dir, VAE_TRAINING_SIDECAR))
+                    and os.path.isfile(os.path.join(cand_dir, "config.json"))):
+                out.append(cand_dir)
+    return out
+
+
 @router.get("/models/vaes")
 async def list_vaes(db: Session = Depends(get_gallery_db)):
     """List standalone VAE candidates usable as a per-generation VAE override.
 
-    Scans the shared VAE store (models_dir/vae) and the configured model dirs.
-    A candidate is a diffusers ``vae/`` dir or a model whose registry record has
-    a VAE present and no backbone. Dims come from the component registry
-    (header/config reads only). Unclassifiable entries are skipped (best-effort).
+    Scans the shared VAE store (models_dir/vae), the configured model dirs, and
+    the training base dir (VAE fine-tune exports, see
+    ``_training_vae_export_dirs``). A candidate is a diffusers ``vae/`` dir or a
+    model whose registry record has a VAE present and no backbone. Dims come
+    from the component registry (header/config reads only). Unclassifiable
+    entries are skipped (best-effort).
     """
     from api.generation_overrides import classify_vae_candidate
 
     results: List[Dict[str, Any]] = []
     seen_paths = set()
 
+    def _key(path: str) -> str:
+        # Case/separator-insensitive on Windows, so the same directory reached
+        # through two different scan roots (e.g. a training dir that also lives
+        # under a configured model dir) collapses to one entry.
+        return os.path.normcase(os.path.normpath(path))
+
     def _consider(path: str):
-        if not path or path in seen_paths:
+        if not path or _key(path) in seen_paths:
             return
         try:
             cand = classify_vae_candidate(path)
@@ -5007,15 +5069,15 @@ async def list_vaes(db: Session = Depends(get_gallery_db)):
             print(f"[VAEs] classify failed for {path}: {e}")
             return
         if cand is not None:
-            seen_paths.add(path)
+            seen_paths.add(_key(path))
             # Also dedup on the candidate's RESOLVED path: a PiD checkpoint is
             # reachable both as its containing dir and as its .pth file, but both
             # classify to the same concrete .pth — show it once.
             cand_path = cand.get("path")
-            if cand_path and cand_path != path:
-                if cand_path in seen_paths:
+            if cand_path and _key(cand_path) != _key(path):
+                if _key(cand_path) in seen_paths:
                     return
-                seen_paths.add(cand_path)
+                seen_paths.add(_key(cand_path))
             results.append(cand)
 
     for scan_dir in _override_scan_dirs(db):
@@ -5047,6 +5109,16 @@ async def list_vaes(db: Session = Depends(get_gallery_db)):
                 # checkpoint — classify_vae_candidate recognizes the latter via
                 # its "PiD_*.pth" naming and returns kind="pid_decoder".
                 _consider(item_path)
+
+    # Training outputs last: a training dir nested inside a configured model dir
+    # is already in seen_paths by now and is skipped rather than duplicated.
+    # Wrapped so this addition can never take down the endpoint: the guarantee
+    # is "degrades to no training entries", unconditionally.
+    try:
+        for export_dir in _training_vae_export_dirs():
+            _consider(export_dir)
+    except Exception as e:
+        print(f"[VAEs] training-directory scan failed: {e}")
 
     return {"vaes": results}
 

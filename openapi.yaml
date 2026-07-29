@@ -4792,11 +4792,21 @@ paths:
       tags: [models]
       summary: List standalone VAE candidates for the per-generation VAE override
       description: |
-        Scans the shared VAE store (models_dir/vae) and the configured model
-        directories. A candidate is a diffusers vae/ directory or a model whose
+        Scans the shared VAE store (models_dir/vae), the configured model
+        directories, and the training base directory (VAE fine-tune exports).
+        A candidate is a diffusers vae/ directory or a model whose
         component-registry record has a VAE present and no backbone. Dims come
         from the component registry (header/config reads only, no weight load).
         Unclassifiable entries are skipped (best-effort).
+
+        The training-directory scan is bounded to two levels
+        (`<training_base>/<run>/<export_dir>`) and only accepts a directory that
+        carries both `config.json` and the `sushi_vae_training.json` provenance
+        sidecar written by a `vae_decoder` training run; per-run `checkpoints/`,
+        `samples/`, `logs/` and `.dataset_cache/` trees are never walked. Such
+        an entry additionally carries a `training` object. Note that an EMA
+        export (`<run_name>_vae`) and its live-weights sibling
+        (`<run_name>_vae_noema`) are listed as two separate entries.
       operationId: listVaes
       responses:
         '200':
@@ -4815,6 +4825,19 @@ paths:
                           type: string
                         path:
                           type: string
+                        arch:
+                          type: string
+                          nullable: true
+                          description: Architecture inferred by the component registry.
+                          example: sdxl
+                        kind:
+                          type: string
+                          nullable: true
+                          enum: [autoencoder, pid_decoder]
+                          description: |
+                            `pid_decoder` for a PiD (Pixel Diffusion Decoder)
+                            `.pth` checkpoint, `autoencoder` for a normal VAE.
+                          example: autoencoder
                         latent_channels:
                           type: integer
                           nullable: true
@@ -4828,6 +4851,58 @@ paths:
                         scale_temporal:
                           type: integer
                           nullable: true
+                        training:
+                          type: object
+                          nullable: true
+                          description: |
+                            Present only for a VAE exported by a SushiUI VAE
+                            fine-tune (read from its `sushi_vae_training.json`
+                            sidecar). Absent for every other candidate.
+                          properties:
+                            produced_by:
+                              type: string
+                              nullable: true
+                              example: SushiUI VAE fine-tune (network.type=vae_decoder, decoder only, encoder frozen)
+                            run_id:
+                              type: integer
+                              nullable: true
+                              example: 113
+                            run_name:
+                              type: string
+                              nullable: true
+                              example: vae_dec_IL02_v1
+                            step:
+                              type: integer
+                              nullable: true
+                              example: 600
+                            encoder_trained:
+                              type: boolean
+                              nullable: true
+                              description: |
+                                True when the ENCODER was fine-tuned too. Such a
+                                VAE encodes to a different latent distribution
+                                than the base model's VAE, so latent caches,
+                                LoRAs and diffusion checkpoints built against the
+                                base VAE do not match it. `null` when a partial
+                                sidecar does not record it — treat as unknown,
+                                not as "encoder frozen". A generation that
+                                applies such a VAE also gets a `warnings[]` entry
+                                with code `vae_override_warning`, because the
+                                structural compatibility check cannot detect an
+                                encoder fine-tune.
+                              example: false
+                            ema_applied:
+                              type: boolean
+                              nullable: true
+                              description: |
+                                True for the EMA export, false for the
+                                `_noema` (live weights) sibling, `null` when a
+                                partial sidecar does not record it.
+                              example: true
+                            base_vae_path:
+                              type: string
+                              nullable: true
+                              description: Path of the VAE this run started from.
 
   /models/text_encoders:
     get:

@@ -249,7 +249,7 @@ def _validate(cfg: Dict[str, Any], train_section: Dict[str, Any]) -> None:
         raise VaeConfigError(
             "export_bare_ldm=true is refused when train_encoder=true. A bare LDM "
             ".safetensors has no config.json, so the consumer inherits "
-            "scaling_factor / shift_factor from the model it is loaded into — "
+            "scaling_factor / shift_factor from the model it is loaded into, "
             "and an encoder fine-tune is precisely what makes those wrong, with "
             "no way for the consumer to notice. The diffusers directory export "
             "(which carries its own config.json and provenance sidecar) is "

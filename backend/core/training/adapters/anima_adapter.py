@@ -65,7 +65,7 @@ class AnimaLoRAAdapter(BaseLoRAAdapter):
         """
         transformer = self.trainer.transformer
         if transformer is None:
-            print("[AnimaLoRAAdapter] WARNING: trainer.transformer is None — skipping LoRA injection")
+            print("[AnimaLoRAAdapter] WARNING: trainer.transformer is None - skipping LoRA injection")
             return 0
 
         print(f"[AnimaLoRAAdapter] Injecting LoRA (scope={self.scope}, "
@@ -137,7 +137,7 @@ class AnimaLoRAAdapter(BaseLoRAAdapter):
         the DiT module, so LoRA on it is applied via apply_lora_to_unet()
         when scope["llm_adapter"] is enabled.
         """
-        print("[AnimaLoRAAdapter] Qwen3 text encoder is frozen — no LoRA applied to TE")
+        print("[AnimaLoRAAdapter] Qwen3 text encoder is frozen - no LoRA applied to TE")
         return 0
 
     # -- Optimizer parameters ------------------------------------------

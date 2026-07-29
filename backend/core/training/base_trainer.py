@@ -801,7 +801,7 @@ class BaseTrainer(ABC):
             # count, so compile sees two static shapes per bucket (recompiles once
             # per shape, not per step). Warn so the user expects the extra compile.
             if str(_tc.get("torch_compile", "off")).lower() not in ("off", "", "none"):
-                print("[TREAD] WARNING: torch_compile is on with routing — expect an "
+                print("[TREAD] WARNING: torch_compile is on with routing - expect an "
                       "extra one-time recompile for the routed (reduced-token) shape.")
 
         # Low-rate stochastic depth (per-batch block dropout) — training-only,
@@ -828,7 +828,7 @@ class BaseTrainer(ABC):
                   f"(training-only; sampling runs every block)")
             if str(_tc.get("torch_compile", "off")).lower() not in ("off", "", "none"):
                 print("[BlockSkip] WARNING: torch_compile is on with per-batch block "
-                      "dropout — the skip pattern varies each step (dynamic control "
+                      "dropout - the skip pattern varies each step (dynamic control "
                       "flow), causing recompiles; prefer torch_compile=off.")
 
         # DiT-BlockSkip (arXiv 2603.20755) — training-only MEMORY-REDUCTION for
@@ -900,11 +900,11 @@ class BaseTrainer(ABC):
                   f"trainer={trainer_cls}): skip first {_bs_front} + last {_bs_back} "
                   f"blocks; only the middle blocks train under grad (LoRA or full "
                   f"parameters); skipped blocks run no_grad only (no backward "
-                  f"activations, gradient-starved — not optimizer-excluded); span "
+                  f"activations, gradient-starved - not optimizer-excluded); span "
                   f"residuals kept in memory per step (training-only; sampling runs "
                   f"the full network).")
             if str(_tc.get("torch_compile", "off")).lower() not in ("off", "", "none"):
-                print("[BlockSkip] WARNING: torch_compile is on — BlockSkip runs a "
+                print("[BlockSkip] WARNING: torch_compile is on - BlockSkip runs a "
                       "two-pass (no_grad full + grad middle) forward with dynamic "
                       "control flow; prefer torch_compile=off.")
 
@@ -7164,12 +7164,12 @@ class BaseTrainer(ABC):
         if trainer_cls != "FullParameterTrainer":
             print(f"{self.log_prefix} torch_compile={mode!r} requested but trainer "
                   f"is {trainer_cls} (not full-parameter FT); compile is gated to "
-                  f"full-parameter FT — skipping (adapter paths run eager).")
+                  f"full-parameter FT - skipping (adapter paths run eager).")
             return
         if getattr(self, "blocks_to_swap", 0) > 0:
             print(f"{self.log_prefix} torch_compile={mode!r} requested but block "
                   f"swap is active (blocks_to_swap={self.blocks_to_swap}); "
-                  f"incompatible — skipping compile.")
+                  f"incompatible - skipping compile.")
             return
         if getattr(self, "_transformer_compiled", False):
             return
@@ -7635,7 +7635,7 @@ class BaseTrainer(ABC):
             # phase re-bucket would fight it. Disable explicitly instead of logging
             # ENABLED and silently being overridden.
             print(f"{self.log_prefix} [ResCurriculum] DISABLED: crop augmentation is "
-                  f"active and owns per-epoch bucketing — the two features do not combine.")
+                  f"active and owns per-epoch bucketing - the two features do not combine.")
             _rc_enable = False
         if _rc_enable and _rc_warmup_steps > 0 and 0.0 < _rc_scale < 1.0:
             _rc_warmup_res = self._rc_scaled_resolutions(_rc_normal_res, _rc_scale)
@@ -7646,7 +7646,7 @@ class BaseTrainer(ABC):
             if _rc_warmup_res == _rc_normal_res:
                 print(f"{self.log_prefix} [ResCurriculum] scale={_rc_scale} leaves the "
                       f"warmup resolution equal to the target ({_rc_normal_res}) after /64 "
-                      f"snapping — curriculum has no effect, running normally.")
+                      f"snapping - curriculum has no effect, running normally.")
             elif _rc_switch_epoch <= 0:
                 print(f"{self.log_prefix} [ResCurriculum] warmup_steps={_rc_warmup_steps} "
                       f"< one epoch worth of steps; no warmup epochs, running normally.")
@@ -7661,16 +7661,16 @@ class BaseTrainer(ABC):
                       f"{_rc_effective_warmup_steps} steps = epoch end).")
                 if _rc_switch_epoch >= num_epochs:
                     print(f"{self.log_prefix} [ResCurriculum] WARNING: switch epoch "
-                          f"({_rc_switch_epoch}) >= num_epochs ({num_epochs}) — the entire "
+                          f"({_rc_switch_epoch}) >= num_epochs ({num_epochs}) - the entire "
                           f"run stays in warmup (never reaches the target resolution).")
                 if str(self.config.get("torch_compile", "off")).lower() not in ("off", "", "none"):
-                    print(f"{self.log_prefix} [ResCurriculum] WARNING: torch_compile is on — "
+                    print(f"{self.log_prefix} [ResCurriculum] WARNING: torch_compile is on - "
                           f"the resolution switch changes token shapes and forces a one-time "
                           f"recompile at the switch epoch.")
                 if latent_encoding_mode == "pre_encoded_cache":
                     print(f"{self.log_prefix} [ResCurriculum] NOTE: pre_encoded_cache mode "
                           f"caches BOTH warmup and target latents (keyed per-file by w_h, so "
-                          f"no cache poisoning) — extra disk for the warmup entries.")
+                          f"no cache poisoning) - extra disk for the warmup entries.")
 
         # Crop augmentation: batch count varies per epoch (per-epoch re-bucketing), so
         # compute exact per-epoch step offsets up front for accurate total_steps and
@@ -7875,7 +7875,7 @@ class BaseTrainer(ABC):
         if self.is_minit2i and not getattr(self, "minit2i_latent", False) \
                 and latent_encoding_mode != "onthefly_gpu":
             print(f"{self.log_prefix} MiniT2I (pixel-space) detected: forcing "
-                  f"latent_encoding_mode='onthefly_gpu' (was '{latent_encoding_mode}') — "
+                  f"latent_encoding_mode='onthefly_gpu' (was '{latent_encoding_mode}') - "
                   f"no VAE, so disk latent caching is wasteful")
             latent_encoding_mode = "onthefly_gpu"
         # Latent-space MiniT2I uses small VAE latents -> the normal disk cache is fine
@@ -7886,7 +7886,7 @@ class BaseTrainer(ABC):
         # represent. Force on-the-fly GPU encoding.
         if self.crop_planner is not None and latent_encoding_mode != "onthefly_gpu":
             print(f"{self.log_prefix} Crop augmentation: forcing latent_encoding_mode="
-                  f"'onthefly_gpu' (was '{latent_encoding_mode}') — disk/swap latent caches "
+                  f"'onthefly_gpu' (was '{latent_encoding_mode}') - disk/swap latent caches "
                   f"cannot represent per-epoch crops")
             latent_encoding_mode = "onthefly_gpu"
 
@@ -7905,7 +7905,7 @@ class BaseTrainer(ABC):
             item.get("item_type") == "audio" for dataset in datasets for item in dataset.items
         ):
             print(f"{self.log_prefix} ACE-Step audio dataset detected: forcing "
-                  f"latent_encoding_mode='pre_encoded_cache' (was '{latent_encoding_mode}') — "
+                  f"latent_encoding_mode='pre_encoded_cache' (was '{latent_encoding_mode}') - "
                   f"swap_onthefly/onthefly_gpu have no audio-clip encode path yet")
             latent_encoding_mode = "pre_encoded_cache"
 
@@ -9259,7 +9259,7 @@ class BaseTrainer(ABC):
                                 self._ve_set_device("cpu")
                                 torch.cuda.empty_cache()
                                 print(f"{self.log_prefix} [VE] Epoch {epoch + 1}: no reference-image "
-                                      f"batches — Vision Encoder offloaded to CPU (~186MB freed)")
+                                      f"batches - Vision Encoder offloaded to CPU (~186MB freed)")
                         except Exception:
                             pass
 
@@ -9284,7 +9284,7 @@ class BaseTrainer(ABC):
                                     if next(self.vision_encoder.model.parameters()).device.type != "cpu":
                                         self._ve_set_device("cpu")
                                         torch.cuda.empty_cache()
-                                        print(f"{self.log_prefix} [VE] 64 reference-free batches — "
+                                        print(f"{self.log_prefix} [VE] 64 reference-free batches - "
                                               f"Vision Encoder offloaded to CPU (~186MB freed; reloads "
                                               f"on the next reference batch)")
                                 except Exception:
@@ -9363,9 +9363,9 @@ class BaseTrainer(ABC):
                                     continue
                                 _rid = _req.get("request_id", "?")
                                 _params = _req.get("params", {})
-                                print(f"\n{self.log_prefix} Preview request {_rid} — processing...")
+                                print(f"\n{self.log_prefix} Preview request {_rid} - processing...")
                                 self._preview_gen.process_request(_rid, _params)
-                                print(f"{self.log_prefix} Preview request {_rid} — done")
+                                print(f"{self.log_prefix} Preview request {_rid} - done")
                             cleanup_stale(str(self.output_dir))
                     except Exception as _pe:   # noqa: BLE001
                         # Never let preview handling kill training

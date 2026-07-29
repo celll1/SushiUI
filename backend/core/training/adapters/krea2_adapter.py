@@ -48,7 +48,7 @@ class Krea2LoRAAdapter(BaseLoRAAdapter):
     def apply_lora_to_unet(self, lora_layers: Dict[str, nn.Module]) -> int:
         transformer = self.trainer.transformer
         if transformer is None:
-            print("[Krea2LoRAAdapter] WARNING: trainer.transformer is None — skipping")
+            print("[Krea2LoRAAdapter] WARNING: trainer.transformer is None - skipping")
             return 0
         print(f"[Krea2LoRAAdapter] Injecting LoRA (scope={self.scope}, "
               f"rank={self.lora_rank}, alpha={self.lora_alpha})")
@@ -69,7 +69,7 @@ class Krea2LoRAAdapter(BaseLoRAAdapter):
 
     def apply_lora_to_text_encoders(self, lora_layers: Dict[str, nn.Module]) -> int:
         """Qwen3-VL text encoder is frozen — no LoRA applied."""
-        print("[Krea2LoRAAdapter] Qwen3-VL text encoder is frozen — no LoRA on TE")
+        print("[Krea2LoRAAdapter] Qwen3-VL text encoder is frozen - no LoRA on TE")
         return 0
 
     def setup_trainable_parameters(self, lora_layers: Dict[str, nn.Module]) -> List[Dict[str, Any]]:
@@ -118,7 +118,7 @@ class Krea2FullParameterAdapter(BaseFullParameterAdapter):
         if bool(getattr(trainer, "train_text_encoder", False)):
             raise ValueError(
                 "[Krea2FullParameterAdapter] Qwen3-VL text encoder training is not "
-                "supported for Krea 2 — set train_text_encoder=False."
+                "supported for Krea 2 - set train_text_encoder=False."
             )
         if getattr(trainer, "train_unet", True) and trainer.transformer is not None:
             trainer.transformer.requires_grad_(True)

@@ -57,7 +57,7 @@ class MiniT2ILoRAAdapter(BaseLoRAAdapter):
     def apply_lora_to_unet(self, lora_layers: Dict[str, nn.Module]) -> int:
         transformer = self.trainer.transformer
         if transformer is None:
-            print("[MiniT2ILoRAAdapter] WARNING: trainer.transformer is None — skipping")
+            print("[MiniT2ILoRAAdapter] WARNING: trainer.transformer is None - skipping")
             return 0
         print(f"[MiniT2ILoRAAdapter] Injecting LoRA (scope={self.scope}, "
               f"rank={self.lora_rank}, alpha={self.lora_alpha})")
@@ -80,7 +80,7 @@ class MiniT2ILoRAAdapter(BaseLoRAAdapter):
         """LoRA on FLAN-T5 (only called when train_text_encoder=True)."""
         text_encoder = self.trainer.text_encoder
         if text_encoder is None:
-            print("[MiniT2ILoRAAdapter] WARNING: trainer.text_encoder is None — skipping TE LoRA")
+            print("[MiniT2ILoRAAdapter] WARNING: trainer.text_encoder is None - skipping TE LoRA")
             return 0
         print(f"[MiniT2ILoRAAdapter] Injecting FLAN-T5 LoRA (te_scope={self.te_scope}, "
               f"rank={self.lora_rank}, alpha={self.lora_alpha})")

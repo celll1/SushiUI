@@ -1021,7 +1021,7 @@ class VaeTrainer:
                 "Refusing to write a bare LDM .safetensors for an "
                 "encoder-trained VAE: the file carries no config.json, so the "
                 "consumer would inherit scaling_factor / shift_factor from the "
-                "model it is loaded into — and those are exactly what an encoder "
+                "model it is loaded into, and those are exactly what an encoder "
                 "fine-tune invalidates. Use the diffusers directory export "
                 f"({source_dir.name}), which carries its own config.json and the "
                 "sushi_vae_training.json provenance sidecar."

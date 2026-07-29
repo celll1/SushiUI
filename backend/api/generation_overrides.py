@@ -260,6 +260,54 @@ def _friendly_component_name(path: str) -> str:
     return basename
 
 
+#: Provenance sidecar written next to every SushiUI VAE fine-tune export
+#: (``core/training/vae/vae_trainer.py``: ``_write``).
+VAE_TRAINING_SIDECAR = "sushi_vae_training.json"
+
+
+def read_vae_training_sidecar(path: str) -> Optional[Dict[str, Any]]:
+    """Return the trimmed provenance of a SushiUI VAE fine-tune export at
+    ``path``, or None when ``path`` carries no such sidecar.
+
+    Only the fields a candidate list needs are kept; the full sidecar (loss
+    weights, base-VAE identity, EMA statistics) stays on disk.
+    ``encoder_trained`` is carried because such a VAE encodes to a DIFFERENT
+    latent distribution than its base model's VAE — it is not a drop-in
+    replacement, and nothing about its config.json can reveal that.
+
+    Every field is TRI-STATE: a key missing from (or unreadable in) a partial
+    sidecar comes back as ``None``, never as a fabricated ``False``. Defaulting
+    ``encoder_trained`` to False would present an unknown-provenance VAE as a
+    drop-in replacement when it may not be one, and defaulting ``ema_applied``
+    would be a positive factual claim about which weights the file holds. A
+    malformed sidecar therefore degrades to "annotated, some fields unknown"
+    rather than to a confident wrong answer — and never raises, so the entry
+    cannot vanish from the candidate list.
+    """
+    if not isinstance(path, str) or not os.path.isdir(path):
+        return None
+    data = _read_json(os.path.join(path, VAE_TRAINING_SIDECAR))
+    if not isinstance(data, dict):
+        return None
+
+    def _tri_bool(key: str) -> Optional[bool]:
+        v = data.get(key)
+        return bool(v) if isinstance(v, bool) else None
+
+    base_vae = data.get("base_vae")
+    base_vae_path = base_vae.get("path") if isinstance(base_vae, dict) else None
+
+    return {
+        "produced_by": data.get("produced_by"),
+        "run_id": data.get("run_id"),
+        "run_name": data.get("run_name"),
+        "step": data.get("step"),
+        "encoder_trained": _tri_bool("encoder_trained"),
+        "ema_applied": _tri_bool("ema_applied"),
+        "base_vae_path": base_vae_path,
+    }
+
+
 def classify_vae_candidate(path: str, source_type: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """Return a VAE candidate descriptor, or None when ``path`` is not a
     standalone VAE (a diffusers vae/ dir OR a model whose registry record has a
@@ -268,6 +316,12 @@ def classify_vae_candidate(path: str, source_type: Optional[str] = None) -> Opti
     The descriptor includes a ``"kind"`` field: ``"pid_decoder"`` for a PiD
     (Pixel Diffusion Decoder) ``.pth`` checkpoint (see ``_is_pid_checkpoint``),
     else ``"autoencoder"`` for a normal VAE.
+
+    A diffusers VAE directory that carries a ``sushi_vae_training.json`` sidecar
+    (i.e. one exported by a SushiUI VAE fine-tune) additionally gets a
+    ``"training"`` sub-dict — see ``read_vae_training_sidecar``. This is a plain
+    annotation on the SAME classification path, not a second one: such an export
+    is an ordinary diffusers VAE dir and is recognized as one either way.
     """
     pid_pth = _is_pid_checkpoint(path)
     if pid_pth is not None:
@@ -290,7 +344,7 @@ def classify_vae_candidate(path: str, source_type: Optional[str] = None) -> Opti
     if not (is_standalone or (d["present"] and not d["has_backbone"])):
         return None
     name = _friendly_component_name(path)
-    return {
+    out = {
         "name": name,
         "path": path,
         "arch": d["arch"],
@@ -300,6 +354,10 @@ def classify_vae_candidate(path: str, source_type: Optional[str] = None) -> Opti
         "scale_temporal": d["scale_temporal"],
         "kind": "autoencoder",
     }
+    training = read_vae_training_sidecar(path)
+    if training is not None:
+        out["training"] = training
+    return out
 
 
 def classify_te_candidate(path: str, source_type: Optional[str] = None) -> Optional[Dict[str, Any]]:
@@ -427,6 +485,50 @@ def _check_te_compat(loaded: Dict[str, Any], cand: Dict[str, Any]) -> None:
         _warn(f"Text-encoder override applied with an unverified property: {w}", code="te_override_warning")
 
 
+def _warn_vae_training_provenance(apply_vae_path: str) -> None:
+    """Surface what the STRUCTURAL gate cannot see about a fine-tuned VAE.
+
+    ``_check_vae_compat`` compares latent_channels / latent_ndim / vae_class /
+    scale_spatial — every one of which an encoder-trained VAE passes unchanged
+    (``vae_trainer.py``'s ``_save_vae`` says as much: the latent SHAPE survives,
+    the latent DISTRIBUTION does not). The only other signal is the export's
+    directory name and a suffix on a ``<select>`` option label, which is exactly
+    where a long string gets truncated. So the fact is also pushed onto the
+    ``warnings[]`` channel of the generation response, where it cannot be
+    clipped away.
+
+    Decoder-only fine-tunes (the default, and the case the whole design is built
+    around) stay silent: they leave the latent contract intact.
+    """
+    try:
+        prov = read_vae_training_sidecar(apply_vae_path)
+    except Exception:
+        return
+    if not prov:
+        return
+
+    run = prov.get("run_name") or "a SushiUI VAE fine-tune"
+    enc = prov.get("encoder_trained")
+    if enc is True:
+        _warn(
+            f"VAE override '{run}' was fine-tuned WITH ITS ENCODER: it encodes "
+            f"to a different latent distribution than the base VAE, so cached "
+            f"latents, LoRAs and diffusion checkpoints built against the base "
+            f"VAE do not match it. The structural compatibility check cannot "
+            f"detect this (latent channels, class family and spatial scale are "
+            f"unchanged).",
+            code="vae_override_warning",
+        )
+    elif enc is None:
+        _warn(
+            f"VAE override '{run}' carries an incomplete provenance sidecar: "
+            f"whether its encoder was fine-tuned is unknown. If it was, cached "
+            f"latents, LoRAs and diffusion checkpoints built against the base "
+            f"VAE do not match it.",
+            code="vae_override_warning",
+        )
+
+
 def check_override_compat(pipeline_manager, apply_vae_path: Optional[str],
                           apply_te_path: Optional[str]) -> None:
     """Validate candidate VAE/TE against the loaded model. Raises ValidationError
@@ -439,6 +541,7 @@ def check_override_compat(pipeline_manager, apply_vae_path: Optional[str],
         loaded_vae = describe_vae(loaded_path, loaded_st) if loaded_path else describe_vae("")
         cand_vae = describe_vae(apply_vae_path)
         _check_vae_compat(loaded_vae, cand_vae)
+        _warn_vae_training_provenance(apply_vae_path)
 
     if apply_te_path:
         loaded_te = describe_te(loaded_path, loaded_st) if loaded_path else describe_te("")

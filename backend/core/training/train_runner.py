@@ -380,6 +380,46 @@ def _get_dataset_cache_path(output_dir: Path, cache_key: str) -> Path:
     return cache_dir / f"dataset_{cache_key}.pkl"
 
 
+def _prune_captioned_dataset_caches(output_dir: Path) -> None:
+    """Delete caption-bearing dataset pickles from a PIXELS-ONLY run's cache dir.
+
+    A ``vae_decoder`` run reads only ``dataset_<key>_nocap.pkl``. Any other
+    ``dataset_*.pkl`` in its own ``.dataset_cache/`` was written by an earlier
+    load of the SAME run that still built captions (e.g. the same config run
+    before pixels-only loading existed) — it can never be read again, and it is
+    not small: run 113's 22 datasets left 8.4 GB behind. The cache dir belongs
+    to exactly one training run (``output_dir/.dataset_cache``), so nothing else
+    can be relying on these files.
+
+    Best-effort: any failure is logged and ignored, since this is disk hygiene,
+    not correctness.
+    """
+    cache_dir = Path(output_dir) / ".dataset_cache"
+    if not cache_dir.is_dir():
+        return
+    freed, removed = 0, 0
+    try:
+        entries = list(cache_dir.glob("dataset_*.pkl"))
+    except OSError:
+        return
+    for entry in entries:
+        if entry.name.endswith("_nocap.pkl"):
+            continue
+        try:
+            size = entry.stat().st_size
+            entry.unlink()
+            freed += size
+            removed += 1
+        except OSError as e:
+            print(f"[TrainRunner] Could not remove stale dataset cache {entry.name}: {e}")
+    if removed:
+        # ASCII only: train_runner runs as a subprocess whose stdout is a PIPE,
+        # so on Windows it encodes with the locale codepage (cp932 here) and a
+        # non-ASCII character in a print raises UnicodeEncodeError mid-run.
+        print(f"[TrainRunner] Removed {removed} stale caption-bearing dataset cache "
+              f"file(s) ({freed / (1024 ** 3):.2f} GB); this run loads image paths only")
+
+
 def _load_dataset_cache(cache_path: Path) -> dict:
     """Load dataset cache from disk."""
     if not cache_path.exists():
@@ -462,7 +502,8 @@ def _apply_video_metadata(item_dict: dict, item_type, exif_data, image_path: str
 
 
 def get_dataset_items_fast(db: Session, dataset_id: int, caption_types: list = None,
-                           run_id: int = None, output_dir=None) -> list:
+                           run_id: int = None, output_dir=None,
+                           skip_captions: bool = False) -> list:
     """
     Get all items from dataset using optimized JOIN query.
 
@@ -480,6 +521,23 @@ def get_dataset_items_fast(db: Session, dataset_id: int, caption_types: list = N
             ``.stop_training`` flag so a user stop during this (potentially
             many-minutes-long) DB read/scan aborts promptly instead of
             blocking until it finishes.
+        skip_captions: Read PIXELS ONLY — do not join the caption table and do
+            not select a primary caption per item. Set only by the VAE
+            fine-tune path (``network.type == "vae_decoder"``), whose dataset
+            consumes ``image_path`` and nothing else (see
+            ``vae/vae_dataset.py``: ``VaeRawImageDataset`` /
+            ``make_validation_batch``). Every OTHER training method (the four
+            diffusion methods and the tagger) is text-conditioned and must keep
+            the default False. ``item.captions`` is not touched at ANY of its
+            three access sites in this mode, so dropping the eager join cannot
+            degrade into an N+1 lazy load. Consequences for the returned dicts:
+            ``raw_caption`` is "" and ``tag_data`` is None (same keys, empty
+            values), and an ``item_type == "audio"`` item has NO ``lyrics`` key
+            at all — reading it would mean touching ``item.captions``. Every
+            non-caption field (image_path, width/height, related_images,
+            item_type and the video/audio metadata from
+            ``_apply_video_metadata``) is produced exactly as in the default
+            mode.
 
     Returns:
         List of dicts with item data and caption info
@@ -496,11 +554,10 @@ def get_dataset_items_fast(db: Session, dataset_id: int, caption_types: list = N
     _check_init_stop(output_dir)
 
     # Single query with JOIN to get all items with their captions
-    items = db.query(DatasetItem).filter(
-        DatasetItem.dataset_id == dataset_id
-    ).options(
-        joinedload(DatasetItem.captions)
-    ).all()
+    _query = db.query(DatasetItem).filter(DatasetItem.dataset_id == dataset_id)
+    if not skip_captions:
+        _query = _query.options(joinedload(DatasetItem.captions))
+    items = _query.all()
 
     dataset_items = []
     skipped_missing = 0
@@ -525,7 +582,9 @@ def get_dataset_items_fast(db: Session, dataset_id: int, caption_types: list = N
 
         # Find primary caption
         primary_caption = None
-        if caption_types:
+        if skip_captions:
+            pass  # pixels-only (VAE fine-tune): item.captions is never accessed
+        elif caption_types:
             for caption_type in caption_types:
                 for caption in item.captions:
                     if caption.caption_type == caption_type:
@@ -563,7 +622,7 @@ def get_dataset_items_fast(db: Session, dataset_id: int, caption_types: list = N
         # rather than folded into the caption_types priority search. Missing
         # ("" default) preserves the pre-existing instrumental-only behavior
         # for every item/dataset that has never had a lyrics caption added.
-        if item.item_type == "audio":
+        if item.item_type == "audio" and not skip_captions:
             lyrics_caption = None
             for caption in item.captions:
                 if caption.caption_type == "lyrics":
@@ -592,6 +651,7 @@ def get_dataset_items_cached(
     caption_types: list = None,
     use_cache: bool = True,
     force_reload: bool = False,
+    skip_captions: bool = False,
 ) -> list:
     """
     Get dataset items with caching support.
@@ -609,6 +669,13 @@ def get_dataset_items_cached(
         caption_types: List of caption types to use
         use_cache: Whether to use caching (default: True)
         force_reload: Force reload from DB even if cache exists
+        skip_captions: Pixels-only mode for the VAE fine-tune path — forwarded
+            to ``get_dataset_items_fast`` and, additionally, skips the
+            per-epoch caption-processing pass (``_process_cached_items``)
+            entirely, since there is no caption to shuffle/drop out. The
+            on-disk cache key is suffixed so a caption-free cache can never be
+            mistaken for a full one (or vice versa) if the same output_dir is
+            ever reused.
 
     Returns:
         List of dataset items with processed captions
@@ -640,6 +707,10 @@ def get_dataset_items_cached(
 
     # Compute cache key (includes caption_types, so a corrected type invalidates stale cache)
     cache_key = _compute_dataset_cache_key(db, [dataset_id], caption_types)
+    if skip_captions:
+        # A pixels-only cache holds no captions; keep it in a separate slot so it
+        # can never be picked up by (or overwrite) a text-conditioned run's cache.
+        cache_key = f"{cache_key}_nocap"
     cache_path = _get_dataset_cache_path(output_dir, cache_key)
 
     raw_items = None
@@ -658,7 +729,8 @@ def get_dataset_items_cached(
     # If no cache, fetch from DB with optimized query
     if raw_items is None:
         print(f"[TrainRunner] Fetching dataset {dataset_id} from DB (optimized JOIN query)...")
-        raw_items = get_dataset_items_fast(db, dataset_id, caption_types, run_id=run_id, output_dir=output_dir)
+        raw_items = get_dataset_items_fast(db, dataset_id, caption_types, run_id=run_id,
+                                           output_dir=output_dir, skip_captions=skip_captions)
         print(f"[TrainRunner] Fetched {len(raw_items)} items in {time.time() - start_time:.2f}s")
 
         # Save to cache. Checked immediately before, so a stop request doesn't
@@ -673,15 +745,25 @@ def get_dataset_items_cached(
             }
             _save_dataset_cache(cache_path, cache_data)
 
-    # Apply caption processing (must be done every time for shuffle/dropout)
-    print(f"[TrainRunner] Processing captions for epoch {epoch_num}...")
-    processed_items = _process_cached_items(
-        raw_items=raw_items,
-        epoch_num=epoch_num,
-        caption_config=caption_config,
-        run_id=run_id,
-        output_dir=output_dir,
-    )
+    if skip_captions:
+        # VAE fine-tune: the raw items ALREADY carry everything the consumer
+        # reads (image_path, plus width/height/item_type/related_images for the
+        # shared wrappers). Running the caption pass here would process millions
+        # of empty captions to produce a field nothing reads.
+        print(f"[TrainRunner] Caption processing skipped (pixels-only training)")
+        _update_phase_progress(run_id, "initializing", 100.0,
+                               f"Loaded {len(raw_items)} items (captions not used)")
+        processed_items = raw_items
+    else:
+        # Apply caption processing (must be done every time for shuffle/dropout)
+        print(f"[TrainRunner] Processing captions for epoch {epoch_num}...")
+        processed_items = _process_cached_items(
+            raw_items=raw_items,
+            epoch_num=epoch_num,
+            caption_config=caption_config,
+            run_id=run_id,
+            output_dir=output_dir,
+        )
 
     elapsed = time.time() - start_time
     print(f"[TrainRunner] Dataset loading complete: {len(processed_items)} items in {elapsed:.2f}s")
@@ -1291,6 +1373,24 @@ def main():
         else:
             print(f"[TrainRunner] New training: loading dataset for epoch 0")
 
+        # Pixels-only training methods: no caption is ever read, so the caption
+        # join + per-item caption processing (minutes on multi-million-item
+        # datasets) is pure waste. Resolved from the SAME process config block
+        # the network_type dispatch below uses, so the two can't disagree.
+        # `vae_decoder` is the only such method: the four diffusion methods
+        # (lora / relora / full_finetune / controlnet) and the tagger are all
+        # text-conditioned and keep the full caption pipeline.
+        skip_captions = str(
+            (process_config_for_datasets.get('network') or {}).get('type', 'lora')
+        ).lower() == 'vae_decoder'
+        if skip_captions:
+            print("[TrainRunner] VAE fine-tune: loading image paths only "
+                  "(captions are not read by this training method)")
+            # Reclaim any caption-bearing pickles this run wrote before it
+            # switched to the pixels-only cache slot; they are unreadable from
+            # here on and can be tens of GB.
+            _prune_captioned_dataset_caches(Path(run.output_dir))
+
         print(f"[TrainRunner] Loading {len(dataset_configs)} dataset(s)...")
 
         # Load all datasets and combine items
@@ -1328,6 +1428,7 @@ def main():
                 caption_types=caption_types,
                 use_cache=True,
                 force_reload=not is_resume,  # Force reload on new training to ensure fresh data
+                skip_captions=skip_captions,
             )
             print(f"[TrainRunner]   Items: {len(dataset_items)}")
 
@@ -1418,6 +1519,7 @@ def main():
                     caption_types=caption_types,
                     use_cache=True,
                     force_reload=False,  # Use cache for epoch reloads
+                    skip_captions=skip_captions,
                 )
 
                 # Add dataset_unique_id for cache management

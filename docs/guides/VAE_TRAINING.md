@@ -86,6 +86,36 @@ config:
 ```
 
 There is no `sample` section — a VAE fine-tune has no denoiser to sample from.
+Nothing is ever written to the run's `samples/` directory, and the training
+monitor's Samples tab says so instead of polling for images that cannot appear;
+reconstruction quality is read off the validation PSNR / blockiness chart.
+
+### Dataset loading is pixels-only
+
+`VaeRawImageDataset` reads `image_path` and nothing else, so `train_runner`
+loads the datasets for a `vae_decoder` run with `skip_captions=True`
+(`train_runner.py::get_dataset_items_fast` / `get_dataset_items_cached`): the
+caption table is not joined, no primary caption is selected per item, and the
+per-epoch caption-processing pass is skipped entirely. The item dicts keep the
+same keys (`raw_caption` is `""`, `tag_data` is `None`), the missing-file skip
+and the cache-invalidation key are unchanged, and the pixels-only cache is
+stored under a distinct `_nocap` cache key so it can never be picked up by a
+text-conditioned run. (The one shape difference: an `item_type == "audio"` item
+gets no `lyrics` key, because producing it would mean touching `item.captions`
+and reintroducing the N+1 this avoids. VAE training is image-only.) The flag is
+set only for `network.type == "vae_decoder"` — the four diffusion methods and
+the tagger keep the full caption pipeline.
+
+Because the cache key changed, a config that ran before this existed has
+caption-bearing pickles in its own `.dataset_cache/` that can never be read
+again (run 113 left 8.4 GB). A pixels-only run therefore prunes every
+`dataset_*.pkl` in its OWN run directory that is not a `_nocap` file, once, at
+startup (`train_runner.py::_prune_captioned_dataset_caches`); the cache dir
+belongs to exactly one run, so nothing else can depend on them.
+
+This matters at scale: measured over three datasets on the run-113 config, the
+item-loading phase dropped from 8.20s to 2.38s (43k items), 42.07s to 5.22s
+(101k items) and 27.28s to 10.35s (199k items).
 
 ### API surface
 
@@ -120,6 +150,30 @@ weights, not the EMA copy that gets exported. Both directories carry a
 loss config, `train_decoder` / `decoder_blocks`, `encoder_trained` /
 `encoder_blocks` / `kl_weight`, `ema_applied`, `ema_retained_init_fraction`).
 The trainer prints that retained fraction and warns loudly above 0.5.
+
+**Selecting the result for inference.** `GET /api/v1/models/vaes` scans the
+training base dir on top of the configured model dirs, so a freshly exported
+VAE appears in the VAE-override picker without typing a path. The scan is
+bounded to two levels (`<training_base>/<run>/<export_dir>`) and accepts a
+directory only when it holds both `config.json` and `sushi_vae_training.json`
+— per-run `checkpoints/`, `samples/`, `logs/` and `.dataset_cache/` are never
+walked (`api/routes.py::_training_vae_export_dirs`). The sidecar is folded into
+the candidate as a `training` object (`run_name`, `step`, `ema_applied`,
+`encoder_trained`, `base_vae_path`) and rendered in the picker label, so the
+EMA export and its `_noema` sibling are told apart. The label shows the base
+VAE's filename rather than the candidate's *inferred* `arch`, because a 4-ch
+`AutoencoderKL` reads as `sd15` whichever family it came from, and SD1.5/SDXL
+VAEs share `latent_channels` but not `scaling_factor` (0.18215 vs 0.13025).
+`encoder_trained` / `ema_applied` are tri-state: a partial sidecar yields
+`null`, which is shown as "unknown" rather than assumed benign.
+
+An **encoder-trained** VAE additionally raises a `vae_override_warning` on the
+generation response's `warnings[]` channel
+(`generation_overrides.py::_warn_vae_training_provenance`), because the
+structural gate cannot detect it and a dropdown label can be truncated. That
+warning is the same channel every other override warning uses. Decoder-only
+exports — the default — stay silent, since they leave the latent contract
+intact.
 
 With `export_bare_ldm: true` (off by default, `AutoencoderKL` only) a bare
 LDM-format `<run_name>_vae.safetensors` is written alongside the directory, via

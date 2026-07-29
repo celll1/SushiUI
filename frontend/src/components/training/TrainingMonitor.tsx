@@ -92,8 +92,18 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
     return () => clearInterval(interval);
   }, [currentRun.status]);
 
+  // A VAE fine-tune has no sample-image concept at all: it has no denoiser and
+  // no prompt to generate from, and its quality signal is the validation
+  // PSNR / blockiness chart. Nothing ever lands in samples/, so neither the
+  // initial fetch nor the 5s poll has anything to find.
+  const hasSampleImages = currentRun.training_method !== "vae_decoder";
+
   // Load sample images
   useEffect(() => {
+    if (!hasSampleImages) {
+      setSamples([]);
+      return;
+    }
     loadSamples();
 
     // Reload samples every 5 seconds when running
@@ -101,7 +111,7 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
       const interval = setInterval(loadSamples, 5000);
       return () => clearInterval(interval);
     }
-  }, [currentRun.id, currentRun.status]);
+  }, [currentRun.id, currentRun.status, hasSampleImages]);
 
   const loadSamples = async () => {
     try {
@@ -589,7 +599,16 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
               <>
                 {samples.length === 0 ? (
                   <div className="text-gray-500 text-xs sm:text-sm text-center py-8">
-                    No samples generated yet
+                    {hasSampleImages ? (
+                      "No samples generated yet"
+                    ) : (
+                      <>
+                        This training method does not generate sample images.
+                        <br />
+                        Reconstruction quality is tracked by the validation
+                        PSNR / blockiness chart.
+                      </>
+                    )}
                   </div>
                 ) : (
                   <div className="space-y-2.5 sm:space-y-3">

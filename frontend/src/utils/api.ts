@@ -1400,6 +1400,26 @@ export interface VaeEntry {
   scale_temporal?: number | null;
   // "autoencoder" (normal VAE) | "pid_decoder" (PiD Pixel Diffusion Decoder checkpoint)
   kind?: string | null;
+  // Present only for a VAE exported by a SushiUI VAE fine-tune (read from its
+  // sushi_vae_training.json sidecar); absent for every other candidate.
+  training?: VaeTrainingProvenance | null;
+}
+
+export interface VaeTrainingProvenance {
+  produced_by?: string | null;
+  run_id?: number | null;
+  run_name?: string | null;
+  step?: number | null;
+  // True when the ENCODER was fine-tuned too: this VAE encodes to a different
+  // latent distribution than the base model's VAE, so it is not a drop-in
+  // replacement (latent caches / LoRAs built against the base VAE do not match).
+  // TRI-STATE: null/undefined means a partial sidecar did not record it —
+  // render that as unknown, never as "encoder frozen".
+  encoder_trained?: boolean | null;
+  // True for the EMA export, false for its "_noema" (live weights) sibling.
+  // Tri-state for the same reason as encoder_trained.
+  ema_applied?: boolean | null;
+  base_vae_path?: string | null;
 }
 
 export interface TextEncoderEntry {

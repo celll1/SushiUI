@@ -46,6 +46,7 @@ if _BACKEND not in sys.path:
 from api.param_defaults import VAE_TRAINING_DEFAULTS
 from core.training.vae.vae_config import (
     VaeConfigError,
+    VALID_CROP_SCALE_POLICIES,
     VALID_DECODER_BLOCKS,
     VALID_ENCODER_BLOCKS,
     VALID_DTYPES,
@@ -356,6 +357,75 @@ class VaeRefusalMatrixTest(unittest.TestCase):
         self._assert_refused("resolution", vae={"resolution": 32})
         self._assert_refused("validation_resolution", vae={"validation_resolution": 100})
 
+    # ── crop scale policy ────────────────────────────────────────────────
+    # WHICH pixels the decoder trains on. Every fragment asserted here is
+    # phrasing only the guard under test emits: "must be one of" alone would
+    # also be satisfied by the vae_source / decoder_blocks / dtype / lpips_net
+    # enum messages, and "must be a number" / "must be >= 0" by the loss-weight
+    # ones. Each row below was mutation-tested (guard deleted -> row fails).
+    def test_every_crop_scale_policy_is_accepted(self):
+        for policy in VALID_CROP_SCALE_POLICIES:
+            with self.subTest(crop_scale_policy=policy):
+                cfg = self._assert_accepted(vae={"crop_scale_policy": policy})
+                self.assertEqual(cfg["crop_scale_policy"], policy)
+
+    def test_default_crop_scale_policy_is_the_historical_downscale(self):
+        """The shipped default must not change what an existing run trains on."""
+        cfg = self._assert_accepted()
+        self.assertEqual(cfg["crop_scale_policy"], "downscale")
+        self.assertEqual(cfg["crop_scale_max_downscale"], 0.0)
+
+    def test_out_of_enum_crop_scale_policy_is_refused(self):
+        # Without this guard an unknown policy resolves cleanly (the bound check
+        # below only fires for a non-zero bound), and the loader would then be
+        # the first thing to notice -- after the model load, mid-startup.
+        self._assert_refused("'native' crops out of the full-size pixels",
+                             vae={"crop_scale_policy": "fullsize"})
+
+    def test_max_downscale_is_refused_under_a_non_mixed_policy(self):
+        """A bound only the per-sample draw reads must not be silently ignored."""
+        for policy in ("downscale", "native"):
+            with self.subTest(crop_scale_policy=policy):
+                self._assert_refused("is only read when", vae={
+                    "crop_scale_policy": policy,
+                    "crop_scale_max_downscale": 2.0,
+                })
+
+    def test_max_downscale_below_one_is_refused_rather_than_clamped(self):
+        # Isolated to the 'mixed' policy so that deleting THIS guard cannot be
+        # covered by the non-mixed refusal above.
+        self._assert_refused("is a downscale factor", vae={
+            "crop_scale_policy": "mixed",
+            "crop_scale_max_downscale": 0.5,
+        })
+
+    def test_negative_max_downscale_is_refused(self):
+        self._assert_refused("0 = unbounded", vae={
+            "crop_scale_policy": "mixed",
+            "crop_scale_max_downscale": -1.0,
+        })
+
+    def test_non_numeric_max_downscale_is_refused(self):
+        self._assert_refused("crop_scale_max_downscale must be a number", vae={
+            "crop_scale_policy": "mixed",
+            "crop_scale_max_downscale": "native-ish",
+        })
+
+    def test_mixed_with_a_bound_is_accepted_and_coerced_to_float(self):
+        cfg = self._assert_accepted(vae={
+            "crop_scale_policy": "mixed",
+            "crop_scale_max_downscale": 2,
+        })
+        self.assertIsInstance(cfg["crop_scale_max_downscale"], float)
+        self.assertEqual(cfg["crop_scale_max_downscale"], 2.0)
+
+    def test_validation_resolution_default_is_1024(self):
+        """1024, not 512: see docs/guides/VAE_TRAINING.md. Pinned here because a
+        silent revert would move the held-out metric's regime without moving the
+        chart's label."""
+        self.assertEqual(VAE_TRAINING_DEFAULTS["validation_resolution"], 1024)
+        self.assertEqual(self._assert_accepted()["validation_resolution"], 1024)
+
     def test_counts_must_be_at_least_one(self):
         for key in ("batch_size", "total_steps", "gradient_accumulation_steps"):
             with self.subTest(key=key):
@@ -442,6 +512,86 @@ class VaeTrainerGateTest(unittest.TestCase):
         self.assertFalse(trainer.train_encoder)
         self.assertEqual(trainer._export_suffix(), "_vae")
 
+    # ── resume: measurement-basis changes warn, they do not refuse ────────
+    def _checkpoint_with(self, saved_config: dict):
+        """A throwaway checkpoint dir carrying only train_state.json."""
+        import json
+        import tempfile
+        from pathlib import Path
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        ckpt = Path(tmp.name) / "step_00001000"
+        ckpt.mkdir(parents=True)
+        with open(ckpt / "train_state.json", "w", encoding="utf-8") as f:
+            json.dump({"config": saved_config}, f)
+        return ckpt
+
+    def _resume_output(self, saved_config: dict, **cfg_overrides):
+        import contextlib
+        import io
+        from core.training.vae.vae_trainer import VaeTrainer
+        trainer = VaeTrainer(self._cfg(**cfg_overrides),
+                             output_dir=".", run_name="gate_test")
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            trainer._assert_component_set_matches(
+                self._checkpoint_with(saved_config))
+        return buf.getvalue()
+
+    def test_a_changed_validation_resolution_warns_on_resume(self):
+        """The default moved 512 -> 1024, so a process.vae that OMITS the key now
+        resolves differently than when the checkpoint was written -- and the
+        resumed run appends to the SAME vae_val_psnr series with no fresh baseline
+        point (global_step != 0). Nothing else detects that."""
+        out = self._resume_output(
+            {"train_decoder": True, "train_encoder": False,
+             "decoder_blocks": "all", "validation_resolution": 512},
+            validation_resolution=1024)
+        self.assertIn("validation_resolution", out)
+        self.assertIn("NOT comparable", out)
+        self.assertIn("warning, not a refusal", out)
+
+    def test_a_changed_crop_scale_policy_warns_on_resume(self):
+        out = self._resume_output(
+            {"train_decoder": True, "train_encoder": False,
+             "decoder_blocks": "all", "crop_scale_policy": "downscale"},
+            crop_scale_policy="native")
+        self.assertIn("crop_scale_policy", out)
+        self.assertIn("NOT comparable", out)
+
+    def test_an_unchanged_measurement_basis_is_silent(self):
+        out = self._resume_output(
+            {"train_decoder": True, "train_encoder": False,
+             "decoder_blocks": "all", "crop_scale_policy": "downscale",
+             "validation_resolution": 1024})
+        self.assertNotIn("WARNING", out)
+
+    def test_a_pre_policy_checkpoint_does_not_warn_about_a_key_it_never_had(self):
+        """Absent != changed. Run 113's checkpoints predate crop_scale_policy, so
+        comparing against a default would invent a mismatch."""
+        out = self._resume_output(
+            {"train_decoder": True, "train_encoder": False,
+             "decoder_blocks": "all", "validation_resolution": 1024},
+            crop_scale_policy="native")
+        self.assertNotIn("crop_scale_policy", out)
+
+    def test_a_measurement_change_is_a_warning_not_an_exception(self):
+        """It must never block a resume: both keys are legitimate to change."""
+        self._resume_output(
+            {"train_decoder": True, "train_encoder": False,
+             "decoder_blocks": "all", "validation_resolution": 512,
+             "crop_scale_policy": "downscale"},
+            validation_resolution=1024, crop_scale_policy="mixed")
+
+    def test_a_component_set_mismatch_still_refuses(self):
+        """The fatal branch must not have been softened by the warning branch."""
+        from core.training.vae.vae_trainer import VaeTrainer
+        trainer = VaeTrainer(self._cfg(), output_dir=".", run_name="gate_test")
+        with self.assertRaises(VaeConfigError):
+            trainer._assert_component_set_matches(self._checkpoint_with(
+                {"train_decoder": True, "train_encoder": False,
+                 "decoder_blocks": "conv_out"}))
+
     def test_bare_ldm_write_is_refused_for_an_encoder_trained_run(self):
         from pathlib import Path
         from core.training.vae.vae_trainer import VaeTrainer
@@ -451,6 +601,175 @@ class VaeTrainerGateTest(unittest.TestCase):
         with self.assertRaises(VaeConfigError) as ctx:
             trainer.save_bare_ldm_safetensors(Path("./gate_test_vae_encoder_trained"))
         self.assertIn("config.json", str(ctx.exception))
+
+
+class VaeCropScalePolicyTest(unittest.TestCase):
+    """The loader side of the crop scale policy.
+
+    Synthetic images (no dataset dependency), but the geometry asserted is the
+    real thing: the reference expression for ``downscale`` is a verbatim copy of
+    the pre-policy implementation, so a regression there fails here rather than
+    24 hours into a fine-tune. Imports torch/PIL, hence its own class.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import tempfile
+        from PIL import Image
+
+        cls._tmp = tempfile.TemporaryDirectory()
+        cls.paths = {}
+        # (w, h): a downscale case (short 1200 -> factor 2.34x at 512), a
+        # square-ish one, and one BELOW the crop so the upscale branch is covered.
+        for w, h in ((1700, 1200), (1024, 1024), (400, 300)):
+            path = os.path.join(cls._tmp.name, f"{w}x{h}.png")
+            # Deterministic non-uniform content: a constant image would make a
+            # pixel comparison pass whatever the geometry did.
+            img = Image.new("RGB", (w, h))
+            img.putdata([((x * 7) % 256, (x // w * 11) % 256, (x * 3) % 256)
+                         for x in range(w * h)])
+            img.save(path)
+            cls.paths[(w, h)] = path
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._tmp.cleanup()
+
+    @staticmethod
+    def _legacy_load(path, resolution, random_crop, rng):
+        """The implementation as it stood before crop_scale_policy existed."""
+        import numpy as np
+        import torch
+        from PIL import Image
+
+        with Image.open(path) as im:
+            image = im.convert("RGB")
+            w, h = image.size
+            scale = resolution / min(w, h)
+            if scale != 1.0:
+                new_w = max(resolution, int(round(w * scale)))
+                new_h = max(resolution, int(round(h * scale)))
+                image = image.resize((new_w, new_h), Image.LANCZOS)
+                w, h = new_w, new_h
+            max_left, max_top = w - resolution, h - resolution
+            if random_crop:
+                left = rng.randint(0, max_left) if max_left > 0 else 0
+                top = rng.randint(0, max_top) if max_top > 0 else 0
+            else:
+                left, top = max_left // 2, max_top // 2
+            image = image.crop((left, top, left + resolution, top + resolution))
+            arr = np.array(image).astype(np.float32) / 255.0
+            arr = (arr - 0.5) * 2.0
+        return torch.from_numpy(arr).permute(2, 0, 1).contiguous()
+
+    def test_downscale_policy_is_pixel_identical_to_the_legacy_loader(self):
+        """Run 113 has 52k steps of history under this exact geometry."""
+        import random as _random
+        import torch
+        from core.training.vae.vae_dataset import load_image_tensor
+
+        for size, path in self.paths.items():
+            for random_crop in (False, True):
+                with self.subTest(size=size, random_crop=random_crop):
+                    got = load_image_tensor(
+                        path, 512, random_crop=random_crop,
+                        rng=_random.Random(1234), scale_policy="downscale")
+                    want = self._legacy_load(
+                        path, 512, random_crop, _random.Random(1234))
+                    self.assertTrue(torch.equal(got, want))
+
+    def test_native_policy_does_not_resample_a_large_enough_image(self):
+        from core.training.vae.vae_dataset import resolve_crop_scale
+        self.assertEqual(resolve_crop_scale(1200, 512, scale_policy="native"), 1.0)
+        self.assertEqual(resolve_crop_scale(512, 512, scale_policy="native"), 1.0)
+
+    def test_every_policy_upscales_an_image_smaller_than_the_crop(self):
+        """4.21% of the corpus: there is no resolution-sized window to crop, so
+        the upscale branch must be common to all three policies."""
+        from core.training.vae.vae_dataset import resolve_crop_scale
+        for policy in VALID_CROP_SCALE_POLICIES:
+            with self.subTest(policy=policy):
+                self.assertAlmostEqual(
+                    resolve_crop_scale(300, 512, scale_policy=policy),
+                    512 / 300, places=12)
+
+    def test_native_and_mixed_still_produce_the_requested_shape(self):
+        import torch
+        from core.training.vae.vae_dataset import load_image_tensor
+        for policy in VALID_CROP_SCALE_POLICIES:
+            for size, path in self.paths.items():
+                with self.subTest(policy=policy, size=size):
+                    t = load_image_tensor(path, 512, scale_policy=policy)
+                    self.assertEqual(tuple(t.shape), (3, 512, 512))
+                    self.assertEqual(t.dtype, torch.float32)
+                    self.assertGreaterEqual(float(t.min()), -1.0)
+                    self.assertLessEqual(float(t.max()), 1.0)
+
+    def test_mixed_draws_cover_the_range_including_both_ends(self):
+        import random as _random
+        from core.training.vae.vae_dataset import resolve_crop_scale
+
+        rng = _random.Random(7)
+        f_max = 2400 / 512
+        factors = [1.0 / resolve_crop_scale(2400, 512, scale_policy="mixed", rng=rng)
+                   for _ in range(4000)]
+        self.assertGreaterEqual(min(factors), 1.0)
+        self.assertLessEqual(max(factors), f_max + 1e-9)
+        # Log-uniform: the median sits at sqrt(f_max), NOT at f_max/2 (which is
+        # what a linear-uniform draw would give). This is the property that keeps
+        # the corpus-level distribution from being dragged towards the
+        # heavily-resampled regime by the largest sources.
+        factors.sort()
+        median = factors[len(factors) // 2]
+        self.assertAlmostEqual(median, f_max ** 0.5, delta=0.1)
+        self.assertLess(median, f_max / 2)
+
+    def test_mixed_respects_the_max_downscale_bound(self):
+        import random as _random
+        from core.training.vae.vae_dataset import resolve_crop_scale
+
+        rng = _random.Random(11)
+        factors = [1.0 / resolve_crop_scale(4000, 512, scale_policy="mixed",
+                                            max_downscale=2.0, rng=rng)
+                   for _ in range(2000)]
+        self.assertGreaterEqual(min(factors), 1.0)
+        self.assertLessEqual(max(factors), 2.0 + 1e-9)
+
+    def test_a_bound_of_one_degenerates_to_native(self):
+        from core.training.vae.vae_dataset import resolve_crop_scale
+        self.assertEqual(
+            resolve_crop_scale(4000, 512, scale_policy="mixed", max_downscale=1.0),
+            1.0)
+
+    def test_the_dataset_refuses_an_unknown_policy_at_construction(self):
+        from core.training.vae.vae_dataset import VaeRawImageDataset
+        items = [{"image_path": p} for p in self.paths.values()]
+        with self.assertRaises(ValueError):
+            VaeRawImageDataset(items, 512, scale_policy="fullsize")
+
+    def test_the_dataset_passes_the_policy_through_per_sample(self):
+        import torch
+        from core.training.vae.vae_dataset import VaeRawImageDataset
+        items = [{"image_path": self.paths[(1700, 1200)]}]
+        native = VaeRawImageDataset(items, 512, scale_policy="native")[0]
+        downscaled = VaeRawImageDataset(items, 512, scale_policy="downscale")[0]
+        self.assertFalse(torch.equal(native, downscaled))
+
+    def test_validation_batch_is_deterministic_and_policy_independent(self):
+        """The held-out metric must not move because a TRAINING knob moved, and
+        must be identical call to call (it is re-derived on resume)."""
+        import torch
+        from core.training.vae.vae_dataset import make_validation_batch
+        items = [{"image_path": p} for p in self.paths.values()]
+        first = make_validation_batch(items, 512, len(items))
+        for _ in range(3):
+            self.assertTrue(torch.equal(first, make_validation_batch(
+                items, 512, len(items))))
+        # It takes no policy argument at all, by construction, so there is no way
+        # for a caller to make it follow crop_scale_policy.
+        import inspect
+        self.assertEqual(list(inspect.signature(make_validation_batch).parameters),
+                         ["items", "resolution", "count"])
 
 
 class VaeLossBankKlTest(unittest.TestCase):

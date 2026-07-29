@@ -85,6 +85,8 @@ const DEFAULT_VAE_CONFIG: VaeConfig = {
   acknowledge_latent_space_break: false,
   encoder_blocks: "all",
   resolution: 512,
+  crop_scale_policy: "downscale",
+  crop_scale_max_downscale: 0.0,
   dtype: "bf16",
   ema_enabled: true,
   ema_decay: 0.999,
@@ -102,7 +104,7 @@ const DEFAULT_VAE_CONFIG: VaeConfig = {
   export_bare_ldm: false,
   validation_every: 100,
   validation_num_images: 8,
-  validation_resolution: 512,
+  validation_resolution: 1024,
 };
 
 // Loss weights the backend checks: if every one of them is 0 the run is refused
@@ -306,6 +308,20 @@ export default function VaeTrainingConfig({
       );
       return;
     }
+    // A "max downscale" below 1 would name an UPSCALE bound, which the knob does
+    // not mean; the backend refuses it outright rather than clamping, so say so
+    // here instead of round-tripping the refusal.
+    if (
+      cfg.crop_scale_policy === "mixed" &&
+      cfg.crop_scale_max_downscale > 0 &&
+      cfg.crop_scale_max_downscale < 1
+    ) {
+      setError(
+        "Max downscale is a downscale factor, so it must be 0 (unbounded) or at least 1.0. " +
+        "1.0 means \"never downscale\", which is what the 'native' crop scale policy says."
+      );
+      return;
+    }
 
     setSaving(true);
     setError(null);
@@ -340,6 +356,14 @@ export default function VaeTrainingConfig({
           acknowledge_latent_space_break:
             cfg.train_encoder && cfg.acknowledge_latent_space_break,
           export_bare_ldm: cfg.train_encoder ? false : cfg.export_bare_ldm,
+          // Read only by the "mixed" per-sample draw, and HARD-REFUSED by the
+          // backend under any other policy (a knob nothing reads must not be
+          // silently recorded). The policy handler clears it too; this spread is
+          // the defensive layer, because /params on an edited run and the
+          // late-arriving schema defaults can both set the policy without going
+          // through that handler.
+          crop_scale_max_downscale:
+            cfg.crop_scale_policy === "mixed" ? cfg.crop_scale_max_downscale : 0,
         },
       };
 
@@ -874,10 +898,53 @@ export default function VaeTrainingConfig({
               className={numberClass}
             />
             <span className="text-xs text-gray-500">
-              Square random crop, multiple of 8. No bucketing: a fixed square crop makes every
-              batch the same shape.
+              Square random crop, multiple of 8. No aspect-ratio bucketing: the decoder&apos;s
+              non-local terms (one flattened attention, 30 GroupNorms) reduce over the spatial
+              axes, so they see latent area and never aspect.
             </span>
           </div>
+
+          <div className="flex items-center gap-3">
+            <label className="text-xs text-gray-400 w-40">Crop scale policy</label>
+            <select
+              value={cfg.crop_scale_policy}
+              onChange={(e) => {
+                const next = e.target.value as VaeConfig["crop_scale_policy"];
+                setField("crop_scale_policy", next);
+                // The bound is only read under "mixed", and the backend REFUSES
+                // a non-zero value under any other policy rather than ignoring
+                // it, so leaving it set would block the run.
+                if (next !== "mixed") setField("crop_scale_max_downscale", 0);
+              }}
+              className="bg-gray-800 border border-gray-600 rounded px-2 py-1.5 text-sm text-white"
+            >
+              <option value="downscale">downscale (short side to resolution)</option>
+              <option value="native">native (crop full-size pixels)</option>
+              <option value="mixed">mixed (per-sample factor)</option>
+            </select>
+            {cfg.crop_scale_policy === "mixed" && (
+              <>
+                <label className="text-xs text-gray-400">Max downscale</label>
+                <NumberInput
+                  min={0} step={0.5} parse="float"
+                  value={cfg.crop_scale_max_downscale}
+                  defaultValue={DEFAULT_VAE_CONFIG.crop_scale_max_downscale}
+                  onCommit={(v) => setField("crop_scale_max_downscale", v)}
+                  className="w-20 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
+                />
+              </>
+            )}
+          </div>
+          <p className="text-xs text-gray-500">
+            How much an image is resampled before the crop is taken. <b>downscale</b> scales the
+            short side to exactly the resolution, which resamples 95.8% of the datasets in use by
+            a median 2.30x; <b>native</b> crops out of the full-size pixels and upscales only
+            images smaller than the crop; <b>mixed</b> draws the factor per sample over
+            [1, short/resolution], log-uniformly, bounded by Max downscale (0 = unbounded).
+            Native crops are cheaper in the dataloader, not more expensive. Validation is not
+            affected: it is always a deterministic centre crop under the downscale policy, so the
+            held-out PSNR keeps one meaning across a policy change.
+          </p>
 
           <div className="flex items-center gap-3">
             <label className="text-xs text-gray-400 w-40">Compute dtype</label>
@@ -1104,6 +1171,10 @@ export default function VaeTrainingConfig({
             />
           </div>
           <p className="text-xs text-gray-500">
+            Validation is a deterministic centre crop under the downscale policy, at 1024 by
+            default: at 512 the held-out PSNR is measured on content ~4x richer in near-Nyquist
+            energy than anything generation produces, while at 1024 the median source is
+            downscaled only ~1.1x. Changing this mid-run puts a step in the PSNR chart.
             Validation images are taken from the tail of the dataset and excluded from training.
             The validation PSNR / blockiness series in the loss chart is the signal that a
             fine-tune is going wrong: PSNR falling means the decoder is drifting off the data,

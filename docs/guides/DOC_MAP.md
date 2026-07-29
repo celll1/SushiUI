@@ -24,6 +24,7 @@ Local-only files that may be absent in a fresh clone are listed separately.
 | `docs/guides/MODEL_FACTS.md` | Per-architecture facts reference, including LTX-2.3 video-model speed/lightweight features. |
 | `docs/guides/VAE_TRAINING.md` | Read when running/changing a `vae_decoder` (decoder-only, encoder-frozen) fine-tune, or before touching its loss defaults or refusal gate. |
 | `docs/guides/VAE_DECODE_BEHAVIOR.md` | Read before working on tiled decode, seams, or any claim about what a VAE decoder adds/loses — the measured non-locality decomposition and artifact facts live here. |
+| `docs/guides/VAE_TRAINING_RESOLUTION.md` | Read to understand what a VAE fine-tune's crop policy and `resolution` feed the decoder, why bucketing is skipped, and how its memory/time scale — the measured analysis (gradient checkpointing vs ActDispatch vs tiling), which is knowledge rather than a set of `vae_decoder` config keys. The knobs that do exist are in `VAE_TRAINING.md`. |
 
 ## `docs/` (design docs / reports / plans)
 

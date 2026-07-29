@@ -406,7 +406,9 @@ class VaeTrainer:
 
         train_items, val_items = self._split_items(dataset_items)
         train_dataset = VaeRawImageDataset(
-            train_items, self.cfg["resolution"], random_crop=True, seed=seed)
+            train_items, self.cfg["resolution"], random_crop=True, seed=seed,
+            scale_policy=self.cfg["crop_scale_policy"],
+            max_downscale=self.cfg["crop_scale_max_downscale"])
         loader = DataLoader(
             train_dataset,
             batch_size=self.cfg["batch_size"],
@@ -422,9 +424,13 @@ class VaeTrainer:
             self.val_batch = make_validation_batch(
                 val_items, self.cfg["validation_resolution"],
                 self.cfg["validation_num_images"])
+            # The validation crop policy is PINNED to 'downscale' in
+            # make_validation_batch and takes no parameter, so vae_val_psnr keeps
+            # the same meaning whatever crop_scale_policy the run trains under.
             print(f"{self.log_prefix} Validation set: "
                   f"{self.val_batch.shape[0]} held-out image(s) @ "
-                  f"{self.cfg['validation_resolution']}px")
+                  f"{self.cfg['validation_resolution']}px "
+                  f"(centre crop, scale policy pinned to 'downscale')")
         except Exception as e:
             print(f"{self.log_prefix} WARNING: no validation set ({e}); "
                   f"val PSNR/blockiness will not be charted. This is the only "
@@ -441,9 +447,13 @@ class VaeTrainer:
         save_every = int(self.cfg["save_every"])
         val_every = int(self.cfg["validation_every"])
 
+        crop_policy_note = self.cfg["crop_scale_policy"]
+        if crop_policy_note == "mixed" and self.cfg["crop_scale_max_downscale"] > 0:
+            crop_policy_note += f"(<={self.cfg['crop_scale_max_downscale']:g}x)"
         print(f"{self.log_prefix} Training: {total_steps} steps, "
               f"batch={self.cfg['batch_size']}x{accum}, "
-              f"res={self.cfg['resolution']}, dtype={self.cfg['dtype']}")
+              f"res={self.cfg['resolution']}, crop_scale={crop_policy_note}, "
+              f"dtype={self.cfg['dtype']}")
 
         # Baseline validation so the chart has a "before" point.
         if self.val_batch is not None and self.global_step == 0:
@@ -703,6 +713,11 @@ class VaeTrainer:
         Named, actionable and BEFORE any weight load. Optimizer state, EMA state
         and the trainable-name list are all indexed by the component set, so a
         mismatch is never recoverable — it is only ever a config mistake.
+
+        Two further keys are compared but only WARNED about, at the end: they do
+        not invalidate the checkpoint, they invalidate the *comparability of the
+        charts across the resume*, which nothing else detects. See
+        ``_warn_measurement_changes``.
         """
         state_path = ckpt_dir / "train_state.json"
         if not state_path.is_file():
@@ -756,6 +771,59 @@ class VaeTrainer:
                 f"same set, so it can only be resumed by a run with the same "
                 f"settings. Match them, or start a new run."
             )
+
+        self._warn_measurement_changes(ckpt_dir, saved)
+
+    def _warn_measurement_changes(self, ckpt_dir: Path, saved: Dict[str, Any]) -> None:
+        """Warn (never refuse) when a resume changes WHAT IS MEASURED or TRAINED ON.
+
+        ``validation_resolution`` and ``crop_scale_policy`` are both legitimate
+        deliberate changes, so neither can be a refusal. But neither is detectable
+        after the fact either: the resumed run appends to the SAME
+        ``vae_val_psnr`` / ``vae_val_blockiness`` series, and because
+        ``global_step != 0`` on a resume the trainer emits no fresh baseline point
+        to separate the two regimes. The chart then shows a step that no model
+        change caused — validation PSNR is strongly content-dependent here (the
+        same fine-tune measures +1.15 dB on downscaled content and +0.81 dB on
+        native), and that chart is the only quality signal this modality has.
+
+        This is not hypothetical: ``validation_resolution``'s default moved from
+        512 to 1024, so a hand-written ``process.vae`` that OMITS the key now
+        resolves to a different value than it did when the checkpoint was written.
+        (A run created through the UI or ``generate_vae_config`` pins every key in
+        its own YAML and is unaffected.)
+        """
+        notes = []
+        for key, what in (
+            ("validation_resolution",
+             "the held-out PSNR / blockiness series is computed on "
+             "differently-sized centre crops"),
+            ("crop_scale_policy",
+             "the decoder is now trained on a different resampling "
+             "distribution, which shifts what the same metric reports"),
+        ):
+            if key not in saved:
+                continue
+            before, now = saved.get(key), self.cfg.get(key)
+            # str() both sides: train_state.json goes through _jsonable, which
+            # may have stringified the value.
+            if str(before) != str(now):
+                notes.append(f"{key}: checkpoint={before!r} -> this run={now!r} "
+                             f"({what})")
+
+        if not notes:
+            return
+        print(f"{self.log_prefix} WARNING: resuming {ckpt_dir.name} with a "
+              f"changed measurement/training basis:")
+        for note in notes:
+            print(f"{self.log_prefix}   - {note}")
+        print(f"{self.log_prefix}   Points recorded BEFORE and AFTER this resume "
+              f"are measured on different content and are NOT comparable; the "
+              f"chart will show a step that no model change caused, and no fresh "
+              f"baseline point is emitted on a resume. This is a warning, not a "
+              f"refusal - changing either key is a legitimate deliberate act. To "
+              f"keep one comparable series, restore the checkpoint's values; to "
+              f"read a clean series under the new ones, start a new run.")
 
     def load_checkpoint(self, checkpoint):
         """Resume from a checkpoint directory, a run-relative step name, or the
@@ -925,6 +993,17 @@ class VaeTrainer:
                         for nm, prm in zip(self.trainable_names, self.trainable_params):
                             prm.copy_(backup[nm].to(prm.device, dtype=prm.dtype))
             sidecar = {
+                # NOT bumped for ADDITIVE fields, deliberately. The only reader
+                # of this sidecar (api/routes.py::_training_vae_export_dirs ->
+                # generation_overrides) looks up named keys and is already
+                # required to treat a missing one as tri-state "unknown" rather
+                # than as benign, so a new key cannot break it — whereas a bump
+                # would tell a reader that something it knows how to parse has
+                # changed shape, which is false, and would make every older
+                # export look stale. Bump it when a field is REMOVED, RENAMED, or
+                # changes meaning/units, i.e. when an existing reader would be
+                # wrong rather than merely incomplete. Fields added since v1:
+                # crop_scale_policy, crop_scale_max_downscale (2026-07-30).
                 "format_version": 1,
                 "produced_by": (
                     "SushiUI VAE fine-tune (network.type=vae_decoder"
@@ -954,6 +1033,14 @@ class VaeTrainer:
                                                if applied_ema else 0.0),
                 "dtype": self.cfg["dtype"],
                 "resolution": self.cfg["resolution"],
+                # WHICH pixels this decoder was calibrated on. Recorded because
+                # nothing in the weights reveals it and it is the dominant
+                # control on how the fine-tune behaves on native-resolution
+                # content (results_crop_geometry.md §3).
+                "crop_scale_policy": self.cfg["crop_scale_policy"],
+                "crop_scale_max_downscale": (
+                    float(self.cfg["crop_scale_max_downscale"])
+                    if self.cfg["crop_scale_policy"] == "mixed" else None),
                 "losses": losses,
                 "saved_at": datetime.utcnow().isoformat(),
             }

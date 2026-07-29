@@ -29,6 +29,11 @@ VALID_DECODER_BLOCKS = ("all", "up_blocks", "mid_block", "conv_out")
 VALID_ENCODER_BLOCKS = ("all", "down_blocks", "mid_block", "conv_out")
 VALID_DTYPES = ("bf16", "fp32")
 VALID_LPIPS_NETS = ("vgg", "alex", "squeeze")
+# How much an image is resampled before the square crop is taken. Defined here,
+# with the rest of the enums, and imported by vae_dataset (rather than the other
+# way round) so that this module stays free of torch/PIL: it is the pure-config
+# gate and is exercised by a fast, GPU-free test file.
+VALID_CROP_SCALE_POLICIES = ("downscale", "native", "mixed")
 
 # Loss keys that participate in the "at least one active term" check.
 _LOSS_WEIGHT_KEYS = ("mse_weight", "l1_weight", "lpips_weight",
@@ -360,6 +365,52 @@ def _validate(cfg: Dict[str, Any], train_section: Dict[str, Any]) -> None:
                 f"{key} must be a multiple of 8 and >= 64, got {value}"
             )
         cfg[key] = value
+
+    # ---- crop scale policy ------------------------------------------------
+    # Which pixels the decoder is trained on. Getting this wrong changes what
+    # every step learns from, silently, so an out-of-enum value must not fall
+    # back to a default.
+    if cfg["crop_scale_policy"] not in VALID_CROP_SCALE_POLICIES:
+        raise VaeConfigError(
+            f"crop_scale_policy must be one of "
+            f"{list(VALID_CROP_SCALE_POLICIES)}, got {cfg['crop_scale_policy']!r}. "
+            f"'downscale' scales the short side to exactly resolution (the "
+            f"historical behaviour), 'native' crops out of the full-size pixels, "
+            f"'mixed' draws the downscale factor per sample."
+        )
+
+    try:
+        max_downscale = float(cfg["crop_scale_max_downscale"])
+    except (TypeError, ValueError):
+        raise VaeConfigError(
+            "crop_scale_max_downscale must be a number, got "
+            f"{cfg['crop_scale_max_downscale']!r}"
+        )
+    if max_downscale < 0:
+        raise VaeConfigError(
+            f"crop_scale_max_downscale must be >= 0 (0 = unbounded), "
+            f"got {max_downscale}"
+        )
+    if 0 < max_downscale < 1.0:
+        # A "max downscale" below 1 would name an UPSCALE bound, which the knob
+        # does not mean; silently clamping it to 1 would train on a distribution
+        # the user did not ask for.
+        raise VaeConfigError(
+            f"crop_scale_max_downscale is a downscale factor, so it must be 0 "
+            f"(unbounded) or >= 1.0; got {max_downscale}. 1.0 means 'never "
+            f"downscale', which is what crop_scale_policy='native' already says."
+        )
+    if max_downscale > 0 and cfg["crop_scale_policy"] != "mixed":
+        # Refused rather than ignored: the bound is only consulted by the
+        # per-sample draw, so under 'downscale'/'native' it would be a knob the
+        # user set, the YAML recorded, and nothing read.
+        raise VaeConfigError(
+            f"crop_scale_max_downscale={max_downscale} is only read when "
+            f"crop_scale_policy='mixed' (it bounds the per-sample downscale "
+            f"draw), but the policy is {cfg['crop_scale_policy']!r}. Set the "
+            f"policy to 'mixed', or leave crop_scale_max_downscale at 0."
+        )
+    cfg["crop_scale_max_downscale"] = max_downscale
 
     for key in ("batch_size", "total_steps", "gradient_accumulation_steps",
                 "save_every", "validation_every", "validation_num_images",

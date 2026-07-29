@@ -55,6 +55,7 @@ subset of repo conventions for coding agents; read it before making changes.
 | Training parameters / config | `backend/core/training/TRAINING_PARAMS_GUIDE.md`, `backend/core/training/API_REFERENCE.md` |
 | Fine-tune a VAE (`training_method: vae_decoder`; decoder by default, encoder behind a double gate) | `docs/guides/VAE_TRAINING.md` |
 | VAE decode behavior: tiling options, decoder non-locality, measured artifact facts | `docs/guides/VAE_DECODE_BEHAVIOR.md` |
+| Understand what a VAE fine-tune's crop policy and `resolution` feed the decoder, and how its memory/time scale (measured; checkpointing / activation offload / tiling are analysed, not all of them config keys) | `docs/guides/VAE_TRAINING_RESOLUTION.md` |
 | Model architecture internals (SD1.5/SDXL/etc.) | `backend/core/training/MODEL_ARCHITECTURES.md` |
 | Attention backend selection | `backend/core/docs/ATTENTION_PROCESSORS.md`, `backend/core/attention/registry.py` |
 | Block swap / CPU offload during training | `backend/core/memory_management/BLOCK_SWAP.md` |

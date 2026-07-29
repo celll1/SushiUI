@@ -66,4 +66,19 @@ EXTRA_METRIC_DEFS = {
     "lr_te1": {"label": "LR (TE1)", "color": "#fb923c", "dashed": False, "axis": "right"},
     "lr_te2": {"label": "LR (TE2)", "color": "#c084fc", "dashed": False, "axis": "right"},
     "lr_visionencoder": {"label": "LR (Vision Encoder)", "color": "#4ade80", "dashed": False, "axis": "right"},
+    # ---- VAE decoder fine-tune (network.type == "vae_decoder") ------------
+    # Per-step loss components. The chart's primary Y-range is the total loss,
+    # which these sum into (times their weights), so they stay on the main axis.
+    "vae_recon_loss": {"label": "VAE recon (MSE+L1)", "color": "#60a5fa", "dashed": True},
+    "vae_lpips_loss": {"label": "VAE LPIPS", "color": "#f472b6", "dashed": True},
+    "vae_dc_loss": {"label": "VAE YCbCr DC", "color": "#facc15", "dashed": True},
+    # Only emitted when pattern_weight > 0 (opt-in; see param_defaults.py).
+    "vae_pattern_loss": {"label": "VAE pattern", "color": "#c084fc", "dashed": True},
+    # Periodic held-out validation. These are the user's only signal that a
+    # fine-tune is going wrong (PSNR falling = the decoder is drifting off the
+    # data; blockiness rising above ~1.0 = it is manufacturing latent-cell grid
+    # structure). Both live on the secondary axis: PSNR is ~25-35 dB and
+    # blockiness ~1.0, orders of magnitude away from the loss scale.
+    "vae_val_psnr": {"label": "Val PSNR (dB)", "color": "#34d399", "dashed": False, "axis": "right"},
+    "vae_val_blockiness": {"label": "Val blockiness", "color": "#fb923c", "dashed": False, "axis": "right"},
 }

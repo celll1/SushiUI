@@ -44,7 +44,7 @@ from api.param_defaults import (
     OUTPAINT_DEFAULTS, OUTPAINT_VIDEO_DEFAULTS,
     UPSCALE_DEFAULTS, TXT2VID_DEFAULTS, IMG2VID_DEFAULTS, TXT2AUD_DEFAULTS, AUD2AUD_DEFAULTS,
     OUTPAINT_AUDIO_DEFAULTS,
-    TRAINING_DEFAULTS, TAGGER_TRAINING_DEFAULTS,
+    TRAINING_DEFAULTS, TAGGER_TRAINING_DEFAULTS, VAE_TRAINING_DEFAULTS,
     TIMESTEP_SAMPLING_DEFAULTS_BY_ARCH,
     BUNDLE_VAE_DEFAULTS_BY_ARCH,
 )
@@ -366,6 +366,17 @@ async def get_training_defaults():
 async def get_tagger_training_defaults():
     """Return default parameter values for tagger training."""
     return TAGGER_TRAINING_DEFAULTS
+
+@router.get("/schema/vae-training-defaults")
+async def get_vae_training_defaults():
+    """Return default parameter values for VAE (decoder-only) training.
+
+    Backs `training_method: "vae_decoder"` / `network.type: vae_decoder` runs.
+    The first block of keys (batch_size … max_step_saves_to_keep) is written
+    into the shared `process.train` / `process.save` YAML sections; everything
+    from `vae_source` onwards is written into a dedicated `process.vae` section.
+    """
+    return VAE_TRAINING_DEFAULTS
 
 @router.get("/schema/timestep-defaults-by-arch")
 async def get_timestep_defaults_by_arch():
@@ -9746,8 +9757,16 @@ class TrainingRunCreateRequest(BaseModel):
     dataset_id: Optional[int] = None  # Deprecated - use dataset_configs instead
     dataset_configs: Optional[List[DatasetConfigItem]] = None  # Multiple datasets with filters
     run_name: Optional[str] = None  # Optional - will use UUID if not provided
-    training_method: str  # 'lora' or 'full_finetune'
+    training_method: str  # 'lora' | 'relora' | 'controlnet' | 'full_finetune' | 'vae_decoder'
     base_model_path: str
+
+    # VAE decoder fine-tune (training_method == "vae_decoder"). A single nested
+    # dict mirroring VAE_TRAINING_DEFAULTS (the SSOT) rather than ~30 flat
+    # fields, because the VAE modality shares almost none of its knobs with the
+    # diffusion trainers. Unknown keys are rejected by generate_vae_config;
+    # omitted keys fall back to VAE_TRAINING_DEFAULTS. Ignored for every other
+    # training_method.
+    vae_config: Optional[Dict[str, Any]] = None
 
     # Training parameters
     total_steps: Optional[int] = None  # Mutually exclusive with epochs
@@ -10184,39 +10203,11 @@ async def create_training_run(
                     prompt_dict["condition_image_path"] = ""
             resolved_sample_prompts.append(prompt_dict)
 
-        # Generate YAML config
-        config_generator = TrainingConfigGenerator()
-
-        # Build params dict from Pydantic request, plus resume_from_checkpoint
-        # which has special handling (resolved separately above).
-        params_dict = request.model_dump()
-        params_dict["resume_from_checkpoint"] = resume_from_checkpoint
-
-        common_kwargs = {
-            "run_name": run_name,
-            "base_model_path": request.base_model_path,
-            "output_dir": output_dir_str,
-            "dataset_path": primary_dataset.path,  # Backward compat
-            "dataset_configs": dataset_configs_for_yaml,
-            "sample_prompts": resolved_sample_prompts,
-            "caption_processing": primary_dataset.caption_processing,
-        }
-
-        if request.training_method == "lora":
-            config_yaml = config_generator.generate_lora_config(params_dict, **common_kwargs)
-        elif request.training_method == "relora":
-            config_yaml = config_generator.generate_relora_config(params_dict, **common_kwargs)
-        elif request.training_method == "controlnet":
-            config_yaml = config_generator.generate_controlnet_config(params_dict, **common_kwargs)
-        else:  # full_finetune
-            config_yaml = config_generator.generate_full_finetune_config(params_dict, **common_kwargs)
-
-        # Save config file
-        config_path = os.path.join(output_dir_str, f"{run_name}_config.yaml")
-        config_generator.save_config(config_yaml, config_path)
-
-        # Create training run
-        # Calculate total_steps for database if epochs provided
+        # Calculate total_steps (for the DB column, and for the VAE generator
+        # which has no epochs concept of its own). Computed BEFORE the YAML
+        # dispatch so `epochs` is not silently dropped for vae_decoder runs;
+        # depends only on the request + datasets_db, so the move is inert for
+        # every other training method.
         calculated_total_steps = request.total_steps
         if request.epochs is not None:
             # Count items across all configured datasets (with filters applied)
@@ -10237,6 +10228,50 @@ async def create_training_run(
             raise HTTPException(status_code=400, detail=f"Invalid total_steps calculation: {calculated_total_steps}")
 
         print(f"[Training] Calculated total_steps: {calculated_total_steps}")
+
+        # Generate YAML config
+        config_generator = TrainingConfigGenerator()
+
+        # Build params dict from Pydantic request, plus resume_from_checkpoint
+        # which has special handling (resolved separately above).
+        params_dict = request.model_dump()
+        params_dict["resume_from_checkpoint"] = resume_from_checkpoint
+        # Which fields the caller ACTUALLY sent. model_dump() materialises every
+        # Pydantic default as non-None, so a generator cannot otherwise tell
+        # "user asked for lr=1e-4" from "the model's default happens to be 1e-4".
+        # generate_vae_config gates its flat-field tier on this.
+        params_dict["_explicit_fields"] = sorted(request.model_fields_set)
+
+        common_kwargs = {
+            "run_name": run_name,
+            "base_model_path": request.base_model_path,
+            "output_dir": output_dir_str,
+            "dataset_path": primary_dataset.path,  # Backward compat
+            "dataset_configs": dataset_configs_for_yaml,
+            "sample_prompts": resolved_sample_prompts,
+            "caption_processing": primary_dataset.caption_processing,
+        }
+
+        if request.training_method == "lora":
+            config_yaml = config_generator.generate_lora_config(params_dict, **common_kwargs)
+        elif request.training_method == "relora":
+            config_yaml = config_generator.generate_relora_config(params_dict, **common_kwargs)
+        elif request.training_method == "controlnet":
+            config_yaml = config_generator.generate_controlnet_config(params_dict, **common_kwargs)
+        elif request.training_method == "vae_decoder":
+            # The VAE trainer is step-based only, so `epochs` is resolved to the
+            # step count here rather than silently falling back to the default.
+            config_yaml = config_generator.generate_vae_config(
+                {**params_dict, "total_steps": calculated_total_steps,
+                 "_explicit_fields": sorted(set(params_dict["_explicit_fields"])
+                                            | {"total_steps"})},
+                **common_kwargs)
+        else:  # full_finetune
+            config_yaml = config_generator.generate_full_finetune_config(params_dict, **common_kwargs)
+
+        # Save config file
+        config_path = os.path.join(output_dir_str, f"{run_name}_config.yaml")
+        config_generator.save_config(config_yaml, config_path)
 
         # Create training run with specified run_id and run_name
         training_run = TrainingRun(
@@ -10430,6 +10465,15 @@ _CONTROLNET_ONLY_FIELDS = {
 _AUTO_EXTRACT_EXCLUDE = {
     "dataset_id", "dataset_configs", "run_name", "training_method",
     "cache_latents_to_disk",  # Read from datasets[0], not train section
+    # Whole nested section under process.vae, set explicitly by
+    # get_training_run_params. Without this the generic fallback would look for
+    # train["vae_config"], find nothing, and DROP the entire VAE config on the
+    # /params -> edit -> PUT round-trip (silently rewriting the run).
+    "vae_config",
+    # Not a request field; injected into the params dict at the write boundary
+    # so generators can tell "sent" from "Pydantic default". Listed defensively
+    # so it can never round-trip back in through the extractor.
+    "_explicit_fields",
 }
 
 
@@ -10520,10 +10564,14 @@ async def get_training_run_params(
 
     # Detect training method from network.type (more reliable than job)
     network_config = process_config.get("network", {})
-    if network_config.get("type") == "lora":
-        job = "lora"
-    elif network_config.get("type") == "controlnet":
-        job = "controlnet"
+    network_type = network_config.get("type") if isinstance(network_config, dict) else None
+    if network_type in ("lora", "controlnet", "relora", "vae_decoder"):
+        # `job` in the YAML is the RUN NAME, not the method, so it can never be
+        # trusted for methods that are not detected here. relora and vae_decoder
+        # used to fall through and be reported as full_finetune, which meant
+        # opening the run in the edit form and saving rewrote it as a full
+        # fine-tune.
+        job = network_type
     elif not network_config:  # No network section means full fine-tune
         job = "full_finetune"
     # Otherwise keep job from config.job
@@ -10550,9 +10598,16 @@ async def get_training_run_params(
     # Add fields that aren't part of TrainingRunCreateRequest schema
     params["run_id"] = run.id  # Edit mode marker
     params["run_name"] = run.run_name
-    params["training_method"] = "lora" if job == "lora" else ("controlnet" if job == "controlnet" else "full_finetune")
+    params["training_method"] = (
+        job if job in ("lora", "controlnet", "relora", "vae_decoder")
+        else "full_finetune"
+    )
     params["dataset_configs"] = dataset_configs if dataset_configs else None
     params["cache_latents_to_disk"] = cache_latents_to_disk
+    # process.vae is a whole nested section, not a train key -- carry it through
+    # verbatim so /params -> edit form -> PUT regenerates an identical config.
+    vae_section = process_config.get("vae")
+    params["vae_config"] = dict(vae_section) if isinstance(vae_section, dict) else None
 
     # Fallback for base_model_path if YAML doesn't have it
     if not params.get("base_model_path"):
@@ -10630,6 +10685,9 @@ async def update_training_run(
         config_generator = TrainingConfigGenerator()
 
         params_dict = request.model_dump()
+        # See the create route: model_dump() cannot distinguish "sent" from
+        # "Pydantic default", and generate_vae_config needs that distinction.
+        params_dict["_explicit_fields"] = sorted(request.model_fields_set)
         common_kwargs = {
             "run_name": run.run_name,
             "base_model_path": request.base_model_path,
@@ -10646,6 +10704,8 @@ async def update_training_run(
             config_yaml = config_generator.generate_relora_config(params_dict, **common_kwargs)
         elif request.training_method == "controlnet":
             config_yaml = config_generator.generate_controlnet_config(params_dict, **common_kwargs)
+        elif request.training_method == "vae_decoder":
+            config_yaml = config_generator.generate_vae_config(params_dict, **common_kwargs)
         else:  # full_finetune
             config_yaml = config_generator.generate_full_finetune_config(params_dict, **common_kwargs)
 
@@ -11338,6 +11398,13 @@ async def download_checkpoint(run_id: int, checkpoint_filename: str, db: Session
 
     output_dir = Path(run.output_dir)
     checkpoint_path = output_dir / checkpoint_filename
+    # VAE-decoder checkpoints are DIRECTORIES under <output_dir>/checkpoints/
+    # (weights + EMA + optimizer + RNG + train_state.json), so the flat
+    # <output_dir>/<name> lookup misses them.
+    if not checkpoint_path.exists():
+        nested = output_dir / "checkpoints" / checkpoint_filename
+        if nested.exists():
+            checkpoint_path = nested
 
     # Security check: ensure the file is within the output directory
     try:
@@ -11350,6 +11417,30 @@ async def download_checkpoint(run_id: int, checkpoint_filename: str, db: Session
 
     if not checkpoint_path.exists():
         raise HTTPException(status_code=404, detail="Checkpoint file not found")
+
+    if checkpoint_path.is_dir():
+        # Directory checkpoint: serve a zip so the frontend needs no special
+        # case (it just downloads whatever the route returns).
+        import shutil
+        import tempfile
+        from starlette.background import BackgroundTask
+
+        tmp_dir = tempfile.mkdtemp(prefix="ckpt_zip_")
+        try:
+            archive = shutil.make_archive(
+                os.path.join(tmp_dir, checkpoint_path.name), "zip",
+                root_dir=str(checkpoint_path))
+        except Exception as e:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to archive checkpoint directory: {e}")
+        return FileResponse(
+            path=archive,
+            filename=f"{checkpoint_path.name}.zip",
+            media_type="application/zip",
+            background=BackgroundTask(shutil.rmtree, tmp_dir, ignore_errors=True),
+        )
 
     if not checkpoint_path.is_file():
         raise HTTPException(status_code=400, detail="Not a file")

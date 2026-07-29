@@ -3033,6 +3033,76 @@ def main():
             run.completed_at = datetime.utcnow()
             training_db.commit()
 
+        elif network_type == 'vae_decoder':
+            # Decoder-only VAE fine-tune (design.md Phase 1).
+            #
+            # This branch deliberately does NOT touch any of the diffusion
+            # plumbing above it (dtype forcing, noise process/prediction target
+            # detection, samplers, latent/TE caches): a VAE trainer has no
+            # denoiser, no scheduler and no text encoder. It reuses only the
+            # pieces that hang off the TrainingRun row -- the dataset items
+            # already loaded above, the .stop_training sentinel, the checkpoint
+            # routes and the TrainingMetrics chart channel.
+            print("[TrainRunner] Training method: VAE decoder fine-tune")
+            from core.training.vae.vae_config import (
+                VaeConfigError, resolve_vae_training_config,
+            )
+            from core.training.vae.vae_trainer import VaeTrainer
+
+            try:
+                vae_cfg = resolve_vae_training_config(
+                    process_config, base_model_path=run.base_model_path or "")
+            except VaeConfigError as e:
+                # A refused configuration is a user error, not a crash: report it
+                # verbatim on the run so the UI shows the actionable message.
+                print(f"[TrainRunner] VAE training config REFUSED: {e}")
+                run.status = "failed"
+                run.error_message = str(e)
+                training_db.commit()
+                sys.exit(1)
+
+            print(f"[TrainRunner] VAE config: {vae_cfg}")
+
+            # Flatten the dataset wrappers back into a plain item list; the VAE
+            # dataset only needs image_path (train_runner.py:549-556).
+            vae_items = [item for ds in training_datasets for item in ds.items]
+            print(f"[TrainRunner] VAE training items: {len(vae_items)}")
+
+            run.total_steps = int(vae_cfg["total_steps"])
+            run.status = "running"
+            training_db.commit()
+            print("[TrainRunner] Status updated to 'running'")
+
+            def vae_progress_callback(phase: str, step: int, total: int,
+                                      epoch: int = 0, loss: float = None,
+                                      lr: float = None):
+                update_training_progress(training_db, run_id, phase, step, total,
+                                         epoch, loss, lr)
+
+            trainer = VaeTrainer(
+                vae_cfg,
+                output_dir=run.output_dir,
+                run_name=run.run_name,
+                run_id=run_id,
+                progress_callback=vae_progress_callback,
+            )
+            try:
+                stopped = trainer.train(vae_items)
+            finally:
+                trainer.cleanup()
+
+            if stopped:
+                print("[TrainRunner] VAE training stopped by user")
+                run.status = "stopped"
+                run.phase_detail = "Stopped by user"
+                run.completed_at = datetime.utcnow()
+                training_db.commit()
+            else:
+                print("[TrainRunner] Training completed successfully!")
+                run.status = "completed"
+                run.completed_at = datetime.utcnow()
+                training_db.commit()
+
         else:
             print(f"[TrainRunner] ERROR: Unsupported network type: {network_type}")
             sys.exit(1)

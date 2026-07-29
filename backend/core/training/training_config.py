@@ -869,6 +869,161 @@ class TrainingConfigGenerator:
         return yaml.dump(config, default_flow_style=False, sort_keys=False, allow_unicode=True)
 
     @staticmethod
+    def generate_vae_config(
+        p: Optional[Dict[str, Any]] = None,
+        *,
+        run_name: str,
+        base_model_path: str,
+        output_dir: str,
+        dataset_path: str = "",
+        dataset_configs: Optional[List[Dict[str, Any]]] = None,
+        sample_prompts: Optional[list] = None,
+        caption_processing: Optional[Dict[str, Any]] = None,
+        **legacy_kwargs: Any,
+    ) -> str:
+        """Generate a decoder-only VAE fine-tune configuration YAML.
+
+        Shape (consumed by train_runner's ``network.type == "vae_decoder"``
+        branch and ``core/training/vae/vae_config.resolve_vae_training_config``):
+
+        - ``network.type: vae_decoder`` is the discriminator.
+        - the generic run-shape knobs go into ``process.train`` / ``process.save``
+          so the existing routes, resume plumbing and checkpoint-keep field keep
+          owning them unchanged;
+        - every VAE-specific knob goes into a dedicated ``process.vae`` section,
+          written explicitly from ``VAE_TRAINING_DEFAULTS`` so the YAML is
+          self-describing and hand-editable.
+
+        There is no ``sample`` section: a VAE fine-tune has no denoiser to sample
+        from — its qualitative signal is the held-out validation PSNR/blockiness
+        chart, which the trainer emits into ``TrainingMetrics.extra_metrics``.
+
+        ``sample_prompts`` / ``caption_processing`` are accepted and ignored so
+        this signature stays interchangeable with the other generators at the
+        route's dispatch site.
+
+        Precedence per key: ``p["vae_config"][key]`` > ``p[key]`` **only when the
+        caller explicitly set that flat field** > ``VAE_TRAINING_DEFAULTS[key]``.
+
+        The middle tier is gated on ``p["_explicit_fields"]`` (the route passes
+        ``request.model_fields_set``) because ``request.model_dump()``
+        materialises EVERY Pydantic default as a non-None value. Without the
+        gate, tier 2 is not "what the caller sent" but "the diffusion trainer's
+        defaults, unconditionally", which silently overrode five VAE defaults
+        (learning_rate 1e-5 -> 1e-4, max_grad_norm 0.1 -> 1.0, optimizer adamw ->
+        adamw8bit, save_every 500 -> 100, ema_decay 0.999 -> 0.9999 — the last of
+        which is not even a run-shape key and so mis-reported itself in the YAML,
+        the sidecar and /params). A caller with no ``_explicit_fields`` key at
+        all (direct/legacy kwargs, tests) keeps the permissive behaviour.
+        """
+        # Lazy + function-local: backend/api/__init__.py imports the whole API
+        # surface, so a module-level api.* import from core/training/ would be a
+        # cycle. Same pattern as core/training/adapters/*.py.
+        from api.param_defaults import VAE_TRAINING_DEFAULTS
+        from api.error_handlers import ValidationError
+
+        if p is None:
+            p = legacy_kwargs
+        elif legacy_kwargs:
+            p = {**p, **legacy_kwargs}
+        p = _normalize_params(p)
+
+        # The caller may pass the VAE options either flat (p["resolution"]) or
+        # nested under p["vae_config"]; nested wins.
+        nested = p.get("vae_config") or {}
+        if not isinstance(nested, dict):
+            raise ValidationError(
+                "vae_config must be a mapping",
+                detail=f"got {type(nested).__name__}",
+            )
+        unknown = sorted(set(nested) - set(VAE_TRAINING_DEFAULTS))
+        if unknown:
+            raise ValidationError(
+                f"Unknown vae_config key(s): {unknown}",
+                detail=f"Valid keys: {sorted(VAE_TRAINING_DEFAULTS)}",
+            )
+
+        explicit = p.get("_explicit_fields")
+        explicit_set = set(explicit) if explicit is not None else None
+
+        def value_of(key: str) -> Any:
+            if key in nested and nested[key] is not None:
+                return nested[key]
+            if p.get(key) is not None and (explicit_set is None or key in explicit_set):
+                return p[key]
+            return VAE_TRAINING_DEFAULTS[key]
+
+        # Keys that live in the shared train/save sections rather than process.vae.
+        run_shape_keys = {
+            "batch_size", "total_steps", "gradient_accumulation_steps",
+            "learning_rate", "optimizer", "optimizer_weight_decay",
+            "max_grad_norm", "lr_scheduler", "lr_warmup_steps", "seed",
+            "num_workers", "save_every", "max_step_saves_to_keep",
+        }
+        vae_section = {k: value_of(k) for k in VAE_TRAINING_DEFAULTS
+                       if k not in run_shape_keys}
+
+        cache_latents_to_disk = False  # VAE training is raw-pixel by definition
+        datasets_array = []
+        if dataset_configs:
+            for ds_config in dataset_configs:
+                dataset_entry = {
+                    "folder_path": ds_config.get("path", ""),
+                    "caption_ext": "txt",
+                    "cache_latents_to_disk": cache_latents_to_disk,
+                    **({"dataset_id": ds_config["dataset_id"]}
+                       if ds_config.get("dataset_id") else {}),
+                }
+                dataset_entry.update(extract_dataset_params(ds_config))
+                datasets_array.append(dataset_entry)
+        else:
+            datasets_array.append({
+                "folder_path": dataset_path,
+                "caption_ext": "txt",
+                "cache_latents_to_disk": cache_latents_to_disk,
+            })
+
+        config = {
+            "job": run_name,
+            "config": {
+                "name": run_name,
+                "process": [
+                    {
+                        "type": "sd_trainer",
+                        "training_folder": output_dir,
+                        "device": "cuda:0",
+                        "network": {"type": "vae_decoder"},
+                        "model": {"name_or_path": base_model_path},
+                        "datasets": datasets_array,
+                        "save": {
+                            "save_every": value_of("save_every"),
+                            "save_every_unit": "steps",
+                            "max_step_saves_to_keep": value_of("max_step_saves_to_keep"),
+                        },
+                        "train": {
+                            "batch_size": value_of("batch_size"),
+                            "steps": value_of("total_steps"),
+                            "gradient_accumulation_steps": value_of("gradient_accumulation_steps"),
+                            "lr": value_of("learning_rate"),
+                            "optimizer": value_of("optimizer"),
+                            "optimizer_weight_decay": value_of("optimizer_weight_decay"),
+                            "max_grad_norm": value_of("max_grad_norm"),
+                            "lr_scheduler": value_of("lr_scheduler"),
+                            "lr_warmup_steps": value_of("lr_warmup_steps"),
+                            "seed": value_of("seed"),
+                            "num_workers": value_of("num_workers"),
+                            "resume_from_checkpoint": p.get("resume_from_checkpoint"),
+                        },
+                        "vae": vae_section,
+                    }
+                ],
+            },
+        }
+
+        return yaml.dump(config, default_flow_style=False, sort_keys=False,
+                         allow_unicode=True)
+
+    @staticmethod
     def save_config(config_yaml: str, output_path: str) -> None:
         """
         Save YAML configuration to file.

@@ -168,7 +168,7 @@ def load_components(trainer) -> None:
         if _wants_custom and _tm == "lora":
             raise ValueError(
                 "SDXL custom architecture (sdxl_vae_type / sdxl_te_type) requires "
-                "training_method='full' — LoRA cannot train the resized conv layers or "
+                "training_method='full' - LoRA cannot train the resized conv layers or "
                 "the text-encoder bridge adapters. Switch to Full Fine-tune."
             )
 

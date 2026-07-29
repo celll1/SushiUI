@@ -53,7 +53,7 @@ class LensLoRAAdapter(BaseLoRAAdapter):
         """Wrap target Linear modules of the Lens transformer with LoRALinearLayer."""
         transformer = self.trainer.transformer
         if transformer is None:
-            print("[LensLoRAAdapter] WARNING: trainer.transformer is None — skipping LoRA injection")
+            print("[LensLoRAAdapter] WARNING: trainer.transformer is None - skipping LoRA injection")
             return 0
 
         print(f"[LensLoRAAdapter] Injecting LoRA (scope={self.scope}, "
@@ -82,7 +82,7 @@ class LensLoRAAdapter(BaseLoRAAdapter):
 
     def apply_lora_to_text_encoders(self, lora_layers: Dict[str, nn.Module]) -> int:
         """The GPT-OSS text encoder is frozen — no LoRA applied."""
-        print("[LensLoRAAdapter] GPT-OSS text encoder is frozen — no LoRA applied to TE")
+        print("[LensLoRAAdapter] GPT-OSS text encoder is frozen - no LoRA applied to TE")
         return 0
 
     def setup_trainable_parameters(self, lora_layers: Dict[str, nn.Module]

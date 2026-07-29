@@ -248,4 +248,4 @@ if __name__ == "__main__":
     ext = get_extension()
     print(f"Extension loaded: {ext}")
     print(f"Available functions: {dir(ext)}")
-    print("✓ CUDA extension test PASSED")
+    print("OK CUDA extension test PASSED")

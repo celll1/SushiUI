@@ -70,7 +70,7 @@ class Ideogram4LoRAAdapter(BaseLoRAAdapter):
         unconditional) Ideogram 4 transformer with LoRALinearLayer."""
         transformer = self.trainer.transformer
         if transformer is None:
-            print("[Ideogram4LoRAAdapter] WARNING: trainer.transformer is None — skipping")
+            print("[Ideogram4LoRAAdapter] WARNING: trainer.transformer is None - skipping")
             return 0
 
         print(f"[Ideogram4LoRAAdapter] Injecting LoRA (scope={self.scope}, "
@@ -88,7 +88,7 @@ class Ideogram4LoRAAdapter(BaseLoRAAdapter):
 
     def apply_lora_to_text_encoders(self, lora_layers: Dict[str, nn.Module]) -> int:
         """Qwen3-VL text encoder is frozen — no LoRA applied."""
-        print("[Ideogram4LoRAAdapter] Qwen3-VL text encoder is frozen — no LoRA on TE")
+        print("[Ideogram4LoRAAdapter] Qwen3-VL text encoder is frozen - no LoRA on TE")
         return 0
 
     def setup_trainable_parameters(self, lora_layers: Dict[str, nn.Module]

@@ -111,7 +111,7 @@ class AceStepLoRAAdapter(BaseLoRAAdapter):
         """In-place wrap the target Linear modules of the ACE-Step DiT."""
         transformer = self.trainer.transformer
         if transformer is None:
-            print("[AceStepLoRAAdapter] WARNING: trainer.transformer is None — skipping LoRA injection")
+            print("[AceStepLoRAAdapter] WARNING: trainer.transformer is None - skipping LoRA injection")
             return 0
 
         print(f"[AceStepLoRAAdapter] Injecting LoRA (scope={self.scope}, "
@@ -136,7 +136,7 @@ class AceStepLoRAAdapter(BaseLoRAAdapter):
 
     def apply_lora_to_text_encoders(self, lora_layers: Dict[str, nn.Module]) -> int:
         """ACE-Step keeps the Qwen3-Embedding-0.6B text encoder frozen."""
-        print("[AceStepLoRAAdapter] Qwen3 text encoder is frozen — no LoRA on TE")
+        print("[AceStepLoRAAdapter] Qwen3 text encoder is frozen - no LoRA on TE")
         return 0
 
     def setup_trainable_parameters(self, lora_layers: Dict[str, nn.Module]

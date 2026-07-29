@@ -1750,24 +1750,24 @@ def main():
 
             if mismatch_warnings:
                 print(f"\n{'='*60}")
-                print(f"[TrainRunner] ⚠️  PREDICTION CONFIG MISMATCH DETECTED")
+                print(f"[TrainRunner] WARNING: PREDICTION CONFIG MISMATCH DETECTED")
                 print(f"{'='*60}")
                 for warning in mismatch_warnings:
-                    print(f"  • {warning}")
+                    print(f"  - {warning}")
                 print(f"\nThis may cause training instability or poor convergence.")
                 print(f"Model was trained with: {model_pred_config['noise_process']} + {model_pred_config['prediction_target']}")
                 print(f"You are training with: {training_noise_process} + {training_prediction_target}")
 
                 if strict_validation:
-                    print(f"\n❌ strict_validation=True: Aborting training due to mismatch.")
+                    print(f"\nERROR: strict_validation=True: Aborting training due to mismatch.")
                     print(f"{'='*60}\n")
                     sys.exit(1)
                 else:
-                    print(f"\n⚠️  strict_validation=False: Continuing with warning.")
+                    print(f"\nWARNING: strict_validation=False: Continuing with warning.")
                     print(f"Set strict_validation=true in training config to abort on mismatch.")
                     print(f"{'='*60}\n")
             else:
-                print(f"[TrainRunner] ✓ Prediction configuration validated successfully")
+                print(f"[TrainRunner] OK Prediction configuration validated successfully")
 
             # Store final training config for trainer
             trainer.noise_process = training_noise_process
@@ -2570,24 +2570,24 @@ def main():
 
             if mismatch_warnings:
                 print(f"\n{'='*60}")
-                print(f"[TrainRunner] ⚠️  PREDICTION CONFIG MISMATCH DETECTED")
+                print(f"[TrainRunner] WARNING: PREDICTION CONFIG MISMATCH DETECTED")
                 print(f"{'='*60}")
                 for warning in mismatch_warnings:
-                    print(f"  • {warning}")
+                    print(f"  - {warning}")
                 print(f"\nThis may cause training instability or poor convergence.")
                 print(f"Model was trained with: {model_pred_config['noise_process']} + {model_pred_config['prediction_target']}")
                 print(f"You are training with: {training_noise_process} + {training_prediction_target}")
 
                 if strict_validation:
-                    print(f"\n❌ strict_validation=True: Aborting training due to mismatch.")
+                    print(f"\nERROR: strict_validation=True: Aborting training due to mismatch.")
                     print(f"{'='*60}\n")
                     sys.exit(1)
                 else:
-                    print(f"\n⚠️  strict_validation=False: Continuing with warning.")
+                    print(f"\nWARNING: strict_validation=False: Continuing with warning.")
                     print(f"Set strict_validation=true in training config to abort on mismatch.")
                     print(f"{'='*60}\n")
             else:
-                print(f"[TrainRunner] ✓ Prediction configuration validated successfully")
+                print(f"[TrainRunner] OK Prediction configuration validated successfully")
 
             # Store final training config for trainer
             trainer.noise_process = training_noise_process

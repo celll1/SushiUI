@@ -2,7 +2,8 @@
 
 SushiUI is a Stable-Diffusion-style web UI: a FastAPI backend (`backend/`)
 driving 9 diffusion architectures (SD1.5, SDXL, Z-Image, Flux2, Anima, Lens,
-Krea2, Ideogram4, MiniT2I) plus LoRA/full-parameter training, and a Next.js
+Krea2, Ideogram4, MiniT2I) plus LoRA / full-parameter / tagger / VAE-decoder
+training, and a Next.js
 frontend (`frontend/`). Every capability is reachable through the versioned
 REST API under `/api/v1` (see `openapi.yaml`), so agents can drive and verify
 most changes without touching the UI. This file is the durable, checked-in
@@ -11,12 +12,12 @@ subset of repo conventions for coding agents; read it before making changes.
 ## Non-negotiable rules
 
 - **`backend/api/param_defaults.py` is the single source of truth for every
-  API default value.** `GENERATION_DEFAULTS`, `TRAINING_DEFAULTS`, and
-  `TAGGER_TRAINING_DEFAULTS` back the Pydantic/`Form()` defaults in
-  `backend/api/routes.py` and are exposed to the frontend via the
-  `/schema/generation-defaults`, `/schema/training-defaults`, and
-  `/schema/tagger-training-defaults` endpoints. Never hardcode a default
-  anywhere else.
+  API default value.** `GENERATION_DEFAULTS`, `TRAINING_DEFAULTS`,
+  `TAGGER_TRAINING_DEFAULTS`, and `VAE_TRAINING_DEFAULTS` back the
+  Pydantic/`Form()` defaults in `backend/api/routes.py` and are exposed to the
+  frontend via the `/schema/generation-defaults`, `/schema/training-defaults`,
+  `/schema/tagger-training-defaults`, and `/schema/vae-training-defaults`
+  endpoints. Never hardcode a default anywhere else.
 - **API changes are openapi-first.** `openapi.yaml` is kept in full sync with
   `backend/api/routes.py`; update the spec (paths, schemas under
   `components/schemas`, examples) as part of any endpoint or parameter
@@ -52,6 +53,8 @@ subset of repo conventions for coding agents; read it before making changes.
 | Call the API directly (scripts, smoke tests) | `docs/guides/API_TESTING.md`, `examples/api/` |
 | WebSocket progress messages | `backend/api/WS_PROTOCOL.md` |
 | Training parameters / config | `backend/core/training/TRAINING_PARAMS_GUIDE.md`, `backend/core/training/API_REFERENCE.md` |
+| Fine-tune a VAE decoder (`training_method: vae_decoder`) | `docs/guides/VAE_TRAINING.md` |
+| VAE decode behavior: tiling options, decoder non-locality, measured artifact facts | `docs/guides/VAE_DECODE_BEHAVIOR.md` |
 | Model architecture internals (SD1.5/SDXL/etc.) | `backend/core/training/MODEL_ARCHITECTURES.md` |
 | Attention backend selection | `backend/core/docs/ATTENTION_PROCESSORS.md`, `backend/core/attention/registry.py` |
 | Block swap / CPU offload during training | `backend/core/memory_management/BLOCK_SWAP.md` |

@@ -59,6 +59,8 @@ touches, and mirror that shape for your new parameter.
 | 4 | `apiParams` object (Img2Img/Inpaint dequeue) | Main generation works; queued/loop generation sends `undefined`/`null` for this field. |
 | 5 | `stepParams` object (loop-generation enqueue) | First generation in a session works; the second+ loop iteration reverts to the default. |
 | 6 | `DEFAULT_PARAMS` in a panel | Toggling the UI control appears to do nothing, or the value is `undefined` until the user touches the control at least once. |
+| 7 | Using value-presence as "the caller supplied this" | `request.model_dump()` materialises **every** Pydantic default as a non-None value, so a `if params.get(key) is not None` test is really "the request model's defaults, unconditionally". Any tier that means *the caller deliberately set this* must be gated on `request.model_fields_set` (passed through as `_explicit_fields`), not on presence. This silently overrode five VAE-training defaults — including `learning_rate` 1e-5 → 1e-4 and `optimizer` adamw → adamw8bit — producing runs that completed and simply trained wrong. See `docs/guides/VAE_TRAINING.md`. |
+| 8 | Verifying in only one dtype | A parameter proven numerically correct in fp32 says nothing about whether it *runs* in fp16/bf16. A 24-cell measurement probe, production-path checks and a code audit all passed on `vae_tile_global_norm` — and it could not execute at all, because every check ran fp32 while production runs fp16 and `F.group_norm` rejected fp32 folded weights against `Half` activations. Put the dtype matrix in the check itself. |
 
 ## Verification recipe
 
@@ -75,6 +77,8 @@ touches, and mirror that shape for your new parameter.
    `venv/Scripts/python.exe -m py_compile backend/api/routes.py ...`
 3. **Real import**, not just `py_compile`, to catch module-load-time errors:
    `venv/Scripts/python.exe -c "import backend.api.routes"`
-4. Frontend build/type-check is run by the repo owner — do not run it
+4. **Exercise the parameter in the dtype production actually uses**, not only
+   the dtype a probe script is convenient in (failure pattern 8 above).
+5. Frontend build/type-check is run by the repo owner — do not run it
    yourself; a careful read-through of the panel and `api.ts` diffs is the
    substitute.

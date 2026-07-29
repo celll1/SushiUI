@@ -22,6 +22,8 @@ Local-only files that may be absent in a fresh clone are listed separately.
 | `docs/guides/ADD_A_MODEL_ARCHITECTURE.md` | Procedure for adding a 10th diffusion architecture. |
 | `docs/guides/API_TESTING.md` | Safe vs. owner-sanctioned endpoints, dry-run convention, restart polling. |
 | `docs/guides/MODEL_FACTS.md` | Per-architecture facts reference, including LTX-2.3 video-model speed/lightweight features. |
+| `docs/guides/VAE_TRAINING.md` | Read when running/changing a `vae_decoder` (decoder-only, encoder-frozen) fine-tune, or before touching its loss defaults or refusal gate. |
+| `docs/guides/VAE_DECODE_BEHAVIOR.md` | Read before working on tiled decode, seams, or any claim about what a VAE decoder adds/loses — the measured non-locality decomposition and artifact facts live here. |
 
 ## `docs/` (design docs / reports / plans)
 

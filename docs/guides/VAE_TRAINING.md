@@ -1,16 +1,19 @@
-# VAE Decoder Fine-Tuning
+# VAE Fine-Tuning
 
 A fourth training modality alongside LoRA, full-parameter and tagger training:
-fine-tune a VAE's **decoder** against raw images from the existing dataset
-system, with the **encoder frozen**.
+fine-tune a VAE against raw images from the existing dataset system. By default
+only the **decoder** trains, with the **encoder frozen**.
 
-The encoder freeze is the whole point of the design. The encoder defines the
-latent distribution that every diffusion model, every trained LoRA and every
-cached latent in this install was built against. Training only the decoder
-changes how latents are turned back into pixels and leaves that contract intact,
-so the output can be dropped into the existing inference VAE-override slot
-without invalidating anything. Encoder training is refused (see
-[Refusals](#refusals)).
+That default is the whole point of the design. The encoder defines the latent
+distribution that every diffusion model, every trained LoRA and every cached
+latent in this install was built against. Training only the decoder changes how
+latents are turned back into pixels and leaves that contract intact, so the
+output can be dropped into the existing inference VAE-override slot without
+invalidating anything.
+
+Encoder training exists as an opt-in behind a **double gate** and produces a VAE
+that is *not* a drop-in replacement — see
+[Encoder training](#encoder-training-the-double-gate).
 
 ## Where it lives
 
@@ -22,8 +25,9 @@ without invalidating anything. Encoder training is refused (see
 | `backend/core/training/vae/vae_dataset.py` | Raw-pixel dataset (random square crop to `resolution`, `[-1,1]`, `[B,3,H,W]`). |
 | `backend/core/training/train_runner.py` | The `network_type == 'vae_decoder'` branch that dispatches to it. |
 | `backend/core/training/training_config.py` | `TrainingConfigGenerator.generate_vae_config` — request dict to YAML. |
-| `backend/api/param_defaults.py` | `VAE_TRAINING_DEFAULTS` (36 keys, the SSOT). |
+| `backend/api/param_defaults.py` | `VAE_TRAINING_DEFAULTS` (40 keys, the SSOT). |
 | `frontend/src/components/training/vae/VaeTrainingConfig.tsx` | The config panel. |
+| `backend/tests/test_vae_refusal_matrix.py` | Executable form of the toggle matrix — every accepted and refused combination. |
 
 ### Why it does not subclass `BaseTrainer`
 
@@ -62,7 +66,11 @@ config:
         vae_source: model                   # model | path | store
         train_decoder: true
         decoder_blocks: all                 # all | up_blocks | mid_block | conv_out
-        train_encoder: false
+        train_encoder: false                # needs acknowledge_latent_space_break too
+        acknowledge_latent_space_break: false
+        encoder_blocks: all                 # all | down_blocks | mid_block | conv_out
+        kl_weight: 1.0e-6                   # only constructed when the encoder trains
+        export_bare_ldm: false              # refused together with train_encoder
         resolution: 512
         dtype: bf16
         ema_enabled: true
@@ -84,7 +92,7 @@ There is no `sample` section — a VAE fine-tune has no denoiser to sample from.
 - `POST /training/runs` with `training_method: "vae_decoder"` and the VAE knobs
   nested in the `vae_config` request field (an object with the
   `VaeTrainingDefaults` key set).
-- `GET /schema/vae-training-defaults` returns the 36 defaults (fourth sibling of
+- `GET /schema/vae-training-defaults` returns the 40 defaults (fourth sibling of
   `/schema/generation-defaults`, `/schema/training-defaults`,
   `/schema/tagger-training-defaults`).
 - Create / start / stop / status / metrics / checkpoints routes are the existing
@@ -109,13 +117,66 @@ EMA copy of a short or user-stopped run can be dominated by the base weights,
 and the loss/PSNR/blockiness charts cannot show that — they measure the *live*
 weights, not the EMA copy that gets exported. Both directories carry a
 `sushi_vae_training.json` provenance sidecar (base VAE identity, run id, step,
-loss config, `ema_applied`, `ema_retained_init_fraction`). The trainer prints
-that retained fraction and warns loudly above 0.5.
+loss config, `train_decoder` / `decoder_blocks`, `encoder_trained` /
+`encoder_blocks` / `kl_weight`, `ema_applied`, `ema_retained_init_fraction`).
+The trainer prints that retained fraction and warns loudly above 0.5.
+
+With `export_bare_ldm: true` (off by default, `AutoencoderKL` only) a bare
+LDM-format `<run_name>_vae.safetensors` is written alongside the directory, via
+`convert_vae_state_dict_to_original`. It is read back from the diffusers export
+that was just written, so it always carries the same weights (EMA or live) as
+its sibling directory. It has no `config.json`, so whatever loads it supplies
+`scaling_factor` / `shift_factor` — correct only while the encoder is frozen,
+which is exactly why it is refused for encoder-trained runs.
+
+## Encoder training (the double gate)
+
+`train_encoder: true` alone does nothing but fail: it must be accompanied by
+`acknowledge_latent_space_break: true`, and the acknowledgement on its own (with
+the encoder frozen) is refused too, so it cannot be left set in a config and
+silently authorise a later run. The panel enforces the same pair — the
+acknowledgement is a separate, unchecked checkbox that only appears once encoder
+training is switched on, and switching it back off clears it.
+
+What changes when the encoder is trainable:
+
+| | Decoder-only (default) | Encoder trained |
+|---|---|---|
+| Latent used for the decode forward | `latent_dist.mode()`, under `no_grad` | `latent_dist.sample()`, with gradients |
+| KL term | not constructed (constant w.r.t. every trainable parameter; `kl_weight` is ignored and the trainer logs that) | constructed at `kl_weight` (default 1e-6 = LDM's balance, applied to a per-element-normalised KL — see [the loss bank](#why-the-kl-is-normalised-before-it-is-weighted)); the weighted contribution is charted as `vae_kl_loss` |
+| Export directory | `<run_name>_vae/` (+ `_noema`) | `<run_name>_vae_encoder_trained/` (+ `_noema`) |
+| Sidecar | `encoder_trained: false` | `encoder_trained: true`, plus `encoder_blocks` and `kl_weight` |
+| `export_bare_ldm` | allowed | refused |
+| Granularity | `decoder_blocks` | `decoder_blocks` **and** `encoder_blocks` (`all` / `down_blocks` / `mid_block` / `conv_out`; `all` includes `quant_conv`, the encode-side mirror of `post_quant_conv`) |
+
+**Why the directory name differs.** The structural compatibility gate
+(`api/generation_overrides.py:334-403`) still passes for an encoder-trained VAE —
+`latent_channels`, `latent_ndim`, class family and spatial scale are unchanged —
+so nothing downstream can detect the one thing that *did* change. A `_vae`
+directory is therefore reserved for "same latent space as its base model", and
+an encoder fine-tune gets a name that says otherwise in a directory listing,
+with the sidecar's `encoder_trained` flag as the machine-readable form of the
+same fact. The trainer also prints the consequences at selection time and again
+at save time.
+
+The consequences, stated once: latents cached with the base VAE do not match
+this one and must be re-encoded; LoRAs and diffusion checkpoints trained against
+the base VAE were trained on latents this VAE does not produce. Nothing in the
+run detects or repairs that — the acknowledgement is the entire mechanism.
+
+`kl_weight` deliberately does **not** count towards the "at least one loss
+weight above 0" check: KL regularises the posterior, it is not a reconstruction
+signal, and a run with every reconstruction weight at 0 would minimise the total
+by collapsing the posterior.
 
 ### Charts
 
-`vae_recon_loss`, `vae_lpips_loss`, `vae_dc_loss`, `vae_pattern_loss` on the
-main axis; `vae_val_psnr` and `vae_val_blockiness` on the right axis
+`vae_recon_loss`, `vae_lpips_loss`, `vae_dc_loss`, `vae_pattern_loss` and
+`vae_kl_loss` (encoder runs only) on the main axis; `vae_val_psnr` and
+`vae_val_blockiness` on the right axis. `vae_kl_loss` is the **weighted
+contribution**, which shares the magnitude of the other loss components — the
+raw KL is 1e4–1e5 and on the right axis would flatten the PSNR/blockiness
+curves that are the only quality signal this modality has
 (`backend/core/training/metric_registry.py`). Validation runs every
 `validation_every` steps on a fixed held-out split. **That chart is the only
 signal that a fine-tune is going wrong** — a decoder fine-tune has no sample
@@ -142,6 +203,35 @@ criterion that a future maintainer can re-run rather than re-argue.
 | `ycbcr_dc_weight` | **0.1** | Per-pixel Charbonnier on YCbCr (luma down-weighted, `ycbcr_dc_y_weight` 0.25) **plus** a Charbonnier on the per-image per-channel spatial mean, under the same weight. |
 | `pattern_weight` | **0.0** (available) | The 8 px latent-grid artifact it targets **measured absent**. |
 | `l1_weight` | **0.0** (available) | The LDM / ft-EMA reconstruction term; usable instead of or alongside MSE. Preference, not measurement. |
+| `kl_weight` | **1e-6** (encoder runs only) | LDM's value, applied to a **per-element-normalised** KL so that it means the same thing here — see below. Not constructed under a frozen encoder, where it is a constant w.r.t. every trainable parameter. |
+
+### Why the KL is normalised before it is weighted
+
+LDM's `contperceptual.py` pairs `kl_weight` with a reconstruction term that is
+**summed** over `C·H·W` per image (`nll_loss = torch.sum(nll) / nll.shape[0]`).
+Every reconstruction term in this bank is **mean**-reduced over `B·C·H·W`. The
+two conventions differ by exactly `C·H·W` — about 786k at 512 px — so pasting
+LDM's 1e-6 onto a per-element reconstruction makes the KL roughly five orders of
+magnitude too strong. Measured on an SDXL VAE at 512 px before the fix:
+`kl_term = 0.519` against `mse = 0.034`, i.e. **15× the reconstruction term** —
+a run that was ~90% "pull the posterior to N(0, I)". It was also
+resolution-dependent (4× from 256→512), so the knob did not mean one thing.
+
+`VaeLossBank.forward` therefore divides by the per-image element count before
+weighting. After that, `kl_weight = 1e-6` is LDM's balance in LDM's sense and is
+resolution-invariant. Measured after the fix, same VAE family, two crops:
+
+| res | `mse` | raw `kl` | weighted `kl_term` | `kl_term / mse` |
+|---|---|---|---|---|
+| 256 | 0.01149 | 68 983 | 3.51e-7 | 3.1e-5 |
+| 512 | 0.00537 | 310 637 | 3.95e-7 | 7.4e-5 |
+
+At LDM's balance the KL is a very weak regulariser by design — that is what
+makes an LDM-style VAE's latent nearly deterministic. It is present to stop the
+posterior drifting, not to shape it.
+
+The per-step log prints the **raw** KL (comparable with the literature and other
+trainers) and the weighted contribution; only the weighted one is charted.
 
 ### Why `ycbcr_dc` carries a spatial-mean term the design did not specify
 
@@ -205,8 +295,12 @@ None of the following exists. They are listed so nobody assumes otherwise.
 - **Invented-HF loss.** Its gate *passed* (the decoder does invent high
   frequency — see the decode guide), but it was scoped out of Phase 1. It is the
   one loss term with a live case for being built later.
-- **Component granularity beyond `decoder_blocks`, encoder training, PiD
-  `lq_proj` training.** Designed (Phases 2/3), not implemented.
+- **PiD `lq_proj` training** (`network.type: pid_decoder`, design.md §6).
+  Designed (Phase 3), not implemented.
+- **Encoder-only training with a frozen decoder**, and **`decoder_blocks` /
+  `encoder_blocks` as free-form module lists.** The first is refused on purpose
+  (see the refusal table); the second is a fixed four-value enum on each side,
+  matching ai-toolkit's `blocks_to_train`.
 
 ## Refusals
 
@@ -217,14 +311,65 @@ that will not start. All live in `vae_config.py::_validate` unless noted.
 
 | Refused | Why |
 |---|---|
-| `train_encoder: true` | Moves the latent distribution; invalidates every latent cache, LoRA and diffusion model trained against this VAE. Phase 2, not shipped. |
+| `train_encoder: true` without `acknowledge_latent_space_break: true` | Half of the double gate. Encoder training moves the latent distribution; it must be asked for twice. |
+| `acknowledge_latent_space_break: true` without `train_encoder: true` | The other half. A left-over acknowledgement must not be able to authorise a run that did not ask for encoder training. |
+| `train_encoder: true` with `train_decoder: false` | Encoder-only under a frozen decoder: the only way to reduce a reconstruction loss through a decoder that cannot adapt is to deform the latent distribution to suit it. |
 | `train_decoder: false` and `train_encoder: false` | Nothing trainable. |
+| `export_bare_ldm: true` with `train_encoder: true` | A bare `.safetensors` has no `config.json`, so the consumer inherits `scaling_factor` / `shift_factor` from the model it is loaded into — precisely what an encoder fine-tune invalidates, with no way for the consumer to notice. Enforced twice: at config resolution, and again on the write itself (`vae_trainer.py::save_bare_ldm_safetensors`). |
+| `export_bare_ldm: true` on a non-`AutoencoderKL` VAE | The LDM key mapping in `adapters/state_dict_converter.py` is that architecture's. Raised at save time (the diffusers export is unaffected). |
+| A gate key that is not an interpretable boolean (`train_decoder`, `train_encoder`, `acknowledge_latent_space_break`, `export_bare_ldm`, `ema_enabled`) | See [Strict booleans](#strict-booleans-on-the-gate-keys). |
+| Resume from a checkpoint that trained a different component set | `vae_trainer.py::_assert_component_set_matches`, before any weight is loaded. A checkpoint holds exactly the parameters that were trainable when it was written, plus optimizer and EMA state indexed by that same set. Both directions were previously silent-ish: a decoder-only checkpoint resumed with the encoder on failed with a message blaming `decoder_blocks`, and the reverse loaded happily (the checkpoint is a superset) and then failed opaquely inside the optimizer state load — or not at all, if `optimizer.pt` was absent. |
 | `dtype: fp16` | SD1.5/SDXL-family VAEs overflow fp16 in decoder activations (the documented reason `sdxl-vae-fp16-fix` exists), and a training forward hits it sooner than inference. For every other family there is no `GradScaler` in this trainer, so fp16 gradients would silently underflow instead. `bf16` (default) and `fp32` are allowed. |
 | `latent_encoding_mode: pre_encoded_cache` | VAE training is *defined* by a live encode→decode forward on raw pixels; there is no cached latent to consume. Mirrors the existing outpaint-ControlNet refusal. |
 | All loss weights 0 | No training signal. |
 | `lpips_weight > 0` with `lpips` not importable | Fails before the run starts, never mid-run. |
 | Unknown key in `vae_config` / `process.vae` | Caught in `generate_vae_config` and in `resolve_vae_training_config`; a typo must not silently resolve to the default. |
-| Out-of-enum `vae_source` / `decoder_blocks` / `dtype` / `lpips_net`; empty `vae_path`; `vae_source: store` with no `vae_arch`; `resolution` not a multiple of 8 or < 64; `batch_size`/`total_steps`/`gradient_accumulation_steps` < 1; `ema_decay` outside (0,1); negative or non-numeric loss weight | Ordinary validation, same fail-early principle. |
+| Out-of-enum `vae_source` / `decoder_blocks` / `encoder_blocks` / `dtype` / `lpips_net`; empty `vae_path`; `vae_source: store` with no `vae_arch`; `resolution` not a multiple of 8 or < 64; `batch_size`/`total_steps`/`gradient_accumulation_steps` < 1; `ema_decay` outside (0,1); negative or non-numeric loss weight or `kl_weight` | Ordinary validation, same fail-early principle. |
+
+### Strict booleans on the gate keys
+
+`bool("false")` is `True`. A YAML that quotes its booleans —
+`train_encoder: "false"` — is entirely ordinary (editors, templating and
+hand-quoting all produce it), and under a bare cast it would **silently enable
+encoder training**, i.e. open the double gate by accident; `export_bare_ldm:
+"false"` would silently write the bare file. Every key that decides *what is
+trained* or *what is written* therefore goes through
+`vae_config.strict_bool()`: real booleans and 0/1 pass through, `true/yes/on/1`
+and `false/no/off/0` are accepted in any case with surrounding whitespace, and
+anything else raises rather than being guessed at. The same parser runs in
+`VaeTrainer.__init__`, which is what protects callers that bypassed the
+resolver.
+
+### The tests
+
+Every row above is asserted in **`backend/tests/test_vae_refusal_matrix.py`**
+(48 cases), which is the executable form of design.md §4:
+
+```
+venv/Scripts/python.exe -m pytest backend/tests/test_vae_refusal_matrix.py -v
+```
+
+It also asserts that the matrix rows which are *not* built (PiD, GAN,
+crop-consistency, invented-HF) have no config surface at all, so asking for them
+lands in the unknown-key refusal rather than being silently ignored. Note the
+file needs a `!` negation in `.gitignore` (which ignores `test_*.py` globally) to
+stay tracked; a second checked-in test needs the same.
+
+Two properties of that suite are load-bearing and easy to lose:
+
+- **Every case runs at `lpips_weight: 0`.** The default is 0.1, and `_validate`
+  imports `lpips` above 0 — so with the default in place, an environment without
+  `lpips` turns several *refusal* rows green for the wrong reason (the lpips
+  refusal fires first and the substring assertion still matches). One dedicated
+  case turns LPIPS back on and asserts both environments.
+- **Each refusal row asserts a fragment only its own guard emits.** Matching key
+  names is not enough: a mutation sweep found that deleting the
+  encoder-only-under-frozen-decoder guard went undetected, because the
+  "Nothing to train: `train_decoder=false` and `train_encoder=false`" message of
+  a *different* guard happens to contain both key names — and likewise that
+  asserting `"fp16"` was satisfied by the out-of-enum `dtype` message that
+  follows it. With distinctive fragments, neutralising each of the 11 guards in
+  turn is caught 11/11.
 
 ## Two structural invariants
 
@@ -295,7 +440,32 @@ epochs control would silently do nothing.
   specific artifact terms — not re-learning the distribution. No prior work
   measures Δ-blockiness or Δ-crop-consistency for a fine-tune of this size, so
   no effect size is promised.
-- **Verification level.** Shipped after a 20-step smoke run on a real dataset
+- **Encoder training is verified, not validated.** The smoke run below proves
+  the mechanism (encoder tensors move, KL is finite and charted, the artifact is
+  labelled, the export refusals fire). Whether an encoder fine-tune of this
+  scale *improves* anything is unmeasured, and there is no published recipe of
+  this shape to copy — `sd-vae-ft-mse`, the one shipped precedent, froze the
+  encoder precisely to avoid the question.
+- **Verification level (encoder path, Phase 2).** A 3-step smoke on the sd15
+  `vae-ft-mse-840000-ema-pruned` VAE at 256 px, lr 1e-4, EMA off: **248**
+  trainable tensors / 83.65M params (106 encoder + 138 decoder + 2 `quant_conv`
+  + 2 `post_quant_conv`), max|Δ| 3.008e-4 on the encoder, 3.005e-4 on the
+  decoder, 2.839e-4 on `quant_conv`; KL finite (68143 → 71931 → 76472 raw) with
+  a weighted contribution of ~3.5e-7 against `mse` ~1.4e-2, i.e. the objective
+  is reconstruction; export written to `<run>_vae_encoder_trained/` with
+  `encoder_trained: true` in the sidecar and reloadable via
+  `AutoencoderKL.from_pretrained`; both bare-LDM refusals fired (config
+  resolution and the write itself), both single-gate refusals fired, and the
+  resume component-set guard refused in both directions while accepting a
+  matching set. The decoder-only control in the same run: encoder max|Δ|
+  **exactly 0.0**, `kl_weight` reported as ignored, 140 trainable tensors, and a
+  248-tensor bare-LDM file written that reloads with no key mismatches.
+
+  Note the KL *rises* slightly over these three steps. Before the normalisation
+  fix it fell 27% in three steps (68143 → 50044), which was not the mechanism
+  working — nothing reconstruction-driven moves 27% in three steps — but the
+  posterior collapsing under a KL that outweighed the MSE 15:1.
+- **Verification level (Phase 1).** Shipped after a 20-step smoke run on a real dataset
   and a real SDXL checkpoint (finite losses; 140/140 trainable tensors moved,
   max|Δ| 1.9e-3; zero encoder/`quant_conv` tensors trainable and encoder
   max|Δ| exactly 0.0 in both exports; checkpoint round-trip and resume; stop

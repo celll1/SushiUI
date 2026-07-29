@@ -53,7 +53,7 @@ subset of repo conventions for coding agents; read it before making changes.
 | Call the API directly (scripts, smoke tests) | `docs/guides/API_TESTING.md`, `examples/api/` |
 | WebSocket progress messages | `backend/api/WS_PROTOCOL.md` |
 | Training parameters / config | `backend/core/training/TRAINING_PARAMS_GUIDE.md`, `backend/core/training/API_REFERENCE.md` |
-| Fine-tune a VAE decoder (`training_method: vae_decoder`) | `docs/guides/VAE_TRAINING.md` |
+| Fine-tune a VAE (`training_method: vae_decoder`; decoder by default, encoder behind a double gate) | `docs/guides/VAE_TRAINING.md` |
 | VAE decode behavior: tiling options, decoder non-locality, measured artifact facts | `docs/guides/VAE_DECODE_BEHAVIOR.md` |
 | Model architecture internals (SD1.5/SDXL/etc.) | `backend/core/training/MODEL_ARCHITECTURES.md` |
 | Attention backend selection | `backend/core/docs/ATTENTION_PROCESSORS.md`, `backend/core/attention/registry.py` |

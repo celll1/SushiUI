@@ -1,4 +1,4 @@
-"""Decoder-only VAE fine-tuner (Phase 1).
+"""VAE fine-tuner: decoder by default, encoder behind a double gate.
 
 Standalone by design — see ``core/training/vae/__init__.py`` for why this does
 not subclass ``BaseTrainer``. What it *does* reuse, unchanged, is everything
@@ -9,6 +9,13 @@ that hangs off the ``TrainingRun`` row: the subprocess launch, the
 Recipe (design.md §5.1 as revised by §9.2, i.e. stabilityai/sd-vae-ft-mse's
 published shape): MSE 1.0 + LPIPS-VGG 0.1 + YCbCr Charbonnier 0.1, encoder
 frozen, EMA on, bf16 autocast over an fp32 master copy of the weights.
+
+Encoder training (design.md §4) requires BOTH ``train_encoder`` and
+``acknowledge_latent_space_break``. When it is on, the latent is sampled from
+the posterior instead of taken at its mode, the KL term is constructed, the
+export directory is named ``<run>_vae_encoder_trained`` instead of
+``<run>_vae``, the sidecar records ``encoder_trained: true`` and the bare-LDM
+export is refused.
 
 Precision: the VAE weights are held in **fp32** (they ARE the optimizer's master
 copy) and the forward runs under ``torch.autocast`` in the configured compute
@@ -34,7 +41,7 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
-from core.training.vae.vae_config import VaeConfigError
+from core.training.vae.vae_config import VaeConfigError, strict_bool
 from core.training.vae.vae_dataset import VaeRawImageDataset, make_validation_batch
 from core.training.vae import vae_losses
 
@@ -46,6 +53,7 @@ M_RECON = "vae_recon_loss"
 M_LPIPS = "vae_lpips_loss"
 M_DC = "vae_dc_loss"
 M_PATTERN = "vae_pattern_loss"
+M_KL = "vae_kl_loss"
 M_VAL_PSNR = "vae_val_psnr"
 M_VAL_BLOCKINESS = "vae_val_blockiness"
 
@@ -72,6 +80,31 @@ class VaeTrainer:
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.compute_dtype = _DTYPE_MAP[cfg["dtype"]]
+
+        # Encoder training is gated twice in vae_config (train_encoder AND
+        # acknowledge_latent_space_break); the trainer re-reads BOTH rather than
+        # trusting train_encoder alone, so a hand-built cfg that skipped the
+        # resolver cannot reach the encoder path with one key set.
+        #
+        # strict_bool, NOT bool(): a quoted "false" out of a hand-written YAML is
+        # truthy in Python, so a bare cast here would open the gate rather than
+        # guard it. The same parser runs in vae_config._validate; this call is
+        # what protects callers that bypassed the resolver.
+        asked_for_encoder = strict_bool(cfg.get("train_encoder"), "train_encoder")
+        acknowledged = strict_bool(cfg.get("acknowledge_latent_space_break"),
+                                   "acknowledge_latent_space_break")
+        cfg["train_encoder"] = asked_for_encoder
+        cfg["acknowledge_latent_space_break"] = acknowledged
+        cfg["train_decoder"] = strict_bool(cfg.get("train_decoder"), "train_decoder")
+        cfg["export_bare_ldm"] = strict_bool(cfg.get("export_bare_ldm"),
+                                             "export_bare_ldm")
+        cfg["ema_enabled"] = strict_bool(cfg.get("ema_enabled"), "ema_enabled")
+        self.train_encoder = asked_for_encoder and acknowledged
+        if asked_for_encoder and not self.train_encoder:
+            raise VaeConfigError(
+                "train_encoder=true without acknowledge_latent_space_break=true. "
+                "Both are required (see vae_config.resolve_vae_training_config)."
+            )
 
         self.vae = None
         self.trainable_params: List[torch.nn.Parameter] = []
@@ -152,15 +185,75 @@ class VaeTrainer:
         print(f"{self.log_prefix} Base VAE: {identity}")
 
     def select_trainable(self):
-        """Unfreeze exactly the requested decoder subset (design.md §4)."""
-        blocks = self.cfg["decoder_blocks"]
+        """Unfreeze exactly the requested subset of the VAE (design.md §4).
+
+        The decoder and the encoder are selected by the same block-granularity
+        mechanism (``decoder_blocks`` / ``encoder_blocks``); the ONLY asymmetry
+        is which side-conv counts as part of the path: ``post_quant_conv`` for
+        the decode side, ``quant_conv`` for the encode side.
+        """
+        self.trainable_params = []
+        self.trainable_names = []
+        targets: List = []
+
+        if self.train_encoder:
+            targets += self._encoder_targets(self.cfg["encoder_blocks"])
+        if self.cfg["train_decoder"]:
+            targets += self._decoder_targets(self.cfg["decoder_blocks"])
+
+        for prefix, module in targets:
+            for name, param in module.named_parameters():
+                param.requires_grad_(True)
+                self.trainable_params.append(param)
+                self.trainable_names.append(f"{prefix}.{name}")
+
+        if not self.trainable_params:
+            raise VaeConfigError(
+                f"decoder_blocks={self.cfg['decoder_blocks']!r} / "
+                f"encoder_blocks={self.cfg['encoder_blocks']!r} selected 0 "
+                f"parameters on {type(self.vae).__name__}."
+            )
+        total = sum(p.numel() for p in self.trainable_params)
+        scope = (f"decoder_blocks={self.cfg['decoder_blocks']}"
+                 if self.cfg["train_decoder"] else "decoder frozen")
+        if self.train_encoder:
+            scope += f", encoder_blocks={self.cfg['encoder_blocks']}"
+        print(f"{self.log_prefix} Trainable: {len(self.trainable_params)} tensors "
+              f"/ {total/1e6:.2f}M params ({scope})")
+
+        # Sanity, in BOTH directions: a decoder-only run must leave the encoder
+        # completely frozen (that is the entire latent-space contract), and an
+        # encoder run must actually have unfrozen something in it.
+        encoder = getattr(self.vae, "encoder", None)
+        if encoder is not None:
+            live = [n for n, p in encoder.named_parameters() if p.requires_grad]
+            if live and not self.train_encoder:
+                raise VaeConfigError(
+                    f"Internal error: encoder parameters are trainable "
+                    f"({live[:3]}...) with train_encoder=false. Refusing to run."
+                )
+            if self.train_encoder and not live:
+                raise VaeConfigError(
+                    f"train_encoder=true but encoder_blocks="
+                    f"{self.cfg['encoder_blocks']!r} unfroze no encoder parameter "
+                    f"on {type(self.vae).__name__}."
+                )
+
+        if self.train_encoder:
+            print(f"{self.log_prefix} ENCODER TRAINING IS ACTIVE. The latent "
+                  f"distribution this VAE produces will change, so cached "
+                  f"latents, LoRAs and diffusion checkpoints built against the "
+                  f"original VAE will no longer match the exported result. The "
+                  f"export goes to '{self.run_name}{self._export_suffix()}' and "
+                  f"its sidecar records encoder_trained=true.")
+
+    def _decoder_targets(self, blocks: str) -> List:
         decoder = getattr(self.vae, "decoder", None)
         if decoder is None:
             raise VaeConfigError(
                 f"The loaded VAE ({type(self.vae).__name__}) has no `.decoder` "
-                f"submodule, so decoder-only training is not defined for it."
+                f"submodule, so decoder training is not defined for it."
             )
-
         targets = []
         if blocks == "all":
             targets.append(("decoder", decoder))
@@ -180,33 +273,38 @@ class VaeTrainer:
                 targets.append(("decoder.conv_norm_out", decoder.conv_norm_out))
         else:  # unreachable: validated in vae_config
             raise VaeConfigError(f"Unknown decoder_blocks={blocks!r}")
+        return targets
 
-        self.trainable_params = []
-        self.trainable_names = []
-        for prefix, module in targets:
-            for name, param in module.named_parameters():
-                param.requires_grad_(True)
-                self.trainable_params.append(param)
-                self.trainable_names.append(f"{prefix}.{name}")
-
-        if not self.trainable_params:
-            raise VaeConfigError(
-                f"decoder_blocks={blocks!r} selected 0 parameters on "
-                f"{type(self.vae).__name__}."
-            )
-        total = sum(p.numel() for p in self.trainable_params)
-        print(f"{self.log_prefix} Trainable: {len(self.trainable_params)} tensors "
-              f"/ {total/1e6:.2f}M params (decoder_blocks={blocks})")
-
-        # Sanity: the encoder must be completely frozen in v1.
+    def _encoder_targets(self, blocks: str) -> List:
         encoder = getattr(self.vae, "encoder", None)
-        if encoder is not None:
-            leaked = [n for n, p in encoder.named_parameters() if p.requires_grad]
-            if leaked:
-                raise VaeConfigError(
-                    f"Internal error: encoder parameters are trainable "
-                    f"({leaked[:3]}...). Refusing to run."
-                )
+        if encoder is None:
+            raise VaeConfigError(
+                f"The loaded VAE ({type(self.vae).__name__}) has no `.encoder` "
+                f"submodule, so encoder training is not defined for it."
+            )
+        targets = []
+        if blocks == "all":
+            targets.append(("encoder", encoder))
+            # The encode-side mirror of post_quant_conv.
+            qc = getattr(self.vae, "quant_conv", None)
+            if qc is not None:
+                targets.append(("quant_conv", qc))
+        elif blocks == "down_blocks":
+            targets.append(("encoder.down_blocks", encoder.down_blocks))
+        elif blocks == "mid_block":
+            targets.append(("encoder.mid_block", encoder.mid_block))
+        elif blocks == "conv_out":
+            # The encoder's conv_out produces the posterior parameters, so this
+            # is the encode-side analogue of touching only the final projection.
+            targets.append(("encoder.conv_out", encoder.conv_out))
+            if getattr(encoder, "conv_norm_out", None) is not None:
+                targets.append(("encoder.conv_norm_out", encoder.conv_norm_out))
+            qc = getattr(self.vae, "quant_conv", None)
+            if qc is not None:
+                targets.append(("quant_conv", qc))
+        else:  # unreachable: validated in vae_config
+            raise VaeConfigError(f"Unknown encoder_blocks={blocks!r}")
+        return targets
 
     def build_optimizer(self):
         from core.training.optimizer_factory import OptimizerFactory
@@ -232,8 +330,14 @@ class VaeTrainer:
             self.lr_scheduler = None
 
     def build_losses(self):
-        self.loss_bank = vae_losses.VaeLossBank(self.cfg, self.device)
+        self.loss_bank = vae_losses.VaeLossBank(
+            self.cfg, self.device, kl_enabled=self.train_encoder)
         print(f"{self.log_prefix} Loss bank: {self.loss_bank.describe()}")
+        if not self.train_encoder and float(self.cfg["kl_weight"]) > 0:
+            print(f"{self.log_prefix} kl_weight={self.cfg['kl_weight']} is IGNORED: "
+                  f"with the encoder frozen the posterior KL does not depend on "
+                  f"any trainable parameter, so the term contributes no gradient "
+                  f"and is not constructed.")
 
     def init_ema(self):
         if not self.cfg["ema_enabled"]:
@@ -390,7 +494,10 @@ class VaeTrainer:
                 rate = self.global_step / max(time.time() - t0, 1e-6)
                 print(f"{self.log_prefix} step {self.global_step}/{total_steps} "
                       f"loss={loss:.6f} " +
-                      " ".join(f"{k}={v:.6f}" for k, v in parts.items()) +
+                      # .6g, not .6f: the weighted KL contribution is ~1e-7 by
+                      # construction (it sits at LDM's balance) and would print
+                      # as a flat 0.000000 under a fixed-point format.
+                      " ".join(f"{k}={v:.6g}" for k, v in parts.items()) +
                       f" lr={lr:.2e} ({rate:.2f} it/s)")
 
             if val_every > 0 and self.global_step % val_every == 0:
@@ -417,15 +524,27 @@ class VaeTrainer:
         ctx = (torch.autocast(device_type="cuda", dtype=self.compute_dtype)
                if use_autocast else _NullCtx())
 
+        posterior = None
         with ctx:
-            # Encoder is frozen: no_grad here is a genuine memory/compute saving,
-            # NOT the base_trainer.encode_image no_grad that would break training
-            # (the DECODE below is the one that must carry gradients).
-            with torch.no_grad():
-                latent = self.vae.encode(pixels).latent_dist.mode()
+            if self.train_encoder:
+                # The encode forward now carries gradients, and the latent is
+                # SAMPLED from the posterior rather than taken at its mode: the
+                # KL term only constrains a distribution that is actually being
+                # sampled, and a mode-only path would let the encoder shrink the
+                # variance for free.
+                posterior = self.vae.encode(pixels).latent_dist
+                latent = posterior.sample()
+            else:
+                # Encoder is frozen: no_grad here is a genuine memory/compute
+                # saving, NOT the base_trainer.encode_image no_grad that would
+                # break training (the DECODE below is the one that must carry
+                # gradients). The mode is used, deterministically, which is the
+                # decoder-only ft-MSE shape.
+                with torch.no_grad():
+                    latent = self.vae.encode(pixels).latent_dist.mode()
             recon = self.vae.decode(latent).sample
 
-        loss, parts = self.loss_bank(recon, pixels)
+        loss, parts = self.loss_bank(recon, pixels, posterior)
 
         if not torch.isfinite(loss):
             raise RuntimeError(
@@ -578,6 +697,66 @@ class VaeTrainer:
             f"resume from the newest checkpoint."
         )
 
+    def _assert_component_set_matches(self, ckpt_dir: Path) -> None:
+        """Refuse a resume whose checkpoint trained a different component set.
+
+        Named, actionable and BEFORE any weight load. Optimizer state, EMA state
+        and the trainable-name list are all indexed by the component set, so a
+        mismatch is never recoverable — it is only ever a config mistake.
+        """
+        state_path = ckpt_dir / "train_state.json"
+        if not state_path.is_file():
+            print(f"{self.log_prefix} WARNING: {ckpt_dir} has no train_state.json; "
+                  f"cannot verify that it trained the same components as this run.")
+            return
+        try:
+            with open(state_path, "r", encoding="utf-8") as f:
+                saved = (json.load(f).get("config") or {})
+        except Exception as e:
+            print(f"{self.log_prefix} WARNING: could not read {state_path} ({e}); "
+                  f"skipping the component-set check.")
+            return
+        if not saved:
+            return
+
+        def _saved_bool(key: str, default: bool) -> bool:
+            value = saved.get(key, default)
+            # train_state.json is written through _jsonable, which stringifies
+            # anything exotic; be as strict here as the config gate is.
+            try:
+                return strict_bool(value, key)
+            except VaeConfigError:
+                return bool(default)
+
+        mismatches = []
+        was_encoder = _saved_bool("train_encoder", False)
+        if was_encoder != self.train_encoder:
+            mismatches.append(
+                f"train_encoder: checkpoint={was_encoder}, this run={self.train_encoder}")
+        if _saved_bool("train_decoder", True) != bool(self.cfg["train_decoder"]):
+            mismatches.append(
+                f"train_decoder: checkpoint={saved.get('train_decoder')}, "
+                f"this run={self.cfg['train_decoder']}")
+        if saved.get("decoder_blocks", self.cfg["decoder_blocks"]) != self.cfg["decoder_blocks"]:
+            mismatches.append(
+                f"decoder_blocks: checkpoint={saved.get('decoder_blocks')!r}, "
+                f"this run={self.cfg['decoder_blocks']!r}")
+        if was_encoder and self.train_encoder and \
+                saved.get("encoder_blocks", self.cfg["encoder_blocks"]) != self.cfg["encoder_blocks"]:
+            mismatches.append(
+                f"encoder_blocks: checkpoint={saved.get('encoder_blocks')!r}, "
+                f"this run={self.cfg['encoder_blocks']!r}")
+
+        if mismatches:
+            raise VaeConfigError(
+                f"Checkpoint {ckpt_dir.name} trained a different component set "
+                f"than this run: " + "; ".join(mismatches) + ". A checkpoint "
+                f"stores exactly the parameters that were trainable when it was "
+                f"written, together with optimizer and EMA state indexed by that "
+                f"same set, so it can only be resumed by a run with the same "
+                f"settings. Match them, or start a new run."
+            )
+
     def load_checkpoint(self, checkpoint):
         """Resume from a checkpoint directory, a run-relative step name, or the
         already-resolved Path from :meth:`resolve_resume_target`."""
@@ -588,13 +767,26 @@ class VaeTrainer:
         if ckpt_dir is None:
             return
 
+        # The component set must match BEFORE any weight is touched. Both
+        # mismatch directions are silent failures otherwise:
+        #   - a decoder-only checkpoint resumed with the encoder on is a SUBSET,
+        #     so the tensor-name check below fires but blames decoder_blocks;
+        #   - an encoder-trained checkpoint resumed decoder-only is a SUPERSET,
+        #     so nothing fires at all here and the run continues with the
+        #     encoder half of the checkpoint silently discarded, failing later
+        #     (if at all) inside the optimizer state load.
+        # train_state.json has recorded the resolved config since Phase 1.
+        self._assert_component_set_matches(ckpt_dir)
+
         state = load_file(str(ckpt_dir / "vae_decoder.safetensors"))
         missing = [n for n in self.trainable_names if n not in state]
         if missing:
             raise VaeConfigError(
                 f"Checkpoint {ckpt_dir} is missing {len(missing)} trainable "
-                f"tensor(s) (e.g. {missing[:3]}). It was probably produced with a "
-                f"different decoder_blocks setting."
+                f"tensor(s) (e.g. {missing[:3]}). It was probably produced with "
+                f"different decoder_blocks / encoder_blocks settings "
+                f"(this run: decoder_blocks={self.cfg['decoder_blocks']!r}, "
+                f"encoder_blocks={self.cfg['encoder_blocks']!r})."
             )
         with torch.no_grad():
             for name, param in zip(self.trainable_names, self.trainable_params):
@@ -671,16 +863,36 @@ class VaeTrainer:
     # ------------------------------------------------------------------
     # Final artifact
     # ------------------------------------------------------------------
+    def _export_suffix(self) -> str:
+        """Directory suffix for the exported VAE.
+
+        An encoder fine-tune produces a DIFFERENT VAE, not an improved drop-in
+        for the base model: latents encoded by it do not match the ones every
+        existing cache / LoRA / diffusion checkpoint was built against. The
+        artifact is therefore given a different name, so that a directory listing
+        alone distinguishes the two cases and a `_vae` directory always means
+        "same latent space as its base model". The sidecar's `encoder_trained`
+        flag is the machine-readable form of the same fact; the name is the form
+        a human sees first.
+        """
+        return "_vae_encoder_trained" if self.train_encoder else "_vae"
+
     def save_diffusers_vae(self, step: int) -> Path:
         """Write a diffusers VAE directory the EXISTING inference VAE-override
         path loads unchanged (pipeline.py:1294-1304).
 
-        The compat gate (api/generation_overrides.py:334-403) passes because
-        latent_channels / latent_ndim / class family / spatial scale are all
-        unchanged by a decoder-only fine-tune, and ``save_pretrained`` preserves
-        ``scaling_factor`` / ``shift_factor`` in config.json.
+        For a decoder-only run the compat gate
+        (api/generation_overrides.py:334-403) passes because latent_channels /
+        latent_ndim / class family / spatial scale are all unchanged, and
+        ``save_pretrained`` preserves ``scaling_factor`` / ``shift_factor`` in
+        config.json.
+
+        An encoder-trained run passes the same structural gate — the latent
+        SHAPE is unchanged — but its latent DISTRIBUTION is not the base model's
+        any more. Nothing downstream can detect that, so it is marked in the
+        directory name and in the sidecar instead.
         """
-        out_dir = self.output_dir / f"{self.run_name}_vae"
+        out_dir = self.output_dir / f"{self.run_name}{self._export_suffix()}"
         losses = {
             "mse_weight": self.cfg["mse_weight"],
             "l1_weight": self.cfg["l1_weight"],
@@ -692,6 +904,9 @@ class VaeTrainer:
             "ycbcr_dc_eps": self.cfg["ycbcr_dc_eps"],
             "pattern_weight": self.cfg["pattern_weight"],
             "pattern_size": self.cfg["pattern_size"],
+            # Recorded as None when the encoder was frozen, because the term was
+            # then not constructed at all and the configured value had no effect.
+            "kl_weight": (self.cfg["kl_weight"] if self.train_encoder else None),
         }
 
         def _write(target: Path, applied_ema: bool):
@@ -711,12 +926,24 @@ class VaeTrainer:
                             prm.copy_(backup[nm].to(prm.device, dtype=prm.dtype))
             sidecar = {
                 "format_version": 1,
-                "produced_by": "SushiUI VAE decoder fine-tune (network.type=vae_decoder)",
+                "produced_by": (
+                    "SushiUI VAE fine-tune (network.type=vae_decoder"
+                    + (", encoder trained" if self.train_encoder else
+                       ", decoder only, encoder frozen") + ")"
+                ),
                 "run_id": self.run_id,
                 "run_name": self.run_name,
                 "step": step,
                 "base_vae": self._base_vae_identity,
+                "train_decoder": bool(self.cfg["train_decoder"]),
                 "decoder_blocks": self.cfg["decoder_blocks"],
+                # The machine-readable form of "this is not a drop-in
+                # replacement for the base model's VAE".
+                "encoder_trained": bool(self.train_encoder),
+                "encoder_blocks": (self.cfg["encoder_blocks"]
+                                   if self.train_encoder else None),
+                "kl_weight": (float(self.cfg["kl_weight"])
+                              if self.train_encoder else None),
                 "ema_applied": applied_ema,
                 "ema_target_decay": self.cfg["ema_decay"] if applied_ema else None,
                 "ema_updates": self._ema_updates if applied_ema else None,
@@ -750,7 +977,7 @@ class VaeTrainer:
             # Always write the non-EMA weights too: on a short or user-stopped
             # run the EMA copy can be dominated by the base VAE, and this sibling
             # is the only usable artifact in that case.
-            noema_dir = self.output_dir / f"{self.run_name}_vae_noema"
+            noema_dir = self.output_dir / f"{self.run_name}{self._export_suffix()}_noema"
             _write(noema_dir, applied_ema=False)
             print(f"{self.log_prefix} Non-EMA (live weights) VAE written to {noema_dir}")
         else:
@@ -760,7 +987,75 @@ class VaeTrainer:
 
         print(f"{self.log_prefix} Load either directory via the VAE override in "
               f"the generation UI.")
+        if self.train_encoder:
+            print(f"{self.log_prefix} This VAE was trained WITH THE ENCODER. It "
+                  f"encodes to a different latent distribution than the base "
+                  f"VAE, so latent caches, LoRAs and diffusion checkpoints built "
+                  f"against the base VAE do not match it. Cached latents made "
+                  f"with the base VAE must be re-encoded before they are used "
+                  f"with this one.")
+
+        if self.cfg.get("export_bare_ldm"):
+            try:
+                self.save_bare_ldm_safetensors(out_dir)
+            except VaeConfigError as e:
+                # Never lose the diffusers export over an optional extra one.
+                print(f"{self.log_prefix} bare-LDM export skipped: {e}")
         return out_dir
+
+    def save_bare_ldm_safetensors(self, source_dir: Path) -> Path:
+        """Write the exported VAE as a bare LDM-format ``.safetensors``.
+
+        REFUSED whenever the encoder was trained. A bare ``.safetensors`` has no
+        ``config.json``, so whatever loads it inherits ``scaling_factor`` /
+        ``shift_factor`` from the model it is plugged into
+        (``pipeline.py:1283-1290``). For a decoder-only fine-tune those values
+        are still correct, because the encoder that defined them is byte-identical
+        to the base model's. After an encoder fine-tune they are silently wrong
+        and nothing downstream can tell. ``vae_config._validate`` refuses the
+        combination before the run even starts; this is the second gate, on the
+        write itself, so the refusal holds for any caller.
+        """
+        if self.train_encoder:
+            raise VaeConfigError(
+                "Refusing to write a bare LDM .safetensors for an "
+                "encoder-trained VAE: the file carries no config.json, so the "
+                "consumer would inherit scaling_factor / shift_factor from the "
+                "model it is loaded into — and those are exactly what an encoder "
+                "fine-tune invalidates. Use the diffusers directory export "
+                f"({source_dir.name}), which carries its own config.json and the "
+                "sushi_vae_training.json provenance sidecar."
+            )
+
+        cls_name = type(self.vae).__name__
+        if cls_name != "AutoencoderKL":
+            raise VaeConfigError(
+                f"bare-LDM export is only defined for AutoencoderKL (the LDM key "
+                f"mapping in adapters/state_dict_converter.py is that "
+                f"architecture's); this run trained a {cls_name}. The diffusers "
+                f"directory export is unaffected."
+            )
+
+        from core.training.adapters.state_dict_converter import (
+            convert_vae_state_dict_to_original,
+        )
+        from safetensors.torch import load_file as _load_file, save_file
+
+        # Read back what was actually written (i.e. the EMA weights when EMA is
+        # applied), rather than re-deriving which copy is live.
+        shard = source_dir / "diffusion_pytorch_model.safetensors"
+        state = (_load_file(str(shard)) if shard.is_file()
+                 else {k: v.detach().cpu() for k, v in self.vae.state_dict().items()})
+        converted = convert_vae_state_dict_to_original(
+            {k: v.to(torch.float32).contiguous() for k, v in state.items()})
+
+        out_path = source_dir.parent / f"{source_dir.name}.safetensors"
+        save_file(converted, str(out_path))
+        print(f"{self.log_prefix} Bare LDM VAE written to {out_path} "
+              f"({len(converted)} tensors). It carries no config.json: whatever "
+              f"loads it supplies scaling_factor / shift_factor, which are "
+              f"unchanged from the base VAE because the encoder was frozen.")
+        return out_path
 
     # ------------------------------------------------------------------
     # DB plumbing (TrainingRun-based; no new tables)
@@ -787,6 +1082,9 @@ class VaeTrainer:
             extra[M_DC] = parts["ycbcr_dc"]
         if "pattern" in parts:
             extra[M_PATTERN] = parts["pattern"]
+        if "kl_term" in parts:
+            # The WEIGHTED contribution, not the raw KL: see metric_registry.
+            extra[M_KL] = parts["kl_term"]
         self._queue_metrics(step, loss=loss, recon_loss=recon,
                             learning_rate=lr, grad_norm=grad_norm, extra=extra)
         if self.progress_callback is not None:

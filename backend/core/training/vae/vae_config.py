@@ -26,12 +26,52 @@ class VaeConfigError(ValueError):
 # Allowed values for the enumerated keys.
 VALID_SOURCES = ("model", "path", "store")
 VALID_DECODER_BLOCKS = ("all", "up_blocks", "mid_block", "conv_out")
+VALID_ENCODER_BLOCKS = ("all", "down_blocks", "mid_block", "conv_out")
 VALID_DTYPES = ("bf16", "fp32")
 VALID_LPIPS_NETS = ("vgg", "alex", "squeeze")
 
 # Loss keys that participate in the "at least one active term" check.
 _LOSS_WEIGHT_KEYS = ("mse_weight", "l1_weight", "lpips_weight",
                      "ycbcr_dc_weight", "pattern_weight")
+
+# Keys where a wrong answer changes WHAT IS TRAINED or WHAT IS WRITTEN, and so
+# must never be decided by Python truthiness. See strict_bool().
+_STRICT_BOOL_KEYS = ("train_decoder", "train_encoder",
+                     "acknowledge_latent_space_break", "export_bare_ldm",
+                     "ema_enabled")
+
+_TRUE_STRINGS = frozenset({"true", "yes", "on", "1"})
+_FALSE_STRINGS = frozenset({"false", "no", "off", "0"})
+
+
+def strict_bool(value: Any, key: str) -> bool:
+    """Parse a boolean the way a config file means it, not the way Python does.
+
+    ``bool("false")`` is ``True``. A YAML that quotes its booleans —
+    ``train_encoder: "false"`` — is entirely ordinary (editors, templating and
+    hand-quoting all produce it), and under a bare ``bool()`` cast it would
+    silently ENABLE encoder training, i.e. open the double gate by accident.
+    That is the exact failure this whole gate exists to prevent, so every gate
+    key is parsed here instead: real booleans and 0/1 pass through, the explicit
+    string spellings are accepted, and ANYTHING else raises rather than being
+    guessed at.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and value in (0, 1):
+        return bool(value)
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in _TRUE_STRINGS:
+            return True
+        if text in _FALSE_STRINGS:
+            return False
+    raise VaeConfigError(
+        f"{key} must be a boolean, got {value!r} ({type(value).__name__}). "
+        f"Accepted: true/false, yes/no, on/off, 1/0. This key is parsed strictly "
+        f"because Python would read the string \"false\" as True, which would "
+        f"silently change what the run trains or writes."
+    )
 
 
 def _vae_training_defaults() -> Dict[str, Any]:
@@ -131,19 +171,49 @@ def _copy(cfg: Dict[str, Any], section: Dict[str, Any], src_key: str, dst_key: s
 
 def _validate(cfg: Dict[str, Any], train_section: Dict[str, Any]) -> None:
     # ---- component toggle matrix (design.md §4) ---------------------------
-    train_decoder = bool(cfg["train_decoder"])
-    train_encoder = bool(cfg["train_encoder"])
+    # Strict parsing, NOT bool(): see strict_bool() for why a quoted "false"
+    # must not be able to open the gate.
+    for key in _STRICT_BOOL_KEYS:
+        cfg[key] = strict_bool(cfg[key], key)
 
-    if train_encoder:
-        # Phase 2. Training the encoder moves the latent distribution, which
-        # invalidates every latent cache, every LoRA and every diffusion model
-        # trained against this VAE. v1 does not ship it, and a config asking for
-        # it must fail loudly rather than silently train the decoder only.
+    train_decoder = cfg["train_decoder"]
+    train_encoder = cfg["train_encoder"]
+    acknowledged = cfg["acknowledge_latent_space_break"]
+
+    # The DOUBLE GATE. Training the encoder moves the latent distribution, so
+    # every latent cache, every LoRA and every diffusion model trained against
+    # this VAE stops matching it. Neither key alone is enough, in EITHER
+    # direction: a bare train_encoder must not run, and a stale acknowledgement
+    # left in a config must not silently authorise a later run that did not ask
+    # for encoder training.
+    if train_encoder and not acknowledged:
         raise VaeConfigError(
-            "train_encoder=true is not supported in this version (Phase 2). "
-            "Encoder training moves the latent distribution and invalidates "
-            "every latent cache / LoRA / diffusion model trained against this "
-            "VAE. Set train_encoder=false (decoder-only)."
+            "train_encoder=true requires acknowledge_latent_space_break=true in "
+            "the same config. Training the encoder changes the latent "
+            "distribution: existing latent caches, LoRAs and diffusion "
+            "checkpoints built against this VAE will no longer match it, and the "
+            "result is a new VAE rather than a drop-in replacement. Set both keys "
+            "to run it, or train_encoder=false for a decoder-only fine-tune."
+        )
+    if acknowledged and not train_encoder:
+        raise VaeConfigError(
+            "acknowledge_latent_space_break=true but train_encoder=false. The "
+            "acknowledgement only applies to encoder training; leaving it set "
+            "while the encoder is frozen would let it silently authorise a later "
+            "run. Set train_encoder=true as well, or remove the acknowledgement."
+        )
+
+    if train_encoder and not train_decoder:
+        # design.md §4: encoder-only training under a frozen decoder. The
+        # reconstruction objective can still be differentiated, but every
+        # gradient path to it goes through a decoder that is not allowed to
+        # adapt, so the only way to reduce the loss is to deform the latent
+        # distribution into whatever the fixed decoder already inverts well.
+        raise VaeConfigError(
+            "train_encoder=true with train_decoder=false is not supported: the "
+            "only way to reduce a reconstruction loss through a frozen decoder "
+            "is to deform the latent distribution to suit it. Train both "
+            "(train_decoder=true), or train the decoder only."
         )
     if not train_decoder:
         raise VaeConfigError(
@@ -155,6 +225,28 @@ def _validate(cfg: Dict[str, Any], train_section: Dict[str, Any]) -> None:
         raise VaeConfigError(
             f"decoder_blocks must be one of {list(VALID_DECODER_BLOCKS)}, "
             f"got {cfg['decoder_blocks']!r}"
+        )
+    if cfg["encoder_blocks"] not in VALID_ENCODER_BLOCKS:
+        raise VaeConfigError(
+            f"encoder_blocks must be one of {list(VALID_ENCODER_BLOCKS)}, "
+            f"got {cfg['encoder_blocks']!r}"
+        )
+
+    # A bare LDM .safetensors carries no config.json, so whatever loads it
+    # inherits scaling_factor / shift_factor from the model it is plugged into.
+    # For a decoder-only fine-tune those are still correct (the encoder that
+    # defined them is untouched); after an encoder fine-tune they are not, and
+    # nothing downstream can detect that. Refused here, before the run, rather
+    # than after the training finishes.
+    if cfg["export_bare_ldm"] and train_encoder:
+        raise VaeConfigError(
+            "export_bare_ldm=true is refused when train_encoder=true. A bare LDM "
+            ".safetensors has no config.json, so the consumer inherits "
+            "scaling_factor / shift_factor from the model it is loaded into — "
+            "and an encoder fine-tune is precisely what makes those wrong, with "
+            "no way for the consumer to notice. The diffusers directory export "
+            "(which carries its own config.json and provenance sidecar) is "
+            "always written."
         )
 
     if cfg["vae_source"] not in VALID_SOURCES:
@@ -221,10 +313,21 @@ def _validate(cfg: Dict[str, Any], train_section: Dict[str, Any]) -> None:
             raise VaeConfigError(f"{key} must be >= 0, got {cfg[key]}")
 
     if not any(cfg[key] > 0 for key in _LOSS_WEIGHT_KEYS):
+        # kl_weight is deliberately NOT in this set. It is a regulariser on the
+        # posterior, not a reconstruction signal: a run with every
+        # reconstruction weight at 0 and only KL active would minimise the loss
+        # by collapsing the posterior, whether or not the encoder is trainable.
         raise VaeConfigError(
             "All loss weights are 0: there is no training signal. Set at least "
             f"one of {list(_LOSS_WEIGHT_KEYS)} above 0 (default: mse_weight=1.0)."
         )
+
+    try:
+        cfg["kl_weight"] = float(cfg["kl_weight"])
+    except (TypeError, ValueError):
+        raise VaeConfigError(f"kl_weight must be a number, got {cfg['kl_weight']!r}")
+    if cfg["kl_weight"] < 0:
+        raise VaeConfigError(f"kl_weight must be >= 0, got {cfg['kl_weight']}")
 
     if cfg["lpips_net"] not in VALID_LPIPS_NETS:
         raise VaeConfigError(
@@ -265,7 +368,8 @@ def _validate(cfg: Dict[str, Any], train_section: Dict[str, Any]) -> None:
     if not (0.0 < ema_decay < 1.0):
         raise VaeConfigError(f"ema_decay must be in (0, 1), got {ema_decay}")
     cfg["ema_decay"] = ema_decay
-    cfg["ema_enabled"] = bool(cfg["ema_enabled"])
+    # The boolean toggles were already parsed strictly (and written back as real
+    # bools) at the top of this function.
     cfg["learning_rate"] = float(cfg["learning_rate"])
     cfg["max_grad_norm"] = float(cfg["max_grad_norm"])
     cfg["optimizer_weight_decay"] = float(cfg["optimizer_weight_decay"])

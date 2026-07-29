@@ -1762,10 +1762,18 @@ VAE_TRAINING_DEFAULTS: Dict[str, Any] = {
     "train_decoder": True,
     # all | up_blocks | mid_block | conv_out (ai-toolkit's blocks_to_train)
     "decoder_blocks": "all",
-    # Encoder training is Phase 2 and is HARD-REFUSED here: it moves the latent
-    # distribution and invalidates every latent cache / LoRA / diffusion model
-    # trained against this VAE.
+    # Encoder training is opt-in behind a DOUBLE GATE: train_encoder AND
+    # acknowledge_latent_space_break must BOTH be true, or the run is refused.
+    # Training the encoder moves the latent distribution, so every latent cache,
+    # every LoRA and every diffusion model trained against this VAE stops
+    # matching it. The resulting VAE is a new VAE, not a drop-in replacement:
+    # it is exported to a differently-named directory, its provenance sidecar
+    # records encoder_trained=true, and the bare-LDM export is refused for it.
     "train_encoder": False,
+    "acknowledge_latent_space_break": False,
+    # all | down_blocks | mid_block | conv_out — the encoder mirror of
+    # decoder_blocks. Only read when train_encoder is true.
+    "encoder_blocks": "all",
 
     # --- optimisation shape -------------------------------------------------
     "resolution": 512,
@@ -1791,6 +1799,28 @@ VAE_TRAINING_DEFAULTS: Dict[str, Any] = {
     # present at a measurable level.
     "pattern_weight": 0.0,
     "pattern_size": 8,
+    # Posterior KL weight. This is LDM's 1e-6, and it means the same thing here
+    # ONLY because the trainer divides the KL by the per-image element count
+    # before weighting it: LDM pairs 1e-6 with a reconstruction term summed over
+    # C*H*W, while every reconstruction term in this bank is mean-reduced over
+    # B*C*H*W. Applied to a per-element reconstruction the raw 1e-6 would be
+    # ~C*H*W (~8e5 at 512px) too strong -- measured at 15x the MSE -- and the
+    # balance would shift 4x between 256 and 512px. With the normalisation the
+    # knob is resolution-invariant. See vae_losses.VaeLossBank.forward.
+    #
+    # Only CONSTRUCTED when the encoder is trainable: under a frozen encoder the
+    # term is a constant w.r.t. every trainable parameter, so it contributes no
+    # gradient and is skipped entirely (the value is then ignored, and the
+    # trainer logs that it is).
+    "kl_weight": 1e-6,
+
+    # --- export -------------------------------------------------------------
+    # Additionally write the fine-tuned VAE as a bare LDM-format .safetensors
+    # next to the diffusers directory. Off by default, and REFUSED when the
+    # encoder was trained: a bare .safetensors carries no config.json, so the
+    # consumer inherits scaling_factor / shift_factor from whatever model it is
+    # plugged into — which is exactly what an encoder fine-tune invalidates.
+    "export_bare_ldm": False,
 
     # --- validation (the only signal that a fine-tune is going wrong) -------
     "validation_every": 100,

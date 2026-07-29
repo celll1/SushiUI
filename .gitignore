@@ -131,6 +131,9 @@ verify_*.py
 check_*.py
 update_*_logs.py
 test_*.py
+# Exception: the VAE component-toggle refusal matrix is a checked-in regression
+# guard for design.md §4 (see docs/guides/VAE_TRAINING.md), not a scratch script.
+!backend/tests/test_vae_refusal_matrix.py
 
 # CUDAコンパイル
 backend/core/training/optimizers/cuda/build_*/

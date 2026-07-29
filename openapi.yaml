@@ -9375,10 +9375,19 @@ components:
         `backend/api/param_defaults.py` `VAE_TRAINING_DEFAULTS`, served by
         `GET /schema/vae-training-defaults`.
 
-        Phase 1 trains the DECODER with the ENCODER FROZEN, which is the shape of
-        the only published, shipped recipe (`stabilityai/sd-vae-ft-mse`: decoder
-        only, encoder frozen, MSE + 0.1*LPIPS). Under a frozen encoder the KL term
-        is constant, so it is not constructed at all.
+        The default trains the DECODER with the ENCODER FROZEN, which is the
+        shape of the only published, shipped recipe (`stabilityai/sd-vae-ft-mse`:
+        decoder only, encoder frozen, MSE + 0.1*LPIPS). Under a frozen encoder
+        the KL term is constant w.r.t. every trainable parameter, so it is not
+        constructed at all and `kl_weight` is ignored.
+
+        Encoder training is available behind a double gate (`train_encoder` AND
+        `acknowledge_latent_space_break`, both true, or the run is refused).
+        It changes the latent distribution, so cached latents, LoRAs and
+        diffusion checkpoints built against the original VAE no longer match the
+        result; the export is written to a differently-named directory, the
+        provenance sidecar records `encoder_trained: true`, and
+        `export_bare_ldm` is refused.
       properties:
         batch_size:
           type: integer
@@ -9477,7 +9486,10 @@ components:
         train_decoder:
           type: boolean
           default: true
-          description: "Must be true in Phase 1 (false together with train_encoder=false is refused)."
+          description: |
+            Train the decoder. `false` together with `train_encoder: false` is
+            refused (nothing trainable), and so is `false` together with
+            `train_encoder: true` (encoder-only training under a frozen decoder).
           example: true
         decoder_blocks:
           type: string
@@ -9491,10 +9503,35 @@ components:
           type: boolean
           default: false
           description: |
-            HARD-REFUSED in this version (Phase 2). Encoder training moves the
-            latent distribution and invalidates every latent cache, LoRA and
-            diffusion model trained against this VAE.
+            Train the encoder as well as the decoder. Requires
+            `acknowledge_latent_space_break: true` in the same config; either key
+            without the other is refused.
+
+            The encoder defines the latent distribution, so training it means
+            existing latent caches, LoRAs and diffusion checkpoints no longer
+            match this VAE. The result is exported to
+            `<run_name>_vae_encoder_trained/` rather than `<run_name>_vae/`, its
+            `sushi_vae_training.json` records `encoder_trained: true`, and
+            `export_bare_ldm` is refused for the run.
           example: false
+        acknowledge_latent_space_break:
+          type: boolean
+          default: false
+          description: |
+            Acknowledgement gate for `train_encoder`. Both must be true.
+            `true` on its own (with `train_encoder: false`) is also refused, so
+            the flag cannot be left set from a previous configuration and then
+            silently apply to a later one.
+          example: false
+        encoder_blocks:
+          type: string
+          enum: ["all", "down_blocks", "mid_block", "conv_out"]
+          default: "all"
+          description: |
+            The encoder mirror of `decoder_blocks`; read only when
+            `train_encoder` is true. `all` also includes `quant_conv`, which is
+            part of the encode path.
+          example: "all"
         resolution:
           type: integer
           multipleOf: 8
@@ -9604,6 +9641,36 @@ components:
           default: 8
           description: Latent-cell size in pixels for `pattern_weight`.
           example: 8
+        kl_weight:
+          type: number
+          minimum: 0
+          default: 1.0e-6
+          description: |
+            Posterior KL weight, applied to a KL that is normalised by the
+            per-image element count (C*H*W) so that it sits in the same
+            reduction as the mean-reduced reconstruction terms. That
+            normalisation is what makes 1e-6 mean here what it means in LDM,
+            whose reconstruction term is summed rather than averaged over
+            C*H*W; it also makes the knob resolution-invariant. The raw
+            (unnormalised) KL is logged for comparability; the value charted as
+            `vae_kl_loss` is the weighted contribution to the total loss.
+
+            Constructed ONLY when `train_encoder` is true; under a frozen
+            encoder it is constant w.r.t. every trainable parameter, so the term
+            is skipped entirely and this value is ignored (the trainer logs
+            that it is).
+          example: 1.0e-6
+        export_bare_ldm:
+          type: boolean
+          default: false
+          description: |
+            Also write the fine-tuned VAE as a bare LDM-format `.safetensors`
+            next to the diffusers directory (`AutoencoderKL` only). REFUSED when
+            `train_encoder` is true: a bare `.safetensors` carries no
+            `config.json`, so the consumer inherits `scaling_factor` /
+            `shift_factor` from the model it is plugged into, and those are
+            exactly what an encoder fine-tune invalidates.
+          example: false
         validation_every:
           type: integer
           minimum: 0
@@ -9626,18 +9693,27 @@ components:
           default: 512
           example: 512
       example:
-        batch_size: 4
-        total_steps: 8000
+        batch_size: 1
+        total_steps: 2000
+        gradient_accumulation_steps: 1
         learning_rate: 1.0e-5
         optimizer: "adamw"
+        optimizer_weight_decay: 0.001
         max_grad_norm: 0.1
+        lr_scheduler: "constant"
+        lr_warmup_steps: 0
+        seed: 42
+        num_workers: 2
         save_every: 500
         max_step_saves_to_keep: 3
         vae_source: "model"
+        vae_path: ""
         vae_arch: "sdxl"
         train_decoder: true
         decoder_blocks: "all"
         train_encoder: false
+        acknowledge_latent_space_break: false
+        encoder_blocks: "all"
         resolution: 512
         dtype: "bf16"
         ema_enabled: true
@@ -9647,7 +9723,13 @@ components:
         lpips_weight: 0.1
         lpips_net: "vgg"
         ycbcr_dc_weight: 0.1
+        ycbcr_dc_y_weight: 0.25
+        ycbcr_dc_chroma_weight: 1.0
+        ycbcr_dc_eps: 0.001
         pattern_weight: 0.0
+        pattern_size: 8
+        kl_weight: 1.0e-6
+        export_bare_ldm: false
         validation_every: 100
         validation_num_images: 8
         validation_resolution: 512

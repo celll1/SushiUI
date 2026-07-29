@@ -956,7 +956,11 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
         setFromScratchMiniT2I(false);
       }
     }
-    if (incoming.training_method) setTrainingMethod(incoming.training_method);
+    // "vae_decoder" runs are edited by VaeTrainingConfig, not by this form, so
+    // never adopt that method here (it would be submitted as a diffusion run).
+    if (incoming.training_method && incoming.training_method !== "vae_decoder") {
+      setTrainingMethod(incoming.training_method);
+    }
     if (incoming.dataset_configs) setDatasetConfigs(incoming.dataset_configs);
 
     // Exclusive steps/epochs radio state
@@ -1214,7 +1218,9 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     // New-run mode: load the run list for the "copy settings from" selector.
     if (!editRunId) {
       listTrainingRuns()
-        .then((res) => setCopySourceRuns(res.runs || []))
+        // VAE decoder runs have a different config shape (process.vae) that this
+        // form cannot represent, so they are not offered as copy sources.
+        .then((res) => setCopySourceRuns((res.runs || []).filter((r) => r.training_method !== "vae_decoder")))
         .catch((err) => console.error("[TrainingConfig] Failed to list runs for copy:", err));
     }
   }, [editRunId, loadTrainingRunParams]);

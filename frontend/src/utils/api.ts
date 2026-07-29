@@ -791,6 +791,11 @@ export const fetchTrainingDefaults = async (): Promise<Record<string, unknown>> 
 export const fetchTaggerTrainingDefaults = async (): Promise<Record<string, unknown>> =>
   (await api.get("/schema/tagger-training-defaults")).data;
 
+// Defaults for a decoder-only VAE fine-tune (training_method "vae_decoder").
+// Backed by backend/api/param_defaults.py VAE_TRAINING_DEFAULTS.
+export const fetchVaeTrainingDefaults = async (): Promise<Record<string, unknown>> =>
+  (await api.get("/schema/vae-training-defaults")).data;
+
 // Per-architecture default timestep_sampling configs (e.g. { _default: {...}, minit2i: {...} }).
 // The training UI applies the selected model's entry when the base model changes.
 export const fetchTimestepDefaultsByArch = async (): Promise<Record<string, Record<string, unknown>>> =>
@@ -3299,7 +3304,7 @@ export interface TrainingRun {
   dataset_id: number;
   run_id: string;  // UUID
   run_name: string;
-  training_method: "lora" | "relora" | "full_finetune" | "controlnet";
+  training_method: "lora" | "relora" | "full_finetune" | "controlnet" | "vae_decoder";
   base_model_path: string;
   config_yaml?: string;
   status: "pending" | "running" | "paused" | "completed" | "failed" | "starting";
@@ -3341,8 +3346,14 @@ export interface TrainingRunCreateRequest {
   dataset_id?: number;  // Deprecated - use dataset_configs instead
   dataset_configs?: DatasetConfigItem[];  // Multiple datasets with filters
   run_name?: string;  // Optional - will use UUID if not provided
-  training_method: "lora" | "relora" | "full_finetune" | "controlnet";
+  training_method: "lora" | "relora" | "full_finetune" | "controlnet" | "vae_decoder";
   base_model_path: string;
+  // Decoder-only VAE fine-tune options (training_method "vae_decoder" only).
+  // Nested so the backend can tell "the caller asked for this" from "a diffusion
+  // default happens to have this value": generate_vae_config takes a flat field
+  // into account ONLY when the caller explicitly sent it, and a nested
+  // vae_config entry always wins. Ignored for every other training_method.
+  vae_config?: VaeTrainingConfig | null;
   total_steps?: number;  // Mutually exclusive with epochs
   epochs?: number;  // Mutually exclusive with total_steps
   batch_size?: number;
@@ -3604,6 +3615,86 @@ export interface TrainingStatus {
   loss?: number;
   learning_rate?: number;
 }
+
+// ---------------------------------------------------------------------------
+// VAE decoder fine-tune (training_method "vae_decoder")
+// ---------------------------------------------------------------------------
+// Same key set as backend/api/param_defaults.py VAE_TRAINING_DEFAULTS, served by
+// GET /schema/vae-training-defaults (see fetchVaeTrainingDefaults). A VAE run is
+// an ordinary TrainingRun row, so listing / status / start / stop / delete /
+// checkpoints / metrics all go through the existing training endpoints.
+
+export interface VaeTrainingConfig {
+  // Run shape. These live in process.train / process.save in the YAML, but they
+  // must still be sent inside vae_config: the backend treats a FLAT field the
+  // caller sent as deliberate and lets it override the VAE default.
+  batch_size: number;
+  total_steps: number;
+  gradient_accumulation_steps: number;
+  learning_rate: number;
+  optimizer: string;
+  optimizer_weight_decay: number;
+  max_grad_norm: number;
+  lr_scheduler: string;
+  lr_warmup_steps: number;
+  seed: number;
+  num_workers: number;
+  save_every: number;
+  max_step_saves_to_keep: number;
+  // Base VAE selection
+  vae_source: "model" | "path" | "store";
+  vae_path: string;
+  vae_arch: string;
+  // What to train (encoder training is refused by the backend in this version)
+  train_decoder: boolean;
+  decoder_blocks: "all" | "up_blocks" | "mid_block" | "conv_out";
+  train_encoder: boolean;
+  // Optimisation shape
+  resolution: number;
+  dtype: "bf16" | "fp32";
+  ema_enabled: boolean;
+  ema_decay: number;
+  // Losses
+  mse_weight: number;
+  l1_weight: number;
+  lpips_weight: number;
+  lpips_net: "vgg" | "alex" | "squeeze";
+  ycbcr_dc_weight: number;
+  ycbcr_dc_y_weight: number;
+  ycbcr_dc_chroma_weight: number;
+  ycbcr_dc_eps: number;
+  pattern_weight: number;
+  pattern_size: number;
+  // Validation
+  validation_every: number;
+  validation_num_images: number;
+  validation_resolution: number;
+}
+
+// What the VAE panel sends. Deliberately narrow: any additional flat field would
+// be recorded in the request's model_fields_set and would then override the
+// corresponding VAE default. total_steps is the one exception - the create route
+// requires total_steps or epochs at the top level for the DB column, so it is
+// sent flat AND inside vae_config with the same value.
+export interface VaeTrainingRunCreateRequest {
+  dataset_configs: DatasetConfigItem[];
+  run_name?: string;
+  training_method: "vae_decoder";
+  base_model_path: string;
+  total_steps: number;
+  resume_from_checkpoint?: string | null;
+  vae_config: VaeTrainingConfig;
+}
+
+export const createVaeTrainingRun = async (data: VaeTrainingRunCreateRequest): Promise<TrainingRun> => {
+  const response = await api.post("/training/runs", data);
+  return response.data;
+};
+
+export const updateVaeTrainingRun = async (id: number, data: VaeTrainingRunCreateRequest): Promise<TrainingRun> => {
+  const response = await api.put(`/training/runs/${id}`, data);
+  return response.data;
+};
 
 export const createTrainingRun = async (data: TrainingRunCreateRequest): Promise<TrainingRun> => {
   const response = await api.post("/training/runs", data);

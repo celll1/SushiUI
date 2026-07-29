@@ -1715,3 +1715,85 @@ TAGGER_TRAINING_DEFAULTS: Dict[str, Any] = {
     "danbooru_cooc_collect_per_epoch": 50,   # per-tag per-epoch collection quota
     "danbooru_cooc_order_random": True,      # query with order:random for diversity
 }
+
+# ---------------------------------------------------------------------------
+# VAE / autoencoder training (network.type == "vae_decoder")
+# ---------------------------------------------------------------------------
+# Phase 1 = decoder-only fine-tune with the encoder frozen, which is the shape
+# of the only published, shipped recipe (stabilityai/sd-vae-ft-mse: decoder
+# only, encoder frozen, MSE + 0.1*LPIPS). Consumed by
+# core/training/vae/vae_config.resolve_vae_training_config, emitted into YAML by
+# TrainingConfigGenerator.generate_vae_config, and served to the frontend by
+# GET /schema/vae-training-defaults.
+#
+# The generic run-shape keys (batch_size ... max_step_saves_to_keep) are written
+# into the existing process.train / process.save YAML sections so the existing
+# routes, resume plumbing and checkpoint-keep field keep owning them; everything
+# from vae_source onwards is written into a dedicated process.vae section.
+
+VAE_TRAINING_DEFAULTS: Dict[str, Any] = {
+    # --- run shape (emitted into process.train / process.save) -------------
+    "batch_size": 1,
+    "total_steps": 2000,
+    "gradient_accumulation_steps": 1,
+    "learning_rate": 1e-5,
+    "optimizer": "adamw",
+    "optimizer_weight_decay": 0.001,
+    "max_grad_norm": 0.1,
+    "lr_scheduler": "constant",
+    "lr_warmup_steps": 0,
+    "seed": 42,
+    "num_workers": 2,
+    "save_every": 500,
+    "max_step_saves_to_keep": 3,
+
+    # --- base VAE selection (emitted into process.vae) ----------------------
+    # "model" (default) = the run's own base_model_path, which the create route
+    # already validates; "path" = an explicit diffusers directory or bare
+    # .safetensors in vae_path; "store" = a shared vae_store key from vae_arch.
+    # NOTE the store's "sdxl" entry is madebyollin/sdxl-vae-fp16-fix, whose fp16
+    # safety comes from a weight rescaling that fine-tuning does not preserve --
+    # the trainer warns when it detects that base, so it is not the default.
+    "vae_source": "model",
+    "vae_path": "",
+    "vae_arch": "sdxl",
+
+    # --- what to train ------------------------------------------------------
+    "train_decoder": True,
+    # all | up_blocks | mid_block | conv_out (ai-toolkit's blocks_to_train)
+    "decoder_blocks": "all",
+    # Encoder training is Phase 2 and is HARD-REFUSED here: it moves the latent
+    # distribution and invalidates every latent cache / LoRA / diffusion model
+    # trained against this VAE.
+    "train_encoder": False,
+
+    # --- optimisation shape -------------------------------------------------
+    "resolution": 512,
+    # bf16 compute over an fp32 master copy of the weights. fp16 is refused
+    # outright (SDXL-family activation overflow; no gradient scaler anywhere in
+    # this trainer for the other families).
+    "dtype": "bf16",
+    "ema_enabled": True,
+    "ema_decay": 0.999,
+
+    # --- losses (design.md §5.1 as revised by the Phase-0 outcomes in §9.2) --
+    "mse_weight": 1.0,             # ft-MSE's base term
+    "l1_weight": 0.0,              # the LDM / ft-EMA reconstruction term
+    "lpips_weight": 0.1,           # ft-MSE's weight; 1.0 would work against the goal
+    "lpips_net": "vgg",
+    "ycbcr_dc_weight": 0.1,        # PiD's colour-drift term (Charbonnier on YCbCr)
+    "ycbcr_dc_y_weight": 0.25,
+    "ycbcr_dc_chroma_weight": 1.0,
+    "ycbcr_dc_eps": 1e-3,
+    # Latent-cell grid-phase penalty. Default 0 (opt-in only): Phase 0 measured
+    # the 8 px grid artifact at ratio ~1.0 on all four production VAEs under
+    # three independent metric definitions, i.e. the defect it targets is not
+    # present at a measurable level.
+    "pattern_weight": 0.0,
+    "pattern_size": 8,
+
+    # --- validation (the only signal that a fine-tune is going wrong) -------
+    "validation_every": 100,
+    "validation_num_images": 8,
+    "validation_resolution": 512,
+}

@@ -195,6 +195,40 @@ paths:
               schema:
                 type: object
                 additionalProperties: true
+  /schema/vae-training-defaults:
+    get:
+      summary: Get default parameter values for VAE (decoder-only) training
+      description: |
+        Single source of truth for VAE training defaults
+        (`backend/api/param_defaults.py` `VAE_TRAINING_DEFAULTS`). Backs training
+        runs created with `training_method: "vae_decoder"`, which produce a YAML
+        config whose `network.type` is `vae_decoder`.
+
+        **Where each key ends up in the generated YAML:**
+        - `batch_size` … `max_step_saves_to_keep` are written into the shared
+          `process.train` / `process.save` sections, so the existing start /
+          stop / resume / checkpoint-keep plumbing keeps owning them.
+        - everything from `vae_source` onwards is written into a dedicated
+          `process.vae` section read by
+          `core/training/vae/vae_config.resolve_vae_training_config`.
+
+        **Refused combinations** (the config is rejected before training starts):
+        `train_encoder: true` (Phase 2 — it moves the latent distribution and
+        invalidates every latent cache / LoRA trained against this VAE),
+        `train_decoder: false` with `train_encoder: false` (nothing to train),
+        `latent_encoding_mode: pre_encoded_cache` (VAE training is a live
+        encode→decode forward on raw pixels), `dtype: fp16` (SD1.5/SDXL-family
+        activation overflow, and no gradient scaler for the other families),
+        all loss weights 0, and `lpips_weight > 0` with the `lpips` package not
+        installed.
+      tags: [Schema]
+      responses:
+        '200':
+          description: Map of VAE training parameter name to default value
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VaeTrainingDefaults'
   /generate/txt2img:
     post:
       tags: [generation]
@@ -8255,13 +8289,45 @@ components:
       properties:
         training_method:
           type: string
-          enum: ["lora", "relora", "full_finetune", "controlnet"]
-          description: Training method to use
+          enum: ["lora", "relora", "full_finetune", "controlnet", "vae_decoder"]
+          description: |
+            Training method to use. Selects which YAML generator runs, and
+            therefore the `network.type` written into `config_yaml`, which is
+            what `core/training/train_runner.py` branches on:
+
+            | training_method | network.type | trains |
+            |---|---|---|
+            | `lora` | `lora` | LoRA adapters on the denoiser (+ optionally TEs) |
+            | `relora` | `relora` | LoRA with periodic merge-and-restart |
+            | `full_finetune` | `full_finetune` | all denoiser parameters |
+            | `controlnet` | `controlnet` | a ControlNet / ControlNet-LLLite |
+            | `vae_decoder` | `vae_decoder` | the VAE decoder only, encoder frozen |
+
+            `vae_decoder` is a non-diffusion modality: no denoiser, no scheduler,
+            no text encoder and no latent cache. Its options come from the
+            `vae_config` field below (defaults at
+            `GET /schema/vae-training-defaults`).
           example: "lora"
         base_model_path:
           type: string
           description: Path to the base model file
           example: "M:/models/animagine-xl-3.1.safetensors"
+        vae_config:
+          type: object
+          nullable: true
+          description: |
+            VAE decoder fine-tune options. Only read when
+            `training_method == "vae_decoder"`; ignored otherwise. Omitted keys
+            fall back to `VAE_TRAINING_DEFAULTS`; unknown keys are rejected with
+            a 500 listing the valid key set. See
+            `#/components/schemas/VaeTrainingDefaults`.
+          allOf:
+            - $ref: '#/components/schemas/VaeTrainingDefaults'
+          example:
+            vae_source: "model"
+            resolution: 512
+            lpips_weight: 0.1
+            ycbcr_dc_weight: 0.1
         dataset_id:
           type: integer
           nullable: true
@@ -9291,6 +9357,290 @@ components:
             - type: boolean
           default: "off"
           example: "off"
+    VaeTrainingDefaults:
+      type: object
+      description: |
+        Options for a decoder-only VAE fine-tune (`training_method:
+        "vae_decoder"` / `network.type: vae_decoder`). Single source of truth:
+        `backend/api/param_defaults.py` `VAE_TRAINING_DEFAULTS`, served by
+        `GET /schema/vae-training-defaults`.
+
+        Phase 1 trains the DECODER with the ENCODER FROZEN, which is the shape of
+        the only published, shipped recipe (`stabilityai/sd-vae-ft-mse`: decoder
+        only, encoder frozen, MSE + 0.1*LPIPS). Under a frozen encoder the KL term
+        is constant, so it is not constructed at all.
+      properties:
+        batch_size:
+          type: integer
+          minimum: 1
+          default: 1
+          description: Images per optimizer micro-step. Written to `process.train.batch_size`.
+          example: 4
+        total_steps:
+          type: integer
+          minimum: 1
+          default: 2000
+          description: Total optimizer steps. Written to `process.train.steps`.
+          example: 8000
+        gradient_accumulation_steps:
+          type: integer
+          minimum: 1
+          default: 1
+          example: 1
+        learning_rate:
+          type: number
+          default: 1.0e-5
+          description: Written to `process.train.lr`.
+          example: 1.0e-5
+        optimizer:
+          type: string
+          default: "adamw"
+          description: Resolved by `core/training/optimizer_factory.OptimizerFactory`.
+          example: "adamw"
+        optimizer_weight_decay:
+          type: number
+          default: 0.001
+          example: 0.001
+        max_grad_norm:
+          type: number
+          default: 0.1
+          description: Gradient-norm clip applied to the trainable decoder parameters.
+          example: 0.1
+        lr_scheduler:
+          type: string
+          default: "constant"
+          example: "constant"
+        lr_warmup_steps:
+          type: integer
+          minimum: 0
+          default: 0
+          example: 0
+        seed:
+          type: integer
+          default: 42
+          example: 42
+        num_workers:
+          type: integer
+          minimum: 0
+          default: 2
+          description: DataLoader worker processes for raw-image loading.
+          example: 2
+        save_every:
+          type: integer
+          minimum: 0
+          default: 500
+          description: Checkpoint interval in steps. Written to `process.save.save_every`.
+          example: 500
+        max_step_saves_to_keep:
+          type: integer
+          minimum: 0
+          default: 3
+          description: |
+            Checkpoint-keep pruning (0 = keep all). Written to
+            `process.save.max_step_saves_to_keep`, i.e. the same field the
+            existing training UI already exposes.
+          example: 3
+        vae_source:
+          type: string
+          enum: ["model", "path", "store"]
+          default: "model"
+          description: |
+            Where the base VAE comes from. `model` (default) = the run's own
+            `base_model_path`, which the create route already validates; `path` =
+            an explicit diffusers directory or bare `.safetensors` in `vae_path`;
+            `store` = the shared VAE store, keyed by `vae_arch`.
+
+            Note the store's `sdxl` entry is `madebyollin/sdxl-vae-fp16-fix`,
+            whose fp16 safety comes from a weight rescaling that fine-tuning does
+            not preserve; the trainer warns when it detects that base.
+          example: "model"
+        vae_path:
+          type: string
+          default: ""
+          description: "Explicit VAE path, used when vae_source is `path`."
+          example: "M:/model/sdxl/VAE/sdxl_vae.safetensors"
+        vae_arch:
+          type: string
+          default: "sdxl"
+          description: Shared-VAE-store key used when `vae_source == "store"`.
+          example: "sdxl"
+        train_decoder:
+          type: boolean
+          default: true
+          description: "Must be true in Phase 1 (false together with train_encoder=false is refused)."
+          example: true
+        decoder_blocks:
+          type: string
+          enum: ["all", "up_blocks", "mid_block", "conv_out"]
+          default: "all"
+          description: |
+            Which part of the decoder to unfreeze (ai-toolkit's `blocks_to_train`).
+            `all` also includes `post_quant_conv`, which is part of the decode path.
+          example: "all"
+        train_encoder:
+          type: boolean
+          default: false
+          description: |
+            HARD-REFUSED in this version (Phase 2). Encoder training moves the
+            latent distribution and invalidates every latent cache, LoRA and
+            diffusion model trained against this VAE.
+          example: false
+        resolution:
+          type: integer
+          multipleOf: 8
+          minimum: 64
+          default: 512
+          description: |
+            Square random-crop size for training. No bucketing: a fixed square
+            crop makes every batch the same shape by construction.
+          example: 512
+        dtype:
+          type: string
+          enum: ["bf16", "fp32"]
+          default: "bf16"
+          description: |
+            Compute dtype for the autocast forward. The weights are always held
+            in fp32 (they are the optimizer's master copy). `fp16` is refused
+            outright: SD1.5/SDXL-family VAEs overflow it in their decoder
+            activations, and this trainer has no gradient scaler, so on any other
+            family fp16 gradients would silently underflow.
+          example: "bf16"
+        ema_enabled:
+          type: boolean
+          default: true
+          description: |
+            Exponential moving average over the trainable parameters. Both
+            `sd-vae-ft-ema` and PiD use EMA.
+
+            The decay is warmup-ramped (`min(ema_decay, (1+n)/(10+n))`) so a
+            short run is not dominated by the base weights, and the retained
+            base-VAE fraction is written to the `sushi_vae_training.json`
+            sidecar and logged at save time. The run always writes BOTH
+            `<run_name>_vae` (EMA) and `<run_name>_vae_noema` (live weights).
+          example: true
+        ema_decay:
+          type: number
+          exclusiveMinimum: 0
+          exclusiveMaximum: 1
+          default: 0.999
+          description: Target EMA decay; the effective decay ramps up to this over the first updates.
+          example: 0.999
+        mse_weight:
+          type: number
+          minimum: 0
+          default: 1.0
+          description: L2 reconstruction term (ft-MSE's base term).
+          example: 1.0
+        l1_weight:
+          type: number
+          minimum: 0
+          default: 0.0
+          description: L1 reconstruction term (the LDM / ft-EMA term). Off by default.
+          example: 0.0
+        lpips_weight:
+          type: number
+          minimum: 0
+          default: 0.1
+          description: |
+            LPIPS perceptual term. 0.1 is ft-MSE's weight; the term is what
+            *creates* plausible high frequency, so a larger weight works against
+            the artifact this fine-tune targets. Requires the `lpips` package
+            when > 0 (checked before training starts).
+          example: 0.1
+        lpips_net:
+          type: string
+          enum: ["vgg", "alex", "squeeze"]
+          default: "vgg"
+          example: "vgg"
+        ycbcr_dc_weight:
+          type: number
+          minimum: 0
+          default: 0.1
+          description: |
+            Colour-drift term, under a single weight: a per-pixel Charbonnier on
+            YCbCr with the luma channel downweighted (PiD's own formulation) PLUS
+            a Charbonnier on the per-image, per-channel spatial-mean (DC)
+            difference. Phase 0 measured 39-51/255 of red DC drift over 8
+            encode/decode roundtrips on the SDXL VAEs; that is a spatial-mean
+            defect, which a purely per-pixel penalty barely constrains.
+          example: 0.1
+        ycbcr_dc_y_weight:
+          type: number
+          minimum: 0
+          default: 0.25
+          example: 0.25
+        ycbcr_dc_chroma_weight:
+          type: number
+          minimum: 0
+          default: 1.0
+          example: 1.0
+        ycbcr_dc_eps:
+          type: number
+          default: 0.001
+          example: 0.001
+        pattern_weight:
+          type: number
+          minimum: 0
+          default: 0.0
+          description: |
+            Latent-cell grid-phase penalty. Default 0 (opt-in only): Phase 0
+            measured the 8 px grid artifact at ratio ~1.0 on all four production
+            VAEs under three independent metric definitions, i.e. the defect this
+            term targets is not present at a measurable level.
+          example: 0.0
+        pattern_size:
+          type: integer
+          minimum: 1
+          default: 8
+          description: Latent-cell size in pixels for `pattern_weight`.
+          example: 8
+        validation_every:
+          type: integer
+          minimum: 0
+          default: 100
+          description: |
+            Steps between held-out validation passes (0 disables). The validation
+            PSNR / blockiness chart is the user's only signal that a fine-tune is
+            going wrong.
+          example: 100
+        validation_num_images:
+          type: integer
+          minimum: 1
+          default: 8
+          description: Held-out images (taken from the tail of the dataset, excluded from training).
+          example: 8
+        validation_resolution:
+          type: integer
+          multipleOf: 8
+          minimum: 64
+          default: 512
+          example: 512
+      example:
+        batch_size: 4
+        total_steps: 8000
+        learning_rate: 1.0e-5
+        optimizer: "adamw"
+        max_grad_norm: 0.1
+        save_every: 500
+        max_step_saves_to_keep: 3
+        vae_source: "model"
+        vae_arch: "sdxl"
+        train_decoder: true
+        decoder_blocks: "all"
+        train_encoder: false
+        resolution: 512
+        dtype: "bf16"
+        ema_enabled: true
+        ema_decay: 0.999
+        mse_weight: 1.0
+        l1_weight: 0.0
+        lpips_weight: 0.1
+        lpips_net: "vgg"
+        ycbcr_dc_weight: 0.1
+        pattern_weight: 0.0
+        validation_every: 100
+        validation_num_images: 8
+        validation_resolution: 512
     TaggerTrainingRunCreateRequest:
       type: object
       properties:

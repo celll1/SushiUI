@@ -31,8 +31,13 @@ No GAN, no crop-consistency term and no invented-HF term in v1 (design.md §5.2,
 §9.2: the crop residual after the free inference-time fix is 0.03-0.16/255, and
 a short-run GAN is the single most likely way to make a fine-tune worse).
 
-Under a frozen encoder the KL term is a constant w.r.t. the trainable
-parameters, so it is not constructed at all.
+  constructed only when the ENCODER is trainable
+    kl        1e-6  -- posterior KL, weighted against a PER-ELEMENT-normalised
+                       KL so that this number means what it means in LDM (whose
+                       reconstruction term is summed, not averaged, over C*H*W).
+                       Under a frozen encoder the term is a constant w.r.t.
+                       every trainable parameter, so it is not constructed at
+                       all (``kl_enabled=False``) and the weight is ignored.
 """
 
 from __future__ import annotations
@@ -104,8 +109,14 @@ class VaeLossBank(torch.nn.Module):
     exactly as produced by ``vae_dataset`` and returned by ``vae.decode``.
     """
 
-    def __init__(self, cfg: Dict, device: torch.device):
+    def __init__(self, cfg: Dict, device: torch.device, *, kl_enabled: bool = False):
         super().__init__()
+        # The KL term exists only when the encoder is trainable. With a frozen
+        # encoder the posterior does not depend on any trainable parameter, so
+        # the term is a constant: adding it would inflate the logged total loss
+        # by a fixed amount and contribute exactly zero gradient.
+        self.kl_enabled = bool(kl_enabled)
+        self.kl_weight = float(cfg["kl_weight"]) if self.kl_enabled else 0.0
         self.mse_weight = float(cfg["mse_weight"])
         self.l1_weight = float(cfg["l1_weight"])
         self.lpips_weight = float(cfg["lpips_weight"])
@@ -139,9 +150,14 @@ class VaeLossBank(torch.nn.Module):
         self.to(device)
 
     def forward(
-        self, recon: torch.Tensor, target: torch.Tensor
+        self, recon: torch.Tensor, target: torch.Tensor, posterior=None
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
-        """Returns ``(total_loss, {component_name: float})``."""
+        """Returns ``(total_loss, {component_name: float})``.
+
+        ``posterior`` is the ``DiagonalGaussianDistribution`` returned by
+        ``vae.encode(...).latent_dist``. It is required when ``kl_enabled`` (i.e.
+        when the encoder is trainable) and ignored otherwise.
+        """
         parts: Dict[str, float] = {}
         total = recon.new_zeros(())
 
@@ -173,6 +189,44 @@ class VaeLossBank(torch.nn.Module):
             parts["pattern"] = float(pat.detach())
             total = total + self.pattern_weight * pat
 
+        if self.kl_enabled and self.kl_weight > 0:
+            if posterior is None:
+                raise ValueError(
+                    "VaeLossBank was built with kl_enabled=True (the encoder is "
+                    "trainable) but no posterior was passed to forward(); the KL "
+                    "term cannot be computed."
+                )
+            # DiagonalGaussianDistribution.kl() sums over the latent dims and
+            # returns one value per batch item, matching the LDM formulation
+            # (0.5 * sum(mean^2 + var - 1 - logvar)). That is the literature's
+            # magnitude, and it is what gets LOGGED.
+            kl_raw = posterior.kl().float().mean()
+            #
+            # ...but it must NOT be weighted as-is. LDM's contperceptual.py pairs
+            # kl_weight with a reconstruction term that is SUMMED over C*H*W per
+            # image (`nll_loss = torch.sum(nll) / nll.shape[0]`), whereas every
+            # reconstruction term above is MEAN-reduced over B*C*H*W. The two
+            # conventions differ by exactly C*H*W (~786k at 512px), so applying
+            # LDM's 1e-6 to a per-element recon would make the KL ~15x the MSE
+            # (measured on this install's SDXL VAE at 512px: 0.519 vs 0.034) —
+            # a run that is 90% "pull the posterior to N(0,I)" and only 10%
+            # reconstruction, and whose balance would additionally shift 4x
+            # between 256 and 512px.
+            #
+            # Dividing by the per-image element count puts the KL in the same
+            # reduction as the reconstruction terms. After it, kl_weight=1e-6 IS
+            # the LDM value in the LDM sense, and it is resolution-invariant.
+            elements_per_image = int(target32.shape[1] * target32.shape[2]
+                                     * target32.shape[3])
+            kl = kl_raw / max(elements_per_image, 1)
+            contribution = self.kl_weight * kl
+            # Logged: the raw KL (comparable with the literature and with other
+            # trainers) and the actual weighted contribution to `total`, which is
+            # what belongs on the loss chart next to the other components.
+            parts["kl"] = float(kl_raw.detach())
+            parts["kl_term"] = float(contribution.detach())
+            total = total + contribution
+
         return total, parts
 
     def _ycbcr_dc(self, recon: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
@@ -202,6 +256,8 @@ class VaeLossBank(torch.nn.Module):
         bits = [f"mse={self.mse_weight}", f"l1={self.l1_weight}",
                 f"lpips={self.lpips_weight}", f"ycbcr_dc={self.ycbcr_dc_weight}",
                 f"pattern={self.pattern_weight}"]
+        bits.append(f"kl={self.kl_weight}" if self.kl_enabled
+                    else "kl=not constructed (encoder frozen)")
         return ", ".join(bits)
 
 

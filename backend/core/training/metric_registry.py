@@ -74,6 +74,18 @@ EXTRA_METRIC_DEFS = {
     "vae_dc_loss": {"label": "VAE YCbCr DC", "color": "#facc15", "dashed": True},
     # Only emitted when pattern_weight > 0 (opt-in; see param_defaults.py).
     "vae_pattern_loss": {"label": "VAE pattern", "color": "#c084fc", "dashed": True},
+    # Only emitted when the ENCODER is trainable: under a frozen encoder the
+    # posterior KL is constant w.r.t. every trainable parameter and the term is
+    # not constructed at all.
+    #
+    # This is the WEIGHTED contribution to the total loss, not the raw KL. The
+    # raw value is 1e4-1e5, and charting it anywhere would wreck whichever axis
+    # it landed on -- on the right axis in particular it would flatten
+    # vae_val_psnr (~30) and vae_val_blockiness (~1.0), which are the only
+    # signals that a fine-tune is going wrong. The weighted contribution shares
+    # the magnitude of the other loss components, so it belongs with them on the
+    # main axis; the raw KL stays in the per-step console log.
+    "vae_kl_loss": {"label": "VAE KL (weighted)", "color": "#a3e635", "dashed": True},
     # Periodic held-out validation. These are the user's only signal that a
     # fine-tune is going wrong (PSNR falling = the decoder is drifting off the
     # data; blockiness rising above ~1.0 = it is manufacturing latent-cell grid

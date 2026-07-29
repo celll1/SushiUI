@@ -3645,10 +3645,14 @@ export interface VaeTrainingConfig {
   vae_source: "model" | "path" | "store";
   vae_path: string;
   vae_arch: string;
-  // What to train (encoder training is refused by the backend in this version)
+  // What to train. Encoder training is behind a double gate: the backend
+  // refuses train_encoder without acknowledge_latent_space_break, AND refuses
+  // acknowledge_latent_space_break without train_encoder.
   train_decoder: boolean;
   decoder_blocks: "all" | "up_blocks" | "mid_block" | "conv_out";
   train_encoder: boolean;
+  acknowledge_latent_space_break: boolean;
+  encoder_blocks: "all" | "down_blocks" | "mid_block" | "conv_out";
   // Optimisation shape
   resolution: number;
   dtype: "bf16" | "fp32";
@@ -3665,6 +3669,11 @@ export interface VaeTrainingConfig {
   ycbcr_dc_eps: number;
   pattern_weight: number;
   pattern_size: number;
+  // Posterior KL. Only constructed when the encoder is trainable; ignored (and
+  // reported as ignored by the trainer) under a frozen encoder.
+  kl_weight: number;
+  // Export. Refused by the backend together with train_encoder.
+  export_bare_ldm: boolean;
   // Validation
   validation_every: number;
   validation_num_images: number;

@@ -82,6 +82,8 @@ const DEFAULT_VAE_CONFIG: VaeConfig = {
   train_decoder: true,
   decoder_blocks: "all",
   train_encoder: false,
+  acknowledge_latent_space_break: false,
+  encoder_blocks: "all",
   resolution: 512,
   dtype: "bf16",
   ema_enabled: true,
@@ -96,6 +98,8 @@ const DEFAULT_VAE_CONFIG: VaeConfig = {
   ycbcr_dc_eps: 0.001,
   pattern_weight: 0.0,
   pattern_size: 8,
+  kl_weight: 1e-6,
+  export_bare_ldm: false,
   validation_every: 100,
   validation_num_images: 8,
   validation_resolution: 512,
@@ -295,6 +299,13 @@ export default function VaeTrainingConfig({
       setError("All loss weights are 0: there is no training signal. Set at least one above 0.");
       return;
     }
+    if (cfg.train_encoder && !cfg.acknowledge_latent_space_break) {
+      setError(
+        "Encoder training requires the acknowledgement checkbox under \"What to train\". " +
+        "The backend refuses train_encoder without it."
+      );
+      return;
+    }
 
     setSaving(true);
     setError(null);
@@ -318,8 +329,17 @@ export default function VaeTrainingConfig({
           // Only meaningful for vae_source "path"; cleared otherwise so a stale
           // value cannot shadow the run's own base model.
           vae_path: cfg.vae_source === "path" ? cfg.vae_path.trim() : "",
+          // The panel always trains the decoder: train_decoder=false is only
+          // reachable through a hand-written config, and the backend refuses it
+          // both on its own (nothing trainable) and together with
+          // train_encoder=true (encoder-only under a frozen decoder).
           train_decoder: true,
-          train_encoder: false,
+          train_encoder: cfg.train_encoder,
+          // Never send a stale acknowledgement: the backend refuses it without
+          // train_encoder, and it must not be able to authorise a later run.
+          acknowledge_latent_space_break:
+            cfg.train_encoder && cfg.acknowledge_latent_space_break,
+          export_bare_ldm: cfg.train_encoder ? false : cfg.export_bare_ldm,
         },
       };
 
@@ -367,9 +387,9 @@ export default function VaeTrainingConfig({
             space that cached latents, LoRAs and diffusion models depend on is unchanged.
           </p>
           <p className="text-xs text-gray-500 mt-1">
-            Encoder training is not available in this version: it moves the latent
-            distribution and invalidates every latent cache, LoRA and diffusion model
-            trained against this VAE. The backend refuses a config that asks for it.
+            Encoder training is available under &quot;What to train&quot; and requires a separate
+            acknowledgement: it changes the latent distribution, so existing latent caches,
+            LoRAs and diffusion checkpoints no longer match the result.
           </p>
         </section>
 
@@ -562,9 +582,108 @@ export default function VaeTrainingConfig({
               only be resumed by a run with the same setting.
             </p>
           </div>
-          <p className="text-xs text-gray-500">
-            Encoder: frozen (not trainable in this version).
-          </p>
+          {/* Encoder training: double gate. The two checkboxes are separate,
+              deliberate actions, and neither is pre-checked. Turning the first
+              one off clears the acknowledgement, so it can never be left set
+              from an earlier edit (the backend refuses that combination too). */}
+          <div className="border-t border-gray-700 pt-3 space-y-2">
+            <label className="flex items-center gap-2 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={cfg.train_encoder}
+                onChange={(e) => {
+                  const on = e.target.checked;
+                  touchedRef.current = true;
+                  setCfg((prev) => ({
+                    ...prev,
+                    train_encoder: on,
+                    // Both directions of the gate are enforced here, matching
+                    // the backend: no acknowledgement without encoder training,
+                    // and no bare-LDM export with it.
+                    acknowledge_latent_space_break: on
+                      ? prev.acknowledge_latent_space_break
+                      : false,
+                    export_bare_ldm: on ? false : prev.export_bare_ldm,
+                  }));
+                }}
+                className="w-4 h-4 rounded border-gray-600 bg-gray-800 text-blue-500 focus:ring-0"
+              />
+              <span className="text-sm text-gray-300">Train the encoder as well</span>
+            </label>
+            <p className="text-xs text-gray-500">
+              The encoder defines the latent distribution. Training it means:
+            </p>
+            <ul className="text-xs text-gray-500 list-disc pl-6 space-y-0.5">
+              <li>every cached latent produced with the original VAE no longer matches this one and has to be re-encoded;</li>
+              <li>LoRAs and diffusion checkpoints trained against the original VAE were trained on latents this VAE does not produce;</li>
+              <li>the result is a new VAE, not a drop-in replacement for the base model&apos;s VAE.</li>
+            </ul>
+            <p className="text-xs text-gray-500">
+              The run writes to <code>&lt;run_name&gt;_vae_encoder_trained</code> instead of{" "}
+              <code>&lt;run_name&gt;_vae</code>, records <code>encoder_trained: true</code> in the
+              provenance sidecar, and the bare LDM <code>.safetensors</code> export is refused
+              (that format carries no scaling/shift values of its own).
+            </p>
+
+            {cfg.train_encoder && (
+              <div className="pl-4 border-l border-gray-600 space-y-3 pt-1">
+                <label className="flex items-start gap-2 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={cfg.acknowledge_latent_space_break}
+                    onChange={(e) => setField("acknowledge_latent_space_break", e.target.checked)}
+                    className="w-4 h-4 mt-0.5 rounded border-gray-600 bg-gray-800 text-blue-500 focus:ring-0"
+                  />
+                  <span className="text-sm text-gray-300">
+                    I acknowledge that existing latent caches, LoRAs and diffusion checkpoints
+                    will not match the VAE this run produces.
+                  </span>
+                </label>
+                {!cfg.acknowledge_latent_space_break && (
+                  <p className="text-xs text-yellow-400">
+                    Required: the backend refuses <code>train_encoder</code> without this
+                    acknowledgement.
+                  </p>
+                )}
+
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1">Encoder blocks</label>
+                  <select
+                    value={cfg.encoder_blocks}
+                    onChange={(e) => setField("encoder_blocks", e.target.value as VaeConfig["encoder_blocks"])}
+                    className={inputClass}
+                  >
+                    <option value="all">all</option>
+                    <option value="down_blocks">down_blocks</option>
+                    <option value="mid_block">mid_block</option>
+                    <option value="conv_out">conv_out</option>
+                  </select>
+                  <p className="text-xs text-gray-500 mt-1">
+                    Which part of the encoder to unfreeze. <code>all</code> also includes
+                    <code> quant_conv</code>, which is part of the encode path.
+                  </p>
+                </div>
+
+                <div className="flex items-center gap-3">
+                  <label className="text-xs text-gray-400 w-40">KL weight</label>
+                  <NumberInput
+                    min={0} step={1e-6} parse="float"
+                    value={cfg.kl_weight}
+                    defaultValue={DEFAULT_VAE_CONFIG.kl_weight}
+                    onCommit={(v) => setField("kl_weight", v)}
+                    className={numberClass}
+                  />
+                  <span className="text-xs text-gray-500">Posterior KL term (the LDM value).</span>
+                </div>
+                <p className="text-xs text-gray-500 -mt-1">
+                  Only applied while the encoder is trainable. With the encoder frozen the term
+                  is constant with respect to every trainable parameter, so it is not
+                  constructed and this value is ignored. The latent is sampled from the
+                  posterior instead of taken at its mode while the encoder trains.
+                </p>
+              </div>
+            )}
+          </div>
         </section>
 
         {/* Losses */}
@@ -886,9 +1005,9 @@ export default function VaeTrainingConfig({
           </div>
           <p className="text-xs text-gray-500">
             Both sd-vae-ft-ema and PiD use EMA. The decay is warmup-ramped. With EMA on, the run
-            writes two directories: <code>&lt;run_name&gt;_vae</code> (EMA weights) and{" "}
-            <code>&lt;run_name&gt;_vae_noema</code> (live weights). With EMA off it writes one,{" "}
-            <code>&lt;run_name&gt;_vae</code>, containing the live weights.
+            writes two directories: <code>{`<run_name>${cfg.train_encoder ? "_vae_encoder_trained" : "_vae"}`}</code>{" "}
+            (EMA weights) and <code>{`<run_name>${cfg.train_encoder ? "_vae_encoder_trained" : "_vae"}_noema`}</code>{" "}
+            (live weights). With EMA off it writes one, containing the live weights.
           </p>
         </section>
 
@@ -915,6 +1034,25 @@ export default function VaeTrainingConfig({
             />
             <span className="text-xs text-gray-500">0 keeps all.</span>
           </div>
+
+          <label className="flex items-start gap-2 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={cfg.export_bare_ldm}
+              disabled={cfg.train_encoder}
+              onChange={(e) => setField("export_bare_ldm", e.target.checked)}
+              className="w-4 h-4 mt-0.5 rounded border-gray-600 bg-gray-800 text-blue-500 focus:ring-0 disabled:opacity-50"
+            />
+            <span className="text-sm text-gray-300">
+              Also export a bare LDM <code>.safetensors</code>
+              <span className="block text-xs text-gray-500">
+                AutoencoderKL only. The file carries no <code>config.json</code>, so whatever
+                loads it supplies <code>scaling_factor</code> / <code>shift_factor</code>. That is
+                correct only while the encoder is frozen, so this export is refused when the
+                encoder is trained; the diffusers directory is always written.
+              </span>
+            </span>
+          </label>
 
           <div>
             <label className="block text-xs text-gray-400 mb-1">Resume from checkpoint</label>

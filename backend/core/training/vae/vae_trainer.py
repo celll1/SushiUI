@@ -326,8 +326,11 @@ class VaeTrainer:
                   f"val PSNR/blockiness will not be charted. This is the only "
                   f"signal that a fine-tune is going wrong - fix the dataset.")
 
-        if self.cfg["resume_from"]:
-            self.load_checkpoint(str(self.cfg["resume_from"]))
+        # Resolved BEFORE the loop so an unresolvable explicit checkpoint fails
+        # immediately, and so "latest" with no checkpoints yet starts fresh.
+        resume_target = self.resolve_resume_target(self.cfg["resume_from"])
+        if resume_target is not None:
+            self.load_checkpoint(resume_target)
 
         total_steps = int(self.cfg["total_steps"])
         accum = int(self.cfg["gradient_accumulation_steps"])
@@ -521,20 +524,69 @@ class VaeTrainer:
         self._prune_checkpoints()
         return ckpt_dir
 
-    def load_checkpoint(self, checkpoint: str):
-        """Resume from a checkpoint directory (or a run-relative step name)."""
-        from safetensors.torch import load_file
+    def _sorted_checkpoint_dirs(self) -> List[Path]:
+        """Existing ``checkpoints/step_*`` directories, oldest step first."""
+        if not self.checkpoints_dir.is_dir():
+            return []
+        found = []
+        for d in self.checkpoints_dir.glob("step_*"):
+            if not d.is_dir():
+                continue
+            try:
+                found.append((int(d.name.split("step_")[-1]), d))
+            except ValueError:
+                continue
+        return [d for _, d in sorted(found, key=lambda t: t[0])]
+
+    def resolve_resume_target(self, checkpoint: Optional[str]) -> Optional[Path]:
+        """Resolve a ``resume_from`` value to a checkpoint directory, or None.
+
+        ``"latest"`` (case-insensitive) selects the highest-numbered
+        ``checkpoints/step_*`` directory, and resolves to None when the run has
+        no checkpoints yet -- i.e. it starts fresh rather than erroring. That is
+        the diffusion path's semantics (base_trainer.py:1150-1165: an unmatched
+        "latest" simply leaves checkpoint_to_load as None).
+
+        An EXPLICIT path or step name that does not exist still raises. The
+        diffusion path silently starts fresh there too (base_trainer.py:1167-1177),
+        but a named checkpoint is an unambiguous user intent, and silently
+        restarting a 5,000-step run from zero is not a failure mode worth
+        inheriting.
+        """
+        if not checkpoint:
+            return None
+
+        if str(checkpoint).strip().lower() == "latest":
+            dirs = self._sorted_checkpoint_dirs()
+            if not dirs:
+                print(f"{self.log_prefix} resume_from='latest' but no checkpoints "
+                      f"exist under {self.checkpoints_dir}; starting fresh.")
+                return None
+            print(f"{self.log_prefix} resume_from='latest' -> {dirs[-1].name}")
+            return dirs[-1]
 
         ckpt_dir = Path(checkpoint)
-        if not ckpt_dir.is_dir():
-            candidate = self.checkpoints_dir / checkpoint
-            if candidate.is_dir():
-                ckpt_dir = candidate
-            else:
-                raise VaeConfigError(
-                    f"resume checkpoint not found: {checkpoint!r} (looked at "
-                    f"{ckpt_dir} and {candidate})"
-                )
+        if ckpt_dir.is_dir():
+            return ckpt_dir
+        candidate = self.checkpoints_dir / str(checkpoint)
+        if candidate.is_dir():
+            return candidate
+        available = [d.name for d in self._sorted_checkpoint_dirs()]
+        raise VaeConfigError(
+            f"resume checkpoint not found: {checkpoint!r} (looked at {ckpt_dir} "
+            f"and {candidate}). Available: {available or 'none'}. Use 'latest' to "
+            f"resume from the newest checkpoint."
+        )
+
+    def load_checkpoint(self, checkpoint):
+        """Resume from a checkpoint directory, a run-relative step name, or the
+        already-resolved Path from :meth:`resolve_resume_target`."""
+        from safetensors.torch import load_file
+
+        ckpt_dir = checkpoint if isinstance(checkpoint, Path) else \
+            self.resolve_resume_target(str(checkpoint))
+        if ckpt_dir is None:
+            return
 
         state = load_file(str(ckpt_dir / "vae_decoder.safetensors"))
         missing = [n for n in self.trainable_names if n not in state]

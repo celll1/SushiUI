@@ -10608,6 +10608,16 @@ async def get_training_run_params(
     # verbatim so /params -> edit form -> PUT regenerates an identical config.
     vae_section = process_config.get("vae")
     params["vae_config"] = dict(vae_section) if isinstance(vae_section, dict) else None
+    if params["vae_config"]:
+        # `ema_decay` is the one key that exists BOTH as a flat request field
+        # (diffusion full-FT EMA) and inside process.vae. The flat one is not
+        # written to a VAE run's YAML, so the schema-driven extractor above fills
+        # it with the diffusion default -- which would make /params report two
+        # different EMA decays for the same run. vae_config is authoritative;
+        # mirror it so the two agree. (Regeneration already prefers vae_config,
+        # so this is a reporting fix, not a behaviour change.)
+        if "ema_decay" in params["vae_config"] and "ema_decay" in params:
+            params["ema_decay"] = params["vae_config"]["ema_decay"]
 
     # Fallback for base_model_path if YAML doesn't have it
     if not params.get("base_model_path"):

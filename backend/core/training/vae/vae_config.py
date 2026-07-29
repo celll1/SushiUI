@@ -85,6 +85,11 @@ def resolve_vae_training_config(
     _copy(cfg, train_section, "max_grad_norm", "max_grad_norm")
     _copy(cfg, train_section, "lr_scheduler", "lr_scheduler")
     _copy(cfg, train_section, "lr_warmup_steps", "lr_warmup_steps")
+    # seed / num_workers are written into process.vae by generate_vae_config (a
+    # train-section placement did not survive the GET /params readback, since
+    # neither is a TrainingRunCreateRequest field). These two reads are kept only
+    # so a HAND-WRITTEN yaml that puts them under `train:` still works; the
+    # process.vae entry below always wins.
     _copy(cfg, train_section, "seed", "seed")
     _copy(cfg, train_section, "num_workers", "num_workers")
     _copy(cfg, save_section, "save_every", "save_every")

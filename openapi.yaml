@@ -8692,6 +8692,16 @@ components:
         resume_from_checkpoint:
           type: 'string'
           nullable: true
+          description: |
+            Resume the run from an existing checkpoint. `"latest"` auto-selects
+            the newest one; anything else is a checkpoint path or filename.
+
+            `"latest"` with no checkpoints yet starts fresh (it is not an error),
+            for every training method. For `vae_decoder` runs the checkpoints are
+            the `checkpoints/step_*` DIRECTORIES under the run's output dir, and
+            an explicitly named checkpoint that does not exist is rejected rather
+            than silently restarting from step 0.
+          example: "latest"
         debug_latents:
           type: 'boolean'
           default: false

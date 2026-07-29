@@ -953,12 +953,22 @@ class TrainingConfigGenerator:
                 return p[key]
             return VAE_TRAINING_DEFAULTS[key]
 
-        # Keys that live in the shared train/save sections rather than process.vae.
+        # Keys that live in the shared train/save sections rather than
+        # process.vae. Every one of these is ALSO a TrainingRunCreateRequest
+        # field, which is what makes them survive the
+        # create -> GET /params -> PUT regenerate cycle: the extractor rebuilds
+        # them from the request schema.
+        #
+        # `seed` and `num_workers` deliberately do NOT belong here even though
+        # they are run-shape-ish: they are not request fields, so a train-section
+        # placement made them unreadable by _extract_request_params_from_yaml and
+        # they were silently reset to their defaults on every edit-form save.
+        # They live in process.vae, which /params carries through verbatim.
         run_shape_keys = {
             "batch_size", "total_steps", "gradient_accumulation_steps",
             "learning_rate", "optimizer", "optimizer_weight_decay",
-            "max_grad_norm", "lr_scheduler", "lr_warmup_steps", "seed",
-            "num_workers", "save_every", "max_step_saves_to_keep",
+            "max_grad_norm", "lr_scheduler", "lr_warmup_steps",
+            "save_every", "max_step_saves_to_keep",
         }
         vae_section = {k: value_of(k) for k in VAE_TRAINING_DEFAULTS
                        if k not in run_shape_keys}
@@ -1010,8 +1020,9 @@ class TrainingConfigGenerator:
                             "max_grad_norm": value_of("max_grad_norm"),
                             "lr_scheduler": value_of("lr_scheduler"),
                             "lr_warmup_steps": value_of("lr_warmup_steps"),
-                            "seed": value_of("seed"),
-                            "num_workers": value_of("num_workers"),
+                            # seed / num_workers are emitted inside process.vae
+                            # (see run_shape_keys) so they survive the /params
+                            # readback.
                             "resume_from_checkpoint": p.get("resume_from_checkpoint"),
                         },
                         "vae": vae_section,

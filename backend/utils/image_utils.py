@@ -44,7 +44,8 @@ def save_image_with_metadata(
     image: Image.Image,
     params: Dict[str, Any],
     generation_type: str = "txt2img",
-    model_info: Optional[Dict[str, Any]] = None
+    model_info: Optional[Dict[str, Any]] = None,
+    generation_id: Optional[int] = None
 ) -> str:
     """Save image with EXIF metadata
 
@@ -53,6 +54,13 @@ def save_image_with_metadata(
         params: Generation parameters
         generation_type: Type of generation (txt2img, img2img, inpaint)
         model_info: Model information (source, source_type, hash)
+        generation_id: id returned by ``generation_status.start_generation()``
+            for the generation that produced this image. REQUIRED for the
+            ``effective_warnings`` chunk to be written: reading the accumulator
+            without an id could stamp a concurrently-running generation's
+            warnings into this PNG, and the PNG is the artifact that travels.
+            Callers with no generation of their own (e.g. the training-preview
+            saver) correctly leave it None and get no warnings chunk.
     """
 
     # Create outputs directory if not exists
@@ -315,7 +323,7 @@ def save_image_with_metadata(
     try:
         import json
         from api.generation_status import get_warnings
-        _warnings = get_warnings()
+        _warnings = get_warnings(generation_id) if generation_id is not None else []
         if _warnings:
             # Warning MESSAGES are backend-generated and can quote the path of
             # whatever failed to load, so they get the same treatment as every

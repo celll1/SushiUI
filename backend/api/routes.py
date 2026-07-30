@@ -6,6 +6,7 @@ from typing import List, Optional, Dict, Any, Callable, Tuple
 from pydantic import BaseModel, Field
 from datetime import datetime
 from pathlib import Path
+import contextvars
 import os
 import re
 import sys
@@ -424,6 +425,22 @@ _PEAK_VRAM_GB_BY_KIND = {
 }
 
 
+async def _run_generation_in_executor(loop, executor, fn):
+    """Run a generation's blocking work in ``executor``, carrying the request's
+    context with it.
+
+    ``loop.run_in_executor`` does NOT propagate contextvars into the worker
+    thread (unlike ``asyncio.to_thread``), so without this the sampling thread
+    would see no ``generation_status`` identity and every warning raised inside
+    the denoise — ``attention_kernel_fallback`` above all — would be attributed
+    by a global guess instead of by the request that caused it. A fresh
+    ``copy_context()`` per call keeps concurrent generations independent (a
+    single ``Context`` object cannot be entered twice).
+    """
+    ctx = contextvars.copy_context()
+    return await loop.run_in_executor(executor, lambda: ctx.run(fn))
+
+
 def _estimate_gen_peak_gb(width: int, height: int, batch_size: int, pipeline_kind: str) -> float:
     """Estimate peak VRAM for an incoming generation request."""
     base = _PEAK_VRAM_GB_BY_KIND.get(pipeline_kind, _PEAK_VRAM_GB_BY_KIND["unknown"])
@@ -537,7 +554,7 @@ async def generate_txt2img(
     # Compatibility gate for VAE/TE overrides runs BEFORE start_generation so a
     # HARD mismatch raises ValidationError (HTTP 400) without opening a run.
     _override_plan = plan_overrides(pipeline_manager, vae_path, text_encoder_path)
-    start_generation("txt2img")
+    _gen_id = start_generation("txt2img")
     try:
         # Reset cancellation flag before starting new generation
         pipeline_manager.reset_cancel_flag()
@@ -846,8 +863,8 @@ async def generate_txt2img(
         generation_timer.reset()
         _gen_start = time.perf_counter()
         async with gpu_coordinator.generation_slot(estimated_peak_gb=_peak_gb, timeout=60.0):
-            image, actual_seed, actual_ancestral_seed = await loop.run_in_executor(
-                executor,
+            image, actual_seed, actual_ancestral_seed = await _run_generation_in_executor(
+                loop, executor,
                 lambda: pipeline_manager.generate_txt2img(params, progress_callback=progress_callback, step_callback=step_callback)
             )
         # Record total wall time + any phase breakdown the pipeline populated.
@@ -868,8 +885,8 @@ async def generate_txt2img(
                 "height": params.get("height"),
                 "seed": actual_seed,
             })
-            complete_generation({"latent_id": latent_id, "seed": actual_seed})
-            return {"success": True, "latent_id": latent_id, "actual_seed": actual_seed, "warnings": get_warnings()}
+            complete_generation({"latent_id": latent_id, "seed": actual_seed}, generation_id=_gen_id)
+            return {"success": True, "latent_id": latent_id, "actual_seed": actual_seed, "warnings": get_warnings(_gen_id)}
 
         # Add Vision Encoder info to params for PNG metadata and DB storage.
         # Only record VE info when THIS generation actually used reference images.
@@ -895,19 +912,20 @@ async def generate_txt2img(
             image,
             params,
             "txt2img",
-            model_info=pipeline_manager.current_model_info
+            model_info=pipeline_manager.current_model_info,
+            generation_id=_gen_id
         )
 
         # skip_gallery: the file is saved (so a generation loop can still chain
         # to the next step via its path) but no thumbnail/DB record is created.
         if skip_gallery:
-            complete_generation({"filename": filename, "seed": actual_seed})
+            complete_generation({"filename": filename, "seed": actual_seed}, generation_id=_gen_id)
             return {
                 "success": True,
                 "filename": filename,
                 "image_path": f"/outputs/{filename}",
                 "actual_seed": actual_seed,
-                "warnings": get_warnings(),
+                "warnings": get_warnings(_gen_id),
             }
 
         # Create thumbnail
@@ -924,7 +942,7 @@ async def generate_txt2img(
 
         # Remove image objects from params before saving to DB and calculate ControlNet hashes
         params_for_db = prepare_params_for_db(params, calculate_image_hash)
-        _effective_warnings = get_warnings()
+        _effective_warnings = get_warnings(_gen_id)
         if _effective_warnings:
             params_for_db["effective_warnings"] = _effective_warnings
 
@@ -947,18 +965,18 @@ async def generate_txt2img(
         db.commit()
         db.refresh(db_image)
 
-        complete_generation({"image_id": db_image.id, "filename": filename, "seed": actual_seed})
-        return {"success": True, "image": db_image.to_dict(), "actual_seed": actual_seed, "warnings": get_warnings()}
+        complete_generation({"image_id": db_image.id, "filename": filename, "seed": actual_seed}, generation_id=_gen_id)
+        return {"success": True, "image": db_image.to_dict(), "actual_seed": actual_seed, "warnings": get_warnings(_gen_id)}
 
     except GenerationError as e:
         # Re-raise custom errors as-is
-        fail_generation(str(e))
+        fail_generation(str(e), generation_id=_gen_id)
         raise
     except Exception as e:
         # Wrap unexpected errors in GenerationError
         import traceback
         error_detail = traceback.format_exc()
-        fail_generation(str(e))
+        fail_generation(str(e), generation_id=_gen_id)
         raise GenerationError(
             "Text-to-image generation failed",
             detail=f"{str(e)}\n\n{error_detail}"
@@ -1494,7 +1512,7 @@ async def generate_img2img(
             detail="Provide either an uploaded image or a cached latent_id from a previous loop_decode=\"none\" step, not both.",
         )
     _override_plan = plan_overrides(pipeline_manager, vae_path, text_encoder_path)
-    start_generation("img2img")
+    _gen_id = start_generation("img2img")
     try:
         # Reset cancellation flag before starting new generation
         pipeline_manager.reset_cancel_flag()
@@ -1787,8 +1805,8 @@ async def generate_img2img(
         generation_timer.reset()
         _gen_start = time.perf_counter()
         async with gpu_coordinator.generation_slot(estimated_peak_gb=_peak_gb, timeout=60.0):
-            result_image, actual_seed, actual_ancestral_seed = await loop.run_in_executor(
-                executor,
+            result_image, actual_seed, actual_ancestral_seed = await _run_generation_in_executor(
+                loop, executor,
                 lambda: pipeline_manager.generate_img2img(params, init_image, progress_callback=progress_callback, step_callback=step_callback)
             )
         # Record total wall time + any phase breakdown the pipeline populated.
@@ -1809,8 +1827,8 @@ async def generate_img2img(
                 "height": params.get("height"),
                 "seed": actual_seed,
             })
-            complete_generation({"latent_id": latent_id, "seed": actual_seed})
-            return {"success": True, "latent_id": latent_id, "actual_seed": actual_seed, "warnings": get_warnings()}
+            complete_generation({"latent_id": latent_id, "seed": actual_seed}, generation_id=_gen_id)
+            return {"success": True, "latent_id": latent_id, "actual_seed": actual_seed, "warnings": get_warnings(_gen_id)}
 
         # Add Vision Encoder info to params for PNG metadata and DB storage.
         # Only record VE info when THIS generation actually used reference images
@@ -1835,19 +1853,20 @@ async def generate_img2img(
             result_image,
             params,
             "img2img",
-            model_info=pipeline_manager.current_model_info
+            model_info=pipeline_manager.current_model_info,
+            generation_id=_gen_id
         )
 
         # skip_gallery: the file is saved (so a generation loop can still chain
         # to the next step via its path) but no thumbnail/DB record is created.
         if skip_gallery:
-            complete_generation({"filename": filename, "seed": actual_seed})
+            complete_generation({"filename": filename, "seed": actual_seed}, generation_id=_gen_id)
             return {
                 "success": True,
                 "filename": filename,
                 "image_path": f"/outputs/{filename}",
                 "actual_seed": actual_seed,
-                "warnings": get_warnings(),
+                "warnings": get_warnings(_gen_id),
             }
 
         image_path = os.path.join(settings.outputs_dir, filename)
@@ -1866,7 +1885,7 @@ async def generate_img2img(
 
         # Remove image objects from params before saving to DB and calculate ControlNet hashes
         params_for_db = prepare_params_for_db(params, calculate_image_hash)
-        _effective_warnings = get_warnings()
+        _effective_warnings = get_warnings(_gen_id)
         if _effective_warnings:
             params_for_db["effective_warnings"] = _effective_warnings
 
@@ -1891,18 +1910,18 @@ async def generate_img2img(
         db.commit()
         db.refresh(db_image)
 
-        complete_generation({"image_id": db_image.id, "filename": filename, "seed": actual_seed})
-        return {"success": True, "image": db_image.to_dict(), "actual_seed": actual_seed, "warnings": get_warnings()}
+        complete_generation({"image_id": db_image.id, "filename": filename, "seed": actual_seed}, generation_id=_gen_id)
+        return {"success": True, "image": db_image.to_dict(), "actual_seed": actual_seed, "warnings": get_warnings(_gen_id)}
 
     except GenerationError as e:
         # Re-raise custom errors as-is
-        fail_generation(str(e))
+        fail_generation(str(e), generation_id=_gen_id)
         raise
     except Exception as e:
         # Wrap unexpected errors in GenerationError
         import traceback
         error_detail = traceback.format_exc()
-        fail_generation(str(e))
+        fail_generation(str(e), generation_id=_gen_id)
         raise GenerationError(
             "Image-to-image generation failed",
             detail=f"{str(e)}\n\n{error_detail}"
@@ -1958,7 +1977,7 @@ async def generate_upscale(
     per tile with the currently loaded model)."""
     from api.generation_status import start_generation, complete_generation, fail_generation, get_warnings
     from core.upscaler import run_upscale
-    start_generation("upscale")
+    _gen_id = start_generation("upscale")
     try:
         # Load input image
         image_data = await image.read()
@@ -2034,8 +2053,8 @@ async def generate_upscale(
             _peak_gb = _estimate_gen_peak_gb(input_image.width, input_image.height, 1, "unknown")
         _gen_start = time.perf_counter()
         async with gpu_coordinator.generation_slot(estimated_peak_gb=_peak_gb, timeout=60.0):
-            result_image, upscale_warnings = await loop.run_in_executor(
-                executor,
+            result_image, upscale_warnings = await _run_generation_in_executor(
+                loop, executor,
                 lambda: run_upscale(params, input_image, progress_callback=progress_callback, pipeline_manager=pipeline_manager)
             )
         apply_generation_timings(params, time.perf_counter() - _gen_start)
@@ -2065,14 +2084,15 @@ async def generate_upscale(
             result_image,
             params,
             "upscale",
-            model_info=diffusion_model_info
+            model_info=diffusion_model_info,
+            generation_id=_gen_id
         )
         image_path = os.path.join(settings.outputs_dir, filename)
         create_thumbnail(image_path)
 
         # Remove internal-only keys and non-serializable objects before DB save
         params_for_db = {k: v for k, v in params.items() if not k.startswith("_")}
-        _effective_warnings = get_warnings() + upscale_warnings
+        _effective_warnings = get_warnings(_gen_id) + upscale_warnings
         if _effective_warnings:
             params_for_db["effective_warnings"] = _effective_warnings
 
@@ -2103,21 +2123,21 @@ async def generate_upscale(
         db.commit()
         db.refresh(db_image)
 
-        complete_generation({"image_id": db_image.id, "filename": filename, "seed": actual_seed})
+        complete_generation({"image_id": db_image.id, "filename": filename, "seed": actual_seed}, generation_id=_gen_id)
         return {
             "success": True,
             "image": db_image.to_dict(),
             "actual_seed": actual_seed,
-            "warnings": get_warnings() + upscale_warnings,
+            "warnings": get_warnings(_gen_id) + upscale_warnings,
         }
 
     except (GenerationError, CustomValidationError, NotFoundError) as e:
-        fail_generation(str(e))
+        fail_generation(str(e), generation_id=_gen_id)
         raise
     except Exception as e:
         import traceback
         error_detail = traceback.format_exc()
-        fail_generation(str(e))
+        fail_generation(str(e), generation_id=_gen_id)
         raise GenerationError(
             "Upscale failed",
             detail=f"{str(e)}\n\n{error_detail}"
@@ -2176,7 +2196,7 @@ async def generate_txt2vid(
     params["style_combine_mode"] = style_combine_mode
     params.pop("controlnets", None)
 
-    start_generation("txt2vid")
+    _gen_id = start_generation("txt2vid")
     try:
         pipeline_manager.reset_cancel_flag()
 
@@ -2203,8 +2223,8 @@ async def generate_txt2vid(
         loop = asyncio.get_event_loop()
         _gen_start = time.perf_counter()
         async with gpu_coordinator.generation_slot(estimated_peak_gb=40, timeout=120.0):
-            frames, audio, audio_sample_rate, actual_seed = await loop.run_in_executor(
-                executor,
+            frames, audio, audio_sample_rate, actual_seed = await _run_generation_in_executor(
+                loop, executor,
                 lambda: pipeline_manager.generate_txt2vid(params, progress_callback=progress_callback)
             )
         apply_generation_timings(params, time.perf_counter() - _gen_start)
@@ -2236,7 +2256,7 @@ async def generate_txt2vid(
         params_for_db["duration"] = (num_frames_out / fps_out) if fps_out else 0.0
         params_for_db["audio_enable"] = bool(params.get("audio_enable", True) and audio is not None)
         params_for_db["is_video"] = True
-        _effective_warnings = get_warnings()
+        _effective_warnings = get_warnings(_gen_id)
         if _effective_warnings:
             params_for_db["effective_warnings"] = _effective_warnings
 
@@ -2257,16 +2277,16 @@ async def generate_txt2vid(
         db.commit()
         db.refresh(db_image)
 
-        complete_generation({"image_id": db_image.id, "filename": filename, "seed": actual_seed})
-        return {"success": True, "image": db_image.to_dict(), "actual_seed": actual_seed, "warnings": get_warnings()}
+        complete_generation({"image_id": db_image.id, "filename": filename, "seed": actual_seed}, generation_id=_gen_id)
+        return {"success": True, "image": db_image.to_dict(), "actual_seed": actual_seed, "warnings": get_warnings(_gen_id)}
 
     except (GenerationError, CustomValidationError, NotFoundError) as e:
-        fail_generation(str(e))
+        fail_generation(str(e), generation_id=_gen_id)
         raise
     except Exception as e:
         import traceback
         error_detail = traceback.format_exc()
-        fail_generation(str(e))
+        fail_generation(str(e), generation_id=_gen_id)
         raise GenerationError(
             "Text-to-video generation failed",
             detail=f"{str(e)}\n\n{error_detail}"
@@ -2295,7 +2315,7 @@ async def generate_txt2aud(
             detail="Load an ACE-Step 1.5 audio model before calling /generate/txt2aud.",
         )
 
-    start_generation("txt2aud")
+    _gen_id = start_generation("txt2aud")
     try:
         pipeline_manager.reset_cancel_flag()
 
@@ -2316,8 +2336,8 @@ async def generate_txt2aud(
         loop = asyncio.get_event_loop()
         _gen_start = time.perf_counter()
         async with gpu_coordinator.generation_slot(estimated_peak_gb=_PEAK_VRAM_GB_BY_KIND["acestep"], timeout=120.0):
-            waveform, sample_rate, actual_seed = await loop.run_in_executor(
-                executor,
+            waveform, sample_rate, actual_seed = await _run_generation_in_executor(
+                loop, executor,
                 lambda: pipeline_manager.generate_txt2aud(params, progress_callback=progress_callback)
             )
         apply_generation_timings(params, time.perf_counter() - _gen_start)
@@ -2350,7 +2370,7 @@ async def generate_txt2aud(
         params_for_db["duration"] = duration_s
         params_for_db["sample_rate"] = sample_rate
         params_for_db["is_audio"] = True
-        _effective_warnings = get_warnings()
+        _effective_warnings = get_warnings(_gen_id)
         if _effective_warnings:
             params_for_db["effective_warnings"] = _effective_warnings
 
@@ -2371,16 +2391,16 @@ async def generate_txt2aud(
         db.commit()
         db.refresh(db_image)
 
-        complete_generation({"image_id": db_image.id, "filename": filename, "seed": actual_seed})
-        return {"success": True, "image": db_image.to_dict(), "actual_seed": actual_seed, "warnings": get_warnings()}
+        complete_generation({"image_id": db_image.id, "filename": filename, "seed": actual_seed}, generation_id=_gen_id)
+        return {"success": True, "image": db_image.to_dict(), "actual_seed": actual_seed, "warnings": get_warnings(_gen_id)}
 
     except (GenerationError, CustomValidationError, NotFoundError) as e:
-        fail_generation(str(e))
+        fail_generation(str(e), generation_id=_gen_id)
         raise
     except Exception as e:
         import traceback
         error_detail = traceback.format_exc()
-        fail_generation(str(e))
+        fail_generation(str(e), generation_id=_gen_id)
         raise GenerationError(
             "Text-to-audio generation failed",
             detail=f"{str(e)}\n\n{error_detail}"
@@ -2470,7 +2490,7 @@ async def generate_aud2aud(
             detail=str(e),
         )
 
-    start_generation("aud2aud")
+    _gen_id = start_generation("aud2aud")
     try:
         pipeline_manager.reset_cancel_flag()
 
@@ -2500,8 +2520,8 @@ async def generate_aud2aud(
         loop = asyncio.get_event_loop()
         _gen_start = time.perf_counter()
         async with gpu_coordinator.generation_slot(estimated_peak_gb=_PEAK_VRAM_GB_BY_KIND["acestep"], timeout=120.0):
-            waveform, sample_rate, actual_seed = await loop.run_in_executor(
-                executor,
+            waveform, sample_rate, actual_seed = await _run_generation_in_executor(
+                loop, executor,
                 lambda: pipeline_manager.generate_aud2aud(params, reference_audio_bytes, progress_callback=progress_callback)
             )
         apply_generation_timings(params, time.perf_counter() - _gen_start)
@@ -2537,7 +2557,7 @@ async def generate_aud2aud(
         params_for_db["duration"] = duration_s
         params_for_db["sample_rate"] = sample_rate
         params_for_db["is_audio"] = True
-        _effective_warnings = get_warnings()
+        _effective_warnings = get_warnings(_gen_id)
         if _effective_warnings:
             params_for_db["effective_warnings"] = _effective_warnings
 
@@ -2559,16 +2579,16 @@ async def generate_aud2aud(
         db.commit()
         db.refresh(db_image)
 
-        complete_generation({"image_id": db_image.id, "filename": filename, "seed": actual_seed})
-        return {"success": True, "image": db_image.to_dict(), "actual_seed": actual_seed, "warnings": get_warnings()}
+        complete_generation({"image_id": db_image.id, "filename": filename, "seed": actual_seed}, generation_id=_gen_id)
+        return {"success": True, "image": db_image.to_dict(), "actual_seed": actual_seed, "warnings": get_warnings(_gen_id)}
 
     except (GenerationError, CustomValidationError, NotFoundError) as e:
-        fail_generation(str(e))
+        fail_generation(str(e), generation_id=_gen_id)
         raise
     except Exception as e:
         import traceback
         error_detail = traceback.format_exc()
-        fail_generation(str(e))
+        fail_generation(str(e), generation_id=_gen_id)
         raise GenerationError(
             "Audio-to-audio generation failed",
             detail=f"{str(e)}\n\n{error_detail}"
@@ -2716,7 +2736,7 @@ async def generate_outpaint_audio(
         "loras": lora_configs,
     }
 
-    start_generation("outpaint_aud")
+    _gen_id = start_generation("outpaint_aud")
     try:
         pipeline_manager.reset_cancel_flag()
 
@@ -2736,8 +2756,8 @@ async def generate_outpaint_audio(
         loop = asyncio.get_event_loop()
         _gen_start = time.perf_counter()
         async with gpu_coordinator.generation_slot(estimated_peak_gb=_PEAK_VRAM_GB_BY_KIND["acestep"], timeout=120.0):
-            waveform, sample_rate, actual_seed = await loop.run_in_executor(
-                executor,
+            waveform, sample_rate, actual_seed = await _run_generation_in_executor(
+                loop, executor,
                 lambda: pipeline_manager.generate_aud_outpaint(params, reference_audio_bytes, progress_callback=progress_callback)
             )
         apply_generation_timings(params, time.perf_counter() - _gen_start)
@@ -2773,7 +2793,7 @@ async def generate_outpaint_audio(
         params_for_db["duration"] = duration_s
         params_for_db["sample_rate"] = sample_rate
         params_for_db["is_audio"] = True
-        _effective_warnings = get_warnings()
+        _effective_warnings = get_warnings(_gen_id)
         if _effective_warnings:
             params_for_db["effective_warnings"] = _effective_warnings
 
@@ -2795,16 +2815,16 @@ async def generate_outpaint_audio(
         db.commit()
         db.refresh(db_image)
 
-        complete_generation({"image_id": db_image.id, "filename": filename, "seed": actual_seed})
-        return {"success": True, "image": db_image.to_dict(), "actual_seed": actual_seed, "warnings": get_warnings()}
+        complete_generation({"image_id": db_image.id, "filename": filename, "seed": actual_seed}, generation_id=_gen_id)
+        return {"success": True, "image": db_image.to_dict(), "actual_seed": actual_seed, "warnings": get_warnings(_gen_id)}
 
     except (GenerationError, CustomValidationError, NotFoundError) as e:
-        fail_generation(str(e))
+        fail_generation(str(e), generation_id=_gen_id)
         raise
     except Exception as e:
         import traceback
         error_detail = traceback.format_exc()
-        fail_generation(str(e))
+        fail_generation(str(e), generation_id=_gen_id)
         raise GenerationError(
             "Audio outpaint generation failed",
             detail=f"{str(e)}\n\n{error_detail}"
@@ -2931,7 +2951,7 @@ async def generate_img2vid(
             detail=str(e),
         )
 
-    start_generation("img2vid")
+    _gen_id = start_generation("img2vid")
     try:
         pipeline_manager.reset_cancel_flag()
 
@@ -2954,8 +2974,8 @@ async def generate_img2vid(
         loop = asyncio.get_event_loop()
         _gen_start = time.perf_counter()
         async with gpu_coordinator.generation_slot(estimated_peak_gb=40, timeout=120.0):
-            frames, audio, audio_sample_rate, actual_seed = await loop.run_in_executor(
-                executor,
+            frames, audio, audio_sample_rate, actual_seed = await _run_generation_in_executor(
+                loop, executor,
                 lambda: pipeline_manager.generate_img2vid(params, input_image, progress_callback=progress_callback)
             )
         apply_generation_timings(params, time.perf_counter() - _gen_start)
@@ -2997,7 +3017,7 @@ async def generate_img2vid(
         params_for_db["duration"] = (num_frames_out / fps_out) if fps_out else 0.0
         params_for_db["audio_enable"] = bool(params.get("audio_enable", True) and audio is not None)
         params_for_db["is_video"] = True
-        _effective_warnings = get_warnings()
+        _effective_warnings = get_warnings(_gen_id)
         if _effective_warnings:
             params_for_db["effective_warnings"] = _effective_warnings
 
@@ -3019,16 +3039,16 @@ async def generate_img2vid(
         db.commit()
         db.refresh(db_image)
 
-        complete_generation({"image_id": db_image.id, "filename": filename, "seed": actual_seed})
-        return {"success": True, "image": db_image.to_dict(), "actual_seed": actual_seed, "warnings": get_warnings()}
+        complete_generation({"image_id": db_image.id, "filename": filename, "seed": actual_seed}, generation_id=_gen_id)
+        return {"success": True, "image": db_image.to_dict(), "actual_seed": actual_seed, "warnings": get_warnings(_gen_id)}
 
     except (GenerationError, CustomValidationError, NotFoundError) as e:
-        fail_generation(str(e))
+        fail_generation(str(e), generation_id=_gen_id)
         raise
     except Exception as e:
         import traceback
         error_detail = traceback.format_exc()
-        fail_generation(str(e))
+        fail_generation(str(e), generation_id=_gen_id)
         raise GenerationError(
             "Image-to-video generation failed",
             detail=f"{str(e)}\n\n{error_detail}"
@@ -3195,7 +3215,7 @@ async def generate_outpaint_video(
                    f"input_trim_end_frames={input_trim_end_frames}.",
         )
 
-    start_generation("outpaint_vid")
+    _gen_id = start_generation("outpaint_vid")
     try:
         pipeline_manager.reset_cancel_flag()
 
@@ -3218,8 +3238,8 @@ async def generate_outpaint_video(
         loop = asyncio.get_event_loop()
         _gen_start = time.perf_counter()
         async with gpu_coordinator.generation_slot(estimated_peak_gb=40, timeout=120.0):
-            frames, audio, audio_sample_rate, actual_seed = await loop.run_in_executor(
-                executor,
+            frames, audio, audio_sample_rate, actual_seed = await _run_generation_in_executor(
+                loop, executor,
                 lambda: pipeline_manager.generate_vid_outpaint(
                     params, video_frames, source_fps, input_audio, progress_callback=progress_callback
                 )
@@ -3264,7 +3284,7 @@ async def generate_outpaint_video(
         params_for_db["duration"] = (num_frames_out / fps_out) if fps_out else 0.0
         params_for_db["audio_enable"] = bool(params.get("audio_enable", True) and audio is not None)
         params_for_db["is_video"] = True
-        _effective_warnings = get_warnings()
+        _effective_warnings = get_warnings(_gen_id)
         if _effective_warnings:
             params_for_db["effective_warnings"] = _effective_warnings
 
@@ -3286,16 +3306,16 @@ async def generate_outpaint_video(
         db.commit()
         db.refresh(db_image)
 
-        complete_generation({"image_id": db_image.id, "filename": filename, "seed": actual_seed})
-        return {"success": True, "image": db_image.to_dict(), "actual_seed": actual_seed, "warnings": get_warnings()}
+        complete_generation({"image_id": db_image.id, "filename": filename, "seed": actual_seed}, generation_id=_gen_id)
+        return {"success": True, "image": db_image.to_dict(), "actual_seed": actual_seed, "warnings": get_warnings(_gen_id)}
 
     except (GenerationError, CustomValidationError, NotFoundError) as e:
-        fail_generation(str(e))
+        fail_generation(str(e), generation_id=_gen_id)
         raise
     except Exception as e:
         import traceback
         error_detail = traceback.format_exc()
-        fail_generation(str(e))
+        fail_generation(str(e), generation_id=_gen_id)
         raise GenerationError(
             "Video outpaint generation failed",
             detail=f"{str(e)}\n\n{error_detail}"
@@ -3478,7 +3498,7 @@ async def generate_inpaint(
                    "Use loop_decode='cheap' for lower-cost intermediate loop steps instead.",
         )
     _override_plan = plan_overrides(pipeline_manager, vae_path, text_encoder_path)
-    start_generation("inpaint")
+    _gen_id = start_generation("inpaint")
     try:
         # Reset cancellation flag before starting new generation
         pipeline_manager.reset_cancel_flag()
@@ -3807,8 +3827,8 @@ async def generate_inpaint(
         generation_timer.reset()
         _gen_start = time.perf_counter()
         async with gpu_coordinator.generation_slot(estimated_peak_gb=_peak_gb, timeout=60.0):
-            result_image, actual_seed, actual_ancestral_seed = await loop.run_in_executor(
-                executor,
+            result_image, actual_seed, actual_ancestral_seed = await _run_generation_in_executor(
+                loop, executor,
                 lambda: pipeline_manager.generate_inpaint(params, init_image, mask_image, progress_callback=progress_callback, step_callback=step_callback)
             )
         # Record total wall time + any phase breakdown the pipeline populated.
@@ -3841,19 +3861,20 @@ async def generate_inpaint(
             result_image,
             params,
             "inpaint",
-            model_info=pipeline_manager.current_model_info
+            model_info=pipeline_manager.current_model_info,
+            generation_id=_gen_id
         )
 
         # skip_gallery: the file is saved (so a generation loop can still chain
         # to the next step via its path) but no thumbnail/DB record is created.
         if skip_gallery:
-            complete_generation({"filename": filename, "seed": actual_seed})
+            complete_generation({"filename": filename, "seed": actual_seed}, generation_id=_gen_id)
             return {
                 "success": True,
                 "filename": filename,
                 "image_path": f"/outputs/{filename}",
                 "actual_seed": actual_seed,
-                "warnings": get_warnings(),
+                "warnings": get_warnings(_gen_id),
             }
 
         image_path = os.path.join(settings.outputs_dir, filename)
@@ -3872,7 +3893,7 @@ async def generate_inpaint(
 
         # Remove image objects from params before saving to DB and calculate ControlNet hashes
         params_for_db = prepare_params_for_db(params, calculate_image_hash)
-        _effective_warnings = get_warnings()
+        _effective_warnings = get_warnings(_gen_id)
         if _effective_warnings:
             params_for_db["effective_warnings"] = _effective_warnings
 
@@ -3898,18 +3919,18 @@ async def generate_inpaint(
         db.commit()
         db.refresh(db_image)
 
-        complete_generation({"image_id": db_image.id, "filename": filename, "seed": actual_seed})
-        return {"success": True, "image": db_image.to_dict(), "actual_seed": actual_seed, "warnings": get_warnings()}
+        complete_generation({"image_id": db_image.id, "filename": filename, "seed": actual_seed}, generation_id=_gen_id)
+        return {"success": True, "image": db_image.to_dict(), "actual_seed": actual_seed, "warnings": get_warnings(_gen_id)}
 
     except GenerationError as e:
         # Re-raise custom errors as-is
-        fail_generation(str(e))
+        fail_generation(str(e), generation_id=_gen_id)
         raise
     except Exception as e:
         # Wrap unexpected errors in GenerationError
         import traceback
         error_detail = traceback.format_exc()
-        fail_generation(str(e))
+        fail_generation(str(e), generation_id=_gen_id)
         raise GenerationError(
             "Inpaint generation failed",
             detail=f"{str(e)}\n\n{error_detail}"
@@ -4110,7 +4131,7 @@ async def generate_outpaint(
                    "Use loop_decode='cheap' for lower-cost intermediate loop steps instead.",
         )
     _override_plan = plan_overrides(pipeline_manager, vae_path, text_encoder_path)
-    start_generation("outpaint")
+    _gen_id = start_generation("outpaint")
     try:
         # Reset cancellation flag before starting new generation
         pipeline_manager.reset_cancel_flag()
@@ -4502,8 +4523,8 @@ async def generate_outpaint(
         generation_timer.reset()
         _gen_start = time.perf_counter()
         async with gpu_coordinator.generation_slot(estimated_peak_gb=_peak_gb, timeout=60.0):
-            result_image, actual_seed, actual_ancestral_seed = await loop.run_in_executor(
-                executor,
+            result_image, actual_seed, actual_ancestral_seed = await _run_generation_in_executor(
+                loop, executor,
                 lambda: pipeline_manager.generate_outpaint(params, init_image, progress_callback=progress_callback, step_callback=step_callback)
             )
         # Record total wall time + any phase breakdown the pipeline populated.
@@ -4537,19 +4558,20 @@ async def generate_outpaint(
             result_image,
             params,
             "outpaint",
-            model_info=pipeline_manager.current_model_info
+            model_info=pipeline_manager.current_model_info,
+            generation_id=_gen_id
         )
 
         # skip_gallery: the file is saved (so a generation loop can still chain
         # to the next step via its path) but no thumbnail/DB record is created.
         if skip_gallery:
-            complete_generation({"filename": filename, "seed": actual_seed})
+            complete_generation({"filename": filename, "seed": actual_seed}, generation_id=_gen_id)
             return {
                 "success": True,
                 "filename": filename,
                 "image_path": f"/outputs/{filename}",
                 "actual_seed": actual_seed,
-                "warnings": get_warnings(),
+                "warnings": get_warnings(_gen_id),
             }
 
         image_path = os.path.join(settings.outputs_dir, filename)
@@ -4567,7 +4589,7 @@ async def generate_outpaint(
 
         # Remove image objects from params before saving to DB and calculate ControlNet hashes
         params_for_db = prepare_params_for_db(params, calculate_image_hash)
-        _effective_warnings = get_warnings()
+        _effective_warnings = get_warnings(_gen_id)
         if _effective_warnings:
             params_for_db["effective_warnings"] = _effective_warnings
 
@@ -4592,18 +4614,18 @@ async def generate_outpaint(
         db.commit()
         db.refresh(db_image)
 
-        complete_generation({"image_id": db_image.id, "filename": filename, "seed": actual_seed})
-        return {"success": True, "image": db_image.to_dict(), "actual_seed": actual_seed, "warnings": get_warnings()}
+        complete_generation({"image_id": db_image.id, "filename": filename, "seed": actual_seed}, generation_id=_gen_id)
+        return {"success": True, "image": db_image.to_dict(), "actual_seed": actual_seed, "warnings": get_warnings(_gen_id)}
 
     except GenerationError as e:
         # Re-raise custom errors as-is
-        fail_generation(str(e))
+        fail_generation(str(e), generation_id=_gen_id)
         raise
     except Exception as e:
         # Wrap unexpected errors in GenerationError
         import traceback
         error_detail = traceback.format_exc()
-        fail_generation(str(e))
+        fail_generation(str(e), generation_id=_gen_id)
         raise GenerationError(
             "Outpaint generation failed",
             detail=f"{str(e)}\n\n{error_detail}"

@@ -7716,7 +7716,7 @@ components:
         generation_type:
           type: string
           nullable: true
-          enum: [txt2img, img2img, inpaint]
+          enum: [txt2img, img2img, inpaint, outpaint, upscale, txt2vid, img2vid, outpaint_vid, txt2aud, aud2aud, outpaint_aud]
           description: Which endpoint the most recently started generation used; null before any generation has run.
           example: "txt2img"
         current_step:
@@ -7751,7 +7751,10 @@ components:
         last_result:
           type: object
           nullable: true
-          description: Result of the most recent successful generation, if any.
+          description: |
+            Result of the most recent successful generation, if any. Its
+            `warnings` array is that generation's own `GenerationWarning`
+            list, captured when it completed.
           properties:
             image_id:
               type: integer
@@ -7759,6 +7762,26 @@ components:
               type: string
             seed:
               type: integer
+            warnings:
+              type: array
+              items:
+                $ref: '#/components/schemas/GenerationWarning'
+        warnings:
+          type: array
+          description: |
+            Feature-degradation notices recorded so far by the newest
+            generation (live while it runs, retained afterwards). The same
+            list is persisted per image as `effective_warnings`.
+          items:
+            $ref: '#/components/schemas/GenerationWarning'
+        generation_id:
+          type: integer
+          nullable: true
+          description: |
+            Monotonic id of the newest generation, used internally to keep
+            each request's warnings separate from an overlapping request's.
+            Null before any generation has run.
+          example: 42
 
     GenerationWarning:
       type: object

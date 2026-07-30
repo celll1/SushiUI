@@ -138,6 +138,10 @@ test_*.py
 # recorded prompt, and leaking a filesystem path into a shared PNG -- are both
 # silent, so the fixtures for them have to be checked in.
 !backend/tests/test_path_redaction.py
+# Exception: generation-warning persistence. Both regressions it guards are
+# silent by construction -- a warning that is raised and then dropped before
+# anything writes it to the row leaves no trace anywhere.
+!backend/tests/test_warning_persistence.py
 
 # CUDAコンパイル
 backend/core/training/optimizers/cuda/build_*/

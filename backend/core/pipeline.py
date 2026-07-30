@@ -1228,7 +1228,22 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
 
         targets = self._vae_override_targets()
         if not targets:
+            # Silent no-op until now: `apply_overrides` saw no exception and
+            # still recorded `vae_override_path`, so the row CLAIMED an
+            # override that never reached the decoder. Reported with the same
+            # code as a load failure (both mean "the model's own VAE decoded
+            # this image"), which is also what `GeneratedImage.to_dict` keys
+            # its override-label derivation on.
             print("[VAEOverride] No VAE slot on the loaded model; override skipped.")
+            try:
+                from api.generation_status import add_warning
+                add_warning(
+                    "VAE override could not be applied: the loaded model exposes no VAE "
+                    "slot to swap; the model's own VAE decoded this image",
+                    code="vae_override_error",
+                )
+            except Exception:
+                pass
             return
 
         # Snapshot the originals on the FIRST override so a later clear restores.

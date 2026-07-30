@@ -35,22 +35,48 @@ import torch.nn.functional as F
 
 _HALF_DTYPES = (torch.float16, torch.bfloat16)
 
-# Kernel-fallback warnings are emitted from per-call hot paths, so dedup per
-# process (keyed by message) to avoid flooding the per-generation warning list.
-_warned_kernels: set = set()
+# Kernel-fallback warnings are emitted from per-call hot paths, so they are
+# deduped -- but the dedup is keyed by (generation id, message), NOT by message
+# alone. A process-lifetime dedup (what this was) meant only the FIRST
+# generation after a backend start could ever record an
+# ``attention_kernel_fallback``; every later generation silently ran on native
+# SDPA (different dtype from the flash path, so NOT numerically equivalent)
+# with nothing on its row to say so. Worse, if the first fallback fired outside
+# a generation (model load, warm-up, a route with no ``start_generation()``),
+# the warning was swallowed for the entire process lifetime.
+#
+# The console print keeps the once-per-process dedup: it is a log, and the
+# fallback fires per attention call.
+_warned_kernels: set = set()      # (generation_id, message) -- warnings[] channel
+_logged_kernels: set = set()      # message -- console only
 
 
 def _warn_kernel_fallback(message: str) -> None:
-    """Best-effort: surface an attention-kernel fallback once per process.
+    """Best-effort: surface an attention-kernel fallback once per generation.
 
     Lazily imported so this attention module never hard-depends on the api
     package at import time. Never raises.
     """
-    if message in _warned_kernels:
-        return
-    _warned_kernels.add(message)
+    if message not in _logged_kernels:
+        _logged_kernels.add(message)
+        print(f"[Attention] {message}")
     try:
-        from api.generation_status import add_warning
+        from api.generation_status import add_warning, current_generation_id
+        gen_id = current_generation_id()
+    except Exception:
+        return
+    if gen_id == 0:
+        # Outside a generation there is nothing to attach the warning to; do
+        # NOT record a dedup entry, so the next generation still reports it.
+        return
+    key = (gen_id, message)
+    if key in _warned_kernels:
+        return
+    _warned_kernels.add(key)
+    if len(_warned_kernels) > 512:
+        _warned_kernels.clear()
+        _warned_kernels.add(key)
+    try:
         add_warning(message, code="attention_kernel_fallback")
     except Exception:
         pass
@@ -175,11 +201,9 @@ def _flash_attn(
 
         return out.contiguous()
     except ImportError:
-        print("[Attention] flash_attn not available; falling back to native")
         _warn_kernel_fallback("flash_attn not available; falling back to native attention")
         return None
     except Exception as e:  # noqa: BLE001 - never raise into the model
-        print(f"[Attention] flash_attn error: {e}; falling back to native")
         _warn_kernel_fallback(f"flash_attn error ({e}); falling back to native attention")
         return None
 
@@ -245,11 +269,9 @@ def _sage_attn(
 
         return out.contiguous()
     except ImportError:
-        print("[Attention] sageattention not available; falling back to native")
         _warn_kernel_fallback("sageattention not available; falling back to native attention")
         return None
     except Exception as e:  # noqa: BLE001 - never raise into the model
-        print(f"[Attention] sageattention error: {e}; falling back to native")
         _warn_kernel_fallback(f"sageattention error ({e}); falling back to native attention")
         return None
 
@@ -323,10 +345,8 @@ def _tq_attn(
 
         return out.contiguous()
     except ImportError:
-        print("[Attention] tq_attention not available; falling back to native")
         _warn_kernel_fallback("tq_attention not available; falling back to native attention")
         return None
     except Exception as e:  # noqa: BLE001 - never raise into the model
-        print(f"[Attention] tq_attention error: {e}; falling back to native")
         _warn_kernel_fallback(f"tq_attention error ({e}); falling back to native attention")
         return None

@@ -25,7 +25,9 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any, Dict, Optional, Tuple
+import threading
+from contextlib import contextmanager
+from typing import Any, Dict, List, Optional, Tuple
 
 from api.error_handlers import ValidationError
 from utils.path_redaction import display_name_for_path
@@ -372,12 +374,46 @@ def classify_te_candidate(path: str, source_type: Optional[str] = None) -> Optio
 # Compatibility gate
 # ---------------------------------------------------------------------------
 
+# The compatibility gate deliberately runs BEFORE ``start_generation()`` (a
+# HARD mismatch must raise HTTP 400 without opening a run), which meant every
+# soft warning it emitted -- ``vae_override_warning``, ``te_override_warning``
+# -- was dropped on the floor by ``add_warning()``: no generation was running
+# yet, so nothing could be attached to. Those codes were therefore NEVER
+# persisted on any image row from an image route. ``_warn`` now also records
+# into a thread-local capture buffer that ``plan_overrides()`` returns in the
+# plan and ``apply_overrides()`` (which always runs INSIDE the generation)
+# replays. ``add_warning`` dedups identical entries per generation, so routes
+# that already call ``plan_overrides`` after ``start_generation`` (the video
+# routes) are unaffected by the replay.
+_capture = threading.local()
+
+
 def _warn(message: str, code: str) -> None:
+    buffer = getattr(_capture, "buffer", None)
+    if buffer is not None:
+        entry = {"code": code, "message": message}
+        if entry not in buffer:
+            buffer.append(entry)
     try:
         from api.generation_status import add_warning
         add_warning(message, code=code)
     except Exception:
         pass
+
+
+@contextmanager
+def _capture_warnings(sink: list):
+    """Collect ``_warn`` calls made on this thread into ``sink``.
+
+    Nesting is not expected (``plan_overrides`` is a leaf), but the previous
+    buffer is restored regardless so a nested call cannot orphan it.
+    """
+    previous = getattr(_capture, "buffer", None)
+    _capture.buffer = sink
+    try:
+        yield
+    finally:
+        _capture.buffer = previous
 
 
 def _check_vae_compat(loaded: Dict[str, Any], cand: Dict[str, Any]) -> None:
@@ -549,7 +585,11 @@ def plan_overrides(pipeline_manager, vae_path: Optional[str],
     """Decide which overrides to apply (arch gating) and run the compat gate.
 
     Returns a plan ``{"vae": path|None, "te": path|None, "vae_kind":
-    "pid_decoder"|"autoencoder"|None}``. A requested override on an arch that
+    "pid_decoder"|"autoencoder"|None, "warnings": [...]}``. ``warnings`` holds
+    the soft compat notices raised here, which ``apply_overrides()`` replays
+    once the generation is open — this function runs BEFORE
+    ``start_generation()`` on the image routes, where ``add_warning()`` alone
+    is a no-op. A requested override on an arch that
     does not support it is dropped from the plan (the caller's
     ``check_arch_capabilities`` emits the accepted-but-ignored warning). Raises
     ValidationError on a HARD incompatibility (including a PiD decoder override
@@ -563,9 +603,11 @@ def plan_overrides(pipeline_manager, vae_path: Optional[str],
 
     vae_kind = describe_vae(av).get("kind") if av else None
 
+    pending: List[Dict[str, Any]] = []
     if av or at:
-        check_override_compat(pipeline_manager, av, at)
-    return {"vae": av, "te": at, "vae_kind": vae_kind}
+        with _capture_warnings(pending):
+            check_override_compat(pipeline_manager, av, at)
+    return {"vae": av, "te": at, "vae_kind": vae_kind, "warnings": pending}
 
 
 def apply_overrides(
@@ -601,6 +643,13 @@ def apply_overrides(
     continue on the original component.
     """
     meta: Dict[str, Any] = {}
+
+    # Replay the compat gate's soft warnings: `plan_overrides()` ran before
+    # `start_generation()` on the image routes, so they had nowhere to land.
+    # `add_warning` dedups per generation, so replaying a warning the caller
+    # already recorded (video routes plan AFTER start_generation) is a no-op.
+    for _pending in (plan.get("warnings") or []):
+        _warn(_pending.get("message", ""), _pending.get("code") or "")
 
     try:
         pipeline_manager.load_override_vae(

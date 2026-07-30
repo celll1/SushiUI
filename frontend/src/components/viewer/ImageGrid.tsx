@@ -441,6 +441,18 @@ export default function ImageGrid() {
     } else {
       target.fbcache_enable = false;
     }
+    // VAE override. Restored from vae_override_path (the APPLIED value written
+    // by apply_overrides), never from vae_path (the REQUESTED value, echoed
+    // into every row even when the override was dropped by the arch gate, not
+    // consulted, or failed to load) — the same evidence gate the backend's
+    // GeneratedImage.to_dict uses for the displayed label. Set explicitly in
+    // both directions: leaving a previous panel selection in place would
+    // silently decode with a VAE the source image did not use.
+    const vaeFailed = ((p.effective_warnings || []) as any[]).some(
+      (w) => w && typeof w === "object" && w.code === "vae_override_error"
+    );
+    target.vae_path = !vaeFailed && p.vae_override_path ? p.vae_override_path : null;
+
     if (p.prompt_chunking_mode !== undefined) target.prompt_chunking_mode = p.prompt_chunking_mode;
     if (p.max_prompt_chunks !== undefined) target.max_prompt_chunks = p.max_prompt_chunks;
     if (p.text_encoder_quantization !== undefined) target.text_encoder_quantization = p.text_encoder_quantization;

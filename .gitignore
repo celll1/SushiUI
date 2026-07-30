@@ -134,6 +134,10 @@ test_*.py
 # Exception: the VAE component-toggle refusal matrix is a checked-in regression
 # guard for design.md §4 (see docs/guides/VAE_TRAINING.md), not a scratch script.
 !backend/tests/test_vae_refusal_matrix.py
+# Exception: metadata path redaction. Its two failure modes -- corrupting a
+# recorded prompt, and leaking a filesystem path into a shared PNG -- are both
+# silent, so the fixtures for them have to be checked in.
+!backend/tests/test_path_redaction.py
 
 # CUDAコンパイル
 backend/core/training/optimizers/cuda/build_*/

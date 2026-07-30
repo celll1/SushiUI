@@ -28,6 +28,7 @@ import os
 from typing import Any, Dict, Optional, Tuple
 
 from api.error_handlers import ValidationError
+from utils.path_redaction import display_name_for_path
 
 # ---------------------------------------------------------------------------
 # Per-arch default VAE class family (used only when a candidate/model provides
@@ -232,32 +233,22 @@ def describe_te(path: str, source_type: Optional[str] = None) -> Dict[str, Any]:
 # Candidate classification (endpoints)
 # ---------------------------------------------------------------------------
 
-# Generic component-directory basenames that do not identify which model they
-# belong to (typical of diffusers-layout subfolders like ".../krea2/vae").
-_GENERIC_COMPONENT_NAMES = {
-    "vae",
-    "text_encoder",
-    "text_encoder_2",
-    "text_encoder_3",
-    "",
-}
-
-
 def _friendly_component_name(path: str) -> str:
     """Derive a human-readable candidate name from ``path``.
 
     If the basename is a real filename (e.g. ``my_custom_vae.safetensors``),
-    it is used as-is. If the basename is a generic diffusers subfolder name
-    (e.g. ``vae``, ``text_encoder``), the parent directory (the model folder)
-    is prepended to disambiguate, e.g. ``.../krea2/vae`` -> ``krea2/vae``.
+    it is used as-is (minus the ``.safetensors`` extension). If the basename is
+    a generic diffusers subfolder name (e.g. ``vae``, ``text_encoder``), the
+    parent directory (the model folder) is prepended to disambiguate, e.g.
+    ``.../krea2/vae`` -> ``krea2/vae``.
+
+    Delegates to ``utils.path_redaction`` so that this name — which is shown in
+    the selector UI, recorded in ``params["vae_name"]`` and therefore written
+    into shareable PNGs — is produced by the same single implementation that
+    the PNG writer's redaction backstop uses. It never contains a drive letter
+    or any directory above the one parent shown, and is never empty.
     """
-    norm = path.rstrip("/\\")
-    basename = os.path.basename(norm).replace(".safetensors", "")
-    if basename.lower() in _GENERIC_COMPONENT_NAMES:
-        parent = os.path.basename(os.path.dirname(norm))
-        if parent:
-            return f"{parent}/{basename}" if basename else parent
-    return basename
+    return display_name_for_path(path, strip_safetensors=True)
 
 
 #: Provenance sidecar written next to every SushiUI VAE fine-tune export

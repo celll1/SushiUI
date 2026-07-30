@@ -6,6 +6,39 @@ import base64
 from io import BytesIO
 from datetime import datetime
 from config.settings import settings
+from utils.path_redaction import (
+    display_name_for_path,
+    redact_paths,
+    redact_params_for_sharing,
+)
+
+# ---------------------------------------------------------------------------
+# PNG privacy boundary
+# ---------------------------------------------------------------------------
+# ``save_image_with_metadata`` is the ONLY writer of PNG text chunks, and a PNG
+# travels off this machine. The per-key ``add_text`` calls below are an
+# allowlist — but the ``sushi_parameters`` blob written at the end of the
+# function is NOT: it serializes the whole ``params`` dict, which is why it
+# gets ``redact_params_for_sharing`` applied to it. These keys must NEVER
+# appear in the chunks in unredacted form:
+#
+#   vae_path, vae_override_path, vae_override_source, text_encoder_path,
+#   and any other value holding a filesystem path.
+#
+# ``vae_override_source`` in particular can hold a resolved absolute path.
+#
+# For the identity fields that legitimately go in (``vae_name``,
+# ``vision_encoder_name``, ``upscaler_model``) the producer already emits a
+# display name (see ``api/generation_utils.describe_vae_override``);
+# ``_shareable`` is a second, local defence so that a future call site writing
+# a path into one of those params cannot leak filesystem structure into every
+# PNG it produces. It REDACTS (reduces a path to its name); it never raises and
+# never fails a save.
+
+
+def _shareable(value):
+    """Reduce any absolute path inside a to-be-written text chunk to a name."""
+    return redact_paths(value)
 
 def save_image_with_metadata(
     image: Image.Image,
@@ -115,7 +148,7 @@ def save_image_with_metadata(
             metadata.add_text("upscaler_backend", upscaler_backend)
         upscaler_model = params.get("upscaler_model")
         if upscaler_model:
-            metadata.add_text("upscaler_model", upscaler_model)
+            metadata.add_text("upscaler_model", _shareable(upscaler_model))
         upscaler_model_hash = params.get("upscaler_model_hash")
         if upscaler_model_hash:
             metadata.add_text("upscaler_model_hash", upscaler_model_hash)
@@ -190,15 +223,18 @@ def save_image_with_metadata(
         ve_name = params.get("vision_encoder_name", "")
         ve_hash = params.get("vision_encoder_hash", "")
         if ve_name:
-            metadata.add_text("vision_encoder_name", ve_name)
+            metadata.add_text("vision_encoder_name", _shareable(ve_name))
         if ve_hash:
             metadata.add_text("vision_encoder_hash", ve_hash)
 
     # VAE identity. Recorded whenever known — the VAE always affects the decoded
     # output (embedded-in-checkpoint, shared store, env override, or model-own).
+    # ``vae_name`` is a display name by construction; the redaction here also
+    # covers the non-override branch of ``extract_vae_info``, whose
+    # ``vae_source`` note is an absolute directory for some architectures.
     vae_name = params.get("vae_name", "")
     if vae_name:
-        metadata.add_text("vae_name", vae_name)
+        metadata.add_text("vae_name", _shareable(vae_name))
     vae_hash = params.get("vae_hash", "")
     if vae_hash:
         metadata.add_text("vae_hash", vae_hash)
@@ -281,7 +317,14 @@ def save_image_with_metadata(
         from api.generation_status import get_warnings
         _warnings = get_warnings()
         if _warnings:
-            metadata.add_text("effective_warnings", json.dumps(_warnings))
+            # Warning MESSAGES are backend-generated and can quote the path of
+            # whatever failed to load, so they get the same treatment as every
+            # other chunk. Redacted structurally (before serialization) rather
+            # than on the JSON string, which would corrupt its escaping.
+            metadata.add_text(
+                "effective_warnings",
+                json.dumps(redact_params_for_sharing(_warnings))
+            )
     except Exception:
         pass
 
@@ -325,6 +368,16 @@ def save_image_with_metadata(
             _full_params["style_transfer"] = {
                 k: v for k, v in _full_params["style_transfer"].items() if k != "image_base64"
             }
+        # PRIVACY: this blob is NOT an allowlist -- it carries every key of
+        # `params`, including the local-only ones the per-key chunks above
+        # deliberately omit (`vae_path`, `vae_override_path`,
+        # `vae_override_source`, component/LoRA paths). Those are absolute
+        # filesystem paths, i.e. personal environment information, and a PNG is
+        # a shareable file. Reduce every path to its name here (prompts and
+        # other user-typed text are passed through verbatim); the DB row is
+        # written from the unmodified `params` and keeps the full paths for
+        # local restore, so nothing local is lost.
+        _full_params = redact_params_for_sharing(_full_params)
         # default=str is a defensive fallback only (e.g. a stray PIL Image or
         # Enum/Path slipping past the sanitizer serializes to its short repr,
         # not raw pixel data).
@@ -432,7 +485,10 @@ def _build_lora_metadata(lora_configs) -> list:
         if not path:
             continue
         entry = {
-            "name": os.path.basename(path),
+            # Name + content hash, never the path (the same rule as model_name /
+            # vae_name). display_name_for_path also disambiguates a LoRA whose
+            # filename is a generated one (``checkpoint.safetensors``).
+            "name": display_name_for_path(path),
             "weight": lora.get("strength", 1.0),
         }
         try:

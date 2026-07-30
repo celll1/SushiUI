@@ -260,12 +260,14 @@ paths:
               schema:
                 $ref: '#/components/schemas/GenerationResponse'
               example:
-                image_path: "/outputs/2025-11-28/txt2img_20251128_123456_001.png"
-                image_id: 42
-                seed: 1234567890
-                metadata:
-                  prompt: "1girl, beautiful anime character, detailed face, long hair, standing in garden, cherry blossoms"
-                  model_name: "animagine-xl-3.1"
+                success: true
+                actual_seed: 1234567890
+                warnings: []
+                image:
+                  id: 42
+                  filename: "txt2img_20251128_123456_1234567890.png"
+                  generation_type: "txt2img"
+                  seed: 1234567890
         '400':
           description: Invalid parameters
           content:
@@ -631,9 +633,13 @@ paths:
               schema:
                 $ref: '#/components/schemas/GenerationResponse'
               example:
-                image_path: "/outputs/2025-11-28/img2img_20251128_123456_001.png"
-                image_id: 43
-                seed: 9876543210
+                success: true
+                actual_seed: 9876543210
+                warnings: []
+                image:
+                  id: 43
+                  filename: "img2img_20251128_123456_9876543210.png"
+                  generation_type: "img2img"
         '400':
           description: Invalid parameters
           content:
@@ -674,9 +680,13 @@ paths:
               schema:
                 $ref: '#/components/schemas/GenerationResponse'
               example:
-                image_path: "/outputs/2025-11-28/inpaint_20251128_123456_001.png"
-                image_id: 44
-                seed: 5555555555
+                success: true
+                actual_seed: 5555555555
+                warnings: []
+                image:
+                  id: 44
+                  filename: "inpaint_20251128_123456_5555555555.png"
+                  generation_type: "inpaint"
         '400':
           description: Invalid parameters
           content:
@@ -744,9 +754,13 @@ paths:
               schema:
                 $ref: '#/components/schemas/GenerationResponse'
               example:
-                image_path: "/outputs/2026-07-15/outpaint_20260715_123456_001.png"
-                image_id: 87
-                seed: 5555555555
+                success: true
+                actual_seed: 5555555555
+                warnings: []
+                image:
+                  id: 87
+                  filename: "outpaint_20260715_123456_5555555555.png"
+                  generation_type: "outpaint"
         '400':
           description: Invalid parameters (including degenerate placement geometry)
           content:
@@ -849,13 +863,14 @@ paths:
       tags: [generation]
       summary: Upscale an image
       description: |
-        Upscales an input image using one of three backends: a plain PIL
-        resample, a spandrel super-resolution model, or RTX Video Super
-        Resolution (nvvfx).
+        Upscales an input image using one of four backends: a plain PIL
+        resample, a spandrel super-resolution model, RTX Video Super
+        Resolution (nvvfx), or a diffusion tile upscale (img2img per tile
+        with the currently loaded model).
 
         **Key parameters:**
-        - `upscaler_backend`: `pil` | `spandrel` | `rtx_vsr`
-        - `upscaler_model`: filename under `models/upscalers/`, required when `upscaler_backend=spandrel`
+        - `upscaler_backend`: `pil` | `spandrel` | `rtx_vsr` | `diffusion`
+        - `upscaler_model`: filename under `models/upscalers/`, required when `upscaler_backend=spandrel`, or when `upscaler_backend=diffusion` and `diffusion_pre_upscale_mode=model`
         - `scale_factor`: 1.0-8.0; output dimensions = round(input dimensions * scale_factor)
         - `image`: input image (PNG/JPEG, binary file upload)
       operationId: generateUpscale
@@ -1169,38 +1184,68 @@ paths:
     get:
       tags: [images]
       summary: List generated images
-      description: Get list of generated images with optional filtering
+      description: |
+        Returns a page of gallery rows as `GeneratedImageSummary` objects
+        (the light projection -- no `parameters`, no `mask_data`). Fetch
+        `GET /images/{image_id}` for the full `GeneratedImage` record.
+        Rows are ordered by `created_at` descending.
       operationId: listImages
       parameters:
-        - name: limit
+        - name: skip
           in: query
-          schema:
-            type: integer
-            default: 50
-        - name: offset
-          in: query
+          description: Number of rows to skip (offset into the ordered result set).
           schema:
             type: integer
             default: 0
-        - name: generation_type
+        - name: limit
           in: query
+          description: Maximum number of rows to return.
+          schema:
+            type: integer
+            default: 50
+        - name: search
+          in: query
+          description: Substring match against the prompt.
           schema:
             type: string
-            enum: [txt2img, img2img, inpaint]
-        - name: model_name
+        - name: generation_types
           in: query
+          description: Comma-separated list of generation types to include.
           schema:
             type: string
-        - name: start_date
+          example: txt2img,img2img
+        - name: date_from
           in: query
+          description: Lower bound on `created_at`, ISO 8601.
           schema:
             type: string
             format: date-time
-        - name: end_date
+        - name: date_to
           in: query
+          description: Upper bound on `created_at`, ISO 8601.
           schema:
             type: string
             format: date-time
+        - name: width_min
+          in: query
+          description: Lower bound on image width in pixels.
+          schema:
+            type: integer
+        - name: width_max
+          in: query
+          description: Upper bound on image width in pixels.
+          schema:
+            type: integer
+        - name: height_min
+          in: query
+          description: Lower bound on image height in pixels.
+          schema:
+            type: integer
+        - name: height_max
+          in: query
+          description: Upper bound on image height in pixels.
+          schema:
+            type: integer
       responses:
         '200':
           description: List of images
@@ -1213,6 +1258,9 @@ paths:
     get:
       tags: [images]
       summary: Get image by ID
+      description: |
+        Returns the full gallery record, including the complete `parameters`
+        JSON and any `mask_data` that `GET /images` omits.
       operationId: getImage
       parameters:
         - name: image_id
@@ -1227,6 +1275,19 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GeneratedImage'
+        '404':
+          description: |
+            No gallery row with this id. Raised as a bare `HTTPException`, so
+            the body is FastAPI's `{"detail": "Image not found"}` rather than
+            an `ErrorResponse`.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  detail:
+                    type: string
+                    example: Image not found
 
     delete:
       tags: [images]
@@ -7596,15 +7657,33 @@ components:
 
     GenerationResponse:
       type: object
+      description: |
+        Envelope returned by every `/generate/*` endpoint. `success`,
+        `actual_seed`, and `warnings` are always present; exactly one of
+        `image`, `latent_id`, or the `filename` + `image_path` pair carries the
+        result, depending on the request:
+
+        - normal decode: `image` holds the full gallery record.
+        - `loop_decode="none"` (txt2img/img2img): `latent_id` only -- nothing
+          was decoded, saved, or written to the gallery.
+        - `skip_gallery=true` (txt2img/img2img/inpaint/outpaint): `filename`
+          and `image_path` only -- the file was written but no gallery row or
+          thumbnail was created.
+      required: [success, actual_seed, warnings]
       properties:
-        image_path:
-          type: string
-        image_id:
+        success:
+          type: boolean
+          description: Always true on a 200 response; failures are returned as an `ErrorResponse` with a 4xx/5xx status.
+        actual_seed:
           type: integer
-        seed:
-          type: integer
-        metadata:
-          type: object
+          description: Seed actually used for the generation (the resolved value when the request asked for a random seed).
+        warnings:
+          type: array
+          description: Feature-degradation notices recorded during this generation; empty when nothing was ignored or downgraded.
+          items:
+            $ref: '#/components/schemas/GenerationWarning'
+        image:
+          $ref: '#/components/schemas/GeneratedImage'
         latent_id:
           type: string
           nullable: true
@@ -7613,6 +7692,13 @@ components:
             for the cached final latent (no decode/save/gallery happened this
             request). Pass it as the next loop step's input_latent_id. Absent
             (or null) for a normal "full"/"cheap" decode response.
+        filename:
+          type: string
+          description: Output file name. Present only on a `skip_gallery=true` response, in place of `image`.
+        image_path:
+          type: string
+          description: Path of the saved file under the outputs mount. Present only on a `skip_gallery=true` response, in place of `image`.
+          example: /outputs/txt2img_20260730_222223_1689850057.png
 
     GenerationStatusResponse:
       type: object
@@ -7674,27 +7760,305 @@ components:
             seed:
               type: integer
 
+    GenerationWarning:
+      type: object
+      description: |
+        Feature-degradation notice recorded during a generation by
+        `add_warning()` (`backend/api/generation_status.py`): a requested
+        option that was ignored, substituted, or downgraded. Entries are
+        deduplicated within a single generation.
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          nullable: true
+          description: Machine-readable identifier for the degradation; null when the emitter passed no code.
+          example: unsupported_param
+        message:
+          type: string
+          description: Text explanation of what was ignored, substituted, or downgraded.
+
     GeneratedImage:
       type: object
+      description: |
+        Full gallery record, produced by `GeneratedImage.to_dict()`
+        (`backend/database/models.py`). Returned by `GET /images/{image_id}`
+        and as the `image` field of a generation response.
+
+        The properties listed in `required` come from table columns and are
+        always present (several may be null). **Every other property is
+        conditional**: it is emitted only when the matching key exists in that
+        row's `parameters` JSON, so its presence depends on the generation
+        type and on which features were enabled for that generation. Most
+        conditional values are re-emitted as strings via `str(value)` rather
+        than in their original JSON type; the exceptions are noted per
+        property. `parameters` itself always carries the full, unstringified
+        request parameters, so a client that needs original types can read it
+        directly.
+      required:
+        - id
+        - filename
+        - prompt
+        - negative_prompt
+        - model_name
+        - sampler
+        - steps
+        - cfg_scale
+        - seed
+        - ancestral_seed
+        - width
+        - height
+        - generation_type
+        - parameters
+        - created_at
+        - is_favorite
+        - image_hash
+        - source_image_hash
+        - mask_data
+        - lora_names
+        - model_hash
       properties:
+        # --- Columns (always present) ---
         id:
           type: integer
+          description: Gallery row id.
+          example: 10749
         filename:
           type: string
-        generation_type:
-          type: string
-          enum: [txt2img, img2img, inpaint]
-        model_name:
-          type: string
+          description: Output file name under the outputs directory (`.png` for images, `.mp4` for video, `.flac` for audio).
+          example: txt2img_20260730_222223_1689850057.png
         prompt:
           type: string
+          description: Positive prompt (caption text for audio generations).
         negative_prompt:
           type: string
+          nullable: true
+          description: Negative prompt.
+        model_name:
+          type: string
+          description: Name of the model that produced the row (checkpoint file name, or a backend label such as `distilled` / `ace-step` for video/audio).
+        sampler:
+          type: string
+          description: Sampler and schedule label used for the generation.
+          example: euler_a (uniform)
+        steps:
+          type: integer
+          description: Recorded step count column. Video/audio rows carry the request default here; their effective step count is in `num_inference_steps` / `inference_steps`.
+        cfg_scale:
+          type: number
+          format: float
+          description: Recorded CFG scale column. Video/audio rows carry the request default here; their effective value is in `guidance_scale`.
+        seed:
+          type: integer
+          description: Seed actually used for the generation.
+        ancestral_seed:
+          type: integer
+          nullable: true
+          description: Seed for the stochastic (ancestral) noise of samplers such as Euler a; null for rows generated before this was recorded.
+        width:
+          type: integer
+          description: Output width in pixels; 0 for audio rows.
+        height:
+          type: integer
+          description: Output height in pixels; 0 for audio rows.
+        generation_type:
+          type: string
+          enum: [txt2img, img2img, inpaint, outpaint, upscale, txt2vid, img2vid, outpaint_vid, txt2aud, aud2aud, repaint, outpaint_aud]
+          description: Endpoint that produced the row. `repaint` is written by `/generate/aud2aud` when `mode=repaint`.
         parameters:
           type: object
+          nullable: true
+          additionalProperties: true
+          description: Full generation parameters as stored on the row. Uploaded images are replaced by their SHA256 hashes before storage. Omitted from `GeneratedImageSummary`.
         created_at:
           type: string
           format: date-time
+          nullable: true
+          description: Local-time ISO 8601 timestamp of the row (no timezone offset).
+          example: "2026-07-30T22:22:23.646318"
+        is_favorite:
+          type: boolean
+          description: Whether the row is flagged as a favorite.
+        image_hash:
+          type: string
+          nullable: true
+          description: SHA256 hash of the generated image. Empty string on video/audio rows; null on rows written before it was recorded.
+        source_image_hash:
+          type: string
+          nullable: true
+          description: SHA256 hash of the input image/clip for img2img, inpaint, outpaint, upscale, img2vid, and aud2aud rows; null otherwise.
+        mask_data:
+          type: string
+          nullable: true
+          description: Base64-encoded inpaint mask; null when the row has none. Omitted from `GeneratedImageSummary`.
+        lora_names:
+          type: string
+          nullable: true
+          description: Comma-separated LoRA file names applied to the generation; null when none were used.
+        model_hash:
+          type: string
+          nullable: true
+          description: SHA256 hash of the model file; null when it could not be determined.
+
+        # --- Conditional: NAG (emitted only when parameters.nag_enable is truthy) ---
+        nag_enable:
+          type: string
+          description: Present only when NAG was enabled for the generation. Stringified boolean.
+          example: "True"
+        nag_scale:
+          type: string
+          description: NAG guidance scale. Stringified number; present only alongside `nag_enable`.
+        nag_tau:
+          type: string
+          description: NAG tau. Stringified number; present only alongside `nag_enable`.
+        nag_alpha:
+          type: string
+          description: NAG alpha. Stringified number; present only alongside `nag_enable`.
+        nag_sigma_end:
+          type: string
+          description: Sigma at which NAG stops being applied. Stringified number; present only alongside `nag_enable`.
+
+        # --- Conditional: post-decode options ---
+        color_flatten_strength:
+          type: string
+          description: Color Flatten strength applied after decode. Stringified number; emitted only when non-zero.
+        vae_drift_correction:
+          type: string
+          description: Whether VAE drift correction was applied after decode. Stringified boolean; emitted only when enabled.
+        flatten_in_loop:
+          type: string
+          description: Whether in-loop background flattening was enabled. Stringified boolean; emitted only when enabled.
+        flatten_in_loop_last_steps:
+          type: string
+          description: Number of trailing steps over which in-loop flattening ran. Stringified integer; present only alongside `flatten_in_loop`.
+        flatten_in_loop_min_region:
+          type: string
+          description: Minimum region fraction for in-loop flattening. Stringified number; present only alongside `flatten_in_loop`.
+
+        # --- Conditional: upscale (emitted only when parameters contains upscaler_backend) ---
+        upscaler_backend:
+          type: string
+          description: Upscale backend used. Passed through unstringified.
+          example: spandrel
+        upscaler_model:
+          type: string
+          description: Upscaler model file name; emitted only when a model was used.
+        upscaler_model_hash:
+          type: string
+          description: SHA256 hash of the upscaler model file; emitted only when a model was used.
+        scale_factor:
+          type: string
+          description: Requested upscale factor. Stringified number.
+        pil_resample:
+          type: string
+          description: PIL resample filter name. Passed through unstringified.
+          example: lanczos
+        tile_size:
+          type: string
+          description: Tile size used for tiled upscaling. Stringified integer.
+        tile_overlap:
+          type: string
+          description: Tile overlap in pixels. Stringified integer.
+        rtx_vsr_quality:
+          type: string
+          description: RTX Video Super Resolution quality level. Passed through unstringified.
+        diffusion_denoising_strength:
+          type: string
+          description: Denoising strength for the diffusion upscale backend. Stringified number.
+        diffusion_pre_upscale_mode:
+          type: string
+          description: Pre-upscale mode for the diffusion upscale backend. Passed through unstringified.
+
+        # --- Conditional: video (emitted only when parameters.is_video is truthy) ---
+        is_video:
+          type: boolean
+          description: Present and true only on video rows; the file named by `filename` is an mp4.
+        num_frames:
+          type: string
+          description: Frame count of the generated video. Stringified integer.
+        fps:
+          type: string
+          description: Frame rate of the generated video. Stringified number.
+        duration:
+          type: string
+          description: Duration in seconds. Stringified number; also emitted on audio rows.
+        audio_enable:
+          type: string
+          description: Whether an audio track was generated with the video. Stringified boolean.
+        guidance_scale:
+          type: string
+          description: Guidance scale used by the video/audio pipeline. Stringified number.
+        num_inference_steps:
+          type: string
+          description: Step count used by the video pipeline. Stringified integer.
+
+        # --- Conditional: audio (emitted only when parameters.is_audio is truthy) ---
+        is_audio:
+          type: boolean
+          description: Present and true only on audio rows; the file named by `filename` is a flac.
+        sample_rate:
+          type: string
+          description: Sample rate in Hz of the generated audio. Stringified integer.
+          example: "48000"
+        audio_duration:
+          type: string
+          description: Requested audio duration in seconds. Stringified number.
+        inference_steps:
+          type: string
+          description: Step count used by the audio pipeline. Stringified integer.
+
+        # --- Conditional: advanced CFG (each key emitted independently) ---
+        cfg_schedule_type:
+          type: string
+          description: CFG schedule shape. Passed through unstringified.
+          example: constant
+        cfg_schedule_min:
+          type: string
+          description: Minimum CFG scale of the schedule. Stringified number.
+        cfg_schedule_max:
+          type: string
+          description: Maximum CFG scale of the schedule. Stringified number; a row whose recorded value was null yields the literal string `"None"`.
+        cfg_schedule_power:
+          type: string
+          description: Exponent of the CFG schedule. Stringified number.
+        cfg_rescale_snr_alpha:
+          type: string
+          description: CFG rescale SNR alpha. Stringified number.
+        dynamic_threshold_percentile:
+          type: string
+          description: Dynamic thresholding percentile. Stringified number.
+        dynamic_threshold_mimic_scale:
+          type: string
+          description: Dynamic thresholding mimic scale. Stringified number.
+
+        # --- Conditional: misc ---
+        unet_quantization:
+          type: string
+          nullable: true
+          description: U-Net quantization mode recorded for the generation; emitted (possibly as null) whenever the key exists in `parameters`. Passed through unstringified.
+          example: fp8_e4m3fn
+        effective_warnings:
+          type: array
+          description: Feature-degradation notices recorded during the generation, kept as a list rather than stringified. Emitted only when the row recorded at least one.
+          items:
+            $ref: '#/components/schemas/GenerationWarning'
+        ref_images:
+          type: array
+          description: SHA256 hashes of the reference images supplied for a reference-image generation. Emitted whenever the key exists, including as an empty array.
+          items:
+            type: string
+        vision_encoder_name:
+          type: string
+          description: Vision encoder file name. Emitted only when `ref_images` is non-empty, so rows that merely inherited a loaded encoder do not report one.
+        vision_encoder_hash:
+          type: string
+          description: SHA256 hash of the vision encoder model. Emitted under the same non-empty `ref_images` condition as `vision_encoder_name`.
+        vae_name:
+          type: string
+          description: Identifies the VAE that decoded the image. Emitted whenever the row recorded one; the string format is not part of this contract and should be treated as an opaque label.
+        vae_hash:
+          type: string
+          description: SHA256 hash of the VAE weight file. Suppressed on legacy rows where a per-generation VAE override decoded the image but the recorded hash belongs to the model's own VAE.
 
     GeneratedImageSummary:
       type: object
@@ -7740,6 +8104,8 @@ components:
 
     ImageListResponse:
       type: object
+      description: One page of gallery rows returned by `GET /images`.
+      required: [images, total, skip, limit]
       properties:
         images:
           type: array
@@ -7747,6 +8113,13 @@ components:
             $ref: '#/components/schemas/GeneratedImageSummary'
         total:
           type: integer
+          description: Total number of rows matching the filters, before pagination.
+        skip:
+          type: integer
+          description: Echo of the requested `skip` offset.
+        limit:
+          type: integer
+          description: Echo of the requested `limit`.
 
     ModelInfo:
       type: object

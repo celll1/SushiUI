@@ -55,16 +55,27 @@ export default function VaeOverrideSelector({
   loadedLatentChannels = null,
 }: VaeOverrideSelectorProps) {
   const [vaes, setVaes] = useState<VaeEntry[]>([]);
-  const [loading, setLoading] = useState(false);
+  // Starts true: the candidate list is fetched on mount, and until it arrives
+  // "this value is not among the candidates" is not yet a fact. Initialising to
+  // false made the first paint of a restored (send-to) value claim "Recorded
+  // VAE not found" before the request had even been issued.
+  const [loading, setLoading] = useState(true);
+  // The candidate list could not be fetched. Tracked separately so an empty
+  // list from a failed request is never reported as "the recorded VAE is not
+  // on disk" — that is a different fact, and acting on it (re-picking a VAE)
+  // would be the wrong response.
+  const [loadFailed, setLoadFailed] = useState(false);
 
   useEffect(() => {
     setLoading(true);
+    setLoadFailed(false);
     fetchVaes()
       .then((data) => {
         setVaes(data.vaes || []);
       })
       .catch(() => {
         setVaes([]);
+        setLoadFailed(true);
       })
       .finally(() => setLoading(false));
   }, []);
@@ -82,6 +93,28 @@ export default function VaeOverrideSelector({
   const visibleVaes = compatibleOnly
     ? vaes.filter((v) => isVaeCompatible(v, loadedLatentChannels, loadedArch))
     : vaes;
+
+  // A value can arrive from outside this component — most often "send to" from
+  // a gallery image, which restores the VAE that decoded that image. It may not
+  // be in the list: the file was moved/deleted/renamed, or the compatibility
+  // filter is hiding it. In neither case may the dropdown quietly fall back to
+  // "Default": generating would then use a different VAE than the source image
+  // did, with nothing on screen saying so.
+  const selectedKnown = value ? vaes.find((v) => v.path === value) : undefined;
+  const selectedVisible = value
+    ? visibleVaes.some((v) => v.path === value)
+    : true;
+  const missing = !loading && !loadFailed && !!value && !selectedKnown;
+  const hiddenByFilter = !loading && !!value && !!selectedKnown && !selectedVisible;
+  // Candidate list unavailable while an override IS selected. Generation still
+  // uses that override (the value is in params, untouched) — but no option
+  // matches it, so the closed select would read "Default (model's VAE)" and
+  // disagree with what will actually run. Say so instead.
+  const unverifiable = !loading && loadFailed && !!value;
+  // Name only, matching how the backend labels a VAE everywhere else.
+  const recordedName = value
+    ? value.split(/[\\/]/).filter(Boolean).pop() || value
+    : "";
 
   const options = [
     { value: "", label: "Default (model's VAE)" },
@@ -136,6 +169,26 @@ export default function VaeOverrideSelector({
     }),
   ];
 
+  // Keep the current selection selectable/visible in the dropdown in both
+  // not-found and hidden-by-filter cases (an <option> that isn't in the list
+  // would render as a blank field or snap to the first entry).
+  if (missing) {
+    options.push({
+      value: value as string,
+      label: `Recorded VAE not found — ${recordedName}`,
+    });
+  } else if (unverifiable) {
+    options.push({
+      value: value as string,
+      label: `${recordedName} — candidate list unavailable`,
+    });
+  } else if (hiddenByFilter && selectedKnown) {
+    options.push({
+      value: selectedKnown.path,
+      label: `${selectedKnown.name} — not compatible with the loaded model`,
+    });
+  }
+
   return (
     <div className={`space-y-1 ${className}`}>
       <Select
@@ -148,9 +201,35 @@ export default function VaeOverrideSelector({
       {loading && (
         <p className="text-xs text-gray-500">Scanning model and training directories...</p>
       )}
-      {!loading && vaes.length === 0 && (
+      {missing && (
+        <p className="text-xs text-yellow-400">
+          The recorded VAE override was not found in the model or training
+          directories. Choose one manually, or clear it to use the model&apos;s
+          own VAE — generating as-is will report a VAE override error.
+        </p>
+      )}
+      {unverifiable && (
+        <p className="text-xs text-yellow-400">
+          The VAE list could not be loaded, so this selection could not be
+          checked. Generation will still use the selected VAE.
+        </p>
+      )}
+      {hiddenByFilter && (
+        <p className="text-xs text-yellow-400">
+          The selected VAE does not match the loaded model and is hidden by the
+          compatibility filter.
+        </p>
+      )}
+      {/* An empty list after a FAILED fetch is not evidence that no VAE exists;
+          that case is reported by the banner above instead. */}
+      {!loading && !loadFailed && vaes.length === 0 && (
         <p className="text-xs text-gray-500">
           No standalone VAEs found in the model or training directories.
+        </p>
+      )}
+      {!loading && loadFailed && !value && (
+        <p className="text-xs text-yellow-400">
+          The VAE list could not be loaded.
         </p>
       )}
       {!loading && vaes.length > 0 && visibleVaes.length === 0 && (

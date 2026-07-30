@@ -609,6 +609,28 @@ def describe_vae_override(pipeline_manager) -> tuple:
     not a stable identifier of the weights, and the EMA/live pair is written to
     two sibling directories at the identical step.
 
+    PRIVACY: ``name`` flows into ``params["vae_name"]``, which the PNG writer
+    records in the file's text chunks — i.e. it leaves this machine. It
+    therefore carries only the override's DISPLAY NAME
+    (``_friendly_component_name``: the basename, or ``<model folder>/vae`` for a
+    generic diffusers component directory), never the directory it lives in,
+    the drive, or anything else about this filesystem. That is the same rule
+    the accepted ``model_name`` precedent follows (basename + content hash).
+    The absolute path stays in ``params["vae_override_path"]`` for the local
+    gallery row. Do NOT assume the PNG writer cannot see that key: it is only
+    PARTLY an allowlist. Its per-key ``add_text`` calls are one, but it also
+    writes a ``sushi_parameters`` chunk containing the WHOLE ``params`` dict —
+    that is how ``vae_override_path`` reached shared PNGs for 56 rows before
+    this was fixed. What keeps it out now is the redaction applied there
+    (``utils/path_redaction.redact_params_for_sharing``), not the shape of the
+    writer. See the header of ``utils/image_utils.py``.
+
+    A VAE that this repo did not train has no ``sushi_vae_training.json``
+    sidecar (a downloaded diffusers directory, a bare ``.safetensors``, a PiD
+    ``.pth``). That is a normal case, not a degraded one: such a label is the
+    display name alone, which identifies the file exactly as ``model_name``
+    identifies a checkpoint. The name is never empty and never says "unknown".
+
     Every provenance field is optional and tri-state at the source
     (``read_vae_training_sidecar``): an unknown value is reported as unknown,
     never silently defaulted.
@@ -650,11 +672,36 @@ def describe_vae_override(pipeline_manager) -> tuple:
         parts.append("encoder+decoder trained" if enc is True
                      else "decoder only" if enc is False
                      else "trained scope unknown")
+    elif _has_vae_training_sidecar(path):
+        # The export carries a sidecar that could not be parsed as an object.
+        # Distinguishing this from a VAE that never had one keeps the label
+        # honest in both directions: it does not silently demote a SushiUI
+        # export to "no provenance", and it does not claim provenance for a
+        # third-party VAE that legitimately has none.
+        parts.append("SushiUI VAE fine-tune")
+        parts.append("provenance file unreadable")
 
-    name = f"override: {path}"
+    try:
+        from api.generation_overrides import _friendly_component_name
+        display = _friendly_component_name(path)
+    except Exception:
+        # Same shape as the helper's own fallback: a name, never a path.
+        display = os.path.basename(str(path).rstrip("/\\")) or "unnamed file"
+
+    name = f"override: {display}"
     if parts:
         name = f"{name} ({', '.join(parts)})"
     return name, path
+
+
+def _has_vae_training_sidecar(path) -> bool:
+    """True when ``path`` is a directory holding a SushiUI VAE-training sidecar
+    file, regardless of whether that file could be parsed."""
+    try:
+        from api.generation_overrides import VAE_TRAINING_SIDECAR
+        return bool(path) and os.path.isfile(os.path.join(str(path), VAE_TRAINING_SIDECAR))
+    except Exception:
+        return False
 
 
 def _override_vae_is_pid(pipeline_manager) -> bool:

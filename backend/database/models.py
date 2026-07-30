@@ -5,6 +5,10 @@ from datetime import datetime
 from typing import Any, Dict
 import uuid
 
+# Read-time redaction of filesystem paths in identity labels (see
+# ``GeneratedImage.to_dict``). stdlib-only helper, no API-layer import.
+from utils.path_redaction import display_name_for_path, redact_paths
+
 # Helper function to get local time
 def get_local_now():
     """Get current local time (not UTC)"""
@@ -253,8 +257,18 @@ class GeneratedImage(GalleryBase):
 
             # VAE identity. The VAE always affects the decoded output, so surface it
             # unconditionally when recorded (no ref-image gate, unlike the VE above).
+            #
+            # Redacted at READ time: rows written between the override-label fix
+            # and the privacy fix stored the override's ABSOLUTE PATH in
+            # ``vae_name``. Rows are never rewritten (the stored value stays as
+            # the audit trail, and ``vae_override_path`` in the returned raw
+            # ``parameters`` still gives the frontend the full local path for
+            # restore); only what is presented as the identity label is reduced
+            # to the same display name a new row would carry. Nothing is lost:
+            # ``vae_dec_IL02_v1_vae`` and ``vae_dec_IL02_v1_vae_noema`` remain
+            # distinct, and the parenthesized provenance is preserved verbatim.
             if "vae_name" in self.parameters:
-                result["vae_name"] = self.parameters["vae_name"]
+                result["vae_name"] = redact_paths(self.parameters["vae_name"])
 
             # Legacy rows (written before extract_vae_info consulted the override)
             # recorded the CHECKPOINT's VAE in vae_name even when a per-generation
@@ -286,7 +300,13 @@ class GeneratedImage(GalleryBase):
                 and not str(result.get("vae_name") or "").startswith("override: ")
             )
             if legacy_override:
-                result["vae_name"] = f"override: {override_path}"
+                # Display name only, never the path — same rule as the producer
+                # (``describe_vae_override``), so a legacy row and a new row read
+                # identically. The sidecar provenance is not re-derived here: it
+                # would mean touching the filesystem during a gallery read, and
+                # the export it described may since have been overwritten by a
+                # later step of the same run.
+                result["vae_name"] = f"override: {display_name_for_path(override_path, strip_safetensors=True)}"
 
             # vae_hash on such a row is the hash of the model's own VAE, not of the
             # override that actually decoded the image -- suppress it rather than

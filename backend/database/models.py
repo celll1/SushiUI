@@ -255,7 +255,43 @@ class GeneratedImage(GalleryBase):
             # unconditionally when recorded (no ref-image gate, unlike the VE above).
             if "vae_name" in self.parameters:
                 result["vae_name"] = self.parameters["vae_name"]
-            if "vae_hash" in self.parameters:
+
+            # Legacy rows (written before extract_vae_info consulted the override)
+            # recorded the CHECKPOINT's VAE in vae_name even when a per-generation
+            # VAE override produced the image. The override path was recorded all
+            # along, so derive the label from it here rather than reporting the
+            # wrong VAE. Rows written after the fix already carry the override in
+            # vae_name and are left untouched. Read-only: no row is rewritten.
+            #
+            # Gated on evidence the override was APPLIED, never on the request:
+            #   * ``vae_override_path`` is written by ``apply_overrides`` only.
+            #     ``vae_path`` is the REQUESTED value, echoed into every row even
+            #     when the override was dropped by the arch gate (pixel-space
+            #     minit2i), never consulted (video endpoints), or failed to load.
+            #   * an apply failure is recorded as a ``vae_override_error`` warning,
+            #     in which case the model's own VAE decoded the image.
+            # ``vae_override_source`` is NOT used: it stores the loaded module's
+            # ``config._name_or_path``, which a fine-tune export inherits from its
+            # base VAE and which would therefore name the wrong VAE. The path is
+            # the only field that identifies what was actually loaded.
+            failed = any(
+                (w or {}).get("code") == "vae_override_error"
+                for w in (self.parameters.get("effective_warnings") or [])
+                if isinstance(w, dict)
+            )
+            override_path = self.parameters.get("vae_override_path")
+            legacy_override = (
+                bool(override_path)
+                and not failed
+                and not str(result.get("vae_name") or "").startswith("override: ")
+            )
+            if legacy_override:
+                result["vae_name"] = f"override: {override_path}"
+
+            # vae_hash on such a row is the hash of the model's own VAE, not of the
+            # override that actually decoded the image -- suppress it rather than
+            # pair a corrected name with a stale hash.
+            if "vae_hash" in self.parameters and not legacy_override:
                 result["vae_hash"] = self.parameters["vae_hash"]
 
         return result

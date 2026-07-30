@@ -597,16 +597,109 @@ def extract_vision_encoder_info(pipeline_manager) -> tuple:
     return ve_name, ve_hash
 
 
+def describe_vae_override(pipeline_manager) -> tuple:
+    """Describe the ACTIVE per-generation VAE override. Returns (name, path).
+
+    Returns ``(None, None)`` when no override is applied. ``name`` is prefixed
+    with ``"override: "`` so it can never be confused with the model's own VAE,
+    and — for a SushiUI VAE fine-tune export — carries the provenance that the
+    export DIRECTORY alone cannot express: the run name, the training step, and
+    whether these are the EMA or the live weights. Both are needed because a
+    single run re-exports to the SAME two paths as it progresses, so the path is
+    not a stable identifier of the weights, and the EMA/live pair is written to
+    two sibling directories at the identical step.
+
+    Every provenance field is optional and tri-state at the source
+    (``read_vae_training_sidecar``): an unknown value is reported as unknown,
+    never silently defaulted.
+
+    The label is built from the override PATH, never from the loaded module's
+    ``config._name_or_path``: diffusers copies that field verbatim out of
+    ``config.json``, so a fine-tune export inherits its BASE VAE's value (the
+    run-113 exports both carry ``"../sdxl-vae/"``) and a bare ``.safetensors``
+    override carries nothing at all. Reporting it would name the stock VAE for an
+    image the fine-tune decoded — the exact confusion this function exists to
+    remove. ``override_vae_identity()`` is consulted only for a PiD decoder, where
+    it deliberately returns a description rather than a path.
+    """
+    path = getattr(pipeline_manager, "_override_vae_path", None)
+    if not path:
+        return None, None
+
+    parts = []
+    if _override_vae_is_pid(pipeline_manager):
+        # PiD wraps the model's OWN VAE (its encoder is still the model's); only
+        # the decode is the PiD net at ``path``.
+        parts.append("PiD pixel-diffusion super-resolution decoder")
+
+    try:
+        from api.generation_overrides import read_vae_training_sidecar
+        prov = read_vae_training_sidecar(path)
+    except Exception:
+        prov = None
+    if prov:
+        parts.append(f"run {prov['run_name']}" if prov.get("run_name")
+                     else "SushiUI VAE fine-tune")
+        if prov.get("step") is not None:
+            parts.append(f"step {prov['step']}")
+        ema = prov.get("ema_applied")
+        parts.append("EMA weights" if ema is True
+                     else "live weights" if ema is False
+                     else "EMA state unknown")
+        enc = prov.get("encoder_trained")
+        parts.append("encoder+decoder trained" if enc is True
+                     else "decoder only" if enc is False
+                     else "trained scope unknown")
+
+    name = f"override: {path}"
+    if parts:
+        name = f"{name} ({', '.join(parts)})"
+    return name, path
+
+
+def _override_vae_is_pid(pipeline_manager) -> bool:
+    """True when the active override VAE slot holds a ``PidVaeWrapper``."""
+    try:
+        from core.models.pid.pid_vae_wrapper import PidVaeWrapper
+        for kind, container, key in pipeline_manager._vae_override_targets():
+            active = getattr(container, key) if kind == "attr" else container.get(key)
+            return isinstance(active, PidVaeWrapper)
+    except Exception:
+        pass
+    return False
+
+
 def extract_vae_info(pipeline_manager) -> tuple:
     """Extract the effective VAE identity used for decode. Returns (vae_name, vae_hash).
 
     The VAE always participates in the final decode, so this is recorded for every
     generation where it can be determined. ``vae_name`` is a source description (a
-    resolved directory/repo id, ``"embedded (checkpoint)"``, or ``"none (pixel-space)"``);
-    ``vae_hash`` is the cached hash of a concrete local weight file when one is
-    identifiable, else "" (embedded VAEs are already covered by the model hash).
+    resolved directory/repo id, ``"embedded (checkpoint)"``, ``"none (pixel-space)"``,
+    or an ``"override: ..."`` description when a per-generation VAE override is
+    active — see ``describe_vae_override``); ``vae_hash`` is the cached hash of a
+    concrete local weight file when one is identifiable, else "" (embedded VAEs are
+    already covered by the model hash).
+
+    An active override is reported FIRST: it replaces the VAE object in the model's
+    slots without touching the ``vae_source`` notes recorded at model load, so those
+    notes still describe the checkpoint's own VAE and would misreport the decode.
     """
     from utils.hash_cache import get_cached_file_hash
+
+    override_name, override_path = describe_vae_override(pipeline_manager)
+    if override_name:
+        # Hash of the override's own weight file. For a PiD override this is the
+        # PiD .pth, so such a row records no hash for the model's own VAE (whose
+        # encoder still ran) — the model hash remains its only anchor.
+        vae_hash = ""
+        try:
+            weight_file = _resolve_primary_vae_weight(override_path)
+            if weight_file:
+                vae_hash = get_cached_file_hash(weight_file)
+        except Exception as e:
+            print(f"[VAE Metadata] Override hash calculation failed: {e}")
+        print(f"[VAE Metadata] vae_name={override_name!r}, vae_hash={vae_hash[:16] if vae_hash else ''!r}")
+        return override_name, vae_hash
 
     info = getattr(pipeline_manager, "current_model_info", None) or {}
     model_type = info.get("type", "")

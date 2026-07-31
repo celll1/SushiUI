@@ -67,6 +67,12 @@ recorded width and height** (read-only query against `datasets.db`, MEASURED):
 So at `resolution: 512` the decoder is trained almost entirely on
 LANCZOS-downscaled content, typically a **2-3× reduction**, and one crop leaves
 ~27 % of each source reachable only through the random-crop offset across epochs.
+That reach is real only because the offset is re-drawn on **each visit** to an
+image: the crop RNG is keyed by `(seed, index, visit)`, where `visit` is the data
+pass supplied by `VaeEpochCropSampler` (`vae_dataset.py`). Keying it by
+`(seed, index)` alone — as the loader did until 2026-07-31 — pinned every image
+to one crop window for the whole run, so shuffling reordered items without ever
+moving a window and the other ~27 % was never reached.
 
 An independent 6,000-image sample of the same pool (header reads only, 0
 unreadable, MEASURED) gives the fraction that a *native* crop at each size could

@@ -125,6 +125,17 @@ item-loading phase dropped from 8.20s to 2.38s (43k items), 42.07s to 5.22s
 
 Every crop is square, at `resolution`, with the aspect ratio preserved (nothing
 is squashed) — randomly placed for training, centred for validation.
+
+"Randomly placed" means **re-placed on every visit**: the training crop RNG is
+keyed by `(seed, item index, visit)`, where `visit` is the data-pass counter that
+`VaeEpochCropSampler` yields alongside the index (`vae_dataset.py`), so the same
+image gets a different window — and, under `mixed`, a different scale factor —
+each time it comes round. The counter is checkpointed (`data_epoch` in
+`train_state.json`) and a resume continues into the next pass, so the stream is
+reproducible for a seed and independent of `num_workers`. Until 2026-07-31 the
+key was `(seed, item index)` only, which silently gave each image exactly one
+crop and one `mixed` factor for the entire run.
+
 `crop_scale_policy` decides how much the image is **resampled before that crop**,
 which the crop-geometry study
 (`scratchpad/vae_training/results_crop_geometry.md`) measured to be the dominant
@@ -140,7 +151,7 @@ because the absolutes move with machine load.
 |---|---|---|---|
 | `downscale` (**default**) | short side scaled to exactly `resolution`, up or down | median **2.17x**, mean 2.51x, p95 5.35x; **95.0%** downscaled, 0.5% already exactly at `resolution` | baseline |
 | `native` | crop out of the full-size pixels; upscale only when the short side is genuinely below `resolution` | **95.5% at exactly 1x**; the remaining 4.50% are upscaled | **−42 to −43%** (no LANCZOS pass over a multi-megapixel image) |
-| `mixed` | draw the factor per sample, log-uniformly over `[1, f_max]` | median **1.35x**, mean 1.60x, p95 3.13x; the whole range is covered, 1x is a limit of the support | +14 to +16% |
+| `mixed` | draw the factor per sample **and per visit**, log-uniformly over `[1, f_max]` | median **1.35x**, mean 1.60x, p95 3.13x; the whole range is covered, 1x is a limit of the support | +14 to +16% |
 | `mixed` + `crop_scale_max_downscale: 2.0` | as above with `f_max` capped | median 1.28x, max 1.99x | ~+15% |
 
 The corpus-wide census is **§1.2**, not this table: over all 3,842,897 items
@@ -189,19 +200,34 @@ intermediate size *larger* than the crop — `results_crop_geometry.md` §5.3
 predicted its cost would sit between the other two rows and that turned out to be
 wrong (§8.4) — still ~10x the GPU's demand at 2 workers.
 
-**The default stays `downscale`**, so no existing run changes what it trains on:
-run 113 has 52k steps of history under that geometry, and `downscale` is
-**pixel-identical** to the pre-policy loader (`results_crop_geometry.md` §8.3:
+**The default stays `downscale`**, so no existing run changes the *geometry* it
+trains on: run 113 has 52k steps of history under that geometry, and `downscale`
+is **pixel-identical** to the pre-policy loader (`results_crop_geometry.md` §8.3:
 `torch.equal` on 400/400 real dataset images in both random-crop and centre-crop
 mode — the branch reuses the same `resolution / min(w, h)` expression, and
 `resolve_crop_scale` returns before touching the RNG on both non-`mixed` paths,
 so the crop-offset draw sees an unchanged stream).
 
+**That claim is about the resample geometry of a policy, not about which crop
+window a given image gets.** The crop-offset *sequence* did change on
+2026-07-31, for every policy including `downscale`: the RNG seed derivation went
+from `(seed * 1000003) ^ index` to `mix_seed(_DOMAIN_CROP, seed, index, visit)`
+in order to make re-visits move the window (see above). Re-keying moves the very
+first draw too, so even visit 0 lands elsewhere than it used to: for items 0-4 at
+`seed: 7`, with 100 px of slack on both axes, the old key drew the offsets
+`(19,91) (81,79) (91,51) (22,89) (99,40)` and the current one draws
+`(61,5) (45,21) (69,4) (67,67) (62,93)`. A run resumed across that date
+therefore continues on **different crop windows** (the intended fix: the old key
+pinned each image to one window for the entire run). What is unchanged is the
+resampling each policy applies before the crop, and the validation batch, which
+uses no RNG at all.
+
 **Validation ignores the policy, deliberately.** `make_validation_batch` is
 pinned to `downscale` and takes no policy argument at all, so:
 
-- it stays deterministic (no RNG — `mixed` would redraw per call and make the
-  held-out series noisy for a reason unrelated to the model), and
+- it stays deterministic (no RNG at all, no visit counter, centre crop — `mixed`
+  would redraw per call and make the held-out series noisy for a reason unrelated
+  to the model), and
 - `vae_val_psnr` keeps ONE meaning. PSNR is strongly scale-dependent here (the
   same fine-tune measures +1.15 dB on downscaled content and +0.81 dB on
   native), so a validation set that followed the training policy would put a

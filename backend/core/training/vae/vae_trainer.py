@@ -43,7 +43,11 @@ from torch.utils.data import DataLoader
 
 from core.training.lr_utils import reassert_config_lr
 from core.training.vae.vae_config import VaeConfigError, strict_bool
-from core.training.vae.vae_dataset import VaeRawImageDataset, make_validation_batch
+from core.training.vae.vae_dataset import (
+    VaeEpochCropSampler,
+    VaeRawImageDataset,
+    make_validation_batch,
+)
 from core.training.vae import vae_losses
 
 _DTYPE_MAP = {"bf16": torch.bfloat16, "fp16": torch.float16, "fp32": torch.float32}
@@ -120,6 +124,9 @@ class VaeTrainer:
         self._ema_retained_init = 1.0
 
         self.resume_seq = 0
+        # Set in train(); carries the data-pass counter that keys the crop RNG,
+        # and is checkpointed so a resume continues into a FRESH pass.
+        self.train_sampler = None
         self.global_step = 0
         self.stopped = False
         self._last_val_step = -1
@@ -418,10 +425,16 @@ class VaeTrainer:
             train_items, self.cfg["resolution"], random_crop=True, seed=seed,
             scale_policy=self.cfg["crop_scale_policy"],
             max_downscale=self.cfg["crop_scale_max_downscale"])
+        # Custom sampler instead of shuffle=True: it yields (index, visit) pairs
+        # so that re-visiting an image in a later pass moves its crop window and
+        # re-draws its 'mixed' scale. See VaeEpochCropSampler for why the counter
+        # cannot live on the dataset (worker processes hold their own copies).
+        self.train_sampler = VaeEpochCropSampler(
+            len(train_dataset), seed=seed, shuffle=True)
         loader = DataLoader(
             train_dataset,
             batch_size=self.cfg["batch_size"],
-            shuffle=True,
+            sampler=self.train_sampler,
             num_workers=self.cfg["num_workers"],
             drop_last=len(train_dataset) >= self.cfg["batch_size"],
             pin_memory=(self.device.type == "cuda"),
@@ -650,6 +663,10 @@ class VaeTrainer:
                     "ema_enabled": self.ema is not None,
                     "ema_updates": self._ema_updates,
                     "ema_retained_init_fraction": self._ema_retained_init,
+                    # Data-pass counter of VaeEpochCropSampler: the crop RNG is
+                    # keyed by it, so without it a resume would replay the pass-0
+                    # crops and undo the per-visit variation.
+                    "data_epoch": self._data_epoch_for_checkpoint(),
                     "resume_seq": self.resume_seq,
                     "base_vae": self._base_vae_identity,
                     "config": _jsonable(self.cfg),
@@ -661,6 +678,40 @@ class VaeTrainer:
         self._record_checkpoint_row(ckpt_dir, step)
         self._prune_checkpoints()
         return ckpt_dir
+
+    def _data_epoch_for_checkpoint(self) -> int:
+        """The data pass in progress, for ``train_state.json``.
+
+        0 when no sampler exists yet (a checkpoint written before ``train()``
+        built the loader) -- the resume then simply starts at pass 1.
+        """
+        sampler = getattr(self, "train_sampler", None)
+        if sampler is None:
+            return 0
+        return int(sampler.current_epoch)
+
+    def _position_data_sampler(self, train_state: Dict[str, Any]) -> None:
+        """Continue the data traversal into the pass AFTER the checkpointed one.
+
+        The crop window and (under ``crop_scale_policy: mixed``) the scale factor
+        of every item are keyed by this counter, so restarting at the
+        checkpointed pass would re-serve the images the interrupted pass had
+        already consumed with the very crops they just saw. ``+1`` makes the
+        resumed stream a continuation rather than a partial repeat, and because
+        it is a plain integer the resume stays exactly reproducible -- unlike the
+        global-RNG restore next to it, which cannot express "where in the data
+        order we were".
+
+        Checkpoints written before ``data_epoch`` existed resume at pass 1, which
+        is still distinct from the pass-0 crops they trained on.
+        """
+        # getattr, not attribute access: load_checkpoint is also driven against
+        # __new__-built trainers (backend/tests/test_lr_resume_override.py), and
+        # a resume must not die on an attribute the loop had not set yet.
+        sampler = getattr(self, "train_sampler", None)
+        if sampler is None:
+            return
+        sampler.set_next_epoch(int(train_state.get("data_epoch", 0)) + 1)
 
     def _sorted_checkpoint_dirs(self) -> List[Path]:
         """Existing ``checkpoints/step_*`` directories, oldest step first."""
@@ -927,6 +978,7 @@ class VaeTrainer:
         with open(ckpt_dir / "train_state.json", "r", encoding="utf-8") as f:
             train_state = json.load(f)
         self.global_step = int(train_state.get("step", 0))
+        self._position_data_sampler(train_state)
         # Continue the EMA warmup ramp / retained-init product across resume
         # (only meaningful when the EMA itself was restored, not re-seeded).
         if self.ema is not None and train_state.get("ema_enabled"):

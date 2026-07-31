@@ -34,6 +34,7 @@ stays in that absent-key list as a typo guard.
 
 from __future__ import annotations
 
+import ast
 import copy
 import os
 import sys
@@ -2157,6 +2158,119 @@ class VaeResumeCompletenessTest(unittest.TestCase):
                              "save_checkpoint writes a file that no resume "
                              "verifies (add it to _CKPT_ARTIFACTS)")
             self.assertIn("vae_decoder.safetensors", on_disk)
+
+
+class TestTrainingOutputIsCp932Encodable(unittest.TestCase):
+    """Every runtime string in the VAE training modules must survive cp932.
+
+    The training subprocess's stdout is cp932 on this platform. A single
+    non-ASCII character in a message therefore raises UnicodeEncodeError at the
+    moment the message is produced -- and because that happens inside the
+    subprocess, it surfaces to the UI as a generic "training failed" rather than
+    as an encoding problem. On a SUCCESS path (a print, or a string a print
+    consumes) that turns a working configuration into a dead one; on a refusal
+    path it replaces a carefully-worded explanation with a traceback about a
+    codec.
+
+    Commit 5c257a4e swept the tree for exactly this and established the
+    invariant, but left no guard, so it regressed twice (bd0d8a08, 6cc12b0e --
+    ten em-dashes, one of them in the optimizer-placement note that
+    build_optimizer prints unconditionally for the *_ringbuffer optimizers).
+    This test is that guard.
+
+    Scope is the VAE training package only: those modules run inside the
+    training subprocess and own its stdout. It is deliberately not a repo-wide
+    check. Docstrings are exempt (they are documentation, never printed);
+    comments never reach a Constant node and so are exempt automatically. Every
+    other string literal is checked, including ones that are returned and
+    printed by a caller, because that is precisely the shape the regression
+    took.
+    """
+
+    ENCODING = "cp932"
+
+    @staticmethod
+    def _module_paths():
+        vae_pkg = os.path.join(_BACKEND, "core", "training", "vae")
+        return sorted(
+            os.path.join(vae_pkg, name)
+            for name in os.listdir(vae_pkg)
+            if name.endswith(".py")
+        )
+
+    @classmethod
+    def _docstring_node_ids(cls, tree):
+        ids = set()
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.Module, ast.FunctionDef,
+                                     ast.AsyncFunctionDef, ast.ClassDef)):
+                continue
+            body = getattr(node, "body", None)
+            if (body and isinstance(body[0], ast.Expr)
+                    and isinstance(body[0].value, ast.Constant)
+                    and isinstance(body[0].value.value, str)):
+                ids.add(id(body[0].value))
+        return ids
+
+    @classmethod
+    def offending_literals(cls, path):
+        """[(lineno, char, snippet)] for every unencodable non-docstring string."""
+        with open(path, "r", encoding="utf-8") as handle:
+            source = handle.read()
+        tree = ast.parse(source, filename=path)
+        exempt = cls._docstring_node_ids(tree)
+        found = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
+                continue
+            if id(node) in exempt:
+                continue
+            for char in node.value:
+                try:
+                    char.encode(cls.ENCODING)
+                except UnicodeEncodeError:
+                    # ascii() so this report itself cannot die on a cp932 stdout.
+                    found.append((node.lineno, hex(ord(char)),
+                                  ascii(node.value[:60])))
+                    break
+        # ast.walk is breadth-first, not source order.
+        return sorted(found)
+
+    def test_no_runtime_string_breaks_the_training_subprocess_stdout(self):
+        modules = self._module_paths()
+        self.assertTrue(modules, "no VAE training modules found to check")
+        offences = []
+        for path in modules:
+            for lineno, char, snippet in self.offending_literals(path):
+                offences.append(
+                    f"{os.path.basename(path)}:{lineno}: U+{char[2:].upper()} "
+                    f"in {snippet}")
+        self.assertEqual(
+            offences, [],
+            "String literal(s) that cannot be encoded to "
+            f"{self.ENCODING}, in modules that print to the training "
+            "subprocess's stdout. Replace the character with an ASCII "
+            "equivalent (' - ' for an em-dash); see this class's docstring:\n  "
+            + "\n  ".join(offences))
+
+    def test_the_check_would_catch_a_reintroduced_em_dash(self):
+        """The guard above passes trivially if the detector is broken."""
+        import tempfile
+        source = (
+            "def f():\n"
+            '    """A docstring with an em-dash — which is exempt."""\n'
+            '    # A comment with an em-dash — which is also exempt.\n'
+            '    print(f"placement note — the same state placement")\n'
+            '    raise ValueError("refused — for a reason")\n'
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "probe.py")
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write(source)
+            found = self.offending_literals(path)
+        self.assertEqual([lineno for lineno, _, _ in found], [4, 5],
+                         "the detector must flag the print and the raise, and "
+                         "exempt the docstring and the comment")
 
 
 if __name__ == "__main__":

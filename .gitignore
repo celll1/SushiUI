@@ -157,6 +157,12 @@ test_*.py
 # kwargs, yield shape and injection semantics at once, and nothing caught it
 # because git had never seen the test.
 !backend/tests/test_danbooru_online_learning.py
+# Exception: the L_invented flat-region loss. Its failure mode is that the
+# term rewards blur -- which reads as SUCCESS on every other instrument we
+# have, since blurring lowers both invented HF and total emitted HF. The
+# guard pins the anti-blur invariants and the internal geometry that keeps
+# the loss distinguishable from the metric that judges it.
+!backend/tests/test_l_invented_loss.py
 # Exception: learning-rate re-assertion on resume. The defect it guards was
 # invisible from the outside -- editing lr and resuming was a silent no-op,
 # and the accompanying schedule-multiplier regression mispriced the first

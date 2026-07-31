@@ -100,6 +100,11 @@ const DEFAULT_VAE_CONFIG: VaeConfig = {
   ycbcr_dc_eps: 0.001,
   pattern_weight: 0.0,
   pattern_size: 8,
+  l_invented_weight: 0.0,
+  l_invented_y_weight: 1.0,
+  l_invented_chroma_weight: 0.25,
+  l_invented_flat_t_y: 2.0,
+  l_invented_flat_t_c: 1.25,
   kl_weight: 1e-6,
   export_bare_ldm: false,
   validation_every: 100,
@@ -111,6 +116,7 @@ const DEFAULT_VAE_CONFIG: VaeConfig = {
 // (no training signal). Mirrored here so the form can say so before submitting.
 const LOSS_WEIGHT_KEYS: (keyof VaeConfig)[] = [
   "mse_weight", "l1_weight", "lpips_weight", "ycbcr_dc_weight", "pattern_weight",
+  "l_invented_weight",
 ];
 
 // Optimizers resolvable by OptimizerFactory without a trainer-provided
@@ -844,6 +850,99 @@ export default function VaeTrainingConfig({
             measured at ratio ~1.0 (i.e. absent) on four production VAEs under three independent
             metric definitions.
           </p>
+
+          <div className="flex items-center gap-3">
+            <label className="text-xs text-gray-400 w-40">Invented HF weight</label>
+            <NumberInput
+              min={0} max={10} step={0.1} parse="float"
+              value={cfg.l_invented_weight}
+              defaultValue={DEFAULT_VAE_CONFIG.l_invented_weight}
+              onCommit={(v) => setField("l_invented_weight", v)}
+              className={numberClass}
+            />
+            <span className="text-xs text-gray-500">Flat-region penalty.</span>
+          </div>
+          <p className="text-xs text-gray-500 -mt-1">
+            Penalises high-frequency energy in the decode that a least-squares projection onto
+            the source&apos;s own high-frequency content cannot explain, inside windows where a
+            plane fit says the source is flat or a smooth gradient. The projection coefficient is
+            detached from the gradient, so the term is reduced by emitting less unexplained
+            energy rather than by correlating more with the source. Every other term in the bank
+            is an agreement-with-source objective. The window geometry, the highpass basis and
+            the projection constants are fixed in the backend. 0 disables the term.
+          </p>
+          <p className="text-xs text-gray-500 -mt-1">
+            Not a standalone objective: the term&apos;s own minimum inside a flat window is
+            &quot;emit no high frequency at all&quot;, and it charges exact reproduction of the
+            source&apos;s own detail slightly more than it charges a blur of it. It is meant to
+            run alongside an agreement-with-source term (MSE / LPIPS), which supplies the
+            opposing pull.
+          </p>
+          {cfg.l_invented_weight > 0 && (
+            <div className="pl-4 border-l border-gray-700 space-y-2">
+              <div className="flex items-center gap-3">
+                <label className="text-xs text-gray-400 w-40">Luma (Y) weight</label>
+                <NumberInput
+                  min={0} max={4} step={0.05} parse="float"
+                  value={cfg.l_invented_y_weight}
+                  defaultValue={DEFAULT_VAE_CONFIG.l_invented_y_weight}
+                  onCommit={(v) => setField("l_invented_y_weight", v)}
+                  className={numberClass}
+                />
+              </div>
+              <div className="flex items-center gap-3">
+                <label className="text-xs text-gray-400 w-40">Chroma weight</label>
+                <NumberInput
+                  min={0} max={4} step={0.05} parse="float"
+                  value={cfg.l_invented_chroma_weight}
+                  defaultValue={DEFAULT_VAE_CONFIG.l_invented_chroma_weight}
+                  onCommit={(v) => setField("l_invented_chroma_weight", v)}
+                  className={numberClass}
+                />
+              </div>
+              {LOSS_WEIGHT_KEYS.every(
+                (k) => k === "l_invented_weight" || Number(cfg[k]) <= 0,
+              ) && (
+                <p className="text-xs text-amber-400">
+                  This is the only active loss weight. On its own, the configuration whose loss
+                  is lowest is a decoder that emits no high frequency inside flat regions. Set
+                  mse_weight or another agreement-with-source term above 0.
+                </p>
+              )}
+              {cfg.l_invented_y_weight <= 0 && cfg.l_invented_chroma_weight <= 0 && (
+                <p className="text-xs text-red-400">
+                  Both channel weights are 0: the term would be identically zero while still
+                  being computed every step. The backend refuses this.
+                </p>
+              )}
+              <div className="flex items-center gap-3">
+                <label className="text-xs text-gray-400 w-40">Flat threshold Y</label>
+                <NumberInput
+                  min={0.25} max={8} step={0.25} parse="float"
+                  value={cfg.l_invented_flat_t_y}
+                  defaultValue={DEFAULT_VAE_CONFIG.l_invented_flat_t_y}
+                  onCommit={(v) => setField("l_invented_flat_t_y", v)}
+                  className={numberClass}
+                />
+              </div>
+              <div className="flex items-center gap-3">
+                <label className="text-xs text-gray-400 w-40">Flat threshold chroma</label>
+                <NumberInput
+                  min={0.25} max={8} step={0.25} parse="float"
+                  value={cfg.l_invented_flat_t_c}
+                  defaultValue={DEFAULT_VAE_CONFIG.l_invented_flat_t_c}
+                  onCommit={(v) => setField("l_invented_flat_t_c", v)}
+                  className={numberClass}
+                />
+              </div>
+              <p className="text-xs text-gray-500">
+                Plane-fit residual thresholds in 8-bit levels: a window counts as flat when the
+                RMS residual of a least-squares plane fit is at or below them, so smooth
+                gradients qualify as well as constant regions. The fraction of candidate windows
+                selected is charted as &quot;VAE invented coverage&quot;.
+              </p>
+            </div>
+          )}
 
           {activeLossCount === 0 && (
             <p className="text-xs text-red-400">

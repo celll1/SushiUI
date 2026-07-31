@@ -37,7 +37,16 @@ VALID_CROP_SCALE_POLICIES = ("downscale", "native", "mixed")
 
 # Loss keys that participate in the "at least one active term" check.
 _LOSS_WEIGHT_KEYS = ("mse_weight", "l1_weight", "lpips_weight",
-                     "ycbcr_dc_weight", "pattern_weight")
+                     "ycbcr_dc_weight", "pattern_weight", "l_invented_weight")
+
+# Upper bounds for the L_invented keys, mirroring the `maximum:` that
+# openapi.yaml declares for each of them (VaeTrainingDefaults). They are here so
+# the declared contract is ENFORCED rather than merely documented; the sibling
+# pattern_weight declares no maximum, so nothing else in this file gains one.
+# If a bound is wrong it is changed in openapi.yaml and here together.
+_INVENTED_WEIGHT_MAX = 10.0
+_INVENTED_CHANNEL_MAX = 4.0
+_INVENTED_THRESHOLD_MAX = 8.0
 
 # Keys where a wrong answer changes WHAT IS TRAINED or WHAT IS WRITTEN, and so
 # must never be decided by Python truthiness. See strict_bool().
@@ -434,3 +443,63 @@ def _validate(cfg: Dict[str, Any], train_section: Dict[str, Any]) -> None:
     cfg["ycbcr_dc_y_weight"] = float(cfg["ycbcr_dc_y_weight"])
     cfg["ycbcr_dc_chroma_weight"] = float(cfg["ycbcr_dc_chroma_weight"])
     cfg["ycbcr_dc_eps"] = float(cfg["ycbcr_dc_eps"])
+
+    # ---- L_invented sub-parameters ----------------------------------------
+    # Type and range are checked UNCONDITIONALLY, so a typo'd value cannot sit
+    # in a config until the day someone turns the term on. The two
+    # *consistency* refusals below (which reject a combination that is
+    # individually legal) fire ONLY when the term is actually on: with
+    # l_invented_weight=0 nothing here is read, so refusing would break "off by
+    # default is completely inert" — and the remediation those messages name
+    # ("set l_invented_weight=0") would already be true and could not clear it.
+    invented_on = float(cfg["l_invented_weight"]) > 0
+    # Upper bounds are the ones openapi.yaml declares for these properties. The
+    # spec is the contract, so it is enforced here rather than documented and
+    # ignored (an unenforced maximum: 10 accepted l_invented_weight=1e6).
+    for key, upper in (("l_invented_weight", _INVENTED_WEIGHT_MAX),
+                       ("l_invented_y_weight", _INVENTED_CHANNEL_MAX),
+                       ("l_invented_chroma_weight", _INVENTED_CHANNEL_MAX)):
+        try:
+            cfg[key] = float(cfg[key])
+        except (TypeError, ValueError):
+            raise VaeConfigError(f"{key} must be a number, got {cfg[key]!r}")
+        if cfg[key] < 0:
+            raise VaeConfigError(f"{key} must be >= 0, got {cfg[key]}")
+        if cfg[key] > upper:
+            raise VaeConfigError(
+                f"{key} must be <= {upper} (the bound openapi.yaml declares for "
+                f"it), got {cfg[key]}."
+            )
+    if invented_on and (cfg["l_invented_y_weight"] <= 0
+                        and cfg["l_invented_chroma_weight"] <= 0):
+        # Both channel weights at 0 makes the term identically 0 while still
+        # costing a full mask + projection pass every step: a weight the user
+        # set, the YAML recorded, and nothing acted on.
+        raise VaeConfigError(
+            "l_invented_y_weight and l_invented_chroma_weight are both 0, which "
+            "makes the invented-HF term identically zero while still computing "
+            "it every step. Set at least one above 0, or set "
+            "l_invented_weight=0 to disable the term."
+        )
+    for key in ("l_invented_flat_t_y", "l_invented_flat_t_c"):
+        try:
+            cfg[key] = float(cfg[key])
+        except (TypeError, ValueError):
+            raise VaeConfigError(f"{key} must be a number, got {cfg[key]!r}")
+        if cfg[key] > _INVENTED_THRESHOLD_MAX:
+            raise VaeConfigError(
+                f"{key} must be <= {_INVENTED_THRESHOLD_MAX} (the bound "
+                f"openapi.yaml declares for it), got {cfg[key]}."
+            )
+        if cfg[key] < 0:
+            raise VaeConfigError(f"{key} must be >= 0, got {cfg[key]}")
+        if invented_on and cfg[key] <= 0:
+            # 0 is refused rather than clamped: a zero plane-residual threshold
+            # selects no window at all on real data, so the term would be
+            # silently inert for the whole run.
+            raise VaeConfigError(
+                f"{key} must be > 0 (it is a plane-fit residual threshold in "
+                f"8-bit levels), got {cfg[key]}. A threshold of 0 selects no "
+                f"window on real data, so the invented-HF term would train "
+                f"nothing."
+            )

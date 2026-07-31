@@ -54,6 +54,8 @@ M_RECON = "vae_recon_loss"
 M_LPIPS = "vae_lpips_loss"
 M_DC = "vae_dc_loss"
 M_PATTERN = "vae_pattern_loss"
+M_INVENTED = "vae_invented_loss"
+M_INVENTED_COV = "vae_invented_cov"
 M_KL = "vae_kl_loss"
 M_VAL_PSNR = "vae_val_psnr"
 M_VAL_BLOCKINESS = "vae_val_blockiness"
@@ -985,6 +987,22 @@ class VaeTrainer:
             "ycbcr_dc_eps": self.cfg["ycbcr_dc_eps"],
             "pattern_weight": self.cfg["pattern_weight"],
             "pattern_size": self.cfg["pattern_size"],
+            # The sidecar's loss block is hand-listed rather than a cfg dump, so
+            # a new term has to be added here to be recorded. Sub-parameters are
+            # written as None when the term was off, because they were then not
+            # read at all (same convention as kl_weight under a frozen encoder).
+            "l_invented_weight": self.cfg["l_invented_weight"],
+            **({
+                "l_invented_y_weight": self.cfg["l_invented_y_weight"],
+                "l_invented_chroma_weight": self.cfg["l_invented_chroma_weight"],
+                "l_invented_flat_t_y": self.cfg["l_invented_flat_t_y"],
+                "l_invented_flat_t_c": self.cfg["l_invented_flat_t_c"],
+            } if float(self.cfg["l_invented_weight"]) > 0 else {
+                "l_invented_y_weight": None,
+                "l_invented_chroma_weight": None,
+                "l_invented_flat_t_y": None,
+                "l_invented_flat_t_c": None,
+            }),
             # Recorded as None when the encoder was frozen, because the term was
             # then not constructed at all and the configured value had no effect.
             "kl_weight": (self.cfg["kl_weight"] if self.train_encoder else None),
@@ -1182,6 +1200,12 @@ class VaeTrainer:
             extra[M_DC] = parts["ycbcr_dc"]
         if "pattern" in parts:
             extra[M_PATTERN] = parts["pattern"]
+        if "l_invented" in parts:
+            extra[M_INVENTED] = parts["l_invented"]
+            # Window coverage rides along with the term: a value that falls
+            # because the term stopped firing looks identical to one that falls
+            # because the decoder stopped inventing, unless both are charted.
+            extra[M_INVENTED_COV] = parts["l_invented_cov"]
         if "kl_term" in parts:
             # The WEIGHTED contribution, not the raw KL: see metric_registry.
             extra[M_KL] = parts["kl_term"]

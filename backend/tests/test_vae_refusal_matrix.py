@@ -24,9 +24,12 @@ encoder-training behaviour (parameters move, KL finite, sidecar flag) is covered
 by the smoke run documented in docs/guides/VAE_TRAINING.md.
 
 Matrix rows that are NOT implemented at all (the PiD ``pid_decoder`` network
-type, the GAN loss, ``crop_consistency`` / ``invented_hf``) are covered by
+type, the GAN loss, ``crop_consistency``) are covered by
 ``test_unimplemented_matrix_rows_have_no_config_surface``: they must remain
-unreachable rather than becoming silently-accepted unknown keys.
+unreachable rather than becoming silently-accepted unknown keys. The
+invented-HF row IS implemented, but under the ``l_invented_*`` names (see
+``test_l_invented_loss.py``), so the design.md spelling ``invented_hf_weight``
+stays in that absent-key list as a typo guard.
 """
 
 from __future__ import annotations
@@ -444,9 +447,12 @@ class VaeRefusalMatrixTest(unittest.TestCase):
     def test_unimplemented_matrix_rows_have_no_config_surface(self):
         """design.md §4 rows that are NOT built must stay unreachable.
 
-        PiD decoder training (Phase 3), the GAN loss and the crop-consistency /
-        invented-HF terms have no keys, so asking for them lands in the
-        unknown-key refusal above rather than being silently ignored.
+        PiD decoder training (Phase 3), the GAN loss and the crop-consistency
+        term have no keys, so asking for them lands in the unknown-key refusal
+        above rather than being silently ignored. ``invented_hf_weight`` is
+        design.md's spelling of a term that shipped as ``l_invented_weight``,
+        and is kept here so the old name still refuses instead of being quietly
+        dropped by a config that used it.
         """
         for absent in ("gan_enabled", "disc_start", "crop_consistency_weight",
                        "invented_hf_weight", "train_lq_proj", "pid_backbone"):

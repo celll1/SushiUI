@@ -81,6 +81,7 @@ config:
         lpips_weight: 0.1
         ycbcr_dc_weight: 0.1
         pattern_weight: 0.0
+        l_invented_weight: 0.0              # flat-region invented-HF penalty (opt-in)
         seed: 42
         num_workers: 2
         validation_every: 100
@@ -406,6 +407,7 @@ criterion that a future maintainer can re-run rather than re-argue.
 | `ycbcr_dc_weight` | **0.1** | Per-pixel Charbonnier on YCbCr (luma down-weighted, `ycbcr_dc_y_weight` 0.25) **plus** a Charbonnier on the per-image per-channel spatial mean, under the same weight. |
 | `pattern_weight` | **0.0** (available) | The 8 px latent-grid artifact it targets **measured absent**. |
 | `l1_weight` | **0.0** (available) | The LDM / ft-EMA reconstruction term; usable instead of or alongside MSE. Preference, not measurement. |
+| `l_invented_weight` | **0.0** (available) | Flat-region invented-HF penalty — the only term in the bank that is **not** an agreement-with-source objective. See below. |
 | `kl_weight` | **1e-6** (encoder runs only) | LDM's value, applied to a **per-element-normalised** KL so that it means the same thing here — see below. Not constructed under a frozen encoder, where it is a constant w.r.t. every trainable parameter. |
 
 ### Why the KL is normalised before it is weighted
@@ -477,6 +479,90 @@ That is real, but it is broadband softness/ringing at edges, not grid structure,
 so a grid-phase penalty is the wrong instrument for it — MSE + LPIPS already
 target it. The term stays available as opt-in for anyone who can demonstrate the
 artifact.
+
+### What `l_invented_weight` is for
+
+Every other term in the bank compares the decode with the source, which is the
+family the SDXL VAE was already trained on. Measured outcome of a full fine-tune
+under that bank (`scratchpad/vae_training/results_flat_region_noise.md`): in
+flat regions the *error* fell 21%, while the total high-frequency energy the
+decoder emits there moved **+0.4% (not significant)**. The decoder kept
+fabricating the same amount of detail and aimed it better. In dark flat windows
+**66% of the fine high frequency is fabricated**, and at the exposure gain a
+user actually inspects such regions at, the invented luma is **3.3/255** against
+a visibility bar of 1/255.
+
+`l_invented_weight` turns on a *conditional non-generation* term instead. Inside
+windows where a least-squares **plane fit** on the source says the region is
+flat or a smooth gradient (so ramps count, unlike a variance test), it charges
+the part of the decode's high frequency that a least-squares projection onto the
+source's own high frequency cannot explain:
+
+```
+alpha = clamp( <h(recon), h(target)> / (<h(target),h(target)> + eps), 0, 2 )   # DETACHED
+L     = mean( (h(recon) - alpha * h(target))^2 )
+```
+
+- **alpha carries no gradient.** With it attached, the decoder could reduce the
+  loss by raising its correlation with the source instead of emitting less —
+  the behaviour the existing bank was measured to reward. Detached, each step is
+  a plain MSE toward a fixed target, so the only way down is to emit less
+  unexplained energy.
+- **eps sits at the measured 8-bit quantisation-floor energy** (`0.2797²` per
+  pixel), so in a genuinely empty window alpha goes to 0 smoothly and the term
+  becomes "where the source has nothing, emit nothing".
+- **Nothing is exempt, and blur is charged less than exact reproduction.** With
+  `eps > 0` the fixed point inside a flat window is `d = alpha·s` with
+  `alpha < 1` — a shrink, not the identity. For a decode `d = g·s` the charge is
+  `sigma²·(g − alpha(g))²`, which rises smoothly from `g = 0` upward — exactly
+  as `g²` while alpha tracks. Measured at sigma ≈ 1.5: g=0 (emit nothing) → 0
+  exactly, g=0.5 → 0.00223, g=1 (exact reproduction) → 0.00892, g=2 → 0.03567,
+  g=3 → 0.62209. The `alpha ≤ 2` clamp caps how much exemption a
+  strongly-correlated emission can buy; it does **not** make gains below 2x
+  free. Exact reproduction costs `sigma²·eps²/(sigma²+eps)²` per scale, at most
+  `eps/4` = 0.0196 levels² (0.140 levels rms per scale, ~0.198 combined), and a
+  blur costs less than that at every sigma.
+- **Consequence: it is not a standalone objective.** Its own global optimum
+  inside the mask is "emit nothing". Measured on 200 real 512² crops at this
+  geometry, the systematic under-emission of *transmitted* HF at the fixed point
+  is 5.1% of the in-mask transmitted-HF energy amplitude. It is meant to run
+  with `mse`/`lpips`, which supply the opposing pull toward `g = 1`; the
+  in-mask transmitted-HF gate below (R7) is what keeps that trade honest.
+  `l_invented_weight` alone satisfies the config's "at least one training
+  signal" check (as `pattern_weight` alone does) — but a run configured that way
+  minimises its loss by emitting no high frequency in flat regions at all. Do
+  not configure it that way.
+- Windows, thresholds, the highpass basis and the photometric weight are
+  deliberately different from the frozen evaluation harness's, so that a fall in
+  the harness's number is evidence rather than a tautology. Only the five
+  weights/thresholds are configurable; the geometry is internal.
+
+Logged per step as `vae_invented_loss` (unweighted, in (8-bit levels)²) and
+`vae_invented_cov` (the fraction of candidate windows that passed the flat test
+— a value that falls because the term stopped firing looks identical to one that
+falls because the decoder stopped inventing, unless both are charted).
+
+`sqrt(vae_invented_loss)` is a **relative trend indicator, not an absolute
+level**, and must not be read against the 1/255 visibility bar: the logged value
+carries the term's Weber photometric weight (0.16 bright … 0.98 black) and its
+channel weights. Injecting exactly 1.0 level of pure uncorrelated invention
+gives `sqrt(logged)` = 0.94 (dark window) / 0.52 (mid) / 0.40 (bright), i.e. it
+under-reads true invented luma by 1.1–2.5×. Absolute levels come from the frozen
+g1flat harness only.
+
+**Gate when running this term (R7).** The design's regression gates R1 (edges)
+and R2 (the flat mask's *complement*) cannot see attenuation of transmitted HF
+*inside* the mask, and under a blur both the primary success metric (invented
+luma) and the secondary (total emitted flat HF) fall — so blur reads as success
+on every other instrument. Therefore: in-flat-mask **transmitted** luma HF rms
+(`alpha·s`, already computed in the frozen harness,
+`results_flat_region_noise.md` §1.3) must be **≥ −5%** against the start arm. A
+candidate that reaches the invented-luma target while failing R7 has bought it
+with blur and is a failure, not a success.
+
+Behaviour is pinned by `backend/tests/test_l_invented_loss.py`; measured cost of
+the term at 512², batch 2, forward+backward: ~18 ms and ~124 MB of transient
+VRAM on this install (contended GPU, so the time is an upper bound).
 
 ### What is deliberately NOT built
 

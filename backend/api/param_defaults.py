@@ -1823,6 +1823,24 @@ VAE_TRAINING_DEFAULTS: Dict[str, Any] = {
     # present at a measurable level.
     "pattern_weight": 0.0,
     "pattern_size": 8,
+    # Flat-region invented-HF penalty (L_invented). Default 0 (opt-in only).
+    # Penalises high-frequency energy in the decode that a least-squares
+    # projection onto the source's own high-frequency content cannot explain,
+    # inside plane-fit flat/gradient windows. Unlike every other term in this
+    # bank it is not an agreement-with-source objective: the projection
+    # coefficient is detached, so the only way to reduce it is to emit less
+    # unexplained energy, not to correlate more with the source.
+    # The window geometry, the highpass basis, the projection epsilon, the
+    # alpha clamp and the photometric weight are fixed internal constants of
+    # the term (see core/training/vae/vae_losses.InventedHfLoss).
+    "l_invented_weight": 0.0,
+    "l_invented_y_weight": 1.0,
+    "l_invented_chroma_weight": 0.25,
+    # Plane-fit residual thresholds that decide which windows count as flat,
+    # in 8-bit levels. A plane fit (not a variance test) is what admits smooth
+    # gradients as "flat".
+    "l_invented_flat_t_y": 2.0,
+    "l_invented_flat_t_c": 1.25,
     # Posterior KL weight. This is LDM's 1e-6, and it means the same thing here
     # ONLY because the trainer divides the KL by the per-image element count
     # before weighting it: LDM pairs 1e-6 with a reconstruction term summed over

@@ -1705,5 +1705,459 @@ class VaeLossBankKlTest(unittest.TestCase):
             bank(torch.zeros(1, 3, 64, 64), torch.zeros(1, 3, 64, 64))
 
 
+class VaeResumeCompletenessTest(unittest.TestCase):
+    """An incomplete checkpoint must not resume as if it were complete.
+
+    ``load_checkpoint`` used to load ``optimizer.pt`` / ``lr_scheduler.pt``
+    *only if the file existed*, while still adopting the checkpoint's global
+    step. A step directory that was copied or written only in part therefore
+    resumed at, say, step 10,000 with freshly-initialised Adam moments or a
+    schedule sitting at position 0, and reported a normal resume.
+
+    The tiers under test (see ``VaeTrainer._assert_checkpoint_complete``):
+    weights / optimizer / scheduler / train_state.json are REFUSALS, EMA and
+    RNG are warn-and-repair.
+    """
+
+    # ── fixtures ─────────────────────────────────────────────────────────
+    def _write_checkpoint(self, *, ema=True, scheduler=True, manifest=True,
+                          step=10000, parent=None):
+        """A complete, real checkpoint on disk, written the way the trainer
+        writes one (including the artifact manifest).
+
+        ``parent`` places several step directories in one ``checkpoints/``
+        folder, which is what the intact-sibling listing reads.
+        """
+        import json
+        import random as _random
+        import tempfile
+        import numpy as np
+        import torch
+        from pathlib import Path
+        from safetensors.torch import save_file
+        from core.training.vae.vae_trainer import _CKPT_ARTIFACTS
+
+        if parent is None:
+            tmp = tempfile.TemporaryDirectory()
+            self.addCleanup(tmp.cleanup)
+            parent = Path(tmp.name)
+        ckpt = Path(parent) / f"step_{step:08d}"
+        ckpt.mkdir(parents=True)
+
+        params = [torch.nn.Parameter(torch.full((4,), 3.0)) for _ in self.NAMES]
+        opt = torch.optim.AdamW([{"params": [p]} for p in params], lr=1e-5)
+        for p in params:                      # give Adam real moment state
+            p.grad = torch.ones_like(p)
+        opt.step()
+
+        save_file({n: p.detach().clone() for n, p in zip(self.NAMES, params)},
+                  str(ckpt / "vae_decoder.safetensors"))
+        if ema:
+            save_file({n: p.detach().clone() for n, p in zip(self.NAMES, params)},
+                      str(ckpt / "ema.safetensors"))
+        torch.save(opt.state_dict(), ckpt / "optimizer.pt")
+        if scheduler:
+            sched = torch.optim.lr_scheduler.LambdaLR(opt, lr_lambda=lambda s: 1.0)
+            torch.save(sched.state_dict(), ckpt / "lr_scheduler.pt")
+        torch.save({"python": _random.getstate(),
+                    "numpy": np.random.get_state(),
+                    "torch": torch.get_rng_state(),
+                    "cuda": None},
+                   ckpt / "rng_state.pt")
+
+        state = {
+            "step": step,
+            "ema_enabled": ema,
+            "ema_updates": 500,
+            "ema_retained_init_fraction": 0.5,
+            "config": {"train_encoder": False, "train_decoder": True,
+                       "decoder_blocks": "all"},
+        }
+        if manifest:
+            state["artifacts"] = {n: (ckpt / n).stat().st_size
+                                  for n in _CKPT_ARTIFACTS
+                                  if (ckpt / n).is_file()}
+        with open(ckpt / "train_state.json", "w", encoding="utf-8") as f:
+            json.dump(state, f)
+        return ckpt
+
+    NAMES = ["decoder.a", "decoder.b"]
+
+    def _trainer(self, *, ema=True, scheduler=True):
+        import torch
+        from core.training.vae.vae_trainer import VaeTrainer
+        t = VaeTrainer.__new__(VaeTrainer)
+        t.log_prefix = "[VaeTrainer]"
+        t.device = torch.device("cpu")
+        t.train_encoder = False
+        t.cfg = {"learning_rate": 1e-5, "train_decoder": True,
+                 "decoder_blocks": "all", "encoder_blocks": "none",
+                 "lr_scheduler": "constant", "ema_decay": 0.999,
+                 "ema_enabled": ema}
+        t.trainable_names = list(self.NAMES)
+        t.trainable_params = [torch.nn.Parameter(torch.zeros(4))
+                              for _ in self.NAMES]
+        t.optimizer = torch.optim.AdamW(
+            [{"params": [p]} for p in t.trainable_params], lr=1e-5)
+        t.lr_scheduler = (torch.optim.lr_scheduler.LambdaLR(
+            t.optimizer, lr_lambda=lambda s: 1.0) if scheduler else None)
+        t.ema = ({n: p.detach().clone().float()
+                  for n, p in zip(t.trainable_names, t.trainable_params)}
+                 if ema else None)
+        t._ema_updates = 0
+        t._ema_retained_init = 1.0
+        return t
+
+    def _resume(self, trainer, ckpt):
+        """Run the real load_checkpoint, capturing stdout."""
+        import contextlib
+        import io
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            trainer.load_checkpoint(ckpt)
+        return buf.getvalue()
+
+    def _refusal(self, trainer, ckpt):
+        import contextlib
+        import io
+        with contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(VaeConfigError) as ctx:
+                trainer.load_checkpoint(ckpt)
+        return str(ctx.exception)
+
+    # ── the complete checkpoint still resumes, fully ─────────────────────
+    def test_a_complete_checkpoint_resumes_every_piece_of_state(self):
+        import torch
+        ckpt = self._write_checkpoint()
+        trainer = self._trainer()
+        out = self._resume(trainer, ckpt)
+
+        self.assertEqual(trainer.global_step, 10000)
+        self.assertTrue(torch.allclose(trainer.trainable_params[0].detach(),
+                                       torch.full((4,), 3.0)))
+        # Optimizer state actually arrived (exp_avg exists for every param).
+        state = trainer.optimizer.state_dict()["state"]
+        self.assertEqual(len(state), len(self.NAMES))
+        self.assertTrue(all("exp_avg" in s for s in state.values()))
+        # EMA was restored, so its warmup counters continue.
+        self.assertEqual(trainer._ema_updates, 500)
+        self.assertAlmostEqual(trainer._ema_retained_init, 0.5)
+        self.assertNotIn("WARNING", out)
+
+    def test_a_pre_manifest_checkpoint_still_resumes(self):
+        """Checkpoints written before the manifest existed (every checkpoint on
+        disk today) must keep resuming, on presence alone."""
+        ckpt = self._write_checkpoint(manifest=False)
+        out = self._resume(self._trainer(), ckpt)
+        self.assertNotIn("WARNING", out)
+        self.assertIn("presence only", out)
+
+    # ── refusals ─────────────────────────────────────────────────────────
+    def test_a_missing_optimizer_state_refuses(self):
+        ckpt = self._write_checkpoint()
+        (ckpt / "optimizer.pt").unlink()
+        msg = self._refusal(self._trainer(), ckpt)
+        self.assertIn("incomplete", msg)
+        self.assertIn("optimizer.pt", msg)
+        self.assertIn("accumulated history", msg)
+
+    def test_a_missing_optimizer_state_refuses_without_a_manifest_too(self):
+        ckpt = self._write_checkpoint(manifest=False)
+        (ckpt / "optimizer.pt").unlink()
+        self.assertIn("optimizer.pt", self._refusal(self._trainer(), ckpt))
+
+    def test_a_missing_lr_scheduler_state_refuses(self):
+        ckpt = self._write_checkpoint()
+        (ckpt / "lr_scheduler.pt").unlink()
+        msg = self._refusal(self._trainer(), ckpt)
+        self.assertIn("lr_scheduler.pt", msg)
+        self.assertIn("position 0", msg)
+
+    # ── conditionally-written artifacts on a pre-manifest checkpoint ─────
+    # save_checkpoint writes ema.safetensors / lr_scheduler.pt only when the run
+    # HAS an EMA / a scheduler. Without a manifest, "never written" and "lost"
+    # are indistinguishable, so the same absence must not be a refusal in one
+    # checkpoint generation and a warning in the other.
+    def test_an_absent_scheduler_state_without_a_manifest_warns_not_refuses(self):
+        """The build_optimizer fallback ("LR scheduler unavailable; using
+        constant LR") writes exactly this checkpoint. Refusing it would leave
+        no way to resume once the cause is fixed."""
+        ckpt = self._write_checkpoint(manifest=False, scheduler=False)
+        trainer = self._trainer(scheduler=True)
+        out = self._resume(trainer, ckpt)
+        self.assertIn("WARNING", out)
+        self.assertIn("lr_scheduler.pt", out)
+        self.assertIn("position 0", out)
+        self.assertEqual(trainer.global_step, 10000)
+
+    def test_an_absent_ema_without_a_manifest_warns_and_reseeds(self):
+        import torch
+        ckpt = self._write_checkpoint(manifest=False, ema=False)
+        trainer = self._trainer(ema=True)
+        out = self._resume(trainer, ckpt)
+        self.assertIn("WARNING", out)
+        self.assertIn("ema.safetensors", out)
+        self.assertEqual(trainer.global_step, 10000)
+        self.assertTrue(torch.allclose(trainer.ema["decoder.a"],
+                                       torch.full((4,), 3.0)))
+        self.assertEqual(trainer._ema_updates, 0)
+
+    def test_an_absent_unconditional_artifact_without_a_manifest_still_refuses(self):
+        """rng_state.pt is warn-tier anyway, so the asymmetry is shown on the
+        two files the writer ALWAYS writes: absent means lost, manifest or
+        not."""
+        for name in ("optimizer.pt", "vae_decoder.safetensors"):
+            ckpt = self._write_checkpoint(manifest=False)
+            (ckpt / name).unlink()
+            self.assertIn(name, self._refusal(self._trainer(), ckpt))
+
+    # ── the refusal has to say which checkpoint IS resumable ─────────────
+    def test_a_refusal_lists_the_intact_sibling_checkpoints(self):
+        """`resume_from: latest` is the shipped default and picks the highest
+        step without inspecting it — and the damaged directory is typically the
+        newest one, so the refusal must name a way out."""
+        import tempfile
+        from pathlib import Path
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        parent = Path(tmp.name) / "checkpoints"
+        parent.mkdir()
+        self._write_checkpoint(parent=parent, step=5000)
+        self._write_checkpoint(parent=parent, step=7500)
+        newest = self._write_checkpoint(parent=parent, step=10000)
+        (newest / "optimizer.pt").unlink()
+
+        msg = self._refusal(self._trainer(), newest)
+        self.assertIn("step_00005000", msg)
+        self.assertIn("step_00007500", msg)
+        self.assertNotIn("step_00010000,", msg)   # not offered as a way out
+        self.assertIn("resume_from_checkpoint", msg)
+
+    def test_a_damaged_sibling_is_not_offered_as_a_way_out(self):
+        import tempfile
+        from pathlib import Path
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        parent = Path(tmp.name) / "checkpoints"
+        parent.mkdir()
+        older = self._write_checkpoint(parent=parent, step=5000)
+        (older / "train_state.json").unlink()
+        newest = self._write_checkpoint(parent=parent, step=10000)
+        (newest / "optimizer.pt").unlink()
+
+        msg = self._refusal(self._trainer(), newest)
+        self.assertNotIn("step_00005000", msg)
+        self.assertIn("No other checkpoint", msg)
+
+    def test_a_truncated_optimizer_state_refuses(self):
+        """The failure the manifest exists for: the file is THERE, and shorter
+        than it was saved (an interrupted copy)."""
+        ckpt = self._write_checkpoint()
+        blob = (ckpt / "optimizer.pt").read_bytes()
+        (ckpt / "optimizer.pt").write_bytes(blob[: len(blob) // 2])
+        msg = self._refusal(self._trainer(), ckpt)
+        self.assertIn("optimizer.pt", msg)
+        self.assertIn("incompletely", msg)
+
+    def test_a_zero_byte_artifact_is_refused_with_or_without_a_manifest(self):
+        """An empty artifact is never valid state; the verdict must not depend
+        on the checkpoint's generation."""
+        for manifest in (True, False):
+            ckpt = self._write_checkpoint(manifest=manifest)
+            (ckpt / "optimizer.pt").write_bytes(b"")
+            msg = self._refusal(self._trainer(), ckpt)
+            self.assertIn("optimizer.pt", msg)
+            self.assertIn("0 bytes", msg)
+
+    def test_a_truncated_weights_file_refuses(self):
+        ckpt = self._write_checkpoint()
+        blob = (ckpt / "vae_decoder.safetensors").read_bytes()
+        (ckpt / "vae_decoder.safetensors").write_bytes(blob[:64])
+        msg = self._refusal(self._trainer(), ckpt)
+        self.assertIn("vae_decoder.safetensors", msg)
+
+    def test_several_missing_artifacts_are_all_named_at_once(self):
+        ckpt = self._write_checkpoint()
+        (ckpt / "optimizer.pt").unlink()
+        (ckpt / "lr_scheduler.pt").unlink()
+        (ckpt / "rng_state.pt").unlink()
+        msg = self._refusal(self._trainer(), ckpt)
+        self.assertIn("optimizer.pt", msg)
+        self.assertIn("lr_scheduler.pt", msg)
+        # ...and the refusal explains the supported way to reset optimisation.
+        self.assertIn("start a NEW run", msg)
+
+    def test_a_missing_train_state_refuses(self):
+        ckpt = self._write_checkpoint()
+        (ckpt / "train_state.json").unlink()
+        msg = self._refusal(self._trainer(), ckpt)
+        self.assertIn("train_state.json", msg)
+
+    def test_an_unreadable_train_state_refuses(self):
+        ckpt = self._write_checkpoint()
+        (ckpt / "train_state.json").write_text("{not json", encoding="utf-8")
+        self.assertIn("train_state.json", self._refusal(self._trainer(), ckpt))
+
+    def test_a_corrupt_optimizer_file_of_the_right_size_refuses(self):
+        """Sizes cannot catch same-length corruption; torch.load does, and the
+        result must be a refusal rather than a silent skip."""
+        ckpt = self._write_checkpoint()
+        blob = bytearray((ckpt / "optimizer.pt").read_bytes())
+        blob[len(blob) // 2:] = b"\x00" * (len(blob) - len(blob) // 2)
+        (ckpt / "optimizer.pt").write_bytes(bytes(blob))
+        msg = self._refusal(self._trainer(), ckpt)
+        self.assertIn("optimizer.pt", msg)
+        # A state dict written by a DIFFERENT optimizer type lands here too, so
+        # the message must not diagnose "damaged file" as the only cause.
+        self.assertIn("different optimizer", msg)
+        self.assertIn("optimizer=", msg)
+
+    # ── warn-and-repair tiers ────────────────────────────────────────────
+    def test_a_missing_rng_state_warns_and_resumes(self):
+        ckpt = self._write_checkpoint()
+        (ckpt / "rng_state.pt").unlink()
+        trainer = self._trainer()
+        out = self._resume(trainer, ckpt)
+        self.assertEqual(trainer.global_step, 10000)
+        self.assertIn("WARNING", out)
+        self.assertIn("rng_state.pt", out)
+        self.assertIn("data_epoch", out)
+
+    def test_a_missing_ema_warns_reseeds_and_restarts_the_ema_ramp(self):
+        import torch
+        ckpt = self._write_checkpoint()
+        (ckpt / "ema.safetensors").unlink()
+        trainer = self._trainer()
+        out = self._resume(trainer, ckpt)
+        self.assertIn("WARNING", out)
+        self.assertIn("ema.safetensors", out)
+        self.assertEqual(trainer.global_step, 10000)
+        # Re-seeded from the restored weights...
+        self.assertTrue(torch.allclose(trainer.ema["decoder.a"],
+                                       torch.full((4,), 3.0)))
+        # ...and the warmup ramp restarts: adopting the checkpoint's 500 updates
+        # would average that seed in at the full decay.
+        self.assertEqual(trainer._ema_updates, 0)
+        self.assertAlmostEqual(trainer._ema_retained_init, 1.0)
+
+    def test_a_truncated_ema_warns_and_reseeds(self):
+        ckpt = self._write_checkpoint()
+        blob = (ckpt / "ema.safetensors").read_bytes()
+        (ckpt / "ema.safetensors").write_bytes(blob[:64])
+        trainer = self._trainer()
+        out = self._resume(trainer, ckpt)
+        self.assertIn("ema.safetensors", out)
+        self.assertEqual(trainer.global_step, 10000)
+        self.assertEqual(trainer._ema_updates, 0)
+
+    def test_a_checkpoint_without_ema_resumed_with_ema_on_warns(self):
+        ckpt = self._write_checkpoint(ema=False)
+        trainer = self._trainer(ema=True)
+        out = self._resume(trainer, ckpt)
+        self.assertIn("WARNING", out)
+        self.assertIn("EMA disabled", out)
+        self.assertEqual(trainer._ema_updates, 0)
+
+    def test_a_checkpoint_with_ema_resumed_with_ema_off_warns(self):
+        ckpt = self._write_checkpoint(ema=True)
+        trainer = self._trainer(ema=False)
+        out = self._resume(trainer, ckpt)
+        self.assertIn("WARNING", out)
+        self.assertIn("ema_enabled=false", out)
+        self.assertIsNone(trainer.ema)
+
+    def test_a_scheduler_added_after_the_checkpoint_warns_rather_than_refuses(self):
+        """The manifest proves the file was never written, so its absence is a
+        config change, not damage."""
+        ckpt = self._write_checkpoint(scheduler=False)
+        trainer = self._trainer(scheduler=True)
+        out = self._resume(trainer, ckpt)
+        self.assertIn("WARNING", out)
+        self.assertIn("no LR scheduler", out)
+        self.assertEqual(trainer.global_step, 10000)
+
+    def test_a_scheduler_removed_after_the_checkpoint_warns(self):
+        ckpt = self._write_checkpoint(scheduler=True)
+        trainer = self._trainer(scheduler=False)
+        out = self._resume(trainer, ckpt)
+        self.assertIn("WARNING", out)
+        self.assertIn("discarded", out)
+        self.assertEqual(trainer.global_step, 10000)
+
+    # ── the manifest itself, written by the REAL save_checkpoint ─────────
+    def _saved_by_the_real_writer(self, trainer, step=4200):
+        """Drive ``VaeTrainer.save_checkpoint`` for real, with only the DB row
+        and the pruning stubbed out (neither is part of the artifact contract,
+        and the DB must not be written from a test)."""
+        import contextlib
+        import io
+        import tempfile
+        from pathlib import Path
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        trainer.checkpoints_dir = Path(tmp.name) / "checkpoints"
+        trainer.checkpoints_dir.mkdir(parents=True)
+        trainer.run_name = "manifest_test"
+        trainer.run_id = None
+        trainer.resume_seq = 0
+        trainer._base_vae_identity = None
+        trainer._record_checkpoint_row = lambda *a, **k: None
+        trainer._prune_checkpoints = lambda *a, **k: None
+        with contextlib.redirect_stdout(io.StringIO()):
+            return trainer.save_checkpoint(step)
+
+    def test_the_writer_records_a_size_manifest_for_every_file_it_wrote(self):
+        import json
+        from core.training.vae.vae_trainer import _CKPT_ARTIFACTS
+        ckpt = self._saved_by_the_real_writer(self._trainer())
+        state = json.loads((ckpt / "train_state.json").read_text(encoding="utf-8"))
+        manifest = state.get("artifacts")
+        self.assertIsInstance(manifest, dict,
+                              "save_checkpoint wrote no artifact manifest, so a "
+                              "partially-copied checkpoint cannot be detected")
+        on_disk = {n for n in _CKPT_ARTIFACTS if (ckpt / n).is_file()}
+        self.assertEqual(set(manifest), on_disk)
+        for name, size in manifest.items():
+            self.assertEqual((ckpt / name).stat().st_size, size)
+
+    def test_a_checkpoint_from_the_real_writer_round_trips_and_is_verifiable(self):
+        ckpt = self._saved_by_the_real_writer(self._trainer())
+        trainer = self._trainer()
+        out = self._resume(trainer, ckpt)
+        self.assertEqual(trainer.global_step, 4200)
+        self.assertNotIn("WARNING", out)
+        self.assertNotIn("presence only", out)   # i.e. the manifest was used
+
+    def test_a_checkpoint_from_the_real_writer_detects_truncation(self):
+        ckpt = self._saved_by_the_real_writer(self._trainer())
+        blob = (ckpt / "optimizer.pt").read_bytes()
+        (ckpt / "optimizer.pt").write_bytes(blob[:-16])
+        msg = self._refusal(self._trainer(), ckpt)
+        self.assertIn("optimizer.pt", msg)
+        self.assertIn("incompletely", msg)
+
+    def test_every_artifact_the_writer_produces_is_in_the_verified_list(self):
+        """A new checkpoint file added to save_checkpoint without adding it to
+        _CKPT_ARTIFACTS would be unverifiable on resume, silently.
+
+        Compared against the FILES ON DISK after a real save, not against the
+        source text: a future artifact written through a variable path or a
+        helper would slip past a source-level check while still being
+        unverified.
+        """
+        from core.training.vae.vae_trainer import _CKPT_ARTIFACTS
+        # Both configurations, so the conditional artifacts are covered too.
+        for ema, scheduler in ((True, True), (False, False)):
+            ckpt = self._saved_by_the_real_writer(
+                self._trainer(ema=ema, scheduler=scheduler))
+            on_disk = {p.name for p in ckpt.iterdir() if p.is_file()}
+            self.assertIn("train_state.json", on_disk)
+            self.assertEqual(on_disk - set(_CKPT_ARTIFACTS) - {"train_state.json"},
+                             set(),
+                             "save_checkpoint writes a file that no resume "
+                             "verifies (add it to _CKPT_ARTIFACTS)")
+            self.assertIn("vae_decoder.safetensors", on_disk)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

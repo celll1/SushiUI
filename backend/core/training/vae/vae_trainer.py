@@ -35,7 +35,7 @@ import shutil
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -70,6 +70,29 @@ M_VAL_BLOCKINESS = "vae_val_blockiness"
 # so that changing how the digest is computed makes old and new values
 # *incomparable* (-> warn) rather than *different* (-> refuse).
 _FROZEN_FP_ALGO = "blake2b16-fp32-v1"
+
+# Every file ``save_checkpoint`` writes beside ``train_state.json``. The list is
+# shared by the writer (which records the size of each one it produced) and the
+# resume guard (which verifies them); adding a new checkpoint artifact means
+# adding it here, so that a resume can never silently ignore it.
+# ``VaeTrainer._assert_checkpoint_complete`` documents the tier each one is
+# verified at.
+_CKPT_ARTIFACTS = (
+    "vae_decoder.safetensors",
+    "ema.safetensors",
+    "optimizer.pt",
+    "lr_scheduler.pt",
+    "rng_state.pt",
+)
+
+# The subset of _CKPT_ARTIFACTS that save_checkpoint writes CONDITIONALLY: only
+# when the run has an EMA / an LR scheduler. On a checkpoint that carries the
+# artifact manifest, absence is proven to be "never written". Without a manifest
+# it is genuinely ambiguous ("never written" vs "lost"), and that ambiguity must
+# not be resolved as damage — the LR-scheduler fallback in build_optimizer
+# ("... unavailable; using constant LR") writes exactly such a checkpoint, and
+# refusing it would leave no way to resume once the cause is fixed.
+_CKPT_CONDITIONAL = ("ema.safetensors", "lr_scheduler.pt")
 
 
 class VaeTrainer:
@@ -962,10 +985,15 @@ class VaeTrainer:
             },
             ckpt_dir / "rng_state.pt",
         )
+        # train_state.json is written LAST and carries the manifest of everything
+        # written before it, so it doubles as the "this checkpoint is complete"
+        # marker: a save interrupted part-way leaves no manifest to check against,
+        # and a directory copied part-way is caught by the recorded sizes.
         with open(ckpt_dir / "train_state.json", "w", encoding="utf-8") as f:
             json.dump(
                 {
                     "step": step,
+                    "artifacts": self._checkpoint_manifest(ckpt_dir),
                     "run_name": self.run_name,
                     "run_id": self.run_id,
                     "final": bool(final),
@@ -989,6 +1017,336 @@ class VaeTrainer:
         self._record_checkpoint_row(ckpt_dir, step)
         self._prune_checkpoints()
         return ckpt_dir
+
+    def _checkpoint_manifest(self, ckpt_dir: Path) -> Dict[str, int]:
+        """Name -> byte size of every artifact this checkpoint actually wrote.
+
+        Sizes, not hashes: the point is to catch a file that was cut short (an
+        interrupted save, a copy that was still running, a full disk), and a
+        truncated file is a shorter file. Hashing 400 MB of optimizer state on
+        every save and every resume would cost far more than the failure mode is
+        worth, and would still not detect the case sizes miss (a same-length
+        corruption), which `torch.load` / `safetensors` catch anyway when the
+        file is actually read.
+
+        The recorded key set is also the record of what the writing run HAD:
+        a checkpoint written without an LR scheduler simply has no
+        ``lr_scheduler.pt`` entry, which is how a resume tells "never written"
+        apart from "lost".
+        """
+        sizes: Dict[str, int] = {}
+        for name in _CKPT_ARTIFACTS:
+            path = ckpt_dir / name
+            if path.is_file():
+                sizes[name] = int(path.stat().st_size)
+        return sizes
+
+    def _artifact_status(self, ckpt_dir: Path, name: str,
+                         manifest: Optional[Dict[str, Any]]) -> Tuple[str, str]:
+        """Classify one checkpoint artifact.
+
+        Returns ``(status, detail)`` where status is one of:
+
+        * ``"ok"``           — present, and the size the manifest recorded.
+        * ``"missing"``      — it is established that the file was written and
+                               this directory has not got it (interrupted save,
+                               partial copy, deletion).
+        * ``"size_mismatch"``— present, but not the size it was saved at (or
+                               empty), i.e. the file that is there is not the
+                               file that was saved.
+        * ``"not_written"``  — the manifest proves the writing run never wrote it
+                               (e.g. no LR scheduler, no EMA). Not damage.
+        * ``"absent_unverifiable"`` — absent, and CONDITIONALLY written, on a
+                               checkpoint with no manifest: "never written" and
+                               "lost" are indistinguishable here, so this is not
+                               treated as damage. See ``_CKPT_CONDITIONAL``.
+        * ``"unverified"``   — present, no manifest (checkpoint predates it);
+                               presence is all that can be established.
+        """
+        path = ckpt_dir / name
+        recorded = manifest.get(name) if isinstance(manifest, dict) else None
+        if isinstance(manifest, dict) and recorded is None:
+            # The manifest is authoritative about what was written. A file that
+            # is not in it was not part of this checkpoint.
+            return ("not_written", f"{name} was never written by this checkpoint")
+        if not path.is_file():
+            if manifest is None and name in _CKPT_CONDITIONAL:
+                return ("absent_unverifiable",
+                        f"{name} is absent from {ckpt_dir.name}, and the "
+                        f"checkpoint predates the artifact manifest, so whether "
+                        f"it was ever written cannot be established")
+            return ("missing", f"{name} is absent from {ckpt_dir.name}")
+        actual = int(path.stat().st_size)
+        # An empty artifact is never valid state, with or without a manifest:
+        # the same rule on both paths, so the verdict does not depend on the
+        # checkpoint's generation.
+        if actual == 0:
+            return ("size_mismatch", f"{name} is empty (0 bytes)")
+        if recorded is not None:
+            try:
+                expected = int(recorded)
+            except (TypeError, ValueError):
+                expected = None
+            if expected is not None and actual != expected:
+                return ("size_mismatch",
+                        f"{name} is {actual} bytes but was {expected} bytes when "
+                        f"the checkpoint recorded it (written or copied "
+                        f"incompletely, or replaced since)")
+            return ("ok", "")
+        return ("unverified", "")
+
+    def _assert_checkpoint_complete(self, ckpt_dir: Path) -> Tuple[Dict[str, Any],
+                                                                   Dict[str, str]]:
+        """Refuse a resume from a checkpoint that cannot be fully restored.
+
+        Runs FIRST, before any state is touched: every check below is about the
+        files on disk, and the config checks that follow read the same
+        ``train_state.json`` this one validates.
+
+        The tiers follow the existing rule of this trainer — *state that cannot
+        be reconstructed and whose loss is invisible afterwards is a refusal;
+        state that is re-derivable, or whose loss is announced and repaired, is a
+        warning*:
+
+        ============================  ========  ==============================
+        artifact                      missing   why
+        ============================  ========  ==============================
+        ``train_state.json``          REFUSE    holds the step, the data pass,
+                                                the component set and the base
+                                                VAE identity; without it a
+                                                resume can neither position
+                                                itself nor run any other guard.
+        ``vae_decoder.safetensors``   REFUSE    the trained weights themselves.
+        ``optimizer.pt``              REFUSE    Adam's moments ARE this run's
+                                                accumulated history; a fresh
+                                                optimizer changes the effective
+                                                step size for thousands of
+                                                steps and looks exactly like a
+                                                normal resume in every log and
+                                                chart.
+        ``lr_scheduler.pt``           REFUSE    (when this run has a scheduler
+                                                and the checkpoint wrote one)
+                                                the schedule would restart at
+                                                position 0 while the step
+                                                counter jumps to the
+                                                checkpoint's — warmup and decay
+                                                would be replayed silently.
+        ``ema.safetensors``           warn      re-seeded from the restored
+                                                weights, exactly as the
+                                                pre-existing partial-EMA path
+                                                does; the EMA is a derived
+                                                average, and the re-seed is
+                                                announced.
+        ``rng_state.pt``              warn      only the noise/augmentation
+                                                draw stream; the data order is
+                                                restored separately and
+                                                exactly by ``data_epoch``.
+        ============================  ========  ==============================
+
+        "Missing" and "the wrong size" are treated identically at every tier: a
+        file that is not the one that was saved is not the state that was saved.
+
+        Two of the artifacts are written CONDITIONALLY (``_CKPT_CONDITIONAL``:
+        ``ema.safetensors``, ``lr_scheduler.pt``). On a checkpoint that carries
+        the manifest their absence is PROVEN to be "never written" and warns; on
+        one written before the manifest existed, "never written" and "lost"
+        cannot be told apart, so the same absence warns there too rather than
+        refusing. Refusing would strand every checkpoint produced by
+        ``build_optimizer``'s "LR scheduler unavailable; using constant LR"
+        fallback once the cause is fixed, with no way to resume it. The
+        unconditionally-written artifacts have no such ambiguity: the writer
+        always produces them, so absent means lost, manifest or not.
+
+        A refusal lists the intact sibling checkpoints
+        (``_intact_sibling_note``), because the damaged directory is typically
+        the newest one and ``resume_from: latest`` selects exactly that.
+
+        There is deliberately no "resume anyway" config key. A resume means
+        *continue this run*; an optimizer reset is a different intent that is
+        already expressible without one — stop, and start a NEW run whose base
+        VAE is this run's exported ``*_vae`` directory. That gets a clean step
+        counter, a clean LR schedule and a chart that does not silently splice
+        two optimisation regimes into one series, which is what a "partial
+        resume" would produce.
+        """
+        train_state, statuses, fatal, warnings, manifest = \
+            self._inspect_checkpoint(ckpt_dir)
+
+        if fatal:
+            raise VaeConfigError(
+                f"Checkpoint {ckpt_dir.name} is incomplete and cannot be resumed: "
+                + "; ".join(fatal) + ". Resuming it would restore whatever is "
+                f"present, and the step counter, while silently re-initialising "
+                f"the rest — a discontinuity in the optimisation that no log, "
+                f"metric or chart distinguishes from a normal resume."
+                + self._intact_sibling_note(ckpt_dir) +
+                f" To deliberately restart optimisation from these weights, "
+                f"export the run and start a NEW run with that export as its base "
+                f"VAE — that keeps the reset visible in the run history instead of "
+                f"hiding it inside a resume."
+            )
+
+        if warnings:
+            print(f"{self.log_prefix} WARNING: resuming {ckpt_dir.name} with "
+                  f"state that is not fully restored:")
+            for note in warnings:
+                print(f"{self.log_prefix}   - {note}")
+        if manifest is None:
+            print(f"{self.log_prefix} Note: {ckpt_dir.name} predates the artifact "
+                  f"manifest, so its files were checked for presence only; a file "
+                  f"that was copied only in part cannot be detected here.")
+        return train_state, statuses
+
+    def _intact_sibling_note(self, ckpt_dir: Path) -> str:
+        """" Resume from X instead" — the intact step_* directories next to this one.
+
+        ``resume_from: latest`` is the shipped default and picks the HIGHEST step
+        without looking at its contents, and the failure this guard exists for
+        (a save interrupted, a copy still running) damages exactly the newest
+        directory. So the refusal has to say which directories are still
+        resumable, the way ``resolve_resume_target`` already lists what it found
+        when an explicit name does not resolve. Deliberately a list rather than
+        an automatic fallback: silently resuming an OLDER checkpoint would roll
+        the step counter back by up to ``save_every`` steps and re-train that
+        span, which is the same class of unannounced surprise this guard removes.
+        """
+        try:
+            siblings = sorted(
+                (d for d in ckpt_dir.parent.glob("step_*")
+                 if d.is_dir() and d != ckpt_dir),
+                key=lambda d: d.name)
+        except Exception:
+            return ""
+        intact = []
+        for sibling in siblings:
+            try:
+                if not self._inspect_checkpoint(sibling)[2]:
+                    intact.append(sibling.name)
+            except Exception:
+                continue
+        if not intact:
+            return (" No other checkpoint in this run is resumable either, so "
+                    "re-copy this directory if it is a partial copy, or start a "
+                    "new run.")
+        return (f" Resume from one of the intact checkpoints in the same folder "
+                f"instead: {', '.join(intact)} (set resume_from_checkpoint to the "
+                f"directory name; 'latest' will keep selecting this damaged one). "
+                f"Re-copy this directory if it is a partial copy.")
+
+    def _inspect_checkpoint(self, ckpt_dir: Path):
+        """Classify a checkpoint's artifacts without raising.
+
+        Returns ``(train_state, statuses, fatal, warnings, manifest)``;
+        ``fatal`` empty means the directory is resumable by this run.
+        Non-raising on purpose: ``_intact_sibling_note`` uses it to tell which
+        neighbouring checkpoints are still usable.
+        """
+        state_path = ckpt_dir / "train_state.json"
+        no_state = ({}, {n: "missing" for n in _CKPT_ARTIFACTS}, [], [], None)
+        if not state_path.is_file():
+            return no_state[:2] + ([
+                f"train_state.json is absent from {ckpt_dir.name}, so the step "
+                f"counter, the data pass, the trained component set and the base "
+                f"VAE identity are all unavailable and no resume guard can run"],
+                [], None)
+        try:
+            with open(state_path, "r", encoding="utf-8") as f:
+                train_state = json.load(f)
+            if not isinstance(train_state, dict):
+                raise ValueError(f"expected an object, got {type(train_state).__name__}")
+        except Exception as e:
+            return no_state[:2] + ([
+                f"train_state.json in {ckpt_dir.name} is unreadable ({e}), so a "
+                f"resume cannot position itself"], [], None)
+
+        manifest = train_state.get("artifacts")
+        if not isinstance(manifest, dict):
+            manifest = None
+
+        statuses: Dict[str, str] = {}
+        details: Dict[str, str] = {}
+        for name in _CKPT_ARTIFACTS:
+            statuses[name], details[name] = self._artifact_status(
+                ckpt_dir, name, manifest)
+
+        fatal: List[str] = []
+        warnings: List[str] = []
+        # getattr, like _position_data_sampler / _assert_base_vae_matches: this
+        # also runs on __new__-built trainers in the unit tests.
+        scheduler = getattr(self, "lr_scheduler", None)
+        ema = getattr(self, "ema", None)
+
+        def _damaged(name: str) -> bool:
+            return statuses[name] in ("missing", "size_mismatch")
+
+        if statuses["vae_decoder.safetensors"] != "not_written":
+            if _damaged("vae_decoder.safetensors"):
+                fatal.append(f"{details['vae_decoder.safetensors']} — these are "
+                             f"the trained weights themselves")
+        else:
+            fatal.append("vae_decoder.safetensors was never written, so this "
+                         "directory holds no trained weights")
+
+        if statuses["optimizer.pt"] == "not_written":
+            fatal.append("optimizer.pt was never written, so the optimizer state "
+                         "of the step this checkpoint claims does not exist")
+        elif _damaged("optimizer.pt"):
+            fatal.append(f"{details['optimizer.pt']} — the optimizer moments are "
+                         f"this run's accumulated history and cannot be "
+                         f"reconstructed from the weights")
+
+        if scheduler is not None:
+            if _damaged("lr_scheduler.pt"):
+                fatal.append(f"{details['lr_scheduler.pt']} — the LR schedule "
+                             f"would restart at position 0 while the step counter "
+                             f"jumps to the checkpoint's")
+            elif statuses["lr_scheduler.pt"] == "not_written":
+                warnings.append(
+                    "the checkpoint was written by a run with no LR scheduler, "
+                    "but this run has one (lr_scheduler="
+                    f"{self.cfg.get('lr_scheduler')!r}); it starts at schedule "
+                    "position 0, so any warmup/decay is replayed from the "
+                    "beginning at the resumed step count")
+            elif statuses["lr_scheduler.pt"] == "absent_unverifiable":
+                # No manifest, and the file is one save_checkpoint writes only
+                # conditionally: this is the build_optimizer fallback's
+                # checkpoint as much as it is a lost file, and the two cannot be
+                # told apart. Announce the consequence, do not refuse.
+                warnings.append(
+                    f"{details['lr_scheduler.pt']}. This run has one "
+                    f"(lr_scheduler={self.cfg.get('lr_scheduler')!r}), and it "
+                    f"starts at schedule position 0, so any warmup/decay is "
+                    f"replayed from the beginning at the resumed step count. If "
+                    f"the file was lost rather than never written, resume from a "
+                    f"checkpoint that still has it")
+        elif statuses["lr_scheduler.pt"] in ("ok", "unverified"):
+            warnings.append(
+                "the checkpoint carries an LR schedule position but this run has "
+                "no LR scheduler, so that position is discarded and the "
+                "configured learning rate is used flat")
+
+        # EMA and RNG: announced and repaired, never fatal. load_checkpoint reads
+        # `statuses` back to decide whether to trust each file.
+        if ema is not None and (_damaged("ema.safetensors")
+                                or statuses["ema.safetensors"] == "absent_unverifiable"):
+            warnings.append(f"{details['ema.safetensors']}; the EMA is re-seeded "
+                            f"from the restored weights (its averaging history is "
+                            f"lost, and the exported EMA weights will be closer to "
+                            f"the raw ones for the next few thousand updates)")
+        elif ema is None and statuses["ema.safetensors"] in ("ok", "unverified"):
+            warnings.append("the checkpoint carries EMA weights but this run has "
+                            "ema_enabled=false, so they are dropped and the export "
+                            "will use the raw trained weights")
+
+        if _damaged("rng_state.pt") or statuses["rng_state.pt"] == "not_written":
+            warnings.append(
+                f"{details['rng_state.pt'] or 'rng_state.pt is unusable'}; the "
+                f"noise/augmentation draw stream restarts from the process seed "
+                f"instead of continuing. The data order and per-visit crops are "
+                f"restored separately and exactly (data_epoch), so this changes "
+                f"which random draws are made, not which images are trained on")
+
+        return train_state, statuses, fatal, warnings, manifest
 
     def _data_epoch_for_checkpoint(self) -> int:
         """The data pass in progress, for ``train_state.json``.
@@ -1219,6 +1577,11 @@ class VaeTrainer:
         if ckpt_dir is None:
             return
 
+        # Completeness FIRST: every later step assumes the files are the ones
+        # save_checkpoint wrote, and the config guards below read the very
+        # train_state.json this validates (and returns, so it is read once).
+        train_state, artifacts = self._assert_checkpoint_complete(ckpt_dir)
+
         # The component set must match BEFORE any weight is touched. Both
         # mismatch directions are silent failures otherwise:
         #   - a decoder-only checkpoint resumed with the encoder on is a SUBSET,
@@ -1244,35 +1607,80 @@ class VaeTrainer:
             for name, param in zip(self.trainable_names, self.trainable_params):
                 param.copy_(state[name].to(param.device, dtype=param.dtype))
 
-        ema_path = ckpt_dir / "ema.safetensors"
-        if self.ema is not None and ema_path.is_file():
-            ema_state = load_file(str(ema_path))
-            ema_missing = [n for n in self.trainable_names if n not in ema_state]
-            if ema_missing:
+        # EMA is the warn-and-repair tier: absent, short and unreadable all end
+        # in an announced re-seed. _assert_checkpoint_complete has already warned
+        # about an absent/truncated file; re-seed silently in that case rather
+        # than printing the same fact twice.
+        ema_restored = False
+        if self.ema is not None:
+            ema_state = None
+            if artifacts["ema.safetensors"] in ("ok", "unverified"):
+                try:
+                    ema_state = load_file(str(ckpt_dir / "ema.safetensors"))
+                except Exception as e:
+                    print(f"{self.log_prefix} WARNING: ema.safetensors in "
+                          f"{ckpt_dir} could not be read ({e}); re-seeding EMA "
+                          f"from the restored weights.")
+            elif artifacts["ema.safetensors"] == "not_written":
+                print(f"{self.log_prefix} WARNING: {ckpt_dir.name} was written by "
+                      f"a run with EMA disabled but this run has ema_enabled=true; "
+                      f"seeding EMA from the restored weights.")
+            if ema_state is None:
+                self.init_ema()
+            else:
                 # A PARTIAL restore is worse than no restore: _update_ema()
                 # indexes every trainable name, so a short dict would KeyError on
                 # the first step after resume. Re-seed instead.
-                print(f"{self.log_prefix} WARNING: ema.safetensors in {ckpt_dir} "
-                      f"is missing {len(ema_missing)} of {len(self.trainable_names)} "
-                      f"tensor(s) (e.g. {ema_missing[:3]}); re-seeding EMA from the "
-                      f"restored weights.")
-                self.init_ema()
-            else:
-                self.ema = {k: ema_state[k].float().to(self.device)
-                            for k in self.trainable_names}
-        elif self.ema is not None:
-            print(f"{self.log_prefix} WARNING: no ema.safetensors in {ckpt_dir}; "
-                  f"re-seeding EMA from the restored weights.")
-            self.init_ema()
+                ema_missing = [n for n in self.trainable_names if n not in ema_state]
+                if ema_missing:
+                    print(f"{self.log_prefix} WARNING: ema.safetensors in "
+                          f"{ckpt_dir} is missing {len(ema_missing)} of "
+                          f"{len(self.trainable_names)} tensor(s) "
+                          f"(e.g. {ema_missing[:3]}); re-seeding EMA from the "
+                          f"restored weights.")
+                    self.init_ema()
+                else:
+                    self.ema = {k: ema_state[k].float().to(self.device)
+                                for k in self.trainable_names}
+                    ema_restored = True
 
-        opt_path = ckpt_dir / "optimizer.pt"
-        if opt_path.is_file():
+        # Optimizer / scheduler are the refusal tier: _assert_checkpoint_complete
+        # has already established that the files are there and the size they were
+        # saved at, so anything that still fails here is a genuinely corrupt file
+        # and must stop the run rather than leave the state re-initialised.
+        try:
             self.optimizer.load_state_dict(
-                torch.load(opt_path, map_location=self.device, weights_only=False))
-        sched_path = ckpt_dir / "lr_scheduler.pt"
-        if self.lr_scheduler is not None and sched_path.is_file():
-            self.lr_scheduler.load_state_dict(
-                torch.load(sched_path, map_location="cpu", weights_only=False))
+                torch.load(ckpt_dir / "optimizer.pt",
+                           map_location=self.device, weights_only=False))
+        except Exception as e:
+            raise VaeConfigError(
+                f"Checkpoint {ckpt_dir.name} has an optimizer.pt this run cannot "
+                f"load ({e}). Either the file is damaged, or it was written by a "
+                f"run using a different optimizer than this one "
+                f"(optimizer={self.cfg.get('optimizer')!r}) — an optimizer state "
+                f"dict only loads back into the same optimizer type and param "
+                f"group layout. Resuming without it would restart the moment "
+                f"estimates at the resumed step count, which nothing downstream "
+                f"reports. Resume from an intact step_* directory, or match the "
+                f"optimizer the checkpoint was written with."
+                + self._intact_sibling_note(ckpt_dir)
+            )
+        if self.lr_scheduler is not None and \
+                artifacts["lr_scheduler.pt"] in ("ok", "unverified"):
+            try:
+                self.lr_scheduler.load_state_dict(
+                    torch.load(ckpt_dir / "lr_scheduler.pt",
+                               map_location="cpu", weights_only=False))
+            except Exception as e:
+                raise VaeConfigError(
+                    f"Checkpoint {ckpt_dir.name} has an lr_scheduler.pt this run "
+                    f"cannot load ({e}). Either the file is damaged, or it was "
+                    f"written under a different schedule than this run's "
+                    f"(lr_scheduler={self.cfg.get('lr_scheduler')!r}). Resuming "
+                    f"without it would replay warmup/decay from schedule position "
+                    f"0 at the resumed step count."
+                    + self._intact_sibling_note(ckpt_dir)
+                )
 
         # Both restores above re-import the checkpoint's LR (see
         # core/training/lr_utils.py). Re-assert the configured one,
@@ -1286,10 +1694,12 @@ class VaeTrainer:
             component_names=("VAE",),
         )
 
-        rng_path = ckpt_dir / "rng_state.pt"
-        if rng_path.is_file():
+        # RNG is the warn tier; _assert_checkpoint_complete has already explained
+        # an absent/truncated file, so only a genuinely corrupt one prints here.
+        if artifacts["rng_state.pt"] in ("ok", "unverified"):
             try:
-                rng = torch.load(rng_path, map_location="cpu", weights_only=False)
+                rng = torch.load(ckpt_dir / "rng_state.pt",
+                                 map_location="cpu", weights_only=False)
                 random.setstate(rng["python"])
                 np.random.set_state(rng["numpy"])
                 torch.set_rng_state(rng["torch"].cpu().to(torch.uint8))
@@ -1299,13 +1709,15 @@ class VaeTrainer:
             except Exception as e:
                 print(f"{self.log_prefix} RNG restore failed (non-fatal): {e}")
 
-        with open(ckpt_dir / "train_state.json", "r", encoding="utf-8") as f:
-            train_state = json.load(f)
+        # train_state was read (and validated) by _assert_checkpoint_complete.
         self.global_step = int(train_state.get("step", 0))
         self._position_data_sampler(train_state)
-        # Continue the EMA warmup ramp / retained-init product across resume
-        # (only meaningful when the EMA itself was restored, not re-seeded).
-        if self.ema is not None and train_state.get("ema_enabled"):
+        # Continue the EMA warmup ramp / retained-init product across resume --
+        # ONLY when the EMA itself was restored. A re-seeded EMA equals the raw
+        # weights, so adopting the checkpoint's update count would skip the
+        # warmup ramp and average that seed in at the full decay, which is both
+        # wrong and invisible; init_ema()'s counters are the honest ones.
+        if self.ema is not None and ema_restored and train_state.get("ema_enabled"):
             self._ema_updates = int(train_state.get("ema_updates", self.global_step))
             self._ema_retained_init = float(
                 train_state.get("ema_retained_init_fraction", 1.0))

@@ -456,6 +456,92 @@ verified; one with `base_vae` but no fingerprint is still checked on structure
 to the digest, so a future change to how it is computed makes old and new values
 *incomparable* (warning) rather than *different* (refusal).
 
+### Resume from an incomplete checkpoint
+
+A checkpoint directory is six files: `vae_decoder.safetensors`, `optimizer.pt`,
+`rng_state.pt`, `train_state.json`, plus `ema.safetensors` and
+`lr_scheduler.pt` when the run has an EMA / an LR scheduler. A resume used to
+load the optional-looking ones *only if the file happened to exist*, while still
+adopting the checkpoint's `global_step` — so a directory that was written or
+copied only in part resumed at, say, step 10,000 with **freshly-initialised Adam
+moments**, or with the LR schedule sitting at position 0, and logged a normal
+resume. Nothing downstream distinguishes that from a healthy continuation.
+
+`VaeTrainer._assert_checkpoint_complete` now runs **before any state is
+touched** and grades every artifact by the same rule the other resume guards
+use: *state that cannot be reconstructed and whose loss is invisible afterwards
+is a refusal; state that is re-derivable, and whose loss is announced and
+repaired, is a warning.*
+
+| Artifact | Absent, empty or the wrong size | Why |
+|---|---|---|
+| `train_state.json` | **refusal** | carries the step, the data pass, the component set and the base-VAE identity; without it a resume can neither position itself nor run any other guard |
+| `vae_decoder.safetensors` | **refusal** | the trained weights themselves |
+| `optimizer.pt` | **refusal** | Adam's moment estimates *are* the run's accumulated history. A fresh optimizer changes the effective step size for thousands of steps, and no log, metric or chart reports it |
+| `lr_scheduler.pt` | **refusal** when this run has a scheduler and the file is *established* to have been written (see the conditional-artifact rule below) | the schedule would restart at position 0 while the step counter jumps to the checkpoint's, replaying warmup/decay silently |
+| `ema.safetensors` | warning + re-seed | the EMA is a derived average; the re-seed is announced, and it also **resets the EMA warmup counters** (`ema_updates`, `ema_retained_init_fraction`) so the re-seeded average is not immediately damped at full decay. This is the pre-existing partial-EMA behaviour, now applied to the absent and unreadable cases too |
+| `rng_state.pt` | warning | only the noise/augmentation draw stream. The data order and per-visit crops are restored separately and exactly by `data_epoch`, so what changes is which random draws are made, not which images are trained on |
+
+Two *config* differences look like missing files and are warnings, not
+refusals, because the manifest (below) proves the file was never written and the
+run's own config explains why: adding an LR scheduler to a run whose checkpoint
+had none (the schedule then starts at position 0 — stated in the warning), and
+enabling/disabling EMA across a resume.
+
+**How "complete" is decided.** `save_checkpoint` writes `train_state.json`
+*last*, and records in it an `artifacts` manifest of `{filename: byte size}` for
+everything it wrote. On resume each artifact is classified as `ok`, `missing`,
+`size_mismatch` (present, but empty or not the size it was saved at),
+`not_written` (absent from the manifest, i.e. the writing run never produced
+it), `absent_unverifiable` (absent, conditionally written, and no manifest to
+say which) or `unverified` (present, no manifest at all). Sizes rather than
+hashes: the failure being caught is a file cut short — an interrupted save, a
+copy still in progress, a full disk — and hashing ~400 MB of optimizer state on
+every save and every resume would cost far more than that. A zero-byte artifact
+is rejected on both paths, manifest or not. Same-length corruption is not caught
+by sizes, so `torch.load` failures on `optimizer.pt` / `lr_scheduler.pt` are
+converted into the same refusal rather than being skipped — and those messages
+name the *other* cause that lands there, a checkpoint written under a different
+`optimizer` / `lr_scheduler` than this run's, since an optimizer state dict only
+loads back into the same optimizer type and param-group layout.
+
+**Conditionally-written artifacts.** `ema.safetensors` and `lr_scheduler.pt`
+(`_CKPT_CONDITIONAL`) are written only when the run *has* an EMA / a scheduler.
+With a manifest, their absence is proven to be "never written". Without one it
+is genuinely ambiguous, and that ambiguity is **not** resolved as damage: the
+absence warns (stating that the schedule starts at position 0, or that the EMA
+is re-seeded) instead of refusing. Otherwise every checkpoint produced by
+`build_optimizer`'s `LR scheduler … unavailable; using constant LR` fallback
+would become unresumable once the cause was fixed, with no escape hatch. The
+unconditionally-written artifacts have no such ambiguity — the writer always
+produces them, so absent means lost, manifest or not.
+
+**A refusal names the way out.** `resume_from_checkpoint` defaults to `latest`,
+which picks the highest step *without* inspecting it — and the directory this
+guard catches is typically the newest one, so a refusal would otherwise turn a
+silent degradation into "the run will not start". The message therefore lists
+the intact `step_*` directories in the same `checkpoints/` folder (and says so
+explicitly when there are none), the way `resolve_resume_target` already lists
+what it found for an unresolvable explicit name. It is a list, not an automatic
+fallback: silently resuming an older checkpoint would roll the step counter back
+by up to `save_every` steps and re-train that span — the same class of
+unannounced surprise this guard exists to remove.
+
+**Existing checkpoints keep resuming.** A checkpoint written before the manifest
+existed is checked for presence only, and says so once in the log
+(`… predates the artifact manifest …`); an absent conditional artifact warns
+there rather than refusing (above). All 11 checkpoint directories on disk from
+runs 113–117 verify clean under the new guard, with no warnings.
+
+**There is deliberately no "resume anyway" key** — the parameter surface is
+unchanged. A resume means *continue this run*; deliberately restarting
+optimisation is a different intent that is already expressible without a new
+key: let the run export (or stop it and export), then start a **new** run with
+that export as its base VAE. That gets a clean step counter, a clean LR
+schedule and a metric series that is not two optimisation regimes spliced into
+one line — which is exactly what a "partial resume" would silently produce. The
+refusal message says this.
+
 Independently of the resolution: **`vae_val_psnr` is anti-correlated with
 sharpness here**, so it must not be used on its own to decide whether an
 LPIPS-weight change worked.
@@ -683,6 +769,7 @@ that will not start. All live in `vae_config.py::_validate` unless noted.
 | A gate key that is not an interpretable boolean (`train_decoder`, `train_encoder`, `acknowledge_latent_space_break`, `export_bare_ldm`, `ema_enabled`) | See [Strict booleans](#strict-booleans-on-the-gate-keys). |
 | Resume from a checkpoint trained against a **different base VAE** | `vae_trainer.py::_assert_base_vae_matches`, before any weight is loaded. See [Resume across a changed base VAE](#resume-across-a-changed-base-vae). |
 | Resume from a checkpoint that trained a different component set | `vae_trainer.py::_assert_component_set_matches`, before any weight is loaded. A checkpoint holds exactly the parameters that were trainable when it was written, plus optimizer and EMA state indexed by that same set. Both directions were previously silent-ish: a decoder-only checkpoint resumed with the encoder on failed with a message blaming `decoder_blocks`, and the reverse loaded happily (the checkpoint is a superset) and then failed opaquely inside the optimizer state load — or not at all, if `optimizer.pt` was absent. |
+| Resume from a checkpoint whose `train_state.json`, weights, `optimizer.pt` or (when this run has a scheduler, and the file is established to have been written) `lr_scheduler.pt` is absent, empty, the wrong size or unreadable | `vae_trainer.py::_assert_checkpoint_complete`, before any state is touched. The step counter would be adopted while the missing state was silently re-initialised. `ema.safetensors` and `rng_state.pt` are the warn-and-repair tier instead, as is an absent conditional artifact on a checkpoint with no manifest. The refusal lists the intact sibling checkpoints. See [Resume from an incomplete checkpoint](#resume-from-an-incomplete-checkpoint). |
 | `dtype: fp16` | SD1.5/SDXL-family VAEs overflow fp16 in decoder activations (the documented reason `sdxl-vae-fp16-fix` exists), and a training forward hits it sooner than inference. For every other family there is no `GradScaler` in this trainer, so fp16 gradients would silently underflow instead. `bf16` (default) and `fp32` are allowed. |
 | `latent_encoding_mode: pre_encoded_cache` | VAE training is *defined* by a live encode→decode forward on raw pixels; there is no cached latent to consume. Mirrors the existing outpaint-ControlNet refusal. |
 | A single-file base VAE whose `vae_arch` is empty, unknown, contradicts the file's latent-channel count, or contradicts a value the file itself provided | `vae_trainer.repair_single_file_scaling_factor`, at load time. Such a file has no `config.json`, so `vae_arch` is the only statement of which family it is, and that statement is what `save_pretrained` bakes into every export. See [the `vae_arch` matrix](#known-limits). |
@@ -750,7 +837,19 @@ class or newly-reported `latent_channels` warns instead of refusing when the
 digests match, while a changed `scaling_factor` / `shift_factor` warns even then;
 `select_trainable` is driven for real so the *recording* wiring is covered, not
 just its two ends; the digest ignores the tensors a resume overwrites and reacts
-to the ones it does not) and,
+to the ones it does not), in `VaeResumeCompletenessTest`, the checkpoint
+completeness guard (a complete checkpoint restores weights, optimizer state and
+the EMA counters; missing/truncated/corrupt `optimizer.pt`, `lr_scheduler.pt`,
+weights or `train_state.json` each refuse and name the file; missing EMA and RNG
+warn, resume, and re-seed the EMA with its ramp reset; adding or removing a
+scheduler or the EMA across a resume warns rather than refuses; an absent
+*conditional* artifact on a pre-manifest checkpoint warns while an absent
+unconditional one still refuses; a zero-byte artifact refuses with and without a
+manifest; a refusal lists the intact sibling checkpoints and omits the damaged
+ones; a checkpoint written by the real `save_checkpoint` round-trips, carries a
+size manifest for every file it wrote, and detects a byte-level truncation of
+any of them; and a real-save assertion that every file left in the directory is
+one the resume guard verifies) and,
 in `VaeCropScalePolicyTest`, the loader side of the crop scale policy — including a
 verbatim copy of the pre-policy loader that `downscale` is pixel-compared
 against, and an `inspect.signature` assertion that `make_validation_batch` takes

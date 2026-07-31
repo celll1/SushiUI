@@ -54,6 +54,8 @@ from core.training.vae.vae_config import (
     VALID_ENCODER_BLOCKS,
     VALID_DTYPES,
     VALID_LPIPS_NETS,
+    VALID_LR_SCHEDULERS,
+    VALID_OPTIMIZERS,
     VALID_SOURCES,
     resolve_vae_training_config,
     strict_bool,
@@ -472,6 +474,407 @@ class VaeRefusalMatrixTest(unittest.TestCase):
         self.assertEqual(cfg["resume_from"], "latest")
 
 
+# ── the numeric gate: one verdict per VAE_TRAINING_DEFAULTS key ──────────────
+# Written down so that ADDING a key without deciding what its meaningless values
+# are fails a test rather than shipping an unchecked knob. The verdict text is
+# the human-readable half; ``VaeNumericRefusalTest`` below asserts the rules.
+#
+# "enum"      - a closed value set is enforced.
+# "bool"      - parsed by strict_bool, anything else refused.
+# "bounded"   - numeric with an enforced range.
+# "free"      - deliberately unbounded above (see the note), bounded below.
+# "text"      - must be a string; emptiness rules live with vae_source.
+_KEY_VERDICTS = {
+    "batch_size": "bounded: >= 1",
+    "total_steps": "bounded: >= 1, and > lr_warmup_steps",
+    "gradient_accumulation_steps": "bounded: >= 1",
+    "learning_rate": "bounded: > 0 (0 is a no-op run that reports success)",
+    "optimizer": "enum: VALID_OPTIMIZERS (= everything OptimizerFactory resolves)",
+    "optimizer_weight_decay": "bounded: >= 0 (negative grows the weights)",
+    "max_grad_norm": "bounded: >= 0, where 0 MEANS 'no clipping' (repo-wide convention)",
+    "lr_scheduler": "enum: VALID_LR_SCHEDULERS, and 'constant' forbids a warmup",
+    "lr_warmup_steps": "bounded: >= 0, < total_steps, and 0 under lr_scheduler 'constant'",
+    "seed": "bounded: 0 .. 2**32-1 (numpy.random.seed's domain)",
+    "num_workers": "bounded: >= 0",
+    "save_every": "bounded: >= 0 (0 = only the final checkpoint)",
+    "max_step_saves_to_keep": "bounded: >= 0 (0 = keep all)",
+    "vae_source": "enum: VALID_SOURCES",
+    "vae_path": "text: required for vae_source 'path'/'model'",
+    "vae_arch": "text: required for vae_source 'store'; the loader checks the key itself",
+    "train_decoder": "bool",
+    "decoder_blocks": "enum: VALID_DECODER_BLOCKS",
+    "train_encoder": "bool (double gate)",
+    "acknowledge_latent_space_break": "bool (double gate)",
+    "encoder_blocks": "enum: VALID_ENCODER_BLOCKS",
+    "resolution": "bounded: multiple of 8, >= 64",
+    "crop_scale_policy": "enum: VALID_CROP_SCALE_POLICIES",
+    "crop_scale_max_downscale": "bounded: 0 or >= 1, and only under 'mixed'",
+    "dtype": "enum: VALID_DTYPES (fp16 refused with its own reason)",
+    "ema_enabled": "bool",
+    "ema_decay": "bounded: strictly inside (0, 1)",
+    "mse_weight": "free: >= 0, unbounded above (a large weight is loud, not silent)",
+    "l1_weight": "free: >= 0",
+    "lpips_weight": "free: >= 0, plus the lpips-import gate above 0",
+    "lpips_net": "enum: VALID_LPIPS_NETS",
+    "ycbcr_dc_weight": "free: >= 0",
+    "ycbcr_dc_y_weight": "bounded: >= 0, not both-zero with chroma while the term is on",
+    "ycbcr_dc_chroma_weight": "bounded: >= 0, not both-zero with luma while the term is on",
+    "ycbcr_dc_eps": "bounded: > 0 (0 makes the Charbonnier gradient NaN at d=0)",
+    "pattern_weight": "free: >= 0",
+    "pattern_size": "bounded: >= 1, and <= resolution while the term is on",
+    "l_invented_weight": "bounded: 0 .. 10 (openapi's declared maximum)",
+    "l_invented_y_weight": "bounded: 0 .. 4, not both-zero with chroma while the term is on",
+    "l_invented_chroma_weight": "bounded: 0 .. 4, not both-zero with luma while the term is on",
+    "l_invented_flat_t_y": "bounded: 0 .. 8, and > 0 while the term is on",
+    "l_invented_flat_t_c": "bounded: 0 .. 8, and > 0 while the term is on",
+    "kl_weight": "free: >= 0 (ignored, and logged as ignored, under a frozen encoder)",
+    "export_bare_ldm": "bool (refused with train_encoder)",
+    "validation_every": "bounded: >= 0 (0 = validation off)",
+    "validation_num_images": "bounded: >= 1 (0 empties the TRAINING split)",
+    "validation_resolution": "bounded: multiple of 8, >= 64",
+}
+
+
+class VaeNumericRefusalTest(unittest.TestCase):
+    """Numeric validation: every value that would train something OTHER than
+    what the config says, without saying so.
+
+    The holes closed here were all of the same shape — a key that was cast to
+    ``int``/``float`` and never range-checked, so an out-of-domain value
+    resolved cleanly and degraded the run in silence (``learning_rate: 0`` =
+    a successful run that exports the base VAE; ``validation_num_images: -1`` =
+    training on one image; ``max_grad_norm: 0`` = every gradient zeroed while
+    weight decay keeps shrinking the weights).
+
+    Each row asserts a fragment only its own guard emits, for the reason
+    documented in ``VaeRefusalMatrixTest``: a bare key name is satisfied by
+    neighbouring messages, so deleting the guard would go undetected.
+    """
+
+    _resolve = VaeRefusalMatrixTest._resolve
+    _assert_accepted = VaeRefusalMatrixTest._assert_accepted
+    _assert_refused = VaeRefusalMatrixTest._assert_refused
+
+    # ── exhaustiveness ───────────────────────────────────────────────────
+    def test_every_default_key_has_a_recorded_verdict(self):
+        """A new key must come with a decision about its meaningless values.
+
+        Without this, the next key added to VAE_TRAINING_DEFAULTS would ship
+        with a bare cast and no range — which is exactly how the holes above got
+        in. The ledger is documentation; the tests below are the enforcement.
+        """
+        self.assertEqual(set(_KEY_VERDICTS), set(VAE_TRAINING_DEFAULTS))
+        self.assertEqual(len(_KEY_VERDICTS), 47)
+
+    def test_the_shipped_defaults_resolve(self):
+        """Every bound above must admit the value the SSOT ships."""
+        cfg = self._assert_accepted()
+        for key, default in VAE_TRAINING_DEFAULTS.items():
+            if key == "lpips_weight":
+                continue  # forced to 0 by _NO_LPIPS
+            if key == "vae_path":
+                continue  # filled from base_model_path under vae_source='model'
+            self.assertEqual(cfg[key], default, f"default for {key} was rejected")
+
+    # ── learning rate ────────────────────────────────────────────────────
+    def test_a_zero_learning_rate_is_refused(self):
+        self._assert_refused("every optimizer step is a no-op",
+                             vae={"learning_rate": 0})
+
+    def test_a_negative_learning_rate_is_refused(self):
+        self._assert_refused("ascends the loss instead of descending",
+                             vae={"learning_rate": -1e-5})
+
+    def test_a_small_positive_learning_rate_is_accepted(self):
+        self.assertEqual(self._assert_accepted(
+            vae={"learning_rate": 1e-9})["learning_rate"], 1e-9)
+
+    # ── gradient clipping: 0 MEANS DISABLED, negative is refused ─────────
+    def test_max_grad_norm_zero_is_accepted_and_means_no_clipping(self):
+        """Refusing 0 would break the field's meaning everywhere else in the
+        repo (base_trainer / fused_optimizer_groups both use `> 0` to gate the
+        clip, the latter documenting "0 to disable"), and the UI has always
+        offered it. The trainer is what was wrong, not the value — see
+        ``VaeTrainerGateTest.test_max_grad_norm_zero_disables_clipping``."""
+        self.assertEqual(self._assert_accepted(
+            vae={"max_grad_norm": 0})["max_grad_norm"], 0.0)
+
+    def test_a_negative_max_grad_norm_is_refused(self):
+        self._assert_refused("flips the sign of every gradient",
+                             vae={"max_grad_norm": -1.0})
+
+    def test_an_infinite_max_grad_norm_is_routed_to_the_zero_spelling(self):
+        """`inf` WAS a working way to disable clipping (clip_grad_norm_ clamps
+        the scale factor at 1.0). It is refused now so that "off" has exactly
+        one spelling, but the message must name that spelling rather than
+        reporting a generic non-finite typo."""
+        message = self._assert_refused("max_grad_norm=0",
+                                       vae={"max_grad_norm": float("inf")})
+        self.assertNotIn("must be a finite number", message)
+
+    def test_a_negative_weight_decay_is_refused(self):
+        self._assert_refused("grows the VAE's weights without limit",
+                             vae={"optimizer_weight_decay": -0.001})
+
+    # ── optimizer / scheduler names ──────────────────────────────────────
+    def test_every_listed_optimizer_is_accepted(self):
+        for name in VALID_OPTIMIZERS:
+            with self.subTest(optimizer=name):
+                self.assertEqual(
+                    self._assert_accepted(vae={"optimizer": name})["optimizer"], name)
+
+    def test_an_unknown_optimizer_is_refused_before_the_model_load(self):
+        self._assert_refused("OptimizerFactory resolves exactly this set",
+                             vae={"optimizer": "sgd"})
+
+    def test_the_ringbuffer_optimizers_are_accepted_because_they_run(self):
+        """They do NOT need the allocator their name implies.
+
+        ``OptimizerFactory`` passes ``get_state_buffer=None`` and both
+        implementations then take their "Ring Buffer disabled: GPU allocation"
+        branch. Verified by construction plus a live ``step()`` on CUDA: the
+        state is allocated as uint8 on cuda:0 and the parameters move. Refusing
+        them would break a configuration that works today, so the misleading
+        name is handled by a log line in ``build_optimizer`` instead.
+        """
+        for name in ("adamw8bit_ringbuffer", "lion8bit_ringbuffer"):
+            with self.subTest(optimizer=name):
+                self.assertIn(name, VALID_OPTIMIZERS)
+                self.assertEqual(
+                    self._assert_accepted(vae={"optimizer": name})["optimizer"], name)
+
+    def test_the_optimizer_enum_is_exactly_what_the_factory_resolves(self):
+        """The enum is derived from OptimizerFactory, not guessed at. Reading
+        its source keeps this test free of a CUDA/bitsandbytes dependency while
+        still failing if the factory grows or loses a name."""
+        import inspect
+        import re
+        from core.training.optimizer_factory import OptimizerFactory
+        source = inspect.getsource(OptimizerFactory.create_optimizer)
+        names = set()
+        for match in re.finditer(r'optimizer_type\s*==\s*"([a-z0-9_]+)"', source):
+            names.add(match.group(1))
+        for match in re.finditer(r'optimizer_type\s+in\s+\[([^\]]+)\]', source):
+            names.update(re.findall(r'"([a-z0-9_]+)"', match.group(1)))
+        self.assertEqual(names, set(VALID_OPTIMIZERS))
+
+    def test_optimizer_case_is_folded_like_optimizerfactory_folds_it(self):
+        self.assertEqual(
+            self._assert_accepted(vae={"optimizer": "AdamW"})["optimizer"], "adamw")
+
+    def test_every_listed_lr_scheduler_is_accepted(self):
+        for name in VALID_LR_SCHEDULERS:
+            with self.subTest(lr_scheduler=name):
+                self.assertEqual(
+                    self._assert_accepted(vae={"lr_scheduler": name})["lr_scheduler"],
+                    name)
+
+    def test_an_unrunnable_lr_scheduler_is_refused(self):
+        """The trainer CATCHES a get_scheduler failure and continues at a
+        constant LR, so an unknown name is not an error at run time — it is a
+        silently ignored schedule. `piecewise_constant` is a real diffusers name
+        that would always land there (no `step_rules` is ever passed)."""
+        for name in ("piecewise_constant", "cosine_annealing", ""):
+            with self.subTest(lr_scheduler=name):
+                self._assert_refused("silently ignore the schedule",
+                                     vae={"lr_scheduler": name})
+
+    # ── warmup vs the schedule that is supposed to consume it ────────────
+    def test_a_warmup_under_the_constant_scheduler_is_refused(self):
+        """diffusers' get_scheduler returns the CONSTANT schedule *before* the
+        `num_warmup_steps` argument is used at all, so the pair is recorded
+        everywhere and applied nowhere. Both keys are UI-reachable and
+        `constant` is the shipped default, which makes this the likeliest
+        spelling of the mistake."""
+        self._assert_refused("returns the constant schedule without ever",
+                             vae={"lr_scheduler": "constant",
+                                  "lr_warmup_steps": 500})
+
+    def test_the_same_warmup_under_constant_with_warmup_is_accepted(self):
+        cfg = self._assert_accepted(vae={"lr_scheduler": "constant_with_warmup",
+                                         "lr_warmup_steps": 500})
+        self.assertEqual(cfg["lr_warmup_steps"], 500)
+
+    def test_the_constant_scheduler_with_no_warmup_is_still_the_default(self):
+        cfg = self._assert_accepted()
+        self.assertEqual(cfg["lr_scheduler"], "constant")
+        self.assertEqual(cfg["lr_warmup_steps"], 0)
+
+    def test_every_other_scheduler_accepts_a_warmup(self):
+        for name in VALID_LR_SCHEDULERS:
+            if name == "constant":
+                continue
+            with self.subTest(lr_scheduler=name):
+                self._assert_accepted(vae={"lr_scheduler": name,
+                                           "lr_warmup_steps": 100})
+
+    # ── warmup vs run length ─────────────────────────────────────────────
+    # Each row pins lr_scheduler explicitly so that it exercises the run-length
+    # rule and not the 'constant ignores warmup' rule next to it.
+    def test_a_warmup_at_least_as_long_as_the_run_is_refused(self):
+        for warmup in (100, 500):
+            with self.subTest(lr_warmup_steps=warmup):
+                self._assert_refused("entire run would be warmup", vae={
+                    "lr_scheduler": "constant_with_warmup",
+                    "total_steps": 100, "lr_warmup_steps": warmup,
+                })
+
+    def test_a_warmup_shorter_than_the_run_is_accepted(self):
+        cfg = self._assert_accepted(vae={"lr_scheduler": "constant_with_warmup",
+                                         "total_steps": 100,
+                                         "lr_warmup_steps": 99})
+        self.assertEqual(cfg["lr_warmup_steps"], 99)
+
+    # ── counts and cadences ──────────────────────────────────────────────
+    def test_validation_num_images_below_one_is_refused(self):
+        """0 makes items[:-0] == items[:0], i.e. an EMPTY training split, and -1
+        resolves to items[:1] — training on a single image."""
+        for bad in (0, -1):
+            with self.subTest(validation_num_images=bad):
+                self._assert_refused("TRAINING split empty",
+                                     vae={"validation_num_images": bad})
+
+    def test_negative_cadences_are_refused_rather_than_silently_disabling(self):
+        self._assert_refused("only tests validation_every > 0",
+                             vae={"validation_every": -1})
+        self._assert_refused("only tests save_every > 0", vae={"save_every": -1})
+        self._assert_refused("quietly fill the disk",
+                             vae={"max_step_saves_to_keep": -1})
+        self._assert_refused("rejected by DataLoader itself",
+                             vae={"num_workers": -1})
+
+    def test_zero_cadences_stay_accepted_because_they_mean_something(self):
+        cfg = self._assert_accepted(vae={"validation_every": 0, "save_every": 0,
+                                         "max_step_saves_to_keep": 0,
+                                         "num_workers": 0, "lr_warmup_steps": 0})
+        self.assertEqual(cfg["validation_every"], 0)
+        self.assertEqual(cfg["save_every"], 0)
+        self.assertEqual(cfg["max_step_saves_to_keep"], 0)
+        self.assertEqual(cfg["num_workers"], 0)
+
+    def test_a_seed_the_run_would_not_actually_use_is_refused(self):
+        """Not because the value crashes anything — `random.seed(-1)` and
+        `torch.manual_seed(-1)` are both legal, and the trainer already takes a
+        modulus for numpy. It is refused because that modulus makes the three
+        generators disagree with the seed written into train_state.json and the
+        sidecar, so the recorded seed does not reproduce the run."""
+        for bad in (-1, 2 ** 32, 2 ** 32 + 7):
+            with self.subTest(seed=bad):
+                self._assert_refused("does not use the seed it records",
+                                     vae={"seed": bad})
+        self.assertEqual(self._assert_accepted(
+            vae={"seed": 2 ** 32 - 1})["seed"], 2 ** 32 - 1)
+        self.assertEqual(self._assert_accepted(vae={"seed": 0})["seed"], 0)
+
+    def test_the_documented_seed_aliasing_is_real(self):
+        """The refusal message's claim, checked rather than asserted."""
+        self.assertEqual((-1) % (2 ** 32), 4294967295)
+        self.assertEqual((2 ** 32 + 7) % (2 ** 32), 7)
+
+    # ── YCbCr sub-parameters ─────────────────────────────────────────────
+    def test_a_negative_ycbcr_channel_weight_is_refused(self):
+        """It does not disable the channel: the term is summed over channels, so
+        a negative weight pays the run for increasing that channel's error."""
+        for key in ("ycbcr_dc_y_weight", "ycbcr_dc_chroma_weight"):
+            with self.subTest(key=key):
+                self._assert_refused("pays the run for increasing", vae={key: -1.0})
+
+    def test_both_ycbcr_channel_weights_zero_is_refused_while_the_term_is_on(self):
+        """The hole the audit named: the 'at least one active loss' check only
+        sees ycbcr_dc_weight, so this passes it while the objective is
+        identically zero."""
+        self._assert_refused("only looks at ycbcr_dc_weight", vae={
+            "mse_weight": 0, "l1_weight": 0, "lpips_weight": 0,
+            "pattern_weight": 0, "ycbcr_dc_weight": 0.1,
+            "ycbcr_dc_y_weight": 0, "ycbcr_dc_chroma_weight": 0,
+        })
+
+    def test_both_ycbcr_channel_weights_zero_is_accepted_with_the_term_off(self):
+        """Off by default must stay completely inert — the same rule the
+        l_invented sub-parameters follow."""
+        cfg = self._assert_accepted(vae={
+            "ycbcr_dc_weight": 0, "ycbcr_dc_y_weight": 0,
+            "ycbcr_dc_chroma_weight": 0,
+        })
+        self.assertEqual(cfg["ycbcr_dc_y_weight"], 0.0)
+
+    def test_a_non_positive_charbonnier_epsilon_is_refused(self):
+        for bad in (0, -1e-3):
+            with self.subTest(ycbcr_dc_eps=bad):
+                self._assert_refused("Charbonnier smoothing constant",
+                                     vae={"ycbcr_dc_eps": bad})
+
+    # ── pattern term ─────────────────────────────────────────────────────
+    def test_pattern_size_below_one_is_refused(self):
+        self._assert_refused("divides by zero at 0", vae={"pattern_size": 0})
+
+    def test_a_pattern_cell_larger_than_the_crop_is_refused_while_active(self):
+        self._assert_refused("no whole cell to group by", vae={
+            "pattern_weight": 0.1, "pattern_size": 1024, "resolution": 512,
+        })
+
+    def test_a_pattern_cell_exactly_the_crop_size_is_accepted(self):
+        """The boundary, pinned because ``>`` vs ``>=`` is a one-character
+        mistake that no other row catches. ``PatternLoss.forward`` computes
+        ``h_c = (h // p) * p``, which is 512 for p=512, so the ``h_c < p``
+        early-return is NOT taken and the phase variance is a real value over a
+        single cell — a legitimate (if degenerate) configuration."""
+        cfg = self._assert_accepted(vae={"pattern_weight": 0.1,
+                                         "pattern_size": 512,
+                                         "resolution": 512})
+        self.assertEqual(cfg["pattern_size"], 512)
+
+    def test_the_single_cell_pattern_term_really_is_computable(self):
+        """The reason the boundary above is accepted, asserted against the loss
+        itself rather than against a comment."""
+        import torch
+        from core.training.vae.vae_losses import PatternLoss
+        loss = PatternLoss(512)
+        pred = torch.randn(1, 3, 512, 512)
+        value = loss(pred, torch.zeros_like(pred))
+        self.assertTrue(torch.isfinite(value))
+        self.assertGreater(float(value), 0.0)
+
+    def test_a_pattern_cell_larger_than_the_crop_is_inert_when_the_term_is_off(self):
+        cfg = self._assert_accepted(vae={"pattern_size": 1024, "resolution": 512})
+        self.assertEqual(cfg["pattern_size"], 1024)
+
+    # ── type discipline ──────────────────────────────────────────────────
+    def test_non_finite_numbers_are_refused(self):
+        for key in ("mse_weight", "learning_rate", "ema_decay"):
+            for bad in (float("nan"), float("inf"), "nan", "-inf"):
+                with self.subTest(key=key, value=bad):
+                    self._assert_refused("must be a finite number", vae={key: bad})
+
+    def test_a_fractional_count_is_refused_rather_than_truncated(self):
+        for key in ("total_steps", "batch_size", "validation_num_images"):
+            with self.subTest(key=key):
+                self._assert_refused("Truncating it", vae={key: 2.5})
+
+    def test_a_whole_number_written_as_a_float_is_accepted(self):
+        """YAML/JSON round trips turn 2000 into 2000.0 often enough that this
+        must not become a refusal."""
+        cfg = self._assert_accepted(vae={"total_steps": 2000.0, "batch_size": 2.0})
+        self.assertEqual(cfg["total_steps"], 2000)
+        self.assertIsInstance(cfg["total_steps"], int)
+
+    def test_booleans_are_not_numbers(self):
+        """bool is an int subclass, so float(True) == 1.0 would let a stray
+        `mse_weight: true` become a weight of 1.0 and `batch_size: true` a batch
+        of one."""
+        self._assert_refused("(a boolean)", vae={"mse_weight": True})
+        self._assert_refused("(a boolean)", vae={"batch_size": True})
+
+    def test_non_string_paths_are_refused(self):
+        for key in ("vae_path", "vae_arch"):
+            with self.subTest(key=key):
+                self._assert_refused("must be a string", vae={key: ["a", "b"]})
+
+    def test_a_non_numeric_count_names_the_key(self):
+        self._assert_refused(["total_steps", "must be an integer"],
+                             vae={"total_steps": "many"})
+
+
 class VaeTrainerGateTest(unittest.TestCase):
     """The trainer's own second gate (defence in depth for non-resolver callers).
 
@@ -511,6 +914,109 @@ class VaeTrainerGateTest(unittest.TestCase):
             output_dir=".", run_name="gate_test")
         self.assertTrue(trainer.train_encoder)
         self.assertEqual(trainer._export_suffix(), "_vae_encoder_trained")
+
+    # ── gradient clipping: 0 must DISABLE it, not zero every gradient ────
+    def _clip_probe(self, max_grad_norm):
+        """A trainer whose only trainable tensor carries a gradient of norm 5."""
+        import torch
+        from core.training.vae.vae_trainer import VaeTrainer
+        trainer = VaeTrainer(self._cfg(max_grad_norm=max_grad_norm),
+                             output_dir=".", run_name="clip_test")
+        param = torch.nn.Parameter(torch.zeros(2))
+        param.grad = torch.tensor([3.0, 4.0])
+        trainer.trainable_params = [param]
+        return trainer, param, float(trainer._clip_gradients())
+
+    def test_max_grad_norm_zero_disables_clipping(self):
+        """The defect: ``clip_grad_norm_(params, 0)`` scales every gradient by
+        ``0 / total_norm``, i.e. to exactly zero. The optimizer step is then a
+        no-op except for AdamW's decoupled weight decay, so the run reports
+        success while shrinking the weights it was asked to train. 0 now means
+        "no clipping", as it does in base_trainer and fused_optimizer_groups.
+        """
+        import torch
+        _, param, norm = self._clip_probe(0.0)
+        self.assertTrue(torch.equal(param.grad, torch.tensor([3.0, 4.0])),
+                        "max_grad_norm=0 zeroed the gradients instead of "
+                        "disabling clipping")
+        # The unclipped norm is still reported: it is charted as grad_norm and
+        # is the only warning that a run is about to diverge.
+        self.assertAlmostEqual(norm, 5.0, places=5)
+
+    def test_a_positive_max_grad_norm_still_clips(self):
+        import torch
+        _, param, norm = self._clip_probe(1.0)
+        self.assertAlmostEqual(norm, 5.0, places=5)   # the norm BEFORE clipping
+        self.assertAlmostEqual(float(param.grad.norm()), 1.0, places=5)
+        self.assertFalse(torch.equal(param.grad, torch.tensor([3.0, 4.0])))
+
+    def test_clipping_a_parameter_set_with_no_gradients_is_not_a_crash(self):
+        import torch
+        from core.training.vae.vae_trainer import VaeTrainer
+        trainer = VaeTrainer(self._cfg(max_grad_norm=0.0),
+                             output_dir=".", run_name="clip_test")
+        trainer.trainable_params = [torch.nn.Parameter(torch.zeros(2))]
+        self.assertEqual(float(trainer._clip_gradients()), 0.0)
+
+    # ── the ringbuffer names run, but not as their name says ─────────────
+    def test_a_ringbuffer_optimizer_states_what_the_run_actually_gets(self):
+        """The mitigation that pays for accepting the misleading names.
+
+        They are NOT refused (they work: with no allocator both fall back to a
+        GPU allocation of the 8-bit state), so the only thing standing between
+        the name and a wrong expectation is this notice. Asserted on the pure
+        function rather than through build_optimizer, which would compile a CUDA
+        extension.
+        """
+        from core.training.vae.vae_trainer import VaeTrainer
+        for name, plain in (("adamw8bit_ringbuffer", "adamw8bit"),
+                            ("lion8bit_ringbuffer", "lion8bit"),
+                            ("AdamW8bit_RingBuffer", "adamw8bit")):
+            with self.subTest(optimizer=name):
+                note = VaeTrainer.optimizer_placement_note(name)
+                self.assertIsNotNone(note, f"no placement note for {name}")
+                self.assertIn("no ring-buffer allocator", note)
+                self.assertIn("allocated on the GPU", note)
+                self.assertIn(plain, note)
+
+    def test_build_optimizer_actually_prints_the_placement_note(self):
+        """The wiring, not just the two ends of it.
+
+        A note that is computed and dropped is the same as no note at all, and
+        it is the ONLY thing standing between the ring-buffer name and a wrong
+        expectation. OptimizerFactory is stubbed so the case stays GPU-free (the
+        real one compiles a CUDA extension).
+        """
+        import contextlib
+        import io
+        import torch
+        from core.training import optimizer_factory
+        from core.training.vae.vae_trainer import VaeTrainer
+
+        param = torch.nn.Parameter(torch.zeros(4))
+        original = optimizer_factory.OptimizerFactory.create_optimizer
+        optimizer_factory.OptimizerFactory.create_optimizer = staticmethod(
+            lambda **kwargs: torch.optim.SGD([param], lr=kwargs["learning_rate"]))
+        self.addCleanup(setattr, optimizer_factory.OptimizerFactory,
+                        "create_optimizer", original)
+
+        seen = {}
+        for name in ("adamw8bit_ringbuffer", "adamw"):
+            trainer = VaeTrainer(self._cfg(optimizer=name),
+                                 output_dir=".", run_name="note_test")
+            trainer.trainable_params = [param]
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                trainer.build_optimizer()
+            seen[name] = buf.getvalue()
+        self.assertIn("no ring-buffer allocator", seen["adamw8bit_ringbuffer"])
+        self.assertNotIn("ring-buffer", seen["adamw"])
+
+    def test_ordinary_optimizers_get_no_placement_note(self):
+        from core.training.vae.vae_trainer import VaeTrainer
+        for name in ("adamw", "adamw8bit", "adafactor", "lion8bit"):
+            with self.subTest(optimizer=name):
+                self.assertIsNone(VaeTrainer.optimizer_placement_note(name))
 
     def test_decoder_only_export_suffix_is_unchanged(self):
         from core.training.vae.vae_trainer import VaeTrainer

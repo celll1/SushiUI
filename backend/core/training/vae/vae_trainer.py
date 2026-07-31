@@ -575,11 +575,40 @@ class VaeTrainer:
             raise VaeConfigError(f"Unknown encoder_blocks={blocks!r}")
         return targets
 
+    @staticmethod
+    def optimizer_placement_note(optimizer_type: str) -> Optional[str]:
+        """What the run actually gets, when the optimizer's NAME says otherwise.
+
+        ``adamw8bit_ringbuffer`` / ``lion8bit_ringbuffer`` are accepted because
+        they really run here (verified with a live ``step()``): ``OptimizerFactory``
+        passes ``get_state_buffer=None`` and both implementations take their
+        "Ring Buffer disabled: GPU allocation" branch. But the ring-buffer
+        residency their name promises is exactly what this trainer does not wire
+        up, so the run says what it is doing rather than letting the name speak
+        for it. Returns None for every other optimizer.
+        """
+        from core.training.vae.vae_config import RINGBUFFER_OPTIMIZERS
+        name = str(optimizer_type).strip().lower()
+        if name not in RINGBUFFER_OPTIMIZERS:
+            return None
+        plain = "adamw8bit" if name.startswith("adamw") else "lion8bit"
+        return (f"optimizer={optimizer_type}: this trainer passes no "
+                f"ring-buffer allocator, so the 8-bit optimizer state is "
+                f"allocated on the GPU — the same state placement as "
+                f"{plain}. The ring-buffer part of the name does not apply "
+                f"here; {plain} is the unambiguous spelling of what this run "
+                f"gets.")
+
     def build_optimizer(self):
         from core.training.optimizer_factory import OptimizerFactory
 
+        optimizer_type = str(self.cfg["optimizer"])
+        note = self.optimizer_placement_note(optimizer_type)
+        if note:
+            print(f"{self.log_prefix} {note}")
+
         self.optimizer = OptimizerFactory.create_optimizer(
-            optimizer_type=str(self.cfg["optimizer"]),
+            optimizer_type=optimizer_type,
             params=self.trainable_params,
             learning_rate=self.cfg["learning_rate"],
             weight_decay=self.cfg["optimizer_weight_decay"],
@@ -763,8 +792,7 @@ class VaeTrainer:
             if micro % accum != 0:
                 continue
 
-            grad_norm = torch.nn.utils.clip_grad_norm_(
-                self.trainable_params, self.cfg["max_grad_norm"])
+            grad_norm = self._clip_gradients()
             self.optimizer.step()
             if self.lr_scheduler is not None:
                 self.lr_scheduler.step()
@@ -800,6 +828,36 @@ class VaeTrainer:
         self.save_diffusers_vae(self.global_step)
         self._flush_metrics()
         return self.stopped
+
+    def _clip_gradients(self) -> torch.Tensor:
+        """Clip to ``max_grad_norm``, where **0 means "do not clip"**.
+
+        That is the convention the rest of this repository already uses for the
+        same key (``base_trainer`` and ``optimizers/fused_optimizer_groups``
+        both guard their clip with ``if max_grad_norm > 0``, the latter
+        documenting it as "0 to disable"), and it is the only reading under
+        which the UI's ``min=0`` input is safe.
+
+        Passing 0 straight to ``clip_grad_norm_`` does NOT disable clipping: the
+        scale factor is ``max_norm / (total_norm + 1e-6)``, i.e. 0, so every
+        gradient becomes exactly 0. The optimizer step is then a no-op except
+        for AdamW's decoupled weight decay, which keeps shrinking the weights —
+        so the run reports success, charts a flat loss and exports a VAE that
+        was decayed rather than trained. ``vae_config`` refuses a NEGATIVE bound
+        (which would negate the gradients); 0 is given the meaning it has
+        everywhere else instead of being refused.
+
+        The unclipped total norm is still computed and returned in both
+        branches, because it is charted as ``grad_norm`` and is the only signal
+        that a run is about to diverge.
+        """
+        max_norm = float(self.cfg["max_grad_norm"])
+        if max_norm > 0:
+            return torch.nn.utils.clip_grad_norm_(self.trainable_params, max_norm)
+        grads = [p.grad for p in self.trainable_params if p.grad is not None]
+        if not grads:
+            return torch.zeros(())
+        return torch.norm(torch.stack([g.detach().norm(2) for g in grads]), 2)
 
     def _train_micro_step(self, batch: torch.Tensor, accum: int):
         pixels = batch.to(self.device, dtype=torch.float32, non_blocking=True)

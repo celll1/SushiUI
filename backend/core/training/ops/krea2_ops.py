@@ -64,6 +64,21 @@ def load_components(trainer) -> None:
 
     trainer.vae = trainer.vae.to(dtype=trainer.vae_dtype)
 
+    # A training process is DEQUANT-ONLY (see ideogram4_ops.load_components for
+    # the full reasoning). Krea 2's TE CAN be fp8: when the TE directory resolves
+    # to an Ideogram-4-style "<parent>/text_encoder" layout, krea2_loader's
+    # _load_qwen3vl_text_encoder() delegates to load_ideogram4_text_encoder(),
+    # which swaps to Fp8Linear whenever the on-disk state dict is FP8. A
+    # weight-only-FP8 transformer checkpoint is also supported, and training-time
+    # sample generation runs both under the pipeline's no_grad denoise loop --
+    # which would make the validation previews W8A8 while the trained weights are
+    # not. Both are gated below; this is a no-op when a module is bf16.
+    from core.models.ideogram4.vendor.fp8_linear import disable_scaled_mm
+    for _label, _module in (("transformer", trainer.transformer),
+                            ("text_encoder", trainer.text_encoder)):
+        if _module is not None:
+            disable_scaled_mm(_module, label=f"krea2 training {_label}")
+
     # Gradient checkpointing on the vendored transformer.
     if trainer.gradient_checkpointing and hasattr(trainer.transformer, "enable_gradient_checkpointing"):
         try:

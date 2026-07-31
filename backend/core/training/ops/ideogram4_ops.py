@@ -60,6 +60,22 @@ def load_components(trainer) -> None:
 
     trainer.vae = trainer.vae.to(dtype=trainer.vae_dtype)
 
+    # A training process is DEQUANT-ONLY. ``SUSHI_FP8_SCALED_MM`` is inherited
+    # from the backend (training_process.py does os.environ.copy()), and the
+    # trainer's TE encode path goes through the @torch.no_grad()-decorated
+    # ``encode_text_layers``, so neither the env flag nor grad mode can be relied
+    # on to keep the W8A8 fast path out of training. Switch it off explicitly on
+    # every fp8 module this trainer owns, so the LoRA is fitted against exactly
+    # the base function everyone else runs at inference.
+    from core.models.ideogram4.vendor.fp8_linear import disable_scaled_mm
+    for _label, _module in (
+        ("transformer", trainer.transformer),
+        ("transformer_uncond", trainer.transformer_uncond),
+        ("text_encoder", trainer.text_encoder),
+    ):
+        if _module is not None:
+            disable_scaled_mm(_module, label=f"ideogram4 training {_label}")
+
     # Gradient checkpointing.
     if not trainer.gradient_checkpointing:
         print(f"{trainer.log_prefix} Gradient checkpointing disabled by config (Ideogram 4)")

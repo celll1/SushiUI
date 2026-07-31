@@ -33,6 +33,19 @@ if _opts:
         (_alloc_conf + "," if _alloc_conf else "") + ",".join(_opts))
     print(f"[TrainRunner] PYTORCH_CUDA_ALLOC_CONF={os.environ['PYTORCH_CUDA_ALLOC_CONF']}")
 
+# Belt-and-braces on top of the per-module disable_scaled_mm() calls every
+# trainer-side loader already makes (see krea2_ops.py / ideogram4_ops.py): force
+# the whole training process onto the dequant-only FP8 path regardless of which
+# loader ran, so a future training entry point that obtains an Fp8Linear module
+# without going through those loaders cannot silently regress into W8A8. Does
+# not override an operator's explicit "0"; only fills in when unset, matching
+# fp8_linear's own `os.environ.get("SUSHI_FP8_SCALED_MM", "0")` default.
+# MUST be set before `core.models.ideogram4.vendor.fp8_linear` is first
+# imported: `_SCALED_MM_ENABLED` is read once at that module's import time, and
+# nothing above this point (stdlib only, plus the PYTORCH_CUDA_ALLOC_CONF logic)
+# imports it or anything that transitively imports it.
+os.environ.setdefault("SUSHI_FP8_SCALED_MM", "0")
+
 import torch
 import gc
 from pathlib import Path

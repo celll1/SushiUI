@@ -4,11 +4,30 @@ Independently implemented for SushiUI (no runtime dependency on the upstream
 ``ideogram4`` package). Ported from the Apache-2.0 reference loader
 (ideogram-oss/ideogram4 ``quantized_loading.py``).
 
-Activations stay in the compute dtype (e.g. bfloat16); only Linear weights are
-stored as float8 with a per-output-channel (per-row) float32 scale. At forward
-time the weight is dequantized back to the compute dtype and a normal matmul
-runs, so this needs no FP8 tensor-core hardware and works on any device that can
-store float8 (CPU included). The win is ~2x smaller Linear weights.
+Linear weights are stored as float8 with a per-output-channel (per-row) float32
+scale, halving the size of every quantized Linear weight.
+
+Two forward paths exist. The dequantized matmul is the DEFAULT; the scaled GEMM
+is opt-in behind ``SUSHI_FP8_SCALED_MM=1`` (see ``_SCALED_MM_ENABLED``) and is
+inference-only -- a module's owner declares that explicitly by calling
+``disable_scaled_mm`` (every trainer-side loader does), because grad mode alone
+cannot distinguish inference from training here.
+
+* **W8A8 scaled GEMM** (``torch._scaled_mm``): the activation is dynamically
+  quantized to e4m3 with a per-token (per-row) float32 scale and the matmul runs
+  directly on the FP8 tensor cores, with the per-token and per-output-channel
+  scales applied by the GEMM epilogue. Requires CUDA with FP8 tensor cores
+  (compute capability >= 8.9) and shapes that satisfy ``_scaled_mm``'s
+  constraints.
+* **Dequantized matmul** (fallback): the weight is dequantized back to the
+  compute dtype and a normal matmul runs. Works on any device that can store
+  float8 (CPU included) and is used whenever the scaled GEMM is disabled
+  (globally by env, or per-module via ``disable_scaled_mm``), unavailable,
+  unsupported for the given shape/dtype, or grad mode is enabled (any training,
+  whether or not this particular layer needs a gradient).
+
+Path selection is probed once per (device, activation dtype) and cached; see
+``_scaled_mm_mode``.
 
 Checkpoint layout (per quantized Linear ``<name>``):
     <name>.weight        float8_e4m3fn  (out, in)
@@ -20,6 +39,8 @@ Dequantization: ``weight.to(dtype) * weight_scale[:, None]``.
 
 from __future__ import annotations
 
+import os
+import threading
 import warnings
 
 import torch
@@ -58,17 +79,239 @@ def quantize_weight_to_fp8(weight: torch.Tensor) -> tuple[torch.Tensor, torch.Te
     return q, scale.squeeze(1).to(torch.float32)
 
 
+# ---------------------------------------------------------------------------
+# W8A8 scaled-GEMM fast path (torch._scaled_mm)
+# ---------------------------------------------------------------------------
+#
+# Constraints taken from the installed torch's own checker,
+# ``torch/_meta_registrations.py::_check_scaled_mm_sizes`` (torch 2.10):
+#   * both operands 2-D and of an fp8/fp4 dtype
+#   * ``self`` row-major, ``mat2`` column-major
+#   * ``self.size(1) % 16 == 0`` and both dims of ``mat2`` divisible by 16
+#   * tensorwise scaling: both scales are float32 with ``numel() == 1``
+#   * rowwise scaling: both scales are float32 and 2-D, ``scale_a`` is ``(m, 1)``
+#     and ``scale_b`` is ``(1, n)``, both contiguous
+# A weight stored ``(out, in)`` row-major contiguous gives a column-major
+# ``(in, out)`` operand for free via ``.t()``.
+#
+# Rowwise scaling has historically been gated by torch version / GPU
+# architecture, so the usable mode is probed once per (device, out dtype) and
+# cached instead of being retried on every forward.
+
+# Smallest activation scale we will emit. Guards all-zero rows: without it the
+# scale would be 0 and the reciprocal used for quantization would be inf/NaN.
+_MIN_ACT_SCALE = 1e-12
+
+# Alignment required by _scaled_mm on both GEMM operand dimensions.
+_SCALED_MM_ALIGN = 16
+
+# Minimum compute capability with FP8 tensor cores (Ada / sm_89).
+_FP8_MIN_CAPABILITY = (8, 9)
+
+# Fast accumulation keeps the FP8 MMA accumulator in reduced precision inside a
+# tile instead of promoting every k-block to fp32. Inference-only here (the
+# fast path is skipped whenever gradients must flow). Set the env var to "0" to
+# force the fully-promoted accumulation.
+_USE_FAST_ACCUM = os.environ.get("SUSHI_FP8_FAST_ACCUM", "1") != "0"
+
+# The W8A8 scaled-GEMM path is OPT-IN: set SUSHI_FP8_SCALED_MM=1 to enable it.
+#
+# It is off by default because its cost is measured and its benefit is not. The
+# extra activation quantization raises the error against an fp32 reference from
+# ~2.6e-02 (dequant path) to ~3.7e-02 rel RMS, i.e. ~44% more error, on both
+# Ideogram 4 (transformer and text encoder) and Krea 2. No throughput number has
+# been produced on this hardware yet; until the measurement gate in
+# ``examples/api/bench_fp8_scaled_mm.py`` passes, the dequant path -- which is
+# what users already run -- stays the default.
+#
+# Read once at import: flipping this requires a backend restart (see the gate
+# script's protocol).
+_SCALED_MM_ENABLED = os.environ.get("SUSHI_FP8_SCALED_MM", "0") == "1"
+
+# (device index, activation dtype) -> mode string, or None for "unusable".
+#   "rowwise_bias" : rowwise scales, bias fused into the GEMM epilogue
+#   "rowwise"      : rowwise scales, bias added afterwards
+#   "tensorwise"   : unit scalar scales, both scales applied after the GEMM
+_SCALED_MM_MODE: dict[tuple[int, torch.dtype], str | None] = {}
+_SCALED_MM_LOCK = threading.Lock()
+_SCALED_MM_REPORTED: set[str] = set()
+
+
+def _report_scaled_mm_fallback(key: str, reason: str, *, degraded: bool) -> None:
+    """Log the fallback, and for unexpected failures surface it to the user.
+
+    ``degraded=True`` means the fast path failed unexpectedly rather than simply
+    being unsupported on this hardware; only that case is worth putting on the
+    generation's warning channel.
+
+    Both the console print and the user-facing warning fire exactly ONCE PER
+    (device, activation dtype) -- not once per process: the print is one-shot
+    per ``key``, and every degraded call site latches
+    ``_SCALED_MM_MODE[key] = None`` at or before reporting (probe failure,
+    runtime failure), so the next forward short-circuits on ``mode is None`` and
+    never reaches this function again for that key. A second GPU, or a second
+    activation dtype on the same GPU, gets its own key and therefore its own
+    single report.
+
+    That is deliberate. Re-filing the warning on the ``mode is None`` early
+    return would put an ``add_warning`` call (plus an import) on the hot path of
+    every Linear forward of every generation, to restate a fact that does not
+    change for the life of the process. The one warning plus the console line
+    are the signal; the fallback itself is safe (it is the default path).
+    """
+    message = f"FP8 W8A8 via torch._scaled_mm unavailable, falling back to dequant path: {reason}"
+    with _SCALED_MM_LOCK:
+        first_time = key not in _SCALED_MM_REPORTED
+        _SCALED_MM_REPORTED.add(key)
+    if first_time:
+        print(f"[Fp8Linear] {message}")
+    if not degraded:
+        # Plain capability miss (no FP8 tensor cores, no torch._scaled_mm, ...).
+        # Expected on most hardware: print-only, never a user-facing warning.
+        return
+    try:
+        from api.generation_status import add_warning
+
+        add_warning(message, code="quantization_fallback")
+    except Exception:
+        pass
+
+
+def _probe_scaled_mm(device: torch.device, out_dtype: torch.dtype) -> str | None:
+    """Run one tiny scaled GEMM to find which scaling mode this build accepts.
+
+    Uses 16x16 operands, so the probe costs no meaningful VRAM or time. Returns
+    the mode string, or None if no variant works.
+    """
+    if not _SCALED_MM_ENABLED:
+        # The default state, not a degradation: stay silent. Printing here would
+        # put a "falling back" line on every model load for every user.
+        return None
+    if not hasattr(torch, "_scaled_mm"):
+        _report_scaled_mm_fallback("missing", "torch._scaled_mm is not available", degraded=False)
+        return None
+    if device.type != "cuda":
+        return None
+    try:
+        capability = torch.cuda.get_device_capability(device)
+    except Exception as exc:  # pragma: no cover - driver-level failure
+        _report_scaled_mm_fallback("capability", f"could not query compute capability ({exc})", degraded=False)
+        return None
+    if capability < _FP8_MIN_CAPABILITY:
+        _report_scaled_mm_fallback(
+            f"capability{capability}",
+            f"compute capability {capability[0]}.{capability[1]} has no FP8 tensor cores",
+            degraded=False,
+        )
+        return None
+
+    n = _SCALED_MM_ALIGN
+    a = torch.zeros(n, n, dtype=FP8_WEIGHT_DTYPE, device=device)
+    # (out, in) row-major -> .t() is the column-major operand _scaled_mm wants.
+    b = torch.zeros(n, n, dtype=FP8_WEIGHT_DTYPE, device=device).t()
+    row_a = torch.ones(n, 1, dtype=torch.float32, device=device)
+    row_b = torch.ones(1, n, dtype=torch.float32, device=device)
+    one = torch.ones((), dtype=torch.float32, device=device)
+    bias = torch.zeros(n, dtype=out_dtype, device=device)
+
+    # The tensorwise probe must use the same out_dtype the forward will ask for
+    # (see Fp8Linear._scaled_mm_forward): always float32, because the per-token
+    # and per-output-channel scales are applied in float32 afterwards.
+    tensorwise_out = torch.float32
+    attempts: list[tuple[str, dict]] = [
+        ("rowwise_bias", {"scale_a": row_a, "scale_b": row_b, "bias": bias, "out_dtype": out_dtype}),
+        ("rowwise", {"scale_a": row_a, "scale_b": row_b, "out_dtype": out_dtype}),
+        ("tensorwise", {"scale_a": one, "scale_b": one, "out_dtype": tensorwise_out}),
+    ]
+    errors: list[str] = []
+    for mode, kwargs in attempts:
+        try:
+            torch._scaled_mm(a, b, use_fast_accum=_USE_FAST_ACCUM, **kwargs)
+            return mode
+        except Exception as exc:
+            errors.append(f"{mode}: {type(exc).__name__}: {exc}")
+    device_key = device.index if device.index is not None else -1
+    _report_scaled_mm_fallback(
+        f"probe{device_key}{out_dtype}",
+        f"no supported scaling mode for {out_dtype} ({' | '.join(errors)})",
+        degraded=True,
+    )
+    return None
+
+
+def _scaled_mm_mode(device: torch.device, out_dtype: torch.dtype) -> str | None:
+    """Cached ``_probe_scaled_mm`` keyed on (device index, activation dtype)."""
+    key = (device.index if device.index is not None else -1, out_dtype)
+    try:
+        return _SCALED_MM_MODE[key]
+    except KeyError:
+        pass
+    mode = _probe_scaled_mm(device, out_dtype)
+    with _SCALED_MM_LOCK:
+        _SCALED_MM_MODE.setdefault(key, mode)
+    return _SCALED_MM_MODE[key]
+
+
+def _quantize_activation(x2: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """Per-token dynamic e4m3 quantization of a 2-D activation.
+
+    Returns ``(x_fp8, scale)`` with ``scale`` of shape ``(m, 1)`` float32 such
+    that ``x2 ~= x_fp8.float() * scale``. Rows that are entirely zero get the
+    floor scale rather than zero, so the reciprocal stays finite.
+    """
+    amax = x2.detach().abs().amax(dim=-1, keepdim=True).to(torch.float32)
+    scale = (amax / FP8_E4M3_MAX).clamp_(min=_MIN_ACT_SCALE)
+    recip = scale.reciprocal()
+    if x2.dtype is torch.bfloat16:
+        # bfloat16 covers the full float32 exponent range, so the reciprocal
+        # never overflows and the product carries more mantissa than e4m3 keeps.
+        scaled = x2 * recip.to(torch.bfloat16)
+    elif x2.dtype is torch.float32:
+        scaled = x2 * recip
+    else:
+        # float16 would overflow on the reciprocal of a very small amax.
+        scaled = x2.to(torch.float32) * recip
+    return scaled.clamp_(-FP8_E4M3_MAX, FP8_E4M3_MAX).to(FP8_WEIGHT_DTYPE), scale
+
+
+# Allocation failures that do not arrive as ``torch.cuda.OutOfMemoryError``.
+# cuBLAS reports a workspace shortage as a plain RuntimeError; it is transient in
+# the same way an OOM is, so it must not latch the mode off for the process.
+_ALLOC_FAILURE_MARKERS = ("CUBLAS_STATUS_ALLOC_FAILED", "out of memory", "CUDA_ERROR_OUT_OF_MEMORY")
+
+
+def _is_allocation_failure(exc: BaseException) -> bool:
+    try:
+        message = str(exc)
+    except Exception:
+        # An exception whose own __str__ raises must not propagate out of the
+        # except block in _scaled_mm_forward that calls this helper.
+        return False
+    return any(marker in message for marker in _ALLOC_FAILURE_MARKERS)
+
+
 class Fp8Linear(nn.Module):
     """Linear layer holding an e4m3 float8 weight + per-row float32 scale.
 
     The weight and scale are registered as buffers (not parameters) so they load
-    via ``load_state_dict`` and are excluded from optimizer/grad machinery. The
-    dequantized matmul runs in ``compute_dtype``.
+    via ``load_state_dict`` and are excluded from optimizer/grad machinery.
+
+    ``forward`` tries the W8A8 scaled GEMM first (``_scaled_mm_forward``) and
+    falls back to the dequantized matmul (``_dequant_forward``, which runs in the
+    activation's dtype) whenever the former is not usable.
+
+    ``_allow_scaled_mm`` is the explicit per-module opt-out (see
+    ``disable_scaled_mm``). It is a CLASS attribute so it costs nothing per
+    instance, is not a buffer/parameter (so it never touches ``state_dict``), and
+    is set per instance only where a caller has opted out.
     """
 
     weight: torch.Tensor
     weight_scale: torch.Tensor
     bias: torch.Tensor | None
+
+    # Owner-level kill switch for the W8A8 fast path. See disable_scaled_mm().
+    _allow_scaled_mm: bool = True
 
     def __init__(
         self,
@@ -92,9 +335,201 @@ class Fp8Linear(nn.Module):
             self.bias = None
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        out = self._scaled_mm_forward(x)
+        if out is not None:
+            return out
+        return self._dequant_forward(x)
+
+    def _dequant_forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Dequantize the weight to the compute dtype and run a normal matmul."""
         w = self.weight.to(x.dtype) * self.weight_scale.to(x.dtype).unsqueeze(1)
         bias = self.bias.to(x.dtype) if self.bias is not None else None
         return F.linear(x, w, bias)
+
+    def _scaled_mm_forward(self, x: torch.Tensor) -> torch.Tensor | None:
+        """FP8 W8A8 matmul on the tensor cores, or None if it is not usable here.
+
+        Returning None (rather than raising) lets ``forward`` fall through to the
+        dequant path for every case the scaled GEMM cannot serve.
+        """
+        # GATE 0 (cheapest first): the feature is off entirely for this process
+        # (the default). Every other gate below still runs correctly when this
+        # check is skipped -- ``_scaled_mm_mode`` calls ``_probe_scaled_mm``,
+        # which itself checks ``_SCALED_MM_ENABLED`` and returns None -- so this
+        # is a pure short-circuit, not a behavior change: it just avoids paying
+        # gates 1-8 (module ownership check, grad-mode check, device/dtype/shape
+        # checks, and the probe/cache lookup) on every Linear forward of every
+        # generation for users who never set ``SUSHI_FP8_SCALED_MM=1``.
+        if not _SCALED_MM_ENABLED:
+            return None
+        w = self.weight
+        # GATE 1 (authoritative): the module's owner may forbid the fast path
+        # outright. Grad mode is NOT a usable proxy for "this is inference":
+        # several no_grad-decorated helpers are shared by the inference and the
+        # TRAINING call graphs -- ``encode_text_layers``
+        # (ideogram4_pipeline_ops.py) is @torch.no_grad() and is reached both from
+        # the pipeline and from ``training/ops/ideogram4_ops.encode_prompt``, and
+        # a training subprocess inherits ``SUSHI_FP8_SCALED_MM`` from the backend
+        # via ``training_process.py``'s ``os.environ.copy()``. Without this gate an
+        # operator who enabled the fast path for inference speed would silently
+        # fit every LoRA against W8A8 conditioning (~2.7e-02 rel RMS noisier than
+        # the dequant path everyone else runs). The trainer-side loaders call
+        # ``disable_scaled_mm`` on every module they own, so a training process is
+        # dequant-only regardless of env or grad mode.
+        if not self._allow_scaled_mm:
+            return None
+        # GATE 2 (defence in depth): never run W8A8 where a gradient could flow.
+        # Checking only ``x.requires_grad`` would not be enough on its own, since
+        # every Fp8Linear sitting BEFORE the first LoRA contribution in the graph
+        # (and every layer in a branch with no LoRA at all) receives an input with
+        # requires_grad=False.
+        if x.requires_grad or torch.is_grad_enabled():
+            return None
+        if not x.is_cuda or w.device != x.device or w.dtype is not FP8_WEIGHT_DTYPE:
+            return None
+        if self.in_features % _SCALED_MM_ALIGN or self.out_features % _SCALED_MM_ALIGN:
+            return None
+        if not w.is_contiguous():
+            return None
+        if x.shape[-1] != self.in_features or x.numel() == 0:
+            return None
+
+        mode = _scaled_mm_mode(x.device, x.dtype)
+        if mode is None:
+            return None
+
+        # Everything that only the fast path does lives inside the try, including
+        # the activation quantization: it allocates a float32 (m, k) temporary for
+        # fp16/fp32 inputs, so it can OOM where the dequant path would not, and an
+        # exception there must fall back rather than escape forward().
+        try:
+            x2 = x.reshape(-1, self.in_features)
+            if not x2.is_contiguous():
+                x2 = x2.contiguous()
+            x_fp8, a_scale = _quantize_activation(x2)
+
+            w_scale = self.weight_scale
+            if w_scale.dtype is not torch.float32:
+                w_scale = w_scale.to(torch.float32)
+            w_scale = w_scale.reshape(1, self.out_features)
+            if not w_scale.is_contiguous():
+                w_scale = w_scale.contiguous()
+            # (out, in) row-major -> (in, out) column-major, which is the layout
+            # _scaled_mm requires for the second operand. No copy.
+            w_t = w.t()
+
+            # UNEXERCISED: the two rowwise branches below have never run on the
+            # only hardware this was tested on (sm_89 / Ada), where the probe only
+            # ever accepts "tensorwise". They were checked by inspection against
+            # torch's own _check_scaled_mm_sizes and are internally consistent
+            # (and "rowwise_bias" with bias=None degrades harmlessly to
+            # "rowwise"), but they carry NO measured evidence. Anyone enabling
+            # them -- a Blackwell GPU, or a torch upgrade that widens rowwise
+            # support -- must re-run examples/api/bench_fp8_scaled_mm.py and the
+            # numerics check rather than trusting this code.
+            if mode == "rowwise_bias":
+                out2 = torch._scaled_mm(
+                    x_fp8,
+                    w_t,
+                    scale_a=a_scale,
+                    scale_b=w_scale,
+                    bias=self.bias.to(x.dtype) if self.bias is not None else None,
+                    out_dtype=x.dtype,
+                    use_fast_accum=_USE_FAST_ACCUM,
+                )
+            elif mode == "rowwise":
+                out2 = torch._scaled_mm(
+                    x_fp8,
+                    w_t,
+                    scale_a=a_scale,
+                    scale_b=w_scale,
+                    out_dtype=x.dtype,
+                    use_fast_accum=_USE_FAST_ACCUM,
+                )
+                if self.bias is not None:
+                    out2 = out2 + self.bias.to(x.dtype)
+            else:
+                # Tensorwise-only build (this is what sm_89 offers): the GEMM
+                # takes scalar scales, so the per-token and per-output-channel
+                # scales are applied afterwards.
+                #
+                # This is NOT numerically identical to a fused rowwise epilogue,
+                # which scales the fp32 accumulator once and rounds once. The
+                # closest we can get with scalar scales is to take the GEMM out in
+                # float32, apply both scale vectors in float32, and round to the
+                # activation dtype exactly once at the end. That costs one float32
+                # (m, n) temporary; scaling in the (narrower) activation dtype
+                # instead would save it but add three roundings, which measured
+                # 4.31e-03 rel RMS worse than this decomposition on bf16.
+                one = torch.ones((), dtype=torch.float32, device=x.device)
+                acc = torch._scaled_mm(
+                    x_fp8,
+                    w_t,
+                    scale_a=one,
+                    scale_b=one,
+                    out_dtype=torch.float32,
+                    use_fast_accum=_USE_FAST_ACCUM,
+                )
+                #
+                # Applied IN PLACE: ``acc`` is a fresh ``_scaled_mm`` output with
+                # no other reference, so mutating it is safe and it keeps the
+                # transient at 1.5x the (m, n) float32 accumulator instead of 3x
+                # (measured at m=n=2048: 24 MiB vs 48 MiB peak delta over a 16 MiB
+                # accumulator; tmp/fp8_scaled_mm_memory.py). The
+                # out-of-place form was heavier in transient VRAM than the dequant
+                # path it replaces, on exactly the large layers the fast path is
+                # for. Still rounds exactly once, at the ``.to(x.dtype)`` below.
+                acc.mul_(a_scale).mul_(w_scale)
+                if self.bias is not None:
+                    acc.add_(self.bias.to(torch.float32))
+                out2 = acc.to(x.dtype)
+        except torch.cuda.OutOfMemoryError as exc:
+            self._report_transient_oom(exc)
+            return None
+        except Exception as exc:
+            if _is_allocation_failure(exc):
+                # e.g. RuntimeError: CUBLAS_STATUS_ALLOC_FAILED -- cuBLAS could not
+                # get its workspace. Same nature as an OOM (transient, pressure-
+                # dependent) but it does not arrive as OutOfMemoryError, so it
+                # would otherwise latch the mode off for the whole process.
+                self._report_transient_oom(exc)
+                return None
+            # Anything else (unsupported shape/dtype combination, a kernel or
+            # driver error) is a property of this configuration, not of one call:
+            # latch it so we do not pay a failing call on every forward.
+            key = (x.device.index if x.device.index is not None else -1, x.dtype)
+            with _SCALED_MM_LOCK:
+                _SCALED_MM_MODE[key] = None
+            _report_scaled_mm_fallback(
+                f"runtime{key}",
+                f"{mode} call failed ({type(exc).__name__}: {exc})",
+                degraded=True,
+            )
+            return None
+
+        return out2.reshape(*x.shape[:-1], self.out_features)
+
+    def _report_transient_oom(self, exc: BaseException) -> None:
+        """Report an allocation failure that must NOT latch the mode off.
+
+        Transient and shape-specific: one oversized layer (a large batch, or a
+        block-swap spike) must not condemn every other layer on this device for
+        the process lifetime, and it is not evidence that the hardware or the
+        build is degraded -- so no ``quantization_fallback`` warning either.
+        Printed once per layer shape so a layer that fails on every step cannot
+        flood the log.
+        """
+        key = f"oom{self.in_features}x{self.out_features}"
+        with _SCALED_MM_LOCK:
+            first_time = key not in _SCALED_MM_REPORTED
+            _SCALED_MM_REPORTED.add(key)
+        if first_time:
+            print(
+                f"[Fp8Linear] scaled-GEMM out of memory on a "
+                f"{self.in_features}x{self.out_features} layer "
+                f"({type(exc).__name__}); using the dequant path for these "
+                f"calls. The mode stays enabled for every other layer."
+            )
 
     def extra_repr(self) -> str:
         return (
@@ -136,6 +571,30 @@ def swap_linears_to_fp8(
                 child, state_dict, compute_dtype, prefix=f"{child_prefix}."
             )
     return swapped
+
+
+def disable_scaled_mm(module: nn.Module, *, label: str = "") -> int:
+    """Forbid the W8A8 scaled-GEMM fast path on every ``Fp8Linear`` under ``module``.
+
+    The dequant path is what every published checkpoint and every default-config
+    user runs, so anything that must match it bit-for-bit-ish -- above all
+    TRAINING, where the base function is what a LoRA is fitted against -- calls
+    this on the modules it owns.
+
+    This is the authoritative gate: it does not depend on grad mode (several
+    ``@torch.no_grad()`` helpers are shared between the inference and training
+    call graphs) nor on ``SUSHI_FP8_SCALED_MM`` (a training subprocess inherits
+    the backend's environment). Idempotent; a no-op on a module with no
+    ``Fp8Linear``. Returns the number of layers switched off.
+    """
+    n = 0
+    for m in module.modules():
+        if isinstance(m, Fp8Linear):
+            m._allow_scaled_mm = False
+            n += 1
+    if n and label:
+        print(f"[Fp8Linear] {label}: W8A8 scaled-GEMM disabled on {n} layer(s) (dequant only)")
+    return n
 
 
 _BNB_SIBLING_SUFFIXES = (

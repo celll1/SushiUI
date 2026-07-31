@@ -37,6 +37,7 @@ FEATURE_PARAMS: Dict[str, List[str]] = {
     "fbcache": ["fbcache_enable"],
     "nag": ["nag_enable"],
     "controlnets": ["controlnets"],
+    "unet_quantization": ["unet_quantization"],
     "text_encoder_quantization": ["text_encoder_quantization"],
     "cpu_text_encoding": ["cpu_text_encoding"],
     "attention_impl": ["attention_impl"],
@@ -54,6 +55,7 @@ FEATURE_LABELS: Dict[str, str] = {
     "fbcache": "fbcache_* (First Block Cache)",
     "nag": "nag_* (Normalized Attention Guidance)",
     "controlnets": "controlnets",
+    "unet_quantization": "unet_quantization",
     "text_encoder_quantization": "text_encoder_quantization",
     "cpu_text_encoding": "cpu_text_encoding",
     "attention_impl": "attention_impl",
@@ -119,6 +121,21 @@ _add("acestep", "advanced_cfg",
      "CFG scheduling / dynamic thresholding / CFG-rescale run only in the U-Net sampling loop, not in the ACE-Step turbo sampler")
 _add("acestep", "nag", "Normalized Attention Guidance is not implemented for the ACE-Step audio model")
 _add("acestep", "controlnets", "ControlNet is not supported for the ACE-Step audio model")
+
+# U-Net/transformer quantization (per-generation unet_quantization parameter):
+# not consumed by these architectures' pipeline backends. sd15/sdxl consume it
+# via move_unet_to_gpu(); zimage/flux2/anima/lens consume it via their own
+# transformer-quantization codepaths.
+_add("krea2", "unet_quantization",
+     "quantization on this architecture is selected by checkpoint format at load time (bf16 or weight-only FP8 checkpoints); the per-generation unet_quantization parameter is not applied")
+_add("ideogram4", "unet_quantization",
+     "quantization on this architecture is selected by checkpoint format at load time (FP8 or nf4 quantized checkpoints); the per-generation unet_quantization parameter is not applied")
+_add("minit2i", "unet_quantization",
+     "unet_quantization is not implemented for this architecture")
+_add("ltx2", "unet_quantization",
+     "unet_quantization is not implemented for the LTX-2.3 video model")
+_add("acestep", "unet_quantization",
+     "unet_quantization is not implemented for the ACE-Step audio model")
 
 # Text-encoder quantization: not applied on these architectures' text-encoder paths.
 for _a in ["sd15", "sdxl", "ideogram4", "minit2i", "krea2", "ltx2", "acestep"]:

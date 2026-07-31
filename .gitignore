@@ -142,6 +142,20 @@ test_*.py
 # silent by construction -- a warning that is raised and then dropped before
 # anything writes it to the row leaves no trace anywhere.
 !backend/tests/test_warning_persistence.py
+# Exception: outpaint preserved-rect contract. A regression here repaints
+# pixels the user explicitly asked to keep untouched, and the result still
+# looks like a plausible image -- there is no error, no crash, just quietly
+# wrong output.
+!backend/tests/test_outpaint_utils.py
+# Exception: outpaint RePaint-style resample schedule. A regression here
+# silently changes NFE/anchor placement or breaks the byte-identical
+# plain-walk fallback for non-outpaint calls -- no crash, just a subtly
+# different (or subtly worse) generation with no signal that anything moved.
+!backend/tests/test_outpaint_resample_schedule.py
+# Exception: tagger vocab-expansion optimizer-state migration. A regression
+# here silently corrupts or drops per-tag momentum on vocab resize -- training
+# keeps running, just with wrong optimizer state for every affected tag row.
+!tests/test_optimizer_migrate.py
 
 # CUDAコンパイル
 backend/core/training/optimizers/cuda/build_*/

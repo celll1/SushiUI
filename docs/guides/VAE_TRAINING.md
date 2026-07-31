@@ -408,6 +408,54 @@ unaffected by the default moving, but a **hand-written `process.vae` that omits
 Run 113 is in the first category — its stored YAML pins 512 and carries no crop
 keys, so resuming it is bit-for-bit unaffected.
 
+### Resume across a changed base VAE
+
+A checkpoint contains **only the tensors that were trainable**. Everything else —
+the frozen encoder of a decoder-only run, the decoder blocks outside
+`decoder_blocks`, the quant convs — comes from the base VAE the *resuming* run
+loads. Editing `vae_path` / `vae_source` / `vae_arch` and then resuming therefore
+used to produce a **hybrid model**: checkpoint tensors on one base, the rest on
+another, with matching tensor names, no error and no warning.
+
+`VaeTrainer._assert_base_vae_matches` now compares the checkpoint's recorded
+`base_vae` block against the one this run resolved, immediately after the
+component-set check and before any weight is loaded. Three tiers, by how
+conclusive the recorded evidence is:
+
+| Axis | Recorded where | Verdict |
+|---|---|---|
+| **Frozen-weight fingerprint** — a `blake2b` digest over exactly the tensors a resume does *not* restore (`base_vae.frozen_fingerprint`, computed once in `select_trainable`) | `train_state.json` and the export sidecar | Conclusive both ways. Equal digests prove the untouched half is bit-identical; different digests prove a hybrid → **refusal** |
+| **Structure** — `class`, `latent_channels` | recorded by every checkpoint since Phase 1 | Read off the loaded model, not off a user string → **refusal**, *unless the digests are equal*: bit-identical weights cannot be a different model, so a renamed `_class_name` after a diffusers upgrade, or a `latent_channels` that used to be unreported (recorded as `-1`) and now reads 16, is demoted to a **warning** rather than stranding a long run. Structure is the fallback axis for checkpoints written before the fingerprint existed |
+| **`scaling_factor` / `shift_factor`** | same | Cannot produce a hybrid (training reads neither), but `save_pretrained` bakes both into the exported `config.json` and the provenance sidecar, and the inference VAE-override path reads them back. A change is therefore **always warned about**, matching digests or not |
+| **`path` / `format`** | same | Spelling → **warning**, and only when there is no comparable fingerprint to settle the question |
+
+The fingerprint covers the frozen half rather than the whole model on purpose,
+in both directions:
+
+- it makes the check indifferent to *spelling* — the same VAE on a moved drive,
+  under a relative path, or loaded as a single file instead of a diffusers
+  directory all digest identically, so none of those routine cases can block a
+  resume (path differences are compared only after `os.path.abspath`, separator
+  and — on Windows — case folding, and only when there is no fingerprint);
+- and it keeps the legitimate "point the run at an **export of itself** and
+  resume" case working: only the trained half differs there, and the checkpoint
+  overwrites that half anyway, so the resulting model is identical either way. A
+  whole-model hash would refuse it.
+
+Tensors are cast to fp32 before hashing, so the digest does not depend on the
+*container* dtype (the same values held as fp16 and as fp32 hash alike). It is
+**not** indifferent to a base file that was actually rounded to fp16: those
+values differ, the digest differs, and the resume is refused — correctly, since
+the frozen half really would be different weights, but it does mean "the fp16
+copy of the same VAE" counts as a different base VAE here.
+
+**Older checkpoints are not broken.** A `train_state.json` with no `base_vae`
+block at all resumes with an explicit warning that identity could not be
+verified; one with `base_vae` but no fingerprint is still checked on structure
+(refusal) and on path/format/factors (warning). The algorithm tag is stored next
+to the digest, so a future change to how it is computed makes old and new values
+*incomparable* (warning) rather than *different* (refusal).
+
 Independently of the resolution: **`vae_val_psnr` is anti-correlated with
 sharpness here**, so it must not be used on its own to decide whether an
 LPIPS-weight change worked.
@@ -633,6 +681,7 @@ that will not start. All live in `vae_config.py::_validate` unless noted.
 | `export_bare_ldm: true` with `train_encoder: true` | A bare `.safetensors` has no `config.json`, so the consumer inherits `scaling_factor` / `shift_factor` from the model it is loaded into — precisely what an encoder fine-tune invalidates, with no way for the consumer to notice. Enforced twice: at config resolution, and again on the write itself (`vae_trainer.py::save_bare_ldm_safetensors`). |
 | `export_bare_ldm: true` on a non-`AutoencoderKL` VAE | The LDM key mapping in `adapters/state_dict_converter.py` is that architecture's. Raised at save time (the diffusers export is unaffected). |
 | A gate key that is not an interpretable boolean (`train_decoder`, `train_encoder`, `acknowledge_latent_space_break`, `export_bare_ldm`, `ema_enabled`) | See [Strict booleans](#strict-booleans-on-the-gate-keys). |
+| Resume from a checkpoint trained against a **different base VAE** | `vae_trainer.py::_assert_base_vae_matches`, before any weight is loaded. See [Resume across a changed base VAE](#resume-across-a-changed-base-vae). |
 | Resume from a checkpoint that trained a different component set | `vae_trainer.py::_assert_component_set_matches`, before any weight is loaded. A checkpoint holds exactly the parameters that were trainable when it was written, plus optimizer and EMA state indexed by that same set. Both directions were previously silent-ish: a decoder-only checkpoint resumed with the encoder on failed with a message blaming `decoder_blocks`, and the reverse loaded happily (the checkpoint is a superset) and then failed opaquely inside the optimizer state load — or not at all, if `optimizer.pt` was absent. |
 | `dtype: fp16` | SD1.5/SDXL-family VAEs overflow fp16 in decoder activations (the documented reason `sdxl-vae-fp16-fix` exists), and a training forward hits it sooner than inference. For every other family there is no `GradScaler` in this trainer, so fp16 gradients would silently underflow instead. `bf16` (default) and `fp32` are allowed. |
 | `latent_encoding_mode: pre_encoded_cache` | VAE training is *defined* by a live encode→decode forward on raw pixels; there is no cached latent to consume. Mirrors the existing outpaint-ControlNet refusal. |
@@ -660,9 +709,17 @@ resolver.
 
 ### The tests
 
-Every row above is asserted in **`backend/tests/test_vae_refusal_matrix.py`**
-(68 cases), which is the executable form of design.md §4 plus, in
-`VaeCropScalePolicyTest`, the loader side of the crop scale policy — including a
+Every row above is asserted in **`backend/tests/test_vae_refusal_matrix.py`**,
+which is the executable form of design.md §4 plus, in
+`VaeResumeBaseVaeIdentityTest`, the base-VAE identity guard (a changed base
+refuses; the same base under a different path/format resumes silently; a
+pre-fingerprint and a pre-`base_vae` checkpoint both still resume; a renamed
+class or newly-reported `latent_channels` warns instead of refusing when the
+digests match, while a changed `scaling_factor` / `shift_factor` warns even then;
+`select_trainable` is driven for real so the *recording* wiring is covered, not
+just its two ends; the digest ignores the tensors a resume overwrites and reacts
+to the ones it does not) and,
+in `VaeCropScalePolicyTest`, the loader side of the crop scale policy — including a
 verbatim copy of the pre-policy loader that `downscale` is pixel-compared
 against, and an `inspect.signature` assertion that `make_validation_batch` takes
 no policy argument:

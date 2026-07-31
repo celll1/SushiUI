@@ -64,6 +64,13 @@ M_KL = "vae_kl_loss"
 M_VAL_PSNR = "vae_val_psnr"
 M_VAL_BLOCKINESS = "vae_val_blockiness"
 
+# Algorithm tag of the frozen-weight fingerprint written into
+# ``train_state.json`` / the export sidecar (see
+# ``VaeTrainer._compute_frozen_fingerprint``). It is stored ALONGSIDE the digest
+# so that changing how the digest is computed makes old and new values
+# *incomparable* (-> warn) rather than *different* (-> refuse).
+_FROZEN_FP_ALGO = "blake2b16-fp32-v1"
+
 
 class VaeTrainer:
     """Decoder-only fine-tune of an AutoencoderKL-family VAE."""
@@ -255,6 +262,8 @@ class VaeTrainer:
                     f"on {type(self.vae).__name__}."
                 )
 
+        self._record_frozen_fingerprint()
+
         if self.train_encoder:
             print(f"{self.log_prefix} ENCODER TRAINING IS ACTIVE. The latent "
                   f"distribution this VAE produces will change, so cached "
@@ -262,6 +271,250 @@ class VaeTrainer:
                   f"original VAE will no longer match the exported result. The "
                   f"export goes to '{self.run_name}{self._export_suffix()}' and "
                   f"its sidecar records encoder_trained=true.")
+
+    # ------------------------------------------------------------------
+    # Base-VAE identity
+    # ------------------------------------------------------------------
+    def _compute_frozen_fingerprint(self) -> Optional[Dict[str, Any]]:
+        """Digest the tensors a resume does NOT restore, i.e. the frozen half.
+
+        This is the exact invariant a resume needs. ``load_checkpoint`` overwrites
+        every *trainable* tensor with the checkpoint's copy, so those weights are
+        fully determined by the checkpoint and their initial value is irrelevant.
+        Everything else -- the frozen encoder of a decoder-only run, the decoder
+        blocks outside ``decoder_blocks``, the quant convs -- comes from whatever
+        base VAE THIS run loaded. If that half differs from the one the checkpoint
+        was written against, the resumed model is a hybrid that no file records.
+
+        Hashing precisely that half is also why the check does not misfire on the
+        legitimate uses of a *different path*: the same weights loaded from a moved
+        drive, from a differently-spelled path, or from a single file instead of a
+        diffusers directory all produce the same digest. Conversely, restarting
+        from an EXPORT of the same run (frozen half identical, trained half
+        different) is correctly accepted -- the checkpoint overwrites the trained
+        half anyway, so the resulting model is identical either way. A digest over
+        the whole model would refuse that legitimate case.
+
+        Tensors are cast to fp32 before hashing so that the digest does not depend
+        on the *container* dtype: the same values held as fp16 and as fp32 hash
+        alike. It does NOT make the digest indifferent to a file that was actually
+        ROUNDED to fp16 — those values differ, so the digest differs and the resume
+        is refused. That is the correct verdict (the frozen half really would be
+        different weights), but it means "the fp16 copy of the same VAE" is a
+        different base VAE as far as this check is concerned.
+
+        Returns None when there is no model to hash (e.g. a trainer built for a
+        unit test), which callers treat as "unknown", never as "mismatch".
+        """
+        vae = getattr(self, "vae", None)
+        if vae is None:
+            return None
+        try:
+            import hashlib
+
+            digest = hashlib.blake2b(digest_size=16)
+            count = 0
+            tensors = list(vae.named_parameters()) + list(vae.named_buffers())
+            for name, tensor in sorted(tensors, key=lambda kv: kv[0]):
+                if getattr(tensor, "requires_grad", False):
+                    continue  # restored from the checkpoint; not part of the base
+                digest.update(name.encode("utf-8"))
+                digest.update(str(tuple(tensor.shape)).encode("utf-8"))
+                digest.update(
+                    tensor.detach().to("cpu", torch.float32).contiguous()
+                    .numpy().tobytes())
+                count += 1
+            if not count:
+                return None
+            return {"algo": _FROZEN_FP_ALGO,
+                    "digest": digest.hexdigest(),
+                    "tensor_count": count}
+        except Exception as e:
+            # A fingerprint is a safety net, never a reason a run cannot start.
+            print(f"{self.log_prefix} WARNING: could not fingerprint the frozen "
+                  f"base weights ({e}); a resume will fall back to comparing the "
+                  f"recorded base-VAE path and structure only.")
+            return None
+
+    def _record_frozen_fingerprint(self) -> None:
+        """Attach the frozen-weight fingerprint to the base-VAE identity.
+
+        Computed once, here, because the frozen tensors never change during a run
+        and because the trainable set (which defines the complement) is only known
+        after ``select_trainable``. The value then rides along into every
+        ``train_state.json`` and into the export sidecar for free.
+        """
+        fp = self._compute_frozen_fingerprint()
+        if fp is None:
+            return
+        self._base_vae_identity["frozen_fingerprint"] = fp
+        print(f"{self.log_prefix} Frozen base weights: {fp['tensor_count']} "
+              f"tensor(s), fingerprint {fp['algo']}:{fp['digest']}")
+
+    @staticmethod
+    def _normalized_path(value: Any) -> str:
+        """A path in a form that ignores separator/case/relative-form spelling.
+
+        Deliberately does NOT resolve symlinks or drive mappings: this value only
+        ever feeds a *warning*, and the authoritative identity check is the
+        frozen-weight fingerprint.
+        """
+        if not value:
+            return ""
+        text = str(value)
+        try:
+            text = os.path.abspath(text)
+        except Exception:
+            pass
+        text = text.replace("\\", "/").rstrip("/")
+        if os.name == "nt":
+            text = text.lower()
+        return text
+
+    def _assert_base_vae_matches(self, ckpt_dir: Path,
+                                 saved: Optional[Dict[str, Any]]) -> None:
+        """Refuse a resume that would splice this run's base VAE with another's.
+
+        Runs AFTER the component-set check, because the fingerprint compared here
+        covers the complement of the trainable set and is only meaningful once
+        both sides are known to have trained the same components.
+
+        Tiers, by how conclusive the recorded evidence is:
+
+        * **frozen-weight fingerprint** -- conclusive in both directions. Equal
+          digests prove the untouched half is bit-identical whatever anything
+          else says; different digests prove a hybrid. **Refusal.**
+        * **structure** (``class`` / ``latent_channels``) -- read off the loaded
+          model rather than off a user string, so a mismatch is real. **Refusal**
+          — *unless* the digests are equal, in which case the weights are proven
+          bit-identical and the difference can only be in how the model is
+          described (a diffusers release renaming ``_class_name``, or starting to
+          report a ``latent_channels`` attribute that used to be absent and was
+          recorded as -1). Refusing there would stop a long run over a library
+          upgrade, so it is demoted to a warning. Structure is what protects
+          checkpoints written before the fingerprint existed.
+        * **``scaling_factor`` / ``shift_factor``** -- never a hybrid (training
+          reads neither), but not spelling either: ``save_pretrained`` bakes them
+          into every export and the sidecar/inference override path reads them.
+          A silent change across a resume changes what the run finally writes, so
+          it is **always warned about**, digests equal or not.
+        * **path / format** -- suggestive only. The same VAE legitimately has
+          several spellings (moved drive, relative vs absolute, diffusers
+          directory vs single file). **Warning**, and only when there is no
+          comparable fingerprint to settle the question.
+        """
+        # getattr, not attribute access: like _position_data_sampler, this runs on
+        # __new__-built trainers in backend/tests/test_lr_resume_override.py, and
+        # a resume must not die on an attribute __init__ never got to set.
+        current = getattr(self, "_base_vae_identity", None) or {}
+        if not current:
+            # No identity recorded for this run (no model loaded yet — unit-test
+            # harnesses drive this method directly). Nothing to compare against.
+            return
+        if not saved:
+            print(f"{self.log_prefix} WARNING: checkpoint {ckpt_dir.name} records "
+                  f"no base VAE, so it cannot be verified to have been trained on "
+                  f"this run's base VAE ({current.get('path')!r}). Resuming it on "
+                  f"a DIFFERENT base VAE would silently produce a hybrid model. "
+                  f"Proceeding — the checkpoint predates base-VAE recording.")
+            return
+
+        old_fp = saved.get("frozen_fingerprint") or {}
+        new_fp = current.get("frozen_fingerprint") or {}
+        comparable_fp = bool(old_fp) and bool(new_fp) and \
+            old_fp.get("algo") == new_fp.get("algo")
+        digests_equal = comparable_fp and old_fp.get("digest") == new_fp.get("digest")
+
+        structure: List[str] = []
+        for key, label in (("class", "VAE class"),
+                           ("latent_channels", "latent_channels")):
+            before, now = saved.get(key), current.get(key)
+            if before is None or now is None:
+                continue
+            if str(before) != str(now):
+                structure.append(f"{label}: checkpoint={before!r}, this run={now!r}")
+
+        fatal: List[str] = []
+        if comparable_fp and not digests_equal:
+            fatal.append(
+                f"frozen base weights: checkpoint="
+                f"{old_fp.get('digest')} ({old_fp.get('tensor_count')} tensors), "
+                f"this run={new_fp.get('digest')} "
+                f"({new_fp.get('tensor_count')} tensors)")
+        if structure and not digests_equal:
+            # Proven-identical weights outrank a structural label; see the
+            # docstring. Without a digest to appeal to, structure IS the evidence.
+            fatal.extend(structure)
+
+        if fatal:
+            raise VaeConfigError(
+                f"Checkpoint {ckpt_dir.name} was trained on a DIFFERENT base VAE "
+                f"than this run loaded: " + "; ".join(fatal) + ". "
+                f"Checkpoint base: {saved.get('path')!r} "
+                f"({saved.get('format')}); this run: {current.get('path')!r} "
+                f"({current.get('format')}). A checkpoint stores only the "
+                f"parameters that were trainable; the rest of the model comes "
+                f"from the base VAE loaded now, so resuming across a base change "
+                f"would produce a hybrid of the two that no file describes and "
+                f"nothing later detects. Point vae_path / vae_source / vae_arch "
+                f"back at the base this run's checkpoints were written against, "
+                f"or start a new run against the new base."
+            )
+
+        notes: List[str] = []
+        if structure:  # only reachable when digests_equal
+            notes.extend(
+                f"{item} (the frozen weights are bit-identical, so this is a "
+                f"description/library difference, not a different model)"
+                for item in structure)
+        # ALWAYS compared, digests equal or not: neither factor is read during
+        # training, but save_pretrained bakes both into every export and the
+        # sidecar / inference VAE-override path reads them back, so a change here
+        # silently changes what this run writes at the end.
+        for key in ("scaling_factor", "shift_factor"):
+            before, now = saved.get(key), current.get(key)
+            if before is None or now is None:
+                continue
+            try:
+                changed = float(before) != float(now)
+            except (TypeError, ValueError):
+                changed = str(before) != str(now)
+            if changed:
+                notes.append(f"{key}: checkpoint={before!r} -> this run={now!r} "
+                             f"(baked into the exported config.json and the "
+                             f"provenance sidecar)")
+        if not comparable_fp:
+            if self._normalized_path(saved.get("path")) != \
+                    self._normalized_path(current.get("path")):
+                notes.append(f"path: checkpoint={saved.get('path')!r} -> this run="
+                             f"{current.get('path')!r}")
+            if saved.get("format") and saved.get("format") != current.get("format"):
+                notes.append(f"format: checkpoint={saved.get('format')!r} -> this "
+                             f"run={current.get('format')!r}")
+        if not notes:
+            return
+        print(f"{self.log_prefix} WARNING: resuming {ckpt_dir.name} with a "
+              f"base VAE that is described differently:")
+        for note in notes:
+            print(f"{self.log_prefix}   - {note}")
+        if comparable_fp:
+            print(f"{self.log_prefix}   The frozen-weight fingerprints are equal, "
+                  f"so the model this resume trains is the one the checkpoint was "
+                  f"written against; no hybrid is possible and the run continues. "
+                  f"A changed scaling_factor / shift_factor still ends up in the "
+                  f"exported config.json, so check that the value above is the one "
+                  f"this VAE should ship with.")
+            return
+        why = ("this checkpoint predates the frozen-weight fingerprint"
+               if not old_fp else
+               "the fingerprints were computed by different algorithms")
+        print(f"{self.log_prefix}   {why}, so whether the weights are the same "
+              f"file cannot be decided here. The same VAE moved, renamed, or "
+              f"loaded as a single file instead of a diffusers directory is "
+              f"expected to look like this and is harmless. A genuinely different "
+              f"base VAE is NOT: only the trainable tensors come from the "
+              f"checkpoint, so the rest of the model would come from the new base. "
+              f"Verify before letting this run continue.")
 
     def _decoder_targets(self, blocks: str) -> List:
         decoder = getattr(self.vae, "decoder", None)
@@ -768,11 +1021,18 @@ class VaeTrainer:
         )
 
     def _assert_component_set_matches(self, ckpt_dir: Path) -> None:
-        """Refuse a resume whose checkpoint trained a different component set.
+        """Refuse a resume whose checkpoint trained a different component set,
+        or was trained on a different base VAE.
 
         Named, actionable and BEFORE any weight load. Optimizer state, EMA state
         and the trainable-name list are all indexed by the component set, so a
         mismatch is never recoverable — it is only ever a config mistake.
+
+        The base-VAE check (``_assert_base_vae_matches``) runs in the same place
+        for the same reason, and AFTER the component comparison: a checkpoint
+        supplies only the tensors that were trainable, so everything else comes
+        from the base VAE loaded by THIS run, and a base change across a resume
+        is as unrecoverable — and far quieter — than a component change.
 
         Two further keys are compared but only WARNED about, at the end: they do
         not invalidate the checkpoint, they invalidate the *comparability of the
@@ -782,16 +1042,19 @@ class VaeTrainer:
         state_path = ckpt_dir / "train_state.json"
         if not state_path.is_file():
             print(f"{self.log_prefix} WARNING: {ckpt_dir} has no train_state.json; "
-                  f"cannot verify that it trained the same components as this run.")
+                  f"cannot verify that it trained the same components as this run, "
+                  f"nor that it was trained on the same base VAE.")
             return
         try:
             with open(state_path, "r", encoding="utf-8") as f:
-                saved = (json.load(f).get("config") or {})
+                state = json.load(f)
+            saved = (state.get("config") or {})
         except Exception as e:
             print(f"{self.log_prefix} WARNING: could not read {state_path} ({e}); "
-                  f"skipping the component-set check.")
+                  f"skipping the component-set and base-VAE checks.")
             return
         if not saved:
+            self._assert_base_vae_matches(ckpt_dir, state.get("base_vae"))
             return
 
         def _saved_bool(key: str, default: bool) -> bool:
@@ -832,6 +1095,9 @@ class VaeTrainer:
                 f"settings. Match them, or start a new run."
             )
 
+        # Only now: the frozen-weight fingerprint covers the complement of the
+        # trainable set, so it is only comparable once that set is known to match.
+        self._assert_base_vae_matches(ckpt_dir, state.get("base_vae"))
         self._warn_measurement_changes(ckpt_dir, saved)
 
     def _warn_measurement_changes(self, ckpt_dir: Path, saved: Dict[str, Any]) -> None:
@@ -1099,7 +1365,8 @@ class VaeTrainer:
                 # export look stale. Bump it when a field is REMOVED, RENAMED, or
                 # changes meaning/units, i.e. when an existing reader would be
                 # wrong rather than merely incomplete. Fields added since v1:
-                # crop_scale_policy, crop_scale_max_downscale (2026-07-30).
+                # crop_scale_policy, crop_scale_max_downscale (2026-07-30),
+                # base_vae.frozen_fingerprint (2026-08-01).
                 "format_version": 1,
                 "produced_by": (
                     "SushiUI VAE fine-tune (network.type=vae_decoder"

@@ -30,12 +30,22 @@ any helper being called:
     * an ``sd15`` run still gets 0.18215 -- the fix must not blanket-overwrite;
     * a FULL checkpoint (backbone present) is left alone: there diffusers read
       the family off the checkpoint and its answer is evidence, not a guess;
-    * an architecture with no scalar scaling factor (flux2 / qwen_image) or an
-      unknown ``vae_arch`` is left alone rather than being given a fabricated
-      number;
+    * an architecture with no scalar scaling factor (flux2 / qwen_image) is left
+      alone rather than being given a fabricated number;
+    * an UNSTATED ``vae_arch`` (the default is the empty string) or one that is
+      not a registry key is REFUSED, not defaulted: a wrong substitution is as
+      undetectable downstream as the fallback it replaces, and the run's own
+      config is the only thing that knows which family the file is;
     * a ``vae_arch`` whose latent-channel count contradicts the loaded file is
       REFUSED, because that config cannot be trusted to decide the number that
       gets baked into the export;
+    * an UNINSPECTABLE file (.ckpt/.pt/.bin, an unreadable header, an
+      unrecognised layout) is never overwritten — "unknown" is not "bare" —
+      only checked against ``vae_arch``;
+    * a REAL stock LDM VAE file (which also ships ``model_ema.*``) is classified
+      as a bare VAE and corrected, and a stated scalar ``vae_arch`` that
+      contradicts a "full checkpoint" verdict REFUSES — the classifier's
+      backstop;
     * the registry's numbers are the ones the corresponding official configs
       carry, and the "diffusers fallback" constant is still diffusers' own.
 
@@ -98,6 +108,38 @@ def _write_bare_vae_file(path: Path) -> str:
     return str(path)
 
 
+def _write_stock_ldm_vae_file(path: Path) -> str:
+    """The shape a REAL stock ``sdxl_vae.safetensors`` has.
+
+    Measured on M:/model/sdxl/VAE (250 keys): its top-level prefixes are
+    ``decoder`` / ``encoder`` / ``model_ema`` / ``post_quant_conv`` /
+    ``quant_conv``. The ``model_ema.*`` block is why the original allow-list
+    classifier called this file a FULL CHECKPOINT and skipped the repair
+    entirely — the export then carried diffusers' 0.18215 fallback with
+    "family identified" written into its provenance sidecar. The idealised
+    fixture above cannot see that; this one is the regression.
+    """
+    save_file({
+        "encoder.conv_in.weight": torch.zeros(1),
+        "decoder.conv_out.weight": torch.zeros(1),
+        "quant_conv.weight": torch.zeros(1),
+        "post_quant_conv.weight": torch.zeros(1),
+        "model_ema.decoder_conv_out_weight": torch.zeros(1),
+        "model_ema.num_updates": torch.zeros(1),
+    }, str(path))
+    return str(path)
+
+
+def _write_ldm_namespaced_vae_file(path: Path) -> str:
+    """A VAE-only dump that kept LDM's ``first_stage_model.`` namespace."""
+    save_file({
+        "first_stage_model.encoder.conv_in.weight": torch.zeros(1),
+        "first_stage_model.decoder.conv_out.weight": torch.zeros(1),
+        "first_stage_model.post_quant_conv.weight": torch.zeros(1),
+    }, str(path))
+    return str(path)
+
+
 def _write_full_checkpoint_file(path: Path) -> str:
     """A full checkpoint: VAE keys PLUS a backbone, i.e. evidence of family."""
     save_file({
@@ -105,6 +147,12 @@ def _write_full_checkpoint_file(path: Path) -> str:
         "model.diffusion_model.input_blocks.0.0.weight": torch.zeros(1),
         "conditioner.embedders.0.transformer.weight": torch.zeros(1),
     }, str(path))
+    return str(path)
+
+
+def _write_unrecognised_file(path: Path) -> str:
+    """Neither a backbone marker nor a recognisable VAE layout."""
+    save_file({"something.else.weight": torch.zeros(1)}, str(path))
     return str(path)
 
 
@@ -128,6 +176,14 @@ class RegistryValuesTest(unittest.TestCase):
     def test_unknown_arch_is_none(self):
         self.assertIsNone(vae_store.canonical_latent_scaling("qwen"))
         self.assertIsNone(vae_store.canonical_latent_scaling(""))
+
+    def test_vae_arch_default_is_unstated(self):
+        # The SSOT default must mean "not stated". Any concrete family here is a
+        # silent claim about every unlabelled VAE the UI can select, and the
+        # trainer would act on it (that is HIGH-1: a bare SD1.5 VAE exported with
+        # SDXL's 0.13025). The refusal tests below are only meaningful while this
+        # holds.
+        self.assertEqual(VAE_TRAINING_DEFAULTS["vae_arch"], "")
 
     def test_fallback_constant_matches_diffusers(self):
         # If diffusers ever changes its single-file fallback, the comment in the
@@ -157,6 +213,39 @@ class BareFileDetectionTest(unittest.TestCase):
         self.assertIsNone(vt._is_bare_vae_single_file("model.ckpt"))
         self.assertIsNone(vt._is_bare_vae_single_file(None))
 
+    def test_stock_ldm_vae_with_model_ema_is_bare(self):
+        # The measured shape of a real stock sdxl_vae.safetensors. Under the old
+        # allow-list classifier its model_ema.* block made this a "full
+        # checkpoint", which skipped the repair for the single most common file
+        # the feature exists for.
+        with tempfile.TemporaryDirectory() as tmp:
+            p = _write_stock_ldm_vae_file(Path(tmp) / "sdxl_vae.safetensors")
+            self.assertIs(vt._is_bare_vae_single_file(p), True)
+
+    def test_first_stage_model_namespaced_vae_is_bare(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p = _write_ldm_namespaced_vae_file(Path(tmp) / "vae.safetensors")
+            self.assertIs(vt._is_bare_vae_single_file(p), True)
+
+    def test_unrecognised_layout_is_unknown_not_bare(self):
+        # The inverted classifier must not turn "I do not recognise this" into
+        # "it is a bare VAE": that would license an overwrite on a file whose
+        # value might have been read.
+        with tempfile.TemporaryDirectory() as tmp:
+            p = _write_unrecognised_file(Path(tmp) / "mystery.safetensors")
+            self.assertIsNone(vt._is_bare_vae_single_file(p))
+            self.assertEqual(vt._classify_single_file(p)[1], "unrecognised_keys")
+
+    def test_reasons_distinguish_the_unknown_states(self):
+        # The reason is what the refusal message says out loud, so a .ckpt and a
+        # corrupt header must not be described as the same problem.
+        self.assertEqual(vt._classify_single_file("model.ckpt")[1], "not_safetensors")
+        with tempfile.TemporaryDirectory() as tmp:
+            broken = Path(tmp) / "broken.safetensors"
+            broken.write_bytes(b"not a safetensors header at all")
+            self.assertEqual(vt._classify_single_file(str(broken))[1],
+                             "header_unreadable")
+
 
 class RepairTest(unittest.TestCase):
     """The load-time repair, on a real AutoencoderKL config."""
@@ -167,6 +256,7 @@ class RepairTest(unittest.TestCase):
         self.addCleanup(self._tmp.cleanup)
         self.bare = _write_bare_vae_file(self.tmp / "sdxl_vae.safetensors")
         self.full = _write_full_checkpoint_file(self.tmp / "checkpoint.safetensors")
+        self.stock = _write_stock_ldm_vae_file(self.tmp / "stock_sdxl_vae.safetensors")
 
     def test_sdxl_bare_file_is_corrected(self):
         vae = _tiny_vae(SD15_SCALING)          # what from_single_file hands back
@@ -180,21 +270,94 @@ class RepairTest(unittest.TestCase):
         vt.repair_single_file_scaling_factor(vae, self.bare, "sd15")
         self.assertEqual(vae.config.scaling_factor, SD15_SCALING)
 
+    def test_stock_sdxl_vae_is_corrected(self):
+        # THE audited defect: a real stock sdxl_vae.safetensors (encoder /
+        # decoder / quant_conv / post_quant_conv / model_ema) selected with
+        # vae_arch="sdxl" must be corrected 0.18215 -> 0.13025, not waved
+        # through as a "full checkpoint".
+        vae = _tiny_vae(SD15_SCALING)
+        source = vt.repair_single_file_scaling_factor(vae, self.stock, "sdxl")
+        self.assertEqual(vae.config.scaling_factor, SDXL_SCALING)
+        self.assertIn("0.13025", source)
+        self.assertNotIn("full checkpoint", source)
+
+    def test_stock_sdxl_vae_without_arch_is_refused(self):
+        vae = _tiny_vae(SD15_SCALING)
+        with self.assertRaises(VaeConfigError):
+            vt.repair_single_file_scaling_factor(vae, self.stock, "")
+        self.assertEqual(vae.config.scaling_factor, SD15_SCALING)
+
     def test_full_checkpoint_is_left_alone(self):
         # from_single_file READ the family here (run 113's base checkpoint
-        # loaded at 0.13025 this way). Even with a contradicting vae_arch, the
-        # evidence beats the config field.
+        # loaded at 0.13025 this way): the evidence is not second-guessed, and
+        # an agreeing vae_arch changes nothing.
         vae = _tiny_vae(SD15_SCALING)
-        source = vt.repair_single_file_scaling_factor(vae, self.full, "sdxl")
+        source = vt.repair_single_file_scaling_factor(vae, self.full, "sd15")
+        self.assertEqual(vae.config.scaling_factor, SD15_SCALING)
+        self.assertIn("full checkpoint", source)
+
+    def test_full_checkpoint_without_arch_is_left_alone(self):
+        # A full checkpoint states its own value, so vae_arch is not required.
+        vae = _tiny_vae(SD15_SCALING)
+        source = vt.repair_single_file_scaling_factor(vae, self.full, "")
+        self.assertEqual(vae.config.scaling_factor, SD15_SCALING)
+        self.assertIn("full checkpoint", source)
+
+    def test_full_checkpoint_contradicting_arch_is_refused(self):
+        # The backstop: whatever the classifier decided, a stated scalar
+        # vae_arch that disagrees with the loaded value stops the run instead of
+        # being dropped in silence. This is also what would have caught the
+        # stock-VAE misclassification above had the classifier still been wrong.
+        vae = _tiny_vae(SD15_SCALING)
+        with self.assertRaises(VaeConfigError) as ctx:
+            vt.repair_single_file_scaling_factor(vae, self.full, "sdxl")
+        self.assertIn("vae_arch", str(ctx.exception))
+        self.assertEqual(vae.config.scaling_factor, SD15_SCALING)
+
+    def test_full_checkpoint_non_scalar_arch_is_left_alone(self):
+        # flux2 has no scalar to compare against, so there is no contradiction
+        # to detect and the checkpoint's own value stands.
+        vae = _tiny_vae(SD15_SCALING)
+        source = vt.repair_single_file_scaling_factor(vae, self.full, "flux2")
         self.assertEqual(vae.config.scaling_factor, SD15_SCALING)
         self.assertIn("full checkpoint", source)
 
     def test_non_scalar_arch_is_left_alone(self):
-        for arch in ("flux2", "qwen_image", "typo", ""):
+        # flux2 / qwen_image normalise with latents_mean/latents_std: there is no
+        # scalar to substitute, so nothing is written and the export says so.
+        for arch in ("flux2", "qwen_image"):
             vae = _tiny_vae(SD15_SCALING)
             source = vt.repair_single_file_scaling_factor(vae, self.bare, arch)
             self.assertEqual(vae.config.scaling_factor, SD15_SCALING, arch)
             self.assertIn("UNVERIFIED", source, arch)
+
+    def test_unstated_arch_is_refused_rather_than_assumed(self):
+        # THE regression this pins: with a non-empty default (`vae_arch: "sdxl"`
+        # was one) a bare SD1.5 VAE selected in the UI — which had no way to say
+        # otherwise — was silently re-stamped 0.18215 -> 0.13025 and exported.
+        # Both possible guesses are wrong for one of the two families and neither
+        # is detectable downstream, so an unstated arch must stop the run.
+        vae = _tiny_vae(SD15_SCALING)
+        with self.assertRaises(VaeConfigError) as ctx:
+            vt.repair_single_file_scaling_factor(vae, self.bare, "")
+        self.assertIn("vae_arch", str(ctx.exception))
+        self.assertEqual(vae.config.scaling_factor, SD15_SCALING)
+
+    def test_none_arch_is_refused_too(self):
+        # A config that omits the key entirely arrives here as None.
+        vae = _tiny_vae(SD15_SCALING)
+        with self.assertRaises(VaeConfigError):
+            vt.repair_single_file_scaling_factor(vae, self.bare, None)
+        self.assertEqual(vae.config.scaling_factor, SD15_SCALING)
+
+    def test_unknown_arch_key_is_refused(self):
+        # A typo names no architecture, so the correction it asks for cannot be
+        # made; continuing would leave the unverified fallback on the export.
+        vae = _tiny_vae(SD15_SCALING)
+        with self.assertRaises(VaeConfigError) as ctx:
+            vt.repair_single_file_scaling_factor(vae, self.bare, "typo")
+        self.assertIn("vae_arch", str(ctx.exception))
+        self.assertEqual(vae.config.scaling_factor, SD15_SCALING)
 
     def test_flux1_bare_file_gets_scaling_and_shift(self):
         vae = _tiny_vae(SD15_SCALING, latent_channels=16)
@@ -210,6 +373,73 @@ class RepairTest(unittest.TestCase):
             vt.repair_single_file_scaling_factor(vae, self.bare, "flux1")
         self.assertIn("vae_arch", str(ctx.exception))
         self.assertEqual(vae.config.scaling_factor, SD15_SCALING)
+
+
+class UninspectableFileTest(unittest.TestCase):
+    """`.ckpt` / `.pt` / `.bin`: "unknown" is NOT "bare".
+
+    Telling a bare VAE from a full checkpoint would mean unpickling the file, so
+    the loaded value may be a genuine reading. It is therefore never overwritten
+    — only checked against `vae_arch`, with both "cannot check" cases refused.
+    """
+
+    # Nothing is read from disk: _is_bare_vae_single_file answers None from the
+    # extension alone, which is the branch under test.
+    CKPT = "M:/model/sd15/some_vae.ckpt"
+
+    def test_matching_arch_is_accepted_without_writing(self):
+        vae = _tiny_vae(SD15_SCALING)
+        source = vt.repair_single_file_scaling_factor(vae, self.CKPT, "sd15")
+        self.assertEqual(vae.config.scaling_factor, SD15_SCALING)
+        self.assertIn("sd15", source)
+
+    def test_contradicting_arch_is_refused_not_overwritten(self):
+        # The old code treated unknown as bare and stamped 0.13025 over a value
+        # that may have been READ from an SD1.5 checkpoint.
+        vae = _tiny_vae(SD15_SCALING)
+        with self.assertRaises(VaeConfigError) as ctx:
+            vt.repair_single_file_scaling_factor(vae, self.CKPT, "sdxl")
+        self.assertIn("vae_arch", str(ctx.exception))
+        self.assertEqual(vae.config.scaling_factor, SD15_SCALING)
+
+    def test_unstated_arch_is_refused(self):
+        vae = _tiny_vae(SD15_SCALING)
+        with self.assertRaises(VaeConfigError):
+            vt.repair_single_file_scaling_factor(vae, self.CKPT, "")
+        self.assertEqual(vae.config.scaling_factor, SD15_SCALING)
+
+    def test_non_scalar_arch_is_left_alone(self):
+        vae = _tiny_vae(SD15_SCALING)
+        source = vt.repair_single_file_scaling_factor(vae, self.CKPT, "qwen_image")
+        self.assertEqual(vae.config.scaling_factor, SD15_SCALING)
+        self.assertIn("UNVERIFIED", source)
+
+    def test_unrecognised_safetensors_takes_the_same_check_only_path(self):
+        # Not a .ckpt, but equally unclassifiable: same rule, and the refusal
+        # must describe THIS situation rather than talk about unpickling.
+        with tempfile.TemporaryDirectory() as tmp:
+            p = _write_unrecognised_file(Path(tmp) / "mystery.safetensors")
+            vae = _tiny_vae(SD15_SCALING)
+            with self.assertRaises(VaeConfigError) as ctx:
+                vt.repair_single_file_scaling_factor(vae, p, "sdxl")
+            message = str(ctx.exception)
+            self.assertNotIn("unpickling", message)
+            # ...and the remedy has to be one this state can act on: the file
+            # already IS a readable .safetensors, so "convert it to
+            # safetensors" would send the reader nowhere.
+            self.assertNotIn("convert this VAE to .safetensors", message)
+            self.assertIn("re-save the file", message)
+            self.assertEqual(vae.config.scaling_factor, SD15_SCALING)
+
+            ok = _tiny_vae(SD15_SCALING)
+            source = vt.repair_single_file_scaling_factor(ok, p, "sd15")
+            self.assertEqual(ok.config.scaling_factor, SD15_SCALING)
+            self.assertIn("sd15", source)
+
+    def test_full_checkpoint_extension_case_is_still_the_bare_check(self):
+        # A .ckpt that IS a full checkpoint cannot be distinguished from a bare
+        # one, which is exactly why this class refuses instead of guessing.
+        self.assertIsNone(vt._is_bare_vae_single_file(self.CKPT))
 
 
 class _StubTrainer(vt.VaeTrainer):

@@ -1412,32 +1412,116 @@ def _find_vae_config_dir(path: str) -> Optional[str]:
     return None
 
 
-# Key prefixes that make up a VAE-ONLY safetensors file. A file whose every
-# tensor starts with one of these carries no backbone, hence no evidence of which
-# model family it belongs to -- which is exactly when from_single_file's
-# scaling_factor is a fallback rather than a reading.
+# What makes a single file a FULL CHECKPOINT is the presence of a BACKBONE, so
+# that is what is looked for -- positively. The earlier version of this check
+# asked the opposite question ("does every key look like a VAE key?"), which is
+# an allow-list over a space nobody controls: a stock LDM
+# `sdxl_vae.safetensors` also ships `model_ema.*`, and that one unlisted prefix
+# made a plain VAE file classify as a full checkpoint, skipping the repair
+# entirely and recording "family identified" in the provenance sidecar for a
+# value diffusers had actually guessed (measured on a real 250-key stock file).
+# Denoising diffusion backbones, by contrast, have a small and slow-moving set
+# of top-level names, and a file that carries NONE of them carries no evidence
+# of family whatever else is in it -- which is exactly the condition the repair
+# is about. New VAE side-car tensors therefore no longer break the classifier;
+# only a genuinely new backbone naming scheme would, and that fails SAFE (see
+# the third state below and the vae_arch cross-check in the caller).
+_BACKBONE_KEY_MARKERS = (
+    "model.diffusion_model.",   # LDM / SD1.x / SD2 / SDXL UNet
+    "model_ema.diffusion_model.",
+    "diffusion_model.",         # some repacks drop the "model." level
+    "unet.",                    # diffusers-style bundle
+    "conditioner.",             # SDXL text encoders
+    "cond_stage_model.",        # SD1.x text encoder
+    "text_encoders.",           # ComfyUI-style bundles
+    "text_model.",
+    "double_blocks.",           # FLUX / DiT families
+    "single_blocks.",
+    "transformer.",
+    "transformer_blocks.",
+    "joint_blocks.",            # MMDiT (SD3)
+)
+
+# Prefixes a VAE-ONLY file is made of. Used only as a POSITIVE recognition step
+# after the backbone check has already said "no backbone": a file made entirely
+# of these is a VAE and nothing else. `model_ema.` / `first_stage_model.` /
+# `vae.` are here because real VAE files ship them (EMA copies, LDM-namespaced
+# and diffusers-namespaced dumps); in a full checkpoint they coexist with a
+# backbone marker, which is tested first.
 _VAE_ONLY_KEY_PREFIXES = ("encoder.", "decoder.", "quant_conv.",
-                          "post_quant_conv.", "loss.")
+                          "post_quant_conv.", "loss.", "model_ema.",
+                          "first_stage_model.", "vae.")
 
 
-def _is_bare_vae_single_file(path: str) -> Optional[bool]:
-    """True when ``path`` is a VAE-ONLY safetensors file, False when it also
-    holds a backbone (a full checkpoint), None when it cannot be determined.
+def _classify_single_file(path: str):
+    """Classify ``path`` as ``(verdict, reason)``.
+
+    ``verdict`` is True for a VAE-ONLY file, False for a file carrying a
+    backbone (a full checkpoint), and None when it cannot be determined.
+    ``reason`` names WHICH of those situations it is, so the caller can say
+    something true about it instead of guessing (a ``.ckpt`` and a corrupt
+    safetensors header are both "None", but they are not the same problem).
 
     Reads the safetensors header only -- no tensor data.
     """
     if not isinstance(path, str) or not path.lower().endswith(".safetensors"):
-        return None  # .ckpt/.pt/.bin: not inspectable without unpickling
+        # .ckpt/.pt/.bin: telling the two apart would mean unpickling the file.
+        return None, "not_safetensors"
     try:
         from safetensors import safe_open
         with safe_open(path, framework="pt", device="cpu") as f:
             keys = list(f.keys())
     except Exception as e:
         print(f"[VaeTrainer] Could not read safetensors header of {path}: {e}")
-        return None
+        return None, "header_unreadable"
     if not keys:
-        return None
-    return all(k.startswith(_VAE_ONLY_KEY_PREFIXES) for k in keys)
+        return None, "no_keys"
+    if any(k.startswith(_BACKBONE_KEY_MARKERS) for k in keys):
+        return False, "backbone"
+    if all(k.startswith(_VAE_ONLY_KEY_PREFIXES) for k in keys):
+        return True, "bare"
+    # No backbone marker, but not recognisable as a pure VAE dump either. Do NOT
+    # collapse this into either answer: an unrecognised layout is exactly where
+    # a guess would be wrong in a way nothing downstream can see.
+    return None, "unrecognised_keys"
+
+
+def _is_bare_vae_single_file(path: str) -> Optional[bool]:
+    """True when ``path`` is a VAE-ONLY safetensors file, False when it also
+    holds a backbone (a full checkpoint), None when it cannot be determined."""
+    return _classify_single_file(path)[0]
+
+
+# How each "cannot be determined" reason is described to the user. The wording
+# is the diagnosis, so it has to match the actual situation.
+_UNKNOWN_REASON_PHRASE = {
+    "not_safetensors": ("whose contents cannot be inspected without unpickling "
+                        "it"),
+    "header_unreadable": ("whose safetensors header could not be read (the "
+                          "error is logged above)"),
+    "no_keys": "whose safetensors header lists no tensors at all",
+    "unrecognised_keys": ("whose key layout matches neither a VAE-only file nor "
+                          "any known backbone"),
+}
+
+# What the user can actually DO about each of those states. Kept next to the
+# phrase above and keyed the same way, because a remedy that does not apply to
+# the state being reported ("save it as safetensors" for a file that already is
+# one) sends the reader looking in the wrong place.
+_UNKNOWN_REASON_REMEDY = {
+    "not_safetensors": ("convert this VAE to .safetensors, or supply it as a "
+                        "diffusers directory carrying its own config.json"),
+    "header_unreadable": ("repair or re-fetch the file so its safetensors "
+                          "header can be read, or supply this VAE as a "
+                          "diffusers directory carrying its own config.json"),
+    "no_keys": ("supply a file that actually contains the VAE tensors, or a "
+                "diffusers directory carrying its own config.json"),
+    "unrecognised_keys": ("supply this VAE as a diffusers directory carrying "
+                          "its own config.json (which states scaling_factor "
+                          "outright), or re-save the file with the standard "
+                          "encoder./decoder./quant_conv./post_quant_conv. key "
+                          "names so it is recognisable as a VAE-only file"),
+}
 
 
 def repair_single_file_scaling_factor(vae, path: str, vae_arch: Optional[str],
@@ -1450,22 +1534,48 @@ def repair_single_file_scaling_factor(vae, path: str, vae_arch: Optional[str],
     file it falls back to LDM's 0.18215. Training never reads the value, but
     ``save_pretrained`` writes it verbatim into the exported ``config.json``,
     and the inference-side VAE override trusts a directory's config.json. An
-    SDXL export carrying 0.18215 is a silent 1.40x latent-scale error.
+    SDXL export carrying 0.18215 is a silent 1.40x latent-scale error -- and an
+    SD1.5 export carrying 0.13025 is the same error in the other direction, so
+    the substituted value has to be STATED by the user, never assumed.
 
-    The correct value is decided by ARCHITECTURE (``process.vae.vae_arch``,
-    resolved through the shared VAE registry), not by guesswork, and is applied
-    only when the file gave diffusers nothing to go on:
+    ``process.vae.vae_arch`` (resolved through the shared VAE registry) is that
+    statement. Its default is the empty string, i.e. "not stated": there is no
+    family this function may fall back to, because both candidate falsehoods are
+    equally undiagnosable downstream. The decision matrix:
 
-    * full checkpoint (backbone present) -> diffusers READ the family from the
-      checkpoint; left untouched.
-    * unknown / non-scalar ``vae_arch`` (flux2, qwen_image, a typo) -> nothing
-      can be substituted honestly; left untouched, loudly.
+    * full checkpoint (a backbone key is present) -> diffusers READ the family
+      from the checkpoint, so the value is evidence and is never overwritten.
+      It is still CROSS-CHECKED against a stated scalar ``vae_arch``, and a
+      contradiction REFUSES: that disagreement is either a wrong ``vae_arch`` or
+      a misclassified file, and both are things the run must not carry into an
+      export. (This cross-check is also the backstop for the classifier itself:
+      a VAE file misread as a checkpoint would otherwise skip the repair AND
+      record "family identified" for a guessed number.)
+    * ``vae_arch`` not stated -> REFUSE. Nothing here knows which family an
+      unlabelled VAE belongs to, and guessing writes the wrong number to disk.
+    * ``vae_arch`` stated but not a registry key (a typo) -> REFUSE, for the
+      same reason: the run asked for a correction that cannot be made.
+    * ``vae_arch`` names a family with no scalar scaling_factor (flux2,
+      qwen_image: they normalise with latents_mean/latents_std) -> there is no
+      number to substitute; left untouched, loudly, and recorded as UNVERIFIED.
     * ``vae_arch``'s latent_channels disagree with the loaded VAE -> the config
       is wrong about which VAE this is, so REFUSE rather than stamp a
       foreign family's number onto the export.
+    * file not classifiable (a ``.ckpt`` / ``.pt`` / ``.bin``, an unreadable
+      safetensors header, or a key layout that is neither a VAE dump nor any
+      known backbone) -> the loaded value may be a genuine reading, so it is
+      NEVER overwritten. It is only CHECKED
+      against ``vae_arch``: agreement passes, disagreement REFUSES, because
+      which of the two is right is exactly what cannot be determined here.
+    * bare VAE-only ``.safetensors`` + a stated, matching-channel, scalar
+      family -> corrected (this is the only branch that writes).
 
     Returns a short string recording HOW the effective value was arrived at; it
     is stored in the provenance sidecar so an export is self-describing.
+
+    Raises:
+        VaeConfigError: on any of the refusals above. This runs inside
+        ``load_base_vae``, before a single training step or any export.
     """
     from core.models.common.vae_store import (
         LDM_SINGLE_FILE_DEFAULT_SCALING_FACTOR,
@@ -1475,26 +1585,81 @@ def repair_single_file_scaling_factor(vae, path: str, vae_arch: Optional[str],
     loaded = getattr(vae.config, "scaling_factor", None)
     loaded_shift = getattr(vae.config, "shift_factor", None)
 
-    bare = _is_bare_vae_single_file(path)
+    bare, reason = _classify_single_file(path)
+    arch = (vae_arch or "").strip()
+    stated = canonical_latent_scaling(arch)[0] if (
+        arch and canonical_latent_scaling(arch) is not None) else None
+
     if bare is False:
+        # The file carries a backbone, so from_single_file read the family off
+        # it. Evidence beats a config field -- but a stated scalar vae_arch that
+        # CONTRADICTS that evidence is not a difference of opinion to be dropped
+        # silently: one of the two is wrong, and either way the number that gets
+        # baked into the export is in question.
+        if stated is not None and loaded is not None and \
+                abs(float(loaded) - float(stated)) > 1e-9:
+            raise VaeConfigError(
+                f"The base VAE at {path} carries a backbone, so "
+                f"from_single_file identified its family and gave it "
+                f"scaling_factor={loaded} -- but vae_arch={arch!r} says "
+                f"{stated}. Refusing to run on that contradiction: either "
+                f"vae_arch does not describe this file (leave it unset when the "
+                f"base VAE comes from a full checkpoint, which states its own "
+                f"value), or this is a VAE-only file that was misread as a "
+                f"checkpoint, in which case {loaded} is diffusers' fallback "
+                f"{LDM_SINGLE_FILE_DEFAULT_SCALING_FACTOR} and would be baked "
+                f"into every export of this run by save_pretrained."
+            )
         print(f"{log_prefix} scaling_factor={loaded} comes from the checkpoint "
               f"itself (the file carries a backbone, so from_single_file "
-              f"identified the family); left as loaded.")
+              f"identified the family); left as loaded"
+              + (f", and it matches vae_arch={arch!r}." if stated is not None
+                 else "."))
         return "from_single_file (full checkpoint, family identified)"
 
-    arch = (vae_arch or "").strip()
-    canonical = canonical_latent_scaling(arch) if arch else None
-    if canonical is None or canonical[0] is None:
-        why = (f"vae_arch={arch!r} is not a known VAE-store key"
-               if canonical is None else
-               f"vae_arch={arch!r} has no single scalar scaling_factor "
-               f"(it normalises with latents_mean/latents_std)")
-        print(f"{log_prefix} WARNING: this is a VAE-only file, so its "
-              f"scaling_factor={loaded} is whatever from_single_file assumed "
-              f"(its fallback is {LDM_SINGLE_FILE_DEFAULT_SCALING_FACTOR}), and "
-              f"{why}, so it cannot be corrected. Every export of this run will "
-              f"carry {loaded}. Set process.vae.vae_arch to the matching key "
-              f"(sdxl / sd15 / flux1) if that is wrong.")
+    # `bare is True`  -> a VAE-ONLY safetensors: `loaded` is provably a fallback.
+    # `bare is None`  -> not classifiable: `loaded` MIGHT be a genuine reading.
+    # Neither may proceed on an unstated family.
+    if not arch:
+        raise VaeConfigError(
+            f"vae_arch is not set, and the base VAE at {path} is a single file "
+            f"with no config.json"
+            + (" (a VAE-only file, so its scaling_factor="
+               f"{loaded} is diffusers' fallback "
+               f"{LDM_SINGLE_FILE_DEFAULT_SCALING_FACTOR}, not a reading)"
+               if bare else
+               f" {_UNKNOWN_REASON_PHRASE.get(reason, 'that could not be classified')}"
+               f", so its scaling_factor={loaded} may or may not be a reading")
+            + ". SD1.5 and SDXL VAEs are byte-for-byte the same shape, so "
+            "nothing here can tell them apart, and save_pretrained bakes "
+            "whatever is on the config into every export of this run (0.18215 "
+            "vs 0.13025 is a 1.40x latent-scale error that produces wrong "
+            "images with no error and no warning). Refusing to guess: set "
+            "process.vae.vae_arch to the architecture of this VAE "
+            "(sdxl / sd15 / flux1 / flux2 / qwen_image) -- the 'VAE "
+            "architecture' field in the VAE training form."
+        )
+
+    canonical = canonical_latent_scaling(arch)
+    if canonical is None:
+        raise VaeConfigError(
+            f"vae_arch={arch!r} is not a known VAE-store key, and the base VAE "
+            f"at {path} is a single file with no config.json, so vae_arch is "
+            f"what has to decide the scaling_factor baked into every export of "
+            f"this run. Refusing to run on a value that names no architecture: "
+            f"set process.vae.vae_arch to one of "
+            f"sdxl / sd15 / flux1 / flux2 / qwen_image."
+        )
+
+    if canonical[0] is None:
+        print(f"{log_prefix} WARNING: the base VAE at {path} is a single file "
+              f"with no config.json, so its scaling_factor={loaded} is whatever "
+              f"from_single_file assumed (its fallback is "
+              f"{LDM_SINGLE_FILE_DEFAULT_SCALING_FACTOR}), and vae_arch={arch!r} "
+              f"has no single scalar scaling_factor (that family normalises with "
+              f"latents_mean/latents_std), so there is no value to substitute. "
+              f"Every export of this run will carry {loaded}. Consumers of this "
+              f"family read latents_mean/latents_std instead.")
         return f"from_single_file fallback, UNVERIFIED (vae_arch={arch!r})"
 
     expected, expected_shift, expected_channels = canonical
@@ -1513,6 +1678,27 @@ def repair_single_file_scaling_factor(vae, path: str, vae_arch: Optional[str],
         print(f"{log_prefix} scaling_factor={loaded} already matches "
               f"vae_arch={arch!r}; unchanged.")
         return f"from_single_file, confirmed against vae_arch={arch!r}"
+
+    if bare is None:
+        # Not inspectable, and the loaded value contradicts the stated family.
+        # Overwriting would corrupt a full checkpoint's genuine reading; keeping
+        # it silently would leave a fallback in place. Both are undiagnosable
+        # downstream, so neither is done.
+        raise VaeConfigError(
+            f"The base VAE at {path} carries scaling_factor={loaded}, but "
+            f"vae_arch={arch!r} says {expected}. This is a single file "
+            f"{_UNKNOWN_REASON_PHRASE.get(reason, 'that could not be classified')}"
+            f", so it cannot be determined whether {loaded} was READ from a checkpoint "
+            f"(in which case vae_arch is wrong) or is diffusers' fallback "
+            f"{LDM_SINGLE_FILE_DEFAULT_SCALING_FACTOR} for a VAE-only file (in "
+            f"which case it needs correcting). Refusing to pick one: fix "
+            f"process.vae.vae_arch if it is wrong, or "
+            + _UNKNOWN_REASON_REMEDY.get(
+                reason,
+                "supply this VAE as a diffusers directory carrying its own "
+                "config.json")
+            + ", which makes the answer determinable."
+        )
 
     kwargs = {"scaling_factor": float(expected)}
     if expected_shift is not None:

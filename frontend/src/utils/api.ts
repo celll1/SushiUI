@@ -3667,6 +3667,13 @@ export interface VaeTrainingConfig {
   // Base VAE selection
   vae_source: "model" | "path" | "store";
   vae_path: string;
+  // VAE-store key ("" = not stated, the default). Two jobs: it selects the entry
+  // to load when vae_source is "store", and for a base VAE that comes from a
+  // SINGLE FILE (any source) it is the only statement of which family that file
+  // belongs to — such a file has no config.json, so the scaling_factor on the
+  // loaded config is a fallback, and save_pretrained bakes it into every export.
+  // The backend refuses a single-file base VAE whose vae_arch is unstated or
+  // unknown rather than assuming one.
   vae_arch: string;
   // What to train. Encoder training is behind a double gate: the backend
   // refuses train_encoder without acknowledge_latent_space_break, AND refuses

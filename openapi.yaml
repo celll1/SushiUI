@@ -9947,12 +9947,47 @@ components:
         vae_path:
           type: string
           default: ""
-          description: "Explicit VAE path, used when vae_source is `path`."
+          description: |
+            Explicit VAE path, used when `vae_source` is `path`: either a
+            diffusers VAE directory (which carries its own `config.json`) or a
+            single weight file. Any file `AutoencoderKL.from_single_file` accepts
+            is loaded — `.safetensors`, and also `.ckpt` / `.pt` / `.bin`, which
+            have their own handling because their contents cannot be inspected
+            without unpickling them. A single file also requires `vae_arch`,
+            which is what states the exported `scaling_factor`.
           example: "M:/model/sdxl/VAE/sdxl_vae.safetensors"
         vae_arch:
           type: string
-          default: "sdxl"
-          description: Shared-VAE-store key used when `vae_source == "store"`.
+          default: ""
+          description: |
+            VAE-store key naming the architecture of the base VAE — one of
+            `sdxl`, `sd15`, `flux1`, `flux2`, `qwen_image` (the keys of
+            `core/models/common/vae_store.VAE_REGISTRY`). Empty means "not
+            stated", which is the default.
+
+            It is read in two places:
+
+            - with `vae_source: "store"` it selects the store entry to load, and
+              an empty value is refused;
+            - for a base VAE that comes from a SINGLE FILE (any `vae_source`,
+              including a `.safetensors` / `.ckpt` `base_model_path`), it is the
+              only thing that can say which family the file belongs to. Such a
+              file carries no `config.json`, and `from_single_file` falls back to
+              0.18215 for every 4-channel VAE, while `save_pretrained` bakes
+              whatever ends up on the config into the exported `config.json`
+              that the inference-side VAE override then trusts (SD1.5 0.18215 vs
+              SDXL 0.13025 is a 1.40x latent-scale difference).
+
+            The trainer therefore refuses a single-file base VAE whose
+            `vae_arch` is empty or is not one of the keys above, refuses a key
+            whose latent-channel count contradicts the loaded file, and never
+            overwrites a value that the file itself provided (a full checkpoint,
+            where `from_single_file` identified the family) — but a stated key
+            whose scaling factor contradicts such a file is refused as well,
+            since one of the two must be wrong. `flux2` and
+            `qwen_image` have no scalar scaling factor at all, so for those the
+            loaded value is left as it is and recorded as unverified in the
+            export's provenance sidecar.
           example: "sdxl"
         train_decoder:
           type: boolean
@@ -10292,7 +10327,7 @@ components:
         max_step_saves_to_keep: 3
         vae_source: "model"
         vae_path: ""
-        vae_arch: "sdxl"
+        vae_arch: ""
         train_decoder: true
         decoder_blocks: "all"
         train_encoder: false

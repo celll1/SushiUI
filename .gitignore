@@ -157,6 +157,10 @@ test_*.py
 # kwargs, yield shape and injection semantics at once, and nothing caught it
 # because git had never seen the test.
 !backend/tests/test_danbooru_online_learning.py
+# Exception: VAE latent scaling_factor on single-file load. A wrong value
+# never raises -- it bakes a 1.40x latent-scale error into every export and
+# the images just come out wrong, so the guard has to be checked in.
+!backend/tests/test_vae_scaling_factor.py
 # Exception: the L_invented flat-region loss. Its failure mode is that the
 # term rewards blur -- which reads as SUCCESS on every other instrument we
 # have, since blurring lowers both invented HF and total emitted HF. The

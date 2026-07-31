@@ -14,6 +14,7 @@ from .transformer import (
 from .fp8_linear import (
     FP8_TEXT_ENCODER_CONFIG_FLAG,
     Fp8Linear,
+    disable_scaled_mm,
     is_bnb4bit_state_dict,
     is_fp8_state_dict,
     load_bnb4bit_state_dict,
@@ -31,6 +32,7 @@ __all__ = [
     "SEQUENCE_PADDING_INDICATOR",
     "Fp8Linear",
     "FP8_TEXT_ENCODER_CONFIG_FLAG",
+    "disable_scaled_mm",
     "is_fp8_state_dict",
     "load_fp8_state_dict",
     "swap_linears_to_fp8",

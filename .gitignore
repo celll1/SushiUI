@@ -152,6 +152,11 @@ test_*.py
 # plain-walk fallback for non-outpaint calls -- no crash, just a subtly
 # different (or subtly worse) generation with no signal that anything moved.
 !backend/tests/test_outpaint_resample_schedule.py
+# Exception: Danbooru online-learning interrupt-batch scheme. This file is the
+# reason the blanket ignore is a hazard -- 1dc6b4cf changed MixedDataLoader's
+# kwargs, yield shape and injection semantics at once, and nothing caught it
+# because git had never seen the test.
+!backend/tests/test_danbooru_online_learning.py
 # Exception: tagger vocab-expansion optimizer-state migration. A regression
 # here silently corrupts or drops per-tag momentum on vocab resize -- training
 # keeps running, just with wrong optimizer state for every affected tag row.

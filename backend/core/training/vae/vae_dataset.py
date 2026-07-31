@@ -46,12 +46,12 @@ from __future__ import annotations
 
 import math
 import random
-from typing import Dict, List, Optional
+from typing import Dict, Iterator, List, Optional, Tuple, Union
 
 import numpy as np
 import torch
 from PIL import Image, ImageFile
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, Sampler
 
 # Training datasets routinely contain slightly-truncated JPEGs; the rest of the
 # repo's loaders tolerate them rather than crashing a multi-hour run.
@@ -67,6 +67,60 @@ from core.training.vae.vae_config import VALID_CROP_SCALE_POLICIES  # noqa: E402
 
 CROP_SCALE_POLICIES = VALID_CROP_SCALE_POLICIES
 DEFAULT_CROP_SCALE_POLICY = "downscale"
+
+_MASK64 = (1 << 64) - 1
+
+# Stream domains. Two RNGs are derived from the same run seed -- the crop draw
+# and the traversal order -- and they must not be able to coincide. Tagging each
+# with a domain constant is what keeps them apart STRUCTURALLY: an earlier
+# version distinguished them by putting a literal (0x5EED) in the argument slot
+# the crop stream fills with the item index, so item 24301 got a crop stream
+# byte-identical to that epoch's shuffle stream. A domain constant occupies a
+# slot no caller-supplied value ever fills, so no dataset index can reach it.
+_DOMAIN_CROP = 0x9E3779B97F4A7C15
+_DOMAIN_ORDER = 0xC2B2AE3D27D4EB4F
+
+
+def mix_seed(domain: int, *values: int) -> int:
+    """Fold a domain tag plus integers into one 64-bit seed.
+
+    FNV-1a rounds with an avalanche shift. Used instead of the
+    ``(seed * k) ^ index`` it replaces because the RNG stream now depends on
+    several numbers (run seed, item index, visit counter) whose ranges overlap: a
+    plain XOR of small integers collides constantly, e.g. ``index=5, visit=4``
+    and ``index=4, visit=5`` would give one identical crop. Every value is mixed
+    through a multiply and a shift, so neighbouring (index, visit) pairs land on
+    unrelated streams while the result stays a pure function of its arguments --
+    no process state, so a worker-parallel loader and a single-process one draw
+    the same crops.
+
+    ``domain`` is a leading constant (``_DOMAIN_CROP`` / ``_DOMAIN_ORDER``) that
+    separates the uses of one run seed from each other; see the note there.
+    """
+    h = 0xCBF29CE484222325
+    for value in (domain, *values):
+        h = (h ^ (int(value) & _MASK64)) & _MASK64
+        h = (h * 0x100000001B3) & _MASK64
+        h ^= h >> 29
+    return h & _MASK64
+
+
+def split_index(index: Union[int, Tuple[int, int]]) -> Tuple[int, int]:
+    """Accept either a bare dataset index or a ``(index, visit)`` pair.
+
+    A map-style ``Dataset`` receives verbatim whatever its sampler yields
+    (``torch/utils/data/_utils/fetch.py`` indexes ``self.dataset[idx]`` with the
+    sampler's own elements), which is how the visit counter travels from the main
+    process into a worker without any shared mutable state. Bare ints keep
+    working -- ``dataset[i]`` in a test or a default sampler means visit 0.
+    """
+    if isinstance(index, (tuple, list)):
+        if len(index) != 2:
+            raise ValueError(
+                f"VaeRawImageDataset index must be an int or an (index, visit) "
+                f"pair, got {index!r}")
+        return int(index[0]), int(index[1])
+    return int(index), 0
 
 
 def resolve_crop_scale(
@@ -152,7 +206,9 @@ def load_image_tensor(
       ``resolution`` the window is cut straight out of the full-size pixels, so
       the decoder sees genuine unresampled detail; only genuinely-smaller images
       are upscaled. The crop then covers ~20% of the median source's area.
-    - ``"mixed"``: draw the downscale factor per sample over ``[1, f_max]``, so
+    - ``"mixed"``: draw the downscale factor per sample -- and, because the
+      caller's ``rng`` is keyed by the visit counter too, afresh on each visit to
+      an image (see ``VaeRawImageDataset``) -- over ``[1, f_max]``, so
       the decoder sees the whole range including 1x. ``max_downscale`` (0 = the
       image's own ``short/resolution``) bounds ``f_max``; see
       ``resolve_crop_scale`` for why the draw is log-uniform.
@@ -199,6 +255,21 @@ class VaeRawImageDataset(Dataset):
     ``load_image_tensor`` per sample, which is what makes ``"mixed"`` a per-sample
     draw rather than a per-run choice.
 
+    **The crop RNG is keyed by (seed, index, visit), not by (seed, index).** The
+    index alone would pin every one of an image's exposures -- across the whole
+    run, not just within an epoch -- to a single crop window and (under
+    ``"mixed"``) a single scale factor, since ``index -> path`` is a fixed map and
+    shuffling only reorders items. A 500-image set seen ~16 times would then have
+    shown 500 distinct crops instead of ~8,000, and ``"mixed"`` would have
+    degenerated from "sample each image's scale distribution" to "train each image
+    at one fixed scale". ``visit`` is supplied by :class:`VaeEpochCropSampler`
+    (see there for how it reaches a worker process), and defaults to 0 when the
+    dataset is indexed with a bare ``int``, so plain ``dataset[i]`` stays
+    reproducible.
+
+    ``random_crop=False`` ignores ``visit`` entirely: a deterministic (validation
+    style) dataset must not start moving just because it is read twice.
+
     An unreadable/corrupt image is skipped by walking forward to the next index
     rather than aborting the run — a single bad file in a 100k-item dataset must
     not kill a multi-hour fine-tune. Repeated failures are reported once each.
@@ -232,10 +303,15 @@ class VaeRawImageDataset(Dataset):
     def __len__(self) -> int:
         return len(self.paths)
 
-    def __getitem__(self, index: int) -> torch.Tensor:
+    def __getitem__(self, index: Union[int, Tuple[int, int]]) -> torch.Tensor:
+        index, visit = split_index(index)
         n = len(self.paths)
-        # Per-item RNG so a worker-parallel loader is reproducible for a seed.
-        rng = random.Random((self.seed * 1000003) ^ index)
+        # Per-(item, visit) RNG: a pure function of the run seed, so a
+        # worker-parallel loader is reproducible, while re-visiting the same image
+        # in a later pass draws a different crop / mixed scale.
+        if not self.random_crop:
+            visit = 0
+        rng = random.Random(mix_seed(_DOMAIN_CROP, self.seed, index, visit))
         for attempt in range(min(n, 32)):
             i = (index + attempt) % n
             path = self.paths[i]
@@ -255,6 +331,68 @@ class VaeRawImageDataset(Dataset):
             f"VaeRawImageDataset: 32 consecutive images failed to load starting "
             f"at index {index}; the dataset paths are probably invalid."
         )
+
+
+class VaeEpochCropSampler(Sampler):
+    """Shuffling sampler that yields ``(index, visit)`` instead of ``index``.
+
+    It exists because the crop RNG needs a *visit counter* and there is nowhere
+    else to keep one:
+
+    - dataset attributes do not work. With ``num_workers > 0`` each worker holds
+      its OWN copy of the dataset object, so a counter bumped in ``__getitem__``
+      counts that worker's share, and one bumped in the main process never
+      reaches the workers at all (``persistent_workers=True`` makes the copies
+      outlive the epoch, so not even re-creating the loader would propagate it).
+    - process-global or time-derived state would work but destroys
+      reproducibility, which the trainer relies on (it seeds and checkpoints
+      every RNG it owns).
+
+    The sampler, by contrast, runs in the MAIN process for every configuration --
+    indices are generated there and shipped to workers -- and the value it yields
+    is handed to ``Dataset.__getitem__`` untouched. So the counter is
+    single-sourced, worker-count-independent, and a pure function of
+    ``(seed, epoch)``.
+
+    Both the shuffle order and the visit counter are derived from ``seed`` and the
+    epoch number rather than from the torch global RNG, so a re-run with the same
+    seed replays the same order and the same crops, and a resume is positioned by
+    restoring one integer (``next_epoch``) rather than by hoping a global RNG
+    state lines up. See ``VaeTrainer.save_checkpoint`` / ``load_checkpoint``.
+    """
+
+    def __init__(self, num_items: int, *, seed: int = 0, shuffle: bool = True,
+                 start_epoch: int = 0):
+        self.num_items = int(num_items)
+        if self.num_items <= 0:
+            raise ValueError("VaeEpochCropSampler: num_items must be > 0")
+        self.seed = int(seed)
+        self.shuffle = bool(shuffle)
+        self.next_epoch = int(start_epoch)
+
+    @property
+    def current_epoch(self) -> int:
+        """The epoch most recently STARTED (``next_epoch - 1``, floored at 0)."""
+        return max(0, self.next_epoch - 1)
+
+    def set_next_epoch(self, epoch: int) -> None:
+        self.next_epoch = int(epoch)
+
+    def __len__(self) -> int:
+        return self.num_items
+
+    def __iter__(self) -> Iterator[Tuple[int, int]]:
+        epoch = self.next_epoch
+        self.next_epoch = epoch + 1
+        order = list(range(self.num_items))
+        if self.shuffle:
+            # Its own stream, domain-tagged so no item index can land on it: the
+            # order must not depend on how many crop draws the previous epoch
+            # happened to make (``mixed`` draws one extra number per sample), or
+            # two policies would traverse the data differently for no reason.
+            random.Random(mix_seed(_DOMAIN_ORDER, self.seed, epoch)).shuffle(order)
+        for index in order:
+            yield (index, epoch)
 
 
 def make_validation_batch(

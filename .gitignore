@@ -172,6 +172,13 @@ test_*.py
 # and the accompanying schedule-multiplier regression mispriced the first
 # post-resume step by up to 159x with nothing in the logs to show it.
 !backend/tests/test_lr_resume_override.py
+# Exception: the VAE training crop RNG. Keying it by (seed, index) alone gave
+# every image ONE crop window and one 'mixed' scale for the whole run, which
+# nothing observable reports -- loss and val PSNR look healthy while data
+# coverage silently collapses. The guard pins per-visit variation together with
+# the two properties it pulls against: seed reproducibility (worker count and
+# resume included) and a deterministic validation path.
+!backend/tests/test_vae_crop_visit_rng.py
 # Exception: tagger vocab-expansion optimizer-state migration. A regression
 # here silently corrupts or drops per-tag momentum on vocab resize -- training
 # keeps running, just with wrong optimizer state for every affected tag row.

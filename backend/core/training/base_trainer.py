@@ -40,6 +40,7 @@ from core.attention import (
     resolve_backend,
     to_diffusers_backend,
 )
+from core.training.lr_utils import reassert_config_lr
 
 
 class FatalCudaError(RuntimeError):
@@ -3182,6 +3183,39 @@ class BaseTrainer(ABC):
             names.append("VisionEncoder")
 
         return lrs, names
+
+    def _reassert_config_lr_on_resume(self):
+        """Make the YAML config's per-component LRs win over the resumed ones.
+
+        Called from ``train()``'s two resume branches, AFTER
+        ``load_optimizer_state()`` (which imports the checkpoint's ``lr`` into
+        every param group) and AFTER the scheduler fast-forward loop.
+
+        The LR written to each group is ``configured_base_lr *
+        schedule_multiplier(last_epoch)``, not the bare base LR: the training
+        loop calls ``optimizer.step()`` BEFORE ``lr_scheduler.step()``, and a
+        mid-epoch resume slices the batch list rather than iterating it, so a
+        flat write would make the first post-resume step run at the
+        un-multiplied base LR (unbounded error mid-warmup, 1/floor_ratio in a
+        plateau_cosine_floor decay tail). See core/training/lr_utils.py.
+
+        Groups the component list does not cover fall back to
+        ``self.learning_rate``, exactly as the previous inline code did.
+        """
+        if not hasattr(self, 'optimizer') or self.optimizer is None:
+            return
+
+        component_lrs, component_names = self._build_component_lr_list()
+        lr_scheduler = getattr(self, 'lr_scheduler', None)
+
+        reassert_config_lr(
+            self.optimizer,
+            lr_scheduler,
+            component_lrs if component_lrs else self.learning_rate,
+            log_prefix=self.log_prefix,
+            component_names=component_names,
+            fallback_lr=self.learning_rate,
+        )
 
     def setup_optimizer(
         self,
@@ -8067,36 +8101,21 @@ class BaseTrainer(ABC):
                     for _ in range(global_step):
                         self.lr_scheduler.step()
 
-                    # IMPORTANT: Update optimizer learning rate from YAML config
-                    # (Necessary when user modifies LR in YAML before resume)
-                    # Build component LR list matching actual optimizer group order:
-                    #   [UNet, TE1, TE2 (SDXL only), VE (if _train_vision_encoder)]
-                    if hasattr(self, 'optimizer') and self.optimizer is not None:
-                        component_lrs, component_names = self._build_component_lr_list()
-
-                        for i, param_group in enumerate(self.optimizer.param_groups):
-                            old_lr = param_group['lr']
-                            new_lr = component_lrs[i] if i < len(component_lrs) else self.learning_rate
-                            name = component_names[i] if i < len(component_names) else f"group{i}"
-                            param_group['lr'] = new_lr
-                            if old_lr != new_lr:
-                                print(f"{self.log_prefix} Updated optimizer {name} LR (param_group[{i}]): {old_lr:.2e} -> {new_lr:.2e}")
-
-                    # IMPORTANT: Also update LR Scheduler's base_lrs to prevent it from resetting LR
-                    if hasattr(self, 'lr_scheduler') and self.lr_scheduler is not None:
-                        if hasattr(self.lr_scheduler, 'base_lrs'):
-                            component_lrs, component_names = self._build_component_lr_list()
-
-                            for i in range(len(self.lr_scheduler.base_lrs)):
-                                old_base_lr = self.lr_scheduler.base_lrs[i]
-                                new_base_lr = component_lrs[i] if i < len(component_lrs) else self.learning_rate
-                                name = component_names[i] if i < len(component_names) else f"group{i}"
-                                self.lr_scheduler.base_lrs[i] = new_base_lr
-                                if old_base_lr != new_base_lr:
-                                    print(f"{self.log_prefix} Updated LR Scheduler {name} base_lr[{i}]: {old_base_lr:.2e} -> {new_base_lr:.2e}")
-
-                    # Load optimizer state (momentum, variance, etc.)
+                    # Load optimizer state (momentum, variance, etc.) BEFORE the
+                    # LR re-assertion below: torch's Optimizer.load_state_dict
+                    # takes only 'params' from the live group and every other key
+                    # -- 'lr' included -- from the SAVED group, so loading after
+                    # it would silently reinstate the checkpoint's LR for the
+                    # first step after a resume.
                     self.load_optimizer_state(checkpoint_step)
+
+                    # Re-assert the YAML config's LR over whatever the resume
+                    # restored (needed when the user edits LR before resuming),
+                    # AT the schedule's current position -- see lr_utils. The
+                    # component LR list matches the optimizer group order:
+                    #   [UNet, TE1, TE2 (SDXL only), VE (if _train_vision_encoder)]
+                    self._reassert_config_lr_on_resume()
+
                     # Restore EMA shadow (no-op unless use_ema; re-inits from
                     # current weights if no saved shadow is found)
                     self.load_ema_state(checkpoint_step)
@@ -8152,36 +8171,17 @@ class BaseTrainer(ABC):
                     for _ in range(global_step):
                         self.lr_scheduler.step()
 
-                    # IMPORTANT: Update optimizer learning rate from YAML config
-                    # (Necessary when user modifies LR in YAML before resume)
-                    # Build component LR list matching actual optimizer group order:
-                    #   [UNet, TE1, TE2 (SDXL only), VE (if _train_vision_encoder)]
-                    if hasattr(self, 'optimizer') and self.optimizer is not None:
-                        component_lrs, component_names = self._build_component_lr_list()
-
-                        for i, param_group in enumerate(self.optimizer.param_groups):
-                            old_lr = param_group['lr']
-                            new_lr = component_lrs[i] if i < len(component_lrs) else self.learning_rate
-                            name = component_names[i] if i < len(component_names) else f"group{i}"
-                            param_group['lr'] = new_lr
-                            if old_lr != new_lr:
-                                print(f"{self.log_prefix} Updated optimizer {name} LR (param_group[{i}]): {old_lr:.2e} -> {new_lr:.2e}")
-
-                    # IMPORTANT: Also update LR Scheduler's base_lrs to prevent it from resetting LR
-                    if hasattr(self, 'lr_scheduler') and self.lr_scheduler is not None:
-                        if hasattr(self.lr_scheduler, 'base_lrs'):
-                            component_lrs, component_names = self._build_component_lr_list()
-
-                            for i in range(len(self.lr_scheduler.base_lrs)):
-                                old_base_lr = self.lr_scheduler.base_lrs[i]
-                                new_base_lr = component_lrs[i] if i < len(component_lrs) else self.learning_rate
-                                name = component_names[i] if i < len(component_names) else f"group{i}"
-                                self.lr_scheduler.base_lrs[i] = new_base_lr
-                                if old_base_lr != new_base_lr:
-                                    print(f"{self.log_prefix} Updated LR Scheduler {name} base_lr[{i}]: {old_base_lr:.2e} -> {new_base_lr:.2e}")
-
-                    # Load optimizer state (momentum, variance, etc.)
+                    # Load optimizer state (momentum, variance, etc.) BEFORE the
+                    # LR re-assertion below -- see the note in the "latest"
+                    # branch: Optimizer.load_state_dict restores the checkpoint's
+                    # 'lr' into every param group, so it must not run after it.
                     self.load_optimizer_state(checkpoint_step)
+
+                    # Re-assert the YAML config's LR over whatever the resume
+                    # restored, at the schedule's current position (see the
+                    # "latest" branch and lr_utils).
+                    self._reassert_config_lr_on_resume()
+
                     # Restore EMA shadow (no-op unless use_ema; re-inits from
                     # current weights if no saved shadow is found)
                     self.load_ema_state(checkpoint_step)

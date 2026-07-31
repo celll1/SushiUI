@@ -1894,18 +1894,14 @@ def custom_sampling_loop(
     else:
         device = pipeline.device
 
-    # Get U-Net dtype, but use float16 for latents if U-Net is FP8 or UINT quantized
-    # (torch.randn doesn't support FP8, and UINT quantization uses FP16 activations)
+    # Get U-Net dtype, but use float16 for latents if U-Net is FP8 quantized
+    # (torch.randn doesn't support FP8)
     # nn.Module doesn't have .dtype, get from first parameter
     unet_dtype = next(pipeline.unet.parameters()).dtype
-    is_uint_quantized = hasattr(pipeline.unet, '_is_uint_quantized') and pipeline.unet._is_uint_quantized
 
-    if unet_dtype == torch.float8_e4m3fn or unet_dtype == torch.float8_e5m2 or is_uint_quantized:
+    if unet_dtype == torch.float8_e4m3fn or unet_dtype == torch.float8_e5m2:
         dtype = torch.float16  # Use float16 for latents
-        if is_uint_quantized:
-            print(f"[CustomSampling] U-Net is UINT quantized, using float16 for latents and activations")
-        else:
-            print(f"[CustomSampling] U-Net is {unet_dtype}, using float16 for latents")
+        print(f"[CustomSampling] U-Net is {unet_dtype}, using float16 for latents")
     else:
         dtype = unet_dtype
 
@@ -2461,9 +2457,8 @@ def custom_sampling_loop(
 
         # Predict noise residual
         with torch.no_grad():
-            # Use autocast for FP8 or UINT quantized U-Net (required for FP16 activations)
-            is_uint_quantized = hasattr(unet, '_is_uint_quantized') and unet._is_uint_quantized
-            use_autocast = unet_dtype == torch.float8_e4m3fn or unet_dtype == torch.float8_e5m2 or is_uint_quantized
+            # Use autocast for FP8 quantized U-Net (required for FP16 activations)
+            use_autocast = unet_dtype == torch.float8_e4m3fn or unet_dtype == torch.float8_e5m2
 
             if is_deus and do_classifier_free_guidance:
                 # DEUS: 2-Pass CFG - separate U-Net calls for negative and positive embeddings
@@ -3093,18 +3088,14 @@ def custom_img2img_sampling_loop(
     else:
         device = pipeline.device
 
-    # Get U-Net dtype, but use float16 for latents if U-Net is FP8 or UINT quantized
-    # (torch.randn doesn't support FP8, and UINT quantization uses FP16 activations)
+    # Get U-Net dtype, but use float16 for latents if U-Net is FP8 quantized
+    # (torch.randn doesn't support FP8)
     # nn.Module doesn't have .dtype, get from first parameter
     unet_dtype = next(pipeline.unet.parameters()).dtype
-    is_uint_quantized = hasattr(pipeline.unet, '_is_uint_quantized') and pipeline.unet._is_uint_quantized
 
-    if unet_dtype == torch.float8_e4m3fn or unet_dtype == torch.float8_e5m2 or is_uint_quantized:
+    if unet_dtype == torch.float8_e4m3fn or unet_dtype == torch.float8_e5m2:
         dtype = torch.float16  # Use float16 for latents
-        if is_uint_quantized:
-            print(f"[CustomSampling] U-Net is UINT quantized, using float16 for latents and activations")
-        else:
-            print(f"[CustomSampling] U-Net is {unet_dtype}, using float16 for latents")
+        print(f"[CustomSampling] U-Net is {unet_dtype}, using float16 for latents")
     else:
         dtype = unet_dtype
 
@@ -3655,9 +3646,8 @@ def custom_img2img_sampling_loop(
 
         # Predict noise residual
         with torch.no_grad():
-            # Use autocast for FP8 or UINT quantized U-Net (required for FP16 activations)
-            is_uint_quantized = hasattr(unet, '_is_uint_quantized') and unet._is_uint_quantized
-            use_autocast = unet_dtype == torch.float8_e4m3fn or unet_dtype == torch.float8_e5m2 or is_uint_quantized
+            # Use autocast for FP8 quantized U-Net (required for FP16 activations)
+            use_autocast = unet_dtype == torch.float8_e4m3fn or unet_dtype == torch.float8_e5m2
 
             if is_deus and do_classifier_free_guidance:
                 # DEUS: 2-Pass CFG - separate U-Net calls for negative and positive embeddings
@@ -4459,18 +4449,14 @@ def custom_inpaint_sampling_loop(
     else:
         device = pipeline.device
 
-    # Get U-Net dtype, but use float16 for latents if U-Net is FP8 or UINT quantized
-    # (torch.randn doesn't support FP8, and UINT quantization uses FP16 activations)
+    # Get U-Net dtype, but use float16 for latents if U-Net is FP8 quantized
+    # (torch.randn doesn't support FP8)
     # nn.Module doesn't have .dtype, get from first parameter
     unet_dtype = next(pipeline.unet.parameters()).dtype
-    is_uint_quantized = hasattr(pipeline.unet, '_is_uint_quantized') and pipeline.unet._is_uint_quantized
 
-    if unet_dtype == torch.float8_e4m3fn or unet_dtype == torch.float8_e5m2 or is_uint_quantized:
+    if unet_dtype == torch.float8_e4m3fn or unet_dtype == torch.float8_e5m2:
         dtype = torch.float16  # Use float16 for latents
-        if is_uint_quantized:
-            print(f"[CustomSampling] U-Net is UINT quantized, using float16 for latents and activations")
-        else:
-            print(f"[CustomSampling] U-Net is {unet_dtype}, using float16 for latents")
+        print(f"[CustomSampling] U-Net is {unet_dtype}, using float16 for latents")
     else:
         dtype = unet_dtype
 
@@ -5681,9 +5667,8 @@ def custom_inpaint_sampling_loop(
                 )
 
         with torch.no_grad():
-            # Use autocast for FP8 or UINT quantized U-Net (required for FP16 activations)
-            is_uint_quantized = hasattr(unet, '_is_uint_quantized') and unet._is_uint_quantized
-            use_autocast = unet_dtype == torch.float8_e4m3fn or unet_dtype == torch.float8_e5m2 or is_uint_quantized
+            # Use autocast for FP8 quantized U-Net (required for FP16 activations)
+            use_autocast = unet_dtype == torch.float8_e4m3fn or unet_dtype == torch.float8_e5m2
 
             if is_deus and do_classifier_free_guidance:
                 # DEUS: 2-Pass CFG - separate U-Net calls for negative and positive embeddings

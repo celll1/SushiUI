@@ -40,6 +40,22 @@ from typing import Dict, Optional
 #   default_repo     : HF repo id for the default weights (redistributable)
 #   default_subfolder: subfolder within the repo holding the VAE (None = repo root)
 #   license          : SPDX-ish license string of the default repo
+#   scaling_factor   : the family's canonical latent scaling factor, or None when
+#                      the family does not have a single scalar one (see below)
+#   shift_factor     : the family's canonical latent shift, or None for "absent"
+#
+# scaling_factor / shift_factor are the values in the default repo's own
+# config.json, verified against it. They exist here so that a VAE loaded WITHOUT
+# a config.json (a bare `.safetensors`) can be given the right number instead of
+# diffusers' single-file fallback: `AutoencoderKL.from_single_file` cannot tell
+# an SDXL VAE from an SD1.5 one (the architectures are identical) and falls back
+# to LDM_VAE_DEFAULT_SCALING_FACTOR = 0.18215, which is a 1.40x error on SDXL.
+# This table is the ONLY place those numbers are written down.
+#
+# `None` means "this family has no single scalar scaling factor": AutoencoderKLFlux2
+# and AutoencoderKLQwenImage normalise with per-channel latents_mean/latents_std
+# and their config.json carries no scaling_factor at all. None must therefore be
+# read as "cannot be determined from the architecture alone", never as 1.0.
 VAE_REGISTRY: Dict[str, Dict] = {
     "sdxl": {
         "class": "AutoencoderKL",
@@ -48,6 +64,8 @@ VAE_REGISTRY: Dict[str, Dict] = {
         "default_repo": "madebyollin/sdxl-vae-fp16-fix",
         "default_subfolder": None,
         "license": "MIT",
+        "scaling_factor": 0.13025,
+        "shift_factor": None,
     },
     "sd15": {
         "class": "AutoencoderKL",
@@ -56,6 +74,8 @@ VAE_REGISTRY: Dict[str, Dict] = {
         "default_repo": "stabilityai/sd-vae-ft-mse-original",
         "default_subfolder": None,
         "license": "MIT",
+        "scaling_factor": 0.18215,
+        "shift_factor": None,
     },
     "flux1": {
         "class": "AutoencoderKL",
@@ -64,6 +84,8 @@ VAE_REGISTRY: Dict[str, Dict] = {
         "default_repo": "diffusers/FLUX.1-vae",
         "default_subfolder": None,
         "license": "Apache-2.0",
+        "scaling_factor": 0.3611,
+        "shift_factor": 0.1159,
     },
     "flux2": {
         "class": "AutoencoderKLFlux2",
@@ -73,6 +95,8 @@ VAE_REGISTRY: Dict[str, Dict] = {
         "default_repo": "black-forest-labs/FLUX.2-klein-4B",
         "default_subfolder": "vae",
         "license": "Apache-2.0",
+        "scaling_factor": None,   # latents_mean / latents_std, no scalar
+        "shift_factor": None,
     },
     "qwen_image": {
         "class": "AutoencoderKLQwenImage",
@@ -81,8 +105,31 @@ VAE_REGISTRY: Dict[str, Dict] = {
         "default_repo": "Qwen/Qwen-Image",
         "default_subfolder": "vae",
         "license": "Apache-2.0",
+        "scaling_factor": None,   # latents_mean / latents_std, no scalar
+        "shift_factor": None,
     },
 }
+
+# What `AutoencoderKL.from_single_file` falls back to when the file it is given
+# carries no architectural evidence (diffusers
+# `loaders/single_file_utils.LDM_VAE_DEFAULT_SCALING_FACTOR`). Named here so the
+# "this value is a guess, not a measurement" test reads as such at its call site.
+LDM_SINGLE_FILE_DEFAULT_SCALING_FACTOR = 0.18215
+
+
+def canonical_latent_scaling(vae_type: str):
+    """Return ``(scaling_factor, shift_factor, latent_channels)`` for ``vae_type``.
+
+    ``scaling_factor`` is None when the family has no single scalar one, and the
+    whole tuple is None when ``vae_type`` is not a known registry key. Callers
+    must treat both as "cannot determine" and leave whatever they loaded alone
+    rather than substituting a number.
+    """
+    entry = VAE_REGISTRY.get(vae_type)
+    if entry is None:
+        return None
+    return (entry.get("scaling_factor"), entry.get("shift_factor"),
+            entry.get("latent_channels"))
 
 
 def vae_identity(vae, embedded: bool = False, pixel_space: bool = False) -> tuple:

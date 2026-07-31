@@ -163,6 +163,12 @@ class VaeTrainer:
                   f"(fp32 master)")
             vae = AutoencoderKL.from_single_file(path, torch_dtype=torch.float32)
             identity = {"format": "single_file", "path": path, "class": "AutoencoderKL"}
+            # A single file carries no config.json, so the scaling_factor on the
+            # loaded config may be diffusers' fallback rather than this VAE's own.
+            # Training never reads it, but save_pretrained BAKES it into every
+            # export -- so it is repaired here, before anything is written.
+            identity["scaling_factor_source"] = repair_single_file_scaling_factor(
+                vae, path, self.cfg.get("vae_arch"), log_prefix=self.log_prefix)
         else:
             raise VaeConfigError(
                 f"No loadable VAE at {path!r} (expected a diffusers directory "
@@ -970,6 +976,13 @@ class VaeTrainer:
         ``save_pretrained`` preserves ``scaling_factor`` / ``shift_factor`` in
         config.json.
 
+        Because that preservation is verbatim, the value written here is exactly
+        whatever ``load_base_vae`` ended up with -- which is why the single-file
+        branch repairs it at load (``repair_single_file_scaling_factor``) rather
+        than here: nothing between the two can change it, and an export is the
+        only place a wrong one becomes visible (and then only silently). The
+        sidecar's ``base_vae.scaling_factor_source`` records how it was decided.
+
         An encoder-trained run passes the same structural gate — the latent
         SHAPE is unchanged — but its latent DISTRIBUTION is not the base model's
         any more. Nothing downstream can detect that, so it is marked in the
@@ -1397,6 +1410,122 @@ def _find_vae_config_dir(path: str) -> Optional[str]:
     if os.path.isfile(os.path.join(nested, "config.json")):
         return nested
     return None
+
+
+# Key prefixes that make up a VAE-ONLY safetensors file. A file whose every
+# tensor starts with one of these carries no backbone, hence no evidence of which
+# model family it belongs to -- which is exactly when from_single_file's
+# scaling_factor is a fallback rather than a reading.
+_VAE_ONLY_KEY_PREFIXES = ("encoder.", "decoder.", "quant_conv.",
+                          "post_quant_conv.", "loss.")
+
+
+def _is_bare_vae_single_file(path: str) -> Optional[bool]:
+    """True when ``path`` is a VAE-ONLY safetensors file, False when it also
+    holds a backbone (a full checkpoint), None when it cannot be determined.
+
+    Reads the safetensors header only -- no tensor data.
+    """
+    if not isinstance(path, str) or not path.lower().endswith(".safetensors"):
+        return None  # .ckpt/.pt/.bin: not inspectable without unpickling
+    try:
+        from safetensors import safe_open
+        with safe_open(path, framework="pt", device="cpu") as f:
+            keys = list(f.keys())
+    except Exception as e:
+        print(f"[VaeTrainer] Could not read safetensors header of {path}: {e}")
+        return None
+    if not keys:
+        return None
+    return all(k.startswith(_VAE_ONLY_KEY_PREFIXES) for k in keys)
+
+
+def repair_single_file_scaling_factor(vae, path: str, vae_arch: Optional[str],
+                                      log_prefix: str = "[VaeTrainer]") -> str:
+    """Give a VAE loaded from a bare single file its architecture's own
+    ``scaling_factor`` / ``shift_factor``, and say so out loud.
+
+    ``AutoencoderKL.from_single_file`` cannot tell an SDXL VAE from an SD1.5 one
+    -- the architectures are byte-for-byte the same shape -- so for a VAE-ONLY
+    file it falls back to LDM's 0.18215. Training never reads the value, but
+    ``save_pretrained`` writes it verbatim into the exported ``config.json``,
+    and the inference-side VAE override trusts a directory's config.json. An
+    SDXL export carrying 0.18215 is a silent 1.40x latent-scale error.
+
+    The correct value is decided by ARCHITECTURE (``process.vae.vae_arch``,
+    resolved through the shared VAE registry), not by guesswork, and is applied
+    only when the file gave diffusers nothing to go on:
+
+    * full checkpoint (backbone present) -> diffusers READ the family from the
+      checkpoint; left untouched.
+    * unknown / non-scalar ``vae_arch`` (flux2, qwen_image, a typo) -> nothing
+      can be substituted honestly; left untouched, loudly.
+    * ``vae_arch``'s latent_channels disagree with the loaded VAE -> the config
+      is wrong about which VAE this is, so REFUSE rather than stamp a
+      foreign family's number onto the export.
+
+    Returns a short string recording HOW the effective value was arrived at; it
+    is stored in the provenance sidecar so an export is self-describing.
+    """
+    from core.models.common.vae_store import (
+        LDM_SINGLE_FILE_DEFAULT_SCALING_FACTOR,
+        canonical_latent_scaling,
+    )
+
+    loaded = getattr(vae.config, "scaling_factor", None)
+    loaded_shift = getattr(vae.config, "shift_factor", None)
+
+    bare = _is_bare_vae_single_file(path)
+    if bare is False:
+        print(f"{log_prefix} scaling_factor={loaded} comes from the checkpoint "
+              f"itself (the file carries a backbone, so from_single_file "
+              f"identified the family); left as loaded.")
+        return "from_single_file (full checkpoint, family identified)"
+
+    arch = (vae_arch or "").strip()
+    canonical = canonical_latent_scaling(arch) if arch else None
+    if canonical is None or canonical[0] is None:
+        why = (f"vae_arch={arch!r} is not a known VAE-store key"
+               if canonical is None else
+               f"vae_arch={arch!r} has no single scalar scaling_factor "
+               f"(it normalises with latents_mean/latents_std)")
+        print(f"{log_prefix} WARNING: this is a VAE-only file, so its "
+              f"scaling_factor={loaded} is whatever from_single_file assumed "
+              f"(its fallback is {LDM_SINGLE_FILE_DEFAULT_SCALING_FACTOR}), and "
+              f"{why}, so it cannot be corrected. Every export of this run will "
+              f"carry {loaded}. Set process.vae.vae_arch to the matching key "
+              f"(sdxl / sd15 / flux1) if that is wrong.")
+        return f"from_single_file fallback, UNVERIFIED (vae_arch={arch!r})"
+
+    expected, expected_shift, expected_channels = canonical
+    channels = getattr(vae.config, "latent_channels", None)
+    if expected_channels is not None and channels is not None and \
+            int(channels) != int(expected_channels):
+        raise VaeConfigError(
+            f"vae_arch={arch!r} expects a {expected_channels}-channel latent, "
+            f"but the VAE loaded from {path} has {channels}. Refusing to run: "
+            f"vae_arch is what decides the scaling_factor written into every "
+            f"export of this run, and it does not describe this file. Set "
+            f"process.vae.vae_arch to the architecture of the VAE in vae_path."
+        )
+
+    if loaded is not None and abs(float(loaded) - float(expected)) < 1e-9:
+        print(f"{log_prefix} scaling_factor={loaded} already matches "
+              f"vae_arch={arch!r}; unchanged.")
+        return f"from_single_file, confirmed against vae_arch={arch!r}"
+
+    kwargs = {"scaling_factor": float(expected)}
+    if expected_shift is not None:
+        kwargs["shift_factor"] = float(expected_shift)
+    vae.register_to_config(**kwargs)
+    print(f"{log_prefix} CORRECTED scaling_factor {loaded} -> {expected} "
+          f"(and shift_factor {loaded_shift} -> {kwargs.get('shift_factor', loaded_shift)}) "
+          f"for vae_arch={arch!r}. A VAE-only file carries no config.json, so "
+          f"from_single_file had to guess; SDXL and SD1.5 VAEs are "
+          f"indistinguishable by their weights, and only vae_arch can tell them "
+          f"apart. This value is baked into every export by save_pretrained. If "
+          f"vae_arch is wrong for this file, stop the run and fix it.")
+    return f"corrected from {loaded} to {expected} via vae_arch={arch!r}"
 
 
 def _jsonable(obj):

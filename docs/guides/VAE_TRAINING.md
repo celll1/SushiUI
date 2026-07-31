@@ -732,6 +732,25 @@ epochs control would silently do nothing.
   `madebyollin/sdxl-vae-fp16-fix`**, whose fp16 safety comes from a weight
   rescaling that fine-tuning does not preserve. The trainer warns when it
   detects that base; it is not the default (`vae_source` defaults to `"model"`).
+- **`vae_arch` also decides the exported `scaling_factor` for a bare
+  `.safetensors` base.** A VAE-only single file carries no `config.json`, and
+  `AutoencoderKL.from_single_file` cannot tell an SDXL VAE from an SD1.5 one
+  (identical architecture), so diffusers falls back to LDM's `0.18215`. Since
+  `save_pretrained` bakes `vae.config` verbatim into the exported
+  `config.json` — and the inference-side VAE override trusts a directory's
+  `config.json` — an SDXL export carrying `0.18215` would be a silent 1.40×
+  latent-scale error. The trainer therefore repairs the value at load from
+  `process.vae.vae_arch` (`sdxl` → `0.13025`, `sd15` → `0.18215`, `flux1` →
+  `0.3611`/`0.1159`; the canonical numbers live in
+  `core/models/common/vae_store.VAE_REGISTRY`), prints the before/after, and
+  records `base_vae.scaling_factor_source` in the sidecar. It is applied ONLY to
+  a VAE-only file: a full checkpoint identifies its own family and is left
+  alone, an unknown or non-scalar `vae_arch` (`flux2`, `qwen_image`) is left
+  alone with a warning, and a `vae_arch` whose latent-channel count contradicts
+  the file is refused. **The web UI only exposes the `vae_arch` field for
+  `vae_source: "store"`**, so a `vae_source: "path"` run started from the UI
+  uses the default `sdxl`; an SD1.5 bare VAE trained that way needs
+  `vae_arch: sd15` set in the YAML (the log line says which value is in force).
 - **Scale.** `sd-vae-ft-mse` was batch 192 × ~840k cumulative steps. A single
   GPU at batch 1–4 × 1–2k steps is orders of magnitude below that. What is
   reachable is local adaptation to your data distribution and suppression of

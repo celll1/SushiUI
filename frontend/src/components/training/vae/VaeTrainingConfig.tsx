@@ -52,6 +52,32 @@ interface ModelListEntry {
  */
 const NON_TRAINABLE_VAE_ARCHS = new Set(["anima", "krea2", "ltx2", "minit2i"]);
 
+/**
+ * The keys of `core/models/common/vae_store.VAE_REGISTRY`, which is what
+ * `vae_arch` names. Kept as a list rather than a free-text box because the
+ * backend refuses a key it does not know: `vae_arch` selects the store entry
+ * for `vae_source: "store"`, and for a single-file base VAE it is the only
+ * statement of which family the file belongs to (such a file has no
+ * `config.json`, and the value on the loaded config is baked into every export).
+ */
+const VAE_ARCH_KEYS = ["sdxl", "sd15", "flux1", "flux2", "qwen_image"] as const;
+
+/**
+ * Text fields come back from GET /params exactly as the run's YAML holds them,
+ * and a hand-written `vae_arch:` (or `vae_path:`) with no value is `null` there.
+ * That would throw on `.trim()` and would make the always-rendered `vae_arch`
+ * select uncontrolled, so every read of these goes through here.
+ */
+const asText = (value: string | null | undefined): string => value ?? "";
+
+/** Extensions that make a base VAE a SINGLE FILE, i.e. one with no config.json. */
+const SINGLE_FILE_EXTS = [".safetensors", ".ckpt", ".pt", ".bin"];
+
+const looksLikeSingleFile = (path: string | null | undefined): boolean => {
+  const p = asText(path).trim().toLowerCase();
+  return SINGLE_FILE_EXTS.some((ext) => p.endsWith(ext));
+};
+
 const isVaeTrainableModel = (m: ModelListEntry): boolean =>
   m.is_video !== true &&
   !NON_TRAINABLE_VAE_ARCHS.has((m.architecture || "").toLowerCase());
@@ -78,7 +104,7 @@ const DEFAULT_VAE_CONFIG: VaeConfig = {
   max_step_saves_to_keep: 3,
   vae_source: "model",
   vae_path: "",
-  vae_arch: "sdxl",
+  vae_arch: "",
   train_decoder: true,
   decoder_blocks: "all",
   train_encoder: false,
@@ -295,12 +321,30 @@ export default function VaeTrainingConfig({
       );
       return;
     }
-    if (cfg.vae_source === "path" && !cfg.vae_path.trim()) {
+    if (cfg.vae_source === "path" && !asText(cfg.vae_path).trim()) {
       setError("Base VAE source is 'Explicit path' but no path was given.");
       return;
     }
-    if (cfg.vae_source === "store" && !cfg.vae_arch.trim()) {
+    if (cfg.vae_source === "store" && !asText(cfg.vae_arch).trim()) {
       setError("Base VAE source is 'Shared VAE store' but no store key was given.");
+      return;
+    }
+    // A single-file base VAE carries no config.json, so vae_arch is the only
+    // statement of which family it is, and the trainer refuses the run without
+    // it (see the field's description). Said here so the refusal does not cost a
+    // started run. Only checked for "path", where the panel knows the file: with
+    // "model" the base checkpoint may carry a backbone, in which case
+    // from_single_file identifies the family itself and vae_arch is not read.
+    if (
+      cfg.vae_source === "path" &&
+      looksLikeSingleFile(cfg.vae_path) &&
+      !asText(cfg.vae_arch).trim()
+    ) {
+      setError(
+        "The base VAE is a single file, which carries no config.json, so 'VAE architecture' " +
+        "must say which family it is (sdxl / sd15 / flux1 / ...). That value becomes the " +
+        "scaling_factor of every export of this run; the backend refuses to assume one."
+      );
       return;
     }
     if (activeLossCount === 0) {
@@ -350,7 +394,11 @@ export default function VaeTrainingConfig({
           ...cfg,
           // Only meaningful for vae_source "path"; cleared otherwise so a stale
           // value cannot shadow the run's own base model.
-          vae_path: cfg.vae_source === "path" ? cfg.vae_path.trim() : "",
+          vae_path: cfg.vae_source === "path" ? asText(cfg.vae_path).trim() : "",
+          // Never send null/undefined: the backend key is a plain string, and a
+          // null would be dropped by the resolver's "value is not None" merge and
+          // silently fall back to the default.
+          vae_arch: asText(cfg.vae_arch).trim(),
           // The panel always trains the decoder: train_decoder=false is only
           // reachable through a hand-written config, and the backend refuses it
           // both on its own (nothing trainable) and together with
@@ -571,24 +619,62 @@ export default function VaeTrainingConfig({
             </div>
           )}
 
-          {cfg.vae_source === "store" && (
-            <div>
-              <input
-                type="text"
-                value={cfg.vae_arch}
-                onChange={(e) => setField("vae_arch", e.target.value)}
-                placeholder="sdxl"
-                className={inputClass}
-              />
+          {/* vae_arch is shown for EVERY source, not just "store": it also names
+              the architecture of a single-file base VAE (`path` pointing at a
+              .safetensors, or a single-file base_model_path under "model"),
+              which is the only statement of which family that file belongs to.
+              A single file has no config.json, so from_single_file falls back to
+              0.18215 for every 4-channel VAE and save_pretrained bakes whatever
+              is on the config into the export. */}
+          <div>
+            <label className="block text-xs text-gray-400 mb-1">
+              VAE architecture (<code>vae_arch</code>)
+            </label>
+            <select
+              value={asText(cfg.vae_arch)}
+              onChange={(e) => setField("vae_arch", e.target.value)}
+              className={inputClass}
+            >
+              <option value="">Not stated</option>
+              {VAE_ARCH_KEYS.map((key) => (
+                <option key={key} value={key}>
+                  {key}
+                </option>
+              ))}
+              {/* A run loaded from /params may carry a key this list does not
+                  have (hand-written YAML, or a key added to the backend
+                  registry later). Shown rather than dropped: an unlisted value
+                  is still what the run would be submitted with, and the backend
+                  refuses a key it does not know. */}
+              {asText(cfg.vae_arch) &&
+                !(VAE_ARCH_KEYS as readonly string[]).includes(asText(cfg.vae_arch)) && (
+                  <option value={asText(cfg.vae_arch)}>
+                    {asText(cfg.vae_arch)} (not a known key)
+                  </option>
+                )}
+            </select>
+            {cfg.vae_source === "store" ? (
               <p className="text-xs text-gray-500 mt-1">
-                Shared-VAE-store key (for example <code>sdxl</code>, <code>sd15</code>,{" "}
-                <code>flux1</code>, <code>flux2</code>, <code>qwen_image</code>). The store&apos;s
-                <code> sdxl</code> entry is madebyollin/sdxl-vae-fp16-fix, whose fp16 safety comes
-                from a weight rescaling that fine-tuning does not preserve; the trainer logs a
-                warning when it detects that base.
+                Selects the shared-VAE-store entry to load. The store&apos;s <code>sdxl</code>{" "}
+                entry is madebyollin/sdxl-vae-fp16-fix, whose fp16 safety comes from a weight
+                rescaling that fine-tuning does not preserve; the trainer logs a warning when it
+                detects that base.
               </p>
-            </div>
-          )}
+            ) : (
+              <p className="text-xs text-gray-500 mt-1">
+                Required when the base VAE is a single file (a{" "}
+                <code>.safetensors</code> / <code>.ckpt</code> path rather than a diffusers
+                directory): such a file carries no <code>config.json</code>, SD1.5 and SDXL VAEs
+                have identical weight shapes, and the <code>scaling_factor</code> on the loaded
+                config is written into every export (SD1.5 0.18215 vs SDXL 0.13025). The trainer
+                refuses a single-file base VAE with this field left unstated instead of assuming
+                one. A checkpoint that carries a backbone states its own value, so this field may
+                be left unstated for one — but if it is stated, it is cross-checked against that
+                value and a contradiction stops the run. A diffusers VAE directory carries its own
+                config.json and this field is not read for it.
+              </p>
+            )}
+          </div>
         </section>
 
         {/* What to train */}

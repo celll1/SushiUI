@@ -1756,7 +1756,21 @@ VAE_TRAINING_DEFAULTS: Dict[str, Any] = {
     # the trainer warns when it detects that base, so it is not the default.
     "vae_source": "model",
     "vae_path": "",
-    "vae_arch": "sdxl",
+    # vae_arch has TWO jobs, and both of them need it to be STATED rather than
+    # assumed, which is why its default is the empty string ("not stated"):
+    #   1. with vae_source="store" it names the store entry to load (refused
+    #      when empty by vae_config._validate);
+    #   2. for ANY base VAE that comes from a single file with no config.json,
+    #      it is the only thing that can say which family the file belongs to.
+    #      SD1.5 and SDXL VAEs are byte-for-byte the same shape, so
+    #      from_single_file falls back to 0.18215 for both, and whatever ends up
+    #      on vae.config is baked into every export by save_pretrained. A
+    #      non-empty default here would mean "silently declare every unlabelled
+    #      VAE to be that family" -- for a bare SD1.5 VAE under the old "sdxl"
+    #      default that was a 1.40x latent-scale error written to disk. Empty
+    #      makes the trainer REFUSE instead (vae_trainer.
+    #      repair_single_file_scaling_factor), which is diagnosable.
+    "vae_arch": "",
 
     # --- what to train ------------------------------------------------------
     "train_decoder": True,

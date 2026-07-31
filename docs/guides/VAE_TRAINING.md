@@ -610,6 +610,7 @@ that will not start. All live in `vae_config.py::_validate` unless noted.
 | Resume from a checkpoint that trained a different component set | `vae_trainer.py::_assert_component_set_matches`, before any weight is loaded. A checkpoint holds exactly the parameters that were trainable when it was written, plus optimizer and EMA state indexed by that same set. Both directions were previously silent-ish: a decoder-only checkpoint resumed with the encoder on failed with a message blaming `decoder_blocks`, and the reverse loaded happily (the checkpoint is a superset) and then failed opaquely inside the optimizer state load — or not at all, if `optimizer.pt` was absent. |
 | `dtype: fp16` | SD1.5/SDXL-family VAEs overflow fp16 in decoder activations (the documented reason `sdxl-vae-fp16-fix` exists), and a training forward hits it sooner than inference. For every other family there is no `GradScaler` in this trainer, so fp16 gradients would silently underflow instead. `bf16` (default) and `fp32` are allowed. |
 | `latent_encoding_mode: pre_encoded_cache` | VAE training is *defined* by a live encode→decode forward on raw pixels; there is no cached latent to consume. Mirrors the existing outpaint-ControlNet refusal. |
+| A single-file base VAE whose `vae_arch` is empty, unknown, contradicts the file's latent-channel count, or contradicts a value the file itself provided | `vae_trainer.repair_single_file_scaling_factor`, at load time. Such a file has no `config.json`, so `vae_arch` is the only statement of which family it is, and that statement is what `save_pretrained` bakes into every export. See [the `vae_arch` matrix](#known-limits). |
 | All loss weights 0 | No training signal. |
 | `lpips_weight > 0` with `lpips` not importable | Fails before the run starts, never mid-run. |
 | Unknown key in `vae_config` / `process.vae` | Caught in `generate_vae_config` and in `resolve_vae_training_config`; a typo must not silently resolve to the default. |
@@ -732,25 +733,47 @@ epochs control would silently do nothing.
   `madebyollin/sdxl-vae-fp16-fix`**, whose fp16 safety comes from a weight
   rescaling that fine-tuning does not preserve. The trainer warns when it
   detects that base; it is not the default (`vae_source` defaults to `"model"`).
-- **`vae_arch` also decides the exported `scaling_factor` for a bare
-  `.safetensors` base.** A VAE-only single file carries no `config.json`, and
+- **`vae_arch` also decides the exported `scaling_factor` for a single-file
+  base.** A VAE-only single file carries no `config.json`, and
   `AutoencoderKL.from_single_file` cannot tell an SDXL VAE from an SD1.5 one
   (identical architecture), so diffusers falls back to LDM's `0.18215`. Since
   `save_pretrained` bakes `vae.config` verbatim into the exported
   `config.json` — and the inference-side VAE override trusts a directory's
   `config.json` — an SDXL export carrying `0.18215` would be a silent 1.40×
-  latent-scale error. The trainer therefore repairs the value at load from
-  `process.vae.vae_arch` (`sdxl` → `0.13025`, `sd15` → `0.18215`, `flux1` →
-  `0.3611`/`0.1159`; the canonical numbers live in
-  `core/models/common/vae_store.VAE_REGISTRY`), prints the before/after, and
-  records `base_vae.scaling_factor_source` in the sidecar. It is applied ONLY to
-  a VAE-only file: a full checkpoint identifies its own family and is left
-  alone, an unknown or non-scalar `vae_arch` (`flux2`, `qwen_image`) is left
-  alone with a warning, and a `vae_arch` whose latent-channel count contradicts
-  the file is refused. **The web UI only exposes the `vae_arch` field for
-  `vae_source: "store"`**, so a `vae_source: "path"` run started from the UI
-  uses the default `sdxl`; an SD1.5 bare VAE trained that way needs
-  `vae_arch: sd15` set in the YAML (the log line says which value is in force).
+  latent-scale error, and an SD1.5 export carrying `0.13025` is the same error
+  in the other direction. The substituted value is therefore **stated, never
+  assumed**: `vae_arch` defaults to the empty string ("not stated"), and the web
+  UI exposes the field for every `vae_source`, not only `"store"`. The decision
+  matrix in `vae_trainer.repair_single_file_scaling_factor` (canonical numbers
+  in `core/models/common/vae_store.VAE_REGISTRY`):
+
+  | Single-file base VAE | Outcome |
+  |---|---|
+  | Full checkpoint (a backbone key is present) | Left as loaded — `from_single_file` identified the family, which is evidence rather than a guess. A stated scalar `vae_arch` that **contradicts** that value is **refused**, though: one of the two is wrong, and this cross-check is also the backstop for a misclassified file. `vae_arch` left unstated is fine here. |
+  | VAE-only `.safetensors`, `vae_arch` stated and scalar (`sdxl` → `0.13025`, `sd15` → `0.18215`, `flux1` → `0.3611`/`0.1159`) | Corrected, with the before/after printed and `base_vae.scaling_factor_source` recorded in the sidecar. |
+  | VAE-only `.safetensors`, `vae_arch` empty | **Refused.** Nothing can tell the families apart, and both possible guesses write a wrong number into every export. |
+  | `vae_arch` set to something that is not a registry key | **Refused** — the run asked for a correction that cannot be made. |
+  | `vae_arch` names a family with no scalar factor (`flux2`, `qwen_image`) | Left as loaded, loudly, and recorded as `UNVERIFIED`: those families normalise with `latents_mean`/`latents_std`, so there is no number to substitute. |
+  | `vae_arch`'s latent-channel count contradicts the loaded VAE | **Refused** — that config does not describe this file. |
+  | Not classifiable — `.ckpt` / `.pt` / `.bin` (would need unpickling), an unreadable safetensors header, or a key layout that is neither a VAE dump nor a known backbone | Never overwritten, only checked: matching `vae_arch` passes, an empty or contradicting one is **refused**, because whether the loaded value was read from a backbone or is the fallback cannot be determined. |
+
+  All of these fire in `load_base_vae`, before the first training step and
+  before anything is written.
+
+  **How "is this a full checkpoint?" is decided.** By looking for a BACKBONE
+  (`model.diffusion_model.`, `conditioner.`, `cond_stage_model.`,
+  `double_blocks.`, `transformer.`, … — `_BACKBONE_KEY_MARKERS`), not by
+  checking that every key looks like a VAE key. The earlier allow-list form of
+  that check was an allow-list over a space nobody controls: a stock
+  `sdxl_vae.safetensors` also ships a `model_ema.*` block (measured: 250 keys,
+  top-level `decoder` / `encoder` / `model_ema` / `post_quant_conv` /
+  `quant_conv`), that one unlisted prefix made it classify as a full checkpoint,
+  and the repair was skipped for the single most common file this feature
+  exists for — exporting 0.18215 for an SDXL VAE while recording "family
+  identified" in the sidecar. Backbone names are few and slow-moving, so new VAE
+  side-car tensors no longer break the classifier; a file with no backbone
+  marker that is *also* not recognisable as a pure VAE dump is reported as
+  "unknown" (the check-only row above) rather than being guessed either way.
 - **Scale.** `sd-vae-ft-mse` was batch 192 × ~840k cumulative steps. A single
   GPU at batch 1–4 × 1–2k steps is orders of magnitude below that. What is
   reachable is local adaptation to your data distribution and suppression of

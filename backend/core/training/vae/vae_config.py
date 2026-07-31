@@ -50,7 +50,7 @@ VALID_CROP_SCALE_POLICIES = ("downscale", "native", "mixed")
 # allocate uint8 state on cuda:0 and move the parameters. Refusing them would
 # therefore break a configuration that works today. What they do NOT do here is
 # the thing their name promises, so build_optimizer says so out loud
-# (_RINGBUFFER_OPTIMIZERS below).
+# (RINGBUFFER_OPTIMIZERS below).
 #
 # The frontend panel offers the seven non-ringbuffer names; this set is a
 # superset of that list, never a subset, so nothing the UI can produce is
@@ -136,7 +136,7 @@ _INT_KEY_BOUNDS: Dict[str, Any] = {
     "max_step_saves_to_keep": (
         0, None,
         "0 keeps every checkpoint. A negative value would also keep them all, "
-        "silently, because pruning is skipped for keep <= 0 — so a run that "
+        "silently, because pruning is skipped for keep <= 0 - so a run that "
         "asked for pruning would quietly fill the disk instead."),
     "validation_every": (
         0, None,
@@ -179,7 +179,7 @@ def _as_number(cfg: Dict[str, Any], key: str) -> float:
         raise VaeConfigError(
             f"{key} must be a finite number, got {number}. A non-finite value "
             f"reaches the loss, and nothing notices until the trainer aborts on "
-            f"a non-finite loss — after the model load."
+            f"a non-finite loss - after the model load."
         )
     cfg[key] = number
     return number

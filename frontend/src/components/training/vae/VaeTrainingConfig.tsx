@@ -944,7 +944,12 @@ export default function VaeTrainingConfig({
                   className={numberClass}
                 />
               </div>
-              {cfg.ycbcr_dc_y_weight <= 0 && cfg.ycbcr_dc_chroma_weight <= 0 && (
+              {/* Conditioned on ycbcr_dc_weight > 0 to match the backend gate
+                  (vae_config._validate) and the submit-time guard above: with the
+                  top-level weight at 0 the term is off entirely and the backend
+                  does NOT refuse, so an unconditional hint would claim a refusal
+                  that never happens. */}
+              {cfg.ycbcr_dc_weight > 0 && cfg.ycbcr_dc_y_weight <= 0 && cfg.ycbcr_dc_chroma_weight <= 0 && (
                 <p className="text-xs text-red-400">
                   Both channel weights are 0: the term would be identically zero while still
                   being computed every step, and the &quot;all loss weights are 0&quot; check only

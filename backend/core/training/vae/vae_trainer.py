@@ -439,7 +439,7 @@ class VaeTrainer:
                   f"no base VAE, so it cannot be verified to have been trained on "
                   f"this run's base VAE ({current.get('path')!r}). Resuming it on "
                   f"a DIFFERENT base VAE would silently produce a hybrid model. "
-                  f"Proceeding — the checkpoint predates base-VAE recording.")
+                  f"Proceeding - the checkpoint predates base-VAE recording.")
             return
 
         old_fp = saved.get("frozen_fingerprint") or {}
@@ -617,7 +617,7 @@ class VaeTrainer:
         plain = "adamw8bit" if name.startswith("adamw") else "lion8bit"
         return (f"optimizer={optimizer_type}: this trainer passes no "
                 f"ring-buffer allocator, so the 8-bit optimizer state is "
-                f"allocated on the GPU — the same state placement as "
+                f"allocated on the GPU - the same state placement as "
                 f"{plain}. The ring-buffer part of the name does not apply "
                 f"here; {plain} is the unambiguous spelling of what this run "
                 f"gets.")
@@ -1177,12 +1177,12 @@ class VaeTrainer:
                 f"Checkpoint {ckpt_dir.name} is incomplete and cannot be resumed: "
                 + "; ".join(fatal) + ". Resuming it would restore whatever is "
                 f"present, and the step counter, while silently re-initialising "
-                f"the rest — a discontinuity in the optimisation that no log, "
+                f"the rest - a discontinuity in the optimisation that no log, "
                 f"metric or chart distinguishes from a normal resume."
                 + self._intact_sibling_note(ckpt_dir) +
                 f" To deliberately restart optimisation from these weights, "
                 f"export the run and start a NEW run with that export as its base "
-                f"VAE — that keeps the reset visible in the run history instead of "
+                f"VAE - that keeps the reset visible in the run history instead of "
                 f"hiding it inside a resume."
             )
 
@@ -1281,7 +1281,7 @@ class VaeTrainer:
 
         if statuses["vae_decoder.safetensors"] != "not_written":
             if _damaged("vae_decoder.safetensors"):
-                fatal.append(f"{details['vae_decoder.safetensors']} — these are "
+                fatal.append(f"{details['vae_decoder.safetensors']} - these are "
                              f"the trained weights themselves")
         else:
             fatal.append("vae_decoder.safetensors was never written, so this "
@@ -1291,13 +1291,13 @@ class VaeTrainer:
             fatal.append("optimizer.pt was never written, so the optimizer state "
                          "of the step this checkpoint claims does not exist")
         elif _damaged("optimizer.pt"):
-            fatal.append(f"{details['optimizer.pt']} — the optimizer moments are "
+            fatal.append(f"{details['optimizer.pt']} - the optimizer moments are "
                          f"this run's accumulated history and cannot be "
                          f"reconstructed from the weights")
 
         if scheduler is not None:
             if _damaged("lr_scheduler.pt"):
-                fatal.append(f"{details['lr_scheduler.pt']} — the LR schedule "
+                fatal.append(f"{details['lr_scheduler.pt']} - the LR schedule "
                              f"would restart at position 0 while the step counter "
                              f"jumps to the checkpoint's")
             elif statuses["lr_scheduler.pt"] == "not_written":
@@ -1657,7 +1657,7 @@ class VaeTrainer:
                 f"Checkpoint {ckpt_dir.name} has an optimizer.pt this run cannot "
                 f"load ({e}). Either the file is damaged, or it was written by a "
                 f"run using a different optimizer than this one "
-                f"(optimizer={self.cfg.get('optimizer')!r}) — an optimizer state "
+                f"(optimizer={self.cfg.get('optimizer')!r}) - an optimizer state "
                 f"dict only loads back into the same optimizer type and param "
                 f"group layout. Resuming without it would restart the moment "
                 f"estimates at the resumed step count, which nothing downstream "

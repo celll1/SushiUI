@@ -10,7 +10,7 @@ info:
     - ControlNet integration
     - TIPO tag generation
     - Image tagging
-    - Quantization support (FP8, UINT)
+    - Quantization support (FP8)
 
     WebSocket progress protocol (`/api/v1/ws/progress`) is documented separately in backend/api/WS_PROTOCOL.md.
   version: 1.0.0
@@ -5424,7 +5424,8 @@ components:
         unet_quantization:
           type: string
           nullable: true
-          enum: [none, fp8_e4m3fn, fp8_e5m2, uint2, uint3, uint4, uint5, uint6, uint7, uint8]
+          enum: [none, fp8_e4m3fn, fp8_e5m2]
+          description: "U-Net/transformer quantization mode. None = full precision. FP8 (E4M3FN/E5M2) is the only supported quantized mode."
         text_encoder_quantization:
           type: string
           nullable: true

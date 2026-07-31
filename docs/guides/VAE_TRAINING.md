@@ -692,6 +692,38 @@ that will not start. All live in `vae_config.py::_validate` unless noted.
 | `crop_scale_max_downscale > 0` with `crop_scale_policy` not `mixed` | The bound is consulted only by the per-sample draw, so under `downscale` / `native` it would be a knob the caller set, the YAML recorded, and nothing read. Refused rather than ignored. |
 | `crop_scale_max_downscale` between 0 and 1 | It names a *downscale* factor, so a sub-1 value would mean an upscale bound. Clamping it to 1 silently would train on a distribution nobody asked for; `crop_scale_policy: native` is how "never downscale" is spelled. |
 | Out-of-enum `crop_scale_policy` / `vae_source` / `decoder_blocks` / `encoder_blocks` / `dtype` / `lpips_net`; empty `vae_path`; `vae_source: store` with no `vae_arch`; `resolution` not a multiple of 8 or < 64; `batch_size`/`total_steps`/`gradient_accumulation_steps` < 1; `ema_decay` outside (0,1); negative or non-numeric loss weight or `kl_weight` | Ordinary validation, same fail-early principle. |
+| `learning_rate <= 0` | At 0 every optimizer step is a no-op (AdamW's decoupled decay is also scaled by the LR), so the run finishes, reports success and exports a copy of the base VAE. Negative ascends the loss. |
+| `max_grad_norm < 0` | `clip_grad_norm_` scales by `max_norm / total_norm` and clamps that factor only from *above*, so a negative bound negates every gradient. **0 is accepted and means "no clipping"** — see [Gradient clipping](#gradient-clipping-0-means-off). |
+| `optimizer_weight_decay < 0` | Multiplies every weight by more than 1 per step; unbounded growth, unreported until the loss stops being finite. |
+| `optimizer` outside `VALID_OPTIMIZERS` | `OptimizerFactory` would raise only after the base VAE is loaded. The enum is exactly what that factory resolves — **including** `adamw8bit_ringbuffer` / `lion8bit_ringbuffer`, which do run here: with no allocator passed they fall back to allocating their 8-bit state on the GPU (verified by a live `step()`), i.e. the same placement as plain `adamw8bit` / `lion8bit`. `build_optimizer` logs that, since the name promises otherwise. |
+| `lr_scheduler` outside `VALID_LR_SCHEDULERS` | `build_optimizer` *catches* a `get_scheduler` failure and continues at a constant LR, so an unrunnable name is not an error at run time — it is a silently ignored schedule. `piecewise_constant` is excluded for the same reason (no `step_rules` is ever passed). |
+| `lr_scheduler: constant` with `lr_warmup_steps > 0` | `get_scheduler`'s `CONSTANT` branch returns before `num_warmup_steps` is passed to anything, so the run trains at the full LR from step 0 while the YAML, the sidecar and the LR chart all record a warmup. `constant` is the default and both keys are UI-reachable, so this is the likeliest spelling of the mistake. Use `constant_with_warmup`. |
+| `lr_warmup_steps >= total_steps` | The whole run would be warmup, so the configured LR is never reached while the YAML, the sidecar and the LR chart all report it. |
+| `validation_num_images < 1` | The split is `items[-validation_num_images:]`: 0 leaves the **training** split empty (`items[:-0]` is `items[:0]`) while validating on everything, and -1 trains on `items[:1]`. |
+| Negative `validation_every` / `save_every` / `num_workers` / `max_step_saves_to_keep` / `lr_warmup_steps` / `pattern_size` | Each one is guarded downstream by `> 0`, so a negative value *silently* disables validation, disables checkpointing, or keeps every checkpoint instead of pruning. |
+| `seed` outside `0 .. 2**32-1` | Not because the value fails — `random.seed(-1)` and `torch.manual_seed(-1)` are legal and the trainer already takes a modulus for numpy. Because of that modulus: python and torch get the literal value while numpy gets `seed % 2**32`, so `-1` reaches numpy as 4294967295 and `2**32+7` as 7, while `train_state.json` and the sidecar record the original — the generators disagree and the recorded seed does not reproduce the run. There is also no `-1 = random` convention here, unlike the generation seeds in `api/param_defaults.py`. |
+| `ycbcr_dc_y_weight < 0` or `ycbcr_dc_chroma_weight < 0` | The term is summed over channels, so a negative channel weight *pays* the run for increasing that channel's colour error while the total loss still falls. |
+| `ycbcr_dc_y_weight` and `ycbcr_dc_chroma_weight` both 0 while `ycbcr_dc_weight > 0` | Identically zero objective, computed every step — and it passes the "all loss weights 0" check, which only sees the top-level weight. (The `l_invented_*` pair has the same rule.) |
+| `ycbcr_dc_eps <= 0` | Charbonnier is `sqrt(d² + eps²) - eps`: at 0 it degenerates to `\|d\|`, whose gradient at an exactly-zero residual is NaN, and a negative value offsets the reported loss instead of subtracting. |
+| `pattern_size > resolution` while `pattern_weight > 0` | The term crops to whole cells, so it has none and returns exactly 0 every step while the config says it is active. |
+| A non-finite (`NaN` / `inf`) number, a fractional integer count, a boolean where a number is expected, or a non-string `vae_path` / `vae_arch` | `_as_number` / `_as_int` / `_as_text`. `int(2.7)` truncates, `float(True)` is 1.0, and a `NaN` weight is only noticed by the trainer's non-finite-loss abort, one model load later. |
+
+### Gradient clipping: 0 means off
+
+`max_grad_norm: 0` is the way to turn clipping off, which is what the same key
+means in the diffusion trainers (`base_trainer`, `optimizers/fused_optimizer_groups`,
+the latter documenting it as "0 to disable") and what the UI's `min=0` input has
+always implied. Passing 0 straight to `torch.nn.utils.clip_grad_norm_` does
+**not** do that: the scale factor is `0 / total_norm`, so every gradient becomes
+exactly 0, the optimizer step is a no-op except for AdamW's decoupled weight
+decay, and the run reports success while *shrinking* the weights it was asked to
+train. `VaeTrainer._clip_gradients` therefore skips the clip at 0 and still
+returns the unclipped total norm, which is what the `grad_norm` chart shows.
+
+`max_grad_norm: inf` was another working spelling of "off" (`clip_grad_norm_`
+clamps its scale factor at 1.0). It is refused, with a message that names `0`,
+so that "no clipping" has one spelling in a config, a chart legend and a
+sidecar rather than two.
 
 ### Strict booleans on the gate keys
 

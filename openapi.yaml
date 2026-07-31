@@ -9879,35 +9879,101 @@ components:
           example: 1
         learning_rate:
           type: number
+          exclusiveMinimum: 0
           default: 1.0e-5
-          description: Written to `process.train.lr`.
+          description: |
+            Written to `process.train.lr`. Must be > 0: at 0 every optimizer
+            step is a no-op, so the run would finish, report success and export
+            the base VAE unchanged; a negative value ascends the loss.
           example: 1.0e-5
         optimizer:
           type: string
+          enum: ["adamw", "adamw8bit", "adafactor", "lion8bit", "paged_adamw", "paged_adamw8bit", "paged_lion8bit", "adamw8bit_ringbuffer", "lion8bit_ringbuffer"]
           default: "adamw"
-          description: Resolved by `core/training/optimizer_factory.OptimizerFactory`.
+          description: |
+            Resolved by `core/training/optimizer_factory.OptimizerFactory`; the
+            enum is exactly the set that factory knows, checked here so an
+            unknown name does not raise only after the base VAE has been loaded.
+
+            The two `*_ringbuffer` entries run, but not as their name suggests:
+            this trainer passes no ring-buffer allocator, and both
+            implementations then fall back to allocating their 8-bit state on
+            the GPU — the same placement as plain `adamw8bit` / `lion8bit`. The
+            trainer logs that at startup. Prefer the plain names unless you are
+            reproducing an existing run.
           example: "adamw"
         optimizer_weight_decay:
           type: number
+          minimum: 0
           default: 0.001
+          description: |
+            Decoupled weight decay. Must be >= 0: a negative decay multiplies
+            every weight by more than 1 on each step, which grows the VAE's
+            weights without bound and is not reported until the loss stops
+            being finite.
           example: 0.001
         max_grad_norm:
           type: number
+          minimum: 0
           default: 0.1
-          description: Gradient-norm clip applied to the trainable decoder parameters.
+          description: |
+            Gradient-norm clip applied to the trainable parameters. **0 disables
+            clipping**, which is the same meaning the key has in the diffusion
+            trainers (`base_trainer`, `optimizers/fused_optimizer_groups`).
+            Passing 0 to `clip_grad_norm_` directly would instead scale every
+            gradient by `0 / total_norm`, i.e. to exactly zero, leaving only
+            AdamW's decoupled weight decay to change the weights — a run that
+            reports success while decaying rather than training. A negative
+            value is refused: the clip factor is clamped only from above, so it
+            would negate every gradient.
           example: 0.1
         lr_scheduler:
           type: string
+          enum: ["constant", "constant_with_warmup", "linear", "cosine", "cosine_with_restarts", "polynomial"]
           default: "constant"
+          description: |
+            `diffusers.optimization.get_scheduler` name. Restricted to the
+            schedules this trainer can actually run: `piecewise_constant`
+            requires a `step_rules` argument that is never passed, and an
+            unrecognised name is not a run-time error either — the trainer
+            catches the failure and continues at a CONSTANT learning rate, so
+            the run would silently ignore the schedule its config records.
+
+            `constant` together with `lr_warmup_steps > 0` is REFUSED:
+            `get_scheduler`'s `CONSTANT` branch returns before
+            `num_warmup_steps` is passed to anything, so the run would train at
+            the full learning rate from step 0 while the YAML, the sidecar and
+            the LR chart all record a warmup. Use `constant_with_warmup`.
           example: "constant"
         lr_warmup_steps:
           type: integer
           minimum: 0
           default: 0
+          description: |
+            Linear warmup length. Must be strictly below `total_steps`:
+            otherwise the entire run is warmup and `learning_rate` is never
+            reached, while the YAML, the provenance sidecar and the LR chart
+            all still report it. Requires an `lr_scheduler` that consumes it —
+            above 0 with `lr_scheduler: constant` is refused, since that
+            schedule never receives the value.
           example: 0
         seed:
           type: integer
+          minimum: 0
+          maximum: 4294967295
           default: 42
+          description: |
+            Seeds python `random`, `numpy` and `torch`, and keys the dataset
+            crop RNG.
+
+            Bounded because outside this range the run does not use the seed it
+            records: the trainer seeds python and torch with the literal value
+            but numpy with `seed % 2**32`, so `-1` reaches numpy as 4294967295
+            and `2**32 + 7` as 7, while `train_state.json` and the export
+            sidecar keep the original — the generators disagree and the recorded
+            seed no longer reproduces the run. Note there is no
+            `-1 means random` convention here (unlike the generation seeds):
+            a negative value would run as a literal seed.
           example: 42
         num_workers:
           type: integer
@@ -10171,15 +10237,31 @@ components:
           type: number
           minimum: 0
           default: 0.25
+          description: |
+            Luma channel weight inside `ycbcr_dc_weight`. Must be >= 0: the term
+            is summed over its channels, so a negative channel weight pays the
+            run for INCREASING that channel's colour error while the total loss
+            still falls. Setting this and `ycbcr_dc_chroma_weight` both to 0
+            while `ycbcr_dc_weight` is above 0 is refused — the term would be
+            identically zero, and the "at least one active loss" check only
+            looks at the top-level weight.
           example: 0.25
         ycbcr_dc_chroma_weight:
           type: number
           minimum: 0
           default: 1.0
+          description: Chroma (Cb/Cr) channel weight inside `ycbcr_dc_weight`; same rules as `ycbcr_dc_y_weight`.
           example: 1.0
         ycbcr_dc_eps:
           type: number
+          exclusiveMinimum: 0
           default: 0.001
+          description: |
+            Charbonnier smoothing constant in `sqrt(d^2 + eps^2) - eps`. Must be
+            > 0: at 0 the term degenerates to `|d|`, whose gradient at an
+            exactly-zero residual is NaN (and identical pixels are common in the
+            flat regions this term exists for), and a negative value adds a
+            constant offset to the reported loss instead of subtracting one.
           example: 0.001
         pattern_weight:
           type: number
@@ -10195,7 +10277,12 @@ components:
           type: integer
           minimum: 1
           default: 8
-          description: Latent-cell size in pixels for `pattern_weight`.
+          description: |
+            Latent-cell size in pixels for `pattern_weight`. While
+            `pattern_weight` is above 0 it must also be <= `resolution`: the
+            term crops to whole cells, so a cell larger than the image leaves it
+            none and it returns exactly 0 on every step while the config says it
+            is active.
           example: 8
         l_invented_weight:
           type: number
@@ -10230,7 +10317,7 @@ components:
           example: 0.25
         l_invented_flat_t_y:
           type: number
-          exclusiveMinimum: 0
+          minimum: 0
           maximum: 8
           default: 2.0
           description: |
@@ -10238,15 +10325,23 @@ components:
             counts as flat when the RMS residual of a least-squares plane fit is
             at or below this, so a smooth gradient qualifies as well as a
             constant region.
+
+            While `l_invented_weight` is above 0 it must be strictly > 0: a
+            threshold of 0 selects no window on real data, so the term would be
+            inert for the whole run. With the term off the value is not read at
+            all, so 0 is accepted there — "off by default" stays completely
+            inert, and the remediation the refusal would name (`set
+            l_invented_weight=0`) would already be true.
           example: 2.0
         l_invented_flat_t_c:
           type: number
-          exclusiveMinimum: 0
+          minimum: 0
           maximum: 8
           default: 1.25
           description: |
             Flat-window chroma plane-residual threshold, in 8-bit levels;
-            applied to the larger of the Cb and Cr residuals.
+            applied to the larger of the Cb and Cr residuals. Same
+            active/inactive rule as `l_invented_flat_t_y`.
           example: 1.25
         kl_weight:
           type: number
@@ -10291,7 +10386,12 @@ components:
           type: integer
           minimum: 1
           default: 8
-          description: Held-out images (taken from the tail of the dataset, excluded from training).
+          description: |
+            Held-out images (taken from the tail of the dataset, excluded from
+            training). Must be >= 1: the split is `items[-validation_num_images:]`,
+            so 0 leaves the TRAINING split empty (`items[:-0]` is `items[:0]`)
+            while validating on the whole dataset, and a negative value trains
+            on the first few images only.
           example: 8
         validation_resolution:
           type: integer

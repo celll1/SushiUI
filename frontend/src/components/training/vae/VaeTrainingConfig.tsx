@@ -145,15 +145,23 @@ const LOSS_WEIGHT_KEYS: (keyof VaeConfig)[] = [
   "l_invented_weight",
 ];
 
-// Optimizers resolvable by OptimizerFactory without a trainer-provided
-// allocator (the *_ringbuffer variants need one, which this trainer does not
-// build, so they are not offered).
+// The optimizers this panel offers. The backend's VALID_OPTIMIZERS
+// (backend/core/training/vae/vae_config.py) is a SUPERSET: it also accepts
+// adamw8bit_ringbuffer / lion8bit_ringbuffer, which do run here but without the
+// ring-buffer residency their name promises (this trainer passes no allocator,
+// so their 8-bit state lands on the GPU exactly as plain adamw8bit / lion8bit
+// does). They are left out of this list because the plain names say the same
+// thing without the misleading one; a run that already uses them keeps working
+// and shows up in the dropdown below via the value it carries.
 const OPTIMIZERS = [
   "adamw", "adamw8bit", "adafactor", "lion8bit",
   "paged_adamw", "paged_adamw8bit", "paged_lion8bit",
 ];
 
-// diffusers get_scheduler names.
+// diffusers get_scheduler names. Must stay identical to VALID_LR_SCHEDULERS in
+// backend/core/training/vae/vae_config.py: an unlisted name is refused there,
+// because the trainer would otherwise fall back to a constant LR and run on
+// silently under a config that says something else.
 const LR_SCHEDULERS = [
   "constant", "constant_with_warmup", "linear", "cosine",
   "cosine_with_restarts", "polynomial",
@@ -349,6 +357,46 @@ export default function VaeTrainingConfig({
     }
     if (activeLossCount === 0) {
       setError("All loss weights are 0: there is no training signal. Set at least one above 0.");
+      return;
+    }
+    // The backend's per-term consistency refusals, mirrored so they do not cost
+    // a started run. Each one is a configuration whose top-level weight says the
+    // term is active while its sub-parameters make it identically zero.
+    if (
+      cfg.ycbcr_dc_weight > 0 &&
+      cfg.ycbcr_dc_y_weight <= 0 &&
+      cfg.ycbcr_dc_chroma_weight <= 0
+    ) {
+      setError(
+        "YCbCr luma and chroma weights are both 0, which makes the colour term identically " +
+        "zero while it is still computed every step. Set at least one above 0, or set the " +
+        "YCbCr DC weight to 0."
+      );
+      return;
+    }
+    if (cfg.pattern_weight > 0 && cfg.pattern_size > cfg.resolution) {
+      setError(
+        `Pattern cell size (${cfg.pattern_size}) is larger than the training resolution ` +
+        `(${cfg.resolution}), so the pattern term has no whole cell to group by and returns 0 ` +
+        "on every step. Reduce the cell size, raise the resolution, or set the pattern weight to 0."
+      );
+      return;
+    }
+    if (cfg.lr_warmup_steps >= cfg.total_steps) {
+      setError(
+        `Warmup steps (${cfg.lr_warmup_steps}) must be below total steps (${cfg.total_steps}): ` +
+        "otherwise the whole run is warmup and the configured learning rate is never reached."
+      );
+      return;
+    }
+    // "constant" never receives num_warmup_steps from diffusers' get_scheduler,
+    // so a warmup set next to it is recorded everywhere and applied nowhere.
+    if (cfg.lr_scheduler === "constant" && cfg.lr_warmup_steps > 0) {
+      setError(
+        `The "constant" LR scheduler ignores warmup steps (${cfg.lr_warmup_steps}): the run would ` +
+        "train at the full learning rate from step 0 while the config and the LR chart record a " +
+        "warmup. Use \"constant_with_warmup\", or set warmup steps to 0."
+      );
       return;
     }
     if (cfg.train_encoder && !cfg.acknowledge_latent_space_break) {
@@ -896,10 +944,20 @@ export default function VaeTrainingConfig({
                   className={numberClass}
                 />
               </div>
+              {cfg.ycbcr_dc_y_weight <= 0 && cfg.ycbcr_dc_chroma_weight <= 0 && (
+                <p className="text-xs text-red-400">
+                  Both channel weights are 0: the term would be identically zero while still
+                  being computed every step, and the &quot;all loss weights are 0&quot; check only
+                  looks at the YCbCr DC weight above. The backend refuses this.
+                </p>
+              )}
               <div className="flex items-center gap-3">
                 <label className="text-xs text-gray-400 w-40">Charbonnier epsilon</label>
                 <NumberInput
-                  min={0} step={0.001} parse="float"
+                  // Positive minimum: at 0 the Charbonnier term degenerates to |d|,
+                  // whose gradient at an exactly-zero residual is NaN, and a negative
+                  // value offsets the reported loss. The backend refuses <= 0.
+                  min={1e-8} step={0.001} parse="float"
                   value={cfg.ycbcr_dc_eps}
                   defaultValue={DEFAULT_VAE_CONFIG.ycbcr_dc_eps}
                   onCommit={(v) => setField("ycbcr_dc_eps", v)}
@@ -1179,6 +1237,14 @@ export default function VaeTrainingConfig({
               {OPTIMIZERS.map((o) => (
                 <option key={o} value={o}>{o}</option>
               ))}
+              {/* A run loaded from /params may carry a name this list does not
+                  offer but the backend accepts (the *_ringbuffer variants, or a
+                  hand-written YAML). Shown rather than dropped: without it the
+                  select would render empty and saving the form would silently
+                  change the optimizer of an existing run. */}
+              {cfg.optimizer && !OPTIMIZERS.includes(cfg.optimizer) && (
+                <option value={cfg.optimizer}>{cfg.optimizer}</option>
+              )}
             </select>
             <label className="text-xs text-gray-400">Gradient clip</label>
             <NumberInput
@@ -1189,6 +1255,10 @@ export default function VaeTrainingConfig({
               className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
             />
           </div>
+          <p className="text-xs text-gray-500 -mt-1">
+            Gradient-norm clip over the trainable parameters. 0 disables clipping, the same
+            meaning the field has in the LoRA / full fine-tune trainers.
+          </p>
 
           <div className="flex items-center gap-3">
             <label className="text-xs text-gray-400 w-40">LR scheduler</label>
@@ -1210,11 +1280,21 @@ export default function VaeTrainingConfig({
               className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
             />
           </div>
+          {cfg.lr_scheduler === "constant" && cfg.lr_warmup_steps > 0 && (
+            <p className="text-xs text-red-400 -mt-1">
+              The &quot;constant&quot; scheduler never receives the warmup length, so the run would
+              train at the full learning rate from step 0 while the config and the LR chart record
+              a warmup. Use &quot;constant_with_warmup&quot;, or set warmup steps to 0. The backend
+              refuses this combination.
+            </p>
+          )}
 
           <div className="flex items-center gap-3">
             <label className="text-xs text-gray-400 w-40">Seed</label>
             <NumberInput
-              min={0} step={1} parse="int"
+              // Upper bound: the seed is passed to numpy.random.seed, whose
+              // domain is 0..2**32-1. The backend refuses anything outside it.
+              min={0} max={4294967295} step={1} parse="int"
               value={cfg.seed}
               defaultValue={DEFAULT_VAE_CONFIG.seed}
               onCommit={(v) => setField("seed", v)}

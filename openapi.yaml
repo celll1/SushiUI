@@ -10162,6 +10162,57 @@ components:
           default: 8
           description: Latent-cell size in pixels for `pattern_weight`.
           example: 8
+        l_invented_weight:
+          type: number
+          minimum: 0
+          maximum: 10
+          default: 0.0
+          description: |
+            Weight of the flat-region invented-HF penalty. Penalises
+            high-frequency energy in the decode that a least-squares projection
+            onto the source's own high-frequency content cannot explain, inside
+            plane-fit flat/gradient windows. The projection coefficient is
+            detached from the gradient, so the term is reduced by emitting less
+            unexplained energy rather than by correlating more with the source.
+            Not a standalone objective: its own minimum inside a flat window is
+            emitting no high frequency at all, so it is meant to run alongside
+            an agreement-with-source term (`mse_weight` / `lpips_weight`).
+            0 disables the term.
+          example: 0.0
+        l_invented_y_weight:
+          type: number
+          minimum: 0
+          maximum: 4
+          default: 1.0
+          description: Luma channel weight inside `l_invented_weight`.
+          example: 1.0
+        l_invented_chroma_weight:
+          type: number
+          minimum: 0
+          maximum: 4
+          default: 0.25
+          description: Chroma (Cb/Cr) channel weight inside `l_invented_weight`.
+          example: 0.25
+        l_invented_flat_t_y:
+          type: number
+          exclusiveMinimum: 0
+          maximum: 8
+          default: 2.0
+          description: |
+            Flat-window luma plane-residual threshold, in 8-bit levels. A window
+            counts as flat when the RMS residual of a least-squares plane fit is
+            at or below this, so a smooth gradient qualifies as well as a
+            constant region.
+          example: 2.0
+        l_invented_flat_t_c:
+          type: number
+          exclusiveMinimum: 0
+          maximum: 8
+          default: 1.25
+          description: |
+            Flat-window chroma plane-residual threshold, in 8-bit levels;
+            applied to the larger of the Cb and Cr residuals.
+          example: 1.25
         kl_weight:
           type: number
           minimum: 0
@@ -10263,6 +10314,11 @@ components:
         ycbcr_dc_eps: 0.001
         pattern_weight: 0.0
         pattern_size: 8
+        l_invented_weight: 0.0
+        l_invented_y_weight: 1.0
+        l_invented_chroma_weight: 0.25
+        l_invented_flat_t_y: 2.0
+        l_invented_flat_t_c: 1.25
         kl_weight: 1.0e-6
         export_bare_ldm: false
         validation_every: 100

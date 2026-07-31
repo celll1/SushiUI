@@ -3700,6 +3700,21 @@ export interface VaeTrainingConfig {
   ycbcr_dc_eps: number;
   pattern_weight: number;
   pattern_size: number;
+  // Flat-region invented-HF penalty. Penalises high-frequency energy in the
+  // decode that a least-squares projection onto the source's own high-frequency
+  // content cannot explain, inside plane-fit flat/gradient windows. 0 disables
+  // the term; the window geometry and projection constants are fixed inside the
+  // backend and are not exposed. NOT a standalone objective: its own minimum
+  // inside a flat window is "emit no high frequency at all", so it is meant to
+  // run alongside an agreement-with-source term (mse / lpips).
+  l_invented_weight: number;
+  l_invented_y_weight: number;
+  l_invented_chroma_weight: number;
+  // Plane-fit residual thresholds (8-bit levels) deciding which windows count
+  // as flat. The backend refuses 0 for either WHEN THE TERM IS ON; with
+  // l_invented_weight = 0 nothing here is read and nothing is refused.
+  l_invented_flat_t_y: number;
+  l_invented_flat_t_c: number;
   // Posterior KL. Only constructed when the encoder is trainable; ignored (and
   // reported as ignored by the trainer) under a frozen encoder.
   kl_weight: number;

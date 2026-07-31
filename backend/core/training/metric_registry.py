@@ -74,6 +74,21 @@ EXTRA_METRIC_DEFS = {
     "vae_dc_loss": {"label": "VAE YCbCr DC", "color": "#facc15", "dashed": True},
     # Only emitted when pattern_weight > 0 (opt-in; see param_defaults.py).
     "vae_pattern_loss": {"label": "VAE pattern", "color": "#c084fc", "dashed": True},
+    # Only emitted when l_invented_weight > 0 (opt-in; see param_defaults.py).
+    # The UNWEIGHTED term, in (8-bit levels)^2 inside flat windows. Its square
+    # root is a RELATIVE TREND INDICATOR, NOT an absolute level: the value
+    # carries the term's Weber photometric weight (0.16 bright .. 0.98 black)
+    # and its channel weights, so it under-reads true invented luma by ~1.1x in
+    # dark windows and ~2.5x in bright ones. Absolute levels against the 1/255
+    # visibility bar come from the frozen g1flat harness only.
+    "vae_invented_loss": {"label": "VAE invented HF", "color": "#22d3ee", "dashed": True},
+    # Fraction of candidate windows that passed the flat test on that step.
+    # Charted next to the term because the two are only interpretable together:
+    # a falling loss with a collapsing coverage means the term stopped firing,
+    # not that the decoder stopped inventing. It is a 0..1 fraction, so it goes
+    # on the secondary axis rather than into the loss-scale pooled range.
+    "vae_invented_cov": {"label": "VAE invented coverage", "color": "#818cf8",
+                         "dashed": False, "axis": "right"},
     # Only emitted when the ENCODER is trainable: under a frozen encoder the
     # posterior KL is constant w.r.t. every trainable parameter and the term is
     # not constructed at all.

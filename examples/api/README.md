@@ -49,6 +49,15 @@ So, e.g., the health check is `GET http://localhost:8000/api/v1/health`, not
   starting a real training run spawns a GPU-resident subprocess and mutates
   `training.db` and disk state — pass `--no-dry-run` (with valid
   `--dataset-id`/`--base-model-path`) only when you actually intend to train.
+- `bench_fp8_scaled_mm.py` — measurement gate for the opt-in FP8 W8A8
+  scaled-GEMM fast path in `Fp8Linear` (Ideogram 4 / Krea 2 weight-only-FP8
+  checkpoints). Three arms — bf16 baseline, fp8 dequant path, fp8 fast path —
+  at a fixed prompt/seed/resolution, 1 warmup + 3 timed runs, median reported,
+  with every image downloaded to `tmp/fp8_bench_images/<arm>/` for a human A/B.
+  The fast path stays off (`SUSHI_FP8_SCALED_MM` unset) until this gate passes
+  on both speed (>= 1.10x vs bf16) and quality (no visible degradation vs the
+  dequant arm). The env gate is read at import time, so the backend must be
+  restarted between the two fp8 arms. Defaults to dry-run.
 
 ## WebSocket / progress streaming
 

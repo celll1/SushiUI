@@ -157,6 +157,11 @@ test_*.py
 # kwargs, yield shape and injection semantics at once, and nothing caught it
 # because git had never seen the test.
 !backend/tests/test_danbooru_online_learning.py
+# Exception: learning-rate re-assertion on resume. The defect it guards was
+# invisible from the outside -- editing lr and resuming was a silent no-op,
+# and the accompanying schedule-multiplier regression mispriced the first
+# post-resume step by up to 159x with nothing in the logs to show it.
+!backend/tests/test_lr_resume_override.py
 # Exception: tagger vocab-expansion optimizer-state migration. A regression
 # here silently corrupts or drops per-tag momentum on vocab resize -- training
 # keeps running, just with wrong optimizer state for every affected tag row.

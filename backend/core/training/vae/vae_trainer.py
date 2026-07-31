@@ -41,6 +41,7 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
+from core.training.lr_utils import reassert_config_lr
 from core.training.vae.vae_config import VaeConfigError, strict_bool
 from core.training.vae.vae_dataset import VaeRawImageDataset, make_validation_batch
 from core.training.vae import vae_losses
@@ -889,6 +890,18 @@ class VaeTrainer:
         if self.lr_scheduler is not None and sched_path.is_file():
             self.lr_scheduler.load_state_dict(
                 torch.load(sched_path, map_location="cpu", weights_only=False))
+
+        # Both restores above re-import the checkpoint's LR (see
+        # core/training/lr_utils.py). Re-assert the configured one,
+        # unconditionally and loudly, so a mid-run `train.lr` edit is honoured
+        # AND the log always states which LR is actually running. A scalar
+        # cfg_lr is broadcast over the (single) param group.
+        reassert_config_lr(
+            self.optimizer, self.lr_scheduler,
+            float(self.cfg["learning_rate"]),
+            log_prefix=self.log_prefix,
+            component_names=("VAE",),
+        )
 
         rng_path = ckpt_dir / "rng_state.pt"
         if rng_path.is_file():

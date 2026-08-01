@@ -49,15 +49,54 @@ So, e.g., the health check is `GET http://localhost:8000/api/v1/health`, not
   starting a real training run spawns a GPU-resident subprocess and mutates
   `training.db` and disk state — pass `--no-dry-run` (with valid
   `--dataset-id`/`--base-model-path`) only when you actually intend to train.
-- `bench_fp8_scaled_mm.py` — measurement gate for the opt-in FP8 W8A8
-  scaled-GEMM fast path in `Fp8Linear` (Ideogram 4 / Krea 2 weight-only-FP8
-  checkpoints). Three arms — bf16 baseline, fp8 dequant path, fp8 fast path —
-  at a fixed prompt/seed/resolution, 1 warmup + 3 timed runs, median reported,
-  with every image downloaded to `tmp/fp8_bench_images/<arm>/` for a human A/B.
-  The fast path stays off (`SUSHI_FP8_SCALED_MM` unset) until this gate passes
-  on both speed (>= 1.10x vs bf16) and quality (no visible degradation vs the
-  dequant arm). The env gate is read at import time, so the backend must be
-  restarted between the two fp8 arms. Defaults to dry-run.
+- `bench_fp8_scaled_mm.py` — measurement gate **G1** for the opt-in FP8 W8A8
+  scaled-GEMM fast path in `Fp8Linear`. Two vehicles, two arms each; times
+  sampler steps (via the progress WebSocket), not wall clock including model
+  load; saves a 4-prompt × 2-seed quality set per arm for a human A/B.
+  Defaults to dry-run. See the module docstring for the full protocol and the
+  exact command lines. The pre-registered decision rule is reproduced below.
+
+## FP8 scaled-GEMM gate (G1) — pre-registered decision rule
+
+Written down **before** any measurement existed, and duplicated here so it
+cannot be quietly edited in one place after the fact. `--report` evaluates the
+recorded numbers against it and prints which branch applies.
+
+**Vehicles.** Krea 2 carries the speed gate (`fp8_fast` vs `bf16`): it ships
+bf16 locally, bf16 is its shipping production configuration today, and it is a
+single transformer that fits VRAM. Ideogram 4 carries the regression + quality
+arm (`fp8_fast` vs `fp8_dequant`, same shipped FP8 checkpoint) and does **not**
+carry the ≥1.10× claim — a dequantized-bf16 Ideogram 4 arm is invalid, because
+it keeps two transformers resident (asymmetric CFG) and would measure offload
+traffic rather than the GEMM.
+
+**Flip the default (and proceed to Phase 2) requires ALL of:**
+
+1. Krea 2 `fp8_fast` ≥ **1.10×** the steps/s of Krea 2 `bf16` — median of ≥3
+   timed runs, 1 warmup, fixed prompt/seed/shape, ≥20 steps.
+2. Ideogram 4 `fp8_fast` ≥ **1.00×** Ideogram 4 `fp8_dequant`.
+3. Both quality A/Bs clean.
+
+**If Krea 2 lands in 1.00–1.10×:** keep the path, reframed as "removes the
+dequantization step for models already stored in FP8". Make **no** speed claim
+anywhere, do not flip the default, and do **not** generalize it to the runtime
+`unet_quantization` enum — Phase 2's value proposition was speed.
+
+**If Krea 2 is below 1.00×:** revert.
+
+Recorded explicitly: *"beats the dequant path" is a valid reason to keep this
+code for checkpoints that are already FP8 on disk, but never on its own a
+reason to flip a default or widen the surface.*
+
+Run `--probe` **first**: it records which `torch._scaled_mm` scaling mode the
+GPU accepts (rowwise vs tensorwise). A gate result without that recorded is
+uninterpretable. `SUSHI_FP8_SCALED_MM` is read at import time, so the backend
+must be started with the value each arm needs — `POST /system/restart-backend`
+cannot inject it (it passes no `env=`), so the repo owner has to launch it.
+`SUSHI_FP8_FAST_ACCUM` stays at its shipping default (1) for every arm.
+
+The matched FP8 Krea 2 checkpoint is produced by
+`subapps/fp8_quantize/quantize_transformer_fp8.py`.
 
 ## WebSocket / progress streaming
 

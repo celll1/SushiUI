@@ -8,7 +8,8 @@ Linear weights are stored as float8 with a per-output-channel (per-row) float32
 scale, halving the size of every quantized Linear weight.
 
 Two forward paths exist. The dequantized matmul is the DEFAULT; the scaled GEMM
-is opt-in behind ``SUSHI_FP8_SCALED_MM=1`` (see ``_SCALED_MM_ENABLED``) and is
+is opt-in behind ``SUSHI_FP8_SCALED_MM=1`` at import or ``set_scaled_mm_enabled``
+at runtime (see ``_SCALED_MM_ENABLED``) and is
 inference-only -- a module's owner declares that explicitly by calling
 ``disable_scaled_mm`` (every trainer-side loader does), because grad mode alone
 cannot distinguish inference from training here.
@@ -22,7 +23,7 @@ cannot distinguish inference from training here.
 * **Dequantized matmul** (fallback): the weight is dequantized back to the
   compute dtype and a normal matmul runs. Works on any device that can store
   float8 (CPU included) and is used whenever the scaled GEMM is disabled
-  (globally by env, or per-module via ``disable_scaled_mm``), unavailable,
+  (globally by env/API, or per-module via ``disable_scaled_mm``), unavailable,
   unsupported for the given shape/dtype, or grad mode is enabled (any training,
   whether or not this particular layer needs a gradient).
 
@@ -124,9 +125,19 @@ _USE_FAST_ACCUM = os.environ.get("SUSHI_FP8_FAST_ACCUM", "1") != "0"
 # ``examples/api/bench_fp8_scaled_mm.py`` passes, the dequant path -- which is
 # what users already run -- stays the default.
 #
-# Read once at import: flipping this requires a backend restart (see the gate
-# script's protocol).
+# Initialized from the environment at import, then MUTABLE for the life of the
+# process via ``set_scaled_mm_enabled`` (exposed as
+# ``GET/POST /api/v1/system/fp8-scaled-mm``). Not persisted: every process starts
+# from the environment again, and default-off is the correct state for a path
+# whose benefit is unmeasured.
 _SCALED_MM_ENABLED = os.environ.get("SUSHI_FP8_SCALED_MM", "0") == "1"
+
+# Where the CURRENT value came from: "env" (the variable was present at import),
+# "default" (it was not), or "api" (a later set_scaled_mm_enabled call). Must
+# stay in lockstep with the `Fp8ScaledMmState.origin` enum in openapi.yaml
+# ([default, env, api]) -- see the validation in set_scaled_mm_enabled().
+_SCALED_MM_VALID_ORIGINS = frozenset({"default", "env", "api"})
+_SCALED_MM_ORIGIN = "env" if "SUSHI_FP8_SCALED_MM" in os.environ else "default"
 
 # (device index, activation dtype) -> mode string, or None for "unusable".
 #   "rowwise_bias" : rowwise scales, bias fused into the GEMM epilogue
@@ -135,6 +146,136 @@ _SCALED_MM_ENABLED = os.environ.get("SUSHI_FP8_SCALED_MM", "0") == "1"
 _SCALED_MM_MODE: dict[tuple[int, torch.dtype], str | None] = {}
 _SCALED_MM_LOCK = threading.Lock()
 _SCALED_MM_REPORTED: set[str] = set()
+
+
+def _mode_label(key: tuple[int, torch.dtype]) -> str:
+    """JSON-friendly label for a ``_SCALED_MM_MODE`` key."""
+    index, dtype = key
+    device = f"cuda:{index}" if index >= 0 else "cuda:default"
+    return f"{device}/{str(dtype).rsplit('.', 1)[-1]}"
+
+
+def get_scaled_mm_state() -> dict:
+    """Current W8A8 scaled-GEMM state.
+
+    ``resolved_modes`` exposes the per-(device, activation dtype) probe results
+    so the case "flag on, but the probe latched None and every layer runs the
+    dequant path" is visible rather than inferred. An empty dict means no probe
+    has run yet in this process (no FP8 Linear forward has reached the probe).
+    """
+    with _SCALED_MM_LOCK:
+        return {
+            "enabled": bool(_SCALED_MM_ENABLED),
+            "origin": _SCALED_MM_ORIGIN,
+            "resolved_modes": {_mode_label(k): v for k, v in _SCALED_MM_MODE.items()},
+        }
+
+
+def set_scaled_mm_enabled(enabled: bool, *, origin: str = "api") -> dict:
+    """Turn the W8A8 scaled-GEMM path on or off for THIS PROCESS.
+
+    Both directions clear the probe cache (``_SCALED_MM_MODE``) and the one-shot
+    report set (``_SCALED_MM_REPORTED``), so the next FP8 forward re-probes. That
+    also un-latches a key that a transient failure had condemned for the process.
+
+    Scope and limits:
+
+    * Per-process, not per-generation, and not persisted across restarts.
+    * Does NOT override ``disable_scaled_mm``: that per-module opt-out is the
+      authoritative gate (every trainer-side loader calls it), and enabling the
+      path here cannot resurrect a module that declared itself dequant-only.
+    * ``Fp8Linear.forward`` branches on this module global, so a ``torch.compile``
+      graph containing an ``Fp8Linear`` would bake the value in as a constant and
+      keep running the path that was active at trace time. This is safe today
+      only because nothing compiles these layers: ``use_torch_compile`` is wired
+      solely into the SD1.5/SDXL U-Net staging path
+      (``core/vram_optimization.move_unet_to_gpu``) and is listed as unsupported
+      for every DiT arch in ``api/arch_capabilities.py``, while ``Fp8Linear``
+      exists only on Ideogram 4 and Krea 2. The trainer's block-level
+      ``torch.compile`` runs in a separate process that is hard-off. If a future
+      change compiles an arch that owns ``Fp8Linear`` modules, this setter must
+      grow a refusal for that case.
+
+    ``origin`` must be one of ``_SCALED_MM_VALID_ORIGINS`` (kept identical to
+    the ``Fp8ScaledMmState.origin`` enum in ``openapi.yaml``): raises
+    ``ValueError`` otherwise, so a caller cannot silently drift the two apart
+    by passing an ad-hoc string that only ``get_scaled_mm_state()`` would ever
+    have surfaced as a mismatch against the documented contract.
+
+    Returns the same dict as ``get_scaled_mm_state()``.
+    """
+    global _SCALED_MM_ENABLED, _SCALED_MM_ORIGIN
+    enabled = bool(enabled)
+    if origin not in _SCALED_MM_VALID_ORIGINS:
+        raise ValueError(
+            f"invalid origin {origin!r}: must be one of {sorted(_SCALED_MM_VALID_ORIGINS)} "
+            f"(see the Fp8ScaledMmState.origin enum in openapi.yaml)"
+        )
+    with _SCALED_MM_LOCK:
+        changed = enabled != _SCALED_MM_ENABLED
+        _SCALED_MM_ENABLED = enabled
+        _SCALED_MM_ORIGIN = origin
+        # Cleared on EVERY flip, in both directions: the cached mode (and the
+        # "already reported" marker) describe a probe taken under the previous
+        # setting, and a latched None must not survive a re-enable.
+        _SCALED_MM_MODE.clear()
+        _SCALED_MM_REPORTED.clear()
+        state = {
+            "enabled": _SCALED_MM_ENABLED,
+            "origin": _SCALED_MM_ORIGIN,
+            "resolved_modes": {},
+        }
+    print(
+        f"[Fp8Linear] W8A8 scaled-GEMM path "
+        f"{'ENABLED' if enabled else 'DISABLED'} (origin={origin}"
+        f"{'' if changed else ', unchanged'}); probe cache cleared. "
+        f"{'FP8 Linear layers will run torch._scaled_mm where the probe accepts a scaling mode.' if enabled else 'FP8 Linear layers run the dequantized matmul.'}"
+    )
+    return state
+
+
+def describe_gemm_path(module: nn.Module | None = None) -> str | None:
+    """Describe which FP8 GEMM path is in force, for metadata/provenance.
+
+    Returns None when ``module`` is given and owns no ``Fp8Linear`` (nothing to
+    record). Otherwise one of:
+
+    * ``"w8a8_scaled_mm(<mode>)"`` -- the flag is on, the module allows it and the
+      probe resolved a usable scaling mode.
+    * ``"dequant"`` -- the flag is off, or every owned layer opted out.
+    * ``"dequant(scaled_mm unavailable)"`` -- the flag is on but every probed
+      key latched None.
+    * ``"dequant(scaled_mm unprobed)"`` -- the flag is on but no FP8 forward has
+      reached the probe in this process, so no layer has run the scaled GEMM.
+
+    Derived from state only; it adds nothing to any per-forward path.
+
+    LIMITATIONS: ``_SCALED_MM_MODE`` is a process-wide cache keyed on (device,
+    activation dtype), not scoped to ``module`` or to one generation, so this
+    aggregates over every key ever probed in this process -- a mode latched by
+    an earlier, unrelated model's forward can still be reported here even if
+    ``module``'s own layers latched ``None`` on their own key (mixed devices or
+    activation dtypes). It also cannot see a per-layer runtime fallback within
+    THIS generation: ``_scaled_mm_forward``'s OOM/allocation-failure path
+    (``_report_transient_oom``) intentionally does not touch
+    ``_SCALED_MM_MODE``, so a generation where every layer fell back to dequant
+    for a transient reason is still labelled with whatever mode is cached, not
+    ``"dequant"``.
+    """
+    if module is not None:
+        layers = [m for m in module.modules() if isinstance(m, Fp8Linear)]
+        if not layers:
+            return None
+        if not any(m._allow_scaled_mm for m in layers):
+            return "dequant"
+    with _SCALED_MM_LOCK:
+        if not _SCALED_MM_ENABLED:
+            return "dequant"
+        modes = sorted({m for m in _SCALED_MM_MODE.values() if m})
+        probed = bool(_SCALED_MM_MODE)
+    if modes:
+        return f"w8a8_scaled_mm({'+'.join(modes)})"
+    return "dequant(scaled_mm unavailable)" if probed else "dequant(scaled_mm unprobed)"
 
 
 def _report_scaled_mm_fallback(key: str, reason: str, *, degraded: bool) -> None:
@@ -248,8 +389,7 @@ def _scaled_mm_mode(device: torch.device, out_dtype: torch.dtype) -> str | None:
         pass
     mode = _probe_scaled_mm(device, out_dtype)
     with _SCALED_MM_LOCK:
-        _SCALED_MM_MODE.setdefault(key, mode)
-    return _SCALED_MM_MODE[key]
+        return _SCALED_MM_MODE.setdefault(key, mode)
 
 
 def _quantize_activation(x2: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:

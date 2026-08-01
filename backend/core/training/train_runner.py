@@ -37,14 +37,24 @@ if _opts:
 # trainer-side loader already makes (see krea2_ops.py / ideogram4_ops.py): force
 # the whole training process onto the dequant-only FP8 path regardless of which
 # loader ran, so a future training entry point that obtains an Fp8Linear module
-# without going through those loaders cannot silently regress into W8A8. Does
-# not override an operator's explicit "0"; only fills in when unset, matching
-# fp8_linear's own `os.environ.get("SUSHI_FP8_SCALED_MM", "0")` default.
+# without going through those loaders cannot silently regress into W8A8.
+#
+# UNCONDITIONAL, not setdefault(): training_process.py hands this subprocess an
+# os.environ.copy() of the backend's environment, so an operator who launched the
+# backend with SUSHI_FP8_SCALED_MM=1 (for inference) had that "1" INHERITED here
+# and setdefault() left it in place -- exactly the case this line exists to
+# prevent. Training has no legitimate use for W8A8: a LoRA fitted against W8A8
+# conditioning (~2.7e-02 rel RMS noisier) is fitted against a base function
+# nobody runs at inference.
+#
 # MUST be set before `core.models.ideogram4.vendor.fp8_linear` is first
-# imported: `_SCALED_MM_ENABLED` is read once at that module's import time, and
-# nothing above this point (stdlib only, plus the PYTORCH_CUDA_ALLOC_CONF logic)
-# imports it or anything that transitively imports it.
-os.environ.setdefault("SUSHI_FP8_SCALED_MM", "0")
+# imported: `_SCALED_MM_ENABLED` is initialized from this variable at that
+# module's import time, and nothing above this point (stdlib only, plus the
+# PYTORCH_CUDA_ALLOC_CONF logic) imports it or anything that transitively
+# imports it. The runtime toggle (set_scaled_mm_enabled / the
+# /system/fp8-scaled-mm endpoint) lives in the API process and cannot reach this
+# one, so the import-time value is the whole story here.
+os.environ["SUSHI_FP8_SCALED_MM"] = "0"
 
 import torch
 import gc
@@ -60,6 +70,21 @@ from database import get_training_db, get_datasets_db
 from database.models import TrainingRun, Dataset, DatasetItem, DatasetCaption
 from sqlalchemy.orm import Session
 from core.training.caption_processor import process_caption, get_default_caption_processing_config
+
+# Second half of the FP8 hard-off above. The env write only works while nothing
+# has imported fp8_linear yet, which holds for the shipped launch path
+# (training_process.py runs this file as a SCRIPT, so `core.training/__init__` --
+# which pulls base_trainer and, transitively, fp8_linear -- is not executed
+# before line 57). It does NOT hold for `import core.training.train_runner`,
+# where the package __init__ runs first and `_SCALED_MM_ENABLED` is already
+# initialized from the inherited environment by then. This call is order-
+# independent: it flips the module global whenever fp8_linear is reachable, and
+# it also clears any probe cache that a "1" had populated.
+try:
+    from core.models.ideogram4.vendor.fp8_linear import set_scaled_mm_enabled as _fp8_hard_off
+    _fp8_hard_off(False, origin="default")
+except Exception as _e:  # pragma: no cover - fp8 support is optional at import time
+    print(f"[TrainRunner] Could not force the FP8 dequant path: {_e}")
 
 
 def _is_krea2_base_model(base_model_path: str) -> bool:

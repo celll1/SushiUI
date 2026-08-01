@@ -633,6 +633,9 @@ export interface GeneratedImage {
   // per-generation VAE override decoded the image.
   vae_name?: string;
   vae_hash?: string;              // SHA256 hash of the VAE weight file (when identifiable)
+  // FP8 GEMM path used by weight-only FP8 checkpoints (Ideogram 4 / Krea 2).
+  // "w8a8_scaled_mm(<mode>)" or "dequant..."; absent for every other checkpoint.
+  fp8_gemm?: string;
   // Advanced CFG parameters
   cfg_schedule_type?: string;
   cfg_schedule_min?: string;

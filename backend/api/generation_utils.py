@@ -799,6 +799,48 @@ def extract_vae_info(pipeline_manager) -> tuple:
     return vae_source, vae_hash
 
 
+def extract_fp8_gemm_info(pipeline_manager) -> str:
+    """Describe the FP8 GEMM path that served this generation, or "" if N/A.
+
+    Only weight-only FP8 checkpoints have anything to report, and only on the two
+    architectures that carry ``Fp8Linear`` (Ideogram 4, Krea 2). A bf16 checkpoint
+    on either arch, or any other architecture, returns "" and records nothing.
+
+    The RESOLVED path is what is recorded, not the flag: the W8A8 path can be
+    enabled while the per-device probe finds no usable scaling mode, in which case
+    every layer runs the dequantized matmul. The two paths are numerically
+    different (the W8A8 path additionally quantizes the activation), so an image
+    is not reproducible without knowing which one ran.
+    """
+    info = getattr(pipeline_manager, "current_model_info", None) or {}
+    comp_attr = {
+        "ideogram4": "ideogram4_components",
+        "krea2": "krea2_components",
+    }.get(info.get("type", ""))
+    if not comp_attr:
+        return ""
+    comps = getattr(pipeline_manager, comp_attr, None) or {}
+    try:
+        from core.models.ideogram4.vendor.fp8_linear import describe_gemm_path
+    except Exception:
+        return ""
+    # The transformer is the bulk of the Linear work; Ideogram 4's unconditional
+    # branch and both text encoders are swapped by the same loader, so the
+    # conditional transformer is a faithful witness for the checkpoint's format.
+    for name in ("transformer", "unconditional_transformer", "text_encoder"):
+        module = comps.get(name)
+        if module is None:
+            continue
+        try:
+            label = describe_gemm_path(module)
+        except Exception as e:
+            print(f"[FP8 Metadata] Could not resolve the GEMM path: {e}")
+            return ""
+        if label:
+            return label
+    return ""
+
+
 def _resolve_primary_vae_weight(vae_path: str) -> Optional[str]:
     """Return a concrete VAE weight file to hash from a dir or file path (or None).
 

@@ -247,6 +247,15 @@ def save_image_with_metadata(
     if vae_hash:
         metadata.add_text("vae_hash", vae_hash)
 
+    # FP8 GEMM path (weight-only FP8 checkpoints only; the producer writes nothing
+    # for other checkpoints). The W8A8 scaled GEMM and the dequantized matmul are
+    # numerically different functions, so this is reproduction-affecting whenever
+    # it is present. Mechanism, not a value judgement: e.g.
+    # "w8a8_scaled_mm(tensorwise)" or "dequant".
+    fp8_gemm = params.get("fp8_gemm", "")
+    if fp8_gemm:
+        metadata.add_text("fp8_gemm", str(fp8_gemm))
+
     # LoRA weights + hashes (compact JSON). Written only when LoRAs are present.
     lora_meta = _build_lora_metadata(params.get("loras"))
     if lora_meta:

@@ -111,6 +111,28 @@ async def startup_event():
 
     asyncio.create_task(load_model_background())
 
+    # Report which FP8 GEMM path this process starts in. The setting is
+    # per-process (env at import, changeable at runtime through
+    # POST /api/v1/system/fp8-scaled-mm) and is not persisted, so the only way an
+    # operator can know which path an image came from is if the process says so.
+    # Imported in a thread: the module lives under the Ideogram 4 package, whose
+    # __init__ pulls the loader.
+    async def report_fp8_gemm_path():
+        try:
+            def _state():
+                from core.models.ideogram4.vendor.fp8_linear import get_scaled_mm_state
+                return get_scaled_mm_state()
+            state = await asyncio.to_thread(_state)
+            path = ("W8A8 torch._scaled_mm (where the per-device probe accepts a "
+                    "scaling mode)" if state["enabled"] else "dequantized matmul")
+            print(f"[Startup] FP8 Linear GEMM path: {path} "
+                  f"(enabled={state['enabled']}, origin={state['origin']}). "
+                  f"Applies to weight-only FP8 checkpoints (Ideogram 4, Krea 2).")
+        except Exception as e:
+            print(f"[Startup] Could not report the FP8 GEMM path: {e}")
+
+    asyncio.create_task(report_fp8_gemm_path())
+
     # Pre-scan models, LoRAs, ControlNets in background to populate cache
     async def prescan_resources():
         try:

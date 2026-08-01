@@ -59,6 +59,7 @@ from api.generation_utils import (
     extract_model_info,
     extract_vision_encoder_info,
     extract_vae_info,
+    extract_fp8_gemm_info,
     sanitize_params_for_logging,
     set_prompt_chunking_settings,
     calculate_generation_metadata,
@@ -906,6 +907,14 @@ async def generate_txt2img(
             params["vae_name"] = vae_name
         if vae_hash:
             params["vae_hash"] = vae_hash
+
+        # FP8 GEMM path. Recorded only for checkpoints that carry weight-only FP8
+        # Linear weights, and it records the RESOLVED path rather than the flag —
+        # the W8A8 path can be enabled while the device probe rejects every
+        # scaling mode, and the two paths are numerically different.
+        fp8_gemm = extract_fp8_gemm_info(pipeline_manager)
+        if fp8_gemm:
+            params["fp8_gemm"] = fp8_gemm
 
         # Save image with metadata (include model info)
         filename = save_image_with_metadata(
@@ -1847,6 +1856,14 @@ async def generate_img2img(
             params["vae_name"] = vae_name
         if vae_hash:
             params["vae_hash"] = vae_hash
+
+        # FP8 GEMM path. Recorded only for checkpoints that carry weight-only FP8
+        # Linear weights, and it records the RESOLVED path rather than the flag —
+        # the W8A8 path can be enabled while the device probe rejects every
+        # scaling mode, and the two paths are numerically different.
+        fp8_gemm = extract_fp8_gemm_info(pipeline_manager)
+        if fp8_gemm:
+            params["fp8_gemm"] = fp8_gemm
 
         # Save image with metadata (include model info)
         filename = save_image_with_metadata(
@@ -3856,6 +3873,14 @@ async def generate_inpaint(
         if vae_hash:
             params["vae_hash"] = vae_hash
 
+        # FP8 GEMM path. Recorded only for checkpoints that carry weight-only FP8
+        # Linear weights, and it records the RESOLVED path rather than the flag —
+        # the W8A8 path can be enabled while the device probe rejects every
+        # scaling mode, and the two paths are numerically different.
+        fp8_gemm = extract_fp8_gemm_info(pipeline_manager)
+        if fp8_gemm:
+            params["fp8_gemm"] = fp8_gemm
+
         # Save image with metadata (include model info)
         filename = save_image_with_metadata(
             result_image,
@@ -4551,6 +4576,14 @@ async def generate_outpaint(
             params["vae_name"] = vae_name
         if vae_hash:
             params["vae_hash"] = vae_hash
+
+        # FP8 GEMM path. Recorded only for checkpoints that carry weight-only FP8
+        # Linear weights, and it records the RESOLVED path rather than the flag —
+        # the W8A8 path can be enabled while the device probe rejects every
+        # scaling mode, and the two paths are numerically different.
+        fp8_gemm = extract_fp8_gemm_info(pipeline_manager)
+        if fp8_gemm:
+            params["fp8_gemm"] = fp8_gemm
 
         # Save image with metadata (include model info). params["width"]/["height"]
         # were overwritten by generate_outpaint to the resolved canvas size.
@@ -5706,6 +5739,79 @@ async def restart_backend():
         error_detail = f"{str(e)}\n\nTraceback:\n{traceback.format_exc()}"
         print(f"Restart backend error: {error_detail}")
         raise HTTPException(status_code=500, detail=str(e))
+
+class Fp8ScaledMmRequest(BaseModel):
+    """Body of ``POST /system/fp8-scaled-mm``."""
+    enabled: bool
+
+
+def _fp8_scaled_mm_busy_reason() -> Optional[str]:
+    """Why the FP8 GEMM path must not be flipped right now, or None.
+
+    Both paths are numerically valid, but they are NOT the same function
+    (the W8A8 path additionally quantizes the activation), so a mid-run flip
+    would make the metadata recorded for that run describe a path that produced
+    only part of it.
+
+    Fails CLOSED: if either introspection probe raises unexpectedly, this
+    reports "busy" (refuses the flip) rather than silently allowing it. A
+    refused toggle is recoverable (retry once the ambiguity is gone); a flip
+    that lands mid-generation is not -- it corrupts the ``fp8_gemm`` metadata
+    recorded for that run. The two probes are reported separately so the
+    refusal message says which introspection failed instead of a generic
+    "internal error".
+    """
+    try:
+        from api.generation_status import get_snapshot
+        if get_snapshot().get("status") == "running":
+            return "an image generation is running"
+    except Exception as exc:
+        return f"generation status could not be determined ({type(exc).__name__}: {exc})"
+    try:
+        from core.training.training_process import training_process_manager
+        active = [str(rid) for rid, p in training_process_manager.processes.items()
+                  if p.is_running]
+        if active:
+            return f"training run(s) {', '.join(active)} are active"
+    except Exception as exc:
+        return f"training status could not be determined ({type(exc).__name__}: {exc})"
+    return None
+
+
+@router.get("/system/fp8-scaled-mm")
+async def get_fp8_scaled_mm():
+    """Report the FP8 W8A8 ``torch._scaled_mm`` state of this backend process."""
+    try:
+        from core.models.ideogram4.vendor.fp8_linear import get_scaled_mm_state
+        return get_scaled_mm_state()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/system/fp8-scaled-mm")
+async def set_fp8_scaled_mm(request: Fp8ScaledMmRequest):
+    """Select the FP8 GEMM path (W8A8 scaled GEMM or dequantized matmul).
+
+    Per-process and not persisted: a restart returns to the value the
+    environment gives (default off).
+    """
+    busy = _fp8_scaled_mm_busy_reason()
+    if busy:
+        raise HTTPException(
+            status_code=409,
+            detail=(f"Cannot change the FP8 GEMM path while {busy}. The two paths "
+                    f"are numerically different, so a mid-run change would make the "
+                    f"recorded metadata describe a path that produced only part of "
+                    f"the result."),
+        )
+    try:
+        from core.models.ideogram4.vendor.fp8_linear import set_scaled_mm_enabled
+        return set_scaled_mm_enabled(bool(request.enabled), origin="api")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 @router.post("/system/restart-frontend")
 async def restart_frontend():

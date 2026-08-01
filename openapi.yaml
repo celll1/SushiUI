@@ -2132,6 +2132,98 @@ paths:
         '200':
           description: Restart initiated
 
+  /system/fp8-scaled-mm:
+    get:
+      tags: [system]
+      summary: Get the FP8 W8A8 scaled-GEMM state
+      description: |
+        Report whether FP8 (e4m3) weight-only `Linear` layers run the W8A8
+        `torch._scaled_mm` path or the dequantized matmul, for THIS backend
+        process.
+
+        The setting is per-process: it is initialized from the
+        `SUSHI_FP8_SCALED_MM` environment variable at import (default off) and
+        can be changed at runtime with the POST form of this endpoint. It is not
+        persisted across restarts.
+
+        `resolved_modes` reports the cached per-(device, activation dtype) probe
+        results, so the case "enabled, but the probe found no usable scaling
+        mode and every layer runs the dequantized matmul" is visible rather than
+        inferred. An empty object means no FP8 `Linear` forward has reached the
+        probe yet in this process.
+
+        Applies only to architectures whose checkpoints carry weight-only FP8
+        Linear weights (Ideogram 4, Krea 2). Training processes are always on the
+        dequantized matmul, independently of this setting.
+      operationId: getFp8ScaledMm
+      responses:
+        '200':
+          description: Current state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Fp8ScaledMmState'
+              example:
+                enabled: true
+                origin: api
+                resolved_modes:
+                  "cuda:0/bfloat16": tensorwise
+        '500':
+          description: Could not read the state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    post:
+      tags: [system]
+      summary: Set the FP8 W8A8 scaled-GEMM state
+      description: |
+        Turn the W8A8 `torch._scaled_mm` path on or off for this backend process.
+
+        Both directions clear the cached per-(device, activation dtype) probe, so
+        the next FP8 `Linear` forward re-probes.
+
+        The two paths are numerically different (the W8A8 path additionally
+        quantizes the activation), so the endpoint REFUSES with 409 while an
+        image generation or a training run is active: flipping mid-run would make
+        the recorded metadata describe a path that produced only part of the
+        result.
+
+        Modules that declared themselves dequant-only (every trainer-side loader
+        does) are unaffected: this setting cannot re-enable them.
+      operationId: setFp8ScaledMm
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Fp8ScaledMmRequest'
+            example:
+              enabled: true
+      responses:
+        '200':
+          description: State applied
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Fp8ScaledMmState'
+              example:
+                enabled: true
+                origin: api
+                resolved_modes: {}
+        '409':
+          description: A generation or training run is active
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Could not read or change the state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /system/gpu-stats:
     get:
       tags: [system]
@@ -5255,6 +5347,48 @@ components:
           type: string
           description: The tag normalized for matching (escapes removed, underscores to spaces, lowercased).
           example: "hatsune miku"
+    Fp8ScaledMmRequest:
+      type: object
+      required: [enabled]
+      properties:
+        enabled:
+          type: boolean
+          description: |
+            true  = FP8 Linear layers run the W8A8 `torch._scaled_mm` path where
+                    the probe accepts a scaling mode for the device/dtype.
+            false = FP8 Linear layers dequantize the weight and run a normal
+                    matmul (the process default).
+          example: true
+    Fp8ScaledMmState:
+      type: object
+      required: [enabled, origin, resolved_modes]
+      properties:
+        enabled:
+          type: boolean
+          description: Whether the W8A8 `torch._scaled_mm` path is currently selected.
+          example: true
+        origin:
+          type: string
+          enum: [default, env, api]
+          description: |
+            Where the current value came from. "default" = no environment
+            variable was set at import; "env" = `SUSHI_FP8_SCALED_MM` was present
+            at import; "api" = a later POST to this endpoint.
+          example: api
+        resolved_modes:
+          type: object
+          additionalProperties:
+            type: string
+            nullable: true
+            enum: [rowwise_bias, rowwise, tensorwise, null]
+          description: |
+            Cached probe result per "<device>/<activation dtype>" key. The value
+            is the `torch._scaled_mm` scaling mode this build accepted, or null
+            when no variant worked (in which case those layers run the
+            dequantized matmul even while `enabled` is true). Empty when no FP8
+            Linear forward has reached the probe yet.
+          example:
+            "cuda:0/bfloat16": tensorwise
     TimestepSamplingConfig:
       type: object
       description: |
@@ -8083,6 +8217,10 @@ components:
         vae_hash:
           type: string
           description: SHA256 hash of the VAE weight file. Suppressed on legacy rows where a per-generation VAE override decoded the image but the recorded hash belongs to the model's own VAE.
+        fp8_gemm:
+          type: string
+          description: FP8 Linear GEMM path that produced the image. Present only on rows from a weight-only FP8 checkpoint (Ideogram 4, Krea 2). Opaque mechanism label.
+          example: "w8a8_scaled_mm(tensorwise)"
 
     GeneratedImageSummary:
       type: object

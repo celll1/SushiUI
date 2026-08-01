@@ -91,40 +91,48 @@ measures something nobody runs. The script aborts if it sees the variable set to
 "0" in its own environment.
 
 ===========================================================================
-PROTOCOL (the backend env is fixed at process start)
+PROTOCOL (arms are switched in one backend process)
 ===========================================================================
-``SUSHI_FP8_SCALED_MM`` is read at import time in ``fp8_linear``, so an arm is
-fixed for the lifetime of a backend process, and ``POST /system/restart-backend``
-cannot inject it (it passes no ``env=``). The repo owner must start the backend
-with the value each arm needs; agents must not start/stop servers (AGENTS.md).
+The GEMM path is a per-process setting exposed at
+``GET/POST /api/v1/system/fp8-scaled-mm``. This script flips it between arms, so
+BOTH arms of a vehicle are measured inside ONE backend process. That removes the
+cross-session variance a restart injects (allocator state, clock/power state,
+page cache) from a ratio the rule reads to two decimal places.
+
+``SUSHI_FP8_SCALED_MM`` still sets the value the backend STARTS with; it is no
+longer how an arm is selected, and no restart is needed between arms. The
+endpoint refuses (409) while a generation or a training run is active, so nothing
+else may be running on this backend.
 
     # 0. record the GPU's scaled-GEMM capability mode FIRST -- a gate result is
     #    meaningless without knowing which mode was measured (rowwise vs
     #    tensorwise). No backend needed.
     venv/Scripts/python.exe examples/api/bench_fp8_scaled_mm.py --probe
 
-    # backend WITHOUT SUSHI_FP8_SCALED_MM (or =0)
-    # arm 1 -- krea2 bf16 baseline
+    # 1. ideogram4 -- SAME checkpoint in both arms, so the toggle is the only
+    #    difference. Runs are interleaved dequant/fast/dequant/fast..., which
+    #    also spreads any monotonic drift across both arms instead of loading it
+    #    onto whichever ran second.
     venv/Scripts/python.exe examples/api/bench_fp8_scaled_mm.py \
-        --vehicle krea2 --arm bf16 \
-        --source-type safetensors --source <bf16 krea2 index/file> --no-dry-run
-    # arm 2 -- ideogram4 fp8, dequant path (today's default)
-    venv/Scripts/python.exe examples/api/bench_fp8_scaled_mm.py \
-        --vehicle ideogram4 --arm fp8_dequant \
+        --vehicle ideogram4 --pair \
         --source-type diffusers --source <ideogram4 fp8 dir> --no-dry-run
 
-    # backend restarted WITH SUSHI_FP8_SCALED_MM=1
-    # arm 3 -- krea2 fp8, scaled-GEMM fast path
+    # 2. krea2 -- the arms are DIFFERENT checkpoints (bf16 vs fp8), so they
+    #    cannot be interleaved per run; a model load sits between them. Order:
+    #    bf16 reps -> toggle on + load fp8 -> fp8_fast reps -> reload bf16 for
+    #    ONE closing replicate (drift sentinel: if it does not match the opening
+    #    bf16 median, the session drifted and the ratio is not trustworthy).
     venv/Scripts/python.exe examples/api/bench_fp8_scaled_mm.py \
-        --vehicle krea2 --arm fp8_fast \
-        --source-type safetensors --source <fp8 krea2 index> --no-dry-run
-    # arm 4 -- ideogram4 fp8, scaled-GEMM fast path
+        --vehicle krea2 --pair \
+        --source-type safetensors --source <bf16 krea2 index/file> \
+        --fp8-source <fp8 krea2 index> --no-dry-run
+
+    # single arm (still supported; sets the toggle itself before running)
     venv/Scripts/python.exe examples/api/bench_fp8_scaled_mm.py \
         --vehicle ideogram4 --arm fp8_fast \
         --source-type diffusers --source <ideogram4 fp8 dir> --no-dry-run
 
-    # quality A/B: 4 prompts x 2 seeds per arch, per arm (8 images each), run in
-    # the backend session that matches the arm
+    # quality A/B: 4 prompts x 2 seeds per arch, per arm (8 images each)
     venv/Scripts/python.exe examples/api/bench_fp8_scaled_mm.py \
         --vehicle krea2 --arm fp8_fast --quality \
         --source-type safetensors --source <fp8 krea2 index> --no-dry-run
@@ -133,7 +141,10 @@ with the value each arm needs; agents must not start/stop servers (AGENTS.md).
     venv/Scripts/python.exe examples/api/bench_fp8_scaled_mm.py --report
 
 Results accumulate in ``tmp/fp8_bench_results.json`` keyed ``<vehicle>:<arm>``;
-images land in ``tmp/fp8_bench_images/<vehicle>/<arm>/``.
+images land in ``tmp/fp8_bench_images/<vehicle>/<arm>/``. Every record carries the
+toggle state (``enabled``/``origin``) reported by the backend before the arm ran
+and the ``resolved_modes`` it reported after, so a record states which path it
+actually measured rather than which one was requested.
 """
 
 import argparse
@@ -364,6 +375,39 @@ def load_model(root, source_type, source):
     return resp.json()
 
 
+def get_toggle(root):
+    """GET the backend's current FP8 GEMM state."""
+    resp = requests.get(f"{root}/api/v1/system/fp8-scaled-mm", timeout=60)
+    resp.raise_for_status()
+    return resp.json()
+
+
+def set_toggle(root, enabled):
+    """POST the FP8 GEMM state. 409 means something else is running on this backend."""
+    resp = requests.post(
+        f"{root}/api/v1/system/fp8-scaled-mm", json={"enabled": bool(enabled)}, timeout=60
+    )
+    if resp.status_code == 409:
+        print(f"ABORT: the backend refused the toggle -- {resp.text}\n"
+              "Nothing else may be generating or training on this backend while a "
+              "timed arm runs (the progress channel is a global broadcast anyway).")
+        raise SystemExit(2)
+    resp.raise_for_status()
+    return resp.json()
+
+
+def toggle_for_arm(root, arm):
+    """Put the backend in the GEMM state this arm requires and report it."""
+    enabled = arm == "fp8_fast"
+    state = set_toggle(root, enabled)
+    print(f"  toggle -> enabled={state['enabled']} origin={state['origin']} "
+          f"(arm {arm}); probe cache cleared")
+    if state["enabled"] != enabled:
+        print("ABORT: the backend did not take the requested GEMM state.")
+        raise SystemExit(2)
+    return state
+
+
 def form_data(vehicle, prompt=PROMPT, seed=SEED, steps=STEPS):
     """/generate/txt2img is a Form(...) route, not JSON (see txt2img_minimal.py).
 
@@ -430,21 +474,109 @@ def check_fast_accum():
 # Arms
 # ---------------------------------------------------------------------------
 
+class ArmSamples:
+    """Accumulator for one arm's timed replicates (identical work per replicate)."""
+
+    def __init__(self, vehicle, arm, source_type, source, info, toggle_before):
+        self.vehicle = vehicle
+        self.arm = arm
+        self.source_type = source_type
+        self.source = source
+        self.info = info
+        self.toggle_before = toggle_before
+        self.times = []
+        self.step_rates = []
+        self.images = []
+
+    def add(self, root, data, timer, tag):
+        """Run one timed replicate and record it."""
+        elapsed, body = txt2img(root, data)
+        measured = timer.take(STEPS)
+        self.times.append(elapsed)
+        if measured is not None:
+            steps, span = measured
+            self.step_rates.append(steps / span)
+            print(f"  [{self.arm}] {tag}: sampler {steps} steps in {span:.2f}s -> "
+                  f"{steps / span:.3f} steps/s   (end-to-end {elapsed:.2f}s)")
+        else:
+            print(f"  [{self.arm}] {tag}: no usable progress samples; "
+                  f"end-to-end {elapsed:.2f}s")
+        path = save_image(root, body, self.vehicle, self.arm, tag)
+        if path:
+            self.images.append(path)
+        return body
+
+    def store(self, root, key_suffix=""):
+        """Reduce to the pre-registered statistic (median of the timed runs) and save."""
+        if len(self.step_rates) == len(self.times) and self.step_rates:
+            timing_source = "ws_progress_steps"
+            steps_per_s = statistics.median(self.step_rates)
+        else:
+            timing_source = "http_end_to_end"
+            steps_per_s = STEPS / statistics.median(self.times)
+            print("  NOTE: falling back to end-to-end HTTP time. That window includes "
+                  "VAE decode, PNG save and the DB write, which are identical across "
+                  "arms, so the resulting ratio is CONSERVATIVE (it understates a "
+                  "real speedup rather than inventing one).")
+        try:
+            toggle_after = get_toggle(root)
+        except Exception as exc:                       # pragma: no cover
+            toggle_after = {"error": f"{type(exc).__name__}: {exc}"}
+        record = {
+            "vehicle": self.vehicle,
+            "arm": self.arm,
+            "source_type": self.source_type,
+            "source": self.source,
+            "model_info": self.info.get("model_info"),
+            "steps": STEPS,
+            "width": WIDTH,
+            "height": HEIGHT,
+            "seed": SEED,
+            "prompt": PROMPT,
+            "timing_source": timing_source,
+            "step_rates": self.step_rates,
+            "http_times_s": self.times,
+            "median_http_s": statistics.median(self.times),
+            "steps_per_s": steps_per_s,
+            "fast_accum_env": os.environ.get("SUSHI_FP8_FAST_ACCUM",
+                                             "(unset -> shipping default 1)"),
+            # Which GEMM path this record actually measured, as the backend
+            # reported it -- not which one was requested. ``resolved_modes`` in
+            # ``toggle_after`` distinguishes "fast path ran" from "fast path was
+            # enabled but the probe rejected every scaling mode".
+            "toggle_before": self.toggle_before,
+            "toggle_after": toggle_after,
+            "images": self.images,
+            "recorded_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        }
+        key = f"{self.vehicle}:{self.arm}{key_suffix}"
+        store_result(key, record)
+        print(f"  MEDIAN [{self.arm}] {steps_per_s:.3f} steps/s  [{timing_source}]  "
+              f"resolved_modes={toggle_after.get('resolved_modes')}  "
+              f"(saved to {RESULTS} as '{key}')")
+        return record
+
+
+def _banner(vehicle, extra=""):
+    print(f"  {STEPS} steps  {WIDTH}x{HEIGHT}  seed={SEED}  {WARMUP} warmup + {RUNS} timed"
+          f"{extra}")
+    print(f"  vehicle={vehicle}  arms are switched through "
+          f"POST /api/v1/system/fp8-scaled-mm (no backend restart)")
+
+
 def run_timed(vehicle, arm, source_type, source):
+    """One arm, in the current backend process. The toggle is set from the arm."""
     check_fast_accum()
     root = base_url()
     print(f"vehicle={vehicle} arm={arm} source={source}")
-    print(f"  {STEPS} steps  {WIDTH}x{HEIGHT}  seed={SEED}  {WARMUP} warmup + {RUNS} timed")
-    print(f"  env in THIS shell: SUSHI_FP8_SCALED_MM="
-          f"{os.environ.get('SUSHI_FP8_SCALED_MM', '(unset)')} "
-          f"-- the BACKEND's value is what selects the arm, not this one")
+    _banner(vehicle)
 
+    toggle_before = toggle_for_arm(root, arm)
     info = load_model(root, source_type, source)
     print(f"  model loaded: {info.get('model_info')}")
 
     data = form_data(vehicle)
-    times, step_rates, images = [], [], []
-    timing_source = "ws_progress_steps"
+    samples = ArmSamples(vehicle, arm, source_type, source, info, toggle_before)
 
     with StepTimer() as timer:
         for i in range(WARMUP):
@@ -453,54 +585,116 @@ def run_timed(vehicle, arm, source_type, source):
             print(f"  warmup {i}: {elapsed:.2f}s  warnings={body.get('warnings')}")
         if timer.error:
             print(f"  WARNING: progress WebSocket unusable ({timer.error})")
-
         for i in range(RUNS):
+            samples.add(root, data, timer, f"run{i}")
+
+    samples.store(root)
+
+
+def run_pair_ideogram4(source_type, source):
+    """Both ideogram4 arms on the SAME checkpoint, interleaved dequant/fast.
+
+    Nothing but the toggle differs, so the arms can alternate replicate by
+    replicate; any monotonic session drift is then shared by both arms instead of
+    being charged to whichever ran second. Warmup and the median-of-RUNS
+    statistic are exactly as the pre-registered rule specifies, per arm.
+    """
+    check_fast_accum()
+    root = base_url()
+    vehicle = "ideogram4"
+    arms = ("fp8_dequant", "fp8_fast")
+    print(f"vehicle={vehicle} PAIRED arms={arms} source={source}")
+    _banner(vehicle, "  per arm, interleaved")
+
+    info = load_model(root, source_type, source)
+    print(f"  model loaded: {info.get('model_info')}")
+    data = form_data(vehicle)
+
+    samples = {}
+    with StepTimer() as timer:
+        for arm in arms:
+            state = toggle_for_arm(root, arm)
+            samples[arm] = ArmSamples(vehicle, arm, source_type, source, info, state)
+            for i in range(WARMUP):
+                elapsed, body = txt2img(root, data)
+                timer.take(STEPS)
+                print(f"  [{arm}] warmup {i}: {elapsed:.2f}s  "
+                      f"warnings={body.get('warnings')}")
+        if timer.error:
+            print(f"  WARNING: progress WebSocket unusable ({timer.error})")
+        for i in range(RUNS):
+            for arm in arms:
+                toggle_for_arm(root, arm)
+                samples[arm].add(root, data, timer, f"run{i}")
+
+    for arm in arms:
+        samples[arm].store(root)
+
+
+def run_pair_krea2(source_type, source, fp8_source, fp8_source_type):
+    """Both krea2 arms in one process: bf16 -> fp8_fast -> one closing bf16.
+
+    The arms are different checkpoints, so a model load sits between them and
+    they cannot be interleaved. The closing bf16 replicate is a DRIFT SENTINEL,
+    not part of the statistic: if it lands far from the opening bf16 median, the
+    session moved during the run and the ratio is not trustworthy.
+    """
+    check_fast_accum()
+    root = base_url()
+    vehicle = "krea2"
+    print(f"vehicle={vehicle} PAIRED arms=('bf16', 'fp8_fast')")
+    print(f"  bf16 source={source}")
+    print(f"  fp8  source={fp8_source}")
+    _banner(vehicle, "  per arm")
+
+    data = form_data(vehicle)
+    results = {}
+
+    with StepTimer() as timer:
+        # --- arm 1: bf16 baseline (toggle off; a bf16 checkpoint has no
+        # Fp8Linear at all, so this only pins the process state) --------------
+        state = toggle_for_arm(root, "bf16")
+        info = load_model(root, source_type, source)
+        print(f"  model loaded: {info.get('model_info')}")
+        bf16 = ArmSamples(vehicle, "bf16", source_type, source, info, state)
+        for i in range(WARMUP):
             elapsed, body = txt2img(root, data)
-            measured = timer.take(STEPS)
-            times.append(elapsed)
-            if measured is not None:
-                steps, span = measured
-                step_rates.append(steps / span)
-                print(f"  run {i}: sampler {steps} steps in {span:.2f}s -> "
-                      f"{steps / span:.3f} steps/s   (end-to-end {elapsed:.2f}s)")
-            else:
-                print(f"  run {i}: no usable progress samples; end-to-end {elapsed:.2f}s")
-            path = save_image(root, body, vehicle, arm, f"run{i}")
-            if path:
-                images.append(path)
+            timer.take(STEPS)
+            print(f"  [bf16] warmup {i}: {elapsed:.2f}s  warnings={body.get('warnings')}")
+        if timer.error:
+            print(f"  WARNING: progress WebSocket unusable ({timer.error})")
+        for i in range(RUNS):
+            bf16.add(root, data, timer, f"run{i}")
+        results["bf16"] = bf16.store(root)
 
-    if len(step_rates) == RUNS:
-        steps_per_s = statistics.median(step_rates)
-    else:
-        timing_source = "http_end_to_end"
-        steps_per_s = STEPS / statistics.median(times)
-        print("  NOTE: falling back to end-to-end HTTP time. That window includes "
-              "VAE decode, PNG save and the DB write, which are identical across "
-              "arms, so the resulting ratio is CONSERVATIVE (it understates a "
-              "real speedup rather than inventing one).")
+        # --- arm 2: fp8 checkpoint, scaled-GEMM path ------------------------
+        state = toggle_for_arm(root, "fp8_fast")
+        info8 = load_model(root, fp8_source_type, fp8_source)
+        print(f"  model loaded: {info8.get('model_info')}")
+        fast = ArmSamples(vehicle, "fp8_fast", fp8_source_type, fp8_source, info8, state)
+        for i in range(WARMUP):
+            elapsed, body = txt2img(root, data)
+            timer.take(STEPS)
+            print(f"  [fp8_fast] warmup {i}: {elapsed:.2f}s  warnings={body.get('warnings')}")
+        for i in range(RUNS):
+            fast.add(root, data, timer, f"run{i}")
+        results["fp8_fast"] = fast.store(root)
 
-    record = {
-        "vehicle": vehicle,
-        "arm": arm,
-        "source_type": source_type,
-        "source": source,
-        "model_info": info.get("model_info"),
-        "steps": STEPS,
-        "width": WIDTH,
-        "height": HEIGHT,
-        "seed": SEED,
-        "prompt": PROMPT,
-        "timing_source": timing_source,
-        "step_rates": step_rates,
-        "http_times_s": times,
-        "median_http_s": statistics.median(times),
-        "steps_per_s": steps_per_s,
-        "fast_accum_env": os.environ.get("SUSHI_FP8_FAST_ACCUM", "(unset -> shipping default 1)"),
-        "images": images,
-        "recorded_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-    }
-    store_result(f"{vehicle}:{arm}", record)
-    print(f"  MEDIAN {steps_per_s:.3f} steps/s  [{timing_source}]  (saved to {RESULTS})")
+        # --- closing drift sentinel: ONE bf16 replicate ----------------------
+        state = toggle_for_arm(root, "bf16")
+        info_s = load_model(root, source_type, source)
+        sentinel = ArmSamples(vehicle, "bf16", source_type, source, info_s, state)
+        sentinel.add(root, data, timer, "sentinel0")
+        results["sentinel"] = sentinel.store(root, key_suffix="_sentinel")
+
+    opening = results["bf16"]["steps_per_s"]
+    closing = results["sentinel"]["steps_per_s"]
+    drift = closing / opening if opening else float("nan")
+    print(f"\ndrift sentinel: closing bf16 {closing:.3f} steps/s vs opening "
+          f"{opening:.3f} steps/s -> {drift:.3f}x")
+    print("  This is NOT part of the decision rule. It is the session-stability "
+          "check the interleaved ideogram4 pair gets for free and this vehicle "
+          "cannot have: read the krea2 ratio in light of it.")
 
 
 def run_quality(vehicle, arm, source_type, source, steps):
@@ -509,17 +703,26 @@ def run_quality(vehicle, arm, source_type, source, steps):
     root = base_url()
     print(f"quality A/B: vehicle={vehicle} arm={arm} "
           f"{len(QUALITY_PROMPTS)} prompts x {len(QUALITY_SEEDS)} seeds, {steps} steps")
+    toggle_before = toggle_for_arm(root, arm)
     info = load_model(root, source_type, source)
     print(f"  model loaded: {info.get('model_info')}")
 
     saved = []
+    warnings_seen = []
     for pi, prompt in enumerate(QUALITY_PROMPTS):
         for si, seed in enumerate(QUALITY_SEEDS):
             data = form_data(vehicle, prompt=prompt, seed=seed, steps=steps)
             elapsed, body = txt2img(root, data)
             path = save_image(root, body, vehicle, arm, f"q{pi}_s{si}")
             saved.append(path)
+            warnings_seen.append({"prompt_index": pi, "seed": seed,
+                                  "warnings": body.get("warnings")})
             print(f"  p{pi} seed={seed}: {elapsed:.2f}s -> {path}")
+
+    try:
+        toggle_after = get_toggle(root)
+    except Exception as exc:                           # pragma: no cover
+        toggle_after = {"error": f"{type(exc).__name__}: {exc}"}
 
     key = f"{vehicle}:{arm}:quality"
     store_result(key, {
@@ -527,6 +730,13 @@ def run_quality(vehicle, arm, source_type, source, steps):
         "arm": arm,
         "source_type": source_type,
         "source": source,
+        # Recorded so a quality record is self-describing months later: which
+        # checkpoint produced these images, whether any generation reported a
+        # degradation, and which GEMM path was actually in force.
+        "model_info": info.get("model_info"),
+        "warnings": warnings_seen,
+        "toggle_before": toggle_before,
+        "toggle_after": toggle_after,
         "steps": steps,
         "prompts": QUALITY_PROMPTS,
         "seeds": QUALITY_SEEDS,
@@ -630,6 +840,15 @@ def main():
                     help="source_type for POST /models/load. An Ideogram 4 model "
                          "directory is 'diffusers'; a Krea 2 single file or shard "
                          "index is 'safetensors'. (default: diffusers)")
+    ap.add_argument("--pair", action="store_true",
+                    help="run BOTH of the vehicle's arms in this one backend process, "
+                         "switching the GEMM path through POST /system/fp8-scaled-mm "
+                         "(ideogram4: interleaved on one checkpoint; krea2: bf16 -> "
+                         "fp8_fast -> one closing bf16 drift sentinel, needs --fp8-source)")
+    ap.add_argument("--fp8-source", help="krea2 --pair only: the FP8 checkpoint "
+                                         "(--source is then the bf16 one)")
+    ap.add_argument("--fp8-source-type", default=None, choices=SOURCE_TYPES,
+                    help="source_type for --fp8-source (defaults to --source-type)")
     ap.add_argument("--quality", action="store_true",
                     help="run the quality A/B set (4 prompts x 2 seeds) instead of the timed runs")
     ap.add_argument("--quality-steps", type=int, default=STEPS,
@@ -646,8 +865,48 @@ def main():
         return probe()
     if args.report:
         return report()
+    if args.pair:
+        if not args.vehicle or not args.source:
+            ap.error("--pair needs --vehicle and --source")
+        if args.arm:
+            ap.error("--pair runs both of the vehicle's arms; do not also pass --arm")
+        if args.quality:
+            ap.error("--pair is for the timed arms; run --quality per arm "
+                     "(the toggle is set from --arm there too)")
+        if args.vehicle == "krea2" and not args.fp8_source:
+            ap.error("krea2 --pair needs --fp8-source: its two arms are DIFFERENT "
+                     "checkpoints (bf16 vs fp8), unlike ideogram4's")
+        if args.vehicle == "ideogram4" and args.fp8_source:
+            ap.error("ideogram4 --pair uses ONE checkpoint for both arms (only the "
+                     "toggle differs); --fp8-source is meaningless here")
+        fp8_source_type = args.fp8_source_type or args.source_type
+        if args.dry_run:
+            root = base_url()
+            print("=== DRY RUN (no request sent) ===")
+            if args.vehicle == "ideogram4":
+                print(f"Would load {args.source!r} once, then per arm "
+                      f"({WARMUP} warmup each) run {RUNS} timed replicates "
+                      f"INTERLEAVED fp8_dequant/fp8_fast, flipping "
+                      f"{root}/api/v1/system/fp8-scaled-mm between replicates.")
+            else:
+                print(f"Would run krea2 bf16 ({args.source!r}) {WARMUP}+{RUNS}, then "
+                      f"toggle on and load {args.fp8_source!r} ({fp8_source_type}) "
+                      f"{WARMUP}+{RUNS}, then reload bf16 for ONE closing drift "
+                      f"sentinel replicate.")
+            print(f"Would record results in {RESULTS}")
+            print("\nThis loads models and runs real generations on the GPU. Re-run "
+                  "with --no-dry-run when the GPU is idle and nothing else is "
+                  "generating or training on this backend.")
+            return 0
+        if args.vehicle == "ideogram4":
+            run_pair_ideogram4(args.source_type, args.source)
+        else:
+            run_pair_krea2(args.source_type, args.source, args.fp8_source, fp8_source_type)
+        return 0
+
     if not args.vehicle or not args.arm or not args.source:
-        ap.error("--vehicle, --arm and --source are required unless --probe/--report is given")
+        ap.error("--vehicle, --arm and --source are required unless "
+                 "--pair/--probe/--report is given")
     if args.vehicle == "krea2" and args.arm == "fp8_dequant":
         print("note: krea2:fp8_dequant is not part of the decision rule (krea2 carries "
               "fp8_fast vs bf16). It is recorded, and it is useful context, but it "
@@ -676,10 +935,12 @@ def main():
             print(f"Would time sampler steps via {ws_url()}")
         print(f"Would save images to {os.path.join(IMAGE_DIR, args.vehicle, args.arm)}")
         print(f"Would record results in {RESULTS}")
+        print(f"Would POST {root}/api/v1/system/fp8-scaled-mm "
+              f"{{'enabled': {args.arm == 'fp8_fast'}}} before running")
         print("\nThis loads a model and runs real generations on the GPU. Re-run with "
-              "--no-dry-run when the GPU is idle, nothing else is generating or "
-              "training on this backend, AND the backend was started with the "
-              "SUSHI_FP8_SCALED_MM value this arm requires.")
+              "--no-dry-run when the GPU is idle and nothing else is generating or "
+              "training on this backend (the toggle endpoint refuses with 409 while "
+              "either is active).")
         return 0
 
     if args.quality:

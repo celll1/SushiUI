@@ -8219,8 +8219,8 @@ components:
           description: SHA256 hash of the VAE weight file. Suppressed on legacy rows where a per-generation VAE override decoded the image but the recorded hash belongs to the model's own VAE.
         fp8_gemm:
           type: string
-          description: FP8 Linear GEMM path that produced the image. Present only on rows from a weight-only FP8 checkpoint (Ideogram 4, Krea 2). Opaque mechanism label.
-          example: "w8a8_scaled_mm(tensorwise)"
+          description: FP8 Linear GEMM path that produced the image. Present only on rows from a weight-only FP8 checkpoint (Ideogram 4, Krea 2). Opaque mechanism label; a `+fused` marker records that the fused Triton epilogue/quantizer served the run (bitwise-identical output, so it does not distinguish two sets of pixels).
+          example: "w8a8_scaled_mm(tensorwise+fused)"
 
     GeneratedImageSummary:
       type: object

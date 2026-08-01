@@ -150,7 +150,9 @@ actually measured rather than which one was requested.
 import argparse
 import json
 import os
+import re
 import statistics
+import subprocess
 import sys
 import threading
 import time
@@ -240,12 +242,246 @@ def load_results():
         return json.load(fh)
 
 
+# Set once per invocation by ``check_gpu_exclusivity()`` (called from ``main()``
+# before anything that records a number) and attached to EVERY record written
+# from then on, so a contaminated run can never later be mistaken for a clean
+# one just by looking at the number itself.
+_RUN_GPU_STATE = None
+
+
 def store_result(key, record):
     os.makedirs(OUT_DIR, exist_ok=True)
     data = load_results()
+    record = dict(record)
+    if _RUN_GPU_STATE is not None:
+        record["gpu_exclusivity"] = _RUN_GPU_STATE
     data[key] = record
     with open(RESULTS, "w", encoding="utf-8") as fh:
         json.dump(data, fh, indent=2)
+
+
+# ---------------------------------------------------------------------------
+# GPU exclusivity precondition -- run BEFORE any number is recorded.
+#
+# The module docstring already states the requirement ("nothing else may be
+# generating or training on this backend while a timed arm runs, and the GPU
+# must otherwise be idle"); this is what enforces it. A whole G1 session was
+# invalidated once because that requirement was documented but not checked:
+# two unrelated CUDA training processes ran at 100% utilization throughout,
+# and seven contaminated generations were recorded before anyone noticed.
+# ---------------------------------------------------------------------------
+
+def _query_compute_apps():
+    """``nvidia-smi --query-compute-apps=pid,used_memory,name --format=csv``.
+
+    Returns a list of ``{"pid", "used_memory", "name"}`` dicts, or ``None`` if
+    nvidia-smi could not be run at all (absent, PATH issue, driver error). The
+    caller must treat ``None`` as "unknown", never as "clean".
+    """
+    try:
+        proc = subprocess.run(
+            ["nvidia-smi", "--query-compute-apps=pid,used_memory,name",
+             "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=15,
+        )
+    except FileNotFoundError:
+        return None
+    except Exception as exc:                          # pragma: no cover
+        print(f"WARNING: could not run nvidia-smi ({type(exc).__name__}: {exc})")
+        return None
+    if proc.returncode != 0:
+        print(f"WARNING: nvidia-smi --query-compute-apps exited {proc.returncode}: "
+              f"{proc.stderr.strip()}")
+        return None
+    procs = []
+    for line in proc.stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) < 3:
+            continue
+        pid_s, mem_s = parts[0], parts[1]
+        name = ",".join(parts[2:])  # a process path could itself contain a comma
+        try:
+            pid = int(pid_s)
+        except ValueError:
+            continue
+        procs.append({"pid": pid, "used_memory": mem_s, "name": name})
+    return procs
+
+
+_PROCESS_TABLE_ROW = re.compile(r"^\|\s*\d+\s+\S+\s+\S+\s+(\d+)\s+(C\+G|C|G)\s")
+
+
+def _query_process_types():
+    """Best-effort PID -> Type ('C' / 'G' / 'C+G') from the plain ``nvidia-smi``
+    process table.
+
+    ``--query-compute-apps`` reports every GPU-accelerated desktop process as a
+    "compute app" on Windows/WDDM (verified empirically on this machine:
+    Explorer, Notepad, browser helpers all show up, each with
+    ``used_memory=[N/A]``), which would make an exclusivity check fire on an
+    otherwise-idle desktop. The plain table's ``Type`` column is the only place
+    this driver actually distinguishes pure CUDA compute (``C``) from a
+    graphics/UI context (``G`` / ``C+G``), so it narrows the compute-apps list
+    down to real compute work. Returns ``{}`` (not ``None``) on any parse
+    failure: the caller then falls back to the unfiltered compute-apps list,
+    which fails toward flagging too much rather than missing a real foreign
+    process.
+    """
+    try:
+        proc = subprocess.run(["nvidia-smi"], capture_output=True, text=True, timeout=15)
+    except Exception:                                  # pragma: no cover
+        return {}
+    types = {}
+    for line in proc.stdout.splitlines():
+        m = _PROCESS_TABLE_ROW.match(line)
+        if m:
+            types[int(m.group(1))] = m.group(2)
+    return types
+
+
+def _find_backend_pid():
+    """PID of the process listening on the backend's own host:port, via psutil.
+
+    Returns ``(pid, None)`` on success or ``(None, reason)`` on failure. Reuses
+    ``backend/.port_info`` (already the source of truth for the backend's
+    address elsewhere in this script) rather than adding a new discovery
+    mechanism, and psutil rather than a new process-listing dependency --
+    psutil is already imported elsewhere in this repo (see
+    ``backend/core/gpu_coordinator.py``).
+    """
+    try:
+        import psutil
+    except ImportError:
+        return None, "psutil is not installed"
+    try:
+        with open(PORT_INFO, encoding="utf-8") as fh:
+            info = json.load(fh)
+        port = info["port"]
+    except Exception as exc:
+        return None, f"could not read {PORT_INFO} ({type(exc).__name__}: {exc})"
+    try:
+        conns = psutil.net_connections(kind="inet")
+    except Exception as exc:
+        # On Windows this can require elevated privileges to see other users'
+        # sockets; the backend's own socket (same user, same session) is
+        # normally still visible, but fail open rather than assume that.
+        return None, f"psutil.net_connections() failed ({type(exc).__name__}: {exc})"
+    for c in conns:
+        if c.status == psutil.CONN_LISTEN and c.laddr and c.laddr.port == port:
+            return c.pid, None
+    return None, f"no LISTEN socket found on port {port} -- is the backend running?"
+
+
+def check_gpu_exclusivity(allow_foreign):
+    """Startup precondition: the GPU must be idle apart from the backend.
+
+    Returns a dict describing what was found. That dict is attached to EVERY
+    result record written for the rest of this process (via ``store_result``
+    reading ``_RUN_GPU_STATE``), so ``--allow-foreign-gpu`` can never silently
+    produce a number that looks clean.
+
+    Raises ``SystemExit`` (without ``--allow-foreign-gpu``) if a non-backend
+    CUDA compute process is found. nvidia-smi or psutil being unavailable is a
+    WARNING, not a hard failure: the check degrades to "not verified" rather
+    than blocking every environment that lacks the CLI tool or admin rights to
+    enumerate sockets.
+    """
+    state = {
+        "checked_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "verified": False,
+        "foreign_processes": [],
+        "allow_foreign_gpu": bool(allow_foreign),
+        "note": None,
+    }
+
+    compute_apps = _query_compute_apps()
+    if compute_apps is None:
+        state["note"] = "nvidia-smi unavailable; GPU exclusivity NOT verified"
+        print(f"WARNING: {state['note']}")
+        return state
+
+    types = _query_process_types()
+    if types:
+        candidates = [p for p in compute_apps if types.get(p["pid"]) == "C"]
+    else:
+        candidates = compute_apps
+        state["note"] = ("could not read the Type column from plain nvidia-smi; "
+                          "falling back to the unfiltered --query-compute-apps list, "
+                          "which may over-report on Windows/WDDM")
+        print(f"WARNING: {state['note']}")
+
+    backend_pid, backend_err = _find_backend_pid()
+    if backend_pid is None:
+        note = f"could not identify the backend's own PID ({backend_err}); GPU exclusivity NOT verified"
+        state["note"] = f"{state['note']}; {note}" if state["note"] else note
+        print(f"WARNING: {note}")
+        return state
+
+    foreign = [p for p in candidates if p["pid"] != backend_pid]
+    state["verified"] = True
+    state["backend_pid"] = backend_pid
+    state["foreign_processes"] = foreign
+
+    if not foreign:
+        print(f"GPU exclusivity OK: only the backend (pid {backend_pid}) is doing "
+              "CUDA compute work on this GPU.")
+        return state
+
+    print(f"\n{'=' * 70}")
+    print(f"FOREIGN GPU PROCESS DETECTED -- the benchmark protocol requires the "
+          f"GPU to be idle apart from the backend (pid {backend_pid}):")
+    for p in foreign:
+        print(f"  pid={p['pid']:<8} used_memory={p['used_memory']:<12} name={p['name']}")
+    print("Any number recorded now would be contaminated by this process (see the "
+          "module docstring: VAE decode -- a path with no FP8 code at all -- ran "
+          "3.0-4.8x slower the last time this was missed).")
+    if allow_foreign:
+        print("--allow-foreign-gpu given: proceeding anyway. This will be recorded "
+              "in EVERY result written during this run.")
+        print("=" * 70 + "\n")
+        return state
+    print("Stop the foreign process(es), or pass --allow-foreign-gpu to proceed "
+          "anyway (the contamination will be recorded in every result).")
+    print("=" * 70)
+    raise SystemExit(3)
+
+
+def _query_gpu_power_and_clock():
+    """Power limit and SM clock context for the ``_probe`` record.
+
+    A ratio the decision rule reads to two decimal places is meaningless
+    without knowing whether the card was power- or clock-throttled when it was
+    measured. The investigation that motivated this found the card running at
+    a 240 W software power cap against a 300 W default (SW Power Cap active),
+    with SM clock pinned at 1575 MHz against a 2505 MHz applications clock --
+    caused by an unrelated foreign workload, invisible unless recorded
+    alongside the number it affected. Returns ``{}`` if nvidia-smi cannot
+    answer (absence is a warning, not a hard failure -- same policy as the
+    exclusivity check above).
+    """
+    fields = ["power.limit", "power.default_limit", "power.draw",
+              "clocks.sm", "clocks.max.sm"]
+    try:
+        proc = subprocess.run(
+            ["nvidia-smi", f"--query-gpu={','.join(fields)}", "--format=csv,noheader"],
+            capture_output=True, text=True, timeout=15,
+        )
+    except Exception as exc:                          # pragma: no cover
+        print(f"WARNING: could not query GPU power/clock state ({type(exc).__name__}: {exc})")
+        return {}
+    if proc.returncode != 0:
+        print(f"WARNING: nvidia-smi power/clock query exited {proc.returncode}: "
+              f"{proc.stderr.strip()}")
+        return {}
+    line = proc.stdout.strip().splitlines()[0] if proc.stdout.strip() else ""
+    parts = [p.strip() for p in line.split(",")]
+    keys = ["power_limit", "power_default_limit", "power_draw", "sm_clock", "sm_clock_max"]
+    if len(parts) != len(keys):
+        return {"raw": line}
+    return dict(zip(keys, parts))
 
 
 # ---------------------------------------------------------------------------
@@ -280,6 +516,7 @@ def probe():
             str(dt).rsplit(".", 1)[-1]: _probe_scaled_mm(device, dt)
             for dt in (torch.bfloat16, torch.float16, torch.float32)
         },
+        "power_and_clock": _query_gpu_power_and_clock(),
         "recorded_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
     }
     store_result("_probe", record)
@@ -858,10 +1095,20 @@ def main():
     ap.add_argument("--report", action="store_true")
     ap.add_argument("--no-dry-run", dest="dry_run", action="store_false",
                     help="actually load the model and run generations (heavy, GPU-mutating)")
+    ap.add_argument("--allow-foreign-gpu", action="store_true",
+                    help="proceed even if a non-backend CUDA compute process is detected "
+                         "on the GPU. The fact is recorded in EVERY result written during "
+                         "this run so a contaminated number can never be mistaken for a "
+                         "clean one. Off by default: the pre-registered rule reads ratios "
+                         "to two decimal places and a foreign workload has been shown to "
+                         "silently invalidate an entire session.")
     ap.set_defaults(dry_run=True)
     args = ap.parse_args()
 
+    global _RUN_GPU_STATE
+
     if args.probe:
+        _RUN_GPU_STATE = check_gpu_exclusivity(args.allow_foreign_gpu)
         return probe()
     if args.report:
         return report()
@@ -880,6 +1127,7 @@ def main():
             ap.error("ideogram4 --pair uses ONE checkpoint for both arms (only the "
                      "toggle differs); --fp8-source is meaningless here")
         fp8_source_type = args.fp8_source_type or args.source_type
+        _RUN_GPU_STATE = check_gpu_exclusivity(args.allow_foreign_gpu)
         if args.dry_run:
             root = base_url()
             print("=== DRY RUN (no request sent) ===")
@@ -915,6 +1163,8 @@ def main():
         ap.error("an ideogram4 bf16 arm is INVALID -- see the module docstring. "
                  "Ideogram 4 keeps two transformers resident; a bf16 arm would measure "
                  "offload traffic, not the GEMM.")
+
+    _RUN_GPU_STATE = check_gpu_exclusivity(args.allow_foreign_gpu)
 
     if args.dry_run:
         root = base_url()

@@ -30,6 +30,16 @@ cannot distinguish inference from training here.
 Path selection is probed once per (device, activation dtype) and cached; see
 ``_scaled_mm_mode``.
 
+On a build that only accepts TENSORWISE scaling (this is what sm_89 offers), the
+scaled GEMM's two elementwise stages -- the per-token activation quantization and
+the epilogue that re-applies both scale vectors -- are served by single fused
+Triton kernels from ``fp8_fused`` where they are available. They are gated on a
+probe that verifies their output BITWISE against the eager chains
+(``_eager_quantize_activation``, ``_eager_epilogue``), which remain the
+definition of the result and the fallback for every case the kernels cannot
+serve. See ``fp8_fused`` for why bitwise, and for the three places its kernels
+deviate from the obvious formulation to stay that way.
+
 Checkpoint layout (per quantized Linear ``<name>``):
     <name>.weight        float8_e4m3fn  (out, in)
     <name>.weight_scale  float32        (out,)
@@ -181,6 +191,11 @@ def set_scaled_mm_enabled(enabled: bool, *, origin: str = "api") -> dict:
     Scope and limits:
 
     * Per-process, not per-generation, and not persisted across restarts.
+    * Does NOT clear ``fp8_fused``'s own latch. That one records whether this
+      machine's triton toolchain can compile and run the fused kernels
+      bitwise-identically -- a property of the install, not of which GEMM path is
+      selected -- and its fallback changes no result, so re-probing it on every
+      flip would only re-pay the compile.
     * Does NOT override ``disable_scaled_mm``: that per-module opt-out is the
       authoritative gate (every trainer-side loader calls it), and enabling the
       path here cannot resurrect a module that declared itself dequant-only.
@@ -241,7 +256,13 @@ def describe_gemm_path(module: nn.Module | None = None) -> str | None:
     record). Otherwise one of:
 
     * ``"w8a8_scaled_mm(<mode>)"`` -- the flag is on, the module allows it and the
-      probe resolved a usable scaling mode.
+      probe resolved a usable scaling mode. A ``+fused`` suffix on the mode
+      (e.g. ``"w8a8_scaled_mm(tensorwise+fused)"``) records that the fused Triton
+      epilogue/quantizer served at least one key in this process. That does NOT
+      change the pixels -- the fused kernels are gated on a bitwise-equality
+      probe against the eager chain -- but it does change what ran, and a
+      toolchain that latched the kernels off is exactly the kind of thing a
+      provenance label should not hide.
     * ``"dequant"`` -- the flag is off, or every owned layer opted out.
     * ``"dequant(scaled_mm unavailable)"`` -- the flag is on but every probed
       key latched None.
@@ -274,8 +295,23 @@ def describe_gemm_path(module: nn.Module | None = None) -> str | None:
         modes = sorted({m for m in _SCALED_MM_MODE.values() if m})
         probed = bool(_SCALED_MM_MODE)
     if modes:
-        return f"w8a8_scaled_mm({'+'.join(modes)})"
+        return f"w8a8_scaled_mm({'+'.join(modes)}{_fused_suffix()})"
     return "dequant(scaled_mm unavailable)" if probed else "dequant(scaled_mm unprobed)"
+
+
+def _fused_suffix() -> str:
+    """``"+fused"`` when the fused Triton kernels served a key in this process.
+
+    Derived from state only (no import side effects that matter, no probe is
+    forced): if ``fp8_fused`` has not been imported, or every key latched off, the
+    label stays exactly what it was before the fused kernels existed.
+    """
+    try:
+        from .fp8_fused import fused_enabled
+
+        return "+fused" if fused_enabled() else ""
+    except Exception:
+        return ""
 
 
 def _report_scaled_mm_fallback(key: str, reason: str, *, degraded: bool) -> None:
@@ -398,6 +434,34 @@ def _quantize_activation(x2: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     Returns ``(x_fp8, scale)`` with ``scale`` of shape ``(m, 1)`` float32 such
     that ``x2 ~= x_fp8.float() * scale``. Rows that are entirely zero get the
     floor scale rather than zero, so the reciprocal stays finite.
+
+    Prefers the single fused Triton kernel in ``fp8_fused`` (~8 kernels and
+    ~13 B/element of traffic collapse to 1 and 3), which is gated on an EXECUTED
+    probe that checks its output BITWISE against ``_eager_quantize_activation``
+    below. Anything that is not usable falls through to the eager chain, which
+    stays the definition of the result.
+    """
+    fused = _try_fused_quantize(x2)
+    if fused is not None:
+        return fused
+    return _eager_quantize_activation(x2)
+
+
+def _try_fused_quantize(x2: torch.Tensor):
+    """``fp8_fused.fused_quantize`` if importable/usable, else None."""
+    try:
+        from .fp8_fused import fused_quantize
+    except Exception:
+        return None
+    return fused_quantize(x2)
+
+
+def _eager_quantize_activation(x2: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """The reference (and fallback) implementation of ``_quantize_activation``.
+
+    Also the bitwise target the fused kernel's probe compares against, so this
+    body -- including WHERE each rounding happens -- is the contract, not an
+    implementation detail.
     """
     amax = x2.detach().abs().amax(dim=-1, keepdim=True).to(torch.float32)
     scale = (amax / FP8_E4M3_MAX).clamp_(min=_MIN_ACT_SCALE)
@@ -418,6 +482,64 @@ def _quantize_activation(x2: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
 # cuBLAS reports a workspace shortage as a plain RuntimeError; it is transient in
 # the same way an OOM is, so it must not latch the mode off for the process.
 _ALLOC_FAILURE_MARKERS = ("CUBLAS_STATUS_ALLOC_FAILED", "out of memory", "CUDA_ERROR_OUT_OF_MEMORY")
+
+
+def _eager_epilogue(
+    acc: torch.Tensor,
+    a_scale: torch.Tensor,
+    w_scale: torch.Tensor,
+    bias: torch.Tensor | None,
+    out_dtype: torch.dtype,
+) -> torch.Tensor:
+    """``((acc * a_scale) * w_scale [+ bias]).to(out_dtype)``, in place on ``acc``.
+
+    THE DEFINITION of the tensorwise decomposition's epilogue, and the bitwise
+    target the fused kernel's probe compares against. Every property here is
+    load-bearing:
+
+    * both scales are applied in float32 and the ASSOCIATION is
+      ``(acc * a_scale) * w_scale`` -- not ``acc * (a_scale * w_scale)``;
+    * the bias is widened to float32 and added as a separate rounded step (a
+      fused multiply-add would round once, which is more accurate and therefore
+      a different result);
+    * the output dtype is reached by exactly ONE rounding, at the end. Scaling in
+      the narrower activation dtype instead would save the float32 ``(m, n)``
+      temporary but measured 4.31e-03 rel RMS worse on bf16.
+
+    ``acc`` is MUTATED: callers pass a fresh ``_scaled_mm`` output with no other
+    reference, which keeps the transient at 1.5x the accumulator instead of 3x
+    (measured at m=n=2048: 24 MiB vs 48 MiB peak delta over a 16 MiB
+    accumulator; tmp/fp8_scaled_mm_memory.py).
+    """
+    acc.mul_(a_scale).mul_(w_scale)
+    if bias is not None:
+        acc.add_(bias.to(torch.float32))
+    return acc.to(out_dtype)
+
+
+def _try_fused_epilogue(acc, a_scale, w_scale, bias, out_dtype):
+    """``fp8_fused.fused_epilogue`` if importable/usable, else None."""
+    try:
+        from .fp8_fused import fused_epilogue
+    except Exception:
+        return None
+    return fused_epilogue(acc, a_scale, w_scale, bias, out_dtype)
+
+
+# Cached float32 scalar 1.0 per device: the tensorwise GEMM needs unit scales on
+# every call, and allocating two 4-byte tensors per Linear forward is pure
+# allocator churn on a path whose whole point is to remove per-call overhead.
+_ONE_CACHE: dict[torch.device, torch.Tensor] = {}
+
+
+def _scalar_one(device: torch.device) -> torch.Tensor:
+    one = _ONE_CACHE.get(device)
+    if one is None:
+        one = torch.ones((), dtype=torch.float32, device=device)
+        # Benign race: two threads may each build one; both are the value 1.0 and
+        # neither is ever mutated, so whichever wins the dict is equivalent.
+        _ONE_CACHE[device] = one
+    return one
 
 
 def _is_allocation_failure(exc: BaseException) -> bool:
@@ -601,7 +723,7 @@ class Fp8Linear(nn.Module):
                 # (m, n) temporary; scaling in the (narrower) activation dtype
                 # instead would save it but add three roundings, which measured
                 # 4.31e-03 rel RMS worse than this decomposition on bf16.
-                one = torch.ones((), dtype=torch.float32, device=x.device)
+                one = _scalar_one(x.device)
                 acc = torch._scaled_mm(
                     x_fp8,
                     w_t,
@@ -610,19 +732,19 @@ class Fp8Linear(nn.Module):
                     out_dtype=torch.float32,
                     use_fast_accum=_USE_FAST_ACCUM,
                 )
-                #
-                # Applied IN PLACE: ``acc`` is a fresh ``_scaled_mm`` output with
-                # no other reference, so mutating it is safe and it keeps the
-                # transient at 1.5x the (m, n) float32 accumulator instead of 3x
-                # (measured at m=n=2048: 24 MiB vs 48 MiB peak delta over a 16 MiB
-                # accumulator; tmp/fp8_scaled_mm_memory.py). The
-                # out-of-place form was heavier in transient VRAM than the dequant
-                # path it replaces, on exactly the large layers the fast path is
-                # for. Still rounds exactly once, at the ``.to(x.dtype)`` below.
-                acc.mul_(a_scale).mul_(w_scale)
-                if self.bias is not None:
-                    acc.add_(self.bias.to(torch.float32))
-                out2 = acc.to(x.dtype)
+                # ONE fused Triton kernel where it is available (one read of the
+                # accumulator, one write of the output -- the eager chain is 4
+                # kernels and ~5x the traffic over the same (m, n) buffer), else
+                # the eager chain. The two are bitwise-identical by construction
+                # and the fused path is gated on a probe that verifies exactly
+                # that; see fp8_fused.py. Both leave the transient at 1.5x the
+                # accumulator: the eager form scales in place and allocates only
+                # the narrower output, the fused form allocates the same output
+                # while the accumulator is still live.
+                bias = self.bias
+                out2 = _try_fused_epilogue(acc, a_scale, w_scale, bias, x.dtype)
+                if out2 is None:
+                    out2 = _eager_epilogue(acc, a_scale, w_scale, bias, x.dtype)
         except torch.cuda.OutOfMemoryError as exc:
             self._report_transient_oom(exc)
             return None

@@ -656,15 +656,28 @@ class Fp8Linear(nn.Module):
         if x.shape[-1] != self.in_features or x.numel() == 0:
             return None
 
-        mode = _scaled_mm_mode(x.device, x.dtype)
-        if mode is None:
-            return None
-
         # Everything that only the fast path does lives inside the try, including
-        # the activation quantization: it allocates a float32 (m, k) temporary for
-        # fp16/fp32 inputs, so it can OOM where the dequant path would not, and an
-        # exception there must fall back rather than escape forward().
+        # the mode probe itself. ``_scaled_mm_mode`` allocates real tensors on its
+        # first call for a given (device, dtype) key (see ``_probe_scaled_mm``),
+        # so it can OOM exactly like the GEMM calls below -- and with the toggle
+        # (``set_scaled_mm_enabled``) clearing ``_SCALED_MM_MODE`` on every flip,
+        # that first call can now land inside somebody's forward pass instead of
+        # only once at process start. Catching it here means a transient OOM
+        # during the probe falls through the same ``except`` branches as every
+        # other allocation on this path, and -- because the exception propagates
+        # out of ``_scaled_mm_mode`` before it reaches
+        # ``_SCALED_MM_MODE.setdefault`` -- the mode is never cached: the next
+        # forward call re-probes instead of being latched off by a false
+        # negative that was really just memory pressure. The activation
+        # quantization below has the same property: it allocates a float32
+        # (m, k) temporary for fp16/fp32 inputs, so it can OOM where the dequant
+        # path would not, and an exception there must fall back rather than
+        # escape forward().
         try:
+            mode = _scaled_mm_mode(x.device, x.dtype)
+            if mode is None:
+                return None
+
             x2 = x.reshape(-1, self.in_features)
             if not x2.is_contiguous():
                 x2 = x2.contiguous()

@@ -28,6 +28,7 @@ from torch import nn
 from safetensors import safe_open
 
 from .vendor.fp8_linear import Fp8Linear
+from .vendor.int8_linear import Int8Linear
 
 
 # ---------------------------------------------------------------------------
@@ -174,8 +175,8 @@ def iter_ideogram4_lora_targets(
 
     attr_or_idx is a str for normal attributes or an int for ModuleList children
     (e.g. to_out[0]). Use _set_module() for assignment. Targets include both plain
-    nn.Linear and weight-only-FP8 Fp8Linear (the fp8 base), plus already-wrapped
-    LoRALinearLayer (for stacking).
+    nn.Linear, weight-only-quantized Fp8Linear / Int8Linear (the e4m3 and int8
+    bases), plus already-wrapped LoRALinearLayer (for stacking).
     """
     from core.training.adapters.sd15_adapter import LoRALinearLayer
 
@@ -184,7 +185,10 @@ def iter_ideogram4_lora_targets(
     want_mlp = bool(scope.get("mlp", False))
     want_mod = bool(scope.get("mod", False))
 
-    is_target = lambda m: isinstance(m, (nn.Linear, Fp8Linear, LoRALinearLayer))
+    # Fp8Linear and Int8Linear are nn.Modules, NOT nn.Linear subclasses: both
+    # have to be named or their layers are silently skipped (no target, no
+    # warning, and a LoRA that appears to do nothing on a quantized checkpoint).
+    is_target = lambda m: isinstance(m, (nn.Linear, Fp8Linear, Int8Linear, LoRALinearLayer))
 
     blocks = getattr(transformer, "layers", None)
     if blocks is None:

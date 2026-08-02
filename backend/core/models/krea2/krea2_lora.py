@@ -15,8 +15,9 @@ Target scope (controlled by the ``scope`` dict):
 ~264 plain nn.Linear targets total; the default scope (attn+mlp) covers the 28
 main blocks. Keys use a reversible ``.``<->``__`` encoding (module names contain
 only single underscores, so ``__`` is unambiguously the path separator) — the same
-scheme as minit2i_lora. All targets are plain nn.Linear (weight-only FP8 checkpoints
-keep their Fp8Linear base, also wrapped). Forward-time addition, fully reversible.
+scheme as minit2i_lora. Targets are plain nn.Linear on a bf16 checkpoint; a
+weight-only quantized checkpoint keeps its Fp8Linear / Int8Linear base and those
+are wrapped too. Forward-time addition, fully reversible.
 """
 
 from __future__ import annotations
@@ -83,10 +84,19 @@ def parse_scope_csv(scope_csv: Optional[str]) -> Dict[str, bool]:
 
 
 def _is_target(m) -> bool:
+    """True for a module a LoRA can wrap: a plain Linear, EITHER quantized
+    Linear (weight-only e4m3 or int8), or an already-wrapped LoRALinearLayer.
+
+    ``Fp8Linear`` and ``Int8Linear`` are ``nn.Module``s, NOT ``nn.Linear``
+    subclasses, so both must be named explicitly. Omitting one is silent: the
+    iterator simply yields no targets for those layers and ``apply_lora_group``
+    reports a small ``applied`` count without raising -- which on a quantized
+    checkpoint looks exactly like "the LoRA had no effect"."""
     from core.training.adapters.sd15_adapter import LoRALinearLayer
     try:
         from core.models.ideogram4.vendor.fp8_linear import Fp8Linear
-        return isinstance(m, (nn.Linear, Fp8Linear, LoRALinearLayer))
+        from core.models.ideogram4.vendor.int8_linear import Int8Linear
+        return isinstance(m, (nn.Linear, Fp8Linear, Int8Linear, LoRALinearLayer))
     except Exception:
         return isinstance(m, (nn.Linear, LoRALinearLayer))
 
@@ -222,6 +232,11 @@ def apply_lora_group(
         alpha_value = float(alpha_tensor.item()) if alpha_tensor is not None else float(rank)
         wrapper = LoRALinearLayer(true_original, rank=rank, alpha=alpha_value, lora_name=module_path)
         device = true_original.weight.device
+        # Compute dtype for the LoRA branch: the base weight's dtype when it is a
+        # normal float, else bf16. Both quantized bases take the bf16 branch --
+        # e4m3 by the "float8" test, int8 because an integer dtype is not
+        # floating point at all -- which is also the dtype their own forward
+        # produces from a bf16 activation.
         if (true_original.weight.dtype.is_floating_point and
                 "float8" not in str(true_original.weight.dtype)):
             compute_dtype = true_original.weight.dtype

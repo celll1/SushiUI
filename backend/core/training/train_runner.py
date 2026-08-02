@@ -55,6 +55,11 @@ if _opts:
 # /system/fp8-scaled-mm endpoint) lives in the API process and cannot reach this
 # one, so the import-time value is the whole story here.
 os.environ["SUSHI_FP8_SCALED_MM"] = "0"
+# Identical treatment for the INT8 W8A8 path (torch._int_mm). Same inheritance
+# problem, same reasoning, same ordering requirement: `int8_linear`'s
+# `_INT8_MM_ENABLED` is initialized from this variable at ITS import time, and
+# nothing above this line imports it.
+os.environ["SUSHI_INT8_MM"] = "0"
 
 import torch
 import gc
@@ -85,6 +90,14 @@ try:
     _fp8_hard_off(False, origin="default")
 except Exception as _e:  # pragma: no cover - fp8 support is optional at import time
     print(f"[TrainRunner] Could not force the FP8 dequant path: {_e}")
+
+# Same second half for INT8. Separate try block on purpose: if the fp8 import
+# fails for any reason, the int8 hard-off must still run.
+try:
+    from core.models.ideogram4.vendor.int8_linear import set_int8_mm_enabled as _int8_hard_off
+    _int8_hard_off(False, origin="default")
+except Exception as _e:  # pragma: no cover - int8 support is optional at import time
+    print(f"[TrainRunner] Could not force the INT8 dequant path: {_e}")
 
 
 def _is_krea2_base_model(base_model_path: str) -> bool:

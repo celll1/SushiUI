@@ -247,11 +247,13 @@ def save_image_with_metadata(
     if vae_hash:
         metadata.add_text("vae_hash", vae_hash)
 
-    # FP8 GEMM path (weight-only FP8 checkpoints only; the producer writes nothing
-    # for other checkpoints). The W8A8 scaled GEMM and the dequantized matmul are
-    # numerically different functions, so this is reproduction-affecting whenever
-    # it is present. Mechanism, not a value judgement: e.g.
-    # "w8a8_scaled_mm(tensorwise)" or "dequant".
+    # Quantized-Linear GEMM path (weight-only FP8 *or* INT8 checkpoints only; the
+    # producer writes nothing for other checkpoints). A W8A8 GEMM and the
+    # dequantized matmul are numerically different functions, so this is
+    # reproduction-affecting whenever it is present. Mechanism, not a value
+    # judgement: e.g. "w8a8_scaled_mm(tensorwise)", "w8a8_int_mm(int_mm+fused)",
+    # "dequant", or -- on a mixed int8/e4m3 checkpoint -- both joined with "+".
+    # The key name is historical and is not FP8-specific.
     fp8_gemm = params.get("fp8_gemm", "")
     if fp8_gemm:
         metadata.add_text("fp8_gemm", str(fp8_gemm))

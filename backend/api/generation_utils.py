@@ -800,17 +800,33 @@ def extract_vae_info(pipeline_manager) -> tuple:
 
 
 def extract_fp8_gemm_info(pipeline_manager) -> str:
-    """Describe the FP8 GEMM path that served this generation, or "" if N/A.
+    """Describe the quantized GEMM path that served this generation, or "" if N/A.
 
-    Only weight-only FP8 checkpoints have anything to report, and only on the two
-    architectures that carry ``Fp8Linear`` (Ideogram 4, Krea 2). A bf16 checkpoint
-    on either arch, or any other architecture, returns "" and records nothing.
+    Only weight-only quantized checkpoints have anything to report, and only on
+    the two architectures that carry ``Fp8Linear`` (Ideogram 4, Krea 2). INT8 is
+    narrower still: only the Krea 2 loader swaps ``Int8Linear`` today, so an
+    ``int8_*`` / ``w8a8_int_mm`` label can only come from a Krea 2 checkpoint. A
+    bf16 checkpoint on either arch, or any other architecture, returns "" and
+    records nothing.
 
-    The RESOLVED path is what is recorded, not the flag: the W8A8 path can be
-    enabled while the per-device probe finds no usable scaling mode, in which case
-    every layer runs the dequantized matmul. The two paths are numerically
-    different (the W8A8 path additionally quantizes the activation), so an image
-    is not reproducible without knowing which one ran.
+    The RESOLVED path is what is recorded, not the flag: a W8A8 path can be
+    enabled while the per-device probe finds nothing usable, in which case every
+    layer runs the dequantized matmul. The paths are numerically different (a
+    W8A8 path additionally quantizes the activation), so an image is not
+    reproducible without knowing which one ran.
+
+    VOCABULARY. The ``fp8_gemm`` metadata field is declared an opaque mechanism
+    label, and this function's job is to keep it one field rather than growing a
+    second. Its vocabulary now includes the INT8 stems
+    (``w8a8_int_mm(...)`` / ``int8_dequant...``) alongside the FP8 ones
+    (``w8a8_scaled_mm(...)`` / ``dequant...``). A MIXED checkpoint -- which is
+    what the int8 conversion tool produces, since high-crest layers fall back to
+    e4m3 in the same file -- owns both module types and is reported as both
+    labels joined with "+", ALWAYS in FP8-then-INT8 order because that is the
+    order the describers are collected in below, e.g.
+    ``"dequant+w8a8_int_mm(int_mm+fused)"`` for a mixed checkpoint with the FP8
+    toggle off and the INT8 one on. The stems are distinct precisely so that join
+    stays unambiguous.
     """
     info = getattr(pipeline_manager, "current_model_info", None) or {}
     comp_attr = {
@@ -820,9 +836,16 @@ def extract_fp8_gemm_info(pipeline_manager) -> str:
     if not comp_attr:
         return ""
     comps = getattr(pipeline_manager, comp_attr, None) or {}
-    try:
-        from core.models.ideogram4.vendor.fp8_linear import describe_gemm_path
-    except Exception:
+    describers = []
+    for module_path, attr in (
+        ("core.models.ideogram4.vendor.fp8_linear", "describe_gemm_path"),
+        ("core.models.ideogram4.vendor.int8_linear", "describe_gemm_path"),
+    ):
+        try:
+            describers.append(getattr(__import__(module_path, fromlist=[attr]), attr))
+        except Exception:
+            pass
+    if not describers:
         return ""
     # The transformer is the bulk of the Linear work; Ideogram 4's unconditional
     # branch and both text encoders are swapped by the same loader, so the
@@ -831,13 +854,17 @@ def extract_fp8_gemm_info(pipeline_manager) -> str:
         module = comps.get(name)
         if module is None:
             continue
-        try:
-            label = describe_gemm_path(module)
-        except Exception as e:
-            print(f"[FP8 Metadata] Could not resolve the GEMM path: {e}")
-            return ""
-        if label:
-            return label
+        labels = []
+        for describe in describers:
+            try:
+                label = describe(module)
+            except Exception as e:
+                print(f"[Quant Metadata] Could not resolve the GEMM path: {e}")
+                return ""
+            if label:
+                labels.append(label)
+        if labels:
+            return "+".join(labels)
     return ""
 
 

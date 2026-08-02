@@ -2224,6 +2224,114 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /system/int8-mm:
+    get:
+      tags: [system]
+      summary: Get the INT8 W8A8 integer-GEMM state
+      description: |
+        Report whether INT8 weight-only `Linear` layers run the W8A8
+        `torch._int_mm` path or the dequantized matmul, for THIS backend
+        process.
+
+        The INT8 sibling of `/system/fp8-scaled-mm`. The setting is per-process:
+        it is initialized from the `SUSHI_INT8_MM` environment variable at import
+        (default off) and can be changed at runtime with the POST form of this
+        endpoint. It is not persisted across restarts.
+
+        `resolved_modes` reports the cached per-device probe result, so the case
+        "enabled, but `torch._int_mm` was found unusable and every layer runs the
+        dequantized matmul" is visible rather than inferred. An empty object
+        means no INT8 `Linear` forward has reached the probe yet in this process.
+        The key is a device (not device + activation dtype, as the FP8 endpoint
+        uses): both GEMM operands are int8 whatever the activation dtype is.
+
+        Even while enabled and resolved, individual layers still fall back to the
+        dequantized matmul when a shape cannot use the integer GEMM
+        (`torch._int_mm` requires m > 16, k % 8 == 0, n % 8 == 0) or is too small
+        or too thin for the path to pay for its activation quantizer and
+        epilogue. That per-layer decision is not reported here; the resolved
+        metadata label recorded with each image (`fp8_gemm`) is the record of
+        what ran.
+
+        Applies only to architectures whose checkpoints carry weight-only INT8
+        Linear weights. Only the Krea 2 loader swaps `Int8Linear` today (the
+        Ideogram 4 loader handles weight-only FP8 and nf4, not INT8), so this
+        setting is a no-op for every other architecture. Training processes are
+        always on the dequantized matmul, independently of this setting.
+      operationId: getInt8Mm
+      responses:
+        '200':
+          description: Current state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Int8MmState'
+              example:
+                enabled: true
+                origin: api
+                resolved_modes:
+                  "cuda:0": int_mm
+        '500':
+          description: Could not read the state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    post:
+      tags: [system]
+      summary: Set the INT8 W8A8 integer-GEMM state
+      description: |
+        Turn the W8A8 `torch._int_mm` path on or off for this backend process.
+
+        Both directions clear the cached per-device probe, so the next INT8
+        `Linear` forward re-probes.
+
+        The two paths are numerically different (the W8A8 path additionally
+        quantizes the activation), so the endpoint REFUSES with 409 while an
+        image generation or a training run is active: flipping mid-run would make
+        the recorded metadata describe a path that produced only part of the
+        result.
+
+        Modules that declared themselves dequant-only (every trainer-side loader
+        does) are unaffected: this setting cannot re-enable them.
+
+        Independent of `/system/fp8-scaled-mm`. A checkpoint produced by the int8
+        conversion tool is MIXED -- layers whose per-row crest factor makes int8
+        worse than e4m3 fall back to e4m3 in the same file -- so a model can own
+        both module types and each toggle governs only its own.
+      operationId: setInt8Mm
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Int8MmRequest'
+            example:
+              enabled: true
+      responses:
+        '200':
+          description: State applied
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Int8MmState'
+              example:
+                enabled: true
+                origin: api
+                resolved_modes: {}
+        '409':
+          description: A generation or training run is active
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Could not read or change the state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /system/gpu-stats:
     get:
       tags: [system]
@@ -5389,6 +5497,48 @@ components:
             Linear forward has reached the probe yet.
           example:
             "cuda:0/bfloat16": tensorwise
+    Int8MmRequest:
+      type: object
+      required: [enabled]
+      properties:
+        enabled:
+          type: boolean
+          description: |
+            true  = INT8 Linear layers run the W8A8 `torch._int_mm` path where the
+                    probe succeeded and the shape gates allow it.
+            false = INT8 Linear layers dequantize the weight and run a normal
+                    matmul (the process default).
+          example: true
+    Int8MmState:
+      type: object
+      required: [enabled, origin, resolved_modes]
+      properties:
+        enabled:
+          type: boolean
+          description: Whether the W8A8 `torch._int_mm` path is currently selected.
+          example: true
+        origin:
+          type: string
+          enum: [default, env, api]
+          description: |
+            Where the current value came from. "default" = no environment
+            variable was set at import; "env" = `SUSHI_INT8_MM` was present at
+            import; "api" = a later POST to this endpoint.
+          example: api
+        resolved_modes:
+          type: object
+          additionalProperties:
+            type: string
+            nullable: true
+            enum: [int_mm, null]
+          description: |
+            Cached probe result per device. "int_mm" means `torch._int_mm` ran
+            and reproduced an int32 reference product; null means it was
+            unusable, in which case those layers run the dequantized matmul even
+            while `enabled` is true. Empty when no INT8 Linear forward has
+            reached the probe yet.
+          example:
+            "cuda:0": int_mm
     TimestepSamplingConfig:
       type: object
       description: |
@@ -8219,8 +8369,20 @@ components:
           description: SHA256 hash of the VAE weight file. Suppressed on legacy rows where a per-generation VAE override decoded the image but the recorded hash belongs to the model's own VAE.
         fp8_gemm:
           type: string
-          description: FP8 Linear GEMM path that produced the image. Present only on rows from a weight-only FP8 checkpoint (Ideogram 4, Krea 2). Opaque mechanism label; a `+fused` marker records that the fused Triton epilogue/quantizer served the run (bitwise-identical output, so it does not distinguish two sets of pixels).
-          example: "w8a8_scaled_mm(tensorwise+fused)"
+          description: |
+            Quantized Linear GEMM path that produced the image. Present only on
+            rows from a weight-only FP8 checkpoint (Ideogram 4, Krea 2) or a
+            weight-only INT8 checkpoint (Krea 2 only -- the Ideogram 4 loader
+            does not swap `Int8Linear`).
+            Opaque mechanism label, kept as ONE field across both formats: the
+            FP8 stems are `w8a8_scaled_mm(...)` / `dequant...` and the INT8 stems
+            are `w8a8_int_mm(...)` / `int8_dequant...`. A mixed int8/e4m3
+            checkpoint reports both, joined with `+`, FP8 label first. A `+fused` marker inside
+            the parentheses records that the fused Triton epilogue/quantizer
+            served the run (bitwise-identical output, so it does not distinguish
+            two sets of pixels). The field name is historical; it is not
+            FP8-specific.
+          example: "dequant+w8a8_int_mm(int_mm+fused)"
 
     GeneratedImageSummary:
       type: object

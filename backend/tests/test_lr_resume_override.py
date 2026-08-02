@@ -693,7 +693,8 @@ class VaeResumeWiringTest(_LrAssertions):
         names = ["decoder.a", "decoder.b"]
         ckpt_params = [torch.nn.Parameter(torch.full((4,), 3.0)) for _ in names]
         ckpt_opt = torch.optim.AdamW(
-            [{"params": [p]} for p in ckpt_params], lr=CKPT_LR)
+            [{"params": [p]} for p in ckpt_params], lr=CKPT_LR,
+            weight_decay=0.2)
         ckpt_sched = LambdaLR(ckpt_opt, lr_lambda=_warmup_lambda)
         _take_steps(ckpt_params, ckpt_opt, ckpt_sched, 5)
         ckpt_sched.last_epoch = 499          # mid-warmup, multiplier = 0.5
@@ -706,7 +707,8 @@ class VaeResumeWiringTest(_LrAssertions):
         with open(self.ckpt_dir / "train_state.json", "w", encoding="utf-8") as f:
             json.dump({"step": RESUME_STEP,
                        "config": {"train_encoder": False, "train_decoder": True,
-                                  "decoder_blocks": "all"}}, f)
+                                  "decoder_blocks": "all", "optimizer": "adamw",
+                                  "optimizer_weight_decay": 0.2}}, f)
 
         # ---- a trainer built from the NEW config LR ------------------------
         trainer = VaeTrainer.__new__(VaeTrainer)
@@ -714,13 +716,15 @@ class VaeResumeWiringTest(_LrAssertions):
         trainer.device = "cpu"
         trainer.ema = None
         trainer.train_encoder = False
-        trainer.cfg = {"learning_rate": CFG_LR, "train_decoder": True,
+        trainer.cfg = {"learning_rate": CFG_LR, "optimizer": "adamw",
+                       "optimizer_weight_decay": 0.03, "train_decoder": True,
                        "decoder_blocks": "all", "encoder_blocks": "none"}
         trainer.trainable_names = names
         trainer.trainable_params = [torch.nn.Parameter(torch.zeros(4))
                                     for _ in names]
         trainer.optimizer = torch.optim.AdamW(
-            [{"params": [p]} for p in trainer.trainable_params], lr=CFG_LR)
+            [{"params": [p]} for p in trainer.trainable_params], lr=CFG_LR,
+            weight_decay=0.03)
         trainer.lr_scheduler = LambdaLR(trainer.optimizer, lr_lambda=_warmup_lambda)
         self.trainer = trainer
 
@@ -754,6 +758,13 @@ class VaeResumeWiringTest(_LrAssertions):
                     self.trainer.lr_scheduler, 3)
         expected = CFG_LR * _warmup_lambda(self.trainer.lr_scheduler.last_epoch)
         self.assertLrEqual(self.trainer.optimizer.param_groups[0]["lr"], expected)
+
+    def test_vae_resume_reasserts_config_weight_decay(self):
+        self.trainer.load_checkpoint(self.ckpt_dir)
+        self.assertEqual(
+            [group["weight_decay"] for group in self.trainer.optimizer.param_groups],
+            [0.03, 0.03],
+        )
 
 
 if __name__ == "__main__":

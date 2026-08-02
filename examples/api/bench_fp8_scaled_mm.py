@@ -163,6 +163,18 @@ that the code exists. Do not half-wire it -- when the int8 path is built, its
 own commit adds the arm plumbing AND a ``report()`` branch for this gate in
 one place, so the two never drift apart.
 
+DEFERRAL NOTE (recorded when the int8 path shipped, so the omission is visible
+rather than silent): the int8 W8A8 path and its offline quantizer HAVE now been
+built, WITHOUT the arm plumbing or the ``report()`` branch this section asks
+for -- the G2 quality measurement was deprioritized by the repo owner and the
+shipped path is opt-in (``SUSHI_INT8_MM``, default OFF), so no default was
+moved and none of the branches below has been exercised. Consequently NO G2
+claim of any kind has been earned: the int8 path carries no quality claim, and
+its measured speed numbers are micro-benchmarks of the GEMM
+(``tmp/int8_micro_bench.json``), NOT this gate's end-to-end steps/s criterion.
+The rule below is unchanged and still governs; whoever runs G2 adds the arms
+and the ``report()`` branch together, exactly as stated above.
+
 VEHICLE: Krea 2 only, quantized to int8 FROM ITS BF16 SOURCE. It must NOT be
 produced by dequantizing the shipped e4m3 checkpoint: e4m3 has already
 discarded weight information that int8 quantization cannot recover, so an

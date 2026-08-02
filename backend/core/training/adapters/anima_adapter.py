@@ -194,6 +194,56 @@ class AnimaLoRAAdapter(BaseLoRAAdapter):
 # Full-parameter adapter (skeleton; full implementation in Phase C.2)
 # ----------------------------------------------------------------------
 
+def _count_quantized_linears(module: Optional[nn.Module]) -> int:
+    """Number of ``Int8Linear`` / ``Fp8Linear`` modules under ``module``."""
+    if module is None:
+        return 0
+    try:
+        from core.models.ideogram4.vendor.int8_linear import Int8Linear
+        from core.models.ideogram4.vendor.fp8_linear import Fp8Linear
+    except Exception as e:
+        print(f"[AnimaFullParameterAdapter] weight-only quant classes unavailable "
+              f"({e}); assuming an unquantized base")
+        return 0
+    return sum(1 for m in module.modules() if isinstance(m, (Int8Linear, Fp8Linear)))
+
+
+def _reject_quantized_base(transformer: Optional[nn.Module]) -> None:
+    """Refuse full fine-tuning on a weight-only quantized Anima DiT.
+
+    ``Int8Linear`` / ``Fp8Linear`` hold ``weight`` (and ``weight_scale``) as
+    BUFFERS, not ``nn.Parameter``s, precisely so an inference path cannot
+    accidentally build an optimizer state for a non-differentiable int8 tensor.
+    The consequence for training is that ``requires_grad_(True)`` is a no-op on
+    them and ``named_parameters()`` never yields them, so a full fine-tune of a
+    quantized checkpoint would train only the layers the conversion SKIPPED --
+    on the shipped Anima int8 artifact that is 283 of 515 Linears, with every
+    self-attention projection, every cross-attention q/output and every block MLP
+    silently frozen. Loss still falls, nothing errors, and the saved checkpoint
+    reloads: the failure is invisible from the outside, which is why it is a hard
+    refusal rather than a warning.
+
+    LoRA is unaffected and deliberately still allowed: ``LoRALinearLayer`` wraps
+    the quantized module rather than differentiating through its weight, and only
+    the adapter's own float parameters are trained.
+
+    Same guard, same reasoning as ``Ideogram4FullParameterAdapter``. Anima
+    differs only in that its ordinary bf16 checkpoint trains fine, so this is
+    conditional on the base rather than unconditional.
+    """
+    n = _count_quantized_linears(transformer)
+    if not n:
+        return
+    raise NotImplementedError(
+        f"Anima full fine-tuning requires a bf16 base transformer: this checkpoint is "
+        f"weight-only quantized ({n} Int8Linear/Fp8Linear layer(s)), and those layers "
+        f"store their weights as BUFFERS. They cannot receive gradients, so a full "
+        f"fine-tune would silently train only the layers the quantization skipped "
+        f"while reporting a normal, falling loss. Use LoRA on this checkpoint (that "
+        f"path works: the adapter wraps the quantized Linears), or select the "
+        f"unquantized bf16 Anima checkpoint for full fine-tuning."
+    )
+
 class AnimaFullParameterAdapter(BaseFullParameterAdapter):
     """Full-parameter training adapter for Anima DiT models.
 
@@ -220,6 +270,7 @@ class AnimaFullParameterAdapter(BaseFullParameterAdapter):
 
     def prepare_models_for_training(self):
         trainer = self.trainer
+        _reject_quantized_base(trainer.transformer)
         train_dit = bool(getattr(trainer, "train_unet", True))
         train_adapter_only = bool(
             getattr(trainer, "train_llm_adapter",
@@ -289,6 +340,10 @@ class AnimaFullParameterAdapter(BaseFullParameterAdapter):
         trainer = self.trainer
         if trainer.transformer is None:
             return []
+        # Second gate, not a duplicate: a caller that builds the optimizer without
+        # going through prepare_models_for_training() would otherwise get the
+        # silently-partial parameter list this guard exists to prevent.
+        _reject_quantized_base(trainer.transformer)
 
         base_lr = getattr(trainer, "unet_lr", None) or getattr(trainer, "learning_rate", 1e-5)
         attn_mlp_factor = float(trainer.config.get("anima_attn_mlp_lr_factor", 1.0))

@@ -881,13 +881,52 @@ def _anima_patch_linear_fp8(linear, fp8_dtype):
     linear.forward = patched_forward
 
 
+def _anima_already_weight_only_quantized(model) -> int:
+    """Count ``Int8Linear`` / ``Fp8Linear`` modules under ``model``.
+
+    Non-zero means the checkpoint was quantized OFFLINE (per-output-row scales,
+    swapped in by ``anima_loader._swap_quantized_linears``) and already owns the
+    superior path: a real W8A8 GEMM where the shape gates allow, and a dequant
+    matmul otherwise. Detection is by module type, not by weight dtype, so it
+    cannot be confused by a checkpoint that merely happens to store float8.
+    """
+    try:
+        from core.models.ideogram4.vendor.int8_linear import Int8Linear
+        from core.models.ideogram4.vendor.fp8_linear import Fp8Linear
+    except Exception:
+        return 0
+    return sum(1 for m in model.modules() if isinstance(m, (Int8Linear, Fp8Linear)))
+
+
 def _anima_quantize_fp8(model, quantization: str, label: str):
     """Apply FP8 weight-only quantization with on-the-fly dequant to all
     nn.Linear modules in `model`. Embeddings are left untouched (they're
     looked up, not matmul'd, so we can't safely dequant on lookup).
 
     Returns the model with Linear forward methods replaced.
+
+    SUPERSEDED BY AN OFFLINE-QUANTIZED CHECKPOINT. This is the legacy runtime
+    path: it deep-copies the module and replaces every ``nn.Linear.forward``
+    with a full-weight dequantization per call. On an Anima checkpoint that
+    already carries ``Int8Linear`` / ``Fp8Linear`` layers that would be strictly
+    worse -- it would deep-copy 2.5 GB, then leave those modules alone anyway
+    (they are not ``nn.Linear`` and the loop would skip them), so the only
+    effect would be the copy. It returns the model untouched in that case, and
+    says so.
     """
+    already = _anima_already_weight_only_quantized(model)
+    if already:
+        print(f"[Quantization] Anima {label} is already weight-only quantized "
+              f"({already} Int8Linear/Fp8Linear layer(s) from the checkpoint); "
+              f"ignoring the runtime '{quantization}' request. The per-row-scaled "
+              f"layers already hold their weights in 8 bits.")
+        _add_generation_warning(
+            f"Anima {label} quantization '{quantization}' was ignored: the checkpoint is "
+            f"already weight-only quantized ({already} layers).",
+            code="quantization_superseded",
+        )
+        return model
+
     if quantization == 'fp8_e4m3fn':
         fp8_dtype = torch.float8_e4m3fn
         dtype_name = "FP8 E4M3FN"

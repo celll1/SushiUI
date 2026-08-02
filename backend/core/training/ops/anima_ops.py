@@ -60,6 +60,26 @@ def load_components(trainer) -> None:
     # Cast VAE to the desired dtype.
     trainer.vae = trainer.vae.to(dtype=trainer.vae_dtype)
 
+    # A training process is DEQUANT-ONLY (see ideogram4_ops.load_components for
+    # the full reasoning). An Anima DiT loaded from a weight-only int8/fp8
+    # checkpoint owns Int8Linear / Fp8Linear modules whose W8A8 fast paths are
+    # enabled by process-wide env flags that training_process.py copies from the
+    # backend (os.environ.copy()), and grad mode is not a usable proxy for "this
+    # is inference". Switch both off explicitly on every module this trainer
+    # owns, so a LoRA is fitted against exactly the base function everyone else
+    # runs -- and so training-time sample previews, which run under the
+    # pipeline's no_grad denoise loop, cannot be W8A8 while the trained weights
+    # are not. Two separate module types with two separate per-instance
+    # opt-outs: disabling one does not disable the other. No-op on a bf16 base,
+    # which is every Anima checkpoint that ships today.
+    from core.models.ideogram4.vendor.fp8_linear import disable_scaled_mm
+    from core.models.ideogram4.vendor.int8_linear import disable_int8_mm
+    for _label, _module in (("transformer", trainer.transformer),
+                            ("text_encoder", trainer.text_encoder)):
+        if _module is not None:
+            disable_scaled_mm(_module, label=f"anima training {_label}")
+            disable_int8_mm(_module, label=f"anima training {_label}")
+
     # Gradient checkpointing mode for the DiT blocks. Three options:
     #   standard         (default) — activations stay on GPU
     #   cpu_offload      — blocking CPU offload (saves VRAM, slower)

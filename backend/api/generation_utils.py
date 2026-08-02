@@ -803,11 +803,11 @@ def extract_fp8_gemm_info(pipeline_manager) -> str:
     """Describe the quantized GEMM path that served this generation, or "" if N/A.
 
     Only weight-only quantized checkpoints have anything to report, and only on
-    the two architectures that carry ``Fp8Linear`` (Ideogram 4, Krea 2). INT8 is
-    narrower still: only the Krea 2 loader swaps ``Int8Linear`` today, so an
-    ``int8_*`` / ``w8a8_int_mm`` label can only come from a Krea 2 checkpoint. A
-    bf16 checkpoint on either arch, or any other architecture, returns "" and
-    records nothing.
+    the three architectures whose loaders swap in the quantized Linear classes:
+    Ideogram 4 (``Fp8Linear`` only), Krea 2 and Anima (either class, since both
+    of their loaders detect int8 and fp8 independently and a converted artifact
+    is mixed by design). A bf16 checkpoint on any of them, or any other
+    architecture, returns "" and records nothing.
 
     The RESOLVED path is what is recorded, not the flag: a W8A8 path can be
     enabled while the per-device probe finds nothing usable, in which case every
@@ -832,6 +832,7 @@ def extract_fp8_gemm_info(pipeline_manager) -> str:
     comp_attr = {
         "ideogram4": "ideogram4_components",
         "krea2": "krea2_components",
+        "anima": "anima_components",
     }.get(info.get("type", ""))
     if not comp_attr:
         return ""

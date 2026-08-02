@@ -2255,6 +2255,57 @@ export const restartBoth = async () => {
   }, 2000);
 };
 
+// --- Process-level quantized GEMM paths -------------------------------------
+// These are per-process modes, NOT generation parameters: they are not stored
+// with an image and not part of GenerationParams. The path a given image
+// actually ran is recorded separately in GeneratedImage.fp8_gemm.
+
+export interface Fp8ScaledMmState {
+  enabled: boolean;
+  origin: "default" | "env" | "api";
+  /**
+   * Probe result per "<device>/<activation dtype>" key. null means no
+   * torch._scaled_mm variant worked for that key, so those layers run the
+   * dequantized matmul even while `enabled` is true. Empty until an FP8 Linear
+   * forward has reached the probe in this process.
+   */
+  resolved_modes: Record<string, "rowwise_bias" | "rowwise" | "tensorwise" | null>;
+}
+
+export interface Int8MmState {
+  enabled: boolean;
+  origin: "default" | "env" | "api";
+  /**
+   * Probe result per device. "int_mm" means torch._int_mm reproduced an int32
+   * reference product; null means it was unusable, so those layers run the
+   * dequantized matmul even while `enabled` is true. Empty until an INT8 Linear
+   * forward has reached the probe in this process.
+   */
+  resolved_modes: Record<string, "int_mm" | null>;
+}
+
+export const getFp8ScaledMm = async (): Promise<Fp8ScaledMmState> => {
+  const response = await api.get("/system/fp8-scaled-mm");
+  return response.data;
+};
+
+/** Throws on 409 while a generation or training run is active. */
+export const setFp8ScaledMm = async (enabled: boolean): Promise<Fp8ScaledMmState> => {
+  const response = await api.post("/system/fp8-scaled-mm", { enabled });
+  return response.data;
+};
+
+export const getInt8Mm = async (): Promise<Int8MmState> => {
+  const response = await api.get("/system/int8-mm");
+  return response.data;
+};
+
+/** Throws on 409 while a generation or training run is active. */
+export const setInt8Mm = async (enabled: boolean): Promise<Int8MmState> => {
+  const response = await api.post("/system/int8-mm", { enabled });
+  return response.data;
+};
+
 export const getControlNets = async () => {
   const response = await api.get("/controlnets");
   return response.data;

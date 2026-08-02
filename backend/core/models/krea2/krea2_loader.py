@@ -211,6 +211,7 @@ def _build_transformer_from_dir(model_path: str, torch_dtype: torch.dtype):
                 config[k] = file_cfg[k]
 
     state_dict = _load_component_state_dict(transformer_dir, "diffusion_pytorch_model")
+    reject_unsupported_quant(transformer_dir, {}, state_dict)
     diffusers_sd, _ = normalize_state_dict(state_dict, metadata={})
     return build_krea2_transformer(diffusers_sd, config, torch_dtype)
 

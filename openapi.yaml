@@ -2220,8 +2220,8 @@ paths:
         probe yet in this process.
 
         Applies only to architectures whose checkpoints carry weight-only FP8
-        Linear weights (Ideogram 4, Krea 2). Training processes are always on the
-        dequantized matmul, independently of this setting.
+        Linear weights (Ideogram 4, Krea 2, Anima). Training processes are always
+        on the dequantized matmul, independently of this setting.
       operationId: getFp8ScaledMm
       responses:
         '200':
@@ -2321,10 +2321,10 @@ paths:
         what ran.
 
         Applies only to architectures whose checkpoints carry weight-only INT8
-        Linear weights. Only the Krea 2 loader swaps `Int8Linear` today (the
-        Ideogram 4 loader handles weight-only FP8 and nf4, not INT8), so this
-        setting is a no-op for every other architecture. Training processes are
-        always on the dequantized matmul, independently of this setting.
+        Linear weights. The Krea 2 and Anima loaders swap `Int8Linear`; the
+        Ideogram 4 loader handles weight-only FP8 and nf4, not INT8. This setting
+        is a no-op for every other architecture. Training processes are always on
+        the dequantized matmul, independently of this setting.
       operationId: getInt8Mm
       responses:
         '200':
@@ -8596,9 +8596,9 @@ components:
           type: string
           description: |
             Quantized Linear GEMM path that produced the image. Present only on
-            rows from a weight-only FP8 checkpoint (Ideogram 4, Krea 2) or a
-            weight-only INT8 checkpoint (Krea 2 only -- the Ideogram 4 loader
-            does not swap `Int8Linear`).
+            rows from a weight-only FP8 checkpoint (Ideogram 4, Krea 2, Anima)
+            or a weight-only INT8 checkpoint (Krea 2, Anima -- the Ideogram 4
+            loader does not swap `Int8Linear`).
             Opaque mechanism label, kept as ONE field across both formats: the
             FP8 stems are `w8a8_scaled_mm(...)` / `dequant...` and the INT8 stems
             are `w8a8_int_mm(...)` / `int8_dequant...`. A mixed int8/e4m3

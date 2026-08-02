@@ -860,14 +860,6 @@ async def generate_txt2img(
         _current_arch = pipeline_manager.current_model_info.get("type") if pipeline_manager.current_model_info else None
         check_arch_capabilities(params, _current_arch)
 
-        # Quantized-GEMM path: force the process flags for THIS generation when
-        # the caller asked explicitly. Called directly rather than via
-        # POST /system/* -- that endpoint's fail-closed busy check would return
-        # 409 against this very run, which is already `running` by now. A None
-        # mode touches nothing (the env / manual value stands).
-        from api.quantized_gemm import apply_quantized_gemm_mode
-        apply_quantized_gemm_mode(quantized_gemm_mode)
-
         # Progress callback to send updates via WebSocket
         progress_callback = create_progress_callback_factory(
             taesd_manager,
@@ -917,10 +909,14 @@ async def generate_txt2img(
         generation_timer.reset()
         _gen_start = time.perf_counter()
         async with gpu_coordinator.generation_slot(estimated_peak_gb=_peak_gb, timeout=60.0):
+            # GEMM flags are process-wide; keep selection and probing in this slot.
+            from api.quantized_gemm import apply_quantized_gemm_mode
+            apply_quantized_gemm_mode(quantized_gemm_mode)
             image, actual_seed, actual_ancestral_seed = await _run_generation_in_executor(
                 loop, executor,
                 lambda: pipeline_manager.generate_txt2img(params, progress_callback=progress_callback, step_callback=step_callback)
             )
+            fp8_gemm = extract_fp8_gemm_info(pipeline_manager)
         # Record total wall time + any phase breakdown the pipeline populated.
         apply_generation_timings(params, time.perf_counter() - _gen_start)
 
@@ -944,7 +940,7 @@ async def generate_txt2img(
             # that chains latents must still surface a degraded "w8a8" request.
             from api.quantized_gemm import report_quantized_gemm_outcome
             report_quantized_gemm_outcome(
-                quantized_gemm_mode, extract_fp8_gemm_info(pipeline_manager), _current_arch
+                quantized_gemm_mode, fp8_gemm, _current_arch
             )
             complete_generation({"latent_id": latent_id, "seed": actual_seed}, generation_id=_gen_id)
             return {"success": True, "latent_id": latent_id, "actual_seed": actual_seed, "warnings": get_warnings(_gen_id)}
@@ -972,7 +968,6 @@ async def generate_txt2img(
         # Linear weights, and it records the RESOLVED path rather than the flag —
         # the W8A8 path can be enabled while the device probe rejects every
         # scaling mode, and the two paths are numerically different.
-        fp8_gemm = extract_fp8_gemm_info(pipeline_manager)
         if fp8_gemm:
             params["fp8_gemm"] = fp8_gemm
         # Report an explicit "w8a8" request that resolved to the dequant path
@@ -1838,14 +1833,6 @@ async def generate_img2img(
         _current_arch = pipeline_manager.current_model_info.get("type") if pipeline_manager.current_model_info else None
         check_arch_capabilities(params, _current_arch)
 
-        # Quantized-GEMM path: force the process flags for THIS generation when
-        # the caller asked explicitly. Called directly rather than via
-        # POST /system/* -- that endpoint's fail-closed busy check would return
-        # 409 against this very run, which is already `running` by now. A None
-        # mode touches nothing (the env / manual value stands).
-        from api.quantized_gemm import apply_quantized_gemm_mode
-        apply_quantized_gemm_mode(quantized_gemm_mode)
-
         # Progress callback to send updates via WebSocket
         progress_callback = create_progress_callback_factory(
             taesd_manager,
@@ -1896,10 +1883,14 @@ async def generate_img2img(
         generation_timer.reset()
         _gen_start = time.perf_counter()
         async with gpu_coordinator.generation_slot(estimated_peak_gb=_peak_gb, timeout=60.0):
+            # GEMM flags are process-wide; keep selection and probing in this slot.
+            from api.quantized_gemm import apply_quantized_gemm_mode
+            apply_quantized_gemm_mode(quantized_gemm_mode)
             result_image, actual_seed, actual_ancestral_seed = await _run_generation_in_executor(
                 loop, executor,
                 lambda: pipeline_manager.generate_img2img(params, init_image, progress_callback=progress_callback, step_callback=step_callback)
             )
+            fp8_gemm = extract_fp8_gemm_info(pipeline_manager)
         # Record total wall time + any phase breakdown the pipeline populated.
         apply_generation_timings(params, time.perf_counter() - _gen_start)
 
@@ -1923,7 +1914,7 @@ async def generate_img2img(
             # that chains latents must still surface a degraded "w8a8" request.
             from api.quantized_gemm import report_quantized_gemm_outcome
             report_quantized_gemm_outcome(
-                quantized_gemm_mode, extract_fp8_gemm_info(pipeline_manager), _current_arch
+                quantized_gemm_mode, fp8_gemm, _current_arch
             )
             complete_generation({"latent_id": latent_id, "seed": actual_seed}, generation_id=_gen_id)
             return {"success": True, "latent_id": latent_id, "actual_seed": actual_seed, "warnings": get_warnings(_gen_id)}
@@ -1950,7 +1941,6 @@ async def generate_img2img(
         # Linear weights, and it records the RESOLVED path rather than the flag —
         # the W8A8 path can be enabled while the device probe rejects every
         # scaling mode, and the two paths are numerically different.
-        fp8_gemm = extract_fp8_gemm_info(pipeline_manager)
         if fp8_gemm:
             params["fp8_gemm"] = fp8_gemm
         # Report an explicit "w8a8" request that resolved to the dequant path
@@ -3897,14 +3887,6 @@ async def generate_inpaint(
         _current_arch = pipeline_manager.current_model_info.get("type") if pipeline_manager.current_model_info else None
         check_arch_capabilities(params, _current_arch)
 
-        # Quantized-GEMM path: force the process flags for THIS generation when
-        # the caller asked explicitly. Called directly rather than via
-        # POST /system/* -- that endpoint's fail-closed busy check would return
-        # 409 against this very run, which is already `running` by now. A None
-        # mode touches nothing (the env / manual value stands).
-        from api.quantized_gemm import apply_quantized_gemm_mode
-        apply_quantized_gemm_mode(quantized_gemm_mode)
-
         # Progress callback to send updates via WebSocket
         progress_callback = create_progress_callback_factory(
             taesd_manager,
@@ -3955,10 +3937,14 @@ async def generate_inpaint(
         generation_timer.reset()
         _gen_start = time.perf_counter()
         async with gpu_coordinator.generation_slot(estimated_peak_gb=_peak_gb, timeout=60.0):
+            # GEMM flags are process-wide; keep selection and probing in this slot.
+            from api.quantized_gemm import apply_quantized_gemm_mode
+            apply_quantized_gemm_mode(quantized_gemm_mode)
             result_image, actual_seed, actual_ancestral_seed = await _run_generation_in_executor(
                 loop, executor,
                 lambda: pipeline_manager.generate_inpaint(params, init_image, mask_image, progress_callback=progress_callback, step_callback=step_callback)
             )
+            fp8_gemm = extract_fp8_gemm_info(pipeline_manager)
         # Record total wall time + any phase breakdown the pipeline populated.
         apply_generation_timings(params, time.perf_counter() - _gen_start)
 
@@ -3988,7 +3974,6 @@ async def generate_inpaint(
         # Linear weights, and it records the RESOLVED path rather than the flag —
         # the W8A8 path can be enabled while the device probe rejects every
         # scaling mode, and the two paths are numerically different.
-        fp8_gemm = extract_fp8_gemm_info(pipeline_manager)
         if fp8_gemm:
             params["fp8_gemm"] = fp8_gemm
         # Report an explicit "w8a8" request that resolved to the dequant path
@@ -4622,14 +4607,6 @@ async def generate_outpaint(
         _current_arch = pipeline_manager.current_model_info.get("type") if pipeline_manager.current_model_info else None
         check_arch_capabilities(params, _current_arch)
 
-        # Quantized-GEMM path: force the process flags for THIS generation when
-        # the caller asked explicitly. Called directly rather than via
-        # POST /system/* -- that endpoint's fail-closed busy check would return
-        # 409 against this very run, which is already `running` by now. A None
-        # mode touches nothing (the env / manual value stands).
-        from api.quantized_gemm import apply_quantized_gemm_mode
-        apply_quantized_gemm_mode(quantized_gemm_mode)
-
         # Progress callback to send updates via WebSocket. Uses the CANVAS
         # size (the actual output dimensions), not the raw input image size.
         progress_callback = create_progress_callback_factory(
@@ -4681,10 +4658,14 @@ async def generate_outpaint(
         generation_timer.reset()
         _gen_start = time.perf_counter()
         async with gpu_coordinator.generation_slot(estimated_peak_gb=_peak_gb, timeout=60.0):
+            # GEMM flags are process-wide; keep selection and probing in this slot.
+            from api.quantized_gemm import apply_quantized_gemm_mode
+            apply_quantized_gemm_mode(quantized_gemm_mode)
             result_image, actual_seed, actual_ancestral_seed = await _run_generation_in_executor(
                 loop, executor,
                 lambda: pipeline_manager.generate_outpaint(params, init_image, progress_callback=progress_callback, step_callback=step_callback)
             )
+            fp8_gemm = extract_fp8_gemm_info(pipeline_manager)
         # Record total wall time + any phase breakdown the pipeline populated.
         apply_generation_timings(params, time.perf_counter() - _gen_start)
 
@@ -4714,7 +4695,6 @@ async def generate_outpaint(
         # Linear weights, and it records the RESOLVED path rather than the flag —
         # the W8A8 path can be enabled while the device probe rejects every
         # scaling mode, and the two paths are numerically different.
-        fp8_gemm = extract_fp8_gemm_info(pipeline_manager)
         if fp8_gemm:
             params["fp8_gemm"] = fp8_gemm
         # Report an explicit "w8a8" request that resolved to the dequant path

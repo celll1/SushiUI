@@ -550,14 +550,16 @@ def quantize_linears_in_place(
                 staged = weight
                 chosen, q, scale, row = audit_and_quantize_int8(
                     name, staged, crest_threshold, fallback)
-            rows.append(row)
-            counts[chosen] = counts.get(chosen, 0) + 1
             if chosen == "bf16":
                 # fallback="bf16": leave the source Linear untouched.
+                rows.append(row)
+                counts[chosen] = counts.get(chosen, 0) + 1
                 del staged, q
                 continue
             setattr(parent, attr, _filled_quantized_linear(
                 src, chosen, q, scale, compute_dtype, orig_device))
+            rows.append(row)
+            counts[chosen] = counts.get(chosen, 0) + 1
             del src, weight, staged, q, scale
         except Exception as err:
             # The module is now PARTIALLY converted. Hand the caller everything

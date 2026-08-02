@@ -65,9 +65,13 @@ def load_components(trainer) -> None:
     # trainer's TE encode path goes through the @torch.no_grad()-decorated
     # ``encode_text_layers``, so neither the env flag nor grad mode can be relied
     # on to keep the W8A8 fast path out of training. Switch it off explicitly on
-    # every fp8 module this trainer owns, so the LoRA is fitted against exactly
-    # the base function everyone else runs at inference.
+    # every quantized module this trainer owns, so the LoRA is fitted against
+    # exactly the base function everyone else runs at inference. The INT8 W8A8
+    # path (torch._int_mm, SUSHI_INT8_MM) is switched off by the same rule and
+    # for the same reasons -- it is a separate module type with a separate
+    # per-instance opt-out, so disabling one does not disable the other.
     from core.models.ideogram4.vendor.fp8_linear import disable_scaled_mm
+    from core.models.ideogram4.vendor.int8_linear import disable_int8_mm
     for _label, _module in (
         ("transformer", trainer.transformer),
         ("transformer_uncond", trainer.transformer_uncond),
@@ -75,6 +79,7 @@ def load_components(trainer) -> None:
     ):
         if _module is not None:
             disable_scaled_mm(_module, label=f"ideogram4 training {_label}")
+            disable_int8_mm(_module, label=f"ideogram4 training {_label}")
 
     # Gradient checkpointing.
     if not trainer.gradient_checkpointing:

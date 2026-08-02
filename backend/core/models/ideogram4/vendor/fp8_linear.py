@@ -70,10 +70,30 @@ FP8_TEXT_ENCODER_CONFIG_FLAG = "ideogram_fp8_weight_only"
 
 
 def is_fp8_state_dict(state_dict: dict[str, torch.Tensor]) -> bool:
-    """True if the checkpoint carries weight-only FP8 Linear weights."""
-    return any(k.endswith(FP8_SCALE_SUFFIX) for k in state_dict) or any(
-        v.dtype == FP8_WEIGHT_DTYPE for v in state_dict.values()
-    )
+    """True if the checkpoint carries weight-only FP8 Linear weights.
+
+    Keyed on BOTH the ``.weight_scale`` sibling and an ``e4m3`` weight, because
+    ``int8_linear`` deliberately uses the IDENTICAL scale suffix and only the
+    weight dtype tells the two formats apart. The suffix alone would answer True
+    for a pure INT8 checkpoint, and ``swap_linears_to_fp8`` would then claim its
+    layers and ``copy_`` int8 codes into an e4m3 buffer -- silently, since the
+    load itself succeeds.
+
+    The second clause keeps a checkpoint whose e4m3 weights carry no scales
+    (nothing this repo emits, but a valid weight-only file) detected as FP8;
+    it cannot fire on an int8 checkpoint, which contains no e4m3 tensor.
+
+    A MIXED int8/e4m3 checkpoint -- what the offline tool's per-layer selection
+    produces -- answers True here and True to ``is_int8_state_dict``, and both
+    swaps run in either order, each taking only its own layers.
+    """
+    for key in state_dict:
+        if not key.endswith(FP8_SCALE_SUFFIX):
+            continue
+        weight = state_dict.get(key[: -len(FP8_SCALE_SUFFIX)] + ".weight")
+        if weight is not None and weight.dtype == FP8_WEIGHT_DTYPE:
+            return True
+    return any(v.dtype == FP8_WEIGHT_DTYPE for v in state_dict.values())
 
 
 def quantize_weight_to_fp8(weight: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
@@ -820,16 +840,26 @@ def swap_linears_to_fp8(
     *,
     prefix: str = "",
 ) -> int:
-    """Replace each ``nn.Linear`` that has a saved FP8 scale with an ``Fp8Linear``.
+    """Replace each ``nn.Linear`` with an e4m3 saved weight by an ``Fp8Linear``.
 
-    Gating on the presence of ``<name>.weight_scale`` means only layers that were
-    actually quantized at save time are swapped; everything else loads normally in
-    the compute dtype. Returns the number of layers swapped.
+    Gated on BOTH ``<name>.weight_scale`` being present AND ``<name>.weight``
+    being ``float8_e4m3fn``. The scale suffix alone is NOT sufficient: it is
+    shared with ``int8_linear``'s format, and without the dtype test this would
+    claim int8 layers and ``copy_`` their integer codes into an e4m3 buffer
+    without raising. With the dtype test, a mixed checkpoint can run this and
+    ``swap_linears_to_int8`` in either order and each takes only its own layers.
+    Everything else loads normally in the compute dtype. Returns the count.
     """
     swapped = 0
     for name, child in list(module.named_children()):
         child_prefix = f"{prefix}{name}"
-        if isinstance(child, nn.Linear) and f"{child_prefix}{FP8_SCALE_SUFFIX}" in state_dict:
+        weight = state_dict.get(f"{child_prefix}.weight")
+        if (
+            isinstance(child, nn.Linear)
+            and f"{child_prefix}{FP8_SCALE_SUFFIX}" in state_dict
+            and weight is not None
+            and weight.dtype == FP8_WEIGHT_DTYPE
+        ):
             setattr(
                 module,
                 name,

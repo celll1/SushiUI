@@ -73,11 +73,18 @@ def load_components(trainer) -> None:
     # sample generation runs both under the pipeline's no_grad denoise loop --
     # which would make the validation previews W8A8 while the trained weights are
     # not. Both are gated below; this is a no-op when a module is bf16.
+    # The INT8 W8A8 path (torch._int_mm, SUSHI_INT8_MM) is gated by the same rule
+    # and for the same reasons; it is a separate module type with its own
+    # per-instance opt-out, so disabling one does not disable the other. A Krea 2
+    # int8 checkpoint is MIXED (high-crest layers fall back to e4m3), so a single
+    # trainer can own both module types at once.
     from core.models.ideogram4.vendor.fp8_linear import disable_scaled_mm
+    from core.models.ideogram4.vendor.int8_linear import disable_int8_mm
     for _label, _module in (("transformer", trainer.transformer),
                             ("text_encoder", trainer.text_encoder)):
         if _module is not None:
             disable_scaled_mm(_module, label=f"krea2 training {_label}")
+            disable_int8_mm(_module, label=f"krea2 training {_label}")
 
     # Gradient checkpointing on the vendored transformer.
     if trainer.gradient_checkpointing and hasattr(trainer.transformer, "enable_gradient_checkpointing"):

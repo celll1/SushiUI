@@ -5745,6 +5745,11 @@ class Fp8ScaledMmRequest(BaseModel):
     enabled: bool
 
 
+class Int8MmRequest(BaseModel):
+    """Body of ``POST /system/int8-mm``."""
+    enabled: bool
+
+
 def _fp8_scaled_mm_busy_reason() -> Optional[str]:
     """Why the FP8 GEMM path must not be flipped right now, or None.
 
@@ -5807,6 +5812,46 @@ async def set_fp8_scaled_mm(request: Fp8ScaledMmRequest):
     try:
         from core.models.ideogram4.vendor.fp8_linear import set_scaled_mm_enabled
         return set_scaled_mm_enabled(bool(request.enabled), origin="api")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/system/int8-mm")
+async def get_int8_mm():
+    """Report the INT8 W8A8 ``torch._int_mm`` state of this backend process."""
+    try:
+        from core.models.ideogram4.vendor.int8_linear import get_int8_mm_state
+        return get_int8_mm_state()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/system/int8-mm")
+async def set_int8_mm(request: Int8MmRequest):
+    """Select the INT8 GEMM path (W8A8 integer GEMM or dequantized matmul).
+
+    Per-process and not persisted: a restart returns to the value the
+    environment gives (default off). Independent of ``/system/fp8-scaled-mm``;
+    a mixed int8/e4m3 checkpoint is governed by both, each over its own layers.
+    """
+    # Same busy check as the FP8 toggle, reused rather than duplicated: the
+    # reason to refuse is identical (both paths are numerically valid but
+    # DIFFERENT, and a mid-run flip corrupts the ``fp8_gemm`` metadata recorded
+    # for that run), and it fails CLOSED for the same reason.
+    busy = _fp8_scaled_mm_busy_reason()
+    if busy:
+        raise HTTPException(
+            status_code=409,
+            detail=(f"Cannot change the INT8 GEMM path while {busy}. The two paths "
+                    f"are numerically different, so a mid-run change would make the "
+                    f"recorded metadata describe a path that produced only part of "
+                    f"the result."),
+        )
+    try:
+        from core.models.ideogram4.vendor.int8_linear import set_int8_mm_enabled
+        return set_int8_mm_enabled(bool(request.enabled), origin="api")
     except HTTPException:
         raise
     except Exception as e:

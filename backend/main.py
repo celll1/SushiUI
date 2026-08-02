@@ -133,6 +133,27 @@ async def startup_event():
 
     asyncio.create_task(report_fp8_gemm_path())
 
+    # Same for the INT8 W8A8 path (torch._int_mm, POST /api/v1/system/int8-mm).
+    # Independent of the FP8 one: a checkpoint from the int8 conversion tool is
+    # mixed (high-crest layers fall back to e4m3), so both settings can matter
+    # for the same model and an operator needs both reported.
+    async def report_int8_gemm_path():
+        try:
+            def _state():
+                from core.models.ideogram4.vendor.int8_linear import get_int8_mm_state
+                return get_int8_mm_state()
+            state = await asyncio.to_thread(_state)
+            path = ("W8A8 torch._int_mm (where the per-device probe succeeds and the "
+                    "shape gates allow)" if state["enabled"] else "dequantized matmul")
+            print(f"[Startup] INT8 Linear GEMM path: {path} "
+                  f"(enabled={state['enabled']}, origin={state['origin']}). "
+                  f"Applies to weight-only INT8 checkpoints (Krea 2; the "
+                  f"Ideogram 4 loader does not swap Int8Linear).")
+        except Exception as e:
+            print(f"[Startup] Could not report the INT8 GEMM path: {e}")
+
+    asyncio.create_task(report_int8_gemm_path())
+
     # Pre-scan models, LoRAs, ControlNets in background to populate cache
     async def prescan_resources():
         try:

@@ -25,9 +25,25 @@ from .fp8_linear import (
     swap_linears_to_bnb4bit,
     swap_linears_to_fp8,
 )
+from .int8_linear import (
+    Int8Linear,
+    describe_gemm_path as describe_int8_gemm_path,
+    disable_int8_mm,
+    get_int8_mm_state,
+    is_int8_state_dict,
+    set_int8_mm_enabled,
+    swap_linears_to_int8,
+)
 from .text_encoder import load_ideogram4_text_encoder
 
 __all__ = [
+    "Int8Linear",
+    "describe_int8_gemm_path",
+    "disable_int8_mm",
+    "get_int8_mm_state",
+    "is_int8_state_dict",
+    "set_int8_mm_enabled",
+    "swap_linears_to_int8",
     "Ideogram4Transformer2DModel",
     "IMAGE_POSITION_OFFSET",
     "LLM_TOKEN_INDICATOR",

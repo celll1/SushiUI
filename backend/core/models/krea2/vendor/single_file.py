@@ -62,6 +62,11 @@ from core.models.ideogram4.vendor.fp8_linear import (
     load_fp8_state_dict,
     swap_linears_to_fp8,
 )
+# ... and the INT8 sibling (per-row int8 + float32 scale, same suffix).
+from core.models.ideogram4.vendor.int8_linear import (
+    is_int8_state_dict,
+    swap_linears_to_int8,
+)
 
 
 TRANSFORMER_PREFIX = "transformer."
@@ -336,14 +341,36 @@ def build_krea2_transformer(
     torch_dtype: torch.dtype = torch.bfloat16,
 ) -> Krea2Transformer2DModel:
     """Instantiate a Krea2Transformer2DModel from config and load a diffusers-format
-    state dict. Weight-only FP8 checkpoints (per-row ``.weight_scale``) keep their
-    float8 Linear weights; everything else loads as ``torch_dtype``."""
+    state dict. Weight-only quantized checkpoints (per-row ``.weight_scale``) keep
+    their float8/int8 Linear weights; everything else loads as ``torch_dtype``.
+
+    INT8 and FP8 are detected INDEPENDENTLY and both swaps run, because the int8
+    conversion tool emits a MIXED checkpoint on purpose: layers whose per-row
+    crest factor makes int8 worse than e4m3 fall back to e4m3, in the same file.
+    Each detector AND each swap helper gates on the weight DTYPE as well as the
+    shared ``.weight_scale`` suffix -- ``is_int8_state_dict`` /
+    ``swap_linears_to_int8`` on ``int8``, ``is_fp8_state_dict`` /
+    ``swap_linears_to_fp8`` on ``float8_e4m3fn`` -- so neither can claim the
+    other's layers and the order between the two calls below does not matter (a
+    layer already replaced is no longer an ``nn.Linear``). The suffix test alone
+    would NOT give that: it would let the fp8 swap take int8 layers and ``copy_``
+    integer codes into an e4m3 buffer without raising. ``load_fp8_state_dict`` then serves both: it keys on
+    "is this floating point?", so an int8 weight is moved to the device with its
+    dtype intact exactly as a float8 one is."""
     model = Krea2Transformer2DModel.from_config(config)
 
-    if is_fp8_state_dict(diffusers_sd):
+    has_int8 = is_int8_state_dict(diffusers_sd)
+    has_fp8 = is_fp8_state_dict(diffusers_sd)
+    if has_int8 or has_fp8:
         model.to(torch_dtype)
-        swapped = swap_linears_to_fp8(model, diffusers_sd, compute_dtype=torch_dtype)
-        print(f"[Krea2] weight-only FP8: swapped {swapped} Linear(s) to Fp8Linear")
+        n_int8 = swap_linears_to_int8(model, diffusers_sd, compute_dtype=torch_dtype) if has_int8 else 0
+        n_fp8 = swap_linears_to_fp8(model, diffusers_sd, compute_dtype=torch_dtype) if has_fp8 else 0
+        parts = []
+        if n_int8:
+            parts.append(f"{n_int8} Int8Linear")
+        if n_fp8:
+            parts.append(f"{n_fp8} Fp8Linear")
+        print(f"[Krea2] weight-only quantized: swapped {' + '.join(parts) or 'no'} Linear(s)")
         load_fp8_state_dict(
             model, diffusers_sd, device=torch.device("cpu"), dtype=torch_dtype,
             assign=False, strict=False,

@@ -314,10 +314,13 @@ class GeneratedImage(GalleryBase):
             if "vae_hash" in self.parameters and not legacy_override:
                 result["vae_hash"] = self.parameters["vae_hash"]
 
-            # FP8 GEMM path. Present only on rows produced by a weight-only FP8
-            # checkpoint (Ideogram 4 / Krea 2); surfaced verbatim, as the value is
-            # a mechanism label ("w8a8_scaled_mm(tensorwise)" / "dequant") with no
-            # path in it.
+            # Quantized-Linear GEMM path. Present only on rows produced by a
+            # weight-only FP8 checkpoint (Ideogram 4 / Krea 2) or a weight-only
+            # INT8 checkpoint (Krea 2 only, today); surfaced
+            # verbatim, as the value is a mechanism label
+            # ("w8a8_scaled_mm(tensorwise)" / "w8a8_int_mm(int_mm+fused)" /
+            # "dequant" / "int8_dequant", possibly two joined with "+") with no
+            # path in it. The key name is historical, not FP8-specific.
             if "fp8_gemm" in self.parameters:
                 result["fp8_gemm"] = self.parameters["fp8_gemm"]
 

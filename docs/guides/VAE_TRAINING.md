@@ -502,8 +502,33 @@ is rejected on both paths, manifest or not. Same-length corruption is not caught
 by sizes, so `torch.load` failures on `optimizer.pt` / `lr_scheduler.pt` are
 converted into the same refusal rather than being skipped — and those messages
 name the *other* cause that lands there, a checkpoint written under a different
-`optimizer` / `lr_scheduler` than this run's, since an optimizer state dict only
-loads back into the same optimizer type and param-group layout.
+`optimizer` / `lr_scheduler` than this run's. Optimizer state normally only
+loads back into the same implementation and parameter-group layout; the one
+explicit exception is the AdamW -> AdamW8bit migration described below.
+
+### Resume while changing AdamW to AdamW8bit
+
+VAE resume permits exactly one optimizer change: a checkpoint written by torch
+`AdamW` may resume with bitsandbytes `AdamW8bit`. `optimizer.pt` records
+`_sushi_opt_class` on new checkpoints; older VAE checkpoints can use the
+`train_state.json` config's `optimizer: adamw` as the source identity. The state
+is loaded on CPU and converted *before* `AdamW8bit.load_state_dict` runs:
+
+- `exp_avg` and `exp_avg_sq` are validated as fp32 tensors with the same shape
+  and group/parameter position as the live optimizer;
+- parameters at or above the target AdamW8bit `min_8bit_size` are quantized with
+  bitsandbytes blockwise quantization (block size 256, signed first moment,
+  unsigned second moment), while smaller parameters retain fp32 `state1` and
+  `state2`, matching AdamW8bit's own lazy state initialization;
+- the target optimizer's parameter groups are retained, and the normal resume
+  LR / weight-decay reassertion still applies.
+
+Conversion is mandatory for this pair. A group/shape mismatch, missing moments,
+unsupported target configuration, or quantization failure refuses the resume;
+the raw foreign dict is never tried. This matters because a foreign state dict
+can pass `load_state_dict` and only fail on the first optimizer step. All other
+changes (including the reverse AdamW8bit -> AdamW direction, Adafactor, Lion,
+paged and ring-buffer variants) remain refused before weights are loaded.
 
 **Conditionally-written artifacts.** `ema.safetensors` and `lr_scheduler.pt`
 (`_CKPT_CONDITIONAL`) are written only when the run *has* an EMA / a scheduler.
@@ -770,6 +795,7 @@ that will not start. All live in `vae_config.py::_validate` unless noted.
 | Resume from a checkpoint trained against a **different base VAE** | `vae_trainer.py::_assert_base_vae_matches`, before any weight is loaded. See [Resume across a changed base VAE](#resume-across-a-changed-base-vae). |
 | Resume from a checkpoint that trained a different component set | `vae_trainer.py::_assert_component_set_matches`, before any weight is loaded. A checkpoint holds exactly the parameters that were trainable when it was written, plus optimizer and EMA state indexed by that same set. Both directions were previously silent-ish: a decoder-only checkpoint resumed with the encoder on failed with a message blaming `decoder_blocks`, and the reverse loaded happily (the checkpoint is a superset) and then failed opaquely inside the optimizer state load — or not at all, if `optimizer.pt` was absent. |
 | Resume from a checkpoint whose `train_state.json`, weights, `optimizer.pt` or (when this run has a scheduler, and the file is established to have been written) `lr_scheduler.pt` is absent, empty, the wrong size or unreadable | `vae_trainer.py::_assert_checkpoint_complete`, before any state is touched. The step counter would be adopted while the missing state was silently re-initialised. `ema.safetensors` and `rng_state.pt` are the warn-and-repair tier instead, as is an absent conditional artifact on a checkpoint with no manifest. The refusal lists the intact sibling checkpoints. See [Resume from an incomplete checkpoint](#resume-from-an-incomplete-checkpoint). |
+| Resume while changing optimizer, except AdamW -> AdamW8bit | Optimizer state layouts and moment semantics are implementation-specific. AdamW -> AdamW8bit has an explicit validated conversion; the reverse direction and Adafactor/Lion/paged/ring-buffer changes are refused before weights are loaded. See [Resume while changing AdamW to AdamW8bit](#resume-while-changing-adamw-to-adamw8bit). |
 | `dtype: fp16` | SD1.5/SDXL-family VAEs overflow fp16 in decoder activations (the documented reason `sdxl-vae-fp16-fix` exists), and a training forward hits it sooner than inference. For every other family there is no `GradScaler` in this trainer, so fp16 gradients would silently underflow instead. `bf16` (default) and `fp32` are allowed. |
 | `latent_encoding_mode: pre_encoded_cache` | VAE training is *defined* by a live encode→decode forward on raw pixels; there is no cached latent to consume. Mirrors the existing outpaint-ControlNet refusal. |
 | A single-file base VAE whose `vae_arch` is empty, unknown, contradicts the file's latent-channel count, or contradicts a value the file itself provided | `vae_trainer.repair_single_file_scaling_factor`, at load time. Such a file has no `config.json`, so `vae_arch` is the only statement of which family it is, and that statement is what `save_pretrained` bakes into every export. See [the `vae_arch` matrix](#known-limits). |

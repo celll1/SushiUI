@@ -1720,6 +1720,193 @@ class VaeLossBankKlTest(unittest.TestCase):
             bank(torch.zeros(1, 3, 64, 64), torch.zeros(1, 3, 64, 64))
 
 
+class AdamW8bit:
+    """Minimal bnb-shaped CPU target for converter contract tests."""
+
+    def __init__(self, groups, min_8bit_size=64):
+        self.param_groups = groups
+        self._min_8bit_size = min_8bit_size
+
+    def state_dict(self):
+        next_id = 0
+        groups = []
+        for group in self.param_groups:
+            ids = list(range(next_id, next_id + len(group["params"])))
+            next_id += len(ids)
+            groups.append({key: value for key, value in group.items()
+                           if key != "params"} | {"params": ids})
+        return {"state": {}, "param_groups": groups}
+
+    def get_config(self, _gindex, _pindex, group):
+        return {
+            "optim_bits": 8,
+            "min_8bit_size": self._min_8bit_size,
+            "percentile_clipping": 100,
+            "block_wise": True,
+            "max_unorm": 0.0,
+            **{key: value for key, value in group.items() if key != "params"},
+        }
+
+
+def _stepped_adamw_state(shapes):
+    import torch
+    params = [torch.nn.Parameter(torch.linspace(-1.0, 1.0, shape[0]))
+              for shape in shapes]
+    optimizer = torch.optim.AdamW(
+        [{"params": [param], "lr": 1e-3, "weight_decay": 0.2}
+         for param in params]
+    )
+    for index, param in enumerate(params, 1):
+        param.grad = torch.linspace(-index, index, param.numel()).reshape_as(param)
+    optimizer.step()
+    state = optimizer.state_dict()
+    state["_sushi_opt_class"] = "AdamW"
+    return state
+
+
+class TorchAdamWToBnbAdamW8bitStateTest(unittest.TestCase):
+    """The shared converter is fully CPU-testable; no optimizer step needed."""
+
+    def test_large_states_quantize_and_small_states_stay_fp32(self):
+        import torch
+        from bitsandbytes.functional import dequantize_blockwise
+        from core.training.optimizers.optimizer_state_convert import (
+            maybe_convert_optimizer_state,
+        )
+
+        saved = _stepped_adamw_state(((300,), (8,)))
+        target = AdamW8bit(
+            [{"params": [torch.nn.Parameter(torch.zeros(300))], "lr": 7e-5},
+             {"params": [torch.nn.Parameter(torch.zeros(8))], "lr": 8e-5}],
+            min_8bit_size=64,
+        )
+        converted, carry_step = maybe_convert_optimizer_state(saved, target)
+
+        self.assertIsNotNone(converted)
+        self.assertEqual(carry_step, 1)
+        self.assertEqual(converted["param_groups"], target.state_dict()["param_groups"])
+        large, small = converted["state"][0], converted["state"][1]
+        self.assertEqual(large["state1"].dtype, torch.uint8)
+        self.assertEqual(large["state2"].dtype, torch.uint8)
+        self.assertEqual(large["absmax1"].numel(), 2)  # ceil(300 / 256)
+        self.assertEqual(large["absmax2"].numel(), 2)
+        self.assertEqual(small["state1"].dtype, torch.float32)
+        self.assertEqual(small["state2"].dtype, torch.float32)
+
+        source = saved["state"][0]
+        first = dequantize_blockwise(
+            large["state1"], absmax=large["absmax1"], code=large["qmap1"],
+            blocksize=256)
+        second = dequantize_blockwise(
+            large["state2"], absmax=large["absmax2"], code=large["qmap2"],
+            blocksize=256)
+        torch.testing.assert_close(first, source["exp_avg"], rtol=0.03, atol=5e-4)
+        torch.testing.assert_close(second, source["exp_avg_sq"],
+                                   rtol=0.03, atol=5e-7)
+
+    def test_target_groups_replace_saved_hyperparameters(self):
+        import torch
+        from core.training.optimizers.optimizer_state_convert import (
+            maybe_convert_optimizer_state,
+        )
+        saved = _stepped_adamw_state(((8,),))
+        target = AdamW8bit([{"params": [torch.nn.Parameter(torch.zeros(8))],
+                             "lr": 9e-5, "weight_decay": 0.07}])
+        converted, _ = maybe_convert_optimizer_state(saved, target)
+        self.assertEqual(converted["param_groups"][0]["lr"], 9e-5)
+        self.assertEqual(converted["param_groups"][0]["weight_decay"], 0.07)
+
+    def test_group_and_shape_mismatches_fail_without_partial_state(self):
+        import torch
+        from core.training.optimizers.optimizer_state_convert import (
+            maybe_convert_optimizer_state,
+        )
+        saved = _stepped_adamw_state(((8,), (8,)))
+        bad_grouping = AdamW8bit([{"params": [
+            torch.nn.Parameter(torch.zeros(8)), torch.nn.Parameter(torch.zeros(8))]}])
+        self.assertEqual(maybe_convert_optimizer_state(saved, bad_grouping), (None, 0))
+
+        saved = _stepped_adamw_state(((8,),))
+        bad_shape = AdamW8bit(
+            [{"params": [torch.nn.Parameter(torch.zeros(9))]}])
+        self.assertEqual(maybe_convert_optimizer_state(saved, bad_shape), (None, 0))
+
+    def test_untagged_adam_family_state_is_not_guessed_to_be_adamw(self):
+        import torch
+        from core.training.optimizers.optimizer_state_convert import (
+            maybe_convert_optimizer_state,
+        )
+        saved = _stepped_adamw_state(((8,),))
+        saved.pop("_sushi_opt_class")
+        target = AdamW8bit([{"params": [torch.nn.Parameter(torch.zeros(8))]}])
+        self.assertEqual(maybe_convert_optimizer_state(saved, target), (None, 0))
+
+    def test_step_zero_adamw_converts_to_valid_empty_target_state(self):
+        import torch
+        from core.training.optimizers.optimizer_state_convert import (
+            maybe_convert_optimizer_state,
+        )
+        source_param = torch.nn.Parameter(torch.zeros(8))
+        source = torch.optim.AdamW([{"params": [source_param], "lr": 1e-3}])
+        saved = source.state_dict()  # no step: state is legitimately empty
+        saved["_sushi_opt_class"] = "AdamW"
+        target = AdamW8bit([{"params": [torch.nn.Parameter(torch.zeros(8))],
+                             "lr": 7e-5}])
+
+        converted, carry_step = maybe_convert_optimizer_state(saved, target)
+
+        self.assertEqual(carry_step, 0)
+        self.assertEqual(converted["state"], {})
+        self.assertEqual(converted["param_groups"], target.state_dict()["param_groups"])
+
+    def test_adamw_identity_refuses_bnb_shaped_contradictory_state(self):
+        import copy
+        import torch
+        from core.training.optimizers.optimizer_state_convert import (
+            maybe_convert_optimizer_state,
+        )
+        contradictory = {
+            "state": {0: {
+                "step": 1,
+                "state1": torch.zeros(8, dtype=torch.uint8),
+                "state2": torch.zeros(8, dtype=torch.uint8),
+                "qmap1": torch.zeros(256),
+                "qmap2": torch.zeros(256),
+                "absmax1": torch.ones(1),
+                "absmax2": torch.ones(1),
+            }},
+            "param_groups": [{"params": [0]}],
+        }
+        target = AdamW8bit([{"params": [torch.nn.Parameter(torch.zeros(8))]}])
+        tagged = copy.deepcopy(contradictory)
+        tagged["_sushi_opt_class"] = "AdamW"
+        self.assertEqual(maybe_convert_optimizer_state(tagged, target), (None, 0))
+        self.assertEqual(
+            maybe_convert_optimizer_state(
+                contradictory, target, source_optimizer_name="adamw"),
+            (None, 0),
+        )
+
+    def test_checkpoint_tag_overrides_and_can_refuse_conflicting_adamw_hint(self):
+        import torch
+        from core.training.optimizers.optimizer_state_convert import (
+            detect_state_format,
+            maybe_convert_optimizer_state,
+        )
+        saved = _stepped_adamw_state(((8,),))
+        # The bytes look like torch AdamW, but the checkpoint's own known tag
+        # says otherwise. The external train_state hint cannot override it.
+        saved["_sushi_opt_class"] = "AdamW8bit"
+        target = AdamW8bit([{"params": [torch.nn.Parameter(torch.zeros(8))]}])
+
+        self.assertIsNone(detect_state_format(saved, "adamw"))
+        self.assertEqual(
+            maybe_convert_optimizer_state(
+                saved, target, source_optimizer_name="adamw"),
+            (None, 0),
+        )
+
+
 class VaeResumeCompletenessTest(unittest.TestCase):
     """An incomplete checkpoint must not resume as if it were complete.
 
@@ -1770,7 +1957,9 @@ class VaeResumeCompletenessTest(unittest.TestCase):
         if ema:
             save_file({n: p.detach().clone() for n, p in zip(self.NAMES, params)},
                       str(ckpt / "ema.safetensors"))
-        torch.save(opt.state_dict(), ckpt / "optimizer.pt")
+        optimizer_state = opt.state_dict()
+        optimizer_state["_sushi_opt_class"] = type(opt).__name__
+        torch.save(optimizer_state, ckpt / "optimizer.pt")
         if scheduler:
             sched = torch.optim.lr_scheduler.LambdaLR(opt, lr_lambda=lambda s: 1.0)
             torch.save(sched.state_dict(), ckpt / "lr_scheduler.pt")
@@ -1786,7 +1975,7 @@ class VaeResumeCompletenessTest(unittest.TestCase):
             "ema_updates": 500,
             "ema_retained_init_fraction": 0.5,
             "config": {"train_encoder": False, "train_decoder": True,
-                       "decoder_blocks": "all"},
+                       "decoder_blocks": "all", "optimizer": "adamw"},
         }
         if manifest:
             state["artifacts"] = {n: (ckpt / n).stat().st_size
@@ -1808,7 +1997,7 @@ class VaeResumeCompletenessTest(unittest.TestCase):
         t.cfg = {"learning_rate": 1e-5, "train_decoder": True,
                  "decoder_blocks": "all", "encoder_blocks": "none",
                  "lr_scheduler": "constant", "ema_decay": 0.999,
-                 "ema_enabled": ema}
+                 "ema_enabled": ema, "optimizer": "adamw"}
         t.trainable_names = list(self.NAMES)
         t.trainable_params = [torch.nn.Parameter(torch.zeros(4))
                               for _ in self.NAMES]
@@ -1859,6 +2048,61 @@ class VaeResumeCompletenessTest(unittest.TestCase):
         self.assertAlmostEqual(trainer._ema_retained_init, 0.5)
         self.assertNotIn("WARNING", out)
 
+    def test_adamw_checkpoint_can_resume_with_adamw8bit_conversion(self):
+        """The one allowed optimizer change must convert before loading.
+
+        A tiny CPU-only stand-in exercises VaeTrainer's real gate and wiring;
+        blockwise quantization itself is covered by test_optimizer_state_convert.
+        """
+        import torch
+
+        class AdamW8bit(torch.optim.Optimizer):
+            def __init__(self, groups):
+                super().__init__(groups, {"lr": 1e-5, "betas": (0.9, 0.999),
+                                          "eps": 1e-8, "weight_decay": 0.01})
+
+            def get_config(self, _gindex, _pindex, group):
+                return {"optim_bits": 8, "min_8bit_size": 4096,
+                        "percentile_clipping": 100, "block_wise": True,
+                        "max_unorm": 0.0, **group}
+
+            def step(self, closure=None):  # pragma: no cover - load contract only
+                return None
+
+        ckpt = self._write_checkpoint(scheduler=False)
+        trainer = self._trainer(scheduler=False)
+        trainer.cfg["optimizer"] = "adamw8bit"
+        trainer.optimizer = AdamW8bit(
+            [{"params": [p]} for p in trainer.trainable_params]
+        )
+
+        out = self._resume(trainer, ckpt)
+
+        self.assertIn("torch_adamw -> bnb_adamw8bit", out)
+        states = trainer.optimizer.state_dict()["state"]
+        self.assertEqual(len(states), len(self.NAMES))
+        self.assertTrue(all(s["state1"].dtype == torch.float32
+                            and s["state2"].dtype == torch.float32
+                            for s in states.values()))
+
+    def test_other_optimizer_changes_still_refuse_before_weight_load(self):
+        import json
+        ckpt = self._write_checkpoint(manifest=False)
+        cases = (("adamw", "lion8bit"),
+                 ("adamw8bit", "adamw"),
+                 ("adafactor", "adamw8bit"))
+        for saved_name, current_name in cases:
+            with self.subTest(saved=saved_name, current=current_name):
+                state_path = ckpt / "train_state.json"
+                state = json.loads(state_path.read_text(encoding="utf-8"))
+                state["config"]["optimizer"] = saved_name
+                state_path.write_text(json.dumps(state), encoding="utf-8")
+                trainer = self._trainer()
+                trainer.cfg["optimizer"] = current_name
+                msg = self._refusal(trainer, ckpt)
+                self.assertIn("only supported optimizer change", msg)
+                self.assertIn("AdamW -> AdamW8bit", msg)
+
     def test_a_pre_manifest_checkpoint_still_resumes(self):
         """Checkpoints written before the manifest existed (every checkpoint on
         disk today) must keep resuming, on presence alone."""
@@ -1866,6 +2110,31 @@ class VaeResumeCompletenessTest(unittest.TestCase):
         out = self._resume(self._trainer(), ckpt)
         self.assertNotIn("WARNING", out)
         self.assertIn("presence only", out)
+
+    def test_a_configless_untagged_legacy_optimizer_still_raw_loads(self):
+        """Old checkpoints predate both optimizer identifiers.
+
+        Their same-optimizer raw load was valid and must not be reclassified as
+        an unsupported None -> adamw change.
+        """
+        import json
+        import torch
+        ckpt = self._write_checkpoint(manifest=False)
+        train_state_path = ckpt / "train_state.json"
+        train_state = json.loads(train_state_path.read_text(encoding="utf-8"))
+        train_state["config"].pop("optimizer", None)
+        train_state_path.write_text(json.dumps(train_state), encoding="utf-8")
+        optimizer_path = ckpt / "optimizer.pt"
+        optimizer_state = torch.load(optimizer_path, map_location="cpu",
+                                     weights_only=False)
+        optimizer_state.pop("_sushi_opt_class", None)
+        torch.save(optimizer_state, optimizer_path)
+
+        trainer = self._trainer()
+        self._resume(trainer, ckpt)
+        self.assertEqual(trainer.global_step, 10000)
+        self.assertTrue(all("exp_avg" in state for state in
+                            trainer.optimizer.state_dict()["state"].values()))
 
     # ── refusals ─────────────────────────────────────────────────────────
     def test_a_missing_optimizer_state_refuses(self):
@@ -2134,6 +2403,13 @@ class VaeResumeCompletenessTest(unittest.TestCase):
         self.assertEqual(set(manifest), on_disk)
         for name, size in manifest.items():
             self.assertEqual((ckpt / name).stat().st_size, size)
+
+    def test_the_writer_tags_the_optimizer_class(self):
+        import torch
+        ckpt = self._saved_by_the_real_writer(self._trainer())
+        state = torch.load(ckpt / "optimizer.pt", map_location="cpu",
+                           weights_only=False)
+        self.assertEqual(state.get("_sushi_opt_class"), "AdamW")
 
     def test_a_checkpoint_from_the_real_writer_round_trips_and_is_verifiable(self):
         ckpt = self._saved_by_the_real_writer(self._trainer())

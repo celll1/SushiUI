@@ -40,6 +40,8 @@ import {
   OutpaintAudioParams,
   LoRAConfig,
   ControlNetConfig,
+  unetQuantizationOptions,
+  normalizeUnetQuantization,
 } from "@/utils/api";
 import { wsClient, CFGMetrics } from "@/utils/websocket";
 import { saveTempImage, loadTempImage, deleteTempImageRef } from "@/utils/tempImageStorage";
@@ -425,7 +427,7 @@ interface OutpaintPanelProps {
 }
 
 export default function OutpaintPanel({ onTabChange, onImageGenerated }: OutpaintPanelProps = {}) {
-  const { isBackendReady, generationDefaults, isVideo, isAudio } = useStartup();
+  const { isBackendReady, generationDefaults, isVideo, isAudio, archCapabilities } = useStartup();
   const [params, setParams] = useState<OutpaintPanelParams>(DEFAULT_PARAMS);
   const [generatedImageParams, setGeneratedImageParams] = useState<OutpaintPanelParams | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
@@ -485,6 +487,18 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
   const [isMounted, setIsMounted] = useState(false);
   const [isInitialLoad, setIsInitialLoad] = useState(true);
   const [currentModelInfo, setCurrentModelInfo] = useState<any>(null);
+  // Drop a persisted unet_quantization the loaded architecture does not offer
+  // (e.g. fp8_e4m3fn carried over onto a krea2 model): otherwise the <select>
+  // holds a value absent from its options and renders blank, while the panel
+  // keeps sending that value.
+  useEffect(() => {
+    const arch = currentModelInfo?.model_info?.type as string | undefined;
+    if (!archCapabilities || !arch) return;
+    setParams((prev) => {
+      const normalized = normalizeUnetQuantization(archCapabilities, arch, prev.unet_quantization ?? null);
+      return normalized === (prev.unet_quantization ?? null) ? prev : { ...prev, unet_quantization: normalized };
+    });
+  }, [archCapabilities, currentModelInfo?.model_info?.type]);
 
   const [sendImage, setSendImage] = useState(true);
   const [sendPrompt, setSendPrompt] = useState(true);
@@ -3062,11 +3076,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
                         label={`Transformer Quantization (${currentModelInfo?.model_info?.type === "flux2" ? "FLUX.2" : "Z-Image"})`}
                         value={params.unet_quantization || "none"}
                         onChange={(e) => setParams({ ...params, unet_quantization: e.target.value === "none" ? null : e.target.value })}
-                        options={[
-                          { value: "none", label: "None" },
-                          { value: "fp8_e4m3fn", label: "FP8 E4M3" },
-                          { value: "fp8_e5m2", label: "FP8 E5M2" },
-                        ]}
+                        options={unetQuantizationOptions(archCapabilities, currentModelInfo?.model_info?.type as string | undefined)}
                       />
                       <Select
                         label={`Text Encoder Quantization (${currentModelInfo?.model_info?.type === "flux2" ? "Qwen3" : "Gemma2"})`}
@@ -3079,10 +3089,17 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
                         ]}
                       />
                     </div>
-                    {params.unet_quantization && params.unet_quantization !== "none" && (
+                    {params.unet_quantization && params.unet_quantization !== "none" && params.unet_quantization !== "int8" && (
                       <div className="bg-blue-900/20 border border-blue-600/30 rounded-lg p-3">
                         <p className="text-xs text-blue-200">
                           Transformer FP8 reduces VRAM. Weights are dequantized back to full precision per operation during inference, so generation is slower than without quantization.
+                        </p>
+                      </div>
+                    )}
+                    {params.unet_quantization === "int8" && (
+                      <div className="bg-blue-900/20 border border-blue-600/30 rounded-lg p-3">
+                        <p className="text-xs text-blue-200">
+                          INT8 converts the transformer in place the first time you generate after loading the model, and keeps it for the session. Layers where INT8 measures worse than FP8 E4M3 are stored as E4M3 instead. The conversion is one-way: reload the model to return to the checkpoint&apos;s original precision.
                         </p>
                       </div>
                     )}
@@ -3094,17 +3111,20 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
                         label="U-Net Quantization"
                         value={params.unet_quantization || "none"}
                         onChange={(e) => setParams({ ...params, unet_quantization: e.target.value === "none" ? null : e.target.value })}
-                        options={[
-                          { value: "none", label: "None" },
-                          { value: "fp8_e4m3fn", label: "FP8 E4M3" },
-                          { value: "fp8_e5m2", label: "FP8 E5M2" },
-                        ]}
+                        options={unetQuantizationOptions(archCapabilities, currentModelInfo?.model_info?.type as string | undefined)}
                       />
                     </div>
-                    {params.unet_quantization && params.unet_quantization !== "none" && (
+                    {params.unet_quantization && params.unet_quantization !== "none" && params.unet_quantization !== "int8" && (
                       <div className="bg-yellow-900/20 border border-yellow-600/30 rounded-lg p-3">
                         <p className="text-xs text-yellow-200">
                           Quantization reduces VRAM but may affect quality. FP8 weights are dequantized back to full precision per operation during inference, so generation is slower than without quantization. Original model kept on CPU.
+                        </p>
+                      </div>
+                    )}
+                    {params.unet_quantization === "int8" && (
+                      <div className="bg-blue-900/20 border border-blue-600/30 rounded-lg p-3">
+                        <p className="text-xs text-blue-200">
+                          INT8 converts the transformer in place the first time you generate after loading the model, and keeps it for the session. Layers where INT8 measures worse than FP8 E4M3 are stored as E4M3 instead. The conversion is one-way: reload the model to return to the checkpoint&apos;s original precision.
                         </p>
                       </div>
                     )}

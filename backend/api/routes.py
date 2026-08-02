@@ -420,10 +420,18 @@ async def get_arch_capabilities():
 
     `feature_params` maps each feature to the request parameter keys that arm
     it, so a caller can go from a parameter name back to its feature.
+
+    `supported_values` is the exemption list: values of an arming parameter that
+    the architecture DOES honor even though the feature is listed unsupported
+    (e.g. `unet_quantization="int8"` on Krea 2, which converts an unquantized
+    transformer in place, while the FP8 values there remain checkpoint-driven).
     """
-    from api.arch_capabilities import ARCH_UNSUPPORTED, FEATURE_PARAMS, FEATURE_LABELS
+    from api.arch_capabilities import (
+        ARCH_SUPPORTED_VALUES, ARCH_UNSUPPORTED, FEATURE_PARAMS, FEATURE_LABELS,
+    )
     return {
         "unsupported": ARCH_UNSUPPORTED,
+        "supported_values": ARCH_SUPPORTED_VALUES,
         "feature_params": FEATURE_PARAMS,
         "feature_labels": FEATURE_LABELS,
     }
@@ -5420,9 +5428,16 @@ async def create_scratch_minit2i_endpoint(
 async def load_model(
     source_type: str = Form(...),
     source: str = Form(...),
-    revision: Optional[str] = Form(None)
+    revision: Optional[str] = Form(None),
+    force: bool = Form(False)
 ):
-    """Load a model from various sources (fp16 by default)"""
+    """Load a model from various sources (fp16 by default).
+
+    ``force`` re-loads even when the requested model is the one already loaded.
+    Without it that request is a no-op, which made the documented recovery for
+    every per-session component mutation -- above all the one-way in-place
+    runtime INT8 conversion -- do nothing at all.
+    """
     try:
         kwargs = {}
         if revision:
@@ -5438,6 +5453,7 @@ async def load_model(
                 source_type=source_type,
                 source=source,
                 pipeline_type="txt2img",
+                force_reload=bool(force),
                 **kwargs
             )
         )

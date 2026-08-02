@@ -156,7 +156,10 @@ paths:
                   sdxl:
                     quantized_gemm: "this architecture's checkpoints hold plain floating-point Linear weights; the quantized-GEMM path selection applies only to the weight-only quantized Linear layers used by Ideogram 4, Krea 2 and Anima"
                   krea2:
-                    unet_quantization: "quantization on this architecture is selected by checkpoint format at load time (bf16 or weight-only FP8 checkpoints); the per-generation unet_quantization parameter is not applied"
+                    unet_quantization: "FP8 quantization on this architecture is selected by checkpoint format at load time (bf16 or weight-only FP8 checkpoints); the only per-generation unet_quantization value applied is 'int8', which converts an unquantized transformer in place once per model load"
+                supported_values:
+                  krea2:
+                    unet_quantization: [int8]
                 feature_params:
                   quantized_gemm: [quantized_gemm_mode]
                   unet_quantization: [unet_quantization]
@@ -1511,19 +1514,42 @@ paths:
         - Diffusers format (directory)
 
         **Note:** Loading a new model will unload the currently loaded model and clear VRAM.
+
+        **Re-loading the model that is already loaded** is a no-op unless
+        `force=true` is sent. `force` is the documented way to undo any
+        per-session mutation of the loaded components — above all the one-way
+        in-place runtime INT8 conversion (`unet_quantization: "int8"` on anima /
+        krea2), whose source weights are dropped and can only come back from the
+        checkpoint.
       operationId: loadModel
       requestBody:
         required: true
         content:
-          application/json:
+          multipart/form-data:
             schema:
               type: object
-              required: [model_path]
+              required: [source_type, source]
               properties:
-                model_path:
+                source_type:
                   type: string
-                  description: Relative path to model file from models directory
-                  example: "animagine-xl-3.1.safetensors"
+                  description: Where the model comes from (as reported by `GET /models`, e.g. `local`).
+                  example: local
+                source:
+                  type: string
+                  description: Model path (or hub id) to load.
+                  example: "M:/model/sdxl/animagine-xl-3.1.safetensors"
+                revision:
+                  type: string
+                  nullable: true
+                  description: Optional hub revision, passed through to the loader.
+                force:
+                  type: boolean
+                  default: false
+                  description: |
+                    Reload even when this model is already the loaded one. Without
+                    it, a request for the currently loaded model returns success
+                    without touching the pipeline, so nothing per-session is reset.
+                  example: true
       responses:
         '200':
           description: Model loaded successfully
@@ -1532,12 +1558,16 @@ paths:
               schema:
                 type: object
                 properties:
+                  success:
+                    type: boolean
+                    example: true
                   message:
                     type: string
                     example: "Model loaded successfully"
-                  model_hash:
-                    type: string
-                    example: "a1b2c3d4e5f6"
+                  model_info:
+                    type: object
+                    additionalProperties: true
+                    description: Same payload as `GET /models/current`'s `model_info`.
 
   /models/upload:
     post:
@@ -5506,7 +5536,7 @@ components:
           example: true
     ArchCapabilities:
       type: object
-      required: [unsupported, feature_params, feature_labels]
+      required: [unsupported, supported_values, feature_params, feature_labels]
       description: |
         Mirror of `backend/api/arch_capabilities.py`. Declares which generation
         features a given model architecture does NOT honor, and why. Served by
@@ -5522,6 +5552,23 @@ components:
           example:
             sdxl:
               quantized_gemm: "this architecture's checkpoints hold plain floating-point Linear weights; the quantized-GEMM path selection applies only to the weight-only quantized Linear layers used by Ideogram 4, Krea 2 and Anima"
+        supported_values:
+          type: object
+          description: |
+            Architecture name -> feature name -> the values of that feature's
+            arming parameter which the architecture DOES honor, despite the
+            feature being listed in `unsupported`. A caller should treat a
+            parameter value present here as supported and must not hide the
+            control outright for that architecture.
+          additionalProperties:
+            type: object
+            additionalProperties:
+              type: array
+              items:
+                type: string
+          example:
+            krea2:
+              unet_quantization: [int8]
         feature_params:
           type: object
           description: Feature name -> the request parameter keys that arm it.
@@ -5785,8 +5832,53 @@ components:
         unet_quantization:
           type: string
           nullable: true
-          enum: [none, fp8_e4m3fn, fp8_e5m2]
-          description: "U-Net/transformer quantization mode. None = full precision. FP8 (E4M3FN/E5M2) is the only supported quantized mode. Reduces VRAM by storing weights at lower precision; weights are dequantized back to full precision per operation during inference, so measured generation speed is slower than full precision, not faster."
+          enum: [none, fp8_e4m3fn, fp8_e5m2, int8]
+          description: |
+            U-Net/transformer quantization mode. `none`/null = full precision.
+
+            `fp8_e4m3fn` / `fp8_e5m2` — per-call full-weight dequantization
+            (SD1.5/SDXL, Z-Image, FLUX.2, Anima, Lens). Weights are stored at
+            lower precision and dequantized back to full precision per
+            operation during inference, so measured generation speed is slower
+            than full precision, not faster.
+
+            `int8` — **`anima` and `krea2` only.** Converts the loaded
+            transformer IN PLACE to the mixed weight-only int8/e4m3 layout the
+            offline tool (`subapps/fp8_quantize/quantize_transformer_fp8.py
+            --format int8`) writes, using the same per-layer selection rule
+            (shared module `core/models/common/int8_runtime_quantize.py`). The
+            conversion happens once, at the first generation after the model is
+            loaded, and is ONE-WAY: the source weights are dropped, so a later
+            request with a different value keeps the quantized transformer and
+            returns a `runtime_quantization_persistent` warning. To get full
+            precision back, load the model again with
+            `POST /models/load` **`force=true`** (loading the already-loaded
+            model without `force` is a no-op and undoes nothing).
+
+            On any OTHER architecture `int8` is refused up front with
+            `quantization_fallback` and the model runs at full precision.
+
+            Refusals specific to `int8`, each returning a warning and leaving the
+            transformer exactly as it was:
+
+            * the checkpoint is already weight-only quantized —
+              `quantization_superseded`;
+            * the weights were already cast to FP8 by an earlier generation in
+              the same session — `quantization_superseded`. Quantizing
+              already-rounded weights measured 11.2x the weight error of a direct
+              int8 conversion, i.e. worse than either format alone;
+            * LoRAs are loaded — `quantization_fallback`. The wrappers hide the
+              Linear layers, which would silently change the selection.
+
+            If the conversion FAILS part-way (a CUDA out-of-memory is the
+            realistic case) the transformer is left partially converted, which
+            cannot be undone; the response carries `quantization_partial` with
+            the number of layers converted. Requesting `int8` again RESUMES the
+            conversion from where it stopped.
+
+            Whether the resulting int8 layers run the integer GEMM or the
+            dequantized matmul is a separate axis (`quantized_gemm_mode` /
+            `POST /api/v1/system/int8-mm`).
         text_encoder_quantization:
           type: string
           nullable: true

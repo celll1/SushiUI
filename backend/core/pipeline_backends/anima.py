@@ -294,15 +294,53 @@ class AnimaMixin:
         offloader.prepare_block_devices_before_forward()
         return offloader
 
+    def _anima_runtime_int8(self, transformer_quantization, progress_callback=None):
+        """Apply the one-time in-place INT8 conversion, if this request asks for it.
+
+        Runs BEFORE the transformer is staged (so the module is still on CPU and
+        no second module copy is built; host RSS still ends at ~1.6x the source,
+        see quantize_linears_in_place) and BEFORE LoRA wrapping (the converter
+        refuses a LoRA-wrapped module, because wrappers would hide Linears and
+        silently change the selection). Returns the quantization string the rest
+        of staging should see: ``None`` once a conversion has happened, since
+        ``_anima_quantize_fp8`` has nothing left to do on quantized Linears.
+        """
+        from core.vram_optimization import (
+            apply_runtime_int8_quantization, runtime_int8_requested,
+        )
+        transformer = self.anima_components.get("transformer")
+        if transformer is None:
+            return transformer_quantization
+        model, converted = apply_runtime_int8_quantization(
+            self, transformer, "anima", transformer_quantization,
+            label="Anima Transformer", progress_callback=progress_callback)
+        self.anima_components["transformer"] = model
+        if converted or runtime_int8_requested(transformer_quantization) \
+                or getattr(self, "_runtime_int8_converted", False) \
+                or getattr(self, "_runtime_int8_partial", False):
+            # ``_runtime_int8_partial`` too: a half-converted transformer already
+            # carries Int8Linear modules, which would make _anima_quantize_fp8
+            # refuse with its CHECKPOINT-provenance message (false here) and
+            # leave the still-bf16 remainder unquantized anyway.
+            # apply_runtime_int8_quantization has already warned accurately.
+            return None
+        return transformer_quantization
+
     def _anima_stage_transformer(self, device: str, transformer_quantization,
-                                 params: Dict[str, Any]):
+                                 params: Dict[str, Any], progress_callback=None):
         """Place the Anima transformer on GPU for the denoise loop.
 
         Default (block swap disabled): full GPU move via _anima_move, byte-identical
         to the pre-block-swap behaviour. With block swap enabled, the transformer's
         blocks are streamed per forward by a per-model offloader instead of being
         fully resident. Returns the (possibly reassigned) transformer.
+
+        ``unet_quantization="int8"`` is handled first, in place and once per model
+        load; every other quantization value falls through to the pre-existing
+        FP8 paths unchanged.
         """
+        transformer_quantization = self._anima_runtime_int8(
+            transformer_quantization, progress_callback=progress_callback)
         enable_block_swap = bool(params.get("enable_block_swap", False))
         blocks_to_swap = int(params.get("blocks_to_swap", 20))
         use_pinned_memory = bool(params.get("use_pinned_memory", False))
@@ -604,7 +642,8 @@ class AnimaMixin:
                 transformer = self.anima_components["transformer"]
                 self._anima_offloader = None
             else:
-                transformer = self._anima_stage_transformer(device, transformer_quantization, params)
+                transformer = self._anima_stage_transformer(device, transformer_quantization, params,
+                                                            progress_callback=progress_callback)
 
             # Apply user-supplied LoRAs after the transformer is on GPU (and
             # after any optional quantization). LoRA wrappers point at the
@@ -886,7 +925,8 @@ class AnimaMixin:
                 transformer = self.anima_components["transformer"]
                 self._anima_offloader = None
             else:
-                transformer = self._anima_stage_transformer(device, transformer_quantization, params)
+                transformer = self._anima_stage_transformer(device, transformer_quantization, params,
+                                                            progress_callback=progress_callback)
 
             # Apply user-supplied LoRAs after the transformer is on GPU (and
             # after any optional quantization). LoRA wrappers point at the
@@ -1175,7 +1215,8 @@ class AnimaMixin:
                 transformer = self.anima_components["transformer"]
                 self._anima_offloader = None
             else:
-                transformer = self._anima_stage_transformer(device, transformer_quantization, params)
+                transformer = self._anima_stage_transformer(device, transformer_quantization, params,
+                                                            progress_callback=progress_callback)
 
             # Apply user-supplied LoRAs after the transformer is on GPU (and
             # after any optional quantization). LoRA wrappers point at the

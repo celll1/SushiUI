@@ -26,7 +26,7 @@ import GenerationQueue from "../common/GenerationQueue";
 import LoopGenerationPanel, { LoopGenerationConfig } from "./LoopGenerationPanel";
 import QuantizedGemmSelect from "./QuantizedGemmSelect";
 import { migrateLoopGenerationConfig, computeLoopDecodeDirective } from "@/utils/loopGenerationInheritance";
-import { getSamplers, getScheduleTypes, generateInpaint, generateInpaintTrainingPreview, toBase64, InpaintParams as ApiInpaintParams, LoRAConfig, ControlNetConfig, generateTIPOPrompt, cancelGeneration, getCurrentModel, getResultFilename, getResultSeed, getResultAncestralSeed, isLatentOnlyResult } from "@/utils/api";
+import { getSamplers, getScheduleTypes, generateInpaint, generateInpaintTrainingPreview, toBase64, InpaintParams as ApiInpaintParams, LoRAConfig, ControlNetConfig, generateTIPOPrompt, cancelGeneration, getCurrentModel, getResultFilename, getResultSeed, getResultAncestralSeed, isLatentOnlyResult, unetQuantizationOptions, normalizeUnetQuantization } from "@/utils/api";
 import { useActiveTraining } from "@/hooks/useActiveTraining";
 import { wsClient, CFGMetrics } from "@/utils/websocket";
 import CFGMetricsGraph from "../common/CFGMetricsGraph";
@@ -441,7 +441,7 @@ interface InpaintPanelProps {
 }
 
 export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintPanelProps = {}) {
-  const { modelLoaded, isBackendReady, generationDefaults } = useStartup();
+  const { modelLoaded, isBackendReady, generationDefaults, archCapabilities } = useStartup();
   const [params, setParams] = useState<InpaintParams>(DEFAULT_PARAMS);
   const [generatedImageParams, setGeneratedImageParams] = useState<InpaintParams | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
@@ -472,6 +472,18 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
   const [scheduleTypes, setScheduleTypes] = useState<Array<{ id: string; name: string }>>([]);
   const [isMounted, setIsMounted] = useState(false);
   const [currentModelInfo, setCurrentModelInfo] = useState<any>(null);
+  // Drop a persisted unet_quantization the loaded architecture does not offer
+  // (e.g. fp8_e4m3fn carried over onto a krea2 model): otherwise the <select>
+  // holds a value absent from its options and renders blank, while the panel
+  // keeps sending that value.
+  useEffect(() => {
+    const arch = currentModelInfo?.model_info?.type as string | undefined;
+    if (!archCapabilities || !arch) return;
+    setParams((prev) => {
+      const normalized = normalizeUnetQuantization(archCapabilities, arch, prev.unet_quantization ?? null);
+      return normalized === (prev.unet_quantization ?? null) ? prev : { ...prev, unet_quantization: normalized };
+    });
+  }, [archCapabilities, currentModelInfo?.model_info?.type]);
   const [isDragging, setIsDragging] = useState(false);
   const [showImageEditor, setShowImageEditor] = useState(false);
   const [editingImageUrl, setEditingImageUrl] = useState<string | null>(null);
@@ -3294,11 +3306,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
                   ...params,
                   unet_quantization: e.target.value === "none" ? null : e.target.value
                 })}
-                options={[
-                  { value: "none", label: "None" },
-                  { value: "fp8_e4m3fn", label: "FP8 E4M3" },
-                  { value: "fp8_e5m2", label: "FP8 E5M2" },
-                ]}
+                options={unetQuantizationOptions(archCapabilities, currentModelInfo?.model_info?.type as string | undefined)}
               />
               <Select
                 label={`Text Encoder Quantization (${currentModelInfo?.model_info?.type === "flux2" ? "Qwen3" : "Gemma2"})`}
@@ -3319,9 +3327,14 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
                 <p className="text-xs text-blue-200">
                   💡 {currentModelInfo?.model_info?.type === "flux2" ? "FLUX.2" : "Z-Image"} quantization can reduce VRAM significantly. Text encoder ({currentModelInfo?.model_info?.type === "flux2" ? "Qwen3" : "Gemma2 3.4B"}) is particularly large.
                 </p>
-                {params.unet_quantization && params.unet_quantization !== "none" && (
+                {params.unet_quantization && params.unet_quantization !== "none" && params.unet_quantization !== "int8" && (
                   <p className="text-xs text-blue-200">
                     Transformer FP8 weights are dequantized back to full precision per operation during inference, so generation is slower than without quantization.
+                  </p>
+                )}
+                {params.unet_quantization === "int8" && (
+                  <p className="text-xs text-blue-200">
+                    INT8 converts the transformer in place the first time you generate after loading the model, and keeps it for the session. Layers where INT8 measures worse than FP8 E4M3 are stored as E4M3 instead. The conversion is one-way: reload the model to return to the checkpoint&apos;s original precision.
                   </p>
                 )}
               </div>
@@ -3338,17 +3351,20 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
                   ...params,
                   unet_quantization: e.target.value === "none" ? null : e.target.value
                 })}
-                options={[
-                  { value: "none", label: "None" },
-                  { value: "fp8_e4m3fn", label: "FP8 E4M3" },
-                  { value: "fp8_e5m2", label: "FP8 E5M2" },
-                ]}
+                options={unetQuantizationOptions(archCapabilities, currentModelInfo?.model_info?.type as string | undefined)}
               />
             </div>
-            {params.unet_quantization && params.unet_quantization !== "none" && (
+            {params.unet_quantization && params.unet_quantization !== "none" && params.unet_quantization !== "int8" && (
               <div className="bg-yellow-900/20 border border-yellow-600/30 rounded-lg p-3">
                 <p className="text-xs text-yellow-200">
                   ⚠️ Quantization reduces VRAM but may affect quality. FP8 weights are dequantized back to full precision per operation during inference, so generation is slower than without quantization. Original model kept on CPU.
+                </p>
+              </div>
+            )}
+            {params.unet_quantization === "int8" && (
+              <div className="bg-blue-900/20 border border-blue-600/30 rounded-lg p-3">
+                <p className="text-xs text-blue-200">
+                  INT8 converts the transformer in place the first time you generate after loading the model, and keeps it for the session. Layers where INT8 measures worse than FP8 E4M3 are stored as E4M3 instead. The conversion is one-way: reload the model to return to the checkpoint&apos;s original precision.
                 </p>
               </div>
             )}

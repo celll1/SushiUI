@@ -92,6 +92,28 @@ def _lora_fingerprint(lora_configs) -> tuple:
     return tuple(sorted(items, key=lambda t: t[0]))
 
 
+def _quantization_fingerprint(manager, params: Dict[str, Any]) -> str:
+    """The ``unet_quantization`` component of the model key.
+
+    Normalised to ``"int8"`` once the loaded transformer has been converted in
+    place (``vram_optimization.apply_runtime_int8_quantization``). That
+    conversion is ONE-WAY until the model is reloaded, so the raw request value
+    stops describing the resident components: a follow-up generation that omits
+    the parameter would otherwise compute a different key and evict a component
+    set that is in fact still exactly what was staged.
+
+    A conversion that FAILED part-way gets its own value: the module is neither
+    the checkpoint's nor fully int8, and it stops being "int8_partial" the moment
+    a later request converts the remainder -- which is exactly when the resident
+    set must be re-keyed.
+    """
+    if getattr(manager, "_runtime_int8_converted", False):
+        return "int8"
+    if getattr(manager, "_runtime_int8_partial", False):
+        return "int8_partial"
+    return str(params.get("unet_quantization"))
+
+
 def compute_model_key(manager, params: Dict[str, Any]) -> str:
     """Identity string the resident component set is valid for.
 
@@ -103,7 +125,7 @@ def compute_model_key(manager, params: Dict[str, Any]) -> str:
     key_parts = (
         str(getattr(manager, "current_model", None)),
         _lora_fingerprint(lora_configs),
-        str(params.get("unet_quantization")),
+        _quantization_fingerprint(manager, params),
         # A kept-hot TE is only valid for the exact TE placement/precision it was
         # staged under: a different text_encoder_quantization re-quantizes it, and
         # cpu_text_encoding moves it off-GPU entirely. Either change must

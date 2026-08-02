@@ -191,8 +191,68 @@ a generation without style transfer.
     int8 and fp8 INDEPENDENTLY and runs both swaps (`Int8Linear` / `Fp8Linear`),
     then loads with `assign=True`, which preserves the stored dtypes. The W8A8
     integer GEMM itself is opt-in per process (`SUSHI_INT8_MM=1`,
-    `GET/POST /api/v1/system/int8-mm`); there is NO per-generation parameter.
-  - `--skip-below-work-gate` is **required** for Anima, unlike Krea 2. The
+    `GET/POST /api/v1/system/int8-mm`) or per generation (`quantized_gemm_mode`).
+  - **Runtime INT8 (no pre-built artifact)**: `unet_quantization: "int8"` on an
+    ordinary bf16 Anima or Krea 2 checkpoint converts the loaded transformer IN
+    PLACE, once, at the first generation after the model load
+    (`vram_optimization.apply_runtime_int8_quantization` ->
+    `core/models/common/int8_runtime_quantize.quantize_linears_in_place`). The
+    selection rule is the SAME module the offline tool imports, and the layer
+    selection is gate-tested against the committed offline audits
+    (`tmp/int8_runtime_anima_gate.py`): Anima 232 quantized (231 int8 + 1 e4m3) /
+    283 skipped, Krea 2 263 quantized (259 int8 + 4 e4m3) / 1 skipped — identical
+    names, identical per-layer format, measured errors matching to <4e-9.
+    Measured on an RTX 6000 Ada with the module on CPU and the quantization math
+    on GPU: Anima 2.1 s / 0.31 GB GPU peak (3.895 GB -> 2.327 GB of weights),
+    Krea 2 11-16 s / 4.22 GB GPU peak (23.879 GB -> 11.948 GB). No second copy of
+    the model is made (each source weight is dropped as its replacement is built),
+    unlike the SD1.5/SDXL `_original_unet` path.
+  - **HOST RAM cost of the runtime conversion is ~1.6x the source module, for
+    the session** — the module bytes fall, the process's RSS does not.
+    `tmp/int8_runtime_host_memory.py` (20 Hz RSS sampler, real Anima): RSS 0.959
+    GB after load -> 6.159 GB peak -> **6.159 GB steady after `gc.collect()`**,
+    against 2.327 GB of resulting module bytes and a 3.895 GB source. The
+    safetensors mapping of the source stays resident because the 283 skipped
+    Linears and every non-Linear parameter still reference it. Extrapolated by
+    the Krea 2 figures above, a 23.9 GB bf16 Krea 2 transformer needs roughly
+    **36 GB of host RAM** held until the model is reloaded: fine on a 64/96 GB
+    box, not viable on 32 GB. Per-layer GPU working set (float32) is small — 0.31
+    GB Anima, 4.22 GB Krea 2 — and a layer that hits `torch.cuda.OutOfMemoryError`
+    is retried on the weight's own device (CPU) instead of aborting; the fallback
+    list is in the returned audit under `oom_fallback_layers`.
+  - The conversion is ONE-WAY until the model is reloaded: a later `null`/fp8
+    request keeps the quantized transformer and returns a
+    `runtime_quantization_persistent` warning. **Recovery is
+    `POST /models/load` with `force=true`** (the model selector's Load button
+    sends it when the selected model is the loaded one, and reads "Reload
+    Selected Model"): without it, `_load_model_locked` early-returns on the same
+    model id and resets nothing. `keep_hot.compute_model_key`
+    normalises the quantization component to `"int8"` once converted, so the
+    resident set does not thrash between generations.
+  - Refusals, each leaving the transformer exactly as it was: an already
+    weight-only quantized CHECKPOINT (`quantization_superseded`); weights already
+    cast to float8 by an FP8 generation earlier in the same session
+    (`quantization_superseded` — quantizing e4m3-rounded weights to int8 measured
+    0.04400 relative RMS against 0.00394 for a direct conversion, 11.2x, i.e.
+    worse than either format alone); a LoRA-wrapped module
+    (`quantization_fallback` — wrappers hide Linears and would silently change
+    the selection, so both backends call the converter before LoRA application);
+    and `int8` on any arch outside `RUNTIME_INT8_ARCHS`, refused before any
+    `copy.deepcopy` is paid for.
+  - A conversion that dies part-way (CUDA OOM at layer 120/263 is the realistic
+    case) leaves the module PARTIALLY converted, which cannot be undone. It is
+    NOT latched as converted: the manager gets `_runtime_int8_partial`, the
+    response carries `quantization_partial` with the layer count, the keep-hot
+    fingerprint becomes `"int8_partial"`, and the next `int8` request RESUMES —
+    selection walks `nn.Linear` and a converted layer is no longer one. The
+    checkpoint-provenance branch is suppressed while partial so it cannot claim
+    those modules came from the file. A conversion that converts ZERO layers also
+    does not latch the flag.
+  - `--skip-below-work-gate` is **required** for Anima, unlike Krea 2 — a
+    per-arch knob that now lives in
+    `int8_runtime_quantize.ARCH_QUANT_POLICY` (the CLI flag defaults to it and
+    can still override it explicitly with `--skip-below-work-gate` /
+    `--no-skip-below-work-gate`). The
     conversion skips **283 of the DiT's 515 Linears** (168 AdaLN modulation
     layers, 56 cross-attention k/v projections, the LLM-adapter projections, the
     timestep and final-layer Linears), leaving 232 quantized. Those 283 can never
@@ -280,6 +340,17 @@ a generation without style transfer.
   `guidance = cfg_scale - 1`; the distilled/turbo checkpoint sets guidance 0 (no
   CFG). Qwen3-VL-4B TE is always frozen and TE training is explicitly rejected;
   train_runner forces bf16.
+  - `unet_quantization` is honoured for exactly ONE value, `"int8"` (the in-place
+    runtime conversion described in the Anima row; `_krea2_runtime_int8` runs it
+    before the transformer is staged). The FP8 story stays checkpoint-format
+    driven, so `arch_capabilities` still lists `unet_quantization` as unsupported
+    for krea2 and carries `int8` in `ARCH_SUPPORTED_VALUES` — the panels read
+    that matrix and offer only the values the arch applies (and normalise a
+    persisted value the loaded arch does not offer back to null, so the selector
+    can never hold a value that is not among its options).
+  - Host RAM: a runtime INT8 conversion of the 23.9 GB bf16 transformer holds
+    roughly 36 GB of host RAM for the session (source mapping + quantized
+    module); see the measured Anima ratio in the Anima row.
 - **ltx2** — Video (+ optional audio) generation, not part of the 9-architecture
   image roster; loaded/routed separately from `model_loader.py`'s image-model
   detection. All speed/lightweight features below are opt-in (default OFF) and

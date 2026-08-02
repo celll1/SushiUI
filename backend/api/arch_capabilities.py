@@ -76,9 +76,29 @@ _SPECTRUM_UNSUPPORTED = ["zimage", "ideogram4", "lens", "minit2i", "anima", "kre
 
 ARCH_UNSUPPORTED: Dict[str, Dict[str, str]] = {}
 
+# ---------------------------------------------------------------------------
+# ARCH_SUPPORTED_VALUES[arch][feature] = the VALUES of the feature's arming
+# parameter that the architecture DOES honor, even though the feature is listed
+# unsupported above.
+#
+# Needed because a feature is not always all-or-nothing per architecture:
+# `unet_quantization` on Krea 2 ignores the FP8 values (its FP8 story is
+# checkpoint-format-driven) but applies `"int8"`, which converts an unquantized
+# transformer in place. Recording that as a value exemption keeps the
+# unsupported reason accurate for the values it really does ignore, instead of
+# either warning wrongly on `int8` or going silent on the FP8 values.
+#
+# Only meaningful for single-value (string) parameters.
+# ---------------------------------------------------------------------------
+ARCH_SUPPORTED_VALUES: Dict[str, Dict[str, List[str]]] = {}
+
 
 def _add(arch: str, feature: str, reason: str) -> None:
     ARCH_UNSUPPORTED.setdefault(arch, {})[feature] = reason
+
+
+def _add_supported_values(arch: str, feature: str, values: List[str]) -> None:
+    ARCH_SUPPORTED_VALUES.setdefault(arch, {})[feature] = list(values)
 
 
 # use_torch_compile: only wired into the U-Net (SD1.5/SDXL) path; DiT archs
@@ -129,7 +149,8 @@ _add("acestep", "controlnets", "ControlNet is not supported for the ACE-Step aud
 # via move_unet_to_gpu(); zimage/flux2/anima/lens consume it via their own
 # transformer-quantization codepaths.
 _add("krea2", "unet_quantization",
-     "quantization on this architecture is selected by checkpoint format at load time (bf16 or weight-only FP8 checkpoints); the per-generation unet_quantization parameter is not applied")
+     "FP8 quantization on this architecture is selected by checkpoint format at load time (bf16 or weight-only FP8 checkpoints); the only per-generation unet_quantization value applied is 'int8', which converts an unquantized transformer in place once per model load")
+_add_supported_values("krea2", "unet_quantization", ["int8"])
 _add("ideogram4", "unet_quantization",
      "quantization on this architecture is selected by checkpoint format at load time (FP8 or nf4 quantized checkpoints); the per-generation unet_quantization parameter is not applied")
 _add("minit2i", "unet_quantization",
@@ -209,13 +230,22 @@ _add("acestep", "vae_override",
      "VAE override is not supported on the ACE-Step audio model: its Oobleck VAE is audio-specific and not a per-generation image/video override target")
 
 
-def arch_supports_feature(arch: Optional[str], feature: str) -> bool:
+def arch_supports_feature(arch: Optional[str], feature: str,
+                          value: Any = None) -> bool:
     """True when ``arch`` honors ``feature`` (i.e. it is NOT in the unsupported
     table). An unknown/None arch is treated as supporting the feature so the
-    override path is not silently dropped for an unrecognized model."""
+    override path is not silently dropped for an unrecognized model.
+
+    ``value`` — when given, a value listed in ``ARCH_SUPPORTED_VALUES`` counts as
+    supported even though the feature is otherwise unsupported on that arch
+    (e.g. ``unet_quantization="int8"`` on Krea 2)."""
     if not arch:
         return True
-    return feature not in ARCH_UNSUPPORTED.get(arch, {})
+    if feature not in ARCH_UNSUPPORTED.get(arch, {}):
+        return True
+    if value is None:
+        return False
+    return value in ARCH_SUPPORTED_VALUES.get(arch, {}).get(feature, [])
 
 
 def _is_user_set(params: Dict[str, Any], key: str) -> bool:
@@ -246,9 +276,19 @@ def check_arch_capabilities(params: Dict[str, Any], arch: str) -> List[Dict[str,
     except ImportError:
         add_warning = None
 
+    exempt = ARCH_SUPPORTED_VALUES.get(arch, {})
     for feature, reason in unsupported.items():
         trigger_keys = FEATURE_PARAMS.get(feature, [feature])
         if not any(_is_user_set(params, k) for k in trigger_keys):
+            continue
+        # A value this arch DOES honor (e.g. unet_quantization="int8" on Krea 2)
+        # is not a reason to warn, even though other values of the same
+        # parameter are ignored here.
+        honored = exempt.get(feature)
+        if honored and all(
+            (not _is_user_set(params, k)) or params.get(k) in honored
+            for k in trigger_keys
+        ):
             continue
         label = FEATURE_LABELS.get(feature, feature)
         message = f"{label} is not supported on '{arch}' and was ignored: {reason}"

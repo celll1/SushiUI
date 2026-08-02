@@ -2761,7 +2761,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                 })}
                 options={[
                   { value: "none", label: "None" },
-                  { value: "fp8_e4m3fn", label: "FP8 E4M3 (Recommended)" },
+                  { value: "fp8_e4m3fn", label: "FP8 E4M3" },
                   { value: "fp8_e5m2", label: "FP8 E5M2" },
                 ]}
               />
@@ -2780,10 +2780,15 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
               />
             </div>
             {(params.unet_quantization && params.unet_quantization !== "none") || (params.text_encoder_quantization && params.text_encoder_quantization !== "none") ? (
-              <div className="bg-blue-900/20 border border-blue-600/30 rounded-lg p-3">
+              <div className="bg-blue-900/20 border border-blue-600/30 rounded-lg p-3 space-y-1">
                 <p className="text-xs text-blue-200">
                   💡 Quantization can reduce VRAM significantly. Text encoder ({currentModelInfo?.model_info?.type === "flux2" ? "Qwen3" : "Gemma2"}) is particularly large.
                 </p>
+                {params.unet_quantization && params.unet_quantization !== "none" && (
+                  <p className="text-xs text-blue-200">
+                    Transformer FP8 weights are dequantized back to full precision per operation during inference, so generation is slower than without quantization.
+                  </p>
+                )}
               </div>
             ) : null}
           </>
@@ -2800,7 +2805,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                 })}
                 options={[
                   { value: "none", label: "None" },
-                  { value: "fp8_e4m3fn", label: "FP8 E4M3 (Recommended)" },
+                  { value: "fp8_e4m3fn", label: "FP8 E4M3" },
                   { value: "fp8_e5m2", label: "FP8 E5M2" },
                 ]}
               />
@@ -2819,10 +2824,15 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
               />
             </div>
             {(params.unet_quantization && params.unet_quantization !== "none") || (params.text_encoder_quantization && params.text_encoder_quantization !== "none") ? (
-              <div className="bg-blue-900/20 border border-blue-600/30 rounded-lg p-3">
+              <div className="bg-blue-900/20 border border-blue-600/30 rounded-lg p-3 space-y-1">
                 <p className="text-xs text-blue-200">
                   💡 Z-Image quantization can reduce VRAM significantly. Text encoder (Qwen 3.4B) is particularly large.
                 </p>
+                {params.unet_quantization && params.unet_quantization !== "none" && (
+                  <p className="text-xs text-blue-200">
+                    U-Net FP8 weights are dequantized back to full precision per operation during inference, so generation is slower than without quantization.
+                  </p>
+                )}
               </div>
             ) : null}
           </>

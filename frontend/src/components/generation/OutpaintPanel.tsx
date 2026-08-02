@@ -3054,41 +3054,59 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
               </summary>
               <div className="mt-3 space-y-3">
                 {(currentModelInfo?.model_info?.type === "zimage" || currentModelInfo?.model_info?.type === "flux2" || currentModelInfo?.model_info?.type === "anima") ? (
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                    <Select
-                      label={`Transformer Quantization (${currentModelInfo?.model_info?.type === "flux2" ? "FLUX.2" : "Z-Image"})`}
-                      value={params.unet_quantization || "none"}
-                      onChange={(e) => setParams({ ...params, unet_quantization: e.target.value === "none" ? null : e.target.value })}
-                      options={[
-                        { value: "none", label: "None" },
-                        { value: "fp8_e4m3fn", label: "FP8 E4M3 (Recommended)" },
-                        { value: "fp8_e5m2", label: "FP8 E5M2" },
-                      ]}
-                    />
-                    <Select
-                      label={`Text Encoder Quantization (${currentModelInfo?.model_info?.type === "flux2" ? "Qwen3" : "Gemma2"})`}
-                      value={params.text_encoder_quantization || "none"}
-                      onChange={(e) => setParams({ ...params, text_encoder_quantization: e.target.value === "none" ? null : e.target.value })}
-                      options={[
-                        { value: "none", label: "None" },
-                        { value: "fp8_e4m3fn", label: "FP8 E4M3 (Recommended)" },
-                        { value: "fp8_e5m2", label: "FP8 E5M2" },
-                      ]}
-                    />
-                  </div>
+                  <>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      <Select
+                        label={`Transformer Quantization (${currentModelInfo?.model_info?.type === "flux2" ? "FLUX.2" : "Z-Image"})`}
+                        value={params.unet_quantization || "none"}
+                        onChange={(e) => setParams({ ...params, unet_quantization: e.target.value === "none" ? null : e.target.value })}
+                        options={[
+                          { value: "none", label: "None" },
+                          { value: "fp8_e4m3fn", label: "FP8 E4M3" },
+                          { value: "fp8_e5m2", label: "FP8 E5M2" },
+                        ]}
+                      />
+                      <Select
+                        label={`Text Encoder Quantization (${currentModelInfo?.model_info?.type === "flux2" ? "Qwen3" : "Gemma2"})`}
+                        value={params.text_encoder_quantization || "none"}
+                        onChange={(e) => setParams({ ...params, text_encoder_quantization: e.target.value === "none" ? null : e.target.value })}
+                        options={[
+                          { value: "none", label: "None" },
+                          { value: "fp8_e4m3fn", label: "FP8 E4M3 (Recommended)" },
+                          { value: "fp8_e5m2", label: "FP8 E5M2" },
+                        ]}
+                      />
+                    </div>
+                    {params.unet_quantization && params.unet_quantization !== "none" && (
+                      <div className="bg-blue-900/20 border border-blue-600/30 rounded-lg p-3">
+                        <p className="text-xs text-blue-200">
+                          Transformer FP8 reduces VRAM. Weights are dequantized back to full precision per operation during inference, so generation is slower than without quantization.
+                        </p>
+                      </div>
+                    )}
+                  </>
                 ) : (
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                    <Select
-                      label="U-Net Quantization"
-                      value={params.unet_quantization || "none"}
-                      onChange={(e) => setParams({ ...params, unet_quantization: e.target.value === "none" ? null : e.target.value })}
-                      options={[
-                        { value: "none", label: "None" },
-                        { value: "fp8_e4m3fn", label: "FP8 E4M3 (Recommended)" },
-                        { value: "fp8_e5m2", label: "FP8 E5M2" },
-                      ]}
-                    />
-                  </div>
+                  <>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      <Select
+                        label="U-Net Quantization"
+                        value={params.unet_quantization || "none"}
+                        onChange={(e) => setParams({ ...params, unet_quantization: e.target.value === "none" ? null : e.target.value })}
+                        options={[
+                          { value: "none", label: "None" },
+                          { value: "fp8_e4m3fn", label: "FP8 E4M3" },
+                          { value: "fp8_e5m2", label: "FP8 E5M2" },
+                        ]}
+                      />
+                    </div>
+                    {params.unet_quantization && params.unet_quantization !== "none" && (
+                      <div className="bg-yellow-900/20 border border-yellow-600/30 rounded-lg p-3">
+                        <p className="text-xs text-yellow-200">
+                          Quantization reduces VRAM but may affect quality. FP8 weights are dequantized back to full precision per operation during inference, so generation is slower than without quantization. Original model kept on CPU.
+                        </p>
+                      </div>
+                    )}
+                  </>
                 )}
 
                 <label className="flex items-center gap-2 cursor-pointer">

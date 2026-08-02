@@ -185,6 +185,97 @@ a generation without style transfer.
   Training can be restricted to the LLM Adapter only; TE and Qwen-Image VAE frozen.
   Inference attention routes tq via conduit; training `attn_mode` (torch/flash)
   blocks tq.
+  - **Weight-only INT8 (W8A8)**: Anima accepts a mixed int8/e4m3 checkpoint
+    produced by `subapps/fp8_quantize/quantize_transformer_fp8.py --arch anima
+    --format int8 --skip-below-work-gate`. `anima_loader.load_anima_dit` detects
+    int8 and fp8 INDEPENDENTLY and runs both swaps (`Int8Linear` / `Fp8Linear`),
+    then loads with `assign=True`, which preserves the stored dtypes. The W8A8
+    integer GEMM itself is opt-in per process (`SUSHI_INT8_MM=1`,
+    `GET/POST /api/v1/system/int8-mm`); there is NO per-generation parameter.
+  - `--skip-below-work-gate` is **required** for Anima, unlike Krea 2. The
+    conversion skips **283 of the DiT's 515 Linears** (168 AdaLN modulation
+    layers, 56 cross-attention k/v projections, the LLM-adapter projections, the
+    timestep and final-layer Linears), leaving 232 quantized. Those 283 can never
+    clear the runtime min-work gate at any `m`, so quantizing them would make
+    them run `Int8Linear._dequant_forward` forever — slower than the `F.linear`
+    the bf16 checkpoint runs. Cost of skipping them: ~369 MB of saving
+    (2.4987 GB shipped vs ~2.13 GB fully quantized, against a 4.1822 GB bf16
+    source — i.e. −40% instead of −49%).
+  - Measured effect, **Linear-only** and to one significant digit. Harness:
+    `tmp/anima_int8_rollup_probe.py` (RTX 6000 Ada sm_89, bf16, batch 1, per
+    denoise pass; real layer census from the artifact's audit JSON; weights
+    rotated over 6 buffers to defeat L2; clock-aware warmup — the card idles at
+    210 MHz and a short loop measures fiction). Against the bf16 checkpoint:
+
+    | resolution | 384² | 512² | 640² | 768² | 1024² | 1328² |
+    |---|---|---|---|---|---|---|
+    | with the flag | ~1.3x | ~1.6x | ~1.8x | ~1.9x | ~2x | ~2x |
+    | naive all-int8 | ~0.9x | ~1.2x | ~1.4x | ~1.6x | ~1.8x | ~1.8x |
+
+    What is robust across every harness tried: the filtered artifact is **faster
+    than the naive one at every resolution**, and the naive one **regresses**
+    below break-even at low resolution. What is *not* robust is the magnitude,
+    and at ≤512² not even the sign: a separately written audit harness reported
+    the filtered arm at 0.90x/0.98x for 384²/512² where this one measures
+    1.3x/1.6x. Treat ≤512² (which includes Anima's **default** 512²,
+    `pipeline_backends/anima.py`) as "break-even to modestly positive,
+    harness-dependent". The spread is dominated by fixed per-call cost: on this
+    host a CUDA launch is ~8 µs, an `F.linear` ~20 µs and an `Int8Linear.forward`
+    ~60 µs regardless of size, so the small-`m` layers are dispatch-bound rather
+    than arithmetic-bound.
+  - These figures are a **Linear-only** roll-up. Attention (SDPA), norms, RoPE,
+    the Qwen3 TE and the Qwen-Image VAE are excluded and are identical between
+    the arms, so the **end-to-end** speedup is strictly closer to 1.0 than any
+    number above.
+  - Some quantized layers are permanently on the dequant path and are kept only
+    for the VRAM: both tokenizers pad to `max_length=512`, so
+    `llm_adapter.blocks.N.mlp.2` sits at mkn = 2.15e9 < the floor at every
+    resolution, and both `t_embedder` Linears run at m=1. CFG does not raise `m`
+    — Anima runs conditional and unconditional as two separate passes
+    (`anima_pipeline_ops.py`).
+  - The runtime min-work gate (`_MIN_WORK_K/N/MKN`) is left **unchanged**, but
+    that is a scope decision, not a measurement: the constants are Krea-2-derived
+    and shared by every arch that uses `int8_linear`. For Anima the floor is
+    measurably a little too high. Counterexample (harness
+    `tmp/anima_int8_gate_counterexample.py`, same host/method as above), forcing
+    `_MIN_WORK_MKN = 0` and comparing against the dequant path each shape is
+    actually routed to:
+
+    | shape | mkn | int_mm/dequant | verdict |
+    |---|---|---|---|
+    | m=576 k=n=2048 (384², the 168-layer group) | 2.42e9 | **1.20x** | refusal costs ~20% on those layers |
+    | m=512 k=4096 n=1024 (`llm_adapter…mlp.2`) | 2.15e9 | **1.06x** | marginal loss |
+    | m=480 k=n=2048 | 2.01e9 | 0.90x | refusal correct |
+    | m=400 k=n=2048 | 1.68e9 | 0.80x | refusal correct |
+
+    Break-even therefore sits near 2.2e9, not 2.5e9. Lowering it is a change to a
+    **shared** constant and must not be shipped without re-validating Krea 2
+    (whose artifact and gate behaviour are the reason the constant has its
+    current value); that re-validation has not been done, so the constant stands.
+    Note also that the original Krea 2 sweep predates the clock-aware timing used
+    here, which is a further reason any retune must re-measure both arches rather
+    than edit the number.
+  - Block swap composes with the quantized layers (verified, incl. the pinned
+    staging path): the offloader keys on class names ending in `Linear`, moves
+    only `weight`, so the float32 `weight_scale` stays GPU-resident. The
+    `block_swap_h2d_only` coalesced path needs one dtype per block and therefore
+    disables itself on a quantized DiT with a printed message.
+  - Training is dequant-only: `training/ops/anima_ops.load_components` calls
+    `disable_int8_mm` + `disable_scaled_mm` on the transformer and text encoder.
+  - **Full fine-tuning a quantized Anima checkpoint is refused**
+    (`AnimaFullParameterAdapter`, `NotImplementedError`). `Int8Linear`/`Fp8Linear`
+    hold `weight` as a *buffer*, so `requires_grad_(True)` is a no-op on them and
+    `named_parameters()` skips them — a full FT would silently train only the 283
+    skipped Linears (measured: 405 M of the DiT's 2.09 B weight elements remain
+    trainable, i.e. **80.6% of the weights are frozen**;
+    `tmp/anima_int8_fullft_guard_probe.py` ARM 0) while the loss still fell.
+    LoRA on the same checkpoint is
+    fine and stays allowed (the adapter wraps the quantized module). Same guard
+    as `Ideogram4FullParameterAdapter`, but conditional: the bf16 Anima
+    checkpoint full-fine-tunes normally.
+  - `vram_optimization._anima_quantize_fp8` (the legacy per-call full-weight
+    dequant patch, 0.50–0.96x vs 16-bit) is **superseded** and refuses to run on
+    an already-quantized checkpoint, emitting a `quantization_superseded` warning.
 - **krea2** — Single-stream MMDiT with rectified flow. UI `cfg_scale` maps to Krea
   `guidance = cfg_scale - 1`; the distilled/turbo checkpoint sets guidance 0 (no
   CFG). Qwen3-VL-4B TE is always frozen and TE training is explicitly rejected;

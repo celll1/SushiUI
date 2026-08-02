@@ -94,6 +94,25 @@ _CKPT_ARTIFACTS = (
 # refusing it would leave no way to resume once the cause is fixed.
 _CKPT_CONDITIONAL = ("ema.safetensors", "lr_scheduler.pt")
 
+# Cross-optimizer resume is deliberately an allow-list. These names are the
+# public VAE config values, not Python class names. Every allowed pair must also
+# have a lossless-enough state conversion in optimizer_state_convert.py.
+_COMPATIBLE_OPTIMIZER_RESUME_PAIRS = {
+    ("adamw", "adamw8bit"),
+}
+
+_OPTIMIZER_CLASS_TO_CONFIG_NAME = {
+    "AdamW": "adamw",
+    "AdamW8bit": "adamw8bit",
+    "PagedAdamW": "paged_adamw",
+    "PagedAdamW8bit": "paged_adamw8bit",
+    "Adafactor": "adafactor",
+    "Lion8bit": "lion8bit",
+    "PagedLion8bit": "paged_lion8bit",
+    "AdamW8bit_RingBuffer": "adamw8bit_ringbuffer",
+    "Lion8bit_RingBuffer": "lion8bit_ringbuffer",
+}
+
 
 class VaeTrainer:
     """Decoder-only fine-tune of an AutoencoderKL-family VAE."""
@@ -972,7 +991,12 @@ class VaeTrainer:
         if self.ema is not None:
             save_file(self._trainable_state_dict(use_ema=True),
                       str(ckpt_dir / "ema.safetensors"))
-        torch.save(self.optimizer.state_dict(), ckpt_dir / "optimizer.pt")
+        optimizer_state = self.optimizer.state_dict()
+        # State key layouts are implementation-specific and some foreign dicts
+        # pass load_state_dict only to fail at the first step. Record the writer
+        # class so resume conversion can identify the source before loading.
+        optimizer_state["_sushi_opt_class"] = type(self.optimizer).__name__
+        torch.save(optimizer_state, ckpt_dir / "optimizer.pt")
         if self.lr_scheduler is not None:
             torch.save(self.lr_scheduler.state_dict(), ckpt_dir / "lr_scheduler.pt")
         torch.save(
@@ -1477,12 +1501,17 @@ class VaeTrainer:
         current_optimizer = self.cfg.get("optimizer")
         if saved_optimizer is not None and current_optimizer is not None and \
                 str(saved_optimizer).strip().lower() != \
-                str(current_optimizer).strip().lower():
+                str(current_optimizer).strip().lower() and \
+                (str(saved_optimizer).strip().lower(),
+                 str(current_optimizer).strip().lower()) not in \
+                _COMPATIBLE_OPTIMIZER_RESUME_PAIRS:
             raise VaeConfigError(
                 f"Checkpoint {ckpt_dir.name} used optimizer "
                 f"{saved_optimizer!r}, but this run uses {current_optimizer!r}. "
-                f"Optimizer state is implementation-specific; match the "
-                f"checkpoint optimizer or start a new run."
+                f"Optimizer state is implementation-specific. The only "
+                f"supported optimizer change during VAE resume is "
+                f"AdamW -> AdamW8bit; otherwise match the checkpoint optimizer "
+                f"or start a new run."
             )
 
         def _saved_bool(key: str, default: bool) -> bool:
@@ -1661,9 +1690,69 @@ class VaeTrainer:
         # saved at, so anything that still fails here is a genuinely corrupt file
         # and must stop the run rather than leave the state re-initialised.
         try:
-            self.optimizer.load_state_dict(
-                torch.load(ckpt_dir / "optimizer.pt",
-                           map_location=self.device, weights_only=False))
+            # Always deserialize on CPU. Cross-optimizer conversion quantizes
+            # fp32 AdamW moments there before load_state_dict casts the finished
+            # state to each target parameter's device.
+            optimizer_state = torch.load(
+                ckpt_dir / "optimizer.pt", map_location="cpu", weights_only=False
+            )
+            saved_optimizer = ((train_state.get("config") or {}).get("optimizer"))
+            current_optimizer = self.cfg.get("optimizer")
+            saved_class = optimizer_state.get("_sushi_opt_class")
+            saved_config_name = (str(saved_optimizer).strip().lower()
+                                 if saved_optimizer is not None else None)
+            saved_class_name = _OPTIMIZER_CLASS_TO_CONFIG_NAME.get(str(saved_class))
+            current_class_name = _OPTIMIZER_CLASS_TO_CONFIG_NAME.get(
+                type(self.optimizer).__name__
+            )
+            current_name = (str(current_optimizer).strip().lower()
+                             if current_optimizer is not None else None)
+            if saved_class_name is not None and saved_config_name is not None and \
+                    saved_class_name != saved_config_name:
+                raise ValueError(
+                    f"optimizer.pt class {saved_class!r} contradicts "
+                    f"train_state optimizer {saved_optimizer!r}"
+                )
+            if current_class_name is not None and current_name is not None and \
+                    current_class_name != current_name:
+                raise ValueError(
+                    f"live optimizer class {type(self.optimizer).__name__!r} "
+                    f"contradicts config optimizer {current_optimizer!r}"
+                )
+            saved_name = saved_class_name or saved_config_name
+            # A pre-tag, config-less checkpoint cannot prove its source class.
+            # Preserve the historical raw-load path in that case; same-optimizer
+            # legacy resumes remain valid, while an incompatible raw dict still
+            # receives the existing actionable load refusal.
+            if saved_name is not None and current_name is not None and \
+                    saved_name != current_name:
+                pair = (saved_name, current_name)
+                if pair not in _COMPATIBLE_OPTIMIZER_RESUME_PAIRS:
+                    # Normally caught before weights are touched. Keep this
+                    # second gate local to the state load for legacy config-less
+                    # checkpoints and hand-built test callers.
+                    raise ValueError(
+                        f"unsupported optimizer resume pair {saved_optimizer!r} "
+                        f"-> {current_optimizer!r}"
+                    )
+                from core.training.optimizers.optimizer_state_convert import (
+                    maybe_convert_optimizer_state,
+                )
+                converted, _carry_step = maybe_convert_optimizer_state(
+                    optimizer_state,
+                    self.optimizer,
+                    log_prefix=self.log_prefix,
+                    source_optimizer_name=saved_name,
+                )
+                if converted is None:
+                    # Never try the raw torch AdamW dict. bnb's loader can accept
+                    # exp_avg keys and defer the actual KeyError until step().
+                    raise ValueError(
+                        f"required optimizer conversion {saved_optimizer!r} -> "
+                        f"{current_optimizer!r} did not succeed"
+                    )
+                optimizer_state = converted
+            self.optimizer.load_state_dict(optimizer_state)
         except Exception as e:
             raise VaeConfigError(
                 f"Checkpoint {ckpt_dir.name} has an optimizer.pt this run cannot "
@@ -1671,7 +1760,8 @@ class VaeTrainer:
                 f"run using a different optimizer than this one "
                 f"(optimizer={self.cfg.get('optimizer')!r}) - an optimizer state "
                 f"dict only loads back into the same optimizer type and param "
-                f"group layout. Resuming without it would restart the moment "
+                f"group layout, except for the supported AdamW -> AdamW8bit "
+                f"conversion. Resuming without it would restart the moment "
                 f"estimates at the resumed step count, which nothing downstream "
                 f"reports. Resume from an intact step_* directory, or match the "
                 f"optimizer the checkpoint was written with."

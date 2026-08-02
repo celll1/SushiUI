@@ -1175,6 +1175,15 @@ def apply_runtime_int8_quantization(manager, model, arch: str, quantization,
         doc = getattr(e, "_int8_partial_document", None) or {}
         rows = list(getattr(manager, "_runtime_int8_partial_rows", []) or [])
         rows.extend(doc.get("layers", []) or [])
+        unique_rows = []
+        seen_names = set()
+        for row in rows:
+            name = row.get("name")
+            if name in seen_names:
+                continue
+            seen_names.add(name)
+            unique_rows.append(row)
+        rows = unique_rows
         done = len([r for r in rows if r.get("chosen") in ("int8", "e4m3")])
         remaining = int(doc.get("remaining", 0) or 0)
         # NOT latched as converted: the model is neither bf16 nor fully INT8.

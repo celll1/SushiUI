@@ -310,6 +310,12 @@ def move_unet_to_gpu(pipeline, quantization: Optional[str] = None, use_torch_com
     if quantization in [None, "", "none"]:
         quantization = None
 
+    # INT8 is an anima/krea2-only path (see _refuse_runtime_int8_elsewhere).
+    # Refused HERE rather than in _quantize_unet so the request never pays for
+    # the copy.deepcopy that the unsupported-type branch would do first.
+    if _refuse_runtime_int8_elsewhere(quantization, "U-Net"):
+        quantization = None
+
     if hasattr(pipeline, 'unet') and pipeline.unet is not None:
         # Fast path: No quantization and no torch.compile (most common case)
         if not quantization and not use_torch_compile:
@@ -498,6 +504,9 @@ def move_zimage_transformer_to_gpu(transformer, quantization: Optional[str] = No
     """
     # Normalize quantization parameter
     if quantization in [None, "", "none"]:
+        quantization = None
+
+    if _refuse_runtime_int8_elsewhere(quantization, "Z-Image Transformer"):
         quantization = None
 
     if transformer is None:
@@ -819,6 +828,9 @@ def move_flux2_transformer_to_gpu(transformer, quantization: Optional[str] = Non
     if quantization in [None, "", "none"]:
         quantization = None
 
+    if _refuse_runtime_int8_elsewhere(quantization, "FLUX.2 Transformer"):
+        quantization = None
+
     if transformer is None:
         return transformer
 
@@ -898,6 +910,329 @@ def _anima_already_weight_only_quantized(model) -> int:
     return sum(1 for m in model.modules() if isinstance(m, (Int8Linear, Fp8Linear)))
 
 
+# ---------------------------------------------------------------------------
+# Runtime INT8: quantize an ordinary bf16 checkpoint IN PLACE, once per load
+# ---------------------------------------------------------------------------
+#
+# ``unet_quantization="int8"`` on an UNQUANTIZED anima / krea2 model converts the
+# loaded transformer to the same MIXED int8/e4m3 layout the offline tool
+# (``subapps/fp8_quantize/quantize_transformer_fp8.py --format int8``) writes,
+# using the SAME selection rule -- both import it from
+# ``core.models.common.int8_runtime_quantize``.
+#
+# IN PLACE, deliberately. The SD1.5/SDXL path above keeps a second, unquantized
+# copy on CPU (``pipeline._original_unet``) so the request can be undone; that
+# costs 1x the model and is not viable against a 26 GB bf16 Krea 2 transformer.
+# Here each layer's source weight is dropped as its quantized replacement is
+# built, so no second MODULE is ever constructed -- but the process still holds
+# the source checkpoint's mapping (the skipped Linears and every non-Linear
+# parameter reference it), which measures as ~1.6x the source in host RSS for
+# the session: 6.16 GB for Anima's 3.90 GB DiT, ~36 GB extrapolated for Krea 2.
+# See quantize_linears_in_place's docstring and docs/guides/MODEL_FACTS.md.
+# The conversion is ONE-WAY until the model is reloaded.
+
+RUNTIME_INT8_VALUE = "int8"
+
+# The recovery action, in ONE place, because it is quoted in several warnings,
+# in openapi.yaml and in all four generation panels -- and because it was WRONG
+# until POST /models/load grew `force`: `_load_model_locked` early-returns when
+# the requested model id equals the loaded one, so re-selecting the same
+# checkpoint used to be a silent no-op that undid nothing. "Load Selected Model"
+# on the currently-loaded model now sends force=true and really does reload.
+_RUNTIME_INT8_RECOVERY = (
+    "Load the model again from the model selector (loading the model that is already "
+    "loaded now forces a real reload) to get an unquantized transformer."
+)
+_RUNTIME_INT8_RECOVERY_LOWER = (
+    "load the model again from the model selector (loading the model that is already "
+    "loaded now forces a real reload) to get an unquantized transformer."
+)
+_RUNTIME_INT8_RECOVERY_LOG = (
+    "Load the model again (POST /models/load with force=true, or the model selector's "
+    "Load button on the currently loaded model) for an unquantized transformer."
+)
+
+
+def _refuse_runtime_int8_elsewhere(quantization, label: str) -> bool:
+    """True (with a warning emitted) when ``quantization`` asks for INT8 on a path
+    that cannot do it.
+
+    ``unet_quantization: "int8"`` is advertised for every architecture by the
+    request schema, but the in-place converter is wired only for the archs in
+    ``RUNTIME_INT8_ARCHS`` (anima, krea2). Every other quantization entry point
+    would otherwise treat "int8" as an unknown type and reach that branch only
+    AFTER paying for a full ``copy.deepcopy`` of the U-Net (SD1.5/SDXL). Refuse
+    up front instead, and say which architectures do support it.
+    """
+    if _normalize_quantization(quantization) != RUNTIME_INT8_VALUE:
+        return False
+    print(f"[Quantization] '{RUNTIME_INT8_VALUE}' is not supported for {label}; the in-place "
+          f"INT8 conversion is wired for the Anima and Krea 2 transformers only. "
+          f"Running at full precision.")
+    _add_generation_warning(
+        f"{label} quantization 'int8' is not supported on this architecture (the in-place "
+        f"INT8 conversion is implemented for the Anima and Krea 2 transformers only); "
+        f"running at full precision.",
+        code="quantization_fallback",
+    )
+    return True
+
+
+def _normalize_quantization(quantization) -> Optional[str]:
+    """``None`` for every spelling of "no quantization", else the string."""
+    if quantization in (None, "", "none"):
+        return None
+    return str(quantization)
+
+
+def runtime_int8_requested(quantization) -> bool:
+    """True when the per-generation request asks for the runtime INT8 path."""
+    return _normalize_quantization(quantization) == RUNTIME_INT8_VALUE
+
+
+def _runtime_int8_progress_adapter(progress_callback):
+    """Wrap a generation progress callback for the converter's (done, total, name).
+
+    Uses the SAME decoupled-phase channel the PiD decode uses
+    (``progress_callback(step, total, None, phase_label=...)``) rather than
+    inventing a mechanism: the conversion happens inside the first generation, so
+    it belongs on that generation's progress channel. Throttled to ~2 Hz because
+    a conversion is 230-260 layers and every callback is a WebSocket send.
+    """
+    if progress_callback is None:
+        return None
+    import time as _time
+    last = [0.0]
+
+    def _cb(done: int, total: int, name: str) -> None:
+        now = _time.monotonic()
+        if done != total and (now - last[0]) < 0.5:
+            return
+        last[0] = now
+        try:
+            progress_callback(done, total, None,
+                              phase_label="Quantizing transformer weights (INT8, one-time)")
+        except Exception:
+            pass
+
+    return _cb
+
+
+def apply_runtime_int8_quantization(manager, model, arch: str, quantization,
+                                    label: str = "Transformer",
+                                    progress_callback=None):
+    """Convert ``model`` to the mixed int8/e4m3 layout in place, once.
+
+    Returns ``(model, converted)``. ``model`` is returned UNCHANGED (and
+    ``converted`` is False) for every case that is not a fresh int8 conversion:
+
+    * the request is not ``"int8"`` -- the caller's own fp8/none handling stands;
+    * ``arch`` is not one of ``RUNTIME_INT8_ARCHS``;
+    * the model was ALREADY converted at runtime. A later ``null``/fp8 request
+      then proceeds with the quantized model and emits
+      ``runtime_quantization_persistent`` -- the conversion cannot be undone
+      without reloading the checkpoint, and pretending otherwise would be worse
+      than saying so;
+    * the CHECKPOINT is already weight-only quantized (offline artifact). That is
+      the same condition ``_anima_quantize_fp8`` refuses on, and it emits the
+      same ``quantization_superseded`` code;
+    * the weights are ALREADY float8, because an fp8 generation ran earlier in
+      this session and ``_anima_patch_linear_fp8`` cast them in place (it leaves
+      the module an ``nn.Linear``, so the type-based check above cannot see it).
+      Quantizing e4m3-rounded weights to int8 measured 11.2x the weight error of
+      a direct int8 conversion -- worse than either format alone -- so this
+      refuses instead, with ``quantization_superseded``;
+    * a PREVIOUS attempt failed part-way (``manager._runtime_int8_partial``) and
+      this request is not another int8 request. A partial model is reported for
+      what it is; another int8 request RESUMES it (see below).
+
+    PARTIAL CONVERSIONS. A failure part-way (a CUDA OOM at layer 120 of 263 is
+    the realistic one) leaves the module half converted, which cannot be undone.
+    It is therefore NOT latched as converted: ``manager._runtime_int8_partial``
+    is set instead, the user is told how many layers were converted, and the next
+    int8 request resumes the remainder -- selection walks ``nn.Linear`` and a
+    converted layer is no longer one. While partial, the "already quantized
+    CHECKPOINT" branch is suppressed: those modules are ours, not the
+    checkpoint's, and claiming otherwise both asserts a false provenance and
+    would strand the unconverted layers forever.
+
+    A completed conversion sets ``manager._runtime_int8_converted = True``, which
+    ``keep_hot.compute_model_key`` reads so the resident-component key does not
+    flip between generations, and which ``pipeline._load_model_locked`` clears.
+    """
+    requested = _normalize_quantization(quantization)
+    already_converted = bool(getattr(manager, "_runtime_int8_converted", False))
+    partial = bool(getattr(manager, "_runtime_int8_partial", False))
+
+    if already_converted:
+        if requested != RUNTIME_INT8_VALUE:
+            print(f"[RuntimeInt8] {label} was quantized to INT8 earlier in this session; "
+                  f"the request '{quantization}' cannot undo it (the source weights were "
+                  f"dropped). {_RUNTIME_INT8_RECOVERY_LOG}")
+            _add_generation_warning(
+                f"{label} stays INT8: it was quantized in place earlier in this session and "
+                f"the conversion is one-way. {_RUNTIME_INT8_RECOVERY}",
+                code="runtime_quantization_persistent",
+            )
+        return model, False
+
+    if requested != RUNTIME_INT8_VALUE:
+        if partial:
+            done = int(getattr(manager, "_runtime_int8_partial_done", 0) or 0)
+            print(f"[RuntimeInt8] {label} is PARTIALLY INT8 ({done} layer(s) converted before an "
+                  f"earlier failure); the request '{quantization}' cannot undo it. "
+                  f"{_RUNTIME_INT8_RECOVERY_LOG}")
+            _add_generation_warning(
+                f"{label} is partially INT8: an earlier conversion failed after {done} layer(s) "
+                f"and the conversion is one-way. Request INT8 again to convert the remaining "
+                f"layers, or {_RUNTIME_INT8_RECOVERY_LOWER}",
+                code="runtime_quantization_persistent",
+            )
+        return model, False
+
+    try:
+        from core.models.common.int8_runtime_quantize import (
+            LoraWrappedError, RUNTIME_INT8_ARCHS, already_weight_only_quantized,
+            float8_weight_linear_count, quantize_linears_in_place,
+        )
+    except Exception as e:
+        print(f"[RuntimeInt8] unavailable ({e}); leaving {label} unquantized")
+        _add_generation_warning(
+            f"{label} INT8 quantization unavailable ({e}); running at full precision",
+            code="quantization_fallback",
+        )
+        return model, False
+
+    if arch not in RUNTIME_INT8_ARCHS:
+        # The capability table already warns for an arch that ignores
+        # unet_quantization; nothing to add here.
+        return model, False
+
+    if not partial:
+        # Suppressed while partial: the quantized modules present would then be
+        # OUR OWN half-finished work, not a checkpoint property.
+        owned = already_weight_only_quantized(model)
+        if owned:
+            print(f"[RuntimeInt8] {label} already holds {owned} weight-only quantized Linear(s) "
+                  f"from the checkpoint; the runtime '{quantization}' request is a no-op.")
+            _add_generation_warning(
+                f"{label} quantization '{quantization}' was ignored: the checkpoint is already "
+                f"weight-only quantized ({owned} layers).",
+                code="quantization_superseded",
+            )
+            # Treat it as converted for keep-hot purposes: the model IS
+            # int8-shaped, so the resident-set key must not flip when the next
+            # request omits the parameter.
+            manager._runtime_int8_converted = True
+            return model, False
+
+    fp8_weights = float8_weight_linear_count(model)
+    if fp8_weights:
+        print(f"[RuntimeInt8] {label} holds {fp8_weights} Linear layer(s) whose weights are "
+              f"already float8 from an FP8 generation earlier in this session; refusing to "
+              f"quantize rounded weights again (measured 11.2x the weight error of a direct "
+              f"INT8 conversion). {_RUNTIME_INT8_RECOVERY_LOG}")
+        _add_generation_warning(
+            f"{label} quantization '{quantization}' was ignored: {fp8_weights} Linear layer(s) "
+            f"already hold FP8 weights (an FP8 generation earlier in this session casts them "
+            f"in place), and quantizing already-rounded weights to INT8 is worse than either "
+            f"format alone. The "
+            f"transformer stays FP8. To convert from the original weights instead, "
+            f"{_RUNTIME_INT8_RECOVERY_LOWER[:-1]} and request INT8 without an FP8 "
+            f"generation in between.",
+            code="quantization_superseded",
+        )
+        return model, False
+
+    if partial:
+        done = int(getattr(manager, "_runtime_int8_partial_done", 0) or 0)
+        print(f"[RuntimeInt8] resuming a partial {label} conversion "
+              f"({done} layer(s) already converted)")
+
+    work_device = torch.device("cuda:0") if torch.cuda.is_available() else None
+    try:
+        document = quantize_linears_in_place(
+            model,
+            arch=arch,
+            compute_dtype=torch.bfloat16,
+            work_device=work_device,
+            progress_cb=_runtime_int8_progress_adapter(progress_callback),
+            label=label,
+        )
+    except LoraWrappedError as e:
+        # Nothing was touched: the refusal happens before the first layer.
+        print(f"[RuntimeInt8] {label} conversion refused: {e}")
+        _add_generation_warning(
+            f"{label} INT8 quantization was not applied because LoRAs are loaded: the LoRA "
+            f"wrappers hide the Linear layers, so the conversion would select a different "
+            f"set than it should. The model is unchanged and runs at full precision. "
+            f"Remove the LoRAs (or reload the model without them) to convert.",
+            code="quantization_fallback",
+        )
+        return model, False
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        doc = getattr(e, "_int8_partial_document", None) or {}
+        rows = list(getattr(manager, "_runtime_int8_partial_rows", []) or [])
+        rows.extend(doc.get("layers", []) or [])
+        done = len([r for r in rows if r.get("chosen") in ("int8", "e4m3")])
+        remaining = int(doc.get("remaining", 0) or 0)
+        # NOT latched as converted: the model is neither bf16 nor fully INT8.
+        manager._runtime_int8_partial = True
+        manager._runtime_int8_partial_rows = rows
+        manager._runtime_int8_partial_done = done
+        print(f"[RuntimeInt8] {label} conversion failed after {done} layer(s) "
+              f"({remaining} left): {e}")
+        _add_generation_warning(
+            f"{label} INT8 quantization failed after converting {done} layer(s) ({remaining} "
+            f"left): {e}. The transformer is now partially INT8 and that cannot be undone. "
+            f"Generate again with INT8 to convert the remaining layers, or "
+            f"{_RUNTIME_INT8_RECOVERY_LOWER}",
+            code="quantization_partial",
+        )
+        return model, False
+
+    counts = document.get("converted", {})
+    converted_n = counts.get("int8", 0) + counts.get("e4m3", 0)
+    prev_rows = list(getattr(manager, "_runtime_int8_partial_rows", []) or [])
+    if prev_rows:
+        # Merge an earlier partial pass in, so the stored audit describes the
+        # whole module rather than only the resumed remainder.
+        seen = {r.get("name") for r in document.get("layers", [])}
+        document["layers"] = [r for r in prev_rows if r.get("name") not in seen] + \
+            list(document.get("layers", []))
+        merged: Dict[str, int] = {}
+        for r in document["layers"]:
+            merged[r["chosen"]] = merged.get(r["chosen"], 0) + 1
+        document["format_counts"] = merged
+        document["converted"] = merged
+        document["resumed_after_partial"] = True
+        counts = merged
+        converted_n = merged.get("int8", 0) + merged.get("e4m3", 0)
+
+    if converted_n == 0:
+        # Nothing qualified (every candidate filtered out by the shape gates, or
+        # every one rejected in favour of leaving it alone). The model is exactly
+        # what it was, so the one-way flag must NOT be latched.
+        print(f"[RuntimeInt8] {label}: no layer was converted; leaving the model unchanged")
+        _add_generation_warning(
+            f"{label} INT8 quantization converted no layers (none of this model's Linear "
+            f"layers qualified); the transformer runs at full precision.",
+            code="quantization_fallback",
+        )
+        return model, False
+
+    manager._runtime_int8_converted = True
+    manager._runtime_int8_partial = False
+    manager._runtime_int8_partial_rows = []
+    manager._runtime_int8_partial_done = 0
+    manager._runtime_int8_audit = document
+    print(f"[RuntimeInt8] {label} converted in place: "
+          f"{counts.get('int8', 0)} int8 + {counts.get('e4m3', 0)} e4m3 Linear(s), "
+          f"{document.get('elapsed_s', 0.0):.1f}s. One-way until the model is reloaded.")
+    return model, True
+
+
 def _anima_quantize_fp8(model, quantization: str, label: str):
     """Apply FP8 weight-only quantization with on-the-fly dequant to all
     nn.Linear modules in `model`. Embeddings are left untouched (they're
@@ -913,7 +1248,26 @@ def _anima_quantize_fp8(model, quantization: str, label: str):
     (they are not ``nn.Linear`` and the loop would skip them), so the only
     effect would be the copy. It returns the model untouched in that case, and
     says so.
+
+    The "already quantized" condition is now reachable by a SECOND route: a
+    model converted in place by ``apply_runtime_int8_quantization`` above. The
+    ANIMA staging path short-circuits before reaching here in that case
+    (``_anima_runtime_int8`` passes ``None`` once a runtime conversion has
+    happened or is being requested, and the user gets a
+    ``runtime_quantization_persistent`` warning explaining that the conversion is
+    one-way). LENS does NOT: ``move_lens_transformer_to_gpu`` calls this function
+    directly and has no runtime-int8 hook at all, so a Lens transformer reaches
+    here with whatever the request said. That is why the int8 refusal below is
+    part of this function rather than of the Anima caller, and why the
+    already-quantized refusal is kept type-based rather than
+    provenance-based: any caller that reaches here with quantized Linears gets
+    the same answer.
     """
+    # int8 is the anima/krea2 in-place converter's value; it never means anything
+    # here (Lens and the text encoders have no int8 path).
+    if _refuse_runtime_int8_elsewhere(quantization, f"Anima/Lens {label}"):
+        return model
+
     already = _anima_already_weight_only_quantized(model)
     if already:
         print(f"[Quantization] Anima {label} is already weight-only quantized "

@@ -837,6 +837,10 @@ export const fetchBundleVaeDefaultsByArch = async (): Promise<Record<string, boo
 // in exactly one place (the backend table) instead of being duplicated here.
 export interface ArchCapabilities {
   unsupported: Record<string, Record<string, string>>;
+  // Values of a feature's arming parameter that the arch DOES honor even though
+  // the feature is listed in `unsupported` (e.g. unet_quantization="int8" on
+  // krea2). Optional so an older backend without the key still type-checks.
+  supported_values?: Record<string, Record<string, string[]>>;
   feature_params: Record<string, string[]>;
   feature_labels: Record<string, string>;
 }
@@ -848,13 +852,64 @@ export const fetchArchCapabilities = async (): Promise<ArchCapabilities> =>
 // not loaded yet, are treated as SUPPORTING the feature — the same convention as
 // the backend's arch_supports_feature(), so a control is never hidden merely
 // because the matrix was unavailable.
+// `value` (optional): a value listed in `supported_values` counts as supported
+// even when the feature as a whole is unsupported on that arch — the same rule
+// as the backend's arch_supports_feature(arch, feature, value).
 export const archSupportsFeature = (
   caps: ArchCapabilities | null | undefined,
   arch: string | null | undefined,
-  feature: string
+  feature: string,
+  value?: string
 ): boolean => {
   if (!caps || !arch) return true;
-  return !(caps.unsupported?.[arch] && feature in caps.unsupported[arch]);
+  if (!(caps.unsupported?.[arch] && feature in caps.unsupported[arch])) return true;
+  if (value === undefined) return false;
+  return (caps.supported_values?.[arch]?.[feature] ?? []).includes(value);
+};
+
+// Architectures whose transformer can be converted to the weight-only INT8
+// layout AT RUNTIME, in place, from an ordinary bf16 checkpoint. Mirrors
+// backend/core/models/common/int8_runtime_quantize.py RUNTIME_INT8_ARCHS.
+// Kept as a list rather than derived from the capability matrix because an arch
+// that already honors `unet_quantization` (anima) has no entry there at all.
+export const RUNTIME_INT8_ARCHS = ["anima", "krea2"];
+
+// Options for the "Transformer / U-Net Quantization" selector, filtered by what
+// the loaded architecture actually applies. When the capability matrix has not
+// loaded, every FP8 value is offered (the same "assume supported" convention as
+// archSupportsFeature), so a control is never narrowed merely because the matrix
+// was unavailable.
+export const unetQuantizationOptions = (
+  caps: ArchCapabilities | null | undefined,
+  arch: string | null | undefined
+): { value: string; label: string }[] => {
+  const allow = (v: string) =>
+    archSupportsFeature(caps, arch, "unet_quantization", v);
+  const options = [{ value: "none", label: "None" }];
+  if (allow("fp8_e4m3fn")) options.push({ value: "fp8_e4m3fn", label: "FP8 E4M3" });
+  if (allow("fp8_e5m2")) options.push({ value: "fp8_e5m2", label: "FP8 E5M2" });
+  if (arch && RUNTIME_INT8_ARCHS.includes(arch) && allow("int8")) {
+    options.push({
+      value: "int8",
+      label: "INT8 (in-place, applied once per model load)",
+    });
+  }
+  return options;
+};
+
+// A persisted (localStorage) unet_quantization can name a value the CURRENTLY
+// loaded architecture does not offer — e.g. `fp8_e4m3fn` carried over onto a
+// krea2 model, where only `int8` is applied. Left alone, the <select> holds a
+// value that is not among its options (it renders blank) while the panel keeps
+// SENDING the value. Returns the value to keep, or null when it is not offered.
+export const normalizeUnetQuantization = (
+  caps: ArchCapabilities | null | undefined,
+  arch: string | null | undefined,
+  value: string | null | undefined
+): string | null => {
+  if (!value || value === "none") return null;
+  const offered = unetQuantizationOptions(caps, arch).some((o) => o.value === value);
+  return offered ? value : null;
 };
 
 // ---------------------------------------------------------------------------
@@ -2245,12 +2300,19 @@ export const getCurrentModel = async () => {
   return response.data;
 };
 
-export const loadModel = async (sourceType: string, source: string, revision?: string) => {
+// `force`: reload even when this model is already the loaded one. Without it the
+// backend early-returns, so nothing per-session is reset — which is what makes
+// "load the model again" the working recovery for the one-way in-place INT8
+// conversion (unet_quantization="int8" on anima/krea2).
+export const loadModel = async (sourceType: string, source: string, revision?: string, force?: boolean) => {
   const formData = new FormData();
   formData.append("source_type", sourceType);
   formData.append("source", source);
   if (revision) {
     formData.append("revision", revision);
+  }
+  if (force) {
+    formData.append("force", "true");
   }
 
   const response = await api.post("/models/load", formData, {

@@ -73,12 +73,22 @@ export default function ModelSelector({ onModelLoad }: ModelSelectorProps) {
     }
   };
 
+  // Loading the model that is ALREADY loaded sends force=true: without it the
+  // backend early-returns and the click does nothing at all. That reload is the
+  // documented (and only) way to undo per-session mutations of the loaded
+  // components — above all the one-way in-place INT8 conversion
+  // (unet_quantization="int8" on anima/krea2), whose warnings tell the user to
+  // load the model again.
   const handleLoadModel = async (sourceType: string, source: string) => {
     setLoading(true);
+    const isReload = currentModel?.source === source;
     try {
       const formData = new FormData();
       formData.append("source_type", sourceType);
       formData.append("source", source);
+      if (isReload) {
+        formData.append("force", "true");
+      }
 
       const response = await fetch("/api/models/load", {
         method: "POST",
@@ -91,7 +101,7 @@ export default function ModelSelector({ onModelLoad }: ModelSelectorProps) {
         if (onModelLoad) {
           onModelLoad(data.model_info);
         }
-        alert("Model loaded successfully!");
+        alert(isReload ? "Model reloaded successfully!" : "Model loaded successfully!");
       }
     } catch (error) {
       console.error("Failed to load model:", error);
@@ -250,7 +260,11 @@ export default function ModelSelector({ onModelLoad }: ModelSelectorProps) {
                 disabled={!selectedModelPath || loading}
                 className="w-full"
               >
-                {loading ? "Loading..." : "Load Selected Model"}
+                {loading
+                  ? "Loading..."
+                  : currentModel?.source === selectedModelPath
+                    ? "Reload Selected Model"
+                    : "Load Selected Model"}
               </Button>
             </>
           )}

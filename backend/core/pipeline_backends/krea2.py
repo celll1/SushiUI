@@ -84,6 +84,28 @@ class Krea2Mixin:
         keep_vae = requested and guard_ok
         return model_key, keep_te, keep_transformer, keep_vae
 
+    def _krea2_runtime_int8(self, params: Dict[str, Any], progress_callback=None) -> None:
+        """Apply the one-time in-place INT8 conversion, if this request asks for it.
+
+        Krea 2's quantization is otherwise decided by the CHECKPOINT FORMAT at
+        load time (a bf16 or a weight-only FP8/INT8 file); this is the one
+        per-generation value it honours, and only this one. Called before the
+        transformer is staged, so the module is still on CPU and no second module
+        copy is built -- the bf16 transformer is ~24 GB and a deep copy is not an
+        option. Host RSS still ends around 1.6x the source (~36 GB here) because
+        the source checkpoint's mapping stays referenced; see
+        ``quantize_linears_in_place`` and docs/guides/MODEL_FACTS.md.
+        """
+        from core.vram_optimization import apply_runtime_int8_quantization
+
+        transformer = (self.krea2_components or {}).get("transformer")
+        if transformer is None:
+            return
+        model, _converted = apply_runtime_int8_quantization(
+            self, transformer, "krea2", params.get("unet_quantization"),
+            label="Krea 2 Transformer", progress_callback=progress_callback)
+        self.krea2_components["transformer"] = model
+
     def _krea2_apply_attention_backend(self, transformer, params: Dict[str, Any]):
         """Stamp the inference attention backend (native/flash/sage) on the transformer.
 
@@ -316,6 +338,10 @@ class Krea2Mixin:
                 dtype=torch.float32, device=device, seed=cfg["seed"])
 
             print("[Krea2] Stage 3: Denoising...")
+            # One-time in-place INT8 conversion (unet_quantization="int8"), while
+            # the transformer is still on CPU. No-op for every other value and
+            # for an already-converted / already-quantized model.
+            self._krea2_runtime_int8(params, progress_callback=progress_callback)
             if not is_resident(self, "transformer", _kh_model_key):
                 transformer = self._krea2_move("transformer", device)
             else:
@@ -426,6 +452,10 @@ class Krea2Mixin:
                 torch.cuda.empty_cache()
 
             print("[Krea2] Stage 3: Denoising (SDEdit)...")
+            # One-time in-place INT8 conversion (unet_quantization="int8"), while
+            # the transformer is still on CPU. No-op for every other value and
+            # for an already-converted / already-quantized model.
+            self._krea2_runtime_int8(params, progress_callback=progress_callback)
             if not is_resident(self, "transformer", _kh_model_key):
                 transformer = self._krea2_move("transformer", device)
             else:
@@ -543,6 +573,10 @@ class Krea2Mixin:
                 mask_image, cfg["grid_h"], cfg["grid_w"], device=device, dtype=torch.float32)
 
             print("[Krea2] Stage 3: Denoising (repaint)...")
+            # One-time in-place INT8 conversion (unet_quantization="int8"), while
+            # the transformer is still on CPU. No-op for every other value and
+            # for an already-converted / already-quantized model.
+            self._krea2_runtime_int8(params, progress_callback=progress_callback)
             if not is_resident(self, "transformer", _kh_model_key):
                 transformer = self._krea2_move("transformer", device)
             else:

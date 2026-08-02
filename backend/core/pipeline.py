@@ -168,24 +168,33 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         source_type: ModelSource,
         source: str,
         pipeline_type: str = "txt2img",
+        force_reload: bool = False,
         **kwargs
     ):
         """Load a model, serialized against concurrent loads (boot auto-load vs a
-        manual /models/load) via ``_load_model_lock`` so state stays consistent."""
+        manual /models/load) via ``_load_model_lock`` so state stays consistent.
+
+        ``force_reload`` bypasses the same-model early return below. It exists
+        because that early return made "reload the model" -- the documented (and
+        only) way to undo an in-place runtime INT8 conversion, a VAE/TE override,
+        or any other per-session mutation of the loaded components -- a silent
+        no-op when the user re-selected the SAME checkpoint."""
         with self._load_model_lock:
-            return self._load_model_locked(source_type, source, pipeline_type, **kwargs)
+            return self._load_model_locked(
+                source_type, source, pipeline_type, force_reload=force_reload, **kwargs)
 
     def _load_model_locked(
         self,
         source_type: ModelSource,
         source: str,
         pipeline_type: str = "txt2img",
+        force_reload: bool = False,
         **kwargs
     ):
         """Load a Stable Diffusion model from various sources"""
         model_id = f"{source_type}:{source}"
 
-        if self.current_model == model_id:
+        if self.current_model == model_id and not force_reload:
             return
 
         # A model (re)load invalidates any keep-models-hot resident set from the
@@ -193,6 +202,17 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         # what the resident set refers to.
         from core.keep_hot import clear_resident
         clear_resident(self)
+
+        # A model (re)load is also the ONLY invalidation point for the in-place
+        # runtime INT8 conversion (vram_optimization.apply_runtime_int8_quantization):
+        # it drops the source bf16 weights, so the freshly loaded transformer is
+        # the only way back to full precision. Reached for the SAME checkpoint
+        # only via force_reload -- which is why POST /models/load takes it.
+        self._runtime_int8_converted = False
+        self._runtime_int8_partial = False
+        self._runtime_int8_partial_rows = []
+        self._runtime_int8_partial_done = 0
+        self._runtime_int8_audit = None
 
         # Clear any TE/VAE override state: the new model replaces the components
         # the override swapped, so the previous override refs are now stale.

@@ -98,6 +98,72 @@ cannot inject it (it passes no `env=`), so the repo owner has to launch it.
 The matched FP8 Krea 2 checkpoint is produced by
 `subapps/fp8_quantize/quantize_transformer_fp8.py`.
 
+## int8 W8A8 gate (G2) — pre-registered decision rule (separate from G1)
+
+Written down **before** any int8 arm, CLI flag, or GEMM code exists in
+`bench_fp8_scaled_mm.py`. This is a different fast path (`torch._int_mm`
+W8A8, not FP8) with its own gate; it does not replace or modify the FP8 rule
+above, which stays exactly as written. **Not implemented yet** — see the
+module docstring's `MEASUREMENT GATE G2` section for the full text this
+summarizes; `--report` does not currently evaluate it.
+
+**Vehicle.** Krea 2 only, quantized to int8 **from its bf16 source**, not
+from the shipped e4m3 checkpoint — e4m3 has already discarded weight
+information int8 cannot recover, so quantizing from it would judge int8
+against a floor already lowered by a different lossy step.
+
+**Five arms** (one process): `bf16` (anchor, both axes), `int8_weight_only`,
+`int8_w8a8_eager`, `int8_w8a8_fused` (the arm this gate decides on), and
+`int8_w8a8_hadamard` (built only if the outlier retry below triggers).
+
+**Quality — all four required**, measured on `int8_w8a8_fused` vs `bf16`:
+
+1. Flat-region residual (flattest 256×256 tile, high-pass σ=6) ≤ **1.15×
+   bf16** at seeds 987654321 and 12345. Calibrated against the FP8 gate's
+   actual numbers (seed 12345: bf16 0.199 / dequant 0.319 / fast 0.398; seed
+   987654321: bf16 0.351 / dequant 0.358 / fast 0.532) — this bar admits a
+   dequant-shaped result and rejects a fast-shaped one.
+2. Residual power-spectrum ratio at the 32–128px mottle wavelength ≤ **1.3×
+   bf16** (the FP8 fast arm measured 3.0–8.4× here).
+3. Brightness drift vs bf16 not one-signed across all 8 quality pairs, and
+   mean |dV| ≤ **1.0** (the FP8 fast arm was +2.93 mean, positive in 8/8).
+4. Blind human A/B clean at the mottle seed (987654321, quality prompt index
+   1, the flat-gradient prompt) — its bf16 reference is genuinely clean,
+   which is what makes this a real judgement.
+
+**Speed.** `int8_w8a8_fused` ≥ **1.10×** bf16 steps/s — the same bar the FP8
+fast path cleared (1.155× on Krea 2). There is **no** requirement to beat
+the FP8 fast path itself: that path failed its own quality gate and is not
+the shipped default.
+
+**Branches:**
+
+- **Both pass** → the int8 path may default ON for int8 checkpoints. This is
+  licensed where the FP8 flip was not because this gate is anchored to bf16
+  on *both* axes, not to "beats dequant" (the weaker, checkpoint-relative
+  comparison G1 used for Ideogram 4).
+- **Quality passes, speed fails** → ships as a factual VRAM-reduction
+  format only; no speed claim anywhere.
+- **Quality fails in an outlier-shaped way** → one pre-authorized retry
+  with the Hadamard rotation added (`int8_w8a8_hadamard`); no further
+  retries after that.
+- **Anything else** → the code is removed, not parked behind a flag.
+
+**Phase 0 measurements this gate was designed against** (pre-dating the
+rule, cited for context, not as its source): raw `torch._int_mm` at Krea 2
+shapes measured 2.857–3.075× bf16 (layer-count-weighted 3.009×; the earlier,
+smaller-scope threshold this work was originally sized against was 1.30×,
+not this gate's 1.10×). Eager int8 W8A8 chain 1.515× vs the shipped fused
+FP8 path's 1.550×; fused int8 2.561×. Per-row accuracy on 112 real Krea 2
+layers: e4m3 error flat at 0.02628–0.02649, int8 error 0.01016–0.03117;
+geomean advantage 2.06× weight-only / 2.19× W8A8 (a prior simulation's 3.3×
+was ~60% optimistic). One inverted layer, `transformer_blocks.27.ff.down`
+(int8 0.03117 vs e4m3 0.02628), predicted in advance by within-row crest
+factor (32.6 vs a typical 4.5–6) — the concrete precedent for the outlier
+retry clause above. The GPU ran at a 240W cap, 735 MHz SM under load (vs
+3105 MHz max) for all of it — ratios between arms hold, absolute figures do
+not generalize.
+
 ## WebSocket / progress streaming
 
 These examples cover REST only. For the WebSocket protocol (progress

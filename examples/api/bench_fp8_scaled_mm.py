@@ -145,6 +145,142 @@ images land in ``tmp/fp8_bench_images/<vehicle>/<arm>/``. Every record carries t
 toggle state (``enabled``/``origin``) reported by the backend before the arm ran
 and the ``resolved_modes`` it reported after, so a record states which path it
 actually measured rather than which one was requested.
+
+===========================================================================
+MEASUREMENT GATE G2 -- int8 W8A8 (separate from, and additional to, G1 above)
+===========================================================================
+This gate governs a DIFFERENT fast path: int8 (``torch._int_mm``) W8A8, not
+FP8. It is written down BEFORE any int8 arm, CLI flag, or scaled-GEMM code
+exists in this script -- same discipline as G1, for the same reason. Nothing
+in this section may be edited once a measurement exists, and nothing above
+this section (the FP8 rule, RUNS/WARMUP, prompts, seeds, shapes, ``report()``)
+is touched by it.
+
+IMPLEMENTATION STATUS: NOT IMPLEMENTED. There is no int8 arm, no ``--vehicle
+... --arm int8_*`` flag, and ``report()`` does not evaluate this gate. This
+section is the rule the future code will be judged against, not a promise
+that the code exists. Do not half-wire it -- when the int8 path is built, its
+own commit adds the arm plumbing AND a ``report()`` branch for this gate in
+one place, so the two never drift apart.
+
+VEHICLE: Krea 2 only, quantized to int8 FROM ITS BF16 SOURCE. It must NOT be
+produced by dequantizing the shipped e4m3 checkpoint: e4m3 has already
+discarded weight information that int8 quantization cannot recover, so an
+e4m3-derived int8 arm would be judged against a floor already lowered by a
+different lossy step, not against the same bf16 anchor the speed axis uses.
+
+FIVE ARMS, same process, same discipline as G1's interleaving:
+  - bf16                     (the anchor, both axes)
+  - int8_weight_only         (weight-only, activations stay bf16)
+  - int8_w8a8_eager          (W8A8, eager ``torch._int_mm`` chain)
+  - int8_w8a8_fused          (W8A8, fused GEMM path -- the one this gate is
+                              actually deciding whether to default on)
+  - int8_w8a8_hadamard       (W8A8 + Hadamard rotation -- built ONLY if the
+                              pre-authorized retry below is triggered; absent
+                              otherwise)
+
+QUALITY -- ALL FOUR required, measured on the int8_w8a8_fused arm against the
+bf16 arm, same protocol as G1's quality A/B (4 prompts x 2 seeds):
+
+  1. Flat-region residual (flattest 256x256 tile, high-pass sigma=6) <=
+     **1.15x bf16**, at BOTH seed 987654321 AND seed 12345.
+     Calibration from the FP8 gate's actual numbers, so this bar is not
+     invented in a vacuum: at seed 12345 the FP8 run measured bf16=0.199,
+     dequant=0.319, fast=0.398; at seed 987654321 it measured bf16=0.351,
+     dequant=0.358, fast=0.532. A 1.15x bar against THIS gate's own bf16
+     anchor would admit a dequant-shaped result (0.358/0.351 = 1.02x) and
+     reject a fast-shaped one (0.532/0.351 = 1.52x) -- i.e. it separates the
+     two classes the FP8 gate already showed exist.
+  2. Residual power-spectrum ratio at the 32-128px mottle wavelength <=
+     **1.3x bf16**. The FP8 fast arm measured 3.0-8.4x here -- this bar
+     rejects anything in that shape.
+  3. Brightness drift vs bf16 must NOT be one-signed across all 8 quality
+     pairs, AND mean |dV| <= **1.0**. The FP8 fast arm was +2.93 mean,
+     positive in 8/8 pairs -- this bar rejects that shape on either symptom
+     alone (a one-signed drift under 1.0, or a two-signed drift over 1.0,
+     both fail).
+  4. Blind human A/B clean at the mottle seed (987654321, quality prompt
+     index 1, the flat-gradient prompt). This seed/prompt pair is the target
+     specifically because its bf16 reference is genuinely clean, which is
+     what makes "clean" or "not clean" a real judgement rather than a
+     coin-flip on an already-imperfect reference.
+
+SPEED -- int8_w8a8_fused >= **1.10x** the steps/s of bf16 (same protocol as
+G1 criterion 1: median of >= 3 timed runs, 1 warmup, fixed prompt/seed/shape,
+>= 20 steps). This is the same bar the FP8 fast path cleared (1.155x on
+Krea 2). RECORDED EXPLICITLY: there is NO requirement that int8 beat the FP8
+fast path's speed number. That path failed its own quality gate and is not
+the shipped default -- outrunning a rejected arm proves nothing about
+whether int8 is safe to ship.
+
+BRANCHES:
+
+  BOTH quality and speed pass:
+    The int8 W8A8 path may default ON for int8 checkpoints.
+    RECORD WHY THIS IS LICENSED WHERE THE FP8 FLIP WAS NOT: this gate is
+    anchored to bf16 on BOTH axes (quality residual vs bf16, speed ratio vs
+    bf16) -- it is not "beats fp8_dequant" or "beats fp8_fast", which was the
+    weaker, checkpoint-relative comparison G1 used for its Ideogram 4 arm.
+    A bf16-anchored pass on both axes is the strongest claim this repo's
+    gates make about a quantization path, which is why it is allowed to move
+    a default and G1's dequant-relative pass was not.
+
+  Quality passes, speed fails:
+    Ships as a factual VRAM-reduction format only. No speed claim anywhere --
+    not in the UI, not in a docstring, not in a commit message. Same rule G1
+    applies to its 1.00-1.10x band, for the same reason: a claim not backed
+    by this gate's own numbers does not get made because a *different* gate
+    passed.
+
+  Quality fails in an outlier-shaped way (i.e. the failure is plausibly one
+  or a few pathological rows/channels rather than a systemic W8A8 error, the
+  same shape Phase 0 already found once -- see below):
+    ONE pre-authorized retry, and only one: rebuild the int8_w8a8_hadamard
+    arm (W8A8 + Hadamard rotation to spread outlier magnitude across the
+    channel before quantizing) and re-run this exact gate against it. If that
+    retry also fails, there is no second retry and no third arm invented to
+    try again -- proceed to the next branch.
+
+  Anything else (quality fails in a non-outlier-shaped way, the retry above
+  also fails, or the result is ambiguous rather than a clean pass/fail):
+    The code is removed, not parked. No ``SUSHI_INT8_*`` flag is left behind
+    "in case it's useful later" -- an unshippable path sitting behind a flag
+    is exactly the kind of surface this repo's gates exist to prevent.
+
+===========================================================================
+PHASE 0 MEASUREMENTS THIS GATE WAS DESIGNED AGAINST
+===========================================================================
+Recorded so a later reader can see what was already known when the G2 rule
+above was fixed -- these numbers PRE-DATE the rule and did not shape its
+thresholds after the fact; the thresholds above were chosen independently
+and these are cited for context, not as the source of the bars.
+
+  - Raw ``torch._int_mm`` at Krea 2's shapes: 2.857-3.075x bf16,
+    layer-count-weighted mean 3.009x. (For calibration: the smaller-scope G1
+    threshold this Phase 0 work was originally sized against was 1.30x, not
+    the 1.10x this gate uses -- the two numbers are not the same claim.)
+  - Eager int8 W8A8 chain: 1.515x bf16, vs the shipped fused FP8 path's
+    1.550x on the same hardware. Fused int8: 2.561x bf16.
+  - Per-row accuracy on 112 real Krea 2 layers: e4m3 error was flat across
+    layers at 0.02628-0.02649; int8 per-row error ranged 0.01016-0.03117.
+    Geometric-mean advantage of int8 over e4m3: 2.06x for weight-only,
+    2.19x for W8A8. A separate simulation had predicted 3.3x; the real
+    per-layer measurement came in about 60% more modest than that
+    simulation, which is why this gate does not lean on simulated numbers
+    for its thresholds.
+  - One inverted layer: ``transformer_blocks.27.ff.down`` had int8 error
+    (0.03117) WORSE than its e4m3 error (0.02628) -- the one layer in 112
+    where int8 lost to FP8. It was predicted in advance by within-row crest
+    factor: 32.6 for this layer vs a typical 4.5-6 elsewhere. This is the
+    concrete precedent behind the "outlier-shaped failure" retry clause
+    above -- a single high-crest-factor layer is exactly the failure mode
+    Hadamard rotation targets, and this layer is why that retry exists
+    rather than being invented generically.
+  - The GPU was running at a 240W power cap, 735 MHz SM clock under load
+    (vs a 3105 MHz maximum) for all of the above. All arms in a given
+    session throttled equally, so the RATIOS between arms hold, but none of
+    the absolute steps/s or ms/layer figures above generalize to hardware
+    running at its normal clocks.
 """
 
 import argparse

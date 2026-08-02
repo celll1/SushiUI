@@ -1473,6 +1473,18 @@ class VaeTrainer:
             self._assert_base_vae_matches(ckpt_dir, state.get("base_vae"))
             return
 
+        saved_optimizer = saved.get("optimizer")
+        current_optimizer = self.cfg.get("optimizer")
+        if saved_optimizer is not None and current_optimizer is not None and \
+                str(saved_optimizer).strip().lower() != \
+                str(current_optimizer).strip().lower():
+            raise VaeConfigError(
+                f"Checkpoint {ckpt_dir.name} used optimizer "
+                f"{saved_optimizer!r}, but this run uses {current_optimizer!r}. "
+                f"Optimizer state is implementation-specific; match the "
+                f"checkpoint optimizer or start a new run."
+            )
+
         def _saved_bool(key: str, default: bool) -> bool:
             value = saved.get(key, default)
             # train_state.json is written through _jsonable, which stringifies
@@ -1693,6 +1705,18 @@ class VaeTrainer:
             log_prefix=self.log_prefix,
             component_names=("VAE",),
         )
+        if "optimizer_weight_decay" in self.cfg:
+            configured_weight_decay = float(self.cfg["optimizer_weight_decay"])
+            restored_weight_decays = [group.get("weight_decay")
+                                      for group in self.optimizer.param_groups]
+            for group in self.optimizer.param_groups:
+                group["weight_decay"] = configured_weight_decay
+            if any(value is None or
+                   not math.isclose(float(value), configured_weight_decay)
+                   for value in restored_weight_decays):
+                print(f"{self.log_prefix} Resume weight decay: checkpoint "
+                      f"{restored_weight_decays} -> config "
+                      f"{configured_weight_decay}")
 
         # RNG is the warn tier; _assert_checkpoint_complete has already explained
         # an absent/truncated file, so only a genuinely corrupt one prints here.

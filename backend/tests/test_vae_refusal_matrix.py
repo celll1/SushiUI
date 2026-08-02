@@ -1105,6 +1105,20 @@ class VaeTrainerGateTest(unittest.TestCase):
                 {"train_decoder": True, "train_encoder": False,
                  "decoder_blocks": "conv_out"}))
 
+    def test_a_changed_optimizer_refuses_before_state_load(self):
+        from core.training.vae.vae_trainer import VaeTrainer
+        trainer = VaeTrainer(self._cfg(optimizer="adamw"),
+                             output_dir=".", run_name="gate_test")
+        with self.assertRaises(VaeConfigError) as ctx:
+            trainer._assert_component_set_matches(self._checkpoint_with({
+                "train_decoder": True,
+                "train_encoder": False,
+                "decoder_blocks": "all",
+                "optimizer": "adafactor",
+            }))
+        self.assertIn("used optimizer", str(ctx.exception))
+        self.assertIn("start a new run", str(ctx.exception))
+
     def test_bare_ldm_write_is_refused_for_an_encoder_trained_run(self):
         from pathlib import Path
         from core.training.vae.vae_trainer import VaeTrainer

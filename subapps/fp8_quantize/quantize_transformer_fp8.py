@@ -1,13 +1,57 @@
 #!/usr/bin/env python3
-"""Quantize a transformer checkpoint to the repo's weight-only FP8 layout.
+"""Quantize a transformer checkpoint to the repo's weight-only FP8 or INT8 layout.
 
-Produces a checkpoint that the NORMAL production loader path accepts: the FP8
-Linear layout is exactly the one ``backend/core/models/ideogram4/vendor/fp8_linear.py``
-defines and ``swap_linears_to_fp8`` gates on, so no loader change is needed.
+Produces a checkpoint that the NORMAL production loader path accepts: both Linear
+layouts are exactly the ones ``backend/core/models/ideogram4/vendor/fp8_linear.py``
+and ``int8_linear.py`` define and their ``swap_linears_to_*`` helpers gate on, so
+no loader change is needed.
 
-    <name>.weight        float8_e4m3fn  (out, in)
+    <name>.weight        float8_e4m3fn  (out, in)   [--format fp8]
+    <name>.weight        int8           (out, in)   [--format int8]
     <name>.weight_scale  float32        (out,)      <- presence gates the swap
     <name>.bias          original dtype (out,)      [untouched]
+
+The two formats share the ``.weight_scale`` suffix; the WEIGHT DTYPE is what
+tells them apart, and both loaders key on it. That is deliberate -- ``--format
+int8`` produces a MIXED checkpoint (see below) in which some layers are int8 and
+some are e4m3, and a single suffix convention lets one load pass serve both.
+
+PER-LAYER FORMAT SELECTION (``--format int8``)
+----------------------------------------------
+int8 spends 254 uniform levels across each output row's range, so its relative
+error scales with the row's CREST FACTOR (row amax / row RMS): a uniform rounding
+error of ``amax/127`` has RMS ``amax/(127*sqrt(12))``, i.e. ``crest/440`` relative
+to the row. e4m3 instead spends a floating exponent per element and sits flat at
+~2.63e-02 whatever the distribution. Setting the two equal gives a break-even
+crest of ~11.6, which is where ``--crest-threshold`` defaults (12.0).
+
+Measured on the full 263-layer Krea 2 transformer conversion
+(``krea2_int8.int8_audit.json``): mean per-row crest is 4.5-6 for typical layers,
+7-9 for the marginal ones, and 12.14 / 12.44 / 32.56 for three -- so the
+threshold does NOT sit in an empty gap; two layers land just above it.
+
+What makes the placement safe is that the two rules AGREE on that checkpoint. The
+crest rule is the documented, predictive one, but the measured per-layer error of
+both formats is computed anyway for the audit table and any layer whose int8
+error exceeds its e4m3 error is selected out regardless of crest -- and on the
+real run that measured backstop ALONE reproduces the identical 4-layer selection:
+every layer kept in int8 has an int8-over-e4m3 error advantage of at least 1.199,
+every layer selected out at most 0.928, with nothing in between. The crest is the
+explanation; the measurement is the decision.
+
+Selected-out layers fall back to e4m3 (``--fallback e4m3``, the default: keeps the
+VRAM saving, and with the FP8 W8A8 toggle off -- which is the default -- they run
+the dequantized matmul, i.e. the highest-quality path available) or to the source
+dtype (``--fallback bf16``: no quantization error at all, at full weight size).
+
+AUDIT TABLE
+-----------
+``--format int8`` ALWAYS writes ``<output stem>.int8_audit.json`` next to the
+output and prints a summary: per layer, the measured int8 and e4m3 relative RMS
+weight error, the mean/p99/max per-row crest, the chosen format, and the reason.
+Unconditional on purpose -- the outlier branch is the part of this design most
+likely to be wrong on a checkpoint nobody has looked at, and diagnosing it from a
+committed artifact beats re-running a 26 GB conversion to find out.
 
 Everything that is not a quantized ``nn.Linear`` weight (norms, embeddings,
 biases, modulation tables, non-Linear parameters) is copied through in its
@@ -29,14 +73,23 @@ pre-registered decision rule.
 WHICH LINEARS ARE QUANTIZED
 ---------------------------
 Every ``nn.Linear`` in the model, EXCEPT those whose ``in_features`` or
-``out_features`` is not a multiple of ``--min-align`` (16 by default). Rationale:
-``Fp8Linear._scaled_mm_forward`` rejects unaligned shapes outright, so an
-unaligned layer can never reach the fast path -- quantizing it would add
-quantization error for exactly zero speed. (For Krea 2 this excludes one layer,
-``text_fusion.projector``, which is 12x1.) The reference FP8 checkpoint this
-format comes from -- ideogram-4-fp8 -- quantizes every Linear including the
-input/output projections and the timestep MLP, so "all Linears" is the matching
-convention, not a narrowed subset.
+``out_features`` is not a multiple of ``--min-align``. The default follows the
+format: 16 for fp8 (``_scaled_mm``'s alignment) and 8 for int8
+(``torch._int_mm``'s). Rationale: the fast path rejects unaligned shapes
+outright, so an unaligned layer can never reach it -- quantizing it would add
+quantization error for exactly zero speed. For Krea 2 this excludes one layer
+under either setting, ``text_fusion.projector``, which is 12x1.
+
+It does NOT exclude layers that are merely too small or too thin for the RUNTIME
+min-work gate (``int8_linear._MIN_WORK_*``), nor the timestep MLPs whose ``m`` is
+the batch size and can never clear ``torch._int_mm``'s ``m > 16`` floor. Those
+layers still get quantized, for VRAM: ``time_mod_proj`` alone is 36864x6144 =
+226M parameters, the single largest weight in the model, and it costs 226 MB as
+int8 against 452 MB as bf16 while running the dequant path either way.
+
+The reference FP8 checkpoint this format comes from -- ideogram-4-fp8 --
+quantizes every Linear including the input/output projections and the timestep
+MLP, so "all Linears" is the matching convention, not a narrowed subset.
 
 Use ``--exclude`` (repeatable regex, matched against the module path) to carve
 out more.
@@ -50,9 +103,15 @@ would need far more RAM than shard-at-a-time does.
 USAGE
 -----
     venv/Scripts/python.exe subapps/fp8_quantize/quantize_transformer_fp8.py \
-        --arch krea2 \
+        --arch krea2 --format fp8 \
         --source "<bf16 model dir>/diffusion_pytorch_model.safetensors.index.json" \
         --output "<scratch dir>/krea2_fp8/krea2_fp8.safetensors" \
+        --link-siblings "<bf16 model dir>"
+
+    venv/Scripts/python.exe subapps/fp8_quantize/quantize_transformer_fp8.py \
+        --arch krea2 --format int8 \
+        --source "<bf16 model dir>/diffusion_pytorch_model.safetensors.index.json" \
+        --output "<scratch dir>/krea2_int8/krea2_int8.safetensors" \
         --link-siblings "<bf16 model dir>"
 
 Write the output to a scratch location, NOT under a ``M:/model/<arch>/`` root:
@@ -91,6 +150,11 @@ from core.models.ideogram4.vendor.fp8_linear import (  # noqa: E402
     FP8_SCALE_SUFFIX,
     quantize_weight_to_fp8,
 )
+from core.models.ideogram4.vendor.int8_linear import (  # noqa: E402
+    INT8_SCALE_SUFFIX,
+    quantize_weight_to_int8,
+    weight_crest_factors,
+)
 # Private in the writer module on purpose (they are format constants, not API);
 # imported rather than re-typed so a change to the on-disk convention cannot
 # leave this tool emitting the old one.
@@ -101,6 +165,24 @@ from core.models.common.single_file_format import _INDEX_SUFFIX, _SHARD_SUFFIX  
 DEFAULT_OUT_SHARD_BYTES = 4 * 1024 ** 3
 
 SIBLING_DIRS = ("text_encoder", "vae", "tokenizer", "scheduler")
+
+# Per-format GEMM alignment. A layer that cannot satisfy its format's fast-path
+# alignment can never reach that path, so quantizing it buys error for no speed.
+FORMAT_MIN_ALIGN = {"fp8": 16, "int8": 8}
+
+# Default crest-factor threshold above which int8 loses to e4m3. Derived, not
+# tuned: int8's relative error is crest/(127*sqrt(12)) = crest/440 and e4m3's is
+# flat at ~2.63e-02, so they cross at crest ~= 11.6.
+#
+# It is NOT true that the real checkpoint leaves a wide empty gap around 12.0 --
+# the full 263-layer Krea 2 run has layers at crest 9.22, 9.43, 12.14, 12.44 and
+# 32.56, i.e. two of them sit just above the threshold. What makes the placement
+# safe is stronger than a gap: on that run the MEASURED backstop alone
+# (``err_int8 < err_e4m3``) reproduces exactly the same 4-layer selection, with
+# every chosen int8 layer at an int8-over-e4m3 error advantage >= 1.199 and every
+# selected-out layer <= 0.928. The two rules agree, and the measurement -- not the
+# crest -- is what actually decides.
+DEFAULT_CREST_THRESHOLD = 12.0
 
 
 # ---------------------------------------------------------------------------
@@ -230,7 +312,7 @@ def select_targets(
             skipped.append((name, "no weight in checkpoint"))
             continue
         if min_align and (in_f % min_align or out_f % min_align):
-            skipped.append((name, f"unaligned {in_f}x{out_f} (cannot reach the scaled-GEMM path)"))
+            skipped.append((name, f"unaligned {in_f}x{out_f} (cannot reach the fast GEMM path)"))
             continue
         pattern = next((p for p in excludes if p.search(name)), None)
         if pattern is not None:
@@ -238,6 +320,117 @@ def select_targets(
             continue
         targets.append(name)
     return targets, skipped
+
+
+# ---------------------------------------------------------------------------
+# Per-layer format selection + audit (int8 only)
+# ---------------------------------------------------------------------------
+
+def _rel_rms(reference: torch.Tensor, approx: torch.Tensor) -> float:
+    """Relative RMS error of ``approx`` against ``reference``, in float32."""
+    ref = reference.to(torch.float32)
+    err = approx.to(torch.float32) - ref
+    denom = ref.pow(2).mean().sqrt()
+    if not torch.isfinite(denom) or denom == 0:
+        return float("nan")
+    return float(err.pow(2).mean().sqrt() / denom)
+
+
+def audit_and_quantize_int8(
+    name: str,
+    tensor: torch.Tensor,
+    crest_threshold: float,
+    fallback: str,
+) -> Tuple[str, torch.Tensor, torch.Tensor, Dict]:
+    """Choose int8 / e4m3 / bf16 for one Linear weight and return the audit row.
+
+    BOTH candidate quantizations are always performed and both errors always
+    measured, whatever the crest says. That costs one extra pass over a weight
+    that is already resident and makes the audit table a record of what was
+    actually true rather than of what the heuristic predicted.
+
+    Returns ``(chosen_format, weight, scale_or_None, audit_row)``.
+    """
+    crest = weight_crest_factors(tensor)
+    crest_mean = float(crest.mean())
+    crest_p99 = float(crest.quantile(0.99)) if crest.numel() > 1 else crest_mean
+    crest_max = float(crest.amax())
+
+    q_i8, s_i8 = quantize_weight_to_int8(tensor)
+    q_f8, s_f8 = quantize_weight_to_fp8(tensor)
+    err_i8 = _rel_rms(tensor, q_i8.to(torch.float32) * s_i8.unsqueeze(1))
+    err_f8 = _rel_rms(tensor, q_f8.to(torch.float32) * s_f8.unsqueeze(1))
+
+    # Two independent reasons to select a layer out. The crest rule is the
+    # documented, predictive one; the measured comparison is the backstop for a
+    # weight whose distribution the crest model does not describe (it cannot,
+    # for instance, see a bimodal row). Either one is sufficient.
+    if crest_mean > crest_threshold:
+        reason = f"crest {crest_mean:.2f} > {crest_threshold:.2f}"
+        chosen = fallback
+    elif not (err_i8 < err_f8):
+        # Also catches NaN errors (a degenerate all-zero or non-finite weight):
+        # `not (a < b)` is False only when int8 is strictly better.
+        reason = f"measured int8 {err_i8:.5f} not better than e4m3 {err_f8:.5f}"
+        chosen = fallback
+    else:
+        reason = f"int8 {err_i8:.5f} < e4m3 {err_f8:.5f} at crest {crest_mean:.2f}"
+        chosen = "int8"
+
+    row = {
+        "name": name,
+        "shape": list(tensor.shape),
+        "int8_rel_rms": err_i8,
+        "e4m3_rel_rms": err_f8,
+        "advantage_int8_over_e4m3": (err_f8 / err_i8) if err_i8 else float("inf"),
+        "crest_mean": crest_mean,
+        "crest_p99": crest_p99,
+        "crest_max": crest_max,
+        "chosen": chosen,
+        "reason": reason,
+    }
+    if chosen == "int8":
+        return chosen, q_i8, s_i8, row
+    if chosen == "e4m3":
+        return chosen, q_f8, s_f8, row
+    return "bf16", tensor, None, row
+
+
+def write_audit(path: str, rows: List[Dict], args_summary: Dict) -> str:
+    """Write the per-layer audit JSON and print a summary table."""
+    counts: Dict[str, int] = {}
+    for r in rows:
+        counts[r["chosen"]] = counts.get(r["chosen"], 0) + 1
+    selected_out = [r for r in rows if r["chosen"] != "int8"]
+
+    print("\n[audit] per-layer weight-error audit "
+          f"({len(rows)} quantizable Linear weights)")
+    print(f"[audit] {'layer':<44} {'int8':>9} {'e4m3':>9} {'adv':>6} "
+          f"{'crest':>7} {'p99':>7}  format")
+    for r in rows:
+        print(f"[audit] {r['name'][:44]:<44} {r['int8_rel_rms']:9.5f} "
+              f"{r['e4m3_rel_rms']:9.5f} {r['advantage_int8_over_e4m3']:6.3f} "
+              f"{r['crest_mean']:7.2f} {r['crest_p99']:7.2f}  {r['chosen']}")
+    print(f"[audit] format counts: {counts}")
+    if selected_out:
+        print(f"[audit] selected out of int8 ({len(selected_out)}):")
+        for r in selected_out:
+            print(f"[audit]   {r['name']} -> {r['chosen']} ({r['reason']})")
+    else:
+        print("[audit] no layer was selected out of int8")
+    finite = [r["advantage_int8_over_e4m3"] for r in rows
+              if r["advantage_int8_over_e4m3"] not in (float("inf"),)
+              and r["advantage_int8_over_e4m3"] == r["advantage_int8_over_e4m3"]]
+    geomean = None
+    if finite:
+        geomean = float(torch.tensor(finite, dtype=torch.float64).log().mean().exp())
+        print(f"[audit] geomean int8-over-e4m3 weight-error advantage: {geomean:.3f}x")
+
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump({"settings": args_summary, "format_counts": counts,
+                   "geomean_advantage": geomean, "layers": rows}, fh, indent=1)
+    print(f"[audit] wrote {path}")
+    return path
 
 
 # ---------------------------------------------------------------------------
@@ -354,14 +547,23 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0],
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--arch", required=True, choices=sorted(ARCHS))
+    ap.add_argument("--format", choices=sorted(FORMAT_MIN_ALIGN), default="fp8",
+                    help="weight format: fp8 (e4m3, every eligible Linear) or int8 "
+                         "(per-layer selection between int8 and the fallback)")
     ap.add_argument("--source", required=True,
                     help="bf16 checkpoint: shard index, single safetensors, or a directory")
     ap.add_argument("--output", required=True,
                     help="destination <stem>.safetensors (shards + index written beside it "
                          "when the result exceeds --max-shard-bytes)")
-    ap.add_argument("--min-align", type=int, default=16,
+    ap.add_argument("--min-align", type=int, default=None,
                     help="skip Linears whose in/out features are not a multiple of this "
-                         "(they can never take the scaled-GEMM path). 0 disables the check.")
+                         "(they can never take the fast path). Defaults to the format's "
+                         "GEMM alignment (fp8: 16, int8: 8). 0 disables the check.")
+    ap.add_argument("--crest-threshold", type=float, default=DEFAULT_CREST_THRESHOLD,
+                    help="[--format int8] mean per-row crest factor above which a layer "
+                         "falls back instead of going int8")
+    ap.add_argument("--fallback", choices=("e4m3", "bf16"), default="e4m3",
+                    help="[--format int8] what a selected-out layer becomes")
     ap.add_argument("--exclude", action="append", default=[],
                     help="regex matched against the module path; repeatable")
     ap.add_argument("--max-shard-bytes", type=int, default=DEFAULT_OUT_SHARD_BYTES)
@@ -374,36 +576,51 @@ def main() -> int:
 
     arch = ARCHS[args.arch]
     excludes = [re.compile(p) for p in args.exclude]
+    fmt = args.format
+    tag = f"[{fmt}]"
+    min_align = FORMAT_MIN_ALIGN[fmt] if args.min_align is None else args.min_align
 
-    print(f"[fp8] arch={args.arch} source={args.source}")
+    print(f"{tag} arch={args.arch} format={fmt} min_align={min_align} source={args.source}")
     shards, key_to_shard = _source_shards(args.source)
-    print(f"[fp8] source has {len(key_to_shard)} tensors in {len(shards)} shard(s)")
+    print(f"{tag} source has {len(key_to_shard)} tensors in {len(shards)} shard(s)")
 
     config = arch["config"](args.source)
     meta_model = arch["build_meta"](config)
     linears = linear_paths(meta_model)
-    targets, skipped = select_targets(linears, set(key_to_shard), args.min_align, excludes)
+    targets, skipped = select_targets(linears, set(key_to_shard), min_align, excludes)
 
-    print(f"[fp8] {len(linears)} nn.Linear module(s); quantizing {len(targets)}, skipping {len(skipped)}")
+    print(f"{tag} {len(linears)} nn.Linear module(s); quantizing {len(targets)}, skipping {len(skipped)}")
     for name, reason in skipped:
-        print(f"[fp8]   skip {name}: {reason}")
+        print(f"{tag}   skip {name}: {reason}")
 
     if args.dry_run:
-        print("[fp8] dry run: nothing written")
+        print(f"{tag} dry run: nothing written")
         return 0
 
     target_set = set(targets)
     prefix = arch["prefix"]
     metadata = arch["metadata"](config)
-    metadata["fp8_quantized_linears"] = str(len(targets))
-    metadata["fp8_source"] = os.path.abspath(args.source)
+    metadata["quantized_linears"] = str(len(targets))
+    metadata["quant_source"] = os.path.abspath(args.source)
+    # NOTE: deliberately NOT written into a key the Krea 2 loader scans for
+    # rejected quant layouts. `single_file._REJECTED_QUANT_TOKENS` matches
+    # ("int8_convrot", "mxfp8", "nvfp4") against the PATH plus
+    # metadata["quantization"], so this format must neither be called
+    # "int8_convrot" nor be written to a path containing that token. The label
+    # below ("int8_perrow") and the "quant_format" key avoid both.
+    metadata["quant_format"] = "int8_perrow" if fmt == "int8" else "fp8_e4m3_perrow"
+    if fmt == "fp8":
+        # Preserved for checkpoints produced before --format existed.
+        metadata["fp8_quantized_linears"] = str(len(targets))
+        metadata["fp8_source"] = os.path.abspath(args.source)
 
     writer = ShardWriter(args.output, metadata, args.max_shard_bytes)
     t0 = time.perf_counter()
     quantized = 0
     passthrough = 0
+    audit: List[Dict] = []
     for shard in shards:
-        print(f"[fp8] reading {os.path.basename(shard)}")
+        print(f"{tag} reading {os.path.basename(shard)}")
         with safe_open(shard, framework="pt", device="cpu") as fh:
             for key in fh.keys():
                 tensor = fh.get_tensor(key)
@@ -411,10 +628,20 @@ def main() -> int:
                 if base is not None and base in target_set:
                     if tensor.dim() != 2:
                         raise RuntimeError(f"{key}: expected a 2-D Linear weight, got {tuple(tensor.shape)}")
-                    q, scale = quantize_weight_to_fp8(tensor)
-                    writer.add(f"{prefix}{key}", q.contiguous())
-                    writer.add(f"{prefix}{base}{FP8_SCALE_SUFFIX}", scale.contiguous())
-                    quantized += 1
+                    if fmt == "int8":
+                        chosen, q, scale, row = audit_and_quantize_int8(
+                            base, tensor, args.crest_threshold, args.fallback)
+                        audit.append(row)
+                        writer.add(f"{prefix}{key}", q.contiguous())
+                        if scale is not None:
+                            writer.add(f"{prefix}{base}{INT8_SCALE_SUFFIX}", scale.contiguous())
+                        quantized += chosen != "bf16"
+                        passthrough += chosen == "bf16"
+                    else:
+                        q, scale = quantize_weight_to_fp8(tensor)
+                        writer.add(f"{prefix}{key}", q.contiguous())
+                        writer.add(f"{prefix}{base}{FP8_SCALE_SUFFIX}", scale.contiguous())
+                        quantized += 1
                 else:
                     writer.add(f"{prefix}{key}", tensor.contiguous())
                     passthrough += 1
@@ -422,16 +649,28 @@ def main() -> int:
     written = writer.close()
     elapsed = time.perf_counter() - t0
 
-    print(f"[fp8] quantized {quantized} Linear weight(s), passed through {passthrough} tensor(s)")
-    print(f"[fp8] wrote {written} ({writer.total_bytes / 2**30:.2f} GB) in {elapsed:.1f}s")
-    if quantized != len(targets):
-        print(f"[fp8] WARNING: expected {len(targets)} quantized weights, wrote {quantized}")
+    print(f"{tag} quantized {quantized} Linear weight(s), passed through {passthrough} tensor(s)")
+    print(f"{tag} wrote {written} ({writer.total_bytes / 2**30:.2f} GB) in {elapsed:.1f}s")
+    if fmt == "fp8" and quantized != len(targets):
+        print(f"{tag} WARNING: expected {len(targets)} quantized weights, wrote {quantized}")
+
+    if fmt == "int8":
+        stem = os.path.basename(args.output)
+        if stem.endswith(_SHARD_SUFFIX):
+            stem = stem[: -len(_SHARD_SUFFIX)]
+        audit_path = os.path.join(os.path.dirname(os.path.abspath(args.output)),
+                                  f"{stem}.int8_audit.json")
+        write_audit(audit_path, audit, {
+            "arch": args.arch, "format": fmt, "min_align": min_align,
+            "crest_threshold": args.crest_threshold, "fallback": args.fallback,
+            "source": os.path.abspath(args.source), "output": written,
+        })
 
     if args.link_siblings:
-        print("[fp8] linking companion component dirs")
+        print(f"{tag} linking companion component dirs")
         link_siblings(args.link_siblings, os.path.dirname(os.path.abspath(args.output)))
 
-    print(f"[fp8] load it with: source_type=safetensors source={written}")
+    print(f"{tag} load it with: source_type=safetensors source={written}")
     return 0
 
 

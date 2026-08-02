@@ -197,6 +197,64 @@ DEFAULT_TRAINING_SCOPE = {
 }
 
 
+_LORA_TARGET_TYPES: Optional[tuple] = None
+
+
+def _lora_target_types() -> tuple:
+    """The ``isinstance`` tuple used by ``_is_lora_target``, resolved ONCE.
+
+    Resolved lazily rather than at module import because ``LoRALinearLayer``
+    lives in ``core.training.adapters.sd15_adapter`` and that package's
+    ``anima_adapter`` imports THIS module at its own import time; a module-scope
+    import here would close that cycle and hand back a partially-initialised
+    module depending on which side is imported first. Lazy + cached gets the
+    same result as hoisting for the cost that matters: the imports run once per
+    process instead of once per module on a 515-module walk, twice per
+    iteration.
+
+    If the quantized classes cannot be imported the fallback is announced, not
+    silent — it is exactly the pre-fix predicate (56 targets instead of 224 on
+    the shipped int8 artifact), and a LoRA that quietly wraps a third of its
+    intended layers looks like a LoRA that "just has no effect". Same reporting
+    contract as ``anima_loader.anima_state_dict_is_quantized``.
+    """
+    global _LORA_TARGET_TYPES
+    if _LORA_TARGET_TYPES is not None:
+        return _LORA_TARGET_TYPES
+    from core.training.adapters.sd15_adapter import LoRALinearLayer
+    try:
+        from core.models.ideogram4.vendor.fp8_linear import Fp8Linear
+        from core.models.ideogram4.vendor.int8_linear import Int8Linear
+        _LORA_TARGET_TYPES = (nn.Linear, Fp8Linear, Int8Linear, LoRALinearLayer)
+    except Exception as e:
+        print(f"[AnimaLoRA] weight-only quantized Linear classes unavailable ({e}); "
+              f"only plain nn.Linear layers can be wrapped. On a quantized Anima DiT "
+              f"this yields FAR fewer LoRA targets than intended and the LoRA will "
+              f"appear to have little or no effect.")
+        _LORA_TARGET_TYPES = (nn.Linear, LoRALinearLayer)
+    return _LORA_TARGET_TYPES
+
+
+def _is_lora_target(m) -> bool:
+    """True for a module a LoRA can wrap: a plain ``nn.Linear``, EITHER
+    weight-only quantized Linear (e4m3 ``Fp8Linear`` or ``Int8Linear``), or an
+    already-wrapped ``LoRALinearLayer``.
+
+    ``Fp8Linear`` and ``Int8Linear`` are ``nn.Module``s, NOT ``nn.Linear``
+    subclasses, so both must be named explicitly. Omitting them is SILENT: on a
+    quantized DiT the iterator simply yields no targets for those layers,
+    ``apply_lora_group`` returns a small ``applied`` count without raising, and
+    the generation proceeds looking exactly as if no LoRA had been selected.
+    Same fix, same reasoning as ``krea2_lora._is_target`` and
+    ``ideogram4_lora``'s ``is_target``.
+
+    ``LoRALinearLayer`` reads only ``in_features`` / ``out_features`` /
+    ``weight.device`` off the module it wraps, and calls it as a callable, all of
+    which both quantized classes provide -- so wrapping one needs nothing else.
+    """
+    return isinstance(m, _lora_target_types())
+
+
 def iter_anima_lora_targets(
     transformer: nn.Module,
     scope: Optional[Dict[str, bool]] = None,
@@ -230,7 +288,7 @@ def iter_anima_lora_targets(
     want_mod = bool(scope.get("mod", False))
     want_adapter = bool(scope.get("llm_adapter", False))
 
-    is_linear_or_wrap = lambda m: isinstance(m, (nn.Linear, LoRALinearLayer))
+    is_linear_or_wrap = _is_lora_target
 
     for name, module in transformer.named_modules():
         cls_name = module.__class__.__name__
@@ -385,7 +443,15 @@ def apply_lora_group(
         # on-the-fly dequant patch (Phase B.1-d), in which case the actual
         # compute happens at the bias dtype or — when bias is absent — falls
         # back to bfloat16.
-        if true_original.bias is not None and true_original.bias.dtype.is_floating_point:
+        #
+        # Fp8Linear / Int8Linear state their compute dtype outright, so ask them
+        # rather than inferring it: an int8 weight is not floating point at all
+        # and a bias-less quantized layer would otherwise fall through to the
+        # bfloat16 default, which is right today only by coincidence.
+        declared = getattr(true_original, "compute_dtype", None)
+        if isinstance(declared, torch.dtype) and declared.is_floating_point:
+            compute_dtype = declared
+        elif true_original.bias is not None and true_original.bias.dtype.is_floating_point:
             compute_dtype = true_original.bias.dtype
         elif true_original.weight.dtype.is_floating_point and not (
             'float8' in str(true_original.weight.dtype)

@@ -218,6 +218,48 @@ def discover_anima_components(dit_path: str, models_root: Optional[str] = None,
 
 # -------- Loading ----------
 
+def anima_state_dict_is_quantized(sd: Dict[str, torch.Tensor]) -> Tuple[bool, bool]:
+    """``(has_int8, has_fp8)`` for an already-``net.``-stripped Anima DiT state dict.
+
+    Exposed so callers that must know BEFORE building the model -- above all
+    ``vram_optimization._anima_quantize_fp8``, which must not re-quantize an
+    already-quantized DiT -- can ask without importing the vendor modules
+    themselves.
+    """
+    try:
+        from core.models.ideogram4.vendor.int8_linear import is_int8_state_dict
+        from core.models.ideogram4.vendor.fp8_linear import is_fp8_state_dict
+    except Exception as e:
+        print(f"[AnimaLoader] weight-only quant detection unavailable ({e}); "
+              f"treating the checkpoint as unquantized")
+        return False, False
+    return bool(is_int8_state_dict(sd)), bool(is_fp8_state_dict(sd))
+
+
+def _swap_quantized_linears(model, sd: Dict[str, torch.Tensor], dtype: torch.dtype) -> int:
+    """Replace ``nn.Linear``s that have a quantized saved weight. Returns the count.
+
+    A no-op (and silent) on an ordinary bf16 checkpoint, which is every Anima
+    checkpoint that ships today.
+    """
+    has_int8, has_fp8 = anima_state_dict_is_quantized(sd)
+    if not (has_int8 or has_fp8):
+        return 0
+    from core.models.ideogram4.vendor.int8_linear import swap_linears_to_int8
+    from core.models.ideogram4.vendor.fp8_linear import swap_linears_to_fp8
+
+    n_int8 = swap_linears_to_int8(model, sd, compute_dtype=dtype) if has_int8 else 0
+    n_fp8 = swap_linears_to_fp8(model, sd, compute_dtype=dtype) if has_fp8 else 0
+    parts = []
+    if n_int8:
+        parts.append(f"{n_int8} Int8Linear")
+    if n_fp8:
+        parts.append(f"{n_fp8} Fp8Linear")
+    print(f"[AnimaLoader] weight-only quantized DiT: swapped {' + '.join(parts) or 'no'} Linear(s); "
+          f"the remaining Linears load as {dtype}")
+    return n_int8 + n_fp8
+
+
 def load_anima_dit(dit_path: str, device: str = "cpu",
                    dtype: torch.dtype = torch.bfloat16,
                    state_dict: Optional[dict] = None) -> Anima:
@@ -229,6 +271,22 @@ def load_anima_dit(dit_path: str, device: str = "cpu",
 
     ``state_dict`` may be supplied to reuse an already-read state dict (avoids a
     second file read when the caller has already split off the embedded VAE).
+
+    WEIGHT-ONLY QUANTIZED CHECKPOINTS. A checkpoint carrying per-output-row
+    ``.weight_scale`` siblings keeps its int8 / float8 Linear weights: the
+    matching ``nn.Linear`` modules are replaced by ``Int8Linear`` / ``Fp8Linear``
+    before the load, and ``assign=True`` then installs the stored tensors with
+    their dtypes intact (this path never casts, which is exactly what a
+    quantized weight needs).
+
+    INT8 and FP8 are detected INDEPENDENTLY and both swaps run, because
+    ``quantize_transformer_fp8.py --format int8`` emits a MIXED checkpoint on
+    purpose: a layer whose per-row crest factor makes int8 worse than e4m3 falls
+    back to e4m3 in the same file (one layer does, on the Anima conversion). Each
+    detector and each swap helper gates on the weight DTYPE as well as the shared
+    ``.weight_scale`` suffix, so neither can claim the other's layers and the
+    order of the two calls does not matter. Same reasoning, same helpers as
+    ``krea2/vendor/single_file.build_krea2_transformer``.
     """
     from accelerate import init_empty_weights
 
@@ -244,6 +302,8 @@ def load_anima_dit(dit_path: str, device: str = "cpu",
     # Strip net. prefix if present
     if any(k.startswith("net.") for k in sd.keys()):
         sd = {(k[len("net."):] if k.startswith("net.") else k): v for k, v in sd.items()}
+
+    _swap_quantized_linears(model, sd, dtype)
 
     missing, unexpected = model.load_state_dict(sd, strict=False, assign=True)
     # Filter out buffers that are re-initialized in __init__ (not saved in checkpoint).

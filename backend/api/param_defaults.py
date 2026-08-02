@@ -58,6 +58,21 @@ GENERATION_DEFAULTS: Dict[str, Any] = {
     # architecture where it does anything (sd15/sdxl, zimage/flux2, anima/lens).
     "unet_quantization": None,
     "text_encoder_quantization": None,
+    # Quantized-GEMM path for checkpoints that ALREADY carry weight-only
+    # quantized Linear weights (Ideogram 4: FP8/nf4; Krea 2: FP8 or INT8;
+    # Anima: INT8). A different axis from `unet_quantization`, which quantizes
+    # an unquantized model's weights at load time to reduce VRAM; this one
+    # selects HOW already-quantized weights are multiplied.
+    #   None      -> do not touch the process-level flags (the default). The
+    #                process value set by SUSHI_FP8_SCALED_MM / SUSHI_INT8_MM,
+    #                or by POST /system/fp8-scaled-mm | /system/int8-mm, stands.
+    #   "w8a8"    -> force BOTH W8A8 paths on for this generation.
+    #   "dequant" -> force BOTH W8A8 paths off for this generation.
+    # One axis rather than two booleans: FP8-vs-INT8 is decided by the
+    # checkpoint format, not by the caller, so an impossible request ("int8 on
+    # an fp8 checkpoint") is unrepresentable. MUST stay None: a False/"dequant"
+    # default here would override an env-var opt-in for every existing caller.
+    "quantized_gemm_mode": None,
     "cpu_text_encoding": False,
     "use_torch_compile": False,
     # Keep-models-hot (queue optimization, SD1.5/SDXL only in this phase): when

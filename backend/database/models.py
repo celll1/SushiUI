@@ -324,6 +324,12 @@ class GeneratedImage(GalleryBase):
             if "fp8_gemm" in self.parameters:
                 result["fp8_gemm"] = self.parameters["fp8_gemm"]
 
+            # What the request asked for on the quantized-GEMM axis ("w8a8" /
+            # "dequant"), when it asked. Omitted when null, i.e. when the
+            # process-level value stood and the generation forced nothing.
+            if self.parameters.get("quantized_gemm_mode"):
+                result["quantized_gemm_mode"] = str(self.parameters["quantized_gemm_mode"])
+
         return result
 
 

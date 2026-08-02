@@ -18,6 +18,7 @@ import ControlNetSelector from "../common/ControlNetSelector";
 import GenerationQueue from "../common/GenerationQueue";
 import OutpaintPlacementCanvas, { OutpaintPlacementParams } from "./OutpaintPlacementCanvas";
 import OutpaintTimeline from "./OutpaintTimeline";
+import QuantizedGemmSelect from "./QuantizedGemmSelect";
 import ImageViewer from "../common/ImageViewer";
 import PostEditControls from "../common/PostEditControls";
 import { PostEditState, NEUTRAL_POST_EDIT, buildFilterString } from "@/utils/postEdit";
@@ -183,6 +184,7 @@ const DEFAULT_PARAMS: OutpaintPanelParams = {
   nag_negative_prompt: "",
   attention_type: "normal",
   unet_quantization: null,
+  quantized_gemm_mode: null,
   original_size_w: 0,
   original_size_h: 0,
   original_size_scale: 1.0,
@@ -3108,6 +3110,12 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
                     )}
                   </>
                 )}
+
+                <QuantizedGemmSelect
+                  arch={currentModelInfo?.model_info?.type as string | undefined}
+                  value={params.quantized_gemm_mode ?? null}
+                  onChange={(v) => setParams({ ...params, quantized_gemm_mode: v })}
+                />
 
                 <label className="flex items-center gap-2 cursor-pointer">
                   <input

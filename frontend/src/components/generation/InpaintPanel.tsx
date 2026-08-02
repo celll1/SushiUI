@@ -24,6 +24,7 @@ import { PostEditState, NEUTRAL_POST_EDIT, buildFilterString } from "@/utils/pos
 import { usePostEditPreview } from "@/hooks/usePostEditPreview";
 import GenerationQueue from "../common/GenerationQueue";
 import LoopGenerationPanel, { LoopGenerationConfig } from "./LoopGenerationPanel";
+import QuantizedGemmSelect from "./QuantizedGemmSelect";
 import { migrateLoopGenerationConfig, computeLoopDecodeDirective } from "@/utils/loopGenerationInheritance";
 import { getSamplers, getScheduleTypes, generateInpaint, generateInpaintTrainingPreview, toBase64, InpaintParams as ApiInpaintParams, LoRAConfig, ControlNetConfig, generateTIPOPrompt, cancelGeneration, getCurrentModel, getResultFilename, getResultSeed, getResultAncestralSeed, isLatentOnlyResult } from "@/utils/api";
 import { useActiveTraining } from "@/hooks/useActiveTraining";
@@ -107,6 +108,9 @@ interface InpaintParams {
   original_size_scale?: number;
   // U-Net Quantization
   unet_quantization?: string | null;
+  // Quantized GEMM path for already-quantized checkpoints (ideogram4/krea2/anima).
+  // null = leave the process-level setting alone.
+  quantized_gemm_mode?: "w8a8" | "dequant" | null;
   // Text Encoder Quantization (Z-Image only)
   text_encoder_quantization?: string | null;
   // Attention backend
@@ -193,6 +197,7 @@ const DEFAULT_PARAMS: InpaintParams = {
   nag_sigma_end: 3.0,
   nag_negative_prompt: "",
   unet_quantization: null,
+  quantized_gemm_mode: null,
   original_size_w: 0,
   original_size_h: 0,
   original_size_scale: 1.0,
@@ -352,6 +357,7 @@ const INPAINT_OPTIONS_TAB_KEYS: Record<InpaintOptionsTabId, (keyof InpaintParams
   ],
   environment: [
     "unet_quantization",
+    "quantized_gemm_mode",
     "text_encoder_quantization",
     "cpu_text_encoding",
     "vae_tiling",
@@ -410,6 +416,7 @@ function isInpaintOptionsTabActive(tabId: InpaintOptionsTabId, params: InpaintPa
     case "environment":
       return (
         !!(params.unet_quantization && params.unet_quantization !== "none") ||
+        !!params.quantized_gemm_mode ||
         !!(params.text_encoder_quantization && params.text_encoder_quantization !== "none") ||
         !!params.cpu_text_encoding ||
         !!params.vae_tiling ||
@@ -1876,6 +1883,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         boundary_relax_end: mainParams.boundary_relax_end,
         boundary_relax_paste: mainParams.boundary_relax_paste,
         unet_quantization: mainParams.unet_quantization, // Inherit quantization from main
+        quantized_gemm_mode: mainParams.quantized_gemm_mode, // Inherit quantized GEMM path from main
         original_size_w: mainParams.original_size_w,
         original_size_h: mainParams.original_size_h,
         original_size_scale: mainParams.original_size_scale,
@@ -2028,6 +2036,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
       stepParams.prompt_chunking_mode = mainParams.prompt_chunking_mode;
       stepParams.max_prompt_chunks = mainParams.max_prompt_chunks;
       stepParams.unet_quantization = mainParams.unet_quantization;
+      stepParams.quantized_gemm_mode = mainParams.quantized_gemm_mode;
       stepParams.original_size_w = mainParams.original_size_w;
       stepParams.original_size_h = mainParams.original_size_h;
       stepParams.original_size_scale = mainParams.original_size_scale;
@@ -2141,6 +2150,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         nag_sigma_end: nextItem.params.nag_sigma_end,
         nag_negative_prompt: nextItem.params.nag_negative_prompt,
         unet_quantization: nextItem.params.unet_quantization,
+        quantized_gemm_mode: nextItem.params.quantized_gemm_mode,
         original_size_w: nextItem.params.original_size_w,
         original_size_h: nextItem.params.original_size_h,
         original_size_scale: nextItem.params.original_size_scale,
@@ -3344,6 +3354,12 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
             )}
           </>
         )}
+
+        <QuantizedGemmSelect
+          arch={currentModelInfo?.model_info?.type as string | undefined}
+          value={params.quantized_gemm_mode ?? null}
+          onChange={(v) => setParams({ ...params, quantized_gemm_mode: v })}
+        />
 
         {/* CPU Text Encoding — applies to all model types */}
         <label className="flex items-center gap-2 cursor-pointer">

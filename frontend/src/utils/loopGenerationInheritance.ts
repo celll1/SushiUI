@@ -86,6 +86,9 @@ export const LOOP_GENRE_FIELDS = {
    */
   modelEnvironment: [
     "unet_quantization",
+    // Quantized GEMM path: model-global (it forces process-level flags), so a
+    // loop step must not silently revert to the process default mid-loop.
+    "quantized_gemm_mode",
     "text_encoder_quantization",
     "cpu_text_encoding",
     "use_torch_compile",

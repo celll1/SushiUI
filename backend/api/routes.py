@@ -259,6 +259,11 @@ class GenerationParams(BaseModel):
     unet_quantization: Optional[str] = None  # None, "int8", "fp8", "int4", "nf4"
     # Text Encoder Quantization (Z-Image only)
     text_encoder_quantization: Optional[str] = None  # None, "fp8_e4m3fn", "fp8_e5m2", "uint8", "uint4"
+    # Quantized-GEMM path for checkpoints that already carry weight-only
+    # quantized Linear weights (ideogram4 / krea2 / anima). null = leave the
+    # process flags alone (env / POST /system/* value stands); "w8a8" = force
+    # both W8A8 paths on; "dequant" = force both off. See api/quantized_gemm.py.
+    quantized_gemm_mode: Optional[str] = GENERATION_DEFAULTS["quantized_gemm_mode"]
     # CPU text encoding: keep text encoder on CPU during prompt encode (saves VRAM, slower)
     cpu_text_encoding: bool = GENERATION_DEFAULTS["cpu_text_encoding"]
     # torch.compile optimization
@@ -402,6 +407,28 @@ async def get_bundle_vae_defaults_by_arch():
     return BUNDLE_VAE_DEFAULTS_BY_ARCH
 
 
+@router.get("/schema/arch-capabilities")
+async def get_arch_capabilities():
+    """Per-architecture table of generation features that have NO effect.
+
+    Mirrors `api/arch_capabilities.ARCH_UNSUPPORTED` verbatim: an architecture
+    key maps feature name -> a one-line factual reason the feature is ignored
+    there. The backend already uses this table to emit an `unsupported_param`
+    warning after the fact; exposing it lets the generation panels hide a
+    control on an architecture that would ignore it, driven by the same matrix
+    instead of a second hardcoded arch list in the frontend.
+
+    `feature_params` maps each feature to the request parameter keys that arm
+    it, so a caller can go from a parameter name back to its feature.
+    """
+    from api.arch_capabilities import ARCH_UNSUPPORTED, FEATURE_PARAMS, FEATURE_LABELS
+    return {
+        "unsupported": ARCH_UNSUPPORTED,
+        "feature_params": FEATURE_PARAMS,
+        "feature_labels": FEATURE_LABELS,
+    }
+
+
 # ---------------------------------------------------------------------------
 # GPU coordinator helpers (shared by all /generate/* endpoints)
 # ---------------------------------------------------------------------------
@@ -486,6 +513,7 @@ async def generate_txt2img(
     attention_impl: str = Form("conduit"),
     unet_quantization: Optional[str] = Form(None),
     text_encoder_quantization: Optional[str] = Form(None),
+    quantized_gemm_mode: Optional[str] = Form(GENERATION_DEFAULTS["quantized_gemm_mode"]),
     use_torch_compile: bool = Form(False),
     keep_models_hot: bool = Form(GENERATION_DEFAULTS["keep_models_hot"]),
     vae_tiling: bool = Form(GENERATION_DEFAULTS["vae_tiling"]),
@@ -547,6 +575,14 @@ async def generate_txt2img(
     from api.arch_capabilities import check_arch_capabilities
     from api.generation_overrides import plan_overrides, apply_overrides
     from api.error_handlers import ValidationError
+    # Quantized-GEMM path (quantized_gemm_mode): normalized BEFORE start_generation
+    # so an invalid value is a 400 rather than a 500 from inside the run. None
+    # (the default) leaves the process flags completely untouched.
+    from api.quantized_gemm import normalize_mode as _normalize_qgm
+    try:
+        quantized_gemm_mode = _normalize_qgm(quantized_gemm_mode)
+    except ValueError as exc:
+        raise ValidationError("Invalid quantized_gemm_mode value", detail=str(exc))
     if loop_decode not in ("full", "cheap", "none"):
         raise ValidationError(
             "Invalid loop_decode value",
@@ -689,6 +725,7 @@ async def generate_txt2img(
             "attention_type": attention_type,
             "attention_impl": attention_impl,
             "unet_quantization": unet_quantization,
+            "quantized_gemm_mode": quantized_gemm_mode,
             "original_size_w": original_size_w,
             "original_size_h": original_size_h,
             "original_size_scale": original_size_scale,
@@ -815,6 +852,14 @@ async def generate_txt2img(
         _current_arch = pipeline_manager.current_model_info.get("type") if pipeline_manager.current_model_info else None
         check_arch_capabilities(params, _current_arch)
 
+        # Quantized-GEMM path: force the process flags for THIS generation when
+        # the caller asked explicitly. Called directly rather than via
+        # POST /system/* -- that endpoint's fail-closed busy check would return
+        # 409 against this very run, which is already `running` by now. A None
+        # mode touches nothing (the env / manual value stands).
+        from api.quantized_gemm import apply_quantized_gemm_mode
+        apply_quantized_gemm_mode(quantized_gemm_mode)
+
         # Progress callback to send updates via WebSocket
         progress_callback = create_progress_callback_factory(
             taesd_manager,
@@ -886,6 +931,13 @@ async def generate_txt2img(
                 "height": params.get("height"),
                 "seed": actual_seed,
             })
+            # The latent-only path returns before the fp8_gemm block below, so
+            # report the resolved quantized-GEMM path here too — a loop step
+            # that chains latents must still surface a degraded "w8a8" request.
+            from api.quantized_gemm import report_quantized_gemm_outcome
+            report_quantized_gemm_outcome(
+                quantized_gemm_mode, extract_fp8_gemm_info(pipeline_manager), _current_arch
+            )
             complete_generation({"latent_id": latent_id, "seed": actual_seed}, generation_id=_gen_id)
             return {"success": True, "latent_id": latent_id, "actual_seed": actual_seed, "warnings": get_warnings(_gen_id)}
 
@@ -915,6 +967,10 @@ async def generate_txt2img(
         fp8_gemm = extract_fp8_gemm_info(pipeline_manager)
         if fp8_gemm:
             params["fp8_gemm"] = fp8_gemm
+        # Report an explicit "w8a8" request that resolved to the dequant path
+        # (probe rejected it, or the checkpoint has no quantized layers).
+        from api.quantized_gemm import report_quantized_gemm_outcome
+        report_quantized_gemm_outcome(quantized_gemm_mode, fp8_gemm, _current_arch)
 
         # Save image with metadata (include model info)
         filename = save_image_with_metadata(
@@ -1443,6 +1499,7 @@ async def generate_img2img(
     attention_impl: str = Form("conduit"),
     unet_quantization: Optional[str] = Form(None),
     text_encoder_quantization: Optional[str] = Form(None),
+    quantized_gemm_mode: Optional[str] = Form(GENERATION_DEFAULTS["quantized_gemm_mode"]),
     cpu_text_encoding: bool = Form(GENERATION_DEFAULTS["cpu_text_encoding"]),
     use_torch_compile: bool = Form(False),
     keep_models_hot: bool = Form(GENERATION_DEFAULTS["keep_models_hot"]),
@@ -1508,6 +1565,14 @@ async def generate_img2img(
     from api.arch_capabilities import check_arch_capabilities
     from api.generation_overrides import plan_overrides, apply_overrides
     from api.error_handlers import ValidationError
+    # Quantized-GEMM path (quantized_gemm_mode): normalized BEFORE start_generation
+    # so an invalid value is a 400 rather than a 500 from inside the run. None
+    # (the default) leaves the process flags completely untouched.
+    from api.quantized_gemm import normalize_mode as _normalize_qgm
+    try:
+        quantized_gemm_mode = _normalize_qgm(quantized_gemm_mode)
+    except ValueError as exc:
+        raise ValidationError("Invalid quantized_gemm_mode value", detail=str(exc))
     if loop_decode not in ("full", "cheap", "none"):
         raise ValidationError(
             "Invalid loop_decode value",
@@ -1673,6 +1738,7 @@ async def generate_img2img(
             "attention_type": attention_type,
             "attention_impl": attention_impl,
             "unet_quantization": unet_quantization,
+            "quantized_gemm_mode": quantized_gemm_mode,
             "original_size_w": original_size_w,
             "original_size_h": original_size_h,
             "original_size_scale": original_size_scale,
@@ -1764,6 +1830,14 @@ async def generate_img2img(
         _current_arch = pipeline_manager.current_model_info.get("type") if pipeline_manager.current_model_info else None
         check_arch_capabilities(params, _current_arch)
 
+        # Quantized-GEMM path: force the process flags for THIS generation when
+        # the caller asked explicitly. Called directly rather than via
+        # POST /system/* -- that endpoint's fail-closed busy check would return
+        # 409 against this very run, which is already `running` by now. A None
+        # mode touches nothing (the env / manual value stands).
+        from api.quantized_gemm import apply_quantized_gemm_mode
+        apply_quantized_gemm_mode(quantized_gemm_mode)
+
         # Progress callback to send updates via WebSocket
         progress_callback = create_progress_callback_factory(
             taesd_manager,
@@ -1836,6 +1910,13 @@ async def generate_img2img(
                 "height": params.get("height"),
                 "seed": actual_seed,
             })
+            # The latent-only path returns before the fp8_gemm block below, so
+            # report the resolved quantized-GEMM path here too — a loop step
+            # that chains latents must still surface a degraded "w8a8" request.
+            from api.quantized_gemm import report_quantized_gemm_outcome
+            report_quantized_gemm_outcome(
+                quantized_gemm_mode, extract_fp8_gemm_info(pipeline_manager), _current_arch
+            )
             complete_generation({"latent_id": latent_id, "seed": actual_seed}, generation_id=_gen_id)
             return {"success": True, "latent_id": latent_id, "actual_seed": actual_seed, "warnings": get_warnings(_gen_id)}
 
@@ -1864,6 +1945,10 @@ async def generate_img2img(
         fp8_gemm = extract_fp8_gemm_info(pipeline_manager)
         if fp8_gemm:
             params["fp8_gemm"] = fp8_gemm
+        # Report an explicit "w8a8" request that resolved to the dequant path
+        # (probe rejected it, or the checkpoint has no quantized layers).
+        from api.quantized_gemm import report_quantized_gemm_outcome
+        report_quantized_gemm_outcome(quantized_gemm_mode, fp8_gemm, _current_arch)
 
         # Save image with metadata (include model info)
         filename = save_image_with_metadata(
@@ -3431,6 +3516,7 @@ async def generate_inpaint(
     attention_impl: str = Form("conduit"),
     unet_quantization: Optional[str] = Form(None),
     text_encoder_quantization: Optional[str] = Form(None),
+    quantized_gemm_mode: Optional[str] = Form(GENERATION_DEFAULTS["quantized_gemm_mode"]),
     cpu_text_encoding: bool = Form(GENERATION_DEFAULTS["cpu_text_encoding"]),
     use_torch_compile: bool = Form(False),
     keep_models_hot: bool = Form(GENERATION_DEFAULTS["keep_models_hot"]),
@@ -3497,6 +3583,14 @@ async def generate_inpaint(
     from api.arch_capabilities import check_arch_capabilities
     from api.generation_overrides import plan_overrides, apply_overrides
     from api.error_handlers import ValidationError
+    # Quantized-GEMM path (quantized_gemm_mode): normalized BEFORE start_generation
+    # so an invalid value is a 400 rather than a 500 from inside the run. None
+    # (the default) leaves the process flags completely untouched.
+    from api.quantized_gemm import normalize_mode as _normalize_qgm
+    try:
+        quantized_gemm_mode = _normalize_qgm(quantized_gemm_mode)
+    except ValueError as exc:
+        raise ValidationError("Invalid quantized_gemm_mode value", detail=str(exc))
     if loop_decode not in ("full", "cheap", "none"):
         raise ValidationError(
             "Invalid loop_decode value",
@@ -3696,6 +3790,7 @@ async def generate_inpaint(
             "attention_type": attention_type,
             "attention_impl": attention_impl,
             "unet_quantization": unet_quantization,
+            "quantized_gemm_mode": quantized_gemm_mode,
             "original_size_w": original_size_w,
             "original_size_h": original_size_h,
             "original_size_scale": original_size_scale,
@@ -3794,6 +3889,14 @@ async def generate_inpaint(
         _current_arch = pipeline_manager.current_model_info.get("type") if pipeline_manager.current_model_info else None
         check_arch_capabilities(params, _current_arch)
 
+        # Quantized-GEMM path: force the process flags for THIS generation when
+        # the caller asked explicitly. Called directly rather than via
+        # POST /system/* -- that endpoint's fail-closed busy check would return
+        # 409 against this very run, which is already `running` by now. A None
+        # mode touches nothing (the env / manual value stands).
+        from api.quantized_gemm import apply_quantized_gemm_mode
+        apply_quantized_gemm_mode(quantized_gemm_mode)
+
         # Progress callback to send updates via WebSocket
         progress_callback = create_progress_callback_factory(
             taesd_manager,
@@ -3880,6 +3983,10 @@ async def generate_inpaint(
         fp8_gemm = extract_fp8_gemm_info(pipeline_manager)
         if fp8_gemm:
             params["fp8_gemm"] = fp8_gemm
+        # Report an explicit "w8a8" request that resolved to the dequant path
+        # (probe rejected it, or the checkpoint has no quantized layers).
+        from api.quantized_gemm import report_quantized_gemm_outcome
+        report_quantized_gemm_outcome(quantized_gemm_mode, fp8_gemm, _current_arch)
 
         # Save image with metadata (include model info)
         filename = save_image_with_metadata(
@@ -4069,6 +4176,7 @@ async def generate_outpaint(
     attention_impl: str = Form(OUTPAINT_DEFAULTS["attention_impl"]),
     unet_quantization: Optional[str] = Form(OUTPAINT_DEFAULTS["unet_quantization"]),
     text_encoder_quantization: Optional[str] = Form(OUTPAINT_DEFAULTS["text_encoder_quantization"]),
+    quantized_gemm_mode: Optional[str] = Form(OUTPAINT_DEFAULTS["quantized_gemm_mode"]),
     cpu_text_encoding: bool = Form(OUTPAINT_DEFAULTS["cpu_text_encoding"]),
     use_torch_compile: bool = Form(OUTPAINT_DEFAULTS["use_torch_compile"]),
     keep_models_hot: bool = Form(OUTPAINT_DEFAULTS["keep_models_hot"]),
@@ -4138,6 +4246,14 @@ async def generate_outpaint(
     from api.arch_capabilities import check_arch_capabilities
     from api.generation_overrides import plan_overrides, apply_overrides
     from api.error_handlers import ValidationError
+    # Quantized-GEMM path (quantized_gemm_mode): normalized BEFORE start_generation
+    # so an invalid value is a 400 rather than a 500 from inside the run. None
+    # (the default) leaves the process flags completely untouched.
+    from api.quantized_gemm import normalize_mode as _normalize_qgm
+    try:
+        quantized_gemm_mode = _normalize_qgm(quantized_gemm_mode)
+    except ValueError as exc:
+        raise ValidationError("Invalid quantized_gemm_mode value", detail=str(exc))
     if loop_decode not in ("full", "cheap", "none"):
         raise ValidationError(
             "Invalid loop_decode value",
@@ -4397,6 +4513,7 @@ async def generate_outpaint(
             "attention_type": attention_type,
             "attention_impl": attention_impl,
             "unet_quantization": unet_quantization,
+            "quantized_gemm_mode": quantized_gemm_mode,
             "original_size_w": original_size_w,
             "original_size_h": original_size_h,
             "original_size_scale": original_size_scale,
@@ -4497,6 +4614,14 @@ async def generate_outpaint(
         _current_arch = pipeline_manager.current_model_info.get("type") if pipeline_manager.current_model_info else None
         check_arch_capabilities(params, _current_arch)
 
+        # Quantized-GEMM path: force the process flags for THIS generation when
+        # the caller asked explicitly. Called directly rather than via
+        # POST /system/* -- that endpoint's fail-closed busy check would return
+        # 409 against this very run, which is already `running` by now. A None
+        # mode touches nothing (the env / manual value stands).
+        from api.quantized_gemm import apply_quantized_gemm_mode
+        apply_quantized_gemm_mode(quantized_gemm_mode)
+
         # Progress callback to send updates via WebSocket. Uses the CANVAS
         # size (the actual output dimensions), not the raw input image size.
         progress_callback = create_progress_callback_factory(
@@ -4584,6 +4709,10 @@ async def generate_outpaint(
         fp8_gemm = extract_fp8_gemm_info(pipeline_manager)
         if fp8_gemm:
             params["fp8_gemm"] = fp8_gemm
+        # Report an explicit "w8a8" request that resolved to the dequant path
+        # (probe rejected it, or the checkpoint has no quantized layers).
+        from api.quantized_gemm import report_quantized_gemm_outcome
+        report_quantized_gemm_outcome(quantized_gemm_mode, fp8_gemm, _current_arch)
 
         # Save image with metadata (include model info). params["width"]/["height"]
         # were overwritten by generate_outpaint to the resolved canvas size.

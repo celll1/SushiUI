@@ -6,6 +6,7 @@ import Card from "@/components/common/Card";
 import Button from "@/components/common/Button";
 import DirectorySettings from "@/components/settings/DirectorySettings";
 import GenerationSettings from "@/components/settings/GenerationSettings";
+import QuantizedGemmSettings from "@/components/settings/QuantizedGemmSettings";
 import ProtectedRoute from "@/components/common/ProtectedRoute";
 import { restartBackend, restartFrontend, restartBoth } from "@/utils/api";
 import NumberInput from "@/components/common/NumberInput";
@@ -498,6 +499,10 @@ export default function SettingsPage() {
 
           <Card title="Generation Settings">
             <GenerationSettings />
+          </Card>
+
+          <Card title="Quantized GEMM Paths">
+            <QuantizedGemmSettings />
           </Card>
 
           <Card title="Tag Suggestions">

@@ -320,15 +320,57 @@ def _detect_is_distilled(metadata: dict) -> bool:
     return bool(flag)
 
 
-def reject_unsupported_quant(path: str, metadata: dict) -> None:
-    """Raise for comfy quant layouts that are out of scope (int8_convrot/mxfp8/nvfp4)."""
-    haystack = (path or "").lower() + " " + str(metadata.get("quantization", "")).lower()
+def reject_unsupported_quant(
+    path: str,
+    metadata: dict,
+    state_dict: Optional[Dict[str, torch.Tensor]] = None,
+) -> None:
+    """Raise for unsupported Comfy quantization layouts."""
+    metadata_text = json.dumps(metadata or {}, sort_keys=True, default=str)
+    haystack = f"{path or ''} {metadata_text}".lower().replace("-", "_")
     for token in _REJECTED_QUANT_TOKENS:
         if token in haystack:
             raise ValueError(
                 f"[Krea2] quantization layout '{token}' is not supported. "
                 f"Use a bf16 or fp8_scaled checkpoint."
             )
+
+    for key, value in (state_dict or {}).items():
+        if not key.endswith("comfy_quant"):
+            continue
+        try:
+            if isinstance(value, torch.Tensor):
+                payload = bytes(value.detach().cpu().flatten().tolist())
+            elif isinstance(value, (bytes, bytearray)):
+                payload = bytes(value)
+            else:
+                raise TypeError(type(value).__name__)
+            layer_config = json.loads(payload.decode("utf-8"))
+        except Exception as exc:
+            raise ValueError(
+                f"[Krea2] unreadable Comfy quantization marker {key!r}: {exc}. "
+                f"Use a bf16 or fp8_scaled checkpoint."
+            ) from exc
+
+        params = layer_config.get("params", {})
+        if not isinstance(params, dict):
+            params = {}
+        convrot = layer_config.get("convrot", params.get("convrot", False))
+        if isinstance(convrot, str):
+            convrot = convrot.strip().lower() in ("1", "true", "yes", "on")
+        if convrot:
+            raise ValueError(
+                f"[Krea2] quantization layout 'int8_convrot' in {key!r} is not "
+                f"supported. Use a bf16 or fp8_scaled checkpoint."
+            )
+
+        marker_text = json.dumps(layer_config, sort_keys=True, default=str).lower()
+        for token in ("mxfp8", "nvfp4"):
+            if token in marker_text:
+                raise ValueError(
+                    f"[Krea2] quantization layout '{token}' in {key!r} is not "
+                    f"supported. Use a bf16 or fp8_scaled checkpoint."
+                )
 
 
 # ---------------------------------------------------------------------------
@@ -405,7 +447,7 @@ def load_single_file(path: str, torch_dtype: torch.dtype = torch.bfloat16) -> di
               "config": dict}.
     """
     raw, metadata = _read_safetensors(path)
-    reject_unsupported_quant(path, metadata)
+    reject_unsupported_quant(path, metadata, raw)
 
     # Split off an embedded VAE section (``vae.*``) before normalisation, so it does
     # not pollute the transformer load. Absent -> None (loader resolves default VAE).

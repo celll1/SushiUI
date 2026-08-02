@@ -126,6 +126,43 @@ paths:
                 sd15: true
                 sdxl: true
                 deus: true
+  /schema/arch-capabilities:
+    get:
+      summary: Per-architecture table of generation features that have no effect
+      description: |
+        Returns the capability matrix the backend already uses to emit
+        `unsupported_param` warnings after a generation
+        (`backend/api/arch_capabilities.py`), so a client can hide a control on
+        an architecture that would ignore it instead of maintaining a second,
+        divergent arch list.
+
+        * `unsupported` — architecture name -> feature name -> a one-line
+          factual reason the feature has no effect there. An architecture absent
+          from the map, or a feature absent from its entry, honors the feature.
+        * `feature_params` — feature name -> the request parameter keys that arm
+          it, so a parameter name can be mapped back to its feature.
+        * `feature_labels` — feature name -> the human-readable label used in the
+          warning message.
+      tags: [Schema]
+      responses:
+        '200':
+          description: Capability matrix
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ArchCapabilities'
+              example:
+                unsupported:
+                  sdxl:
+                    quantized_gemm: "this architecture's checkpoints hold plain floating-point Linear weights; the quantized-GEMM path selection applies only to the weight-only quantized Linear layers used by Ideogram 4, Krea 2 and Anima"
+                  krea2:
+                    unet_quantization: "quantization on this architecture is selected by checkpoint format at load time (bf16 or weight-only FP8 checkpoints); the per-generation unet_quantization parameter is not applied"
+                feature_params:
+                  quantized_gemm: [quantized_gemm_mode]
+                  unet_quantization: [unet_quantization]
+                feature_labels:
+                  quantized_gemm: "quantized_gemm_mode (quantized GEMM path)"
+                  unet_quantization: "unet_quantization"
   /schema/generation-defaults:
     get:
       summary: Get default parameter values for txt2img/img2img/inpaint generation
@@ -5467,6 +5504,40 @@ components:
             false = FP8 Linear layers dequantize the weight and run a normal
                     matmul (the process default).
           example: true
+    ArchCapabilities:
+      type: object
+      required: [unsupported, feature_params, feature_labels]
+      description: |
+        Mirror of `backend/api/arch_capabilities.py`. Declares which generation
+        features a given model architecture does NOT honor, and why. Served by
+        `GET /schema/arch-capabilities`.
+      properties:
+        unsupported:
+          type: object
+          description: Architecture name -> feature name -> factual reason the feature has no effect there.
+          additionalProperties:
+            type: object
+            additionalProperties:
+              type: string
+          example:
+            sdxl:
+              quantized_gemm: "this architecture's checkpoints hold plain floating-point Linear weights; the quantized-GEMM path selection applies only to the weight-only quantized Linear layers used by Ideogram 4, Krea 2 and Anima"
+        feature_params:
+          type: object
+          description: Feature name -> the request parameter keys that arm it.
+          additionalProperties:
+            type: array
+            items:
+              type: string
+          example:
+            quantized_gemm: [quantized_gemm_mode]
+        feature_labels:
+          type: object
+          description: Feature name -> the human-readable label used in the warning message.
+          additionalProperties:
+            type: string
+          example:
+            quantized_gemm: "quantized_gemm_mode (quantized GEMM path)"
     Fp8ScaledMmState:
       type: object
       required: [enabled, origin, resolved_modes]
@@ -5477,11 +5548,14 @@ components:
           example: true
         origin:
           type: string
-          enum: [default, env, api]
+          enum: [default, env, api, generation]
           description: |
             Where the current value came from. "default" = no environment
             variable was set at import; "env" = `SUSHI_FP8_SCALED_MM` was present
-            at import; "api" = a later POST to this endpoint.
+            at import; "api" = a later POST to this endpoint; "generation" = a
+            generation request carried an explicit `quantized_gemm_mode` and
+            forced the flag for itself. "generation" is distinct from "api" so a
+            manual flip can be told apart from one a queued generation made.
           example: api
         resolved_modes:
           type: object
@@ -5519,11 +5593,14 @@ components:
           example: true
         origin:
           type: string
-          enum: [default, env, api]
+          enum: [default, env, api, generation]
           description: |
             Where the current value came from. "default" = no environment
             variable was set at import; "env" = `SUSHI_INT8_MM` was present at
-            import; "api" = a later POST to this endpoint.
+            import; "api" = a later POST to this endpoint; "generation" = a
+            generation request carried an explicit `quantized_gemm_mode` and
+            forced the flag for itself. "generation" is distinct from "api" so a
+            manual flip can be told apart from one a queued generation made.
           example: api
         resolved_modes:
           type: object
@@ -5714,6 +5791,52 @@ components:
           type: string
           nullable: true
           description: "Text encoder quantization mode. None = full precision."
+        quantized_gemm_mode:
+          type: string
+          nullable: true
+          enum: [w8a8, dequant, null]
+          default: null
+          description: |
+            Per-generation selection of the GEMM path used by Linear layers whose
+            weights are ALREADY weight-only quantized in the checkpoint. A
+            different axis from `unet_quantization`: that one quantizes an
+            unquantized model's weights at load time, this one selects how
+            already-quantized weights are multiplied.
+
+            Consumed only by the architectures whose loaders swap in the
+            quantized Linear classes — `ideogram4` (FP8/nf4), `krea2` (FP8 or
+            INT8) and `anima` (INT8). Whether a given layer is FP8 or INT8 is
+            fixed by the checkpoint, not by this parameter, so this is ONE axis
+            that drives both process flags rather than two independent booleans.
+
+            * `null` (default) — do not touch process state. Whatever
+              `SUSHI_FP8_SCALED_MM` / `SUSHI_INT8_MM` or a prior
+              `POST /system/fp8-scaled-mm` | `/system/int8-mm` set remains in
+              force. Existing callers that never send this field are unaffected.
+            * `"w8a8"` — force both W8A8 paths ON for this generation
+              (`torch._scaled_mm` for FP8 layers, `torch._int_mm` for INT8).
+            * `"dequant"` — force both W8A8 paths OFF for this generation; every
+              quantized Linear dequantizes its weight and runs a normal matmul.
+
+            Applied directly to the process flags before this generation's first
+            forward, recorded with `origin: "generation"`. It is per-process
+            state, so the forced value persists until something else changes it;
+            `GET /system/fp8-scaled-mm` and `GET /system/int8-mm` report the
+            current value and its origin.
+
+            Requesting `"w8a8"` on a model with no quantized Linear layers (any
+            other architecture, or a bf16 checkpoint on one of the three) is a
+            NO-OP, not an error; the response's `warnings[]` reports it. The same
+            channel reports a `"w8a8"` request that resolved to the dequantized
+            matmul because the per-device probe rejected every scaling mode. The
+            RESOLVED path is recorded separately in the image's `fp8_gemm`
+            metadata field.
+
+            The two paths are numerically different functions (the W8A8 path
+            additionally quantizes the activation), so this is
+            reproduction-affecting whenever the checkpoint has quantized layers.
+            No end-to-end throughput measurement exists for either path.
+          example: w8a8
         attention_type:
           type: string
           enum: [normal, sage, flash, tq]
@@ -8345,6 +8468,16 @@ components:
           nullable: true
           description: U-Net quantization mode recorded for the generation; emitted (possibly as null) whenever the key exists in `parameters`. Passed through unstringified.
           example: fp8_e4m3fn
+        quantized_gemm_mode:
+          type: string
+          enum: [w8a8, dequant]
+          description: |
+            What the generation REQUEST asked for on the quantized-GEMM axis.
+            Emitted only when the request forced a value; omitted when it was
+            null and the process-level setting stood. Distinct from `fp8_gemm`,
+            which records the path that actually resolved — the pair is what
+            makes a rejected `w8a8` request legible after the fact.
+          example: w8a8
         effective_warnings:
           type: array
           description: Feature-degradation notices recorded during the generation, kept as a list rather than stringified. Emitted only when the row recorded at least one.

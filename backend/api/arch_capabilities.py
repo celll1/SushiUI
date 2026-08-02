@@ -38,6 +38,7 @@ FEATURE_PARAMS: Dict[str, List[str]] = {
     "nag": ["nag_enable"],
     "controlnets": ["controlnets"],
     "unet_quantization": ["unet_quantization"],
+    "quantized_gemm": ["quantized_gemm_mode"],
     "text_encoder_quantization": ["text_encoder_quantization"],
     "cpu_text_encoding": ["cpu_text_encoding"],
     "attention_impl": ["attention_impl"],
@@ -56,6 +57,7 @@ FEATURE_LABELS: Dict[str, str] = {
     "nag": "nag_* (Normalized Attention Guidance)",
     "controlnets": "controlnets",
     "unet_quantization": "unet_quantization",
+    "quantized_gemm": "quantized_gemm_mode (quantized GEMM path)",
     "text_encoder_quantization": "text_encoder_quantization",
     "cpu_text_encoding": "cpu_text_encoding",
     "attention_impl": "attention_impl",
@@ -136,6 +138,23 @@ _add("ltx2", "unet_quantization",
      "unet_quantization is not implemented for the LTX-2.3 video model")
 _add("acestep", "unet_quantization",
      "unet_quantization is not implemented for the ACE-Step audio model")
+
+# Quantized GEMM path (per-generation quantized_gemm_mode): only the three
+# architectures whose loaders swap in the weight-only quantized Linear classes
+# (Fp8Linear / Int8Linear) have any GEMM to select -- Ideogram 4 (FP8/nf4),
+# Krea 2 (FP8 or INT8) and Anima (INT8). Every other architecture stores plain
+# floating-point Linear weights, so the two process flags govern nothing there.
+# This table is what the generation panels read (via
+# GET /schema/arch-capabilities) to decide whether to show the control at all,
+# so the arch set is declared HERE and nowhere else.
+#
+# NOTE this is a different axis from `unet_quantization`, which quantizes an
+# unquantized model's weights at load time to reduce VRAM. The two must not be
+# merged: krea2/ideogram4 are listed as NOT applying `unet_quantization` just
+# above, while they are exactly the archs that DO consume `quantized_gemm`.
+for _a in ["sd15", "sdxl", "zimage", "flux2", "lens", "minit2i", "ltx2", "acestep"]:
+    _add(_a, "quantized_gemm",
+         "this architecture's checkpoints hold plain floating-point Linear weights; the quantized-GEMM path selection applies only to the weight-only quantized Linear layers used by Ideogram 4, Krea 2 and Anima")
 
 # Text-encoder quantization: not applied on these architectures' text-encoder paths.
 for _a in ["sd15", "sdxl", "ideogram4", "minit2i", "krea2", "ltx2", "acestep"]:

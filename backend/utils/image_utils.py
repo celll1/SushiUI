@@ -258,6 +258,15 @@ def save_image_with_metadata(
     if fp8_gemm:
         metadata.add_text("fp8_gemm", str(fp8_gemm))
 
+    # What the REQUEST asked for on that axis, when it asked at all. Distinct
+    # from ``fp8_gemm`` above, which records what actually resolved: a request
+    # of "w8a8" whose probe was rejected records both, and the pair is what
+    # makes the degradation legible after the fact. Omitted when null (the
+    # default), where the process-level value stood and nothing was forced.
+    quantized_gemm_mode = params.get("quantized_gemm_mode")
+    if quantized_gemm_mode:
+        metadata.add_text("quantized_gemm_mode", str(quantized_gemm_mode))
+
     # LoRA weights + hashes (compact JSON). Written only when LoRAs are present.
     lora_meta = _build_lora_metadata(params.get("loras"))
     if lora_meta:

@@ -8,7 +8,9 @@ import {
   fetchVaeTrainingDefaults,
   fetchTimestepDefaultsByArch,
   fetchBundleVaeDefaultsByArch,
+  fetchArchCapabilities,
   GenerationDefaultsResponse,
+  ArchCapabilities,
 } from "@/utils/api";
 
 // Loaded-model info object returned by GET /models/current -> model_info.
@@ -39,6 +41,10 @@ interface StartupContextType {
   vaeTrainingDefaults: Record<string, unknown> | null;
   timestepDefaultsByArch: Record<string, Record<string, unknown>> | null;
   bundleVaeDefaultsByArch: Record<string, boolean> | null;
+  // Per-architecture capability matrix (GET /schema/arch-capabilities).
+  // null until fetched; archSupportsFeature() treats null as "supported" so a
+  // control is never hidden just because the matrix has not arrived.
+  archCapabilities: ArchCapabilities | null;
 }
 
 const StartupContext = createContext<StartupContextType>({
@@ -54,6 +60,7 @@ const StartupContext = createContext<StartupContextType>({
   vaeTrainingDefaults: null,
   timestepDefaultsByArch: null,
   bundleVaeDefaultsByArch: null,
+  archCapabilities: null,
 });
 
 export const useStartup = () => useContext(StartupContext);
@@ -76,6 +83,7 @@ export function StartupProvider({ children }: StartupProviderProps) {
   const [vaeTrainingDefaults, setVaeTrainingDefaults] = useState<Record<string, unknown> | null>(null);
   const [timestepDefaultsByArch, setTimestepDefaultsByArch] = useState<Record<string, Record<string, unknown>> | null>(null);
   const [bundleVaeDefaultsByArch, setBundleVaeDefaultsByArch] = useState<Record<string, boolean> | null>(null);
+  const [archCapabilities, setArchCapabilities] = useState<ArchCapabilities | null>(null);
 
   // Re-fetch the currently loaded model info. Panels call this after a
   // (re)load so modelInfo/isVideo stay the single source of truth.
@@ -121,13 +129,14 @@ export function StartupProvider({ children }: StartupProviderProps) {
 
           // Fetch param schema defaults from backend (single source of truth)
           try {
-            const [genDef, trainDef, taggerDef, vaeDef, tsByArch, bvByArch] = await Promise.all([
+            const [genDef, trainDef, taggerDef, vaeDef, tsByArch, bvByArch, archCaps] = await Promise.all([
               fetchGenerationDefaults(),
               fetchTrainingDefaults(),
               fetchTaggerTrainingDefaults(),
               fetchVaeTrainingDefaults(),
               fetchTimestepDefaultsByArch(),
               fetchBundleVaeDefaultsByArch(),
+              fetchArchCapabilities(),
             ]);
             setGenerationDefaults(genDef);
             setTrainingDefaults(trainDef);
@@ -135,6 +144,7 @@ export function StartupProvider({ children }: StartupProviderProps) {
             setVaeTrainingDefaults(vaeDef);
             setTimestepDefaultsByArch(tsByArch);
             setBundleVaeDefaultsByArch(bvByArch);
+            setArchCapabilities(archCaps);
             console.log("[StartupContext] Param defaults loaded from backend");
           } catch (e) {
             console.warn("[StartupContext] Failed to fetch param defaults, using hardcoded fallbacks", e);
@@ -174,6 +184,7 @@ export function StartupProvider({ children }: StartupProviderProps) {
       vaeTrainingDefaults,
       timestepDefaultsByArch,
       bundleVaeDefaultsByArch,
+      archCapabilities,
     }}>
       {children}
     </StartupContext.Provider>

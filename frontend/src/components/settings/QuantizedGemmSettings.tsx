@@ -15,14 +15,16 @@ type ResolvedModes = Record<string, string | null>;
 
 interface ModeState {
   enabled: boolean;
-  origin: "default" | "env" | "api";
+  origin: "default" | "env" | "api" | "generation";
   resolved_modes: ResolvedModes;
 }
 
 const ORIGIN_TEXT: Record<ModeState["origin"], string> = {
   default: "process default (no environment variable at import)",
   env: "environment variable at import",
-  api: "set through this API in the current process",
+  api: "set here (this panel / the API) in the current process",
+  generation:
+    "set by a generation that requested an explicit Quantized GEMM path",
 };
 
 function extractDetail(error: any, fallback: string): string {
@@ -212,9 +214,16 @@ export default function QuantizedGemmSettings() {
         Select how quantized Linear layers compute their matrix product: W8A8
         (the activation is quantized and the product is computed in the
         quantized type) or dequantize-then-matmul. The two paths are
-        numerically different. Both settings apply to the whole backend process,
-        are independent of each other, are not stored with a generation, and
-        reset to their environment value when the backend restarts.
+        numerically different. Both settings apply to the whole backend process
+        and reset to their environment value when the backend restarts.
+      </p>
+      <p className="text-gray-400 text-sm">
+        This panel sets the PROCESS DEFAULT and shows the diagnostics (origin and
+        the per-device probe result). A generation panel&apos;s{" "}
+        <span className="font-mono">Quantized GEMM path</span> control overrides
+        it for a single generation; when it does, the origin below reads
+        &quot;set by a generation&quot; and the value it forced stays in force
+        until something changes it again.
       </p>
 
       {message && (
@@ -268,7 +277,14 @@ export default function QuantizedGemmSettings() {
           <li>
             The path each image actually ran is recorded per generation and
             shown as <span className="font-mono">fp8_gemm</span> in the gallery
-            image details.
+            image details. What the request asked for, when it asked, is
+            recorded separately as{" "}
+            <span className="font-mono">quantized_gemm_mode</span>.
+          </li>
+          <li>
+            The per-generation control (Ideogram 4 / Krea 2 / Anima panels) is
+            applied inside the generation, so it is not subject to the refusal
+            below; the refusal guards manual changes made from this panel.
           </li>
           <li>
             The backend refuses a change while an image generation or a training

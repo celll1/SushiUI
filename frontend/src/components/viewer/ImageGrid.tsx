@@ -1299,6 +1299,12 @@ export default function ImageGrid() {
                       <span className="text-xs text-white font-mono" title={selectedImage.fp8_gemm}>{selectedImage.fp8_gemm}</span>
                     </div>
                   )}
+                  {selectedImage.quantized_gemm_mode && (
+                    <div>
+                      <span className="text-gray-400">Quantized GEMM (requested):</span>{' '}
+                      <span className="text-xs text-white font-mono">{selectedImage.quantized_gemm_mode}</span>
+                    </div>
+                  )}
                   {selectedImage.unet_quantization && (
                     <div>
                       <span className="text-gray-400">U-Net Quantization:</span> {selectedImage.unet_quantization}

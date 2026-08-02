@@ -258,9 +258,13 @@ _MAX_ACC_K = (2 ** 31 - 1) // (127 * 127)
 # ``GET/POST /api/v1/system/int8-mm``). Not persisted.
 _INT8_MM_ENABLED = os.environ.get("SUSHI_INT8_MM", "0") == "1"
 
-# Where the CURRENT value came from. Must stay in lockstep with the
-# ``Int8MmState.origin`` enum in openapi.yaml ([default, env, api]).
-_INT8_MM_VALID_ORIGINS = frozenset({"default", "env", "api"})
+# Where the CURRENT value came from: "default"/"env" at import, "api" for a
+# POST /system/int8-mm, or "generation" for a per-generation
+# `quantized_gemm_mode` (api/quantized_gemm.py). "generation" is distinct from
+# "api" on purpose so the diagnostics can tell a manual flip from one a queued
+# generation forced. Must stay in lockstep with the ``Int8MmState.origin`` enum
+# in openapi.yaml ([default, env, api, generation]).
+_INT8_MM_VALID_ORIGINS = frozenset({"default", "env", "api", "generation"})
 _INT8_MM_ORIGIN = "env" if "SUSHI_INT8_MM" in os.environ else "default"
 
 # device index -> "int_mm" (probed OK) or None (unusable, latched).

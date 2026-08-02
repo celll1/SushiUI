@@ -164,6 +164,12 @@ export interface ControlNetConfig {
   style_guidance_scale?: number;  // extra guidance pass strengthening style independently of cfg_scale (0/undefined = off)
 }
 
+// Per-generation quantized-GEMM path selection. One axis, not two booleans:
+// whether a checkpoint's quantized Linear layers are FP8 or INT8 is fixed by
+// the checkpoint format, so the caller only chooses W8A8 vs dequantized.
+// `null` (or an absent field) means "do not touch the process-level setting".
+export type QuantizedGemmMode = "w8a8" | "dequant" | null;
+
 export interface GenerationParams {
   prompt: string;
   negative_prompt?: string;
@@ -205,6 +211,15 @@ export interface GenerationParams {
   unet_quantization?: string | null;
   // Text Encoder Quantization (Z-Image only)
   text_encoder_quantization?: string | null;
+  // Quantized GEMM path for checkpoints whose Linear weights are ALREADY
+  // weight-only quantized (ideogram4 = FP8/nf4, krea2 = FP8 or INT8,
+  // anima = INT8). A different axis from unet_quantization, which quantizes an
+  // unquantized model's weights at load time.
+  //   null      = leave the process-level setting alone (the default)
+  //   "w8a8"    = force both W8A8 GEMM paths on for this generation
+  //   "dequant" = force both off (weights dequantized, normal matmul)
+  // Not sent when null, so a raw caller / env opt-in is never overridden.
+  quantized_gemm_mode?: QuantizedGemmMode;
   // CPU Text Encoding: run text encoder on CPU to save VRAM (slower)
   cpu_text_encoding?: boolean;
   // torch.compile optimization
@@ -624,6 +639,9 @@ export interface GeneratedImage {
   lora_names?: string;
   model_hash?: string;
   unet_quantization?: string;
+  // What the request asked for on the quantized-GEMM axis; absent when the
+  // generation forced nothing. The path that actually ran is `fp8_gemm`.
+  quantized_gemm_mode?: string;
   effective_warnings?: string | { code?: string; message: string }[]; // Feature-degradation notices recorded during generation
   ref_images?: string[]; // FLUX.2 Image Edit: Reference image hashes
   vision_encoder_name?: string;   // SigLIP2 Vision Encoder filename
@@ -812,6 +830,33 @@ export const fetchTimestepDefaultsByArch = async (): Promise<Record<string, Reco
 export const fetchBundleVaeDefaultsByArch = async (): Promise<Record<string, boolean>> =>
   (await api.get("/schema/bundle-vae-defaults-by-arch")).data;
 
+// Per-architecture capability matrix (GET /schema/arch-capabilities). Mirrors
+// backend/api/arch_capabilities.py: `unsupported[arch][feature]` is a factual
+// one-line reason the feature has NO effect on that architecture. Panels use it
+// to hide a control the loaded architecture would ignore, so the arch list lives
+// in exactly one place (the backend table) instead of being duplicated here.
+export interface ArchCapabilities {
+  unsupported: Record<string, Record<string, string>>;
+  feature_params: Record<string, string[]>;
+  feature_labels: Record<string, string>;
+}
+
+export const fetchArchCapabilities = async (): Promise<ArchCapabilities> =>
+  (await api.get("/schema/arch-capabilities")).data;
+
+// True when `arch` honors `feature`. An unknown arch, or capabilities that have
+// not loaded yet, are treated as SUPPORTING the feature — the same convention as
+// the backend's arch_supports_feature(), so a control is never hidden merely
+// because the matrix was unavailable.
+export const archSupportsFeature = (
+  caps: ArchCapabilities | null | undefined,
+  arch: string | null | undefined,
+  feature: string
+): boolean => {
+  if (!caps || !arch) return true;
+  return !(caps.unsupported?.[arch] && feature in caps.unsupported[arch]);
+};
+
 // ---------------------------------------------------------------------------
 // Loop-generation decode-mode response helpers
 // ---------------------------------------------------------------------------
@@ -889,6 +934,12 @@ export const generateTxt2Img = async (params: GenerationParams) => {
   // Quantization
   if (paramsWithImages.unet_quantization && paramsWithImages.unet_quantization !== "none") {
     formData.append("unet_quantization", paramsWithImages.unet_quantization);
+  }
+  // Quantized GEMM path (already-quantized checkpoints: ideogram4/krea2/anima).
+  // Sent ONLY when the user picked an explicit value; omitting it leaves the
+  // backend's process-level setting (env var / Settings panel) untouched.
+  if (paramsWithImages.quantized_gemm_mode) {
+    formData.append("quantized_gemm_mode", paramsWithImages.quantized_gemm_mode);
   }
   // SDXL micro-conditioning original_size override
   if (paramsWithImages.original_size_w) formData.append("original_size_w", String(paramsWithImages.original_size_w));
@@ -1258,6 +1309,12 @@ export const generateImg2Img = async (
     console.log('[API] Added unet_quantization to FormData:', paramsWithImages.unet_quantization);
   } else {
     console.log('[API] No quantization or "none" selected');
+  }
+  // Quantized GEMM path (already-quantized checkpoints: ideogram4/krea2/anima).
+  // Sent ONLY when the user picked an explicit value; omitting it leaves the
+  // backend's process-level setting (env var / Settings panel) untouched.
+  if (paramsWithImages.quantized_gemm_mode) {
+    formData.append("quantized_gemm_mode", paramsWithImages.quantized_gemm_mode);
   }
 
   // CPU text encoding
@@ -1686,6 +1743,12 @@ export const generateInpaint = async (params: InpaintParams, image: File | strin
   } else {
     console.log('[API] No quantization or "none" selected');
   }
+  // Quantized GEMM path (already-quantized checkpoints: ideogram4/krea2/anima).
+  // Sent ONLY when the user picked an explicit value; omitting it leaves the
+  // backend's process-level setting (env var / Settings panel) untouched.
+  if (paramsWithImages.quantized_gemm_mode) {
+    formData.append("quantized_gemm_mode", paramsWithImages.quantized_gemm_mode);
+  }
 
   // CPU text encoding
   formData.append("cpu_text_encoding", String(paramsWithImages.cpu_text_encoding ?? false));
@@ -1921,6 +1984,12 @@ export const generateOutpaint = async (params: OutpaintParams, image: File | str
   }
   if (paramsWithImages.text_encoder_quantization && paramsWithImages.text_encoder_quantization !== "none") {
     formData.append("text_encoder_quantization", paramsWithImages.text_encoder_quantization);
+  }
+  // Quantized GEMM path (already-quantized checkpoints: ideogram4/krea2/anima).
+  // Sent ONLY when the user picked an explicit value; omitting it leaves the
+  // backend's process-level setting (env var / Settings panel) untouched.
+  if (paramsWithImages.quantized_gemm_mode) {
+    formData.append("quantized_gemm_mode", paramsWithImages.quantized_gemm_mode);
   }
 
   formData.append("cpu_text_encoding", String(paramsWithImages.cpu_text_encoding ?? false));
@@ -2262,7 +2331,13 @@ export const restartBoth = async () => {
 
 export interface Fp8ScaledMmState {
   enabled: boolean;
-  origin: "default" | "env" | "api";
+  /**
+   * Where the current process value came from. "generation" means a generation
+   * request carried an explicit `quantized_gemm_mode` and forced the flag for
+   * itself; it is distinct from "api" so a manual flip in Settings can be told
+   * apart from one a queued generation made.
+   */
+  origin: "default" | "env" | "api" | "generation";
   /**
    * Probe result per "<device>/<activation dtype>" key. null means no
    * torch._scaled_mm variant worked for that key, so those layers run the
@@ -2274,7 +2349,8 @@ export interface Fp8ScaledMmState {
 
 export interface Int8MmState {
   enabled: boolean;
-  origin: "default" | "env" | "api";
+  /** See Fp8ScaledMmState.origin. */
+  origin: "default" | "env" | "api" | "generation";
   /**
    * Probe result per device. "int_mm" means torch._int_mm reproduced an int32
    * reference product; null means it was unusable, so those layers run the

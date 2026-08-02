@@ -163,10 +163,16 @@ _USE_FAST_ACCUM = os.environ.get("SUSHI_FP8_FAST_ACCUM", "1") != "0"
 _SCALED_MM_ENABLED = os.environ.get("SUSHI_FP8_SCALED_MM", "0") == "1"
 
 # Where the CURRENT value came from: "env" (the variable was present at import),
-# "default" (it was not), or "api" (a later set_scaled_mm_enabled call). Must
-# stay in lockstep with the `Fp8ScaledMmState.origin` enum in openapi.yaml
-# ([default, env, api]) -- see the validation in set_scaled_mm_enabled().
-_SCALED_MM_VALID_ORIGINS = frozenset({"default", "env", "api"})
+# "default" (it was not), "api" (a later POST /system/fp8-scaled-mm), or
+# "generation" (a per-generation `quantized_gemm_mode` forced it -- see
+# api/quantized_gemm.py). "generation" is a DISTINCT value rather than reusing
+# "api" so the diagnostics stay honest about who last moved the flag: an
+# operator reading `origin` in the Settings panel can tell a manual flip from a
+# value a queued generation forced. Must stay in lockstep with the
+# `Fp8ScaledMmState.origin` enum in openapi.yaml
+# ([default, env, api, generation]) -- see the validation in
+# set_scaled_mm_enabled().
+_SCALED_MM_VALID_ORIGINS = frozenset({"default", "env", "api", "generation"})
 _SCALED_MM_ORIGIN = "env" if "SUSHI_FP8_SCALED_MM" in os.environ else "default"
 
 # (device index, activation dtype) -> mode string, or None for "unusable".

@@ -191,16 +191,24 @@ from core.models.ideogram4.vendor.fp8_linear import (  # noqa: E402
 )
 from core.models.ideogram4.vendor.int8_linear import (  # noqa: E402
     INT8_SCALE_SUFFIX,
-    quantize_weight_to_int8,
-    weight_crest_factors,
 )
-# The runtime min-work gate's SHAPE conditions, imported so --skip-below-work-gate
-# cannot drift from what Int8Linear._int_mm_forward actually enforces. The third
-# condition (_MIN_WORK_MKN) depends on m and therefore on the call, not the layer,
-# so it has no offline equivalent.
-from core.models.ideogram4.vendor.int8_linear import (  # noqa: E402
-    _MIN_WORK_K as INT8_MIN_WORK_K,
-    _MIN_WORK_N as INT8_MIN_WORK_N,
+# THE selection logic lives in the shared module, which the RUNTIME in-place
+# converter imports too. One module, two callers -- the shared import is the pin
+# against the two rules drifting apart. Everything below is a thin caller:
+# ``select_targets`` (shape filters, incl. the min-work gate whose constants are
+# int8_linear's own), ``audit_and_quantize_int8`` (crest pre-filter + the
+# measured int8-vs-e4m3 backstop that actually decides), the per-arch knobs, and
+# the audit document's shape.
+from core.models.common.int8_runtime_quantize import (  # noqa: E402
+    DEFAULT_CREST_THRESHOLD,
+    FORMAT_MIN_ALIGN,
+    INT8_MIN_WORK_K,
+    INT8_MIN_WORK_N,
+    arch_policy,
+    audit_and_quantize_int8,
+    audit_document,
+    linear_paths,
+    select_targets,
 )
 # Private in the writer module on purpose (they are format constants, not API);
 # imported rather than re-typed so a change to the on-disk convention cannot
@@ -216,23 +224,9 @@ DEFAULT_OUT_SHARD_BYTES = 4 * 1024 ** 3
 # ``siblings`` entry (see ARCHS); entries may be RELATIVE PATHS, not just names.
 SIBLING_DIRS = ("text_encoder", "vae", "tokenizer", "scheduler")
 
-# Per-format GEMM alignment. A layer that cannot satisfy its format's fast-path
-# alignment can never reach that path, so quantizing it buys error for no speed.
-FORMAT_MIN_ALIGN = {"fp8": 16, "int8": 8}
-
-# Default crest-factor threshold above which int8 loses to e4m3. Derived, not
-# tuned: int8's relative error is crest/(127*sqrt(12)) = crest/440 and e4m3's is
-# flat at ~2.63e-02, so they cross at crest ~= 11.6.
-#
-# It is NOT true that the real checkpoint leaves a wide empty gap around 12.0 --
-# the full 263-layer Krea 2 run has layers at crest 9.22, 9.43, 12.14, 12.44 and
-# 32.56, i.e. two of them sit just above the threshold. What makes the placement
-# safe is stronger than a gap: on that run the MEASURED backstop alone
-# (``err_int8 < err_e4m3``) reproduces exactly the same 4-layer selection, with
-# every chosen int8 layer at an int8-over-e4m3 error advantage >= 1.199 and every
-# selected-out layer <= 0.928. The two rules agree, and the measurement -- not the
-# crest -- is what actually decides.
-DEFAULT_CREST_THRESHOLD = 12.0
+# FORMAT_MIN_ALIGN and DEFAULT_CREST_THRESHOLD are imported from
+# core.models.common.int8_runtime_quantize (see the import block above): they are
+# part of the selection rule, and the runtime converter applies the same values.
 
 
 # ---------------------------------------------------------------------------
@@ -417,134 +411,22 @@ def _strip_prefix(key: str, prefix: str) -> str:
     return key[len(prefix):] if prefix and key.startswith(prefix) else key
 
 
-def linear_paths(model: nn.Module) -> Dict[str, Tuple[int, int]]:
-    """{module path: (in_features, out_features)} for every ``nn.Linear``."""
-    return {
-        name: (m.in_features, m.out_features)
-        for name, m in model.named_modules()
-        if isinstance(m, nn.Linear)
-    }
-
-
-def select_targets(
-    linears: Dict[str, Tuple[int, int]],
-    present_keys: set,
-    min_align: int,
-    excludes: List[re.Pattern],
-    skip_below_work_gate: bool = False,
-) -> Tuple[List[str], List[Tuple[str, str]]]:
-    """Split the Linears into (quantize, [(skipped, reason)]).
-
-    ``present_keys`` holds module paths ALREADY stripped of the arch's
-    ``source_prefix``, so it is directly comparable with the meta model's paths.
-
-    ``skip_below_work_gate`` is applied verbatim if set; the INT8-only scoping
-    lives in ``main`` (which clears it for other formats), the same place the
-    other int8-only selectors are scoped.
-    """
-    targets: List[str] = []
-    skipped: List[Tuple[str, str]] = []
-    for name, (in_f, out_f) in sorted(linears.items()):
-        if f"{name}.weight" not in present_keys:
-            skipped.append((name, "no weight in checkpoint"))
-            continue
-        if min_align and (in_f % min_align or out_f % min_align):
-            skipped.append((name, f"unaligned {in_f}x{out_f} (cannot reach the fast GEMM path)"))
-            continue
-        if skip_below_work_gate and (in_f < INT8_MIN_WORK_K or out_f < INT8_MIN_WORK_N):
-            skipped.append((
-                name,
-                f"{in_f}x{out_f} below the runtime min-work gate "
-                f"(k>={INT8_MIN_WORK_K}, n>={INT8_MIN_WORK_N}) at any m: it would always "
-                f"run the dequant path, which is slower than the unquantized F.linear"))
-            continue
-        pattern = next((p for p in excludes if p.search(name)), None)
-        if pattern is not None:
-            skipped.append((name, f"excluded by /{pattern.pattern}/"))
-            continue
-        targets.append(name)
-    return targets, skipped
-
-
-# ---------------------------------------------------------------------------
-# Per-layer format selection + audit (int8 only)
-# ---------------------------------------------------------------------------
-
-def _rel_rms(reference: torch.Tensor, approx: torch.Tensor) -> float:
-    """Relative RMS error of ``approx`` against ``reference``, in float32."""
-    ref = reference.to(torch.float32)
-    err = approx.to(torch.float32) - ref
-    denom = ref.pow(2).mean().sqrt()
-    if not torch.isfinite(denom) or denom == 0:
-        return float("nan")
-    return float(err.pow(2).mean().sqrt() / denom)
-
-
-def audit_and_quantize_int8(
-    name: str,
-    tensor: torch.Tensor,
-    crest_threshold: float,
-    fallback: str,
-) -> Tuple[str, torch.Tensor, torch.Tensor, Dict]:
-    """Choose int8 / e4m3 / bf16 for one Linear weight and return the audit row.
-
-    BOTH candidate quantizations are always performed and both errors always
-    measured, whatever the crest says. That costs one extra pass over a weight
-    that is already resident and makes the audit table a record of what was
-    actually true rather than of what the heuristic predicted.
-
-    Returns ``(chosen_format, weight, scale_or_None, audit_row)``.
-    """
-    crest = weight_crest_factors(tensor)
-    crest_mean = float(crest.mean())
-    crest_p99 = float(crest.quantile(0.99)) if crest.numel() > 1 else crest_mean
-    crest_max = float(crest.amax())
-
-    q_i8, s_i8 = quantize_weight_to_int8(tensor)
-    q_f8, s_f8 = quantize_weight_to_fp8(tensor)
-    err_i8 = _rel_rms(tensor, q_i8.to(torch.float32) * s_i8.unsqueeze(1))
-    err_f8 = _rel_rms(tensor, q_f8.to(torch.float32) * s_f8.unsqueeze(1))
-
-    # Two independent reasons to select a layer out. The crest rule is the
-    # documented, predictive one; the measured comparison is the backstop for a
-    # weight whose distribution the crest model does not describe (it cannot,
-    # for instance, see a bimodal row). Either one is sufficient.
-    if crest_mean > crest_threshold:
-        reason = f"crest {crest_mean:.2f} > {crest_threshold:.2f}"
-        chosen = fallback
-    elif not (err_i8 < err_f8):
-        # Also catches NaN errors (a degenerate all-zero or non-finite weight):
-        # `not (a < b)` is False only when int8 is strictly better.
-        reason = f"measured int8 {err_i8:.5f} not better than e4m3 {err_f8:.5f}"
-        chosen = fallback
-    else:
-        reason = f"int8 {err_i8:.5f} < e4m3 {err_f8:.5f} at crest {crest_mean:.2f}"
-        chosen = "int8"
-
-    row = {
-        "name": name,
-        "shape": list(tensor.shape),
-        "int8_rel_rms": err_i8,
-        "e4m3_rel_rms": err_f8,
-        "advantage_int8_over_e4m3": (err_f8 / err_i8) if err_i8 else float("inf"),
-        "crest_mean": crest_mean,
-        "crest_p99": crest_p99,
-        "crest_max": crest_max,
-        "chosen": chosen,
-        "reason": reason,
-    }
-    if chosen == "int8":
-        return chosen, q_i8, s_i8, row
-    if chosen == "e4m3":
-        return chosen, q_f8, s_f8, row
-    return "bf16", tensor, None, row
+# ``linear_paths`` / ``select_targets`` / ``audit_and_quantize_int8`` are
+# imported from ``core.models.common.int8_runtime_quantize``. They used to live
+# here; they moved when the runtime in-place converter needed the identical rule.
 
 
 def write_audit(path: str, rows: List[Dict], args_summary: Dict) -> str:
-    """Write the per-layer audit JSON and print a summary table."""
-    counts: Dict[str, int] = {}
-    for r in rows:
-        counts[r["chosen"]] = counts.get(r["chosen"], 0) + 1
+    """Write the per-layer audit JSON and print a summary table.
+
+    The JSON BODY is built by ``int8_runtime_quantize.audit_document`` -- the
+    same function the runtime in-place converter returns -- so an offline
+    artifact and a runtime conversion are directly diffable. Only the printed
+    table is local to this tool.
+    """
+    document = audit_document(rows, args_summary)
+    counts = document["format_counts"]
+    geomean = document["geomean_advantage"]
     selected_out = [r for r in rows if r["chosen"] != "int8"]
 
     print("\n[audit] per-layer weight-error audit "
@@ -562,17 +444,11 @@ def write_audit(path: str, rows: List[Dict], args_summary: Dict) -> str:
             print(f"[audit]   {r['name']} -> {r['chosen']} ({r['reason']})")
     else:
         print("[audit] no layer was selected out of int8")
-    finite = [r["advantage_int8_over_e4m3"] for r in rows
-              if r["advantage_int8_over_e4m3"] not in (float("inf"),)
-              and r["advantage_int8_over_e4m3"] == r["advantage_int8_over_e4m3"]]
-    geomean = None
-    if finite:
-        geomean = float(torch.tensor(finite, dtype=torch.float64).log().mean().exp())
+    if geomean is not None:
         print(f"[audit] geomean int8-over-e4m3 weight-error advantage: {geomean:.3f}x")
 
     with open(path, "w", encoding="utf-8") as fh:
-        json.dump({"settings": args_summary, "format_counts": counts,
-                   "geomean_advantage": geomean, "layers": rows}, fh, indent=1)
+        json.dump(document, fh, indent=1)
     print(f"[audit] wrote {path}")
     return path
 
@@ -714,7 +590,8 @@ def main() -> int:
                     help="[--format int8] what a selected-out layer becomes")
     ap.add_argument("--exclude", action="append", default=[],
                     help="regex matched against the module path; repeatable")
-    ap.add_argument("--skip-below-work-gate", action="store_true",
+    ap.add_argument("--skip-below-work-gate", dest="skip_below_work_gate",
+                    action="store_true", default=None,
                     help=f"[--format int8 ONLY; ignored with a notice for other formats] "
                          f"also skip Linears whose in_features < {INT8_MIN_WORK_K} or "
                          f"out_features < {INT8_MIN_WORK_N}: the runtime min-work gate can "
@@ -723,8 +600,14 @@ def main() -> int:
                          f"buys speed. Measured necessary for Anima (283/515 Linears; the "
                          f"naive artifact falls below break-even at 384x384 and is behind the "
                          f"filtered one at every resolution measured -- see "
-                         f"tmp/anima_int8_rollup_probe.py); not for Krea 2. Off by default so "
-                         f"existing artifacts reproduce.")
+                         f"tmp/anima_int8_rollup_probe.py); not for Krea 2. DEFAULTS TO THE "
+                         f"ARCH TABLE (int8_runtime_quantize.ARCH_QUANT_POLICY: on for anima, "
+                         f"off for krea2), which is the same table the runtime in-place "
+                         f"converter reads; pass this flag or --no-skip-below-work-gate to "
+                         f"override it.")
+    ap.add_argument("--no-skip-below-work-gate", dest="skip_below_work_gate",
+                    action="store_false",
+                    help="force the min-work-gate filter OFF regardless of the arch table")
     ap.add_argument("--max-shard-bytes", type=int, default=DEFAULT_OUT_SHARD_BYTES)
     ap.add_argument("--link-siblings", metavar="SRC_DIR",
                     help="create text_encoder/vae/tokenizer/scheduler junctions from SRC_DIR "
@@ -734,10 +617,14 @@ def main() -> int:
     args = ap.parse_args()
 
     arch = ARCHS[args.arch]
-    excludes = [re.compile(p) for p in args.exclude]
     fmt = args.format
     tag = f"[{fmt}]"
-    min_align = FORMAT_MIN_ALIGN[fmt] if args.min_align is None else args.min_align
+    # The per-arch knobs come from the SHARED table, not from CLI defaults, so
+    # the offline artifact and a runtime in-place conversion of the same arch
+    # select the same layers. An explicit flag still wins.
+    policy = arch_policy(args.arch, fmt)
+    excludes = [re.compile(p) for p in (list(args.exclude) + list(policy["excludes"]))]
+    min_align = int(policy["min_align"]) if args.min_align is None else args.min_align
 
     # --skip-below-work-gate is an INT8-ONLY selector, scoped here the way
     # --fallback and --crest-threshold are scoped by the writer's `fmt == "int8"`
@@ -745,8 +632,11 @@ def main() -> int:
     # _MIN_WORK_* at all (the e4m3 path has a different profile and no such
     # shape gate), so applying them to an e4m3 conversion would filter it against
     # a rule that governs nothing it will ever run. Ignored rather than silently
-    # honoured, and said out loud rather than ignored silently.
-    skip_gate = bool(args.skip_below_work_gate)
+    # honoured, and said out loud rather than ignored silently. ``arch_policy``
+    # has already forced the arch default to False for a non-int8 format; the
+    # notice below covers an EXPLICIT flag on such a format.
+    skip_gate = bool(policy["skip_below_work_gate"]) if args.skip_below_work_gate is None \
+        else bool(args.skip_below_work_gate)
     if skip_gate and fmt != "int8":
         print(f"{tag} --skip-below-work-gate IGNORED: it is an int8-only selector "
               f"(its k>={INT8_MIN_WORK_K} / n>={INT8_MIN_WORK_N} constants are "

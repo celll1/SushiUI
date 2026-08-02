@@ -80,12 +80,45 @@ outright, so an unaligned layer can never reach it -- quantizing it would add
 quantization error for exactly zero speed. For Krea 2 this excludes one layer
 under either setting, ``text_fusion.projector``, which is 12x1.
 
-It does NOT exclude layers that are merely too small or too thin for the RUNTIME
-min-work gate (``int8_linear._MIN_WORK_*``), nor the timestep MLPs whose ``m`` is
-the batch size and can never clear ``torch._int_mm``'s ``m > 16`` floor. Those
-layers still get quantized, for VRAM: ``time_mod_proj`` alone is 36864x6144 =
-226M parameters, the single largest weight in the model, and it costs 226 MB as
-int8 against 452 MB as bf16 while running the dequant path either way.
+By default it does NOT exclude layers that are merely too small or too thin for
+the RUNTIME min-work gate (``int8_linear._MIN_WORK_*``), nor the timestep MLPs
+whose ``m`` is the batch size and can never clear ``torch._int_mm``'s ``m > 16``
+floor. Those layers still get quantized, for VRAM: ``time_mod_proj`` alone is
+36864x6144 = 226M parameters, the single largest weight in the model, and it
+costs 226 MB as int8 against 452 MB as bf16 while running the dequant path
+either way.
+
+``--skip-below-work-gate`` reverses that trade for architectures where it does
+not pay. A layer whose ``in_features < _MIN_WORK_K`` or
+``out_features < _MIN_WORK_N`` can never be admitted by the runtime gate AT ANY
+``m``, so it always runs ``Int8Linear._dequant_forward`` -- which is SLOWER than
+the ``F.linear`` the unquantized checkpoint would have run, because it pays a
+full ``(n, k)`` weight expansion first. Whether that matters depends entirely on
+how many such layers the architecture has:
+
+* Krea 2 has few, so the default (quantize them, take the VRAM) is right and the
+  shipped ``krea2_int8`` artifact is unaffected by this flag existing.
+* Anima has 283 of them out of 515 Linears -- 168 AdaLN modulation Linears alone,
+  whose ``m`` is the batch size -- and a Linear-only per-pass roll-up over the
+  real layer census (RTX 6000 Ada, bf16, batch 1; harness preserved at
+  ``tmp/anima_int8_rollup_probe.py``) puts the naive all-int8 artifact BELOW
+  break-even at 384x384 (~0.9x vs the bf16 checkpoint) and behind the filtered
+  artifact at every resolution measured, while the filtered artifact is ~1.3x at
+  384x384 rising to ~2x at 1024x1024 and above. Read those to ONE significant
+  digit and treat <=512x512 as "break-even to modestly positive": the low-``m``
+  rows are dispatch-bound, not arithmetic-bound, and independent harnesses
+  disagree there (0.9x-1.3x at 384x384). None of it is end-to-end -- attention,
+  norms, the TE and the VAE are excluded and unchanged, so the whole-generation
+  effect is strictly closer to 1.0.
+  The flag costs ~369 MB of the saving: 2.4987 GB as shipped vs ~2.13 GB fully
+  quantized, against a 4.1822 GB bf16 source (-40% instead of -49%).
+
+The flag is a pure SHAPE test using the same constants the runtime gate uses
+(imported, not retyped), exactly like ``--min-align``, and it is INT8-ONLY --
+``fp8_linear`` has no ``_MIN_WORK_*`` at all, so ``--format fp8`` ignores it with
+a printed notice rather than filtering an e4m3 conversion against int8's rule.
+It cannot express the ``m``-dependent third condition (``_MIN_WORK_MKN``), which
+is a property of the call, not of the layer.
 
 The reference FP8 checkpoint this format comes from -- ideogram-4-fp8 --
 quantizes every Linear including the input/output projections and the timestep
@@ -113,6 +146,12 @@ USAGE
         --source "<bf16 model dir>/diffusion_pytorch_model.safetensors.index.json" \
         --output "<scratch dir>/krea2_int8/krea2_int8.safetensors" \
         --link-siblings "<bf16 model dir>"
+
+    venv/Scripts/python.exe subapps/fp8_quantize/quantize_transformer_fp8.py \
+        --arch anima --format int8 --skip-below-work-gate \
+        --source "<anima root>/split_files/diffusion_models/<dit>.safetensors" \
+        --output "<scratch dir>/anima_int8/split_files/diffusion_models/anima_int8.safetensors" \
+        --link-siblings "<anima root>"
 
 Write the output to a scratch location, NOT under a ``M:/model/<arch>/`` root:
 those roots hold the vanilla checkpoints and their sibling directories are
@@ -155,6 +194,14 @@ from core.models.ideogram4.vendor.int8_linear import (  # noqa: E402
     quantize_weight_to_int8,
     weight_crest_factors,
 )
+# The runtime min-work gate's SHAPE conditions, imported so --skip-below-work-gate
+# cannot drift from what Int8Linear._int_mm_forward actually enforces. The third
+# condition (_MIN_WORK_MKN) depends on m and therefore on the call, not the layer,
+# so it has no offline equivalent.
+from core.models.ideogram4.vendor.int8_linear import (  # noqa: E402
+    _MIN_WORK_K as INT8_MIN_WORK_K,
+    _MIN_WORK_N as INT8_MIN_WORK_N,
+)
 # Private in the writer module on purpose (they are format constants, not API);
 # imported rather than re-typed so a change to the on-disk convention cannot
 # leave this tool emitting the old one.
@@ -164,6 +211,9 @@ from core.models.common.single_file_format import _INDEX_SUFFIX, _SHARD_SUFFIX  
 # writer buffers a whole shard in RAM while the source shard is also resident.
 DEFAULT_OUT_SHARD_BYTES = 4 * 1024 ** 3
 
+# Default companion component directories to junction next to the output. An
+# arch whose loader probes different names overrides this with its own
+# ``siblings`` entry (see ARCHS); entries may be RELATIVE PATHS, not just names.
 SIBLING_DIRS = ("text_encoder", "vae", "tokenizer", "scheduler")
 
 # Per-format GEMM alignment. A layer that cannot satisfy its format's fast-path
@@ -191,8 +241,32 @@ DEFAULT_CREST_THRESHOLD = 12.0
 #
 # Each entry knows how to (a) build the module on the META device so its
 # ``nn.Linear`` paths can be enumerated without allocating 13 B parameters, and
-# (b) declare the key prefix and metadata the arch's own single-file loader
-# expects. To add an arch: add one entry and nothing else.
+# (b) declare the key prefixes and metadata the arch's own single-file loader
+# expects.
+#
+# Keys:
+#   prefix         (required) prepended to every OUTPUT key -- the layout the
+#                  arch's loader reads.
+#   source_prefix  (optional, default "") stripped from every SOURCE key before
+#                  it is matched against a module path. Needed whenever the
+#                  checkpoint wraps the module (Anima ships ``net.*``, which its
+#                  loader strips); without it every Linear silently fails to
+#                  match and the tool quantizes nothing.
+#   config / build_meta / metadata  (required) as for krea2.
+#   siblings       (optional, default SIBLING_DIRS) component directories
+#                  --link-siblings junctions next to the output; may be
+#                  relative paths.
+#   sibling_root   (optional, default ".") where the sibling names are rooted,
+#                  relative to the OUTPUT's directory. Krea 2 writes its output
+#                  at the layout root so "." is right; Anima's output sits at
+#                  ``<root>/split_files/diffusion_models/``, so its layout root
+#                  is two levels up.
+#
+# "Add an arch: add one entry and nothing else" holds for an arch whose
+# checkpoint keys are already module paths and whose loader probes the default
+# sibling names. Anima satisfied neither, which is what ``source_prefix`` and
+# ``siblings`` are for; both are generic and default to today's behaviour, so no
+# existing entry changes.
 
 
 def _krea2_build_meta(config: dict) -> nn.Module:
@@ -237,6 +311,40 @@ def _krea2_metadata(config: dict) -> Dict[str, str]:
     }
 
 
+def _anima_build_meta(config: dict) -> nn.Module:
+    from accelerate import init_empty_weights
+
+    from core.models.anima.anima_models import Anima
+
+    with init_empty_weights():
+        return Anima(**config)
+
+
+def _anima_config(source: str) -> dict:
+    """Anima's DiT geometry is a fixed constant, not a per-checkpoint config.
+
+    ``anima_loader.load_anima_dit`` instantiates ``Anima(**ANIMA_DIT_CONFIG)``
+    unconditionally and reads no config.json, so the enumeration model here must
+    use exactly that dict or the module paths would not correspond to what the
+    loader will build.
+    """
+    from core.models.anima.anima_models import ANIMA_DIT_CONFIG
+
+    print("[fp8] Anima DiT geometry from ANIMA_DIT_CONFIG (the loader uses no config.json)")
+    return dict(ANIMA_DIT_CONFIG)
+
+
+def _anima_metadata(config: dict) -> Dict[str, str]:
+    # ``modelspec.architecture`` is the fast path in ``is_anima_safetensors``;
+    # the key-signature check behind it also still passes, because quantization
+    # renames nothing (it only changes weight dtypes and adds ``.weight_scale``).
+    return {
+        "modelspec.architecture": "anima",
+        "model_type": "anima",
+        "format": "pt",
+    }
+
+
 ARCHS = {
     "krea2": {
         # sushiUI single-file layout: transformer weights live under this prefix.
@@ -244,6 +352,21 @@ ARCHS = {
         "config": _krea2_config,
         "build_meta": _krea2_build_meta,
         "metadata": _krea2_metadata,
+    },
+    "anima": {
+        # Anima DiT single-files carry the module tree verbatim under ``net.``;
+        # the loader strips that prefix, so the output keeps it (an identical
+        # layout to the source) and the SOURCE prefix is stripped for matching.
+        "prefix": "",
+        "source_prefix": "net.",
+        "config": _anima_config,
+        "build_meta": _anima_build_meta,
+        "metadata": _anima_metadata,
+        # anima_loader.detect_anima_split_layout walks up from the DiT file to a
+        # ``split_files/diffusion_models`` parent and probes these two siblings
+        # for the Qwen3 text encoder and the Qwen-Image VAE.
+        "siblings": ("split_files/text_encoders", "split_files/vae"),
+        "sibling_root": os.path.join("..", ".."),
     },
 }
 
@@ -289,6 +412,11 @@ def _source_shards(source: str) -> Tuple[List[str], Dict[str, str]]:
 # Linear enumeration
 # ---------------------------------------------------------------------------
 
+def _strip_prefix(key: str, prefix: str) -> str:
+    """``key`` with the arch's source prefix removed, if it carries it."""
+    return key[len(prefix):] if prefix and key.startswith(prefix) else key
+
+
 def linear_paths(model: nn.Module) -> Dict[str, Tuple[int, int]]:
     """{module path: (in_features, out_features)} for every ``nn.Linear``."""
     return {
@@ -303,8 +431,17 @@ def select_targets(
     present_keys: set,
     min_align: int,
     excludes: List[re.Pattern],
+    skip_below_work_gate: bool = False,
 ) -> Tuple[List[str], List[Tuple[str, str]]]:
-    """Split the Linears into (quantize, [(skipped, reason)])."""
+    """Split the Linears into (quantize, [(skipped, reason)]).
+
+    ``present_keys`` holds module paths ALREADY stripped of the arch's
+    ``source_prefix``, so it is directly comparable with the meta model's paths.
+
+    ``skip_below_work_gate`` is applied verbatim if set; the INT8-only scoping
+    lives in ``main`` (which clears it for other formats), the same place the
+    other int8-only selectors are scoped.
+    """
     targets: List[str] = []
     skipped: List[Tuple[str, str]] = []
     for name, (in_f, out_f) in sorted(linears.items()):
@@ -313,6 +450,13 @@ def select_targets(
             continue
         if min_align and (in_f % min_align or out_f % min_align):
             skipped.append((name, f"unaligned {in_f}x{out_f} (cannot reach the fast GEMM path)"))
+            continue
+        if skip_below_work_gate and (in_f < INT8_MIN_WORK_K or out_f < INT8_MIN_WORK_N):
+            skipped.append((
+                name,
+                f"{in_f}x{out_f} below the runtime min-work gate "
+                f"(k>={INT8_MIN_WORK_K}, n>={INT8_MIN_WORK_N}) at any m: it would always "
+                f"run the dequant path, which is slower than the unquantized F.linear"))
             continue
         pattern = next((p for p in excludes if p.search(name)), None)
         if pattern is not None:
@@ -507,15 +651,18 @@ class ShardWriter:
 # Sibling junctions
 # ---------------------------------------------------------------------------
 
-def link_siblings(src_dir: str, dest_dir: str) -> List[str]:
+def link_siblings(src_dir: str, dest_dir: str, names=SIBLING_DIRS) -> List[str]:
     """Create directory junctions dest_dir/<name> -> src_dir/<name>.
+
+    ``names`` may contain RELATIVE PATHS (Anima's components live under
+    ``split_files/``), so the link's parent directory is created as needed.
 
     Junctions (``mklink /J``) need no administrator rights and work across local
     volumes; a symlink would need developer mode. POSIX falls back to symlinks.
     """
     made = []
     os.makedirs(dest_dir, exist_ok=True)
-    for name in SIBLING_DIRS:
+    for name in names:
         target = os.path.join(src_dir, name)
         link = os.path.join(dest_dir, name)
         if not os.path.isdir(target):
@@ -523,6 +670,7 @@ def link_siblings(src_dir: str, dest_dir: str) -> List[str]:
         if os.path.exists(link):
             print(f"[fp8]   sibling '{name}' already present, leaving as is")
             continue
+        os.makedirs(os.path.dirname(link), exist_ok=True)
         if os.name == "nt":
             # cmd parses a leading "/" as a switch, so forward-slash paths must be
             # normalised to backslashes before they reach mklink.
@@ -566,6 +714,17 @@ def main() -> int:
                     help="[--format int8] what a selected-out layer becomes")
     ap.add_argument("--exclude", action="append", default=[],
                     help="regex matched against the module path; repeatable")
+    ap.add_argument("--skip-below-work-gate", action="store_true",
+                    help=f"[--format int8 ONLY; ignored with a notice for other formats] "
+                         f"also skip Linears whose in_features < {INT8_MIN_WORK_K} or "
+                         f"out_features < {INT8_MIN_WORK_N}: the runtime min-work gate can "
+                         f"never admit them at any m, so they would always run the dequant "
+                         f"path, which is SLOWER than the unquantized F.linear. Costs VRAM, "
+                         f"buys speed. Measured necessary for Anima (283/515 Linears; the "
+                         f"naive artifact falls below break-even at 384x384 and is behind the "
+                         f"filtered one at every resolution measured -- see "
+                         f"tmp/anima_int8_rollup_probe.py); not for Krea 2. Off by default so "
+                         f"existing artifacts reproduce.")
     ap.add_argument("--max-shard-bytes", type=int, default=DEFAULT_OUT_SHARD_BYTES)
     ap.add_argument("--link-siblings", metavar="SRC_DIR",
                     help="create text_encoder/vae/tokenizer/scheduler junctions from SRC_DIR "
@@ -580,14 +739,47 @@ def main() -> int:
     tag = f"[{fmt}]"
     min_align = FORMAT_MIN_ALIGN[fmt] if args.min_align is None else args.min_align
 
-    print(f"{tag} arch={args.arch} format={fmt} min_align={min_align} source={args.source}")
+    # --skip-below-work-gate is an INT8-ONLY selector, scoped here the way
+    # --fallback and --crest-threshold are scoped by the writer's `fmt == "int8"`
+    # branch. Its two constants are int8_linear's runtime gate; fp8_linear has no
+    # _MIN_WORK_* at all (the e4m3 path has a different profile and no such
+    # shape gate), so applying them to an e4m3 conversion would filter it against
+    # a rule that governs nothing it will ever run. Ignored rather than silently
+    # honoured, and said out loud rather than ignored silently.
+    skip_gate = bool(args.skip_below_work_gate)
+    if skip_gate and fmt != "int8":
+        print(f"{tag} --skip-below-work-gate IGNORED: it is an int8-only selector "
+              f"(its k>={INT8_MIN_WORK_K} / n>={INT8_MIN_WORK_N} constants are "
+              f"int8_linear's runtime gate; the {fmt} path has no equivalent).")
+        skip_gate = False
+
+    source_prefix = arch.get("source_prefix", "")
+    print(f"{tag} arch={args.arch} format={fmt} min_align={min_align} "
+          f"skip_below_work_gate={skip_gate} source={args.source}")
     shards, key_to_shard = _source_shards(args.source)
     print(f"{tag} source has {len(key_to_shard)} tensors in {len(shards)} shard(s)")
+
+    # Match module paths, not raw keys: a source that wraps the module (Anima's
+    # ``net.``) must have that prefix removed before the comparison, or nothing
+    # matches and the tool silently quantizes zero layers.
+    if source_prefix:
+        n_pref = sum(1 for k in key_to_shard if k.startswith(source_prefix))
+        print(f"{tag} source_prefix={source_prefix!r}: {n_pref}/{len(key_to_shard)} keys carry it")
+        if n_pref == 0:
+            raise RuntimeError(
+                f"arch {args.arch!r} declares source_prefix={source_prefix!r} but no source key "
+                f"starts with it; refusing to run (every Linear would silently be skipped)")
+    module_keys = {_strip_prefix(k, source_prefix) for k in key_to_shard}
 
     config = arch["config"](args.source)
     meta_model = arch["build_meta"](config)
     linears = linear_paths(meta_model)
-    targets, skipped = select_targets(linears, set(key_to_shard), min_align, excludes)
+    targets, skipped = select_targets(linears, module_keys, min_align, excludes,
+                                      skip_below_work_gate=skip_gate)
+    if not targets:
+        raise RuntimeError(
+            f"no Linear weight matched between the {len(linears)} module path(s) and the "
+            f"{len(key_to_shard)} source key(s); nothing would be quantized")
 
     print(f"{tag} {len(linears)} nn.Linear module(s); quantizing {len(targets)}, skipping {len(skipped)}")
     for name, reason in skipped:
@@ -624,23 +816,31 @@ def main() -> int:
         with safe_open(shard, framework="pt", device="cpu") as fh:
             for key in fh.keys():
                 tensor = fh.get_tensor(key)
-                base = key[: -len(".weight")] if key.endswith(".weight") else None
+                # ``base`` is a MODULE PATH (source_prefix stripped) so it can be
+                # compared with target_set; ``key`` keeps the source layout so the
+                # output is key-for-key identical apart from dtype + the new scales.
+                base = (_strip_prefix(key[: -len(".weight")], source_prefix)
+                        if key.endswith(".weight") else None)
                 if base is not None and base in target_set:
                     if tensor.dim() != 2:
                         raise RuntimeError(f"{key}: expected a 2-D Linear weight, got {tuple(tensor.shape)}")
+                    # The scale is a SIBLING of the weight key, so it must be built
+                    # from ``key`` (source layout), not from the stripped ``base``:
+                    # both swap helpers look for ``<weight key minus .weight>.weight_scale``.
+                    scale_stem = f"{prefix}{key[: -len('.weight')]}"
                     if fmt == "int8":
                         chosen, q, scale, row = audit_and_quantize_int8(
                             base, tensor, args.crest_threshold, args.fallback)
                         audit.append(row)
                         writer.add(f"{prefix}{key}", q.contiguous())
                         if scale is not None:
-                            writer.add(f"{prefix}{base}{INT8_SCALE_SUFFIX}", scale.contiguous())
+                            writer.add(f"{scale_stem}{INT8_SCALE_SUFFIX}", scale.contiguous())
                         quantized += chosen != "bf16"
                         passthrough += chosen == "bf16"
                     else:
                         q, scale = quantize_weight_to_fp8(tensor)
                         writer.add(f"{prefix}{key}", q.contiguous())
-                        writer.add(f"{prefix}{base}{FP8_SCALE_SUFFIX}", scale.contiguous())
+                        writer.add(f"{scale_stem}{FP8_SCALE_SUFFIX}", scale.contiguous())
                         quantized += 1
                 else:
                     writer.add(f"{prefix}{key}", tensor.contiguous())
@@ -662,13 +862,19 @@ def main() -> int:
                                   f"{stem}.int8_audit.json")
         write_audit(audit_path, audit, {
             "arch": args.arch, "format": fmt, "min_align": min_align,
+            "skip_below_work_gate": skip_gate,
+            "min_work_k": INT8_MIN_WORK_K, "min_work_n": INT8_MIN_WORK_N,
             "crest_threshold": args.crest_threshold, "fallback": args.fallback,
             "source": os.path.abspath(args.source), "output": written,
+            "skipped": [{"name": n, "reason": r} for n, r in skipped],
         })
 
     if args.link_siblings:
         print(f"{tag} linking companion component dirs")
-        link_siblings(args.link_siblings, os.path.dirname(os.path.abspath(args.output)))
+        sibling_dest = os.path.normpath(os.path.join(
+            os.path.dirname(os.path.abspath(args.output)), arch.get("sibling_root", ".")))
+        link_siblings(args.link_siblings, sibling_dest,
+                      names=arch.get("siblings", SIBLING_DIRS))
 
     print(f"{tag} load it with: source_type=safetensors source={written}")
     return 0

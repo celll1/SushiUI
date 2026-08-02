@@ -5709,7 +5709,7 @@ components:
           type: string
           nullable: true
           enum: [none, fp8_e4m3fn, fp8_e5m2]
-          description: "U-Net/transformer quantization mode. None = full precision. FP8 (E4M3FN/E5M2) is the only supported quantized mode."
+          description: "U-Net/transformer quantization mode. None = full precision. FP8 (E4M3FN/E5M2) is the only supported quantized mode. Reduces VRAM by storing weights at lower precision; weights are dequantized back to full precision per operation during inference, so measured generation speed is slower than full precision, not faster."
         text_encoder_quantization:
           type: string
           nullable: true

@@ -3092,7 +3092,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
                 })}
                 options={[
                   { value: "none", label: "None" },
-                  { value: "fp8_e4m3fn", label: "FP8 E4M3 (Recommended)" },
+                  { value: "fp8_e4m3fn", label: "FP8 E4M3" },
                   { value: "fp8_e5m2", label: "FP8 E5M2" },
                 ]}
               />
@@ -3111,10 +3111,15 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
               />
             </div>
             {(params.unet_quantization && params.unet_quantization !== "none") || (params.text_encoder_quantization && params.text_encoder_quantization !== "none") ? (
-              <div className="bg-blue-900/20 border border-blue-600/30 rounded-lg p-3">
+              <div className="bg-blue-900/20 border border-blue-600/30 rounded-lg p-3 space-y-1">
                 <p className="text-xs text-blue-200">
                   💡 {currentModelInfo?.model_info?.type === "flux2" ? "FLUX.2" : "Z-Image"} quantization can reduce VRAM significantly. Text encoder ({currentModelInfo?.model_info?.type === "flux2" ? "Qwen3" : "Gemma2 3.4B"}) is particularly large.
                 </p>
+                {params.unet_quantization && params.unet_quantization !== "none" && (
+                  <p className="text-xs text-blue-200">
+                    Transformer FP8 weights are dequantized back to full precision per operation during inference, so generation is slower than without quantization.
+                  </p>
+                )}
               </div>
             ) : null}
           </>
@@ -3131,7 +3136,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
                 })}
                 options={[
                   { value: "none", label: "None" },
-                  { value: "fp8_e4m3fn", label: "FP8 E4M3 (Recommended)" },
+                  { value: "fp8_e4m3fn", label: "FP8 E4M3" },
                   { value: "fp8_e5m2", label: "FP8 E5M2" },
                 ]}
               />
@@ -3139,7 +3144,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
             {params.unet_quantization && params.unet_quantization !== "none" && (
               <div className="bg-yellow-900/20 border border-yellow-600/30 rounded-lg p-3">
                 <p className="text-xs text-yellow-200">
-                  ⚠️ Quantization reduces VRAM but may affect quality. Original model kept on CPU.
+                  ⚠️ Quantization reduces VRAM but may affect quality. FP8 weights are dequantized back to full precision per operation during inference, so generation is slower than without quantization. Original model kept on CPU.
                 </p>
               </div>
             )}

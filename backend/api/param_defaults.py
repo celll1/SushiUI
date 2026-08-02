@@ -52,6 +52,10 @@ GENERATION_DEFAULTS: Dict[str, Any] = {
     # registry (byte-identical legacy path). Consumed by the FLUX.2 inference path;
     # other archs are conduit-only or ignore it.
     "attention_impl": "conduit",
+    # U-Net/transformer FP8 quantization: a VRAM-reduction feature, not a speed
+    # feature. Weights are dequantized back to full precision per operation
+    # during inference, which measures slower than full precision on every
+    # architecture where it does anything (sd15/sdxl, zimage/flux2, anima/lens).
     "unet_quantization": None,
     "text_encoder_quantization": None,
     "cpu_text_encoding": False,

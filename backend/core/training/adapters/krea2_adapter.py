@@ -28,7 +28,9 @@ import torch
 import torch.nn as nn
 from safetensors.torch import save_file
 
-from .base_adapter import BaseLoRAAdapter, BaseFullParameterAdapter
+from .base_adapter import (
+    BaseLoRAAdapter, BaseFullParameterAdapter, reject_quantized_base,
+)
 from .sd15_adapter import LoRALinearLayer
 
 from core.models.krea2.krea2_lora import (
@@ -115,6 +117,7 @@ class Krea2FullParameterAdapter(BaseFullParameterAdapter):
 
     def prepare_models_for_training(self):
         trainer = self.trainer
+        reject_quantized_base(trainer.transformer, model_label="Krea 2")
         if bool(getattr(trainer, "train_text_encoder", False)):
             raise ValueError(
                 "[Krea2FullParameterAdapter] Qwen3-VL text encoder training is not "
@@ -133,6 +136,10 @@ class Krea2FullParameterAdapter(BaseFullParameterAdapter):
 
     def setup_trainable_parameters(self) -> List[Dict[str, Any]]:
         trainer = self.trainer
+        # Second gate, not a duplicate: a caller that builds the optimizer without
+        # going through prepare_models_for_training() would otherwise still get
+        # the silently-truncated parameter list this guard exists to prevent.
+        reject_quantized_base(trainer.transformer, model_label="Krea 2")
         groups: List[Dict[str, Any]] = []
         if trainer.transformer is not None:
             t_params = [p for p in trainer.transformer.parameters() if p.requires_grad]

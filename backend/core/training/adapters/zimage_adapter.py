@@ -30,7 +30,7 @@ import torch.nn as nn
 from safetensors.torch import save_file
 import math
 
-from .base_adapter import BaseLoRAAdapter, BaseFullParameterAdapter
+from .base_adapter import BaseLoRAAdapter, BaseFullParameterAdapter, reject_quantized_base
 from .sd15_adapter import LoRALinearLayer  # Reuse LoRA layer implementation
 
 
@@ -211,6 +211,14 @@ class ZImageFullParameterAdapter(BaseFullParameterAdapter):
     def prepare_models_for_training(self):
         """Prepare models for full parameter training."""
         trainer = self.trainer
+        # Unwrap BatchedZImageWrapper (if present) before checking for
+        # weight-only quantized Linears -- the wrapper itself never owns them.
+        _target_for_guard = (
+            trainer.transformer.transformer
+            if trainer.transformer is not None and hasattr(trainer.transformer, 'transformer')
+            else trainer.transformer
+        )
+        reject_quantized_base(_target_for_guard, model_label="Z-Image")
 
         # Set requires_grad based on configuration
         # Note: For Z-Image, we train the Transformer (not U-Net)
@@ -253,6 +261,15 @@ class ZImageFullParameterAdapter(BaseFullParameterAdapter):
         """
         params = []
         trainer = self.trainer
+        # Second gate, not a duplicate: a caller that builds the optimizer without
+        # going through prepare_models_for_training() would otherwise still get
+        # the silently-truncated parameter list this guard exists to prevent.
+        _target_for_guard = (
+            trainer.transformer.transformer
+            if trainer.transformer is not None and hasattr(trainer.transformer, 'transformer')
+            else trainer.transformer
+        )
+        reject_quantized_base(_target_for_guard, model_label="Z-Image")
 
         if trainer.train_unet and trainer.transformer is not None:
             # Access the original transformer inside the wrapper

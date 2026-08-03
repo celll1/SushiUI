@@ -29,7 +29,7 @@ import torch.nn as nn
 from safetensors.torch import save_file
 import math
 
-from .base_adapter import BaseLoRAAdapter, BaseFullParameterAdapter
+from .base_adapter import BaseLoRAAdapter, BaseFullParameterAdapter, reject_quantized_base
 from .sd15_adapter import LoRALinearLayer  # Reuse LoRA layer implementation
 
 
@@ -308,6 +308,7 @@ class FLUX2FullParameterAdapter(BaseFullParameterAdapter):
     def prepare_models_for_training(self):
         """Prepare models for full parameter training."""
         trainer = self.trainer
+        reject_quantized_base(trainer.transformer, model_label="FLUX.2 Klein")
 
         # Set requires_grad based on configuration
         if trainer.train_unet and trainer.transformer is not None:
@@ -343,6 +344,10 @@ class FLUX2FullParameterAdapter(BaseFullParameterAdapter):
         """
         params = []
         trainer = self.trainer
+        # Second gate, not a duplicate: a caller that builds the optimizer without
+        # going through prepare_models_for_training() would otherwise still get
+        # the silently-truncated parameter list this guard exists to prevent.
+        reject_quantized_base(trainer.transformer, model_label="FLUX.2 Klein")
 
         if trainer.train_unet and trainer.transformer is not None:
             transformer_params = [p for p in trainer.transformer.parameters() if p.requires_grad]

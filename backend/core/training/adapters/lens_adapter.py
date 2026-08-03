@@ -28,7 +28,7 @@ import torch
 import torch.nn as nn
 from safetensors.torch import save_file
 
-from .base_adapter import BaseLoRAAdapter, BaseFullParameterAdapter
+from .base_adapter import BaseLoRAAdapter, BaseFullParameterAdapter, reject_quantized_base
 from .sd15_adapter import LoRALinearLayer
 
 from core.models.lens.lens_lora import (
@@ -156,6 +156,7 @@ class LensFullParameterAdapter(BaseFullParameterAdapter):
 
     def prepare_models_for_training(self):
         trainer = self.trainer
+        reject_quantized_base(trainer.transformer, model_label="Lens")
         train_dit = bool(getattr(trainer, "train_unet", True))
 
         if train_dit and trainer.transformer is not None:
@@ -180,6 +181,10 @@ class LensFullParameterAdapter(BaseFullParameterAdapter):
         trainer = self.trainer
         if trainer.transformer is None:
             return []
+        # Second gate, not a duplicate: a caller that builds the optimizer without
+        # going through prepare_models_for_training() would otherwise still get
+        # the silently-truncated parameter list this guard exists to prevent.
+        reject_quantized_base(trainer.transformer, model_label="Lens")
 
         base_lr = getattr(trainer, "unet_lr", None) or getattr(trainer, "learning_rate", 1e-5)
         img_factor = float(trainer.config.get("lens_img_lr_factor", 1.0))

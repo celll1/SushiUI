@@ -23,7 +23,7 @@ import torch.nn as nn
 from safetensors.torch import save_file
 import math
 
-from .base_adapter import BaseLoRAAdapter, BaseFullParameterAdapter
+from .base_adapter import BaseLoRAAdapter, BaseFullParameterAdapter, reject_quantized_base
 from .sd15_adapter import LoRALinearLayer  # Reuse LoRA layer implementation
 
 
@@ -295,6 +295,7 @@ class SDXLFullParameterAdapter(BaseFullParameterAdapter):
     def prepare_models_for_training(self):
         """Prepare models for full parameter training."""
         trainer = self.trainer
+        reject_quantized_base(trainer.unet, model_label="SDXL")
 
         # Set requires_grad based on configuration
         if trainer.train_unet and trainer.unet is not None:
@@ -342,6 +343,10 @@ class SDXLFullParameterAdapter(BaseFullParameterAdapter):
         """
         params = []
         trainer = self.trainer
+        # Second gate, not a duplicate: a caller that builds the optimizer without
+        # going through prepare_models_for_training() would otherwise still get
+        # the silently-truncated parameter list this guard exists to prevent.
+        reject_quantized_base(trainer.unet, model_label="SDXL")
 
         if trainer.train_unet and trainer.unet is not None:
             unet_params = [p for p in trainer.unet.parameters() if p.requires_grad]

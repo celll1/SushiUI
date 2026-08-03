@@ -127,6 +127,16 @@ MLP, so "all Linears" is the matching convention, not a narrowed subset.
 Use ``--exclude`` (repeatable regex, matched against the module path) to carve
 out more.
 
+RELATED: THE RUNTIME EXPORT
+---------------------------
+``POST /api/v1/models/export-quantized`` writes the LOADED transformer out in
+this same layout, which is how an in-place runtime conversion
+(``unet_quantization: "int8"`` on anima / krea2) is made to survive a restart.
+It shares this tool's writer, sibling-junction helper, key prefixes and metadata
+builders through ``core.models.common.quantized_export`` -- the shared import is
+the pin against the two emitting different files. This tool remains the way to
+convert a checkpoint WITHOUT loading it into the backend.
+
 STREAMING
 ---------
 Source and destination are read/written shard-by-shard. The Krea 2 bf16
@@ -170,7 +180,6 @@ import argparse
 import json
 import os
 import re
-import subprocess
 import sys
 import time
 from typing import Dict, List, Tuple
@@ -183,7 +192,6 @@ if BACKEND not in sys.path:
 import torch  # noqa: E402
 import torch.nn as nn  # noqa: E402
 from safetensors import safe_open  # noqa: E402
-from safetensors.torch import save_file  # noqa: E402
 
 from core.models.ideogram4.vendor.fp8_linear import (  # noqa: E402
     FP8_SCALE_SUFFIX,
@@ -214,15 +222,18 @@ from core.models.common.int8_runtime_quantize import (  # noqa: E402
 # imported rather than re-typed so a change to the on-disk convention cannot
 # leave this tool emitting the old one.
 from core.models.common.single_file_format import _INDEX_SUFFIX, _SHARD_SUFFIX  # noqa: E402
-
-# Output shard threshold. Smaller than the repo default (10 GB) because the
-# writer buffers a whole shard in RAM while the source shard is also resident.
-DEFAULT_OUT_SHARD_BYTES = 4 * 1024 ** 3
-
-# Default companion component directories to junction next to the output. An
-# arch whose loader probes different names overrides this with its own
-# ``siblings`` entry (see ARCHS); entries may be RELATIVE PATHS, not just names.
-SIBLING_DIRS = ("text_encoder", "vae", "tokenizer", "scheduler")
+# The streaming writer, the sibling-junction helper, the per-arch key prefixes
+# and the per-arch metadata builders live in the backend module so the RUNTIME
+# export (POST /models/export-quantized, which writes a live in-place-quantized
+# transformer) and this offline tool emit byte-compatible files. Same reasoning
+# as the int8_runtime_quantize import above: the shared import IS the pin.
+from core.models.common.quantized_export import (  # noqa: E402
+    DEFAULT_EXPORT_SHARD_BYTES as DEFAULT_OUT_SHARD_BYTES,
+    EXPORT_LAYOUTS,
+    SIBLING_DIRS,
+    ShardWriter,
+    link_siblings,
+)
 
 # FORMAT_MIN_ALIGN and DEFAULT_CREST_THRESHOLD are imported from
 # core.models.common.int8_runtime_quantize (see the import block above): they are
@@ -292,19 +303,6 @@ def _krea2_config(source: str) -> dict:
     return config
 
 
-def _krea2_metadata(config: dict) -> Dict[str, str]:
-    from core.models.krea2.vendor.single_file import KREA2_DEFAULT_CONFIG
-
-    return {
-        "model_type": "krea2",
-        "variant": "raw",
-        "is_distilled": "0",
-        "krea2_config": json.dumps({k: config[k] for k in KREA2_DEFAULT_CONFIG if k in config}),
-        "has_text_encoder": "0",
-        "format": "pt",
-    }
-
-
 def _anima_build_meta(config: dict) -> nn.Module:
     from accelerate import init_empty_weights
 
@@ -328,40 +326,32 @@ def _anima_config(source: str) -> dict:
     return dict(ANIMA_DIT_CONFIG)
 
 
-def _anima_metadata(config: dict) -> Dict[str, str]:
-    # ``modelspec.architecture`` is the fast path in ``is_anima_safetensors``;
-    # the key-signature check behind it also still passes, because quantization
-    # renames nothing (it only changes weight dtypes and adds ``.weight_scale``).
-    return {
-        "modelspec.architecture": "anima",
-        "model_type": "anima",
-        "format": "pt",
+def _from_layout(arch: str, **extra) -> Dict[str, object]:
+    """An ARCHS entry: the shared on-disk layout plus this tool's source knobs.
+
+    ``prefix`` / ``source_prefix`` / ``metadata`` / ``siblings`` /
+    ``sibling_root`` come from ``EXPORT_LAYOUTS`` -- the same table the runtime
+    exporter reads -- so the offline artifact and a runtime export of the same
+    architecture land on identical keys and identical metadata. Only ``config``
+    and ``build_meta`` (how to enumerate Linears from a SOURCE checkpoint,
+    which the runtime path does not need because it has the live module) are
+    local to this tool.
+    """
+    layout = EXPORT_LAYOUTS[arch]
+    entry: Dict[str, object] = {
+        "prefix": layout["offline_prefix"],
+        "source_prefix": layout["source_prefix"],
+        "metadata": layout["metadata"],
+        "siblings": layout.get("siblings", SIBLING_DIRS),
+        "sibling_root": layout.get("sibling_root", "."),
     }
+    entry.update(extra)
+    return entry
 
 
 ARCHS = {
-    "krea2": {
-        # sushiUI single-file layout: transformer weights live under this prefix.
-        "prefix": "transformer.",
-        "config": _krea2_config,
-        "build_meta": _krea2_build_meta,
-        "metadata": _krea2_metadata,
-    },
-    "anima": {
-        # Anima DiT single-files carry the module tree verbatim under ``net.``;
-        # the loader strips that prefix, so the output keeps it (an identical
-        # layout to the source) and the SOURCE prefix is stripped for matching.
-        "prefix": "",
-        "source_prefix": "net.",
-        "config": _anima_config,
-        "build_meta": _anima_build_meta,
-        "metadata": _anima_metadata,
-        # anima_loader.detect_anima_split_layout walks up from the DiT file to a
-        # ``split_files/diffusion_models`` parent and probes these two siblings
-        # for the Qwen3 text encoder and the Qwen-Image VAE.
-        "siblings": ("split_files/text_encoders", "split_files/vae"),
-        "sibling_root": os.path.join("..", ".."),
-    },
+    "krea2": _from_layout("krea2", config=_krea2_config, build_meta=_krea2_build_meta),
+    "anima": _from_layout("anima", config=_anima_config, build_meta=_anima_build_meta),
 }
 
 
@@ -451,116 +441,6 @@ def write_audit(path: str, rows: List[Dict], args_summary: Dict) -> str:
         json.dump(document, fh, indent=1)
     print(f"[audit] wrote {path}")
     return path
-
-
-# ---------------------------------------------------------------------------
-# Streaming writer
-# ---------------------------------------------------------------------------
-
-class ShardWriter:
-    """Buffer tensors and flush diffusers-convention shards + an index.
-
-    Shard naming and the index schema match
-    ``core.models.common.single_file_format.save_single_file_state`` exactly, so
-    the produced checkpoint is read by ``read_state_dict`` like any other.
-    """
-
-    def __init__(self, out_path: str, metadata: Dict[str, str], max_shard_bytes: int):
-        self.directory = os.path.dirname(os.path.abspath(out_path))
-        stem = os.path.basename(out_path)
-        if stem.endswith(_SHARD_SUFFIX):
-            stem = stem[: -len(_SHARD_SUFFIX)]
-        self.stem = stem
-        self.metadata = {k: str(v) for k, v in metadata.items()}
-        self.max_shard_bytes = max_shard_bytes
-        self.buffer: Dict[str, torch.Tensor] = {}
-        self.buffer_bytes = 0
-        self.total_bytes = 0
-        self.shards: List[Tuple[str, List[str]]] = []  # (temp name, keys)
-        os.makedirs(self.directory, exist_ok=True)
-
-    def add(self, key: str, tensor: torch.Tensor) -> None:
-        nbytes = tensor.numel() * tensor.element_size()
-        if self.buffer and self.buffer_bytes + nbytes > self.max_shard_bytes:
-            self._flush()
-        self.buffer[key] = tensor
-        self.buffer_bytes += nbytes
-        self.total_bytes += nbytes
-
-    def _flush(self) -> None:
-        if not self.buffer:
-            return
-        # Written under a provisional name; renamed once the shard COUNT is known
-        # (the diffusers convention encodes the total in every filename).
-        tmp = os.path.join(self.directory, f"{self.stem}-part{len(self.shards):05d}.tmp.safetensors")
-        save_file(self.buffer, tmp, metadata=self.metadata)
-        self.shards.append((tmp, list(self.buffer)))
-        print(f"[fp8]   wrote shard {len(self.shards)} ({self.buffer_bytes / 2**30:.2f} GB, "
-              f"{len(self.buffer)} tensors)")
-        self.buffer = {}
-        self.buffer_bytes = 0
-
-    def close(self) -> str:
-        self._flush()
-        n = len(self.shards)
-        if n == 1:
-            final = os.path.join(self.directory, f"{self.stem}{_SHARD_SUFFIX}")
-            os.replace(self.shards[0][0], final)
-            return final
-        weight_map: Dict[str, str] = {}
-        for i, (tmp, keys) in enumerate(self.shards, start=1):
-            name = f"{self.stem}-{i:05d}-of-{n:05d}.safetensors"
-            os.replace(tmp, os.path.join(self.directory, name))
-            for k in keys:
-                weight_map[k] = name
-        index_path = os.path.join(self.directory, f"{self.stem}{_INDEX_SUFFIX}")
-        with open(index_path, "w", encoding="utf-8") as fh:
-            json.dump(
-                {"metadata": {**self.metadata, "total_size": self.total_bytes}, "weight_map": weight_map},
-                fh,
-                indent=2,
-            )
-        return index_path
-
-
-# ---------------------------------------------------------------------------
-# Sibling junctions
-# ---------------------------------------------------------------------------
-
-def link_siblings(src_dir: str, dest_dir: str, names=SIBLING_DIRS) -> List[str]:
-    """Create directory junctions dest_dir/<name> -> src_dir/<name>.
-
-    ``names`` may contain RELATIVE PATHS (Anima's components live under
-    ``split_files/``), so the link's parent directory is created as needed.
-
-    Junctions (``mklink /J``) need no administrator rights and work across local
-    volumes; a symlink would need developer mode. POSIX falls back to symlinks.
-    """
-    made = []
-    os.makedirs(dest_dir, exist_ok=True)
-    for name in names:
-        target = os.path.join(src_dir, name)
-        link = os.path.join(dest_dir, name)
-        if not os.path.isdir(target):
-            continue
-        if os.path.exists(link):
-            print(f"[fp8]   sibling '{name}' already present, leaving as is")
-            continue
-        os.makedirs(os.path.dirname(link), exist_ok=True)
-        if os.name == "nt":
-            # cmd parses a leading "/" as a switch, so forward-slash paths must be
-            # normalised to backslashes before they reach mklink.
-            link, target = os.path.normpath(link), os.path.normpath(target)
-            res = subprocess.run(["cmd", "/c", "mklink", "/J", link, target],
-                                 capture_output=True, text=True)
-            if res.returncode != 0:
-                print(f"[fp8]   WARNING: could not link '{name}': {res.stdout.strip()} {res.stderr.strip()}")
-                continue
-        else:
-            os.symlink(target, link, target_is_directory=True)
-        made.append(name)
-        print(f"[fp8]   linked {link} -> {target}")
-    return made
 
 
 # ---------------------------------------------------------------------------

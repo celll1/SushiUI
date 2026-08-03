@@ -843,6 +843,12 @@ export interface ArchCapabilities {
   supported_values?: Record<string, Record<string, string[]>>;
   feature_params: Record<string, string[]>;
   feature_labels: Record<string, string>;
+  // Architectures whose transformer the in-place weight-only INT8 converter is
+  // wired for, i.e. the ones that honor unet_quantization="int8". Served
+  // straight from backend RUNTIME_INT8_ARCHS
+  // (core/models/common/int8_runtime_quantize.py). Optional so an older backend
+  // without the key still type-checks.
+  runtime_int8_archs?: string[];
 }
 
 export const fetchArchCapabilities = async (): Promise<ArchCapabilities> =>
@@ -867,12 +873,20 @@ export const archSupportsFeature = (
   return (caps.supported_values?.[arch]?.[feature] ?? []).includes(value);
 };
 
-// Architectures whose transformer can be converted to the weight-only INT8
-// layout AT RUNTIME, in place, from an ordinary bf16 checkpoint. Mirrors
-// backend/core/models/common/int8_runtime_quantize.py RUNTIME_INT8_ARCHS.
-// Kept as a list rather than derived from the capability matrix because an arch
-// that already honors `unet_quantization` (anima) has no entry there at all.
-export const RUNTIME_INT8_ARCHS = ["anima", "krea2"];
+// True when `arch`'s transformer can be converted to the weight-only INT8
+// layout AT RUNTIME, in place, from an ordinary bf16 checkpoint.
+//
+// Read from the capability payload's `runtime_int8_archs`, which the backend
+// serves straight from RUNTIME_INT8_ARCHS — the tuple the converter itself
+// gates on. There is deliberately no fallback list here: a hardcoded copy is
+// exactly what went stale as architectures were added. While the matrix has not
+// loaded (or on an older backend that does not send the field) the value is not
+// offered, the conservative direction for an opt-in control whose backend would
+// otherwise refuse the request and warn.
+export const archSupportsRuntimeInt8 = (
+  caps: ArchCapabilities | null | undefined,
+  arch: string | null | undefined
+): boolean => !!arch && (caps?.runtime_int8_archs ?? []).includes(arch);
 
 // Options for the "Transformer / U-Net Quantization" selector, filtered by what
 // the loaded architecture actually applies. When the capability matrix has not
@@ -888,7 +902,7 @@ export const unetQuantizationOptions = (
   const options = [{ value: "none", label: "None" }];
   if (allow("fp8_e4m3fn")) options.push({ value: "fp8_e4m3fn", label: "FP8 E4M3" });
   if (allow("fp8_e5m2")) options.push({ value: "fp8_e5m2", label: "FP8 E5M2" });
-  if (arch && RUNTIME_INT8_ARCHS.includes(arch) && allow("int8")) {
+  if (archSupportsRuntimeInt8(caps, arch) && allow("int8")) {
     options.push({
       value: "int8",
       label: "INT8 (in-place, applied once per model load)",

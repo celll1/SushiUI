@@ -425,15 +425,26 @@ async def get_arch_capabilities():
     the architecture DOES honor even though the feature is listed unsupported
     (e.g. `unet_quantization="int8"` on Krea 2, which converts an unquantized
     transformer in place, while the FP8 values there remain checkpoint-driven).
+
+    `runtime_int8_archs` is the architectures whose transformer the in-place
+    weight-only INT8 converter is wired for, i.e. the ones that honor
+    `unet_quantization="int8"`. It mirrors `RUNTIME_INT8_ARCHS` in
+    `core/models/common/int8_runtime_quantize.py` (the module that implements
+    the conversion), so a client offering the value reads it from here rather
+    than keeping its own copy of the list. It cannot be inferred from
+    `unsupported`/`supported_values`: an architecture that honors
+    `unet_quantization` outright (anima) has no entry in either map.
     """
     from api.arch_capabilities import (
         ARCH_SUPPORTED_VALUES, ARCH_UNSUPPORTED, FEATURE_PARAMS, FEATURE_LABELS,
+        RUNTIME_INT8_ARCHS,
     )
     return {
         "unsupported": ARCH_UNSUPPORTED,
         "supported_values": ARCH_SUPPORTED_VALUES,
         "feature_params": FEATURE_PARAMS,
         "feature_labels": FEATURE_LABELS,
+        "runtime_int8_archs": list(RUNTIME_INT8_ARCHS),
     }
 
 

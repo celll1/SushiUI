@@ -72,6 +72,9 @@ __all__ = [
     "INT8_MIN_WORK_N",
     "ARCH_QUANT_POLICY",
     "RUNTIME_INT8_ARCHS",
+    "QUANTIZED_LINEAR_ARCHS",
+    "ARCH_DISPLAY_NAMES",
+    "arch_names",
     "LoraWrappedError",
     "arch_policy",
     "linear_paths",
@@ -151,7 +154,58 @@ ARCH_QUANT_POLICY: Dict[str, Dict[str, object]] = {
 
 # Architectures the RUNTIME converter is wired for. A superset entry in
 # ARCH_QUANT_POLICY (offline-only arch) would simply not be listed here.
+#
+# THIS TUPLE IS THE SINGLE SOURCE OF TRUTH for "which archs accept
+# unet_quantization='int8'". Every other place that used to spell the set out
+# now reads it from here:
+#   * backend/core/vram_optimization.py  -- the refusal warning's prose
+#     (``arch_names`` below renders it), and the arch gate itself;
+#   * backend/api/arch_capabilities.py   -- re-exported and served by
+#     GET /schema/arch-capabilities as ``runtime_int8_archs``;
+#   * frontend/src/utils/api.ts          -- reads that field instead of its own
+#     hardcoded list.
+# Adding an arch here is therefore the whole rollout switch on the UI side.
 RUNTIME_INT8_ARCHS = ("anima", "krea2")
+
+# Architectures whose LOADERS swap in the weight-only quantized Linear classes
+# (``Fp8Linear`` / ``Int8Linear``), i.e. the archs where a quantized-GEMM path
+# exists to select at all. A SUPERSET of RUNTIME_INT8_ARCHS: Ideogram 4 has no
+# in-place runtime conversion, but its checkpoints ship FP8/nf4 quantized, so it
+# owns quantized Linears all the same. Consumed by
+# ``backend/api/quantized_gemm.py``.
+QUANTIZED_LINEAR_ARCHS = tuple(sorted({"ideogram4", *RUNTIME_INT8_ARCHS}))
+
+# Display spelling of an arch id, for user-facing prose only. Every arch that
+# can appear in either tuple above needs an entry; ``arch_names`` falls back to
+# the raw id so a missing one degrades to "anima" rather than raising.
+ARCH_DISPLAY_NAMES: Dict[str, str] = {
+    "anima": "Anima",
+    "krea2": "Krea 2",
+    "ideogram4": "Ideogram 4",
+    "flux2": "FLUX.2",
+    "zimage": "Z-Image",
+    "lens": "Lens",
+    "minit2i": "MiniT2I",
+    "sd15": "SD1.5",
+    "sdxl": "SDXL",
+    "ltx2": "LTX-2.3",
+    "acestep": "ACE-Step",
+}
+
+
+def arch_names(archs: Sequence[str]) -> str:
+    """Render an arch tuple as English prose: ``"Anima and Krea 2"``.
+
+    Exists so a warning message cannot name a different set than the code that
+    enforces it; the whole point of the tuples above is that adding an arch
+    updates the message too.
+    """
+    names = [ARCH_DISPLAY_NAMES.get(a, a) for a in archs]
+    if not names:
+        return "no architecture"
+    if len(names) == 1:
+        return names[0]
+    return f"{', '.join(names[:-1])} and {names[-1]}"
 
 
 def arch_policy(arch: Optional[str], fmt: str = "int8") -> Dict[str, object]:

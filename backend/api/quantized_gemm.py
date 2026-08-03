@@ -46,11 +46,16 @@ silent degradation is exactly how this feature became hard to find.
 """
 from typing import Any, Dict, Optional
 
-# The three architectures whose loaders swap in Fp8Linear / Int8Linear, i.e.
-# the only ones where this parameter can change what runs. Kept in step with
-# ``generation_utils.extract_fp8_gemm_info``'s component map and with the
-# ``quantized_gemm`` entries in ``arch_capabilities.py``.
-QUANTIZED_GEMM_ARCHS = ("ideogram4", "krea2", "anima")
+from core.models.common.int8_runtime_quantize import QUANTIZED_LINEAR_ARCHS
+
+# The architectures whose loaders swap in Fp8Linear / Int8Linear, i.e. the only
+# ones where this parameter can change what runs. IMPORTED, not restated: the
+# tuple lives with the quantization selection rule in
+# ``core.models.common.int8_runtime_quantize`` so that adding an architecture
+# there cannot leave this module (or the ``quantized_gemm`` entries in
+# ``arch_capabilities.py``, or ``generation_utils.extract_fp8_gemm_info``'s
+# component map) naming a stale set.
+QUANTIZED_GEMM_ARCHS = QUANTIZED_LINEAR_ARCHS
 
 VALID_MODES = ("w8a8", "dequant")
 

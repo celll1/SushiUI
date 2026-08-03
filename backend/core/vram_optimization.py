@@ -953,25 +953,45 @@ _RUNTIME_INT8_RECOVERY_LOG = (
 )
 
 
+def _runtime_int8_arch_phrase() -> str:
+    """"the Anima and Krea 2 transformers", rendered from ``RUNTIME_INT8_ARCHS``.
+
+    Imported lazily and defensively for the same reason the converter itself is
+    (``apply_runtime_int8_quantization`` below): a build where the vendor
+    quantized-Linear modules cannot be imported must still be able to say that
+    int8 is unavailable, rather than raising while composing the message.
+    """
+    try:
+        from core.models.common.int8_runtime_quantize import (
+            RUNTIME_INT8_ARCHS, arch_names,
+        )
+        return f"the {arch_names(RUNTIME_INT8_ARCHS)} transformers"
+    except Exception:
+        return "a subset of the DiT architectures"
+
+
 def _refuse_runtime_int8_elsewhere(quantization, label: str) -> bool:
     """True (with a warning emitted) when ``quantization`` asks for INT8 on a path
     that cannot do it.
 
     ``unet_quantization: "int8"`` is advertised for every architecture by the
     request schema, but the in-place converter is wired only for the archs in
-    ``RUNTIME_INT8_ARCHS`` (anima, krea2). Every other quantization entry point
-    would otherwise treat "int8" as an unknown type and reach that branch only
-    AFTER paying for a full ``copy.deepcopy`` of the U-Net (SD1.5/SDXL). Refuse
-    up front instead, and say which architectures do support it.
+    ``RUNTIME_INT8_ARCHS``. Every other quantization entry point would otherwise
+    treat "int8" as an unknown type and reach that branch only AFTER paying for
+    a full ``copy.deepcopy`` of the U-Net (SD1.5/SDXL). Refuse up front instead,
+    and say which architectures do support it -- the arch names are DERIVED from
+    ``RUNTIME_INT8_ARCHS`` rather than written out, so this message cannot go on
+    naming two archs after a third is wired up.
     """
     if _normalize_quantization(quantization) != RUNTIME_INT8_VALUE:
         return False
+    supported = _runtime_int8_arch_phrase()
     print(f"[Quantization] '{RUNTIME_INT8_VALUE}' is not supported for {label}; the in-place "
-          f"INT8 conversion is wired for the Anima and Krea 2 transformers only. "
+          f"INT8 conversion is wired for {supported} only. "
           f"Running at full precision.")
     _add_generation_warning(
         f"{label} quantization 'int8' is not supported on this architecture (the in-place "
-        f"INT8 conversion is implemented for the Anima and Krea 2 transformers only); "
+        f"INT8 conversion is implemented for {supported} only); "
         f"running at full precision.",
         code="quantization_fallback",
     )

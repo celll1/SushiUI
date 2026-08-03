@@ -143,6 +143,11 @@ paths:
           it, so a parameter name can be mapped back to its feature.
         * `feature_labels` — feature name -> the human-readable label used in the
           warning message.
+        * `runtime_int8_archs` — the architectures that honor
+          `unet_quantization: "int8"` (the in-place weight-only INT8 conversion).
+          Cannot be derived from `unsupported`/`supported_values`, because an
+          architecture that honors `unet_quantization` outright has no entry in
+          either map.
       tags: [Schema]
       responses:
         '200':
@@ -166,6 +171,7 @@ paths:
                 feature_labels:
                   quantized_gemm: "quantized_gemm_mode (quantized GEMM path)"
                   unet_quantization: "unet_quantization"
+                runtime_int8_archs: [anima, krea2]
   /schema/generation-defaults:
     get:
       summary: Get default parameter values for txt2img/img2img/inpaint generation
@@ -5774,7 +5780,7 @@ components:
           example: true
     ArchCapabilities:
       type: object
-      required: [unsupported, supported_values, feature_params, feature_labels]
+      required: [unsupported, supported_values, feature_params, feature_labels, runtime_int8_archs]
       description: |
         Mirror of `backend/api/arch_capabilities.py`. Declares which generation
         features a given model architecture does NOT honor, and why. Served by
@@ -5823,6 +5829,18 @@ components:
             type: string
           example:
             quantized_gemm: "quantized_gemm_mode (quantized GEMM path)"
+        runtime_int8_archs:
+          type: array
+          description: |
+            Architectures whose transformer the in-place weight-only INT8
+            converter is wired for, i.e. the ones that honor
+            `unet_quantization: "int8"`. Mirrors `RUNTIME_INT8_ARCHS` in
+            `backend/core/models/common/int8_runtime_quantize.py`. Requesting
+            `int8` on any other architecture is refused before conversion and
+            reported through the generation's `warnings[]`.
+          items:
+            type: string
+          example: [anima, krea2]
     Fp8ScaledMmState:
       type: object
       required: [enabled, origin, resolved_modes]

@@ -19,6 +19,11 @@ to a non-default value (compared against ``GENERATION_DEFAULTS``).
 from typing import Any, Dict, List, Optional
 
 from api.param_defaults import GENERATION_DEFAULTS
+# Re-exported (and served by GET /schema/arch-capabilities) so the generation
+# panels can offer unet_quantization="int8" exactly where the in-place converter
+# is wired, without a second hardcoded arch list in the frontend. The tuple is
+# owned by the module that implements the conversion.
+from core.models.common.int8_runtime_quantize import RUNTIME_INT8_ARCHS
 
 # ---------------------------------------------------------------------------
 # Feature -> the parameter keys that "arm" it. When any of these keys is set

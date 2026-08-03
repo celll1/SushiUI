@@ -140,3 +140,123 @@ Fixed here so the protocol cannot be chosen after seeing a number.
   210 MHz; a previous measurement on it was invalidated by short loops that
   never left the idle clock. Warmup is on **wall time** and batch sizes are
   **calibrated**, per the method already used by `tmp/anima_int8_rollup_probe.py`.
+
+## Result: G3 FAILED (gate closed, not reopened for a rerun)
+
+This section records the measurement and the verdict. The rule above is
+unedited from its pre-registered form; nothing below changes it.
+
+### Synthetic projection (first pass)
+
+Measured from safetensors headers plus synthetic tensors — no model was
+loaded — under GPU exclusivity, peak 0.71 GB VRAM.
+
+- Projected end-to-end step-time reduction: Krea 2 **32.4%**, Anima **19.5%**.
+- Zero regressions across 103 gate-passing shapes.
+- Autotune confirmed a non-issue: the kernels in this repo contain no
+  `@triton.autotune` sweep; measured cost was 235 ms once per process and
+  0.118 ms per newly-seen bucket thereafter.
+- One input to the Anima number was **derived**, not measured: `f`, the
+  forward-Linear share of a training step, derived at **43.9%** for Anima.
+  Both criteria 1 and 3 appeared to pass on this pass.
+
+### Real Anima training step (second pass, the one that decides the gate)
+
+Measured against a real Anima training step, GPU exclusive, batch 1, at and
+below 512px. Peak 3.18 GiB GPU / 0.98 GiB host.
+
+- `f` measured **23.7%** at 512px against the real step, versus 43-48%
+  against a "bare" step (the synthetic pass's proxy). The derivation method
+  itself was not wrong; its denominator omitted the LoRA adapter GEMMs and
+  the optimizer step. That omitted overhead is **+90-112%** at low
+  resolution, but it does not scale with token count — the 341 rank-16
+  adapter GEMM pairs are launch-bound and the optimizer step is
+  token-independent — so the same omission falls to **+18.7%** at the
+  1024px shipping default.
+- Corrected Anima projection: **~15.2%** (down from the synthetic pass's
+  19.5%). Criterion 1 (>=10% on both architectures) still passes on this
+  corrected number; Krea 2's number is unaffected by this correction.
+- **Criterion 2 was violated.** The W8A8 forward is slower than the dequant
+  forward at low token counts. Measured forward-only A/B speedup (W8A8 vs
+  dequant): **0.877x at 256px, 0.908x at 384px, 0.949x at 512px, 1.582x at
+  1024px.** Projected effect on full step time: **-4.53% at 256px** (the
+  criterion-2 floor is -3%) and **-1.75% at 512px**. At 512px, 223 of 231
+  layers already pass the existing min-work admission gate, and the fused
+  path is *still* slower there — at that token count the activation-quantize
+  kernels cost more than the saved GEMM time, because the DiT forward is
+  launch-bound rather than compute-bound.
+- A hypothesised cheap partial win was tested and disproven. Anima runs
+  gradient checkpointing with `torch.utils.checkpoint(..., use_reentrant=False)`
+  (`backend/core/training/arch_handlers/anima_models.py:660-666`). Verified
+  directly against `torch`: with `use_reentrant=False`, **both** the
+  recompute pass and the original forward pass run with grad enabled, so a
+  "skip W8A8 on the no-grad recompute pass" fast path does not exist for
+  Anima under its current checkpoint mode — it was refused on all 12712
+  measured calls, and its measured effect was **+0.73%**, i.e. noise, not a
+  win. Switching Anima to `use_reentrant=True` to unlock that fast path is
+  not a free flip: Anima's `x_embedder` is not a LoRA target module, so
+  reentrant checkpointing would silently drop gradients through it, and even
+  if that were fixed, the ceiling of the idea is 7.1%, below the criterion-2
+  floor being violated at 256/512px regardless.
+
+### The ruling
+
+Criterion 1 (>=10% on Krea 2 and Anima) passes after correction. Criterion 2
+(no tested workload regresses more than 3%) **fails**: 256px and 512px
+regress the full step by more than the 3% floor. Per the rule as written,
+failing any one of the three ALL-of criteria fails the gate; there is no
+"proceeds ex-Anima-at-low-res" branch in the pre-registered rule.
+
+Two designers were asked independently whether adding a resolution/token-
+count admission condition — so the gate would apply only above the observed
+crossover — is a legitimate extension of a rule that already has a
+token-count term (`m*k*n`, where `m` is the token count) in its existing
+min-work gates, or whether it is moving the goalposts after seeing the
+result. **They disagreed**, and both readings are recorded here because the
+disagreement exposes a genuine ambiguity in how the rule was written, not
+because one side is obviously right:
+
+- **Legitimate, conditionally.** The gate's own measurement protocol already
+  required accounting for "the `m > 16`, `k % 8`, `n % 8` and minimum-work
+  gates, which exclude layers at *training* token counts too" — so a
+  token-count-aware admission rule is already inside the spirit of what was
+  pre-registered. But this reading was conditioned on a rigorous derivation,
+  not a fit to the failure: simply re-deriving the existing
+  `_MIN_WORK_MKN` constant from the 256/512px failure would be curve-fitting
+  the wrong model, because the cost that actually bites here is launch-bound
+  activation-quantization overhead, which scales with `m*k`, not the
+  `m*k*n` compute-volume term the current gate and its constant model.
+- **Post hoc.** The gate as written already explicitly covered training
+  token counts, the real aspect-ratio buckets, and the existing min-work
+  selector. Recalibrating the admission threshold only after observing which
+  resolutions failed changes the tested intervention from the one that was
+  pre-registered; that is a different, unregistered gate wearing this one's
+  name.
+
+**The stricter reading was adopted.** G3 fails as written. A
+resolution-floored (or otherwise token-count-admission-gated) variant of
+this idea is a **new feature requiring a new pre-registered gate**, evaluated
+against its own criteria and its own numbers before it is measured — not
+this gate re-passing on a rerun with a moved goalpost.
+
+### Prerequisites for any future proposal (not a plan — these must exist before a new gate is written)
+
+- **Measure a real 1024px Anima training step.** The 1024px column above was
+  spliced from a bare-step number plus the measured overhead correction, not
+  measured end-to-end at 1024px. The same class of derivation was already
+  wrong once, by 4.3 points (23.7% measured vs 43.9% derived `f`), and the
+  margin between the corrected Anima projection (~15.2%) and the 10% bar is
+  5.2 points — smaller than the error already observed once at a different
+  resolution.
+- Derive a **unified (m, k, n) admission selector from real training-time
+  shapes, measured against the real training dequant path** — with
+  calibration and holdout workloads separated *before* the holdout results
+  are observed. Do not retrofit a nominal-resolution floor onto the existing
+  inference-time constants.
+- Any such selector must, without hand adjustment after the fact, refuse the
+  256px shapes measured here and admit the 1024px shapes measured here. If
+  the selector's natural crossover does not separate those two cases, there
+  is no crossover to exploit and the low-resolution case dies honestly
+  rather than being carved out by hand.
+- Scope any new constants strictly to the training-time admission path. Do
+  not retune the already-shipped inference gate (G2) to accommodate this.

@@ -37,6 +37,7 @@ __all__ = [
     "QUANT_SCALE_SUFFIX",
     "quantized_state_dict_report",
     "refuse_quantized_state_dict",
+    "verify_quantized_swap",
 ]
 
 # Both weight-only formats in this repo use the same scale suffix; only the
@@ -87,6 +88,78 @@ def quantized_state_dict_report(state_dict: Dict[str, "torch.Tensor"]) -> Option
         "quantized_weight_keys": len(quant_weights),
         "examples": (scale_keys[:3] + quant_weights[:3])[:5],
     }
+
+
+def verify_quantized_swap(
+    report: Optional[Dict[str, object]],
+    swapped: int,
+    *,
+    arch: str,
+    path: Optional[str] = None,
+    label: str = "transformer",
+) -> None:
+    """Raise unless the quantized-Linear swap covered the WHOLE quantized file.
+
+    Call it on a loader that DOES support these checkpoints, immediately after
+    the swap and before the ``strict=False`` load. ``report`` is what
+    ``quantized_state_dict_report`` returned for the same state dict and
+    ``swapped`` is the count the swap helper(s) returned. ``report is None``
+    (an ordinary checkpoint) is a no-op.
+
+    WHY AN EQUALITY AND NOT "swapped > 0"
+    ------------------------------------
+    ``quantized_state_dict_report`` fires on EITHER piece of evidence -- a
+    ``.weight_scale`` key OR an int8/float8 ``.weight`` -- while both swap
+    helpers require BOTH (the scale sibling AND the weight dtype, so a mixed
+    int8/e4m3 file cannot have one format claim the other's layers). Anything
+    the report saw and the swap did not take is a layer that reaches
+    ``load_state_dict`` as a plain ``nn.Linear``: its scale lands in
+    ``unexpected_keys`` (a print) and its quantized codes are CAST into a bf16
+    parameter (silently, because a dtype cast is what ``load_state_dict``
+    does). That is the exact silently-wrong model this module exists to
+    prevent, so the three counts must agree exactly:
+
+    * a file whose scales were stripped by a foreign tool, or a shard set
+      missing its scale-bearing shard, reports ``quantized_weight_keys > 0``
+      with ``scale_keys == 0`` and swaps NOTHING;
+    * a file whose module paths do not match the model the loader built (a
+      config/artifact mismatch) reports both counts > 0 and swaps FEWER.
+
+    Both loaded silently wrong before this check existed.
+    """
+    if report is None:
+        return
+    scale_keys = int(report.get("scale_keys", 0) or 0)
+    weight_keys = int(report.get("quantized_weight_keys", 0) or 0)
+    if swapped == scale_keys == weight_keys:
+        return
+    where = f" ({path})" if path else ""
+    examples = ", ".join(str(e) for e in (report.get("examples") or [])) or "none"
+    if scale_keys != weight_keys:
+        diagnosis = (
+            f"the file carries {weight_keys} int8/float8 '.weight' tensor(s) but "
+            f"{scale_keys} '{QUANT_SCALE_SUFFIX}' sibling(s) -- every quantized weight "
+            f"needs its per-row scale, so a scale-less (or partially scale-less) file "
+            f"cannot be read back. Producing it again with "
+            f"subapps/fp8_quantize/quantize_transformer_fp8.py, or supplying the shard "
+            f"that holds the scales, is the fix"
+        )
+    else:
+        diagnosis = (
+            f"the file attests {scale_keys} quantized Linear(s) but only {swapped} "
+            f"matching module(s) exist in the {arch} {label} this loader built -- the "
+            f"checkpoint's module paths and the model's geometry/config disagree"
+        )
+    raise RuntimeError(
+        f"the {arch} {label} checkpoint{where} is weight-only QUANTIZED, and "
+        f"{swapped} of its quantized Linear(s) could be swapped in "
+        f"(scales={scale_keys}, quantized weights={weight_keys}, swapped={swapped}; "
+        f"e.g. {examples}). {diagnosis}. Refusing rather than continuing: the "
+        f"unswapped layers would reach load_state_dict as plain nn.Linear, dropping "
+        f"any scales they do have as unexpected keys and casting their quantized "
+        f"codes into bf16 parameters -- a model that loads without a warning and "
+        f"generates noise."
+    )
 
 
 def refuse_quantized_state_dict(

@@ -287,13 +287,32 @@ def _run_export(pipeline_manager, job_id, arch, modules, output_path, *,
         _update(job_id, processed=done, total=total, message=f"writing {key}")
 
     try:
-        config = None
-        if arch == "krea2":
-            try:
-                # The PRIMARY component's config; krea2 has exactly one.
-                config = dict(getattr(modules[0][1], "config", {}) or {})
-            except Exception:
-                config = None
+        # The PRIMARY component's config, for the arch metadata builder that
+        # wants one (krea2's ``krea2_config``, flux2's ``flux2_config``). Read
+        # generically rather than per-arch: a diffusers ``ConfigMixin`` exposes
+        # ``.config`` and a module that has none yields {}, which every builder
+        # already tolerates -- so an arch added later gets its config without
+        # another branch here.
+        #
+        # The LOADED components' own ``config`` entry is then layered on top,
+        # because the module's ``.config`` is geometry only. The loader's dict is
+        # geometry PLUS the provenance it resolved for this model, and for FLUX.2
+        # that provenance (``base_model_repo``, ``is_distilled``) is what decides
+        # whether the reloaded export runs CFG at all. Dropping it would export a
+        # full-FT save as something the loader then mis-detects. Generic for the
+        # same reason as above: an arch whose components carry no ``config`` dict
+        # is unaffected.
+        try:
+            config = dict(getattr(modules[0][1], "config", {}) or {})
+        except Exception:
+            config = None
+        try:
+            loaded = getattr(pipeline_manager, f"{arch}_components", None) or {}
+            provenance = loaded.get("config")
+            if isinstance(provenance, dict) and provenance:
+                config = {**(config or {}), **provenance}
+        except Exception:
+            pass
 
         audit = getattr(pipeline_manager, "_runtime_int8_audit", None)
         audit_note = None

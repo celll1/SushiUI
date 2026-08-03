@@ -1421,6 +1421,65 @@ class ModelLoader:
         return transformer_sd, vae_sd, te_sd
 
     @staticmethod
+    def _swap_flux2_quantized_linears(model, sd: dict, dtype: torch.dtype) -> int:
+        """Replace FLUX.2 ``nn.Linear``s that have a quantized saved weight. Returns the count.
+
+        A no-op (and silent) on an ordinary bf16 checkpoint, so it is safe to call
+        unconditionally; the caller gates on ``quantized_state_dict_report`` only
+        to know whether to skip the blanket dtype cast.
+
+        INT8 and e4m3 are detected INDEPENDENTLY and both swaps run, because
+        ``quantize_transformer_fp8.py --format int8`` emits a MIXED checkpoint on
+        purpose: a layer whose per-row crest factor makes int8 worse than e4m3
+        falls back to e4m3 in the same file. Each detector and each swap helper
+        gates on the weight DTYPE as well as the shared ``.weight_scale`` suffix,
+        so neither can claim the other's layers and the call order does not
+        matter. Same helpers, same reasoning as
+        ``anima_loader._swap_quantized_linears`` and
+        ``krea2/vendor/single_file.build_krea2_transformer`` -- FLUX.2 needs no
+        prefix argument because its single files carry the diffusers module tree
+        with no wrapper.
+
+        The returned count is NOT decorative: the caller compares it against
+        ``quantized_state_dict_report`` (``verify_quantized_swap``) and refuses
+        the load when they disagree, because a quantized layer this helper did
+        not take is a layer whose codes ``load_state_dict`` will cast into a bf16
+        parameter without a word.
+
+        The caller also casts the module to ``dtype`` BEFORE calling this, and
+        skips the usual post-load cast. Not because a later cast would corrupt an
+        e4m3 buffer -- bf16 represents every e4m3 value exactly, and the dequant
+        path still applies the scale -- but because it would double the buffer and
+        drop ``Fp8Linear``'s ``_scaled_mm`` fast path, which gates on the weight
+        dtype.
+        """
+        try:
+            from core.models.ideogram4.vendor.int8_linear import (
+                is_int8_state_dict, swap_linears_to_int8,
+            )
+            from core.models.ideogram4.vendor.fp8_linear import (
+                is_fp8_state_dict, swap_linears_to_fp8,
+            )
+        except Exception as e:
+            print(f"[ModelLoader] FLUX.2 weight-only quant support unavailable ({e}); "
+                  f"the checkpoint would load as a silently wrong model")
+            raise
+        has_int8 = bool(is_int8_state_dict(sd))
+        has_fp8 = bool(is_fp8_state_dict(sd))
+        if not (has_int8 or has_fp8):
+            return 0
+        n_int8 = swap_linears_to_int8(model, sd, compute_dtype=dtype) if has_int8 else 0
+        n_fp8 = swap_linears_to_fp8(model, sd, compute_dtype=dtype) if has_fp8 else 0
+        parts = []
+        if n_int8:
+            parts.append(f"{n_int8} Int8Linear")
+        if n_fp8:
+            parts.append(f"{n_fp8} Fp8Linear")
+        print(f"[ModelLoader] weight-only quantized FLUX.2 transformer: swapped "
+              f"{' + '.join(parts) or 'no'} Linear(s); the remaining Linears load as {dtype}")
+        return n_int8 + n_fp8
+
+    @staticmethod
     def load_flux2_from_safetensors(
         file_path: str,
         device: str = "cuda",
@@ -1559,16 +1618,21 @@ class ModelLoader:
             # 1. BFL/Comfy format: double_blocks.*, single_blocks.* (original BFL weights)
             # 2. Diffusers format: time_guidance_embed.*, double_stream_modulation_*, single_transformer_blocks.*
             # 3. SushiUI/musubi training format: model.diffusion_model.* prefix (ComfyUI-style but with diffusers keys inside)
-            # A weight-only quantized checkpoint must be refused BEFORE the
-            # format conversion below (which would drop the .weight_scale keys it
-            # does not know) and before the strict=False load (which would cast
-            # the int8/e4m3 codes straight into bf16 parameters and run a
-            # silently wrong model). FLUX.2 has no quantized-Linear swap.
+            # WEIGHT-ONLY QUANTIZED CHECKPOINTS (int8 / e4m3 weights + per-row
+            # ``.weight_scale`` siblings, written by
+            # subapps/fp8_quantize/quantize_transformer_fp8.py or by
+            # POST /models/export-quantized). FLUX.2 reads them: the matching
+            # nn.Linear modules are replaced by Int8Linear / Fp8Linear BEFORE the
+            # load, below. What must NOT happen is reaching the plain strict=False
+            # load with them still as nn.Linear -- every scale would land in
+            # unexpected_keys and every quantized weight would be cast into a bf16
+            # parameter, i.e. the int8 CODES written as if they were the weights.
+            # Detected here, before the format branch, because format 1 and 3 are
+            # refused for it (see below).
             from core.models.common.quantized_checkpoint_guard import (
-                refuse_quantized_state_dict,
+                quantized_state_dict_report,
             )
-            refuse_quantized_state_dict(
-                transformer_state_dict, arch="flux2", path=file_path)
+            quant_report = quantized_state_dict_report(transformer_state_dict)
 
             sample_keys = list(transformer_state_dict.keys())[:5]
             is_bfl_format = any(k.startswith('double_blocks.') for k in transformer_state_dict.keys())
@@ -1578,6 +1642,25 @@ class ModelLoader:
             # empty for standard single-file transformer checkpoints.
             embedded_vae_state_dict: dict = {}
             embedded_te_state_dict: dict = {}
+
+            if quant_report is not None and (is_bfl_format or is_sushiui_format):
+                # Only the diffusers layout is supported for a quantized file, and
+                # nothing legitimate produces the other two: the offline tool
+                # applies the BFL->diffusers transform itself and always emits
+                # diffusers keys, and the sushiUI full-FT save is written by a
+                # trainer, which refuses a quantized base outright
+                # (adapters/base_adapter.reject_quantized_base). Refusing is
+                # cheap insurance against the alternative -- diffusers' converter
+                # would happily chunk a fused ``.weight_scale`` alongside its
+                # weight and produce something that looks right.
+                raise RuntimeError(
+                    f"the FLUX.2 transformer checkpoint ({file_path}) is weight-only "
+                    f"QUANTIZED ({quant_report['scale_keys']} '.weight_scale' key(s)) AND in "
+                    f"the {'BFL/Comfy' if is_bfl_format else 'sushiUI/musubi'} key layout. "
+                    f"Quantized FLUX.2 checkpoints are supported only in the diffusers key "
+                    f"layout, which is what both writers of this format emit. Quantize the "
+                    f"unquantized checkpoint again with "
+                    f"subapps/fp8_quantize/quantize_transformer_fp8.py --arch flux2.")
 
             if is_bfl_format:
                 print(f"[ModelLoader] Detected BFL/Comfy format state_dict, converting to diffusers format...")
@@ -1604,6 +1687,36 @@ class ModelLoader:
             print(f"[ModelLoader] Creating Flux2Transformer2DModel...")
             transformer = Flux2Transformer2DModel(**transformer_config)
 
+            if quant_report is not None:
+                # ORDER MATTERS. The dtype cast happens HERE, before the swap, and
+                # the usual one after the load is skipped, because
+                # nn.Module.to(dtype) casts every FLOATING-POINT buffer: it leaves
+                # an int8 weight alone but WOULD convert an e4m3 weight buffer (a
+                # mixed artifact always has some) to bf16. That conversion is
+                # value-preserving -- e4m3 has 3 mantissa bits and an exponent
+                # range wholly inside bf16's, so all 256 codes survive it exactly,
+                # and the dequant path (weight.to(x.dtype) * weight_scale) keeps
+                # producing the same numbers. What it costs is real but narrower
+                # than "garbage": the weight buffer doubles in size, and
+                # Fp8Linear._scaled_mm_forward gates on
+                # ``w.dtype is FP8_WEIGHT_DTYPE`` (fp8_linear.py), so the W8A8 fast
+                # path is silently lost for the rest of the process. Casting first
+                # and swapping second gives the quantized modules their exact
+                # buffer dtypes and never revisits them.
+                transformer = transformer.to(dtype=torch_dtype)
+                swapped = ModelLoader._swap_flux2_quantized_linears(
+                    transformer, transformer_state_dict, torch_dtype)
+                # The swap helpers require BOTH the scale sibling and the weight
+                # dtype, while the report fires on either -- so "we took the new
+                # branch" does not mean "every quantized layer is now a quantized
+                # module". Anything left over would fall through to the plain
+                # strict=False load below and be cast into bf16 parameters.
+                from core.models.common.quantized_checkpoint_guard import (
+                    verify_quantized_swap,
+                )
+                verify_quantized_swap(quant_report, swapped, arch="FLUX.2",
+                                      path=file_path, label="transformer")
+
             # Load weights
             missing_keys, unexpected_keys = transformer.load_state_dict(transformer_state_dict, strict=False)
             if missing_keys:
@@ -1611,7 +1724,8 @@ class ModelLoader:
             if unexpected_keys:
                 print(f"[ModelLoader] WARNING: Unexpected keys: {unexpected_keys[:5]}..." if len(unexpected_keys) > 5 else f"[ModelLoader] WARNING: Unexpected keys: {unexpected_keys}")
 
-            transformer = transformer.to(dtype=torch_dtype)
+            if quant_report is None:
+                transformer = transformer.to(dtype=torch_dtype)
             print(f"[ModelLoader] Transformer loaded with {sum(p.numel() for p in transformer.parameters()):,} parameters")
 
             # Step 4: Load VAE — ALWAYS from the Apache-2.0 FLUX.2 store

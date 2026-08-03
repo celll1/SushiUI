@@ -131,7 +131,8 @@ RELATED: THE RUNTIME EXPORT
 ---------------------------
 ``POST /api/v1/models/export-quantized`` writes the LOADED transformer out in
 this same layout, which is how an in-place runtime conversion
-(``unet_quantization: "int8"`` on anima / krea2) is made to survive a restart.
+(``unet_quantization: "int8"`` on anima / krea2 / flux2) is made to survive a
+restart.
 It shares this tool's writer, sibling-junction helper, key prefixes and metadata
 builders through ``core.models.common.quantized_export`` -- the shared import is
 the pin against the two emitting different files. This tool remains the way to
@@ -162,6 +163,22 @@ USAGE
         --source "<anima root>/split_files/diffusion_models/<dit>.safetensors" \
         --output "<scratch dir>/anima_int8/split_files/diffusion_models/anima_int8.safetensors" \
         --link-siblings "<anima root>"
+
+    venv/Scripts/python.exe subapps/fp8_quantize/quantize_transformer_fp8.py \
+        --arch flux2 --format int8 \
+        --source "<flux2 root>/flux-2-klein-base-4b.safetensors" \
+        --output "<scratch dir>/flux2_int8/flux2_int8.safetensors"
+
+FLUX.2 sources may be in EITHER on-disk layout. A BFL/Comfy single file
+(``double_blocks.*`` / ``single_blocks.*``) is remapped to diffusers keys --
+including the fused ``img_attn.qkv`` / ``txt_attn.qkv`` split -- by the arch's
+``source_transform``, which calls the same diffusers converter the production
+loader calls; a source that is already in diffusers layout passes through
+untouched. Either way the OUTPUT is diffusers-keyed, so the loader reads it
+through its "already in diffusers format" branch and learns nothing new. FLUX.2
+gets no ``--link-siblings`` treatment: its loader resolves the VAE from the
+Apache-2.0 VAE store and the text encoder / tokenizer / scheduler from the
+detected base repo, and probes nothing next to the checkpoint.
 
 Write the output to a scratch location, NOT under a ``M:/model/<arch>/`` root:
 those roots hold the vanilla checkpoints and their sibling directories are
@@ -337,6 +354,47 @@ def _anima_config(source: str) -> dict:
     return dict(ANIMA_DIT_CONFIG)
 
 
+def _flux2_build_meta(config: dict) -> nn.Module:
+    from accelerate import init_empty_weights
+
+    from diffusers import Flux2Transformer2DModel
+
+    with init_empty_weights():
+        return Flux2Transformer2DModel.from_config(config)
+
+
+def _flux2_config(source: str) -> dict:
+    """Resolve the FLUX.2 transformer geometry from the SOURCE checkpoint's keys.
+
+    Unlike Krea 2 (a config.json next to the weights) and Anima (a compiled-in
+    constant), a FLUX.2 single file ships no config at all: the production loader
+    downloads one from the base repo it detects. That is right for a loader --
+    it needs the text encoder, tokenizer and scheduler from that repo anyway --
+    and wrong here, where the only thing wanted is a module tree to enumerate
+    ``nn.Linear`` paths from. So this reads the block counts out of the
+    checkpoint's own key names and looks them up in the pinned table
+    (``core.models.flux2.single_file``), which REFUSES an unrecognised geometry
+    instead of defaulting to 4B. ``--config`` overrides it with a real
+    ``transformer/config.json`` when one is at hand.
+
+    Only the safetensors HEADER is read (``_source_shards`` already has it), so
+    resolving the config costs no tensor bytes.
+    """
+    from core.models.flux2.single_file import (
+        count_flux2_blocks, flux2_config_for_state_dict,
+    )
+
+    _shards, key_to_shard = _source_shards(source)
+    keys = list(key_to_shard)
+    config = flux2_config_for_state_dict(keys)
+    n_double, n_single = count_flux2_blocks(keys)
+    print(f"[fp8] FLUX.2 geometry from the checkpoint's keys: {n_double} double + "
+          f"{n_single} single block(s) -> pinned config "
+          f"(num_layers={config['num_layers']}, num_single_layers={config['num_single_layers']}, "
+          f"num_attention_heads={config['num_attention_heads']})")
+    return config
+
+
 def _from_layout(arch: str, **extra) -> Dict[str, object]:
     """An ARCHS entry: the shared on-disk layout plus this tool's source knobs.
 
@@ -371,6 +429,12 @@ def _from_layout(arch: str, **extra) -> Dict[str, object]:
 ARCHS = {
     "krea2": _from_layout("krea2", config=_krea2_config, build_meta=_krea2_build_meta),
     "anima": _from_layout("anima", config=_anima_config, build_meta=_anima_build_meta),
+    # FLUX.2 is the first arch here whose SOURCE keys are not module paths: a BFL
+    # single file needs the diffusers key remap plus a fused-qkv split first. That
+    # is declared as the layout's ``source_transform`` (see EXPORT_LAYOUTS), not
+    # as a special case in this table, so the offline artifact and a runtime
+    # export stay the same file.
+    "flux2": _from_layout("flux2", config=_flux2_config, build_meta=_flux2_build_meta),
 }
 
 
@@ -507,6 +571,15 @@ def main() -> int:
     ap.add_argument("--no-skip-below-work-gate", dest="skip_below_work_gate",
                     action="store_false",
                     help="force the min-work-gate filter OFF regardless of the arch table")
+    ap.add_argument("--config", metavar="CONFIG_JSON",
+                    help="transformer config.json to build the enumeration model from, "
+                         "instead of the arch's own resolution (a config.json next to the "
+                         "source for krea2, a compiled-in constant for anima, the pinned "
+                         "geometry table for flux2). Use it for a variant this repo does "
+                         "not pin; it is used VERBATIM, so it must be that checkpoint's "
+                         "real config -- a mismatched geometry produces module paths that "
+                         "match no weight and the run then fails with 'no Linear weight "
+                         "matched'.")
     ap.add_argument("--max-shard-bytes", type=int, default=DEFAULT_OUT_SHARD_BYTES)
     ap.add_argument("--link-siblings", metavar="SRC_DIR",
                     help="create text_encoder/vae/tokenizer/scheduler junctions from SRC_DIR "
@@ -578,7 +651,12 @@ def main() -> int:
                 f"starts with it; refusing to run (every Linear would silently be skipped)")
     module_keys = {_strip_prefix(k, source_prefix) for k in canonical_keys}
 
-    config = arch["config"](args.source)
+    if args.config:
+        with open(args.config, encoding="utf-8") as fh:
+            config = json.load(fh)
+        print(f"{tag} transformer config from --config {args.config}")
+    else:
+        config = arch["config"](args.source)
     meta_model = arch["build_meta"](config)
     linears = linear_paths(meta_model)
     targets, skipped = select_targets(linears, module_keys, min_align, excludes,

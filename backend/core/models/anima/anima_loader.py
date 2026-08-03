@@ -303,7 +303,20 @@ def load_anima_dit(dit_path: str, device: str = "cpu",
     if any(k.startswith("net.") for k in sd.keys()):
         sd = {(k[len("net."):] if k.startswith("net.") else k): v for k, v in sd.items()}
 
-    _swap_quantized_linears(model, sd, dtype)
+    # Detected and verified around the swap: the report fires on EITHER a
+    # ``.weight_scale`` key or an int8/float8 ``.weight``, while the swap helpers
+    # require both, so a scale-less (or partially matched) quantized file would
+    # otherwise swap nothing and fall through to the strict=False load below --
+    # every scale an unexpected key, every quantized code cast into a bf16
+    # parameter, no warning that matters. Same check, same helper as the FLUX.2
+    # loader.
+    from core.models.common.quantized_checkpoint_guard import (
+        quantized_state_dict_report, verify_quantized_swap,
+    )
+    quant_report = quantized_state_dict_report(sd)
+    swapped = _swap_quantized_linears(model, sd, dtype)
+    verify_quantized_swap(quant_report, swapped, arch="Anima", path=dit_path,
+                          label="DiT")
 
     missing, unexpected = model.load_state_dict(sd, strict=False, assign=True)
     # Filter out buffers that are re-initialized in __init__ (not saved in checkpoint).

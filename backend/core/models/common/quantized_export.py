@@ -102,6 +102,54 @@ def krea2_export_metadata(config: dict) -> Dict[str, str]:
     }
 
 
+def flux2_export_metadata(config: dict) -> Dict[str, str]:
+    """Metadata block for a FLUX.2 transformer single file.
+
+    ``base_model_repo`` and ``is_distilled`` are the ONLY metadata keys
+    ``model_loader.load_flux2_from_safetensors`` reads back, and they decide real
+    behaviour: ``is_distilled`` alone flips
+    ``do_classifier_free_guidance = guidance_scale > 1.0 and not is_distilled``
+    in every FLUX.2 denoise loop (pipeline_backends/flux2.py). They are PROPAGATED
+    here, never invented:
+
+    * present in ``config`` -- which is the case for a live export, because
+      ``load_flux2_from_safetensors`` puts both into the ``config`` dict it
+      returns, and ``quantized_export_job`` passes that dict -- they are written
+      verbatim, so the quantized copy loads exactly the way the source did. For a
+      vanilla checkpoint that reproduces what the loader's own detection would
+      have produced anyway; for a sushiUI full-FT save (the only writer of those
+      keys, ``flux2_adapter.py``) it preserves provenance the loader could NOT
+      re-derive: its single-layer-count probe knows 24/36/48 and a Klein 4B
+      export has 20, so detection would fall back to ``klein-base-4B`` and take
+      ``is_distilled`` from that repo -- turning CFG ON for a distilled
+      fine-tune;
+    * absent -- the offline tool's route, where ``config`` is the pinned geometry
+      and genuinely carries no provenance -- they are OMITTED, and the loader's
+      detection runs exactly as it does for the unquantized source. Writing a
+      guessed value would be worse than not writing one: the pinned config cannot
+      tell a distilled variant from a base one, their geometry being identical.
+
+    ``flux2_config`` is recorded for provenance only; nothing reads it back.
+    """
+    from core.models.flux2.single_file import FLUX2_DEFAULT_CONFIG
+
+    config = dict(config or {})
+    metadata = {
+        "modelspec.architecture": "flux2",
+        "model_type": "flux2",
+        "flux2_config": json.dumps({k: config[k] for k in FLUX2_DEFAULT_CONFIG if k in config}),
+        "format": "pt",
+    }
+    base_model_repo = config.get("base_model_repo")
+    if base_model_repo:
+        metadata["base_model_repo"] = str(base_model_repo)
+    if "is_distilled" in config and config["is_distilled"] is not None:
+        # Read back as ``metadata["is_distilled"].lower() == "true"``; written the
+        # same way flux2_adapter.py writes it, so the two producers agree.
+        metadata["is_distilled"] = str(bool(config["is_distilled"])).lower()
+    return metadata
+
+
 def anima_export_metadata(config: dict) -> Dict[str, str]:
     """Metadata block an Anima DiT single-file loader reads.
 
@@ -119,6 +167,22 @@ def anima_export_metadata(config: dict) -> Dict[str, str]:
 # ---------------------------------------------------------------------------
 # Source-key transform (offline route only)
 # ---------------------------------------------------------------------------
+
+def _flux2_source_transform(key: str, tensor: Optional[torch.Tensor]):
+    """FLUX.2's ``source_transform``: BFL keys -> diffusers keys, identity otherwise.
+
+    A thin, DEFERRED wrapper (the implementation reaches for diffusers'
+    ``single_file_utils``, which this module has no other reason to import) kept
+    at module scope so ``EXPORT_LAYOUTS`` can name a stable function object --
+    ``layout_source_transform(arch) is identity_source_transform`` is how
+    ``check_layout_prefixes`` decides whether the prefix invariant applies, and a
+    lambda rebuilt per call would make that comparison meaningless for anything
+    that later wants the same test in the other direction.
+    """
+    from core.models.flux2.single_file import flux2_bfl_to_diffusers
+
+    return flux2_bfl_to_diffusers(key, tensor)
+
 
 def identity_source_transform(key: str, tensor: Optional[torch.Tensor]):
     """The default ``source_transform``: the source key IS the module path.
@@ -198,6 +262,35 @@ EXPORT_LAYOUTS: Dict[str, Dict[str, object]] = {
         "source_prefix": "",
         "metadata": krea2_export_metadata,
         "siblings": SIBLING_DIRS,
+        "sibling_root": ".",
+        "output_subdir": "",
+    },
+    "flux2": {
+        # A FLUX.2 transformer single file carries the diffusers module tree with
+        # NO prefix at all: ``load_flux2_from_safetensors`` reads the state dict,
+        # and a key set that is neither BFL (``double_blocks.*``) nor a sushiUI
+        # full-FT save (``model.diffusion_model.*``) falls through to its "already
+        # in diffusers format" branch and is loaded as-is. An export must
+        # therefore land in that third branch, which an empty prefix does and
+        # which the OTHER two must not be able to claim: no exported key starts
+        # with ``double_blocks.`` (the source transform below has already
+        # rewritten those to ``transformer_blocks.``) or with
+        # ``model.diffusion_model.``.
+        "modules": (("transformer", ""),),
+        "offline_prefix": "",
+        "source_prefix": "",
+        # BFL-format sources need a full key remap plus a fused-qkv split before
+        # a key can be compared with a module path; a diffusers-format source is
+        # passed through untouched (the transform decides per key). See
+        # ``core.models.flux2.single_file``.
+        "source_transform": _flux2_source_transform,
+        "metadata": flux2_export_metadata,
+        # No sibling junctions: the FLUX.2 loader resolves its VAE from the
+        # Apache-2.0 VAE store and its text encoder / tokenizer / scheduler from
+        # the detected base repo, and probes nothing next to the checkpoint. A
+        # ``text_encoder`` directory beside the file would be inert, so offering
+        # to create one would only suggest it mattered.
+        "siblings": (),
         "sibling_root": ".",
         "output_subdir": "",
     },

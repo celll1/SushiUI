@@ -168,6 +168,49 @@ a generation without style transfer.
   upstream FLUX text stack); concatenates Qwen3 hidden states from layers 9/18/27.
   Distilled checkpoints inject a guidance vector instead of running CFG. VAE always
   pulled from the Apache-2.0 4B store regardless of transformer variant.
+  - **Weight-only INT8**: FLUX.2 is in `RUNTIME_INT8_ARCHS`, so
+    `unet_quantization: "int8"` converts the loaded transformer in place
+    (`Flux2Mixin._flux2_runtime_int8`, before the block offloader is built and
+    before staging — `move_flux2_transformer_to_gpu` is only reached in the
+    NO-block-swap branch, so quantizing there would skip every block-swapped
+    generation). The FP8 values still go through `move_flux2_transformer_to_gpu`
+    /`_quantize_transformer`, which now short-circuits on an already-quantized
+    module instead of deep-copying it. `model_loader._swap_flux2_quantized_linears`
+    reads a quantized checkpoint back (int8 and e4m3 detected independently, both
+    swaps run); only the diffusers key layout is accepted for one. The dtype cast
+    is done BEFORE the swap, and the post-load cast skipped, because a later
+    `.to(bf16)` would convert the e4m3 weight BUFFERS — not a correctness problem
+    (bf16 represents all 256 e4m3 codes exactly and the dequant path still applies
+    the scale; measured forward error identical) but it doubles those buffers and
+    permanently drops `Fp8Linear`'s `_scaled_mm` fast path, which gates on the
+    weight dtype. The swap count is then verified against the checkpoint's own
+    quantized-key census (`quantized_checkpoint_guard.verify_quantized_swap`,
+    shared with anima): a scale-less or path-mismatched quantized file is refused
+    instead of falling through to the plain `strict=False` load.
+  - **Offline artifact**: `quantize_transformer_fp8.py --arch flux2 --format int8`
+    accepts a BFL/Comfy *or* a diffusers source and always emits diffusers keys —
+    the arch's `source_transform` runs diffusers'
+    `convert_flux2_transformer_checkpoint_to_diffusers` per key (fused
+    `img_attn.qkv`/`txt_attn.qkv` fan out to q/k/v; per-row scales make split-then-
+    quantize identical to quantize-then-split). Geometry comes from the pinned
+    `core/models/flux2/single_file.FLUX2_DEFAULT_CONFIG` (Klein 4B: 5 double + 20
+    single blocks), NOT from a hub download; an unrecognised block count is
+    refused rather than guessed, and `--config` overrides it.
+    Measured on `flux-2-klein-base-4b.safetensors` (149 source tensors → 169
+    diffusers keys, exactly the model's state-dict key set): 109 Linears, 3.8755 G
+    2-D parameters, **109/109 selected int8, zero e4m3 fallbacks**, geomean
+    int8-over-e4m3 weight-error advantage 2.742x, worst layer advantage 1.565,
+    highest mean per-row crest 7.38 (`proj_out`) against the 12.0 threshold. Only
+    3 Linears sit below the runtime min-work gate (0.04% of the parameters), which
+    is why `skip_below_work_gate` is off for flux2.
+  - **Runtime export** (`POST /models/export-quantized`): the flux2 metadata block
+    propagates `base_model_repo` and `is_distilled` from the LOADED config when it
+    has them (the loader puts both there), and omits them otherwise (the offline
+    tool's route, which has only the pinned geometry). They are the only metadata
+    keys the loader reads back, and `is_distilled` alone flips
+    `do_classifier_free_guidance`; a full-FT save exported without them would be
+    re-detected as `klein-base-4B` — its 20 single blocks match none of the
+    probe's 24/36/48 arms — and silently regain CFG.
 - **ideogram4** — Only architecture bundling two transformers (conditional +
   unconditional); asymmetric CFG zeroes the unconditional text branch. FP8
   weight-only Qwen3-VL and FP8 transformer linears; head_dim 256 keeps it on native
@@ -193,7 +236,8 @@ a generation without style transfer.
     integer GEMM itself is opt-in per process (`SUSHI_INT8_MM=1`,
     `GET/POST /api/v1/system/int8-mm`) or per generation (`quantized_gemm_mode`).
   - **Runtime INT8 (no pre-built artifact)**: `unet_quantization: "int8"` on an
-    ordinary bf16 Anima or Krea 2 checkpoint converts the loaded transformer IN
+    ordinary bf16 checkpoint of any arch in `RUNTIME_INT8_ARCHS` (Anima, Krea 2,
+    FLUX.2) converts the loaded transformer IN
     PLACE, once, at the first generation after the model load
     (`vram_optimization.apply_runtime_int8_quantization` ->
     `core/models/common/int8_runtime_quantize.quantize_linears_in_place`). The

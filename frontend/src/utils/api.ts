@@ -2317,7 +2317,7 @@ export const getCurrentModel = async () => {
 // `force`: reload even when this model is already the loaded one. Without it the
 // backend early-returns, so nothing per-session is reset — which is what makes
 // "load the model again" the working recovery for the one-way in-place INT8
-// conversion (unet_quantization="int8" on anima/krea2).
+// conversion (unet_quantization="int8" on anima/krea2/flux2).
 export const loadModel = async (sourceType: string, source: string, revision?: string, force?: boolean) => {
   const formData = new FormData();
   formData.append("source_type", sourceType);

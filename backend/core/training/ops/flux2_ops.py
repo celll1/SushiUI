@@ -171,6 +171,26 @@ def load_components(trainer) -> None:
     # Convert VAE to vae_dtype
     trainer.vae = trainer.vae.to(dtype=trainer.vae_dtype)
 
+    # A training process is DEQUANT-ONLY (see ideogram4_ops.load_components for
+    # the full reasoning). FLUX.2 is in RUNTIME_INT8_ARCHS and its loader now
+    # swaps Int8Linear / Fp8Linear in for a weight-only quantized checkpoint, so a
+    # LoRA run over a quantized FLUX.2 base is reachable and must be fitted
+    # against exactly the base function everyone else runs -- not against the
+    # W8A8 fast paths, which are enabled by process-wide env flags that
+    # training_process.py copies from the backend (os.environ.copy()) and which
+    # grad mode cannot be used as a proxy for. Two module types, two separate
+    # per-instance opt-outs: disabling one does not disable the other. train_runner
+    # also disables both process-wide; that is belt-and-braces on top of the
+    # per-module calls every trainer-side loader makes, which is what this is.
+    # No-op on a bf16 base.
+    from core.models.ideogram4.vendor.fp8_linear import disable_scaled_mm
+    from core.models.ideogram4.vendor.int8_linear import disable_int8_mm
+    for _label, _module in (("transformer", trainer.transformer),
+                            ("text_encoder", trainer.text_encoder)):
+        if _module is not None:
+            disable_scaled_mm(_module, label=f"flux2 training {_label}")
+            disable_int8_mm(_module, label=f"flux2 training {_label}")
+
     # Enable gradient checkpointing for Transformer (CRITICAL for VRAM reduction)
     if not trainer.gradient_checkpointing:
         print(f"{trainer.log_prefix} Gradient checkpointing disabled by config (FLUX.2)")

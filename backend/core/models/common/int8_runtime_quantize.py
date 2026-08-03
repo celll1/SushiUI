@@ -140,6 +140,21 @@ ARCH_QUANT_POLICY: Dict[str, Dict[str, object]] = {
             "it on here would stop reproducing it."
         ),
     },
+    "flux2": {
+        "skip_below_work_gate": False,
+        "excludes": (),
+        "note": (
+            "FLUX.2 Klein 4B has 109 Linears holding 3.8755 G 2-D parameters, and only "
+            "THREE of them sit below the runtime min-work gate (k>=2048, n>=1024): "
+            "x_embedder (3072x128), proj_out (128x3072) and the timestep embedder's "
+            "linear_1 (3072x256), 0.0016 G parameters between them -- 0.04% of the "
+            "total. Every attention and MLP projection is 3072-wide or wider, the two "
+            "largest being the fused img_attn.qkv (9216x3072) and single_blocks.linear1 "
+            "(27648x3072). The filter therefore has almost nothing to filter, so it "
+            "stays off (the Krea 2 setting for the Krea 2 reason; Anima's 283 sub-gate "
+            "Linears out of 515 are what make it pay there)."
+        ),
+    },
     "anima": {
         "skip_below_work_gate": True,
         "excludes": (),
@@ -165,7 +180,7 @@ ARCH_QUANT_POLICY: Dict[str, Dict[str, object]] = {
 #   * frontend/src/utils/api.ts          -- reads that field instead of its own
 #     hardcoded list.
 # Adding an arch here is therefore the whole rollout switch on the UI side.
-RUNTIME_INT8_ARCHS = ("anima", "krea2")
+RUNTIME_INT8_ARCHS = ("anima", "krea2", "flux2")
 
 # Architectures whose LOADERS swap in the weight-only quantized Linear classes
 # (``Fp8Linear`` / ``Int8Linear``), i.e. the archs where a quantized-GEMM path

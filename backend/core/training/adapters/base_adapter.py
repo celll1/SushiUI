@@ -41,6 +41,56 @@ def count_quantized_linears(module: Optional[nn.Module]) -> int:
     return sum(1 for m in module.modules() if isinstance(m, (Int8Linear, Fp8Linear)))
 
 
+def is_lora_wrappable_linear(module: Optional[nn.Module]) -> bool:
+    """True for a module a LoRA can wrap: ``nn.Linear`` or EITHER weight-only
+    quantized Linear (``Int8Linear`` / ``Fp8Linear``).
+
+    THE reason this exists: ``Int8Linear`` and ``Fp8Linear`` are ``nn.Module``s,
+    NOT ``nn.Linear`` subclasses. Every ``isinstance(x, nn.Linear)`` site that
+    selects LoRA targets therefore skips every quantized layer SILENTLY -- no
+    error, just a smaller ``applied`` count that looks like a LoRA which happens
+    to touch fewer modules. Measured on Anima, where the naive predicate dropped
+    75% of the intended targets.
+
+    Deliberately does NOT include ``LoRALinearLayer``: the call sites this
+    replaces use the predicate to decide whether to WRAP, and an already-wrapped
+    module must not be wrapped twice. A caller that wants "wrappable or already
+    wrapped" (re-application, target enumeration) tests for that class itself --
+    ``core.models.krea2.krea2_lora._is_target`` is the example.
+    """
+    if module is None:
+        return False
+    if isinstance(module, nn.Linear):
+        return True
+    try:
+        from core.models.ideogram4.vendor.int8_linear import Int8Linear
+        from core.models.ideogram4.vendor.fp8_linear import Fp8Linear
+    except Exception:
+        return False
+    return isinstance(module, (Int8Linear, Fp8Linear))
+
+
+def lora_branch_dtype(module: nn.Module,
+                      default: torch.dtype = torch.bfloat16) -> torch.dtype:
+    """The dtype a LoRA branch attached to ``module`` should compute in.
+
+    The base weight's own dtype when that is a real float, else ``default``. Both
+    quantized bases take the default branch -- e4m3 by the "float8" test, int8
+    because an integer dtype is not floating point at all -- which is also the
+    dtype their own forward produces from a bf16 activation. Without this a
+    caller that copies the LoRA weights with ``dtype=base.weight.dtype`` would
+    cast them to int8 and quantize the adapter to 8 uniform levels, or to e4m3
+    and lose most of its precision.
+    """
+    weight = getattr(module, "weight", None)
+    if weight is None:
+        return default
+    dtype = weight.dtype
+    if dtype.is_floating_point and "float8" not in str(dtype):
+        return dtype
+    return default
+
+
 def reject_quantized_base(transformer: Optional[nn.Module], *, model_label: str) -> None:
     """Refuse full fine-tuning on a weight-only quantized DiT base.
 

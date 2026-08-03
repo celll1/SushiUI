@@ -260,7 +260,8 @@ class GenerationParams(BaseModel):
     # Text Encoder Quantization (Z-Image only)
     text_encoder_quantization: Optional[str] = None  # None, "fp8_e4m3fn", "fp8_e5m2", "uint8", "uint4"
     # Quantized-GEMM path for checkpoints that already carry weight-only
-    # quantized Linear weights (ideogram4 / krea2 / anima). null = leave the
+    # quantized Linear weights (QUANTIZED_LINEAR_ARCHS: anima / flux2 /
+    # ideogram4 / krea2). null = leave the
     # process flags alone (env / POST /system/* value stands); "w8a8" = force
     # both W8A8 paths on; "dequant" = force both off. See api/quantized_gemm.py.
     quantized_gemm_mode: Optional[str] = GENERATION_DEFAULTS["quantized_gemm_mode"]

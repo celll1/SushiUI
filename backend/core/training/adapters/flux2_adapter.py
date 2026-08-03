@@ -29,7 +29,10 @@ import torch.nn as nn
 from safetensors.torch import save_file
 import math
 
-from .base_adapter import BaseLoRAAdapter, BaseFullParameterAdapter, reject_quantized_base
+from .base_adapter import (
+    BaseLoRAAdapter, BaseFullParameterAdapter, is_lora_wrappable_linear,
+    reject_quantized_base,
+)
 from .sd15_adapter import LoRALinearLayer  # Reuse LoRA layer implementation
 
 
@@ -77,7 +80,7 @@ class FLUX2LoRAAdapter(BaseLoRAAdapter):
                 for attr_name in ["to_q", "to_k", "to_v"]:
                     if hasattr(module, attr_name):
                         original_linear = getattr(module, attr_name)
-                        if isinstance(original_linear, torch.nn.Linear):
+                        if is_lora_wrappable_linear(original_linear):
                             lora_name = f"lora_transformer_{name.replace('.', '_')}_{attr_name}"
                             lora_layer = LoRALinearLayer(
                                 original_linear, self.lora_rank, self.lora_alpha, lora_name, self.lora_dtype
@@ -88,7 +91,7 @@ class FLUX2LoRAAdapter(BaseLoRAAdapter):
 
                 # to_out (ModuleList)
                 if hasattr(module, "to_out") and isinstance(module.to_out, torch.nn.ModuleList):
-                    if len(module.to_out) > 0 and isinstance(module.to_out[0], torch.nn.Linear):
+                    if len(module.to_out) > 0 and is_lora_wrappable_linear(module.to_out[0]):
                         lora_name = f"lora_transformer_{name.replace('.', '_')}_to_out_0"
                         lora_layer = LoRALinearLayer(
                             module.to_out[0], self.lora_rank, self.lora_alpha, lora_name, self.lora_dtype
@@ -101,7 +104,7 @@ class FLUX2LoRAAdapter(BaseLoRAAdapter):
                 for attr_name in ["add_q_proj", "add_k_proj", "add_v_proj", "to_add_out"]:
                     if hasattr(module, attr_name):
                         original_linear = getattr(module, attr_name)
-                        if isinstance(original_linear, torch.nn.Linear):
+                        if is_lora_wrappable_linear(original_linear):
                             lora_name = f"lora_transformer_{name.replace('.', '_')}_{attr_name}"
                             lora_layer = LoRALinearLayer(
                                 original_linear, self.lora_rank, self.lora_alpha, lora_name, self.lora_dtype
@@ -115,7 +118,7 @@ class FLUX2LoRAAdapter(BaseLoRAAdapter):
                 # Fused QKV + MLP projection
                 if hasattr(module, "to_qkv_mlp_proj"):
                     original_linear = module.to_qkv_mlp_proj
-                    if isinstance(original_linear, torch.nn.Linear):
+                    if is_lora_wrappable_linear(original_linear):
                         lora_name = f"lora_transformer_{name.replace('.', '_')}_to_qkv_mlp_proj"
                         lora_layer = LoRALinearLayer(
                             original_linear, self.lora_rank, self.lora_alpha, lora_name, self.lora_dtype
@@ -125,7 +128,7 @@ class FLUX2LoRAAdapter(BaseLoRAAdapter):
                         count += 1
 
                 # Output projection (attention out + MLP out fused)
-                if hasattr(module, "to_out") and isinstance(module.to_out, torch.nn.Linear):
+                if hasattr(module, "to_out") and is_lora_wrappable_linear(module.to_out):
                     lora_name = f"lora_transformer_{name.replace('.', '_')}_to_out"
                     lora_layer = LoRALinearLayer(
                         module.to_out, self.lora_rank, self.lora_alpha, lora_name, self.lora_dtype
@@ -139,7 +142,7 @@ class FLUX2LoRAAdapter(BaseLoRAAdapter):
                 for attr_name in ["linear_in", "linear_out"]:
                     if hasattr(module, attr_name):
                         original_linear = getattr(module, attr_name)
-                        if isinstance(original_linear, torch.nn.Linear):
+                        if is_lora_wrappable_linear(original_linear):
                             lora_name = f"lora_transformer_{name.replace('.', '_')}_{attr_name}"
                             lora_layer = LoRALinearLayer(
                                 original_linear, self.lora_rank, self.lora_alpha, lora_name, self.lora_dtype
@@ -203,7 +206,7 @@ class FLUX2LoRAAdapter(BaseLoRAAdapter):
                 for mlp_attr in ["gate_proj", "up_proj", "down_proj"]:
                     if hasattr(layer.mlp, mlp_attr):
                         original_linear = getattr(layer.mlp, mlp_attr)
-                        if isinstance(original_linear, torch.nn.Linear):
+                        if is_lora_wrappable_linear(original_linear):
                             lora_name = f"lora_te_model_layers_{layer_idx}_mlp_{mlp_attr}"
                             lora_layer = LoRALinearLayer(
                                 original_linear, self.lora_rank, self.lora_alpha, lora_name, self.lora_dtype
@@ -217,7 +220,7 @@ class FLUX2LoRAAdapter(BaseLoRAAdapter):
                 for attn_attr in ["q_proj", "k_proj", "v_proj", "o_proj"]:
                     if hasattr(layer.self_attn, attn_attr):
                         original_linear = getattr(layer.self_attn, attn_attr)
-                        if isinstance(original_linear, torch.nn.Linear):
+                        if is_lora_wrappable_linear(original_linear):
                             lora_name = f"lora_te_model_layers_{layer_idx}_self_attn_{attn_attr}"
                             lora_layer = LoRALinearLayer(
                                 original_linear, self.lora_rank, self.lora_alpha, lora_name, self.lora_dtype

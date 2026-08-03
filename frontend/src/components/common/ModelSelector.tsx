@@ -77,7 +77,7 @@ export default function ModelSelector({ onModelLoad }: ModelSelectorProps) {
   // backend early-returns and the click does nothing at all. That reload is the
   // documented (and only) way to undo per-session mutations of the loaded
   // components — above all the one-way in-place INT8 conversion
-  // (unet_quantization="int8" on anima/krea2), whose warnings tell the user to
+  // (unet_quantization="int8" on anima/krea2/flux2), whose warnings tell the user to
   // load the model again.
   const handleLoadModel = async (sourceType: string, source: string) => {
     setLoading(true);

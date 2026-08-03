@@ -23,7 +23,9 @@ from api.param_defaults import GENERATION_DEFAULTS
 # panels can offer unet_quantization="int8" exactly where the in-place converter
 # is wired, without a second hardcoded arch list in the frontend. The tuple is
 # owned by the module that implements the conversion.
-from core.models.common.int8_runtime_quantize import RUNTIME_INT8_ARCHS
+from core.models.common.int8_runtime_quantize import (
+    QUANTIZED_LINEAR_ARCHS, RUNTIME_INT8_ARCHS, arch_names,
+)
 
 # ---------------------------------------------------------------------------
 # Feature -> the parameter keys that "arm" it. When any of these keys is set
@@ -152,7 +154,11 @@ _add("acestep", "controlnets", "ControlNet is not supported for the ACE-Step aud
 # U-Net/transformer quantization (per-generation unet_quantization parameter):
 # not consumed by these architectures' pipeline backends. sd15/sdxl consume it
 # via move_unet_to_gpu(); zimage/flux2/anima/lens consume it via their own
-# transformer-quantization codepaths.
+# transformer-quantization codepaths. FLUX.2 is absent from this table on
+# purpose: it honours BOTH axes of the parameter -- the FP8 values through
+# move_flux2_transformer_to_gpu, and "int8" through the in-place runtime
+# conversion (Flux2Mixin._flux2_runtime_int8, RUNTIME_INT8_ARCHS) -- so there is
+# nothing to warn about for any value.
 _add("krea2", "unet_quantization",
      "FP8 quantization on this architecture is selected by checkpoint format at load time (bf16 or weight-only FP8 checkpoints); the only per-generation unet_quantization value applied is 'int8', which converts an unquantized transformer in place once per model load")
 _add_supported_values("krea2", "unet_quantization", ["int8"])
@@ -165,11 +171,12 @@ _add("ltx2", "unet_quantization",
 _add("acestep", "unet_quantization",
      "unet_quantization is not implemented for the ACE-Step audio model")
 
-# Quantized GEMM path (per-generation quantized_gemm_mode): only the three
+# Quantized GEMM path (per-generation quantized_gemm_mode): only the
 # architectures whose loaders swap in the weight-only quantized Linear classes
 # (Fp8Linear / Int8Linear) have any GEMM to select -- Ideogram 4 (FP8/nf4),
-# Krea 2 (FP8 or INT8) and Anima (INT8). Every other architecture stores plain
-# floating-point Linear weights, so the two process flags govern nothing there.
+# Krea 2 (FP8 or INT8), Anima (INT8) and FLUX.2 (INT8). Every other architecture
+# stores plain floating-point Linear weights, so the two process flags govern
+# nothing there.
 # This table is what the generation panels read (via
 # GET /schema/arch-capabilities) to decide whether to show the control at all,
 # so the arch set is declared HERE and nowhere else.
@@ -178,9 +185,18 @@ _add("acestep", "unet_quantization",
 # unquantized model's weights at load time to reduce VRAM. The two must not be
 # merged: krea2/ideogram4 are listed as NOT applying `unet_quantization` just
 # above, while they are exactly the archs that DO consume `quantized_gemm`.
-for _a in ["sd15", "sdxl", "zimage", "flux2", "lens", "minit2i", "ltx2", "acestep"]:
+#
+# DERIVED from QUANTIZED_LINEAR_ARCHS rather than written out, because the set
+# grows: FLUX.2 left this list the moment its loader gained the
+# Int8Linear/Fp8Linear swap and it joined RUNTIME_INT8_ARCHS, and the next arch
+# to be wired must not need an edit here to stop lying to the panels.
+_ALL_ARCHS = ["sd15", "sdxl"] + _DIT_ARCHS
+_QUANTIZED_GEMM_SUPPORTED = set(QUANTIZED_LINEAR_ARCHS)
+for _a in [a for a in _ALL_ARCHS if a not in _QUANTIZED_GEMM_SUPPORTED]:
     _add(_a, "quantized_gemm",
-         "this architecture's checkpoints hold plain floating-point Linear weights; the quantized-GEMM path selection applies only to the weight-only quantized Linear layers used by Ideogram 4, Krea 2 and Anima")
+         "this architecture's checkpoints hold plain floating-point Linear weights; the "
+         "quantized-GEMM path selection applies only to the weight-only quantized Linear "
+         f"layers used by {arch_names(QUANTIZED_LINEAR_ARCHS)}")
 
 # Text-encoder quantization: not applied on these architectures' text-encoder paths.
 for _a in ["sd15", "sdxl", "ideogram4", "minit2i", "krea2", "ltx2", "acestep"]:

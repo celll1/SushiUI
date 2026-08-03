@@ -159,7 +159,7 @@ paths:
               example:
                 unsupported:
                   sdxl:
-                    quantized_gemm: "this architecture's checkpoints hold plain floating-point Linear weights; the quantized-GEMM path selection applies only to the weight-only quantized Linear layers used by Ideogram 4, Krea 2 and Anima"
+                    quantized_gemm: "this architecture's checkpoints hold plain floating-point Linear weights; the quantized-GEMM path selection applies only to the weight-only quantized Linear layers used by Anima, FLUX.2, Ideogram 4 and Krea 2"
                   krea2:
                     unet_quantization: "FP8 quantization on this architecture is selected by checkpoint format at load time (bf16 or weight-only FP8 checkpoints); the only per-generation unet_quantization value applied is 'int8', which converts an unquantized transformer in place once per model load"
                 supported_values:
@@ -1587,7 +1587,7 @@ paths:
         `Int8Linear` / `Fp8Linear` modules. Both provenances count and are
         indistinguishable by then: a checkpoint that was already quantized, and
         a bf16 checkpoint converted in place at generation time
-        (`unet_quantization: "int8"` on anima / krea2, which is one-way until the
+        (`unet_quantization: "int8"` on anima / krea2 / flux2, which is one-way until the
         model is reloaded).
 
         `suggested_path` is a destination outside the loaded model's own
@@ -2420,7 +2420,7 @@ paths:
         what ran.
 
         Applies only to architectures whose checkpoints carry weight-only INT8
-        Linear weights. The Krea 2 and Anima loaders swap `Int8Linear`; the
+        Linear weights. The Krea 2, Anima and FLUX.2 loaders swap `Int8Linear`; the
         Ideogram 4 loader handles weight-only FP8 and nf4, not INT8. This setting
         is a no-op for every other architecture. Training processes are always on
         the dequantized matmul, independently of this setting.
@@ -5795,7 +5795,7 @@ components:
               type: string
           example:
             sdxl:
-              quantized_gemm: "this architecture's checkpoints hold plain floating-point Linear weights; the quantized-GEMM path selection applies only to the weight-only quantized Linear layers used by Ideogram 4, Krea 2 and Anima"
+              quantized_gemm: "this architecture's checkpoints hold plain floating-point Linear weights; the quantized-GEMM path selection applies only to the weight-only quantized Linear layers used by Anima, FLUX.2, Ideogram 4 and Krea 2"
         supported_values:
           type: object
           description: |

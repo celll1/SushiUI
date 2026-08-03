@@ -6,9 +6,71 @@ Author: Claude (2026-01-04)
 
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
 import torch
 import torch.nn as nn
+
+
+def count_quantized_linears(module: Optional[nn.Module]) -> int:
+    """Number of ``Int8Linear`` / ``Fp8Linear`` modules under ``module``.
+
+    Shared by every full-parameter adapter that can be handed a weight-only
+    quantized DiT (Anima, Ideogram 4, Krea 2): those module types hold
+    ``weight`` (and ``weight_scale``) as buffers, not ``nn.Parameter``s, so
+    they are invisible to both ``requires_grad_(True)`` and
+    ``named_parameters()``. Detecting them is the first half of
+    ``reject_quantized_base`` below.
+    """
+    if module is None:
+        return 0
+    try:
+        from core.models.ideogram4.vendor.int8_linear import Int8Linear
+        from core.models.ideogram4.vendor.fp8_linear import Fp8Linear
+    except Exception as e:
+        print(f"[quantized-base-guard] weight-only quant classes unavailable "
+              f"({e}); assuming an unquantized base")
+        return 0
+    return sum(1 for m in module.modules() if isinstance(m, (Int8Linear, Fp8Linear)))
+
+
+def reject_quantized_base(transformer: Optional[nn.Module], *, model_label: str) -> None:
+    """Refuse full fine-tuning on a weight-only quantized DiT base.
+
+    ``Int8Linear`` / ``Fp8Linear`` hold ``weight`` (and ``weight_scale``) as
+    BUFFERS, not ``nn.Parameter``s, precisely so an inference path cannot
+    accidentally build an optimizer state for a non-differentiable int8/fp8
+    tensor. The consequence for training is that ``requires_grad_(True)`` is
+    a no-op on them and ``named_parameters()`` never yields them, so a full
+    fine-tune of a quantized checkpoint would silently train only the layers
+    the quantized conversion skipped. Loss still falls, nothing errors, and
+    the saved checkpoint reloads: the failure is invisible from the outside,
+    which is why this is a hard refusal rather than a warning.
+
+    LoRA is unaffected and deliberately still allowed: ``LoRALinearLayer``
+    wraps the quantized module rather than differentiating through its
+    weight, and only the adapter's own float parameters are trained.
+
+    Conditional on the base actually being quantized: an unquantized bf16
+    checkpoint of the same architecture trains fine and must not be rejected.
+
+    Call this from BOTH ``prepare_models_for_training`` and
+    ``setup_trainable_parameters`` — a caller that builds the optimizer
+    without going through ``prepare_models_for_training`` first would
+    otherwise still get the silently-truncated parameter list this guard
+    exists to prevent.
+    """
+    n = count_quantized_linears(transformer)
+    if not n:
+        return
+    raise NotImplementedError(
+        f"{model_label} full fine-tuning requires a bf16 base transformer: this checkpoint is "
+        f"weight-only quantized ({n} Int8Linear/Fp8Linear layer(s)), and those layers "
+        f"store their weights as BUFFERS. They cannot receive gradients, so a full "
+        f"fine-tune would silently train only the layers the quantization skipped "
+        f"while reporting a normal, falling loss. Use LoRA on this checkpoint (that "
+        f"path works: the adapter wraps the quantized Linears), or select an "
+        f"unquantized bf16 {model_label} checkpoint for full fine-tuning."
+    )
 
 
 class BaseLoRAAdapter(ABC):

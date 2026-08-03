@@ -32,8 +32,9 @@ from typing import Dict, Optional, Tuple
 # Architectures whose live module has a single-file export layout.
 from core.models.common.quantized_export import (
     EXPORT_LAYOUTS,
+    combined_linear_inventory,
     export_quantized_transformer,
-    quantized_linear_inventory,
+    layout_module_specs,
 )
 
 
@@ -45,11 +46,17 @@ _job: Optional[Dict] = None
 # Target resolution
 # ---------------------------------------------------------------------------
 
-def _loaded_transformer(pipeline_manager) -> Tuple[Optional[str], Optional[object], Optional[str]]:
-    """``(arch, transformer_module, reason_it_is_unavailable)``.
+def _loaded_transformer(pipeline_manager) -> Tuple[Optional[str], Optional[list], Optional[str]]:
+    """``(arch, [(component name, module), ...], reason_it_is_unavailable)``.
 
     Only the architectures with an ``EXPORT_LAYOUTS`` entry are resolvable; any
-    other loaded model returns a reason rather than a module.
+    other loaded model returns a reason rather than modules.
+
+    The component NAMES come from the layout, not from a hardcoded
+    ``"transformer"``: an architecture that exports two transformers into one
+    file (Ideogram 4) declares both there, and every one of them must be present
+    or the export is refused -- half a model in a file that claims to be whole is
+    worse than no file.
     """
     info = getattr(pipeline_manager, "current_model_info", None) or {}
     arch = str(info.get("type") or "") or None
@@ -60,10 +67,13 @@ def _loaded_transformer(pipeline_manager) -> Tuple[Optional[str], Optional[objec
             f"single-file export is implemented for "
             f"{', '.join(sorted(EXPORT_LAYOUTS))}; the loaded model is '{arch}'")
     components = getattr(pipeline_manager, f"{arch}_components", None) or {}
-    model = components.get("transformer")
-    if model is None:
-        return arch, None, f"the loaded {arch} model exposes no transformer component"
-    return arch, model, None
+    modules = []
+    for name, _prefix in layout_module_specs(arch):
+        module = components.get(name)
+        if module is None:
+            return arch, None, f"the loaded {arch} model exposes no {name} component"
+        modules.append((name, module))
+    return arch, modules, None
 
 
 def _model_source(pipeline_manager) -> Optional[str]:
@@ -144,14 +154,14 @@ def job_is_running() -> bool:
 
 def export_status(pipeline_manager) -> Dict:
     """The document ``GET /models/export-quantized`` returns."""
-    arch, model, reason = _loaded_transformer(pipeline_manager)
+    arch, modules, reason = _loaded_transformer(pipeline_manager)
     inventory = {"int8": 0, "e4m3": 0, "plain": 0, "total": 0}
     source = _model_source(pipeline_manager)
     suggested = None
     exportable = False
-    if model is not None:
+    if modules is not None:
         try:
-            full = quantized_linear_inventory(model)
+            full = combined_linear_inventory(modules)
         except RuntimeError as exc:
             # The module tree changed under the walk -- an in-place runtime
             # conversion is replacing Linears right now. Transient: this is a
@@ -211,10 +221,10 @@ def start_export(
     """Validate, then start the worker thread. Returns the initial job document."""
     global _job
 
-    arch, model, reason = _loaded_transformer(pipeline_manager)
-    if model is None:
+    arch, modules, reason = _loaded_transformer(pipeline_manager)
+    if modules is None:
         raise ExportUnavailableError(reason or "no exportable model is loaded")
-    inventory = quantized_linear_inventory(model)
+    inventory = combined_linear_inventory(modules)
     if not (inventory["int8"] or inventory["e4m3"]):
         raise ExportUnavailableError(
             "the loaded transformer owns no weight-only quantized Linear layers")
@@ -254,7 +264,7 @@ def start_export(
 
     thread = threading.Thread(
         target=_run_export,
-        args=(pipeline_manager, job_id, arch, model, output_path),
+        args=(pipeline_manager, job_id, arch, modules, output_path),
         kwargs={"link_siblings": link_siblings, "overwrite": overwrite,
                 "source": source, "source_root": source_root},
         name=f"quant-export-{job_id}",
@@ -271,7 +281,7 @@ def _update(job_id: str, **fields) -> None:
         _job.update(fields)
 
 
-def _run_export(pipeline_manager, job_id, arch, model, output_path, *,
+def _run_export(pipeline_manager, job_id, arch, modules, output_path, *,
                 link_siblings, overwrite, source, source_root):
     def progress(done: int, total: int, key: str) -> None:
         _update(job_id, processed=done, total=total, message=f"writing {key}")
@@ -280,7 +290,8 @@ def _run_export(pipeline_manager, job_id, arch, model, output_path, *,
         config = None
         if arch == "krea2":
             try:
-                config = dict(getattr(model, "config", {}) or {})
+                # The PRIMARY component's config; krea2 has exactly one.
+                config = dict(getattr(modules[0][1], "config", {}) or {})
             except Exception:
                 config = None
 
@@ -299,7 +310,7 @@ def _run_export(pipeline_manager, job_id, arch, model, output_path, *,
         try:
             _update(job_id, message="writing")
             result = export_quantized_transformer(
-                model,
+                modules,
                 arch,
                 output_path,
                 config=config,

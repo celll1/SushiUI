@@ -254,6 +254,15 @@ def load_lens_single_file(
         (k[len("net."):] if k.startswith("net.") else k): v
         for k, v in raw.items() if not k.startswith("first_stage_model.")
     }
+    # strict=False is right here (the base transformer is being OVERRIDDEN, and a
+    # bundle may legitimately omit sections) and fatal for one input: a
+    # weight-only quantized DiT would land every .weight_scale in unexpected_keys
+    # and cast its int8/e4m3 codes into the base bf16 parameters, i.e. load
+    # "successfully" into a silently wrong model. Lens has no quantized-Linear
+    # swap, so refuse instead.
+    from core.models.common.quantized_checkpoint_guard import refuse_quantized_state_dict
+    refuse_quantized_state_dict(dit_sd, arch="lens", path=dit_path, label="DiT")
+
     info = components["transformer"].load_state_dict(dit_sd, strict=False)
     missing = getattr(info, "missing_keys", [])
     unexpected = getattr(info, "unexpected_keys", [])

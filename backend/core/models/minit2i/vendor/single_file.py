@@ -99,6 +99,15 @@ def load_single_file(path: str, torch_dtype: torch.dtype = torch.bfloat16):
     if not tf_sd:
         raise ValueError(f"[MiniT2I single-file] no '{TRANSFORMER_PREFIX}*' keys in {path}")
 
+    # The strict=False load below is already followed by a hard raise on missing
+    # OR unexpected keys, so a quantized checkpoint does not load silently here.
+    # The guard runs FIRST -- before shape-based variant detection, which would
+    # otherwise report a confusing geometry error on int8 tensors -- so the
+    # failure names the actual cause: a weight-only quantized file MiniT2I cannot
+    # read.
+    from core.models.common.quantized_checkpoint_guard import refuse_quantized_state_dict
+    refuse_quantized_state_dict(tf_sd, arch="minit2i", path=path)
+
     # Prefer metadata config; else detect from shapes.
     variant = metadata.get("variant")
     config = None

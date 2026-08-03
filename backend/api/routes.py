@@ -5449,6 +5449,71 @@ async def load_model(
         print(f"Error loading model: {error_detail}")
         raise HTTPException(status_code=500, detail=str(e))
 
+class QuantizedExportRequest(BaseModel):
+    """Body of ``POST /models/export-quantized``."""
+    output_path: str
+    link_siblings: bool = True
+    overwrite: bool = False
+
+
+@router.get("/models/export-quantized")
+async def get_quantized_export_status():
+    """Report whether the loaded transformer can be exported, and any job state.
+
+    ``exportable`` is true exactly when the loaded model owns weight-only
+    quantized Linear layers — from the checkpoint itself or from an in-place
+    runtime conversion, which are indistinguishable by then and equally
+    exportable. ``inventory`` is the per-format module census and
+    ``suggested_path`` a destination outside the loaded model's own tree.
+    """
+    try:
+        from api.quantized_export_job import export_status
+        return export_status(pipeline_manager)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/models/export-quantized")
+async def start_quantized_export(request: QuantizedExportRequest):
+    """Write the loaded quantized transformer to a single file (async job).
+
+    Refuses with 409 while an image generation or a training run is in flight
+    (the export must describe one settled model state) or while another export
+    job is running. The worker holds the model-load lock for the whole write.
+    """
+    from api.quantized_export_job import (
+        ExportBusyError, ExportUnavailableError, job_is_running, start_export,
+    )
+
+    if job_is_running():
+        raise HTTPException(
+            status_code=409,
+            detail="A quantized-model export is already running; wait for it to finish.")
+    busy = _fp8_scaled_mm_busy_reason()
+    if busy:
+        raise HTTPException(
+            status_code=409,
+            detail=(f"Cannot export the quantized model while {busy}. The export reads "
+                    f"the live transformer, so it must describe one settled state."))
+    try:
+        return start_export(
+            pipeline_manager,
+            request.output_path,
+            link_siblings=bool(request.link_siblings),
+            overwrite=bool(request.overwrite),
+        )
+    except ExportBusyError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except ExportUnavailableError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/models/upload")
 async def upload_model(file: UploadFile = File(...)):
     """Upload a safetensors model file"""

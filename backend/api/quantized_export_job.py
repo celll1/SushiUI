@@ -1,0 +1,324 @@
+"""Background job that writes the LOADED, weight-only quantized transformer to disk.
+
+Backs ``GET`` / ``POST /api/v1/models/export-quantized``.
+
+WHY A JOB AND NOT A PLAIN REQUEST
+---------------------------------
+The write is a multi-GB, multi-minute, CPU-bound operation (an int8 Krea 2
+transformer is ~12 GB). Doing it inside the request would hold the event loop's
+executor for minutes and give the user no progress. So: a single worker thread,
+a polled status document, and a hard refusal to start a second one.
+
+SERIALIZATION
+-------------
+The worker holds ``pipeline_manager._load_model_lock`` for the whole write. That
+is the same lock ``load_model`` takes, so a model (re)load cannot swap the
+transformer out from under a running export -- the one interleaving that would
+produce a file mixing two models. Generations do NOT take that lock, which is
+why the START path additionally refuses while a generation or a training run is
+in flight (``_fp8_scaled_mm_busy_reason``): a generation mutates component
+device placement and (for a not-yet-converted model) can convert layers in
+place, and an export must describe one settled state.
+"""
+
+from __future__ import annotations
+
+import os
+import threading
+import time
+import uuid
+from typing import Dict, Optional, Tuple
+
+# Architectures whose live module has a single-file export layout.
+from core.models.common.quantized_export import (
+    EXPORT_LAYOUTS,
+    export_quantized_transformer,
+    quantized_linear_inventory,
+)
+
+
+_lock = threading.Lock()
+_job: Optional[Dict] = None
+
+
+# ---------------------------------------------------------------------------
+# Target resolution
+# ---------------------------------------------------------------------------
+
+def _loaded_transformer(pipeline_manager) -> Tuple[Optional[str], Optional[object], Optional[str]]:
+    """``(arch, transformer_module, reason_it_is_unavailable)``.
+
+    Only the architectures with an ``EXPORT_LAYOUTS`` entry are resolvable; any
+    other loaded model returns a reason rather than a module.
+    """
+    info = getattr(pipeline_manager, "current_model_info", None) or {}
+    arch = str(info.get("type") or "") or None
+    if not arch:
+        return None, None, "no model is loaded"
+    if arch not in EXPORT_LAYOUTS:
+        return arch, None, (
+            f"single-file export is implemented for "
+            f"{', '.join(sorted(EXPORT_LAYOUTS))}; the loaded model is '{arch}'")
+    components = getattr(pipeline_manager, f"{arch}_components", None) or {}
+    model = components.get("transformer")
+    if model is None:
+        return arch, None, f"the loaded {arch} model exposes no transformer component"
+    return arch, model, None
+
+
+def _model_source(pipeline_manager) -> Optional[str]:
+    info = getattr(pipeline_manager, "current_model_info", None) or {}
+    source = info.get("source")
+    return str(source) if source else None
+
+
+def _source_root(arch: str, source: Optional[str]) -> Optional[str]:
+    """The directory a sibling junction set should be taken from.
+
+    Anima's loader walks UP from the DiT file to a ``split_files`` parent, so the
+    root is that parent, not the DiT's own directory.
+    """
+    if not source or not os.path.exists(source):
+        return None
+    if arch == "anima":
+        try:
+            from core.models.anima.anima_loader import detect_anima_split_layout
+            layout = detect_anima_split_layout(source)
+            if layout and layout.get("root"):
+                return str(layout["root"])
+        except Exception:
+            pass
+    return source if os.path.isdir(source) else os.path.dirname(source)
+
+
+def _default_export_root() -> str:
+    from config.settings import settings
+    return os.path.join(settings.models_dir, "quantized_exports")
+
+
+def suggested_output_path(arch: str, source: Optional[str], inventory: Dict) -> str:
+    """A pre-fillable destination for ``arch``.
+
+    Under the repo's own ``models/quantized_exports/`` (never inside the loaded
+    model's own directory tree — those roots hold vanilla checkpoints and their
+    siblings are loader completion sources), in the SUBDIRECTORY the arch's
+    loader needs (Anima: ``split_files/diffusion_models``).
+    """
+    stem = "model"
+    if source:
+        base = os.path.basename(source.rstrip("\\/"))
+        if base.endswith(".safetensors"):
+            base = base[: -len(".safetensors")]
+        stem = base or stem
+    suffix = "int8" if inventory.get("int8") else "fp8"
+    stem = f"{stem}_{suffix}"
+    subdir = str(EXPORT_LAYOUTS[arch].get("output_subdir", "") or "")
+    directory = os.path.join(_default_export_root(), stem, subdir) if subdir \
+        else os.path.join(_default_export_root(), stem)
+    return os.path.normpath(os.path.join(directory, f"{stem}.safetensors"))
+
+
+def _is_inside(child: str, parent: str) -> bool:
+    try:
+        return os.path.commonpath([os.path.abspath(child), os.path.abspath(parent)]) \
+            == os.path.abspath(parent)
+    except ValueError:  # different drives
+        return False
+
+
+# ---------------------------------------------------------------------------
+# Status
+# ---------------------------------------------------------------------------
+
+def _job_snapshot() -> Dict:
+    with _lock:
+        if _job is None:
+            return {"state": "idle"}
+        return dict(_job)
+
+
+def job_is_running() -> bool:
+    with _lock:
+        return _job is not None and _job.get("state") == "running"
+
+
+def export_status(pipeline_manager) -> Dict:
+    """The document ``GET /models/export-quantized`` returns."""
+    arch, model, reason = _loaded_transformer(pipeline_manager)
+    inventory = {"int8": 0, "e4m3": 0, "plain": 0, "total": 0}
+    source = _model_source(pipeline_manager)
+    suggested = None
+    exportable = False
+    if model is not None:
+        try:
+            full = quantized_linear_inventory(model)
+        except RuntimeError as exc:
+            # The module tree changed under the walk -- an in-place runtime
+            # conversion is replacing Linears right now. Transient: this is a
+            # polled status, so report it and let the next poll settle it,
+            # rather than 500-ing the whole endpoint.
+            return {
+                "exportable": False,
+                "reason": f"the transformer is being modified right now ({exc})",
+                "arch": arch,
+                "source": source,
+                "inventory": inventory,
+                "has_runtime_audit": bool(getattr(pipeline_manager, "_runtime_int8_audit", None)),
+                "suggested_path": None,
+                "job": _job_snapshot(),
+            }
+        inventory = {k: full[k] for k in ("int8", "e4m3", "plain", "total")}
+        if inventory["int8"] or inventory["e4m3"]:
+            exportable = True
+            suggested = suggested_output_path(arch, source, inventory)
+        else:
+            reason = (
+                "the loaded transformer owns no weight-only quantized Linear layers "
+                "(load a checkpoint that is already quantized, or generate once with "
+                "INT8 quantization requested to convert it in place)")
+    audit = getattr(pipeline_manager, "_runtime_int8_audit", None)
+    return {
+        "exportable": exportable,
+        "reason": reason,
+        "arch": arch,
+        "source": source,
+        "inventory": inventory,
+        "has_runtime_audit": bool(audit),
+        "suggested_path": suggested,
+        "job": _job_snapshot(),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Start
+# ---------------------------------------------------------------------------
+
+class ExportBusyError(RuntimeError):
+    """Something else is using the model; the export must not start."""
+
+
+class ExportUnavailableError(ValueError):
+    """The loaded model cannot be exported (nothing quantized, wrong arch, ...)."""
+
+
+def start_export(
+    pipeline_manager,
+    output_path: str,
+    *,
+    link_siblings: bool = True,
+    overwrite: bool = False,
+) -> Dict:
+    """Validate, then start the worker thread. Returns the initial job document."""
+    global _job
+
+    arch, model, reason = _loaded_transformer(pipeline_manager)
+    if model is None:
+        raise ExportUnavailableError(reason or "no exportable model is loaded")
+    inventory = quantized_linear_inventory(model)
+    if not (inventory["int8"] or inventory["e4m3"]):
+        raise ExportUnavailableError(
+            "the loaded transformer owns no weight-only quantized Linear layers")
+
+    output_path = os.path.abspath(os.path.expanduser(str(output_path or "").strip()))
+    if not output_path.endswith(".safetensors"):
+        raise ExportUnavailableError("the destination must end in '.safetensors'")
+
+    source = _model_source(pipeline_manager)
+    source_root = _source_root(arch, source)
+    if source_root and _is_inside(output_path, source_root):
+        raise ExportUnavailableError(
+            f"refusing to write the export inside the loaded model's own directory "
+            f"({source_root}): that tree holds the source checkpoint and the sibling "
+            f"directories the loader completes from. Choose a separate destination.")
+
+    with _lock:
+        if _job is not None and _job.get("state") == "running":
+            raise ExportBusyError(
+                f"an export to {_job.get('output_path')} is already running")
+        job_id = uuid.uuid4().hex[:12]
+        _job = {
+            "job_id": job_id,
+            "state": "running",
+            "arch": arch,
+            "output_path": output_path,
+            "written_path": None,
+            "processed": 0,
+            "total": 0,
+            "message": "starting",
+            "error": None,
+            "result": None,
+            "started_at": time.time(),
+            "finished_at": None,
+        }
+        snapshot = dict(_job)
+
+    thread = threading.Thread(
+        target=_run_export,
+        args=(pipeline_manager, job_id, arch, model, output_path),
+        kwargs={"link_siblings": link_siblings, "overwrite": overwrite,
+                "source": source, "source_root": source_root},
+        name=f"quant-export-{job_id}",
+        daemon=True,
+    )
+    thread.start()
+    return snapshot
+
+
+def _update(job_id: str, **fields) -> None:
+    with _lock:
+        if _job is None or _job.get("job_id") != job_id:
+            return
+        _job.update(fields)
+
+
+def _run_export(pipeline_manager, job_id, arch, model, output_path, *,
+                link_siblings, overwrite, source, source_root):
+    def progress(done: int, total: int, key: str) -> None:
+        _update(job_id, processed=done, total=total, message=f"writing {key}")
+
+    try:
+        config = None
+        if arch == "krea2":
+            try:
+                config = dict(getattr(model, "config", {}) or {})
+            except Exception:
+                config = None
+
+        audit = getattr(pipeline_manager, "_runtime_int8_audit", None)
+        audit_note = None
+        if not audit:
+            audit_note = (
+                "no per-layer audit exists for this module: the quantized layers came "
+                "from the loaded checkpoint, not from an in-place conversion in this "
+                "session")
+
+        load_lock = getattr(pipeline_manager, "_load_model_lock", None)
+        _update(job_id, message="waiting for the model lock")
+        if load_lock is not None:
+            load_lock.acquire()
+        try:
+            _update(job_id, message="writing")
+            result = export_quantized_transformer(
+                model,
+                arch,
+                output_path,
+                config=config,
+                audit=audit,
+                audit_note=audit_note,
+                source=source,
+                link_siblings_from=source_root if link_siblings else None,
+                progress_cb=progress,
+                overwrite=overwrite,
+            )
+        finally:
+            if load_lock is not None:
+                load_lock.release()
+
+        _update(job_id, state="completed", result=result,
+                written_path=result.get("output_path"),
+                message="completed", finished_at=time.time())
+    except BaseException as exc:  # noqa: BLE001 - reported verbatim to the user
+        import traceback
+        traceback.print_exc()
+        _update(job_id, state="failed", error=f"{type(exc).__name__}: {exc}",
+                message="failed", finished_at=time.time())

@@ -2444,6 +2444,73 @@ export const setInt8Mm = async (enabled: boolean): Promise<Int8MmState> => {
   return response.data;
 };
 
+/** Per-format census of the loaded transformer's Linear modules. */
+export interface QuantizedExportInventory {
+  /** Int8Linear modules (int8 weight + per-row float32 scale). */
+  int8: number;
+  /** Fp8Linear modules (float8_e4m3fn weight + per-row float32 scale). */
+  e4m3: number;
+  /** Unquantized nn.Linear modules. */
+  plain: number;
+  total: number;
+}
+
+/**
+ * Export job document. Before the first export of a backend process this is
+ * just `{ state: "idle" }`; every other field appears once a job has started.
+ */
+export interface QuantizedExportJob {
+  job_id?: string;
+  state: "idle" | "running" | "completed" | "failed";
+  arch?: string | null;
+  output_path?: string;
+  /** The `.safetensors`, or the `.safetensors.index.json` of a sharded export. */
+  written_path?: string | null;
+  processed?: number;
+  total?: number;
+  message?: string;
+  error?: string | null;
+  result?: Record<string, any> | null;
+  started_at?: number;
+  finished_at?: number | null;
+}
+
+export interface QuantizedExportStatus {
+  /** True when the loaded transformer owns quantized Linear modules. */
+  exportable: boolean;
+  /** Why it is not exportable; null when it is. */
+  reason: string | null;
+  arch: string | null;
+  source: string | null;
+  inventory: QuantizedExportInventory;
+  /**
+   * True when this session converted the model in place, so a per-layer audit
+   * document exists and is written next to the export.
+   */
+  has_runtime_audit: boolean;
+  suggested_path: string | null;
+  job: QuantizedExportJob;
+}
+
+export const getQuantizedExportStatus = async (): Promise<QuantizedExportStatus> => {
+  const response = await api.get("/models/export-quantized");
+  return response.data;
+};
+
+/**
+ * Start the export job. Throws on 409 while a generation, a training run or
+ * another export is in flight, and on 400 for an unexportable model or an
+ * invalid destination.
+ */
+export const startQuantizedExport = async (params: {
+  output_path: string;
+  link_siblings?: boolean;
+  overwrite?: boolean;
+}): Promise<QuantizedExportJob> => {
+  const response = await api.post("/models/export-quantized", params);
+  return response.data;
+};
+
 export const getControlNets = async () => {
   const response = await api.get("/controlnets");
   return response.data;

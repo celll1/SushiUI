@@ -5,6 +5,7 @@ import Card from "./Card";
 import ModelSelector from "./ModelSelector";
 import VisionEncoderSelector from "./VisionEncoderSelector";
 import VaeOverrideSelector from "./VaeOverrideSelector";
+import QuantizedExportSection from "./QuantizedExportSection";
 import TextEncoderOverrideSelector from "./TextEncoderOverrideSelector";
 import Select from "./Select";
 import NumberInput from "./NumberInput";
@@ -172,6 +173,13 @@ export default function ModelLoadSection({
   return (
     <>
       <ModelSelector onModelLoad={handleModelLoad} />
+
+      {/* Renders itself only when the loaded transformer owns quantized
+          Linear layers (checkpoint-loaded or converted in place this session). */}
+      <QuantizedExportSection
+        arch={modelType ?? null}
+        storageKeyPrefix={storageKeyPrefix}
+      />
 
       <Card
         title="Component overrides"

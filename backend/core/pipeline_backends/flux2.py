@@ -183,6 +183,52 @@ def set_flux2_attention_backend(transformer, backend, attention_impl="diffusers"
 class Flux2Mixin:
     """Flux2Mixin: flux2 backend methods extracted verbatim from pipeline.py."""
 
+    def _flux2_runtime_int8(self, params: Dict[str, Any], transformer,
+                            progress_callback=None):
+        """Apply the one-time in-place INT8 conversion, if this request asks for it.
+
+        Returns the transformer (the SAME object -- the conversion replaces child
+        modules in place and never builds a second one; a 3.6 GB bf16 Klein 4B
+        would not tolerate the ``copy.deepcopy`` the legacy FP8 path uses, and a
+        9B still less).
+
+        ORDERING, which is load-bearing rather than incidental:
+
+        * BEFORE the block-swap wrapper and ``create_flux_block_offloader``. The
+          offloader captures references to each block's Linear modules and builds
+          pinned CPU masters from their weights; converting afterwards would
+          replace the modules it holds and strand it on the pre-conversion ones.
+          Asserted below rather than assumed, because the failure is silent.
+        * BEFORE staging. ``move_flux2_transformer_to_gpu`` is only reached in the
+          NO-block-swap branch, so quantizing there would leave a block-swapped
+          generation unquantized; here it happens on whatever device the module
+          currently sits on (the converter is device-aware).
+        * AFTER LoRA loading, which is where LoRAs are applied for FLUX.2. A
+          LoRA-wrapped transformer is REFUSED by the converter (the wrappers hide
+          the Linears, so the selection would differ from the offline audit) and
+          the user gets a warning; that is the same contract Krea 2 has.
+        """
+        from core.vram_optimization import apply_runtime_int8_quantization
+
+        if transformer is None:
+            return transformer
+        # Checked, not asserted: `python -O` strips an assert, and this is the one
+        # invariant whose violation is invisible (a conversion that "succeeded"
+        # while the offloader still streams the pre-conversion weights).
+        if getattr(self, "_flux2_active_block_offloader", None) is not None:
+            raise RuntimeError(
+                "FLUX.2 INT8 conversion was reached while a block offloader is still "
+                "active. It must run BEFORE the offloader is created: the offloader "
+                "holds references to each block's Linear modules, and the conversion "
+                "replaces those modules, so afterwards it would stream the original "
+                "bf16 weights into modules nothing reads.")
+        model, _converted = apply_runtime_int8_quantization(
+            self, transformer, "flux2", params.get("unet_quantization"),
+            label="FLUX.2 Transformer", progress_callback=progress_callback)
+        if self.flux2_components is not None:
+            self.flux2_components["transformer"] = model
+        return model
+
     def _load_lora_flux2(self, lora_configs: List[Dict]):
         """Load LoRAs for FLUX.2 Transformer
 
@@ -215,6 +261,12 @@ class Flux2Mixin:
 
         # Use global lora_manager instance (has user-configured additional_dirs)
         from core.extensions.lora_manager import lora_manager
+        # NOT ``isinstance(x, torch.nn.Linear)`` below: after a runtime INT8
+        # conversion (unet_quantization="int8") the very layers a LoRA targets are
+        # Int8Linear / Fp8Linear, which are nn.Module but NOT nn.Linear
+        # subclasses. The naive test skips every one of them silently -- the LoRA
+        # loads, reports a small applied count and does nothing.
+        from core.training.adapters.base_adapter import is_lora_wrappable_linear
 
         print(f"[FLUX.2 LoRA] Loading {len(lora_configs)} LoRA(s)...")
 
@@ -270,7 +322,7 @@ class Flux2Mixin:
                         for attr_name in ["to_q", "to_k", "to_v"]:
                             if hasattr(module, attr_name):
                                 original_linear = getattr(module, attr_name)
-                                if isinstance(original_linear, torch.nn.Linear):
+                                if is_lora_wrappable_linear(original_linear):
                                     # Build LoRA key using training adapter's naming convention
                                     lora_name = f"lora_transformer_{name.replace('.', '_')}_{attr_name}"
                                     lora_down_key = f"{lora_name}.lora_down.weight"
@@ -292,7 +344,7 @@ class Flux2Mixin:
 
                         # to_out (ModuleList) - uses same effective_strength computed above
                         if hasattr(module, "to_out") and isinstance(module.to_out, torch.nn.ModuleList):
-                            if len(module.to_out) > 0 and isinstance(module.to_out[0], torch.nn.Linear):
+                            if len(module.to_out) > 0 and is_lora_wrappable_linear(module.to_out[0]):
                                 lora_name = f"lora_transformer_{name.replace('.', '_')}_to_out_0"
                                 lora_down_key = f"{lora_name}.lora_down.weight"
                                 lora_up_key = f"{lora_name}.lora_up.weight"
@@ -315,7 +367,7 @@ class Flux2Mixin:
                         for attr_name in ["add_q_proj", "add_k_proj", "add_v_proj", "to_add_out"]:
                             if hasattr(module, attr_name):
                                 original_linear = getattr(module, attr_name)
-                                if isinstance(original_linear, torch.nn.Linear):
+                                if is_lora_wrappable_linear(original_linear):
                                     lora_name = f"lora_transformer_{name.replace('.', '_')}_{attr_name}"
                                     lora_down_key = f"{lora_name}.lora_down.weight"
                                     lora_up_key = f"{lora_name}.lora_up.weight"
@@ -344,7 +396,7 @@ class Flux2Mixin:
                         # Fused QKV + MLP projection
                         if hasattr(module, "to_qkv_mlp_proj"):
                             original_linear = module.to_qkv_mlp_proj
-                            if isinstance(original_linear, torch.nn.Linear):
+                            if is_lora_wrappable_linear(original_linear):
                                 lora_name = f"lora_transformer_{name.replace('.', '_')}_to_qkv_mlp_proj"
                                 lora_down_key = f"{lora_name}.lora_down.weight"
                                 lora_up_key = f"{lora_name}.lora_up.weight"
@@ -364,7 +416,7 @@ class Flux2Mixin:
                                         applied_count += 1
 
                         # Output projection (fused attention + MLP) - uses same effective_strength
-                        if hasattr(module, "to_out") and isinstance(module.to_out, torch.nn.Linear):
+                        if hasattr(module, "to_out") and is_lora_wrappable_linear(module.to_out):
                             lora_name = f"lora_transformer_{name.replace('.', '_')}_to_out"
                             lora_down_key = f"{lora_name}.lora_down.weight"
                             lora_up_key = f"{lora_name}.lora_up.weight"
@@ -393,7 +445,7 @@ class Flux2Mixin:
                         for attr_name in ["linear_in", "linear_out"]:
                             if hasattr(module, attr_name):
                                 original_linear = getattr(module, attr_name)
-                                if isinstance(original_linear, torch.nn.Linear):
+                                if is_lora_wrappable_linear(original_linear):
                                     lora_name = f"lora_transformer_{name.replace('.', '_')}_{attr_name}"
                                     lora_down_key = f"{lora_name}.lora_down.weight"
                                     lora_up_key = f"{lora_name}.lora_up.weight"
@@ -484,9 +536,17 @@ class Flux2Mixin:
             true_original, rank=rank, alpha=alpha_value, lora_name=module_key
         )
 
-        # Load pretrained weights
+        # Load pretrained weights.
+        # The LoRA branch computes in the BASE weight's dtype -- except when the
+        # base is weight-only quantized, where that dtype is int8 or e4m3 and
+        # copying the adapter into it would quantize the adapter itself (int8:
+        # 254 levels over its own amax; e4m3: ~2.6e-02 relative error). Both
+        # quantized bases produce bf16 from a bf16 activation, so the branch uses
+        # bf16 too. Same rule as krea2_lora.apply_lora_group.
+        from core.training.adapters.base_adapter import lora_branch_dtype
+
         device = true_original.weight.device
-        dtype = true_original.weight.dtype
+        dtype = lora_branch_dtype(true_original)
 
         with torch.no_grad():
             lora_wrapper.lora_down.weight.data = lora_down_weight.to(device=device, dtype=dtype)
@@ -905,6 +965,14 @@ class Flux2Mixin:
             # ============================================================
             print("[FLUX.2] Stage 3: Denoising loop...")
             _t_denoise = _time.perf_counter()
+
+            # One-time in-place INT8 conversion (unet_quantization="int8"). MUST be
+            # here: before the block offloader is built (it captures the Linear
+            # modules this replaces) and before staging (move_flux2_transformer_to_gpu
+            # is only reached in the no-block-swap branch below). No-op for every
+            # other value and for an already-converted / already-quantized model.
+            transformer = self._flux2_runtime_int8(
+                params, transformer, progress_callback=progress_callback)
 
             # Block Swap setup
             enable_block_swap = params.get("enable_block_swap", False)
@@ -2497,6 +2565,14 @@ class Flux2Mixin:
             print("[FLUX.2] Stage 4: Denoising loop...")
             _t_denoise = _time.perf_counter()
 
+            # One-time in-place INT8 conversion (unet_quantization="int8"). MUST be
+            # here: before the block offloader is built (it captures the Linear
+            # modules this replaces) and before staging (move_flux2_transformer_to_gpu
+            # is only reached in the no-block-swap branch below). No-op for every
+            # other value and for an already-converted / already-quantized model.
+            transformer = self._flux2_runtime_int8(
+                params, transformer, progress_callback=progress_callback)
+
             # Block Swap setup
             enable_block_swap = params.get("enable_block_swap", False)
             blocks_to_swap = params.get("blocks_to_swap", 0) if enable_block_swap else 0
@@ -3362,6 +3438,14 @@ class Flux2Mixin:
             # ============================================================
             print("[FLUX.2] Stage 4: Denoising loop with mask blending...")
             _t_denoise = _time.perf_counter()
+
+            # One-time in-place INT8 conversion (unet_quantization="int8"). MUST be
+            # here: before the block offloader is built (it captures the Linear
+            # modules this replaces) and before staging (move_flux2_transformer_to_gpu
+            # is only reached in the no-block-swap branch below). No-op for every
+            # other value and for an already-converted / already-quantized model.
+            transformer = self._flux2_runtime_int8(
+                params, transformer, progress_callback=progress_callback)
 
             # Block Swap setup
             enable_block_swap = params.get("enable_block_swap", False)

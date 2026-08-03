@@ -310,7 +310,8 @@ def move_unet_to_gpu(pipeline, quantization: Optional[str] = None, use_torch_com
     if quantization in [None, "", "none"]:
         quantization = None
 
-    # INT8 is an anima/krea2-only path (see _refuse_runtime_int8_elsewhere).
+    # INT8 is a DiT-only path (RUNTIME_INT8_ARCHS: anima / krea2 / flux2; see
+    # _refuse_runtime_int8_elsewhere, whose message renders that tuple).
     # Refused HERE rather than in _quantize_unet so the request never pays for
     # the copy.deepcopy that the unsupported-type branch would do first.
     if _refuse_runtime_int8_elsewhere(quantization, "U-Net"):
@@ -828,11 +829,38 @@ def move_flux2_transformer_to_gpu(transformer, quantization: Optional[str] = Non
     if quantization in [None, "", "none"]:
         quantization = None
 
-    if _refuse_runtime_int8_elsewhere(quantization, "FLUX.2 Transformer"):
+    # INT8 is NOT handled here. FLUX.2 is one of RUNTIME_INT8_ARCHS, and its
+    # conversion runs IN PLACE from Flux2Mixin._flux2_runtime_int8 before the
+    # transformer is staged -- necessarily so, because block swap never calls
+    # this function at all (it streams weights per block) and would otherwise
+    # never quantize. By the time the module reaches here there is nothing left
+    # to do but move it, so the request degrades to a plain move rather than to
+    # the "unsupported on this architecture" refusal it used to get.
+    if _normalize_quantization(quantization) == RUNTIME_INT8_VALUE:
         quantization = None
 
     if transformer is None:
         return transformer
+
+    # Legacy FP8 path, superseded for an already-quantized module. Reaching
+    # _quantize_transformer with weight-only quantized Linears would deep-copy the
+    # whole transformer (3.6 GB bf16 for Klein 4B, more for a 9B) and then convert
+    # nothing: Int8Linear / Fp8Linear are not nn.Linear subclasses, so its
+    # isinstance loop skips every one of them. The copy would be the only effect.
+    # Same condition and same warning code as _anima_quantize_fp8's.
+    if quantization:
+        owned = _already_weight_only_quantized(transformer)
+        if owned:
+            print(f"[Quantization] FLUX.2 Transformer already holds {owned} weight-only "
+                  f"quantized Linear layer(s); ignoring the runtime '{quantization}' request "
+                  f"(they already store their weights in 8 bits, with per-row scales).")
+            _add_generation_warning(
+                f"FLUX.2 Transformer quantization '{quantization}' was ignored: the "
+                f"transformer is already weight-only quantized ({owned} layers).",
+                code="quantization_superseded",
+            )
+            transformer.to('cuda:0', non_blocking=False)
+            return transformer
 
     # Fast path: No quantization (most common case)
     if not quantization:
@@ -893,11 +921,16 @@ def _anima_patch_linear_fp8(linear, fp8_dtype):
     linear.forward = patched_forward
 
 
-def _anima_already_weight_only_quantized(model) -> int:
+def _already_weight_only_quantized(model) -> int:
     """Count ``Int8Linear`` / ``Fp8Linear`` modules under ``model``.
 
-    Non-zero means the checkpoint was quantized OFFLINE (per-output-row scales,
-    swapped in by ``anima_loader._swap_quantized_linears``) and already owns the
+    ARCH-AGNOSTIC despite its Anima-shaped history: it is now also what
+    ``move_flux2_transformer_to_gpu`` asks before deep-copying for the legacy FP8
+    path. Non-zero means the module owns weight-only quantized Linears -- from an
+    offline-quantized checkpoint (per-output-row scales, swapped in by
+    ``anima_loader._swap_quantized_linears`` /
+    ``model_loader._swap_flux2_quantized_linears``) or from an in-place runtime
+    conversion -- and already owns the
     superior path: a real W8A8 GEMM where the shape gates allow, and a dequant
     matmul otherwise. Detection is by module type, not by weight dtype, so it
     cannot be confused by a checkpoint that merely happens to store float8.
@@ -914,7 +947,8 @@ def _anima_already_weight_only_quantized(model) -> int:
 # Runtime INT8: quantize an ordinary bf16 checkpoint IN PLACE, once per load
 # ---------------------------------------------------------------------------
 #
-# ``unet_quantization="int8"`` on an UNQUANTIZED anima / krea2 model converts the
+# ``unet_quantization="int8"`` on an UNQUANTIZED model of any arch in
+# RUNTIME_INT8_ARCHS (anima / krea2 / flux2) converts the
 # loaded transformer to the same MIXED int8/e4m3 layout the offline tool
 # (``subapps/fp8_quantize/quantize_transformer_fp8.py --format int8``) writes,
 # using the SAME selection rule -- both import it from
@@ -1292,12 +1326,12 @@ def _anima_quantize_fp8(model, quantization: str, label: str):
     provenance-based: any caller that reaches here with quantized Linears gets
     the same answer.
     """
-    # int8 is the anima/krea2 in-place converter's value; it never means anything
+    # int8 is the in-place converter's value (RUNTIME_INT8_ARCHS); it never means anything
     # here (Lens and the text encoders have no int8 path).
     if _refuse_runtime_int8_elsewhere(quantization, f"Anima/Lens {label}"):
         return model
 
-    already = _anima_already_weight_only_quantized(model)
+    already = _already_weight_only_quantized(model)
     if already:
         print(f"[Quantization] Anima {label} is already weight-only quantized "
               f"({already} Int8Linear/Fp8Linear layer(s) from the checkpoint); "

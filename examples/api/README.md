@@ -167,10 +167,14 @@ not generalize.
 ### G2 is an inference gate only
 
 G2 above decides the int8 W8A8 path for **generation**. It says nothing about
-INT8 in **training**, which is a separate pre-registered gate (**G3**) with its
-own rule, vehicle and bar. G3's full text lives next to the training code it
-governs, in `backend/core/training/INT8_W8A8_TRAINING_GATE.md`; it is not
-duplicated here, so there is exactly one copy to edit.
+INT8 in **training**, which was a separate pre-registered gate (**G3**) with
+its own rule, vehicle and bar. **G3 is closed: it FAILED** — criterion 2 (no
+tested workload regresses >3%) was violated at 256px/512px Anima token
+counts, despite criterion 1 (>=10% projected reduction on both Krea 2 and
+Anima) passing after correcting the forward-fraction derivation. G3's full
+text and its recorded Result live next to the training code it governs, in
+`backend/core/training/INT8_W8A8_TRAINING_GATE.md`; it is not duplicated
+here, so there is exactly one copy to edit.
 
 ## WebSocket / progress streaming
 

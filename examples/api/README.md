@@ -164,6 +164,14 @@ retry clause above. The GPU ran at a 240W cap, 735 MHz SM under load (vs
 3105 MHz max) for all of it — ratios between arms hold, absolute figures do
 not generalize.
 
+### G2 is an inference gate only
+
+G2 above decides the int8 W8A8 path for **generation**. It says nothing about
+INT8 in **training**, which is a separate pre-registered gate (**G3**) with its
+own rule, vehicle and bar. G3's full text lives next to the training code it
+governs, in `backend/core/training/INT8_W8A8_TRAINING_GATE.md`; it is not
+duplicated here, so there is exactly one copy to edit.
+
 ## WebSocket / progress streaming
 
 These examples cover REST only. For the WebSocket protocol (progress

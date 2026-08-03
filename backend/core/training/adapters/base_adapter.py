@@ -14,12 +14,20 @@ import torch.nn as nn
 def count_quantized_linears(module: Optional[nn.Module]) -> int:
     """Number of ``Int8Linear`` / ``Fp8Linear`` modules under ``module``.
 
-    Shared by every full-parameter adapter that can be handed a weight-only
-    quantized DiT (Anima, Ideogram 4, Krea 2): those module types hold
-    ``weight`` (and ``weight_scale``) as buffers, not ``nn.Parameter``s, so
-    they are invisible to both ``requires_grad_(True)`` and
-    ``named_parameters()``. Detecting them is the first half of
-    ``reject_quantized_base`` below.
+    Called from EVERY full-parameter adapter's ``prepare_models_for_training``
+    / ``setup_trainable_parameters``, not just the three architectures whose
+    loaders can currently produce these classes (Anima, Ideogram 4, Krea 2).
+    ``Int8Linear`` / ``Fp8Linear`` hold ``weight`` (and ``weight_scale``) as
+    buffers, not ``nn.Parameter``s, so they are invisible to both
+    ``requires_grad_(True)`` and ``named_parameters()``. Detecting them is
+    the first half of ``reject_quantized_base`` below.
+
+    For an architecture whose loader never swaps in these classes, this is a
+    guaranteed no-op (returns 0, ``reject_quantized_base`` returns without
+    raising) -- it costs one cheap module scan and exists so the same silent
+    failure cannot reappear unnoticed if that architecture later gains a
+    weight-only quantized load path, the way Anima/Krea2/Ideogram4 already
+    have.
     """
     if module is None:
         return 0

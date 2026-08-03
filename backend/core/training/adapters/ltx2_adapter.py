@@ -25,7 +25,7 @@ import torch
 import torch.nn as nn
 from safetensors.torch import save_file
 
-from .base_adapter import BaseLoRAAdapter, BaseFullParameterAdapter
+from .base_adapter import BaseLoRAAdapter, BaseFullParameterAdapter, reject_quantized_base
 from .sd15_adapter import LoRALinearLayer
 
 
@@ -206,6 +206,7 @@ class Ltx2FullParameterAdapter(BaseFullParameterAdapter):
 
     def prepare_models_for_training(self):
         trainer = self.trainer
+        reject_quantized_base(trainer.transformer, model_label="LTX-2.3")
         train_dit = bool(getattr(trainer, "train_unet", True))
 
         if train_dit and trainer.transformer is not None:
@@ -233,6 +234,10 @@ class Ltx2FullParameterAdapter(BaseFullParameterAdapter):
         trainer = self.trainer
         if trainer.transformer is None:
             return []
+        # Second gate, not a duplicate: a caller that builds the optimizer without
+        # going through prepare_models_for_training() would otherwise still get
+        # the silently-truncated parameter list this guard exists to prevent.
+        reject_quantized_base(trainer.transformer, model_label="LTX-2.3")
         base_lr = getattr(trainer, "unet_lr", None) or getattr(trainer, "learning_rate", 1e-5)
         params = [p for p in trainer.transformer.parameters() if p.requires_grad]
         if not params:

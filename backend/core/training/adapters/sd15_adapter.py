@@ -16,7 +16,7 @@ import torch.nn as nn
 from safetensors.torch import save_file
 import math
 
-from .base_adapter import BaseLoRAAdapter, BaseFullParameterAdapter
+from .base_adapter import BaseLoRAAdapter, BaseFullParameterAdapter, reject_quantized_base
 from .state_dict_converter import (
     convert_unet_state_dict_to_original,
     convert_vae_state_dict_to_original,
@@ -311,6 +311,7 @@ class SD15FullParameterAdapter(BaseFullParameterAdapter):
     def prepare_models_for_training(self):
         """Prepare models for full parameter training."""
         trainer = self.trainer
+        reject_quantized_base(trainer.unet, model_label="SD1.5")
 
         # Set requires_grad based on configuration
         if trainer.train_unet and trainer.unet is not None:
@@ -343,6 +344,10 @@ class SD15FullParameterAdapter(BaseFullParameterAdapter):
         """
         params = []
         trainer = self.trainer
+        # Second gate, not a duplicate: a caller that builds the optimizer without
+        # going through prepare_models_for_training() would otherwise still get
+        # the silently-truncated parameter list this guard exists to prevent.
+        reject_quantized_base(trainer.unet, model_label="SD1.5")
 
         if trainer.train_unet and trainer.unet is not None:
             unet_params = [p for p in trainer.unet.parameters() if p.requires_grad]

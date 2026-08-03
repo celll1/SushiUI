@@ -1569,6 +1569,99 @@ paths:
                     additionalProperties: true
                     description: Same payload as `GET /models/current`'s `model_info`.
 
+  /models/export-quantized:
+    get:
+      tags: [models]
+      summary: Quantized-model export status
+      description: |
+        Report whether the loaded transformer can be written out as a
+        weight-only quantized single file, plus the state of any export job.
+
+        `exportable` is true exactly when the loaded transformer owns
+        `Int8Linear` / `Fp8Linear` modules. Both provenances count and are
+        indistinguishable by then: a checkpoint that was already quantized, and
+        a bf16 checkpoint converted in place at generation time
+        (`unet_quantization: "int8"` on anima / krea2, which is one-way until the
+        model is reloaded).
+
+        `suggested_path` is a destination outside the loaded model's own
+        directory tree, in the subdirectory that architecture's loader needs
+        (anima resolves its text encoder and VAE by walking up from the DiT file
+        to a `split_files/` parent, so its export goes in
+        `split_files/diffusion_models/`).
+      operationId: getQuantizedExportStatus
+      responses:
+        '200':
+          description: Export capability and job state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QuantizedExportStatus'
+    post:
+      tags: [models]
+      summary: Export the loaded quantized model to a single file
+      description: |
+        Start a background job that writes the loaded, weight-only quantized
+        transformer to `output_path` in the layout the production loader reads
+        back (per-row `.weight_scale` siblings, architecture key prefix,
+        architecture metadata). Shards above 4 GB with a
+        `<stem>.safetensors.index.json`, the diffusers convention.
+
+        Transformer only — no text encoder and no VAE are embedded. With
+        `link_siblings` (default true) the companion component directories of the
+        loaded model are junctioned next to the output so the loader's sibling
+        probe resolves the same components.
+
+        When the quantized layers came from an in-place runtime conversion, the
+        per-layer audit document for that conversion is written next to the file
+        as `<stem>.int8_audit.json`, the same document the offline conversion
+        tool emits. When the model was loaded already quantized no audit exists;
+        the file's metadata records `quant_audit=unavailable` rather than a
+        fabricated table.
+
+        Returns immediately with the job document; poll `GET` for progress.
+      operationId: startQuantizedExport
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/QuantizedExportRequest'
+      responses:
+        '200':
+          description: Export job started
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QuantizedExportJob'
+        '400':
+          description: |
+            The loaded model cannot be exported: nothing is loaded, the
+            architecture has no single-file export layout, the transformer owns
+            no quantized Linear layers, the destination does not end in
+            `.safetensors`, or it lies inside the loaded model's own directory
+            tree (that tree holds the source checkpoint and the sibling
+            directories the loader completes from).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: |
+            An image generation or a training run is in flight (the export reads
+            the live transformer, so it must describe one settled state), or
+            another export job is already running.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Export could not be started
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /models/upload:
     post:
       tags: [models]
@@ -5484,6 +5577,151 @@ components:
       bearerFormat: JWT
 
   schemas:
+    QuantizedExportRequest:
+      type: object
+      required: [output_path]
+      properties:
+        output_path:
+          type: string
+          description: |
+            Destination `<stem>.safetensors`. Must end in `.safetensors` and must
+            not lie inside the loaded model's own directory tree. Shards and a
+            `<stem>.safetensors.index.json` are written beside it above 4 GB.
+          example: "D:/celll1/webui_cl/models/quantized_exports/anima-base-v1.0_int8/split_files/diffusion_models/anima-base-v1.0_int8.safetensors"
+        link_siblings:
+          type: boolean
+          default: true
+          description: |
+            Create directory junctions to the loaded model's companion component
+            directories (text encoder, VAE, ...) next to the output, so the
+            loader's sibling probe resolves the same components it does today.
+          example: true
+        overwrite:
+          type: boolean
+          default: false
+          description: Replace an existing file or shard index at the destination.
+          example: false
+    QuantizedExportJob:
+      type: object
+      description: |
+        Export job document. Before the first export of this backend process it
+        is the single key `{"state": "idle"}`; every other field appears once a
+        job has been started.
+      required: [state]
+      properties:
+        job_id:
+          type: string
+          example: "61944768f00c"
+        state:
+          type: string
+          enum: [idle, running, completed, failed]
+          example: running
+        arch:
+          type: string
+          nullable: true
+          description: Architecture being exported (`anima`, `krea2`).
+          example: anima
+        output_path:
+          type: string
+          description: Requested destination.
+          example: "D:/exports/anima_int8/split_files/diffusion_models/anima_int8.safetensors"
+        written_path:
+          type: string
+          nullable: true
+          description: |
+            What was actually written: the `.safetensors` itself, or the
+            `<stem>.safetensors.index.json` for a sharded export. Null until the
+            job completes.
+          example: "D:/exports/anima_int8/split_files/diffusion_models/anima_int8.safetensors"
+        processed:
+          type: integer
+          description: Tensors written so far.
+          example: 640
+        total:
+          type: integer
+          description: Tensors in the transformer's state dict.
+          example: 920
+        message:
+          type: string
+          example: "writing blocks.12.attn.to_q.weight"
+        error:
+          type: string
+          nullable: true
+          example: null
+        result:
+          type: object
+          nullable: true
+          additionalProperties: true
+          description: |
+            Present when `state` is `completed`: written path, tensor and byte
+            counts, elapsed seconds, the per-format Linear census, the file
+            metadata, the audit JSON path (null when no audit exists) and the
+            linked sibling names.
+        started_at:
+          type: number
+          format: double
+          example: 1785756665.12
+        finished_at:
+          type: number
+          format: double
+          nullable: true
+          example: null
+    QuantizedExportInventory:
+      type: object
+      description: Per-format census of the loaded transformer's Linear modules.
+      properties:
+        int8:
+          type: integer
+          description: "`Int8Linear` modules (int8 weight + per-row float32 scale)."
+          example: 231
+        e4m3:
+          type: integer
+          description: "`Fp8Linear` modules (float8_e4m3fn weight + per-row float32 scale)."
+          example: 1
+        plain:
+          type: integer
+          description: Unquantized `nn.Linear` modules.
+          example: 283
+        total:
+          type: integer
+          example: 515
+    QuantizedExportStatus:
+      type: object
+      required: [exportable, inventory, job]
+      properties:
+        exportable:
+          type: boolean
+          description: True when the loaded transformer owns quantized Linear modules.
+          example: true
+        reason:
+          type: string
+          nullable: true
+          description: Why it is not exportable; null when it is.
+          example: null
+        arch:
+          type: string
+          nullable: true
+          example: anima
+        source:
+          type: string
+          nullable: true
+          description: Path the loaded model came from.
+          example: "M:/model/anima/split_files/diffusion_models/anima-base-v1.0.safetensors"
+        inventory:
+          $ref: '#/components/schemas/QuantizedExportInventory'
+        has_runtime_audit:
+          type: boolean
+          description: |
+            True when this session converted the model in place, so a per-layer
+            audit document exists and will be written next to the export.
+          example: true
+        suggested_path:
+          type: string
+          nullable: true
+          description: Pre-fillable destination; null when nothing is exportable.
+          example: "D:/celll1/webui_cl/models/quantized_exports/anima-base-v1.0_int8/split_files/diffusion_models/anima-base-v1.0_int8.safetensors"
+        job:
+          $ref: '#/components/schemas/QuantizedExportJob'
     ResolveCategoriesRequest:
       type: object
       required: [tags]

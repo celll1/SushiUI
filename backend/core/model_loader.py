@@ -1559,6 +1559,17 @@ class ModelLoader:
             # 1. BFL/Comfy format: double_blocks.*, single_blocks.* (original BFL weights)
             # 2. Diffusers format: time_guidance_embed.*, double_stream_modulation_*, single_transformer_blocks.*
             # 3. SushiUI/musubi training format: model.diffusion_model.* prefix (ComfyUI-style but with diffusers keys inside)
+            # A weight-only quantized checkpoint must be refused BEFORE the
+            # format conversion below (which would drop the .weight_scale keys it
+            # does not know) and before the strict=False load (which would cast
+            # the int8/e4m3 codes straight into bf16 parameters and run a
+            # silently wrong model). FLUX.2 has no quantized-Linear swap.
+            from core.models.common.quantized_checkpoint_guard import (
+                refuse_quantized_state_dict,
+            )
+            refuse_quantized_state_dict(
+                transformer_state_dict, arch="flux2", path=file_path)
+
             sample_keys = list(transformer_state_dict.keys())[:5]
             is_bfl_format = any(k.startswith('double_blocks.') for k in transformer_state_dict.keys())
             is_sushiui_format = any(k.startswith('model.diffusion_model.') for k in transformer_state_dict.keys())

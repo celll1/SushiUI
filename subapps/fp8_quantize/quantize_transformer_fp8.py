@@ -232,6 +232,8 @@ from core.models.common.quantized_export import (  # noqa: E402
     EXPORT_LAYOUTS,
     SIBLING_DIRS,
     ShardWriter,
+    identity_source_transform,
+    layout_source_transform,
     link_siblings,
 )
 
@@ -257,6 +259,15 @@ from core.models.common.quantized_export import (  # noqa: E402
 #                  checkpoint wraps the module (Anima ships ``net.*``, which its
 #                  loader strips); without it every Linear silently fails to
 #                  match and the tool quantizes nothing.
+#   source_transform (optional, default identity) ``(key, tensor) ->
+#                  [(key', tensor'), ...]``, applied to every streamed source
+#                  tensor BEFORE source_prefix stripping. "Source key == module
+#                  path modulo one prefix" holds for krea2 and anima and fails
+#                  for FLUX.2 (BFL key remap + fused-qkv split) and Ideogram 4
+#                  (its loader splits fused qkv before the quantized swap, so the
+#                  checkpoint key is not the module path). Declared in
+#                  EXPORT_LAYOUTS, next to source_prefix, because it is the same
+#                  kind of fact; see that table for the full contract.
 #   config / build_meta / metadata  (required) as for krea2.
 #   siblings       (optional, default SIBLING_DIRS) component directories
 #                  --link-siblings junctions next to the output; may be
@@ -329,18 +340,26 @@ def _anima_config(source: str) -> dict:
 def _from_layout(arch: str, **extra) -> Dict[str, object]:
     """An ARCHS entry: the shared on-disk layout plus this tool's source knobs.
 
-    ``prefix`` / ``source_prefix`` / ``metadata`` / ``siblings`` /
-    ``sibling_root`` come from ``EXPORT_LAYOUTS`` -- the same table the runtime
-    exporter reads -- so the offline artifact and a runtime export of the same
-    architecture land on identical keys and identical metadata. Only ``config``
-    and ``build_meta`` (how to enumerate Linears from a SOURCE checkpoint,
-    which the runtime path does not need because it has the live module) are
-    local to this tool.
+    ``prefix`` / ``source_prefix`` / ``source_transform`` / ``metadata`` /
+    ``siblings`` / ``sibling_root`` come from ``EXPORT_LAYOUTS`` -- the same
+    table the runtime exporter reads -- so the offline artifact and a runtime
+    export of the same architecture land on identical keys and identical
+    metadata. Only ``config`` and ``build_meta`` (how to enumerate Linears from a
+    SOURCE checkpoint, which the runtime path does not need because it has the
+    live module) are local to this tool.
+
+    EVERY arch goes through here, including one that needs a key remap: the
+    remap is a ``source_transform`` entry in the shared layout, not a bespoke
+    ``ARCHS`` entry that bypasses this function. The offline artifact and the
+    runtime export being the same file is the invariant that keeps nine
+    architectures on one artifact format, and it only survives while both routes
+    read one table.
     """
     layout = EXPORT_LAYOUTS[arch]
     entry: Dict[str, object] = {
         "prefix": layout["offline_prefix"],
         "source_prefix": layout["source_prefix"],
+        "source_transform": layout_source_transform(arch),
         "metadata": layout["metadata"],
         "siblings": layout.get("siblings", SIBLING_DIRS),
         "sibling_root": layout.get("sibling_root", "."),
@@ -524,22 +543,40 @@ def main() -> int:
         skip_gate = False
 
     source_prefix = arch.get("source_prefix", "")
+    source_transform = arch.get("source_transform") or identity_source_transform
     print(f"{tag} arch={args.arch} format={fmt} min_align={min_align} "
           f"skip_below_work_gate={skip_gate} source={args.source}")
     shards, key_to_shard = _source_shards(args.source)
     print(f"{tag} source has {len(key_to_shard)} tensors in {len(shards)} shard(s)")
 
+    # The transform maps raw checkpoint keys into the arch's canonical source
+    # layout (identity for an arch whose keys ALREADY are module paths). Run it
+    # key-only here -- the contract is that ``tensor=None`` yields the same key
+    # set -- so the selection below is made against the keys the write loop will
+    # actually produce, not against the raw ones.
+    canonical_keys = set()
+    for _k in key_to_shard:
+        for _ck, _ in source_transform(_k, None):
+            canonical_keys.add(_ck)
+    if source_transform is not identity_source_transform:
+        print(f"{tag} source_transform: {len(key_to_shard)} source key(s) -> "
+              f"{len(canonical_keys)} canonical key(s)")
+        if not canonical_keys:
+            raise RuntimeError(
+                f"arch {args.arch!r} declares a source_transform that produced no keys at "
+                f"all for this checkpoint; refusing to run (the output would be empty)")
+
     # Match module paths, not raw keys: a source that wraps the module (Anima's
     # ``net.``) must have that prefix removed before the comparison, or nothing
     # matches and the tool silently quantizes zero layers.
     if source_prefix:
-        n_pref = sum(1 for k in key_to_shard if k.startswith(source_prefix))
-        print(f"{tag} source_prefix={source_prefix!r}: {n_pref}/{len(key_to_shard)} keys carry it")
+        n_pref = sum(1 for k in canonical_keys if k.startswith(source_prefix))
+        print(f"{tag} source_prefix={source_prefix!r}: {n_pref}/{len(canonical_keys)} keys carry it")
         if n_pref == 0:
             raise RuntimeError(
                 f"arch {args.arch!r} declares source_prefix={source_prefix!r} but no source key "
                 f"starts with it; refusing to run (every Linear would silently be skipped)")
-    module_keys = {_strip_prefix(k, source_prefix) for k in key_to_shard}
+    module_keys = {_strip_prefix(k, source_prefix) for k in canonical_keys}
 
     config = arch["config"](args.source)
     meta_model = arch["build_meta"](config)
@@ -584,38 +621,47 @@ def main() -> int:
     for shard in shards:
         print(f"{tag} reading {os.path.basename(shard)}")
         with safe_open(shard, framework="pt", device="cpu") as fh:
-            for key in fh.keys():
-                tensor = fh.get_tensor(key)
-                # ``base`` is a MODULE PATH (source_prefix stripped) so it can be
-                # compared with target_set; ``key`` keeps the source layout so the
-                # output is key-for-key identical apart from dtype + the new scales.
-                base = (_strip_prefix(key[: -len(".weight")], source_prefix)
-                        if key.endswith(".weight") else None)
-                if base is not None and base in target_set:
-                    if tensor.dim() != 2:
-                        raise RuntimeError(f"{key}: expected a 2-D Linear weight, got {tuple(tensor.shape)}")
-                    # The scale is a SIBLING of the weight key, so it must be built
-                    # from ``key`` (source layout), not from the stripped ``base``:
-                    # both swap helpers look for ``<weight key minus .weight>.weight_scale``.
-                    scale_stem = f"{prefix}{key[: -len('.weight')]}"
-                    if fmt == "int8":
-                        chosen, q, scale, row = audit_and_quantize_int8(
-                            base, tensor, args.crest_threshold, args.fallback)
-                        audit.append(row)
-                        writer.add(f"{prefix}{key}", q.contiguous())
-                        if scale is not None:
-                            writer.add(f"{scale_stem}{INT8_SCALE_SUFFIX}", scale.contiguous())
-                        quantized += chosen != "bf16"
-                        passthrough += chosen == "bf16"
+            for raw_key in fh.keys():
+                raw_tensor = fh.get_tensor(raw_key)
+                # ONE source tensor may become several canonical ones (a fused
+                # qkv weight -> q/k/v) or none. Per-row scales make "quantize the
+                # fused weight then split" and "split then quantize" identical
+                # (the rows are independent), so splitting FIRST costs nothing
+                # and buys the property that matters: the runtime export sees the
+                # live module after its loader has split, so the offline artifact
+                # must carry the split keys to stay comparable with it.
+                for key, tensor in source_transform(raw_key, raw_tensor):
+                    # ``base`` is a MODULE PATH (source_prefix stripped) so it can be
+                    # compared with target_set; ``key`` keeps the source layout so the
+                    # output is key-for-key identical apart from dtype + the new scales.
+                    base = (_strip_prefix(key[: -len(".weight")], source_prefix)
+                            if key.endswith(".weight") else None)
+                    if base is not None and base in target_set:
+                        if tensor.dim() != 2:
+                            raise RuntimeError(f"{key}: expected a 2-D Linear weight, got {tuple(tensor.shape)}")
+                        # The scale is a SIBLING of the weight key, so it must be built
+                        # from ``key`` (source layout), not from the stripped ``base``:
+                        # both swap helpers look for ``<weight key minus .weight>.weight_scale``.
+                        scale_stem = f"{prefix}{key[: -len('.weight')]}"
+                        if fmt == "int8":
+                            chosen, q, scale, row = audit_and_quantize_int8(
+                                base, tensor, args.crest_threshold, args.fallback)
+                            audit.append(row)
+                            writer.add(f"{prefix}{key}", q.contiguous())
+                            if scale is not None:
+                                writer.add(f"{scale_stem}{INT8_SCALE_SUFFIX}", scale.contiguous())
+                            quantized += chosen != "bf16"
+                            passthrough += chosen == "bf16"
+                        else:
+                            q, scale = quantize_weight_to_fp8(tensor)
+                            writer.add(f"{prefix}{key}", q.contiguous())
+                            writer.add(f"{scale_stem}{FP8_SCALE_SUFFIX}", scale.contiguous())
+                            quantized += 1
                     else:
-                        q, scale = quantize_weight_to_fp8(tensor)
-                        writer.add(f"{prefix}{key}", q.contiguous())
-                        writer.add(f"{scale_stem}{FP8_SCALE_SUFFIX}", scale.contiguous())
-                        quantized += 1
-                else:
-                    writer.add(f"{prefix}{key}", tensor.contiguous())
-                    passthrough += 1
-                del tensor
+                        writer.add(f"{prefix}{key}", tensor.contiguous())
+                        passthrough += 1
+                    del tensor
+                del raw_tensor
     written = writer.close()
     elapsed = time.perf_counter() - t0
 

@@ -44,7 +44,7 @@ import json
 import os
 import subprocess
 import time
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple, Union
 
 import torch
 import torch.nn as nn
@@ -61,6 +61,12 @@ __all__ = [
     "krea2_export_metadata",
     "anima_export_metadata",
     "check_layout_prefixes",
+    "identity_source_transform",
+    "layout_module_specs",
+    "layout_source_transform",
+    "primary_live_prefix",
+    "resolve_layout_modules",
+    "combined_linear_inventory",
     "quantized_linear_inventory",
     "reject_quant_tokens_in_path",
     "export_quantized_transformer",
@@ -111,16 +117,64 @@ def anima_export_metadata(config: dict) -> Dict[str, str]:
 
 
 # ---------------------------------------------------------------------------
+# Source-key transform (offline route only)
+# ---------------------------------------------------------------------------
+
+def identity_source_transform(key: str, tensor: Optional[torch.Tensor]):
+    """The default ``source_transform``: the source key IS the module path.
+
+    See ``EXPORT_LAYOUTS``' ``source_transform`` entry for the contract. Kept as
+    a named function rather than an inline lambda so a layout can be compared
+    against it (``layout_source_transform(arch) is identity_source_transform``),
+    which is what ``check_layout_prefixes`` uses to decide whether the mechanical
+    prefix invariant even applies.
+    """
+    return ((key, tensor),)
+
+
+# ---------------------------------------------------------------------------
 # Per-arch on-disk layout
 # ---------------------------------------------------------------------------
 #
 # Keys:
-#   live_prefix     prepended to every key of a LIVE ``model.state_dict()`` to
-#                   produce the on-disk key.
+#   modules         ((component name, live prefix), ...) — the live components
+#                   this architecture's export writes, IN WRITE ORDER, and the
+#                   prefix each one's ``state_dict()`` keys get on disk. Most
+#                   archs have exactly one; Ideogram 4 has two transformers of
+#                   identical geometry (``transformer.`` and
+#                   ``unconditional_transformer.``) that must land in ONE file,
+#                   because a single file is the whole point of the feature.
+#                   The component name is the key under
+#                   ``pipeline_manager.<arch>_components``.
 #   offline_prefix  the offline tool's ``prefix``: prepended to every SOURCE key
 #                   (which still carries ``source_prefix``).
 #   source_prefix   stripped from a SOURCE key before it is matched against a
 #                   module path (offline only; a live module has no wrapper).
+#   source_transform  (optional, default ``identity_source_transform``) offline
+#                   only. ``(key, tensor) -> [(key', tensor'), ...]`` applied to
+#                   every tensor STREAMED out of the source checkpoint, before
+#                   ``source_prefix`` stripping and before matching against a
+#                   module path. It exists because "source key == module path
+#                   modulo one prefix" is an architecture-specific fact, not a
+#                   general one: FLUX.2's BFL-format single files need a full key
+#                   remap plus a fused-qkv split, and Ideogram 4's loader runs
+#                   ``_convert_fused_qkv_to_split`` BEFORE the quantized swap, so
+#                   its checkpoint keys are not the module paths either.
+#                   Contract:
+#                     * one input tensor may fan out to several outputs (a fused
+#                       qkv weight -> q/k/v), or to none (a key the target module
+#                       does not have);
+#                     * it is ALSO called with ``tensor=None`` during the
+#                       key-enumeration pass and must then return the same KEY
+#                       set it would for a real tensor, with ``None`` tensors;
+#                     * the output keys are in the arch's canonical SOURCE
+#                       layout, i.e. still carrying ``source_prefix``.
+#                   Fusing does not change what is quantized: the scales are PER
+#                   ROW and rows are independent, so quantizing a fused weight
+#                   then splitting it is numerically identical to splitting then
+#                   quantizing. The tiebreaker is that the RUNTIME export sees
+#                   the live module AFTER the split, so the offline artifact has
+#                   to store split keys to stay byte-comparable with it.
 #   metadata        fn(config) -> metadata dict.
 #   siblings        component directories ``link_siblings`` junctions next to the
 #                   output; may be relative paths.
@@ -130,12 +184,16 @@ def anima_export_metadata(config: dict) -> Dict[str, str]:
 #                   for the loader's own layout probe to find its companions.
 #
 # INVARIANT (``check_layout_prefixes``): offline_prefix + source_prefix ==
-# live_prefix. Both routes must produce the same on-disk key for the same
-# module path, and that equality is the whole reason both fields exist.
+# the PRIMARY module's live prefix. Both routes must produce the same on-disk key
+# for the same module path, and that equality is the whole reason both fields
+# exist. It is checked only for layouts that use the identity
+# ``source_transform``; once a transform rewrites keys, "the offline key is the
+# live key plus a constant prefix" is no longer an equation that can be checked
+# by string concatenation, and the transform itself owns the correspondence.
 EXPORT_LAYOUTS: Dict[str, Dict[str, object]] = {
     "krea2": {
         # sushiUI single-file layout: transformer weights live under this prefix.
-        "live_prefix": "transformer.",
+        "modules": (("transformer", "transformer."),),
         "offline_prefix": "transformer.",
         "source_prefix": "",
         "metadata": krea2_export_metadata,
@@ -146,7 +204,7 @@ EXPORT_LAYOUTS: Dict[str, Dict[str, object]] = {
     "anima": {
         # Anima DiT single-files carry the module tree verbatim under ``net.``;
         # the loader strips that prefix, so the file keeps it.
-        "live_prefix": "net.",
+        "modules": (("transformer", "net."),),
         "offline_prefix": "",
         "source_prefix": "net.",
         "metadata": anima_export_metadata,
@@ -161,15 +219,47 @@ EXPORT_LAYOUTS: Dict[str, Dict[str, object]] = {
 }
 
 
+def layout_module_specs(arch: str) -> Tuple[Tuple[str, str], ...]:
+    """``((component name, live prefix), ...)`` for ``arch``, in write order."""
+    layout = EXPORT_LAYOUTS.get(arch)
+    if layout is None:
+        raise ValueError(
+            f"no single-file export layout for architecture {arch!r} "
+            f"(known: {', '.join(sorted(EXPORT_LAYOUTS))})")
+    return tuple((str(name), str(prefix)) for name, prefix in layout["modules"])
+
+
+def primary_live_prefix(arch: str) -> str:
+    """The live-state-dict prefix of ``arch``'s FIRST exported component.
+
+    The offline tool works from a source checkpoint of that primary component,
+    so this is the prefix its keys are compared against.
+    """
+    return layout_module_specs(arch)[0][1]
+
+
+def layout_source_transform(arch: str) -> Callable:
+    """``arch``'s offline source-key transform (``identity_source_transform``)."""
+    layout = EXPORT_LAYOUTS.get(arch) or {}
+    return layout.get("source_transform") or identity_source_transform
+
+
 def check_layout_prefixes() -> List[str]:
     """Return a list of arch names whose prefix fields do not compose.
 
     Empty is the healthy answer. Exposed (rather than asserted at import) so a
     test can state the invariant without a module-load side effect.
+
+    Skips an arch that declares a non-identity ``source_transform``: for those
+    the offline key is not the live key plus a constant prefix by construction,
+    so concatenating the two fields proves nothing. Everything else is checked
+    against its PRIMARY module's live prefix.
     """
     bad = []
     for arch, layout in EXPORT_LAYOUTS.items():
-        if f"{layout['offline_prefix']}{layout['source_prefix']}" != layout["live_prefix"]:
+        if layout_source_transform(arch) is not identity_source_transform:
+            continue
+        if f"{layout['offline_prefix']}{layout['source_prefix']}" != primary_live_prefix(arch):
             bad.append(arch)
     return bad
 
@@ -333,6 +423,68 @@ def quantized_linear_inventory(model: nn.Module) -> Dict[str, object]:
     }
 
 
+def combined_linear_inventory(
+    modules: Sequence[Tuple[str, nn.Module]]
+) -> Dict[str, object]:
+    """``quantized_linear_inventory`` summed over several ``(name, module)`` pairs.
+
+    ``formats`` is keyed by ``"<component>.<module path>"`` so a two-transformer
+    architecture cannot collide two identically-shaped module trees into one
+    entry, which is exactly the failure mode of summing per-module dicts.
+    """
+    total = {"int8": 0, "e4m3": 0, "plain": 0, "total": 0}
+    formats: Dict[str, str] = {}
+    for name, module in modules:
+        one = quantized_linear_inventory(module)
+        for k in ("int8", "e4m3", "plain", "total"):
+            total[k] += int(one[k])
+        for path, fmt in one["formats"].items():
+            formats[f"{name}.{path}"] = fmt
+    return {**total, "formats": formats}
+
+
+def resolve_layout_modules(
+    arch: str,
+    model: Union[nn.Module, Mapping[str, nn.Module], Iterable[Tuple[str, nn.Module]]],
+) -> List[Tuple[str, str, nn.Module]]:
+    """``[(component name, live prefix, module), ...]`` for ``arch``.
+
+    ``model`` may be
+
+    * a bare ``nn.Module`` -- accepted only for a single-component architecture,
+      where there is no ambiguity about which prefix it gets. Passing one for a
+      multi-component arch raises rather than guessing, because guessing would
+      write half a model into a file that claims to be whole;
+    * a mapping ``{component name: module}`` (e.g. ``pipeline_manager
+      .<arch>_components``); extra entries are ignored, a missing declared one
+      raises;
+    * a sequence of ``(component name, module)`` pairs.
+    """
+    specs = layout_module_specs(arch)
+    if isinstance(model, nn.Module):
+        if len(specs) != 1:
+            raise ValueError(
+                f"architecture {arch!r} exports {len(specs)} components "
+                f"({', '.join(n for n, _ in specs)}); pass a mapping of them, not a "
+                f"single module")
+        return [(specs[0][0], specs[0][1], model)]
+
+    if isinstance(model, Mapping):
+        provided: Dict[str, nn.Module] = dict(model)
+    else:
+        provided = {str(name): mod for name, mod in model}
+
+    resolved: List[Tuple[str, str, nn.Module]] = []
+    for name, prefix in specs:
+        module = provided.get(name)
+        if module is None:
+            raise ValueError(
+                f"architecture {arch!r} exports component {name!r}, which was not "
+                f"supplied (got: {', '.join(sorted(provided)) or 'nothing'})")
+        resolved.append((name, prefix, module))
+    return resolved
+
+
 def reject_quant_tokens_in_path(path: str) -> None:
     """Raise if ``path`` contains a quant token the Krea 2 loader rejects.
 
@@ -361,7 +513,7 @@ def reject_quant_tokens_in_path(path: str) -> None:
 # ---------------------------------------------------------------------------
 
 def export_quantized_transformer(
-    model: nn.Module,
+    model: Union[nn.Module, Mapping[str, nn.Module], Iterable[Tuple[str, nn.Module]]],
     arch: str,
     output_path: str,
     *,
@@ -375,6 +527,12 @@ def export_quantized_transformer(
     overwrite: bool = False,
 ) -> Dict[str, object]:
     """Write ``model`` (a live, weight-only quantized transformer) to a file.
+
+    ``model`` is whatever ``resolve_layout_modules`` accepts: a bare module for a
+    single-component architecture, or a mapping of the components the arch's
+    layout declares. ALL of them go into ONE ``ShardWriter`` -- Ideogram 4's two
+    transformers are one checkpoint, and splitting them across two files would
+    defeat the single-file property this feature exists for.
 
     ``audit`` is the document ``quantize_linears_in_place`` returned for THIS
     module (``pipeline_manager._runtime_int8_audit``). When it is None -- the
@@ -391,7 +549,8 @@ def export_quantized_transformer(
             f"no single-file export layout for architecture {arch!r} "
             f"(known: {', '.join(sorted(EXPORT_LAYOUTS))})")
 
-    inventory = quantized_linear_inventory(model)
+    resolved = resolve_layout_modules(arch, model)
+    inventory = combined_linear_inventory([(n, m) for n, _p, m in resolved])
     if not (inventory["int8"] or inventory["e4m3"]):
         raise ValueError(
             "the loaded transformer owns no weight-only quantized Linear layers, so "
@@ -430,9 +589,10 @@ def export_quantized_transformer(
     if not audit and audit_note:
         metadata["quant_audit_note"] = str(audit_note)
 
-    state = model.state_dict()
-    total = len(state)
-    prefix = str(layout["live_prefix"])
+    states = [(prefix, mod.state_dict()) for _name, prefix, mod in resolved]
+    metadata["exported_components"] = json.dumps(
+        [{"component": n, "prefix": p} for n, p, _m in resolved])
+    total = sum(len(s) for _p, s in states)
     writer = ShardWriter(output_path, metadata, max_shard_bytes)
     t0 = time.perf_counter()
     # Tied tensors: safetensors rejects two keys sharing storage. The shared
@@ -440,27 +600,34 @@ def export_quantized_transformer(
     # which neither the Anima nor the Krea 2 transformer loader does. A clone
     # keeps the key inventory of the file identical to the module's, which is
     # exactly what a round-trip check compares.
+    #
+    # ONE ``seen_ptrs`` map across ALL components, not one per component: two
+    # transformers that share a buffer would otherwise reach safetensors as two
+    # keys over one storage, which it rejects outright.
     seen_ptrs: Dict[int, str] = {}
     cloned_tied: List[str] = []
     written_keys = 0
     try:
-        for i, (key, tensor) in enumerate(state.items()):
-            t = tensor.detach()
-            if t.device.type != "cpu":
-                t = t.to("cpu")
-            ptr = t.data_ptr()
-            if ptr in seen_ptrs:
-                t = t.clone()
-                cloned_tied.append(key)
-            else:
-                seen_ptrs[ptr] = key
-            writer.add(f"{prefix}{key}", t.contiguous())
-            written_keys += 1
-            if progress_cb is not None and (i % 25 == 0 or i + 1 == total):
-                try:
-                    progress_cb(i + 1, total, key)
-                except Exception:
-                    pass
+        i = -1
+        for prefix, state in states:
+            for key, tensor in state.items():
+                i += 1
+                t = tensor.detach()
+                if t.device.type != "cpu":
+                    t = t.to("cpu")
+                ptr = t.data_ptr()
+                if ptr in seen_ptrs:
+                    t = t.clone()
+                    cloned_tied.append(f"{prefix}{key}")
+                else:
+                    seen_ptrs[ptr] = f"{prefix}{key}"
+                writer.add(f"{prefix}{key}", t.contiguous())
+                written_keys += 1
+                if progress_cb is not None and (i % 25 == 0 or i + 1 == total):
+                    try:
+                        progress_cb(i + 1, total, f"{prefix}{key}")
+                    except Exception:
+                        pass
         if cloned_tied:
             # Recorded for transparency; the file itself carries both copies, so
             # nothing on the read side has to know.
@@ -493,6 +660,7 @@ def export_quantized_transformer(
           f"({writer.total_bytes / 2**30:.2f} GB, {written_keys} tensors) in {elapsed:.1f}s")
     return {
         "arch": arch,
+        "components": [{"component": n, "prefix": p} for n, p, _m in resolved],
         "output_path": written,
         "requested_path": output_path,
         "tensors": written_keys,

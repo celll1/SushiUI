@@ -702,6 +702,8 @@ class BaseTrainer(ABC):
         optimizer_schedule_free_r: float = 0.0,
         optimizer_schedule_free_weight_lr_power: float = 2.0,
         optimizer_use_radam: bool = False,
+        # Stochastic rounding for BF16 parameter updates (RingBuffer optimizers only)
+        optimizer_stochastic_rounding: bool = False,
         # Resume training
         resume_from_checkpoint: Optional[str] = None,
         # The full train_config dict from the YAML. Stored as self.config so
@@ -943,6 +945,12 @@ class BaseTrainer(ABC):
         self.optimizer_schedule_free_r = optimizer_schedule_free_r
         self.optimizer_schedule_free_weight_lr_power = optimizer_schedule_free_weight_lr_power
         self.optimizer_use_radam = optimizer_use_radam
+
+        # Stochastic rounding for BF16 parameter updates. BF16 round-to-nearest
+        # drops every update below half a ULP, so with a BF16 weight_dtype most
+        # elements never move; stochastic rounding keeps those updates alive in
+        # expectation. Honoured by the RingBuffer optimizers only.
+        self.optimizer_stochastic_rounding = optimizer_stochastic_rounding
 
         # Resume training
         self.resume_from_checkpoint = resume_from_checkpoint
@@ -3217,6 +3225,25 @@ class BaseTrainer(ABC):
             fallback_lr=self.learning_rate,
         )
 
+    def _ringbuffer_optimizer_kwargs(self) -> Dict[str, Any]:
+        """Options only the RingBuffer optimizers accept.
+
+        One place so that every option the user can set reaches the optimizer.
+        ``stochastic_rounding`` used to be missing here, which meant the flag was
+        accepted by the API, written into the YAML and then dropped: the
+        optimizers resolved ``kwargs.get("stochastic_rounding", False)`` and
+        rounded BF16 updates to nearest regardless of the user's choice.
+        """
+        return {
+            "cautious": self.optimizer_cautious,
+            "schedule_free": self.optimizer_schedule_free,
+            "warmup_steps": self.optimizer_warmup_steps,
+            "r": self.optimizer_schedule_free_r,
+            "weight_lr_power": self.optimizer_schedule_free_weight_lr_power,
+            "use_radam": self.optimizer_use_radam,
+            "stochastic_rounding": self.optimizer_stochastic_rounding,
+        }
+
     def setup_optimizer(
         self,
         optimizer_type: str = "adamw",
@@ -3271,12 +3298,27 @@ class BaseTrainer(ABC):
 
             # Pass cautious and Schedule-Free options to RingBuffer optimizers
             if "ringbuffer" in optimizer_type.lower():
-                optimizer_kwargs["cautious"] = self.optimizer_cautious
-                optimizer_kwargs["schedule_free"] = self.optimizer_schedule_free
-                optimizer_kwargs["warmup_steps"] = self.optimizer_warmup_steps
-                optimizer_kwargs["r"] = self.optimizer_schedule_free_r
-                optimizer_kwargs["weight_lr_power"] = self.optimizer_schedule_free_weight_lr_power
-                optimizer_kwargs["use_radam"] = self.optimizer_use_radam
+                optimizer_kwargs.update(self._ringbuffer_optimizer_kwargs())
+                if self.optimizer_stochastic_rounding:
+                    print(f"{self.log_prefix} Stochastic rounding enabled for BF16 parameter updates")
+                    if self.weight_dtype != torch.bfloat16:
+                        print(f"{self.log_prefix} NOTE: stochastic rounding only applies to BF16 "
+                              f"parameters; weight dtype is {self.weight_dtype}")
+                    if self.optimizer_schedule_free:
+                        # The Schedule-Free 'z' sequence is allocated with
+                        # zeros_like/clone of the parameter, so for a bf16
+                        # parameter it is bf16 storage updated with
+                        # round-to-nearest. Stochastic rounding guards writes
+                        # into the parameter only.
+                        print(f"{self.log_prefix} NOTE: with schedule_free, the z sequence is stored "
+                              f"in the parameter dtype and is updated with round-to-nearest; "
+                              f"stochastic rounding covers the parameter update only")
+            elif self.optimizer_stochastic_rounding:
+                # Never accept the flag silently: only the RingBuffer optimizers
+                # implement stochastic rounding.
+                print(f"{self.log_prefix} WARNING: optimizer_stochastic_rounding is not supported by "
+                      f"'{optimizer_type}' and will not be applied "
+                      f"(supported: adamw8bit_ringbuffer, lion8bit_ringbuffer)")
 
             self.optimizer = OptimizerFactory.create_optimizer(
                 optimizer_type=optimizer_type,

@@ -10368,7 +10368,8 @@ class TrainingRunCreateRequest(BaseModel):
     optimizer_schedule_free_r: float = 0.0  # Schedule-Free r parameter (default: 0.0)
     optimizer_schedule_free_weight_lr_power: float = 2.0  # Schedule-Free weight lr power (default: 2.0)
     optimizer_use_radam: bool = False  # Use RAdam (Rectified Adam) with Schedule-Free (adamw8bit_ringbuffer, lion8bit_ringbuffer)
-    optimizer_stochastic_rounding: bool = False  # Enable stochastic rounding for optimizers
+    # Stochastic rounding when writing BF16 parameter updates (adamw8bit_ringbuffer, lion8bit_ringbuffer)
+    optimizer_stochastic_rounding: bool = TRAINING_DEFAULTS["optimizer_stochastic_rounding"]
 
     # LoRA specific
     lora_rank: Optional[int] = 16

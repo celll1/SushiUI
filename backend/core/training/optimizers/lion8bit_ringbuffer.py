@@ -32,6 +32,14 @@ from .lion8bit_cuda import get_extension
 # Import quantization map generator
 from .quantization_map import create_quantization_map
 
+# Stochastic rounding helpers (shared with AdamW8bit_RingBuffer)
+from .stochastic_rounding import (
+    Fp32ScratchPool,
+    prepare_master_and_grad,
+    should_use_stochastic_rounding,
+    stochastic_round_,
+)
+
 
 class Lion8bit_RingBuffer(Optimizer):
     """
@@ -101,6 +109,11 @@ class Lion8bit_RingBuffer(Optimizer):
         self.weight_lr_power = weight_lr_power
         self.use_radam = use_radam
         self.stochastic_rounding = stochastic_rounding
+
+        # FP32 scratch buffers for stochastic rounding (see stochastic_rounding.py).
+        # Shared by every parameter, so the cost is one buffer the size of the
+        # largest parameter, not an FP32 master copy of the model.
+        self._sr_scratch = Fp32ScratchPool()
 
         # Schedule-Free/RAdam tracking
         if self.schedule_free or self.use_radam:
@@ -211,14 +224,16 @@ class Lion8bit_RingBuffer(Optimizer):
 
         else:
             # ============================================================
-            # FP32 State (Standard Lion)
+            # Unquantized State (Standard Lion)
             # ============================================================
+            # NOTE: zeros_like takes the PARAMETER's dtype -- for a bf16
+            # parameter the momentum state is bf16, not FP32.
 
             state['exp_avg'] = torch.zeros_like(p, memory_format=torch.preserve_format)
             state['is_8bit'] = False
 
             state_mem_mb = (p.numel() * p.element_size()) / (1024 ** 2)
-            print(f"[Lion8bit_RingBuffer] Allocated FP32 state for {p.shape} "
+            print(f"[Lion8bit_RingBuffer] Allocated unquantized {p.dtype} state for {p.shape} "
                   f"({state_mem_mb:.2f} MB on GPU)")
 
     def _load_state_dict_uint8(self, state_dict):
@@ -467,6 +482,25 @@ class Lion8bit_RingBuffer(Optimizer):
 
                 state = self.state[p]
 
+                # ============================================================
+                # Stochastic Rounding for BF16 Parameters
+                # ============================================================
+                # Round-to-nearest into BF16 storage discards every update below
+                # half a ULP, deterministically and forever. When enabled, the
+                # update is applied to an FP32 image of the parameter which is
+                # then written back with stochastic rounding, so sub-ULP updates
+                # survive in expectation. The FP32 buffers are scratch shared
+                # across parameters -- no per-parameter master weight is kept.
+                grad = p.grad
+                if should_use_stochastic_rounding(group['stochastic_rounding'], p):
+                    # The 8-bit kernels read the gradient as the parameter's own
+                    # dtype, so the grad must be lifted to FP32 with the master.
+                    p_fp32, grad = prepare_master_and_grad(p, grad, self._sr_scratch)
+                    p_for_update = p_fp32
+                else:
+                    p_fp32 = None
+                    p_for_update = p
+
                 # 8-bit update
                 if state.get('is_8bit', False):
                     if schedule_free:
@@ -482,9 +516,9 @@ class Lion8bit_RingBuffer(Optimizer):
                             state_z_gpu = state['state_z'].cuda(non_blocking=True)
 
                         self.ext.lion_8bit_schedulefree_update(
-                            p,
-                            p.grad,
-                            state_z_gpu,                # z-sequence (GPU, async transferred if needed)
+                            p_for_update,
+                            grad,
+                            state_z_gpu,             # z-sequence (GPU, async transferred if needed)
                             state['absmax_z'],
                             beta1, beta2, 0.0,          # eps unused in Lion
                             scheduled_lr,               # Scheduled LR (with RAdam rect if enabled)
@@ -511,8 +545,8 @@ class Lion8bit_RingBuffer(Optimizer):
                             exp_avg_gpu = state['exp_avg'].cuda(non_blocking=True)
 
                         self.ext.lion_8bit_update(
-                            p,
-                            p.grad,
+                            p_for_update,
+                            grad,
                             exp_avg_gpu,                # state (GPU, async transferred if needed)
                             state['absmax'],
                             beta1, beta2, 0.0,          # eps unused in Lion
@@ -527,8 +561,6 @@ class Lion8bit_RingBuffer(Optimizer):
                             state['exp_avg'].copy_(exp_avg_gpu, non_blocking=True)
                 else:
                     # FP32 fallback (standard Lion)
-                    grad = p.grad.data
-
                     exp_avg = state['exp_avg']
 
                     # Interpolate: c_t = β1 * m_{t-1} + (1 - β1) * g_t
@@ -536,10 +568,13 @@ class Lion8bit_RingBuffer(Optimizer):
 
                     # Update: sign(c_t) + weight_decay * param
                     update = torch.sign(c_t)
-                    p.data.mul_(1 - lr * weight_decay).add_(update, alpha=-lr)
+                    p_for_update.mul_(1 - lr * weight_decay).add_(update, alpha=-lr)
 
                     # Momentum EMA: m_t = β2 * m_{t-1} + (1 - β2) * g_t
                     exp_avg.mul_(beta2).add_(grad, alpha=(1 - beta2))
+
+                # Stochastic rounding: FP32 image -> BF16 param (no-op when off)
+                stochastic_round_(p, p_fp32)
 
         return loss
 
@@ -600,9 +635,18 @@ def register_lion8bit_fused_backward(optimizer, model):
             lr = group['lr']
             weight_decay = group['weight_decay']
 
+            # Stochastic rounding: update an FP32 image of the param, then round
+            # back into BF16. Without this the fused-backward path silently
+            # ignores the stochastic_rounding setting that optimizer.step() honours.
+            grad = param.grad
+            if should_use_stochastic_rounding(group['stochastic_rounding'], param):
+                p_fp32, grad = prepare_master_and_grad(param, grad, optimizer._sr_scratch)
+            else:
+                p_fp32 = None
+
             optimizer.ext.lion_8bit_update(
-                param,
-                param.grad,
+                p_fp32 if p_fp32 is not None else param,
+                grad,
                 state['exp_avg'],
                 state['absmax'],
                 beta1, beta2, 0.0,  # eps unused
@@ -610,6 +654,9 @@ def register_lion8bit_fused_backward(optimizer, model):
                 optimizer.step_count + 1,  # +1 because hook runs before step()
                 optimizer.cautious          # cautious masking (matches step())
             )
+
+            # Stochastic rounding: FP32 image -> BF16 param
+            stochastic_round_(param, p_fp32)
 
             # Clear gradient (already applied)
             param.grad = None

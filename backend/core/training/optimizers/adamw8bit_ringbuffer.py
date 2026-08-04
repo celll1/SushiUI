@@ -27,6 +27,15 @@ from .adamw8bit_cuda import get_extension
 # Import quantization map generator
 from .quantization_map import create_quantization_map
 
+# Stochastic rounding helpers (shared with Lion8bit_RingBuffer)
+from .stochastic_rounding import (
+    Fp32ScratchPool,
+    copy_stochastic_bf16,
+    prepare_master_and_grad,
+    should_use_stochastic_rounding,
+    stochastic_round_,
+)
+
 
 def quantize_blockwise_inplace(tensor: torch.Tensor, blocksize: int = 256):
     """
@@ -148,6 +157,11 @@ class AdamW8bit_RingBuffer(Optimizer):
         self.use_radam = use_radam
         self.stochastic_rounding = stochastic_rounding
 
+        # FP32 scratch buffers for stochastic rounding (see stochastic_rounding.py).
+        # Shared by every parameter, so the cost is one buffer the size of the
+        # largest parameter, not an FP32 master copy of the model.
+        self._sr_scratch = Fp32ScratchPool()
+
         # Schedule-Free specific state
         if schedule_free:
             self.k = 0  # Step counter
@@ -186,38 +200,14 @@ class AdamW8bit_RingBuffer(Optimizer):
         """
         Stochastic rounding from FP32 to BF16.
 
-        Based on: https://github.com/pytorch/pytorch/issues/120376
-
-        BF16 has 7-bit mantissa (vs FP32's 23-bit), so rounding error is significant
-        for small updates. Stochastic rounding removes bias in repeated small updates
-        by randomly rounding up or down based on the fractional part.
+        Thin wrapper over ``stochastic_rounding.copy_stochastic_bf16`` (kept so
+        existing call sites and any external references keep working).
 
         Args:
             target: Target tensor in BF16 (modified in-place)
             source: Source tensor in FP32
         """
-        assert target.dtype == torch.bfloat16, f"Target must be BF16, got {target.dtype}"
-        assert source.dtype == torch.float32, f"Source must be FP32, got {source.dtype}"
-
-        # Create random 16-bit integer [0, 65536)
-        # This will be added to the lower 16 bits of FP32 mantissa
-        result = torch.randint_like(
-            source,
-            dtype=torch.int32,
-            low=0,
-            high=(1 << 16),
-        )
-
-        # Add random to lower 16 bits of mantissa (probabilistic rounding)
-        # View as int32 to manipulate bits directly
-        result.add_(source.view(dtype=torch.int32))
-
-        # Mask off lower 16 bits (keep upper 16 bits = BF16 format)
-        result.bitwise_and_(-65536)  # 0xFFFF0000 as signed int32
-
-        # Copy upper 16 bits to target (BF16)
-        # This effectively does: target = round(source) with stochastic rounding
-        target.copy_(result.view(dtype=torch.float32))
+        copy_stochastic_bf16(target, source)
 
     def _init_param_state(self, p: nn.Parameter):
         """Initialize optimizer state for a parameter."""
@@ -328,8 +318,13 @@ class AdamW8bit_RingBuffer(Optimizer):
 
         else:
             # ============================================================
-            # FP32 States (Standard AdamW)
+            # Unquantized States (Standard AdamW)
             # ============================================================
+            # NOTE: these are allocated with zeros_like/clone, so they take the
+            # PARAMETER's dtype -- for a bf16 parameter they are bf16, not FP32.
+            # In particular the Schedule-Free 'z' sequence is bf16 storage
+            # written by z.sub_() with round-to-nearest, which stochastic
+            # rounding does NOT cover (it only guards writes into p).
 
             if schedule_free:
                 # Schedule-Free: only exp_avg_sq and z (no exp_avg)
@@ -343,7 +338,7 @@ class AdamW8bit_RingBuffer(Optimizer):
             state['is_8bit'] = False
 
             state_mem_mb = (p.numel() * 2 * p.element_size()) / (1024 ** 2)
-            print(f"[AdamW8bit_RingBuffer] Allocated FP32 states for {p.shape} "
+            print(f"[AdamW8bit_RingBuffer] Allocated unquantized {p.dtype} states for {p.shape} "
                   f"({state_mem_mb:.2f} MB on GPU)")
 
     def _load_state_dict_uint8(self, state_dict):
@@ -621,23 +616,24 @@ class AdamW8bit_RingBuffer(Optimizer):
                 # Stochastic Rounding for BF16 Parameters
                 # ============================================================
                 # If stochastic_rounding is enabled and param is BF16:
-                # 1. Create FP32 buffer
-                # 2. CUDA kernel updates FP32 buffer
-                # 3. Python applies stochastic rounding: FP32 → BF16
-                use_stochastic_rounding = (
-                    group['stochastic_rounding'] and
-                    p.dtype == torch.bfloat16 and
-                    use_8bit  # Only for 8-bit quantized updates
+                # 1. Materialise an FP32 image of the param in scratch memory
+                # 2. The update (CUDA kernel or FP32 path) is applied to it
+                # 3. It is written back to the BF16 param with stochastic rounding
+                # The scratch buffers are shared across parameters, so this costs
+                # one buffer the size of the largest parameter -- not an FP32
+                # master copy of the model. See stochastic_rounding.py.
+                use_stochastic_rounding = should_use_stochastic_rounding(
+                    group['stochastic_rounding'], p
                 )
 
-                # Create FP32 buffer if needed
                 if use_stochastic_rounding:
-                    if 'p_fp32' not in state:
-                        # Allocate FP32 buffer (same shape as param)
-                        state['p_fp32'] = p.detach().clone().to(dtype=torch.float32)
-                    p_fp32 = state['p_fp32']
-                    p_for_kernel = p_fp32  # CUDA kernel updates FP32 buffer
+                    # The 8-bit kernels require param.dtype == grad.dtype, and
+                    # autograd hands us a BF16 grad for a BF16 param, so the
+                    # gradient has to be lifted to FP32 alongside the master.
+                    p_fp32, grad = prepare_master_and_grad(p, grad, self._sr_scratch)
+                    p_for_kernel = p_fp32
                 else:
+                    p_fp32 = None
                     p_for_kernel = p  # CUDA kernel updates param directly
 
                 if use_8bit:
@@ -924,9 +920,18 @@ def patch_adamw8bit_ringbuffer(model: nn.Module, optimizer: AdamW8bit_RingBuffer
             eps = group['eps']
             gnorm_scale = 1.0
 
+            # Stochastic rounding: update an FP32 image of the param, then round
+            # back into BF16. Without this the fused-backward path silently
+            # ignores the stochastic_rounding setting that optimizer.step() honours.
+            grad = param.grad
+            if should_use_stochastic_rounding(group['stochastic_rounding'], param):
+                p_fp32, grad = prepare_master_and_grad(param, grad, optimizer._sr_scratch)
+            else:
+                p_fp32 = None
+
             optimizer.ext.adamw_8bit_update(
-                param,
-                param.grad,
+                p_fp32 if p_fp32 is not None else param,
+                grad,
                 state['exp_avg'],
                 state['exp_avg_sq'],
                 state['absmax1'],
@@ -935,6 +940,9 @@ def patch_adamw8bit_ringbuffer(model: nn.Module, optimizer: AdamW8bit_RingBuffer
                 optimizer.step_count + 1,  # +1 because hook runs before step()
                 optimizer.cautious          # cautious masking (matches step())
             )
+
+            # Stochastic rounding: FP32 image -> BF16 param
+            stochastic_round_(param, p_fp32)
 
             # Clear gradient (already applied)
             param.grad = None

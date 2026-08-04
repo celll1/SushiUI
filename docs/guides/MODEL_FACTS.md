@@ -309,7 +309,7 @@ a generation without style transfer.
     `GET/POST /api/v1/system/int8-mm`) or per generation (`quantized_gemm_mode`).
   - **Runtime INT8 (no pre-built artifact)**: `unet_quantization: "int8"` on an
     ordinary bf16 checkpoint of any arch in `RUNTIME_INT8_ARCHS` (Anima, Krea 2,
-    FLUX.2, Ideogram 4) converts the loaded transformer IN
+    FLUX.2, Ideogram 4, LTX-2.3) converts the loaded transformer IN
     PLACE, once, at the first generation after the model load
     (`vram_optimization.apply_runtime_int8_quantization` ->
     `core/models/common/int8_runtime_quantize.quantize_linears_in_place`). The
@@ -509,6 +509,85 @@ a generation without style transfer.
     modulation) and gathers only `video_rotary_emb`. Only installs
     `Ltx2BlockLoopWrapper` for training when an AP3 feature (TREAD or BlockSkip)
     is enabled. Composes with block swap; mutually exclusive with BlockSkip.
+  - **Weight-only INT8**: LTX-2.3 is in `RUNTIME_INT8_ARCHS`, so
+    `unet_quantization: "int8"` converts the video DiT in place
+    (`LTX2Mixin._ltx2_runtime_int8`, called at the top of ALL THREE generate
+    paths — `_generate_txt2vid_ltx2`, `_generate_img2vid_ltx2`,
+    `_generate_vidoutpaint_ltx2` — and before `_ensure_ltx2_swap_and_offload`,
+    because the block offloader captures the blocks' Linear modules and the
+    conversion replaces them; a live offloader raises a `RuntimeError`, not an
+    `assert`). The image endpoints already refuse an LTX-2.3 model, so those
+    three are the whole generate surface.
+  - **Census, and what the DiT actually is.** Enumerated from
+    `LTX2VideoTransformer3DModel` on the meta device: **1660 `nn.Linear`
+    modules holding 18.9777 G 2-D parameters**, all 8-aligned (nothing lost to
+    the GEMM-alignment filter). Selection with the arch policy
+    (`skip_below_work_gate: True`): **1360 quantized / 300 skipped**; the 300
+    hold 0.0362 G, i.e. **0.19%** of the DiT's Linear parameters, and 288 of
+    them are the per-attention `to_gate_logits` projections whose
+    `out_features` is 32, so the runtime gate (k>=2048, n>=1024) can never admit
+    them at any `m` and they would always run the slower dequant path. The
+    filter therefore costs almost nothing here (contrast Ideogram 4's 3.52% and
+    Anima's ~9%). PROVENANCE: shape census + Anima's measurement on a matching
+    shape class — **not** a timing run on LTX-2.3.
+  - **34.33 G is NOT the DiT.** An earlier census over the whole published
+    directory reported 34.3396 G of 2-D tensors and 99.1% gate-reachable. Split
+    by component: `transformer` 18.9824 G, `text_encoder` 12.1855 G (Gemma-3 —
+    `language_model.*` alone is 11.7653 G over **48 decoder layers**, plus a
+    0.4158 G vision tower), `connectors` 3.1717 G, both VAEs and the vocoder
+    ~0. **Only the DiT is quantized.** The bundled LLM is excluded
+    STRUCTURALLY, not by a name heuristic: both enumerations walk the DiT
+    module tree (offline: an `init_empty_weights` build; runtime:
+    `named_modules()` of `pipeline.transformer`), and neither can reach a text
+    encoder that is a different component object in a different directory.
+    `text_encoder_quantization` is separately declared unsupported for ltx2.
+  - **Keys are module paths.** Verified against the distilled 8-shard index:
+    4186 checkpoint keys vs 4186 keys in a meta build from the same
+    `config.json`, **zero difference in either direction**. So `EXPORT_LAYOUTS`
+    uses the identity `source_transform` and an empty prefix — unlike FLUX.2
+    (BFL remap) and Ideogram 4 (fused qkv).
+  - **Loader**: LTX-2.3 is diffusers-DIRECTORY only (no single-file variant), so
+    `ltx2/loader.py` censuses the `transformer/` component's shard HEADERS first
+    (zero tensor bytes — the alternative is materialising 37 GB to find out),
+    runs the census through `scaled_quantization_report`, and only for a SCALED
+    quantized file rebuilds the DiT (`init_empty_weights` +
+    `_swap_ltx2_quantized_linears` + `verify_quantized_swap` +
+    `load_state_dict(assign=True)`) and hands it to `from_pretrained` as a
+    pre-built component. A plain float8 CAST with no scales takes the untouched
+    original path, which reads it correctly; scale-less int8 stays refused.
+  - **Export**: `EXPORT_LAYOUTS["ltx2"]` writes `<root>/transformer/` and
+    junctions/copies the rest of the pipeline root beside it — including the two
+    loose FILES `model_index.json` and `transformer/config.json`, which
+    `link_siblings` copies (directories are still junctioned). An `unwrap` hook
+    exports the inner DiT when the generation path has left an
+    `Ltx2BlockLoopWrapper` in `ltx2_components["transformer"]`.
+  - **MEASURED COST: INT8 turns the coalesced block-swap path OFF.**
+    `block_offloading._h2d_setup` builds one flat pinned CPU master per
+    swappable block, which requires a SINGLE dtype across that block's Linear
+    weights; a mixed set falls back to standard staging-buffer swapping
+    (`"[BlockOffloader] H2D-only disabled: mixed Linear weight dtypes"`). An
+    int8-converted LTX-2.3 block is int8 + e4m3 + bf16 by construction — the
+    conversion is mixed on purpose (high-crest layers stay e4m3) and the 300
+    below-gate Linears stay bf16 — so `h2d_only` is ALWAYS off after a
+    conversion. This is the combination the feature targets (block swap is the
+    standard mode for a 37 GB model), so the H2D win and the INT8 win do not
+    compose: you get one or the other. Correct, not a bug — but not free, and
+    not measured on LTX-2.3 (the mechanism is arch-independent; the dtype-set
+    argument above is what is verified).
+  - **Capabilities / LoRA / training**: `arch_capabilities` keeps
+    `unet_quantization` listed unsupported (the FP8 values genuinely are) and
+    carries `int8` in `ARCH_SUPPORTED_VALUES`, the krea2/ideogram4 treatment.
+    ltx2 is also in `QUANTIZED_LINEAR_ARCHS`, which grants it `quantized_gemm`,
+    so `quantized_gemm_mode` is threaded through all three video routes
+    (`/generate/txt2vid`, `/generate/img2vid`, `/generate/outpaint/video`) and
+    the resolved path is recorded as `fp8_gemm` in the video's metadata —
+    `extract_fp8_gemm_info` now derives `<arch>_components` from that tuple
+    instead of a hand-written map that had already gone stale for FLUX.2.
+    `ltx2_adapter.iter_ltx2_lora_targets` uses `is_lora_wrappable_linear`, not
+    `isinstance(x, nn.Linear)` — `Int8Linear` is not an `nn.Linear` subclass and
+    the naive test drops every quantized target silently. `ltx2_ops
+    .load_components` calls `disable_scaled_mm` + `disable_int8_mm` on the
+    transformer, the text encoder and the connectors: training is dequant-only.
   - **Training, DiT-BlockSkip** (`blockskip_enable`/`blockskip_front`/`blockskip_back`,
     LoRA and full-parameter trainers only, arXiv 2603.20755): dual-stream
     (video + audio) folded-precompute — a no-grad full pass captures the

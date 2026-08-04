@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import time
 from typing import Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple, Union
@@ -61,6 +62,8 @@ __all__ = [
     "krea2_export_metadata",
     "anima_export_metadata",
     "ideogram4_export_metadata",
+    "ltx2_export_metadata",
+    "layout_unwrap",
     "check_layout_prefixes",
     "identity_source_transform",
     "layout_module_specs",
@@ -184,6 +187,61 @@ def ideogram4_export_metadata(config: dict) -> Dict[str, str]:
         "unconditional_transformer_config": blob,
         "format": "pt",
     }
+
+
+def ltx2_export_metadata(config: dict) -> Dict[str, str]:
+    """Metadata block for an exported LTX-2.3 DiT (``LTX2VideoTransformer3DModel``).
+
+    LTX-2.3 is diffusers-DIRECTORY only -- ``model_loader.detect_model_type``
+    recognises it by ``model_index.json``'s ``_class_name == "LTX2Pipeline"`` and
+    there is no single-file variant -- so the export is a component directory
+    inside a pipeline root, not a standalone file, and the layout's ``siblings``
+    entry carries ``model_index.json`` and the transformer's own ``config.json``
+    across (see ``link_siblings``, which copies file entries).
+
+    ``transformer_config`` is written as a SECOND source for that geometry, and
+    ``ltx2/loader.py`` falls back to it when the component directory has no
+    ``config.json``: the quantized branch builds ``LTX2VideoTransformer3DModel``
+    from a config before it can swap anything in, so an artifact that carries no
+    geometry at all is one the loader cannot read. Keys beginning with ``_``
+    (``_class_name``, ``_diffusers_version``, ``_name_or_path``) are dropped --
+    ``from_config`` does not need them and the last is a path on someone else's
+    machine.
+    """
+    config = {k: v for k, v in dict(config or {}).items() if not str(k).startswith("_")}
+    return {
+        "modelspec.architecture": "ltx2",
+        "model_type": "ltx2",
+        "transformer_config": json.dumps(config, default=str),
+        "format": "pt",
+    }
+
+
+def _ltx2_unwrap(module: nn.Module) -> nn.Module:
+    """The INNER ``LTX2VideoTransformer3DModel`` behind an ``Ltx2BlockLoopWrapper``.
+
+    ``pipeline_backends/ltx2.py`` replaces ``ltx2_components["transformer"]`` with
+    that wrapper whenever block swap / FBCache / Spectrum / style transfer is
+    active, and leaves it there after the generation; the export job reads the
+    same dict. Stated precisely, because the obvious motivation is NOT the true
+    one: the wrapper today DELEGATES ``state_dict()`` to the inner transformer
+    (`ltx2_block_loop_wrapper.py`), so the exported KEYS would be right even
+    without this hook -- verified, 144/144 identical on a synthetic build with
+    zero ``transformer.``-prefixed keys.
+
+    What the hook actually buys is that the export writes the object whose key
+    layout IS the loader's contract, instead of depending on a passthrough that
+    exists for LoRA save/load and could reasonably be narrowed. It also aligns
+    ``combined_linear_inventory``'s per-path ``formats`` map, which walks
+    ``named_modules()`` -- NOT delegated, so through the wrapper every audit row
+    would be named ``transformer.<path>`` while the file's keys are ``<path>``.
+    Identity for every other architecture and for an unwrapped LTX-2.3
+    transformer.
+    """
+    inner = getattr(module, "transformer", None)
+    if inner is not None and type(module).__name__ == "Ltx2BlockLoopWrapper":
+        return inner
+    return module
 
 
 def anima_export_metadata(config: dict) -> Dict[str, str]:
@@ -392,6 +450,57 @@ EXPORT_LAYOUTS: Dict[str, Dict[str, object]] = {
         "sibling_root": ".",
         "output_subdir": "",
     },
+    "ltx2": {
+        # LTX-2.3's DiT is a diffusers COMPONENT DIRECTORY, never a single file:
+        # ``detect_model_type`` recognises the arch by a root ``model_index.json``
+        # with ``_class_name == "LTX2Pipeline"``, and ``load_ltx2_from_diffusers``
+        # calls ``LTX2Pipeline.from_pretrained(<root>)``. So the export writes
+        # ``<root>/transformer/<stem>.safetensors`` (``output_subdir`` below) and
+        # junctions/copies the rest of the pipeline root next to it.
+        #
+        # The keys are bare module paths with NO prefix: the component
+        # directory's own checkpoint is keyed that way, and the key set of
+        # ``LTX2VideoTransformer3DModel.from_config(<the shipped config.json>)``
+        # was compared against the distilled 8-shard index directly -- 4186 keys
+        # each way, ZERO in either difference. That is why ``source_transform``
+        # is the identity here: unlike FLUX.2 (BFL remap) and Ideogram 4 (fused
+        # qkv), an LTX-2.3 checkpoint key already IS a module path.
+        #
+        # WHAT IS AND IS NOT IN SCOPE. The published LTX-2.3 directory holds
+        # 34.3396 G of 2-D tensors in total, and an earlier census over the whole
+        # directory reported exactly that number. It is not the DiT. Split by
+        # component: transformer 18.9824 G, text_encoder 12.1855 G (Gemma-3, of
+        # which language_model.* is 11.7653 G over 48 decoder layers plus a
+        # 0.4158 G vision tower), connectors 3.1717 G, both VAEs and the vocoder
+        # ~0. Only the ``transformer`` component is exported and quantized here.
+        # The bundled LLM is EXCLUDED STRUCTURALLY, not by a name filter: the
+        # Linears are enumerated from the DiT module tree (offline: an
+        # ``init_empty_weights`` build of LTX2VideoTransformer3DModel; runtime:
+        # ``named_modules()`` of the live ``pipeline.transformer``), and neither
+        # walk can reach a text encoder that is a different component object in a
+        # different directory. ``arch_capabilities`` separately declares
+        # ``text_encoder_quantization`` unsupported for ltx2, so nothing else
+        # quantizes it either.
+        "modules": (("transformer", ""),),
+        "offline_prefix": "",
+        "source_prefix": "",
+        "metadata": ltx2_export_metadata,
+        # The generation path leaves ``ltx2_components["transformer"]`` holding an
+        # ``Ltx2BlockLoopWrapper`` after any block-swap/FBCache/Spectrum/style
+        # generation; the export writes the inner module (see ``_ltx2_unwrap``).
+        "unwrap": _ltx2_unwrap,
+        # Everything ``LTX2Pipeline.from_pretrained`` needs next to the exported
+        # component, rooted at the pipeline root (one level above the output).
+        # ``model_index.json`` and ``transformer/config.json`` are FILES, which
+        # ``link_siblings`` copies rather than junctions; the rest are component
+        # directories. ``processor`` is present in the published distilled tree
+        # and skipped silently when a source lacks it.
+        "siblings": ("model_index.json", "transformer/config.json",
+                     "text_encoder", "tokenizer", "processor", "scheduler",
+                     "vae", "audio_vae", "connectors", "vocoder"),
+        "sibling_root": "..",
+        "output_subdir": "transformer",
+    },
     "anima": {
         # Anima DiT single-files carry the module tree verbatim under ``net.``;
         # the loader strips that prefix, so the file keeps it.
@@ -433,6 +542,25 @@ def layout_source_transform(arch: str) -> Callable:
     """``arch``'s offline source-key transform (``identity_source_transform``)."""
     layout = EXPORT_LAYOUTS.get(arch) or {}
     return layout.get("source_transform") or identity_source_transform
+
+
+def layout_unwrap(arch: str, module: nn.Module) -> nn.Module:
+    """``module`` reduced to the object whose ``state_dict()`` the export writes.
+
+    Identity unless the arch declares an ``unwrap`` hook. It exists because the
+    export job reads ``pipeline_manager.<arch>_components[name]``, and one
+    architecture leaves a generation-time WRAPPER in that slot: LTX-2.3's
+    ``Ltx2BlockLoopWrapper`` (block swap / FBCache / Spectrum / style transfer).
+    See ``_ltx2_unwrap`` for exactly what that does and does not currently
+    change -- the wrapper delegates ``state_dict()`` but not ``named_modules()``.
+    """
+    hook = (EXPORT_LAYOUTS.get(arch) or {}).get("unwrap")
+    if hook is None:
+        return module
+    try:
+        return hook(module)
+    except Exception:  # pragma: no cover - defensive; a wrapper we cannot unwrap
+        return module
 
 
 def check_layout_prefixes() -> List[str]:
@@ -549,12 +677,33 @@ def link_siblings(src_dir: str, dest_dir: str, names=SIBLING_DIRS) -> List[str]:
 
     Junctions (``mklink /J``) need no administrator rights and work across local
     volumes; a symlink would need developer mode. POSIX falls back to symlinks.
+
+    A named entry that resolves to a FILE rather than a directory is COPIED, not
+    linked. LTX-2.3 is the first arch that needs this: its loader is
+    ``LTX2Pipeline.from_pretrained(<root>)``, which reads a loose
+    ``model_index.json`` at the root before it resolves any component directory,
+    and the transformer's own ``config.json`` lives inside the exported
+    component's directory. Both are on the order of a kilobyte, so copying them
+    is cheaper than the machinery a second "companion files" concept would cost,
+    and a copy (unlike a junction) survives the source tree being moved -- which
+    matters precisely for the two files that decide whether the export is
+    recognisable as a model at all. Entries that resolve to neither a directory
+    nor a file are skipped silently, exactly as before.
     """
     made = []
     os.makedirs(dest_dir, exist_ok=True)
     for name in names:
         target = os.path.join(src_dir, name)
         link = os.path.join(dest_dir, name)
+        if os.path.isfile(target):
+            if os.path.exists(link):
+                print(f"[QuantExport]   companion file '{name}' already present, leaving as is")
+                continue
+            os.makedirs(os.path.dirname(os.path.abspath(link)), exist_ok=True)
+            shutil.copy2(target, link)
+            made.append(name)
+            print(f"[QuantExport]   copied {link} <- {target}")
+            continue
         if not os.path.isdir(target):
             continue
         if os.path.exists(link):
@@ -650,6 +799,10 @@ def resolve_layout_modules(
       .<arch>_components``); extra entries are ignored, a missing declared one
       raises;
     * a sequence of ``(component name, module)`` pairs.
+
+    Every resolved module is passed through ``layout_unwrap`` (identity for all
+    but LTX-2.3), so a caller that hands over a generation-time wrapper still
+    gets the module whose keys the file must carry.
     """
     specs = layout_module_specs(arch)
     if isinstance(model, nn.Module):
@@ -658,7 +811,7 @@ def resolve_layout_modules(
                 f"architecture {arch!r} exports {len(specs)} components "
                 f"({', '.join(n for n, _ in specs)}); pass a mapping of them, not a "
                 f"single module")
-        return [(specs[0][0], specs[0][1], model)]
+        return [(specs[0][0], specs[0][1], layout_unwrap(arch, model))]
 
     if isinstance(model, Mapping):
         provided: Dict[str, nn.Module] = dict(model)
@@ -672,7 +825,7 @@ def resolve_layout_modules(
             raise ValueError(
                 f"architecture {arch!r} exports component {name!r}, which was not "
                 f"supplied (got: {', '.join(sorted(provided)) or 'nothing'})")
-        resolved.append((name, prefix, module))
+        resolved.append((name, prefix, layout_unwrap(arch, module)))
     return resolved
 
 

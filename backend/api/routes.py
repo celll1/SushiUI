@@ -186,6 +186,13 @@ class Txt2VidRequest(BaseModel):
     # arch: accepted-but-ignored with a warning (see check_arch_capabilities).
     vae_path: Optional[str] = TXT2VID_DEFAULTS["vae_path"]
     text_encoder_path: Optional[str] = TXT2VID_DEFAULTS["text_encoder_path"]
+    # Transformer quantization. Only "int8" is applied on LTX-2.3 (one-time
+    # in-place conversion of the video DiT); other values warn and are ignored.
+    unet_quantization: Optional[str] = TXT2VID_DEFAULTS["unet_quantization"]
+    # Quantized-GEMM path selection for this generation (null / "w8a8" /
+    # "dequant"). ltx2 is in QUANTIZED_LINEAR_ARCHS, so this really selects
+    # something here; see api/quantized_gemm.py.
+    quantized_gemm_mode: Optional[str] = TXT2VID_DEFAULTS["quantized_gemm_mode"]
     # Training-free reference-style transfer (video self-attention KV
     # injection; see core.inference.style_ltx2). An entry with
     # is_style_transfer=true carries the style reference; extracted by
@@ -2266,6 +2273,38 @@ async def generate_upscale(
         )
 
 
+def _record_video_gemm_outcome(params, fp8_gemm, arch):
+    """Record the RESOLVED quantized-GEMM path and warn if `w8a8` degraded.
+
+    The video counterpart of the identical pair of calls in the image routes.
+    `fp8_gemm` is recorded into `params` (and so into the sidecar JSON and the
+    gallery row) because the W8A8 and dequantized paths are numerically
+    different, so a video is not reproducible without knowing which one ran.
+    """
+    from api.quantized_gemm import report_quantized_gemm_outcome
+    if fp8_gemm:
+        params["fp8_gemm"] = fp8_gemm
+    report_quantized_gemm_outcome(params.get("quantized_gemm_mode"), fp8_gemm, arch)
+
+
+def _normalize_video_qgm(mode):
+    """`quantized_gemm_mode` for the three LTX-2.3 video routes, as a 400 on junk.
+
+    The image routes each inline this two-liner; the video routes share it
+    because all three are LTX-2.3-only and would otherwise repeat the same
+    try/except three more times. `ltx2` is in `QUANTIZED_LINEAR_ARCHS` -- its
+    loader swaps in `Int8Linear`/`Fp8Linear` for a weight-only quantized
+    transformer component, and `_ltx2_runtime_int8` produces the same classes --
+    so this parameter selects a real GEMM path here rather than being decorative.
+    """
+    from api.error_handlers import ValidationError
+    from api.quantized_gemm import normalize_mode as _normalize_qgm
+    try:
+        return _normalize_qgm(mode)
+    except ValueError as exc:
+        raise ValidationError("Invalid quantized_gemm_mode value", detail=str(exc))
+
+
 @router.post("/generate/txt2vid")
 async def generate_txt2vid(
     request: Txt2VidRequest,
@@ -2280,6 +2319,10 @@ async def generate_txt2vid(
     from utils.video_utils import save_video_with_metadata
 
     params = request.dict()
+    # Quantized-GEMM path (quantized_gemm_mode): normalized BEFORE
+    # start_generation so an invalid value is a 400 rather than a 500 from inside
+    # the run. None (the default) leaves the process flags completely untouched.
+    params["quantized_gemm_mode"] = _normalize_video_qgm(params.get("quantized_gemm_mode"))
 
     # Validate LTX-2.3 dimensional constraints before any GPU work (4xx, not 5xx).
     width = int(params["width"])
@@ -2345,11 +2388,16 @@ async def generate_txt2vid(
         loop = asyncio.get_event_loop()
         _gen_start = time.perf_counter()
         async with gpu_coordinator.generation_slot(estimated_peak_gb=40, timeout=120.0):
+            # GEMM flags are process-wide; keep selection and probing in this slot.
+            from api.quantized_gemm import apply_quantized_gemm_mode
+            apply_quantized_gemm_mode(params.get("quantized_gemm_mode"))
             frames, audio, audio_sample_rate, actual_seed = await _run_generation_in_executor(
                 loop, executor,
                 lambda: pipeline_manager.generate_txt2vid(params, progress_callback=progress_callback)
             )
+            fp8_gemm = extract_fp8_gemm_info(pipeline_manager)
         apply_generation_timings(params, time.perf_counter() - _gen_start)
+        _record_video_gemm_outcome(params, fp8_gemm, _ltx2_arch)
 
         params["seed"] = actual_seed
 
@@ -2984,6 +3032,8 @@ async def generate_img2vid(
     spectrum_max_cache: int = Form(TXT2VID_DEFAULTS["spectrum_max_cache"]),
     vae_path: Optional[str] = Form(TXT2VID_DEFAULTS["vae_path"]),
     text_encoder_path: Optional[str] = Form(TXT2VID_DEFAULTS["text_encoder_path"]),
+    unet_quantization: Optional[str] = Form(TXT2VID_DEFAULTS["unet_quantization"]),
+    quantized_gemm_mode: Optional[str] = Form(TXT2VID_DEFAULTS["quantized_gemm_mode"]),
     controlnets: str = Form("[]"),  # JSON string; only is_style_transfer entries are meaningful for LTX-2.3
     image: UploadFile = File(...),
     db: Session = Depends(get_gallery_db)
@@ -3028,6 +3078,9 @@ async def generate_img2vid(
         "spectrum_max_cache": spectrum_max_cache,
         "vae_path": vae_path,
         "text_encoder_path": text_encoder_path,
+        "unet_quantization": unet_quantization,
+        # Normalized here (before start_generation) so junk is a 400, not a 500.
+        "quantized_gemm_mode": _normalize_video_qgm(quantized_gemm_mode),
     }
 
     # Training-free reference-style transfer (video). See generate_txt2vid's
@@ -3096,11 +3149,16 @@ async def generate_img2vid(
         loop = asyncio.get_event_loop()
         _gen_start = time.perf_counter()
         async with gpu_coordinator.generation_slot(estimated_peak_gb=40, timeout=120.0):
+            # GEMM flags are process-wide; keep selection and probing in this slot.
+            from api.quantized_gemm import apply_quantized_gemm_mode
+            apply_quantized_gemm_mode(params.get("quantized_gemm_mode"))
             frames, audio, audio_sample_rate, actual_seed = await _run_generation_in_executor(
                 loop, executor,
                 lambda: pipeline_manager.generate_img2vid(params, input_image, progress_callback=progress_callback)
             )
+            fp8_gemm = extract_fp8_gemm_info(pipeline_manager)
         apply_generation_timings(params, time.perf_counter() - _gen_start)
+        _record_video_gemm_outcome(params, fp8_gemm, _ltx2_arch)
 
         params["seed"] = actual_seed
 
@@ -3214,6 +3272,8 @@ async def generate_outpaint_video(
     spectrum_max_cache: int = Form(OUTPAINT_VIDEO_DEFAULTS["spectrum_max_cache"]),
     vae_path: Optional[str] = Form(OUTPAINT_VIDEO_DEFAULTS["vae_path"]),
     text_encoder_path: Optional[str] = Form(OUTPAINT_VIDEO_DEFAULTS["text_encoder_path"]),
+    unet_quantization: Optional[str] = Form(OUTPAINT_VIDEO_DEFAULTS["unet_quantization"]),
+    quantized_gemm_mode: Optional[str] = Form(OUTPAINT_VIDEO_DEFAULTS["quantized_gemm_mode"]),
     video_lossless: bool = Form(OUTPAINT_VIDEO_DEFAULTS["video_lossless"]),
     video: UploadFile = File(...),
     db: Session = Depends(get_gallery_db)
@@ -3322,6 +3382,9 @@ async def generate_outpaint_video(
         "spectrum_max_cache": spectrum_max_cache,
         "vae_path": vae_path,
         "text_encoder_path": text_encoder_path,
+        "unet_quantization": unet_quantization,
+        # Normalized here (before start_generation) so junk is a 400, not a 500.
+        "quantized_gemm_mode": _normalize_video_qgm(quantized_gemm_mode),
         "video_lossless": video_lossless,
     }
 
@@ -3360,13 +3423,18 @@ async def generate_outpaint_video(
         loop = asyncio.get_event_loop()
         _gen_start = time.perf_counter()
         async with gpu_coordinator.generation_slot(estimated_peak_gb=40, timeout=120.0):
+            # GEMM flags are process-wide; keep selection and probing in this slot.
+            from api.quantized_gemm import apply_quantized_gemm_mode
+            apply_quantized_gemm_mode(params.get("quantized_gemm_mode"))
             frames, audio, audio_sample_rate, actual_seed = await _run_generation_in_executor(
                 loop, executor,
                 lambda: pipeline_manager.generate_vid_outpaint(
                     params, video_frames, source_fps, input_audio, progress_callback=progress_callback
                 )
             )
+            fp8_gemm = extract_fp8_gemm_info(pipeline_manager)
         apply_generation_timings(params, time.perf_counter() - _gen_start)
+        _record_video_gemm_outcome(params, fp8_gemm, _ltx2_arch)
 
         params["seed"] = actual_seed
 

@@ -767,6 +767,20 @@ VIDEO_GEN_DEFAULTS: Dict[str, Any] = {
     # request schema carries the same keys as the image routes.
     "vae_path": None,
     "text_encoder_path": None,
+    # Transformer quantization. LTX-2.3 is in RUNTIME_INT8_ARCHS, so "int8"
+    # converts the video DiT (and only the DiT -- not the Gemma-3 text encoder,
+    # not the connectors) to the mixed int8/e4m3 weight-only layout in place,
+    # once per model load. Every other value is accepted-but-ignored with a
+    # warning (see arch_capabilities.ARCH_SUPPORTED_VALUES["ltx2"]). Same key and
+    # same semantics as the image routes' GENERATION_DEFAULTS entry.
+    "unet_quantization": None,
+    # Which GEMM the already-quantized Linear layers use for THIS generation
+    # (null = leave the process flags alone, "w8a8", "dequant"). Meaningful on
+    # LTX-2.3 because ltx2 is in QUANTIZED_LINEAR_ARCHS: its loader swaps in
+    # Int8Linear/Fp8Linear for a weight-only quantized transformer component, and
+    # the in-place int8 conversion above produces the same classes. Same key and
+    # same three values as the image routes' GENERATION_DEFAULTS entry.
+    "quantized_gemm_mode": None,
 }
 
 TXT2VID_DEFAULTS: Dict[str, Any] = dict(VIDEO_GEN_DEFAULTS)

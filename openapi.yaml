@@ -162,7 +162,7 @@ paths:
               example:
                 unsupported:
                   sdxl:
-                    quantized_gemm: "this architecture's checkpoints hold plain floating-point Linear weights; the quantized-GEMM path selection applies only to the weight-only quantized Linear layers used by Anima, FLUX.2, Ideogram 4 and Krea 2"
+                    quantized_gemm: "this architecture's checkpoints hold plain floating-point Linear weights; the quantized-GEMM path selection applies only to the weight-only quantized Linear layers used by Anima, FLUX.2, Ideogram 4, Krea 2 and LTX-2.3"
                   krea2:
                     unet_quantization: "FP8 quantization on this architecture is selected by checkpoint format at load time (bf16 or weight-only FP8 checkpoints); the only per-generation unet_quantization value applied is 'int8', which converts an unquantized transformer in place once per model load"
                 supported_values:
@@ -174,8 +174,8 @@ paths:
                 feature_labels:
                   quantized_gemm: "quantized_gemm_mode (quantized GEMM path)"
                   unet_quantization: "unet_quantization"
-                runtime_int8_archs: [anima, krea2, flux2, ideogram4]
-                quantized_linear_archs: [anima, flux2, ideogram4, krea2]
+                runtime_int8_archs: [anima, krea2, flux2, ideogram4, ltx2]
+                quantized_linear_archs: [anima, flux2, ideogram4, krea2, ltx2]
   /schema/generation-defaults:
     get:
       summary: Get default parameter values for txt2img/img2img/inpaint generation
@@ -1529,8 +1529,8 @@ paths:
         `force=true` is sent. `force` is the documented way to undo any
         per-session mutation of the loaded components — above all the one-way
         in-place runtime INT8 conversion (`unet_quantization: "int8"` on anima /
-        krea2), whose source weights are dropped and can only come back from the
-        checkpoint.
+        krea2 / flux2 / ideogram4 / ltx2), whose source weights are dropped and
+        can only come back from the checkpoint.
       operationId: loadModel
       requestBody:
         required: true
@@ -1591,9 +1591,9 @@ paths:
         `Int8Linear` / `Fp8Linear` modules. Both provenances count and are
         indistinguishable by then: a checkpoint that was already quantized, and
         a bf16 checkpoint converted in place at generation time
-        (`unet_quantization: "int8"` on anima / krea2 / flux2 / ideogram4 — which converts
-        BOTH of Ideogram 4's transformers, and is one-way until the
-        model is reloaded).
+        (`unet_quantization: "int8"` on anima / krea2 / flux2 / ideogram4 / ltx2
+        — which converts BOTH of Ideogram 4's transformers, and only the video
+        DiT on LTX-2.3, and is one-way until the model is reloaded).
 
         `suggested_path` is a destination outside the loaded model's own
         directory tree, in the subdirectory that architecture's loader needs
@@ -5604,9 +5604,13 @@ components:
           type: boolean
           default: true
           description: |
-            Create directory junctions to the loaded model's companion component
-            directories (text encoder, VAE, ...) next to the output, so the
-            loader's sibling probe resolves the same components it does today.
+            Make the loaded model's companion components resolvable next to the
+            output, so the loader's sibling probe finds the same components it
+            does today. A companion that is a DIRECTORY (text encoder, VAE, ...)
+            is junctioned; one that is a FILE is copied instead — LTX-2.3 needs
+            `model_index.json` and the transformer's own `config.json`, both of
+            which `LTX2Pipeline.from_pretrained` reads before it resolves any
+            component directory, and both of which are about a kilobyte.
           example: true
         overwrite:
           type: boolean
@@ -5631,7 +5635,10 @@ components:
         arch:
           type: string
           nullable: true
-          description: Architecture being exported (`anima`, `krea2`).
+          description: |
+            Architecture being exported: one of `anima`, `flux2`, `ideogram4`,
+            `krea2`, `ltx2` (the keys of the backend's `EXPORT_LAYOUTS` table,
+            pinned by `quantized_capability_parity_test`).
           example: anima
         output_path:
           type: string
@@ -5846,7 +5853,7 @@ components:
             reported through the generation's `warnings[]`.
           items:
             type: string
-          example: [anima, krea2, flux2, ideogram4]
+          example: [anima, krea2, flux2, ideogram4, ltx2]
         quantized_linear_archs:
           type: array
           description: |
@@ -5860,7 +5867,7 @@ components:
             today.
           items:
             type: string
-          example: [anima, flux2, ideogram4, krea2]
+          example: [anima, flux2, ideogram4, krea2, ltx2]
     Fp8ScaledMmState:
       type: object
       required: [enabled, origin, resolved_modes]
@@ -6118,7 +6125,9 @@ components:
             operation during inference, so measured generation speed is slower
             than full precision, not faster.
 
-            `int8` — **`anima` and `krea2` only.** Converts the loaded
+            `int8` — **`anima`, `krea2`, `flux2`, `ideogram4` and `ltx2` only**
+            (the authoritative list is `runtime_int8_archs` from
+            `GET /schema/arch-capabilities`). Converts the loaded
             transformer IN PLACE to the mixed weight-only int8/e4m3 layout the
             offline tool (`subapps/fp8_quantize/quantize_transformer_fp8.py
             --format int8`) writes, using the same per-layer selection rule
@@ -6172,7 +6181,8 @@ components:
             already-quantized weights are multiplied.
 
             Consumed only by the architectures whose loaders swap in the
-            quantized Linear classes — `anima`, `flux2`, `ideogram4`, `krea2`
+            quantized Linear classes — `anima`, `flux2`, `ideogram4`, `krea2`,
+            `ltx2`
             (the `quantized_linear_archs` list of
             `GET /schema/arch-capabilities`, which is derived from the backend's
             own tuple and is the authority if this sentence ever drifts).
@@ -6864,6 +6874,54 @@ components:
           type: string
           nullable: true
           description: "Per-generation text-encoder override. Unsupported on the LTX-2.3 video model: accepted-but-ignored with a warning."
+        unet_quantization:
+          type: string
+          nullable: true
+          enum: [none, fp8_e4m3fn, fp8_e5m2, int8]
+          default: null
+          description: |
+            Transformer quantization mode for the video DiT. Only `int8` is
+            applied on LTX-2.3: it converts `LTX2VideoTransformer3DModel` IN
+            PLACE to the mixed weight-only int8/e4m3 layout, once, at the first
+            generation after the model is loaded, and is ONE-WAY (reload the
+            model with `force=true` to get full precision back). 1360 of the
+            DiT's 1660 Linear layers are selected; the 300 skipped ones are
+            below the runtime min-work gate and hold 0.19% of its Linear
+            parameters.
+
+            SCOPE: the video DiT only. The bundled Gemma-3 text encoder and the
+            text connectors are separate components and are never quantized by
+            this parameter; `text_encoder_quantization` is separately
+            unsupported on this architecture.
+
+            The FP8 values are accepted-but-ignored with an `unsupported_param`
+            warning on LTX-2.3. Requesting `int8` while a block-swap generation
+            has an offloader attached is refused with an error rather than
+            silently producing a model whose offloader streams pre-conversion
+            weights, so request it before enabling `blocks_to_swap`.
+          example: int8
+        quantized_gemm_mode:
+          type: string
+          nullable: true
+          enum: [w8a8, dequant, null]
+          default: null
+          description: |
+            Per-generation selection of the GEMM path used by Linear layers whose
+            weights are ALREADY weight-only quantized; identical semantics and
+            identical three values to `GenerationParams.quantized_gemm_mode`, and
+            it selects a real path here because `ltx2` is one of the
+            `quantized_linear_archs` of `GET /schema/arch-capabilities` (the
+            LTX-2.3 loader swaps in `Int8Linear`/`Fp8Linear` for a weight-only
+            quantized `transformer/` component, and `unet_quantization: "int8"`
+            produces the same classes at runtime).
+
+            A different axis from `unet_quantization`: that one quantizes an
+            unquantized DiT's weights, this one selects how already-quantized
+            weights are multiplied. The resolved path is recorded in the video's
+            sidecar metadata as `fp8_gemm`, and an explicit `"w8a8"` that
+            degraded to the dequantized matmul is reported through the
+            generation's `warnings[]`.
+          example: w8a8
 
     Img2VidRequest:
       allOf:
@@ -7056,6 +7114,26 @@ components:
           type: string
           nullable: true
           description: "Per-generation text-encoder override. Unsupported on the LTX-2.3 video model: accepted-but-ignored with a warning."
+        unet_quantization:
+          type: string
+          nullable: true
+          enum: [none, fp8_e4m3fn, fp8_e5m2, int8]
+          default: null
+          description: |
+            Transformer quantization mode for the video DiT; identical semantics
+            to `Txt2VidRequest.unet_quantization` (only `int8` is applied on
+            LTX-2.3, converting `LTX2VideoTransformer3DModel` in place once per
+            model load, video DiT only).
+          example: int8
+        quantized_gemm_mode:
+          type: string
+          nullable: true
+          enum: [w8a8, dequant, null]
+          default: null
+          description: |
+            Per-generation GEMM path for already-quantized Linear weights;
+            identical semantics to `Txt2VidRequest.quantized_gemm_mode`.
+          example: w8a8
         video_lossless:
           type: boolean
           default: false

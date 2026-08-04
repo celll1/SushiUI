@@ -198,7 +198,17 @@ class Flux2Mixin:
           offloader captures references to each block's Linear modules and builds
           pinned CPU masters from their weights; converting afterwards would
           replace the modules it holds and strand it on the pre-conversion ones.
-          Asserted below rather than assumed, because the failure is silent.
+          Checked rather than assumed, because the failure is silent -- and
+          checked as the converter's ``precheck``, i.e. only when a conversion is
+          really about to touch the first layer. FLUX.2 clears
+          ``_flux2_active_block_offloader`` in a ``finally`` after every
+          generation, so an unconditional guard here happens to be safe today;
+          it is not safe as a PATTERN (the identical-looking guard on LTX-2.3,
+          whose offloader is persistent wrapper state, refused every second
+          block-swap generation even with no quantization requested), and the
+          safety of this one should not rest on a ``finally`` in three other
+          functions. Same shape as ``_ideogram4_runtime_int8``'s
+          ``runtime_int8_requested`` guard.
         * BEFORE staging. ``move_flux2_transformer_to_gpu`` is only reached in the
           NO-block-swap branch, so quantizing there would leave a block-swapped
           generation unquantized; here it happens on whatever device the module
@@ -212,19 +222,24 @@ class Flux2Mixin:
 
         if transformer is None:
             return transformer
+
         # Checked, not asserted: `python -O` strips an assert, and this is the one
         # invariant whose violation is invisible (a conversion that "succeeded"
         # while the offloader still streams the pre-conversion weights).
-        if getattr(self, "_flux2_active_block_offloader", None) is not None:
+        def _refuse_if_offloader_live():
+            if getattr(self, "_flux2_active_block_offloader", None) is None:
+                return
             raise RuntimeError(
                 "FLUX.2 INT8 conversion was reached while a block offloader is still "
                 "active. It must run BEFORE the offloader is created: the offloader "
                 "holds references to each block's Linear modules, and the conversion "
                 "replaces those modules, so afterwards it would stream the original "
                 "bf16 weights into modules nothing reads.")
+
         model, _converted = apply_runtime_int8_quantization(
             self, transformer, "flux2", params.get("unet_quantization"),
-            label="FLUX.2 Transformer", progress_callback=progress_callback)
+            label="FLUX.2 Transformer", progress_callback=progress_callback,
+            precheck=_refuse_if_offloader_live)
         if self.flux2_components is not None:
             self.flux2_components["transformer"] = model
         return model

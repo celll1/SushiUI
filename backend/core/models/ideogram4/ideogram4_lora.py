@@ -167,6 +167,27 @@ def _set_module(parent: Any, attr: Any, module: nn.Module) -> None:
         setattr(parent, attr, module)
 
 
+def _is_lora_target(m: Any) -> bool:
+    """True for a module a LoRA can wrap or re-wrap on the Ideogram 4 DiT.
+
+    A plain ``nn.Linear``, EITHER weight-only quantized Linear, or an
+    already-wrapped ``LoRALinearLayer`` (yielded so re-application and stacking
+    find the slot). ``Fp8Linear`` and ``Int8Linear`` are ``nn.Module``s, NOT
+    ``nn.Linear`` subclasses, so both have to be named or their layers are
+    skipped SILENTLY -- no target, no warning, and a LoRA that appears to do
+    nothing on a quantized checkpoint. Ideogram 4's published checkpoints are
+    quantized, so that would be the normal case here, not an edge case.
+
+    MODULE-LEVEL rather than the closure it used to be, so that
+    ``quantized_capability_parity_test`` can find it by convention and check it
+    against ``Int8Linear``/``Fp8Linear`` the same way it checks Anima's
+    ``_is_lora_target`` and Krea 2's ``_is_target``. The behaviour is unchanged.
+    """
+    from core.training.adapters.sd15_adapter import LoRALinearLayer
+
+    return isinstance(m, (nn.Linear, Fp8Linear, Int8Linear, LoRALinearLayer))
+
+
 def iter_ideogram4_lora_targets(
     transformer: nn.Module,
     scope: Optional[Dict[str, bool]] = None,
@@ -178,17 +199,12 @@ def iter_ideogram4_lora_targets(
     nn.Linear, weight-only-quantized Fp8Linear / Int8Linear (the e4m3 and int8
     bases), plus already-wrapped LoRALinearLayer (for stacking).
     """
-    from core.training.adapters.sd15_adapter import LoRALinearLayer
-
     scope = scope if scope is not None else DEFAULT_SCOPE
     want_attn = bool(scope.get("attn", False))
     want_mlp = bool(scope.get("mlp", False))
     want_mod = bool(scope.get("mod", False))
 
-    # Fp8Linear and Int8Linear are nn.Modules, NOT nn.Linear subclasses: both
-    # have to be named or their layers are silently skipped (no target, no
-    # warning, and a LoRA that appears to do nothing on a quantized checkpoint).
-    is_target = lambda m: isinstance(m, (nn.Linear, Fp8Linear, Int8Linear, LoRALinearLayer))
+    is_target = _is_lora_target
 
     blocks = getattr(transformer, "layers", None)
     if blocks is None:

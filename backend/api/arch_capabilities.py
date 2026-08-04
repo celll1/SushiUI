@@ -168,7 +168,11 @@ _add_supported_values("ideogram4", "unet_quantization", ["int8"])
 _add("minit2i", "unet_quantization",
      "unet_quantization is not implemented for this architecture")
 _add("ltx2", "unet_quantization",
-     "unet_quantization is not implemented for the LTX-2.3 video model")
+     "the FP8/nf4 values are not implemented for the LTX-2.3 video model; the only "
+     "per-generation unet_quantization value applied is 'int8', which converts the "
+     "unquantized video DiT (and only the DiT -- not the Gemma-3 text encoder or the text "
+     "connectors) in place once per model load")
+_add_supported_values("ltx2", "unet_quantization", ["int8"])
 _add("acestep", "unet_quantization",
      "unet_quantization is not implemented for the ACE-Step audio model")
 

@@ -10,7 +10,7 @@ Note: torchao/UINT quantization has been removed due to compatibility issues.
 """
 
 import torch
-from typing import Optional
+from typing import Dict, Optional
 import copy
 
 
@@ -1072,16 +1072,123 @@ def _runtime_int8_progress_adapter(progress_callback):
     return _cb
 
 
+def _multi_progress_adapter(progress_callback, index: int, count: int,
+                            totals: Optional[Dict[int, int]] = None):
+    """The conversion progress callback for component ``index`` of ``count``.
+
+    One bar across the whole request rather than one per component: an
+    architecture with two transformers (Ideogram 4) would otherwise show the
+    progress restart half way through a single one-time conversion.
+
+    A component's SELECTED-layer count is only known once its first callback
+    arrives (the selection runs inside ``quantize_linears_in_place``), so
+    ``totals`` -- a dict SHARED across the whole set by the caller -- accumulates
+    the ones that have been seen, and the current component's total stands in for
+    the ones that have not. The offset is then the sum of the REAL totals of the
+    components already finished rather than ``index * total``.
+
+    For identical geometry -- Ideogram 4's two transformers, the only
+    multi-component case that exists -- this is exact and identical to what the
+    ``index * total`` form produced. For components of DIFFERENT sizes the step
+    count stays monotonic and the bar still ends at exactly 100%; only the
+    denominator refines (once per component) as each real total becomes known.
+    The ``index * total`` form instead moved the step count BACKWARDS at every
+    component boundary, e.g. 40/80 -> 11/20 on a 40+10 pair. Pre-computing the
+    true grand total would need the converter's selection to run twice (once to
+    count, once to convert) or its gate arguments to be duplicated here, where
+    they could drift from the ones that actually decide; a denominator that
+    refines is the cheaper honest answer.
+    """
+    base = _runtime_int8_progress_adapter(progress_callback)
+    if base is None or count <= 1:
+        return base
+    if totals is None:
+        totals = {}
+
+    def _cb(done: int, total: int, name: str) -> None:
+        totals[index] = total
+        estimated = [totals.get(i, total) for i in range(count)]
+        offset = sum(estimated[:index])
+        grand = sum(estimated)
+        base(min(done + offset, grand), grand, name)
+
+    return _cb
+
+
+def _merge_runtime_int8_documents(documents):
+    """One audit document describing a multi-component conversion.
+
+    Same SHAPE as a single-component one (``settings`` / ``format_counts`` /
+    ``geomean_advantage`` / ``layers``), because it is stored on the manager and
+    written next to a ``POST /models/export-quantized`` artifact, and a reader
+    must not need to know how many transformers the architecture has. The layer
+    rows are already namespaced by component (see ``_qualify``), and the extra
+    ``components`` key names them in write order.
+    """
+    from core.models.common.int8_runtime_quantize import audit_document
+
+    rows = [r for _c, d in documents for r in (d.get("layers", []) or [])]
+    settings = dict((documents[0][1].get("settings", {}) or {}))
+    settings["components"] = [c for c, _d in documents]
+    settings["skipped"] = [s for _c, d in documents
+                           for s in ((d.get("settings", {}) or {}).get("skipped", []) or [])]
+    merged = audit_document(rows, settings)
+    merged["elapsed_s"] = sum(float(d.get("elapsed_s", 0.0) or 0.0) for _c, d in documents)
+    converted: Dict[str, int] = {}
+    for _c, d in documents:
+        for fmt, n in (d.get("converted", {}) or {}).items():
+            converted[fmt] = converted.get(fmt, 0) + int(n)
+    merged["converted"] = converted
+    merged["oom_fallback_layers"] = [
+        f"{c}.{name}" for c, d in documents
+        for name in (d.get("oom_fallback_layers", []) or [])]
+    return merged
+
+
 def apply_runtime_int8_quantization(manager, model, arch: str, quantization,
                                     label: str = "Transformer",
                                     progress_callback=None):
     """Convert ``model`` to the mixed int8/e4m3 layout in place, once.
 
-    Returns ``(model, converted)``. ``model`` is returned UNCHANGED (and
-    ``converted`` is False) for every case that is not a fresh int8 conversion:
+    The single-component spelling of ``apply_runtime_int8_quantization_multi``
+    below, which holds the implementation and the full contract. Returns
+    ``(model, converted)``; ``model`` is the SAME object either way (the
+    conversion replaces child modules in place).
+    """
+    models, converted = apply_runtime_int8_quantization_multi(
+        manager, [("transformer", label, model)], arch, quantization,
+        progress_callback=progress_callback)
+    return (models[0] if models else model), converted
+
+
+def apply_runtime_int8_quantization_multi(manager, components, arch: str, quantization,
+                                          progress_callback=None):
+    """Convert EVERY module in ``components`` to the mixed int8/e4m3 layout, as one unit.
+
+    ``components`` is a sequence of ``(component name, label, module)``; a
+    ``None`` module is dropped. Returns ``(list of modules, converted)``, where
+    ``converted`` is True only when the whole set was converted.
+
+    WHY A SET AND NOT A LOOP OVER THE SINGLE-MODULE FUNCTION. The bookkeeping is
+    per MANAGER, not per module: ``_runtime_int8_converted`` latches the moment a
+    conversion completes, so calling the single-module function twice would
+    convert the first transformer, latch, and return the second one untouched --
+    silently, and with no warning, because "already converted" is a legitimate
+    state. On Ideogram 4 that is not a half-quantized model but something worse:
+    a quantized conditional branch and a bf16 unconditional one, i.e. the two
+    halves of an asymmetric-CFG denoise step computed at different precisions.
+    Everything that decides is therefore evaluated over the whole set, and the
+    latch is set once, at the end.
+
+    The modules are returned UNCHANGED (and ``converted`` is False) for every
+    case that is not a fresh int8 conversion:
 
     * the request is not ``"int8"`` -- the caller's own fp8/none handling stands;
     * ``arch`` is not one of ``RUNTIME_INT8_ARCHS``;
+    * ANY module is already weight-only quantized, or already holds float8
+      weights. Refused for the whole set rather than per module, for the reason
+      above: converting the rest would leave the components at different
+      precisions;
     * the model was ALREADY converted at runtime. A later ``null``/fp8 request
       then proceeds with the quantized model and emits
       ``runtime_quantization_persistent`` -- the conversion cannot be undone
@@ -1113,7 +1220,26 @@ def apply_runtime_int8_quantization(manager, model, arch: str, quantization,
     A completed conversion sets ``manager._runtime_int8_converted = True``, which
     ``keep_hot.compute_model_key`` reads so the resident-component key does not
     flip between generations, and which ``pipeline._load_model_locked`` clears.
+
+    A model that was ALREADY quantized in its checkpoint sets a SEPARATE latch,
+    ``manager._runtime_int8_from_checkpoint``. Keep-hot keys the two identically
+    (both mean "the resident transformer is quantized"), and only the runtime one
+    carries the one-way persistence message: the checkpoint's quantization is not
+    something this session did and not something a reload would undo, so saying
+    so would be a false statement, and on an architecture whose published
+    checkpoints are all quantized it would be the message the user sees every
+    generation.
     """
+    resolved = [(str(name), str(lbl), mod) for name, lbl, mod in components if mod is not None]
+    models = [mod for _n, _l, mod in resolved]
+    if not resolved:
+        return models, False
+    # One label for the messages, whatever the component count. "X and Y" reads
+    # correctly for two and degrades to the single label for one, so every
+    # existing single-module warning is byte-identical.
+    label = resolved[0][1] if len(resolved) == 1 else \
+        f"{', '.join(l for _n, l, _m in resolved[:-1])} and {resolved[-1][1]}"
+
     requested = _normalize_quantization(quantization)
     already_converted = bool(getattr(manager, "_runtime_int8_converted", False))
     partial = bool(getattr(manager, "_runtime_int8_partial", False))
@@ -1128,7 +1254,7 @@ def apply_runtime_int8_quantization(manager, model, arch: str, quantization,
                 f"the conversion is one-way. {_RUNTIME_INT8_RECOVERY}",
                 code="runtime_quantization_persistent",
             )
-        return model, False
+        return models, False
 
     if requested != RUNTIME_INT8_VALUE:
         if partial:
@@ -1142,12 +1268,12 @@ def apply_runtime_int8_quantization(manager, model, arch: str, quantization,
                 f"layers, or {_RUNTIME_INT8_RECOVERY_LOWER}",
                 code="runtime_quantization_persistent",
             )
-        return model, False
+        return models, False
 
     try:
         from core.models.common.int8_runtime_quantize import (
             LoraWrappedError, RUNTIME_INT8_ARCHS, already_weight_only_quantized,
-            float8_weight_linear_count, quantize_linears_in_place,
+            float8_weight_linear_count, lora_wrapped_count, quantize_linears_in_place,
         )
     except Exception as e:
         print(f"[RuntimeInt8] unavailable ({e}); leaving {label} unquantized")
@@ -1155,17 +1281,17 @@ def apply_runtime_int8_quantization(manager, model, arch: str, quantization,
             f"{label} INT8 quantization unavailable ({e}); running at full precision",
             code="quantization_fallback",
         )
-        return model, False
+        return models, False
 
     if arch not in RUNTIME_INT8_ARCHS:
         # The capability table already warns for an arch that ignores
         # unet_quantization; nothing to add here.
-        return model, False
+        return models, False
 
     if not partial:
         # Suppressed while partial: the quantized modules present would then be
         # OUR OWN half-finished work, not a checkpoint property.
-        owned = already_weight_only_quantized(model)
+        owned = sum(already_weight_only_quantized(mod) for _n, _l, mod in resolved)
         if owned:
             print(f"[RuntimeInt8] {label} already holds {owned} weight-only quantized Linear(s) "
                   f"from the checkpoint; the runtime '{quantization}' request is a no-op.")
@@ -1174,13 +1300,21 @@ def apply_runtime_int8_quantization(manager, model, arch: str, quantization,
                 f"weight-only quantized ({owned} layers).",
                 code="quantization_superseded",
             )
-            # Treat it as converted for keep-hot purposes: the model IS
-            # int8-shaped, so the resident-set key must not flip when the next
-            # request omits the parameter.
-            manager._runtime_int8_converted = True
-            return model, False
+            # Keyed for keep-hot exactly like a runtime conversion -- the model
+            # IS quantized, so the resident-set key must not flip when the next
+            # request omits the parameter -- but under its OWN latch. Setting
+            # ``_runtime_int8_converted`` here would make every subsequent
+            # non-int8 request emit ``runtime_quantization_persistent`` ("it was
+            # quantized in place earlier in this session and the conversion is
+            # one-way"), which is false: nothing was converted, the checkpoint
+            # arrived this way, and reloading it would produce the same model.
+            # On an architecture whose published checkpoints are all quantized
+            # (Ideogram 4: FP8/nf4) that false warning would be the NORMAL path
+            # after a single int8 request, not an edge case.
+            manager._runtime_int8_from_checkpoint = True
+            return models, False
 
-    fp8_weights = float8_weight_linear_count(model)
+    fp8_weights = sum(float8_weight_linear_count(mod) for _n, _l, mod in resolved)
     if fp8_weights:
         print(f"[RuntimeInt8] {label} holds {fp8_weights} Linear layer(s) whose weights are "
               f"already float8 from an FP8 generation earlier in this session; refusing to "
@@ -1196,26 +1330,17 @@ def apply_runtime_int8_quantization(manager, model, arch: str, quantization,
             f"generation in between.",
             code="quantization_superseded",
         )
-        return model, False
+        return models, False
 
-    if partial:
-        done = int(getattr(manager, "_runtime_int8_partial_done", 0) or 0)
-        print(f"[RuntimeInt8] resuming a partial {label} conversion "
-              f"({done} layer(s) already converted)")
-
-    work_device = torch.device("cuda:0") if torch.cuda.is_available() else None
-    try:
-        document = quantize_linears_in_place(
-            model,
-            arch=arch,
-            compute_dtype=torch.bfloat16,
-            work_device=work_device,
-            progress_cb=_runtime_int8_progress_adapter(progress_callback),
-            label=label,
-        )
-    except LoraWrappedError as e:
-        # Nothing was touched: the refusal happens before the first layer.
-        print(f"[RuntimeInt8] {label} conversion refused: {e}")
+    # LoRA pre-flight over the WHOLE set, before the first layer of the first
+    # component is touched. ``quantize_linears_in_place`` makes the same refusal
+    # per module, but discovering it on the SECOND component would already have
+    # left the first one converted -- the mixed-precision state this function
+    # exists to prevent.
+    wrapped = [(lbl, lora_wrapped_count(mod)) for _n, lbl, mod in resolved]
+    if any(n for _l, n in wrapped):
+        detail = ", ".join(f"{l}: {n}" for l, n in wrapped if n)
+        print(f"[RuntimeInt8] {label} conversion refused: LoRA wrappers present ({detail})")
         _add_generation_warning(
             f"{label} INT8 quantization was not applied because LoRAs are loaded: the LoRA "
             f"wrappers hide the Linear layers, so the conversion would select a different "
@@ -1223,11 +1348,98 @@ def apply_runtime_int8_quantization(manager, model, arch: str, quantization,
             f"Remove the LoRAs (or reload the model without them) to convert.",
             code="quantization_fallback",
         )
-        return model, False
+        return models, False
+
+    if partial:
+        done = int(getattr(manager, "_runtime_int8_partial_done", 0) or 0)
+        print(f"[RuntimeInt8] resuming a partial {label} conversion "
+              f"({done} layer(s) already converted)")
+
+    work_device = torch.device("cuda:0") if torch.cuda.is_available() else None
+    multi = len(resolved) > 1
+
+    def _qualify(rows, component: str):
+        """Namespace a component's audit rows when there is more than one.
+
+        Two transformers of IDENTICAL geometry produce identical module paths, so
+        an un-namespaced merge would silently collapse 558 rows into 279 -- and
+        the de-duplication in the partial-resume path below would then treat the
+        second transformer's layers as already done. Single-component archs are
+        left exactly as they were, so their audit documents stay diffable against
+        the committed offline artifacts.
+        """
+        if not multi:
+            return rows
+        for row in rows:
+            row["name"] = f"{component}.{row.get('name')}"
+        return rows
+
+    documents = []
+    component, comp_label = resolved[0][0], resolved[0][1]
+    # Shared across the components so the one bar can use each finished
+    # component's REAL Linear count as the next one's offset.
+    progress_totals: Dict[int, int] = {}
+    try:
+        for index, (component, comp_label, mod) in enumerate(resolved):
+            document = quantize_linears_in_place(
+                mod,
+                arch=arch,
+                compute_dtype=torch.bfloat16,
+                work_device=work_device,
+                progress_cb=_multi_progress_adapter(progress_callback, index,
+                                                    len(resolved), progress_totals),
+                label=comp_label,
+            )
+            _qualify(document.get("layers", []) or [], component)
+            _qualify((document.get("settings", {}) or {}).get("skipped", []) or [], component)
+            documents.append((component, document))
+    except LoraWrappedError as e:
+        # The pre-flight above already refused this case, so reaching it means the
+        # module changed under us. Nothing was touched IN THIS component -- but an
+        # earlier one may already be converted, which is a partial model, not an
+        # unchanged one.
+        print(f"[RuntimeInt8] {comp_label} conversion refused: {e}")
+        if documents:
+            manager._runtime_int8_partial = True
+            # Rows from an EARLIER partial pass are carried forward, exactly as
+            # the generic handler below does: this request may be the resume of
+            # one, in which case the layers that pass converted are already
+            # quantized and dropping their rows would under-report the model (and
+            # make the next resume's de-duplication miss them).
+            rows = list(getattr(manager, "_runtime_int8_partial_rows", []) or [])
+            rows.extend(r for _c, d in documents for r in (d.get("layers", []) or []))
+            seen_names = set()
+            unique_rows = []
+            for row in rows:
+                name = row.get("name")
+                if name in seen_names:
+                    continue
+                seen_names.add(name)
+                unique_rows.append(row)
+            manager._runtime_int8_partial_rows = unique_rows
+            manager._runtime_int8_partial_done = len(
+                [r for r in unique_rows if r.get("chosen") in ("int8", "e4m3")])
+        _add_generation_warning(
+            f"{label} INT8 quantization was not applied to {comp_label} because LoRAs are "
+            f"loaded: the LoRA wrappers hide the Linear layers, so the conversion would "
+            f"select a different set than it should. "
+            + (f"{len(documents)} of {len(resolved)} component(s) were already converted and "
+               f"that cannot be undone; " if documents else "The model is unchanged and ")
+            + f"the model runs at "
+            f"{'mixed precision' if documents else 'full precision'}. "
+            f"Remove the LoRAs (or reload the model without them) to convert.",
+            code="quantization_fallback" if not documents else "quantization_partial",
+        )
+        return models, False
     except Exception as e:
         import traceback; traceback.print_exc()
         doc = getattr(e, "_int8_partial_document", None) or {}
+        # ``component`` is the one that failed; its partial document's rows need
+        # the same namespacing the completed ones got.
+        _qualify(doc.get("layers", []) or [], component)
         rows = list(getattr(manager, "_runtime_int8_partial_rows", []) or [])
+        for _c, completed in documents:
+            rows.extend(completed.get("layers", []) or [])
         rows.extend(doc.get("layers", []) or [])
         unique_rows = []
         seen_names = set()
@@ -1240,21 +1452,30 @@ def apply_runtime_int8_quantization(manager, model, arch: str, quantization,
         rows = unique_rows
         done = len([r for r in rows if r.get("chosen") in ("int8", "e4m3")])
         remaining = int(doc.get("remaining", 0) or 0)
+        # Components not started at all are also outstanding; without them the
+        # "left" count would understate a two-transformer failure by a whole
+        # transformer.
+        untouched = len(resolved) - len(documents) - 1
         # NOT latched as converted: the model is neither bf16 nor fully INT8.
         manager._runtime_int8_partial = True
         manager._runtime_int8_partial_rows = rows
         manager._runtime_int8_partial_done = done
-        print(f"[RuntimeInt8] {label} conversion failed after {done} layer(s) "
-              f"({remaining} left): {e}")
+        scope = f" (in {comp_label})" if multi else ""
+        untouched_note = (
+            f" and {untouched} further component(s) were not started" if untouched > 0 else "")
+        print(f"[RuntimeInt8] {label} conversion failed after {done} layer(s)"
+              f"{scope} ({remaining} left{untouched_note}): {e}")
         _add_generation_warning(
-            f"{label} INT8 quantization failed after converting {done} layer(s) ({remaining} "
-            f"left): {e}. The transformer is now partially INT8 and that cannot be undone. "
+            f"{label} INT8 quantization failed after converting {done} layer(s){scope} "
+            f"({remaining} left{untouched_note}): {e}. The transformer is now partially INT8 "
+            f"and that cannot be undone. "
             f"Generate again with INT8 to convert the remaining layers, or "
             f"{_RUNTIME_INT8_RECOVERY_LOWER}",
             code="quantization_partial",
         )
-        return model, False
+        return models, False
 
+    document = _merge_runtime_int8_documents(documents) if multi else documents[0][1]
     counts = document.get("converted", {})
     converted_n = counts.get("int8", 0) + counts.get("e4m3", 0)
     prev_rows = list(getattr(manager, "_runtime_int8_partial_rows", []) or [])
@@ -1283,17 +1504,18 @@ def apply_runtime_int8_quantization(manager, model, arch: str, quantization,
             f"layers qualified); the transformer runs at full precision.",
             code="quantization_fallback",
         )
-        return model, False
+        return models, False
 
     manager._runtime_int8_converted = True
     manager._runtime_int8_partial = False
     manager._runtime_int8_partial_rows = []
     manager._runtime_int8_partial_done = 0
     manager._runtime_int8_audit = document
-    print(f"[RuntimeInt8] {label} converted in place: "
+    scope = f" across {len(resolved)} components" if multi else ""
+    print(f"[RuntimeInt8] {label} converted in place{scope}: "
           f"{counts.get('int8', 0)} int8 + {counts.get('e4m3', 0)} e4m3 Linear(s), "
           f"{document.get('elapsed_s', 0.0):.1f}s. One-way until the model is reloaded.")
-    return model, True
+    return models, True
 
 
 def _anima_quantize_fp8(model, quantization: str, label: str):

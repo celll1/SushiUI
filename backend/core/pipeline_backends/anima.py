@@ -317,12 +317,17 @@ class AnimaMixin:
         self.anima_components["transformer"] = model
         if converted or runtime_int8_requested(transformer_quantization) \
                 or getattr(self, "_runtime_int8_converted", False) \
+                or getattr(self, "_runtime_int8_from_checkpoint", False) \
                 or getattr(self, "_runtime_int8_partial", False):
             # ``_runtime_int8_partial`` too: a half-converted transformer already
             # carries Int8Linear modules, which would make _anima_quantize_fp8
             # refuse with its CHECKPOINT-provenance message (false here) and
             # leave the still-bf16 remainder unquantized anyway.
             # apply_runtime_int8_quantization has already warned accurately.
+            # ``_runtime_int8_from_checkpoint`` is listed for the same reason it
+            # used to be covered by ``_runtime_int8_converted`` (which the
+            # already-quantized-checkpoint branch no longer sets): the Linears
+            # are Int8Linear/Fp8Linear, so _anima_quantize_fp8 has nothing to do.
             return None
         return transformer_quantization
 

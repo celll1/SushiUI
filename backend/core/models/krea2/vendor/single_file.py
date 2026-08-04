@@ -401,6 +401,26 @@ def build_krea2_transformer(
     dtype intact exactly as a float8 one is."""
     model = Krea2Transformer2DModel.from_config(config)
 
+    # The census is taken BEFORE the swap and checked against it afterwards. The
+    # two detectors above require BOTH the scale sibling and the weight dtype,
+    # while the census fires on either -- so a quantized file whose scales are
+    # missing (or whose module paths do not match the config this built) answers
+    # False to both, takes the plain ``strict=False`` branch below, and loads its
+    # int8/e4m3 codes into bf16 parameters as if they were the weights. Same
+    # check, same helper, same gap as the FLUX.2 and Anima loaders.
+    #
+    # ``scaled_quantization_report`` narrows the census to the SCALED case. A
+    # file with float8 weights and no scales at all is the ComfyUI pure-cast
+    # distribution (``krea2_fp8_e4m3fn.safetensors``): not a quantization
+    # format, just bf16 rounded to 8-bit floats, and the plain branch below
+    # already reads it correctly by casting back. Refusing that would call a
+    # legitimate file scale-stripped.
+    from core.models.common.quantized_checkpoint_guard import (
+        quantized_state_dict_report, scaled_quantization_report, verify_quantized_swap,
+    )
+    quant_report = scaled_quantization_report(
+        quantized_state_dict_report(diffusers_sd), arch="Krea 2")
+
     has_int8 = is_int8_state_dict(diffusers_sd)
     has_fp8 = is_fp8_state_dict(diffusers_sd)
     if has_int8 or has_fp8:
@@ -413,11 +433,16 @@ def build_krea2_transformer(
         if n_fp8:
             parts.append(f"{n_fp8} Fp8Linear")
         print(f"[Krea2] weight-only quantized: swapped {' + '.join(parts) or 'no'} Linear(s)")
+        verify_quantized_swap(quant_report, n_int8 + n_fp8, arch="Krea 2")
         load_fp8_state_dict(
             model, diffusers_sd, device=torch.device("cpu"), dtype=torch_dtype,
             assign=False, strict=False,
         )
     else:
+        # Zero swapped against a non-None census is the scale-less-INTEGER /
+        # mismatched case; it must not reach the load below. A pure float8 cast
+        # reports None above and loads here, which is what it asks for.
+        verify_quantized_swap(quant_report, 0, arch="Krea 2")
         model.to(torch_dtype)
         missing, unexpected = model.load_state_dict(diffusers_sd, strict=False)
         if unexpected:

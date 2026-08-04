@@ -1629,10 +1629,19 @@ class ModelLoader:
             # parameter, i.e. the int8 CODES written as if they were the weights.
             # Detected here, before the format branch, because format 1 and 3 are
             # refused for it (see below).
+            #
+            # Narrowed to the SCALED case by ``scaled_quantization_report``: a
+            # checkpoint whose weights are float8 with no scales anywhere is a
+            # plain dtype cast (the ComfyUI "fp8" distribution shape), not a
+            # weight-only quantization. It needs no swap, it is not refused for
+            # its key layout below, and it loads the way it always did -- the
+            # cast back to bf16 is exact.
             from core.models.common.quantized_checkpoint_guard import (
-                quantized_state_dict_report,
+                quantized_state_dict_report, scaled_quantization_report,
             )
-            quant_report = quantized_state_dict_report(transformer_state_dict)
+            quant_report = scaled_quantization_report(
+                quantized_state_dict_report(transformer_state_dict),
+                arch="FLUX.2", path=file_path, label="transformer")
 
             sample_keys = list(transformer_state_dict.keys())[:5]
             is_bfl_format = any(k.startswith('double_blocks.') for k in transformer_state_dict.keys())

@@ -310,10 +310,24 @@ def load_anima_dit(dit_path: str, device: str = "cpu",
     # every scale an unexpected key, every quantized code cast into a bf16
     # parameter, no warning that matters. Same check, same helper as the FLUX.2
     # loader.
+    # ``scaled_quantization_report`` narrows the census to the SCALED case: a
+    # file whose float8 weights carry no scales at all is a plain dtype cast and
+    # loads correctly through the cast below, so it must not be refused as
+    # scale-stripped.
     from core.models.common.quantized_checkpoint_guard import (
-        quantized_state_dict_report, verify_quantized_swap,
+        cast_float8_tensors, quantized_state_dict_report, scaled_quantization_report,
+        verify_quantized_swap,
     )
-    quant_report = quantized_state_dict_report(sd)
+    census = quantized_state_dict_report(sd)
+    quant_report = scaled_quantization_report(
+        census, arch="Anima", path=dit_path, label="DiT")
+    if census is not None and quant_report is None:
+        # The pure-cast case, and the one place it needs help: the load below
+        # uses ``assign=True`` (the module is built on the meta device, so there
+        # is no parameter to cast INTO), which would install the e4m3 tensors as
+        # parameters and leave a DiT no matmul can run. Cast them here, which is
+        # what every other loader's non-assign load does implicitly.
+        sd = cast_float8_tensors(sd, dtype)
     swapped = _swap_quantized_linears(model, sd, dtype)
     verify_quantized_swap(quant_report, swapped, arch="Anima", path=dit_path,
                           label="DiT")

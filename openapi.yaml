@@ -148,6 +148,9 @@ paths:
           Cannot be derived from `unsupported`/`supported_values`, because an
           architecture that honors `unet_quantization` outright has no entry in
           either map.
+        * `quantized_linear_archs` — the architectures whose loaders swap in the
+          quantized Linear classes, i.e. the ones `quantized_gemm_mode` applies
+          to.
       tags: [Schema]
       responses:
         '200':
@@ -171,7 +174,8 @@ paths:
                 feature_labels:
                   quantized_gemm: "quantized_gemm_mode (quantized GEMM path)"
                   unet_quantization: "unet_quantization"
-                runtime_int8_archs: [anima, krea2]
+                runtime_int8_archs: [anima, krea2, flux2, ideogram4]
+                quantized_linear_archs: [anima, flux2, ideogram4, krea2]
   /schema/generation-defaults:
     get:
       summary: Get default parameter values for txt2img/img2img/inpaint generation
@@ -1587,7 +1591,8 @@ paths:
         `Int8Linear` / `Fp8Linear` modules. Both provenances count and are
         indistinguishable by then: a checkpoint that was already quantized, and
         a bf16 checkpoint converted in place at generation time
-        (`unet_quantization: "int8"` on anima / krea2 / flux2, which is one-way until the
+        (`unet_quantization: "int8"` on anima / krea2 / flux2 / ideogram4 — which converts
+        BOTH of Ideogram 4's transformers, and is one-way until the
         model is reloaded).
 
         `suggested_path` is a destination outside the loaded model's own
@@ -2420,8 +2425,9 @@ paths:
         what ran.
 
         Applies only to architectures whose checkpoints carry weight-only INT8
-        Linear weights. The Krea 2, Anima and FLUX.2 loaders swap `Int8Linear`; the
-        Ideogram 4 loader handles weight-only FP8 and nf4, not INT8. This setting
+        Linear weights. The Krea 2, Anima, FLUX.2 and Ideogram 4 loaders all swap
+        `Int8Linear` (Ideogram 4 additionally reads weight-only FP8 and nf4, which
+        its published checkpoints ship). This setting
         is a no-op for every other architecture. Training processes are always on
         the dequantized matmul, independently of this setting.
       operationId: getInt8Mm
@@ -5780,7 +5786,7 @@ components:
           example: true
     ArchCapabilities:
       type: object
-      required: [unsupported, supported_values, feature_params, feature_labels, runtime_int8_archs]
+      required: [unsupported, supported_values, feature_params, feature_labels, runtime_int8_archs, quantized_linear_archs]
       description: |
         Mirror of `backend/api/arch_capabilities.py`. Declares which generation
         features a given model architecture does NOT honor, and why. Served by
@@ -5840,7 +5846,21 @@ components:
             reported through the generation's `warnings[]`.
           items:
             type: string
-          example: [anima, krea2]
+          example: [anima, krea2, flux2, ideogram4]
+        quantized_linear_archs:
+          type: array
+          description: |
+            Architectures whose LOADERS swap in the weight-only quantized Linear
+            classes (`Int8Linear` / `Fp8Linear`), i.e. the ones where
+            `quantized_gemm_mode` selects anything. Mirrors
+            `QUANTIZED_LINEAR_ARCHS` in
+            `backend/core/models/common/int8_runtime_quantize.py`. A superset of
+            `runtime_int8_archs` in general (an architecture can read a quantized
+            checkpoint without having an in-place converter), and equal to it
+            today.
+          items:
+            type: string
+          example: [anima, flux2, ideogram4, krea2]
     Fp8ScaledMmState:
       type: object
       required: [enabled, origin, resolved_modes]
@@ -6152,8 +6172,11 @@ components:
             already-quantized weights are multiplied.
 
             Consumed only by the architectures whose loaders swap in the
-            quantized Linear classes — `ideogram4` (FP8/nf4), `krea2` (FP8 or
-            INT8) and `anima` (INT8). Whether a given layer is FP8 or INT8 is
+            quantized Linear classes — `anima`, `flux2`, `ideogram4`, `krea2`
+            (the `quantized_linear_archs` list of
+            `GET /schema/arch-capabilities`, which is derived from the backend's
+            own tuple and is the authority if this sentence ever drifts).
+            Whether a given layer is FP8 or INT8 is
             fixed by the checkpoint, not by this parameter, so this is ONE axis
             that drives both process flags rather than two independent booleans.
 

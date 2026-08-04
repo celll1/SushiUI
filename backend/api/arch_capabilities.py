@@ -163,7 +163,8 @@ _add("krea2", "unet_quantization",
      "FP8 quantization on this architecture is selected by checkpoint format at load time (bf16 or weight-only FP8 checkpoints); the only per-generation unet_quantization value applied is 'int8', which converts an unquantized transformer in place once per model load")
 _add_supported_values("krea2", "unet_quantization", ["int8"])
 _add("ideogram4", "unet_quantization",
-     "quantization on this architecture is selected by checkpoint format at load time (FP8 or nf4 quantized checkpoints); the per-generation unet_quantization parameter is not applied")
+     "FP8/nf4 quantization on this architecture is selected by checkpoint format at load time (FP8 or nf4 quantized checkpoints); the only per-generation unet_quantization value applied is 'int8', which converts an unquantized model's BOTH transformers in place once per model load")
+_add_supported_values("ideogram4", "unet_quantization", ["int8"])
 _add("minit2i", "unet_quantization",
      "unet_quantization is not implemented for this architecture")
 _add("ltx2", "unet_quantization",

@@ -34,9 +34,14 @@ from typing import Dict, List, Optional
 import torch
 
 __all__ = [
+    "FLOAT8_WEIGHT_DTYPES",
+    "INT_WEIGHT_DTYPES",
     "QUANT_SCALE_SUFFIX",
+    "QUANT_WEIGHT_DTYPES",
+    "cast_float8_tensors",
     "quantized_state_dict_report",
     "refuse_quantized_state_dict",
+    "scaled_quantization_report",
     "verify_quantized_swap",
 ]
 
@@ -45,16 +50,33 @@ __all__ = [
 # ``fp8_linear.FP8_SCALE_SUFFIX``, which are both ".weight_scale").
 QUANT_SCALE_SUFFIX = ".weight_scale"
 
-_QUANT_WEIGHT_DTYPES = tuple(
+_FLOAT8_WEIGHT_DTYPES = tuple(
     d for d in (
-        torch.int8,
         getattr(torch, "float8_e4m3fn", None),
         getattr(torch, "float8_e5m2", None),
         getattr(torch, "float8_e4m3fnuz", None),
         getattr(torch, "float8_e5m2fnuz", None),
-        getattr(torch, "uint8", None),
     ) if d is not None
 )
+
+# int8 / uint8 weights are CODES: without their scale they are not an
+# approximation of the weight, they are a different number entirely. Tracked
+# apart from float8 because a scale-less float8 file IS readable (see
+# ``scaled_quantization_report``) and a scale-less integer one is not.
+_INT_WEIGHT_DTYPES = tuple(
+    d for d in (torch.int8, getattr(torch, "uint8", None)) if d is not None
+)
+
+_QUANT_WEIGHT_DTYPES = _INT_WEIGHT_DTYPES + _FLOAT8_WEIGHT_DTYPES
+
+# Public spellings. ``FLOAT8_WEIGHT_DTYPES`` is for the one loader that must
+# cast a pure-cast checkpoint itself (see ``cast_float8_tensors``);
+# ``QUANT_WEIGHT_DTYPES`` is what the OFFLINE TOOL's already-quantized refusal
+# tests its source's header dtypes against, so the tool and this guard cannot
+# disagree about what "already quantized" means.
+FLOAT8_WEIGHT_DTYPES = _FLOAT8_WEIGHT_DTYPES
+INT_WEIGHT_DTYPES = _INT_WEIGHT_DTYPES
+QUANT_WEIGHT_DTYPES = _QUANT_WEIGHT_DTYPES
 
 
 def quantized_state_dict_report(state_dict: Dict[str, "torch.Tensor"]) -> Optional[Dict[str, object]]:
@@ -68,26 +90,98 @@ def quantized_state_dict_report(state_dict: Dict[str, "torch.Tensor"]) -> Option
       them differently, is still caught. Restricted to ``.weight`` keys so an
       ordinary integer BUFFER (a mask, an index table) cannot trip it.
 
-    The report carries ``scale_keys`` / ``quantized_weight_keys`` counts and a
-    few example key names, for the message.
+    The report carries ``scale_keys`` / ``quantized_weight_keys`` counts, the
+    float8-versus-integer split of the latter (``float8_weight_keys`` /
+    ``int_weight_keys``, which ``scaled_quantization_report`` needs to tell a
+    plain dtype cast from a file whose scales are missing), and a few example
+    key names for the message.
     """
     if not state_dict:
         return None
     scale_keys: List[str] = []
     quant_weights: List[str] = []
+    n_float8 = 0
+    n_int = 0
     for key, value in state_dict.items():
         if key.endswith(QUANT_SCALE_SUFFIX):
             scale_keys.append(key)
             continue
-        if key.endswith(".weight") and getattr(value, "dtype", None) in _QUANT_WEIGHT_DTYPES:
+        if not key.endswith(".weight"):
+            continue
+        dtype = getattr(value, "dtype", None)
+        if dtype in _FLOAT8_WEIGHT_DTYPES:
             quant_weights.append(key)
+            n_float8 += 1
+        elif dtype in _INT_WEIGHT_DTYPES:
+            quant_weights.append(key)
+            n_int += 1
     if not scale_keys and not quant_weights:
         return None
     return {
         "scale_keys": len(scale_keys),
         "quantized_weight_keys": len(quant_weights),
+        "float8_weight_keys": n_float8,
+        "int_weight_keys": n_int,
         "examples": (scale_keys[:3] + quant_weights[:3])[:5],
     }
+
+
+def scaled_quantization_report(
+    report: Optional[Dict[str, object]],
+    *,
+    arch: str,
+    path: Optional[str] = None,
+    label: str = "transformer",
+) -> Optional[Dict[str, object]]:
+    """``report``, unless it describes a plain FLOAT8 DTYPE CAST -- then ``None``.
+
+    ``quantized_state_dict_report`` answers "does this file contain anything
+    quantized-looking"; a LOADER needs the narrower question "is this file
+    weight-only quantized in the SCALED sense, i.e. does reading it require the
+    Int8Linear / Fp8Linear swap". The two differ on exactly one input, and it is
+    a common one:
+
+        a pure cast -- every ``.weight`` stored as e4m3 (or e5m2) with NO
+        ``.weight_scale`` anywhere. This is the dominant ComfyUI "fp8" community
+        distribution shape, and it is not a quantization format at all: it is the
+        bf16 model with its weights rounded to 8-bit floats, meant to be read by
+        casting them back. Every loader here does exactly that already
+        (``model.to(bf16)`` + ``load_state_dict``, which performs the cast), and
+        e4m3's range and 3-bit mantissa sit wholly inside bf16, so the cast back
+        is exact and the forward is the one the file's author intended.
+
+    Refusing it would misdiagnose a legitimate file as one whose scales were
+    stripped. So the refusal is kept for the cases where there IS positive
+    evidence of scaled quantization, or where the cast interpretation is
+    impossible:
+
+    * ``scale_keys > 0`` -- something wrote per-row scales, so the weights are
+      codes; a swap must cover them (``verify_quantized_swap``);
+    * ``int_weight_keys > 0`` -- int8/uint8 weights are codes in -127..127 (or a
+      bitsandbytes 4-bit pack) with no meaning as numbers. Nothing legitimately
+      distributes those without their scales, and casting them into a bf16
+      parameter is the 103020%-error failure this module exists to prevent.
+
+    Call it immediately after ``quantized_state_dict_report`` and use the result
+    everywhere the loader branches on "is this a quantized checkpoint": the pure
+    cast then takes the ordinary path, byte-for-byte as it did before any of
+    these guards existed.
+    """
+    if report is None:
+        return None
+    if int(report.get("scale_keys", 0) or 0):
+        return report
+    if int(report.get("int_weight_keys", 0) or 0):
+        return report
+    n_float8 = int(report.get("float8_weight_keys", 0) or 0)
+    if not n_float8:
+        return report
+    where = f" ({path})" if path else ""
+    print(f"[QuantGuard] the {arch} {label} checkpoint{where} stores {n_float8} "
+          f"'.weight' tensor(s) as float8 with no '{QUANT_SCALE_SUFFIX}' sibling: a plain "
+          f"dtype cast, not a scaled weight-only quantization. Loading it normally; the "
+          f"cast back to the compute dtype is exact.")
+    return None
 
 
 def verify_quantized_swap(
@@ -126,6 +220,13 @@ def verify_quantized_swap(
       config/artifact mismatch) reports both counts > 0 and swaps FEWER.
 
     Both loaded silently wrong before this check existed.
+
+    WHAT THIS MUST NOT REFUSE. A file with NO scales at all whose quantized
+    weights are all float8 is a plain dtype cast, which every one of these
+    loaders reads correctly by casting back (the ComfyUI "fp8" distribution
+    shape). ``scaled_quantization_report`` above filters that case out, and
+    every caller runs the report through it, so a ``report`` reaching here with
+    ``scale_keys == 0`` means integer codes with no scales -- unreadable.
     """
     if report is None:
         return
@@ -136,8 +237,10 @@ def verify_quantized_swap(
     where = f" ({path})" if path else ""
     examples = ", ".join(str(e) for e in (report.get("examples") or [])) or "none"
     if scale_keys != weight_keys:
+        int_keys = int(report.get("int_weight_keys", 0) or 0)
+        kind = "int8/uint8" if int_keys == weight_keys else "int8/float8"
         diagnosis = (
-            f"the file carries {weight_keys} int8/float8 '.weight' tensor(s) but "
+            f"the file carries {weight_keys} {kind} '.weight' tensor(s) but "
             f"{scale_keys} '{QUANT_SCALE_SUFFIX}' sibling(s) -- every quantized weight "
             f"needs its per-row scale, so a scale-less (or partially scale-less) file "
             f"cannot be read back. Producing it again with "
@@ -160,6 +263,29 @@ def verify_quantized_swap(
         f"codes into bf16 parameters -- a model that loads without a warning and "
         f"generates noise."
     )
+
+
+def cast_float8_tensors(
+    state_dict: Dict[str, "torch.Tensor"], dtype: "torch.dtype",
+) -> Dict[str, "torch.Tensor"]:
+    """A copy of ``state_dict`` with every float8 tensor cast to ``dtype``.
+
+    ONLY for a loader that installs the checkpoint's tensors with
+    ``load_state_dict(..., assign=True)`` (Anima, whose module is built on the
+    meta device, so assignment is the only option). A plain
+    ``load_state_dict`` CASTS into the existing parameter and needs nothing from
+    this; ``assign=True`` would instead leave float8 parameters behind, which no
+    ``nn.Linear`` forward can multiply.
+
+    The input is not mutated -- it may be the caller's own dict -- and only the
+    float8 entries are copied, so the transient cost is the float8 half of the
+    checkpoint expanded once, not the whole file twice.
+    """
+    return {
+        key: (value.to(dtype)
+              if getattr(value, "dtype", None) in _FLOAT8_WEIGHT_DTYPES else value)
+        for key, value in state_dict.items()
+    }
 
 
 def refuse_quantized_state_dict(

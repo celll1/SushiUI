@@ -28,10 +28,12 @@ from .vendor import (
     Ideogram4Transformer2DModel,
     is_bnb4bit_state_dict,
     is_fp8_state_dict,
+    is_int8_state_dict,
     load_bnb4bit_state_dict,
     load_fp8_state_dict,
     swap_linears_to_bnb4bit,
     swap_linears_to_fp8,
+    swap_linears_to_int8,
 )
 from .vendor.text_encoder import load_ideogram4_text_encoder
 
@@ -43,36 +45,126 @@ from core.models.common.single_file_format import (
 )
 
 
+# The optional leading group is a WRAPPER PREFIX, not decoration. The loader
+# always hands these bare module paths (it strips prefixes before it converts),
+# but the offline quantizer's ``source_transform`` runs BEFORE prefix stripping
+# by contract, and a COMBINED Ideogram 4 single file carries every key under
+# ``transformer.`` / ``unconditional_transformer.``. An anchored pattern silently
+# matched none of them: the fused qkv keys passed through unsplit and 135 of the
+# 241 selectable Linears per transformer were quietly left unquantized. The
+# prefix is captured and re-emitted, so a transformed key keeps the layout it
+# arrived in -- which is exactly what the contract asks for.
+_FUSED_QKV_RE = re.compile(r"^(.*?\.)?(layers\.\d+\.attention)\.qkv\.(weight|weight_scale|bias)$")
+_FUSED_O_RE = re.compile(r"^(.*?\.)?(layers\.\d+\.attention)\.o\.(weight|weight_scale|bias)$")
+
+
+def ideogram4_fused_qkv_to_split(key: str, tensor=None):
+    """One checkpoint key -> the module path(s) it holds, in the ``source_transform`` shape.
+
+    ``(key, tensor) -> ((key', tensor'), ...)``, per
+    ``core.models.common.quantized_export.EXPORT_LAYOUTS``' contract:
+
+    * ``layers.N.attention.qkv.{weight,weight_scale,bias}`` fans out to
+      ``to_q`` / ``to_k`` / ``to_v``; the split is along the OUTPUT rows, which
+      is exact for the weight, for the per-row ``weight_scale`` and for the bias
+      alike -- and is why quantizing the fused tensor and splitting it afterwards
+      would give bit-identical results (the rows are independent). The offline
+      artifact splits FIRST because a RUNTIME export sees the live module, which
+      the loader has already split;
+    * ``layers.N.attention.o.*`` renames to ``to_out.0.*``;
+    * every other key passes through untouched, so a checkpoint already in the
+      split (diffusers) layout is unchanged.
+
+    ``tensor=None`` is the key-enumeration pass and returns the same key set with
+    ``None`` tensors. The row count is taken from the tensor itself
+    (``shape[0] // 3``) rather than from a config, so the function needs no
+    geometry: a fused qkv tensor is 3 x hidden rows by construction.
+    """
+    m_qkv = _FUSED_QKV_RE.match(key)
+    if m_qkv is not None:
+        wrapper = m_qkv.group(1) or ""
+        prefix, suffix = f"{wrapper}{m_qkv.group(2)}", m_qkv.group(3)
+        names = (f"{prefix}.to_q.{suffix}", f"{prefix}.to_k.{suffix}", f"{prefix}.to_v.{suffix}")
+        if tensor is None:
+            return tuple((n, None) for n in names)
+        rows = tensor.shape[0]
+        if rows % 3:
+            raise ValueError(
+                f"[Ideogram4Loader] {key}: a fused qkv tensor must have 3 x hidden rows, "
+                f"got {rows}")
+        h = rows // 3
+        parts = (tensor[:h], tensor[h:2 * h], tensor[2 * h:3 * h])
+        return tuple((n, p.contiguous()) for n, p in zip(names, parts))
+    m_o = _FUSED_O_RE.match(key)
+    if m_o is not None:
+        return ((f"{m_o.group(1) or ''}{m_o.group(2)}.to_out.0.{m_o.group(3)}", tensor),)
+    return ((key, tensor),)
+
+
 def _convert_fused_qkv_to_split(state_dict: dict, hidden_size: int) -> dict:
     """Remap native fused-QKV attention keys to the diffusers split layout.
 
     The ``ideogram-4-fp8`` checkpoint stores attention as a fused
     ``layers.N.attention.qkv`` (out = 3*hidden, ordered q,k,v) plus
     ``layers.N.attention.o``. The vendored diffusers transformer uses split
-    ``to_q``/``to_k``/``to_v`` and ``to_out.0``. Splitting along the output rows
-    is exact for both the weight and the per-row ``weight_scale``.
+    ``to_q``/``to_k``/``to_v`` and ``to_out.0``.
 
     No-op when the checkpoint already uses the split (diffusers) layout.
+
+    The per-key rule lives in ``ideogram4_fused_qkv_to_split`` above, which the
+    offline quantizer's ``source_transform`` also calls -- ONE remap table, so an
+    offline artifact cannot land on keys this loader would not produce.
+    ``hidden_size`` (from the config) is no longer needed to perform the split,
+    which the tensor's own row count determines, but it is still CHECKED against
+    it: a config whose geometry disagrees with the checkpoint would otherwise
+    produce three plausibly-shaped tensors that fit no module.
     """
-    if not any(re.match(r"layers\.\d+\.attention\.qkv\.", k) for k in state_dict):
+    if not any(_FUSED_QKV_RE.match(k) for k in state_dict):
         return state_dict
 
     new_sd: dict = {}
     for k, v in state_dict.items():
-        m_qkv = re.match(r"(layers\.\d+\.attention)\.qkv\.(weight|weight_scale|bias)$", k)
-        if m_qkv:
-            prefix, suffix = m_qkv.group(1), m_qkv.group(2)
-            q, kk, vv = v[:hidden_size], v[hidden_size:2 * hidden_size], v[2 * hidden_size:3 * hidden_size]
-            new_sd[f"{prefix}.to_q.{suffix}"] = q.contiguous()
-            new_sd[f"{prefix}.to_k.{suffix}"] = kk.contiguous()
-            new_sd[f"{prefix}.to_v.{suffix}"] = vv.contiguous()
-            continue
-        m_o = re.match(r"(layers\.\d+\.attention)\.o\.(weight|weight_scale|bias)$", k)
-        if m_o:
-            new_sd[f"{m_o.group(1)}.to_out.0.{m_o.group(2)}"] = v
-            continue
-        new_sd[k] = v
+        if _FUSED_QKV_RE.match(k) is not None and v.shape[0] != 3 * hidden_size:
+            raise ValueError(
+                f"[Ideogram4Loader] {k}: fused qkv has {v.shape[0]} rows, but the config's "
+                f"geometry implies 3 x {hidden_size}. The checkpoint and the config disagree.")
+        for new_key, value in ideogram4_fused_qkv_to_split(k, v):
+            new_sd[new_key] = value
     return new_sd
+
+
+def _swap_ideogram4_quantized_linears(model, state_dict: dict, dtype: torch.dtype,
+                                      label: str) -> int:
+    """Replace the ``nn.Linear``s that have a quantized saved weight. Returns the count.
+
+    INT8 and e4m3 are detected INDEPENDENTLY and both swaps run, because
+    ``quantize_transformer_fp8.py --format int8`` emits a MIXED checkpoint on
+    purpose: a layer whose per-row crest factor makes int8 worse than e4m3 falls
+    back to e4m3 in the same file. Each detector and each swap helper gates on
+    the weight DTYPE as well as the shared ``.weight_scale`` suffix, so neither
+    can claim the other's layers and the call order does not matter. Same
+    helpers, same reasoning as ``krea2/vendor/single_file.build_krea2_transformer``
+    and ``model_loader._swap_flux2_quantized_linears``; the historical Ideogram 4
+    path called only the FP8 half, which is correct for the published FP8
+    checkpoint and would have silently mis-loaded an int8 one.
+
+    The count is NOT decorative: the caller compares it with the checkpoint's own
+    quantized-key census (``verify_quantized_swap``).
+    """
+    has_int8 = bool(is_int8_state_dict(state_dict))
+    has_fp8 = bool(is_fp8_state_dict(state_dict))
+    if not (has_int8 or has_fp8):
+        return 0
+    n_int8 = swap_linears_to_int8(model, state_dict, compute_dtype=dtype) if has_int8 else 0
+    n_fp8 = swap_linears_to_fp8(model, state_dict, compute_dtype=dtype) if has_fp8 else 0
+    parts = []
+    if n_int8:
+        parts.append(f"{n_int8} Int8Linear")
+    if n_fp8:
+        parts.append(f"{n_fp8} Fp8Linear")
+    print(f"[Ideogram4Loader] {label}: weight-only quantized checkpoint; swapped "
+          f"{' + '.join(parts) or 'no'} Linear(s); the rest load as {dtype}")
+    return n_int8 + n_fp8
 
 
 def _build_ideogram4_transformer(
@@ -125,11 +217,37 @@ def _build_ideogram4_transformer_from_state(
         model.eval()
         return model
 
-    if is_fp8_state_dict(state_dict):
-        # Weight-only FP8: cast unquantized params to compute dtype, swap Fp8Linear, load.
+    # Weight-only quantized (int8 and/or e4m3, per-row ``.weight_scale``) is
+    # DETECTED here and VERIFIED below. The report fires on either piece of
+    # evidence -- a scale key or a quantized weight dtype -- while the swap
+    # helpers require both, which is exactly the gap that used to let a
+    # scale-less quantized file fall through to the plain-load branch: every
+    # scale would be an unexpected key and every quantized code would be cast
+    # into a bf16 parameter, silently. Run AFTER the nf4 branch above: a
+    # bitsandbytes checkpoint stores uint8 weights with ``.absmax`` / ``.quant_state``
+    # siblings and no ``.weight_scale`` at all, so it trips the report's dtype
+    # half and has nothing this swap could take.
+    # ``scaled_quantization_report`` narrows the census to the SCALED case: a
+    # checkpoint whose float8 weights carry no scales at all is a plain dtype
+    # cast, which the else branch below reads correctly (``load_state_dict``
+    # casts into the bf16 parameter), so it must not be refused as though its
+    # scales had been stripped.
+    from core.models.common.quantized_checkpoint_guard import (
+        quantized_state_dict_report, scaled_quantization_report, verify_quantized_swap,
+    )
+
+    quant_report = scaled_quantization_report(
+        quantized_state_dict_report(state_dict), arch="Ideogram 4", label=label)
+    if quant_report is not None:
+        # Cast BEFORE the swap and skip any cast after it: ``nn.Module.to(dtype)``
+        # rewrites every floating-point buffer, which would turn an e4m3 weight
+        # buffer into bf16 -- value-preserving (all 256 codes convert exactly and
+        # the dequant path still applies the scale) but it doubles the buffer and
+        # drops ``Fp8Linear``'s ``_scaled_mm`` fast path, which gates on the
+        # weight dtype. Same ordering and same reason as the FLUX.2 loader.
         model.to(torch_dtype)
-        swapped = swap_linears_to_fp8(model, state_dict, compute_dtype=torch_dtype)
-        print(f"[Ideogram4Loader] {label}: swapped {swapped} Linear(s) to Fp8Linear")
+        swapped = _swap_ideogram4_quantized_linears(model, state_dict, torch_dtype, label)
+        verify_quantized_swap(quant_report, swapped, arch="Ideogram 4", label=label)
         load_fp8_state_dict(model, state_dict, device=torch.device("cpu"), dtype=torch_dtype)
     else:
         print(f"[Ideogram4Loader] {label}: loading plain (unquantized) weights")

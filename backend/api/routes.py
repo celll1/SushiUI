@@ -435,10 +435,19 @@ async def get_arch_capabilities():
     than keeping its own copy of the list. It cannot be inferred from
     `unsupported`/`supported_values`: an architecture that honors
     `unet_quantization` outright (anima) has no entry in either map.
+
+    `quantized_linear_archs` is the architectures whose LOADERS swap in the
+    quantized Linear classes (`Int8Linear` / `Fp8Linear`), i.e. the ones where
+    `quantized_gemm_mode` selects anything. It mirrors `QUANTIZED_LINEAR_ARCHS`
+    in the same module and is a superset of `runtime_int8_archs` in general (an
+    architecture can READ a quantized checkpoint without owning an in-place
+    converter). Served so a caller -- and this API's own documentation -- names
+    the set from the backend tuple instead of keeping a hand-written copy that
+    drifts.
     """
     from api.arch_capabilities import (
         ARCH_SUPPORTED_VALUES, ARCH_UNSUPPORTED, FEATURE_PARAMS, FEATURE_LABELS,
-        RUNTIME_INT8_ARCHS,
+        QUANTIZED_LINEAR_ARCHS, RUNTIME_INT8_ARCHS,
     )
     return {
         "unsupported": ARCH_UNSUPPORTED,
@@ -446,6 +455,7 @@ async def get_arch_capabilities():
         "feature_params": FEATURE_PARAMS,
         "feature_labels": FEATURE_LABELS,
         "runtime_int8_archs": list(RUNTIME_INT8_ARCHS),
+        "quantized_linear_archs": list(QUANTIZED_LINEAR_ARCHS),
     }
 
 

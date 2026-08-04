@@ -50,6 +50,26 @@ def load_components(trainer) -> None:
     # Convert VAE to vae_dtype
     trainer.vae = trainer.vae.to(dtype=trainer.vae_dtype)
 
+    # A training process is DEQUANT-ONLY (see ideogram4_ops.load_components for
+    # the full reasoning). A Z-Image transformer CAN be weight-only quantized:
+    # ModelLoader._swap_zimage_quantized_linears swaps in Int8Linear/Fp8Linear
+    # whenever the on-disk state dict carries per-row scales, and an INT8
+    # artifact is MIXED (high-crest layers fall back to e4m3), so a single
+    # trainer can own both module types at once. Training-time sample generation
+    # runs under the pipeline's no_grad denoise loop, which would otherwise make
+    # the validation previews W8A8 while the trained weights are not. Applied to
+    # ``transformer_original`` because that is the module the quantized Linears
+    # live in; the batched wrapper below only forwards into it. Each format has
+    # its own per-instance opt-out, so disabling one does not disable the other.
+    # A no-op on a bf16 checkpoint.
+    from core.models.ideogram4.vendor.fp8_linear import disable_scaled_mm
+    from core.models.ideogram4.vendor.int8_linear import disable_int8_mm
+    for _label, _module in (("transformer", trainer.transformer_original),
+                            ("text_encoder", trainer.text_encoder)):
+        if _module is not None:
+            disable_scaled_mm(_module, label=f"zimage training {_label}")
+            disable_int8_mm(_module, label=f"zimage training {_label}")
+
     # Wrap transformer with BatchedZImageWrapperOptimized
     from core.models.batched_zimage_wrapper import BatchedZImageWrapperOptimized
     print(f"{trainer.log_prefix} Wrapping Z-Image Transformer with BatchedZImageWrapperOptimized")

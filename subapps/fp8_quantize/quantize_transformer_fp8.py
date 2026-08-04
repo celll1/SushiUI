@@ -653,6 +653,153 @@ def _acestep_sources(source: str) -> List[Dict[str, object]]:
     }]
 
 
+def _zimage_build_meta(config: dict) -> nn.Module:
+    """Build the Z-Image DiT on meta from sushiUI's OWN transformer class.
+
+    No HF download and no ``accelerate`` needed: unlike Krea 2 / FLUX.2 /
+    Ideogram 4 / LTX-2.3 (whose classes come from diffusers or a vendored
+    package and are built through ``from_config``), Z-Image's transformer is a
+    plain ``nn.Module`` living in this repo at
+    ``backend/core/models/zimage_transformer.py``, and its ``__init__`` allocates
+    nothing that a meta tensor refuses (no ``Tensor.item()`` call of the kind
+    that forces ACE-Step onto ``init_empty_weights``). Verified by building it:
+    276 ``nn.Linear`` modules, 521 state-dict keys, zero bytes allocated.
+    """
+    from core.models.zimage_transformer import ZImageTransformer2DModel
+
+    with torch.device("meta"):
+        return ZImageTransformer2DModel(**config)
+
+
+# Geometry the Z-Image transformer class declares as its own signature defaults.
+# Restated here rather than imported as a dict because the class takes them as
+# keyword defaults, not as a config constant -- and CHECKED against the published
+# ``transformer/config.json`` of ``Tongyi-MAI/Z-Image-Turbo`` (the file the
+# production loader snapshot-downloads and reads), which is byte-equal to it on
+# every key below.
+_ZIMAGE_DEFAULT_CONFIG: Dict[str, object] = {
+    "all_patch_size": (2,),
+    "all_f_patch_size": (1,),
+    "in_channels": 16,
+    "dim": 3840,
+    "n_layers": 30,
+    "n_refiner_layers": 2,
+    "n_heads": 30,
+    "n_kv_heads": 30,
+    "norm_eps": 1e-05,
+    "qk_norm": True,
+    "cap_feat_dim": 2560,
+    "rope_theta": 256.0,
+    "t_scale": 1000.0,
+    "axes_dims": [32, 48, 48],
+    "axes_lens": [1536, 512, 512],
+}
+
+
+def _zimage_config(source: str) -> dict:
+    """Resolve the Z-Image DiT geometry for a source, matching what the LOADER builds.
+
+    ``load_zimage_from_comfy_safetensors`` takes its config from a
+    snapshot-downloaded ``Tongyi-MAI/Z-Image-Turbo`` repo (never a file next to
+    the source it is loading) and then OVERRIDES two fields from the checkpoint
+    itself -- ``n_layers`` from the highest ``layers.N`` index (so a pruned
+    model is a supported input) and ``in_channels`` from the ``x_embedder``
+    weight shape (16 for the FLUX-VAE build, 4 for the SDXL-VAE one) -- so the
+    same two overrides are applied here or the enumerated module paths would not
+    correspond to what the loader builds. Only the safetensors HEADER is read;
+    no tensor bytes are touched.
+
+    A ``config.json`` next to the source tops up the pinned defaults when one is
+    present, mirroring Krea 2's resolver -- but this is behaviour OF THIS
+    OFFLINE TOOL, not of the loader: the loader never reads a neighbouring
+    ``config.json`` at all, so this top-up has no runtime counterpart and exists
+    only so an offline geometry override (e.g. a pruned or resized DiT) can be
+    supplied without editing the pinned defaults in this file.
+
+    REFUSES A COMFY-LAYOUT SOURCE, deliberately. See the ``source_transform``
+    note in ``EXPORT_LAYOUTS["zimage"]``: a fused ``attention.qkv`` is not a
+    module path, and the split back into ``to_q``/``to_k``/``to_v`` is
+    ``(n_heads*head_dim, n_kv_heads*head_dim, n_kv_heads*head_dim)`` -- equal
+    thirds only while ``n_kv_heads == n_heads``. Rather than guess that, the
+    offline route is scoped to official-layout sources and the message points at
+    ``POST /models/export-quantized``, which reads the LIVE module (always
+    official layout, because the loader converted it on the way in) and is
+    therefore unaffected.
+    """
+    config = dict(_ZIMAGE_DEFAULT_CONFIG)
+    base = source if os.path.isdir(source) else os.path.dirname(source)
+    for cand in (os.path.join(base, "config.json"),
+                 os.path.join(base, "transformer", "config.json")):
+        if os.path.isfile(cand):
+            with open(cand, encoding="utf-8") as fh:
+                file_cfg = json.load(fh)
+            for k in _ZIMAGE_DEFAULT_CONFIG:
+                if k in file_cfg:
+                    config[k] = file_cfg[k]
+            print(f"[fp8] Z-Image transformer config from {cand}")
+            break
+    else:
+        print("[fp8] no config.json next to the source; using the pinned Z-Image geometry "
+              "(equal to Tongyi-MAI/Z-Image-Turbo's transformer/config.json)")
+    config["all_patch_size"] = tuple(config["all_patch_size"])
+    config["all_f_patch_size"] = tuple(config["all_f_patch_size"])
+
+    _shards, key_to_shard = _source_shards(source)
+    keys = list(key_to_shard)
+
+    if any(k.endswith(".qkv.weight") for k in keys) and not any(
+            k.endswith(".to_q.weight") for k in keys):
+        raise ValueError(
+            f"{source} is a ComfyUI-layout Z-Image checkpoint (fused 'attention.qkv'). "
+            f"The offline tool matches SOURCE keys against MODULE paths, and splitting a "
+            f"fused qkv back into to_q/to_k/to_v depends on the head geometry "
+            f"(n_heads vs n_kv_heads), which this tool cannot read off the file. Load the "
+            f"checkpoint in sushiUI and use POST /models/export-quantized instead: it "
+            f"quantizes the LIVE transformer, which is always in the official split layout "
+            f"because the loader converted it, and it writes the identical artifact format.")
+
+    layers = set()
+    for key in keys:
+        parts = key.split(".")
+        if len(parts) > 1 and parts[0] == "layers":
+            try:
+                layers.add(int(parts[1]))
+            except ValueError:
+                pass
+    if layers:
+        detected = max(layers) + 1
+        if detected != config["n_layers"]:
+            print(f"[fp8] Z-Image layer count from the checkpoint's keys: {detected} "
+                  f"(config says {config['n_layers']}); using the checkpoint's")
+        config["n_layers"] = detected
+
+    # NOTE: this includes f_patch, while the loader's own detector
+    # (``ModelLoader.load_zimage_from_comfy_safetensors``, model_loader.py) computes
+    # ``patch_h * patch_w`` only -- no f_patch factor. The two formulas agree
+    # numerically only while ``all_f_patch_size == (1,)``, which is what every
+    # published Z-Image config (including Tongyi-MAI/Z-Image-Turbo's) actually
+    # carries; there is no config in circulation where they would diverge. If a
+    # future config ships ``all_f_patch_size != (1,)``, update BOTH formulas
+    # together or this tool's in_channels detection and the loader's will
+    # disagree on the same checkpoint.
+    patch = config["all_patch_size"][0]
+    f_patch = config["all_f_patch_size"][0]
+    patch_product = patch * patch * f_patch
+    embedder = next((k for k in keys
+                     if k.endswith(".weight") and "x_embedder" in k), None)
+    if embedder is not None and patch_product:
+        with safe_open(key_to_shard[embedder], framework="pt", device="cpu") as fh:
+            shape = fh.get_slice(embedder).get_shape()
+        if len(shape) == 2 and shape[1] % patch_product == 0:
+            detected_in = shape[1] // patch_product
+            if detected_in != config["in_channels"]:
+                print(f"[fp8] Z-Image in_channels from {embedder} {tuple(shape)}: "
+                      f"{detected_in} (config says {config['in_channels']}); using the "
+                      f"checkpoint's")
+            config["in_channels"] = detected_in
+    return config
+
+
 def _from_layout(arch: str, **extra) -> Dict[str, object]:
     """An ARCHS entry: the shared on-disk layout plus this tool's source knobs.
 
@@ -722,6 +869,17 @@ ARCHS = {
     "acestep": _from_layout("acestep", config=_acestep_config,
                             build_meta=_acestep_build_meta,
                             sources=_acestep_sources),
+    # Z-Image is the only arch here whose transformer class is LOCAL
+    # (backend/core/models/zimage_transformer.py), so ``build_meta`` needs no HF
+    # download and no ``accelerate`` -- a plain ``torch.device("meta")`` build.
+    # It is also the only entry whose census was never checked against a weights
+    # file, because there is none on this machine; see the PROVENANCE paragraph
+    # in ARCH_QUANT_POLICY["zimage"]. ``_zimage_config`` mirrors the loader's two
+    # checkpoint-derived overrides (n_layers, in_channels) and REFUSES a
+    # ComfyUI-layout (fused-qkv) source rather than guessing a head split it
+    # cannot verify -- see EXPORT_LAYOUTS["zimage"]'s source_transform note.
+    "zimage": _from_layout("zimage", config=_zimage_config,
+                           build_meta=_zimage_build_meta),
 }
 
 

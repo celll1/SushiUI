@@ -152,6 +152,7 @@ class SupportedLoaderTest(unittest.TestCase):
         "ideogram4": ("core/models/ideogram4/ideogram4_loader.py", "swap_linears_to_fp8"),
         "ltx2": ("core/models/ltx2/loader.py", "_swap_ltx2_quantized_linears"),
         "acestep": ("core/models/acestep/loader.py", "_swap_quantized_linears"),
+        "zimage": ("core/model_loader.py", "_swap_zimage_quantized_linears"),
     }
 
     def test_every_supported_arch_swaps_before_the_tolerant_load(self):
@@ -329,6 +330,67 @@ class ScalelessLoadMatrixTest(unittest.TestCase):
                 al.ANIMA_DIT_CONFIG = original
 
         self._matrix(reference, build)
+
+    # A ~180 k-parameter Z-Image DiT: dim 48, 1 layer, 1 refiner layer, 3 heads,
+    # 14 Linears. The real (full-size) geometry is 276 Linears / 6.15 G
+    # parameters -- CONFIG-DERIVED, not measured against a checkpoint (see
+    # ``ARCH_QUANT_POLICY["zimage"]`` in ``int8_runtime_quantize.py``, which
+    # spells out the same caveat: there is NO Z-Image weights file on the
+    # machine this was written on, so those numbers come from building the
+    # transformer on the META device from the published config, not from a real
+    # safetensors header). This fixture is, uniquely among the archs in this
+    # file, also the only end-to-end exercise the arch's quantized branch gets.
+    # What it does cover is the whole decision under test (census versus swap,
+    # and the assign=True float8 cast), through the real code path; what it
+    # cannot cover is anything that depends on a real file's key set.
+    ZIMAGE_CONFIG = dict(
+        all_patch_size=(2,), all_f_patch_size=(1,), in_channels=4, dim=48,
+        n_layers=1, n_refiner_layers=1, n_heads=3, n_kv_heads=3, norm_eps=1e-5,
+        qk_norm=True, cap_feat_dim=32, rope_theta=256.0, t_scale=1000.0,
+        axes_dims=[4, 6, 6], axes_lens=[64, 32, 32])
+
+    def test_zimage(self):
+        # Driven through ``_build_zimage_transformer_from_state``, the real
+        # build-and-install step of ``load_zimage_from_comfy_safetensors``. The
+        # public entry point cannot be called here: it snapshot-downloads a base
+        # repo and constructs a VAE, a Qwen3 text encoder, a tokenizer and a
+        # scheduler around the transformer, none of which the quantized decision
+        # touches.
+        #
+        # ``layout="official"`` because that is what every writer of a quantized
+        # Z-Image artifact emits (the runtime export reads the live module, which
+        # is always split-qkv; the offline tool refuses a comfy-layout source).
+        # The comfy-layout refusal is asserted separately below.
+        from core.model_loader import ModelLoader
+        from core.models.zimage_transformer import ZImageTransformer2DModel
+
+        reference = ZImageTransformer2DModel(**self.ZIMAGE_CONFIG).to(torch.bfloat16)
+        self._matrix(reference, lambda sd: ModelLoader._build_zimage_transformer_from_state(
+            self.ZIMAGE_CONFIG, self.ZIMAGE_CONFIG["n_layers"],
+            self.ZIMAGE_CONFIG["in_channels"], sd, "official", torch.bfloat16,
+            path="<synthetic>"))
+
+    def test_zimage_refuses_a_quantized_comfy_layout_file(self):
+        """A quantized file in the fused-qkv layout must not be rewritten.
+
+        ``_convert_comfy_to_official_state_dict`` row-splits ``attention.qkv``,
+        and a per-output-row ``.weight_scale`` sitting next to it would be split
+        by the same rule -- producing three plausible-looking projections whose
+        scales are wrong for two of them. Nothing legitimate produces this pair,
+        so it is refused rather than handled.
+        """
+        from core.model_loader import ModelLoader
+        from core.models.zimage_transformer import ZImageTransformer2DModel
+
+        reference = ZImageTransformer2DModel(**self.ZIMAGE_CONFIG).to(torch.bfloat16)
+        quantized = self._quantize(
+            {k: v.clone() for k, v in reference.state_dict().items()}, reference)
+        with self.assertRaises(RuntimeError) as ctx:
+            ModelLoader._build_zimage_transformer_from_state(
+                self.ZIMAGE_CONFIG, self.ZIMAGE_CONFIG["n_layers"],
+                self.ZIMAGE_CONFIG["in_channels"], quantized, "comfy",
+                torch.bfloat16, path="<synthetic>")
+        self.assertIn("ComfyUI (fused-qkv) layout", str(ctx.exception))
 
     # A ~105 k-parameter LTX2VideoTransformer3DModel: 1 layer, 2 heads, 62
     # Linears. The decision under test is the census-versus-swap comparison,

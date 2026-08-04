@@ -30,7 +30,10 @@ import torch.nn as nn
 from safetensors.torch import save_file
 import math
 
-from .base_adapter import BaseLoRAAdapter, BaseFullParameterAdapter, reject_quantized_base
+from .base_adapter import (
+    BaseLoRAAdapter, BaseFullParameterAdapter, is_lora_wrappable_linear,
+    reject_quantized_base,
+)
 from .sd15_adapter import LoRALinearLayer  # Reuse LoRA layer implementation
 
 
@@ -87,7 +90,11 @@ class ZImageLoRAAdapter(BaseLoRAAdapter):
                 if hasattr(attn_module, attr_name):
                     original_linear = getattr(attn_module, attr_name)
 
-                    if isinstance(original_linear, torch.nn.Linear):
+                    # NOT ``isinstance(x, torch.nn.Linear)``: a Z-Image base can
+                    # now be weight-only quantized (Int8Linear / Fp8Linear), and
+                    # those are nn.Modules but not nn.Linear subclasses, so the
+                    # naive test drops every quantized target silently.
+                    if is_lora_wrappable_linear(original_linear):
                         # Create LoRA layer
                         lora_name = f"lora_transformer_{attn_name.replace('.', '_')}_{attr_name}"
                         lora_layer = LoRALinearLayer(
@@ -103,7 +110,7 @@ class ZImageLoRAAdapter(BaseLoRAAdapter):
 
             # Handle to_out (ModuleList in Z-Image, first element is Linear projection)
             if hasattr(attn_module, "to_out") and isinstance(attn_module.to_out, torch.nn.ModuleList):
-                if len(attn_module.to_out) > 0 and isinstance(attn_module.to_out[0], torch.nn.Linear):
+                if len(attn_module.to_out) > 0 and is_lora_wrappable_linear(attn_module.to_out[0]):
                     original_linear = attn_module.to_out[0]
 
                     # Create LoRA layer

@@ -928,6 +928,185 @@ class ModelLoader:
         return official_state_dict
 
     @staticmethod
+    def _build_zimage_transformer_from_state(
+        transformer_config: dict,
+        n_layers: int,
+        in_channels: int,
+        state_dict: dict,
+        layout: str,
+        torch_dtype: torch.dtype,
+        *,
+        path: str = "<state dict>",
+    ):
+        """Build the Z-Image DiT for ``state_dict`` and install the weights into it.
+
+        Everything between "the geometry is decided" and "the weights are in":
+        the meta-device construction, the ComfyUI-to-official key rewrite, the
+        weight-only-quantized swap, and the strict load. Split out of
+        ``load_zimage_from_comfy_safetensors`` -- which otherwise also downloads a
+        base repo and builds a VAE, a text encoder, a tokenizer and a scheduler --
+        so the quantized decision can be exercised END TO END on a tiny synthetic
+        geometry (``quantized_checkpoint_guard_test.ScalelessLoadMatrixTest``)
+        rather than through a proxy. Ideogram 4's
+        ``_build_ideogram4_transformer_from_state`` exists for exactly the same
+        reason and is the precedent that test is already written against.
+
+        ``layout`` is ``_normalize_zimage_state_dict``'s verdict: ``"official"``
+        (split q/k/v, multi-resolution embedders -- what a live module's
+        ``state_dict()`` and every sushiUI save produce) or ``"comfy"`` (fused
+        ``attention.qkv``, single-resolution embedders).
+
+        ``state_dict`` is consumed: the rewrite branch builds a second dict and
+        the original is dropped, so a caller must not reuse it afterwards.
+        """
+        from core.models.zimage_transformer import ZImageTransformer2DModel
+
+        print("[ModelLoader] Creating Z-Image transformer...")
+        with torch.device("meta"):
+            transformer = ZImageTransformer2DModel(
+                all_patch_size=tuple(transformer_config["all_patch_size"]),
+                all_f_patch_size=tuple(transformer_config["all_f_patch_size"]),
+                in_channels=in_channels,
+                dim=transformer_config["dim"],
+                n_layers=n_layers,
+                n_refiner_layers=transformer_config["n_refiner_layers"],
+                n_heads=transformer_config["n_heads"],
+                n_kv_heads=transformer_config["n_kv_heads"],
+                norm_eps=transformer_config["norm_eps"],
+                qk_norm=transformer_config["qk_norm"],
+                cap_feat_dim=transformer_config["cap_feat_dim"],
+                rope_theta=transformer_config["rope_theta"],
+                t_scale=transformer_config["t_scale"],
+                axes_dims=transformer_config["axes_dims"],
+                axes_lens=transformer_config["axes_lens"],
+            ).to(torch_dtype)
+
+        # Convert Comfy format (fused QKV) to official format (separate Q/K/V).
+        # sushiUI full-FT saves are ALREADY in official layout - skip conversion.
+        if layout == "official":
+            print("[ModelLoader] State dict already in official Z-Image layout; skipping conversion")
+        else:
+            print("[ModelLoader] Converting Comfy format to official format...")
+            state_dict = ModelLoader._convert_comfy_to_official_state_dict(
+                state_dict,
+                transformer_config["n_heads"],
+                transformer_config["n_kv_heads"],
+                transformer_config["dim"]
+            )
+
+        # Weight-only quantized checkpoints (offline
+        # subapps/fp8_quantize/quantize_transformer_fp8.py --format int8, or
+        # POST /models/export-quantized on a runtime-converted transformer).
+        # Their Linears must become Int8Linear/Fp8Linear BEFORE the load: a
+        # quantized weight reaching load_state_dict as a plain nn.Linear has its
+        # per-row '.weight_scale' rejected (strict=True raises here; a
+        # strict=False loader would only print) and its int8 CODES written into
+        # the parameter -- a model that loads and generates noise.
+        #
+        # Narrowed by scaled_quantization_report: a checkpoint whose weights are
+        # float8 with NO '.weight_scale' anywhere is a plain dtype cast (the
+        # ComfyUI "fp8" distribution shape), not a scaled quantization. It needs
+        # no swap and must keep loading exactly as it always did -- which on THIS
+        # loader means the float8 tensors must be cast BEFORE the load, because
+        # the load is ``assign=True`` (the module is built on meta, so assignment
+        # is the only option) and assignment would otherwise install float8
+        # parameters that no nn.Linear forward can multiply. Anima is the same
+        # case and uses the same helper.
+        from core.models.common.quantized_checkpoint_guard import (
+            cast_float8_tensors, quantized_state_dict_report,
+            scaled_quantization_report, verify_quantized_swap,
+        )
+        census = quantized_state_dict_report(state_dict)
+        quant_report = scaled_quantization_report(
+            census, arch="Z-Image", path=path, label="transformer")
+        if quant_report is not None:
+            if layout != "official":
+                # Nothing legitimate produces this pair. Both writers of a
+                # quantized Z-Image artifact emit official-layout keys (the
+                # offline tool refuses a comfy-layout source outright; the
+                # runtime export reads the live module, which the loader has
+                # already converted), and the comfy->official rewrite would chunk
+                # a fused '.weight_scale' alongside its weight and produce
+                # something that looks right.
+                raise RuntimeError(
+                    f"the Z-Image transformer checkpoint ({path}) is weight-only "
+                    f"QUANTIZED but its keys are in the ComfyUI (fused-qkv) layout. Only "
+                    f"the official split layout is supported for a quantized file: the "
+                    f"fused-qkv rewrite would split a per-row weight_scale alongside its "
+                    f"weight and silently mis-scale every attention projection.")
+            # Swapped INSIDE a meta context so the replacement modules' buffers
+            # land on meta like the ones they replace -- assign=True below
+            # installs the file's tensors over them, so a real allocation here
+            # would be ~6 GB of int8 written once and thrown away.
+            with torch.device("meta"):
+                swapped = ModelLoader._swap_zimage_quantized_linears(
+                    transformer, state_dict, torch_dtype)
+            # The swap helpers require BOTH the '.weight_scale' sibling and the
+            # weight dtype, while the census fires on either, so "we took this
+            # branch" does not mean "every quantized layer is now a quantized
+            # module".
+            verify_quantized_swap(quant_report, swapped, arch="Z-Image",
+                                  path=path, label="transformer")
+        elif census is not None:
+            # The pure float8 cast. See the paragraph above: assign=True makes
+            # this cast mandatory rather than cosmetic.
+            state_dict = cast_float8_tensors(state_dict, torch_dtype)
+
+        transformer.load_state_dict(state_dict, strict=True, assign=True)
+        return transformer
+
+    @staticmethod
+    def _swap_zimage_quantized_linears(model, sd: dict, dtype: torch.dtype) -> int:
+        """Replace Z-Image ``nn.Linear``s that have a quantized saved weight. Returns the count.
+
+        A no-op (and silent) on an ordinary bf16 checkpoint, so it is safe to
+        call unconditionally; the caller gates on
+        ``scaled_quantization_report`` only to know whether it must then run
+        ``verify_quantized_swap``.
+
+        INT8 and e4m3 are detected INDEPENDENTLY and both swaps run, because
+        ``quantize_transformer_fp8.py --format int8`` emits a MIXED checkpoint on
+        purpose: a layer whose per-row crest factor makes int8 worse than e4m3
+        falls back to e4m3 in the same file. Each detector and each swap helper
+        gates on the weight DTYPE as well as the shared ``.weight_scale`` suffix,
+        so neither can claim the other's layers and the call order does not
+        matter. Same helpers and same reasoning as
+        ``_swap_flux2_quantized_linears`` and ``anima_loader._swap_quantized_linears``;
+        Z-Image needs no prefix argument because a quantized artifact carries the
+        module tree with no wrapper (see ``EXPORT_LAYOUTS["zimage"]``, where the
+        empty prefix is a requirement of ``detect_model_type``'s key probes).
+
+        The returned count is NOT decorative: the caller compares it against
+        ``quantized_state_dict_report`` (``verify_quantized_swap``) and refuses
+        the load when they disagree.
+        """
+        try:
+            from core.models.ideogram4.vendor.int8_linear import (
+                is_int8_state_dict, swap_linears_to_int8,
+            )
+            from core.models.ideogram4.vendor.fp8_linear import (
+                is_fp8_state_dict, swap_linears_to_fp8,
+            )
+        except Exception as e:
+            print(f"[ModelLoader] Z-Image weight-only quant support unavailable ({e}); "
+                  f"the checkpoint would load as a silently wrong model")
+            raise
+        has_int8 = bool(is_int8_state_dict(sd))
+        has_fp8 = bool(is_fp8_state_dict(sd))
+        if not (has_int8 or has_fp8):
+            return 0
+        n_int8 = swap_linears_to_int8(model, sd, compute_dtype=dtype) if has_int8 else 0
+        n_fp8 = swap_linears_to_fp8(model, sd, compute_dtype=dtype) if has_fp8 else 0
+        parts = []
+        if n_int8:
+            parts.append(f"{n_int8} Int8Linear")
+        if n_fp8:
+            parts.append(f"{n_fp8} Fp8Linear")
+        print(f"[ModelLoader] weight-only quantized Z-Image transformer: swapped "
+              f"{' + '.join(parts) or 'no'} Linear(s); the remaining Linears load as {dtype}")
+        return n_int8 + n_fp8
+
+    @staticmethod
     def _normalize_zimage_state_dict(raw: dict):
         """Split a Z-Image single-file save into transformer / VAE / TE sections
         and detect the transformer key layout.
@@ -1129,6 +1308,10 @@ class ModelLoader:
             else:
                 patch_h = patch_w = all_patch_size  # Single integer
             patch_product = patch_h * patch_w  # 16 for standard Z-Image (4x4)
+            # NOTE: no f_patch factor here, unlike subapps/fp8_quantize/quantize_transformer_fp8.py's
+            # _zimage_config, which multiplies by all_f_patch_size[0]. The two agree numerically
+            # only while all_f_patch_size == (1,), true of every published Z-Image config today.
+            # Keep both formulas in sync if that ever changes.
 
             # Try to detect from state_dict (x_embedder weight shape)
             # ComfyUI format: x_embedder.weight shape is [dim, in_channels * patch_h * patch_w]
@@ -1162,44 +1345,15 @@ class ModelLoader:
             else:
                 print(f"[ModelLoader] Z-Image model uses {actual_in_channels}-channel latents (FLUX VAE)")
 
-            # Step 5: Create transformer model with detected layer count and in_channels
-            print("[ModelLoader] Creating Z-Image transformer...")
-            with torch.device("meta"):
-                transformer = ZImageTransformer2DModel(
-                    all_patch_size=tuple(transformer_config["all_patch_size"]),
-                    all_f_patch_size=tuple(transformer_config["all_f_patch_size"]),
-                    in_channels=actual_in_channels,
-                    dim=transformer_config["dim"],
-                    n_layers=actual_n_layers,
-                    n_refiner_layers=transformer_config["n_refiner_layers"],
-                    n_heads=transformer_config["n_heads"],
-                    n_kv_heads=transformer_config["n_kv_heads"],
-                    norm_eps=transformer_config["norm_eps"],
-                    qk_norm=transformer_config["qk_norm"],
-                    cap_feat_dim=transformer_config["cap_feat_dim"],
-                    rope_theta=transformer_config["rope_theta"],
-                    t_scale=transformer_config["t_scale"],
-                    axes_dims=transformer_config["axes_dims"],
-                    axes_lens=transformer_config["axes_lens"],
-                ).to(torch_dtype)
-
-            # Convert Comfy format (fused QKV) to official format (separate Q/K/V).
-            # sushiUI full-FT saves are ALREADY in official layout — skip conversion.
-            if zimage_layout == "official":
-                print("[ModelLoader] State dict already in official Z-Image layout; skipping conversion")
-                state_dict = comfy_state_dict
-            else:
-                print("[ModelLoader] Converting Comfy format to official format...")
-                state_dict = ModelLoader._convert_comfy_to_official_state_dict(
-                    comfy_state_dict,
-                    transformer_config["n_heads"],
-                    transformer_config["n_kv_heads"],
-                    transformer_config["dim"]
-                )
+            # Step 5: build the transformer and install the weights. Extracted
+            # into ``_build_zimage_transformer_from_state`` so the quantized
+            # branch can be driven end to end by a test without HuggingFace,
+            # a VAE or a text encoder -- the same reason Ideogram 4 has
+            # ``_build_ideogram4_transformer_from_state``.
+            transformer = ModelLoader._build_zimage_transformer_from_state(
+                transformer_config, actual_n_layers, actual_in_channels,
+                comfy_state_dict, zimage_layout, torch_dtype, path=file_path)
             del comfy_state_dict
-
-            transformer.load_state_dict(state_dict, strict=True, assign=True)
-            del state_dict
 
             print(f"[ModelLoader] Moving transformer to {device}...")
             transformer = transformer.to(device)

@@ -164,6 +164,62 @@ a generation without style transfer.
   loader normalizes both genuine Comfy (fused qkv, single-res embedders) and
   sushiUI full-FT (official split-qkv, multi-res `all_x_embedder`) layouts; in_ch
   auto-detected from `x_embedder` shape selects FLUX (16ch) vs SDXL (4ch) VAE.
+  - **Weight-only INT8**: Z-Image is in `RUNTIME_INT8_ARCHS`, so
+    `unet_quantization: "int8"` converts the loaded transformer in place
+    (`ZImageMixin._zimage_runtime_int8`, called in all three generate paths
+    before the block-swap branch / staging). It runs **after** the LoRA gate
+    (`_load_lora_zimage`/`_unload_lora_zimage`) only in txt2img and img2img;
+    `_generate_inpaint_zimage` has no LoRA gate at all, so a prior
+    txt2img/img2img generation that loaded LoRAs can leave
+    `_zimage_lora_wrapped_modules` populated for a following int8 inpaint
+    request that carries no LoRAs of its own, which the hook then refuses with
+    advice ("remove the LoRAs") that request cannot act on — degradation, not
+    corruption, and a symptom of the larger pre-existing gap that inpaint also
+    *runs* with the previous generation's LoRAs since it has no gate to unload
+    them. The FP8 values are unaffected and still go through
+    `move_zimage_transformer_to_gpu`, which is why zimage has **no**
+    `unet_quantization` entry in `ARCH_UNSUPPORTED` (unlike
+    krea2/ideogram4/ltx2/acestep, which need `ARCH_SUPPORTED_VALUES: ["int8"]`) —
+    it honours both axes for every value.
+  - **Stale block offloader**: `transformer._block_offloader` is attached per
+    block-swap generation and NEVER cleared (`_zimage_cleanup` says so, and the
+    transformer's `forward` consults the attribute whenever present). The INT8
+    hook therefore passes a `precheck` that TEARS IT DOWN rather than refusing —
+    refusing would be the LTX-2.3 false-advice defect, since the offloader is
+    stale by construction at that point and a block-swap request overwrites it a
+    few lines later anyway. The teardown runs only on a request that really
+    converts.
+  - **Loader**: `_swap_zimage_quantized_linears` (int8 and e4m3 detected
+    independently, both swaps run — an int8 artifact is MIXED) runs on the
+    meta-device module before the `strict=True, assign=True` load, verified by
+    `verify_quantized_swap`. Because the load is `assign=True`, a pure float8
+    cast (float8 weights, no `.weight_scale`) is passed through
+    `cast_float8_tensors` first — assignment would otherwise install float8
+    parameters. A quantized file in the ComfyUI fused-qkv layout is REFUSED: the
+    comfy→official rewrite row-splits `attention.qkv` and would split a per-row
+    `.weight_scale` by the same rule.
+  - **Export prefix is a requirement, not a convention**: `EXPORT_LAYOUTS["zimage"]`
+    uses the empty live prefix because `detect_model_type` recognises a Z-Image
+    safetensors by four `startswith` probes (`cap_embedder`, `t_embedder`,
+    `context_refiner`, `x_embedder`/`all_x_embedder`), and a
+    `model.diffusion_model.` prefix is claimed EARLIER by the SD/SDXL branch.
+  - **Offline route is scoped to official-layout sources.** `_zimage_config`
+    refuses a fused-qkv source and points at `POST /models/export-quantized`: the
+    qkv split is `(n_heads*head_dim, n_kv_heads*head_dim, n_kv_heads*head_dim)`,
+    which a per-key `source_transform` cannot see, and it is equal thirds only
+    while `n_kv_heads == n_heads`. The runtime export is unaffected — it reads the
+    live module, which the loader has already converted to official layout.
+  - **CENSUS IS CONFIG-DERIVED, NOT MEASURED.** There is no Z-Image checkpoint on
+    this machine, so unlike every other arch here the numbers were produced by
+    building `ZImageTransformer2DModel` on the meta device from the published
+    `transformer/config.json`, not by reading a safetensors header: **276
+    `nn.Linear` / 6.1539 G 2-D parameters / 521 state-dict keys**; every shape
+    8-aligned (nothing lost to the GEMM-alignment filter); **37 below the runtime
+    min-work gate holding 0.1278 G — 13.4% of layers for 2.08% of parameters**, of
+    which 32 are the 256×15360 AdaLN modulation Linears that are the exact shape
+    class Anima's roll-up measured as a net loss. Hence
+    `skip_below_work_gate: True`. No timing run on Z-Image exists, and no artifact
+    of this arch has been produced from a real checkpoint.
 - **flux2** — Repo implementation uses a Qwen3 causal LM text encoder (not the
   upstream FLUX text stack); concatenates Qwen3 hidden states from layers 9/18/27.
   Distilled checkpoints inject a guidance vector instead of running CFG. VAE always
@@ -372,6 +428,32 @@ a generation without style transfer.
     checkpoint-provenance branch is suppressed while partial so it cannot claim
     those modules came from the file. A conversion that converts ZERO layers also
     does not latch the flag.
+  - **PARTIAL conversion + block swap is the real narrow hazard here — not
+    `weight_scale` desyncing from the block-swap stream.** Traced: block swap
+    ALWAYS moves `weight_scale` correctly, on any arch, converted or not.
+    `prepare_block_devices_before_forward` (`block_offloading.py`) does
+    `block.to(device)` first — a whole-module move, which carries `weight_scale`
+    (an `Int8Linear`/`Fp8Linear` buffer/attribute) with it — and both
+    `weighs_to_device` and `swap_weight_devices` afterward touch only `.weight`,
+    never `.weight_scale`, so the scale stays wherever the block move put it and
+    the pair never desynchronises. The coalesced H2D-only path needs a single
+    dtype per swappable block and self-disables (falls back to standard staging
+    swap) the moment a block is mixed-dtype — see the LTX-2.3 "MEASURED COST"
+    note below for a full-conversion example of that self-disable; it is
+    correct, not a hazard, and it is arch-independent.
+    The actual hazard is narrower: a conversion that dies part-way (CUDA OOM at
+    layer N) leaves blocks STRUCTURALLY heterogeneous — the same module path is
+    `Int8Linear` in one block and still `nn.Linear` in another — and
+    `swap_weight_devices` pairs modules by NAME and SHAPE only (it never checks
+    dtype); an `Int8Linear`'s int8 `.weight` and a same-shaped `nn.Linear`'s bf16
+    `.weight` pass that check identically. A staging copy performed across that
+    mismatch would silently write int8 codes into bf16-typed storage (or vice
+    versa) with no error and no warning — silent corruption, not the loud
+    self-disable a full conversion gets. This is cross-arch: every
+    `RUNTIME_INT8_ARCHS` member that also supports block swap (ltx2, flux2,
+    ideogram4 today) shares the same offloader and the same pairing-by-shape
+    code, and the hazard is pre-existing for all of them, not introduced by any
+    one arch's conversion support.
   - `--skip-below-work-gate` is **required** for Anima, unlike Krea 2 — a
     per-arch knob that now lives in
     `int8_runtime_quantize.ARCH_QUANT_POLICY` (the CLI flag defaults to it and

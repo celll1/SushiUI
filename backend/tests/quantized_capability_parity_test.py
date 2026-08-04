@@ -50,7 +50,7 @@ Registries below (`_GUARD_CASES`, `_QUANTIZED_GEMM_ROUTES` +
 and against the live router, so a new arch or a new route that is not covered
 fails loudly rather than passing silently.
 
-TWO WAYS THIS SUITE WAS ITSELF WRONG, both found by adversarial audit and fixed
+FOUR WAYS THIS SUITE WAS ITSELF WRONG, all found by adversarial audit and fixed
 here, because they are the failure mode of a suite like this one:
 
 * A test that pins a PROXY for the property instead of the property. Defect
@@ -63,20 +63,43 @@ here, because they are the failure mode of a suite like this one:
   `unet_quantization` must accept `quantized_gemm_mode`" is satisfied by a route
   that accepts neither, so deleting both from `/generate/txt2vid` was invisible.
   The route sets are now pinned absolutely and cross-checked against openapi.
+* A test CIRCULAR against the table it was checking. The functional reporter
+  test filed its fake module under a component name read from
+  `layout_module_specs`, which is where `extract_fp8_gemm_info` reads its names
+  too, so both sides agreed on any name -- right or wrong. Setting
+  `EXPORT_LAYOUTS["acestep"]["modules"] = (("transformer", ""),)`, precisely the
+  map drift this suite exists to catch, left every test green while production
+  would look up `acestep_components["transformer"]`, find nothing, and record no
+  `fp8_gemm` on every ACE-Step generation. `LoaderComponentNameAnchorTest` adds
+  the third source: the loader's own return dict, which shares no source with
+  either side.
+* NO POSITIVE CONTROL for the runtime-int8 hooks. Every test that touched them
+  passed only values that must convert NOTHING, so replacing a hook with
+  `lambda self, params, progress_callback=None: None` was invisible (measured on
+  acestep; krea2 and anima were in the same state).
+  `RuntimeInt8ConversionPositiveControlTest` runs each arch's hook with an int8
+  request over a fixture whose shape no arch policy filters, and requires the
+  module tree to come back holding `Int8Linear`/`Fp8Linear`.
 
 WHAT IS STILL NOT COVERED, after that pass:
 
 * The LoRA predicate is still located BY NAME, and a name imported from
-  `base_adapter` satisfies the lookup. An arch that used the shared helper on
-  one path and an inline type test on another would pass this class's functional
-  test; only the AST scan below would see the second site, and only if it is
-  spelled as an `isinstance`/`type(x) is` test in a function whose source
-  mentions "lora". Deliberately not hardened further: requiring each arch to
-  DEFINE its own predicate would push archs to copy the shared one, which is the
-  condition that produced this defect class in the first place.
+  `base_adapter` satisfies the lookup. EVERY conventional predicate an arch
+  exposes is now exercised (it used to be the first in candidate order alone,
+  which is how `pipeline_backends/acestep._is_lora_target` went functionally
+  untested while `acestep_adapter._is_target` stood in for it) -- but a site
+  that tests the type inline, rather than through a named predicate, is still
+  reached only by the AST scan, and only if it is spelled as an
+  `isinstance`/`type(x) is` test in a function whose source mentions "lora".
+  Deliberately not hardened further: requiring each arch to DEFINE its own
+  predicate would push archs to copy the shared one, which is the condition that
+  produced this defect class in the first place.
 * Nothing here runs a real architecture, so "the enumerator walks the right
   module tree" and "the conversion produces numerically correct weights" are out
-  of scope by construction (see below).
+  of scope by construction (see below). The positive control above converts ONE
+  synthetic Linear per component: it separates a working hook from an empty one
+  and from one that reads the wrong component key, and it says nothing about
+  which of a real DiT's layers are selected.
 * The static guard-ordering check is a complement, not a proof: it only requires
   that a top-level `raise` follow the first look at the request. On LTX-2.3 the
   hook now consults the request in its first statements, so that check is weak
@@ -87,7 +110,9 @@ import ast
 import importlib
 import inspect
 import sys
+import textwrap
 import unittest
+from unittest import mock
 from pathlib import Path
 
 import torch
@@ -154,6 +179,186 @@ _LORA_MODULE_IMPORT_ERRORS = {}
 _PREDICATE_NAMES = ("_is_lora_target", "_is_target", "is_lora_wrappable_linear")
 
 
+def _witness_component(arch):
+    """The component-dict KEY under which `arch` keeps its quantized module.
+
+    NOT always "transformer": ACE-Step's DiT is `acestep_components["dit"]`, and
+    a fake that always said "transformer" would have let
+    `extract_fp8_gemm_info`'s hardcoded name tuple pass for an arch it could not
+    actually read -- the same shape as the map drift the test below exists for,
+    one level down. Read from `EXPORT_LAYOUTS`, which is where the on-disk layout
+    (and therefore the component that holds the quantized Linears) is declared,
+    and which the reporter itself now derives its names from. Falls back to
+    "transformer" for a quantized arch with no export layout.
+
+    THIS IS THE SAME SOURCE THE REPORTER READS, so on its own it is circular:
+    `extract_fp8_gemm_info` looks names up in `layout_module_specs` too, and a
+    WRONG name in `EXPORT_LAYOUTS` makes both sides agree on it -- the fake would
+    file the module under the wrong key, the reporter would find it there, and
+    production (which looks the name up in the loader's real component dict)
+    would find nothing. Measured: setting
+    ``EXPORT_LAYOUTS["acestep"]["modules"] = (("transformer", ""),)`` left this
+    file green. `LoaderComponentNameAnchorTest` below is the anchor that closes
+    it: it checks the same name against the arch's LOADER, which shares no source
+    with either side.
+    """
+    try:
+        from core.models.common.quantized_export import layout_module_specs
+
+        return layout_module_specs(arch)[0][0]
+    except Exception:
+        return "transformer"
+
+
+# arch -> the loader entry point(s) that BUILD its component dict, as
+# (module, dotted attribute). Resolved by import, so a renamed or moved loader
+# fails here loudly instead of dropping the arch out of the anchor below.
+# Checked for completeness against QUANTIZED_LINEAR_ARCHS.
+#
+# Why a written-down registry rather than a convention scan: a scan wide enough
+# to find these six (they live in four different module shapes, one of them a
+# @staticmethod on `ModelLoader`) also sweeps up helpers like
+# `detect_anima_split_layout`, whose own `return {"dit": ...}` is a PATH dict,
+# not a component dict. Folding those in would only ADD accepted key names,
+# i.e. weaken exactly the assertion this table exists to make.
+_LOADER_ENTRY_POINTS = {
+    "acestep": (("core.models.acestep.loader", "load_acestep_from_path"),),
+    "anima": (("core.models.anima.anima_loader", "load_anima_components"),),
+    "flux2": (("core.model_loader", "ModelLoader.load_flux2_from_safetensors"),),
+    "ideogram4": (
+        ("core.models.ideogram4.ideogram4_loader", "load_ideogram4_components"),
+        ("core.models.ideogram4.ideogram4_loader", "load_ideogram4_single_file"),
+    ),
+    "krea2": (("core.models.krea2.krea2_loader", "load_krea2_components"),),
+    "ltx2": (("core.models.ltx2.loader", "load_ltx2_from_diffusers"),),
+}
+
+
+def _resolve_attr(module_name, dotted):
+    obj = importlib.import_module(module_name)
+    for part in dotted.split("."):
+        obj = getattr(obj, part)
+    return obj
+
+
+def _return_dict_key_sets(fn):
+    """The string keys of every ``return {...}`` literal in `fn`'s OWN body.
+
+    Nested functions are excluded (a closure's dict is not what the loader
+    hands back), and a `return` of anything other than a dict DISPLAY yields no
+    entry -- so a loader that builds its dict incrementally produces an empty
+    list here and is reported as un-anchorable rather than silently passing.
+    """
+    source = textwrap.dedent(inspect.getsource(fn))
+    tree = ast.parse(source)
+    func = next(n for n in ast.walk(tree)
+                if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)))
+    nested = {id(n)
+              for f in ast.walk(func)
+              if isinstance(f, (ast.FunctionDef, ast.AsyncFunctionDef)) and f is not func
+              for n in ast.walk(f)}
+    key_sets = []
+    for node in ast.walk(func):
+        if id(node) in nested or not isinstance(node, ast.Return):
+            continue
+        if isinstance(node.value, ast.Dict):
+            key_sets.append({k.value for k in node.value.keys
+                             if isinstance(k, ast.Constant) and isinstance(k.value, str)})
+    return key_sets
+
+
+class LoaderComponentNameAnchorTest(unittest.TestCase):
+    """The component NAME, anchored against the loader that produces it.
+
+    `extract_fp8_gemm_info` resolves an arch's quantized module as
+    ``<arch>_components[name]`` with `name` from
+    ``EXPORT_LAYOUTS[arch]["modules"]``, and the functional reporter test above
+    files its fake module under a name read from THE SAME table. That pair is
+    self-consistent for any name, right or wrong: with
+    ``EXPORT_LAYOUTS["acestep"]["modules"] = (("transformer", ""),)`` -- the
+    map-drift class this suite exists for -- the whole file stayed green while
+    production would look up ``acestep_components["transformer"]``, find nothing,
+    and record no `fp8_gemm` on every ACE-Step generation, silently and
+    permanently.
+
+    The third source is the LOADER: the dict literal it returns IS the component
+    dict `pipeline.py` stores as ``<arch>_components``, and it shares no source
+    with the layout table or with the reporter. Every arch here returns one that
+    can be read statically; if a future loader builds its dict incrementally, the
+    first test below fails with that arch named rather than skipping it.
+    """
+
+    def _key_sets(self, arch):
+        out = []
+        for module_name, dotted in _LOADER_ENTRY_POINTS[arch]:
+            fn = _resolve_attr(module_name, dotted)
+            for keys in _return_dict_key_sets(fn):
+                out.append((f"{module_name}.{dotted}", keys))
+        return out
+
+    def test_every_quantized_arch_has_a_readable_loader_entry_point(self):
+        missing = sorted(set(QUANTIZED_LINEAR_ARCHS) - set(_LOADER_ENTRY_POINTS))
+        self.assertEqual(
+            missing, [],
+            "these archs own weight-only quantized Linear layers but have no loader "
+            "entry point registered in _LOADER_ENTRY_POINTS, so nothing checks that "
+            "the component name their export layout declares is a key their loader "
+            "really returns")
+        unreadable = []
+        for arch in QUANTIZED_LINEAR_ARCHS:
+            key_sets = self._key_sets(arch)
+            if not key_sets or any(not keys for _where, keys in key_sets):
+                unreadable.append(arch)
+        self.assertEqual(
+            unreadable, [],
+            "these archs' loader entry points return no statically readable dict "
+            "literal, so the anchor below would pass vacuously for them. Point the "
+            "registry at the function that DOES return the component dict, or "
+            "anchor the arch some other way -- do not skip it.")
+
+    def test_the_layout_component_names_are_keys_the_loader_really_returns(self):
+        from core.models.common.quantized_export import layout_module_specs
+
+        for arch in QUANTIZED_LINEAR_ARCHS:
+            for component, _prefix in layout_module_specs(arch):
+                for where, keys in self._key_sets(arch):
+                    with self.subTest(arch=arch, component=component, loader=where):
+                        self.assertIn(
+                            component, keys,
+                            f"EXPORT_LAYOUTS[{arch!r}] declares the component "
+                            f"{component!r}, but {where} returns no such key "
+                            f"(it returns {sorted(keys)}). Everything that has to FIND "
+                            f"this arch's quantized module -- the export job and "
+                            f"generation_utils.extract_fp8_gemm_info -- looks the name "
+                            f"up in the live <arch>_components dict, which is this "
+                            f"loader's return value, so a name only the layout table "
+                            f"believes in resolves to None: no fp8_gemm is recorded on "
+                            f"any generation and the export refuses the model.")
+
+    def test_the_anchor_discriminates(self):
+        """The premise: a name from ANOTHER arch's layout is really rejected here.
+
+        Without this, "the loader returns every name anyone might ask for" would
+        satisfy the test above while proving nothing.
+        """
+        from core.models.common.quantized_export import layout_module_specs
+
+        every = {name for a in QUANTIZED_LINEAR_ARCHS
+                 for name, _p in layout_module_specs(a)}
+        for arch in QUANTIZED_LINEAR_ARCHS:
+            own = {name for name, _p in layout_module_specs(arch)}
+            foreign = every - own
+            if not foreign:
+                continue
+            for where, keys in self._key_sets(arch):
+                with self.subTest(arch=arch, loader=where):
+                    self.assertTrue(
+                        foreign - keys,
+                        f"{where} returns every component name any arch's layout "
+                        f"declares ({sorted(foreign)}), so the check above cannot "
+                        f"fail for a wrong name")
+
+
 class LoraQuantizedTargetParityTest(unittest.TestCase):
     """Defect class 1: the `isinstance(x, nn.Linear)` trap.
 
@@ -166,16 +371,27 @@ class LoraQuantizedTargetParityTest(unittest.TestCase):
     be checked, and Ideogram 4's used to be one.
     """
 
-    def _predicate_for(self, arch):
+    def _predicates_for(self, arch):
+        """EVERY conventional predicate the arch exposes, not just the first.
+
+        This used to return the first match in candidate order, and an arch with
+        two of them had only that one exercised: on ACE-Step
+        ``acestep_adapter._is_target`` won, so ``pipeline_backends.acestep``'s
+        own ``_is_lora_target`` -- the one the GENERATION path calls, and the
+        site the quantized-Linear trap would actually be spelled at -- was
+        covered by the AST scan alone. Both are checked now, and an arch that
+        grows a third gets it for free.
+        """
+        found = []
         for module in _lora_modules(arch):
             for name in _PREDICATE_NAMES:
                 fn = getattr(module, name, None)
                 if callable(fn):
-                    return f"{module.__name__}.{name}", fn
-        return None, None
+                    found.append((f"{module.__name__}.{name}", fn))
+        return found
 
     def test_every_quantized_arch_exposes_a_findable_target_predicate(self):
-        missing = [a for a in QUANTIZED_LINEAR_ARCHS if self._predicate_for(a)[1] is None]
+        missing = [a for a in QUANTIZED_LINEAR_ARCHS if not self._predicates_for(a)]
         self.assertEqual(
             missing, [],
             f"these architectures own weight-only quantized Linear layers but expose "
@@ -187,19 +403,18 @@ class LoraQuantizedTargetParityTest(unittest.TestCase):
     def test_the_predicate_selects_quantized_linears_exactly_like_plain_ones(self):
         modules = _quantized_linears()
         for arch in QUANTIZED_LINEAR_ARCHS:
-            where, predicate = self._predicate_for(arch)
-            if predicate is None:
-                continue  # reported by the test above
-            plain = bool(predicate(modules["nn.Linear"]))
-            self.assertTrue(plain, f"{where} does not accept a plain nn.Linear")
-            for name in ("Int8Linear", "Fp8Linear"):
-                self.assertEqual(
-                    bool(predicate(modules[name])), plain,
-                    f"{arch}: {where} answers differently for {name} than for "
-                    f"nn.Linear. {name} is an nn.Module but NOT an nn.Linear "
-                    f"subclass, so an isinstance(x, nn.Linear) predicate drops every "
-                    f"quantized layer silently -- the run 'succeeds' with a smaller "
-                    f"target count that looks like a narrower scope.")
+            for where, predicate in self._predicates_for(arch):
+                with self.subTest(arch=arch, predicate=where):
+                    plain = bool(predicate(modules["nn.Linear"]))
+                    self.assertTrue(plain, f"{where} does not accept a plain nn.Linear")
+                    for name in ("Int8Linear", "Fp8Linear"):
+                        self.assertEqual(
+                            bool(predicate(modules[name])), plain,
+                            f"{arch}: {where} answers differently for {name} than for "
+                            f"nn.Linear. {name} is an nn.Module but NOT an nn.Linear "
+                            f"subclass, so an isinstance(x, nn.Linear) predicate drops every "
+                            f"quantized layer silently -- the run 'succeeds' with a smaller "
+                            f"target count that looks like a narrower scope.")
 
     def test_the_trap_is_real(self):
         """Pins the premise: the naive predicate really does reject both classes.
@@ -379,14 +594,20 @@ _QUANTIZED_GEMM_ROUTES = frozenset({
     "/generate/txt2vid",
     "/generate/img2vid",
     "/generate/outpaint/video",
-})
-
-_UNQUANTIZED_GENERATE_ROUTES = frozenset({
-    # ACE-Step audio. `acestep` is in neither RUNTIME_INT8_ARCHS nor
-    # QUANTIZED_LINEAR_ARCHS, so there is nothing for either parameter to do.
+    # ACE-Step audio. These three were in the unquantized set below while
+    # `acestep` was in neither tuple. It is now in BOTH: its loader swaps in
+    # Int8Linear/Fp8Linear for a weight-only quantized DiT and
+    # `_acestep_runtime_int8` produces the same classes from a bf16 one, so both
+    # parameters govern modules these routes really run -- the same test LTX-2.3
+    # passed. Moving them here (rather than leaving them classified as
+    # unquantized while the capability table advertised `quantized_gemm` for
+    # acestep) is defect class 2 avoided rather than repeated.
     "/generate/txt2aud",
     "/generate/aud2aud",
     "/generate/outpaint/audio",
+})
+
+_UNQUANTIZED_GENERATE_ROUTES = frozenset({
     # Upscale. PIL/spandrel backends run no diffusion model at all, and the
     # diffusion backend runs the loaded model in whatever state it is already
     # in; the route exposes no quantization control of its own.
@@ -501,7 +722,8 @@ class QuantizedCapabilityCoherenceTest(unittest.TestCase):
             with self.subTest(arch=arch):
                 manager = _FakeManager(current_model_info={"type": arch})
                 setattr(manager, f"{arch}_components", {
-                    "transformer": nn.Sequential(_quantized_linears()["Int8Linear"]),
+                    _witness_component(arch):
+                        nn.Sequential(_quantized_linears()["Int8Linear"]),
                 })
                 self.assertNotEqual(
                     extract_fp8_gemm_info(manager), "",
@@ -517,7 +739,8 @@ class QuantizedCapabilityCoherenceTest(unittest.TestCase):
 
         for arch in QUANTIZED_LINEAR_ARCHS:
             manager = _FakeManager(current_model_info={"type": arch})
-            setattr(manager, f"{arch}_components", {"transformer": _tiny_transformer()})
+            setattr(manager, f"{arch}_components",
+                    {_witness_component(arch): _tiny_transformer()})
             self.assertEqual(extract_fp8_gemm_info(manager), "", arch)
 
     def test_every_quantized_arch_has_a_component_dict_the_gemm_reporter_can_find(self):
@@ -877,13 +1100,181 @@ def _anima_case(quantization):
 # arch -> a callable that runs the arch's runtime-int8 hook with a STALE block
 # offloader present. Checked for completeness against RUNTIME_INT8_ARCHS below,
 # so a new arch cannot join the tuple and skip this class silently.
+def _acestep_case(quantization):
+    """ACE-Step's stale state is a LoRA WRAPPER, not a block offloader.
+
+    There is no block-swap path in this backend at all, so the invariant the hook
+    has to survive is the other kind of leftover: `_acestep_lora_original_modules`
+    and a wrapped Linear left behind by an earlier generation. A request that
+    converts nothing must not care -- and `_acestep_runtime_int8` is called AFTER
+    `_apply_or_clear_lora_acestep`, so by the time it runs the wrappers present
+    are only the ones this request asked for.
+
+    SCOPE, because this shape used to read as if it established more than it
+    does: this case is only ever run with a quantization value that converts
+    NOTHING (see `_GUARD_CASES`' caller). It says the guard is quiet, not that
+    the hook does anything -- replacing `_acestep_runtime_int8` with a no-op
+    satisfied it, and satisfied every other test in this file. The positive
+    control that fails for a no-op hook is
+    `RuntimeInt8ConversionPositiveControlTest` below, for every arch in
+    RUNTIME_INT8_ARCHS.
+    """
+    from core.pipeline_backends.acestep import AceStepMixin
+    from core.training.adapters.sd15_adapter import LoRALinearLayer
+
+    inner = nn.Linear(8, 8, dtype=torch.bfloat16)
+    wrapped = LoRALinearLayer(inner, rank=4, alpha=4, lora_name="stale")
+    dit = nn.Sequential(wrapped, nn.Linear(8, 8, dtype=torch.bfloat16))
+    manager = _FakeManager(acestep_components={"dit": dit},
+                           _acestep_lora_original_modules={"stale": inner},
+                           _acestep_lora_wrapped_modules={"stale"})
+    manager.__class__ = type("FakeAceStep", (_FakeManager, AceStepMixin), {})
+    manager._acestep_runtime_int8({"unet_quantization": quantization})
+
+
 _GUARD_CASES = {
+    "acestep": _acestep_case,
     "ltx2": _ltx2_case,
     "flux2": _flux2_case,
     "ideogram4": _ideogram4_case,
     "krea2": _krea2_case,
     "anima": _anima_case,
 }
+
+
+# ---------------------------------------------------------------------------
+# Defect class 3b: the hook that is a no-op.
+#
+# Every test above is satisfied by a hook that does nothing at all: the guard
+# cases only ever pass values that convert NOTHING (None/"none"/""/fp8_e4m3fn),
+# `test_the_genuine_violation_is_still_refused` names three archs by hand, and
+# the existence test greps for `def _<arch>_runtime_int8`, which an empty body
+# satisfies. Measured: replacing `AceStepMixin._acestep_runtime_int8` with
+# `lambda self, params, progress_callback=None: None` left the whole file green,
+# and krea2/anima were in the same state. So each arch's hook is also run with an
+# int8 request that MUST convert.
+# ---------------------------------------------------------------------------
+
+def _quantizable_component():
+    """One bf16 Linear that no arch's selection policy may filter out.
+
+    2048x2048 is 8-aligned (`min_align`, which costs ACE-Step its 2048x6 FSQ
+    projections) and sits at or above the runtime min-work gate (k>=2048,
+    n>=1024) that acestep/anima/ideogram4/ltx2 apply, so "the policy skipped it"
+    is not available as an explanation for a module that comes back unconverted.
+    """
+    return nn.Sequential(nn.Linear(2048, 2048, bias=True, dtype=torch.bfloat16))
+
+
+def _mixin_for(arch):
+    """The one `*Mixin` class `core.pipeline_backends.<arch>` defines."""
+    module = importlib.import_module(f"core.pipeline_backends.{arch}")
+    mixins = [obj for name, obj in vars(module).items()
+              if isinstance(obj, type) and name.endswith("Mixin")
+              and obj.__module__ == module.__name__]
+    if len(mixins) != 1:
+        raise AssertionError(
+            f"core/pipeline_backends/{arch}.py defines {len(mixins)} *Mixin classes; "
+            f"this helper assumes exactly one")
+    return mixins[0]
+
+
+# arch -> how its hook is CALLED. Signatures genuinely differ (Anima takes the
+# quantization string itself, FLUX.2 takes the transformer as a second argument,
+# LTX-2.3 also reads blocks_to_swap), so the invocation is per arch; the
+# components, their NAMES and the assertion are not. Completeness is checked
+# against RUNTIME_INT8_ARCHS below.
+_INT8_INVOCATIONS = {
+    "acestep": lambda m, mods, q: m._acestep_runtime_int8({"unet_quantization": q}),
+    "anima": lambda m, mods, q: m._anima_runtime_int8(q),
+    "krea2": lambda m, mods, q: m._krea2_runtime_int8({"unet_quantization": q}),
+    "flux2": lambda m, mods, q: m._flux2_runtime_int8({"unet_quantization": q},
+                                                      mods["transformer"]),
+    "ideogram4": lambda m, mods, q: m._ideogram4_runtime_int8({"unet_quantization": q}),
+    "ltx2": lambda m, mods, q: m._ltx2_runtime_int8({"unet_quantization": q,
+                                                     "blocks_to_swap": 0}),
+}
+
+
+def _run_runtime_int8(arch, quantization):
+    """Run `arch`'s hook over fake components; return the modules it was given.
+
+    The component NAMES come from `layout_module_specs`, i.e. the same names the
+    F1 anchor validates against the arch's loader -- a hook reading a key nothing
+    puts a module under would find None and return quietly, which is the failure
+    this control has to be able to see.
+
+    CPU only: `torch.cuda.is_available` is patched False so the converter picks
+    no work device, which keeps the run identical on a machine with a GPU and on
+    one without (and allocates nothing on the device).
+    """
+    from core.models.common.quantized_export import layout_module_specs
+
+    modules = {name: _quantizable_component()
+               for name, _prefix in layout_module_specs(arch)}
+    manager = _FakeManager(**{f"{arch}_components": dict(modules)})
+    manager.__class__ = type(f"Fake{arch}", (_FakeManager, _mixin_for(arch)), {})
+    with mock.patch.object(torch.cuda, "is_available", return_value=False):
+        _INT8_INVOCATIONS[arch](manager, modules, quantization)
+    return modules
+
+
+class RuntimeInt8ConversionPositiveControlTest(unittest.TestCase):
+    """`unet_quantization="int8"` must really replace the Linear modules.
+
+    Nothing else in this file distinguishes a working hook from an empty one.
+    This does not check numerics (that is `int8_linear`'s own concern) -- only
+    that the request reaches the converter and the module tree comes back holding
+    the quantized classes instead of `nn.Linear`.
+    """
+
+    def test_every_runtime_int8_arch_is_covered_here(self):
+        self.assertEqual(
+            sorted(set(RUNTIME_INT8_ARCHS) - set(_INT8_INVOCATIONS)), [],
+            "these architectures honor unet_quantization='int8' but have no "
+            "invocation in _INT8_INVOCATIONS, so nothing checks that their hook does "
+            "anything at all. Add one -- or, if the hook needs more setup than a fake "
+            "manager can provide, say so in the entry rather than leaving the arch "
+            "out.")
+
+    def test_the_hook_actually_converts(self):
+        from core.models.ideogram4.vendor.fp8_linear import Fp8Linear
+        from core.models.ideogram4.vendor.int8_linear import Int8Linear
+
+        for arch in RUNTIME_INT8_ARCHS:
+            invoke = _INT8_INVOCATIONS.get(arch)
+            if invoke is None:
+                continue  # reported above
+            with self.subTest(arch=arch):
+                modules = _run_runtime_int8(arch, "int8")
+                self.assertTrue(modules, arch)
+                for name, module in modules.items():
+                    layer = module[0]
+                    self.assertIsInstance(
+                        layer, (Int8Linear, Fp8Linear),
+                        f"{arch}: after _{arch}_runtime_int8 with "
+                        f"unet_quantization='int8', {name}'s 2048x2048 Linear is still "
+                        f"a {type(layer).__name__}. The hook converted nothing -- an "
+                        f"empty body passes every other test in this file, because "
+                        f"they only ever call it with values that must NOT convert.")
+
+    def test_the_control_is_a_control(self):
+        """The same fixture with no int8 request must leave the Linears alone.
+
+        Otherwise the assertion above could be satisfied by the fixture rather
+        than by the hook.
+        """
+        for arch in RUNTIME_INT8_ARCHS:
+            if arch not in _INT8_INVOCATIONS:
+                continue
+            for quantization in (None, "none", "fp8_e4m3fn"):
+                with self.subTest(arch=arch, quantization=quantization):
+                    modules = _run_runtime_int8(arch, quantization)
+                    for name, module in modules.items():
+                        self.assertIs(
+                            type(module[0]), nn.Linear,
+                            f"{arch}: a request for {quantization!r} converted {name} "
+                            f"anyway")
 
 # ~105 k parameters: 1 layer, 2 heads, 62 Linears. Small enough to build in a
 # test, and needed because Ltx2BlockLoopWrapper pins the diffusers module tree.
@@ -1042,6 +1433,88 @@ class RuntimeInt8GuardOrderingTest(unittest.TestCase):
                     f"nothing turns a leftover attribute into a failed generation; "
                     f"pass it to apply_runtime_int8_quantization as `precheck` "
                     f"instead, which runs only when a conversion really starts.")
+
+
+class RuntimeInt8PartialConversionTest(unittest.TestCase):
+    """`converted is False` does NOT mean "the model is unchanged".
+
+    `apply_runtime_int8_quantization` returns False for a PARTIAL conversion too
+    -- the CUDA-OOM-at-layer-N path it explicitly designs for, which sets
+    `manager._runtime_int8_partial` and leaves the layers converted so far as
+    `Int8Linear`. Any hook cleanup that a completed conversion needs is therefore
+    needed after a partial one as well. ACE-Step's was gated on `converted`
+    alone: after an OOM at layer 200 of 383, the pre-conversion bf16 modules
+    stayed in `_acestep_lora_original_modules`, so the next LoRA load/unload
+    cycle restored them over the Int8Linear modules (silently un-quantizing those
+    layers) and held 2.4 GB of bf16 resident meanwhile. Anima's hook already
+    consulted the latch, which is why this is a parity test and not an ACE-Step
+    one.
+    """
+
+    def test_a_hook_that_branches_on_converted_also_consults_the_partial_latch(self):
+        for arch in RUNTIME_INT8_ARCHS:
+            module = importlib.import_module(f"core.pipeline_backends.{arch}")
+            source = Path(inspect.getsourcefile(module)).read_text(encoding="utf-8")
+            hook = next((n for n in ast.walk(ast.parse(source))
+                         if isinstance(n, ast.FunctionDef)
+                         and n.name == f"_{arch}_runtime_int8"), None)
+            self.assertIsNotNone(hook, arch)
+
+            # Names bound to the converter's SECOND return value.
+            converted_names = set()
+            for node in ast.walk(hook):
+                if not isinstance(node, ast.Assign) or not isinstance(node.value, ast.Call):
+                    continue
+                func = node.value.func
+                name = func.attr if isinstance(func, ast.Attribute) else \
+                    getattr(func, "id", "")
+                if not name.startswith("apply_runtime_int8_quantization"):
+                    continue
+                for target in node.targets:
+                    if isinstance(target, ast.Tuple) and len(target.elts) == 2 \
+                            and isinstance(target.elts[1], ast.Name):
+                        converted_names.add(target.elts[1].id)
+            branched = [n.lineno for n in ast.walk(hook) if isinstance(n, ast.If)
+                        and any(isinstance(x, ast.Name) and x.id in converted_names
+                                for x in ast.walk(n.test))]
+            if not branched:
+                continue  # the hook ignores the flag; nothing to get wrong
+            hook_source = ast.get_source_segment(source, hook) or ""
+            self.assertIn(
+                "_runtime_int8_partial", hook_source,
+                f"{arch}: _{arch}_runtime_int8 branches on the converter's "
+                f"'converted' return (line {branched[0]}) without ever consulting "
+                f"manager._runtime_int8_partial. 'converted' is False for a PARTIAL "
+                f"conversion as well as for a no-op, so whatever that branch does "
+                f"after a full conversion is skipped in exactly the half-converted "
+                f"state that needs it most.")
+
+    def test_acestep_drops_the_stale_lora_base_cache_after_a_partial_conversion(self):
+        """The functional half, on the arch where the branch has a body.
+
+        The latch is the observable an OOM leaves behind, so it is set directly
+        rather than by exhausting a GPU: with `_runtime_int8_partial` set, the DiT
+        already holds Int8Linear modules whose pre-conversion bf16 originals are
+        in the LoRA cache, and the cache must not survive this hook.
+        """
+        from core.pipeline_backends.acestep import AceStepMixin
+
+        pre_conversion = nn.Linear(8, 8, dtype=torch.bfloat16)
+        dit = nn.Sequential(nn.Linear(8, 8, dtype=torch.bfloat16))
+        manager = _FakeManager(
+            acestep_components={"dit": dit},
+            _acestep_lora_original_modules={"decoder.layers.0.q_proj": pre_conversion},
+            _acestep_lora_wrapped_modules=set(),
+            _runtime_int8_partial=True,
+            _runtime_int8_partial_done=200)
+        manager.__class__ = type("FakeAceStep", (_FakeManager, AceStepMixin), {})
+        manager._acestep_runtime_int8({"unet_quantization": "none"})
+        self.assertEqual(
+            manager._acestep_lora_original_modules, {},
+            "the pre-conversion bf16 base modules are still cached after a partial "
+            "INT8 conversion. A later LoRA load/unload cycle restores them over the "
+            "converted Int8Linear modules (silently un-quantizing those layers), and "
+            "the cache holds their weights resident until the model is reloaded.")
 
 
 if __name__ == "__main__":

@@ -416,5 +416,78 @@ class JobGuardTest(unittest.TestCase):
         self.assertEqual(status["job"]["state"], "idle")
 
 
+class SourceRootTest(unittest.TestCase):
+    """The sibling junctions must come from the MODEL ROOT, not the weight's dir.
+
+    Two archs put the weight file in a subdirectory of the tree their loader
+    completes from (`output_subdir` in `EXPORT_LAYOUTS`), and both accept that
+    FILE as the loaded model's `source`:
+
+    * Anima: ``<root>/split_files/diffusion_models/<dit>.safetensors``;
+    * ACE-Step: ``<root>/diffusion_models/<dit>.safetensors``.
+
+    `os.path.dirname(source)` there is a directory holding NO sibling the layout
+    declares, so the export would junction nothing and write a tree its own
+    loader cannot complete. ACE-Step shipped without its branch while Anima had
+    one, which is why this is written against the layout table rather than as two
+    hand-written cases.
+    """
+
+    # Archs whose layout puts the weight in a subdirectory but whose `source` is
+    # never a file. LTX-2.3 is loaded as `LTX2Pipeline.from_pretrained(<root>)`
+    # and is detected by a root `model_index.json`, so the source is always the
+    # pipeline root directory -- `os.path.dirname` is never reached for it.
+    _DIRECTORY_SOURCE_ONLY = {"ltx2"}
+
+    def _tree(self, tmp, arch, layout):
+        """A synthetic source tree shaped exactly as `arch`'s layout declares."""
+        root = os.path.join(tmp, arch)
+        weight_dir = os.path.join(root, str(layout.get("output_subdir") or ""))
+        os.makedirs(weight_dir, exist_ok=True)
+        weight = os.path.join(weight_dir, "model.safetensors")
+        open(weight, "wb").close()
+        for name in layout.get("siblings") or ():
+            target = os.path.join(root, name)
+            if name.endswith(".json"):
+                os.makedirs(os.path.dirname(target), exist_ok=True)
+                open(target, "wb").close()
+            else:
+                os.makedirs(target, exist_ok=True)
+        return root, weight
+
+    def test_a_file_source_resolves_to_the_root_its_siblings_hang_off(self):
+        from api.quantized_export_job import _source_root
+
+        with tempfile.TemporaryDirectory() as tmp:
+            for arch, layout in qe.EXPORT_LAYOUTS.items():
+                if not layout.get("output_subdir") or arch in self._DIRECTORY_SOURCE_ONLY:
+                    continue
+                with self.subTest(arch=arch):
+                    root, weight = self._tree(tmp, arch, layout)
+                    resolved = _source_root(arch, weight)
+                    self.assertEqual(
+                        os.path.normpath(resolved or ""), os.path.normpath(root),
+                        f"{arch}: a {layout['output_subdir']}/*.safetensors source "
+                        f"resolved to {resolved!r}, not the model root")
+                    for name in layout.get("siblings") or ():
+                        self.assertTrue(
+                            os.path.exists(os.path.join(resolved, name)),
+                            f"{arch}: the export would junction '{name}' from "
+                            f"{resolved!r}, which does not hold it -- the exported "
+                            f"tree would be missing a component its loader completes "
+                            f"from")
+
+    def test_a_directory_source_is_left_alone(self):
+        from api.quantized_export_job import _source_root
+
+        with tempfile.TemporaryDirectory() as tmp:
+            for arch, layout in qe.EXPORT_LAYOUTS.items():
+                with self.subTest(arch=arch):
+                    root, _weight = self._tree(tmp, arch, layout)
+                    self.assertEqual(
+                        os.path.normpath(_source_root(arch, root) or ""),
+                        os.path.normpath(root), arch)
+
+
 if __name__ == "__main__":
     unittest.main()

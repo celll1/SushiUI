@@ -151,6 +151,7 @@ class SupportedLoaderTest(unittest.TestCase):
         "krea2": ("core/models/krea2/vendor/single_file.py", "swap_linears_to_int8"),
         "ideogram4": ("core/models/ideogram4/ideogram4_loader.py", "swap_linears_to_fp8"),
         "ltx2": ("core/models/ltx2/loader.py", "_swap_ltx2_quantized_linears"),
+        "acestep": ("core/models/acestep/loader.py", "_swap_quantized_linears"),
     }
 
     def test_every_supported_arch_swaps_before_the_tolerant_load(self):
@@ -397,6 +398,48 @@ class ScalelessLoadMatrixTest(unittest.TestCase):
                 return built
 
         self._matrix(reference, build)
+
+
+class CastAfterSwapTest(unittest.TestCase):
+    """What a dtype cast AFTER the quantized swap really does, per class.
+
+    The ACE-Step loader casts BEFORE the load for this reason, and its comment
+    used to state a mechanism that is false ("Module.to converts the weight
+    buffer without complaint", said of both classes). `Module.to(dtype=)` SKIPS
+    integral tensors, so the two classes fail differently, and the difference
+    decides whether an int8-only file is safe under the old ordering -- it is
+    not, only quieter. Pinned here because a future maintainer reading either
+    comment will act on it.
+    """
+
+    def test_a_later_cast_destroys_an_fp8_weight_and_degrades_both_scales(self):
+        from core.models.ideogram4.vendor.fp8_linear import Fp8Linear
+        from core.models.ideogram4.vendor.int8_linear import Int8Linear
+
+        int8 = Int8Linear(8, 8, bias=True, compute_dtype=torch.bfloat16)
+        fp8 = Fp8Linear(8, 8, bias=True, compute_dtype=torch.bfloat16)
+        self.assertIs(int8.weight.dtype, torch.int8)
+        self.assertIs(fp8.weight.dtype, torch.float8_e4m3fn)
+        self.assertIs(int8.weight_scale.dtype, torch.float32)
+        self.assertIs(fp8.weight_scale.dtype, torch.float32)
+
+        int8.to(dtype=torch.bfloat16)
+        fp8.to(dtype=torch.bfloat16)
+
+        self.assertIs(
+            int8.weight.dtype, torch.int8,
+            "an int8 weight survived the cast until now; if torch starts casting "
+            "integral buffers, the ACE-Step loader's ordering comment (which says "
+            "the int8 weight SURVIVES and only its scale is degraded) is wrong")
+        self.assertIs(
+            fp8.weight.dtype, torch.bfloat16,
+            "the fp8 weight is no longer destroyed by a later cast; the ordering "
+            "comment's first bullet needs restating")
+        for name, module in (("Int8Linear", int8), ("Fp8Linear", fp8)):
+            self.assertIs(
+                module.weight_scale.dtype, torch.bfloat16,
+                f"{name}: weight_scale was expected to be silently downcast by the "
+                f"cast (that is the loss the ordering avoids on BOTH classes)")
 
 
 if __name__ == "__main__":

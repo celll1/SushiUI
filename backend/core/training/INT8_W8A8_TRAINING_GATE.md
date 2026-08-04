@@ -260,3 +260,320 @@ this gate re-passing on a rerun with a moved goalpost.
   rather than being carved out by hand.
 - Scope any new constants strictly to the training-time admission path. Do
   not retune the already-shipped inference gate (G2) to accommodate this.
+
+---
+
+# INT8/FP8 dequant-path autograd retention — measurement gate G4 (memory)
+
+**Status: pre-registered, then measured; CLOSED, FAILED.** The rule below was
+written before the `autograd.Function` it decides existed and before any number
+under it was measured. It lives in this file because it is the same subject as
+G3: G3 asked whether the quantized *forward* could be made faster in training
+(closed, failed); G4 asks whether the quantized *dequant path* could be made to
+retain less memory in training. G3's bullet above — "the memory win is already
+ours" — is true only while gradient checkpointing is on, and G4 is what measured
+the rest of that sentence. **G3's rule text is unchanged by G4.**
+
+### The defect this gate decides a fix for
+
+`_dequant_forward` (`models/ideogram4/vendor/int8_linear.py:662`,
+`fp8_linear.py:631`) is
+
+```python
+w = self.weight.to(x.dtype) * self.weight_scale.to(x.dtype).unsqueeze(1)
+return F.linear(x, w, bias)
+```
+
+`F.linear` saves `w` for backward because `grad_input = grad_output @ w`. For a
+bf16 `nn.Linear` the saved tensor is an **alias of the resident parameter** —
+zero extra bytes. For a quantized Linear it is a **fresh (out, in) allocation in
+the compute dtype**, on top of the resident 1-byte codes.
+
+Per weight, per checkpoint unit: **int8 = 1 B resident + 2 B transient**, bf16 =
+2 B + 0. Inside one live unit int8 is 1.5x *worse*; it wins today only because
+per-block gradient checkpointing keeps one unit live at a time.
+
+`gradient_checkpointing` defaults to `True` (`api/param_defaults.py`) but is
+user-toggleable. With it **off**, every block's dequant temporary is live
+simultaneously and the whole model materialises in the compute dtype on top of
+the codes. Derived from safetensors headers (no model loaded), Krea 2's
+transformer: **11.94 GiB of codes + 23.88 GiB of dequant temporaries = 35.81
+GiB**, against a bf16 base of **23.88 GiB**. The quantized base is then strictly
+and badly worse, silently.
+
+### The intervention this gate is about
+
+A `torch.autograd.Function` around the dequant path that **does not save the
+dequantized weight**. It saves the int8/e4m3 codes and the scale — both live
+module buffers, so saving them costs no new allocation — and rebuilds `w` in
+backward.
+
+### The rule — ship only if ALL of
+
+#### B1. Forward stays bitwise identical. Non-negotiable.
+
+Same standard `int8_fused.py` is held to: equality **on integer bit views**, not
+`allclose`, over the dtype matrix {bf16, fp16, fp32} and over hostile inputs
+(all-zero rows, denormals, a single huge outlier, NaN, +-Inf). Any single
+differing bit fails the gate outright, independently of every number below.
+This is not expected to cost anything — the forward *maths* is unchanged, only
+what autograd retains — but it is proven, not assumed.
+
+#### B2. Backward is correct in the production dtype, and emits no weight grad.
+
+`grad_input` matches the current path within the production dtype's tolerance,
+measured **in bf16 and fp16**, not fp32 only (repo precedent: fp32-verified code
+has already shipped a crash onto the fp16 path after a probe, a self-check and
+an audit all passed). The base is frozen and `weight` is a buffer, so a weight
+gradient must **not** appear; a path that would need one must refuse rather than
+silently drop it.
+
+#### M1. Without gradient checkpointing, the retention must be O(1) in N.
+
+On the synthetic probe (N Linears of 2048x2048 = 8 MiB/weight in one unit, LoRA
+rank 16 on top, no checkpointing):
+
+* `peak(int8, N=28) - peak(int8, N=4)` **<= 3 x weight_bytes (24 MiB)** beyond
+  the bf16 arm's own N-growth. This is the actual claim — that the dequant
+  temporary stops scaling with the number of layers.
+* `peak(int8, N=28) < peak(bf16, N=28)`. The quantized arm must stop being a
+  memory regression in this configuration; that is the trap being removed.
+
+#### M2. With gradient checkpointing, the win must be at least the scaling law.
+
+Same probe with `checkpoint(..., use_reentrant=False)`:
+
+* peak reduction versus the current path **>= (N - 3) x weight_bytes** at N=28
+  (**>= 200 MiB**), and
+* `peak(int8) < peak(bf16)` still holds.
+
+#### S1. Step-time ceiling — declared here, before measuring.
+
+On the same synthetic (which is 100% Linear and launch-bound, i.e. the worst
+case for an extra dequantize in backward):
+
+* **<= +12%** with gradient checkpointing,
+* **<= +30%** without.
+
+A prototype measured +9.0% / +24.6%; the ceilings sit above those with margin
+because the implementation being gated is not that prototype. **No real-step
+cost may be extrapolated from this synthetic** — a real step contains attention,
+norms, the LoRA adapter GEMMs and the optimizer step, which this probe does not.
+If a real number is wanted later it must be measured, and this file will not be
+edited to make one fit.
+
+### Derived, not measured: what M1/M2 imply at real shapes
+
+Labelled derived because no model was loaded; shapes come from safetensors
+headers, quantized-byte totals from the runtime rollup already recorded in
+`docs/guides/MODEL_FACTS.md`.
+
+| | codes resident | dequant transient today | after | bf16 base |
+|---|---|---|---|---|
+| Krea 2, no checkpointing | 11.94 GiB | +23.88 GiB (**35.81 total**) | +<=0.38 GiB (**12.31**) | 23.88 |
+| Krea 2, per-block checkpointing | 11.94 | +828 MiB / block | +<=384 MiB | 23.88 |
+| Anima, no checkpointing | 2.33 GiB | +3.14 GiB (**5.46 total**) | +<=0.06 GiB (**2.39**) | 3.90 |
+| Anima, per-block checkpointing | 2.33 | +120 MiB / DiT block | +<=64 MiB | 3.90 |
+
+Anima's per-block win is small in absolute terms (10 quantized Linears per DiT
+block, largest 32 MiB) and that is recorded now so it is not later presented as
+more than it is. The load-bearing row is the no-checkpointing one.
+
+### What is out of scope
+
+* Changing the `gradient_checkpointing` default. Not this gate's subject.
+* The W8A8 fast path in either module. G3 closed it for training; nothing here
+  reopens it.
+* Any accuracy claim about quantization itself. The forward is bitwise
+  unchanged, so there is nothing new to claim.
+
+### If a criterion fails
+
+The fix does not ship, and `gradient_checkpointing: false` over a quantized base
+gets a factual warning through the existing `add_warning` channel instead. If
+the fix ships and removes the trap, the warning is unnecessary and must not be
+added — a warning about a condition that no longer exists is noise.
+
+---
+
+### Result: G4 FAILED (S1). The autograd fix does not ship.
+
+The rule above is unedited from its pre-registered form; nothing below changes
+it. Five of the six criteria pass, one fails, and the rule is ALL-of.
+
+Host: RTX 6000 Ada (sm_89), torch 2.10.0+cu130, bf16, no model loaded, peak
+GPU allocation across every measurement below 0.5 GiB. Candidate implementation
+kept at `tmp/dequant_linear_g4_candidate.py`; probes at
+`tmp/dequant_{retention_probe,bitwise_verify,ab_repeat,overhead_attrib,cost_isolate,kernel_probe}.py`.
+
+#### B1 — forward bitwise identity: **PASS**
+
+576 forward comparisons on integer bit views (`.view(int16/int32)`, with NaN
+placement compared separately so a NaN payload cannot hide a difference), over
+{CPU, CUDA} x {int8 codes, e4m3 codes} x {bf16, fp16, fp32} x {bias, no bias} x
+6 hostile input families (normal, all-zero rows, denormals + smallest-normal,
+one huge outlier, NaN, +-Inf) x {grad enabled, `no_grad`}, with a zero scale and
+a `float32.tiny` scale in every weight. **0 differing bits.**
+
+#### B2 — backward correctness in the production dtype: **PASS**
+
+`grad_input` came out **bitwise equal** to the shipped path — max |delta|
+exactly 0.0 — in bf16, fp16 and fp32, on CPU and CUDA, for both code formats.
+Stronger than the tolerance the gate asked for, because backward rebuilds `w`
+from the identical expression the forward used and then runs the same `mm`.
+No `.grad` appears on `weight`, `weight_scale` or `bias`; and when one of them
+*does* require a gradient the dispatcher falls back to the eager path, which was
+verified to produce that gradient rather than drop it.
+
+#### M1 — no checkpointing, O(1) retention: **PASS**
+
+28 Linears of 2048x2048 (8 MiB/weight bf16), 512 tokens, LoRA rank 16, peak by
+`torch.cuda.max_memory_allocated`.
+
+| arm | weights | peak N=4 | peak N=28 | growth |
+|---|---|---|---|---|
+| bf16 base + LoRA | 224.0 MiB | 78.8 MiB | 322.2 MiB | 243.4 MiB |
+| int8, current | 112.2 | 86.8 | **426.4** | 339.6 |
+| int8, candidate | 112.2 | 62.8 | **210.4** | 147.6 |
+
+Excess growth over the bf16 arm: current **+96.2 MiB**, candidate **-95.8 MiB**
+(below bf16's own growth, since int8 residency grows at 1 B/element). Ceiling
++24.0 MiB. `peak(candidate) 210.4 < peak(bf16) 322.2`, where the current path is
+**426.4 > 322.2** — the trap, reproduced. **PASS.**
+
+#### M2 — with checkpointing: **PASS**
+
+Same probe under `checkpoint(..., use_reentrant=False)`.
+
+| arm | peak |
+|---|---|
+| bf16 base + LoRA | 308.2 MiB |
+| int8, current | 416.4 |
+| int8, candidate | 202.5 |
+
+Reduction **213.9 MiB** against a `(N-3) x 8 MiB = 200 MiB` floor; candidate
+below the bf16 arm. **PASS.**
+
+#### S1 — step time: **FAIL**
+
+Interleaved A/B (`tmp/dequant_ab_repeat.py`), 5 rounds per arm, alternating
+order, 1.5 s wall-time warmup and 40 timed steps per round.
+
+**GPU exclusivity could not be established** for these runs, and it shows: the
+`current` arm's per-round medians ranged 9.94-12.85 ms across four repeats of an
+identical measurement, and one repeat returned -1.9% for a configuration that
+returned +19.6% in another. The memory numbers above are unaffected (allocation
+accounting is process-local and reproduced to the byte across every run); the
+timing numbers are reported as a RANGE and the verdict is taken on the
+least-contaminated estimator available, the minimum sample per arm per round.
+
+| run | ckpt: current / candidate (median) | delta | ckpt: min / min | delta |
+|---|---|---|---|---|
+| A | 9.94 / 11.89 | +19.6% | 9.90 / 11.59 | **+17.1%** |
+| B | 12.85 / 14.46 | +12.5% | 10.47 / 12.43 | **+18.7%** |
+| C | 12.78 / 12.54 | -1.9% | 10.76 / 12.14 | **+12.8%** |
+| D | 11.01 / 12.55 | +14.1% | 10.40 / 12.53 | **+20.5%** |
+
+By minima, **every** repeat of the checkpointing configuration exceeds the +12%
+ceiling (+12.8% to +20.5%); two earlier non-interleaved orderings gave +14.7%
+and +14.8%. The no-checkpointing configuration measured +20.5%, +32.4%, +23.7%,
++25.4% by the same estimator — under its +30% ceiling in three of four.
+
+The verdict rests on the checkpointing arm, where no estimator on any run puts
+the candidate under the ceiling. **FAIL.** If the repo owner wants this decided
+on an exclusive GPU rather than on this evidence, the protocol to re-run is the
+minima column above; the pre-registered ceilings do not move either way.
+
+Attributed (`tmp/dequant_overhead_attrib.py`): the Python `autograd.Function`
+itself costs **-0.4%** with checkpointing (i.e. nothing) — the entire delta is
+the one extra dequantize in backward, **1.58 ms** for 28 layers. Note this does
+not reconcile with the isolated kernel probe below: 28 x 19.6 us is 0.55 ms, a
+2.9x gap that was NOT explained. Candidates not separated here are the fresh
+8 MiB allocation per call and a cold-cache backward `mm`. The gap matters
+because 0.55 ms against the 10.4 ms baseline would be +5.3% and would PASS; the
+wall-clock minima (+12.8% to +20.5%) are consistent with 1.58 ms and not with
+0.55 ms, which is why the FAIL stands, but a re-run should close this. Two
+implementation improvements were made before accepting the number, not after:
+the dequantize was reduced from two kernels to one promoted multiply
+(`codes * scale`, bitwise equal on every probed (device, code dtype, out dtype),
+measured 19.6 us versus 32.3 us per 2048x2048 weight), which moved the
+checkpointing delta from **+24.4%** to +14.7-19.6%. What was NOT done, and why:
+
+* **Factorising the gradient** as `(grad_out * scale) @ codes.to(dtype)` avoids
+  the (out, in) multiply entirely and measured ~40% cheaper, but it multiplies
+  the scale (~1e-5) into the GRADIENT instead of into the weight. In fp16 that
+  underflows: a 1e-4 gradient times a 1e-5 scale is 1e-9, below fp16's smallest
+  denormal. Rejected on the production-dtype rule, not on speed.
+* **Retaining `w` within a checkpoint unit** is exactly the retention M1/M2
+  measure the removal of.
+* **Inductor prologue fusion** would remove the 8 MiB round trip, but nothing in
+  this repo compiles these layers and doing so is a different change.
+
+#### The ruling
+
+Criterion S1 fails on the gradient-checkpointing configuration, which is the
+`gradient_checkpointing` default. The rule is ALL-of, so **G4 fails and the
+candidate does not ship**, exactly as G3 failed on one criterion of three.
+
+The temptation here has the same shape as G3's: every criterion passes in the
+configuration the defect actually bites (checkpointing OFF — M1 pass, S1 pass at
++20.2% against a +30% ceiling), and only the *other* configuration's step time
+fails. Scoping the intervention to "rebuild in backward only when the owner has
+disabled gradient checkpointing" would pass every number in this document. That
+is precisely the move G3's ruling refused: *"a resolution-floored (or otherwise
+admission-gated) variant of this idea is a new feature requiring a new
+pre-registered gate ... not this gate re-passing on a rerun with a moved
+goalpost."* The scoped variant is a different intervention, its numbers are
+already known here, and a rule written after seeing them is not pre-registered.
+It is therefore **not** taken in this pass.
+
+#### What shipped instead — the pre-registered failure branch
+
+`adapters/base_adapter.warn_quantized_base_without_checkpointing`, called once
+from `base_trainer.train()` where both facts are known, prints a factual line to
+the training log (the channel a training run reaches the user through) and
+offers the same text to `api.generation_status.add_warning` best-effort, the way
+`int8_linear._report_int_mm_fallback` does. It states the layer count, the
+measured bytes-per-element on both sides, the measured 426.4 / 322.2 MiB
+synthetic peaks and the derived 35.81 / 23.88 GiB Krea 2 figures. No adjectives,
+no unmeasured claim.
+
+`backend/tests/quantized_base_checkpointing_warning_test.py` pins the warning's
+trigger condition on both quantized classes AND the retention fact it asserts
+(via `saved_tensors_hooks`: a quantized Linear saves one fresh compute-dtype
+weight per forward and N of them for N layers in a live unit; an unquantized
+frozen Linear saves an alias of its own parameter). If the retention ever stops
+happening — a future gate landing the candidate, or a torch change — that test
+fails and sends whoever changed it here to delete the warning.
+
+#### Block swap, re-checked against `8244c509`
+
+The candidate saves the CODE buffers for backward, so a swap that overwrote a
+block's weight storage in place between forward and backward would corrupt its
+gradients. Checked, not assumed: training swaps through
+`memory_management/layer_offload_conductor.py`, which iterates
+`named_parameters()` (the quantized weight/scale are BUFFERS, so it never
+touches them) and moves a layer with `layer.to(...)`, which REPLACES a buffer
+rather than writing into it — a saved reference therefore stays valid and simply
+keeps that block's codes resident at 1 B/element until backward, where today's
+saved `w` already keeps 2 B/element resident in the same situation. The
+dtype-aware pairing fix in `8244c509` is confined to the two INFERENCE
+offloaders (`block_offloading.py`, `flux_block_offloading.py`), where no
+gradient exists and nothing is saved, so it neither helps nor threatens this.
+
+#### Not measured, and deliberately so
+
+* **No real Anima or Krea 2 step.** Real-machine verification was deferred for
+  this pass; every number here is synthetic or header-derived and labelled.
+  The real-step cost of the candidate is therefore **unknown**, and the S1
+  percentages must not be read as real-step percentages — a real step contains
+  attention, norms, adapter GEMMs and the optimizer step that this probe does
+  not. The synthetic is the worst case for the candidate, so a real step would
+  cost relatively less; how much less is not derivable from anything here.
+* **The e4m3 arm's memory was not measured**, only its bitwise/gradient
+  behaviour. The retention asymmetry is identical by construction (1-byte codes,
+  compute-dtype `w`) and the regression test pins it on `Fp8Linear` too, but no
+  peak-memory number is claimed for it.
+* **The promoted-multiply dequantize did not ship either.** It is bitwise equal
+  and measured 1.6x cheaper, but it arrived inside the candidate and has no gate
+  of its own; landing it separately is a small, self-contained follow-up.

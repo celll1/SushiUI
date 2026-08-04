@@ -629,7 +629,19 @@ class Fp8Linear(nn.Module):
         return self._dequant_forward(x)
 
     def _dequant_forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Dequantize the weight to the compute dtype and run a normal matmul."""
+        """Dequantize the weight to the compute dtype and run a normal matmul.
+
+        The explicit cast is REQUIRED here and must not be folded into the
+        multiply the way ``Int8Linear._dequant_forward`` folds it. Integer codes
+        promote against a float scale, so int8 gets the widening for free inside
+        one kernel; ``float8_e4m3fn`` has no promoting multiply at all -- torch
+        raises "Promotion for Float8 Types is not supported, attempted to
+        promote Float8_e4m3fn and BFloat16/Half/Float" on CPU and CUDA alike, in
+        all three compute dtypes (measured, torch 2.10). Dropping the ``.to()``
+        here therefore does not make this faster, it makes it raise on the first
+        forward. ``backend/tests/quantized_dequant_bitwise_test.py`` pins both
+        halves of that asymmetry.
+        """
         w = self.weight.to(x.dtype) * self.weight_scale.to(x.dtype).unsqueeze(1)
         bias = self.bias.to(x.dtype) if self.bias is not None else None
         return F.linear(x, w, bias)

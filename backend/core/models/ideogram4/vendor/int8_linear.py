@@ -660,8 +660,38 @@ class Int8Linear(nn.Module):
         return self._dequant_forward(x)
 
     def _dequant_forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Dequantize the weight to the compute dtype and run a normal matmul."""
-        w = self.weight.to(x.dtype) * self.weight_scale.to(x.dtype).unsqueeze(1)
+        """Dequantize the weight to the compute dtype and run a normal matmul.
+
+        ``self.weight * s`` is the PROMOTED spelling of
+        ``self.weight.to(x.dtype) * s``: an integer tensor times a float tensor
+        promotes to the float dtype, so torch does the widening inside the
+        multiply and writes one ``(out, in)`` buffer instead of two.
+
+        It is bitwise identical, not merely close, and the reason is exact
+        representability rather than luck: every int8 code in [-128, 127] is
+        exactly representable in bf16 (8 mantissa bits), fp16 (11) and fp32
+        (24), so the widening rounds nothing in either spelling and the single
+        remaining rounding is the multiply's. Pinned by
+        ``backend/tests/quantized_dequant_bitwise_test.py``, which compares the
+        two spellings on INTEGER BIT VIEWS over both devices, all three compute
+        dtypes and hostile code/scale/activation values; any future rewrite of
+        this line that is not bitwise equal fails that test.
+
+        ``Fp8Linear._dequant_forward`` deliberately keeps the two-step form:
+        ``float8_e4m3fn`` has no promoting multiply at all (torch raises
+        "Promotion for Float8 Types is not supported" on CPU and CUDA alike).
+
+        The dtype test is not decoration. Promotion only reproduces the explicit
+        cast for an INTEGRAL weight; a float weight of a different dtype would
+        promote UPWARD (fp32 codes against a bf16 scale give a fp32 ``w``, which
+        ``F.linear`` would then reject) where the explicit cast narrows to
+        ``x.dtype``. ``_int_mm_forward`` already declines on the same condition,
+        so this keeps the two paths agreeing about what the buffer holds.
+        """
+        codes = self.weight
+        if codes.dtype is not INT8_WEIGHT_DTYPE:
+            codes = codes.to(x.dtype)
+        w = codes * self.weight_scale.to(x.dtype).unsqueeze(1)
         bias = self.bias.to(x.dtype) if self.bias is not None else None
         return F.linear(x, w, bias)
 

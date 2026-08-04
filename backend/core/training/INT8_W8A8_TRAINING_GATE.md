@@ -574,6 +574,24 @@ gradient exists and nothing is saved, so it neither helps nor threatens this.
   behaviour. The retention asymmetry is identical by construction (1-byte codes,
   compute-dtype `w`) and the regression test pins it on `Fp8Linear` too, but no
   peak-memory number is claimed for it.
-* **The promoted-multiply dequantize did not ship either.** It is bitwise equal
-  and measured 1.6x cheaper, but it arrived inside the candidate and has no gate
-  of its own; landing it separately is a small, self-contained follow-up.
+* **The promoted-multiply dequantize did not ship with the candidate.** It is
+  bitwise equal and measured 1.6x cheaper, but it arrived inside the candidate
+  and has no gate of its own; landing it separately is a small, self-contained
+  follow-up.
+
+  **Follow-up landed (int8 only).** `Int8Linear._dequant_forward` now spells the
+  definition as `codes * scale[:, None]`, letting integer/float promotion do the
+  widening in one kernel. It needed a *test*, not a gate: bitwise identity is
+  not a trade-off to be adjudicated, and it holds for a reason rather than by
+  luck — every int8 code is exactly representable in bf16/fp16/fp32, so the
+  widening rounds nothing in either spelling. Re-derived independently before
+  shipping: 336 comparisons on integer bit views over {CPU, CUDA} x {bf16, fp16,
+  fp32} x {bias, no bias} x hostile codes/scales/activations, **0 differing
+  bits**, and `backend/tests/quantized_dequant_bitwise_test.py` pins it (it was
+  mutation-checked against two plausible non-equal rewrites and failed on both).
+  Re-measured interleaved A/B minima on sm_89, torch 2.10: the dequantize alone
+  1.20-1.99x (20.4 -> 15.1 us at 2048x2048 bf16), the whole `_dequant_forward`
+  1.22-1.23x at 1-64 tokens and 1.00-1.03x once the GEMM dominates at 4096
+  tokens — free, never negative. **`Fp8Linear` deliberately did not take it:**
+  `float8_e4m3fn` has no promoting multiply at all (RuntimeError on CPU and CUDA,
+  all three compute dtypes), so folding its cast would raise, not accelerate.

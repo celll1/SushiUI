@@ -298,10 +298,23 @@ def refuse_quantized_state_dict(
     """Raise ``RuntimeError`` when ``state_dict`` is weight-only quantized.
 
     Call it immediately before a ``strict=False`` load on an architecture that
-    has no quantized-Linear swap. Silent on every ordinary checkpoint, so it is
-    safe to call unconditionally.
+    has no quantized-Linear swap at all (Lens, MiniT2I -- neither is in
+    ``int8_runtime_quantize.QUANTIZED_LINEAR_ARCHS`` and neither loader has a
+    swap to verify). Silent on every ordinary checkpoint, so it is safe to
+    call unconditionally.
+
+    Runs the census through ``scaled_quantization_report`` before deciding
+    whether to raise, same as every swap-capable loader does: a checkpoint
+    whose float8 ``.weight`` tensors carry no ``.weight_scale`` sibling at all
+    is a plain dtype cast (the ComfyUI "fp8" distribution shape), and the
+    ``strict=False`` load these callers already do reads it correctly by
+    casting back -- refusing it would misdiagnose a legitimate file as one
+    whose scales were stripped. What remains refused here is exactly what
+    these loaders genuinely cannot read: a file with positive evidence of
+    SCALED quantization (a ``.weight_scale`` key), or scale-less int8/uint8
+    weights (codes with no meaning as numbers, unlike a float8 cast).
     """
-    report = quantized_state_dict_report(state_dict)
+    report = scaled_quantization_report(quantized_state_dict_report(state_dict), arch=arch, path=path, label=label)
     if report is None:
         return
     try:

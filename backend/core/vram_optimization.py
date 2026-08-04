@@ -1147,7 +1147,7 @@ def _merge_runtime_int8_documents(documents):
 
 def apply_runtime_int8_quantization(manager, model, arch: str, quantization,
                                     label: str = "Transformer",
-                                    progress_callback=None):
+                                    progress_callback=None, precheck=None):
     """Convert ``model`` to the mixed int8/e4m3 layout in place, once.
 
     The single-component spelling of ``apply_runtime_int8_quantization_multi``
@@ -1157,12 +1157,12 @@ def apply_runtime_int8_quantization(manager, model, arch: str, quantization,
     """
     models, converted = apply_runtime_int8_quantization_multi(
         manager, [("transformer", label, model)], arch, quantization,
-        progress_callback=progress_callback)
+        progress_callback=progress_callback, precheck=precheck)
     return (models[0] if models else model), converted
 
 
 def apply_runtime_int8_quantization_multi(manager, components, arch: str, quantization,
-                                          progress_callback=None):
+                                          progress_callback=None, precheck=None):
     """Convert EVERY module in ``components`` to the mixed int8/e4m3 layout, as one unit.
 
     ``components`` is a sequence of ``(component name, label, module)``; a
@@ -1220,6 +1220,21 @@ def apply_runtime_int8_quantization_multi(manager, components, arch: str, quanti
     A completed conversion sets ``manager._runtime_int8_converted = True``, which
     ``keep_hot.compute_model_key`` reads so the resident-component key does not
     flip between generations, and which ``pipeline._load_model_locked`` clears.
+
+    ``precheck`` -- CALLER-OWNED INVARIANTS THAT ONLY APPLY TO A REAL CONVERSION.
+    An optional zero-argument callable invoked exactly ONCE, after every refusal
+    above has been evaluated and immediately before the first layer of the first
+    component is touched; it may raise to abort. It exists because "is this
+    request going to convert anything?" is decided HERE, by a dozen conditions
+    (already converted, already weight-only quantized, float8 weights, LoRA
+    wrappers, arch not wired, ...), and a caller that guards its own invariant
+    before calling cannot know the answer. LTX-2.3 is the case that forced it:
+    its block offloader is PERSISTENT state on the pipeline wrapper (it survives
+    a generation, unlike FLUX.2's ``_flux2_active_block_offloader``, which is
+    cleared in a ``finally``), so a guard raised before this function was
+    consulted fired on the *second* block-swap generation of a session even when
+    no quantization was requested at all. Passing the guard in means it can only
+    fire for the violation it describes.
 
     A model that was ALREADY quantized in its checkpoint sets a SEPARATE latch,
     ``manager._runtime_int8_from_checkpoint``. Keep-hot keys the two identically
@@ -1354,6 +1369,15 @@ def apply_runtime_int8_quantization_multi(manager, components, arch: str, quanti
         done = int(getattr(manager, "_runtime_int8_partial_done", 0) or 0)
         print(f"[RuntimeInt8] resuming a partial {label} conversion "
               f"({done} layer(s) already converted)")
+
+    # Every refusal has been evaluated; from here a conversion really happens.
+    # This is the only point at which a caller-owned "must not convert now"
+    # invariant can be checked without firing on requests that convert nothing
+    # (see the ``precheck`` paragraph in the docstring). Deliberately NOT wrapped
+    # in try/except: it raises to abort, and swallowing it would restore exactly
+    # the silent-corruption case it exists to prevent.
+    if precheck is not None:
+        precheck()
 
     work_device = torch.device("cuda:0") if torch.cuda.is_available() else None
     multi = len(resolved) > 1

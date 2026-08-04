@@ -434,6 +434,70 @@ def _ideogram4_config(source: str) -> dict:
         f"path that has one")
 
 
+def _ltx2_build_meta(config: dict) -> nn.Module:
+    from accelerate import init_empty_weights
+
+    from diffusers import LTX2VideoTransformer3DModel
+
+    with init_empty_weights():
+        return LTX2VideoTransformer3DModel.from_config(config)
+
+
+def _ltx2_config(source: str) -> dict:
+    """Read the LTX-2.3 DiT config from the transformer COMPONENT directory.
+
+    Like Ideogram 4 and unlike FLUX.2, the geometry is always the checkpoint's
+    own ``config.json``: LTX-2.3 ships as a diffusers pipeline directory and
+    ``LTX2Pipeline.from_pretrained`` reads exactly that file, so nothing here may
+    fall back to a compiled-in default -- a wrong ``num_layers`` would enumerate
+    1660 module paths that match no weight and the run would die on "no Linear
+    weight matched".
+
+    ``--source`` may be the pipeline ROOT, the ``transformer/`` component
+    directory, or a file inside it; all three resolve to the same config.
+    """
+    base = source if os.path.isdir(source) else os.path.dirname(source)
+    for cand in (os.path.join(base, "config.json"),
+                 os.path.join(base, "transformer", "config.json")):
+        if os.path.isfile(cand):
+            with open(cand, encoding="utf-8") as fh:
+                config = json.load(fh)
+            print(f"[fp8] LTX-2.3 transformer config from {cand}")
+            return config
+    raise FileNotFoundError(
+        f"no LTX-2.3 transformer config.json under {base}; the DiT geometry is read from "
+        f"the checkpoint's own config (there is no pinned default), so pass --config or "
+        f"point --source at the pipeline root / its transformer subdirectory")
+
+
+def _ltx2_sources(source: str) -> List[Dict[str, object]]:
+    """The single component pass for an LTX-2.3 source: the ``transformer`` dir.
+
+    Exists only to REDIRECT a pipeline-root ``--source`` onto its ``transformer``
+    subdirectory. Pointing the tool at the root and letting ``_source_shards``
+    pick whatever safetensors it finds there would be wrong in a way that is easy
+    to miss: the root's largest neighbour is ``text_encoder/``, a Gemma-3 with a
+    48-layer ``language_model.*``, and a census over "every 2-D tensor in the
+    LTX-2.3 directory" is exactly how the 34.34 G figure (versus the DiT's 18.98 G)
+    arises. One component, always -- the text encoder, the connectors, both VAEs
+    and the vocoder are not quantized by this tool on any arch.
+    """
+    root_transformer = os.path.join(source, "transformer") if os.path.isdir(source) else None
+    if root_transformer and os.path.isfile(os.path.join(root_transformer, "config.json")):
+        print(f"[fp8] LTX-2.3 pipeline root; quantizing the transformer component only "
+              f"({root_transformer}); text_encoder / connectors / vae / audio_vae / "
+              f"vocoder are copied by nothing here and stay where they are")
+        source = root_transformer
+    return [{
+        "component": None,
+        "out_prefix": "",
+        "source_prefix": "",
+        "require_source_prefix": False,
+        "source": source,
+        "config_source": source,
+    }]
+
+
 def _ideogram4_sources(source: str) -> List[Dict[str, object]]:
     """The per-component passes for an Ideogram 4 source. TWO of them, always.
 
@@ -560,6 +624,15 @@ ARCHS = {
     "ideogram4": _from_layout("ideogram4", config=_ideogram4_config,
                               build_meta=_ideogram4_build_meta,
                               sources=_ideogram4_sources),
+    # LTX-2.3's checkpoint keys ARE module paths (verified: 4186 keys in the
+    # distilled 8-shard transformer index, 4186 in an init_empty_weights build of
+    # LTX2VideoTransformer3DModel from the same config.json, zero difference in
+    # either direction), so it needs no ``source_transform``. Its ``sources``
+    # resolver exists for a different reason than Ideogram 4's: not to find a
+    # second module, but to make sure a pipeline-root ``--source`` reads the
+    # ``transformer`` component and not the bundled Gemma-3 text encoder.
+    "ltx2": _from_layout("ltx2", config=_ltx2_config, build_meta=_ltx2_build_meta,
+                         sources=_ltx2_sources),
 }
 
 

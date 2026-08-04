@@ -25,7 +25,10 @@ import torch
 import torch.nn as nn
 from safetensors.torch import save_file
 
-from .base_adapter import BaseLoRAAdapter, BaseFullParameterAdapter, reject_quantized_base
+from .base_adapter import (
+    BaseLoRAAdapter, BaseFullParameterAdapter, is_lora_wrappable_linear,
+    reject_quantized_base,
+)
 from .sd15_adapter import LoRALinearLayer
 
 
@@ -54,6 +57,21 @@ def iter_ltx2_lora_targets(
     Walks ``transformer.transformer_blocks``. By default only the video
     self/cross attention (``attn1`` / ``attn2``) Linears are targeted; audio /
     cross-modality / feed-forward are gated by ``scope``.
+
+    NOT ``isinstance(x, nn.Linear)``: over a weight-only quantized LTX-2.3 base
+    (an offline int8 artifact, or a transformer converted in place by
+    ``unet_quantization="int8"``) the very layers a LoRA targets are
+    ``Int8Linear`` / ``Fp8Linear``, which are ``nn.Module`` but NOT ``nn.Linear``
+    subclasses. The naive test skips every one of them SILENTLY -- the run
+    "succeeds" with a smaller injected count that looks like a narrower scope.
+    Measured at 75% of targets dropped on Anima and at 8 sites on FLUX.2 before
+    the same fix. ``is_lora_wrappable_linear`` accepts all three; the
+    ``LoRALinearLayer`` arm stays separate because an already-wrapped module must
+    be yielded (for idempotent re-application) but must not be wrapped twice.
+
+    The adapter dtype is NOT taken from the base: ``LoRALinearLayer`` builds its
+    two branches at ``self.lora_dtype`` (fp32 by default), so a quantized base
+    cannot pull the adapter down to int8 or e4m3.
     """
     blocks = getattr(transformer, "transformer_blocks", None)
     if blocks is None:
@@ -83,7 +101,7 @@ def iter_ltx2_lora_targets(
                     if idx >= len(holder):
                         continue
                     current = holder[idx]
-                    if not isinstance(current, nn.Linear) and not isinstance(current, LoRALinearLayer):
+                    if not is_lora_wrappable_linear(current) and not isinstance(current, LoRALinearLayer):
                         continue
                     path = f"transformer_blocks.{i}.{attn_name}.{holder_name}.{idx}"
                     yield path, holder, idx, current
@@ -91,7 +109,7 @@ def iter_ltx2_lora_targets(
                     current = getattr(attn, leaf, None)
                     if current is None:
                         continue
-                    if not isinstance(current, nn.Linear) and not isinstance(current, LoRALinearLayer):
+                    if not is_lora_wrappable_linear(current) and not isinstance(current, LoRALinearLayer):
                         continue
                     path = f"transformer_blocks.{i}.{attn_name}.{leaf}"
                     yield path, attn, leaf, current
@@ -101,7 +119,7 @@ def iter_ltx2_lora_targets(
             ff = getattr(block, "ff", None)
             if ff is not None:
                 for sub_name, sub in ff.named_modules():
-                    if isinstance(sub, nn.Linear):
+                    if is_lora_wrappable_linear(sub):
                         # Resolve the parent + attr for in-place replacement.
                         parent = ff
                         attr: Any = sub_name

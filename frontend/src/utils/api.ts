@@ -575,6 +575,10 @@ export interface OutpaintVideoParams {
   // Component overrides (same plumbing as image/video gen; empty/null = model default)
   vae_path?: string | null;
   text_encoder_path?: string | null;
+  // Transformer quantization (see Txt2VidParams.unet_quantization).
+  unet_quantization?: string | null;
+  // Quantized-GEMM path (see Txt2VidParams.quantized_gemm_mode).
+  quantized_gemm_mode?: QuantizedGemmMode;
 }
 
 export interface UpscaleParams {
@@ -718,6 +722,16 @@ export interface Txt2VidParams {
   // Component overrides (same plumbing as image gen; empty/null = model default)
   vae_path?: string | null;
   text_encoder_path?: string | null;
+  // Transformer quantization. Only "int8" is applied on LTX-2.3 (one-time
+  // in-place conversion of the video DiT -- NOT the Gemma-3 text encoder);
+  // the FP8 values warn and are ignored there.
+  unet_quantization?: string | null;
+  // Per-generation GEMM path for ALREADY-quantized Linear weights (null =
+  // leave the process flags alone). ltx2 is in quantized_linear_archs, so this
+  // selects a real path on LTX-2.3 -- its loader swaps in Int8Linear/Fp8Linear
+  // for a weight-only quantized transformer component, and unet_quantization
+  // "int8" produces the same classes at runtime.
+  quantized_gemm_mode?: QuantizedGemmMode;
 }
 
 export interface Img2VidParams extends Txt2VidParams {
@@ -1601,6 +1615,15 @@ export const generateTxt2Vid = async (params: Txt2VidParams) => {
     audio_enable: params.audio_enable ?? true,
     vae_path: params.vae_path ?? null,
     text_encoder_path: params.text_encoder_path ?? null,
+    // `=== "none" -> null` mirrors img2vid, video outpaint and all four image
+    // senders: "none" is the UI's spelling of "no quantization", and a "none"
+    // persisted in localStorage by an older build would otherwise be sent as a
+    // value and come back as an `unsupported_param` warning on every txt2vid.
+    unet_quantization:
+      params.unet_quantization && params.unet_quantization !== "none"
+        ? params.unet_quantization
+        : null,
+    quantized_gemm_mode: params.quantized_gemm_mode ?? null,
   };
 
   const response = await api.post("/generate/txt2vid", body);
@@ -1638,6 +1661,14 @@ export const generateImg2Vid = async (params: Img2VidParams, image: File | strin
   }
   if (params.text_encoder_path) {
     formData.append("text_encoder_path", params.text_encoder_path);
+  }
+  // `&& !== "none"` mirrors the image senders: "none" is the UI's spelling of
+  // "no quantization" and must not be sent as a value.
+  if (params.unet_quantization && params.unet_quantization !== "none") {
+    formData.append("unet_quantization", params.unet_quantization);
+  }
+  if (params.quantized_gemm_mode) {
+    formData.append("quantized_gemm_mode", params.quantized_gemm_mode);
   }
 
   const response = await api.post("/generate/img2vid", formData, {
@@ -2205,6 +2236,14 @@ export const generateOutpaintVideo = async (params: OutpaintVideoParams, video: 
   }
   if (params.text_encoder_path) {
     formData.append("text_encoder_path", params.text_encoder_path);
+  }
+  // `&& !== "none"` mirrors the image senders: "none" is the UI's spelling of
+  // "no quantization" and must not be sent as a value.
+  if (params.unet_quantization && params.unet_quantization !== "none") {
+    formData.append("unet_quantization", params.unet_quantization);
+  }
+  if (params.quantized_gemm_mode) {
+    formData.append("quantized_gemm_mode", params.quantized_gemm_mode);
   }
 
   formData.append("video_lossless", String(params.video_lossless ?? false));

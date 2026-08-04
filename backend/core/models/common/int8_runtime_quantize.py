@@ -176,6 +176,31 @@ ARCH_QUANT_POLICY: Dict[str, Dict[str, object]] = {
             "local checkpoint is the FP8 one, which cannot be an int8 baseline."
         ),
     },
+    "ltx2": {
+        "skip_below_work_gate": True,
+        "excludes": (),
+        "note": (
+            "LTX-2.3's DiT is the largest module in this repo: 1660 nn.Linear modules "
+            "holding 18.9777 G 2-D parameters, enumerated from LTX2VideoTransformer3DModel "
+            "on the meta device (NOT from 'every 2-D tensor in the checkpoint directory', "
+            "which totals 34.3396 G and counts the Gemma-3 text encoder's 12.1855 G and the "
+            "text connectors' 3.1717 G alongside it -- see the census note in "
+            "EXPORT_LAYOUTS['ltx2']). Every shape is 8-aligned, so nothing is lost to the "
+            "GEMM-alignment filter. 300 of the 1660 sit below the runtime min-work gate "
+            "(k>=2048, n>=1024); 288 of those are the per-attention 'to_gate_logits' "
+            "projections, whose out_features is 32, so the gate can never admit them AT ANY "
+            "m and they would always run Int8Linear._dequant_forward -- slower than the "
+            "F.linear an unquantized checkpoint runs. Unlike Ideogram 4 (3.52% of "
+            "parameters) and Anima (~9% of the saving), the filter here costs almost "
+            "nothing: those 300 layers hold 0.0362 G, i.e. 0.19% of the DiT's Linear "
+            "parameters, so filtering them removes 300 per-step dequant calls for 0.19% of "
+            "an 18.94 G saving. NOTE THE PROVENANCE, same caveat Ideogram 4's entry "
+            "records: this is LTX-2.3's own SHAPE census plus Anima's MEASUREMENT applied "
+            "to a matching shape class (Linears the gate cannot admit at any m). It is NOT "
+            "a timing run on LTX-2.3 -- the only local checkpoint is 37 GB of bf16 and a "
+            "timing arm would need an int8 one built first."
+        ),
+    },
     "anima": {
         "skip_below_work_gate": True,
         "excludes": (),
@@ -201,7 +226,7 @@ ARCH_QUANT_POLICY: Dict[str, Dict[str, object]] = {
 #   * frontend/src/utils/api.ts          -- reads that field instead of its own
 #     hardcoded list.
 # Adding an arch here is therefore the whole rollout switch on the UI side.
-RUNTIME_INT8_ARCHS = ("anima", "krea2", "flux2", "ideogram4")
+RUNTIME_INT8_ARCHS = ("anima", "krea2", "flux2", "ideogram4", "ltx2")
 
 # Architectures whose LOADERS swap in the weight-only quantized Linear classes
 # (``Fp8Linear`` / ``Int8Linear``), i.e. the archs where a quantized-GEMM path

@@ -129,6 +129,25 @@ def load_components(trainer) -> None:
     trainer.unet = None
     trainer.noise_scheduler = trainer.scheduler
 
+    # A training process is DEQUANT-ONLY (see ideogram4_ops.load_components for the
+    # full reasoning). LTX-2.3 joined RUNTIME_INT8_ARCHS and its loader now swaps
+    # Int8Linear / Fp8Linear in for a weight-only quantized transformer component,
+    # so a LoRA run over a quantized LTX-2.3 base is reachable and must be fitted
+    # against exactly the base function everyone else runs -- not against the W8A8
+    # fast paths, which are enabled by process-wide env flags that
+    # training_process.py copies from the backend (os.environ.copy()) and which
+    # grad mode cannot be used as a proxy for. Two module types, two separate
+    # per-instance opt-outs: disabling one does not disable the other. No-op on a
+    # bf16 base.
+    from core.models.ideogram4.vendor.fp8_linear import disable_scaled_mm
+    from core.models.ideogram4.vendor.int8_linear import disable_int8_mm
+    for _label, _module in (("transformer", trainer.transformer),
+                            ("text_encoder", trainer.text_encoder),
+                            ("connectors", trainer.connectors)):
+        if _module is not None:
+            disable_scaled_mm(_module, label=f"ltx2 training {_label}")
+            disable_int8_mm(_module, label=f"ltx2 training {_label}")
+
     # Audio-conditioning constants (UNVERIFIED item #2 handled defensively).
     trainer.ltx2_audio_in_channels = int(
         getattr(getattr(trainer.transformer, "config", None), "audio_in_channels",

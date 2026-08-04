@@ -1324,6 +1324,12 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
         spectrum_max_cache: params.spectrum_max_cache,
         vae_path: params.vae_path,
         text_encoder_path: params.text_encoder_path,
+        // Only "int8" is applied on LTX-2.3 (one-time in-place conversion of the
+        // video DiT); other values warn and are ignored server-side.
+        unet_quantization: params.unet_quantization,
+        // ltx2 is in quantized_linear_archs, so the QuantizedGemmSelect control
+        // is rendered for a loaded LTX-2.3 model and must actually be sent.
+        quantized_gemm_mode: params.quantized_gemm_mode,
       };
       addToQueue({
         type: "outpaint_vid",

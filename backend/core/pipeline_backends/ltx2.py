@@ -113,6 +113,139 @@ def _trim_conditioning_sequence_frames(
 class LTX2Mixin:
     """LTX2Mixin: LTX-2.3 text-to-video generation backend."""
 
+    def _ltx2_runtime_int8(self, params: Dict[str, Any], progress_callback=None,
+                           force_wrap: bool = False):
+        """Apply the one-time in-place INT8 conversion, if this request asks for it.
+
+        No-op for every ``unet_quantization`` value other than ``"int8"``, for an
+        already-converted transformer, and for a checkpoint that already carries
+        weight-only quantized Linears (see
+        ``vram_optimization.apply_runtime_int8_quantization`` for the full
+        contract). The conversion replaces child modules in place and never
+        builds a second module -- an 18.98 G-parameter DiT would not tolerate the
+        ``copy.deepcopy`` the legacy FP8 path uses.
+
+        SCOPE. Only ``LTX2VideoTransformer3DModel`` is converted. The Gemma-3
+        text encoder and the text connectors are separate components and are not
+        reached by this walk; ``arch_capabilities`` declares
+        ``text_encoder_quantization`` unsupported for ltx2 and nothing here
+        changes that.
+
+        ORDERING, load-bearing rather than incidental, and the reason this is
+        called at the TOP of every generate path:
+
+        * BEFORE ``_ensure_ltx2_swap_and_offload``. In block-swap mode that
+          builds a ``TransformerBlockOffloader`` over
+          ``transformer.transformer_blocks``, which captures each block's Linear
+          modules and pinned CPU masters; converting afterwards would replace the
+          modules it holds and leave it streaming pre-conversion bf16 weights
+          into modules nothing reads. Checked and raised as a ``RuntimeError``,
+          not asserted -- ``python -O`` strips an assert, and this is the one
+          violation that is invisible at runtime.
+
+          The check is handed to the converter as its ``precheck`` rather than
+          run here, and that placement is the whole point. LTX-2.3's offloader is
+          PERSISTENT state on ``Ltx2BlockLoopWrapper``: it is created once
+          (``_ensure_ltx2_block_swap_wrapper``) and torn down only by that same
+          function on the NEXT generation, i.e. strictly after this runs. FLUX.2's
+          look-alike guard is safe where this one is not, because
+          ``_flux2_active_block_offloader`` is cleared in a ``finally`` at the end
+          of every generation. Raised before the request was consulted, this guard
+          fired on the second block-swap generation of a session with
+          ``unet_quantization`` unset -- block swap being the standard mode for a
+          37 GB model, that broke the primary workflow for users who never enable
+          INT8 at all. Inside ``precheck`` it can only fire when a conversion is
+          genuinely about to touch the first layer.
+
+          The refusal's ADVICE is made true rather than merely printed. A
+          session that generated once with ``blocks_to_swap=22`` leaves the
+          offloader live, so an INT8 request made afterwards WITH
+          ``blocks_to_swap=0`` -- exactly what the message tells the user to do
+          -- would have hit the refusal, microseconds before
+          ``_ensure_ltx2_swap_and_offload(0)`` tore that same wrapper down. When
+          the incoming request asks for no block swap (and no ``force_wrap``,
+          i.e. no FBCache/Spectrum/style wrap needs the block loop) the unwrap is
+          simply performed FIRST, here, which is the same call the generate path
+          makes a few lines later and in the same order (unwrap, then offload).
+          The refusal then fires only where it is unavoidable: an INT8 request
+          that also asks for block swap in the same generation, where the two
+          orderings genuinely conflict.
+        * BEFORE staging. The converter is device-aware, so running here (with
+          the components still on CPU, or wherever the previous generation left
+          them) is correct either way; running it after the accelerate
+          ``enable_model_cpu_offload`` chain has staged the transformer would
+          quantize a GPU-resident module for no reason.
+        * The wrapper is unwrapped for the walk. A FBCache-/Spectrum-/style-only
+          wrapper (``block_offloader=None``) reads ``self.transformer`` and its
+          ``transformer_blocks`` at call time and caches no Linear references, so
+          converting the inner module underneath it is safe; a wrapper with a
+          live offloader is not, and is refused above.
+        """
+        from core.vram_optimization import apply_runtime_int8_quantization
+
+        components = getattr(self, "ltx2_components", None)
+        if not components:
+            return
+        current = components.get("transformer")
+        if current is None:
+            return
+
+        from core.models.ltx2_block_loop_wrapper import Ltx2BlockLoopWrapper
+        from core.vram_optimization import runtime_int8_requested
+
+        blocks_to_swap = int(params.get("blocks_to_swap", 0) or 0)
+        if (runtime_int8_requested(params.get("unet_quantization"))
+                and blocks_to_swap <= 0 and not force_wrap
+                and isinstance(current, Ltx2BlockLoopWrapper)
+                and current._block_offloader is not None):
+            # This request wants no block swap, so the LEFTOVER offloader from an
+            # earlier generation is about to be torn down anyway (by
+            # _ensure_ltx2_swap_and_offload, below). Do it first so the conversion
+            # is legal instead of refused -- see ORDERING above.
+            print("[LTX-2.3] INT8 requested with blocks_to_swap=0: tearing down the "
+                  "block offloader left by an earlier generation before converting")
+            self._ensure_ltx2_block_swap_wrapper(0)
+            current = components.get("transformer")
+            if current is None:
+                return
+
+        wrapper = current if isinstance(current, Ltx2BlockLoopWrapper) else None
+        inner = wrapper.transformer if wrapper is not None else current
+
+        def _refuse_if_offloader_live():
+            if wrapper is None or getattr(wrapper, "_block_offloader", None) is None:
+                return
+            raise RuntimeError(
+                "LTX-2.3 INT8 conversion was reached while a block offloader is still "
+                "active. It must run BEFORE the offloader is created: the offloader holds "
+                "references to each transformer block's Linear modules, and the conversion "
+                "replaces those modules, so afterwards it would stream the original bf16 "
+                "weights into modules nothing reads. Request INT8 in a generation that "
+                "does not itself enable block swap (blocks_to_swap=0) -- a stale "
+                "offloader left by an EARLIER generation is torn down automatically in "
+                "that case -- or on a freshly loaded model.")
+
+        model, _converted = apply_runtime_int8_quantization(
+            self, inner, "ltx2", params.get("unet_quantization"),
+            label="LTX-2.3 Transformer", progress_callback=progress_callback,
+            precheck=_refuse_if_offloader_live)
+
+        # The converter mutates in place and returns the SAME object, so the
+        # component/pipeline references stay valid; re-assigned anyway so a future
+        # converter that returned a new module could not silently strand them.
+        if wrapper is not None:
+            wrapper.transformer = model
+        else:
+            components["transformer"] = model
+            # The base pipeline and the two cached derived pipelines share every
+            # module rather than owning weights, so all three must point at the
+            # converted object (same rule _ensure_ltx2_block_swap_wrapper follows
+            # when it wraps/unwraps).
+            for key in ("pipeline", "i2v_pipeline", "cond_pipeline"):
+                pipe = components.get(key)
+                if pipe is not None and getattr(pipe, "transformer", None) is current:
+                    pipe.transformer = model
+
     def _ltx2_build_fbcache(self, params: Dict[str, Any], block_swap_on: bool):
         """Build a FirstBlockCache for LTX-2.3, or None when inactive/guarded.
 
@@ -696,6 +829,14 @@ class LTX2Mixin:
         )
         force_wrap = (fbcache is not None or spectrum_video is not None or style_active) and blocks_to_swap <= 0
 
+        # One-time in-place INT8 conversion (unet_quantization="int8"). MUST be
+        # before the block-swap/offload step below: the block offloader captures
+        # the transformer blocks' Linear modules and the conversion replaces them
+        # (see _ltx2_runtime_int8). No-op for every other value and for an
+        # already-quantized model.
+        self._ltx2_runtime_int8(params, progress_callback=progress_callback,
+                                force_wrap=force_wrap)
+
         # Base pipeline owns the offload hooks on the shared modules. This brings
         # the shared transformer to the requested block-swap state (wrap/unwrap +
         # offload) in the correct order, BEFORE the i2v pipeline is built (or
@@ -1047,6 +1188,11 @@ class LTX2Mixin:
         )
         force_wrap = (fbcache is not None or spectrum_video is not None) and blocks_to_swap <= 0
 
+        # One-time in-place INT8 conversion, before the offloader is built (see
+        # _ltx2_runtime_int8; same ordering as the other two generate paths).
+        self._ltx2_runtime_int8(params, progress_callback=progress_callback,
+                                force_wrap=force_wrap)
+
         self._ensure_ltx2_swap_and_offload(blocks_to_swap, force_wrap=force_wrap)
         cond_pipeline = self._ensure_ltx2_condition_pipeline()
 
@@ -1290,6 +1436,11 @@ class LTX2Mixin:
             params, num_inference_steps_probe, blocks_to_swap > 0
         )
         force_wrap = (fbcache is not None or spectrum_video is not None or style_active) and blocks_to_swap <= 0
+
+        # One-time in-place INT8 conversion, before the offloader is built (see
+        # _ltx2_runtime_int8; same ordering as the other two generate paths).
+        self._ltx2_runtime_int8(params, progress_callback=progress_callback,
+                                force_wrap=force_wrap)
 
         pipeline = self._ensure_ltx2_swap_and_offload(blocks_to_swap, force_wrap=force_wrap)
 

@@ -8,6 +8,7 @@ itself is pinned, plus the fact that the call sites exist.
 """
 
 import ast
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -149,6 +150,7 @@ class SupportedLoaderTest(unittest.TestCase):
         "anima": ("core/models/anima/anima_loader.py", "_swap_quantized_linears"),
         "krea2": ("core/models/krea2/vendor/single_file.py", "swap_linears_to_int8"),
         "ideogram4": ("core/models/ideogram4/ideogram4_loader.py", "swap_linears_to_fp8"),
+        "ltx2": ("core/models/ltx2/loader.py", "_swap_ltx2_quantized_linears"),
     }
 
     def test_every_supported_arch_swaps_before_the_tolerant_load(self):
@@ -324,6 +326,75 @@ class ScalelessLoadMatrixTest(unittest.TestCase):
                                          dtype=torch.bfloat16, state_dict=state_dict)
             finally:
                 al.ANIMA_DIT_CONFIG = original
+
+        self._matrix(reference, build)
+
+    # A ~105 k-parameter LTX2VideoTransformer3DModel: 1 layer, 2 heads, 62
+    # Linears. The decision under test is the census-versus-swap comparison,
+    # which does not depend on geometry -- and the real thing is 18.98 G of
+    # Linear parameters in a 37 GB component directory, so it is not a test
+    # fixture.
+    LTX2_CONFIG = {
+        "activation_fn": "gelu-approximate", "attention_bias": True,
+        "attention_head_dim": 16, "attention_out_bias": True,
+        "audio_attention_head_dim": 8, "audio_cross_attention_dim": 32,
+        "audio_cross_attn_mod": True, "audio_gated_attn": True,
+        "audio_hop_length": 160, "audio_in_channels": 8,
+        "audio_num_attention_heads": 2, "audio_out_channels": 8,
+        "audio_patch_size": 1, "audio_patch_size_t": 1,
+        "audio_pos_embed_max_pos": 20, "audio_sampling_rate": 16000,
+        "audio_scale_factor": 4, "base_height": 64, "base_width": 64,
+        "caption_channels": 48, "causal_offset": 1, "cross_attention_dim": 64,
+        "cross_attn_mod": True, "cross_attn_timestep_scale_multiplier": 1000,
+        "gated_attn": True, "in_channels": 8, "norm_elementwise_affine": False,
+        "norm_eps": 1e-06, "num_attention_heads": 2, "num_layers": 1,
+        "out_channels": 8, "patch_size": 1, "patch_size_t": 1,
+        "perturbed_attn": True, "pos_embed_max_pos": 20,
+        "qk_norm": "rms_norm_across_heads", "rope_double_precision": True,
+        "rope_theta": 10000.0, "rope_type": "split",
+        "timestep_scale_multiplier": 1000, "use_prompt_embeddings": False,
+        "vae_scale_factors": [8, 32, 32],
+    }
+
+    def test_ltx2(self):
+        # Driven through the REAL entry point,
+        # ``ltx2.loader._load_quantized_ltx2_transformer``, which is
+        # DIRECTORY-shaped rather than state-dict-shaped: LTX-2.3 has no
+        # single-file variant, so its quantized branch reads a component
+        # directory's headers, decides, and only then materialises anything.
+        import json
+        import tempfile
+
+        from safetensors.torch import save_file
+
+        from core.models.ltx2.loader import _load_quantized_ltx2_transformer
+        from diffusers import LTX2VideoTransformer3DModel
+
+        reference = LTX2VideoTransformer3DModel.from_config(
+            self.LTX2_CONFIG).to(torch.bfloat16)
+
+        def build(state_dict):
+            with tempfile.TemporaryDirectory() as root:
+                component = os.path.join(root, "transformer")
+                os.makedirs(component)
+                with open(os.path.join(component, "config.json"), "w", encoding="utf-8") as fh:
+                    json.dump(self.LTX2_CONFIG, fh)
+                save_file({k: v.contiguous() for k, v in state_dict.items()},
+                          os.path.join(component, "diffusion_pytorch_model.safetensors"))
+                model = _load_quantized_ltx2_transformer(root, torch.bfloat16)
+                if model is not None:
+                    return model
+                # ``None`` means "this is not a scaled quantized file; let
+                # from_pretrained load it" -- cases (a) and (e). Reproduce
+                # exactly what diffusers then does, so the assertions still
+                # describe the production path: build from the config and
+                # ``load_state_dict`` WITHOUT assign, which casts into the
+                # existing bf16 parameters (that cast is what makes a pure
+                # float8 file readable, and it is exact).
+                built = LTX2VideoTransformer3DModel.from_config(
+                    self.LTX2_CONFIG).to(torch.bfloat16)
+                built.load_state_dict(state_dict, strict=False)
+                return built
 
         self._matrix(reference, build)
 

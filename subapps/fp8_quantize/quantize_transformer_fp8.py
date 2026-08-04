@@ -217,6 +217,13 @@ from core.models.ideogram4.vendor.fp8_linear import (  # noqa: E402
 from core.models.ideogram4.vendor.int8_linear import (  # noqa: E402
     INT8_SCALE_SUFFIX,
 )
+# The scale suffix as the GUARD spells it (both formats share it; only the weight
+# dtype tells them apart). Imported rather than retyped so the refusal below and
+# the loader-side guard cannot disagree about what a quantized file looks like.
+from core.models.common.quantized_checkpoint_guard import (  # noqa: E402
+    QUANT_SCALE_SUFFIX,
+    QUANT_WEIGHT_DTYPES,
+)
 # THE selection logic lives in the shared module, which the RUNTIME in-place
 # converter imports too. One module, two callers -- the shared import is the pin
 # against the two rules drifting apart. Everything below is a thin caller:
@@ -395,6 +402,114 @@ def _flux2_config(source: str) -> dict:
     return config
 
 
+def _ideogram4_build_meta(config: dict) -> nn.Module:
+    from accelerate import init_empty_weights
+
+    from core.models.ideogram4.vendor import Ideogram4Transformer2DModel
+
+    with init_empty_weights():
+        return Ideogram4Transformer2DModel.from_config(config)
+
+
+def _ideogram4_config(source: str) -> dict:
+    """Read an Ideogram 4 transformer config from a component dir (or a model root).
+
+    Unlike Krea 2 (a default dict topped up from a file) and FLUX.2 (a pinned
+    table), Ideogram 4's geometry is ALWAYS read from the checkpoint's own
+    ``config.json``: the published directories carry one per component and the
+    loader (``_build_ideogram4_transformer``) reads exactly that file, so nothing
+    here may fall back to a compiled-in default -- a wrong ``num_layers`` would
+    enumerate module paths that match no weight.
+    """
+    for cand in (os.path.join(source, "config.json"),
+                 os.path.join(source, "transformer", "config.json")):
+        if os.path.isfile(cand):
+            with open(cand, encoding="utf-8") as fh:
+                config = json.load(fh)
+            print(f"[fp8] transformer config from {cand}")
+            return config
+    raise FileNotFoundError(
+        f"no Ideogram 4 transformer config.json under {source}; the geometry is read from "
+        f"the checkpoint's own config (there is no pinned default), so pass --config or a "
+        f"path that has one")
+
+
+def _ideogram4_sources(source: str) -> List[Dict[str, object]]:
+    """The per-component passes for an Ideogram 4 source. TWO of them, always.
+
+    Ideogram 4 is the only architecture here that is TWO transformers -- a
+    conditional and an unconditional branch of identical geometry, both required
+    by its asymmetric CFG -- and an artifact holding one of them would load
+    (``load_ideogram4_single_file`` skips a missing unconditional branch with a
+    print) and then generate with a bf16 branch against a quantized one. So both
+    are located up front, and a source that can only supply one is REFUSED
+    rather than half-converted.
+
+    Two source shapes are accepted, and they differ in where the component
+    prefix comes from:
+
+    * a published diffusers MODEL ROOT (``<root>/transformer/`` +
+      ``<root>/unconditional_transformer/``): each component is its own
+      checkpoint, whose keys are bare module paths, so ``source_prefix`` is empty
+      and the component's live prefix is added on OUTPUT;
+    * a COMBINED single file or shard index (sushiUI's own save, whose keys
+      already carry ``transformer.`` / ``unconditional_transformer.``): one file
+      read twice, each pass taking only its own prefix and writing it back
+      unchanged.
+
+    Either way ``out_prefix + source_prefix`` is the component's live prefix,
+    which is the invariant ``quantized_export.check_layout_prefixes`` states for
+    the single-component architectures.
+    """
+    from core.models.common.quantized_export import layout_module_specs
+
+    specs = layout_module_specs("ideogram4")
+
+    if os.path.isdir(source):
+        missing = [name for name, _p in specs if not os.path.isdir(os.path.join(source, name))]
+        if not missing:
+            return [{
+                "component": name,
+                "out_prefix": prefix,
+                "source_prefix": "",
+                "require_source_prefix": False,
+                "source": os.path.join(source, name),
+                "config_source": os.path.join(source, name),
+            } for name, prefix in specs]
+        if os.path.isfile(os.path.join(source, "config.json")):
+            raise RuntimeError(
+                f"{source} looks like a single Ideogram 4 component directory. Point --source "
+                f"at the MODEL ROOT (the directory holding "
+                f"{' + '.join(n for n, _p in specs)}) or at a combined single file: Ideogram 4 "
+                f"needs both transformers in one artifact, and quantizing one of them would "
+                f"produce a file that loads with one branch quantized and the other absent.")
+        raise FileNotFoundError(
+            f"{source} is missing the Ideogram 4 component director(y/ies) "
+            f"{', '.join(missing)}")
+
+    _shards, key_to_shard = _source_shards(source)
+    absent = [prefix for _name, prefix in specs
+              if not any(k.startswith(prefix) for k in key_to_shard)]
+    if absent:
+        raise RuntimeError(
+            f"{source} carries no key under {', '.join(repr(p) for p in absent)}; an Ideogram 4 "
+            f"artifact must hold BOTH transformers (asymmetric CFG runs both every step). "
+            f"Use a combined single file, or the published model root directory.")
+
+    from core.models.ideogram4.ideogram4_loader import _resolve_ideogram4_base_dir
+
+    base_dir = _resolve_ideogram4_base_dir(source)
+    print(f"[fp8] combined single-file source; configs from base directory {base_dir}")
+    return [{
+        "component": name,
+        "out_prefix": "",
+        "source_prefix": prefix,
+        "require_source_prefix": True,
+        "source": source,
+        "config_source": os.path.join(base_dir, name),
+    } for name, prefix in specs]
+
+
 def _from_layout(arch: str, **extra) -> Dict[str, object]:
     """An ARCHS entry: the shared on-disk layout plus this tool's source knobs.
 
@@ -404,7 +519,9 @@ def _from_layout(arch: str, **extra) -> Dict[str, object]:
     export of the same architecture land on identical keys and identical
     metadata. Only ``config`` and ``build_meta`` (how to enumerate Linears from a
     SOURCE checkpoint, which the runtime path does not need because it has the
-    live module) are local to this tool.
+    live module) and ``sources`` (how one ``--source`` maps onto the layout's
+    components; absent means "one component, this source") are local to this
+    tool.
 
     EVERY arch goes through here, including one that needs a key remap: the
     remap is a ``source_transform`` entry in the shared layout, not a bespoke
@@ -435,6 +552,14 @@ ARCHS = {
     # as a special case in this table, so the offline artifact and a runtime
     # export stay the same file.
     "flux2": _from_layout("flux2", config=_flux2_config, build_meta=_flux2_build_meta),
+    # Ideogram 4 is the first arch here that is more than ONE module: two
+    # transformers of identical geometry into one artifact (``sources`` below),
+    # and its checkpoint keys are not module paths either -- the loader splits a
+    # fused qkv before it swaps the quantized Linears in, which is the layout's
+    # ``source_transform``.
+    "ideogram4": _from_layout("ideogram4", config=_ideogram4_config,
+                              build_meta=_ideogram4_build_meta,
+                              sources=_ideogram4_sources),
 }
 
 
@@ -487,6 +612,241 @@ def _strip_prefix(key: str, prefix: str) -> str:
 # ``linear_paths`` / ``select_targets`` / ``audit_and_quantize_int8`` are
 # imported from ``core.models.common.int8_runtime_quantize``. They used to live
 # here; they moved when the runtime in-place converter needed the identical rule.
+
+
+# ---------------------------------------------------------------------------
+# Component passes
+# ---------------------------------------------------------------------------
+#
+# A "pass" is one component of the output artifact: which source it reads, which
+# prefix its source keys carry, and which prefix its output keys get. Almost
+# every architecture here has exactly ONE, which is the historical behaviour
+# spelled as a single-element plan; Ideogram 4 has two transformers that must
+# land in one file, so its ARCHS entry declares a ``sources`` resolver.
+#
+# INVARIANT, per pass: ``out_prefix + source_prefix`` is that component's live
+# state-dict prefix (``EXPORT_LAYOUTS[...]["modules"]``). It is what makes an
+# offline artifact and a runtime export of the same model the same file.
+
+def _plan_passes(arch_name: str, arch: Dict[str, object], source: str) -> List[Dict[str, object]]:
+    """The component passes for ``source``; one, unless the arch says otherwise."""
+    resolver = arch.get("sources")
+    if resolver is None:
+        return [{
+            "component": None,
+            "out_prefix": arch["prefix"],
+            "source_prefix": arch.get("source_prefix", ""),
+            "require_source_prefix": False,
+            "source": source,
+            "config_source": source,
+        }]
+    passes = list(resolver(source))
+    if not passes:
+        raise RuntimeError(f"arch {arch_name!r} resolved no component passes for {source}")
+    return passes
+
+
+def _select_pass(tag: str, args, arch: Dict[str, object], spec: Dict[str, object],
+                 source_transform, min_align: int, excludes, skip_gate: bool) -> Dict[str, object]:
+    """Enumerate one component's Linears and choose which of them to quantize.
+
+    Returns ``spec`` extended with ``shards`` / ``canonical_keys`` / ``config`` /
+    ``targets`` / ``skipped``. Selection for EVERY pass happens before the first
+    byte is written, so a dry run reports the whole artifact and a real run
+    cannot fail half way through for a reason that was knowable up front.
+    """
+    label = f"{tag} [{spec['component']}]" if spec.get("component") else tag
+    source = str(spec["source"])
+    source_prefix = str(spec["source_prefix"])
+    shards, key_to_shard = _source_shards(source)
+    print(f"{label} source has {len(key_to_shard)} tensors in {len(shards)} shard(s)")
+
+    # The transform maps raw checkpoint keys into the arch's canonical source
+    # layout (identity for an arch whose keys ALREADY are module paths). Run it
+    # key-only here -- the contract is that ``tensor=None`` yields the same key
+    # set -- so the selection below is made against the keys the write loop will
+    # actually produce, not against the raw ones.
+    raw_keys = [k for k in key_to_shard
+                if not spec.get("require_source_prefix") or k.startswith(source_prefix)]
+    canonical_keys = set()
+    for _k in raw_keys:
+        for _ck, _ in source_transform(_k, None):
+            canonical_keys.add(_ck)
+    if source_transform is not identity_source_transform:
+        print(f"{label} source_transform: {len(raw_keys)} source key(s) -> "
+              f"{len(canonical_keys)} canonical key(s)")
+        if not canonical_keys:
+            raise RuntimeError(
+                f"arch {args.arch!r} declares a source_transform that produced no keys at "
+                f"all for this checkpoint; refusing to run (the output would be empty)")
+
+    # Match module paths, not raw keys: a source that wraps the module (Anima's
+    # ``net.``, Ideogram 4's per-component prefix in a combined file) must have
+    # that prefix removed before the comparison, or nothing matches and the tool
+    # silently quantizes zero layers.
+    if source_prefix:
+        n_pref = sum(1 for k in canonical_keys if k.startswith(source_prefix))
+        print(f"{label} source_prefix={source_prefix!r}: {n_pref}/{len(canonical_keys)} keys carry it")
+        if n_pref == 0:
+            raise RuntimeError(
+                f"arch {args.arch!r} declares source_prefix={source_prefix!r} but no source key "
+                f"starts with it; refusing to run (every Linear would silently be skipped)")
+    module_keys = {_strip_prefix(k, source_prefix) for k in canonical_keys}
+
+    if args.config:
+        with open(args.config, encoding="utf-8") as fh:
+            config = json.load(fh)
+        print(f"{label} transformer config from --config {args.config}")
+    else:
+        config = arch["config"](spec.get("config_source", source))
+    meta_model = arch["build_meta"](config)
+    linears = linear_paths(meta_model)
+    targets, skipped = select_targets(linears, module_keys, min_align, excludes,
+                                      skip_below_work_gate=skip_gate)
+    if not targets:
+        raise RuntimeError(
+            f"no Linear weight matched between the {len(linears)} module path(s) and the "
+            f"{len(canonical_keys)} source key(s); nothing would be quantized")
+
+    print(f"{label} {len(linears)} nn.Linear module(s); quantizing {len(targets)}, "
+          f"skipping {len(skipped)}")
+    for name, reason in skipped:
+        print(f"{label}   skip {name}: {reason}")
+
+    return {**spec, "shards": shards, "canonical_keys": canonical_keys,
+            # RAW key -> shard, for the already-quantized refusal below: the
+            # source's weight DTYPES live in the shard headers and are read from
+            # there (no tensor bytes), and the raw key is what indexes them.
+            "key_to_shard": {k: key_to_shard[k] for k in raw_keys},
+            "config": config, "targets": targets, "skipped": skipped}
+
+
+def _quantized_dtype_names() -> set:
+    """The safetensors header spellings of the guard's quantized weight dtypes.
+
+    Derived from safetensors' own name->torch.dtype table where it is available,
+    so the set follows the guard's ``QUANT_WEIGHT_DTYPES`` rather than a second
+    hand-written list; the literal fallback covers a future safetensors that
+    stops exposing the table (the names are part of the on-disk format, not of
+    the library's API, so they are stable).
+    """
+    try:
+        import safetensors.torch as _st
+        table = getattr(_st, "_TYPES", None) or {}
+        names = {name for name, dtype in table.items() if dtype in QUANT_WEIGHT_DTYPES}
+        if names:
+            return names
+    except Exception:
+        pass
+    return {"I8", "U8", "F8_E4M3", "F8_E4M3FNUZ", "F8_E5M2", "F8_E5M2FNUZ"}
+
+
+def _quantized_source_weights(
+    selections: List[Dict[str, object]],
+) -> Tuple[int, List[str], set]:
+    """(count, up to 3 example keys, dtype names) of quantized ``.weight`` tensors.
+
+    Header-only: one ``safe_open`` per shard, ``get_slice(key).get_dtype()`` per
+    key. No tensor bytes are read and nothing is materialised.
+    """
+    quantized_names = _quantized_dtype_names()
+    total = 0
+    examples: List[str] = []
+    seen_dtypes: set = set()
+    for selection in selections:
+        key_to_shard = selection.get("key_to_shard") or {}
+        by_shard: Dict[str, List[str]] = {}
+        for key, shard in key_to_shard.items():
+            if key.endswith(".weight"):
+                by_shard.setdefault(shard, []).append(key)
+        for shard, keys in by_shard.items():
+            with safe_open(shard, framework="pt", device="cpu") as fh:
+                for key in keys:
+                    dtype = fh.get_slice(key).get_dtype()
+                    if dtype in quantized_names:
+                        total += 1
+                        seen_dtypes.add(dtype)
+                        if len(examples) < 3:
+                            examples.append(key)
+    return total, examples, seen_dtypes
+
+
+def _refuse_quantized_source(tag: str, args, selections: List[Dict[str, object]]) -> None:
+    """Refuse a source that is ALREADY weight-only quantized.
+
+    Re-quantizing an e4m3 (or int8) checkpoint is not a smaller version of
+    quantizing a bf16 one: the weights have already been rounded once, so the
+    second pass measures and encodes the ROUNDING, and the source's own
+    ``.weight_scale`` keys would additionally collide with the ones this tool
+    writes for the same layer -- one silently overwriting the other in the shard
+    buffer. The runtime converter refuses the same input for the same reason
+    (``quantization_superseded``, measured at 11.2x the weight error of a direct
+    conversion on Anima). Detected on the KEY SET, which the shard index already
+    gives us, so it costs no tensor bytes.
+
+    It matters most for Ideogram 4, whose published checkpoints are FP8 or nf4:
+    the only correct int8 source for it is a bf16 one (a sushiUI full fine-tune
+    save, or a bf16 release), and without this check the tool would happily
+    produce a plausible-looking artifact from the FP8 one.
+
+    TWO PIECES OF EVIDENCE, either sufficient, exactly as the loader-side
+    ``quantized_state_dict_report`` uses:
+
+    * a ``.weight_scale`` key -- a scaled artifact from this tool or from
+      ``POST /models/export-quantized``;
+    * a ``.weight`` whose stored DTYPE is int8 / uint8 / float8. The scale test
+      alone misses the commonest already-rounded source there is: the scale-less
+      ComfyUI fp8 CAST (``flux-2-klein-fp8_e4m3fn.safetensors`` and its
+      equivalents for the other archs), whose keys remap onto module paths like
+      any other source, so nothing else here refuses it. A loader reads that file
+      correctly -- casting e4m3 back to bf16 is exact -- but quantizing it is
+      still measuring and encoding a rounding, which is the harm above.
+
+    The dtypes come from the safetensors HEADER (``get_slice(...).get_dtype()``),
+    so this reads zero tensor bytes, and the dtype set is imported from the
+    loader-side guard so the two cannot disagree about what "already quantized"
+    means.
+
+    A DRY RUN reports it and continues -- it writes nothing, and the selection it
+    prints is still the honest answer to "which layers would be chosen".
+    """
+    scales = 0
+    examples: List[str] = []
+    for selection in selections:
+        for key in selection["canonical_keys"]:
+            if key.endswith(QUANT_SCALE_SUFFIX):
+                scales += 1
+                if len(examples) < 3:
+                    examples.append(key)
+
+    quant_weights, quant_examples, quant_dtypes = _quantized_source_weights(selections)
+
+    if not scales and not quant_weights:
+        return
+    if scales:
+        evidence = (f"{scales} '{QUANT_SCALE_SUFFIX}' key(s) (e.g. "
+                    f"{', '.join(examples)})")
+        if quant_weights:
+            evidence += (f" and {quant_weights} quantized '.weight' tensor(s) "
+                         f"({'/'.join(sorted(quant_dtypes))})")
+    else:
+        evidence = (f"{quant_weights} '.weight' tensor(s) stored as "
+                    f"{'/'.join(sorted(quant_dtypes))} with no '{QUANT_SCALE_SUFFIX}' "
+                    f"sibling -- a plain dtype cast, or a foreign scale convention such "
+                    f"as ComfyUI's '.scale_weight' (e.g. {', '.join(quant_examples)})")
+    collision = (" and its existing scales would collide with the ones written here"
+                 if scales else "")
+    message = (
+        f"the source checkpoint is ALREADY weight-only quantized: {evidence}. "
+        f"Quantizing it again "
+        f"would encode weights that have already been rounded once -- worse than either "
+        f"format alone{collision}. "
+        f"Use an unquantized (bf16) checkpoint of this architecture as the source.")
+    if args.dry_run:
+        print(f"{tag} WARNING: {message}")
+        print(f"{tag} (a real run would refuse; the selection below is still what it would pick)")
+        return
+    raise RuntimeError(message)
 
 
 def write_audit(path: str, rows: List[Dict], args_summary: Dict) -> str:
@@ -615,69 +975,36 @@ def main() -> int:
               f"int8_linear's runtime gate; the {fmt} path has no equivalent).")
         skip_gate = False
 
-    source_prefix = arch.get("source_prefix", "")
     source_transform = arch.get("source_transform") or identity_source_transform
     print(f"{tag} arch={args.arch} format={fmt} min_align={min_align} "
           f"skip_below_work_gate={skip_gate} source={args.source}")
-    shards, key_to_shard = _source_shards(args.source)
-    print(f"{tag} source has {len(key_to_shard)} tensors in {len(shards)} shard(s)")
 
-    # The transform maps raw checkpoint keys into the arch's canonical source
-    # layout (identity for an arch whose keys ALREADY are module paths). Run it
-    # key-only here -- the contract is that ``tensor=None`` yields the same key
-    # set -- so the selection below is made against the keys the write loop will
-    # actually produce, not against the raw ones.
-    canonical_keys = set()
-    for _k in key_to_shard:
-        for _ck, _ in source_transform(_k, None):
-            canonical_keys.add(_ck)
-    if source_transform is not identity_source_transform:
-        print(f"{tag} source_transform: {len(key_to_shard)} source key(s) -> "
-              f"{len(canonical_keys)} canonical key(s)")
-        if not canonical_keys:
-            raise RuntimeError(
-                f"arch {args.arch!r} declares a source_transform that produced no keys at "
-                f"all for this checkpoint; refusing to run (the output would be empty)")
+    plan = _plan_passes(args.arch, arch, args.source)
+    multi = len(plan) > 1
+    if multi:
+        print(f"{tag} {len(plan)} component pass(es) into ONE artifact: " + ", ".join(
+            f"{p['component']} (out={p['out_prefix']!r}, src={p['source_prefix']!r})"
+            for p in plan))
 
-    # Match module paths, not raw keys: a source that wraps the module (Anima's
-    # ``net.``) must have that prefix removed before the comparison, or nothing
-    # matches and the tool silently quantizes zero layers.
-    if source_prefix:
-        n_pref = sum(1 for k in canonical_keys if k.startswith(source_prefix))
-        print(f"{tag} source_prefix={source_prefix!r}: {n_pref}/{len(canonical_keys)} keys carry it")
-        if n_pref == 0:
-            raise RuntimeError(
-                f"arch {args.arch!r} declares source_prefix={source_prefix!r} but no source key "
-                f"starts with it; refusing to run (every Linear would silently be skipped)")
-    module_keys = {_strip_prefix(k, source_prefix) for k in canonical_keys}
+    selections = [
+        _select_pass(tag, args, arch, p, source_transform, min_align, excludes, skip_gate)
+        for p in plan
+    ]
+    _refuse_quantized_source(tag, args, selections)
 
-    if args.config:
-        with open(args.config, encoding="utf-8") as fh:
-            config = json.load(fh)
-        print(f"{tag} transformer config from --config {args.config}")
-    else:
-        config = arch["config"](args.source)
-    meta_model = arch["build_meta"](config)
-    linears = linear_paths(meta_model)
-    targets, skipped = select_targets(linears, module_keys, min_align, excludes,
-                                      skip_below_work_gate=skip_gate)
-    if not targets:
-        raise RuntimeError(
-            f"no Linear weight matched between the {len(linears)} module path(s) and the "
-            f"{len(key_to_shard)} source key(s); nothing would be quantized")
-
-    print(f"{tag} {len(linears)} nn.Linear module(s); quantizing {len(targets)}, skipping {len(skipped)}")
-    for name, reason in skipped:
-        print(f"{tag}   skip {name}: {reason}")
+    total_targets = sum(len(s["targets"]) for s in selections)
+    if multi:
+        print(f"{tag} TOTAL across {len(plan)} component(s): quantizing {total_targets}, "
+              f"skipping {sum(len(s['skipped']) for s in selections)}")
 
     if args.dry_run:
         print(f"{tag} dry run: nothing written")
         return 0
 
-    target_set = set(targets)
-    prefix = arch["prefix"]
-    metadata = arch["metadata"](config)
-    metadata["quantized_linears"] = str(len(targets))
+    # The metadata builder gets the PRIMARY component's config, exactly as the
+    # runtime exporter's does (``quantized_export_job`` reads ``modules[0]``).
+    metadata = arch["metadata"](selections[0]["config"])
+    metadata["quantized_linears"] = str(total_targets)
     metadata["quant_source"] = os.path.abspath(args.source)
     # NOTE: deliberately NOT written into a key the Krea 2 loader scans for
     # rejected quant layouts. `single_file._REJECTED_QUANT_TOKENS` matches
@@ -688,7 +1015,7 @@ def main() -> int:
     metadata["quant_format"] = "int8_perrow" if fmt == "int8" else "fp8_e4m3_perrow"
     if fmt == "fp8":
         # Preserved for checkpoints produced before --format existed.
-        metadata["fp8_quantized_linears"] = str(len(targets))
+        metadata["fp8_quantized_linears"] = str(total_targets)
         metadata["fp8_source"] = os.path.abspath(args.source)
 
     writer = ShardWriter(args.output, metadata, args.max_shard_bytes)
@@ -696,57 +1023,79 @@ def main() -> int:
     quantized = 0
     passthrough = 0
     audit: List[Dict] = []
-    for shard in shards:
-        print(f"{tag} reading {os.path.basename(shard)}")
-        with safe_open(shard, framework="pt", device="cpu") as fh:
-            for raw_key in fh.keys():
-                raw_tensor = fh.get_tensor(raw_key)
-                # ONE source tensor may become several canonical ones (a fused
-                # qkv weight -> q/k/v) or none. Per-row scales make "quantize the
-                # fused weight then split" and "split then quantize" identical
-                # (the rows are independent), so splitting FIRST costs nothing
-                # and buys the property that matters: the runtime export sees the
-                # live module after its loader has split, so the offline artifact
-                # must carry the split keys to stay comparable with it.
-                for key, tensor in source_transform(raw_key, raw_tensor):
-                    # ``base`` is a MODULE PATH (source_prefix stripped) so it can be
-                    # compared with target_set; ``key`` keeps the source layout so the
-                    # output is key-for-key identical apart from dtype + the new scales.
-                    base = (_strip_prefix(key[: -len(".weight")], source_prefix)
-                            if key.endswith(".weight") else None)
-                    if base is not None and base in target_set:
-                        if tensor.dim() != 2:
-                            raise RuntimeError(f"{key}: expected a 2-D Linear weight, got {tuple(tensor.shape)}")
-                        # The scale is a SIBLING of the weight key, so it must be built
-                        # from ``key`` (source layout), not from the stripped ``base``:
-                        # both swap helpers look for ``<weight key minus .weight>.weight_scale``.
-                        scale_stem = f"{prefix}{key[: -len('.weight')]}"
-                        if fmt == "int8":
-                            chosen, q, scale, row = audit_and_quantize_int8(
-                                base, tensor, args.crest_threshold, args.fallback)
-                            audit.append(row)
-                            writer.add(f"{prefix}{key}", q.contiguous())
-                            if scale is not None:
-                                writer.add(f"{scale_stem}{INT8_SCALE_SUFFIX}", scale.contiguous())
-                            quantized += chosen != "bf16"
-                            passthrough += chosen == "bf16"
+    # EVERY component into the SAME writer. Two files would not be a single-file
+    # artifact, and the Ideogram 4 loader reads both branches out of one.
+    for selection in selections:
+        source_prefix = selection["source_prefix"]
+        prefix = selection["out_prefix"]
+        component = selection["component"]
+        target_set = set(selection["targets"])
+        if multi:
+            print(f"{tag} component '{component}': {len(target_set)} target(s), "
+                  f"out_prefix={prefix!r}, source_prefix={source_prefix!r}")
+        for shard in selection["shards"]:
+            print(f"{tag} reading {os.path.basename(shard)}")
+            with safe_open(shard, framework="pt", device="cpu") as fh:
+                for raw_key in fh.keys():
+                    if selection["require_source_prefix"] and not raw_key.startswith(source_prefix):
+                        # A component pass over a COMBINED source: the other
+                        # component's keys belong to the other pass, and writing
+                        # them here would duplicate them under the wrong prefix.
+                        continue
+                    raw_tensor = fh.get_tensor(raw_key)
+                    # ONE source tensor may become several canonical ones (a fused
+                    # qkv weight -> q/k/v) or none. Per-row scales make "quantize the
+                    # fused weight then split" and "split then quantize" identical
+                    # (the rows are independent), so splitting FIRST costs nothing
+                    # and buys the property that matters: the runtime export sees the
+                    # live module after its loader has split, so the offline artifact
+                    # must carry the split keys to stay comparable with it.
+                    for key, tensor in source_transform(raw_key, raw_tensor):
+                        # ``base`` is a MODULE PATH (source_prefix stripped) so it can be
+                        # compared with target_set; ``key`` keeps the source layout so the
+                        # output is key-for-key identical apart from dtype + the new scales.
+                        base = (_strip_prefix(key[: -len(".weight")], source_prefix)
+                                if key.endswith(".weight") else None)
+                        if base is not None and base in target_set:
+                            if tensor.dim() != 2:
+                                raise RuntimeError(f"{key}: expected a 2-D Linear weight, got {tuple(tensor.shape)}")
+                            # The scale is a SIBLING of the weight key, so it must be built
+                            # from ``key`` (source layout), not from the stripped ``base``:
+                            # both swap helpers look for ``<weight key minus .weight>.weight_scale``.
+                            scale_stem = f"{prefix}{key[: -len('.weight')]}"
+                            if fmt == "int8":
+                                # The audit row is named by MODULE PATH, namespaced by
+                                # component when there is more than one: the two
+                                # Ideogram 4 transformers have identical geometry and
+                                # therefore identical paths, so an un-namespaced table
+                                # would look like one transformer audited twice. Same
+                                # rule as the runtime converter's merged document.
+                                row_name = f"{component}.{base}" if multi else base
+                                chosen, q, scale, row = audit_and_quantize_int8(
+                                    row_name, tensor, args.crest_threshold, args.fallback)
+                                audit.append(row)
+                                writer.add(f"{prefix}{key}", q.contiguous())
+                                if scale is not None:
+                                    writer.add(f"{scale_stem}{INT8_SCALE_SUFFIX}", scale.contiguous())
+                                quantized += chosen != "bf16"
+                                passthrough += chosen == "bf16"
+                            else:
+                                q, scale = quantize_weight_to_fp8(tensor)
+                                writer.add(f"{prefix}{key}", q.contiguous())
+                                writer.add(f"{scale_stem}{FP8_SCALE_SUFFIX}", scale.contiguous())
+                                quantized += 1
                         else:
-                            q, scale = quantize_weight_to_fp8(tensor)
-                            writer.add(f"{prefix}{key}", q.contiguous())
-                            writer.add(f"{scale_stem}{FP8_SCALE_SUFFIX}", scale.contiguous())
-                            quantized += 1
-                    else:
-                        writer.add(f"{prefix}{key}", tensor.contiguous())
-                        passthrough += 1
-                    del tensor
-                del raw_tensor
+                            writer.add(f"{prefix}{key}", tensor.contiguous())
+                            passthrough += 1
+                        del tensor
+                    del raw_tensor
     written = writer.close()
     elapsed = time.perf_counter() - t0
 
     print(f"{tag} quantized {quantized} Linear weight(s), passed through {passthrough} tensor(s)")
     print(f"{tag} wrote {written} ({writer.total_bytes / 2**30:.2f} GB) in {elapsed:.1f}s")
-    if fmt == "fp8" and quantized != len(targets):
-        print(f"{tag} WARNING: expected {len(targets)} quantized weights, wrote {quantized}")
+    if fmt == "fp8" and quantized != total_targets:
+        print(f"{tag} WARNING: expected {total_targets} quantized weights, wrote {quantized}")
 
     if fmt == "int8":
         stem = os.path.basename(args.output)
@@ -760,7 +1109,11 @@ def main() -> int:
             "min_work_k": INT8_MIN_WORK_K, "min_work_n": INT8_MIN_WORK_N,
             "crest_threshold": args.crest_threshold, "fallback": args.fallback,
             "source": os.path.abspath(args.source), "output": written,
-            "skipped": [{"name": n, "reason": r} for n, r in skipped],
+            "components": [s["component"] for s in selections] if multi else None,
+            "skipped": [
+                {"name": (f"{s['component']}.{n}" if multi else n), "reason": r}
+                for s in selections for n, r in s["skipped"]
+            ],
         })
 
     if args.link_siblings:

@@ -849,6 +849,12 @@ export interface ArchCapabilities {
   // (core/models/common/int8_runtime_quantize.py). Optional so an older backend
   // without the key still type-checks.
   runtime_int8_archs?: string[];
+  // Architectures whose LOADERS swap in the weight-only quantized Linear classes
+  // (Int8Linear / Fp8Linear), i.e. the ones where quantized_gemm_mode selects
+  // anything. Served straight from backend QUANTIZED_LINEAR_ARCHS (same module);
+  // a superset of runtime_int8_archs in general, equal to it today. Optional so
+  // an older backend without the key still type-checks.
+  quantized_linear_archs?: string[];
 }
 
 export const fetchArchCapabilities = async (): Promise<ArchCapabilities> =>
@@ -2317,7 +2323,7 @@ export const getCurrentModel = async () => {
 // `force`: reload even when this model is already the loaded one. Without it the
 // backend early-returns, so nothing per-session is reset — which is what makes
 // "load the model again" the working recovery for the one-way in-place INT8
-// conversion (unet_quantization="int8" on anima/krea2/flux2).
+// conversion (unet_quantization="int8" on anima/krea2/flux2/ideogram4).
 export const loadModel = async (sourceType: string, source: string, revision?: string, force?: boolean) => {
   const formData = new FormData();
   formData.append("source_type", sourceType);

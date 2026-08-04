@@ -151,6 +151,80 @@ class Ideogram4Mixin:
             print(f"[Ideogram4 LoRA] Unloaded {restored} LoRA wrappers")
         return restored
 
+    def _ideogram4_runtime_int8(self, params: Dict[str, Any], progress_callback=None) -> None:
+        """Apply the one-time in-place INT8 conversion, if this request asks for it.
+
+        BOTH TRANSFORMERS, in one call. Ideogram 4 runs asymmetric CFG: the
+        conditional and the unconditional branch are separate 9.28 G-parameter
+        transformers and both run every step, so converting one of them would put
+        the two halves of a single denoise step at different precisions --
+        invisibly, since both would still produce finite images. That is why the
+        conversion goes through ``apply_runtime_int8_quantization_multi``: the
+        manager-level ``_runtime_int8_converted`` latch is set once, for the set,
+        and calling the single-module function twice would convert the
+        conditional branch, latch, and silently skip the unconditional one.
+
+        ORDERING. Called from ``_ideogram4_stage_transformers``, which is the one
+        choke point every generation path goes through, and BEFORE:
+
+        * the per-transformer block-swap offloaders are built. They capture each
+          block's Linear modules and build CPU masters from their weights;
+          converting afterwards would replace the modules they hold and leave
+          them streaming the pre-conversion bf16 weights into modules nothing
+          reads. Checked below rather than assumed.
+        * the ``.to(device)`` staging, so the conversion runs on CPU (the
+          converter is device-aware) and a block-swapped generation -- which
+          never stages the transformers at all -- is converted just the same.
+
+        LoRAs are loaded AFTER staging on this architecture and unloaded in the
+        generation's ``finally``, so the modules here are unwrapped; the
+        converter refuses a wrapped one anyway, for the whole set at once.
+
+        No-op for every value other than ``"int8"``, and for a model that is
+        already weight-only quantized -- which the published Ideogram 4
+        checkpoints are (FP8 or nf4), so on those the request is reported as
+        superseded rather than applied.
+        """
+        from core.vram_optimization import (
+            apply_runtime_int8_quantization_multi, runtime_int8_requested,
+        )
+
+        components = self.ideogram4_components or {}
+        # Scoped to a request that would actually convert something: a stale
+        # offloader is a problem for THIS conversion, and refusing a generation
+        # that never asked for INT8 would turn a leftover attribute into a
+        # crash.
+        for name in ("transformer", "unconditional_transformer"):
+            t = components.get(name)
+            if (runtime_int8_requested(params.get("unet_quantization"))
+                    and t is not None
+                    and getattr(t, "_block_offloader", None) is not None):
+                raise RuntimeError(
+                    f"Ideogram 4 INT8 conversion was reached while a block offloader is "
+                    f"still attached to '{name}'. It must run BEFORE the offloaders are "
+                    f"created: they hold references to each block's Linear modules, and the "
+                    f"conversion replaces those modules, so afterwards they would stream the "
+                    f"original bf16 weights into modules nothing reads.")
+
+        targets = [
+            ("transformer", "Ideogram 4 Transformer (conditional)",
+             components.get("transformer")),
+            ("unconditional_transformer", "Ideogram 4 Transformer (unconditional)",
+             components.get("unconditional_transformer")),
+        ]
+        if not any(mod is not None for _n, _l, mod in targets):
+            return
+
+        present = [t for t in targets if t[2] is not None]
+        models, _converted = apply_runtime_int8_quantization_multi(
+            self, present, "ideogram4", params.get("unet_quantization"),
+            progress_callback=progress_callback)
+        # The converter replaces child modules in place and returns the same
+        # objects, so this is bookkeeping rather than a swap; written back
+        # anyway so the components dict is authoritative either way.
+        for (name, _label, _module), model in zip(present, models):
+            components[name] = model
+
     def _ideogram4_move(self, component_name: str, target_device: str):
         """Move a named Ideogram 4 component to the target device.
 
@@ -546,7 +620,8 @@ class Ideogram4Mixin:
         offloader.prepare_block_devices_before_forward()
         return offloader
 
-    def _ideogram4_stage_transformers(self, device: str, params: Optional[Dict[str, Any]] = None):
+    def _ideogram4_stage_transformers(self, device: str, params: Optional[Dict[str, Any]] = None,
+                                      progress_callback=None):
         """Place both transformers on GPU for the denoise loop.
 
         With block swap enabled, each transformer streams its blocks (per-model
@@ -554,6 +629,12 @@ class Ideogram4Mixin:
         footprint of the two 9.3B FP8 transformers at the cost of CPU<->GPU traffic.
         """
         params = params or {}
+        # One-time in-place INT8 conversion (unet_quantization="int8"), for BOTH
+        # transformers. MUST be here: before the block offloaders are built (they
+        # capture the Linear modules this replaces) and before the ->GPU move,
+        # which the block-swap branch below never performs at all. No-op for every
+        # other value and for an already-quantized checkpoint.
+        self._ideogram4_runtime_int8(params, progress_callback=progress_callback)
         enable_block_swap = bool(params.get("enable_block_swap", False))
         num_layers = len(self.ideogram4_components["transformer"].layers)
         blocks_to_swap = int(params.get("blocks_to_swap", 20))
@@ -754,7 +835,8 @@ class Ideogram4Mixin:
                 uncond_transformer = self.ideogram4_components["unconditional_transformer"]
                 self._ideogram4_offloaders = []
             else:
-                transformer, uncond_transformer = self._ideogram4_stage_transformers(device, params)
+                transformer, uncond_transformer = self._ideogram4_stage_transformers(
+                    device, params, progress_callback=progress_callback)
             set_ideogram4_attention_backend(
                 transformer, uncond_transformer,
                 params.get("attention_type", settings.attention_type),
@@ -942,7 +1024,8 @@ class Ideogram4Mixin:
                 uncond_transformer = self.ideogram4_components["unconditional_transformer"]
                 self._ideogram4_offloaders = []
             else:
-                transformer, uncond_transformer = self._ideogram4_stage_transformers(device, params)
+                transformer, uncond_transformer = self._ideogram4_stage_transformers(
+                    device, params, progress_callback=progress_callback)
             set_ideogram4_attention_backend(
                 transformer, uncond_transformer,
                 params.get("attention_type", settings.attention_type),
@@ -1138,7 +1221,8 @@ class Ideogram4Mixin:
                 uncond_transformer = self.ideogram4_components["unconditional_transformer"]
                 self._ideogram4_offloaders = []
             else:
-                transformer, uncond_transformer = self._ideogram4_stage_transformers(device, params)
+                transformer, uncond_transformer = self._ideogram4_stage_transformers(
+                    device, params, progress_callback=progress_callback)
             set_ideogram4_attention_backend(
                 transformer, uncond_transformer,
                 params.get("attention_type", settings.attention_type),

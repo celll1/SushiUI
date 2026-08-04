@@ -83,6 +83,7 @@ __all__ = [
     "audit_document",
     "already_weight_only_quantized",
     "float8_weight_linear_count",
+    "lora_wrapped_count",
     "quantize_linears_in_place",
 ]
 
@@ -155,6 +156,26 @@ ARCH_QUANT_POLICY: Dict[str, Dict[str, object]] = {
             "Linears out of 515 are what make it pay there)."
         ),
     },
+    "ideogram4": {
+        "skip_below_work_gate": True,
+        "excludes": (),
+        "note": (
+            "Ideogram 4 is the largest image architecture here: 279 Linears holding "
+            "9.2779 G 2-D parameters PER TRANSFORMER, and it ships two of them (asymmetric "
+            "CFG), so 558 Linears and 18.5559 G parameters in one model. Every shape is "
+            "8-aligned, so nothing is lost to the GEMM-alignment filter. 38 of the 279 "
+            "sit below the runtime min-work gate (k>=2048, n>=1024), and 34 of those are "
+            "the SAME shape class Anima's roll-up measured as a net loss: AdaLN modulation "
+            "Linears, 512x18432, whose k is 512 and whose m is the batch size, so the gate "
+            "can never admit them at any m and they would always run the dequant path -- "
+            "slower than the F.linear an unquantized checkpoint runs. They are 13.6% of the "
+            "layers but only 3.52% of the parameters (0.3268 G), so filtering them removes "
+            "68 per-step dequant calls per model for ~0.33 GB of a 9.3 GB saving. NOTE the "
+            "provenance: this is Anima's MEASUREMENT applied to a matching shape class plus "
+            "Ideogram 4's own layer census, not a timing run on Ideogram 4 -- the only "
+            "local checkpoint is the FP8 one, which cannot be an int8 baseline."
+        ),
+    },
     "anima": {
         "skip_below_work_gate": True,
         "excludes": (),
@@ -180,14 +201,16 @@ ARCH_QUANT_POLICY: Dict[str, Dict[str, object]] = {
 #   * frontend/src/utils/api.ts          -- reads that field instead of its own
 #     hardcoded list.
 # Adding an arch here is therefore the whole rollout switch on the UI side.
-RUNTIME_INT8_ARCHS = ("anima", "krea2", "flux2")
+RUNTIME_INT8_ARCHS = ("anima", "krea2", "flux2", "ideogram4")
 
 # Architectures whose LOADERS swap in the weight-only quantized Linear classes
 # (``Fp8Linear`` / ``Int8Linear``), i.e. the archs where a quantized-GEMM path
-# exists to select at all. A SUPERSET of RUNTIME_INT8_ARCHS: Ideogram 4 has no
-# in-place runtime conversion, but its checkpoints ship FP8/nf4 quantized, so it
-# owns quantized Linears all the same. Consumed by
-# ``backend/api/quantized_gemm.py``.
+# exists to select at all. Kept as a SUPERSET expression rather than collapsed
+# into the tuple above: it was a strict superset while Ideogram 4 had no in-place
+# runtime conversion (its checkpoints ship FP8/nf4 quantized, so it owned
+# quantized Linears all the same), the two sets coincide today, and the next arch
+# whose loader reads a quantized file before its runtime path is wired will make
+# them differ again. Consumed by ``backend/api/quantized_gemm.py``.
 QUANTIZED_LINEAR_ARCHS = tuple(sorted({"ideogram4", *RUNTIME_INT8_ARCHS}))
 
 # Display spelling of an arch id, for user-facing prose only. Every arch that
@@ -438,14 +461,23 @@ def float8_weight_linear_count(model: nn.Module) -> int:
     )
 
 
-def _lora_wrapped_count(model: nn.Module) -> int:
+def lora_wrapped_count(model: nn.Module) -> int:
     """Count LoRA wrappers under ``model`` (by class name, no import needed).
 
     A wrapped Linear is no longer an ``nn.Linear``, so converting a LoRA'd module
     would silently skip every wrapped layer and select a DIFFERENT set than the
     offline audit. The converter refuses instead.
+
+    Public because a multi-component caller must be able to ask BEFORE it starts:
+    ``quantize_linears_in_place`` refuses per module, and discovering the refusal
+    on the second transformer would already have converted the first.
     """
     return sum(1 for m in model.modules() if type(m).__name__ == "LoRALinearLayer")
+
+
+# Historical private spelling, kept because it is the name the refusal below
+# reads by.
+_lora_wrapped_count = lora_wrapped_count
 
 
 def _resolve_parent(root: nn.Module, dotted: str) -> Tuple[nn.Module, str]:

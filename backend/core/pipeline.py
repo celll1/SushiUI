@@ -209,6 +209,10 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         # the only way back to full precision. Reached for the SAME checkpoint
         # only via force_reload -- which is why POST /models/load takes it.
         self._runtime_int8_converted = False
+        # The checkpoint-provenance latch is per LOADED MODEL too: the next
+        # checkpoint may be an unquantized one, and a stale True would key
+        # keep-hot as "quantized" for a bf16 transformer.
+        self._runtime_int8_from_checkpoint = False
         self._runtime_int8_partial = False
         self._runtime_int8_partial_rows = []
         self._runtime_int8_partial_done = 0

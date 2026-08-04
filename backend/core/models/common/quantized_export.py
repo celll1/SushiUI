@@ -60,6 +60,7 @@ __all__ = [
     "link_siblings",
     "krea2_export_metadata",
     "anima_export_metadata",
+    "ideogram4_export_metadata",
     "check_layout_prefixes",
     "identity_source_transform",
     "layout_module_specs",
@@ -150,6 +151,41 @@ def flux2_export_metadata(config: dict) -> Dict[str, str]:
     return metadata
 
 
+def ideogram4_export_metadata(config: dict) -> Dict[str, str]:
+    """Metadata block an Ideogram 4 COMBINED single-file loader reads.
+
+    ``load_ideogram4_single_file`` reads exactly two metadata keys,
+    ``transformer_config`` and ``unconditional_transformer_config``, and falls
+    back to ``<base dir>/<subfolder>/config.json`` for either one it does not
+    find. Both are written here, from the SAME config, for two reasons:
+
+    * the export job hands this builder the PRIMARY component's config, and
+      Ideogram 4's two transformers are declared with identical geometry -- the
+      two ``config.json`` files in a published model directory are byte-identical
+      apart from ``_name_or_path``, and the loader builds both branches from
+      ``Ideogram4Transformer2DModel.from_config`` with no branch-specific key;
+    * the fallback path is the fragile one. ``_resolve_ideogram4_base_dir``
+      recognises a base directory by ``transformer/config.json`` plus
+      ``text_encoder/`` and does NOT require an ``unconditional_transformer/``
+      subfolder, so a base dir that satisfies the probe can still fail to answer
+      the second ``_config_for``. Carrying both configs in the file makes the
+      artifact self-describing for the part that decides its module tree.
+
+    Keys beginning with ``_`` (``_class_name``, ``_diffusers_version``,
+    ``_name_or_path``) are dropped: ``from_config`` does not need them and the
+    last is a path on someone else's machine.
+    """
+    config = {k: v for k, v in dict(config or {}).items() if not str(k).startswith("_")}
+    blob = json.dumps(config, default=str)
+    return {
+        "modelspec.architecture": "ideogram4",
+        "model_type": "ideogram4",
+        "transformer_config": blob,
+        "unconditional_transformer_config": blob,
+        "format": "pt",
+    }
+
+
 def anima_export_metadata(config: dict) -> Dict[str, str]:
     """Metadata block an Anima DiT single-file loader reads.
 
@@ -182,6 +218,20 @@ def _flux2_source_transform(key: str, tensor: Optional[torch.Tensor]):
     from core.models.flux2.single_file import flux2_bfl_to_diffusers
 
     return flux2_bfl_to_diffusers(key, tensor)
+
+
+def _ideogram4_source_transform(key: str, tensor: Optional[torch.Tensor]):
+    """Ideogram 4's ``source_transform``: fused qkv -> split q/k/v, ``o`` -> ``to_out.0``.
+
+    Deferred and thin for the same reason as the FLUX.2 one above: the
+    implementation lives next to the loader's own remap
+    (``ideogram4_loader.ideogram4_fused_qkv_to_split``, which the dict-shaped
+    ``_convert_fused_qkv_to_split`` the loader runs also delegates to), so the
+    offline artifact's keys cannot drift from the module paths the loader builds.
+    """
+    from core.models.ideogram4.ideogram4_loader import ideogram4_fused_qkv_to_split
+
+    return ideogram4_fused_qkv_to_split(key, tensor)
 
 
 def identity_source_transform(key: str, tensor: Optional[torch.Tensor]):
@@ -291,6 +341,54 @@ EXPORT_LAYOUTS: Dict[str, Dict[str, object]] = {
         # ``text_encoder`` directory beside the file would be inert, so offering
         # to create one would only suggest it mattered.
         "siblings": (),
+        "sibling_root": ".",
+        "output_subdir": "",
+    },
+    "ideogram4": {
+        # THE multi-component layout, and the reason the machinery exists.
+        # Ideogram 4 runs asymmetric CFG: a conditional ``transformer`` and a
+        # separate ``unconditional_transformer`` of identical geometry, BOTH
+        # required at inference. sushiUI's combined single-file save stores them
+        # under these two prefixes (``ideogram4_loader.COND_PREFIX`` /
+        # ``UNCOND_PREFIX``) in ONE file, and an export must do the same: two
+        # files would break the single-file property, and a file carrying only
+        # the conditional branch would load (the loader skips a missing
+        # unconditional branch with a print) and then generate without the
+        # asymmetric-CFG branch it was trained to use.
+        "modules": (
+            ("transformer", "transformer."),
+            ("unconditional_transformer", "unconditional_transformer."),
+        ),
+        # The offline tool works one component at a time, PRIMARY first; see the
+        # ``sources`` plan in subapps/fp8_quantize/quantize_transformer_fp8.py,
+        # which derives each pass's prefixes from ``modules`` above so that
+        # out_prefix + source_prefix == that component's live prefix, exactly the
+        # invariant ``check_layout_prefixes`` states for the single-component
+        # archs.
+        "offline_prefix": "transformer.",
+        "source_prefix": "",
+        # Ideogram 4's published checkpoints store attention as a FUSED
+        # ``layers.N.attention.qkv`` (13824x4608 = 3 x 4608 rows) plus
+        # ``attention.o``, and the loader splits them into the vendored
+        # transformer's ``to_q``/``to_k``/``to_v``/``to_out.0`` BEFORE it swaps in
+        # the quantized Linear classes -- so the checkpoint keys are not module
+        # paths, and an artifact keyed on them would match nothing. Splitting
+        # first is numerically free (the scales are per output ROW and the split
+        # is along rows), and it is what makes the offline artifact identical to
+        # a runtime export, which necessarily sees the module after the split.
+        "source_transform": _ideogram4_source_transform,
+        "metadata": ideogram4_export_metadata,
+        # ``_resolve_ideogram4_base_dir`` recognises a base diffusers directory by
+        # ``transformer/config.json`` + ``text_encoder/`` and completes the text
+        # encoder, tokenizer, VAE and scheduler from it. Junctioning those next to
+        # the output makes the output's own directory qualify, so the exported
+        # file resolves its companions without depending on where it was written.
+        # ``transformer`` and ``unconditional_transformer`` are linked ONLY to
+        # satisfy that probe and its config fallback -- no weights are read from
+        # them, since the exported file carries both transformers and both
+        # configs.
+        "siblings": ("transformer", "unconditional_transformer",
+                     "text_encoder", "tokenizer", "vae", "scheduler"),
         "sibling_root": ".",
         "output_subdir": "",
     },

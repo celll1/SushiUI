@@ -106,8 +106,16 @@ def _quantization_fingerprint(manager, params: Dict[str, Any]) -> str:
     the checkpoint's nor fully int8, and it stops being "int8_partial" the moment
     a later request converts the remainder -- which is exactly when the resident
     set must be re-keyed.
+
+    ``_runtime_int8_from_checkpoint`` (the transformer arrived quantized, so an
+    int8 request was a no-op) normalises to the SAME value. The two latches
+    differ only in provenance -- which decides whether the user is told the
+    conversion is one-way -- and provenance is not a property of the resident
+    component set. Keying them apart would evict a component set that is in fact
+    still exactly what was staged.
     """
-    if getattr(manager, "_runtime_int8_converted", False):
+    if getattr(manager, "_runtime_int8_converted", False) \
+            or getattr(manager, "_runtime_int8_from_checkpoint", False):
         return "int8"
     if getattr(manager, "_runtime_int8_partial", False):
         return "int8_partial"

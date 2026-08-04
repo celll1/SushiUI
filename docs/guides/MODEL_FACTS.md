@@ -185,8 +185,19 @@ a generation without style transfer.
     permanently drops `Fp8Linear`'s `_scaled_mm` fast path, which gates on the
     weight dtype. The swap count is then verified against the checkpoint's own
     quantized-key census (`quantized_checkpoint_guard.verify_quantized_swap`,
-    shared with anima): a scale-less or path-mismatched quantized file is refused
-    instead of falling through to the plain `strict=False` load.
+    shared with anima): a scale-less INTEGER or path-mismatched quantized file is
+    refused instead of falling through to the plain `strict=False` load.
+  - **A pure float8 CAST is not a quantized checkpoint** and loads normally on
+    all four archs. `quantized_checkpoint_guard.scaled_quantization_report`
+    narrows the census before any loader branches on it: float8 `.weight`s with
+    NO `.weight_scale` anywhere (the dominant ComfyUI "fp8" release shape) are
+    bf16 rounded to 8-bit floats, meant to be read by casting back — which every
+    loader already does, exactly (e4m3's range and 3-bit mantissa sit inside
+    bf16). So such a file skips the swap, is not refused for its key layout on
+    FLUX.2, and loads as it did before the guards existed; Anima additionally
+    casts the tensors first because its load is `assign=True`. Scale-less
+    INT8/uint8 weights stay refused: those are codes, and casting them measured
+    103020% error.
   - **Offline artifact**: `quantize_transformer_fp8.py --arch flux2 --format int8`
     accepts a BFL/Comfy *or* a diffusers source and always emits diffusers keys —
     the arch's `source_transform` runs diffusers'
@@ -215,6 +226,67 @@ a generation without style transfer.
   unconditional); asymmetric CFG zeroes the unconditional text branch. FP8
   weight-only Qwen3-VL and FP8 transformer linears; head_dim 256 keeps it on native
   attention. VAE is `AutoencoderKLFlux2` at 32 latent channels.
+  - **Weight-only INT8**: Ideogram 4 is in `RUNTIME_INT8_ARCHS`, and it is the
+    largest target here — **279 Linears holding 9.2779 G 2-D parameters per
+    transformer, times two transformers** = 558 Linears / 18.5559 G parameters,
+    all shapes 8-aligned. `unet_quantization: "int8"` converts BOTH branches in
+    one call (`Ideogram4Mixin._ideogram4_runtime_int8` ->
+    `vram_optimization.apply_runtime_int8_quantization_multi`), from
+    `_ideogram4_stage_transformers`, before the per-transformer block offloaders
+    are built and before the `->GPU` move (the block-swap branch never performs
+    that move at all). The MULTI entry point is not a convenience: the
+    `_runtime_int8_converted` latch is per manager, so two single-module calls
+    would convert the conditional branch, latch, and silently leave the
+    unconditional one bf16 — the two halves of one asymmetric-CFG step at
+    different precisions. `arch_capabilities` still lists `unet_quantization` as
+    unsupported for ideogram4 (its FP8/nf4 story is checkpoint-format driven) and
+    carries `int8` in `ARCH_SUPPORTED_VALUES`, the krea2 treatment.
+    `skip_below_work_gate` is ON: 38 of the 279 Linears are below the runtime
+    min-work gate and 34 of them are 512x18432 AdaLN modulation Linears — the
+    shape class Anima measured as a net loss — for 3.52% of the parameters. That
+    is Anima's measurement applied to a matching shape class plus Ideogram 4's own
+    census, NOT a timing run on Ideogram 4.
+  - **Loader**: `_swap_ideogram4_quantized_linears` now detects int8 and e4m3
+    independently and runs both swaps (it used to call only the FP8 half, which
+    would have mis-loaded an int8 file), after the nf4 branch — a bitsandbytes
+    checkpoint has uint8 weights and `.quant_state` siblings, no `.weight_scale`.
+    The swap count is then checked against the checkpoint's own quantized-key
+    census (`quantized_checkpoint_guard.verify_quantized_swap`); the same check
+    was added to the Krea 2 loader, where a scale-less or path-mismatched
+    quantized file also used to fall through to the plain load. Measured on the
+    published FP8 checkpoint: 279 scale keys = 279 quantized weights = 279
+    swappable Linears, per transformer.
+  - **Offline artifact / export**: `EXPORT_LAYOUTS["ideogram4"]` is the only
+    multi-component entry — `transformer.` + `unconditional_transformer.` into
+    ONE `ShardWriter`, because two files would not be a single-file artifact and a
+    conditional-only file would load (the loader skips a missing unconditional
+    branch with a print) and then generate with one branch quantized. The offline
+    tool plans one pass per component and accepts either a published model ROOT
+    (`<root>/transformer/` + `<root>/unconditional_transformer/`) or a combined
+    single file; a single component directory is refused. Its `source_transform`
+    splits the fused `layers.N.attention.qkv` (13824x4608) into `to_q`/`to_k`/`to_v`
+    and renames `attention.o` -> `to_out.0`, delegating to the SAME per-key rule
+    `ideogram4_loader._convert_fused_qkv_to_split` uses, because the loader splits
+    before the quantized swap so the checkpoint keys are not module paths.
+    Measured on `M:/model/ideogram4/ideogram4`: 669 source keys -> 805 canonical
+    keys per component, set-EQUAL to the meta-built module's state-dict keys plus
+    its 279 scale siblings (0 either way), and the `tensor=None` key pass equals
+    the per-tensor pass. Selection: 241 quantized / 38 skipped per transformer,
+    482 / 76 in total.
+  - **No int8 artifact exists for the local checkpoint**, and cannot: the only
+    Ideogram 4 checkpoint here is the FP8 one, and the offline tool now REFUSES an
+    already-quantized source (its weights are rounded once already, and its
+    `.weight_scale` keys would collide with the new ones). A dry run reports the
+    refusal and still prints the selection. The int8 path is for a bf16
+    Ideogram 4 — a release or a sushiUI full-FT save.
+    The refusal takes the same TWO pieces of evidence the loader-side census
+    does: a `.weight_scale` key OR a `.weight` whose stored dtype is
+    int8/uint8/float8, read from the safetensors HEADER (zero tensor bytes) with
+    the dtype set imported from the guard. The scale test alone missed the
+    commonest already-rounded source there is — a scale-less ComfyUI fp8 cast,
+    whose keys remap onto module paths like any other, so nothing else refused
+    it. Verified against the four real sources (ideogram4 482/76, flux2 109/109,
+    krea2 263/1, anima 232/283): all still accepted.
 - **lens** — GPT-OSS mxfp4 text encoder permanently holds ~9.7 GB VRAM while loaded
   (packed FP4 buffers untracked by PyTorch, cannot be moved to CPU). VAE falls back
   to the shared FLUX.2-klein-4B vae store when the model ships none.
@@ -237,7 +309,7 @@ a generation without style transfer.
     `GET/POST /api/v1/system/int8-mm`) or per generation (`quantized_gemm_mode`).
   - **Runtime INT8 (no pre-built artifact)**: `unet_quantization: "int8"` on an
     ordinary bf16 checkpoint of any arch in `RUNTIME_INT8_ARCHS` (Anima, Krea 2,
-    FLUX.2) converts the loaded transformer IN
+    FLUX.2, Ideogram 4) converts the loaded transformer IN
     PLACE, once, at the first generation after the model load
     (`vram_optimization.apply_runtime_int8_quantization` ->
     `core/models/common/int8_runtime_quantize.quantize_linears_in_place`). The
@@ -273,6 +345,14 @@ a generation without style transfer.
     model id and resets nothing. `keep_hot.compute_model_key`
     normalises the quantization component to `"int8"` once converted, so the
     resident set does not thrash between generations.
+  - An already-quantized CHECKPOINT sets its OWN latch,
+    `_runtime_int8_from_checkpoint`, not `_runtime_int8_converted`. Keep-hot keys
+    the two identically (both mean "the resident transformer is quantized"), but
+    only a real in-place conversion emits `runtime_quantization_persistent` —
+    nothing was converted and a reload would produce the same model, so saying
+    otherwise is false. It matters most on Ideogram 4, whose published
+    checkpoints are ALL FP8/nf4: with a shared latch, one `int8` request made the
+    false one-way warning fire on every subsequent generation.
   - Refusals, each leaving the transformer exactly as it was: an already
     weight-only quantized CHECKPOINT (`quantization_superseded`); weights already
     cast to float8 by an FP8 generation earlier in the same session

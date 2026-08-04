@@ -131,6 +131,78 @@ def reject_quantized_base(transformer: Optional[nn.Module], *, model_label: str)
     )
 
 
+def warn_quantized_base_without_checkpointing(
+    transformer: Optional[nn.Module],
+    *,
+    gradient_checkpointing: bool,
+    log_prefix: str = "[Trainer]",
+) -> Optional[str]:
+    """Report the memory cost of a quantized base with checkpointing disabled.
+
+    THE CONDITION. ``Int8Linear`` / ``Fp8Linear`` run ``_dequant_forward``, which
+    builds ``w = codes.to(x.dtype) * scale[:, None]`` and hands it to
+    ``F.linear``. ``F.linear`` saves its weight operand for backward because
+    ``grad_input = grad_output @ w``. For a bf16 ``nn.Linear`` that saved tensor
+    is an ALIAS of the resident parameter and costs nothing; for a quantized
+    Linear it is a fresh ``(out, in)`` allocation in the compute dtype, on top of
+    the 1-byte codes. Per weight per live checkpoint unit that is 1 B resident +
+    2 B retained, against 2 B + 0 for an unquantized base.
+
+    With gradient checkpointing ON, one unit is live at a time and the quantized
+    base still uses less memory overall. With it OFF, every layer's temporary is
+    live simultaneously, so the whole model materialises in the compute dtype on
+    top of the codes and the quantized base uses MORE memory than the bf16 one it
+    replaced.
+
+    Numbers in the message are measured (synthetic, `torch.cuda.max_memory_allocated`)
+    and derived (safetensors headers), recorded in
+    ``core/training/INT8_W8A8_TRAINING_GATE.md (G4)`` together with the
+    autograd fix that was built for this, measured, and REFUSED by that gate's
+    pre-registered step-time ceiling.
+
+    Returns the message (also printed to the training log, which is the channel a
+    training run's output reaches the user through) or None when the condition
+    does not hold. Also offered to ``api.generation_status.add_warning``
+    best-effort, the same way ``int8_linear._report_int_mm_fallback`` does; that
+    channel is per-process and a training subprocess has its own, so the printed
+    line is the one that is guaranteed to arrive.
+    """
+    if gradient_checkpointing:
+        return None
+    n = count_quantized_linears(transformer)
+    if not n:
+        return None
+    # Bytes per retained element = the compute dtype the quantized modules were
+    # built with, read off a real module rather than assumed to be bf16.
+    retained_bytes = 2
+    for m in transformer.modules():
+        dtype = getattr(m, "compute_dtype", None)
+        if isinstance(dtype, torch.dtype):
+            retained_bytes = torch.empty(0, dtype=dtype).element_size()
+            break
+    message = (
+        f"gradient_checkpointing is disabled and the base transformer is weight-only "
+        f"quantized ({n} Int8Linear/Fp8Linear layer(s)). Each quantized Linear hands its "
+        f"dequantized weight to autograd, which retains it until backward: 1 byte per "
+        f"weight element resident plus {retained_bytes} bytes per "
+        f"element retained, against {retained_bytes} bytes plus 0 for an unquantized base. "
+        f"With checkpointing disabled all {n} are retained at once. Measured on a 28-layer "
+        f"2048x2048 int8 synthetic (the e4m3 arm's memory was not measured): peak 426.4 MiB "
+        f"quantized vs 322.2 MiB bf16. Derived for a "
+        f"Krea 2 transformer: 11.94 GiB of codes plus 23.88 GiB of retained weights, "
+        f"against a 23.88 GiB bf16 base. Enabling gradient_checkpointing keeps one block's "
+        f"temporaries live at a time."
+    )
+    print(f"{log_prefix} WARNING: {message}")
+    try:
+        from api.generation_status import add_warning
+
+        add_warning(message, code="quantized_base_no_checkpointing")
+    except Exception:
+        pass
+    return message
+
+
 class BaseLoRAAdapter(ABC):
     """
     Abstract base class for model-specific LoRA adapters.

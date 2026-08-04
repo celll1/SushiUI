@@ -7452,6 +7452,25 @@ class BaseTrainer(ABC):
             ve_trainable_scalars = sum(p.numel() for p in self.vision_encoder.parameters() if p.requires_grad)
             print(f"{self.log_prefix}   Vision Encoder:    tensors={ve_trainable_tensors}, params={format_param_count(ve_trainable_scalars)}")
 
+        # A weight-only quantized base costs MORE memory than the bf16 base it
+        # replaced when gradient checkpointing is off, because every quantized
+        # Linear's dequantized weight is retained by autograd until backward and
+        # none of them are freed in between. Reported once here, where both facts
+        # are known; see adapters/base_adapter.py and
+        # core/training/INT8_W8A8_TRAINING_GATE.md (G4).
+        try:
+            from core.training.adapters.base_adapter import (
+                warn_quantized_base_without_checkpointing,
+            )
+
+            warn_quantized_base_without_checkpointing(
+                unet_obj,
+                gradient_checkpointing=self.gradient_checkpointing,
+                log_prefix=self.log_prefix,
+            )
+        except Exception as _qb_warn_err:
+            print(f"{self.log_prefix} WARNING: quantized-base memory check skipped: {_qb_warn_err}")
+
         # If Text Encoder is trainable, embeddings must be recomputed each step
         if text_encoder_trainable and text_encoding_mode in ['swap_onthefly', 'pre_encoded_cache', 'cpu_prefetch']:
             print(f"{self.log_prefix} WARNING: Text Encoder is trainable but text_encoding_mode='{text_encoding_mode}'")

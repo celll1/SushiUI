@@ -162,7 +162,7 @@ paths:
               example:
                 unsupported:
                   sdxl:
-                    quantized_gemm: "this architecture's checkpoints hold plain floating-point Linear weights; the quantized-GEMM path selection applies only to the weight-only quantized Linear layers used by ACE-Step, Anima, FLUX.2, Ideogram 4, Krea 2 and LTX-2.3"
+                    quantized_gemm: "this architecture's checkpoints hold plain floating-point Linear weights; the quantized-GEMM path selection applies only to the weight-only quantized Linear layers used by ACE-Step, Anima, FLUX.2, Ideogram 4, Krea 2, LTX-2.3 and Z-Image"
                   krea2:
                     unet_quantization: "FP8 quantization on this architecture is selected by checkpoint format at load time (bf16 or weight-only FP8 checkpoints); the only per-generation unet_quantization value applied is 'int8', which converts an unquantized transformer in place once per model load"
                 supported_values:
@@ -174,8 +174,8 @@ paths:
                 feature_labels:
                   quantized_gemm: "quantized_gemm_mode (quantized GEMM path)"
                   unet_quantization: "unet_quantization"
-                runtime_int8_archs: [anima, krea2, flux2, ideogram4, ltx2, acestep]
-                quantized_linear_archs: [acestep, anima, flux2, ideogram4, krea2, ltx2]
+                runtime_int8_archs: [anima, krea2, flux2, ideogram4, ltx2, acestep, zimage]
+                quantized_linear_archs: [acestep, anima, flux2, ideogram4, krea2, ltx2, zimage]
   /schema/generation-defaults:
     get:
       summary: Get default parameter values for txt2img/img2img/inpaint generation
@@ -5637,7 +5637,7 @@ components:
           nullable: true
           description: |
             Architecture being exported: one of `acestep`, `anima`, `flux2`,
-            `ideogram4`, `krea2`, `ltx2` (the keys of the backend's
+            `ideogram4`, `krea2`, `ltx2`, `zimage` (the keys of the backend's
             `EXPORT_LAYOUTS` table, pinned by
             `quantized_capability_parity_test`).
           example: anima
@@ -5854,7 +5854,7 @@ components:
             reported through the generation's `warnings[]`.
           items:
             type: string
-          example: [anima, krea2, flux2, ideogram4, ltx2, acestep]
+          example: [anima, krea2, flux2, ideogram4, ltx2, acestep, zimage]
         quantized_linear_archs:
           type: array
           description: |
@@ -5868,7 +5868,7 @@ components:
             today.
           items:
             type: string
-          example: [acestep, anima, flux2, ideogram4, krea2, ltx2]
+          example: [acestep, anima, flux2, ideogram4, krea2, ltx2, zimage]
     Fp8ScaledMmState:
       type: object
       required: [enabled, origin, resolved_modes]
@@ -6121,12 +6121,15 @@ components:
             U-Net/transformer quantization mode. `none`/null = full precision.
 
             `fp8_e4m3fn` / `fp8_e5m2` — per-call full-weight dequantization
-            (SD1.5/SDXL, Z-Image, FLUX.2, Anima, Lens). Weights are stored at
+            (SD1.5/SDXL, Z-Image, FLUX.2, Anima, Lens; on Z-Image these two
+            values still take that path, and only the INT8 value described
+            below takes the in-place converter). Weights are stored at
             lower precision and dequantized back to full precision per
             operation during inference, so measured generation speed is slower
             than full precision, not faster.
 
-            `int8` — **`anima`, `krea2`, `flux2`, `ideogram4`, `ltx2` and `acestep` only**
+            `int8` — **`anima`, `krea2`, `flux2`, `ideogram4`, `ltx2`, `acestep`
+            and `zimage` only**
             (the authoritative list is `runtime_int8_archs` from
             `GET /schema/arch-capabilities`). Converts the loaded
             transformer IN PLACE to the mixed weight-only int8/e4m3 layout the
@@ -6183,7 +6186,7 @@ components:
 
             Consumed only by the architectures whose loaders swap in the
             quantized Linear classes — `acestep`, `anima`, `flux2`, `ideogram4`,
-            `krea2`, `ltx2`
+            `krea2`, `ltx2`, `zimage`
             (the `quantized_linear_archs` list of
             `GET /schema/arch-capabilities`, which is derived from the backend's
             own tuple and is the authority if this sentence ever drifts).

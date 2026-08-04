@@ -27,8 +27,167 @@ from core.inference.custom_sampling import custom_sampling_loop, custom_img2img_
 import time as _time
 from core.inference.generation_timing import generation_timer
 
+
+def _is_lora_target(module) -> bool:
+    """True for a Linear this backend's LoRA loader may wrap.
+
+    A thin delegation to the shared predicate, kept as a MODULE-LEVEL function
+    for the same two reasons ``pipeline_backends/acestep._is_lora_target``
+    is: first, Z-Image can now own ``Int8Linear``/``Fp8Linear`` layers (a
+    weight-only quantized checkpoint, or the in-place conversion
+    ``_zimage_runtime_int8`` performs on request), and those are ``nn.Module``s
+    but NOT ``nn.Linear`` subclasses -- the inline ``isinstance(x, nn.Linear)``
+    tests this replaced would have skipped every one of them silently, reporting
+    a smaller "Applied LoRA to N modules" count that reads like a narrower LoRA;
+    second, ``quantized_capability_parity_test`` locates an arch's predicate BY
+    NAME in this module and exercises it on real
+    ``Int8Linear``/``Fp8Linear``/``nn.Linear`` instances, which an inline test
+    cannot be checked through.
+    """
+    from core.training.adapters.base_adapter import is_lora_wrappable_linear
+
+    return is_lora_wrappable_linear(module)
+
+
 class ZImageMixin:
     """ZImageMixin: zimage backend methods extracted verbatim from pipeline.py."""
+
+    def _zimage_runtime_int8(self, params: Dict[str, Any], progress_callback=None):
+        """Apply the one-time in-place INT8 conversion, if this request asks for it.
+
+        No-op for every ``unet_quantization`` value other than ``"int8"`` (the
+        FP8 values keep going through ``move_zimage_transformer_to_gpu``), for an
+        already-converted transformer, and for a checkpoint that already carries
+        weight-only quantized Linears. See
+        ``vram_optimization.apply_runtime_int8_quantization`` for the full
+        contract. The conversion replaces child modules in place and never builds
+        a second module -- a 6.15 G-parameter DiT would not tolerate the
+        ``copy.deepcopy`` the legacy FP8 path uses.
+
+        SCOPE. Only ``zimage_components["transformer"]`` is converted. The Qwen3
+        text encoder and the VAE are separate component objects this walk cannot
+        reach; ``text_encoder_quantization`` remains its own, unrelated parameter
+        and this changes nothing about it.
+
+        ORDERING, which is load-bearing rather than incidental. Called in each of
+        the three generate paths at the point the quantization parameters are
+        read, which is:
+
+        * AFTER the LoRA gate (``_load_lora_zimage`` / ``_unload_lora_zimage``)
+          in txt2img and img2img. The converter REFUSES a LoRA-wrapped module --
+          the wrappers hide the Linears, so the selection would differ from the
+          offline audit -- and Z-Image's wrappers are PERSISTENT state:
+          ``_zimage_lora_wrapped_modules`` survives the generation that created
+          it and is cleared only by the NEXT generation's LoRA gate. Running the
+          conversion first would therefore see a stale wrapper from an earlier
+          generation and refuse an INT8 request that carries no LoRAs at all --
+          the LTX-2.3 stale-offloader shape, where the refusal's own advice
+          ("remove the LoRAs") had already been followed. After the gate, the
+          wrappers present are exactly the ones THIS request asked for, which is
+          the only case where refusing is right.
+          INPAINT HAS NO LORA GATE AT ALL -- ``_generate_inpaint_zimage`` never
+          calls ``_load_lora_zimage``/``_unload_lora_zimage``, so this hook is
+          NOT "after the LoRA gate" there; there is nothing to be after. A prior
+          txt2img/img2img generation that loaded LoRAs leaves
+          ``_zimage_lora_wrapped_modules`` populated (cleared only by a later
+          gated generation, not by inpaint), so a following inpaint request with
+          ``unet_quantization: "int8"`` and no LoRAs of its own can still see
+          ``lora_wrapped_count > 0`` and be refused with "Remove the LoRAs (or
+          reload the model without them) to convert" -- advice this request has
+          no way to act on, since it never asked for LoRAs. This is degradation
+          (an unnecessary refusal with misleading advice), not corruption, and it
+          is a symptom of a larger, pre-existing gap this hook does not fix:
+          inpaint also *runs* with whatever LoRAs the previous generation left
+          wrapped, since it has no gate of its own to unload them.
+        * BEFORE the block-swap branch and ``create_block_offloader_for_model``.
+          The offloader captures references to each block's Linear modules and
+          builds pinned CPU masters from their weights; converting afterwards
+          would replace the modules it holds and strand it on the pre-conversion
+          ones.
+        * BEFORE staging. ``move_zimage_transformer_to_gpu`` is only reached in
+          the NO-block-swap branch, so quantizing there would leave a
+          block-swapped generation unquantized. Here it happens on whatever
+          device the module currently sits on (the converter is device-aware).
+
+        THE STALE OFFLOADER, passed as ``precheck`` so it can only fire when a
+        conversion is really about to touch the first layer. Z-Image's offloader
+        is attached as ``transformer._block_offloader`` and is NEVER cleared --
+        ``_zimage_cleanup`` says so explicitly, and the transformer's own
+        ``forward`` calls ``self._block_offloader.wait_for_block(...)`` whenever
+        the attribute is present. So an offloader from an earlier block-swap
+        generation is live state holding references to the PRE-conversion
+        Linears, and leaving it attached across a conversion would have it stream
+        bf16 weights into modules nothing reads while the blocks it manages never
+        come back to GPU.
+        Unlike FLUX.2 and Ideogram 4 this does not REFUSE, because refusing would
+        be the LTX-2.3 false-advice defect verbatim: the offloader is stale by
+        construction at this point (this hook runs before this generation's
+        offloader is created, in all three paths), a block-swap request is about
+        to overwrite it a few lines later anyway, and a non-block-swap request
+        wants it gone. It is torn down instead, and ONLY on the request that
+        really converts -- a request that converts nothing leaves every attribute
+        exactly as it found it.
+        """
+        from core.vram_optimization import apply_runtime_int8_quantization
+
+        components = getattr(self, "zimage_components", None)
+        if not components:
+            return None
+        transformer = components.get("transformer")
+        if transformer is None:
+            return None
+
+        def _drop_stale_block_offloader():
+            offloader = getattr(transformer, "_block_offloader", None)
+            if offloader is None:
+                return
+            print("[Z-Image] INT8 conversion: tearing down the block offloader left by an "
+                  "earlier generation before replacing the Linear modules it holds "
+                  "references to")
+            try:
+                offloader.cleanup()
+            except Exception as e:
+                print(f"[Z-Image] block offloader cleanup failed ({e}); detaching anyway")
+            try:
+                delattr(transformer, "_block_offloader")
+            except Exception:
+                transformer._block_offloader = None
+
+        model, converted = apply_runtime_int8_quantization(
+            self, transformer, "zimage", params.get("unet_quantization"),
+            label="Z-Image Transformer", progress_callback=progress_callback,
+            precheck=_drop_stale_block_offloader)
+
+        # The converter mutates in place and returns the SAME object, so the
+        # component reference stays valid; re-assigned anyway so a future
+        # converter that returned a new module could not silently strand it.
+        components["transformer"] = model
+
+        if converted or getattr(self, "_runtime_int8_partial", False):
+            # ``converted`` is False for a PARTIAL conversion too (the
+            # CUDA-OOM-at-layer-N path the converter designs for), and the
+            # half-converted state is exactly the one that needs this cleanup
+            # most -- hence the latch as well as the flag.
+            #
+            # ``_load_lora_zimage`` caches the module it wrapped under
+            # ``_zimage_lora_original_modules`` so ``_unload_lora_zimage`` can put
+            # it back, and that cache is keyed by module path and never
+            # overwritten (``if module_key not in ...``); ``_unload_lora_zimage``
+            # deliberately keeps it "for future LoRA loads". After a conversion
+            # its entries are the PRE-conversion bf16 Linears, alive precisely
+            # because that dict holds them, and a later load-then-unload cycle
+            # would restore them over the Int8Linear modules -- silently
+            # un-quantizing those layers, having held their bf16 weights resident
+            # the whole time. The conversion only runs when nothing is wrapped
+            # (the converter refuses otherwise), so dropping the cache here is
+            # safe and simply lets the next LoRA load re-cache the modules that
+            # are actually installed.
+            stale = getattr(self, "_zimage_lora_original_modules", None)
+            if stale:
+                print(f"[Z-Image] dropping {len(stale)} cached pre-conversion LoRA base "
+                      f"module(s) after the INT8 conversion")
+                stale.clear()
+        return model
 
     def _load_lora_zimage(self, lora_configs: List[Dict]):
         """Load LoRAs for Z-Image Transformer
@@ -99,7 +258,7 @@ class ZImageMixin:
                         if hasattr(attn_module, attr_name):
                             original_linear = getattr(attn_module, attr_name)
 
-                            if isinstance(original_linear, torch.nn.Linear):
+                            if _is_lora_target(original_linear):
                                 # Build LoRA key prefix
                                 lora_key_prefix = f"transformer.{attn_name}.{attr_name}"
                                 lora_down_key = f"{lora_key_prefix}.lora_down.weight"
@@ -131,7 +290,7 @@ class ZImageMixin:
 
                     # Apply to to_out.0 (ModuleList)
                     if hasattr(attn_module, "to_out") and isinstance(attn_module.to_out, torch.nn.ModuleList):
-                        if len(attn_module.to_out) > 0 and isinstance(attn_module.to_out[0], torch.nn.Linear):
+                        if len(attn_module.to_out) > 0 and _is_lora_target(attn_module.to_out[0]):
                             original_linear = attn_module.to_out[0]
 
                             lora_key_prefix = f"transformer.{attn_name}.to_out.0"
@@ -212,9 +371,20 @@ class ZImageMixin:
             true_original, rank=rank, alpha=alpha_value, lora_name=module_key
         )
 
-        # Load pretrained LoRA weights
+        # Load pretrained LoRA weights.
+        #
+        # The dtype must NOT be taken from the base weight. Over an Int8Linear
+        # base ``true_original.weight.dtype`` is torch.int8, so this cast would
+        # quantize the LoRA branch itself to 8 uniform levels; over an Fp8Linear
+        # base it would round it to e4m3 and lose most of its precision. The
+        # device is still the base's -- that is exactly where the branch has to
+        # live -- and ``lora_branch_dtype`` returns the base's real dtype for an
+        # ordinary bf16/fp16 nn.Linear, so this is byte-identical on an
+        # unquantized checkpoint.
+        from core.training.adapters.base_adapter import lora_branch_dtype
+
         device = true_original.weight.device
-        dtype = true_original.weight.dtype
+        dtype = lora_branch_dtype(true_original)
 
         with torch.no_grad():
             lora_wrapper.lora_down.weight.data = lora_down_weight.to(device=device, dtype=dtype)
@@ -556,6 +726,14 @@ class ZImageMixin:
             # Get quantization parameters
             transformer_quantization = params.get("unet_quantization")  # Transformer (U-Net equivalent)
             text_encoder_quantization = params.get("text_encoder_quantization")  # Text Encoder (Z-Image only)
+
+            # Runtime INT8: converts the transformer IN PLACE, once per model
+            # load, when this request asks for it. Placed here deliberately --
+            # after the LoRA gate above, before the block-swap branch and before
+            # any staging. See _zimage_runtime_int8 for the full ordering
+            # argument; a request for anything other than "int8" is a no-op.
+            transformer = self._zimage_runtime_int8(
+                params, progress_callback=progress_callback) or transformer
 
             # ============================================================
             # Stage 1: Text Encoding
@@ -901,6 +1079,14 @@ class ZImageMixin:
             # Get quantization parameters
             transformer_quantization = params.get("unet_quantization")
             text_encoder_quantization = params.get("text_encoder_quantization")
+
+            # Runtime INT8: converts the transformer IN PLACE, once per model
+            # load, when this request asks for it. Placed here deliberately --
+            # after the LoRA gate above, before the block-swap branch and before
+            # any staging. See _zimage_runtime_int8 for the full ordering
+            # argument; a request for anything other than "int8" is a no-op.
+            transformer = self._zimage_runtime_int8(
+                params, progress_callback=progress_callback) or transformer
 
             # ============================================================
             # Stage 1: Text Encoding
@@ -1312,6 +1498,20 @@ class ZImageMixin:
             # Get quantization parameters
             transformer_quantization = params.get("unet_quantization")
             text_encoder_quantization = params.get("text_encoder_quantization")
+
+            # Runtime INT8: converts the transformer IN PLACE, once per model
+            # load, when this request asks for it. Placed here deliberately --
+            # before the block-swap branch and before any staging. NOTE: unlike
+            # txt2img/img2img there is no LoRA gate above this call -- inpaint
+            # never calls _load_lora_zimage/_unload_lora_zimage (see the
+            # "Inpaint does not apply LoRA" comment near the top of this
+            # function). If an earlier txt2img/img2img generation left
+            # _zimage_lora_wrapped_modules populated, this hook can still see it
+            # and refuse an int8 request that carries no LoRAs of its own. See
+            # _zimage_runtime_int8 for the full ordering argument; a request for
+            # anything other than "int8" is a no-op.
+            transformer = self._zimage_runtime_int8(
+                params, progress_callback=progress_callback) or transformer
 
             # ============================================================
             # Stage 1: Text Encoding
@@ -2235,17 +2435,34 @@ class ZImageMixin:
                 print(f"[Z-Image] Denoising loop: {num_inference_steps} steps requested, {len(scheduler.timesteps)} timesteps generated (scheduler: {scheduler.__class__.__name__})")
             timesteps = scheduler.timesteps
 
-        # Detect FP8 quantization (check once before loop)
-        has_fp8_weights = False
-        for module in transformer.modules():
-            if isinstance(module, torch.nn.Linear):
-                if module.weight.dtype in [torch.float8_e4m3fn, torch.float8_e5m2]:
-                    has_fp8_weights = True
-                    print(f"[Z-Image] Detected FP8 quantized Transformer (dtype: {module.weight.dtype})")
-                    print(f"[Z-Image] Will use autocast for mixed precision inference")
-                    break
-        if not has_fp8_weights:
-            print(f"[Z-Image] Transformer not quantized (BF16 inference)")
+        # Detect a legacy FP8 CAST (check once before loop).
+        #
+        # ``float8_weight_linear_count`` is the shared spelling of exactly this
+        # question -- plain ``nn.Linear`` modules whose ``weight`` already holds
+        # float8, which is what ``_quantize_transformer`` / the legacy in-place
+        # FP8 path leaves behind. It deliberately does NOT count ``Fp8Linear`` /
+        # ``Int8Linear``: those are weight-only quantized MODULES that dequantize
+        # (or run W8A8) inside their own forward, so they need no autocast and
+        # counting them here would switch it on for a checkpoint that does not
+        # want it. Using the helper also keeps this loop off the LoRA-target
+        # ``isinstance(x, nn.Linear)`` trap list, which it is not an instance of
+        # but is indistinguishable from by a source scan.
+        from core.models.common.int8_runtime_quantize import (
+            already_weight_only_quantized, float8_weight_linear_count,
+        )
+        has_fp8_weights = bool(float8_weight_linear_count(transformer))
+        if has_fp8_weights:
+            print(f"[Z-Image] Detected FP8-cast Transformer weights "
+                  f"({float8_weight_linear_count(transformer)} nn.Linear layer(s))")
+            print(f"[Z-Image] Will use autocast for mixed precision inference")
+        else:
+            owned = already_weight_only_quantized(transformer)
+            if owned:
+                print(f"[Z-Image] Transformer is weight-only quantized "
+                      f"({owned} Int8Linear/Fp8Linear layer(s); no autocast needed -- each "
+                      f"layer produces the activation dtype itself)")
+            else:
+                print(f"[Z-Image] Transformer not quantized (BF16 inference)")
 
         # Spectrum output-mode acceleration: forecast the per-step (post-CFG) velocity
         # on skip steps to avoid the transformer evaluation. Output mode only (block mode

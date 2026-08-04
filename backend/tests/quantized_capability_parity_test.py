@@ -231,6 +231,16 @@ _LOADER_ENTRY_POINTS = {
     ),
     "krea2": (("core.models.krea2.krea2_loader", "load_krea2_components"),),
     "ltx2": (("core.models.ltx2.loader", "load_ltx2_from_diffusers"),),
+    # Z-Image's PUBLIC entry point is `load_zimage_from_diffusers`, but that one
+    # returns a bare NAME (`return components`) after delegating, so it carries
+    # no statically readable dict literal at all. The function it delegates to is
+    # the one that BUILDS the component dict, and it returns a literal -- so that
+    # is what is anchored here. This is the strongest available anchor rather
+    # than a convenience: `load_zimage_from_diffusers` has exactly two branches,
+    # this delegation and a `NotImplementedError`, so every Z-Image component
+    # dict in the process comes from this literal.
+    "zimage": (("core.model_loader",
+                "ModelLoader.load_zimage_from_comfy_safetensors"),),
 }
 
 
@@ -1132,8 +1142,30 @@ def _acestep_case(quantization):
     manager._acestep_runtime_int8({"unet_quantization": quantization})
 
 
+def _zimage_case(quantization):
+    """Z-Image's stale state is BOTH kinds: a block offloader and LoRA wrappers.
+
+    ``transformer._block_offloader`` is never cleared (``_zimage_cleanup`` says
+    so, and the transformer's own forward consults the attribute whenever it is
+    present), and ``_zimage_lora_original_modules`` is deliberately kept "for
+    future LoRA loads". Both are set here, because a request that converts
+    NOTHING must not care about either -- the hook's ``precheck`` tears the
+    offloader down only when a conversion really starts.
+    """
+    from core.pipeline_backends.zimage import ZImageMixin
+
+    transformer = _tiny_transformer()
+    transformer._block_offloader = _FakeOffloader()
+    manager = _FakeManager(zimage_components={"transformer": transformer},
+                           _zimage_lora_original_modules={"stale": nn.Linear(8, 8)},
+                           _zimage_lora_wrapped_modules=set())
+    manager.__class__ = type("FakeZImage", (_FakeManager, ZImageMixin), {})
+    manager._zimage_runtime_int8({"unet_quantization": quantization})
+
+
 _GUARD_CASES = {
     "acestep": _acestep_case,
+    "zimage": _zimage_case,
     "ltx2": _ltx2_case,
     "flux2": _flux2_case,
     "ideogram4": _ideogram4_case,
@@ -1193,6 +1225,7 @@ _INT8_INVOCATIONS = {
     "ideogram4": lambda m, mods, q: m._ideogram4_runtime_int8({"unet_quantization": q}),
     "ltx2": lambda m, mods, q: m._ltx2_runtime_int8({"unet_quantization": q,
                                                      "blocks_to_swap": 0}),
+    "zimage": lambda m, mods, q: m._zimage_runtime_int8({"unet_quantization": q}),
 }
 
 

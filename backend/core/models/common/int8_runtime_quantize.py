@@ -242,6 +242,50 @@ ARCH_QUANT_POLICY: Dict[str, Dict[str, object]] = {
             "run the dequant path is a strict loss to quantize -- only its size is."
         ),
     },
+    "zimage": {
+        "skip_below_work_gate": True,
+        "excludes": (),
+        "note": (
+            "THE CENSUS BEHIND THIS ENTRY IS DERIVED FROM CODE AND CONFIG, NOT MEASURED "
+            "FROM A CHECKPOINT. There is no Z-Image weights file on the machine this was "
+            "written on, so unlike every other entry in this table (each of which was "
+            "cross-checked against a real safetensors header) the numbers below come from "
+            "building ``core.models.zimage_transformer.ZImageTransformer2DModel`` on the "
+            "META device from the published transformer/config.json (Tongyi-MAI/Z-Image-Turbo, "
+            "the file ``load_zimage_from_comfy_safetensors`` itself downloads and reads; the "
+            "locally cached copy is byte-equal to the class's own signature defaults: dim 3840, "
+            "n_layers 30, n_refiner_layers 2, n_heads = n_kv_heads = 30, cap_feat_dim 2560, "
+            "in_channels 16, all_patch_size (2,), all_f_patch_size (1,)).\n"
+            "DERIVED census: 276 nn.Linear modules holding 6.1539 G 2-D parameters (521 "
+            "state-dict keys). Every shape is 8-aligned, so NOTHING is lost to the "
+            "GEMM-alignment filter -- the same situation as Ideogram 4, LTX-2.3 and (except "
+            "for its two FSQ projections) ACE-Step. 37 of the 276 sit below the runtime "
+            "min-work gate (k>=2048, n>=1024) and hold 0.1278 G, i.e. 13.4% of the layers "
+            "for 2.08% of the parameters. THIRTY-TWO of those 37 are the exact shape class "
+            "Anima's roll-up measured as a net loss: AdaLN modulation Linears, 256x15360 "
+            "(one per transformer block plus the two noise_refiner blocks), whose k is 256 "
+            "and whose m is the batch size, so the gate can never admit them at any m and "
+            "they would always run Int8Linear._dequant_forward -- slower than the F.linear "
+            "an unquantized checkpoint runs, once per block per denoise step. The other five "
+            "are one-shot or terminal projections: the FinalLayer modulation (256x3840), the "
+            "two timestep-embedder MLP Linears (256x1024 and 1024x256), the patch embedder "
+            "all_x_embedder['2-1'] (64x3840) and the final projection "
+            "all_final_layer['2-1'].linear (3840x64).\n"
+            "So the trade is Ideogram 4's, one notch cheaper: 13.4% of the layers removed "
+            "for 2.08% of a 6.15 G saving. PROVENANCE, same caveat Ideogram 4's, LTX-2.3's "
+            "and ACE-Step's entries record and one degree weaker: this is Z-Image's own "
+            "CONFIG-DERIVED shape census plus Anima's MEASUREMENT applied to a matching "
+            "shape class. It is NOT a timing run on Z-Image and it is NOT a header census "
+            "of a Z-Image file. WHAT WOULD CHANGE IT: a checkpoint with a different "
+            "n_layers (the loader auto-detects it from the ``layers.N`` keys, so a pruned "
+            "model is a supported input) moves the 32 AdaLN Linears one-for-one with the "
+            "block count and leaves the percentages within a fraction of a point; a 4-channel "
+            "(SDXL-VAE) variant, which the loader also supports, changes only the two "
+            "embedder shapes, both already below the gate. A GQA variant (n_kv_heads < "
+            "n_heads) would shrink to_k/to_v but they stay far above the gate at any "
+            "plausible head count. None of these flips the direction of the trade."
+        ),
+    },
     "anima": {
         "skip_below_work_gate": True,
         "excludes": (),
@@ -267,7 +311,8 @@ ARCH_QUANT_POLICY: Dict[str, Dict[str, object]] = {
 #   * frontend/src/utils/api.ts          -- reads that field instead of its own
 #     hardcoded list.
 # Adding an arch here is therefore the whole rollout switch on the UI side.
-RUNTIME_INT8_ARCHS = ("anima", "krea2", "flux2", "ideogram4", "ltx2", "acestep")
+RUNTIME_INT8_ARCHS = ("anima", "krea2", "flux2", "ideogram4", "ltx2", "acestep",
+                      "zimage")
 
 # Architectures whose LOADERS swap in the weight-only quantized Linear classes
 # (``Fp8Linear`` / ``Int8Linear``), i.e. the archs where a quantized-GEMM path

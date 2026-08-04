@@ -64,6 +64,7 @@ __all__ = [
     "ideogram4_export_metadata",
     "ltx2_export_metadata",
     "acestep_export_metadata",
+    "zimage_export_metadata",
     "layout_unwrap",
     "check_layout_prefixes",
     "identity_source_transform",
@@ -268,6 +269,49 @@ def acestep_export_metadata(config: dict) -> Dict[str, str]:
         "model_type": "acestep",
         "format": "pt",
     }
+
+
+def zimage_export_metadata(config: dict) -> Dict[str, str]:
+    """Metadata block for an exported Z-Image transformer single file.
+
+    THE LOADER READS NO METADATA KEY. ``ModelLoader.load_zimage_from_comfy_safetensors``
+    takes its geometry from the base repo's ``transformer/config.json``
+    (snapshot-downloaded from ``Tongyi-MAI/Z-Image-Turbo``), then overrides
+    ``n_layers`` from the checkpoint's own ``layers.N`` key names and
+    ``in_channels`` from the ``x_embedder`` weight shape -- none of that comes
+    from this metadata block.
+
+    ``detect_model_type`` is a different story: it DOES consult
+    ``metadata["model_type"]`` first (``model_loader.py``, Priority 1) and
+    returns ``"zimage"`` on a match -- before the ``has_unet_keys``/file-size
+    SD-vs-SDXL branch and before the KEY-SIGNATURE probe
+    (``cap_embedder`` + ``t_embedder`` + ``context_refiner`` +
+    ``x_embedder``/``all_x_embedder``) that Priority 3 falls back to. Since this
+    function writes ``"model_type": "zimage"`` into the metadata it produces, an
+    artifact exported through this path IS recognised by metadata, first, not by
+    the key signature. The key probes are the fallback a genuine ComfyUI file
+    (which carries no metadata at all) depends on -- which is why this export
+    path still needs to reproduce that file's key layout and cannot rely on the
+    metadata it also happens to write. Anima's and ACE-Step's entries are the
+    same case (their loaders likewise take geometry from elsewhere), and this
+    block remains provenance for a human and for ``quantized_export_job``'s
+    bookkeeping in addition to being a detection signal ``detect_model_type``
+    actually reads.
+
+    ``zimage_config`` is written anyway, for provenance only, and it is the one
+    place an exported artifact records the geometry it was produced against --
+    useful precisely because the loader re-derives that geometry from the base
+    repo and could in principle be handed a different one.
+    """
+    config = {k: v for k, v in dict(config or {}).items() if not str(k).startswith("_")}
+    metadata = {
+        "modelspec.architecture": "zimage",
+        "model_type": "zimage",
+        "format": "pt",
+    }
+    if config:
+        metadata["zimage_config"] = json.dumps(config, default=str)
+    return metadata
 
 
 def anima_export_metadata(config: dict) -> Dict[str, str]:
@@ -567,6 +611,66 @@ EXPORT_LAYOUTS: Dict[str, Dict[str, object]] = {
         "siblings": ("vae", "text_encoders"),
         "sibling_root": "..",
         "output_subdir": "diffusion_models",
+    },
+    "zimage": {
+        # Z-Image transformer single files carry the module tree with NO prefix,
+        # and here that is a HARD requirement rather than a convention -- but
+        # for a GENUINE ComfyUI file, not for the artifact this module exports.
+        # ``zimage_export_metadata`` (above) writes ``model_type: "zimage"``
+        # into the metadata this function's output carries, and
+        # ``ModelLoader.detect_model_type`` checks ``metadata["model_type"]``
+        # FIRST (Priority 1) and returns "zimage" on a match, before it ever
+        # reaches the SD/SDXL branch (``has_unet_keys``) or the four
+        # ``startswith`` key-signature probes (``cap_embedder``, ``t_embedder``,
+        # ``context_refiner``, and ``x_embedder``/``all_x_embedder``) that
+        # Priority 3 falls back to. So a prefixed export from THIS module would
+        # still be recognised as zimage by its metadata, not misdetected as
+        # SDXL. The empty prefix is still required, though: a genuine ComfyUI
+        # export carries no metadata at all, so a real user file depends
+        # entirely on the key-signature fallback, and the ``model.diffusion_model.``
+        # spelling in particular is claimed EARLIER in the same function by the
+        # SD/SDXL branch -- a prefixed file WITHOUT this metadata would be
+        # detected as SDXL by file size. This layout must match what a
+        # metadata-less ComfyUI file looks like, because that is the case the
+        # key-signature fallback exists to serve.
+        #
+        # ``_normalize_zimage_state_dict`` then classifies the key layout:
+        # split ``.to_q.weight`` or ``all_x_embedder.``/``all_final_layer.``
+        # means ``official``, which is what a LIVE module's ``state_dict()``
+        # produces, and the official branch skips
+        # ``_convert_comfy_to_official_state_dict`` entirely and loads the keys
+        # as module paths.
+        "modules": (("transformer", ""),),
+        "offline_prefix": "",
+        "source_prefix": "",
+        # IDENTITY, and this is the one layout in this table where that is a
+        # RESTRICTION on the offline route rather than a statement about every
+        # source the arch accepts. Z-Image's dominant distribution shape is the
+        # ComfyUI layout: a FUSED ``attention.qkv`` plus single-resolution
+        # ``x_embedder``/``final_layer``, which the loader rewrites into module
+        # paths (``_convert_comfy_to_official_state_dict``). Those keys are
+        # therefore NOT module paths, exactly like FLUX.2's BFL files and
+        # Ideogram 4's fused qkv -- and unlike both of those, the split here
+        # depends on head geometry (``q_dim = n_heads*head_dim``,
+        # ``kv_dim = n_kv_heads*head_dim``), which a per-key
+        # ``(key, tensor) -> [(key', tensor')]`` transform cannot see. It is
+        # equal thirds only while ``n_kv_heads == n_heads``, which is what the
+        # published config says and what no file on this machine can confirm.
+        # Writing that transform blind would produce a silently mis-split
+        # artifact on any GQA variant, so the offline tool REFUSES a
+        # comfy-layout source instead (see ``_zimage_config``) and names the
+        # runtime export route, which has no such problem because it reads the
+        # live module -- always official layout, because the loader converted it.
+        "metadata": zimage_export_metadata,
+        # No sibling junctions. The Z-Image loader resolves its VAE, text
+        # encoder, tokenizer and scheduler from the base repo it
+        # snapshot-downloads (``Tongyi-MAI/Z-Image-Turbo``), or from the shared
+        # flux1 VAE store, and probes NOTHING next to the checkpoint -- the same
+        # situation as FLUX.2. A ``text_encoder`` directory beside the file would
+        # be inert, so offering to create one would only suggest it mattered.
+        "siblings": (),
+        "sibling_root": ".",
+        "output_subdir": "",
     },
     "anima": {
         # Anima DiT single-files carry the module tree verbatim under ``net.``;

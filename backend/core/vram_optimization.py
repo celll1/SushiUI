@@ -507,11 +507,39 @@ def move_zimage_transformer_to_gpu(transformer, quantization: Optional[str] = No
     if quantization in [None, "", "none"]:
         quantization = None
 
-    if _refuse_runtime_int8_elsewhere(quantization, "Z-Image Transformer"):
+    # INT8 is NOT handled here. Z-Image is one of RUNTIME_INT8_ARCHS, and its
+    # conversion runs IN PLACE from ZImageMixin._zimage_runtime_int8 before the
+    # transformer is staged -- necessarily so, because the block-swap branch
+    # never calls this function at all (it streams weights per block) and would
+    # otherwise never quantize. By the time the module reaches here there is
+    # nothing left to do but move it, so the request degrades to a plain move
+    # rather than to the "unsupported on this architecture" refusal it used to
+    # get. Same shape as move_flux2_transformer_to_gpu's.
+    if _normalize_quantization(quantization) == RUNTIME_INT8_VALUE:
         quantization = None
 
     if transformer is None:
         return transformer
+
+    # Legacy FP8 path, superseded for an already-quantized module. Reaching
+    # _quantize_transformer with weight-only quantized Linears would deep-copy the
+    # whole transformer (12.3 GB bf16 for the 6.15 G-parameter Z-Image DiT) and
+    # then convert nothing: Int8Linear / Fp8Linear are not nn.Linear subclasses,
+    # so its isinstance loop skips every one of them. The copy would be the only
+    # effect. Same condition and same warning code as the FLUX.2 and Anima ones.
+    if quantization:
+        owned = _already_weight_only_quantized(transformer)
+        if owned:
+            print(f"[Quantization] Z-Image Transformer already holds {owned} weight-only "
+                  f"quantized Linear layer(s); ignoring the runtime '{quantization}' request "
+                  f"(they already store their weights in 8 bits, with per-row scales).")
+            _add_generation_warning(
+                f"Z-Image Transformer quantization '{quantization}' was ignored: the "
+                f"transformer is already weight-only quantized ({owned} layers).",
+                code="quantization_superseded",
+            )
+            transformer.to('cuda:0', non_blocking=False)
+            return transformer
 
     # Fast path: No quantization (most common case)
     if not quantization:

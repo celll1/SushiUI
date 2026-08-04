@@ -751,16 +751,22 @@ def extract_vae_info(pipeline_manager) -> tuple:
     info = getattr(pipeline_manager, "current_model_info", None) or {}
     model_type = info.get("type", "")
 
-    # type -> per-arch components dict attribute holding "vae_source"/"vae_path".
-    comp_attr = {
-        "flux2": "flux2_components",
-        "anima": "anima_components",
-        "lens": "lens_components",
-        "ideogram4": "ideogram4_components",
-        "minit2i": "minit2i_components",
-        "krea2": "krea2_components",
-        "zimage": "zimage_components",
-    }.get(model_type)
+    # The per-arch components dict holding "vae_source"/"vae_path" is DERIVED,
+    # never listed: ``PipelineManager`` declares one ``<arch>_components``
+    # attribute per component-based architecture in its ``__init__`` (so
+    # ``hasattr`` is True from construction, whether or not a model is loaded)
+    # and none for SD1.5/SDXL, whose identity is stashed on the loaded pipeline
+    # instead. A written-out map is the exact defect that broke
+    # ``extract_fp8_gemm_info`` for FLUX.2, and it had already broken this one:
+    # the list here was missing ``ltx2`` and ``acestep``, so every LTX-2.3 video
+    # fell into the SD1.5/SDXL branch below, found no ``_sushi_vae_source`` and
+    # recorded NO vae_name/vae_hash at all -- although ``ltx2_components["vae"]``
+    # exists and the ``vae_identity`` fallback below would have named it.
+    # ``quantized_capability_parity_test.HandWrittenArchMapTest`` pins the
+    # derivation functionally, for every component-based arch.
+    comp_attr = f"{model_type}_components" if model_type else ""
+    if comp_attr and not hasattr(pipeline_manager, comp_attr):
+        comp_attr = ""
 
     vae_source = None
     vae_path = None
@@ -804,11 +810,35 @@ def extract_fp8_gemm_info(pipeline_manager) -> str:
 
     Only weight-only quantized checkpoints have anything to report, and only on
     the architectures whose loaders swap in the quantized Linear classes
-    (``QUANTIZED_LINEAR_ARCHS``): Krea 2, Anima, FLUX.2 and Ideogram 4 -- either
-    class on all four, since every one of their loaders detects int8 and fp8
-    independently and a converted artifact is mixed by design (Ideogram 4 was
-    ``Fp8Linear`` only until its loader gained the int8 half). A bf16 checkpoint
-    on any of them, or any other architecture, returns "" and records nothing.
+    (``QUANTIZED_LINEAR_ARCHS``) -- either class on every one of them, since each
+    of those loaders detects int8 and fp8 independently and a converted artifact
+    is mixed by design (Ideogram 4 was ``Fp8Linear`` only until its loader gained
+    the int8 half). A bf16 checkpoint on any of them, or any other architecture,
+    returns "" and records nothing.
+
+    The arch -> component-dict attribute map is DERIVED from
+    ``QUANTIZED_LINEAR_ARCHS`` rather than written out. It was written out, and
+    it drifted: FLUX.2 joined the tuple (and this docstring) while the map kept
+    three entries, so every FLUX.2 generation recorded no ``fp8_gemm`` and every
+    ``quantized_gemm_mode="w8a8"`` request there reported "the loaded checkpoint
+    carries no weight-only quantized Linear layers" -- on a checkpoint full of
+    them. LTX-2.3 would have been the second. ``PipelineManager`` names every one
+    of these dicts ``<arch>_components``, which is what makes the derivation
+    exact rather than a guess.
+
+    WHAT THE TESTS ACTUALLY PIN, stated precisely because an earlier version of
+    this paragraph claimed more than was true (it said a future arch breaking
+    the naming convention "fails a test", while the only test that existed
+    grepped ``pipeline.py`` for the string ``<arch>_components`` -- which pins
+    that the ATTRIBUTE exists, not that this function derives its name, so
+    reverting the derivation to the shipped-broken three-entry map left the
+    whole suite green). ``quantized_capability_parity_test`` now pins BOTH:
+    ``test_every_quantized_arch_has_a_component_dict_the_gemm_reporter_can_find``
+    for the attribute, and
+    ``test_the_gemm_reporter_finds_every_quantized_arch``, which calls THIS
+    function for every arch in ``QUANTIZED_LINEAR_ARCHS`` over a fake manager
+    holding one real ``Int8Linear`` and requires a non-empty label. A hand-written
+    map that omits an arch fails the second one.
 
     The RESOLVED path is what is recorded, not the flag: a W8A8 path can be
     enabled while the per-device probe finds nothing usable, in which case every
@@ -829,14 +859,13 @@ def extract_fp8_gemm_info(pipeline_manager) -> str:
     toggle off and the INT8 one on. The stems are distinct precisely so that join
     stays unambiguous.
     """
+    from core.models.common.int8_runtime_quantize import QUANTIZED_LINEAR_ARCHS
+
     info = getattr(pipeline_manager, "current_model_info", None) or {}
-    comp_attr = {
-        "ideogram4": "ideogram4_components",
-        "krea2": "krea2_components",
-        "anima": "anima_components",
-    }.get(info.get("type", ""))
-    if not comp_attr:
+    arch = info.get("type", "")
+    if arch not in QUANTIZED_LINEAR_ARCHS:
         return ""
+    comp_attr = f"{arch}_components"
     comps = getattr(pipeline_manager, comp_attr, None) or {}
     describers = []
     for module_path, attr in (

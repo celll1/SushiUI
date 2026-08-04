@@ -441,19 +441,65 @@ a generation without style transfer.
     swap) the moment a block is mixed-dtype — see the LTX-2.3 "MEASURED COST"
     note below for a full-conversion example of that self-disable; it is
     correct, not a hazard, and it is arch-independent.
-    The actual hazard is narrower: a conversion that dies part-way (CUDA OOM at
-    layer N) leaves blocks STRUCTURALLY heterogeneous — the same module path is
+    The actual hazard was narrower, and is **FIXED** (`DtypeSplitGuardMixin` in
+    `block_offloading.py`, inherited by `TransformerBlockOffloader` and
+    `FluxBlockOffloader`): a conversion that dies part-way (CUDA OOM at layer N)
+    leaves blocks STRUCTURALLY heterogeneous — the same module path is
     `Int8Linear` in one block and still `nn.Linear` in another — and
-    `swap_weight_devices` pairs modules by NAME and SHAPE only (it never checks
-    dtype); an `Int8Linear`'s int8 `.weight` and a same-shaped `nn.Linear`'s bf16
-    `.weight` pass that check identically. A staging copy performed across that
-    mismatch would silently write int8 codes into bf16-typed storage (or vice
-    versa) with no error and no warning — silent corruption, not the loud
-    self-disable a full conversion gets. This is cross-arch: every
-    `RUNTIME_INT8_ARCHS` member that also supports block swap (ltx2, flux2,
-    ideogram4 today) shares the same offloader and the same pairing-by-shape
-    code, and the hazard is pre-existing for all of them, not introduced by any
-    one arch's conversion support.
+    `swap_weight_devices` used to pair modules by NAME and SHAPE only; an
+    `Int8Linear`'s int8 `.weight` and a same-shaped `nn.Linear`'s bf16 `.weight`
+    passed that check identically, and the staging copy then wrote int8 codes
+    into bf16-typed storage (or vice versa) with no error and no warning. The
+    quantized module kept computing: `Int8Linear._dequant_forward` accepts a bf16
+    weight, so the corruption was silent rather than the loud self-disable a full
+    conversion gets. **A COMPLETE conversion puts the same split in the
+    checkpoint**, because the int8-vs-e4m3 choice is per layer and made from that
+    layer's own weights: the shipped audits diverge on `blocks.0.mlp.layer2` for
+    Anima (1 e4m3 among 231 int8) and on `transformer_blocks.27.attn.to_v` /
+    `.ff.down` for Krea 2 (4 among 259); FLUX.2's 109/109 int8 has no split at
+    all. **Neither of those two is reachable today**: Anima's diverging path is in
+    block 0, which stays permanently resident in inference (`transformer_registry`
+    clamps `blocks_to_swap` to `num_blocks - 1`, and the forward-only rotation
+    only touches the last `blocks_to_swap` blocks) — it is pairable only in
+    `supports_backward` mode, which swaps blocks `0..blocks_to_swap` — and Krea 2
+    has no block-swap streaming at all (`pipeline_backends/krea2.py`). The
+    reachable cases are the PARTIAL conversion on any block-swapping arch, and
+    plausibly LTX-2.3, whose conversion is mixed by design (unverified: no LTX
+    audit on disk). **The partial case alone is why the guard DEFERS the split
+    paths rather than refusing the swap** — a partial conversion is a recoverable,
+    resumable state, and refusing would turn it into a dead generation. Mixed
+    dtypes WITHIN a block are not affected: pairing is per module path.
+    The guard resolves, once per offloader and on the FIRST swap (so LoRA
+    sub-Linears added after block-swap setup are seen), the set of Linear paths
+    whose dtype is not the same in every block of a class; those paths are
+    excluded from the paired staging swap and each side is moved to its own
+    target device individually, dtype unchanged, while every other path keeps the
+    paired swap. It is loud: a `[BlockOffloader]` block naming the paths and
+    dtypes, plus a `block_swap_dtype_split` generation warning. A mismatch that
+    appears AFTER resolution (module tree changed) raises `RuntimeError` instead.
+    Resolving the set ONCE, over all blocks, rather than per pair is load-bearing:
+    the cached staging buffers are allocated from the first swap's job list, so a
+    job list whose length depended on which two blocks are swapping would be
+    zipped against shifted buffers. The "all blocks" it resolves over is only the
+    blocks the rotation can actually pair (`pairable_block_indices`), so a
+    divergence confined to a permanently resident block — Anima's — is not
+    excluded and emits no warning.
+    **EXPECTED COST (derived, not measured):** the deferred move allocates a fresh
+    PAGEABLE CPU tensor per excluded path per swap and its `.to(cpu)` is a
+    host-blocking sync, instead of recycling the pinned/staging storage — it runs
+    on the executor worker so it never stalls the model, but it drains that swap's
+    overlap. A conversion that stopped BETWEEN blocks splits every path, leaves
+    `weight_swap_jobs == []`, and serialises the whole swap into pageable moves;
+    that is also why the empty-list guard on `released_pinned_buffer` is
+    load-bearing (without it the pinned strategy raises `IndexError` there).
+    This is cross-arch: every `RUNTIME_INT8_ARCHS`
+    member that also supports block swap (ltx2, flux2, ideogram4, anima, zimage)
+    shares those two offloaders, so all of them inherit the guard.
+    `backend/tests/block_swap_dtype_split_test.py` holds the functional
+    regression (including the pre-fix mechanism), and
+    `quantized_capability_parity_test.BlockSwapDtypePairingParityTest` requires
+    every offloader class that defines `swap_weight_devices` to inherit the mixin
+    so a third offloader cannot re-derive the pairing without it.
   - `--skip-below-work-gate` is **required** for Anima, unlike Krea 2 — a
     per-arch knob that now lives in
     `int8_runtime_quantize.ARCH_QUANT_POLICY` (the CLI flag defaults to it and

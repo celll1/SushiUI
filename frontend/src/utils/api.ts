@@ -755,6 +755,16 @@ export interface Txt2AudParams {
   sampler_mode?: string;       // accepted for forward-compat; currently a no-op
   vocal_language?: string;     // default "en"
   loras?: LoRAConfig[];
+  // Weight-only quantization of the ACE-Step DiT. Only "int8" is applied on
+  // this architecture (a one-time in-place conversion of the audio DiT -- NOT
+  // the Oobleck VAE or the Qwen3-Embedding text encoder); the FP8 values warn
+  // and are ignored. acestep is in runtime_int8_archs.
+  unet_quantization?: string | null;
+  // Per-generation GEMM path for ALREADY-quantized Linear weights (null =
+  // leave the process flags alone). acestep is in quantized_linear_archs: its
+  // loader swaps in Int8Linear/Fp8Linear for a weight-only quantized DiT, and
+  // unet_quantization "int8" produces the same classes at runtime.
+  quantized_gemm_mode?: QuantizedGemmMode;
 }
 
 // aud2aud (cover): multipart -- prompt/lyrics/cover params + an uploaded
@@ -774,6 +784,16 @@ export interface Aud2AudParams {
   mode?: "cover" | "repaint";    // default "cover"; "repaint" regenerates only [repaint_start, repaint_end)
   repaint_start?: number;        // seconds, repaint mode only; default 0.0
   repaint_end?: number;          // seconds, repaint mode only; default 0.0
+  // Weight-only quantization of the ACE-Step DiT. Only "int8" is applied on
+  // this architecture (a one-time in-place conversion of the audio DiT -- NOT
+  // the Oobleck VAE or the Qwen3-Embedding text encoder); the FP8 values warn
+  // and are ignored. acestep is in runtime_int8_archs.
+  unet_quantization?: string | null;
+  // Per-generation GEMM path for ALREADY-quantized Linear weights (null =
+  // leave the process flags alone). acestep is in quantized_linear_archs: its
+  // loader swaps in Int8Linear/Fp8Linear for a weight-only quantized DiT, and
+  // unet_quantization "int8" produces the same classes at runtime.
+  quantized_gemm_mode?: QuantizedGemmMode;
 }
 
 // Audio temporal outpaint (ACE-Step 1.5 extend): place a (optionally
@@ -800,6 +820,16 @@ export interface OutpaintAudioParams {
   input_offset_sec?: number;       // where the (trimmed) clip lands, snapped server-side to 1/25s
   input_trim_start_sec?: number;   // trim applied to the UPLOADED clip before placement
   input_trim_end_sec?: number;
+  // Weight-only quantization of the ACE-Step DiT. Only "int8" is applied on
+  // this architecture (a one-time in-place conversion of the audio DiT -- NOT
+  // the Oobleck VAE or the Qwen3-Embedding text encoder); the FP8 values warn
+  // and are ignored. acestep is in runtime_int8_archs.
+  unet_quantization?: string | null;
+  // Per-generation GEMM path for ALREADY-quantized Linear weights (null =
+  // leave the process flags alone). acestep is in quantized_linear_archs: its
+  // loader swaps in Int8Linear/Fp8Linear for a weight-only quantized DiT, and
+  // unet_quantization "int8" produces the same classes at runtime.
+  quantized_gemm_mode?: QuantizedGemmMode;
 }
 
 // ---------------------------------------------------------------------------
@@ -907,6 +937,25 @@ export const archSupportsRuntimeInt8 = (
   caps: ArchCapabilities | null | undefined,
   arch: string | null | undefined
 ): boolean => !!arch && (caps?.runtime_int8_archs ?? []).includes(arch);
+
+// Label for the weight-quantization selector on the CURRENTLY loaded model.
+//
+// `unet_quantization` is one request parameter across every architecture, but
+// only SD1.5/SDXL have a U-Net: every other architecture in this app is a DiT
+// (Z-Image, FLUX.2, Anima, Lens, MiniT2I, Krea 2, Ideogram 4, LTX-2.3) or an
+// audio DiT (ACE-Step), and calling the control "U-Net Quantization" there names
+// a module the model does not contain. Only the two U-Net architectures are
+// listed, because that set cannot grow; anything else, including an arch this
+// build has never heard of, gets the neutral both-ways label rather than a
+// guess.
+const UNET_ARCHS = new Set(["sd15", "sdxl"]);
+
+export const transformerQuantizationLabel = (
+  arch: string | null | undefined
+): string => {
+  if (!arch) return "Transformer / U-Net Quantization";
+  return UNET_ARCHS.has(arch) ? "U-Net Quantization" : "Transformer Quantization";
+};
 
 // Options for the "Transformer / U-Net Quantization" selector, filtered by what
 // the loaded architecture actually applies. When the capability matrix has not
@@ -1696,6 +1745,14 @@ export const generateTxt2Aud = async (params: Txt2AudParams) => {
     sampler_mode: params.sampler_mode ?? "euler",
     vocal_language: params.vocal_language ?? "en",
     loras: params.loras || [],
+    // `=== "none" -> null` mirrors every other sender: "none" is the UI's
+    // spelling of "no quantization", and sending it as a value would come back
+    // as an `unsupported_param` warning on every txt2aud.
+    unet_quantization:
+      params.unet_quantization && params.unet_quantization !== "none"
+        ? params.unet_quantization
+        : null,
+    quantized_gemm_mode: params.quantized_gemm_mode ?? null,
   };
 
   const response = await api.post("/generate/txt2aud", body);
@@ -1729,6 +1786,14 @@ export const generateAud2Aud = async (params: Aud2AudParams, referenceAudio: Fil
   formData.append("mode", params.mode ?? "cover");
   formData.append("repaint_start", String(params.repaint_start ?? 0.0));
   formData.append("repaint_end", String(params.repaint_end ?? 0.0));
+  // Weight-only quantization (both axes). Appended only when set, so an unset
+  // field leaves the backend default (and the process GEMM flags) untouched.
+  if (params.unet_quantization && params.unet_quantization !== "none") {
+    formData.append("unet_quantization", params.unet_quantization);
+  }
+  if (params.quantized_gemm_mode) {
+    formData.append("quantized_gemm_mode", params.quantized_gemm_mode);
+  }
 
   const response = await api.post("/generate/aud2aud", formData, {
     headers: { "Content-Type": "multipart/form-data" },
@@ -2285,6 +2350,15 @@ export const generateOutpaintAudio = async (params: OutpaintAudioParams, referen
   formData.append("input_offset_sec", String(params.input_offset_sec ?? 0.0));
   formData.append("input_trim_start_sec", String(params.input_trim_start_sec ?? 0.0));
   formData.append("input_trim_end_sec", String(params.input_trim_end_sec ?? 0.0));
+
+  // Weight-only quantization (both axes). Appended only when set, so an unset
+  // field leaves the backend default (and the process GEMM flags) untouched.
+  if (params.unet_quantization && params.unet_quantization !== "none") {
+    formData.append("unet_quantization", params.unet_quantization);
+  }
+  if (params.quantized_gemm_mode) {
+    formData.append("quantized_gemm_mode", params.quantized_gemm_mode);
+  }
 
   const response = await api.post("/generate/outpaint/audio", formData, {
     headers: { "Content-Type": "multipart/form-data" },

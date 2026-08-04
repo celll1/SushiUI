@@ -201,6 +201,47 @@ ARCH_QUANT_POLICY: Dict[str, Dict[str, object]] = {
             "timing arm would need an int8 one built first."
         ),
     },
+    "acestep": {
+        "skip_below_work_gate": True,
+        "excludes": (),
+        "note": (
+            "ACE-Step 1.5's DiT is the tidiest architecture here for this work: 392 "
+            "nn.Linear modules holding 2.3922 G 2-D parameters, enumerated from "
+            "AceStepConditionGenerationModel with accelerate's init_empty_weights (NOT "
+            "torch.device('meta'): the vendored ResidualFSQ calls Tensor.item() in its "
+            "__init__, which meta tensors refuse). The census is the DiT ALONE and the "
+            "checkpoint file agrees exactly -- acestep_v1.5_turbo.safetensors holds 677 "
+            "tensors / 2.3939 G, of which 392 / 2.3922 G are 2-D, i.e. every 2-D tensor in "
+            "the file is one of those Linear weights and the model has NO non-Linear 2-D "
+            "parameter at all (the lyric/text embed_tokens are Linears here, not "
+            "nn.Embeddings). The co-shipped Oobleck VAE (0.1687 G, zero 2-D tensors) and "
+            "the Qwen3-Embedding text encoders (0.5958 G for the 0.6B tier this DiT "
+            "requires, plus unused 1.7B/4B tiers) are separate FILES and separate "
+            "components; neither the offline enumeration nor the runtime walk can reach "
+            "them, so this arch has none of the whole-directory inflation LTX-2.3's census "
+            "note records. Attention is SPLIT q/k/v (2048x2048 and 2048x1024 for the 8 KV "
+            "heads), so there is no fused-qkv source transform to write.\n"
+            "Two Linears are lost to the GEMM-alignment filter whatever this flag says: "
+            "the FSQ audio tokenizer's quantizer.project_in (2048x6) and project_out "
+            "(6x2048), whose 6 is the FSQ level count. NINE of the 392 sit below the "
+            "runtime min-work gate (k>=2048, n>=1024) -- those two plus the timestep "
+            "embedders' two 256x2048 linear_1, text_projector and lyric embed_tokens "
+            "(1024x2048), the timbre embed_tokens and audio_acoustic_proj (64x2048) and "
+            "proj_out (2048x64) -- and they hold 0.005661 G, 0.237% of the DiT's Linear "
+            "parameters. So 99.76% of the parameters are gate-reachable and the filter "
+            "costs almost nothing, the LTX-2.3 situation rather than Anima's. NOTE THE "
+            "PROVENANCE, the same caveat Ideogram 4's and LTX-2.3's entries record: this is "
+            "ACE-Step's own SHAPE census plus Anima's MEASUREMENT applied to a matching "
+            "shape class (Linears the gate cannot admit at any m, which therefore always "
+            "run Int8Linear._dequant_forward -- slower than the F.linear an unquantized "
+            "checkpoint runs). It is NOT a timing run on ACE-Step. One honest difference "
+            "from the video/image archs: most of these nine are ONE-SHOT projections "
+            "(embedders, text/timbre projections) that run once per generation rather than "
+            "once per denoise step, so the calls removed are ~9 per generation, not 9 per "
+            "step. The direction of the trade is unchanged -- a layer that can only ever "
+            "run the dequant path is a strict loss to quantize -- only its size is."
+        ),
+    },
     "anima": {
         "skip_below_work_gate": True,
         "excludes": (),
@@ -226,7 +267,7 @@ ARCH_QUANT_POLICY: Dict[str, Dict[str, object]] = {
 #   * frontend/src/utils/api.ts          -- reads that field instead of its own
 #     hardcoded list.
 # Adding an arch here is therefore the whole rollout switch on the UI side.
-RUNTIME_INT8_ARCHS = ("anima", "krea2", "flux2", "ideogram4", "ltx2")
+RUNTIME_INT8_ARCHS = ("anima", "krea2", "flux2", "ideogram4", "ltx2", "acestep")
 
 # Architectures whose LOADERS swap in the weight-only quantized Linear classes
 # (``Fp8Linear`` / ``Int8Linear``), i.e. the archs where a quantized-GEMM path

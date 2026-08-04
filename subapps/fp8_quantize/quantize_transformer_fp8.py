@@ -574,6 +574,85 @@ def _ideogram4_sources(source: str) -> List[Dict[str, object]]:
     } for name, prefix in specs]
 
 
+def _acestep_build_meta(config: dict) -> nn.Module:
+    from accelerate import init_empty_weights
+
+    from core.models.acestep.vendor import (
+        AceStepConditionGenerationModel, AceStepConfig,
+    )
+
+    # ``init_empty_weights`` rather than ``torch.device("meta")``, and that is a
+    # requirement here rather than a habit: the vendored ``ResidualFSQ`` calls
+    # ``Tensor.item()`` inside ``__init__`` (an assertion on its level table),
+    # which a meta tensor refuses with "Tensor.item() cannot be called on meta
+    # tensors". ``init_empty_weights`` puts only PARAMETERS on meta and lets that
+    # assertion run on a real little tensor, so nothing is allocated for the
+    # 2.39 G of weights and the build still succeeds.
+    with init_empty_weights():
+        return AceStepConditionGenerationModel(AceStepConfig(**config))
+
+
+def _acestep_config(source: str) -> dict:
+    """ACE-Step's DiT geometry is a fixed constant, not a per-checkpoint config.
+
+    ``core.models.acestep.loader._build_dit`` instantiates
+    ``AceStepConditionGenerationModel(AceStepConfig(**ACESTEP_DIT_CONFIG))``
+    unconditionally, and the published tree ships bare ``.safetensors`` files
+    with no ``config.json`` anywhere, so the enumeration model here must use
+    exactly that dict or the module paths would not correspond to what the loader
+    will build. Anima's entry is the same case for the same reason.
+
+    Pinned by the key comparison in ``EXPORT_LAYOUTS["acestep"]``: this config
+    enumerates 677 state-dict keys and the checkpoint holds 677, zero difference
+    either way.
+    """
+    from core.models.acestep.defaults import ACESTEP_DIT_CONFIG
+
+    print("[fp8] ACE-Step DiT geometry from ACESTEP_DIT_CONFIG (the loader uses no config.json)")
+    return dict(ACESTEP_DIT_CONFIG)
+
+
+def _acestep_sources(source: str) -> List[Dict[str, object]]:
+    """The single component pass for an ACE-Step source: the DiT file.
+
+    Exists for the same reason ``_ltx2_sources`` does -- to REDIRECT a
+    ``--source`` that names the model tree onto the one component this tool
+    quantizes -- and it is not optional here: ACE-Step's root is a flat
+    ComfyUI-style tree (``diffusion_models/`` + ``vae/`` + ``text_encoders/``)
+    with no ``diffusion_pytorch_model.safetensors`` anywhere, so
+    ``_source_shards`` would fail on the root AND on ``diffusion_models/``
+    itself. ``detect_acestep_layout`` is the loader's own resolver, so the tool
+    and the loader pick the same file.
+
+    The text encoders are the thing to be careful about: ``text_encoders/`` holds
+    three Qwen3-Embedding tiers (0.6 / 1.85 / 4.19 G of 2-D tensors), of which
+    only the 0.6B one is even shape-compatible with this DiT. None is quantized
+    by this tool on any arch, and pointing at the DiT file explicitly is what
+    keeps a "every 2-D tensor under the model root" census (which would read
+    9.4 G against the DiT's 2.39 G) from ever arising.
+    """
+    from core.models.acestep.loader import detect_acestep_layout
+
+    layout = detect_acestep_layout(source)
+    if layout is None:
+        raise FileNotFoundError(
+            f"{source} is not an ACE-Step model tree or a DiT file inside one. Point "
+            f"--source at the model ROOT (the directory holding diffusion_models/ + "
+            f"vae/ + text_encoders/) or at a diffusion_models/*.safetensors file.")
+    dit = str(layout["dit"])
+    if os.path.abspath(dit) != os.path.abspath(source):
+        print(f"[fp8] ACE-Step model tree; quantizing the DiT component only ({dit}); "
+              f"the Oobleck VAE and the Qwen3-Embedding text encoders stay where they are")
+    return [{
+        "component": None,
+        "out_prefix": "",
+        "source_prefix": "",
+        "require_source_prefix": False,
+        "source": dit,
+        "config_source": dit,
+    }]
+
+
 def _from_layout(arch: str, **extra) -> Dict[str, object]:
     """An ARCHS entry: the shared on-disk layout plus this tool's source knobs.
 
@@ -633,6 +712,16 @@ ARCHS = {
     # ``transformer`` component and not the bundled Gemma-3 text encoder.
     "ltx2": _from_layout("ltx2", config=_ltx2_config, build_meta=_ltx2_build_meta,
                          sources=_ltx2_sources),
+    # ACE-Step 1.5 is the audio arch, and the least eventful entry in this table:
+    # its checkpoint keys ARE module paths (677 vs 677, zero difference either
+    # way -- see EXPORT_LAYOUTS["acestep"]), its attention is stored split, and
+    # its geometry is a compiled-in constant like Anima's. The only local knob is
+    # ``sources``, which resolves the flat ComfyUI-style tree down to the DiT
+    # file -- required, not a convenience, since that tree has nothing
+    # ``_source_shards`` can find on its own.
+    "acestep": _from_layout("acestep", config=_acestep_config,
+                            build_meta=_acestep_build_meta,
+                            sources=_acestep_sources),
 }
 
 

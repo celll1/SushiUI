@@ -42,6 +42,7 @@ import {
   ControlNetConfig,
   unetQuantizationOptions,
   normalizeUnetQuantization,
+  transformerQuantizationLabel,
 } from "@/utils/api";
 import { wsClient, CFGMetrics } from "@/utils/websocket";
 import { saveTempImage, loadTempImage, deleteTempImageRef } from "@/utils/tempImageStorage";
@@ -1362,6 +1363,12 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
         input_offset_sec: params.input_offset_sec,
         input_trim_start_sec: params.input_trim_start_sec,
         input_trim_end_sec: params.input_trim_end_sec,
+        // Weight-only quantization (both axes). The panel controls are rendered
+        // from arch capabilities, and `acestep` is now in runtime_int8_archs +
+        // quantized_linear_archs, so these must be carried into the audio
+        // params or the UI value is silently dropped.
+        unet_quantization: params.unet_quantization,
+        quantized_gemm_mode: params.quantized_gemm_mode,
       };
       addToQueue({
         type: "outpaint_aud",
@@ -3113,8 +3120,10 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
                 ) : (
                   <>
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      {/* Only SD1.5/SDXL have a U-Net; every other arch here is a
+                          DiT, so the label follows the loaded architecture. */}
                       <Select
-                        label="U-Net Quantization"
+                        label={transformerQuantizationLabel(currentModelInfo?.model_info?.type as string | undefined)}
                         value={params.unet_quantization || "none"}
                         onChange={(e) => setParams({ ...params, unet_quantization: e.target.value === "none" ? null : e.target.value })}
                         options={unetQuantizationOptions(archCapabilities, currentModelInfo?.model_info?.type as string | undefined)}

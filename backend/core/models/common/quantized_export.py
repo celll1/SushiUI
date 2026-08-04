@@ -63,6 +63,7 @@ __all__ = [
     "anima_export_metadata",
     "ideogram4_export_metadata",
     "ltx2_export_metadata",
+    "acestep_export_metadata",
     "layout_unwrap",
     "check_layout_prefixes",
     "identity_source_transform",
@@ -242,6 +243,31 @@ def _ltx2_unwrap(module: nn.Module) -> nn.Module:
     if inner is not None and type(module).__name__ == "Ltx2BlockLoopWrapper":
         return inner
     return module
+
+
+def acestep_export_metadata(config: dict) -> Dict[str, str]:
+    """Metadata block for an exported ACE-Step 1.5 DiT.
+
+    No config is carried, and that is a positive statement rather than an
+    omission: ``core.models.acestep.loader._build_dit`` instantiates
+    ``AceStepConditionGenerationModel(AceStepConfig(**ACESTEP_DIT_CONFIG))``
+    unconditionally and reads no ``config.json`` anywhere (the published tree
+    ships bare ``.safetensors`` files and no config at all), so a geometry blob
+    in the metadata would be a second source of truth that nothing reads. Anima
+    is the same case and its metadata is the same shape.
+
+    ``detect_acestep_layout`` recognises the arch by DIRECTORY layout
+    (``diffusion_models/`` + ``vae/`` + ``text_encoders/``), not by metadata, so
+    ``modelspec.architecture`` here is provenance for a human and for
+    ``quantized_export_job``'s bookkeeping -- which is why the layout below
+    junctions the two companion directories and writes into
+    ``diffusion_models/``.
+    """
+    return {
+        "modelspec.architecture": "acestep",
+        "model_type": "acestep",
+        "format": "pt",
+    }
 
 
 def anima_export_metadata(config: dict) -> Dict[str, str]:
@@ -500,6 +526,47 @@ EXPORT_LAYOUTS: Dict[str, Dict[str, object]] = {
                      "vae", "audio_vae", "connectors", "vocoder"),
         "sibling_root": "..",
         "output_subdir": "transformer",
+    },
+    "acestep": {
+        # ACE-Step 1.5 ships a flat ComfyUI-style tree
+        # (``diffusion_models/`` + ``vae/`` + ``text_encoders/``) and
+        # ``detect_acestep_layout`` finds the DiT by walking UP from a
+        # ``.safetensors`` file to the parent holding ``diffusion_models/``. So
+        # the export writes ``<root>/diffusion_models/<stem>.safetensors``
+        # (``output_subdir``) and junctions the two companion directories next
+        # to it (``sibling_root: ".."``), exactly the shape Anima's entry uses
+        # for the same reason.
+        #
+        # The component key is ``dit``, not ``transformer``: that is what
+        # ``load_acestep_from_path`` puts in the component dict, and this table
+        # is where the name is declared for everything that has to find the
+        # module (the export job and ``generation_utils.extract_fp8_gemm_info``,
+        # which derives its witness component from ``layout_module_specs``
+        # rather than assuming "transformer").
+        #
+        # No prefix on either side, and no ``source_transform``: the checkpoint
+        # keys ARE module paths. Verified against the local turbo file -- 677
+        # keys in the file, 677 in an ``init_empty_weights`` build of
+        # ``AceStepConditionGenerationModel(AceStepConfig(**ACESTEP_DIT_CONFIG))``,
+        # ZERO in either difference, and every one of the file's 392 2-D tensors
+        # is one of the model's 392 ``nn.Linear`` weights. Attention is stored
+        # SPLIT (``q_proj``/``k_proj``/``v_proj``/``o_proj``), so unlike FLUX.2
+        # and Ideogram 4 there is no fused-qkv split to perform first.
+        #
+        # SCOPE, stated because ACE-Step is a three-component model: only the
+        # DiT is exported and quantized. The Oobleck VAE (0.1687 G, and not one
+        # 2-D tensor in it) and the Qwen3-Embedding-0.6B text encoder (0.5958 G)
+        # are separate files and separate component objects; the Linears are
+        # enumerated from the DiT module tree on both routes, so neither walk can
+        # reach them, and ``arch_capabilities`` separately declares
+        # ``text_encoder_quantization`` unsupported for acestep.
+        "modules": (("dit", ""),),
+        "offline_prefix": "",
+        "source_prefix": "",
+        "metadata": acestep_export_metadata,
+        "siblings": ("vae", "text_encoders"),
+        "sibling_root": "..",
+        "output_subdir": "diffusion_models",
     },
     "anima": {
         # Anima DiT single-files carry the module tree verbatim under ``net.``;

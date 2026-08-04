@@ -85,15 +85,34 @@ def _model_source(pipeline_manager) -> Optional[str]:
 def _source_root(arch: str, source: Optional[str]) -> Optional[str]:
     """The directory a sibling junction set should be taken from.
 
-    Anima's loader walks UP from the DiT file to a ``split_files`` parent, so the
-    root is that parent, not the DiT's own directory.
+    For the two architectures whose loader walks UP from the weight file to a
+    model ROOT, that root is what the siblings live next to -- not the file's own
+    directory:
+
+    * Anima: ``<root>/split_files/diffusion_models/<dit>.safetensors``, with
+      ``split_files/text_encoders`` and ``split_files/vae`` beside it;
+    * ACE-Step: ``<root>/diffusion_models/<dit>.safetensors``, with ``vae/`` and
+      ``text_encoders/`` beside it. ``detect_acestep_layout`` accepts that file
+      path directly, so it is a real ``current_model_info["source"]``, and
+      falling back to ``os.path.dirname`` would take the siblings from
+      ``diffusion_models/`` -- which holds neither -- and produce an exported
+      tree the loader cannot complete.
+
+    Both are asked THEIR OWN detector rather than having the walk re-implemented
+    here, so a layout change moves one file.
     """
     if not source or not os.path.exists(source):
         return None
-    if arch == "anima":
+    detectors = {
+        "anima": ("core.models.anima.anima_loader", "detect_anima_split_layout"),
+        "acestep": ("core.models.acestep.loader", "detect_acestep_layout"),
+    }
+    if arch in detectors:
+        module_name, func_name = detectors[arch]
         try:
-            from core.models.anima.anima_loader import detect_anima_split_layout
-            layout = detect_anima_split_layout(source)
+            import importlib
+
+            layout = getattr(importlib.import_module(module_name), func_name)(source)
             if layout and layout.get("root"):
                 return str(layout["root"])
         except Exception:

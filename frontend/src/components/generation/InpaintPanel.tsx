@@ -26,7 +26,7 @@ import GenerationQueue from "../common/GenerationQueue";
 import LoopGenerationPanel, { LoopGenerationConfig } from "./LoopGenerationPanel";
 import QuantizedGemmSelect from "./QuantizedGemmSelect";
 import { migrateLoopGenerationConfig, computeLoopDecodeDirective } from "@/utils/loopGenerationInheritance";
-import { getSamplers, getScheduleTypes, generateInpaint, generateInpaintTrainingPreview, toBase64, InpaintParams as ApiInpaintParams, LoRAConfig, ControlNetConfig, generateTIPOPrompt, cancelGeneration, getCurrentModel, getResultFilename, getResultSeed, getResultAncestralSeed, isLatentOnlyResult, unetQuantizationOptions, normalizeUnetQuantization } from "@/utils/api";
+import { getSamplers, getScheduleTypes, generateInpaint, generateInpaintTrainingPreview, toBase64, InpaintParams as ApiInpaintParams, LoRAConfig, ControlNetConfig, generateTIPOPrompt, cancelGeneration, getCurrentModel, getResultFilename, getResultSeed, getResultAncestralSeed, isLatentOnlyResult, unetQuantizationOptions, normalizeUnetQuantization, transformerQuantizationLabel } from "@/utils/api";
 import { useActiveTraining } from "@/hooks/useActiveTraining";
 import { wsClient, CFGMetrics } from "@/utils/websocket";
 import CFGMetricsGraph from "../common/CFGMetricsGraph";
@@ -3342,10 +3342,11 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
           </>
         ) : (
           <>
-            {/* SD/SDXL: 1-column layout */}
+            {/* Every other architecture: 1-column layout. Only SD1.5/SDXL have a
+                U-Net, so the label is arch-aware (see transformerQuantizationLabel). */}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <Select
-                label="U-Net Quantization"
+                label={transformerQuantizationLabel(currentModelInfo?.model_info?.type as string | undefined)}
                 value={params.unet_quantization || "none"}
                 onChange={(e) => setParams({
                   ...params,

@@ -168,16 +168,125 @@ def _resolve_qwen3_tokenizer_source(root: Optional[str]) -> str:
     return QWEN3_EMBEDDING_TOKENIZER_HUB_ID
 
 
+def _swap_quantized_linears(model, state_dict: Dict[str, torch.Tensor],
+                            dtype: torch.dtype) -> int:
+    """Replace ``nn.Linear``s that have a quantized saved weight. Returns the count.
+
+    A no-op (and silent) on an ordinary bf16 checkpoint, which is every published
+    ACE-Step checkpoint today; the quantized ones are produced by
+    ``subapps/fp8_quantize/quantize_transformer_fp8.py --arch acestep`` or by
+    exporting a runtime-converted DiT.
+
+    INT8 and FP8 are detected INDEPENDENTLY and both swaps run, because the int8
+    tool emits a MIXED file on purpose: a layer whose per-row crest factor makes
+    int8 worse than e4m3 falls back to e4m3 in the same file. Each swap helper
+    gates on the weight DTYPE as well as the shared ``.weight_scale`` suffix, so
+    neither can claim the other's layers and the call order does not matter. Same
+    reasoning and the same helpers as the Anima and Krea 2 loaders.
+    """
+    from core.models.ideogram4.vendor.fp8_linear import is_fp8_state_dict, swap_linears_to_fp8
+    from core.models.ideogram4.vendor.int8_linear import is_int8_state_dict, swap_linears_to_int8
+
+    has_int8 = is_int8_state_dict(state_dict)
+    has_fp8 = is_fp8_state_dict(state_dict)
+    if not (has_int8 or has_fp8):
+        return 0
+
+    n_int8 = swap_linears_to_int8(model, state_dict, compute_dtype=dtype) if has_int8 else 0
+    n_fp8 = swap_linears_to_fp8(model, state_dict, compute_dtype=dtype) if has_fp8 else 0
+    parts = []
+    if n_int8:
+        parts.append(f"{n_int8} Int8Linear")
+    if n_fp8:
+        parts.append(f"{n_fp8} Fp8Linear")
+    print(f"[AceStepLoader] weight-only quantized DiT: swapped {' + '.join(parts) or 'no'} "
+          f"Linear(s); the remaining Linears load as {dtype}")
+    return n_int8 + n_fp8
+
+
 def _build_dit(dit_path: str, torch_dtype: torch.dtype):
+    """Instantiate the ACE-Step DiT and load ``dit_path`` into it.
+
+    WEIGHT-ONLY QUANTIZED CHECKPOINTS. A file carrying per-output-row
+    ``.weight_scale`` siblings keeps its int8 / float8 Linear weights: the
+    matching ``nn.Linear`` modules are replaced by ``Int8Linear`` / ``Fp8Linear``
+    BEFORE the load, so the stored tensors are installed with their dtypes
+    intact. That is also why the load below is ``strict=False`` in the quantized
+    case: ``.weight_scale`` is a buffer of the swapped module, so a swap that
+    covered every quantized layer leaves nothing missing or unexpected -- but a
+    file whose swap did NOT cover everything must be caught by
+    ``verify_quantized_swap``, which says exactly what went wrong, rather than by
+    a strict-load traceback listing hundreds of keys. An ordinary bf16 checkpoint
+    keeps the original ``strict=True`` load unchanged.
+
+    The dtype cast now happens BEFORE the load instead of after it, and that
+    ordering is load-bearing for the quantized case. What a later cast does,
+    MEASURED on both classes rather than assumed (``Module.to(dtype=)`` skips
+    integral tensors, so it is not "every buffer is converted"):
+
+    * ``Fp8Linear``: ``weight`` float8_e4m3fn -> bfloat16, i.e. the quantized
+      weight is DESTROYED, and its ``weight_scale`` is then applied to
+      full-scale weights -- so the output is garbage rather than merely
+      imprecise, and nothing in the load reports it;
+    * ``Int8Linear``: ``weight`` stays int8 (the cast skips it), but
+      ``weight_scale`` is silently downcast float32 -> bfloat16 on BOTH classes,
+      which is a precision loss on every dequant of every layer.
+
+    So an int8-only file is not "safe under the old ordering": it is quieter
+    about it. Casting first leaves both untouched -- the quantized buffers are
+    created at their own dtypes by the swap, which runs after the cast -- while
+    every unquantized Linear, norm and embedding still ends up at exactly the
+    dtype the old ordering produced (``load_state_dict`` copies into the
+    parameter, casting the source to the parameter's dtype).
+    """
     from .defaults import ACESTEP_DIT_CONFIG
     from .vendor import AceStepConditionGenerationModel, AceStepConfig
     from safetensors import safe_open
 
     config = AceStepConfig(**ACESTEP_DIT_CONFIG)
     model = AceStepConditionGenerationModel(config)
+    model = model.to(dtype=torch_dtype)
 
     with safe_open(dit_path, framework="pt") as f:
         state_dict = {k: f.get_tensor(k) for k in f.keys()}
+
+    # Detected and verified AROUND the swap: the census fires on EITHER a
+    # ``.weight_scale`` key or an int8/float8 ``.weight``, while the swap helpers
+    # require both, so a scale-less (or partially matched) quantized file would
+    # otherwise swap nothing and load its integer codes into bf16 parameters with
+    # no warning that matters.
+    # ``scaled_quantization_report`` narrows the census to the SCALED case: a file
+    # whose float8 weights carry no scales at all is a plain dtype CAST, which
+    # loads correctly through the ordinary path below, so it must not be refused
+    # as scale-stripped.
+    from core.models.common.quantized_checkpoint_guard import (
+        cast_float8_tensors, quantized_state_dict_report, scaled_quantization_report,
+        verify_quantized_swap,
+    )
+    census = quantized_state_dict_report(state_dict)
+    quant_report = scaled_quantization_report(
+        census, arch="ACE-Step", path=dit_path, label="DiT")
+    if census is not None and quant_report is None:
+        # The pure-cast case: e4m3 weights with no scales. The module here is
+        # materialised (not meta-built), so a plain ``load_state_dict`` would cast
+        # them into the module's own bf16 parameters -- but only because it
+        # copies; casting them explicitly makes that independent of the load's
+        # copy semantics and matches what every other loader does on this path.
+        state_dict = cast_float8_tensors(state_dict, torch_dtype)
+    swapped = _swap_quantized_linears(model, state_dict, torch_dtype)
+    verify_quantized_swap(quant_report, swapped, arch="ACE-Step", path=dit_path,
+                          label="DiT")
+
+    if swapped:
+        missing, unexpected = model.load_state_dict(state_dict, strict=False)
+        if missing or unexpected:
+            raise RuntimeError(
+                f"ACE-Step quantized DiT state_dict mismatch: "
+                f"missing={missing[:5]} ({len(missing)}), "
+                f"unexpected={unexpected[:5]} ({len(unexpected)})"
+            )
+        model.eval()
+        return model, config
 
     missing, unexpected = model.load_state_dict(state_dict, strict=True)
     if missing or unexpected:
@@ -188,7 +297,6 @@ def _build_dit(dit_path: str, torch_dtype: torch.dtype):
             f"ACE-Step DiT state_dict mismatch: missing={missing}, unexpected={unexpected}"
         )
 
-    model = model.to(dtype=torch_dtype)
     model.eval()
     return model, config
 

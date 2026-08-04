@@ -881,7 +881,24 @@ def extract_fp8_gemm_info(pipeline_manager) -> str:
     # The transformer is the bulk of the Linear work; Ideogram 4's unconditional
     # branch and both text encoders are swapped by the same loader, so the
     # conditional transformer is a faithful witness for the checkpoint's format.
-    for name in ("transformer", "unconditional_transformer", "text_encoder"):
+    #
+    # The component KEY is not "transformer" on every arch -- ACE-Step's DiT
+    # lives under "dit" -- so the names are DERIVED from the same table that
+    # declares what an export writes (``EXPORT_LAYOUTS[arch]["modules"]``, via
+    # ``layout_module_specs``), which is by construction the set of components
+    # holding this arch's quantized Linears. A hand-written tuple here is the
+    # fourth occurrence of the arch-map defect this function's docstring is
+    # about; the legacy names stay as a fallback for an arch with quantized
+    # Linears but no export layout.
+    names = []
+    try:
+        from core.models.common.quantized_export import layout_module_specs
+
+        names = [component for component, _prefix in layout_module_specs(arch)]
+    except Exception:
+        names = []
+    for name in list(dict.fromkeys(
+            names + ["transformer", "unconditional_transformer", "text_encoder"])):
         module = comps.get(name)
         if module is None:
             continue

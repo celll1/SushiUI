@@ -220,6 +220,13 @@ class Txt2AudRequest(BaseModel):
     sampler_mode: str = TXT2AUD_DEFAULTS["sampler_mode"]
     vocal_language: str = TXT2AUD_DEFAULTS["vocal_language"]
     loras: Optional[List[LoRAConfig]] = TXT2AUD_DEFAULTS["loras"]
+    # Weight-only quantization. "int8" converts the ACE-Step DiT in place once
+    # per model load (`AceStepMixin._acestep_runtime_int8`, RUNTIME_INT8_ARCHS);
+    # the FP8 values are not implemented for this architecture.
+    unet_quantization: Optional[str] = TXT2AUD_DEFAULTS["unet_quantization"]
+    # Which GEMM an already-quantized Linear runs (`acestep` is in
+    # QUANTIZED_LINEAR_ARCHS). None leaves the process flags untouched.
+    quantized_gemm_mode: Optional[str] = TXT2AUD_DEFAULTS["quantized_gemm_mode"]
 
 
 class GenerationParams(BaseModel):
@@ -2273,13 +2280,15 @@ async def generate_upscale(
         )
 
 
-def _record_video_gemm_outcome(params, fp8_gemm, arch):
+def _record_media_gemm_outcome(params, fp8_gemm, arch):
     """Record the RESOLVED quantized-GEMM path and warn if `w8a8` degraded.
 
-    The video counterpart of the identical pair of calls in the image routes.
+    The video AND audio counterpart of the identical pair of calls in the image
+    routes (named `_record_video_*` while LTX-2.3 was the only non-image arch
+    with quantized Linears; ACE-Step's three audio routes now share it).
     `fp8_gemm` is recorded into `params` (and so into the sidecar JSON and the
     gallery row) because the W8A8 and dequantized paths are numerically
-    different, so a video is not reproducible without knowing which one ran.
+    different, so an output is not reproducible without knowing which one ran.
     """
     from api.quantized_gemm import report_quantized_gemm_outcome
     if fp8_gemm:
@@ -2287,15 +2296,19 @@ def _record_video_gemm_outcome(params, fp8_gemm, arch):
     report_quantized_gemm_outcome(params.get("quantized_gemm_mode"), fp8_gemm, arch)
 
 
-def _normalize_video_qgm(mode):
-    """`quantized_gemm_mode` for the three LTX-2.3 video routes, as a 400 on junk.
+def _normalize_media_qgm(mode):
+    """`quantized_gemm_mode` for the video and audio routes, as a 400 on junk.
 
-    The image routes each inline this two-liner; the video routes share it
-    because all three are LTX-2.3-only and would otherwise repeat the same
-    try/except three more times. `ltx2` is in `QUANTIZED_LINEAR_ARCHS` -- its
-    loader swaps in `Int8Linear`/`Fp8Linear` for a weight-only quantized
-    transformer component, and `_ltx2_runtime_int8` produces the same classes --
-    so this parameter selects a real GEMM path here rather than being decorative.
+    The image routes each inline this two-liner; the three LTX-2.3 video routes
+    and the three ACE-Step audio routes share it rather than repeating the same
+    try/except six more times.
+
+    Both archs pass the same test for accepting the parameter at all: `ltx2` and
+    `acestep` are in `QUANTIZED_LINEAR_ARCHS`, their loaders swap in
+    `Int8Linear`/`Fp8Linear` for a weight-only quantized checkpoint, and
+    `_ltx2_runtime_int8` / `_acestep_runtime_int8` produce exactly those classes
+    from a bf16 one -- so the flags this parameter sets govern modules these
+    routes really can be running, rather than being decorative.
     """
     from api.error_handlers import ValidationError
     from api.quantized_gemm import normalize_mode as _normalize_qgm
@@ -2322,7 +2335,7 @@ async def generate_txt2vid(
     # Quantized-GEMM path (quantized_gemm_mode): normalized BEFORE
     # start_generation so an invalid value is a 400 rather than a 500 from inside
     # the run. None (the default) leaves the process flags completely untouched.
-    params["quantized_gemm_mode"] = _normalize_video_qgm(params.get("quantized_gemm_mode"))
+    params["quantized_gemm_mode"] = _normalize_media_qgm(params.get("quantized_gemm_mode"))
 
     # Validate LTX-2.3 dimensional constraints before any GPU work (4xx, not 5xx).
     width = int(params["width"])
@@ -2397,7 +2410,7 @@ async def generate_txt2vid(
             )
             fp8_gemm = extract_fp8_gemm_info(pipeline_manager)
         apply_generation_timings(params, time.perf_counter() - _gen_start)
-        _record_video_gemm_outcome(params, fp8_gemm, _ltx2_arch)
+        _record_media_gemm_outcome(params, fp8_gemm, _ltx2_arch)
 
         params["seed"] = actual_seed
 
@@ -2478,6 +2491,10 @@ async def generate_txt2aud(
     from utils.audio_utils import save_audio_with_metadata
 
     params = request.dict()
+    # Quantized-GEMM path (quantized_gemm_mode): normalized BEFORE
+    # start_generation so an invalid value is a 400 rather than a 500 from inside
+    # the run. None (the default) leaves the process flags completely untouched.
+    params["quantized_gemm_mode"] = _normalize_media_qgm(params.get("quantized_gemm_mode"))
 
     if not getattr(pipeline_manager, "is_acestep_model", False):
         raise CustomValidationError(
@@ -2506,11 +2523,16 @@ async def generate_txt2aud(
         loop = asyncio.get_event_loop()
         _gen_start = time.perf_counter()
         async with gpu_coordinator.generation_slot(estimated_peak_gb=_PEAK_VRAM_GB_BY_KIND["acestep"], timeout=120.0):
+            # GEMM flags are process-wide; keep selection and probing in this slot.
+            from api.quantized_gemm import apply_quantized_gemm_mode
+            apply_quantized_gemm_mode(params.get("quantized_gemm_mode"))
             waveform, sample_rate, actual_seed = await _run_generation_in_executor(
                 loop, executor,
                 lambda: pipeline_manager.generate_txt2aud(params, progress_callback=progress_callback)
             )
+            fp8_gemm = extract_fp8_gemm_info(pipeline_manager)
         apply_generation_timings(params, time.perf_counter() - _gen_start)
+        _record_media_gemm_outcome(params, fp8_gemm, _acestep_arch)
 
         params["seed"] = actual_seed
 
@@ -2591,6 +2613,9 @@ async def generate_aud2aud(
     repaint_end: float = Form(AUD2AUD_DEFAULTS["repaint_end"]),
     vocal_language: str = Form(AUD2AUD_DEFAULTS["vocal_language"]),
     loras: str = Form("[]"),  # JSON string of LoRA configs
+    # Weight-only quantization; see the Txt2AudRequest fields for both axes.
+    unet_quantization: Optional[str] = Form(AUD2AUD_DEFAULTS["unet_quantization"]),
+    quantized_gemm_mode: Optional[str] = Form(AUD2AUD_DEFAULTS["quantized_gemm_mode"]),
     reference_audio: UploadFile = File(...),
     db: Session = Depends(get_gallery_db)
 ):
@@ -2641,6 +2666,10 @@ async def generate_aud2aud(
         "repaint_end": repaint_end,
         "vocal_language": vocal_language,
         "loras": lora_configs,
+        "unet_quantization": unet_quantization,
+        # Normalized here (not after start_generation) so an invalid value is a
+        # 400 rather than a 500 from inside the run.
+        "quantized_gemm_mode": _normalize_media_qgm(quantized_gemm_mode),
     }
 
     if not getattr(pipeline_manager, "is_acestep_model", False):
@@ -2690,11 +2719,16 @@ async def generate_aud2aud(
         loop = asyncio.get_event_loop()
         _gen_start = time.perf_counter()
         async with gpu_coordinator.generation_slot(estimated_peak_gb=_PEAK_VRAM_GB_BY_KIND["acestep"], timeout=120.0):
+            # GEMM flags are process-wide; keep selection and probing in this slot.
+            from api.quantized_gemm import apply_quantized_gemm_mode
+            apply_quantized_gemm_mode(params.get("quantized_gemm_mode"))
             waveform, sample_rate, actual_seed = await _run_generation_in_executor(
                 loop, executor,
                 lambda: pipeline_manager.generate_aud2aud(params, reference_audio_bytes, progress_callback=progress_callback)
             )
+            fp8_gemm = extract_fp8_gemm_info(pipeline_manager)
         apply_generation_timings(params, time.perf_counter() - _gen_start)
+        _record_media_gemm_outcome(params, fp8_gemm, _acestep_arch)
 
         params["seed"] = actual_seed
 
@@ -2780,6 +2814,9 @@ async def generate_outpaint_audio(
     input_trim_start_sec: float = Form(OUTPAINT_AUDIO_DEFAULTS["input_trim_start_sec"]),
     input_trim_end_sec: float = Form(OUTPAINT_AUDIO_DEFAULTS["input_trim_end_sec"]),
     loras: str = Form("[]"),  # JSON string of LoRA configs
+    # Weight-only quantization; see the Txt2AudRequest fields for both axes.
+    unet_quantization: Optional[str] = Form(OUTPAINT_AUDIO_DEFAULTS["unet_quantization"]),
+    quantized_gemm_mode: Optional[str] = Form(OUTPAINT_AUDIO_DEFAULTS["quantized_gemm_mode"]),
     reference_audio: UploadFile = File(...),
     db: Session = Depends(get_gallery_db)
 ):
@@ -2904,6 +2941,10 @@ async def generate_outpaint_audio(
         "input_trim_start_sec": input_trim_start_sec,
         "input_trim_end_sec": input_trim_end_sec,
         "loras": lora_configs,
+        "unet_quantization": unet_quantization,
+        # Normalized here (not after start_generation) so an invalid value is a
+        # 400 rather than a 500 from inside the run.
+        "quantized_gemm_mode": _normalize_media_qgm(quantized_gemm_mode),
     }
 
     _gen_id = start_generation("outpaint_aud")
@@ -2926,11 +2967,16 @@ async def generate_outpaint_audio(
         loop = asyncio.get_event_loop()
         _gen_start = time.perf_counter()
         async with gpu_coordinator.generation_slot(estimated_peak_gb=_PEAK_VRAM_GB_BY_KIND["acestep"], timeout=120.0):
+            # GEMM flags are process-wide; keep selection and probing in this slot.
+            from api.quantized_gemm import apply_quantized_gemm_mode
+            apply_quantized_gemm_mode(params.get("quantized_gemm_mode"))
             waveform, sample_rate, actual_seed = await _run_generation_in_executor(
                 loop, executor,
                 lambda: pipeline_manager.generate_aud_outpaint(params, reference_audio_bytes, progress_callback=progress_callback)
             )
+            fp8_gemm = extract_fp8_gemm_info(pipeline_manager)
         apply_generation_timings(params, time.perf_counter() - _gen_start)
+        _record_media_gemm_outcome(params, fp8_gemm, _acestep_arch)
 
         params["seed"] = actual_seed
 
@@ -3080,7 +3126,7 @@ async def generate_img2vid(
         "text_encoder_path": text_encoder_path,
         "unet_quantization": unet_quantization,
         # Normalized here (before start_generation) so junk is a 400, not a 500.
-        "quantized_gemm_mode": _normalize_video_qgm(quantized_gemm_mode),
+        "quantized_gemm_mode": _normalize_media_qgm(quantized_gemm_mode),
     }
 
     # Training-free reference-style transfer (video). See generate_txt2vid's
@@ -3158,7 +3204,7 @@ async def generate_img2vid(
             )
             fp8_gemm = extract_fp8_gemm_info(pipeline_manager)
         apply_generation_timings(params, time.perf_counter() - _gen_start)
-        _record_video_gemm_outcome(params, fp8_gemm, _ltx2_arch)
+        _record_media_gemm_outcome(params, fp8_gemm, _ltx2_arch)
 
         params["seed"] = actual_seed
 
@@ -3384,7 +3430,7 @@ async def generate_outpaint_video(
         "text_encoder_path": text_encoder_path,
         "unet_quantization": unet_quantization,
         # Normalized here (before start_generation) so junk is a 400, not a 500.
-        "quantized_gemm_mode": _normalize_video_qgm(quantized_gemm_mode),
+        "quantized_gemm_mode": _normalize_media_qgm(quantized_gemm_mode),
         "video_lossless": video_lossless,
     }
 
@@ -3434,7 +3480,7 @@ async def generate_outpaint_video(
             )
             fp8_gemm = extract_fp8_gemm_info(pipeline_manager)
         apply_generation_timings(params, time.perf_counter() - _gen_start)
-        _record_video_gemm_outcome(params, fp8_gemm, _ltx2_arch)
+        _record_media_gemm_outcome(params, fp8_gemm, _ltx2_arch)
 
         params["seed"] = actual_seed
 

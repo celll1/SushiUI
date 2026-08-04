@@ -61,7 +61,7 @@ Local-only files that may be absent in a fresh clone are listed separately.
 | `backend/core/memory_management/README.md` | Memory management module overview. |
 | `backend/core/memory_management/RING_BUFFER_OPTIMIZER.md` | Ring-buffer optimizer state management. |
 | `backend/core/training/API_REFERENCE.md` | Training API reference. |
-| `backend/core/training/INT8_W8A8_TRAINING_GATE.md` | Measurement gate **G3**: whether a gradient-capable INT8 W8A8 forward path may be built for training at all (the inference gates G1/G2 are in `examples/api/README.md`). **Closed: G3 FAILED** — criterion 2 (no tested workload regresses >3%) was violated at 256px/512px Anima token counts; see the file's "Result" section. |
+| `backend/core/training/INT8_W8A8_TRAINING_GATE.md` | Measurement gate **G3**: whether a gradient-capable INT8 W8A8 forward path may be built for training at all (the inference gates G1/G2 are in `examples/api/README.md`). **Closed: G3 FAILED** — criterion 2 (no tested workload regresses >3%) was violated at 256px/512px Anima token counts; see the file's "Result" section. Also holds gate **G4** (memory): whether the dequant path may stop handing its dequantized weight to autograd. **Closed: G4 FAILED** on its pre-registered step-time ceiling after passing the bitwise, gradient and memory criteria; records the `gradient_checkpointing: false` + quantized-base cost and the warning that shipped instead. |
 | `backend/core/training/MODEL_ARCHITECTURES.md` | Per-architecture training internals (text encoding, conditioning, etc.). |
 | `backend/core/training/TRAINING_PARAMS_GUIDE.md` | Training parameter guide. |
 | `backend/core/training/adapters/MODEL_ADAPTER_DESIGN.md` | Training model-adapter design pattern. |

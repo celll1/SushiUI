@@ -34,10 +34,42 @@ Ring Buffer Optimizersは、**optimizer stateをCPUメモリに配置**し、**�
 
 ### 対応Optimizer
 
-| Optimizer | 8-bit | Schedule-Free | Cautious | Ring Buffer |
-|-----------|-------|---------------|----------|-------------|
-| AdamW8bit_RingBuffer | ✅ | ✅ | ✅ | ✅ |
-| Lion8bit_RingBuffer | ✅ | ✅ | ✅ | ✅ |
+| Optimizer | 8-bit | Schedule-Free | Cautious | Stochastic Rounding | Ring Buffer |
+|-----------|-------|---------------|----------|---------------------|-------------|
+| AdamW8bit_RingBuffer | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Lion8bit_RingBuffer | ✅ | ✅ | ✅ | ✅ | ✅ |
+
+---
+
+## Stochastic Rounding (`optimizer_stochastic_rounding`)
+
+BF16の仮数部は8ビットなので、値 `w ∈ [2^e, 2^(e+1))` のULPは `2^(e-7)`、
+round-to-nearestで切り捨てられる更新量の上限（half ULP）は `2^(e-8)` になる。
+Adam系の1ステップの更新量は概ね `lr` なので、round-to-nearestでは
+**`|w| <= 512 * lr` の要素しか動かない**（lr=1e-5 なら `|w| <= 5.12e-3`）。
+round-to-nearestは決定的であるため、条件を満たさない要素は初期のビットパターンの
+まま学習を通して固定される。
+
+Stochastic roundingは端数の確率で切り上げるため `E[round(x)] == x` となり、
+half ULP未満の更新も期待値として反映される。
+
+実装（`stochastic_rounding.py`）:
+
+- BF16パラメータに対してのみ適用（FP32/FP16パラメータでは無効）
+- FP32のmaster weightは保持しない。ステップごとにscratchバッファ上に
+  パラメータのFP32イメージを作り、更新後にstochastic roundingでBF16へ書き戻す
+- 追加メモリは `4バイト × 最大パラメータのnumel × スロット数`
+  （全パラメータ分のFP32コピーではない）
+- 8-bit CUDAカーネルは `param.dtype == grad.dtype` を要求するため、
+  FP32イメージを渡す際は勾配もFP32へ変換する（`prepare_master_and_grad`）
+- `optimizer.step()` とfused backward hookの両方で適用される
+
+計測（Krea 2 `transformer_blocks.2.ff.up.weight`、lr=1e-5、400ステップ、
+1要素あたり `+lr` の更新）: round-to-nearestでは9.2%の要素のみが動き、
+意図した変化量の6.9%しか反映されない。Stochastic roundingでは100%の要素が動き、
+変化量は100%反映される。
+
+デフォルトは無効（`optimizer_stochastic_rounding: false`）。
 
 ---
 

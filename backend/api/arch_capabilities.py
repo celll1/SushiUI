@@ -174,7 +174,12 @@ _add("ltx2", "unet_quantization",
      "connectors) in place once per model load")
 _add_supported_values("ltx2", "unet_quantization", ["int8"])
 _add("acestep", "unet_quantization",
-     "unet_quantization is not implemented for the ACE-Step audio model")
+     "the FP8/nf4 values are not implemented for the ACE-Step audio model; the only "
+     "per-generation unet_quantization value applied is 'int8', which converts the "
+     "unquantized audio DiT (and only the DiT -- not the Oobleck VAE, which holds no "
+     "2-D Linear weight at all, and not the Qwen3-Embedding text encoder) in place once "
+     "per model load")
+_add_supported_values("acestep", "unet_quantization", ["int8"])
 
 # Quantized GEMM path (per-generation quantized_gemm_mode): only the
 # architectures whose loaders swap in the weight-only quantized Linear classes

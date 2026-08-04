@@ -162,7 +162,7 @@ paths:
               example:
                 unsupported:
                   sdxl:
-                    quantized_gemm: "this architecture's checkpoints hold plain floating-point Linear weights; the quantized-GEMM path selection applies only to the weight-only quantized Linear layers used by Anima, FLUX.2, Ideogram 4, Krea 2 and LTX-2.3"
+                    quantized_gemm: "this architecture's checkpoints hold plain floating-point Linear weights; the quantized-GEMM path selection applies only to the weight-only quantized Linear layers used by ACE-Step, Anima, FLUX.2, Ideogram 4, Krea 2 and LTX-2.3"
                   krea2:
                     unet_quantization: "FP8 quantization on this architecture is selected by checkpoint format at load time (bf16 or weight-only FP8 checkpoints); the only per-generation unet_quantization value applied is 'int8', which converts an unquantized transformer in place once per model load"
                 supported_values:
@@ -174,8 +174,8 @@ paths:
                 feature_labels:
                   quantized_gemm: "quantized_gemm_mode (quantized GEMM path)"
                   unet_quantization: "unet_quantization"
-                runtime_int8_archs: [anima, krea2, flux2, ideogram4, ltx2]
-                quantized_linear_archs: [anima, flux2, ideogram4, krea2, ltx2]
+                runtime_int8_archs: [anima, krea2, flux2, ideogram4, ltx2, acestep]
+                quantized_linear_archs: [acestep, anima, flux2, ideogram4, krea2, ltx2]
   /schema/generation-defaults:
     get:
       summary: Get default parameter values for txt2img/img2img/inpaint generation
@@ -5636,9 +5636,10 @@ components:
           type: string
           nullable: true
           description: |
-            Architecture being exported: one of `anima`, `flux2`, `ideogram4`,
-            `krea2`, `ltx2` (the keys of the backend's `EXPORT_LAYOUTS` table,
-            pinned by `quantized_capability_parity_test`).
+            Architecture being exported: one of `acestep`, `anima`, `flux2`,
+            `ideogram4`, `krea2`, `ltx2` (the keys of the backend's
+            `EXPORT_LAYOUTS` table, pinned by
+            `quantized_capability_parity_test`).
           example: anima
         output_path:
           type: string
@@ -5853,7 +5854,7 @@ components:
             reported through the generation's `warnings[]`.
           items:
             type: string
-          example: [anima, krea2, flux2, ideogram4, ltx2]
+          example: [anima, krea2, flux2, ideogram4, ltx2, acestep]
         quantized_linear_archs:
           type: array
           description: |
@@ -5867,7 +5868,7 @@ components:
             today.
           items:
             type: string
-          example: [anima, flux2, ideogram4, krea2, ltx2]
+          example: [acestep, anima, flux2, ideogram4, krea2, ltx2]
     Fp8ScaledMmState:
       type: object
       required: [enabled, origin, resolved_modes]
@@ -6125,7 +6126,7 @@ components:
             operation during inference, so measured generation speed is slower
             than full precision, not faster.
 
-            `int8` — **`anima`, `krea2`, `flux2`, `ideogram4` and `ltx2` only**
+            `int8` — **`anima`, `krea2`, `flux2`, `ideogram4`, `ltx2` and `acestep` only**
             (the authoritative list is `runtime_int8_archs` from
             `GET /schema/arch-capabilities`). Converts the loaded
             transformer IN PLACE to the mixed weight-only int8/e4m3 layout the
@@ -6181,8 +6182,8 @@ components:
             already-quantized weights are multiplied.
 
             Consumed only by the architectures whose loaders swap in the
-            quantized Linear classes — `anima`, `flux2`, `ideogram4`, `krea2`,
-            `ltx2`
+            quantized Linear classes — `acestep`, `anima`, `flux2`, `ideogram4`,
+            `krea2`, `ltx2`
             (the `quantized_linear_archs` list of
             `GET /schema/arch-capabilities`, which is derived from the backend's
             own tuple and is the authority if this sentence ever drifts).
@@ -7203,6 +7204,35 @@ components:
           default: "en"
           description: "Language folded into the lyrics/metas conditioning text."
           example: "en"
+        unet_quantization:
+          type: string
+          nullable: true
+          enum: [none, fp8_e4m3fn, fp8_e5m2, int8]
+          default: null
+          description: |
+            Weight-only quantization of the ACE-Step DiT. Identical semantics to
+            `GenerationParams.unet_quantization`; on this architecture only
+            `int8` is applied (`acestep` is in `runtime_int8_archs`), converting
+            the DiT's 392 Linear layers in place ONCE per model load. The FP8
+            values are not implemented here and are reported through the
+            generation's `warnings[]`. Only the DiT is converted -- not the
+            Oobleck VAE (which holds no 2-D Linear weight at all) and not the
+            Qwen3-Embedding text encoder.
+          example: null
+        quantized_gemm_mode:
+          type: string
+          nullable: true
+          enum: [w8a8, dequant, null]
+          default: null
+          description: |
+            Per-generation selection of the GEMM path used by Linear layers whose
+            weights are ALREADY weight-only quantized; identical semantics and
+            identical three values to `GenerationParams.quantized_gemm_mode`, and
+            it selects a real path here because `acestep` is one of the
+            `quantized_linear_archs` of `GET /schema/arch-capabilities` (its
+            loader swaps in `Int8Linear`/`Fp8Linear`, and the runtime `int8`
+            conversion above produces the same classes).
+          example: null
         loras:
           type: array
           default: []
@@ -7299,6 +7329,35 @@ components:
             of LoRA config objects (e.g. path/strength). Same apply/restore
             contract as `Txt2AudRequest.loras` -- see there for details.
           example: '[{"path": "acestep_lora.safetensors", "strength": 1.0}]'
+        unet_quantization:
+          type: string
+          nullable: true
+          enum: [none, fp8_e4m3fn, fp8_e5m2, int8]
+          default: null
+          description: |
+            Weight-only quantization of the ACE-Step DiT. Identical semantics to
+            `GenerationParams.unet_quantization`; on this architecture only
+            `int8` is applied (`acestep` is in `runtime_int8_archs`), converting
+            the DiT's 392 Linear layers in place ONCE per model load. The FP8
+            values are not implemented here and are reported through the
+            generation's `warnings[]`. Only the DiT is converted -- not the
+            Oobleck VAE (which holds no 2-D Linear weight at all) and not the
+            Qwen3-Embedding text encoder.
+          example: null
+        quantized_gemm_mode:
+          type: string
+          nullable: true
+          enum: [w8a8, dequant, null]
+          default: null
+          description: |
+            Per-generation selection of the GEMM path used by Linear layers whose
+            weights are ALREADY weight-only quantized; identical semantics and
+            identical three values to `GenerationParams.quantized_gemm_mode`, and
+            it selects a real path here because `acestep` is one of the
+            `quantized_linear_archs` of `GET /schema/arch-capabilities` (its
+            loader swaps in `Int8Linear`/`Fp8Linear`, and the runtime `int8`
+            conversion above produces the same classes).
+          example: null
         reference_audio:
           type: string
           format: binary
@@ -7391,6 +7450,35 @@ components:
             of LoRA config objects (e.g. path/strength). Same apply/restore
             contract as `Txt2AudRequest.loras` -- see there for details.
           example: '[{"path": "acestep_lora.safetensors", "strength": 1.0}]'
+        unet_quantization:
+          type: string
+          nullable: true
+          enum: [none, fp8_e4m3fn, fp8_e5m2, int8]
+          default: null
+          description: |
+            Weight-only quantization of the ACE-Step DiT. Identical semantics to
+            `GenerationParams.unet_quantization`; on this architecture only
+            `int8` is applied (`acestep` is in `runtime_int8_archs`), converting
+            the DiT's 392 Linear layers in place ONCE per model load. The FP8
+            values are not implemented here and are reported through the
+            generation's `warnings[]`. Only the DiT is converted -- not the
+            Oobleck VAE (which holds no 2-D Linear weight at all) and not the
+            Qwen3-Embedding text encoder.
+          example: null
+        quantized_gemm_mode:
+          type: string
+          nullable: true
+          enum: [w8a8, dequant, null]
+          default: null
+          description: |
+            Per-generation selection of the GEMM path used by Linear layers whose
+            weights are ALREADY weight-only quantized; identical semantics and
+            identical three values to `GenerationParams.quantized_gemm_mode`, and
+            it selects a real path here because `acestep` is one of the
+            `quantized_linear_archs` of `GET /schema/arch-capabilities` (its
+            loader swaps in `Int8Linear`/`Fp8Linear`, and the runtime `int8`
+            conversion above produces the same classes).
+          example: null
         reference_audio:
           type: string
           format: binary

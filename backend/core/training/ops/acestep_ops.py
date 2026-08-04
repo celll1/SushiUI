@@ -119,6 +119,29 @@ def load_components(trainer) -> None:
     # casts to trainer.weight_dtype, this covers vae_dtype != weight_dtype).
     trainer.vae = trainer.vae.to(dtype=trainer.vae_dtype)
 
+    # A training process is DEQUANT-ONLY (see ideogram4_ops.load_components for
+    # the full reasoning). An ACE-Step DiT loaded from a weight-only int8/fp8
+    # checkpoint -- one produced by ``quantize_transformer_fp8.py --arch acestep``
+    # or exported after a runtime ``unet_quantization="int8"`` conversion -- owns
+    # Int8Linear / Fp8Linear modules whose W8A8 fast paths are enabled by
+    # process-wide env flags that training_process.py copies from the backend
+    # (os.environ.copy()), and grad mode is not a usable proxy for "this is
+    # inference". Switch both off explicitly on every module this trainer owns,
+    # so a LoRA is fitted against exactly the base function everyone else runs --
+    # and so training-time sample previews, which run under a no_grad denoise
+    # loop, cannot be W8A8 while the trained weights are not. Two separate module
+    # types with two separate per-instance opt-outs: disabling one does not
+    # disable the other. No-op on a bf16 base, which is every published ACE-Step
+    # checkpoint today.
+    from core.models.ideogram4.vendor.fp8_linear import disable_scaled_mm
+    from core.models.ideogram4.vendor.int8_linear import disable_int8_mm
+    for _label, _module in (("transformer", trainer.transformer),
+                            ("text_encoder", trainer.text_encoder),
+                            ("vae", trainer.vae)):
+        if _module is not None:
+            disable_scaled_mm(_module, label=f"acestep training {_label}")
+            disable_int8_mm(_module, label=f"acestep training {_label}")
+
     # Gradient checkpointing: AceStepDiTLayer/AceStepEncoderLayer subclass
     # transformers' GradientCheckpointingLayer, so the standard PreTrainedModel
     # toggle applies.

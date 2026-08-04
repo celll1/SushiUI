@@ -60,6 +60,27 @@ import re
 import torch
 
 
+def _is_lora_target(module) -> bool:
+    """True for a module a generation-time ACE-Step LoRA may wrap.
+
+    Thin re-export of the shared
+    ``core.training.adapters.base_adapter.is_lora_wrappable_linear``, and it
+    exists as a MODULE-LEVEL name for two reasons. First, `Int8Linear` /
+    `Fp8Linear` are ``nn.Module``s but NOT ``nn.Linear`` subclasses, so the
+    ``isinstance(x, torch.nn.Linear)`` these two call sites used to spell skipped
+    every quantized layer silently -- an INT8-converted DiT (which
+    ``_acestep_runtime_int8`` now produces on request) would have reported
+    "0 of N modules applied" and told the user their LoRA was for a different
+    ACE-Step generation. Second, ``quantized_capability_parity_test`` locates an
+    arch's predicate BY NAME in this module and exercises it on real
+    ``Int8Linear``/``Fp8Linear``/``nn.Linear`` instances; an inline test cannot be
+    checked that way.
+    """
+    from core.training.adapters.base_adapter import is_lora_wrappable_linear
+
+    return is_lora_wrappable_linear(module)
+
+
 class AceStepMixin:
     """AceStepMixin: ACE-Step 1.5 (2B DiT + Oobleck VAE + Qwen3-Embedding
     text encoder) text-to-music generation backend."""
@@ -69,6 +90,97 @@ class AceStepMixin:
     # `_move` helper pattern used by the other single-file-loaded backends,
     # e.g. MiniT2IMixin._minit2i_move).
     # ------------------------------------------------------------------
+
+    def _acestep_runtime_int8(self, params: Dict[str, Any], progress_callback=None):
+        """Apply the one-time in-place INT8 conversion, if this request asks for it.
+
+        No-op for every ``unet_quantization`` value other than ``"int8"``, for an
+        already-converted DiT, and for a checkpoint that already carries
+        weight-only quantized Linears (see
+        ``vram_optimization.apply_runtime_int8_quantization`` for the full
+        contract). The conversion replaces child modules in place and never
+        builds a second module.
+
+        SCOPE. Only the DiT (``acestep_components["dit"]``, 392 ``nn.Linear``
+        modules holding 2.3922 G parameters) is converted. The Oobleck VAE holds
+        no 2-D Linear weight at all and the Qwen3-Embedding text encoder is a
+        separate component this walk cannot reach; ``arch_capabilities`` declares
+        ``text_encoder_quantization`` unsupported for acestep and nothing here
+        changes that.
+
+        ORDERING, and why this is called at the top of every generate path but
+        AFTER ``_apply_or_clear_lora_acestep``:
+
+        * AFTER the LoRA gate, not before. The converter refuses a LoRA-wrapped
+          module (the wrappers hide the Linears, so the selection would differ
+          from the offline audit) -- and ACE-Step's wrappers are PERSISTENT state:
+          ``_apply_or_clear_lora_acestep`` unloads whatever the PREVIOUS
+          generation wrapped and only then loads this request's set. Running the
+          conversion first would therefore see a stale wrapper from an earlier
+          generation and refuse an INT8 request that carries no LoRAs at all --
+          the LTX-2.3 stale-offloader shape, where the refusal's own advice
+          ("remove the LoRAs") had already been followed. Running after the gate
+          means the wrappers present are exactly the ones THIS request asked for,
+          which is the only case where refusing is the right answer.
+        * BEFORE staging. The converter is device-aware, so running here (with
+          the components still on CPU, which is where ``load_model`` leaves them
+          and where each generate path's ``_acestep_move`` finds them) is
+          correct; running it after the DiT was moved to CUDA would quantize a
+          GPU-resident module for no reason.
+
+        No ``precheck`` is passed: unlike FLUX.2/Ideogram 4/Krea 2/LTX-2.3 there
+        is no block offloader on this architecture (no ``blocks_to_swap`` path
+        exists in this backend at all), so there is no caller-owned invariant
+        that only applies to a real conversion. The LoRA invariant is the shared
+        converter's own, checked over the whole component set before the first
+        layer is touched.
+        """
+        from core.vram_optimization import apply_runtime_int8_quantization
+
+        components = getattr(self, "acestep_components", None)
+        if not components:
+            return
+        dit = components.get("dit")
+        if dit is None:
+            return
+
+        model, converted = apply_runtime_int8_quantization(
+            self, dit, "acestep", params.get("unet_quantization"),
+            label="ACE-Step DiT", progress_callback=progress_callback)
+
+        # The converter mutates in place and returns the SAME object, so the
+        # component reference stays valid; re-assigned anyway so a future
+        # converter that returned a new module could not silently strand it.
+        components["dit"] = model
+
+        if converted or getattr(self, "_runtime_int8_partial", False):
+            # The LoRA loader caches the module it wrapped under
+            # ``_acestep_lora_original_modules`` so ``_unload_lora_acestep`` can
+            # put it back, and that cache is keyed by module path and never
+            # overwritten (``if module_key not in ...``). After a conversion the
+            # cached entries are the PRE-conversion bf16 Linears, which are still
+            # alive precisely because that dict holds them: a later
+            # load-then-unload cycle would restore them, silently un-quantizing
+            # those layers (and having kept their bf16 weights resident the whole
+            # time). The conversion only runs when nothing is wrapped, so
+            # dropping the cache here is safe and simply lets the next LoRA load
+            # record the quantized modules as the originals.
+            #
+            # ``_runtime_int8_partial`` as well as ``converted``, because
+            # ``converted`` is False for a PARTIAL conversion too -- the
+            # CUDA-OOM-at-layer-N path the converter explicitly designs for
+            # (vram_optimization.apply_runtime_int8_quantization sets the latch
+            # and returns False). Those layers ARE Int8Linear, so gating on
+            # ``converted`` alone left the pre-conversion bf16 modules cached for
+            # exactly the layers that were converted: reproduced as
+            # "after a LoRA load/unload cycle the converted module is an
+            # nn.Linear again", plus 2.4 GB of bf16 held resident by the cache.
+            # The same latch is what Anima's hook consults, for the same reason.
+            stale = getattr(self, "_acestep_lora_original_modules", None)
+            if stale:
+                print(f"[AceStep] Dropping {len(stale)} cached pre-quantization LoRA base "
+                      f"module(s); future LoRA loads restore the INT8 modules instead.")
+                stale.clear()
 
     def _acestep_move(self, component_name: str, target_device: str):
         comp = self.acestep_components.get(component_name)
@@ -679,7 +791,7 @@ class AceStepMixin:
 
                         for leaf in self._ACESTEP_LORA_ATTN_LEAVES:
                             original_linear = getattr(attn, leaf, None)
-                            if not isinstance(original_linear, torch.nn.Linear):
+                            if not _is_lora_target(original_linear):
                                 # Either absent, or already LoRA-wrapped (the call
                                 # site always unloads before reloading -- see
                                 # `_generate_txt2aud_acestep`/`_generate_aud2aud_acestep`).
@@ -786,8 +898,16 @@ class AceStepMixin:
             true_original, rank=rank, alpha=alpha_value, lora_name=module_key
         )
 
+        # The BRANCH's dtype must never be taken from the base weight: over an
+        # Int8Linear that would store the LoRA at 8 uniform levels, and over an
+        # Fp8Linear at e4m3 precision. `lora_branch_dtype` returns the base's
+        # dtype only when it is a real floating-point one and falls back to
+        # bfloat16 otherwise. The DEVICE is still the base's -- that is a
+        # placement, not a precision.
+        from core.training.adapters.base_adapter import lora_branch_dtype
+
         device = true_original.weight.device
-        dtype = true_original.weight.dtype
+        dtype = lora_branch_dtype(true_original)
 
         with torch.no_grad():
             lora_wrapper.lora_down.weight.data = lora_down_weight.to(device=device, dtype=dtype)
@@ -922,7 +1042,7 @@ class AceStepMixin:
                 continue
 
             original_linear = getattr(parent, leaf, None)
-            if not isinstance(original_linear, torch.nn.Linear):
+            if not _is_lora_target(original_linear):
                 skipped_missing += 1
                 continue
 
@@ -1102,6 +1222,12 @@ class AceStepMixin:
 
         # ---- optional LoRA (see the "LoRA" section above for the apply/restore contract) ----
         self._apply_or_clear_lora_acestep(params.get("loras") or [])
+
+        # ---- one-time in-place INT8 conversion (unet_quantization="int8") ----
+        # After the LoRA gate and before staging; see _acestep_runtime_int8 for
+        # why that order is the load-bearing one. No-op for every other value and
+        # for an already-converted / already-quantized DiT.
+        self._acestep_runtime_int8(params, progress_callback=progress_callback)
 
         device = self.device
         model_dtype = next(dit.parameters()).dtype
@@ -1380,6 +1506,12 @@ class AceStepMixin:
 
         # ---- optional LoRA (see the "LoRA" section above for the apply/restore contract) ----
         self._apply_or_clear_lora_acestep(params.get("loras") or [])
+
+        # ---- one-time in-place INT8 conversion (unet_quantization="int8") ----
+        # After the LoRA gate and before staging; see _acestep_runtime_int8 for
+        # why that order is the load-bearing one. No-op for every other value and
+        # for an already-converted / already-quantized DiT.
+        self._acestep_runtime_int8(params, progress_callback=progress_callback)
 
         device = self.device
         model_dtype = next(dit.parameters()).dtype
@@ -1715,6 +1847,12 @@ class AceStepMixin:
 
         # ---- optional LoRA (see the "LoRA" section below for the apply/restore contract) ----
         self._apply_or_clear_lora_acestep(params.get("loras") or [])
+
+        # ---- one-time in-place INT8 conversion (unet_quantization="int8") ----
+        # After the LoRA gate and before staging; see _acestep_runtime_int8 for
+        # why that order is the load-bearing one. No-op for every other value and
+        # for an already-converted / already-quantized DiT.
+        self._acestep_runtime_int8(params, progress_callback=progress_callback)
 
         device = self.device
         model_dtype = next(dit.parameters()).dtype

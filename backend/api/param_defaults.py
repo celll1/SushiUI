@@ -867,6 +867,16 @@ AUDIO_GEN_DEFAULTS: Dict[str, Any] = {
     "reference_audio_enable": False,
     "is_cover": False,
     "denoising_strength": GENERATION_DEFAULTS["denoising_strength"],
+    # Weight-only quantization, shared with the image/video routes and carrying
+    # the same meanings (see GENERATION_DEFAULTS). `acestep` is in
+    # RUNTIME_INT8_ARCHS: "int8" converts the audio DiT's 392 Linear layers in
+    # place, once per model load. The FP8 values are not implemented for this
+    # architecture (arch_capabilities records that, and exempts "int8").
+    "unet_quantization": GENERATION_DEFAULTS["unet_quantization"],
+    # `acestep` is likewise in QUANTIZED_LINEAR_ARCHS -- its loader swaps in
+    # Int8Linear/Fp8Linear for a quantized checkpoint -- so the quantized-GEMM
+    # path selection governs real modules here.
+    "quantized_gemm_mode": GENERATION_DEFAULTS["quantized_gemm_mode"],
 }
 
 TXT2AUD_DEFAULTS: Dict[str, Any] = dict(AUDIO_GEN_DEFAULTS)
@@ -908,6 +918,11 @@ AUD2AUD_DEFAULTS: Dict[str, Any] = {
     # list of {"path": str, "strength": float, ...}). See
     # `core.pipeline_backends.acestep.AceStepMixin._load_lora_acestep`.
     "loras": [],
+    # Weight-only quantization; same two axes and same meanings as in
+    # AUDIO_GEN_DEFAULTS above (and inherited from here by
+    # OUTPAINT_AUDIO_DEFAULTS).
+    "unet_quantization": GENERATION_DEFAULTS["unet_quantization"],
+    "quantized_gemm_mode": GENERATION_DEFAULTS["quantized_gemm_mode"],
 }
 
 # ---------------------------------------------------------------------------

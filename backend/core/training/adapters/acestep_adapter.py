@@ -32,7 +32,10 @@ import torch
 import torch.nn as nn
 from safetensors.torch import save_file
 
-from .base_adapter import BaseLoRAAdapter, BaseFullParameterAdapter, reject_quantized_base
+from .base_adapter import (
+    BaseLoRAAdapter, BaseFullParameterAdapter, is_lora_wrappable_linear,
+    reject_quantized_base,
+)
 from .sd15_adapter import LoRALinearLayer
 
 
@@ -44,6 +47,28 @@ DEFAULT_ACESTEP_SCOPE = {
 
 # Attention leaf Linears within each AceStepAttention module.
 _ATTN_LEAVES = ("q_proj", "k_proj", "v_proj", "o_proj")
+
+
+def _is_target(module: Optional[nn.Module]) -> bool:
+    """True for a module ``iter_acestep_lora_targets`` may yield.
+
+    "Wrappable, or already wrapped": the enumerator is used both to INJECT
+    (``apply_lora_to_unet``, which skips an existing ``LoRALinearLayer``) and to
+    re-walk a model that is already wrapped, so unlike the shared
+    ``is_lora_wrappable_linear`` this one deliberately includes
+    ``LoRALinearLayer`` -- ``core.models.krea2.krea2_lora._is_target`` is the
+    same shape for the same reason.
+
+    The wrappable half is the shared helper rather than
+    ``isinstance(x, nn.Linear)``, which is what these two call sites used to
+    spell: ``Int8Linear`` / ``Fp8Linear`` are ``nn.Module``s but NOT ``nn.Linear``
+    subclasses, so a LoRA fine-tune on an INT8 ACE-Step base (a quantized
+    checkpoint, or a DiT exported after ``_acestep_runtime_int8``) would have
+    enumerated ZERO targets and reported it as a narrower scope.
+    """
+    if module is None:
+        return False
+    return is_lora_wrappable_linear(module) or isinstance(module, LoRALinearLayer)
 
 
 def _flatten_to_sdscripts(module_path: str) -> str:
@@ -78,7 +103,7 @@ def iter_acestep_lora_targets(
                 current = getattr(attn, leaf, None)
                 if current is None:
                     continue
-                if not isinstance(current, nn.Linear) and not isinstance(current, LoRALinearLayer):
+                if not _is_target(current):
                     continue
                 path = f"decoder.layers.{i}.{attn_name}.{leaf}"
                 yield path, attn, leaf, current
@@ -92,7 +117,7 @@ def iter_acestep_lora_targets(
                     current = getattr(mlp, leaf, None)
                     if current is None:
                         continue
-                    if not isinstance(current, nn.Linear) and not isinstance(current, LoRALinearLayer):
+                    if not _is_target(current):
                         continue
                     path = f"decoder.layers.{i}.mlp.{leaf}"
                     yield path, mlp, leaf, current

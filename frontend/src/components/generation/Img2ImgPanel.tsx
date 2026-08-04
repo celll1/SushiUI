@@ -27,7 +27,7 @@ import PromptEditor from "../common/PromptEditor";
 import LoopGenerationPanel, { LoopGenerationConfig } from "./LoopGenerationPanel";
 import QuantizedGemmSelect from "./QuantizedGemmSelect";
 import { migrateLoopGenerationConfig, computeLoopDecodeDirective } from "@/utils/loopGenerationInheritance";
-import { getSamplers, getScheduleTypes, generateImg2Img, generateImg2Vid, Img2VidParams, generateAud2Aud, Aud2AudParams, generateImg2ImgTrainingPreview, toBase64, LoRAConfig, ControlNetConfig, generateTIPOPrompt, cancelGeneration, getCurrentModel, isLatentOnlyResult, getResultFilename, getResultSeed, getResultAncestralSeed, unetQuantizationOptions, normalizeUnetQuantization } from "@/utils/api";
+import { getSamplers, getScheduleTypes, generateImg2Img, generateImg2Vid, Img2VidParams, generateAud2Aud, Aud2AudParams, generateImg2ImgTrainingPreview, toBase64, LoRAConfig, ControlNetConfig, generateTIPOPrompt, cancelGeneration, getCurrentModel, isLatentOnlyResult, getResultFilename, getResultSeed, getResultAncestralSeed, unetQuantizationOptions, normalizeUnetQuantization, transformerQuantizationLabel } from "@/utils/api";
 import { useActiveTraining } from "@/hooks/useActiveTraining";
 import { wsClient, CFGMetrics } from "@/utils/websocket";
 import CFGMetricsGraph from "../common/CFGMetricsGraph";
@@ -1759,6 +1759,12 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         mode: params.mode,
         repaint_start: params.repaint_start,
         repaint_end: params.repaint_end,
+        // Weight-only quantization (both axes). The panel controls are rendered
+        // from arch capabilities, and `acestep` is now in runtime_int8_archs +
+        // quantized_linear_archs, so these must be carried into the audio
+        // params or the UI value is silently dropped.
+        unet_quantization: params.unet_quantization,
+        quantized_gemm_mode: params.quantized_gemm_mode,
       };
       addToQueue({
         type: "aud2aud",
@@ -3153,10 +3159,11 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
           </>
         ) : (
           <>
-            {/* SD/SDXL: 1-column layout */}
+            {/* Every other architecture: 1-column layout. Only SD1.5/SDXL have a
+                U-Net, so the label is arch-aware (see transformerQuantizationLabel). */}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <Select
-                label="U-Net Quantization"
+                label={transformerQuantizationLabel(currentModelInfo?.model_info?.type as string | undefined)}
                 value={params.unet_quantization || "none"}
                 onChange={(e) => setParams({
                   ...params,

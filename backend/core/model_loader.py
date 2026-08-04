@@ -424,7 +424,18 @@ class ModelLoader:
         """ACE-Step 1.5 flat ComfyUI-style tree: a `diffusion_models/` subfolder
         containing one of the EXACT known `acestep_v1.5_{turbo,sft,base}.safetensors`
         filenames. Exact-name (not glob) so this cannot collide with Anima's
-        similarly-shaped bare `diffusion_models/+text_encoders/+vae/` layout."""
+        similarly-shaped bare `diffusion_models/+text_encoders/+vae/` layout.
+
+        A QUANTIZED EXPORT is accepted too, and needs the second clause: the
+        weight-only int8/FP8 export writes `<root>/diffusion_models/<stem>.safetensors`
+        under a name of the user's choosing (`suggested_output_path` derives it
+        from the source directory), so it matches none of the exact names and
+        this probe used to answer False for a tree the loader can read perfectly
+        well. Rather than loosening to a glob -- which is exactly what would
+        collide with Anima -- any OTHER `.safetensors` in that subfolder is
+        identified by its own safetensors metadata (`modelspec.architecture` /
+        `model_type` == "acestep"), which `acestep_export_metadata` writes and
+        no Anima file carries. Header read only; no tensor bytes."""
         try:
             if not os.path.isdir(model_path):
                 return False
@@ -432,7 +443,20 @@ class ModelLoader:
             dit_dir = os.path.join(model_path, "diffusion_models")
             if not os.path.isdir(dit_dir):
                 return False
-            return any(os.path.isfile(os.path.join(dit_dir, name)) for name in ACESTEP_DIT_PATTERNS)
+            if any(os.path.isfile(os.path.join(dit_dir, name)) for name in ACESTEP_DIT_PATTERNS):
+                return True
+            from safetensors import safe_open
+            for name in sorted(os.listdir(dit_dir)):
+                if not name.endswith(".safetensors"):
+                    continue
+                try:
+                    with safe_open(os.path.join(dit_dir, name), framework="pt") as f:
+                        md = f.metadata() or {}
+                except Exception:
+                    continue
+                if "acestep" in (md.get("modelspec.architecture", ""), md.get("model_type", "")):
+                    return True
+            return False
         except Exception:
             return False
 

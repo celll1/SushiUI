@@ -19,10 +19,12 @@ import torch.nn as nn
 from concurrent.futures import ThreadPoolExecutor
 from typing import Optional, Tuple
 
-from .block_offloading import weighs_to_device, _synchronize_device
+from .block_offloading import (
+    DtypeSplitGuardMixin, pairable_block_indices, weighs_to_device, _synchronize_device,
+)
 
 
-class FluxBlockOffloader:
+class FluxBlockOffloader(DtypeSplitGuardMixin):
     """
     Block offloader for FLUX.2 Transformer (dual block list architecture)
 
@@ -116,6 +118,10 @@ class FluxBlockOffloader:
 
         # Backward hook handles (for training)
         self.backward_hook_handles = []
+
+        # Linear paths whose weight dtype differs between blocks of the same class;
+        # resolved on the first swap (see DtypeSplitGuardMixin). None = not yet.
+        self._dtype_split_paths = None
 
         mode_str = "training (backward enabled)" if supports_backward else "inference (forward-only)"
         print(f"[FluxBlockOffloader] Initialized: {self.num_blocks} total blocks "
@@ -705,6 +711,67 @@ class FluxBlockOffloader:
             ]
             return self.pinned_buffer_single
 
+    _dtype_split_label = "FluxBlockOffloader"
+
+    def _dtype_split_blocks(self):
+        # Dual and single blocks are different classes, so the guard groups them
+        # apart on its own; a path that exists in both is only compared within a
+        # class, which is also the only way the two can be paired. Permanently
+        # resident blocks are left out (see pairable_block_indices): they are never
+        # one half of a pair, so a divergence confined to them is not a hazard.
+        return [self._get_block(i) for i in pairable_block_indices(
+            self.num_blocks, self.blocks_to_swap, self.forward_only)]
+
+    def _build_weight_swap_jobs(self, block_to_cpu: nn.Module, block_to_cuda: nn.Module):
+        """Pair the two blocks' Linear weights (name + shape + dtype).
+
+        Returns ``(weight_swap_jobs, deferred_pairs)``; see the identically named
+        method on ``TransformerBlockOffloader`` and the dtype-split guard comment
+        in ``block_offloading.py`` for why dtype is part of the predicate.
+        """
+        excluded = self._dtype_split_paths_for(block_to_cuda)
+
+        weight_swap_jobs = []
+        deferred_pairs = []
+
+        modules_to_cpu = {k: v for k, v in block_to_cpu.named_modules()}
+        for module_to_cuda_name, module_to_cuda in block_to_cuda.named_modules():
+            # Skip non-Linear modules (ModuleList, Sequential, etc.)
+            if not module_to_cuda.__class__.__name__.endswith("Linear"):
+                continue
+            if not hasattr(module_to_cuda, "weight") or module_to_cuda.weight is None:
+                continue
+
+            module_to_cpu = modules_to_cpu.get(module_to_cuda_name, None)
+            if module_to_cpu is None:
+                continue
+            # Check module_to_cpu also has weight attribute
+            if not hasattr(module_to_cpu, "weight") or module_to_cpu.weight is None:
+                continue
+
+            if module_to_cpu.weight.shape == module_to_cuda.weight.shape:
+                if module_to_cuda_name in excluded:
+                    deferred_pairs.append((module_to_cpu, module_to_cuda))
+                    continue
+                if module_to_cpu.weight.dtype != module_to_cuda.weight.dtype:
+                    # Unreachable via the guard; see TransformerBlockOffloader.
+                    raise RuntimeError(
+                        f"Block swap refused for '{module_to_cuda_name}': the two blocks' "
+                        f"weights have the same shape but different dtypes "
+                        f"({module_to_cpu.weight.dtype} vs {module_to_cuda.weight.dtype}), "
+                        f"and this path was not present when the offloader resolved its "
+                        f"dtype-split paths. Swapping them would convert one dtype into the "
+                        f"other during the staging copy with no error. Reload the model "
+                        f"(Load with force) so every block holds the same weight format.")
+                weight_swap_jobs.append(
+                    (module_to_cpu, module_to_cuda, module_to_cpu.weight.data, module_to_cuda.weight.data)
+                )
+            else:
+                if module_to_cuda.weight.data.device.type != self.device.type:
+                    module_to_cuda.weight.data = module_to_cuda.weight.data.to(self.device)
+
+        return weight_swap_jobs, deferred_pairs
+
     def swap_weight_devices(self, block_to_cpu: nn.Module, block_to_cuda: nn.Module):
         """
         Swap weights between two blocks
@@ -712,8 +779,6 @@ class FluxBlockOffloader:
         Note: FLUX.2 has FluxTransformerBlock (dual) and FluxSingleTransformerBlock (single)
         which have different structures. We use separate staging buffer pools for each type.
         """
-        weight_swap_jobs = []
-
         # Dual/single boundary crossing: when blocks_to_swap exceeds the number of single
         # blocks, the rotation can pair a dual block (FluxTransformerBlock) with a single
         # block (FluxSingleTransformerBlock). Their Linear layouts/shapes differ, so the
@@ -737,29 +802,7 @@ class FluxBlockOffloader:
         # Determine block type for buffer selection
         is_dual = self._is_dual_block(block_to_cuda)
 
-        # Find Linear modules to swap
-        modules_to_cpu = {k: v for k, v in block_to_cpu.named_modules()}
-        for module_to_cuda_name, module_to_cuda in block_to_cuda.named_modules():
-            # Skip non-Linear modules (ModuleList, Sequential, etc.)
-            if not module_to_cuda.__class__.__name__.endswith("Linear"):
-                continue
-            if not hasattr(module_to_cuda, "weight") or module_to_cuda.weight is None:
-                continue
-
-            module_to_cpu = modules_to_cpu.get(module_to_cuda_name, None)
-            if module_to_cpu is None:
-                continue
-            # Check module_to_cpu also has weight attribute
-            if not hasattr(module_to_cpu, "weight") or module_to_cpu.weight is None:
-                continue
-
-            if module_to_cpu.weight.shape == module_to_cuda.weight.shape:
-                weight_swap_jobs.append(
-                    (module_to_cpu, module_to_cuda, module_to_cpu.weight.data, module_to_cuda.weight.data)
-                )
-            else:
-                if module_to_cuda.weight.data.device.type != self.device.type:
-                    module_to_cuda.weight.data = module_to_cuda.weight.data.to(self.device)
+        weight_swap_jobs, deferred_pairs = self._build_weight_swap_jobs(block_to_cpu, block_to_cuda)
 
         # Order the swap AFTER the compute that just used these weights, but do it on the
         # transfer stream via a CUDA event instead of draining the whole compute stream on
@@ -772,6 +815,12 @@ class FluxBlockOffloader:
         # preserves the exact same ordering guarantee.
         compute_done = torch.cuda.current_stream().record_event()
         self.stream.wait_event(compute_done)
+
+        # Dtype-split paths: each side moves to its own target device keeping its own
+        # dtype, on the transfer stream after the same event the paired swap waits on.
+        if deferred_pairs:
+            with torch.cuda.stream(self.stream):
+                self._move_deferred_pairs(deferred_pairs)
 
         if not self.use_pinned_memory:
             # Strategy 1: Use staging buffers (less pinned memory)
@@ -967,6 +1016,9 @@ class FluxBlockOffloader:
         self.staging_buffer_single_a = None
         self.staging_buffer_single_b = None
         self.pinned_buffer_single = None
+
+        # Same lifetime as the buffers: a reused offloader re-resolves the map.
+        self._dtype_split_paths = None
 
         self.futures.clear()
 

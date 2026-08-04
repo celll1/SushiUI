@@ -174,6 +174,37 @@ for i, layer in enumerate(transformer.layers):
     offloader.submit_move_blocks_forward(i)
 ```
 
+**Heterogeneous-block guard (`DtypeSplitGuardMixin`)**
+
+`swap_weight_devices` exchanges two blocks' weights through staging buffers
+allocated with `empty_like` from one side, so the pairing is only valid when the
+two weights share a dtype as well as a name and a shape — `Tensor.copy_` converts
+between dtypes silently. Blocks stop being dtype-homogeneous whenever the same
+module path is quantized in one block and not in another: a runtime INT8
+conversion that stopped part-way
+(`vram_optimization.apply_runtime_int8_quantization`, `_runtime_int8_partial`)
+leaves the blocks after the failure as plain `nn.Linear`, and a completed
+conversion can differ too, because the int8/e4m3 choice is made per layer from
+that layer's own weights (checkpoint-real on Anima and Krea 2, but neither can
+reach it today — Anima's one diverging path is in the permanently resident block
+0 and Krea 2 has no block-swap streaming; the reachable case is the partial
+conversion on any block-swapping arch). The split paths are DEFERRED rather than
+refused because a partial conversion is a resumable state.
+
+The mixin (in `block_offloading.py`, inherited by `TransformerBlockOffloader` and
+`FluxBlockOffloader`) resolves those paths once, on the first swap and only over
+the blocks the rotation can actually pair (`pairable_block_indices`), and
+`_build_weight_swap_jobs` excludes them from the paired swap; each side is then
+moved to its own target device individually with its dtype unchanged — a fresh
+pageable CPU tensor and a blocking `.to(cpu)` per path per swap, so an excluded
+path costs that swap's overlap (derived, not measured). The
+exclusion is printed and raised as a `block_swap_dtype_split` generation warning.
+Homogeneous blocks — including a fully converted model, and including blocks
+whose dtypes are mixed *within* the block — resolve to an empty set and take the
+unchanged paired path. A new offloader class must inherit the mixin and implement
+`_dtype_split_blocks`; `backend/tests/quantized_capability_parity_test.py`
+enforces that.
+
 ### 6. Fused Block Swap Trainer (`fused_block_swap.py`)
 
 Complete VRAM-efficient training system combining Block Swap + Fused Optimizer Groups.

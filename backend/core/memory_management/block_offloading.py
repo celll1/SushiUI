@@ -9,7 +9,7 @@ Based on musubi-tuner's approach:
 
 import time
 from concurrent.futures import ThreadPoolExecutor
-from typing import Optional
+from typing import Dict, Iterable, Optional, Tuple
 import torch
 import torch.nn as nn
 
@@ -28,7 +28,192 @@ def weighs_to_device(layer: nn.Module, device: torch.device):
                 module.weight.data = module.weight.data.to(device, non_blocking=device.type != "cpu")
 
 
-class TransformerBlockOffloader:
+# ----------------------------------------------------------------------------
+# Heterogeneous-block guard (shared by every offloader in this package)
+#
+# Both offloaders swap a pair of blocks by PAIRING their Linear modules by name
+# and shape and then exchanging the two weight tensors through staging buffers.
+# That pairing is only valid when the two weights have the same DTYPE: the
+# staging buffers are allocated with ``empty_like`` from one side, and
+# ``Tensor.copy_`` between differing dtypes converts silently, so a mismatched
+# pair writes int8 codes into bf16 storage (and bf16 values into int8 storage)
+# with no error and no warning. The affected module then keeps computing, on
+# numbers that mean nothing.
+#
+# Blocks become dtype-heterogeneous whenever the same module path is quantized
+# in one block and not in another:
+#   * a PARTIAL runtime INT8 conversion (the CUDA-OOM-at-layer-N path
+#     ``vram_optimization.apply_runtime_int8_quantization`` designs for, which
+#     sets ``manager._runtime_int8_partial``) stops mid-walk, so the blocks after
+#     the failure are untouched ``nn.Linear``;
+#   * a COMPLETE conversion can do it too, because the int8/e4m3 choice is made
+#     per layer from that layer's own weights -- the same path can be int8 in one
+#     block and e4m3 (float8_e4m3fn) in another. Both are quantized, both have the
+#     same shape, and their dtypes differ.
+# Mixed dtypes WITHIN one block (int8 + e4m3 + bf16, which is what a converted
+# block normally looks like) are not affected: pairing is per module path.
+#
+# The paths are resolved ONCE per offloader and reused for every pair, so the
+# job list stays identical for every swap of a given block class -- the invariant
+# the cached staging buffers depend on. Deciding per pair would make the job list
+# length depend on which two blocks happen to be swapping.
+# ----------------------------------------------------------------------------
+
+def linear_weight_dtypes(block: nn.Module) -> Dict[str, torch.dtype]:
+    """Map ``module path -> weight dtype`` for every Linear-like module in a block."""
+    out: Dict[str, torch.dtype] = {}
+    for name, module in block.named_modules():
+        if not module.__class__.__name__.endswith("Linear"):
+            continue
+        weight = getattr(module, "weight", None)
+        if weight is not None:
+            out[name] = weight.dtype
+    return out
+
+
+def dtype_split_linear_paths(blocks: Iterable[nn.Module]) -> Dict[str, Dict[str, Tuple[str, ...]]]:
+    """Linear paths whose weight dtype differs between blocks of the same class.
+
+    Returns ``{block_class_name: {module_path: (dtype_str, dtype_str, ...)}}``,
+    with classes that have no such path omitted. An empty result means the blocks
+    are homogeneous and the paired staging swap is valid for all of them.
+    """
+    seen: Dict[str, Dict[str, set]] = {}
+    for block in blocks:
+        per_class = seen.setdefault(block.__class__.__name__, {})
+        for path, dtype in linear_weight_dtypes(block).items():
+            per_class.setdefault(path, set()).add(dtype)
+    split: Dict[str, Dict[str, Tuple[str, ...]]] = {}
+    for class_name, per_class in seen.items():
+        mismatched = {path: tuple(sorted(str(d) for d in dtypes))
+                      for path, dtypes in per_class.items() if len(dtypes) > 1}
+        if mismatched:
+            split[class_name] = mismatched
+    return split
+
+
+def pairable_block_indices(num_blocks: int, blocks_to_swap: int, forward_only: bool):
+    """Indices of the blocks a rotation can actually hand to ``swap_weight_devices``.
+
+    Blocks outside this set are permanently resident and are never one half of a
+    pair, so including them in the dtype-split resolution would exclude paths for
+    a hazard that cannot occur (Anima is exactly that case: its only divergence,
+    ``blocks.0.mlp.layer2``, is in the always-resident block 0 during inference).
+    The set is still resolved ONCE over all of these blocks -- it does not depend
+    on which two of them are swapping -- so the identical-job-list invariant the
+    cached staging buffers rely on is unaffected.
+
+    * forward-only: ``submit_move_blocks_forward`` returns early for
+      ``block_idx < num_blocks - blocks_to_swap``, and the rotation wraps back to
+      that same lower bound, so only the last ``blocks_to_swap`` blocks pair.
+    * backward-enabled: the forward branch pairs ``i`` with ``i+1`` for
+      ``i < blocks_to_swap`` (blocks ``0..blocks_to_swap``), and the backward
+      hooks pair a block from the TAIL (``num_blocks - n``) with a block from the
+      HEAD (``blocks_to_swap - n``), so both ends are pairable.
+    """
+    k = int(blocks_to_swap or 0)
+    if k <= 0 or num_blocks <= 0:
+        return []
+    if forward_only:
+        return list(range(max(num_blocks - k, 0), num_blocks))
+    head = range(0, min(k + 1, num_blocks))
+    tail = range(max(num_blocks - k, 0), num_blocks)
+    return sorted(set(head) | set(tail))
+
+
+def _report_dtype_split(split: Dict[str, Dict[str, Tuple[str, ...]]], label: str) -> None:
+    """Print the mismatch and surface it on the generation, once per offloader."""
+    if not split:
+        return
+    total = sum(len(paths) for paths in split.values())
+    examples = []
+    for class_name, paths in split.items():
+        for path, dtypes in list(paths.items())[:3]:
+            examples.append(f"{class_name}.{path}: {' vs '.join(dtypes)}")
+    print("=" * 60)
+    print(f"[{label}] Heterogeneous blocks: {total} Linear weight path(s) do not have "
+          f"the same dtype in every block.")
+    for line in examples[:6]:
+        print(f"[{label}]   - {line}")
+    if total > len(examples[:6]):
+        print(f"[{label}]   - ... {total - len(examples[:6])} more")
+    print(f"[{label}] Those paths are EXCLUDED from the paired staging swap and moved "
+          f"individually instead; the paired swap would convert one dtype into the "
+          f"other during the copy, with no error.")
+    print(f"[{label}] Two states produce this: an INT8 conversion that stopped part-way "
+          f"(request INT8 again to convert the remaining layers, or reload the model with "
+          f"Load force to start from the original weights), and a completed conversion "
+          f"whose per-layer int8/e4m3 choice differed between blocks (nothing to do; the "
+          f"model is correct as it is).")
+    print("=" * 60)
+    try:
+        from api.generation_status import add_warning
+        add_warning(
+            f"Block swap found {total} Linear layer(s) whose weight dtype differs between "
+            f"blocks (for example {examples[0]}). Those layers are moved individually "
+            f"instead of through the paired weight swap. An INT8 conversion that stopped "
+            f"part-way leaves this state: request INT8 again to convert the remaining "
+            f"layers, or reload the model to start from the original weights. A completed "
+            f"conversion whose per-layer format choice differed between blocks also "
+            f"produces it, and needs no action.",
+            code="block_swap_dtype_split",
+        )
+    except Exception:
+        pass
+
+
+class DtypeSplitGuardMixin:
+    """Resolve (once) the Linear paths that must not be pair-swapped.
+
+    Mixed into every offloader in this package. ``_dtype_split_blocks`` is the
+    only per-offloader piece: it returns every block the offloader's rotation can
+    hand to ``swap_weight_devices`` (see ``pairable_block_indices``), which
+    excludes the permanently resident blocks.
+    """
+
+    _dtype_split_label = "BlockOffloader"
+
+    def _dtype_split_blocks(self):
+        raise NotImplementedError
+
+    def _dtype_split_paths_for(self, block: nn.Module) -> Dict[str, Tuple[str, ...]]:
+        """Excluded paths for ``block``'s class. Resolved lazily on the FIRST swap.
+
+        Lazily, not in ``prepare_block_devices_before_forward``: LoRA adapters and
+        attention processors add Linear sub-modules AFTER block-swap setup (the
+        same reason the H2D-only masters are built lazily), and they have to be
+        seen by this walk.
+        """
+        split = getattr(self, "_dtype_split_paths", None)
+        if split is None:
+            split = dtype_split_linear_paths(self._dtype_split_blocks())
+            self._dtype_split_paths = split
+            _report_dtype_split(split, self._dtype_split_label)
+        return split.get(block.__class__.__name__, {})
+
+    def _move_deferred_pairs(self, deferred_pairs) -> None:
+        """Move an excluded pair's two weights to their targets, dtype unchanged.
+
+        Same net effect as the paired swap (outgoing block's weight on CPU,
+        incoming block's weight on the device) without the shared staging buffer
+        that would force both through one dtype.
+        """
+        cpu = torch.device("cpu")
+        for module_to_cpu, module_to_cuda in deferred_pairs:
+            if module_to_cpu is module_to_cuda:
+                # Degenerate self-swap: with blocks_to_swap == 1 the forward-only
+                # rotation collapses (block_idx_to_gpu == block_idx_to_cpu), so the
+                # paired staging swap is a self-to-self no-op that leaves the block
+                # resident. This path must be a no-op too -- moving the weight to
+                # the device and then straight back to CPU would leave the block
+                # split across devices and the next forward would raise.
+                continue
+            module_to_cuda.weight.data = module_to_cuda.weight.data.to(
+                self.device, non_blocking=self.device.type != "cpu")
+            module_to_cpu.weight.data = module_to_cpu.weight.data.to(cpu)
+
+
+class TransformerBlockOffloader(DtypeSplitGuardMixin):
     """
     Block offloader for Transformer models (forward-only inference)
 
@@ -108,6 +293,10 @@ class TransformerBlockOffloader:
 
         # Backward hook handles (for training)
         self.backward_hook_handles = []
+
+        # Linear paths whose weight dtype differs between blocks; resolved on the
+        # first swap (see DtypeSplitGuardMixin). None = not resolved yet.
+        self._dtype_split_paths = None
 
         mode_str = "training (backward enabled)" if supports_backward else "inference (forward-only)"
         h2d_str = f", H2D-only ring_size={self.ring_size}" if self.h2d_only else ""
@@ -507,6 +696,64 @@ class TransformerBlockOffloader:
             self.h2d_slot_futures[slot] = None
             self.h2d_loaded_block[slot] = None
 
+    def _dtype_split_blocks(self):
+        return [self.blocks[i] for i in pairable_block_indices(
+            self.num_blocks, self.blocks_to_swap, self.forward_only)]
+
+    def _build_weight_swap_jobs(self, block_to_cpu: nn.Module, block_to_cuda: nn.Module):
+        """Pair the two blocks' Linear weights.
+
+        Returns ``(weight_swap_jobs, deferred_pairs)``. A pair is a swap job only
+        when the two weights share a name, a shape AND a dtype; a path listed by
+        the dtype-split guard is returned in ``deferred_pairs`` instead, to be
+        moved individually by the caller (a paired staging swap across differing
+        dtypes converts one into the other silently -- see the guard's comment).
+        """
+        excluded = self._dtype_split_paths_for(block_to_cuda)
+
+        weight_swap_jobs = []
+        deferred_pairs = []
+
+        modules_to_cpu = {k: v for k, v in block_to_cpu.named_modules()}
+        for module_to_cuda_name, module_to_cuda in block_to_cuda.named_modules():
+            if (
+                hasattr(module_to_cuda, "weight")
+                and module_to_cuda.weight is not None
+                and module_to_cuda.__class__.__name__.endswith("Linear")
+            ):
+                module_to_cpu = modules_to_cpu.get(module_to_cuda_name, None)
+                pairable = (
+                    module_to_cpu is not None
+                    and getattr(module_to_cpu, "weight", None) is not None
+                    and module_to_cpu.weight.shape == module_to_cuda.weight.shape
+                )
+                if pairable and module_to_cuda_name in excluded:
+                    deferred_pairs.append((module_to_cpu, module_to_cuda))
+                elif pairable:
+                    if module_to_cpu.weight.dtype != module_to_cuda.weight.dtype:
+                        # Unreachable via the guard, which excludes every path
+                        # whose dtype varies across blocks. Reached only if the
+                        # module tree changed after the guard resolved it, and a
+                        # silent staging cast is exactly what must not happen
+                        # then, so this raises instead of proceeding.
+                        raise RuntimeError(
+                            f"Block swap refused for '{module_to_cuda_name}': the two blocks' "
+                            f"weights have the same shape but different dtypes "
+                            f"({module_to_cpu.weight.dtype} vs {module_to_cuda.weight.dtype}), "
+                            f"and this path was not present when the offloader resolved its "
+                            f"dtype-split paths. Swapping them would convert one dtype into "
+                            f"the other during the staging copy with no error. Reload the "
+                            f"model (Load with force) so every block holds the same weight "
+                            f"format.")
+                    weight_swap_jobs.append(
+                        (module_to_cpu, module_to_cuda, module_to_cpu.weight.data, module_to_cuda.weight.data)
+                    )
+                else:
+                    if module_to_cuda.weight.data.device.type != self.device.type:
+                        module_to_cuda.weight.data = module_to_cuda.weight.data.to(self.device)
+
+        return weight_swap_jobs, deferred_pairs
+
     def swap_weight_devices(self, block_to_cpu: nn.Module, block_to_cuda: nn.Module):
         """
         Swap weights between two blocks
@@ -520,24 +767,7 @@ class TransformerBlockOffloader:
         """
         assert block_to_cpu.__class__ == block_to_cuda.__class__
 
-        weight_swap_jobs = []
-
-        # Find Linear modules to swap
-        modules_to_cpu = {k: v for k, v in block_to_cpu.named_modules()}
-        for module_to_cuda_name, module_to_cuda in block_to_cuda.named_modules():
-            if (
-                hasattr(module_to_cuda, "weight")
-                and module_to_cuda.weight is not None
-                and module_to_cuda.__class__.__name__.endswith("Linear")
-            ):
-                module_to_cpu = modules_to_cpu.get(module_to_cuda_name, None)
-                if module_to_cpu is not None and module_to_cpu.weight.shape == module_to_cuda.weight.shape:
-                    weight_swap_jobs.append(
-                        (module_to_cpu, module_to_cuda, module_to_cpu.weight.data, module_to_cuda.weight.data)
-                    )
-                else:
-                    if module_to_cuda.weight.data.device.type != self.device.type:
-                        module_to_cuda.weight.data = module_to_cuda.weight.data.to(self.device)
+        weight_swap_jobs, deferred_pairs = self._build_weight_swap_jobs(block_to_cpu, block_to_cuda)
 
         # Order the swap AFTER the compute that just used these weights, but do it on the
         # transfer stream via a CUDA event instead of draining the whole compute stream on
@@ -550,6 +780,14 @@ class TransformerBlockOffloader:
         # that preserves the exact same ordering guarantee.
         compute_done = torch.cuda.current_stream().record_event()
         self.stream.wait_event(compute_done)
+
+        # Dtype-split paths: each side moves to its own target device, keeping its
+        # own dtype. Done on the transfer stream, after the same event the paired
+        # swap waits on, so the eviction cannot overtake the compute that just
+        # used these weights.
+        if deferred_pairs:
+            with torch.cuda.stream(self.stream):
+                self._move_deferred_pairs(deferred_pairs)
 
         if not self.use_pinned_memory:
             # Strategy 1: Use staging buffers (less pinned memory)
@@ -637,7 +875,7 @@ class TransformerBlockOffloader:
                 released_pinned_buffer.append(cpu_data_view)
 
             # Reuse released pinned buffers
-            if not released_pinned_buffer[0].is_pinned():
+            if released_pinned_buffer and not released_pinned_buffer[0].is_pinned():
                 with torch.cuda.stream(self.stream):
                     released_pinned_buffer = [
                         torch.empty_like(cuda_data_view, device="cpu").pin_memory(device=self.device)
@@ -777,6 +1015,11 @@ class TransformerBlockOffloader:
         self.staging_buffer_a = None
         self.staging_buffer_b = None
         self.pinned_buffer = None
+
+        # Clear the resolved dtype-split map: it is derived from the blocks' current
+        # weights and has the same lifetime as the buffers, so a reused offloader
+        # must resolve it again rather than trust a map from a previous model state.
+        self._dtype_split_paths = None
 
         # Clear futures
         self.futures.clear()

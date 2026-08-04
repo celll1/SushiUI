@@ -1550,5 +1550,114 @@ class RuntimeInt8PartialConversionTest(unittest.TestCase):
             "the cache holds their weights resident until the model is reloaded.")
 
 
+class BlockSwapDtypePairingParityTest(unittest.TestCase):
+    """Every block offloader must pair Linear weights by dtype as well as shape.
+
+    A block offloader swaps two blocks by pairing their Linear modules by name and
+    shape and exchanging the weights through staging buffers; `Tensor.copy_`
+    converts dtypes silently, so a pair that matches on shape and differs on dtype
+    writes int8 codes into bf16 storage with no error. Blocks become
+    dtype-heterogeneous from a PARTIAL runtime INT8 conversion (the
+    CUDA-OOM-at-layer-N path `apply_runtime_int8_quantization` designs for) and
+    from a COMPLETE one whose per-layer int8/e4m3 choice differed between blocks.
+
+    This is a fourth instance of defect class 2 in this file's header --
+    "advertised-but-unwired" -- in its shared-code form: the archs each declare
+    block swap and INT8 separately, and nothing connected the two. It is a parity
+    test rather than an offloader test because the offloaders are SHARED: every
+    arch in `RUNTIME_INT8_ARCHS` that also supports block swap inherits whichever
+    behaviour these classes have, so a third offloader written for a future arch
+    must inherit the guard rather than re-derive the pairing.
+
+    `backend/tests/block_swap_dtype_split_test.py` holds the functional half.
+    """
+
+    def _offloader_classes(self):
+        import importlib.util
+
+        package = Path(_BACKEND) / "core" / "memory_management"
+        found = []
+        for path in sorted(package.glob("*.py")):
+            if path.name == "__init__.py":
+                continue
+            source = path.read_text(encoding="utf-8")
+            if "def swap_weight_devices" not in source:
+                continue
+            module = importlib.import_module(f"core.memory_management.{path.stem}")
+            for name, obj in vars(module).items():
+                if (isinstance(obj, type) and obj.__module__ == module.__name__
+                        and "swap_weight_devices" in vars(obj)):
+                    found.append((f"{path.name}:{name}", obj))
+        return found
+
+    def test_every_offloader_that_swaps_weights_inherits_the_dtype_guard(self):
+        from core.memory_management.block_offloading import DtypeSplitGuardMixin
+
+        classes = self._offloader_classes()
+        self.assertTrue(classes, "no block offloader was found to check")
+        for label, cls in classes:
+            self.assertTrue(
+                issubclass(cls, DtypeSplitGuardMixin),
+                f"{label} defines swap_weight_devices without inheriting "
+                f"DtypeSplitGuardMixin. Its pairing then has no dtype term, and on a "
+                f"partially INT8-converted model it copies int8 codes into bf16 storage "
+                f"silently.")
+            self.assertIn(
+                "_build_weight_swap_jobs", vars(cls),
+                f"{label} does not build its swap jobs through _build_weight_swap_jobs, "
+                f"so the dtype-split exclusion cannot apply to it.")
+            self.assertNotEqual(
+                cls._dtype_split_blocks, DtypeSplitGuardMixin._dtype_split_blocks,
+                f"{label} does not tell the guard which blocks it can pair "
+                f"(_dtype_split_blocks is still the mixin's stub).")
+
+    def test_the_guard_excludes_a_partially_converted_path_for_each_offloader(self):
+        """Functional, per offloader class: inheritance alone is not the property."""
+        from core.memory_management.block_offloading import (
+            TransformerBlockOffloader, dtype_split_linear_paths)
+        from core.memory_management.flux_block_offloading import FluxBlockOffloader
+        from core.models.ideogram4.vendor.int8_linear import Int8Linear
+
+        def block(quantized):
+            inner = nn.Module()
+            if quantized:
+                lin = Int8Linear(8, 8, bias=False, compute_dtype=torch.bfloat16)
+                lin.weight.data = torch.zeros(8, 8, dtype=torch.int8)
+                lin.weight_scale.data = torch.ones(8)
+            else:
+                lin = nn.Linear(8, 8, bias=False, dtype=torch.bfloat16)
+                lin.requires_grad_(False)
+            inner.proj = lin
+            outer = nn.Module()
+            outer.ff = inner
+            return outer
+
+        converted, untouched = block(True), block(False)
+        self.assertEqual(
+            list(dtype_split_linear_paths([converted, untouched]).values()),
+            [{"ff.proj": ("torch.bfloat16", "torch.int8")}])
+
+        # supports_backward=True so BOTH blocks are inside the rotation's reach:
+        # the guard only resolves blocks that can actually be paired, and a
+        # forward-only offloader with blocks_to_swap=1 over two blocks keeps block 0
+        # permanently resident (see pairable_block_indices).
+        cpu = torch.device("cpu")
+        offloaders = [
+            TransformerBlockOffloader(
+                blocks=nn.ModuleList([converted, untouched]), blocks_to_swap=1,
+                device=cpu, supports_backward=True),
+            FluxBlockOffloader(
+                transformer_blocks=nn.ModuleList([converted, untouched]),
+                single_transformer_blocks=nn.ModuleList([]), blocks_to_swap=1,
+                device=cpu, supports_backward=True),
+        ]
+        for offloader in offloaders:
+            jobs, deferred = offloader._build_weight_swap_jobs(converted, untouched)
+            self.assertEqual(
+                jobs, [],
+                f"{type(offloader).__name__} still pairs an int8 weight with a bf16 one")
+            self.assertEqual(len(deferred), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

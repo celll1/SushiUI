@@ -151,6 +151,16 @@ paths:
         * `quantized_linear_archs` — the architectures whose loaders swap in the
           quantized Linear classes, i.e. the ones `quantized_gemm_mode` applies
           to.
+        * `training_unsupported` — architecture name -> TRAINING METHOD name ->
+          a one-line factual reason that method cannot be run for that
+          architecture, so a client can filter its training-method dropdown
+          from the same table the backend refuses on.
+        * `video_constraints` — architecture name -> the temporal/spatial
+          generation constraints of a VIDEO architecture (`frame_multiple`,
+          `frame_offset`, `min_frames`, `max_frames`, `min_decodable_frames`,
+          `fps_fixed`, `max_pixel_hw`, `pixel_align`, `suggested_frames`), so a
+          client can generate a valid clip-length list instead of hardcoding
+          one. Absent for non-video architectures.
       tags: [Schema]
       responses:
         '200':
@@ -184,6 +194,14 @@ paths:
         (`backend/api/param_defaults.py` `GENERATION_DEFAULTS`, split per mode).
         The frontend fetches this at startup and applies it when no localStorage
         override is present.
+
+        `video_arch_overlays` carries the PER-ARCHITECTURE video overrides
+        (`VIDEO_GEN_ARCH_OVERLAYS`): architecture name -> the subset of video
+        keys that differ from the base `txt2vid`/`img2vid`/`outpaint_vid`
+        defaults for that architecture. A client resolves a video default as
+        `base | video_arch_overlays[arch]`, which is exactly what the video
+        routes do server-side for every field a request omits. An architecture
+        absent from the map takes the base values unchanged.
       tags: [Schema]
       responses:
         '200':
@@ -211,6 +229,21 @@ paths:
                   outpaint_aud:
                     type: object
                     additionalProperties: true
+                  video_arch_overlays:
+                    type: object
+                    description: >-
+                      Architecture name -> the video default keys that differ
+                      from the base video defaults on that architecture.
+                    additionalProperties:
+                      type: object
+                      additionalProperties: true
+                    example:
+                      minimax_h3:
+                        width: 1344
+                        height: 768
+                        num_frames: 124
+                        frame_rate: 24.0
+                        num_inference_steps: 20
   /schema/training-defaults:
     get:
       summary: Get default parameter values for LoRA / Full-FT training
@@ -338,21 +371,49 @@ paths:
   /generate/txt2vid:
     post:
       tags: [generation]
-      summary: Generate video from text prompt (LTX-2.3)
+      summary: Generate video from text prompt (LTX-2.3, MiniMax-H3)
       description: |
-        Text-to-video generation using a loaded LTX-2.3 model. Produces an
+        Text-to-video generation using a loaded video model. Produces an
         H.264 mp4 (with an audio track when `audio_enable` is true) and a
         gallery row.
 
         **Requirements:**
-        - An LTX-2.3 model must be loaded (otherwise 400).
+        - An LTX-2.3 or MiniMax-H3 model must be loaded (otherwise 400).
 
-        **Constraints (validated before generation):**
+        **Per-architecture defaults.** Any field omitted from the request body
+        is filled from the loaded architecture's resolved video defaults, i.e.
+        `video_arch_overlays` of `GET /schema/generation-defaults` merged over
+        the base `txt2vid` defaults. The declared defaults below are the base
+        (LTX-2.3-shaped) values; an omitted field on MiniMax-H3 resolves to the
+        MiniMax-H3 overlay instead.
+
+        **LTX-2.3 constraints (validated before generation):**
         - `width` and `height` must both be divisible by 32.
         - `num_frames` must satisfy (num_frames - 1) % 8 == 0 (e.g. 9, 17, ..., 121).
+        - Distilled defaults: num_inference_steps=8, guidance_scale=1.0,
+          num_frames=121, frame_rate=24.0, height=512, width=768.
 
-        **Distilled defaults:** num_inference_steps=8, guidance_scale=1.0,
-        num_frames=121, frame_rate=24.0, height=512, width=768.
+        **MiniMax-H3 constraints (validated before generation):**
+        - `width` and `height` must both be divisible by 32, and neither edge
+          may exceed 1344 / the short edge 768 (the released canvas envelope).
+        - `num_frames` must be of the form `17 * n + 5` with `n >= 1` (the
+          video VAE's chunking; its shortest decodable clip is 22 frames), and
+          must fall in `[124, 345]`. A value that is off the grid or outside
+          the range is SNAPPED to the nearest valid length and a `warnings[]`
+          entry states the rule — including when the value came from the client.
+        - `frame_rate` is fixed at 24.0; any other value is forced to 24.0 with
+          a warning.
+        - `guidance_scale` and `negative_prompt` are ignored: guidance is
+          distilled into the weights and the sampler takes no guidance scale.
+          A warning is emitted when either is set to a NON-DEFAULT value (the
+          default itself never warns, because the UI always sends the full
+          parameter object).
+        - The soundtrack is generated jointly with the video in one packed
+          sequence. `audio_enable: false` skips the audio decode and the mux;
+          the audio rows still participate in generation and still influence
+          the video through self-attention.
+        - There is no official step count for this model. The shipped default
+          of 20 is a community baseline.
       operationId: generateTxt2Vid
       requestBody:
         required: true
@@ -376,9 +437,8 @@ paths:
                   generation_type: "txt2vid"
         '400':
           description: >-
-            Invalid parameters, or no LTX-2.3 model loaded. A loaded MiniMax-H3
-            model is refused here with its own reason: it is a video model whose
-            sampler is not wired to this endpoint yet.
+            Invalid parameters, or no video model loaded (neither LTX-2.3 nor
+            MiniMax-H3).
           content:
             application/json:
               schema:
@@ -5878,6 +5938,55 @@ components:
             type: string
           example:
             quantized_gemm: "quantized_gemm_mode (quantized GEMM path)"
+        training_unsupported:
+          type: object
+          description: |
+            Architecture name -> training method name -> the factual reason that
+            method cannot be run for that architecture. Mirrors
+            `TRAINING_UNSUPPORTED` in `backend/api/arch_capabilities.py`, which
+            is one of the places the corresponding trainer branch refuses. An
+            architecture absent from the map, or a method absent from its entry,
+            is offered normally.
+          additionalProperties:
+            type: object
+            additionalProperties:
+              type: string
+          example:
+            minimax_h3:
+              full_finetune: "MiniMax-H3's DiT is a 33 B dense transformer; its parameters, gradients and optimizer state do not fit the single-GPU 48 GB envelope this integration targets, so only LoRA training is implemented"
+        video_constraints:
+          type: object
+          description: |
+            Architecture name -> the temporal and spatial constraints of that
+            VIDEO architecture, mirroring its `TemporalSpec`
+            (`backend/core/models/components/wiring.py`). Non-video
+            architectures are absent.
+
+            * `frame_multiple` / `frame_offset` — valid clip lengths are
+              `k * frame_multiple + frame_offset`.
+            * `min_frames` / `max_frames` — the production generation bounds
+              (`max_frames` null = unbounded).
+            * `min_decodable_frames` — a hard VAE floor that nothing overrides.
+            * `fps_fixed` — the architecture's fixed frame rate, or null when
+              the source rate is preserved.
+            * `max_pixel_hw` — `[height, width]` envelope, orientation-agnostic,
+              or null when uncapped.
+            * `pixel_align` — the multiple both spatial axes round to.
+            * `suggested_frames` — valid in-range lengths a client can offer.
+          additionalProperties:
+            type: object
+            additionalProperties: true
+          example:
+            minimax_h3:
+              frame_multiple: 17
+              frame_offset: 5
+              min_frames: 124
+              max_frames: 345
+              min_decodable_frames: 22
+              fps_fixed: 24.0
+              max_pixel_hw: [768, 1344]
+              pixel_align: 32
+              suggested_frames: [124, 141, 158, 175, 192]
         runtime_int8_archs:
           type: array
           description: |
@@ -6744,6 +6853,13 @@ components:
 
     Txt2VidRequest:
       type: object
+      description: |
+        Every field is optional apart from `prompt`. An OMITTED field is filled
+        from the loaded architecture's resolved video defaults
+        (`video_arch_overlays` of `GET /schema/generation-defaults` merged over
+        the base `txt2vid` defaults), so the `default` values declared below —
+        which are the LTX-2.3-shaped base — are what an omitted field resolves
+        to only when no arch overlay applies.
       required:
         - prompt
       properties:
@@ -6754,37 +6870,59 @@ components:
         negative_prompt:
           type: string
           default: ""
-          description: "Content to steer away from. Applied only when guidance_scale > 1."
+          description: >-
+            Content to steer away from. Applied only when guidance_scale > 1.
+            Ignored on MiniMax-H3 (guidance is distilled into the weights, so
+            there is no unconditional branch); a warning is emitted when it is
+            set to a non-default value.
           example: "worst quality, inconsistent motion, blurry, jittery, distorted"
         width:
           type: integer
           default: 768
-          description: "Video width in pixels. Must be divisible by 32."
+          description: >-
+            Video width in pixels. Must be divisible by 32. On MiniMax-H3 it
+            must additionally fit the released canvas envelope (long edge
+            <= 1344, short edge <= 768).
           example: 768
         height:
           type: integer
           default: 512
-          description: "Video height in pixels. Must be divisible by 32."
+          description: >-
+            Video height in pixels. Must be divisible by 32. On MiniMax-H3 it
+            must additionally fit the released canvas envelope (long edge
+            <= 1344, short edge <= 768).
           example: 512
         num_frames:
           type: integer
           default: 121
-          description: "Number of frames. Must satisfy (num_frames - 1) % 8 == 0."
+          description: >-
+            Number of frames. LTX-2.3: must satisfy (num_frames - 1) % 8 == 0.
+            MiniMax-H3: must be of the form 17 * n + 5 with n >= 1, within
+            [124, 345]; an invalid value is snapped to the nearest valid length
+            and reported in warnings[].
           example: 121
         frame_rate:
           type: number
           default: 24.0
-          description: "Output frames per second."
+          description: >-
+            Output frames per second. Fixed at 24.0 on MiniMax-H3: any other
+            value is forced to 24.0 with a warning.
           example: 24.0
         num_inference_steps:
           type: integer
           default: 8
-          description: "Number of denoising steps (distilled default: 8)."
+          description: >-
+            Number of denoising steps (LTX-2.3 distilled default: 8). MiniMax-H3
+            defaults to 20; MiniMax publishes no step count for this model, so
+            20 is a community baseline rather than an official figure.
           example: 8
         guidance_scale:
           type: number
           default: 1.0
-          description: "Classifier-free guidance scale. 1.0 disables CFG (distilled default)."
+          description: >-
+            Classifier-free guidance scale. 1.0 disables CFG (distilled
+            default). Ignored on MiniMax-H3 (its sampler takes no guidance
+            scale); a warning is emitted when it is set to a non-default value.
           example: 1.0
         seed:
           type: integer

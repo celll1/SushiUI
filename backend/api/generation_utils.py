@@ -1045,3 +1045,142 @@ def apply_generation_timings(params: Dict[str, Any], total_seconds: float) -> No
     # Phase keys already come back as time_text_encode / time_denoise / time_vae_decode.
     for key, value in generation_timer.phases_dict().items():
         params[key] = value
+
+
+# ---------------------------------------------------------------------------
+# Per-architecture video request resolution (design sec.8 / sec.9)
+# ---------------------------------------------------------------------------
+
+def resolve_video_defaults(params: Dict[str, Any], provided_keys, arch: Optional[str],
+                           base: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Fill every OMITTED video field from the loaded arch's video defaults.
+
+    ``VIDEO_GEN_DEFAULTS`` is LTX-2.3-shaped, so a second video architecture
+    needs different geometry. Rather than special-casing a route, the Pydantic /
+    ``Form()`` declared defaults stay the base values (they are what the schema
+    documents) and this helper replaces them for the fields the client did NOT
+    send, using ``param_defaults.video_defaults_for_arch``.
+
+    Args:
+        params: the request dict, MUTATED in place.
+        provided_keys: the keys the client actually sent — Pydantic's
+            ``model_fields_set`` on a JSON body, or the set of ``Form(None)``
+            sentinels that came back non-None on a multipart one.
+        arch: the loaded architecture (``pipeline_manager.current_model_info``'s
+            ``type``). Unknown/None resolves to the base defaults, i.e. today's
+            behaviour.
+        base: the base default map, default ``VIDEO_GEN_DEFAULTS``.
+
+    Returns:
+        The RESOLVED default map — which the caller passes on to
+        ``check_arch_capabilities(..., defaults=...)`` so "the user set this to
+        a non-default value" is judged against the same numbers the request was
+        filled from.
+    """
+    from api.param_defaults import video_defaults_for_arch
+
+    resolved = video_defaults_for_arch(arch, base)
+    provided = set(provided_keys or ())
+    for key, value in resolved.items():
+        if key in params and key not in provided:
+            params[key] = value
+    return resolved
+
+
+def validate_video_geometry(params: Dict[str, Any], arch: Optional[str],
+                            provided_keys=None, *, frame_key: str = "num_frames") -> List[str]:
+    """Validate (and, where the arch says so, SNAP) a video request's geometry.
+
+    Spec-driven: every rule comes from the arch's ``TemporalSpec``
+    (``core.models.components.wiring``), so adding a video architecture does not
+    add a branch here.
+
+    * spatial axes must be multiples of ``pixel_align`` and must fit
+      ``max_pixel_hw`` (orientation-agnostic) — both are hard 400s, because a
+      canvas is not something to silently change under a caller;
+    * ``frame_key`` must be a valid clip length in the production range. An
+      invalid one is a hard 400 on an arch whose spec sets
+      ``snap_invalid_length=False`` (LTX-2.3 — this is its documented, shipped
+      behaviour) and is SNAPPED to the nearest valid length on an arch that sets
+      it True (MiniMax-H3), with a warning;
+    * ``frame_rate`` is forced to ``fps_fixed`` where the arch has one, with a
+      warning.
+
+    Mutates ``params`` for the snapped/forced values. Returns the warning
+    messages, already emitted through ``add_warning`` (so they reach the
+    response's ``warnings[]``), for the caller to log or assert on.
+
+    An arch with no ``TemporalSpec`` (not a video arch, or an unrecognised one)
+    is left completely alone: the caller's own checks still apply.
+    """
+    from api.error_handlers import ValidationError
+    from core.models.components.wiring import temporal_spec_for_arch
+
+    spec = temporal_spec_for_arch(arch)
+    warnings: List[str] = []
+    if spec is None:
+        return warnings
+
+    try:
+        from api.generation_status import add_warning
+    except ImportError:  # pragma: no cover - status module always present in-process
+        add_warning = None
+
+    def warn(message: str) -> None:
+        warnings.append(message)
+        if add_warning is not None:
+            add_warning(message, code="video_constraint")
+
+    width = int(params.get("width", 0))
+    height = int(params.get("height", 0))
+    if width % spec.pixel_align or height % spec.pixel_align:
+        raise ValidationError(
+            f"width and height must both be divisible by {spec.pixel_align}",
+            detail=f"Got width={width}, height={height}. Round each to the nearest multiple of "
+                   f"{spec.pixel_align}.",
+        )
+    if spec.max_pixel_hw is not None:
+        short_cap, long_cap = min(spec.max_pixel_hw), max(spec.max_pixel_hw)
+        short_edge, long_edge = min(width, height), max(width, height)
+        if short_edge > short_cap or long_edge > long_cap:
+            raise ValidationError(
+                f"the canvas exceeds this model's {short_cap}x{long_cap} envelope",
+                detail=f"Got {width}x{height}. The released checkpoint generates with a short edge "
+                       f"of at most {short_cap} and a long edge of at most {long_cap}, in either "
+                       f"orientation.",
+            )
+
+    # The smoke gate lowers the PRODUCTION floor to the VAE's decodable floor,
+    # so a short clip can be generated deliberately (a smoke test, a preview)
+    # without that length being reachable by an ordinary API caller. It never
+    # lowers `min_decodable_frames`, which the decoder cannot go below at all.
+    smoke = bool(os.environ.get(spec.smoke_override_env))
+    floor = spec.floor(smoke)
+    num_frames = int(params.get(frame_key, 0))
+    in_range = floor <= num_frames and (spec.max_frames is None or num_frames <= spec.max_frames)
+    if not (spec.is_valid_length(num_frames) and in_range):
+        if not spec.snap_invalid_length:
+            raise ValidationError(
+                f"{frame_key} must satisfy ({frame_key} - {spec.frame_offset}) % "
+                f"{spec.frame_multiple} == 0",
+                detail=f"Got {frame_key}={num_frames}. Valid values are "
+                       f"{spec.suggested_lengths(6)}, ...",
+            )
+        snapped = spec.snap_length(num_frames, smoke)
+        params[frame_key] = snapped
+        warn(f"{frame_key}={num_frames} is not a length this model can generate; using {snapped}. "
+             f"Valid lengths are {spec.frame_multiple} * n + {spec.frame_offset} "
+             f"(n >= 1), between {floor} and {spec.max_frames}.")
+    elif smoke and num_frames < spec.min_frames:
+        warn(f"{frame_key}={num_frames} is below this model's trained range "
+             f"({spec.min_frames}-{spec.max_frames}) and was accepted only because "
+             f"{spec.smoke_override_env} is set.")
+
+    if spec.fps_fixed is not None:
+        frame_rate = float(params.get("frame_rate", spec.fps_fixed))
+        if abs(frame_rate - spec.fps_fixed) > 1e-6:
+            params["frame_rate"] = spec.fps_fixed
+            warn(f"frame_rate={frame_rate} is not supported by this model, which generates at a "
+                 f"fixed {spec.fps_fixed} fps; using {spec.fps_fixed}.")
+
+    return warnings

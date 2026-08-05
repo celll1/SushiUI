@@ -53,6 +53,11 @@ FEATURE_PARAMS: Dict[str, List[str]] = {
     "flatten_in_loop": ["flatten_in_loop"],
     "te_override": ["text_encoder_path"],
     "vae_override": ["vae_path"],
+    # Guidance. Split from `advanced_cfg` (which is the U-Net scheduling block)
+    # because a guidance-DISTILLED architecture ignores the guidance scale
+    # itself, not just its schedule.
+    "cfg": ["guidance_scale", "cfg_scale"],
+    "negative_prompt": ["negative_prompt"],
 }
 
 # Human-readable label used in the warning message for each feature.
@@ -72,16 +77,37 @@ FEATURE_LABELS: Dict[str, str] = {
     "flatten_in_loop": "flatten_in_loop (in-loop hard background flatten)",
     "te_override": "text_encoder_path (text-encoder override)",
     "vae_override": "vae_path (VAE override)",
+    "cfg": "guidance_scale/cfg_scale (classifier-free guidance)",
+    "negative_prompt": "negative_prompt",
 }
 
 # ---------------------------------------------------------------------------
 # ARCH_UNSUPPORTED[arch][feature] = short factual reason the feature has no
 # effect on that architecture.
 # ---------------------------------------------------------------------------
-_DIT_ARCHS = ["zimage", "flux2", "ideogram4", "lens", "minit2i", "anima", "krea2", "ltx2", "acestep"]
-_SPECTRUM_UNSUPPORTED = ["zimage", "ideogram4", "lens", "minit2i", "anima", "krea2", "ltx2", "acestep"]
+_DIT_ARCHS = ["zimage", "flux2", "ideogram4", "lens", "minit2i", "anima", "krea2", "ltx2", "acestep",
+              "minimax_h3"]
+_SPECTRUM_UNSUPPORTED = ["zimage", "ideogram4", "lens", "minit2i", "anima", "krea2", "ltx2", "acestep",
+                         "minimax_h3"]
 
 ARCH_UNSUPPORTED: Dict[str, Dict[str, str]] = {}
+
+# ---------------------------------------------------------------------------
+# TRAINING_UNSUPPORTED[arch][training_method] = the factual reason that method
+# cannot be run for that architecture.
+#
+# A DIFFERENT axis from ARCH_UNSUPPORTED, which is about generation parameters
+# that are accepted and ignored. An entry here is a REFUSAL: the trainer raises
+# rather than warns, and the table exists so the UI can filter its method
+# dropdown from the same source instead of discovering the refusal after a run
+# has been queued. Served as `training_unsupported` by
+# GET /schema/arch-capabilities.
+# ---------------------------------------------------------------------------
+TRAINING_UNSUPPORTED: Dict[str, Dict[str, str]] = {}
+
+
+def _add_training_unsupported(arch: str, method: str, reason: str) -> None:
+    TRAINING_UNSUPPORTED.setdefault(arch, {})[method] = reason
 
 # ---------------------------------------------------------------------------
 # ARCH_SUPPORTED_VALUES[arch][feature] = the VALUES of the feature's arming
@@ -260,6 +286,78 @@ _add("minit2i", "vae_override",
 _add("acestep", "vae_override",
      "VAE override is not supported on the ACE-Step audio model: its Oobleck VAE is audio-specific and not a per-generation image/video override target")
 
+# ---------------------------------------------------------------------------
+# MiniMax-H3 (joint video + audio DiT, driven through /generate/txt2vid).
+# ---------------------------------------------------------------------------
+# THE GUIDANCE PAIR. MiniMax-H3 is guidance-distilled: there is no guider, no
+# unconditional branch and no guidance scale, so both the scale and the negative
+# prompt are structurally absent rather than merely unused.
+#
+# WARNING CONTRACT (deliberate, not a limitation dodge): `_is_user_set` compares
+# against the RESOLVED defaults, so an explicit `guidance_scale: 1.0` -- the
+# default -- does not warn, while `guidance_scale: 5.0` does. The frontend
+# always sends the full parameter object with defaults filled in, so a
+# presence-based warning would fire on every UI-originated generation and mean
+# nothing. The openapi descriptions state this contract.
+_add("minimax_h3", "cfg",
+     "guidance is distilled into the MiniMax-H3 weights: the sampler takes no guidance scale and runs exactly one forward pass per step")
+_add("minimax_h3", "negative_prompt",
+     "MiniMax-H3 is guidance-distilled and has no unconditional branch, so there is nothing for a negative prompt to steer away from")
+_add("minimax_h3", "advanced_cfg",
+     "CFG scheduling / dynamic thresholding / CFG-rescale run only in the U-Net sampling loop, and MiniMax-H3 has no guidance to schedule at all")
+_add("minimax_h3", "nag",
+     "Normalized Attention Guidance is not implemented for the MiniMax-H3 video model")
+_add("minimax_h3", "controlnets",
+     "ControlNet is not supported for the MiniMax-H3 video model")
+# Quantization. The reason the generic `quantized_gemm` loop above would give is
+# WRONG for this arch -- its released DiT is fp8-quantized -- so it is restated
+# here with the real reason and overwrites the loop's text.
+_add("minimax_h3", "quantized_gemm",
+     "the released MiniMax-H3 DiT is weight-only FP8, but its scale sidecars are per-tensor scalars and 50 of its 200 quantized Linear layers are marked full_precision_matrix_mult, so every layer of this architecture is pinned to the dequantized path and there is no GEMM to select")
+_add("minimax_h3", "unet_quantization",
+     "the released MiniMax-H3 DiT already ships weight-only FP8-quantized, so there is no unquantized transformer for the per-generation converter to convert")
+_add("minimax_h3", "text_encoder_quantization",
+     "text-encoder quantization is not applied on this architecture's text-encoder path; its Qwen3-VL conditioner is streamed layer by layer from the memory-mapped bf16 file instead")
+_add("minimax_h3", "cpu_text_encoding",
+     "CPU text encoding is not honored by this architecture's encode path, which streams each decoder layer to the GPU and keeps the CPU weights memory-mapped")
+_add("minimax_h3", "attention_impl",
+     "attention_impl is only consumed by the FLUX.2 inference path; this architecture is conduit-only or ignores it")
+_add("minimax_h3", "vae_override",
+     "VAE override is not supported on MiniMax-H3: it owns two autoencoders (a 24-channel causal video VAE and a separate 32-channel audio VAE), its video VAE takes ImageNet-normalised RGB rather than [-1, 1], and its tiling policy is pinned because changing it changes the output")
+
+# Training methods MiniMax-H3 does not offer. Enforced three ways: this table,
+# the absence of a full-parameter adapter for the arch, and a hard refusal in
+# the full_finetune trainer branch.
+_add_training_unsupported(
+    "minimax_h3", "full_finetune",
+    "MiniMax-H3's DiT is a 33 B dense transformer; its parameters, gradients and optimizer state do not fit the single-GPU 48 GB envelope this integration targets, so only LoRA training is implemented")
+
+
+def video_constraints_payload() -> Dict[str, Dict[str, Any]]:
+    """The `video_constraints` block of GET /schema/arch-capabilities.
+
+    Serialises each video architecture's ``TemporalSpec`` (the same table route
+    validation snaps against) so a client can build a valid clip-length list
+    from the backend's own rule instead of hardcoding one. Non-video
+    architectures are absent from the map rather than present with nulls.
+    """
+    from core.models.components.wiring import TEMPORAL_SPECS
+
+    payload: Dict[str, Dict[str, Any]] = {}
+    for arch, spec in TEMPORAL_SPECS.items():
+        payload[arch] = {
+            "frame_multiple": spec.frame_multiple,
+            "frame_offset": spec.frame_offset,
+            "min_frames": spec.min_frames,
+            "max_frames": spec.max_frames,
+            "min_decodable_frames": spec.min_decodable_frames,
+            "fps_fixed": spec.fps_fixed,
+            "max_pixel_hw": list(spec.max_pixel_hw) if spec.max_pixel_hw else None,
+            "pixel_align": spec.pixel_align,
+            "suggested_frames": spec.suggested_lengths(),
+        }
+    return payload
+
 
 def arch_supports_feature(arch: Optional[str], feature: str,
                           value: Any = None) -> bool:
@@ -279,9 +377,21 @@ def arch_supports_feature(arch: Optional[str], feature: str,
     return value in ARCH_SUPPORTED_VALUES.get(arch, {}).get(feature, [])
 
 
-def _is_user_set(params: Dict[str, Any], key: str) -> bool:
-    """True when the user set ``key`` to a non-default value."""
-    default = GENERATION_DEFAULTS.get(key, None)
+def _is_user_set(params: Dict[str, Any], key: str,
+                 defaults: Optional[Dict[str, Any]] = None) -> bool:
+    """True when the user set ``key`` to a non-default value.
+
+    ``defaults`` overrides ``GENERATION_DEFAULTS`` for the keys it carries, and
+    is how a non-image route supplies the defaults its own parameters were
+    resolved against. Without it a video-only key (``num_frames``,
+    ``frame_rate``, ``guidance_scale`` at the VIDEO default, ...) is compared
+    against an IMAGE default it has nothing to do with -- usually absent
+    entirely, which makes the default ``None`` and every value "user-set".
+    """
+    if defaults is not None and key in defaults:
+        default = defaults.get(key)
+    else:
+        default = GENERATION_DEFAULTS.get(key, None)
     val = params.get(key, default)
     if isinstance(val, (list, tuple)):
         # Non-empty list (e.g. controlnets) counts as user-set.
@@ -289,11 +399,18 @@ def _is_user_set(params: Dict[str, Any], key: str) -> bool:
     return val is not None and val != default
 
 
-def check_arch_capabilities(params: Dict[str, Any], arch: str) -> List[Dict[str, Any]]:
+def check_arch_capabilities(params: Dict[str, Any], arch: str,
+                            defaults: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
     """Warn for each feature the loaded architecture ignores but the user set.
 
     Emits at most one warning per feature via ``add_warning`` and returns the
     list of warning dicts (for testing). Best-effort: never raises.
+
+    ``defaults`` is the parameter-default map this request's values were
+    resolved against -- the video routes pass the RESOLVED per-arch video
+    defaults, so "non-default" means non-default for the loaded architecture.
+    Omitted (the image routes) it falls back to ``GENERATION_DEFAULTS``, which
+    is the historical behaviour.
     """
     emitted: List[Dict[str, Any]] = []
     if not arch:
@@ -310,14 +427,14 @@ def check_arch_capabilities(params: Dict[str, Any], arch: str) -> List[Dict[str,
     exempt = ARCH_SUPPORTED_VALUES.get(arch, {})
     for feature, reason in unsupported.items():
         trigger_keys = FEATURE_PARAMS.get(feature, [feature])
-        if not any(_is_user_set(params, k) for k in trigger_keys):
+        if not any(_is_user_set(params, k, defaults) for k in trigger_keys):
             continue
         # A value this arch DOES honor (e.g. unet_quantization="int8" on Krea 2)
         # is not a reason to warn, even though other values of the same
         # parameter are ignored here.
         honored = exempt.get(feature)
         if honored and all(
-            (not _is_user_set(params, k)) or params.get(k) in honored
+            (not _is_user_set(params, k, defaults)) or params.get(k) in honored
             for k in trigger_keys
         ):
             continue

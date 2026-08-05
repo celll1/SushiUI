@@ -48,6 +48,7 @@ from api.param_defaults import (
     TRAINING_DEFAULTS, TAGGER_TRAINING_DEFAULTS, VAE_TRAINING_DEFAULTS,
     TIMESTEP_SAMPLING_DEFAULTS_BY_ARCH,
     BUNDLE_VAE_DEFAULTS_BY_ARCH,
+    VIDEO_GEN_ARCH_OVERLAYS,
 )
 from api.generation_utils import (
     process_controlnet_configs,
@@ -63,7 +64,9 @@ from api.generation_utils import (
     sanitize_params_for_logging,
     set_prompt_chunking_settings,
     calculate_generation_metadata,
-    apply_generation_timings
+    apply_generation_timings,
+    resolve_video_defaults,
+    validate_video_geometry,
 )
 from api.error_handlers import (
     GenerationError,
@@ -376,14 +379,17 @@ def _reject_if_video_model_on_audio_route(endpoint: str):
 def _reject_if_video_arch_unwired(endpoint: str):
     """Refuse a VIDEO route for a loaded video model it cannot dispatch yet.
 
-    The three video routes gate on ``is_ltx2_model`` and answer "No LTX-2.3 model
+    A video route that gates on ``is_ltx2_model`` answers "No LTX-2.3 model
     loaded" for anything else. With a MiniMax-H3 model loaded that is true and
     useless -- the same defect ``_reject_if_video_model_on_audio_route`` exists
     for, one endpoint over: it reads as "this model cannot make video", when in
-    fact it is a video model whose sampler this phase has not wired.
+    fact it is a video model whose sampler is not wired to THAT endpoint yet.
 
-    Remove this helper when the H3 dispatch lands; the routes will branch on the
-    arch instead of refusing it.
+    ``/generate/txt2vid`` no longer calls this: it dispatches to MiniMax-H3 for
+    real. The remaining callers are ``/generate/img2vid`` (H3's keyframe
+    conditioning path) and ``/generate/outpaint/video`` (its temporal-outpaint
+    path); drop each call as its endpoint gains an H3 branch, and delete this
+    helper with the last one.
     """
     if getattr(pipeline_manager, "is_minimax_h3_model", False):
         raise CustomValidationError(
@@ -409,8 +415,14 @@ def _reject_if_audio_model():
 
 @router.get("/schema/generation-defaults")
 async def get_generation_defaults():
-    """Return default parameter values for all generation modes."""
+    """Return default parameter values for all generation modes.
+
+    ``video_arch_overlays`` carries the per-architecture video overrides, so a
+    client resolves a video default as `base | overlay[arch]` — exactly what the
+    video routes do server-side for every field a request omits.
+    """
     return {
+        "video_arch_overlays": VIDEO_GEN_ARCH_OVERLAYS,
         "txt2img": TXT2IMG_DEFAULTS,
         "img2img": IMG2IMG_DEFAULTS,
         "inpaint":  INPAINT_DEFAULTS,
@@ -503,16 +515,28 @@ async def get_arch_capabilities():
     converter). Served so a caller -- and this API's own documentation -- names
     the set from the backend tuple instead of keeping a hand-written copy that
     drifts.
+
+    `training_unsupported` is a DIFFERENT axis: architecture -> training method
+    -> why that method is refused there (not ignored -- the trainer raises), so
+    the training UI filters its method dropdown from the same table.
+
+    `video_constraints` is the per-video-arch `TemporalSpec` (valid clip
+    lengths, production bounds, fixed fps, canvas envelope) that the video
+    routes validate against, so a client can build a valid clip-length list
+    instead of hardcoding one.
     """
     from api.arch_capabilities import (
         ARCH_SUPPORTED_VALUES, ARCH_UNSUPPORTED, FEATURE_PARAMS, FEATURE_LABELS,
-        QUANTIZED_LINEAR_ARCHS, RUNTIME_INT8_ARCHS,
+        QUANTIZED_LINEAR_ARCHS, RUNTIME_INT8_ARCHS, TRAINING_UNSUPPORTED,
+        video_constraints_payload,
     )
     return {
         "unsupported": ARCH_UNSUPPORTED,
         "supported_values": ARCH_SUPPORTED_VALUES,
         "feature_params": FEATURE_PARAMS,
         "feature_labels": FEATURE_LABELS,
+        "training_unsupported": TRAINING_UNSUPPORTED,
+        "video_constraints": video_constraints_payload(),
         "runtime_int8_archs": list(RUNTIME_INT8_ARCHS),
         "quantized_linear_archs": list(QUANTIZED_LINEAR_ARCHS),
     }
@@ -2368,10 +2392,15 @@ async def generate_txt2vid(
     request: Txt2VidRequest,
     db: Session = Depends(get_gallery_db)
 ):
-    """Generate a video from a text prompt using the loaded LTX-2.3 model.
+    """Generate a video from a text prompt (LTX-2.3 or MiniMax-H3).
 
     Produces an H.264 mp4 (with an audio track when audio_enable is true) and a
-    gallery row. Requires an LTX-2.3 model to be loaded.
+    gallery row. Requires a video model to be loaded.
+
+    Any field the client omits is filled from the LOADED ARCHITECTURE's video
+    defaults (`param_defaults.video_defaults_for_arch`), and the geometry is
+    then validated against that architecture's `TemporalSpec` — so neither the
+    defaults nor the constraints are written out here.
     """
     from api.generation_status import start_generation, complete_generation, fail_generation, get_warnings
     from utils.video_utils import save_video_with_metadata
@@ -2382,29 +2411,19 @@ async def generate_txt2vid(
     # the run. None (the default) leaves the process flags completely untouched.
     params["quantized_gemm_mode"] = _normalize_media_qgm(params.get("quantized_gemm_mode"))
 
-    # Validate LTX-2.3 dimensional constraints before any GPU work (4xx, not 5xx).
-    width = int(params["width"])
-    height = int(params["height"])
-    num_frames = int(params["num_frames"])
-    if width % 32 != 0 or height % 32 != 0:
+    if not (getattr(pipeline_manager, "is_ltx2_model", False)
+            or getattr(pipeline_manager, "is_minimax_h3_model", False)):
         raise CustomValidationError(
-            "width and height must both be divisible by 32",
-            detail=f"Got width={width}, height={height}. Round each to the nearest multiple of 32.",
-        )
-    if num_frames % 8 != 1:
-        raise CustomValidationError(
-            "num_frames must satisfy (num_frames - 1) % 8 == 0",
-            detail=f"Got num_frames={num_frames}. Use values like 9, 17, ..., 121 (8k + 1).",
+            "No video model loaded",
+            detail="Load an LTX-2.3 or MiniMax-H3 video model before calling /generate/txt2vid.",
         )
 
-    # A loaded MiniMax-H3 is a VIDEO model this endpoint cannot dispatch yet;
-    # say so, rather than "no LTX-2.3 model loaded".
-    _reject_if_video_arch_unwired("/generate/txt2vid")
-    if not getattr(pipeline_manager, "is_ltx2_model", False):
-        raise CustomValidationError(
-            "No LTX-2.3 model loaded",
-            detail="Load an LTX-2.3 video model before calling /generate/txt2vid.",
-        )
+    # Per-architecture defaults, THEN spec-driven geometry validation. Order
+    # matters: a field the client omitted must be filled from the loaded arch's
+    # overlay before it is validated, or an omitted `num_frames` would be checked
+    # against LTX-2.3's 121 on a MiniMax-H3 request and snapped for no reason.
+    _vid_arch = (pipeline_manager.current_model_info or {}).get("type")
+    _vid_defaults = resolve_video_defaults(params, request.model_fields_set, _vid_arch)
 
     # Training-free reference-style transfer (video). No image-conditioning
     # ControlNets are supported for LTX-2.3 -- `controlnets` exists only to
@@ -2426,15 +2445,26 @@ async def generate_txt2vid(
     try:
         pipeline_manager.reset_cancel_flag()
 
-        # VAE/TE overrides are unsupported on LTX-2.3 (accepted-but-ignored). The
-        # plan drops them (arch gating) and check_arch_capabilities warns; the
-        # apply call clears any stale override from a previous image generation.
+        # Spec-driven geometry validation (TemporalSpec): a hard 400 for the
+        # canvas and, on an arch whose spec says so, a snap-with-warning for the
+        # clip length. Inside the try because a snap emits a `warnings[]` entry,
+        # which needs the generation context started above; a raise from here is
+        # still re-raised as a 4xx by the except clause below.
+        validate_video_geometry(params, _vid_arch, request.model_fields_set)
+
+        # VAE/TE overrides are unsupported on both video archs
+        # (accepted-but-ignored). The plan drops them (arch gating) and
+        # check_arch_capabilities warns; the apply call clears any stale override
+        # from a previous image generation.
         from api.arch_capabilities import check_arch_capabilities
         from api.generation_overrides import plan_overrides, apply_overrides
         _override_plan = plan_overrides(pipeline_manager, params.get("vae_path"), params.get("text_encoder_path"))
         apply_overrides(pipeline_manager, _override_plan)
-        _ltx2_arch = (pipeline_manager.current_model_info or {}).get("type")
-        check_arch_capabilities(params, _ltx2_arch)
+        # The RESOLVED per-arch defaults, so "the user set this to a non-default
+        # value" is judged against the numbers this request was filled from
+        # rather than against the image defaults (which carry none of these
+        # keys, so every video value would read as user-set).
+        check_arch_capabilities(params, _vid_arch, defaults=_vid_defaults)
 
         print(f"txt2vid generation params: {sanitize_params_for_logging(params)}")
 
@@ -2446,7 +2476,13 @@ async def generate_txt2vid(
             update_progress(step, total)
 
         from core.gpu_coordinator import gpu_coordinator
+        from core.inference.generation_timing import generation_timer
         loop = asyncio.get_event_loop()
+        # The phase timer ACCUMULATES, so a generation that records phases and
+        # never resets reports the sum of every generation since the process
+        # started. The four image routes reset; this one did not, which was
+        # harmless only for as long as no video backend recorded a phase.
+        generation_timer.reset()
         _gen_start = time.perf_counter()
         async with gpu_coordinator.generation_slot(estimated_peak_gb=40, timeout=120.0):
             # GEMM flags are process-wide; keep selection and probing in this slot.
@@ -2458,7 +2494,19 @@ async def generate_txt2vid(
             )
             fp8_gemm = extract_fp8_gemm_info(pipeline_manager)
         apply_generation_timings(params, time.perf_counter() - _gen_start)
-        _record_media_gemm_outcome(params, fp8_gemm, _ltx2_arch)
+        _record_media_gemm_outcome(params, fp8_gemm, _vid_arch)
+
+        # VAE identity, exactly as the four image routes record it. The video
+        # routes never called this, so a video gallery row carried no
+        # vae_name/vae_hash at all -- even though `extract_vae_info` DERIVES the
+        # per-arch components dict and has always been able to name an LTX-2.3
+        # or MiniMax-H3 VAE. MiniMax-H3 owns two autoencoders; the one recorded
+        # is the VIDEO VAE, which is the one that produced the frames.
+        vae_name, vae_hash = extract_vae_info(pipeline_manager)
+        if vae_name:
+            params["vae_name"] = vae_name
+        if vae_hash:
+            params["vae_hash"] = vae_hash
 
         params["seed"] = actual_seed
 
@@ -2487,6 +2535,16 @@ async def generate_txt2vid(
         params_for_db["duration"] = (num_frames_out / fps_out) if fps_out else 0.0
         params_for_db["audio_enable"] = bool(params.get("audio_enable", True) and audio is not None)
         params_for_db["is_video"] = True
+        # The gallery's `cfg_scale` / `steps` COLUMNS are filled by
+        # `create_db_image_record` from the keys the IMAGE routes use. A video
+        # request carries neither `cfg_scale` nor `steps`, so every video row so
+        # far recorded that helper's literal fallbacks -- 7.0 and 20 -- which no
+        # video generation ever used. On a guidance-distilled architecture that
+        # is not merely stale: a row claiming CFG 7.0 contradicts the ignored-
+        # guidance warning contract stated in the same response. Map the real
+        # video keys onto the columns instead.
+        params_for_db["cfg_scale"] = float(params.get("guidance_scale", 1.0))
+        params_for_db["steps"] = int(params.get("num_inference_steps", 0))
         _effective_warnings = get_warnings(_gen_id)
         if _effective_warnings:
             params_for_db["effective_warnings"] = _effective_warnings
@@ -3252,7 +3310,13 @@ async def generate_img2vid(
             update_progress(step, total)
 
         from core.gpu_coordinator import gpu_coordinator
+        from core.inference.generation_timing import generation_timer
         loop = asyncio.get_event_loop()
+        # The phase timer ACCUMULATES across generations. Now that a video
+        # backend (MiniMax-H3, via /generate/txt2vid) records phases, an
+        # img2vid that never resets would stamp the PREVIOUS generation's
+        # per-phase seconds onto its own gallery row.
+        generation_timer.reset()
         _gen_start = time.perf_counter()
         async with gpu_coordinator.generation_slot(estimated_peak_gb=40, timeout=120.0):
             # GEMM flags are process-wide; keep selection and probing in this slot.
@@ -3265,6 +3329,13 @@ async def generate_img2vid(
             fp8_gemm = extract_fp8_gemm_info(pipeline_manager)
         apply_generation_timings(params, time.perf_counter() - _gen_start)
         _record_media_gemm_outcome(params, fp8_gemm, _ltx2_arch)
+
+        # See the note on the same call in /generate/txt2vid.
+        vae_name, vae_hash = extract_vae_info(pipeline_manager)
+        if vae_name:
+            params["vae_name"] = vae_name
+        if vae_hash:
+            params["vae_hash"] = vae_hash
 
         params["seed"] = actual_seed
 
@@ -3303,6 +3374,16 @@ async def generate_img2vid(
         params_for_db["duration"] = (num_frames_out / fps_out) if fps_out else 0.0
         params_for_db["audio_enable"] = bool(params.get("audio_enable", True) and audio is not None)
         params_for_db["is_video"] = True
+        # The gallery's `cfg_scale` / `steps` COLUMNS are filled by
+        # `create_db_image_record` from the keys the IMAGE routes use. A video
+        # request carries neither `cfg_scale` nor `steps`, so every video row so
+        # far recorded that helper's literal fallbacks -- 7.0 and 20 -- which no
+        # video generation ever used. On a guidance-distilled architecture that
+        # is not merely stale: a row claiming CFG 7.0 contradicts the ignored-
+        # guidance warning contract stated in the same response. Map the real
+        # video keys onto the columns instead.
+        params_for_db["cfg_scale"] = float(params.get("guidance_scale", 1.0))
+        params_for_db["steps"] = int(params.get("num_inference_steps", 0))
         _effective_warnings = get_warnings(_gen_id)
         if _effective_warnings:
             params_for_db["effective_warnings"] = _effective_warnings
@@ -3529,7 +3610,11 @@ async def generate_outpaint_video(
             update_progress(step, total)
 
         from core.gpu_coordinator import gpu_coordinator
+        from core.inference.generation_timing import generation_timer
         loop = asyncio.get_event_loop()
+        # See the note on the same call in /generate/img2vid: the phase timer
+        # accumulates, and a video backend records phases now.
+        generation_timer.reset()
         _gen_start = time.perf_counter()
         async with gpu_coordinator.generation_slot(estimated_peak_gb=40, timeout=120.0):
             # GEMM flags are process-wide; keep selection and probing in this slot.
@@ -3544,6 +3629,13 @@ async def generate_outpaint_video(
             fp8_gemm = extract_fp8_gemm_info(pipeline_manager)
         apply_generation_timings(params, time.perf_counter() - _gen_start)
         _record_media_gemm_outcome(params, fp8_gemm, _ltx2_arch)
+
+        # See the note on the same call in /generate/txt2vid.
+        vae_name, vae_hash = extract_vae_info(pipeline_manager)
+        if vae_name:
+            params["vae_name"] = vae_name
+        if vae_hash:
+            params["vae_hash"] = vae_hash
 
         params["seed"] = actual_seed
 
@@ -3583,6 +3675,16 @@ async def generate_outpaint_video(
         params_for_db["duration"] = (num_frames_out / fps_out) if fps_out else 0.0
         params_for_db["audio_enable"] = bool(params.get("audio_enable", True) and audio is not None)
         params_for_db["is_video"] = True
+        # The gallery's `cfg_scale` / `steps` COLUMNS are filled by
+        # `create_db_image_record` from the keys the IMAGE routes use. A video
+        # request carries neither `cfg_scale` nor `steps`, so every video row so
+        # far recorded that helper's literal fallbacks -- 7.0 and 20 -- which no
+        # video generation ever used. On a guidance-distilled architecture that
+        # is not merely stale: a row claiming CFG 7.0 contradicts the ignored-
+        # guidance warning contract stated in the same response. Map the real
+        # video keys onto the columns instead.
+        params_for_db["cfg_scale"] = float(params.get("guidance_scale", 1.0))
+        params_for_db["steps"] = int(params.get("num_inference_steps", 0))
         _effective_warnings = get_warnings(_gen_id)
         if _effective_warnings:
             params_for_db["effective_warnings"] = _effective_warnings

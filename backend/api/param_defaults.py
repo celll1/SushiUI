@@ -5,7 +5,7 @@ Backend Pydantic models and Form() defaults reference this module.
 Frontend fetches these via /schema/* endpoints, eliminating manual sync.
 """
 
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 # ---------------------------------------------------------------------------
 # Generation (txt2img / img2img / inpaint)
@@ -782,6 +782,65 @@ VIDEO_GEN_DEFAULTS: Dict[str, Any] = {
     # same three values as the image routes' GENERATION_DEFAULTS entry.
     "quantized_gemm_mode": None,
 }
+
+# ---------------------------------------------------------------------------
+# Per-architecture video defaults (SSOT)
+# ---------------------------------------------------------------------------
+# `VIDEO_GEN_DEFAULTS` above is LTX-2.3-shaped (768x512, 121 frames, 8 steps).
+# A second video architecture needs different geometry, and a route-level
+# `if arch == ...` is exactly what this file exists to prevent, so the
+# difference is declared here as an OVERLAY and resolved by
+# `video_defaults_for_arch`.
+#
+# The overlay is the whole mechanism: an architecture with no entry resolves to
+# `VIDEO_GEN_DEFAULTS` unchanged, so LTX-2.3's behaviour is bit-identical to
+# what it was before overlays existed. The video routes apply the resolved
+# defaults to the fields a request OMITS (Pydantic's `model_fields_set` /
+# `Form(None)` sentinels); the declared Pydantic/Form defaults stay the base
+# values so the schema documents one stable shape.
+VIDEO_GEN_ARCH_OVERLAYS: Dict[str, Dict[str, Any]] = {
+    # MiniMax-H3. Geometry from the agreement between MiniMax's own release
+    # (README: 24 fps, 768 short edge, 768x1344 area cap, both axes /32) and the
+    # ComfyUI node defaults (1344x768, length 124, shift 12.0 / 3.0).
+    "minimax_h3": {
+        "width": 1344,
+        "height": 768,
+        # 17 * 7 + 5. Both the floor of the trained range and the length of
+        # every official example request.
+        "num_frames": 124,
+        # Fixed by the model, not a preference: everything it generates and
+        # conditions on lives on a 24 fps clock.
+        "frame_rate": 24.0,
+        # MiniMax publishes NO step count: their reproducible-768p scripts are
+        # HTTP calls to their own server and expose no sampler knobs, and the
+        # 50 in the diffusers examples is that library's generic template
+        # default rather than a MiniMax figure. 20 is the community baseline and
+        # is described as exactly that everywhere it is user-visible.
+        "num_inference_steps": 20,
+        # Guidance is distilled into the weights: the sampler takes no guidance
+        # scale and there is no unconditional branch. Held at the base default
+        # so `check_arch_capabilities` warns only on a NON-default value.
+        "guidance_scale": 1.0,
+    },
+}
+
+
+def video_defaults_for_arch(arch: Optional[str],
+                            base: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """`base` (default `VIDEO_GEN_DEFAULTS`) with ``arch``'s overlay applied.
+
+    The single resolver behind every video route's omitted-field handling and
+    behind the `video_arch_overlays` block of `/schema/generation-defaults`, so
+    the frontend and the backend resolve a per-arch video default the same way.
+
+    An unknown or missing arch returns `base` unchanged (a copy), which is both
+    the LTX-2.3 behaviour and the safe answer for a model whose type has not
+    been resolved yet.
+    """
+    resolved = dict(base if base is not None else VIDEO_GEN_DEFAULTS)
+    resolved.update(VIDEO_GEN_ARCH_OVERLAYS.get(arch or "", {}))
+    return resolved
+
 
 TXT2VID_DEFAULTS: Dict[str, Any] = dict(VIDEO_GEN_DEFAULTS)
 

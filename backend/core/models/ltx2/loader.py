@@ -167,18 +167,32 @@ def _quantization_census(shards: List[str], key_to_shard: Dict[str, str]):
     from safetensors import safe_open
 
     from core.models.common.quantized_checkpoint_guard import (
-        QUANT_SCALE_SUFFIX, quantized_state_dict_report,
+        COMFY_QUANT_MARKER_SUFFIX, PRE_QUANT_SCALE_SUFFIX, QUANT_SCALE_SUFFIX,
+        quantized_state_dict_report,
     )
 
+    # ``.comfy_quant`` / ``.pre_quant_scale`` are carried through as well, or the
+    # DECLARED-semantics refusal inside ``quantized_state_dict_report`` would
+    # have nothing to see on this arch: a Comfy-quantized shard set is
+    # layout-identical to a supported one, and this loader never materialises a
+    # full state dict to notice otherwise. The markers are tens of bytes, so
+    # they are read FOR REAL (the rest stay zero-element dtype proxies) and the
+    # refusal can name the declared format instead of reporting an undecodable
+    # marker.
+    _SUFFIXES = (QUANT_SCALE_SUFFIX, ".weight", COMFY_QUANT_MARKER_SUFFIX,
+                 PRE_QUANT_SCALE_SUFFIX)
     table = _header_dtype_table()
     proxies: Dict[str, torch.Tensor] = {}
     by_shard: Dict[str, List[str]] = {}
     for key, shard in key_to_shard.items():
-        if key.endswith(QUANT_SCALE_SUFFIX) or key.endswith(".weight"):
+        if key.endswith(_SUFFIXES):
             by_shard.setdefault(shard, []).append(key)
     for shard, keys in by_shard.items():
         with safe_open(shard, framework="pt", device="cpu") as fh:
             for key in keys:
+                if key.endswith(COMFY_QUANT_MARKER_SUFFIX):
+                    proxies[key] = fh.get_tensor(key)
+                    continue
                 name = fh.get_slice(key).get_dtype()
                 dtype = table.get(name)
                 if dtype is None:

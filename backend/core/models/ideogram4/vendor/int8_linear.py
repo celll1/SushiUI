@@ -99,8 +99,38 @@ _RECIP_INT8_MAX = float(torch.tensor(1.0, dtype=torch.float32).div(
 INT8_SCALE_SUFFIX = ".weight_scale"
 
 
+def _refuse_unsupported_quant_semantics(state_dict: dict[str, torch.Tensor]) -> None:
+    """Refuse a checkpoint whose DECLARED quantization contract we do not implement.
+
+    Imported lazily: ``core.models.common.int8_runtime_quantize`` imports this
+    module at module level, so a top-level import of anything under
+    ``core.models.common`` from here risks a cycle.
+
+    Why it is repeated at the int8/fp8 entry points rather than left to
+    ``quantized_state_dict_report``: a Comfy ``int8_tensorwise`` file with
+    ``convrot: true`` satisfies THIS function's gate (a ``.weight_scale``
+    sibling next to an int8 ``.weight``) exactly as a supported file does, and
+    at least one caller (``ideogram4/vendor/text_encoder.py``) reaches the swap
+    without running the census at all. See
+    ``core.models.common.quantized_checkpoint_guard`` for the mechanism.
+    """
+    try:
+        from core.models.common.quantized_checkpoint_guard import (
+            refuse_unsupported_quant_semantics,
+        )
+    except Exception:  # pragma: no cover - defensive; never mask the guard itself
+        return
+    refuse_unsupported_quant_semantics(state_dict)
+
+
 def is_int8_state_dict(state_dict: dict[str, torch.Tensor]) -> bool:
     """True if the checkpoint carries weight-only INT8 Linear weights.
+
+    Raises ``UnsupportedQuantSemanticsError`` first if the file declares a
+    quantization contract this build does not implement (a ``.comfy_quant``
+    marker asking for a ConvRot rotation, an unknown format, or AWQ
+    ``.pre_quant_scale`` vectors): such a file answers True below and swaps
+    cleanly while being numerically wrong.
 
     Keyed on BOTH the ``.weight_scale`` sibling and an ``int8`` weight. The
     suffix alone is ambiguous -- ``fp8_linear``'s format uses the identical
@@ -110,6 +140,7 @@ def is_int8_state_dict(state_dict: dict[str, torch.Tensor]) -> bool:
     ``is_fp8_state_dict`` as well; both swaps must then run, which is what the
     Krea 2 loader does.
     """
+    _refuse_unsupported_quant_semantics(state_dict)
     for key in state_dict:
         if not key.endswith(INT8_SCALE_SUFFIX):
             continue
@@ -856,7 +887,14 @@ def swap_linears_to_int8(
     ``is_fp8_state_dict`` now carry; without it the order does matter, because a
     suffix-only fp8 swap claims int8 layers and copies integer codes into an
     e4m3 buffer silently. Returns the count.
+
+    The DECLARED-semantics refusal runs on the top-level call only (``prefix``
+    empty; the recursion below always passes a non-empty one), so a caller that
+    reaches the swap without the census -- or a future one that adapts the scale
+    SHAPE to make a Comfy file load -- still cannot install a rotated weight.
     """
+    if not prefix:
+        _refuse_unsupported_quant_semantics(state_dict)
     swapped = 0
     for name, child in list(module.named_children()):
         child_prefix = f"{prefix}{name}"

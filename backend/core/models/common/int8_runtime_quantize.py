@@ -35,6 +35,16 @@ THE RULE, in the order it is applied
 
 Both callers emit the same audit document shape (``audit_document``), so a
 runtime conversion can be diffed against the committed offline artifact.
+
+NOT HERE: DECLARED-SEMANTICS REFUSAL. Everything in this module operates on a
+LIVE ``nn.Module`` whose weights are already ordinary tensors, so a foreign
+checkpoint's declared quantization contract (Comfy-Org's ``.comfy_quant``
+markers, AWQ ``.pre_quant_scale`` vectors) cannot reach it -- such a file is
+refused at LOAD time by
+``core.models.common.quantized_checkpoint_guard.refuse_unsupported_quant_semantics``,
+which runs inside ``quantized_state_dict_report`` and inside the int8/fp8
+detectors and swap entry points. That module's docstring carries the ConvRot
+mechanism and why this repo implements the guard and not the rotation.
 """
 
 from __future__ import annotations

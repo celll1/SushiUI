@@ -504,5 +504,227 @@ class CastAfterSwapTest(unittest.TestCase):
                 f"cast (that is the loss the ordering avoids on BOTH classes)")
 
 
+class DeclaredSemanticsGuardTest(unittest.TestCase):
+    """A LAYOUT-compatible file whose declared MEANING differs must be refused.
+
+    Comfy-Org's ``int8_tensorwise`` distribution stores ``W @ H^T`` -- a
+    Hadamard-rotated weight -- as int8 codes, and says so only in a
+    ``.comfy_quant`` sidecar. Everything else about the file is the layout this
+    repo reads: int8 ``.weight``, float32 ``.weight_scale``. So the census
+    fires, the swap takes every layer, and ``verify_quantized_swap``'s three
+    counts agree. Reconstructing with the scales alone then yields a rotated
+    weight and the forward mixes the input through an orthogonal matrix -- a
+    wrong model, not a degraded one.
+
+    THE ANCHOR. The marker bytes below are the literal JSON read out of
+    ``Comfy-Org/MiniMax-H3``'s
+    ``minimax_h3_fl2va_pruned_int8_convrot.safetensors`` header (see
+    ``scratchpad/minimax_h3_weight_formats.md``), spelled as a raw byte string
+    rather than built from this repo's own constants: neither the guard nor this
+    test owns that spelling, so a guard that drifts to some other key name or
+    encoding fails here.
+
+    THE NEGATIVE CONTROL. ``test_an_unmarked_int8_checkpoint_is_unaffected`` and
+    ``test_a_convrot_false_marker_is_not_refused`` load and SWAP through the
+    real entry points. A guard replaced by a no-op passes those two and fails
+    every other test in this class; a guard widened to "refuse anything
+    quantized" passes the refusals and fails those two.
+    """
+
+    # Read literally from the real file's header. Do not regenerate with
+    # json.dumps: the point is that the bytes come from outside this repo.
+    CONVROT_MARKER = (
+        b'{"format": "int8_tensorwise", "convrot": true, "convrot_groupsize": 256}'
+    )
+    PLAIN_MARKER = (
+        b'{"format": "int8_tensorwise", "convrot": false}'
+    )
+
+    @staticmethod
+    def _marker(payload: bytes) -> torch.Tensor:
+        return torch.tensor(list(payload), dtype=torch.uint8)
+
+    @staticmethod
+    def _int8_sd(scale_shape=(8,)):
+        """A file the supported path reads: int8 codes + per-output-row scales."""
+        return {
+            "fc.weight": torch.zeros(8, 8, dtype=torch.int8),
+            "fc.weight_scale": torch.ones(*scale_shape, dtype=torch.float32),
+        }
+
+    @staticmethod
+    def _module():
+        model = torch.nn.Module()
+        model.fc = torch.nn.Linear(8, 8, bias=False)
+        return model
+
+    # -- negative controls ---------------------------------------------------
+
+    def test_an_unmarked_int8_checkpoint_is_unaffected(self):
+        from core.models.ideogram4.vendor.int8_linear import (
+            is_int8_state_dict, swap_linears_to_int8,
+        )
+
+        sd = self._int8_sd()
+        self.assertIsNone(guard.unsupported_quant_semantics_report(sd))
+        self.assertIsNotNone(guard.quantized_state_dict_report(sd))
+        self.assertTrue(is_int8_state_dict(sd))
+        model = self._module()
+        self.assertEqual(swap_linears_to_int8(model, sd, torch.bfloat16), 1)
+        self.assertEqual(type(model.fc).__name__, "Int8Linear")
+
+    def test_a_convrot_false_marker_is_not_refused(self):
+        # A marker is provenance, not by itself a different contract: with
+        # ``convrot`` false and a format whose layout this build expresses, the
+        # file must take exactly the path it would with no marker at all.
+        from core.models.ideogram4.vendor.int8_linear import (
+            is_int8_state_dict, swap_linears_to_int8,
+        )
+
+        sd = self._int8_sd()
+        sd["fc.comfy_quant"] = self._marker(self.PLAIN_MARKER)
+        self.assertIsNone(guard.unsupported_quant_semantics_report(sd))
+        self.assertTrue(is_int8_state_dict(sd))
+        model = self._module()
+        self.assertEqual(swap_linears_to_int8(model, sd, torch.bfloat16), 1)
+
+    def test_a_plain_checkpoint_has_no_markers(self):
+        self.assertEqual(guard.comfy_quant_markers(_plain_sd()), {})
+        self.assertIsNone(guard.unsupported_quant_semantics_report(_plain_sd()))
+        guard.refuse_unsupported_quant_semantics(_plain_sd(), arch="flux2")
+
+    # -- the refusal ---------------------------------------------------------
+
+    def test_the_real_convrot_marker_decodes(self):
+        parsed = guard.decode_comfy_quant_marker(self._marker(self.CONVROT_MARKER))
+        self.assertEqual(parsed, {"format": "int8_tensorwise", "convrot": True,
+                                  "convrot_groupsize": 256})
+
+    def test_a_convrot_file_is_refused_by_the_census(self):
+        sd = self._int8_sd()
+        sd["fc.comfy_quant"] = self._marker(self.CONVROT_MARKER)
+        with self.assertRaises(guard.UnsupportedQuantSemanticsError) as ctx:
+            guard.quantized_state_dict_report(
+                sd, arch="MiniMax-H3", path=r"M:\x\int8_convrot.safetensors")
+        message = str(ctx.exception)
+        self.assertIn("int8_convrot.safetensors", message)
+        self.assertIn("convrot", message)
+        self.assertIn("256", message)
+        self.assertIn("fc", message)
+        self.assertIn("W @ H^T", message)
+        self.assertIn(".weight_scale", message)
+        # A RuntimeError subclass, so every existing ``except RuntimeError``
+        # around a load still catches it.
+        self.assertIsInstance(ctx.exception, RuntimeError)
+
+    def test_a_convrot_file_is_refused_by_the_int8_swap_path(self):
+        from core.models.ideogram4.vendor.int8_linear import (
+            is_int8_state_dict, swap_linears_to_int8,
+        )
+
+        sd = self._int8_sd()
+        sd["fc.comfy_quant"] = self._marker(self.CONVROT_MARKER)
+        with self.assertRaises(guard.UnsupportedQuantSemanticsError):
+            is_int8_state_dict(sd)
+        model = self._module()
+        with self.assertRaises(guard.UnsupportedQuantSemanticsError):
+            swap_linears_to_int8(model, sd, torch.bfloat16)
+        # Nothing was converted: the refusal is ahead of the first swap.
+        self.assertIsInstance(model.fc, torch.nn.Linear)
+
+    def test_the_fp8_swap_path_is_guarded_too(self):
+        from core.models.ideogram4.vendor.fp8_linear import (
+            is_fp8_state_dict, swap_linears_to_fp8,
+        )
+
+        sd = {
+            "fc.weight": torch.zeros(8, 8, dtype=torch.float8_e4m3fn),
+            "fc.weight_scale": torch.ones(8, dtype=torch.float32),
+            "fc.comfy_quant": self._marker(
+                b'{"format": "float8_e4m3fn", "convrot": true, "convrot_groupsize": 256}'),
+        }
+        with self.assertRaises(guard.UnsupportedQuantSemanticsError):
+            is_fp8_state_dict(sd)
+        with self.assertRaises(guard.UnsupportedQuantSemanticsError):
+            swap_linears_to_fp8(self._module(), sd, torch.bfloat16)
+
+    def test_squeezing_the_scale_shape_cannot_defeat_the_guard(self):
+        """The obvious "fix" must not turn the guards green.
+
+        Today a Comfy convrot file is stopped only INCIDENTALLY: its scale is
+        ``[out, 1]`` and ``Int8Linear`` registers ``(out,)``, so
+        ``load_state_dict`` raises a size mismatch. This state dict is the
+        post-squeeze one -- ``(out,)``, fully load-compatible, every layout
+        guard satisfied -- and it must still be refused, on the marker, before
+        any shape is looked at.
+        """
+        from core.models.ideogram4.vendor.int8_linear import swap_linears_to_int8
+
+        squeezed = self._int8_sd(scale_shape=(8,))
+        squeezed["fc.comfy_quant"] = self._marker(self.CONVROT_MARKER)
+        # Layout-wise indistinguishable from a supported file...
+        without_marker = {k: v for k, v in squeezed.items() if k != "fc.comfy_quant"}
+        report = guard.quantized_state_dict_report(without_marker)
+        self.assertEqual(report["scale_keys"], 1)
+        self.assertEqual(report["quantized_weight_keys"], 1)
+        guard.verify_quantized_swap(report, 1, arch="MiniMax-H3")  # passes!
+        # ...and refused anyway once the marker is there.
+        with self.assertRaises(guard.UnsupportedQuantSemanticsError):
+            swap_linears_to_int8(self._module(), squeezed, torch.bfloat16)
+
+    def test_an_unknown_format_is_refused(self):
+        sd = self._int8_sd()
+        sd["fc.comfy_quant"] = self._marker(b'{"format": "nvfp4_awq"}')
+        with self.assertRaises(guard.UnsupportedQuantSemanticsError) as ctx:
+            guard.quantized_state_dict_report(sd)
+        self.assertIn("nvfp4_awq", str(ctx.exception))
+
+    def test_an_unread_marker_field_is_refused_not_ignored(self):
+        sd = self._int8_sd()
+        sd["fc.comfy_quant"] = self._marker(
+            b'{"format": "int8_tensorwise", "weight_permutation": "interleaved"}')
+        with self.assertRaises(guard.UnsupportedQuantSemanticsError) as ctx:
+            guard.quantized_state_dict_report(sd)
+        self.assertIn("weight_permutation", str(ctx.exception))
+
+    def test_a_garbled_marker_is_unknown_not_absent(self):
+        for payload in (b"\xff\xfe not json", b"[1, 2, 3]", b""):
+            sd = self._int8_sd()
+            sd["fc.comfy_quant"] = self._marker(payload)
+            self.assertIsNone(
+                guard.decode_comfy_quant_marker(sd["fc.comfy_quant"]), payload)
+            with self.assertRaises(guard.UnsupportedQuantSemanticsError, msg=payload):
+                guard.quantized_state_dict_report(sd)
+
+    def test_awq_pre_quant_scale_vectors_are_refused(self):
+        # ComfyUI multiplies these into the layer's INPUT at runtime; installing
+        # the weights without them is as wrong as ignoring a rotation. No marker
+        # is needed -- the tensor's presence is the declaration.
+        sd = self._int8_sd()
+        sd["fc.pre_quant_scale"] = torch.ones(8, dtype=torch.bfloat16)
+        with self.assertRaises(guard.UnsupportedQuantSemanticsError) as ctx:
+            guard.quantized_state_dict_report(sd)
+        self.assertIn("pre_quant_scale", str(ctx.exception))
+        self.assertIn("INPUT", str(ctx.exception))
+
+    def test_the_unsupported_archs_refusal_also_runs_it(self):
+        # lens / minit2i call ``refuse_quantized_state_dict``; it must not report
+        # a convrot file as a merely-quantized one.
+        sd = self._int8_sd()
+        sd["fc.comfy_quant"] = self._marker(self.CONVROT_MARKER)
+        with self.assertRaises(guard.UnsupportedQuantSemanticsError):
+            guard.refuse_quantized_state_dict(sd, arch="lens", path="m.safetensors")
+
+    def test_convrot_support_is_not_claimed_anywhere(self):
+        # Point 3 of the scope: the guard ships, the un-rotation does not. If a
+        # future commit implements it, this test is the reminder to widen
+        # KNOWN_COMFY_QUANT_FIELDS' handling deliberately rather than by accident.
+        self.assertNotIn("convrot", guard.KNOWN_COMFY_QUANT_FORMATS)
+        sd = self._int8_sd()
+        sd["fc.comfy_quant"] = self._marker(self.CONVROT_MARKER)
+        self.assertEqual(
+            guard.unsupported_quant_semantics_report(sd)["convrot_layers"], ["fc"])
+
+
 if __name__ == "__main__":
     unittest.main()

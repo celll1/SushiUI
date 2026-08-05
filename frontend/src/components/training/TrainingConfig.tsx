@@ -33,6 +33,15 @@ interface ModelInfo {
   source_dir: string;
 }
 
+// Architectures whose weight/training dtype the backend forces to BF16 whatever
+// the dtype dropdowns say (train_runner.py, "forcing training_dtype=bf16").
+// SD1.5, SDXL and Flux 2 are deliberately absent: they keep the configured dtype,
+// which defaults to FP16. Used to decide whether a run will actually have BF16
+// parameters, which is the only thing stochastic rounding can act on.
+const FORCED_BF16_ARCHITECTURES = new Set([
+  "zimage", "anima", "ideogram4", "minit2i", "krea2", "lens", "ltx2", "acestep",
+]);
+
 // Optimizer configuration: defines available options and defaults for each optimizer
 const OPTIMIZER_CONFIGS: Record<string, {
   label: string;
@@ -3799,24 +3808,6 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                           </label>
                         </div>
 
-                        {/* Stochastic Rounding (BF16 only, AdamW8bit/Lion8bit only) */}
-                        {trainingDtype === "bf16" && (optimizer === "adamw8bit_ringbuffer" || optimizer === "lion8bit_ringbuffer") && (
-                          <div>
-                            <label className="flex items-center text-xs text-gray-300">
-                              <input
-                                type="checkbox"
-                                checked={optimizerStochasticRounding}
-                                onChange={(e) => updateParam("optimizer_stochastic_rounding", e.target.checked)}
-                                className="mr-2"
-                              />
-                              Stochastic Rounding (BF16)
-                            </label>
-                            <p className="text-xs text-gray-500 mt-1">
-                              Reduces quantization bias for BF16 training. Only affects AdamW8bit/Lion8bit with BF16.
-                            </p>
-                          </div>
-                        )}
-
                         {/* Schedule-Free r (hidden when RAdam is enabled) */}
                         {!optimizerUseRadam && (
                           <div>
@@ -3848,6 +3839,45 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                     )}
                   </div>
                 )}
+
+                {/* Stochastic Rounding.
+                    Applies to BF16 parameters only (should_use_stochastic_rounding
+                    returns false for FP16/FP32), so the control is disabled when
+                    the run will not have BF16 parameters. That is NOT simply the
+                    dtype dropdown: train_runner forces weight_dtype=bf16 for the
+                    architectures in FORCED_BF16_ARCHITECTURES below whatever the
+                    dropdown says, and it leaves SD1.5 / SDXL / Flux 2 on the
+                    configured dtype (fp16 by default).
+                    It used to be nested inside the Schedule-Free block and
+                    limited to the two Ring Buffer optimizers, which made it
+                    unreachable for a default configuration. Every optimizer here
+                    supports it except AdamW, which updates all of its parameters
+                    in one call with no per-parameter seam to apply it at. */}
+                {optimizer !== "adamw" && (() => {
+                  const forcedBf16 = FORCED_BF16_ARCHITECTURES.has(
+                    getModelArchitecture(baseModelPath) ?? ""
+                  );
+                  const bf16Params = forcedBf16 || weightDtype === "bf16" || trainingDtype === "bf16";
+                  return (
+                    <div className="col-span-2">
+                      <label className={`flex items-center text-xs ${bf16Params ? "text-gray-300" : "text-gray-500"}`}>
+                        <input
+                          type="checkbox"
+                          disabled={!bf16Params}
+                          checked={bf16Params && optimizerStochasticRounding}
+                          onChange={(e) => updateParam("optimizer_stochastic_rounding", e.target.checked)}
+                          className="mr-2"
+                        />
+                        Stochastic Rounding (BF16 parameters)
+                      </label>
+                      <p className="text-xs text-gray-500 mt-1">
+                        {bf16Params
+                          ? "Rounds each BF16 parameter update up or down with probability equal to its fractional part. Without it, an update smaller than half a BF16 step is rounded away every step and the weight never changes."
+                          : `Unavailable: this run's parameters are ${weightDtype.toUpperCase()}. Stochastic rounding applies to BF16 parameters only. Set the weight or training dtype to BF16 to enable it.`}
+                      </p>
+                    </div>
+                  );
+                })()}
               </div>
 
               {/* Optimizer Hyperparameters */}

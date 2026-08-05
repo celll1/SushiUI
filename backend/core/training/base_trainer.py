@@ -3248,13 +3248,17 @@ class BaseTrainer(ABC):
     # means "not requested". Used to warn instead of silently dropping them when
     # another optimizer is selected (the shipped full-FT default, adamw8bit, is
     # one of those). Keep in sync with _ringbuffer_optimizer_kwargs().
+    #
+    # optimizer_stochastic_rounding is deliberately NOT in this list: it is not
+    # a ring-buffer-only option any more. _attach_stochastic_rounding() applies
+    # it to any optimizer that exposes a per-parameter update seam, and reports
+    # by name the ones that do not.
     _RINGBUFFER_ONLY_OPTIONS = (
         ("optimizer_cautious", False),
         ("optimizer_schedule_free", False),
         ("optimizer_schedule_free_r", 0.0),
         ("optimizer_schedule_free_weight_lr_power", 2.0),
         ("optimizer_use_radam", False),
-        ("optimizer_stochastic_rounding", False),
     )
 
     def _ringbuffer_optimizer_kwargs(self) -> Dict[str, Any]:
@@ -3275,6 +3279,85 @@ class BaseTrainer(ABC):
             "use_radam": self.optimizer_use_radam,
             "stochastic_rounding": self.optimizer_stochastic_rounding,
         }
+
+    # Optimizers that apply stochastic rounding inside their own update, so
+    # _attach_stochastic_rounding() must leave them alone.
+    _NATIVE_STOCHASTIC_ROUNDING_OPTIMIZERS = ("adamw8bit_ringbuffer", "lion8bit_ringbuffer")
+
+    def _attach_stochastic_rounding(self, optimizer_type: str):
+        """Make ``optimizer_stochastic_rounding`` reach the optimizer that was chosen.
+
+        Full fine-tuning writes optimizer updates straight into BF16 storage
+        with no FP32 master, so round-to-nearest deterministically discards every
+        update below half a ULP and those weights never move again. Only the two
+        ring-buffer optimizers implemented the repair; the shipped full-FT
+        default is ``adamw8bit``, so a user who changed nothing got the defect.
+
+        Third-party optimizers are covered without modifying them, by making the
+        parameter FP32 for the duration of one per-parameter update call and
+        rounding the result back stochastically -- see
+        ``stochastic_rounding.attach_stochastic_rounding``. Optimizers with no
+        per-parameter entry point cannot be covered that way and are named here
+        rather than left to look covered.
+
+        Must run AFTER the Block Swap setup: ``_setup_fused_backward_pass``
+        installs ``step_param`` (and ``_setup_fused_optimizer_groups`` replaces
+        ``self.optimizer`` outright), so attaching earlier would be discarded.
+        """
+        if not self.optimizer_stochastic_rounding:
+            return
+
+        name = optimizer_type.lower()
+        if name in self._NATIVE_STOCHASTIC_ROUNDING_OPTIMIZERS:
+            return  # applied inside the optimizer; already logged above
+
+        from .optimizers.stochastic_rounding import attach_stochastic_rounding
+
+        groups = getattr(self, "fused_optimizer_groups", None)
+        optimizers = list(groups.optimizers) if groups is not None else [self.optimizer]
+
+        # transformers' Adafactor updates every parameter inside one step() with
+        # no per-parameter entry point, but the fused variant this repo already
+        # ships for Block Swap is the same algorithm exposed as step_param(). Use
+        # it when stochastic rounding is asked for, so Adafactor is covered
+        # whether or not Block Swap is on. (When Block Swap is on the patch has
+        # already been applied and this is a no-op.)
+        #
+        # Stated plainly because it is a real consequence, not a side effect:
+        # ticking stochastic rounding on an Adafactor run REPLACES
+        # transformers.Adafactor.step with adafactor_fused's port of it (from
+        # sd-scripts), which then dispatches through the interposed step_param.
+        # Same algorithm, different implementation; without it step() would keep
+        # writing BF16 with round-to-nearest while the log claimed otherwise.
+        if name == "adafactor":
+            from .optimizers.adafactor_fused import patch_adafactor_fused
+            for optimizer in optimizers:
+                if not hasattr(optimizer, "step_param"):
+                    patch_adafactor_fused(optimizer)
+                    print(f"{self.log_prefix} Adafactor: step() replaced by the fused "
+                          f"per-parameter implementation (same algorithm) so stochastic "
+                          f"rounding can be applied to each parameter update")
+
+        covered = []
+        for optimizer in optimizers:
+            covered.extend(attach_stochastic_rounding(optimizer))
+
+        if covered:
+            print(f"{self.log_prefix} Stochastic rounding attached to '{optimizer_type}' "
+                  f"({', '.join(sorted(set(covered)))}); BF16 parameter updates below "
+                  f"half a ULP are now carried in expectation instead of discarded")
+        else:
+            print(f"{self.log_prefix} WARNING: optimizer_stochastic_rounding is NOT applied: "
+                  f"'{optimizer_type}' updates all of its parameters inside one call and "
+                  f"exposes no per-parameter seam to interpose on. Its BF16 updates below "
+                  f"half a ULP are discarded and those weights never move. "
+                  f"Choose adamw8bit, lion8bit, adafactor, adamw8bit_ringbuffer or "
+                  f"lion8bit_ringbuffer for a covered optimizer.")
+
+        if self.weight_dtype != torch.bfloat16:
+            print(f"{self.log_prefix} NOTE: stochastic rounding applies to BF16 parameters "
+                  f"only; weight dtype is {self.weight_dtype}, so parameters in that dtype "
+                  f"are updated unchanged")
 
     def setup_optimizer(
         self,
@@ -3472,6 +3555,11 @@ class BaseTrainer(ABC):
                 # moves each block to CPU (otherwise CPU-resident params are silently skipped).
                 self._setup_fused_backward_pass(optimizer_type)
 
+        # Last, because the Block Swap setup above installs step_param and can
+        # replace self.optimizer: stochastic rounding has to wrap whatever
+        # actually ends up performing the update.
+        self._attach_stochastic_rounding(optimizer_type)
+
     def _fused_backward_target_module(self):
         """Return the main trainable module the ring-buffer optimizers register their
         post-accumulate-grad hooks on.
@@ -3544,7 +3632,11 @@ class BaseTrainer(ABC):
             patch_adafactor_fused(self.optimizer)
         elif optimizer_type.lower() == "adamw8bit":
             from .optimizers.adamw8bit_fused import patch_adamw8bit_fused
-            patch_adamw8bit_fused(self.optimizer)
+            # This step_param is a plain-Python AdamW (it is NOT the bitsandbytes
+            # 8-bit kernel), so it applies stochastic rounding itself rather than
+            # being wrapped -- that keeps its optimizer state in the parameter's
+            # dtype instead of following an FP32 view of the parameter.
+            patch_adamw8bit_fused(self.optimizer, self.optimizer_stochastic_rounding)
         elif optimizer_type.lower() == "adamw8bit_ringbuffer":
             # AdamW8bit_RingBuffer has built-in hook support via patch_adamw8bit_ringbuffer
             from .optimizers.adamw8bit_ringbuffer import patch_adamw8bit_ringbuffer

@@ -100,7 +100,9 @@ class _StubTrainer:
     _ringbuffer_optimizer_kwargs = BaseTrainer._ringbuffer_optimizer_kwargs
     _setup_fused_backward_pass = BaseTrainer._setup_fused_backward_pass
     _setup_fused_optimizer_groups = BaseTrainer._setup_fused_optimizer_groups
+    _attach_stochastic_rounding = BaseTrainer._attach_stochastic_rounding
     _RINGBUFFER_ONLY_OPTIONS = BaseTrainer._RINGBUFFER_ONLY_OPTIONS
+    _NATIVE_STOCHASTIC_ROUNDING_OPTIMIZERS = BaseTrainer._NATIVE_STOCHASTIC_ROUNDING_OPTIMIZERS
 
     def __init__(self, **overrides: Any):
         self.log_prefix = "[StubTrainer]"

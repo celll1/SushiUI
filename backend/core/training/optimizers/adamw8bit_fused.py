@@ -14,6 +14,13 @@ Requirements:
 
 import torch
 
+from .stochastic_rounding import (
+    NATIVE_ATTR,
+    Fp32ScratchPool,
+    copy_stochastic_bf16,
+    should_use_stochastic_rounding,
+)
+
 
 @torch.no_grad()
 def adamw8bit_step_param(self, p, group):
@@ -63,12 +70,45 @@ def adamw8bit_step_param(self, p, group):
     denom = (exp_avg_sq.sqrt() / (bias_correction2 ** 0.5)).add_(group['eps'])
     step_size = group['lr'] / bias_correction1
 
+    # Both writes below land in the parameter's own storage. For a BF16
+    # parameter that is round-to-nearest, which discards every update below half
+    # a ULP -- deterministically, so such a weight is frozen for the whole run
+    # rather than slow (see stochastic_rounding.py). When stochastic rounding is
+    # requested, apply the update to a pooled FP32 image of the parameter and
+    # round that back instead.
+    #
+    # The optimizer STATE is deliberately still allocated from ``p`` above, so
+    # it keeps the parameter's dtype and this costs no persistent memory. That
+    # leaves exp_avg_sq's own accumulation in BF16 (with beta2=0.999 its
+    # per-step relative change is 1e-3, just under BF16's 2^-9 half-ULP), which
+    # biases the denominator but not the conclusion here: the step size stays of
+    # order lr, and it is the parameter write that freezes the weight.
+    use_sr = should_use_stochastic_rounding(getattr(self, "stochastic_rounding", False), p)
+    if use_sr:
+        pool = getattr(self, "_sr_pool", None)
+        if pool is None:
+            pool = Fp32ScratchPool()
+            self._sr_pool = pool
+        target = pool.copy_of("master", p)
+    else:
+        target = p
+
     # Weight decay (AdamW style - decoupled)
     if group['weight_decay'] != 0:
-        p.mul_(1 - group['lr'] * group['weight_decay'])
+        target.mul_(1 - group['lr'] * group['weight_decay'])
 
     # Update parameters
-    p.addcdiv_(exp_avg, denom, value=-step_size)
+    target.addcdiv_(exp_avg, denom, value=-step_size)
+
+    if use_sr:
+        copy_stochastic_bf16(p.data, target)
+
+
+# Tells attach_stochastic_rounding() not to interpose on this function: it
+# applies stochastic rounding itself, above, and doing it twice would also make
+# the optimizer state FP32 (this implementation allocates state with
+# ``zeros_like(p)``, so it would follow an FP32 view of the parameter).
+setattr(adamw8bit_step_param, NATIVE_ATTR, True)
 
 
 @torch.no_grad()
@@ -89,12 +129,16 @@ def adamw8bit_step(self, closure=None):
         for p in group['params']:
             if p.grad is None:
                 continue
-            adamw8bit_step_param(self, p, group)
+            # self.step_param, not the module-level function: see the same note
+            # in adafactor_fused.adafactor_step. Any interposition on the
+            # per-parameter update rebinds the instance attribute, and calling
+            # the module-level function bypasses it.
+            self.step_param(p, group)
 
     return loss
 
 
-def patch_adamw8bit_fused(optimizer):
+def patch_adamw8bit_fused(optimizer, stochastic_rounding: bool = False):
     """
     Patch AdamW8bit optimizer to support per-parameter updates.
 
@@ -104,6 +148,8 @@ def patch_adamw8bit_fused(optimizer):
 
     Args:
         optimizer: AdamW8bit optimizer instance to patch
+        stochastic_rounding: Write BF16 parameters with stochastic rounding
+            instead of round-to-nearest. Only affects BF16 parameters.
 
     Example:
         >>> import bitsandbytes as bnb
@@ -119,7 +165,9 @@ def patch_adamw8bit_fused(optimizer):
         >>>             lambda tensor: optimizer.step_param(tensor, optimizer.param_groups[0])
         >>>         )
     """
+    optimizer.stochastic_rounding = bool(stochastic_rounding)
     optimizer.step_param = adamw8bit_step_param.__get__(optimizer)
     # Don't replace step() - keep bitsandbytes implementation for fallback
     # optimizer.step = adamw8bit_step.__get__(optimizer)
-    print("[AdamW8bitFused] Optimizer patched with fused backward support")
+    print(f"[AdamW8bitFused] Optimizer patched with fused backward support"
+          f"{' (stochastic rounding)' if optimizer.stochastic_rounding else ''}")

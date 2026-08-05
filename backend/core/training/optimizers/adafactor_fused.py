@@ -127,7 +127,15 @@ def adafactor_step(self, closure=None):
 
     for group in self.param_groups:
         for p in group["params"]:
-            adafactor_step_param(self, p, group)
+            # self.step_param, NOT the module-level function: anything that
+            # interposes on the per-parameter update -- stochastic rounding for
+            # BF16 parameters -- does so by rebinding the INSTANCE attribute.
+            # Calling adafactor_step_param(self, p, group) here bypassed every
+            # such interposition, so a run that went through step() (i.e. any
+            # Adafactor run without Block Swap, and any run with fused optimizer
+            # groups) silently got round-to-nearest while the setup log said
+            # stochastic rounding was attached.
+            self.step_param(p, group)
 
     return loss
 

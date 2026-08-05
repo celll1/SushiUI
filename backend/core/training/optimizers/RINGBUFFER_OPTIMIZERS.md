@@ -71,6 +71,28 @@ half ULP未満の更新も期待値として反映される。
 
 デフォルトは無効（`optimizer_stochastic_rounding: false`）。
 
+### Ring Buffer以外のoptimizerへの適用
+
+Ring Bufferの2つは自前の更新処理の中で上記のプリミティブを呼ぶ。それ以外の
+optimizer（full FTの既定値である `adamw8bit` を含む）はサードパーティのコードが
+パラメータを直接書き換えるため、`attach_stochastic_rounding()` が
+**パラメータ単位の呼び出し口に介入する**形で対応する（optimizer本体は変更しない）。
+
+1回の更新呼び出しの間だけ `p.data` をscratch上のFP32イメージに、`p.grad` を
+勾配のFP32イメージに差し替えるので、カーネルもPythonコードもFP32を読み書きし、
+BF16ストレージには触れない。呼び出し終了時にstochastic roundingで書き戻す。
+
+| optimizer | 介入点 | 備考 |
+|---|---|---|
+| `adamw8bit` / `lion8bit` / `paged_*` | `Optimizer8bit.update_step` | bitsandbytes。8-bit stateはuint8のまま |
+| `adafactor` | `step_param` | fused版（`adafactor_fused`）を使う。stateは元からFP32 |
+| `adamw8bit` + Block Swap | `adamw8bit_fused.step_param` 内で直接適用 | stateを `zeros_like(p)` で確保するため、介入方式だとstateがFP32になり2倍になる |
+| `adamw8bit_ringbuffer` / `lion8bit_ringbuffer` | optimizer本体 | 従来通り |
+| `adamw` | **なし** | 全パラメータを1回の呼び出しで更新し、パラメータ単位の入口が無い。setup時に警告する |
+
+Schedule-Freeの `z` 系列は依然としてパラメータdtypeのまま
+round-to-nearestで更新される（対象はパラメータ本体の書き込みのみ）。
+
 ---
 
 ## アーキテクチャ

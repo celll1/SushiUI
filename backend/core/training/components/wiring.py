@@ -21,6 +21,7 @@ from core.models.components.wiring import (  # noqa: F401
     FLUX2_WIRING,
     LTX2_WIRING,
     ACESTEP_WIRING,
+    MINIMAX_H3_WIRING,
 )
 
 __all__ = [
@@ -36,4 +37,5 @@ __all__ = [
     "FLUX2_WIRING",
     "LTX2_WIRING",
     "ACESTEP_WIRING",
+    "MINIMAX_H3_WIRING",
 ]

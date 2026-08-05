@@ -48,6 +48,13 @@ VAE_CLASS_BY_ARCH: Dict[str, Optional[str]] = {
     "anima": "AutoencoderKLQwenImage",
     "krea2": "AutoencoderKLQwenImage",
     "ltx2": "AutoencoderKLLTXVideo",
+    # The video VAE. MiniMax-H3 also owns a SECOND autoencoder
+    # (AutoencoderKLMiniMaxH3Audio) that this per-arch map cannot express; a VAE
+    # override could only ever replace the video one, and `arch_capabilities`
+    # declares vae_override unsupported for this arch anyway (Phase 2), so the
+    # entry exists to give the refusal an accurate expected class rather than to
+    # enable an override.
+    "minimax_h3": "AutoencoderKLMiniMaxH3",
     "minit2i": None,  # pixel-space, no VAE
 }
 

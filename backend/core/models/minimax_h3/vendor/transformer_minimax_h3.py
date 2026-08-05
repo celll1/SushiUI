@@ -19,6 +19,48 @@
 #     `MiniMaxH3Transformer3DModel.__init__` / `.forward`. Upstream diffusers
 #     implements only the full-modulation variant, which the released
 #     `*_pruned_*` single-file checkpoints do not contain.
+#   * `MiniMaxH3TransformerBlock.forward` now casts the six modulation tensors
+#     down to the residual stream's dtype before applying them.
+#
+#     WHY. Upstream's block was written for a bfloat16 `adaln_proj`. In the
+#     AdaLN-curve ("pruned") variant ComfyUI computes that projection in float32
+#     (`"adaln_dtype": torch.float32 if self.use_adaln_curves else dtype`,
+#     `comfy/ldm/minimax/model.py` L432), and the SushiUI loader follows it. With
+#     no cast, a float32 modulation of shape `(num_adaln_rows, hidden_size)`
+#     promotes the whole `(batch, seq_len, hidden_size)` activation stack to
+#     float32 through every one of the 50 blocks. It does not raise anywhere:
+#     `Fp8Linear._dequant_forward` dequantizes to `x.dtype`, so float32 simply
+#     propagates.
+#
+#     UPSTREAM MIRROR, quoted verbatim from `comfy/ldm/minimax/model.py`
+#     L210-221 (the same file the AdaLN-curve port above was taken from; a
+#     Phase-0 copy lives in the session scratchpad as `scratchpad/comfy/model.py`):
+#
+#         def _mod_scale_shift(h, shift, scale, segments):
+#             # segments: [(start, stop, mod_row)] covering h contiguously.
+#             for a, b, row in segments:
+#                 h[a:b].mul_(1.0 + scale[row].to(h.dtype)).add_(shift[row].to(h.dtype))
+#             return h
+#
+#         def _mod_gate(x, gate, other, segments):
+#             for a, b, row in segments:
+#                 x[a:b].addcmul_(other[a:b], gate[row].to(x.dtype))
+#             return x
+#
+#     i.e. ComfyUI casts each modulation ROW to the hidden dtype at exactly this
+#     point. This port casts the whole small `(rows, hidden)` tensor instead of
+#     one row at a time, which is the same value (the expansion that follows is
+#     an `index_select` gather, not arithmetic) and far less traffic. The
+#     projection's own numerics are untouched, so K0.2's measurements -- which
+#     compared the modulation VECTOR, upstream of this cast -- still hold.
+#
+#     `MiniMaxH3AdaLayerNormOut` is deliberately NOT changed: its output feeds
+#     the float32 output heads, and ComfyUI's `FinalLayer.forward` (L287-294)
+#     promotes there too (`.to(torch.float32)`).
+#
+#     NOT YET EXECUTED. No forward has run the shipped combination: Phase 0's
+#     smoke ran `adaln_proj` in bfloat16, and the Phase-1 loader installs it in
+#     float32. Phase 2's first real forward is this path's first execution.
 #
 # Why vendored: the `minimax-h3` branch is versioned 0.36.0.dev0 and is not on
 # diffusers `main`; this repo runs diffusers 0.38.0 for ten other
@@ -391,6 +433,17 @@ class MiniMaxH3TransformerBlock(nn.Module):
         attention_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.adaln_proj(temb)
+        # SushiUI modification: cast the modulation to the residual stream's dtype BEFORE it is
+        # expanded to sequence length. In the AdaLN-curve ("pruned") variant `adaln_proj` runs in
+        # float32 (ComfyUI's `adaln_dtype`), and applying a float32 `(num_adaln_rows, hidden_size)`
+        # tensor to a bfloat16 `(batch, seq_len, hidden_size)` one would promote the whole stack to
+        # float32 for all 50 blocks. ComfyUI casts at the same point (`scale[row].to(h.dtype)`); the
+        # cast is applied to the small table rather than to the expanded rows, which is the same
+        # value (`index_select` is a gather, not arithmetic) and orders of magnitude less traffic.
+        shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = (
+            t.to(hidden_states.dtype)
+            for t in (shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp)
+        )
 
         residual = hidden_states
         norm_hidden_states = self.norm1(hidden_states)

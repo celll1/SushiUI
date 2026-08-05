@@ -319,7 +319,11 @@ paths:
                   generation_type: "txt2img"
                   seed: 1234567890
         '400':
-          description: Invalid parameters
+          description: >-
+            Invalid parameters. Refused with a 4xx when the loaded model is not an image
+            model: a video model (LTX-2.3, MiniMax-H3) or an audio model
+            (ACE-Step) is rejected here by architecture, each with its own
+            reason and the endpoint to use instead.
           content:
             application/json:
               schema:
@@ -371,7 +375,10 @@ paths:
                   filename: "txt2vid_20260708_120000_1234567890.mp4"
                   generation_type: "txt2vid"
         '400':
-          description: Invalid parameters or no LTX-2.3 model loaded
+          description: >-
+            Invalid parameters, or no LTX-2.3 model loaded. A loaded MiniMax-H3
+            model is refused here with its own reason: it is a video model whose
+            sampler is not wired to this endpoint yet.
           content:
             application/json:
               schema:
@@ -426,7 +433,10 @@ paths:
                   filename: "img2vid_20260708_120000_1234567890.mp4"
                   generation_type: "img2vid"
         '400':
-          description: Invalid parameters or no LTX-2.3 model loaded
+          description: >-
+            Invalid parameters, or no LTX-2.3 model loaded. A loaded MiniMax-H3
+            model is refused here with its own reason: it is a video model whose
+            sampler is not wired to this endpoint yet.
           content:
             application/json:
               schema:
@@ -479,7 +489,10 @@ paths:
                   filename: "txt2aud_20260713_120000_1234567890.flac"
                   generation_type: "txt2aud"
         '400':
-          description: Invalid parameters or no ACE-Step model loaded
+          description: >-
+            Invalid parameters, or no ACE-Step model loaded. A loaded MiniMax-H3
+            model is refused here with its own reason: it generates audio only
+            jointly with video, so its audio is not separately addressable.
           content:
             application/json:
               schema:
@@ -557,7 +570,10 @@ paths:
                   filename: "aud2aud_20260713_120000_1234567890.flac"
                   generation_type: "aud2aud"
         '400':
-          description: Invalid parameters or no ACE-Step model loaded
+          description: >-
+            Invalid parameters, or no ACE-Step model loaded. A loaded MiniMax-H3
+            model is refused here with its own reason: it generates audio only
+            jointly with video, so its audio is not separately addressable.
           content:
             application/json:
               schema:
@@ -646,7 +662,11 @@ paths:
                   filename: "outpaint_aud_20260715_120000_1234567890.flac"
                   generation_type: "outpaint_aud"
         '400':
-          description: Invalid parameters (including a placement that cannot fit) or no ACE-Step model loaded
+          description: >-
+            Invalid parameters (including a placement that cannot fit), or no
+            ACE-Step model loaded. A loaded MiniMax-H3 model is refused here with
+            its own reason: it generates audio only jointly with video, so its
+            audio is not separately addressable.
           content:
             application/json:
               schema:
@@ -691,7 +711,11 @@ paths:
                   filename: "img2img_20251128_123456_9876543210.png"
                   generation_type: "img2img"
         '400':
-          description: Invalid parameters
+          description: >-
+            Invalid parameters. Refused with a 4xx when the loaded model is not an image
+            model: a video model (LTX-2.3, MiniMax-H3) or an audio model
+            (ACE-Step) is rejected here by architecture, each with its own
+            reason and the endpoint to use instead.
           content:
             application/json:
               schema:
@@ -738,7 +762,11 @@ paths:
                   filename: "inpaint_20251128_123456_5555555555.png"
                   generation_type: "inpaint"
         '400':
-          description: Invalid parameters
+          description: >-
+            Invalid parameters. Refused with a 4xx when the loaded model is not an image
+            model: a video model (LTX-2.3, MiniMax-H3) or an audio model
+            (ACE-Step) is rejected here by architecture, each with its own
+            reason and the endpoint to use instead.
           content:
             application/json:
               schema:
@@ -812,7 +840,11 @@ paths:
                   filename: "outpaint_20260715_123456_5555555555.png"
                   generation_type: "outpaint"
         '400':
-          description: Invalid parameters (including degenerate placement geometry)
+          description: >-
+            Invalid parameters (including degenerate placement geometry). Refused with a 4xx when the loaded model is not an image
+            model: a video model (LTX-2.3, MiniMax-H3) or an audio model
+            (ACE-Step) is rejected here by architecture, each with its own
+            reason and the endpoint to use instead.
           content:
             application/json:
               schema:
@@ -896,7 +928,10 @@ paths:
                   filename: "outpaint_vid_20260715_120000_1234567890.mp4"
                   generation_type: "outpaint_vid"
         '400':
-          description: Invalid parameters or no LTX-2.3 model loaded
+          description: >-
+            Invalid parameters, or no LTX-2.3 model loaded. A loaded MiniMax-H3
+            model is refused here with its own reason: it is a video model whose
+            sampler is not wired to this endpoint yet.
           content:
             application/json:
               schema:

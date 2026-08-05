@@ -94,6 +94,20 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         self.acestep_components: Optional[Dict[str, Any]] = None
         self.is_acestep_model: bool = False
 
+        # MiniMax-H3 components (pruned joint video+audio DiT + Qwen3-VL-32B text
+        # encoder + a 24ch video VAE and a 32ch audio VAE). Video model; flow
+        # matching. Phase 1: loadable/slot-switchable only — video generation is
+        # Phase 2, so the image and audio endpoints reject a loaded H3 model.
+        #
+        # NOTE for every future consumer: nothing may call `.to(device, dtype)`
+        # on `minimax_h3_components["text_encoder"]`. Its 48 GiB of CPU weights
+        # are memory-mapped from the file by `load_state_dict(assign=True)`, and
+        # writing them back detaches every parameter from the mapping (MEASURED:
+        # 73.08 GB peak RSS + pagefile growth, against 49.82 GB flat for the
+        # `torch.func.functional_call` streaming Phase 2 uses).
+        self.minimax_h3_components: Optional[Dict[str, Any]] = None
+        self.is_minimax_h3_model: bool = False
+
         # SigLIP2 Vision Encoder (optional, for SD/SDXL vision-conditioned generation)
         self.vision_encoder: Optional[Any] = None
         self._vision_encoder_path: Optional[str] = None
@@ -151,6 +165,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             return "ltx2"
         if self.is_acestep_model:
             return "acestep"
+        if self.is_minimax_h3_model:
+            return "minimax_h3"
         # Detect SDXL vs SD1.5 by inspecting the loaded pipeline class
         pipe = self.txt2img_pipeline
         if pipe is not None:
@@ -391,6 +407,22 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     del comp
                 self.acestep_components = None
                 self.is_acestep_model = False
+
+            # Clean up MiniMax-H3 components
+            if self.minimax_h3_components is not None:
+                print("[Pipeline] Cleaning up MiniMax-H3 components...")
+                for comp_name, comp in self.minimax_h3_components.items():
+                    # DELIBERATELY no `comp.to('cpu')` here, unlike every branch
+                    # above. Every H3 component is already CPU-resident (the
+                    # loader never stages to GPU in Phase 1), and the text
+                    # encoder's parameters are memory-mapped from a 48 GiB file:
+                    # a `.to()` on it would copy 48 GiB into anonymous memory
+                    # moments before the reference is dropped. Phase 2, which
+                    # does stage components to the GPU, must move them back
+                    # WITHOUT a dtype argument and must exempt the text encoder.
+                    del comp
+                self.minimax_h3_components = None
+                self.is_minimax_h3_model = False
 
             # Force garbage collection
             gc.collect()
@@ -794,6 +826,70 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                 }
                 self._save_last_model(source_type, source, pipeline_type)
                 print("[Pipeline] ACE-Step 1.5 model loaded successfully")
+                return
+
+            # Check if MiniMax-H3 (pruned joint video+audio DiT + Qwen3-VL-32B +
+            # a video and an audio VAE). MUST be before the generic Z-Image check
+            # below, which matches any dict carrying a "transformer" key — H3's
+            # does. Phase 1: loadable/slot-switchable only; generation is Phase 2.
+            if isinstance(model_result, dict) and model_result.get("type") == "minimax_h3":
+                print("[Pipeline] MiniMax-H3 video model detected (component-based dict returned)")
+                self.minimax_h3_components = model_result
+                self.is_minimax_h3_model = True
+                self.is_acestep_model = False
+                self.is_ltx2_model = False
+                self.is_krea2_model = False
+                self.is_minit2i_model = False
+                self.is_ideogram4_model = False
+                self.is_lens_model = False
+                self.is_anima_model = False
+                self.is_zimage_model = False
+                self.is_flux2_model = False
+                self.current_model = model_id
+                self.current_attention_type = "normal"
+
+                # The loader already leaves every component on the CPU, and the
+                # text encoder is EXCLUDED from any `.to()` on purpose: its 48 GiB
+                # of parameters are memory-mapped from the file, and moving the
+                # module (even "to cpu", even more so with a dtype) detaches them
+                # from that mapping — MEASURED at 73.08 GB peak RSS against
+                # 49.82 GB for the mapping-preserving path.
+                for comp_name in ("transformer", "vae", "audio_vae"):
+                    comp = self.minimax_h3_components.get(comp_name)
+                    if comp is not None and hasattr(comp, "to"):
+                        try:
+                            comp.to("cpu")
+                        except Exception:
+                            pass
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                print("[VRAM] MiniMax-H3 components on CPU. GPU staging happens at generate "
+                      "time (Phase 2); no two of them fit in 48 GB together.")
+
+                model_hash = ""
+                if source_type in ["safetensors", "diffusers"] and os.path.exists(source):
+                    try:
+                        from utils.hash_cache import get_cached_file_hash
+                        model_hash = get_cached_file_hash(source)
+                    except Exception as e:
+                        print(f"[Pipeline] Hash compute skipped: {e}")
+
+                self.current_model_info = {
+                    "source_type": source_type,
+                    "source": source,
+                    "type": "minimax_h3",
+                    "is_v_prediction": False,  # flow matching, velocity prediction
+                    "model_hash": model_hash,
+                    "is_video": True,
+                    "variant": self.minimax_h3_components.get("variant"),
+                    "latent_channels": self.minimax_h3_components.get("latent_channels", 24),
+                    "vae_scale_factor_spatial": self.minimax_h3_components.get(
+                        "vae_scale_factor_spatial", 16),
+                    "vae_scale_factor_temporal": self.minimax_h3_components.get(
+                        "vae_scale_factor_temporal", 4),
+                }
+                self._save_last_model(source_type, source, pipeline_type)
+                print("[Pipeline] MiniMax-H3 model loaded successfully")
                 return
 
             # Check if Z-Image
@@ -2818,6 +2914,18 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                 detail="The currently loaded model is LTX-2.3, which produces video, not still images.",
             )
 
+        # MiniMax-H3 likewise. The route-level `_reject_if_video_model` fires
+        # first for an API request; this is the second line, for every internal
+        # caller that reaches the pipeline directly.
+        if self.is_minimax_h3_model:
+            from api.error_handlers import ValidationError
+            raise ValidationError(
+                "MiniMax-H3 is a video model — use /generate/txt2vid or /generate/img2vid",
+                detail="The currently loaded model is MiniMax-H3, which produces video with a "
+                       "joint audio track, not still images. Its shortest decodable clip is 22 "
+                       "frames; there is no single-image path.",
+            )
+
         if not self.txt2img_pipeline:
             raise RuntimeError("txt2img pipeline not loaded. Please load a model first.")
 
@@ -3534,6 +3642,18 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             raise ValidationError(
                 "LTX-2.3 is a video model — use /generate/txt2vid or /generate/img2vid",
                 detail="The currently loaded model is LTX-2.3, which produces video, not still images.",
+            )
+
+        # MiniMax-H3 likewise. The route-level `_reject_if_video_model` fires
+        # first for an API request; this is the second line, for every internal
+        # caller that reaches the pipeline directly.
+        if self.is_minimax_h3_model:
+            from api.error_handlers import ValidationError
+            raise ValidationError(
+                "MiniMax-H3 is a video model — use /generate/txt2vid or /generate/img2vid",
+                detail="The currently loaded model is MiniMax-H3, which produces video with a "
+                       "joint audio track, not still images. Its shortest decodable clip is 22 "
+                       "frames; there is no single-image path.",
             )
 
         # If img2img pipeline is not loaded, create it from txt2img pipeline
@@ -4283,6 +4403,18 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             raise ValidationError(
                 "LTX-2.3 is a video model — use /generate/txt2vid or /generate/img2vid",
                 detail="The currently loaded model is LTX-2.3, which produces video, not still images.",
+            )
+
+        # MiniMax-H3 likewise. The route-level `_reject_if_video_model` fires
+        # first for an API request; this is the second line, for every internal
+        # caller that reaches the pipeline directly.
+        if self.is_minimax_h3_model:
+            from api.error_handlers import ValidationError
+            raise ValidationError(
+                "MiniMax-H3 is a video model — use /generate/txt2vid or /generate/img2vid",
+                detail="The currently loaded model is MiniMax-H3, which produces video with a "
+                       "joint audio track, not still images. Its shortest decodable clip is 22 "
+                       "frames; there is no single-image path.",
             )
 
         # If inpaint pipeline is not loaded, create it from txt2img pipeline

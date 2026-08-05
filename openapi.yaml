@@ -9808,7 +9808,18 @@ components:
         optimizer:
           type: string
           default: "adamw"
-          description: Optimizer type
+          description: |
+            Optimizer type, resolved by
+            `core/training/optimizer_factory.OptimizerFactory`: `adamw`,
+            `adamw8bit`, `adamw8bit_ringbuffer`, `adafactor`, `lion8bit`,
+            `lion8bit_ringbuffer`, `paged_adamw`, `paged_adamw8bit`,
+            `paged_lion8bit`.
+
+            Paging (bitsandbytes CPU offload of the optimizer state) is
+            selected by the TYPE NAME alone — pick one of the `paged_*`
+            entries. There is no separate boolean for it; the training panel
+            offers the non-paged names only, so a paged run is configured
+            through this field via the API or a hand-written YAML.
           example: "adamw"
         lr_scheduler:
           type: string
@@ -10080,9 +10091,6 @@ components:
         max_grad_norm:
           type: 'number'
           default: 1.0
-        optimizer_is_paged:
-          type: 'boolean'
-          default: false
         optimizer_cautious:
           type: 'boolean'
           default: false

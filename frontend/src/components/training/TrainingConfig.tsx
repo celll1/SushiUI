@@ -45,7 +45,6 @@ const FORCED_BF16_ARCHITECTURES = new Set([
 // Optimizer configuration: defines available options and defaults for each optimizer
 const OPTIMIZER_CONFIGS: Record<string, {
   label: string;
-  supportsPaged?: boolean;
   supportsCautious?: boolean;
   defaults: {
     beta1?: string;
@@ -56,12 +55,10 @@ const OPTIMIZER_CONFIGS: Record<string, {
 }> = {
   "adamw": {
     label: "AdamW",
-    supportsPaged: true,
     defaults: { beta1: "0.9", beta2: "0.999", epsilon: "1e-8", weight_decay: "0.01" }
   },
   "adamw8bit": {
     label: "AdamW 8-bit",
-    supportsPaged: true,
     defaults: { beta1: "0.9", beta2: "0.999", epsilon: "1e-8", weight_decay: "0.01" }
   },
   "adamw8bit_ringbuffer": {
@@ -71,7 +68,6 @@ const OPTIMIZER_CONFIGS: Record<string, {
   },
   "lion8bit": {
     label: "Lion 8-bit",
-    supportsPaged: true,
     defaults: { beta1: "0.9", beta2: "0.99", weight_decay: "0.01" }  // Lion uses different beta2
   },
   "lion8bit_ringbuffer": {
@@ -113,7 +109,6 @@ const DEFAULT_PARAMS: TrainingRunCreateRequest = {
   ema_update_every: 1,
   ema_device: "cpu",
   optimizer: "adamw8bit",
-  optimizer_is_paged: false,
   optimizer_cautious: false,
   optimizer_beta1: 0.9,
   optimizer_beta2: 0.999,
@@ -441,7 +436,6 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const [localScheduleFreeRText, setLocalScheduleFreeRText] = useState<string>("0.0");
   const [localScheduleFreeWeightLrPowerText, setLocalScheduleFreeWeightLrPowerText] = useState<string>("2.0");
   // Convenience read-only aliases into params
-  const optimizerIsPaged = params.optimizer_is_paged ?? false;
   const optimizerCautious = params.optimizer_cautious ?? false;
   const optimizerBeta1 = localBeta1Text;
   const optimizerBeta2 = localBeta2Text;
@@ -738,7 +732,6 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       ema_update_every: params.ema_update_every,
       ema_device: params.ema_device,
       optimizer: params.optimizer,
-      optimizer_is_paged: params.optimizer_is_paged,
       optimizer_cautious: params.optimizer_cautious,
       optimizer_beta1: localBeta1Text ? parseFloat(localBeta1Text) : undefined,
       optimizer_beta2: localBeta2Text ? parseFloat(localBeta2Text) : undefined,
@@ -1046,7 +1039,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       "batch_size", "gradient_accumulation_steps", "max_grad_norm", "learning_rate", "lr_scheduler", "lr_warmup_steps",
       "lr_decay_start_ratio", "lr_floor_ratio", "use_ema", "ema_decay", "ema_update_every", "ema_device", "optimizer",
       "optimizer_beta1", "optimizer_beta2", "optimizer_epsilon", "optimizer_weight_decay",
-      "optimizer_is_paged", "optimizer_cautious", "optimizer_schedule_free",
+      "optimizer_cautious", "optimizer_schedule_free",
       "optimizer_schedule_free_r", "optimizer_schedule_free_weight_lr_power",
       "optimizer_use_radam", "optimizer_stochastic_rounding",
       "save_every", "save_every_unit", "max_step_saves_to_keep", "resume_from_checkpoint",
@@ -1363,7 +1356,6 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     }
 
     // Reset options that are not supported by the new optimizer
-    if (!config.supportsPaged) updateParam("optimizer_is_paged", false);
     if (!config.supportsCautious) updateParam("optimizer_cautious", false);
   }, [params.optimizer, updateParam]);
 
@@ -1686,7 +1678,6 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       learningRate: localLrText,
       lrScheduler: params.lr_scheduler,
       optimizer: params.optimizer,
-      optimizerIsPaged: params.optimizer_is_paged,
       optimizerCautious: params.optimizer_cautious,
       optimizerBeta1: localBeta1Text,
       optimizerBeta2: localBeta2Text,
@@ -1820,7 +1811,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     }
     if (config.lrScheduler !== undefined) updateParam("lr_scheduler", config.lrScheduler);
     if (config.optimizer !== undefined) updateParam("optimizer", config.optimizer);
-    if (config.optimizerIsPaged !== undefined) updateParam("optimizer_is_paged", config.optimizerIsPaged);
+    // No optimizerIsPaged: presets saved before its removal still carry the
+    // key and are simply not read (it never had an effect).
     if (config.optimizerCautious !== undefined) updateParam("optimizer_cautious", config.optimizerCautious);
     if (config.optimizerBeta1 !== undefined) {
       const v = parseFloat(config.optimizerBeta1);
@@ -3744,21 +3736,10 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
 
               {/* Optimizer Options */}
               <div className="grid grid-cols-2 gap-3">
-                {/* is_paged option (AdamW, AdamW8bit, Lion8bit) */}
-                {OPTIMIZER_CONFIGS[optimizer]?.supportsPaged && (
-                  <div className="flex items-center space-x-2">
-                    <input
-                      type="checkbox"
-                      id="optimizer-is-paged"
-                      checked={optimizerIsPaged}
-                      onChange={(e) => updateParam("optimizer_is_paged", e.target.checked)}
-                      className="w-4 h-4"
-                    />
-                    <label htmlFor="optimizer-is-paged" className="text-xs text-gray-300 cursor-pointer">
-                      Paged (CPU offload)
-                    </label>
-                  </div>
-                )}
+                {/* No "Paged (CPU offload)" checkbox: paging is selected by the
+                    optimizer name (paged_adamw / paged_adamw8bit /
+                    paged_lion8bit), which this dropdown does not offer. The
+                    checkbox set a flag no trainer read. */}
 
                 {/* cautious option (Ring Buffer optimizers only) */}
                 {OPTIMIZER_CONFIGS[optimizer]?.supportsCautious && (

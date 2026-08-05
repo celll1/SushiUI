@@ -1681,7 +1681,6 @@ def main():
             text_encoder_2_lr = train_config.get('text_encoder_2_lr')
 
             # Get optimizer options and hyperparameters from train_config
-            optimizer_is_paged = train_config.get('optimizer_is_paged', False)
             optimizer_cautious = train_config.get('optimizer_cautious', False)
             optimizer_beta1 = train_config.get('optimizer_beta1')
             optimizer_beta2 = train_config.get('optimizer_beta2')
@@ -1731,7 +1730,6 @@ def main():
                 text_encoder_1_lr=text_encoder_1_lr,
                 text_encoder_2_lr=text_encoder_2_lr,
                 # Optimizer options and hyperparameters
-                optimizer_is_paged=optimizer_is_paged,
                 optimizer_cautious=optimizer_cautious,
                 optimizer_beta1=optimizer_beta1,
                 optimizer_beta2=optimizer_beta2,
@@ -2120,7 +2118,6 @@ def main():
             text_encoder_2_lr = train_config.get('text_encoder_2_lr')
 
             # Optimizer options and hyperparameters
-            optimizer_is_paged = train_config.get('optimizer_is_paged', False)
             optimizer_cautious = train_config.get('optimizer_cautious', False)
             optimizer_beta1 = train_config.get('optimizer_beta1')
             optimizer_beta2 = train_config.get('optimizer_beta2')
@@ -2184,7 +2181,6 @@ def main():
                 text_encoder_1_lr=text_encoder_1_lr,
                 text_encoder_2_lr=text_encoder_2_lr,
                 # Optimizer options and hyperparameters
-                optimizer_is_paged=optimizer_is_paged,
                 optimizer_cautious=optimizer_cautious,
                 optimizer_beta1=optimizer_beta1,
                 optimizer_beta2=optimizer_beta2,
@@ -2543,7 +2539,6 @@ def main():
             # no cautious masking, no Schedule-Free -- and, because
             # optimizer_warmup_steps also feeds the LR scheduler's
             # num_warmup_steps, no LR warmup at all.
-            optimizer_is_paged = train_config.get('optimizer_is_paged', False)
             optimizer_cautious = train_config.get('optimizer_cautious', False)
             optimizer_beta1 = train_config.get('optimizer_beta1')
             optimizer_beta2 = train_config.get('optimizer_beta2')
@@ -2596,7 +2591,6 @@ def main():
                 activation_dispatch_threshold_mb=train_config.get('activation_dispatch_threshold_mb', 4),
                 num_optimizer_groups=train_config.get('num_optimizer_groups', 0),
                 # Optimizer options and hyperparameters
-                optimizer_is_paged=optimizer_is_paged,
                 optimizer_cautious=optimizer_cautious,
                 optimizer_beta1=optimizer_beta1,
                 optimizer_beta2=optimizer_beta2,
@@ -2982,7 +2976,6 @@ def main():
             unet_lr = train_config.get('unet_lr')
 
             # Get optimizer options and hyperparameters
-            optimizer_is_paged = train_config.get('optimizer_is_paged', False)
             optimizer_cautious = train_config.get('optimizer_cautious', False)
             optimizer_beta1 = train_config.get('optimizer_beta1')
             optimizer_beta2 = train_config.get('optimizer_beta2')
@@ -3042,7 +3035,6 @@ def main():
                 # Component-specific learning rates
                 unet_lr=unet_lr,
                 # Optimizer options and hyperparameters
-                optimizer_is_paged=optimizer_is_paged,
                 optimizer_cautious=optimizer_cautious,
                 optimizer_beta1=optimizer_beta1,
                 optimizer_beta2=optimizer_beta2,

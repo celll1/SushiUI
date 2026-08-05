@@ -455,7 +455,6 @@ class _StubTrainer:
         self.num_optimizer_groups = 0
         self.use_ema = False
         self.config: Dict[str, Any] = {}
-        self.optimizer_is_paged = False
         self.optimizer_cautious = False
         self.optimizer_beta1 = None
         self.optimizer_beta2 = None

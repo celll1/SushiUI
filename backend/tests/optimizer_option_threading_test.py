@@ -112,7 +112,6 @@ class _StubTrainer:
         self.num_optimizer_groups = 0
         self.use_ema = False
         self.config: Dict[str, Any] = {}
-        self.optimizer_is_paged = False
         self.optimizer_cautious = False
         self.optimizer_beta1 = None
         self.optimizer_beta2 = None
@@ -224,14 +223,19 @@ class TrainerCallSiteCensusTest(unittest.TestCase):
 
     def test_the_option_list_is_the_one_we_think_it_is(self):
         """A derivation that silently returns nothing would pass every test."""
-        self.assertEqual(len(OPTIMIZER_OPTIONS), 12, OPTIMIZER_OPTIONS)
+        self.assertEqual(len(OPTIMIZER_OPTIONS), 11, OPTIMIZER_OPTIONS)
         for name in ("optimizer_cautious", "optimizer_schedule_free",
                      "optimizer_warmup_steps", "optimizer_schedule_free_r",
                      "optimizer_schedule_free_weight_lr_power",
                      "optimizer_use_radam", "optimizer_stochastic_rounding",
                      "optimizer_beta1", "optimizer_beta2", "optimizer_epsilon",
-                     "optimizer_weight_decay", "optimizer_is_paged"):
+                     "optimizer_weight_decay"):
             self.assertIn(name, OPTIMIZER_OPTIONS)
+        # Was twelve. optimizer_is_paged was removed rather than wired: paging
+        # is selected by the optimizer TYPE NAME, and the boolean reached
+        # BaseTrainer and was read by nothing. See
+        # optimizer_is_paged_removal_test.py.
+        self.assertNotIn("optimizer_is_paged", OPTIMIZER_OPTIONS)
 
     def test_every_trainer_call_site_passes_every_optimizer_option(self):
         sites = self._call_sites()
@@ -471,25 +475,10 @@ class UnsupportedOptionIsNamedTest(unittest.TestCase):
         self.assertIn("optimizer_use_radam", output)
         self.assertIn("not supported by 'adamw'", output)
 
-    def test_is_paged_is_reported_because_nothing_reads_it(self):
-        """The flag reaches BaseTrainer and is read by no optimizer path.
-
-        OptimizerFactory selects a paged optimizer from the type name
-        (paged_adamw / paged_adamw8bit / paged_lion8bit); the boolean the UI
-        offers alongside them has never done anything. Until it is either wired
-        or removed, the run has to say so.
-        """
-        stub = _StubTrainer(optimizer_is_paged=True)
-        output = _run_setup_optimizer(stub, optimizer_type="adamw",
-                                      lr_scheduler_type="constant",
-                                      total_steps=10)
-        self.assertIn("optimizer_is_paged is not applied", output)
-
-        paged = _StubTrainer(optimizer_is_paged=True)
-        output = _run_setup_optimizer(paged, optimizer_type="paged_adamw",
-                                      lr_scheduler_type="constant",
-                                      total_steps=10)
-        self.assertNotIn("optimizer_is_paged is not applied", output)
+    # test_is_paged_is_reported_because_nothing_reads_it lived here. It pinned
+    # a warning that existed only to say optimizer_is_paged did nothing; the
+    # flag and the warning were removed together. What replaced it is
+    # optimizer_is_paged_removal_test.py.
 
     def test_nothing_is_reported_when_nothing_was_requested(self):
         stub = _StubTrainer()
@@ -612,6 +601,9 @@ class VaeOptimizerOptionTest(unittest.TestCase):
                            ("optimizer_use_radam", True),
                            ("optimizer_warmup_steps", 100),
                            ("optimizer_stochastic_rounding", True),
+                           # Kept after optimizer_is_paged was removed from the
+                           # diffusion surface: the refusal is by prefix, and
+                           # every YAML written before the removal carries it.
                            ("optimizer_is_paged", True),
                            ("optimizer_beta1", 0.85),
                            ("optimizer_beta2", 0.95),

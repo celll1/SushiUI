@@ -1014,8 +1014,12 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     # copy of the trainable params in VRAM).
     "ema_device": "cpu",
     # Optimizer
+    # Paging (bitsandbytes CPU offload of the optimizer state) is part of the
+    # optimizer NAME -- "paged_adamw" / "paged_adamw8bit" / "paged_lion8bit" --
+    # not a separate flag. There used to be an "optimizer_is_paged" boolean
+    # here; it reached BaseTrainer and was read by nothing, because
+    # OptimizerFactory selects a paged variant from the type string.
     "optimizer": "adamw8bit",
-    "optimizer_is_paged": False,
     "optimizer_cautious": False,
     "optimizer_beta1": 0.9,
     "optimizer_beta2": 0.999,

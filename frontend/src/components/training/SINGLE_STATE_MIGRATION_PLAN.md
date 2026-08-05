@@ -128,8 +128,8 @@ useEffect(() => {
 ```tsx
 <input
   type="checkbox"
-  checked={params.optimizer_is_paged ?? false}
-  onChange={(e) => updateParam("optimizer_is_paged", e.target.checked)}
+  checked={params.optimizer_cautious ?? false}
+  onChange={(e) => updateParam("optimizer_cautious", e.target.checked)}
 />
 ```
 
@@ -167,8 +167,7 @@ const updateTimestepSampling = (key: string, value: any) => {
 |  | `lrScheduler` | `params.lr_scheduler` |
 |  | `lrWarmupSteps` | `params.lr_warmup_steps` |
 |  | `optimizer` | `params.optimizer` |
-| **Optimizer** | `optimizerIsPaged` | `params.optimizer_is_paged` |
-|  | `optimizerCautious` | `params.optimizer_cautious` |
+| **Optimizer** | `optimizerCautious` | `params.optimizer_cautious` |
 |  | `optimizerBeta1/2/Epsilon/WeightDecay` | `params.optimizer_beta1/2/...` (+localText) |
 |  | `optimizerScheduleFree*` | `params.optimizer_schedule_free*` |
 |  | `optimizerUseRadam` | `params.optimizer_use_radam` |
@@ -360,7 +359,7 @@ cd frontend && npm run build  # ユーザーが実施
 |---------|----------|
 | 数値入力 | learning_rate に `1e-5` を入力→ submit → YAMLで `1.0e-05` を確認 |
 | 文字列入力 | run_name に空白付き文字列 → trim される |
-| チェックボックス | optimizer_is_paged ON → YAML に反映 |
+| チェックボックス | optimizer_cautious ON → YAML に反映 |
 | ラジオ | useEpochs 切替 → total_steps/epochs が正しく切り替わる |
 | 派生 | priority_training enabled + entries → YAMLにオブジェクトとして反映 |
 | ネスト | timestep_sampling distribution = "beta" → mean/std が省略される |

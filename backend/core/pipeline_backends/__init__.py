@@ -14,6 +14,7 @@ from core.pipeline_backends.minit2i import MiniT2IMixin
 from core.pipeline_backends.krea2 import Krea2Mixin
 from core.pipeline_backends.ltx2 import LTX2Mixin
 from core.pipeline_backends.acestep import AceStepMixin
+from core.pipeline_backends.minimax_h3 import MiniMaxH3Mixin
 
 __all__ = [
     "ZImageMixin",
@@ -25,4 +26,5 @@ __all__ = [
     "Krea2Mixin",
     "LTX2Mixin",
     "AceStepMixin",
+    "MiniMaxH3Mixin",
 ]

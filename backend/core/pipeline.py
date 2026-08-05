@@ -27,11 +27,11 @@ from core.prompts.processors import PromptEditingProcessor
 from core.inference.schedulers import get_scheduler
 from core.inference.custom_sampling import custom_sampling_loop, custom_img2img_sampling_loop, custom_inpaint_sampling_loop
 from core.inference.generation_timing import generation_timer
-from core.pipeline_backends import ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, Ideogram4Mixin, MiniT2IMixin, Krea2Mixin, LTX2Mixin, AceStepMixin
+from core.pipeline_backends import ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, Ideogram4Mixin, MiniT2IMixin, Krea2Mixin, LTX2Mixin, AceStepMixin, MiniMaxH3Mixin
 
 LAST_MODEL_CONFIG_FILE = Path("last_model.json")
 
-class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, Ideogram4Mixin, MiniT2IMixin, Krea2Mixin, LTX2Mixin, AceStepMixin):
+class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, Ideogram4Mixin, MiniT2IMixin, Krea2Mixin, LTX2Mixin, AceStepMixin, MiniMaxH3Mixin):
     def __init__(self):
         self.txt2img_pipeline: Optional[StableDiffusionPipeline] = None
         self.img2img_pipeline: Optional[StableDiffusionImg2ImgPipeline] = None
@@ -2676,12 +2676,16 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         return prompt_embeds, negative_prompt_embeds, pooled_prompt_embeds, negative_pooled_prompt_embeds
 
     def generate_txt2vid(self, params: Dict[str, Any], progress_callback=None, step_callback=None):
-        """Generate a video from text (LTX-2.3 only).
+        """Generate a video from text (LTX-2.3 or MiniMax-H3).
 
         Args:
-            params: Generation parameters (see TXT2VID_DEFAULTS).
+            params: Generation parameters (see TXT2VID_DEFAULTS, resolved
+                against the loaded arch's overlay by the route).
             progress_callback: Called as (step, total_steps) at each denoise step.
-            step_callback: Reserved (unused for LTX-2.3 txt2vid).
+            step_callback: Per-step latent preview hook. Consumed by MiniMax-H3
+                (as `(i, total, latents, None, pred_x0)`); unused for LTX-2.3,
+                whose pipeline exposes no equivalent. The video routes pass
+                None today — there is no video preview surface yet.
 
         Returns:
             tuple: (frames, audio, audio_sample_rate, actual_seed) where frames is
@@ -2690,11 +2694,14 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         """
         if self.is_ltx2_model:
             return self._generate_txt2vid_ltx2(params, progress_callback, step_callback)
+        if self.is_minimax_h3_model:
+            return self._generate_txt2vid_minimax_h3(params, progress_callback, step_callback)
 
         from api.error_handlers import ValidationError
         raise ValidationError(
-            "Text-to-video generation requires an LTX-2.3 model",
-            detail="The currently loaded model is not a video model. Load an LTX-2.3 model to use /generate/txt2vid.",
+            "Text-to-video generation requires a video model",
+            detail="The currently loaded model is not a video model. Load an LTX-2.3 or MiniMax-H3 "
+                   "model to use /generate/txt2vid.",
         )
 
     def generate_img2vid(self, params: Dict[str, Any], input_image, progress_callback=None, step_callback=None):

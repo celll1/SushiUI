@@ -29,7 +29,7 @@ behavior — it is pure spec data, so it does not affect cache namespaces (R5/R6
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from typing import Optional
+from typing import Callable, Dict, List, Optional, Tuple
 
 
 @dataclass(frozen=True)
@@ -154,3 +154,159 @@ MINIMAX_H3_WIRING = ComponentWiringSpec(
     latent_channels=24, latent_ndim=5, latent_packing="none",
     vae_scale_factor=16, vae_norm="shift_scale",
 )
+
+
+# ---------------------------------------------------------------------------
+# TemporalSpec — the per-arch clip-length / frame-rate / canvas contract of a
+# VIDEO architecture. Declarative, so bucketing, the video loader, route
+# validation and the frontend all read one table instead of growing their own
+# `if arch == ...`.
+#
+# SCOPE OF THIS REVISION (Phase 2 of the MiniMax-H3 integration): the
+# GENERATION side consumes this — route validation and the `video_constraints`
+# block of `GET /schema/arch-capabilities`. Threading it through the TRAINING
+# call chain (`VideoBucketManager`, `video_loader.load_clip` /
+# `encode_and_cache_clip`, the trainer's clip-encode sites, the clip cache key
+# and 24 fps resampling) is a separate, larger refactor of shared LTX-serving
+# code and is deliberately NOT started here; until it lands those functions keep
+# their current hardcoded LTX-2.3 rule.
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class TemporalSpec:
+    """Valid clip lengths, frame rate and canvas envelope of a video arch.
+
+    Valid clip lengths are ``k * frame_multiple + frame_offset``. Two different
+    floors exist on purpose and must not be merged:
+
+    * ``min_decodable_frames`` is a HARD VAE floor — below it the decoder
+      cannot produce frames at all, so nothing (not training, not a smoke test)
+      may go under it;
+    * ``min_frames`` / ``max_frames`` are the PRODUCTION generation bounds, i.e.
+      the range the released model was trained and documented for. Training
+      clips and previews are validated against the grid and the decodable floor
+      instead, so a short training bucket is not a violation of these.
+    """
+
+    frame_multiple: int
+    frame_offset: int
+    min_frames: int
+    max_frames: Optional[int]
+    min_decodable_frames: int
+    # Pixel frames -> latent frames. Closed form; measured per arch.
+    latent_frames: Callable[[int], int]
+    # The arch's own frame rate when it has one (MiniMax-H3 is a fixed 24 fps
+    # model); None means the source/native rate is preserved (LTX-2.3).
+    fps_fixed: Optional[float]
+    # Clip lengths the training bucketer offers by default. Exempt from
+    # min/max_frames by construction (see the class docstring).
+    default_clip_lengths: Tuple[int, ...]
+    # Spatial: the multiple both axes round to, and an orientation-agnostic
+    # envelope (`(short, long)`) when the arch has one.
+    pixel_align: int = 32
+    max_pixel_hw: Optional[Tuple[int, int]] = None
+    # What route validation does with an off-grid or out-of-range clip length:
+    # snap it (and warn), or refuse the request. This is a per-arch API contract,
+    # not a preference, so it is declared here rather than branched on at the
+    # route: LTX-2.3 has answered an invalid `num_frames` with a 400 since it
+    # shipped and its openapi documents that, while MiniMax-H3's own reference
+    # implementation rounds up to the next encodable length with a warning.
+    snap_invalid_length: bool = False
+    # Environment gate that lowers the PRODUCTION floor to the decodable floor.
+    # Grid points below `min_frames` (MiniMax-H3: 22 ... 107) are valid for the
+    # VAE and are what a smoke test or a training clip uses; they are simply not
+    # what the released model was trained to generate, so they must not be
+    # reachable through ordinary API validation. Set the variable in a shell that
+    # is deliberately running a short clip; the request still warns.
+    smoke_override_env: str = "SUSHI_TEMPORAL_SMOKE"
+
+    def floor(self, smoke: bool = False) -> int:
+        """The effective minimum clip length -- production, or the VAE floor."""
+        return self.min_decodable_frames if smoke else max(self.min_frames, self.min_decodable_frames)
+
+    def is_valid_length(self, num_frames: int) -> bool:
+        """True when ``num_frames`` is on the grid and decodable."""
+        return (
+            num_frames >= self.min_decodable_frames
+            and (num_frames - self.frame_offset) % self.frame_multiple == 0
+            and num_frames >= self.frame_offset
+        )
+
+    def snap_length(self, num_frames: int, smoke: bool = False) -> int:
+        """The nearest valid length inside the production bounds.
+
+        Ties go DOWN (the shorter clip), so a snap never silently costs more
+        compute than the caller asked for.
+        """
+        lo = self.floor(smoke)
+        hi = self.max_frames if self.max_frames is not None else max(lo, num_frames)
+        # Round to the grid, then clamp into [lo, hi] on the grid.
+        k = round((num_frames - self.frame_offset) / self.frame_multiple)
+        candidates = {k - 1, k, k + 1}
+        lengths = sorted(
+            length
+            for length in (c * self.frame_multiple + self.frame_offset for c in candidates)
+            if lo <= length <= hi
+        )
+        if not lengths:
+            # The request is outside the bounds entirely: clamp to the nearest
+            # in-range grid point.
+            k_lo = -(-(lo - self.frame_offset) // self.frame_multiple)
+            k_hi = (hi - self.frame_offset) // self.frame_multiple
+            k = min(max(k, k_lo), k_hi)
+            return k * self.frame_multiple + self.frame_offset
+        return min(lengths, key=lambda length: (abs(length - num_frames), length))
+
+    def suggested_lengths(self, count: int = 8) -> List[int]:
+        """In-range valid lengths, for a client building a clip-length list."""
+        lo = max(self.min_frames, self.min_decodable_frames)
+        k = -(-(lo - self.frame_offset) // self.frame_multiple)
+        out: List[int] = []
+        while len(out) < count:
+            length = k * self.frame_multiple + self.frame_offset
+            if self.max_frames is not None and length > self.max_frames:
+                break
+            out.append(length)
+            k += 1
+        return out
+
+
+# LTX-2.3: `(L - 1) % 8 == 0`, native fps preserved, no canvas cap. These are
+# the values the existing hardcoded checks already enforce, restated
+# declaratively; nothing about LTX-2.3's behaviour changes by their presence.
+LTX2_TEMPORAL = TemporalSpec(
+    frame_multiple=8, frame_offset=1, min_frames=1, max_frames=None,
+    min_decodable_frames=1, latent_frames=lambda t: (t - 1) // 8 + 1,
+    fps_fixed=None, default_clip_lengths=(9, 17, 25, 33, 49),
+    pixel_align=32, max_pixel_hw=None, snap_invalid_length=False,
+)
+
+# MiniMax-H3. Everything here is MEASURED (Phase 0):
+#   * valid T = 17n + 5 for n >= 1 -- T = 5 is on the grid but its 2 latent
+#     frames cannot be decoded (`num_chunks` = 0), so 22 frames / 0.917 s is the
+#     hard decodable floor;
+#   * latent_frames(T) = ceil(T/17)*5 - 3 (ComfyUI's own formula agrees only ON
+#     the grid and disagrees off it, so this form is the one to use);
+#   * production bounds 124-345: ComfyUI's node pins the trained range at
+#     ~124-362 and the official README states 4-15 s output, and 345 = 17*20+5
+#     = 14.375 s is the largest grid point <= 15 s. The README's 4 s figure
+#     (107 frames) describes the hosted product; the API floor follows the
+#     trained-range floor instead, and the discrepancy is recorded here rather
+#     than left to look like an oversight.
+MINIMAX_H3_TEMPORAL = TemporalSpec(
+    frame_multiple=17, frame_offset=5, min_frames=124, max_frames=345,
+    min_decodable_frames=22,
+    latent_frames=lambda t: 1 if t <= 1 else -(-t // 17) * 5 - 3,
+    fps_fixed=24.0, default_clip_lengths=(22, 39),
+    pixel_align=32, max_pixel_hw=(768, 1344), snap_invalid_length=True,
+)
+
+TEMPORAL_SPECS: Dict[str, TemporalSpec] = {
+    "ltx2": LTX2_TEMPORAL,
+    "minimax_h3": MINIMAX_H3_TEMPORAL,
+}
+
+
+def temporal_spec_for_arch(arch: Optional[str]) -> Optional[TemporalSpec]:
+    """The arch's ``TemporalSpec``, or None for an image/audio architecture."""
+    return TEMPORAL_SPECS.get(arch or "")

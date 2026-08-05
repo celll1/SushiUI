@@ -22,10 +22,20 @@ from core.models.components.wiring import (  # noqa: F401
     LTX2_WIRING,
     ACESTEP_WIRING,
     MINIMAX_H3_WIRING,
+    TemporalSpec,
+    LTX2_TEMPORAL,
+    MINIMAX_H3_TEMPORAL,
+    TEMPORAL_SPECS,
+    temporal_spec_for_arch,
 )
 
 __all__ = [
     "ComponentWiringSpec",
+    "TemporalSpec",
+    "LTX2_TEMPORAL",
+    "MINIMAX_H3_TEMPORAL",
+    "TEMPORAL_SPECS",
+    "temporal_spec_for_arch",
     "SD15_WIRING",
     "SDXL_WIRING",
     "ZIMAGE_WIRING",

@@ -128,3 +128,29 @@ ACESTEP_WIRING = ComponentWiringSpec(
     latent_channels=64, latent_ndim=3, latent_packing="none",
     vae_scale_factor=1920, vae_norm="identity",
 )
+
+# MiniMax-H3 (joint video + audio): 24ch 5-D video latents from a causal VAE that
+# compresses 16x spatially and 4x temporally, plus a SEPARATE 32ch audio VAE that
+# this single-latent spec cannot express (the audio geometry travels in the
+# component dict and in `minimax_h3.loader`'s constants).
+#
+# `te_out_dim` 5120 is the Qwen3-VL-32B hidden size, read raw after decoder layer
+# 50 -- there is no pooling and no per-modality connector.
+#
+# `vae_scale_factor` is the VAE's own SPATIAL compression, 16, matching what the
+# field means for every other arch here (LTX-2.3's 32 is that model's VAE ratio).
+# It is deliberately NOT 32: the extra factor of 2 the DiT sees comes from the
+# transformer's own 2x2 patchify, so the canvas alignment constraint (/32) is a
+# `pixel_align` property, not a VAE scale factor. The design document said 32;
+# the file's own embedded source_config says `"vae_ratio": 16, "vae_ratio_t": 4`
+# and the loaded module agrees.
+#
+# `vae_norm` is "shift_scale": 24 per-channel mean/std vectors, `(x - mean) / std`
+# on encode. NOT "identity" like LTX-2.3 -- and note the pixel convention on the
+# other side of the VAE is ImageNet-normalised RGB over [0, 1], not [-1, 1],
+# which no field of this spec expresses (see `minimax_h3.loader`).
+MINIMAX_H3_WIRING = ComponentWiringSpec(
+    te_out_dim=5120, te_pooled_dim=None, te_seq_packing="llm", added_cond=None,
+    latent_channels=24, latent_ndim=5, latent_packing="none",
+    vae_scale_factor=16, vae_norm="shift_scale",
+)

@@ -337,7 +337,7 @@ async def health_check():
 # ---------------------------------------------------------------------------
 
 def _reject_if_video_model():
-    """Reject an image-generation request when a video model (LTX-2.3) is loaded.
+    """Reject an image-generation request when a video model is loaded.
 
     Raised before the executor so it surfaces as a 4xx ValidationError instead of
     being re-wrapped as a 500 GenerationError by the route's broad except.
@@ -346,6 +346,51 @@ def _reject_if_video_model():
         raise CustomValidationError(
             "The loaded model is a video model (LTX-2.3); use /generate/txt2vid",
             detail="LTX-2.3 produces video, not still images. Load an image model for txt2img/img2img/inpaint.",
+        )
+    if getattr(pipeline_manager, "is_minimax_h3_model", False):
+        raise CustomValidationError(
+            "The loaded model is a video model (MiniMax-H3); use /generate/txt2vid",
+            detail="MiniMax-H3 produces video with a joint audio track, not still images, and its "
+                   "shortest decodable clip is 22 frames. Load an image model for "
+                   "txt2img/img2img/inpaint.",
+        )
+
+
+def _reject_if_video_model_on_audio_route(endpoint: str):
+    """Reject an audio-only request when MiniMax-H3 is loaded, with ITS reason.
+
+    MiniMax-H3 does generate audio -- but only jointly with video, in one packed
+    sequence, and its audio is not independently addressable output. Without this
+    the three ACE-Step routes would refuse it with "No ACE-Step model loaded",
+    which is true and useless: it reads as "this model cannot make audio".
+    """
+    if getattr(pipeline_manager, "is_minimax_h3_model", False):
+        raise CustomValidationError(
+            "MiniMax-H3 generates audio only jointly with video",
+            detail=f"The loaded model is MiniMax-H3. Its audio track is produced together with "
+                   f"the video by /generate/txt2vid and is not separately addressable, so "
+                   f"{endpoint} cannot serve it. Load an ACE-Step 1.5 model for standalone audio.",
+        )
+
+
+def _reject_if_video_arch_unwired(endpoint: str):
+    """Refuse a VIDEO route for a loaded video model it cannot dispatch yet.
+
+    The three video routes gate on ``is_ltx2_model`` and answer "No LTX-2.3 model
+    loaded" for anything else. With a MiniMax-H3 model loaded that is true and
+    useless -- the same defect ``_reject_if_video_model_on_audio_route`` exists
+    for, one endpoint over: it reads as "this model cannot make video", when in
+    fact it is a video model whose sampler this phase has not wired.
+
+    Remove this helper when the H3 dispatch lands; the routes will branch on the
+    arch instead of refusing it.
+    """
+    if getattr(pipeline_manager, "is_minimax_h3_model", False):
+        raise CustomValidationError(
+            "MiniMax-H3 video generation is not available yet",
+            detail=f"A MiniMax-H3 model is loaded. It is a video model, but {endpoint} currently "
+                   f"dispatches only to LTX-2.3 — MiniMax-H3's sampler is not wired yet. Load an "
+                   f"LTX-2.3 model to use {endpoint}.",
         )
 
 
@@ -2352,6 +2397,9 @@ async def generate_txt2vid(
             detail=f"Got num_frames={num_frames}. Use values like 9, 17, ..., 121 (8k + 1).",
         )
 
+    # A loaded MiniMax-H3 is a VIDEO model this endpoint cannot dispatch yet;
+    # say so, rather than "no LTX-2.3 model loaded".
+    _reject_if_video_arch_unwired("/generate/txt2vid")
     if not getattr(pipeline_manager, "is_ltx2_model", False):
         raise CustomValidationError(
             "No LTX-2.3 model loaded",
@@ -2496,6 +2544,9 @@ async def generate_txt2aud(
     # the run. None (the default) leaves the process flags completely untouched.
     params["quantized_gemm_mode"] = _normalize_media_qgm(params.get("quantized_gemm_mode"))
 
+    # MiniMax-H3 first: it DOES generate audio, but only jointly with video, so
+    # the generic "no ACE-Step model" message below would misdescribe it.
+    _reject_if_video_model_on_audio_route("/generate/txt2aud")
     if not getattr(pipeline_manager, "is_acestep_model", False):
         raise CustomValidationError(
             "No ACE-Step model loaded",
@@ -2672,6 +2723,9 @@ async def generate_aud2aud(
         "quantized_gemm_mode": _normalize_media_qgm(quantized_gemm_mode),
     }
 
+    # MiniMax-H3 first: it DOES generate audio, but only jointly with video, so
+    # the generic "no ACE-Step model" message below would misdescribe it.
+    _reject_if_video_model_on_audio_route("/generate/aud2aud")
     if not getattr(pipeline_manager, "is_acestep_model", False):
         raise CustomValidationError(
             "No ACE-Step model loaded",
@@ -2880,6 +2934,9 @@ async def generate_outpaint_audio(
                    f"{input_trim_start_sec}/{input_trim_end_sec}.",
         )
 
+    # MiniMax-H3 first: it DOES generate audio, but only jointly with video, so
+    # the generic "no ACE-Step model" message below would misdescribe it.
+    _reject_if_video_model_on_audio_route("/generate/outpaint/audio")
     if not getattr(pipeline_manager, "is_acestep_model", False):
         raise CustomValidationError(
             "No ACE-Step model loaded",
@@ -3156,6 +3213,9 @@ async def generate_img2vid(
             detail=f"Got num_frames={num_frames}. Use values like 9, 17, ..., 121 (8k + 1).",
         )
 
+    # A loaded MiniMax-H3 is a VIDEO model this endpoint cannot dispatch yet;
+    # say so, rather than "no LTX-2.3 model loaded".
+    _reject_if_video_arch_unwired("/generate/img2vid")
     if not getattr(pipeline_manager, "is_ltx2_model", False):
         raise CustomValidationError(
             "No LTX-2.3 model loaded",
@@ -3362,6 +3422,9 @@ async def generate_outpaint_video(
             detail=f"Must be 'regenerate' or 'preserve_input', got {outpaint_video_audio_mode!r}.",
         )
 
+    # A loaded MiniMax-H3 is a VIDEO model this endpoint cannot dispatch yet;
+    # say so, rather than "no LTX-2.3 model loaded".
+    _reject_if_video_arch_unwired("/generate/outpaint/video")
     if not getattr(pipeline_manager, "is_ltx2_model", False):
         raise CustomValidationError(
             "No LTX-2.3 model loaded",

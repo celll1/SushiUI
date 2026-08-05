@@ -10,7 +10,7 @@ from pathlib import Path
 ModelSource = Literal["safetensors", "diffusers", "huggingface"]
 # DEUS support removed - architecture no longer maintained
 # ModelType = Literal["sd15", "sdxl", "zimage", "deus", "flux2"]
-ModelType = Literal["sd15", "sdxl", "zimage", "flux2", "anima", "lens", "ideogram4", "minit2i", "krea2", "ltx2", "acestep"]
+ModelType = Literal["sd15", "sdxl", "zimage", "flux2", "anima", "lens", "ideogram4", "minit2i", "krea2", "ltx2", "acestep", "minimax_h3"]
 
 class ModelLoader:
     """Handles loading models from various sources"""
@@ -148,7 +148,7 @@ class ModelLoader:
             # default noise_process by architecture family (ddpm for SD/SDXL).
             if "modelspec.prediction_type" in metadata:
                 pred_target = str(metadata["modelspec.prediction_type"]).strip().lower()
-                default_np = "flow" if model_type in ("zimage", "flux2", "minit2i", "krea2", "anima", "lens", "ltx2") else "ddpm"
+                default_np = "flow" if model_type in ("zimage", "flux2", "minit2i", "krea2", "anima", "lens", "ltx2", "minimax_h3") else "ddpm"
                 print(f"[ModelLoader] Detected prediction_type from ModelSpec metadata: {pred_target}")
                 return {
                     "noise_process": metadata.get("modelspec.noise_process", default_np),
@@ -217,6 +217,18 @@ class ModelLoader:
             elif model_type == "ltx2":
                 # LTX-2.3 video model: flow matching (FlowMatchEuler) with velocity prediction.
                 print(f"[ModelLoader] Inferred prediction config from LTX-2.3 architecture")
+                return {
+                    "noise_process": "flow",
+                    "prediction_target": "velocity",
+                    "source": "inferred"
+                }
+            elif model_type == "minimax_h3":
+                # MiniMax-H3 joint video+audio model: flow matching with velocity
+                # prediction. The sampler recovers x0 as ``x_t + sigma * v``
+                # (READ from ComfyUI's ODE form and verified in K0.4), i.e. the
+                # OPPOSITE sign convention to diffusers' own flow schedulers --
+                # that belongs to the Phase-2 loop, not to this label.
+                print(f"[ModelLoader] Inferred prediction config from MiniMax-H3 architecture")
                 return {
                     "noise_process": "flow",
                     "prediction_target": "velocity",
@@ -461,6 +473,59 @@ class ModelLoader:
             return False
 
     @staticmethod
+    def _looks_like_minimax_h3(model_path: str) -> bool:
+        """MiniMax-H3, from a directory OR a single DiT ``.safetensors``.
+
+        Three accepted spellings, all cheap (JSON reads and safetensors HEADERS
+        only -- no tensor bytes):
+
+        * a directory whose ``model_index.json`` declares
+          ``MiniMaxH3ModularPipeline`` (MiniMax's own config-only tree). The
+          class name is unique, so it cannot collide with any other arch's
+          diffusers-dir signature;
+        * the ComfyUI-style flat tree: a ``diffusion_models/`` subfolder holding
+          a DiT whose KEY NAMES carry the MiniMax-H3 signature. Keyed on the
+          keys rather than on the filename because the filename is the user's to
+          choose; ACE-Step's similarly-shaped ``diffusion_models/`` tree is
+          already matched (on exact filenames + metadata) by the branch above
+          this one in ``detect_model_type``, and Anima's is matched below it, so
+          a key-name probe here cannot steal either;
+        * a single DiT ``.safetensors`` with that same key signature, wherever
+          it lives.
+
+        Delegates the signature itself to the loader package so it stays defined
+        in exactly one place.
+        """
+        try:
+            from core.models.minimax_h3.loader import (
+                MINIMAX_H3_PIPELINE_CLASS, is_minimax_h3_safetensors,
+            )
+
+            if os.path.isdir(model_path):
+                index = os.path.join(model_path, "model_index.json")
+                if os.path.isfile(index):
+                    try:
+                        with open(index, "r", encoding="utf-8") as f:
+                            if json.load(f).get("_class_name") == MINIMAX_H3_PIPELINE_CLASS:
+                                return True
+                    except Exception:
+                        pass
+                dit_dir = os.path.join(model_path, "diffusion_models")
+                if not os.path.isdir(dit_dir):
+                    return False
+                for name in sorted(os.listdir(dit_dir)):
+                    if name.endswith(".safetensors") and is_minimax_h3_safetensors(
+                            os.path.join(dit_dir, name)):
+                        return True
+                return False
+            if isinstance(model_path, str) and model_path.endswith(".safetensors") \
+                    and os.path.isfile(model_path):
+                return is_minimax_h3_safetensors(model_path)
+            return False
+        except Exception:
+            return False
+
+    @staticmethod
     def _is_krea2_safetensors(model_path: str) -> bool:
         """Open a .safetensors file and check for the Krea 2 key signature."""
         try:
@@ -575,6 +640,14 @@ class ModelLoader:
             if ModelLoader._looks_like_acestep_dir(model_path):
                 return "acestep"
 
+            # MiniMax-H3 detection (flat ComfyUI-style tree keyed on the DiT's
+            # KEY NAMES, or MiniMax's config-only directory keyed on
+            # model_index.json's MiniMaxH3ModularPipeline). After ACE-Step, whose
+            # tree has the same shape and is matched on exact filenames, and
+            # before Anima's split-files probe further down for the same reason.
+            if ModelLoader._looks_like_minimax_h3(model_path):
+                return "minimax_h3"
+
             # LTX-2.3 detection (diffusers directory only: model_index.json with
             # _class_name == "LTX2Pipeline"). Unique class name, so it cannot
             # collide with the other archs' diffusers-dir signatures. Base repo
@@ -640,6 +713,17 @@ class ModelLoader:
             # variant dir within 2 levels so the loader can resolve it to a variant.
             if os.path.isdir(model_path) and ModelLoader._dir_contains_minit2i(model_path):
                 return "minit2i"
+
+        # MiniMax-H3 single-file detection (the Comfy DiT: token_refiner. plus a
+        # MiniMax-only key -- see `keys_look_minimax_h3`, whose second clause
+        # deliberately excludes the diffusers spellings LTX-2.3 shares). Runs before the
+        # Lens/Anima net.* probes; the key sets are disjoint, but this file lives
+        # in a `diffusion_models/` folder that Anima's split-layout probe also
+        # inspects, so ordering it first keeps the answer independent of the
+        # directory it happens to sit in.
+        if isinstance(model_path, str) and model_path.endswith(".safetensors") \
+                and os.path.isfile(model_path) and ModelLoader._looks_like_minimax_h3(model_path):
+            return "minimax_h3"
 
         # Lens single-file detection (full-FT save: net.* DiT). Metadata-first,
         # with a net.* key-signature fallback. Runs BEFORE the Anima net.* probe;
@@ -2454,6 +2538,12 @@ class ModelLoader:
             print(f"[ModelLoader] Loading as ACE-Step 1.5 (flat model tree)")
             return ModelLoader.load_acestep_from_path(model_path, torch.bfloat16)
 
+        # MiniMax-H3 flat ComfyUI-style tree (pruned joint video+audio DiT +
+        # Qwen3-VL text encoder + video and audio VAEs)
+        if model_type == "minimax_h3":
+            print(f"[ModelLoader] Loading as MiniMax-H3 (flat model tree)")
+            return ModelLoader.load_minimax_h3_from_path(model_path, torch.bfloat16)
+
         is_v_prediction = ModelLoader.detect_v_prediction(model_path)
 
         if model_type == "sdxl":
@@ -2757,3 +2847,23 @@ class ModelLoader:
         """
         from core.models.acestep.loader import load_acestep_from_path as _load_acestep
         return _load_acestep(model_path=path, torch_dtype=torch_dtype)
+
+    @staticmethod
+    def load_minimax_h3_from_path(
+        path: str,
+        torch_dtype: torch.dtype = torch.bfloat16,
+    ) -> dict:
+        """Load MiniMax-H3 from its flat ComfyUI-style model tree
+        (diffusion_models/ + vae/ + text_encoders/ + MiniMax's config-only
+        official/ tree), or from that official/ directory itself.
+
+        Returns a component dict consumed by PipelineManager.load_model()
+        (type == "minimax_h3"). ``torch_dtype`` is the block stack's compute
+        dtype; the loader overrides it per component where the checkpoint's own
+        mixed precision requires it (float32 patch projections / output heads /
+        AdaLN curve, fp8 codes left quantized, fp16 video VAE, float32 audio
+        VAE, and the text encoder left at the file's bf16 so its CPU weights
+        stay memory-mapped).
+        """
+        from core.models.minimax_h3.loader import load_minimax_h3_from_path as _load_h3
+        return _load_h3(model_path=path, torch_dtype=torch_dtype)

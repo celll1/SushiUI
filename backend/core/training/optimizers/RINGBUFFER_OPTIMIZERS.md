@@ -37,7 +37,27 @@ Ring Buffer Optimizersは、**optimizer stateをCPUメモリに配置**し、**�
 | Optimizer | 8-bit | Schedule-Free | Cautious | Stochastic Rounding | Ring Buffer |
 |-----------|-------|---------------|----------|---------------------|-------------|
 | AdamW8bit_RingBuffer | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Lion8bit_RingBuffer | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Lion8bit_RingBuffer | ✅ | ❌ **拒否** | ✅ | ✅ | ✅ |
+
+`Lion8bit_RingBuffer` の Schedule-Free は拒否される。`lion8bit_schedulefree_kernel.cu`
+は Schedule-Free の位置系列であるべき `z` を Lion の momentum EMA として使い、
+`x = (1-ckp1)*z + ckp1*y` をパラメータに書き戻す。`ckp1 ≈ 1/k` なので数ステップで
+パラメータが momentum バッファそのものになる（実測: ランダム勾配で step5 の
+corr(p, z) = 0.994、step20 で 0.9996）。正しく実装するには位置系列と momentum の
+**2つ**の state が必要で、現在の `_init_param_state` は1つしか確保しないため、
+state レイアウトとチェックポイント形式の再設計になる。コンストラクタ
+（`RuntimeError`）と `BaseTrainer.setup_optimizer`（`ValueError`）の両方で拒否する。
+
+Block Swap（`blocks_to_swap > 0`）と組み合わせられるのは、per-parameter の
+更新経路を持つ optimizer のみ:
+
+| Optimizer | `blocks_to_swap > 0` | 経路 |
+|---|---|---|
+| `adamw8bit_ringbuffer` / `lion8bit_ringbuffer` | ✅ | 自前の post-accumulate-grad hook（8-bit stateのまま） |
+| `adamw8bit` | ✅ | `adamw8bit_fused.step_param`（stateはパラメータdtypeになる） |
+| `adafactor` | ✅ | `adafactor_fused.step_param` |
+| `adamw`（torch） | ✅ | CPU上のパラメータをそのまま更新できる |
+| `lion8bit` / `paged_adamw` / `paged_adamw8bit` / `paged_lion8bit` | ❌ 拒否 | fused経路が無く、bitsandbytesはCPU常駐パラメータでraiseする |
 
 ---
 
@@ -90,8 +110,51 @@ BF16ストレージには触れない。呼び出し終了時にstochastic round
 | `adamw8bit_ringbuffer` / `lion8bit_ringbuffer` | optimizer本体 | 従来通り |
 | `adamw` | **なし** | 全パラメータを1回の呼び出しで更新し、パラメータ単位の入口が無い。setup時に警告する |
 
-Schedule-Freeの `z` 系列は依然としてパラメータdtypeのまま
-round-to-nearestで更新される（対象はパラメータ本体の書き込みのみ）。
+Schedule-Freeの `z` 系列もstochastic roundingの対象になった。`z` は最適化系列
+そのもので毎ステップ読み戻されるため、round-to-nearestではsub-quantumな更新が
+恒久的に破棄される（実測: 8-bit z で300ステップ中コードが動いた要素は0.54%、
+意図したドリフトの実現率1.0%。SR有効時は86.08% / 99.8%）。有効時の内訳:
+
+| z のストレージ | 経路 | 丸め |
+|---|---|---|
+| UINT8（`use_8bit=True`、実運用の経路） | CUDAカーネル内の再量子化 | `quantize_value_stochastic`（隣接コード間を確率的に選択） |
+| パラメータdtype（BF16、`use_8bit=False`） | `step()` のFP32イメージ経由 | `copy_stochastic_bf16` |
+
+`train()` / `eval()` の `p.lerp_(end=z)` も同じ扱い（BF16パラメータへの書き込みは
+stochastic rounding、8-bit z は書き込み前にdequantize）。`exp_avg_sq` は対象外。
+
+### 8-bit `z` のスケール（symmetric headroom）
+
+signed dynamic mapは非対称（最大 `+1.000000000` / 最小 `-0.992968738`）。ブロックの
+最大絶対値要素が**負**だと正規化値 `-1.0` を格納できず、次ステップのdequantizeで
+0.7031%小さい値が返り、それが新しい `absmax_z` になる — これが毎ステップ複利で効く
+（3000ステップでmean|z|がbf16基準の0.485倍、SR有効時は0.254倍）。対策は2つで1組:
+
+1. `absmax = max|z| / 0.992968738`（両符号で表現可能なマージンを持たせる）ので
+   dequantize→absmax再計算→requantizeが冪等になる（実測: 勾配0で20000ステップ、
+   コード変化0/8192、absmax変化 2.7e-6）。
+2. `absmax` を決める要素だけはstochastic roundingを**適用しない**。
+   （この判定は `cub::BlockReduce::Reduce` の戻り値ではなく、shared memory経由で
+   **ブロードキャストした最大値**と比較すること。戻り値がaggregateなのはthread 0
+   だけで、他スレッドはwarp/raking単位の部分最大値を受け取るため、比較すると
+   全要素の12.7%——しかも絶対値の大きい側——がRTNのまま取り残される。）`absmax` は
+   ブロック内の格納値のmaxなので、その要素にノイズが乗るとスケール自体が
+   最大値バイアスを取り込み暴走する（headroomのみだと +0.63%/step = 3000ステップで
+   1.5e8倍、逆にその要素を1コード下げると0.37倍に沈む）。
+
+この扱いはSchedule-Freeカーネル内に閉じており、`quantization_map.py` と
+非Schedule-Freeの8-bit経路（`exp_avg` / `exp_avg_sq`）は変更していない。後者は
+EMA（収縮写像）なので同じ非対称性があっても自己補正する（実測: 定数勾配5000
+ステップでmean|exp_avg| 0.98125のまま不変）。
+
+### 壊れたSchedule-Freeチェックポイントからのresume
+
+Schedule-Freeカーネルの `__constant__` マップが初期化されていなかった頃の
+チェックポイントは、`z` が定数（実例: 全コード255 / `absmax_z` ≈ 0）にデコードされる。
+`z` は無害ではなく `y` がそこへ引っ張られるため、resume後300ステップ（勾配0）で
+mean|p| が 1.63e-2 → 5.21e-5 まで潰れる。`load_state_dict()` はこの署名を検出したら
+`z` を現在のパラメータから再初期化する（`z_0 = p`）。警告を出し、`exp_avg_sq` と
+ステップカウンタは保持する。健全なチェックポイントには触れない。
 
 ---
 

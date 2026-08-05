@@ -80,6 +80,59 @@ __device__ inline float dequantize_value(uint8_t code, const float* qmap, float 
     return qmap[code] * absmax;
 }
 
+/*
+ * Counter-based bit mixer (Murmur3-style finalizer). Stateless per element, so
+ * no curand state has to be allocated or carried across steps.
+ */
+__device__ inline uint32_t sr_mix(uint32_t x) {
+    x ^= x >> 16;
+    x *= 0x7feb352dU;
+    x ^= x >> 15;
+    x *= 0x846ca68bU;
+    x ^= x >> 16;
+    return x;
+}
+
+/*
+ * Stochastically quantize a normalized value to a uint8 index.
+ *
+ * quantize_value() rounds to the NEAREST grid point, so a change smaller than
+ * half a quantization step is discarded -- and because z is dequantized and
+ * re-quantized every step, discarded forever. Rounding up with probability
+ * equal to the position between the two bracketing grid points instead makes
+ * E[dequantize(code)] == value, so those updates survive in expectation (the
+ * same argument as BF16 stochastic rounding; see stochastic_rounding.py).
+ */
+__device__ inline uint8_t quantize_value_stochastic(float value, const float* qmap, float u) {
+    int left = 0;
+    int right = 255;
+
+    while (left < right - 1) {
+        int mid = (left + right) / 2;
+        if (value < qmap[mid]) {
+            right = mid;
+        } else {
+            left = mid;
+        }
+    }
+
+    const float lo = qmap[left];
+    const float hi = qmap[right];
+    const float span = hi - lo;
+    float t = (span > 0.0f) ? ((value - lo) / span) : 0.0f;
+    t = fminf(fmaxf(t, 0.0f), 1.0f);
+
+    return (u < t) ? (uint8_t)right : (uint8_t)left;
+}
+
+/*
+ * Uniform in [0, 1) for this element and step.
+ */
+__device__ inline float sr_uniform(int tid, unsigned int seed) {
+    const uint32_t h = sr_mix(((uint32_t)tid) ^ sr_mix(seed));
+    return (float)(h >> 8) * (1.0f / 16777216.0f);  // 24 bits
+}
+
 
 // ============================================================
 // Lion 8-bit Schedule-Free Update Kernel
@@ -99,7 +152,9 @@ __global__ void lion_8bit_schedulefree_update_kernel(
     const float ckp1,                       // Averaging coefficient: (k+1)/(k+r)
     const float gnorm_scale,                // Gradient norm scaling (1.0 if no clipping)
     const bool cautious,                    // Cautious masking (sign alignment check)
-    const int numel                         // Total number of elements
+    const int numel,                        // Total number of elements
+    const int stochastic_z,                 // 1: stochastically quantize z (0: round-to-nearest)
+    const unsigned int seed                 // Per-step seed for the stochastic path
 ) {
     // Thread and block indices
     const int tid = blockIdx.x * blockDim.x + threadIdx.x;
@@ -197,12 +252,31 @@ __global__ void lion_8bit_schedulefree_update_kernel(
     // Compute abs value
     float abs_z = fabsf(z_new);
 
-    // Block-level reduce (max)
+    // Block-level reduce (max). cub::BlockReduce::Reduce returns the aggregate
+    // in THREAD 0 ONLY, so anything every thread reads must be broadcast through
+    // shared memory (see the same note in adamw8bit_schedulefree_kernel.cu).
     float block_absmax_z = BlockReduce(temp_storage_z).Reduce(abs_z, CubMaxOp{});
 
-    // Update absmax (first thread in block writes)
+    __shared__ float s_block_absmax_z;
     if (local_tid == 0) {
-        absmax_z[qblock_id] = block_absmax_z;
+        s_block_absmax_z = block_absmax_z;
+    }
+    __syncthreads();
+
+    // Update absmax (first thread in block writes)
+    //
+    // SYMMETRIC HEADROOM: the signed dynamic map ends at +1.000000000 but at
+    // -0.992968738, so a block whose extreme element is NEGATIVE normalizes to
+    // exactly -1.0, is stored as -0.992968738, and dequantizes 0.7031% smaller
+    // next step -- and absmax is recomputed from THAT, so the block's scale
+    // shrinks 0.7031% every step and takes the block with it. Dividing by the
+    // largest magnitude representable in both directions makes the extreme land
+    // exactly on a grid point in either sign, so dequantize -> recompute absmax
+    // -> requantize is idempotent. See the same note in
+    // adamw8bit_schedulefree_kernel.cu, where it was measured.
+    const float qmax_symmetric = fminf(-d_qmap_signed[0], d_qmap_signed[255]);
+    if (local_tid == 0) {
+        absmax_z[qblock_id] = block_absmax_z / qmax_symmetric;
     }
     __syncthreads();
 
@@ -217,7 +291,26 @@ __global__ void lion_8bit_schedulefree_update_kernel(
     float normalized_z = (new_absmax_z > 0.0f) ? (z_new / new_absmax_z) : 0.0f;
 
     // Quantize using binary search
-    uint8_t new_qz = quantize_value(normalized_z, d_qmap_signed);
+    // The element that defines absmax is stored exactly (the headroom makes it a
+    // grid point in either sign) and never stochastically: absmax is a max over
+    // the block's own stored values, so noise on that element feeds back into
+    // the scale -- upward as a max-of-noise bias, or downward if it is clamped.
+    // See the measured numbers in adamw8bit_schedulefree_kernel.cu.
+    // Compared on the PRE-quantization magnitudes, which are bitwise equal for
+    // the element the CUB reduction took its maximum from. Comparing the
+    // normalized value against qmax_symmetric instead misses it: the two
+    // divisions leave it an ulp below the constant.
+    const bool defines_absmax = (abs_z >= s_block_absmax_z);
+
+    uint8_t new_qz = (stochastic_z && !defines_absmax)
+        ? quantize_value_stochastic(normalized_z, d_qmap_signed, sr_uniform(tid, seed))
+        : quantize_value(normalized_z, d_qmap_signed);
+
+    // Belt and braces: the map's +1.0 code has no negative counterpart, and
+    // storing z there would put it above its own block's absmax.
+    if (d_qmap_signed[new_qz] > qmax_symmetric) {
+        new_qz -= 1;
+    }
 
     // Write back quantized state
     state_z[tid] = new_qz;

@@ -3285,6 +3285,17 @@ class BaseTrainer(ABC):
     # _attach_stochastic_rounding() must leave them alone.
     _NATIVE_STOCHASTIC_ROUNDING_OPTIMIZERS = ("adamw8bit_ringbuffer", "lion8bit_ringbuffer")
 
+    # bitsandbytes optimizers with NO per-parameter fused-backward implementation.
+    # Their step() runs after Block Swap has moved parameters to the CPU, and every
+    # bitsandbytes optimizer raises on a CPU-resident parameter, so Block Swap +
+    # any of these is a guaranteed crash on the first step. ``adamw8bit`` is
+    # deliberately absent: _setup_fused_backward_pass patches a per-parameter
+    # step_param onto it. ``adamw`` (torch) is absent because torch's own AdamW
+    # updates CPU parameters correctly.
+    _BLOCK_SWAP_UNSUPPORTED_OPTIMIZERS = (
+        "lion8bit", "paged_adamw", "paged_adamw8bit", "paged_lion8bit",
+    )
+
     def _attach_stochastic_rounding(self, optimizer_type: str):
         """Make ``optimizer_stochastic_rounding`` reach the optimizer that was chosen.
 
@@ -3392,6 +3403,33 @@ class BaseTrainer(ABC):
         print(f"{self.log_prefix} Setting up optimizer: {optimizer_type}")
         print(f"{self.log_prefix} LR scheduler: {lr_scheduler_type}")
 
+        # Lion's Schedule-Free kernel writes the wrong sequence into the
+        # parameter. Schedule-Free keeps a POSITION sequence z and derives the
+        # weights from it; lion8bit_schedulefree_kernel.cu instead uses z for
+        # Lion's momentum EMA (z = beta2*z + (1-beta2)*g) and then stores
+        # x = (1-ckp1)*z + ckp1*y into the parameter. ckp1 is ~1/k, so within a
+        # few steps the parameter IS the momentum buffer: measured with random
+        # gradients, corr(p, z) = 0.994 by step 5 and 0.9996 by step 20, and
+        # mean|p| left its initial 1.6e-2 for the momentum's own scale. The
+        # original weights are gone either way -- upward here, and down to
+        # 2.5e-5 under a constant gradient.
+        #
+        # This is refused rather than patched: a correct Lion Schedule-Free needs
+        # BOTH a position sequence and a momentum EMA, and _init_param_state
+        # allocates exactly one 8-bit state for this mode, so a fix changes the
+        # state layout, the kernel signature and the checkpoint format. Refusing
+        # is checked here, before the factory call, because the factory's errors
+        # are caught below and turned into a silent fall back to AdamW.
+        if optimizer_type.lower() == "lion8bit_ringbuffer" and self.optimizer_schedule_free:
+            raise ValueError(
+                "optimizer_schedule_free is not supported with 'lion8bit_ringbuffer'. Its "
+                "Schedule-Free path stores Lion's momentum EMA into the parameter instead of "
+                "the Schedule-Free position sequence, which replaces the weights with the "
+                "momentum buffer within a few steps. "
+                "Options: (1) use 'adamw8bit_ringbuffer', whose Schedule-Free path keeps the "
+                "position sequence, (2) set optimizer_schedule_free=false to use plain Lion."
+            )
+
         # Create optimizer using factory
         from .optimizer_factory import OptimizerFactory
         try:
@@ -3422,14 +3460,13 @@ class BaseTrainer(ABC):
                         print(f"{self.log_prefix} NOTE: stochastic rounding only applies to BF16 "
                               f"parameters; weight dtype is {self.weight_dtype}")
                     if self.optimizer_schedule_free:
-                        # The Schedule-Free 'z' sequence is allocated with
-                        # zeros_like/clone of the parameter, so for a bf16
-                        # parameter it is bf16 storage updated with
-                        # round-to-nearest. Stochastic rounding guards writes
-                        # into the parameter only.
-                        print(f"{self.log_prefix} NOTE: with schedule_free, the z sequence is stored "
-                              f"in the parameter dtype and is updated with round-to-nearest; "
-                              f"stochastic rounding covers the parameter update only")
+                        # The Schedule-Free 'z' sequence is covered too: 8-bit z is
+                        # re-quantized stochastically inside the CUDA kernel, and a
+                        # parameter-dtype z is updated through an FP32 image and
+                        # rounded back. exp_avg_sq is deliberately not covered.
+                        print(f"{self.log_prefix} NOTE: with schedule_free, stochastic rounding also "
+                              f"covers the z sequence (8-bit z is re-quantized stochastically); "
+                              f"the exp_avg_sq second moment is not covered")
             else:
                 # Never accept these options silently: only the RingBuffer
                 # optimizers implement them, and the shipped full-FT default
@@ -3553,6 +3590,37 @@ class BaseTrainer(ABC):
                 # hooks inside _setup_fused_backward_pass, so their updates run before Block Swap
                 # moves each block to CPU (otherwise CPU-resident params are silently skipped).
                 self._setup_fused_backward_pass(optimizer_type)
+            elif optimizer_type.lower() in self._BLOCK_SWAP_UNSUPPORTED_OPTIMIZERS:
+                # Every bitsandbytes optimizer -- 8-bit AND the 32-bit paged one --
+                # refuses a CPU-resident parameter: Optimizer.step() reaches
+                # bitsandbytes.functional.is_on_gpu(), which raises rather than
+                # updating on the host. Block Swap leaves every swapped block on
+                # the CPU when its backward hook fires, so by the time
+                # optimizer.step() runs those parameters are exactly that.
+                # Measured on the installed build (bitsandbytes 0.49.1): a CPU
+                # BF16 parameter with a CPU gradient makes Lion8bit, AdamW8bit,
+                # PagedAdamW, PagedAdamW8bit and PagedLion8bit all raise inside
+                # is_on_gpu's own error formatting ("AttributeError: 'NoneType'
+                # object has no attribute 'shape'"), which says nothing about the
+                # actual problem.
+                #
+                # adamw8bit escapes this list only because
+                # _setup_fused_backward_pass installs a per-parameter step_param
+                # for it. These names have no such implementation, so refuse the
+                # configuration here -- where the message can name the remedies --
+                # instead of failing mid-backward with that AttributeError.
+                raise ValueError(
+                    f"Block Swap (blocks_to_swap={self.blocks_to_swap}) is incompatible with "
+                    f"the '{optimizer_type}' optimizer. bitsandbytes optimizers cannot update "
+                    f"the CPU-resident parameters Block Swap creates, and no fused backward "
+                    f"pass is implemented for this optimizer, so optimizer.step() raises on "
+                    f"the first step. "
+                    f"Options: (1) use 'lion8bit_ringbuffer' (Lion) or 'adamw8bit_ringbuffer' "
+                    f"(AdamW), which keep 8-bit state and register their own per-parameter "
+                    f"fused-backward hooks that run while the parameter is still on the GPU, "
+                    f"(2) use 'adamw8bit' or 'adafactor', which have a fused backward pass, "
+                    f"(3) disable Block Swap (blocks_to_swap=0)."
+                )
 
         # Last, because the Block Swap setup above installs step_param and can
         # replace self.optimizer: stochastic rounding has to wrap whatever

@@ -9820,6 +9820,30 @@ components:
             entries. There is no separate boolean for it; the training panel
             offers the non-paged names only, so a paged run is configured
             through this field via the API or a hand-written YAML.
+
+            **Block swap.** With `blocks_to_swap > 0`, parameters are on the CPU
+            when `optimizer.step()` runs, and every bitsandbytes optimizer
+            raises on a CPU-resident parameter. `adafactor`, `adamw8bit`,
+            `adamw8bit_ringbuffer` and `lion8bit_ringbuffer` get a
+            per-parameter fused backward pass instead and run; `adamw` (torch)
+            updates CPU parameters itself. `lion8bit`, `paged_adamw`,
+            `paged_adamw8bit` and `paged_lion8bit` have neither, so that
+            combination is refused when training starts, with a message naming
+            the alternatives. See also `num_optimizer_groups`, which refuses a
+            wider set for the same reason.
+
+            Note that `adamw8bit` under block swap is **no longer 8-bit**: its
+            fused backward pass is a per-parameter AdamW that allocates its two
+            moments in the parameter's own dtype, so optimizer state costs
+            4 bytes per element instead of 2. `adamw8bit_ringbuffer` /
+            `lion8bit_ringbuffer` keep their 8-bit state under block swap.
+
+            **`lion8bit_ringbuffer` does not support `optimizer_schedule_free`**
+            and refuses that combination at startup: its Schedule-Free kernel
+            stores Lion's momentum EMA into the parameter instead of the
+            Schedule-Free position sequence, which replaces the weights with the
+            momentum buffer within a few steps. Use `adamw8bit_ringbuffer` for a
+            Schedule-Free run.
           example: "adamw"
         lr_scheduler:
           type: string
@@ -10109,6 +10133,13 @@ components:
         optimizer_schedule_free:
           type: 'boolean'
           default: false
+          description: |
+            Schedule-Free learning (arXiv:2405.15682). Implemented only by
+            `adamw8bit_ringbuffer`; `lion8bit_ringbuffer` REFUSES it (its kernel
+            writes Lion's momentum EMA into the parameter), and every other
+            optimizer ignores it with a warning at startup. Also incompatible
+            with `blocks_to_swap > 0`, which requires a fused backward pass that
+            implements the standard update only.
         optimizer_schedule_free_r:
           type: 'number'
           default: 0.0

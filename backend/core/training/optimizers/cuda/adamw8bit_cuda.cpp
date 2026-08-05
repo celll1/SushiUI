@@ -70,6 +70,9 @@ extern "C" {
 
     void init_quantization_maps(const float* host_qmap_signed, const float* host_qmap_unsigned);
 
+    // Same maps, for the Schedule-Free translation unit's own __constant__ copies.
+    void init_schedulefree_quantization_maps(const float* host_qmap_signed, const float* host_qmap_unsigned);
+
     // Schedule-Free kernels
     void adamw_8bit_schedulefree_update_fp32(
         float* param, const float* grad,
@@ -78,6 +81,7 @@ extern "C" {
         float beta1, float beta2, float eps, float lr,
         float weight_decay, float ckp1, float gnorm_scale,
         float bias_correction2, int numel,
+        int stochastic_z, unsigned int seed,
         cudaStream_t stream
     );
 
@@ -88,6 +92,7 @@ extern "C" {
         float beta1, float beta2, float eps, float lr,
         float weight_decay, float ckp1, float gnorm_scale,
         float bias_correction2, int numel,
+        int stochastic_z, unsigned int seed,
         cudaStream_t stream
     );
 
@@ -98,6 +103,7 @@ extern "C" {
         float beta1, float beta2, float eps, float lr,
         float weight_decay, float ckp1, float gnorm_scale,
         float bias_correction2, int numel,
+        int stochastic_z, unsigned int seed,
         cudaStream_t stream
     );
 }
@@ -253,8 +259,14 @@ void init_quantization_maps_wrapper(torch::Tensor qmap_signed, torch::Tensor qma
     TORCH_CHECK(qmap_signed.device().is_cpu(), "Signed qmap must be on CPU");
     TORCH_CHECK(qmap_unsigned.device().is_cpu(), "Unsigned qmap must be on CPU");
 
-    // Copy quantization maps to device constant memory
+    // Copy quantization maps to device constant memory. BOTH translation units:
+    // __constant__ symbols are not shared between them, and the Schedule-Free
+    // kernel reads its own copies (see init_schedulefree_quantization_maps).
     init_quantization_maps(
+        qmap_signed.data_ptr<float>(),
+        qmap_unsigned.data_ptr<float>()
+    );
+    init_schedulefree_quantization_maps(
         qmap_signed.data_ptr<float>(),
         qmap_unsigned.data_ptr<float>()
     );
@@ -279,7 +291,9 @@ void adamw_8bit_schedulefree_update(
     float weight_decay,
     float ckp1,
     float gnorm_scale,
-    float bias_correction2
+    float bias_correction2,
+    bool stochastic_z,
+    int64_t seed
 ) {
     // Input validation
     TORCH_CHECK(param.is_cuda(), "Param must be on CUDA device");
@@ -336,7 +350,7 @@ void adamw_8bit_schedulefree_update(
             absmax_z.data_ptr<float>(),
             absmax2.data_ptr<float>(),
             beta1, beta2, eps, lr, weight_decay, ckp1, gnorm_scale, bias_correction2,
-            numel, stream
+            numel, stochastic_z ? 1 : 0, static_cast<unsigned int>(seed), stream
         );
     } else if (param.dtype() == torch::kFloat16) {
         adamw_8bit_schedulefree_update_fp16(
@@ -347,7 +361,7 @@ void adamw_8bit_schedulefree_update(
             absmax_z.data_ptr<float>(),
             absmax2.data_ptr<float>(),
             beta1, beta2, eps, lr, weight_decay, ckp1, gnorm_scale, bias_correction2,
-            numel, stream
+            numel, stochastic_z ? 1 : 0, static_cast<unsigned int>(seed), stream
         );
     } else if (param.dtype() == torch::kBFloat16) {
         adamw_8bit_schedulefree_update_bf16(
@@ -358,7 +372,7 @@ void adamw_8bit_schedulefree_update(
             absmax_z.data_ptr<float>(),
             absmax2.data_ptr<float>(),
             beta1, beta2, eps, lr, weight_decay, ckp1, gnorm_scale, bias_correction2,
-            numel, stream
+            numel, stochastic_z ? 1 : 0, static_cast<unsigned int>(seed), stream
         );
     } else {
         TORCH_CHECK(false, "Unsupported dtype (must be FP32, FP16, or BF16)");
@@ -403,7 +417,12 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def(
         "adamw_8bit_schedulefree_update",
         &adamw_8bit_schedulefree_update,
-        "AdamW Schedule-Free update with 8-bit quantized z and exp_avg_sq (CUDA, Ring Buffer compatible)"
+        "AdamW Schedule-Free update with 8-bit quantized z and exp_avg_sq (CUDA, Ring Buffer compatible)",
+        py::arg("param"), py::arg("grad"), py::arg("state_z"), py::arg("state_exp_avg_sq"),
+        py::arg("absmax_z"), py::arg("absmax2"), py::arg("beta1"), py::arg("beta2"),
+        py::arg("eps"), py::arg("lr"), py::arg("weight_decay"), py::arg("ckp1"),
+        py::arg("gnorm_scale"), py::arg("bias_correction2"),
+        py::arg("stochastic_z") = false, py::arg("seed") = 0
     );
     m.def(
         "init_quantization_maps",

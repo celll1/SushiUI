@@ -44,21 +44,27 @@ static at::cuda::CUDAStream get_xfer_stream(c10::DeviceIndex device) {
 extern "C" {
     void init_quantization_maps(const float* host_qmap_signed);
 
+    // Same map, for the Schedule-Free translation unit's own __constant__ copy.
+    void init_schedulefree_quantization_maps(const float* host_qmap_signed);
+
     // Schedule-Free launchers
     void lion_8bit_schedulefree_update_fp32(
         float* param, const float* grad, uint8_t* state_z, float* absmax_z,
         float beta1, float beta2, float eps, float lr, float weight_decay,
-        float ckp1, float gnorm_scale, bool cautious, int numel, cudaStream_t stream
+        float ckp1, float gnorm_scale, bool cautious, int numel,
+        int stochastic_z, unsigned int seed, cudaStream_t stream
     );
     void lion_8bit_schedulefree_update_fp16(
         __half* param, const __half* grad, uint8_t* state_z, float* absmax_z,
         float beta1, float beta2, float eps, float lr, float weight_decay,
-        float ckp1, float gnorm_scale, bool cautious, int numel, cudaStream_t stream
+        float ckp1, float gnorm_scale, bool cautious, int numel,
+        int stochastic_z, unsigned int seed, cudaStream_t stream
     );
     void lion_8bit_schedulefree_update_bf16(
         __nv_bfloat16* param, const __nv_bfloat16* grad, uint8_t* state_z, float* absmax_z,
         float beta1, float beta2, float eps, float lr, float weight_decay,
-        float ckp1, float gnorm_scale, bool cautious, int numel, cudaStream_t stream
+        float ckp1, float gnorm_scale, bool cautious, int numel,
+        int stochastic_z, unsigned int seed, cudaStream_t stream
     );
 }
 
@@ -98,8 +104,11 @@ void init_quantization_maps_wrapper(torch::Tensor qmap_signed_cpu) {
     TORCH_CHECK(qmap_signed_cpu.device().is_cpu(),
                 "qmap_signed must be on CPU");
 
-    // Copy to constant memory via extern "C" function
+    // Copy to constant memory via extern "C" functions. BOTH translation units:
+    // __constant__ symbols are not shared between them, and the Schedule-Free
+    // kernel reads its own copy (see init_schedulefree_quantization_maps).
     init_quantization_maps(qmap_signed_cpu.data_ptr<float>());
+    init_schedulefree_quantization_maps(qmap_signed_cpu.data_ptr<float>());
 }
 
 /*
@@ -275,7 +284,9 @@ void lion_8bit_schedulefree_update(
     float weight_decay,
     float ckp1,
     float gnorm_scale,
-    bool cautious
+    bool cautious,
+    bool stochastic_z,
+    int64_t seed
 ) {
     // ============================================================
     // Validation
@@ -331,7 +342,8 @@ void lion_8bit_schedulefree_update(
             grad.data_ptr<float>(),
             state_z_gpu.data_ptr<uint8_t>(),
             absmax_z.data_ptr<float>(),
-            beta1, beta2, eps, lr, weight_decay, ckp1, gnorm_scale, cautious, N, stream
+            beta1, beta2, eps, lr, weight_decay, ckp1, gnorm_scale, cautious, N,
+            stochastic_z ? 1 : 0, static_cast<unsigned int>(seed), stream
         );
     } else if (param_dtype == torch::kFloat16) {
         lion_8bit_schedulefree_update_fp16(
@@ -339,7 +351,8 @@ void lion_8bit_schedulefree_update(
             reinterpret_cast<const __half*>(grad.data_ptr<at::Half>()),
             state_z_gpu.data_ptr<uint8_t>(),
             absmax_z.data_ptr<float>(),
-            beta1, beta2, eps, lr, weight_decay, ckp1, gnorm_scale, cautious, N, stream
+            beta1, beta2, eps, lr, weight_decay, ckp1, gnorm_scale, cautious, N,
+            stochastic_z ? 1 : 0, static_cast<unsigned int>(seed), stream
         );
     } else if (param_dtype == torch::kBFloat16) {
         lion_8bit_schedulefree_update_bf16(
@@ -347,7 +360,8 @@ void lion_8bit_schedulefree_update(
             reinterpret_cast<const __nv_bfloat16*>(grad.data_ptr<at::BFloat16>()),
             state_z_gpu.data_ptr<uint8_t>(),
             absmax_z.data_ptr<float>(),
-            beta1, beta2, eps, lr, weight_decay, ckp1, gnorm_scale, cautious, N, stream
+            beta1, beta2, eps, lr, weight_decay, ckp1, gnorm_scale, cautious, N,
+            stochastic_z ? 1 : 0, static_cast<unsigned int>(seed), stream
         );
     } else {
         TORCH_CHECK(false, "Unsupported parameter dtype");
@@ -383,5 +397,9 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("lion_8bit_update", &lion_8bit_update,
           "Lion 8-bit optimizer update with Ring Buffer support");
     m.def("lion_8bit_schedulefree_update", &lion_8bit_schedulefree_update,
-          "Lion 8-bit Schedule-Free optimizer update with Ring Buffer support");
+          "Lion 8-bit Schedule-Free optimizer update with Ring Buffer support",
+          py::arg("param"), py::arg("grad"), py::arg("state_z"), py::arg("absmax_z"),
+          py::arg("beta1"), py::arg("beta2"), py::arg("eps"), py::arg("lr"),
+          py::arg("weight_decay"), py::arg("ckp1"), py::arg("gnorm_scale"),
+          py::arg("cautious"), py::arg("stochastic_z") = false, py::arg("seed") = 0);
 }

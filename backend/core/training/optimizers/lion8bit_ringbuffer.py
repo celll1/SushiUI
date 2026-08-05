@@ -80,6 +80,30 @@ class Lion8bit_RingBuffer(Optimizer):
                 "Please ensure CUDA toolkit and ninja are installed."
             )
 
+        # Schedule-Free is refused here, not just in the trainer: the trainer's
+        # factory call is wrapped in `except (ValueError, ImportError)` that falls
+        # back to AdamW, so a ValueError raised from inside the constructor would
+        # silently substitute a different optimizer. RuntimeError is not caught
+        # there, so every caller sees this.
+        #
+        # The defect is in lion8bit_schedulefree_kernel.cu: Schedule-Free's z is a
+        # POSITION sequence, but that kernel uses z for Lion's momentum EMA and
+        # then writes x = (1-ckp1)*z + ckp1*y into the parameter. ckp1 is ~1/k, so
+        # the parameter becomes the momentum buffer within a few steps -- measured
+        # with random gradients, corr(p, z) = 0.994 at step 5, 0.9996 at step 20.
+        # A correct implementation needs both a position sequence and a momentum
+        # EMA, i.e. a second 8-bit state that _init_param_state does not allocate,
+        # so this is a redesign of the state layout and the checkpoint format, not
+        # a patch.
+        if schedule_free:
+            raise RuntimeError(
+                "Lion8bit_RingBuffer does not support schedule_free: its Schedule-Free CUDA "
+                "kernel writes Lion's momentum EMA into the parameter instead of the "
+                "Schedule-Free position sequence, which destroys the weights within a few "
+                "steps. Use AdamW8bit_RingBuffer for a Schedule-Free run, or "
+                "Lion8bit_RingBuffer with schedule_free=False."
+            )
+
         # Schedule-Free warmup validation
         if use_radam and warmup_steps > 0:
             print("[Lion8bit_RingBuffer] WARNING: warmup_steps is ignored when use_radam=True")
@@ -143,6 +167,14 @@ class Lion8bit_RingBuffer(Optimizer):
         self.ext.init_quantization_maps(qmap_signed)
 
         print("[Lion8bit_RingBuffer] Quantization maps initialized on device")
+
+    def _next_rounding_seed(self) -> int:
+        """A fresh seed for the kernel's stochastic quantization of z.
+
+        Drawn from torch's own CPU generator, so ``torch.manual_seed`` still makes
+        a run reproducible, and never a GPU sync.
+        """
+        return int(torch.randint(0, 2 ** 31 - 1, (1,), device='cpu').item())
 
     def _init_param_state(self, p: nn.Parameter):
         """Initialize optimizer state for a parameter."""
@@ -515,6 +547,12 @@ class Lion8bit_RingBuffer(Optimizer):
                             # Async transfer for Ring Buffer state (pinned memory)
                             state_z_gpu = state['state_z'].cuda(non_blocking=True)
 
+                        stochastic_z = bool(group['stochastic_rounding'])
+
+                        # ``stochastic_z`` is gated on the flag alone, not on the
+                        # parameter dtype: z lives in 8-bit codes whatever dtype
+                        # the parameter has, and round-to-nearest on those codes
+                        # drops every sub-quantum change to the sequence.
                         self.ext.lion_8bit_schedulefree_update(
                             p_for_update,
                             grad,
@@ -525,7 +563,9 @@ class Lion8bit_RingBuffer(Optimizer):
                             weight_decay,
                             ckp1,                       # Averaging coefficient
                             1.0,                        # gnorm_scale
-                            self.cautious               # Cautious masking
+                            self.cautious,              # Cautious masking
+                            stochastic_z,
+                            self._next_rounding_seed() if stochastic_z else 0,
                         )
 
                         # Ring Buffer: Copy updated state back to CPU

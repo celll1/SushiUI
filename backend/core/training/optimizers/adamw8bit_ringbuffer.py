@@ -41,46 +41,56 @@ def quantize_blockwise_inplace(tensor: torch.Tensor, blocksize: int = 256):
     """
     Quantize a tensor to UINT8 using blockwise quantization (for z initialization).
 
+    The code assigned to each element is the NEAREST entry of the signed dynamic
+    quantization map -- the same map ``dequantize_value()`` in the CUDA kernels
+    reads back through (``d_qmap_signed``), and the same nearest-neighbour rule
+    its ``quantize_value()`` applies.
+
+    This used to write LINEAR codes (``(x/absmax + 1) * 127.5``) while the kernel
+    decoded them through the dynamic map, so the Schedule-Free z sequence started
+    the run at a value unrelated to the parameter it is initialised from: measured
+    on a real Krea 2 tensor, mean |z - p| was 2.34e-2 against a mean |p| of
+    3.32e-2 (70% relative error) instead of the 7.1e-4 (2%) the 8-bit grid can
+    actually represent.
+
     Args:
-        tensor: Input tensor (FP16/FP32) on GPU
+        tensor: Input tensor (FP16/BF16/FP32), on any device
         blocksize: Block size for quantization (default: 256)
 
     Returns:
-        quantized: UINT8 tensor (same shape as input)
+        quantized: UINT8 tensor, flat [numel]
         absmax: FP32 absmax values per block [num_blocks]
     """
     n = tensor.numel()
     num_blocks = (n + blocksize - 1) // blocksize
 
-    # Allocate output
-    device = tensor.device
-    quantized = torch.zeros(n, dtype=torch.uint8, device=device)
-    absmax = torch.zeros(num_blocks, dtype=torch.float32, device=device)
+    # Vectorised over blocks. The previous per-block Python loop issued a handful
+    # of CUDA ops per 256 elements -- 885k iterations for Krea 2's largest tensor.
+    flat = tensor.detach().reshape(-1).float()
+    pad = num_blocks * blocksize - n
+    if pad:
+        flat = torch.cat([flat, flat.new_zeros(pad)])
+    blocks = flat.view(num_blocks, blocksize)
 
-    # Flatten tensor for blockwise processing
-    flat = tensor.flatten()
+    qmap = create_quantization_map(signed=True).to(device=flat.device, dtype=torch.float32)
 
-    # Process each block
-    for i in range(num_blocks):
-        start = i * blocksize
-        end = min(start + blocksize, n)
-        block = flat[start:end]
+    # Symmetric headroom, matching the kernels: the signed map ends at +1.0 but
+    # at -0.992968738, so a block whose extreme is negative cannot be stored at
+    # its own absmax and comes back 0.7031% smaller -- which the kernel then
+    # adopts as the new absmax, compounding once per step. Scaling by the largest
+    # magnitude representable in BOTH directions makes the extreme exact either
+    # way. See adamw8bit_schedulefree_kernel.cu's note.
+    qmax_symmetric = torch.minimum(-qmap[0], qmap[-1])
 
-        # Compute absmax for this block
-        block_absmax = block.abs().max()
-        absmax[i] = block_absmax
+    absmax = blocks.abs().amax(dim=1) / qmax_symmetric
+    scale = torch.where(absmax > 0, absmax, torch.ones_like(absmax)).unsqueeze(1)
+    normalized = (blocks / scale).clamp(-1.0, 1.0).reshape(-1)
+    upper = torch.searchsorted(qmap, normalized.contiguous()).clamp(1, qmap.numel() - 1)
+    lower = upper - 1
+    take_lower = (normalized - qmap[lower]) <= (qmap[upper] - normalized)
+    codes = torch.where(take_lower, lower, upper).to(torch.uint8)
 
-        # Quantize: map [-absmax, absmax] -> [0, 255]
-        if block_absmax > 0:
-            # Normalize to [-1, 1], then map to [0, 255]
-            normalized = block / block_absmax  # [-1, 1]
-            quantized_block = ((normalized + 1.0) * 127.5).clamp(0, 255).to(torch.uint8)
-            quantized[start:end] = quantized_block
-        else:
-            # Zero block
-            quantized[start:end] = 127  # Middle of [0, 255]
-
-    return quantized, absmax
+    return codes[:n].contiguous(), absmax
 
 
 class AdamW8bit_RingBuffer(Optimizer):
@@ -209,6 +219,14 @@ class AdamW8bit_RingBuffer(Optimizer):
         """
         copy_stochastic_bf16(target, source)
 
+    def _next_rounding_seed(self) -> int:
+        """A fresh seed for the kernel's stochastic quantization of z.
+
+        Drawn from torch's own CPU generator, so ``torch.manual_seed`` still
+        makes a run reproducible, and never a GPU sync.
+        """
+        return int(torch.randint(0, 2 ** 31 - 1, (1,), device='cpu').item())
+
     def _init_param_state(self, p: nn.Parameter):
         """Initialize optimizer state for a parameter."""
         state = self.state[p]
@@ -322,9 +340,12 @@ class AdamW8bit_RingBuffer(Optimizer):
             # ============================================================
             # NOTE: these are allocated with zeros_like/clone, so they take the
             # PARAMETER's dtype -- for a bf16 parameter they are bf16, not FP32.
-            # In particular the Schedule-Free 'z' sequence is bf16 storage
-            # written by z.sub_() with round-to-nearest, which stochastic
-            # rounding does NOT cover (it only guards writes into p).
+            # The Schedule-Free 'z' sequence is therefore bf16 storage; step()
+            # updates it through an FP32 image and writes it back with stochastic
+            # rounding when that is enabled, so sub-ULP updates to the sequence
+            # survive. exp_avg_sq is still accumulated in the parameter's dtype:
+            # it is a second moment whose per-step relative change is (1-beta2),
+            # which biases the denominator but not the step's direction.
 
             if schedule_free:
                 # Schedule-Free: only exp_avg_sq and z (no exp_avg)
@@ -477,6 +498,82 @@ class AdamW8bit_RingBuffer(Optimizer):
         if 'train_mode' in state_dict:
             self.train_mode = state_dict['train_mode']
             print(f"[AdamW8bit_RingBuffer] Restored train_mode={self.train_mode}")
+
+        self._repair_degenerate_schedule_free_state()
+
+    @torch.no_grad()
+    def _repair_degenerate_schedule_free_state(self):
+        """Re-seed a Schedule-Free ``z`` that was written by the broken kernel.
+
+        Before the Schedule-Free kernels' ``__constant__`` quantization map was
+        initialised, every ``dequantize_value()`` in them returned 0, so a run
+        wrote out ``z`` codes that are all one value with ``absmax_z`` at ~0.
+        Reading that back with a working map decodes z as zero everywhere -- and
+        z is not inert: ``y = (1 - ckp1) * y + ckp1 * z`` then pulls the weights
+        toward zero on every step. Measured on such a checkpoint, 300
+        zero-gradient steps after resume took mean|p| from 1.63e-2 to 5.21e-5.
+
+        The state carries no information (it decodes to a constant), so it is
+        re-seeded from the current parameter exactly as a fresh run would --
+        ``z_0 = p`` is the Schedule-Free initial condition -- rather than
+        refusing the resume and discarding exp_avg_sq and the step counters with
+        it. Loudly, because it is a change of state the user did not ask for.
+
+        Both signatures are required, not either: a constant tensor is perfectly
+        normal (an all-ones RMSNorm weight at initialisation, a zero-initialised
+        LoRA B, a zero bias), and such a tensor's z is a single repeated code with
+        a healthy absmax. Requiring the decoded z to also DISAGREE with the
+        parameter keeps the repair (and its warning) off those.
+        """
+        if not self.schedule_free:
+            return
+
+        repaired = 0
+        for group in self.param_groups:
+            for p in group['params']:
+                state = self.state.get(p)
+                if not state or 'z' not in state or not state.get('is_8bit', False):
+                    continue
+
+                absmax_z = state.get('absmax_z')
+                codes = state['z']
+                if absmax_z is None or codes.numel() == 0:
+                    continue
+
+                # Signature 1: the decoded z is a constant. Checked per block,
+                # because absmax is per block: a single repeated code still
+                # decodes to different values in blocks with different scales.
+                blocks = codes.reshape(-1)
+                pad = (-blocks.numel()) % 256
+                if pad:
+                    blocks = torch.cat([blocks, blocks[-1:].expand(pad)])
+                blocks = blocks.view(-1, 256)
+                constant_codes = bool((blocks == blocks[:, :1]).all())
+                zero_scale = not bool((absmax_z != 0).any())
+                if not (constant_codes or zero_scale):
+                    continue
+
+                # Signature 2: that constant is not what z should hold. A healthy
+                # z of a constant-valued parameter decodes back to the parameter.
+                z_decoded = self._z_dense(p, state).to(dtype=torch.float32)
+                reference = p.detach().float()
+                scale = reference.abs().mean().item()
+                if (z_decoded - reference).abs().mean().item() <= 0.05 * scale:
+                    continue
+
+                z_quantized, absmax_z_init = quantize_blockwise_inplace(p.detach(), 256)
+                state['z'].copy_(z_quantized.to(state['z'].device))
+                state['absmax_z'] = absmax_z_init.to(
+                    device=absmax_z.device, dtype=torch.float32
+                )
+                repaired += 1
+
+        if repaired:
+            print(f"[AdamW8bit_RingBuffer] WARNING: {repaired} Schedule-Free 'z' tensor(s) in this "
+                  f"checkpoint decode to a constant -- they were written before the Schedule-Free "
+                  f"quantization map was initialised, and resuming from them drives the weights to "
+                  f"zero. Re-seeded z from the current parameters (z_0 = p, the Schedule-Free "
+                  f"initial condition). The second moment and the step counters are kept.")
 
     @torch.no_grad()
     def step(self, closure=None):
@@ -655,7 +752,14 @@ class AdamW8bit_RingBuffer(Optimizer):
                             z_gpu = state['z'].cuda(non_blocking=True)
                             exp_avg_sq_gpu = state['exp_avg_sq'].cuda(non_blocking=True)
 
-                        # Call Schedule-Free CUDA kernel
+                        stochastic_z = bool(group['stochastic_rounding'])
+
+                        # Call Schedule-Free CUDA kernel.
+                        # ``stochastic_z`` is gated on the flag alone, not on the
+                        # parameter dtype: z lives in 8-bit codes whatever the
+                        # parameter's dtype is, and its quantization step is far
+                        # coarser than a BF16 ULP, so round-to-nearest pins the
+                        # codes of the optimization sequence for the whole run.
                         self.ext.adamw_8bit_schedulefree_update(
                             p_for_kernel,           # param (y, GPU) - FP32 buffer if stochastic_rounding
                             grad,                   # grad (GPU)
@@ -670,7 +774,9 @@ class AdamW8bit_RingBuffer(Optimizer):
                             weight_decay,
                             ckp1,
                             gnorm_scale,
-                            bias_correction2_sf
+                            bias_correction2_sf,
+                            stochastic_z,
+                            self._next_rounding_seed() if stochastic_z else 0,
                         )
 
                         # Ring Buffer: Copy updated states back to CPU
@@ -746,6 +852,28 @@ class AdamW8bit_RingBuffer(Optimizer):
                         z = state['z']
                         exp_avg_sq = state['exp_avg_sq']
 
+                        # z carries the Schedule-Free optimization sequence and is
+                        # allocated with clone(p), so for a BF16 parameter it is BF16
+                        # storage. ``z.sub_()`` below then rounds to nearest, which
+                        # discards every update under half a ULP -- deterministically,
+                        # so those elements of z are frozen for the whole run. That is
+                        # the same defect stochastic rounding fixes for the parameter,
+                        # on the tensor that actually drives the trajectory. Apply the
+                        # update to a pooled FP32 image of z and round it back
+                        # stochastically (scratch, so no persistent 4-byte-per-element
+                        # master; see stochastic_rounding.py).
+                        #
+                        # It also makes y's ``lerp_`` well typed: with stochastic
+                        # rounding on, y is the FP32 image of p, and ``y.lerp_(end=z)``
+                        # against a BF16 z raised "expected dtype float for `end`" --
+                        # i.e. Schedule-Free + stochastic rounding could not complete a
+                        # single step.
+                        if use_stochastic_rounding and z.dtype == torch.bfloat16:
+                            z_master = self._sr_scratch.copy_of('z', z)
+                        else:
+                            z_master = None
+                        z_for_update = z if z_master is None else z_master
+
                         # Update exp_avg_sq (second moment)
                         exp_avg_sq.mul_(beta2).addcmul_(grad, grad, value=1 - beta2)
 
@@ -761,13 +889,15 @@ class AdamW8bit_RingBuffer(Optimizer):
 
                         # Update y (training parameters)
                         # y = (1 - ckp1) * y + ckp1 * z + lr * (beta1 * (1 - ckp1) - 1) * grad_normalized
-                        y.lerp_(end=z, weight=ckp1)
+                        y.lerp_(end=z_for_update, weight=ckp1)
                         y.add_(grad_normalized, alpha=scheduled_lr * (beta1 * (1 - ckp1) - 1))
 
                         # Update z (main sequence)
-                        z.sub_(grad_normalized, alpha=scheduled_lr)
+                        z_for_update.sub_(grad_normalized, alpha=scheduled_lr)
 
-                        # Stochastic rounding: FP32 buffer → BF16 param
+                        # Stochastic rounding: FP32 images → BF16 storage
+                        if z_master is not None:
+                            self._copy_stochastic_bf16(z, z_master)
                         if use_stochastic_rounding:
                             self._copy_stochastic_bf16(p, p_fp32)
 
@@ -817,6 +947,57 @@ class AdamW8bit_RingBuffer(Optimizer):
 
         return loss
 
+    def _signed_qmap(self, device: torch.device) -> torch.Tensor:
+        """The signed dynamic quantization map, cached per device."""
+        cache = getattr(self, '_qmap_signed_by_device', None)
+        if cache is None:
+            cache = {}
+            self._qmap_signed_by_device = cache
+        qmap = cache.get(device)
+        if qmap is None:
+            qmap = create_quantization_map(signed=True).to(device)
+            cache[device] = qmap
+        return qmap
+
+    def _z_dense(self, p: nn.Parameter, state: dict) -> torch.Tensor:
+        """z for this parameter as a dense tensor shaped like ``p``.
+
+        In 8-bit mode ``state['z']`` holds blockwise-quantized UINT8 CODES, not
+        values, so the raw tensor cannot be used as the ``end`` of a lerp -- doing
+        so raised ``expected dtype struct c10::BFloat16 for 'end' but got dtype
+        unsigned char``, i.e. train()/eval() could not run at all once the state
+        existed. Dequantize with the same signed map the CUDA kernel uses.
+
+        Materialises a dense FP32 copy (plus an int64 index temporary), so it is
+        for the train()/eval() mode switches, which happen outside the step loop
+        -- not for the per-step update, which stays inside the kernel.
+        """
+        z = state['z']
+        if not state.get('is_8bit', False):
+            return z
+
+        blocksize = 256
+        qmap = self._signed_qmap(z.device)
+        absmax = state['absmax_z'].to(device=z.device, dtype=torch.float32)
+        values = qmap[z.reshape(-1).long()]
+        scales = absmax.repeat_interleave(blocksize)[: values.numel()]
+        return (values * scales).view(p.shape)
+
+    def _lerp_param_toward_z(self, p: nn.Parameter, z_dense: torch.Tensor,
+                             weight: float, group: dict) -> None:
+        """``p = (1 - weight) * p + weight * z``, stochastically rounded when asked.
+
+        These writes land in the parameter's own storage exactly like the ones in
+        step(), so under round-to-nearest they drop every sub-half-ULP move of the
+        train/eval sequence.
+        """
+        if should_use_stochastic_rounding(group.get('stochastic_rounding', False), p):
+            master = self._sr_scratch.copy_of('master', p.data)
+            master.lerp_(end=self._sr_scratch.copy_of('z', z_dense), weight=weight)
+            copy_stochastic_bf16(p.data, master)
+        else:
+            p.data.lerp_(end=z_dense.to(p.dtype), weight=weight)
+
     @torch.no_grad()
     def train(self):
         """
@@ -836,7 +1017,7 @@ class AdamW8bit_RingBuffer(Optimizer):
 
                 # Set p to y: p.lerp_(end=z, weight=1-beta1)
                 # This is equivalent to: p = beta1 * p + (1 - beta1) * z
-                p.lerp_(end=state['z'], weight=1 - beta1)
+                self._lerp_param_toward_z(p, self._z_dense(p, state), 1 - beta1, group)
 
         self.train_mode = True
 
@@ -859,7 +1040,7 @@ class AdamW8bit_RingBuffer(Optimizer):
 
                 # Set p to x: p.lerp_(end=z, weight=1-1/beta1)
                 # This is equivalent to: p = (1/beta1) * p + (1 - 1/beta1) * z
-                p.lerp_(end=state['z'], weight=1 - 1 / beta1)
+                self._lerp_param_toward_z(p, self._z_dense(p, state), 1 - 1 / beta1, group)
 
         self.train_mode = False
 

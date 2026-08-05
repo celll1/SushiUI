@@ -63,6 +63,14 @@ VALID_OPTIMIZERS = ("adamw", "adamw8bit", "adafactor", "lion8bit",
 # VaeTrainer.build_optimizer, which logs what the run actually gets.
 RINGBUFFER_OPTIMIZERS = ("adamw8bit_ringbuffer", "lion8bit_ringbuffer")
 
+# The only two `optimizer*` keys VaeTrainer.build_optimizer consumes. Every
+# other one the diffusion generators can write (optimizer_cautious,
+# optimizer_schedule_free[_r|_weight_lr_power], optimizer_use_radam,
+# optimizer_warmup_steps, optimizer_stochastic_rounding, optimizer_is_paged,
+# optimizer_beta1/beta2/epsilon) is refused in _validate rather than accepted
+# and dropped. Add a key here only together with the code that reads it.
+_VAE_SUPPORTED_OPTIMIZER_KEYS = frozenset({"optimizer", "optimizer_weight_decay"})
+
 # ``diffusers.optimization.get_scheduler`` names this trainer can run.
 # ``piecewise_constant`` is deliberately absent: it requires a ``step_rules``
 # argument that ``VaeTrainer.build_optimizer`` never passes, so asking for it
@@ -499,6 +507,32 @@ def _validate(cfg: Dict[str, Any], train_section: Dict[str, Any]) -> None:
             "pixels, so there is no cached latent to consume. Remove the key or "
             "set it to 'swap_onthefly' (it is ignored by the VAE trainer)."
         )
+
+    # ---- optimizer options this trainer does not consume -------------------
+    # VaeTrainer.build_optimizer passes exactly optimizer type / params / lr /
+    # weight_decay to OptimizerFactory, so every other `optimizer_*` key in the
+    # train section would be read by nobody. generate_vae_config never writes
+    # one, but the diffusion generators do, so a hand-written or hand-merged
+    # YAML can carry them; accepting them would mean a run that reports
+    # cautious masking / Schedule-Free / stochastic rounding in its own config
+    # while doing none of it. Named refusal instead of silence.
+    unsupported = sorted(k for k in train_section
+                         if k.startswith("optimizer")
+                         and k not in _VAE_SUPPORTED_OPTIMIZER_KEYS)
+    if unsupported:
+        message = (
+            f"Unsupported optimizer option(s) in process.train for a VAE run: "
+            f"{unsupported}. This trainer builds its optimizer with "
+            f"{sorted(_VAE_SUPPORTED_OPTIMIZER_KEYS)} only, so the listed keys "
+            f"would have no effect on the run. Remove them."
+        )
+        if "optimizer_warmup_steps" in unsupported:
+            # The one key with a working equivalent here: build_optimizer passes
+            # lr_warmup_steps to get_scheduler, so warmup IS available under
+            # that name. Say so rather than only "remove it".
+            message += (" For LR warmup use lr_warmup_steps, which this trainer "
+                        "passes to the LR scheduler.")
+        raise VaeConfigError(message)
 
     # ---- losses -----------------------------------------------------------
     for key in _LOSS_WEIGHT_KEYS:

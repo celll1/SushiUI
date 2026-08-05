@@ -270,6 +270,16 @@ def _build_train_section(
     train["res_curriculum_warmup_steps"] = p.get("res_curriculum_warmup_steps", 0)
     train["res_curriculum_warmup_scale"] = p.get("res_curriculum_warmup_scale", 0.5)
 
+    # ---- Lens (bf16-native dual-stream DiT) — other archs ignore. ----
+    # These were reachable from param_defaults, routes, openapi and the training
+    # panel but were never written into the YAML, so lora_trainer's
+    # `self.config.get("lens_lora_scope")` and lens_adapter's
+    # `trainer.config.get("lens_*_lr_factor")` always saw their fallbacks and the
+    # user's choice was dropped. SSoT: api/param_defaults.TRAINING_DEFAULTS.
+    train["lens_lora_scope"] = p.get("lens_lora_scope", "img_attn,txt_attn,img_mlp,txt_mlp")
+    train["lens_img_lr_factor"] = p.get("lens_img_lr_factor", 1.0)
+    train["lens_txt_lr_factor"] = p.get("lens_txt_lr_factor", 1.0)
+
     # ---- Ideogram 4 LoRA (flow-matching DiT) — other archs ignore. ----
     train["ideogram4_lora_scope"] = p.get("ideogram4_lora_scope", "attn,mlp")
     train["ideogram4_train_uncond"] = p.get("ideogram4_train_uncond", False)

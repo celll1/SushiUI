@@ -3225,6 +3225,38 @@ class BaseTrainer(ABC):
             fallback_lr=self.learning_rate,
         )
 
+    def _resolved_optimizer_hyperparameters(self) -> Dict[str, Any]:
+        """weight_decay / betas / eps exactly as the user configured them.
+
+        One place, because the fused-optimizer-groups path used to re-create
+        every optimizer with hardcoded ``weight_decay=0.01``,
+        ``betas=(0.9, 0.999)``, ``eps=1e-8``: a Block-Swap run with
+        ``num_optimizer_groups > 0`` silently discarded the configured values
+        while the YAML and the UI still said otherwise.
+
+        ``None`` means "not configured" for all four, and the fallbacks below
+        are the ones this method has always applied.
+        """
+        return {
+            "weight_decay": self.optimizer_weight_decay if self.optimizer_weight_decay is not None else 0.01,
+            "beta1": self.optimizer_beta1 if self.optimizer_beta1 is not None else 0.9,
+            "beta2": self.optimizer_beta2 if self.optimizer_beta2 is not None else 0.999,
+            "eps": self.optimizer_epsilon if self.optimizer_epsilon is not None else 1e-8,
+        }
+
+    # Options only the RingBuffer optimizers implement, with the value that
+    # means "not requested". Used to warn instead of silently dropping them when
+    # another optimizer is selected (the shipped full-FT default, adamw8bit, is
+    # one of those). Keep in sync with _ringbuffer_optimizer_kwargs().
+    _RINGBUFFER_ONLY_OPTIONS = (
+        ("optimizer_cautious", False),
+        ("optimizer_schedule_free", False),
+        ("optimizer_schedule_free_r", 0.0),
+        ("optimizer_schedule_free_weight_lr_power", 2.0),
+        ("optimizer_use_radam", False),
+        ("optimizer_stochastic_rounding", False),
+    )
+
     def _ringbuffer_optimizer_kwargs(self) -> Dict[str, Any]:
         """Options only the RingBuffer optimizers accept.
 
@@ -3280,10 +3312,11 @@ class BaseTrainer(ABC):
         from .optimizer_factory import OptimizerFactory
         try:
             # Use hyperparameters from config, or fall back to defaults
-            weight_decay = self.optimizer_weight_decay if self.optimizer_weight_decay is not None else 0.01
-            beta1 = self.optimizer_beta1 if self.optimizer_beta1 is not None else 0.9
-            beta2 = self.optimizer_beta2 if self.optimizer_beta2 is not None else 0.999
-            eps = self.optimizer_epsilon if self.optimizer_epsilon is not None else 1e-8
+            hyper = self._resolved_optimizer_hyperparameters()
+            weight_decay = hyper["weight_decay"]
+            beta1 = hyper["beta1"]
+            beta2 = hyper["beta2"]
+            eps = hyper["eps"]
 
             # Lion optimizers use 'lion_betas' kwarg instead of 'betas', and don't have epsilon
             optimizer_kwargs = {
@@ -3313,12 +3346,26 @@ class BaseTrainer(ABC):
                         print(f"{self.log_prefix} NOTE: with schedule_free, the z sequence is stored "
                               f"in the parameter dtype and is updated with round-to-nearest; "
                               f"stochastic rounding covers the parameter update only")
-            elif self.optimizer_stochastic_rounding:
-                # Never accept the flag silently: only the RingBuffer optimizers
-                # implement stochastic rounding.
-                print(f"{self.log_prefix} WARNING: optimizer_stochastic_rounding is not supported by "
-                      f"'{optimizer_type}' and will not be applied "
-                      f"(supported: adamw8bit_ringbuffer, lion8bit_ringbuffer)")
+            else:
+                # Never accept these options silently: only the RingBuffer
+                # optimizers implement them, and the shipped full-FT default
+                # (adamw8bit) is not one of them.
+                ignored = [name for name, unset in self._RINGBUFFER_ONLY_OPTIONS
+                           if getattr(self, name) != unset]
+                if ignored:
+                    print(f"{self.log_prefix} WARNING: {', '.join(ignored)} "
+                          f"{'is' if len(ignored) == 1 else 'are'} not supported by "
+                          f"'{optimizer_type}' and will not be applied "
+                          f"(supported: adamw8bit_ringbuffer, lion8bit_ringbuffer)")
+
+            # optimizer_is_paged reaches every trainer (param_defaults -> routes
+            # -> YAML -> BaseTrainer) and is read by nothing: OptimizerFactory
+            # selects a paged optimizer from the TYPE NAME, not from a flag. Say
+            # so instead of accepting the checkbox and ignoring it.
+            if self.optimizer_is_paged and not optimizer_type.lower().startswith("paged_"):
+                print(f"{self.log_prefix} WARNING: optimizer_is_paged is not applied: paging is "
+                      f"selected by the optimizer type, and '{optimizer_type}' is not a paged one. "
+                      f"Choose paged_adamw, paged_adamw8bit or paged_lion8bit for a paged optimizer.")
 
             self.optimizer = OptimizerFactory.create_optimizer(
                 optimizer_type=optimizer_type,
@@ -3469,6 +3516,28 @@ class BaseTrainer(ABC):
             print(f"{self.log_prefix} Fused backward pass disabled")
             return
 
+        # Schedule-Free has no fused-backward implementation. The ring-buffer
+        # hooks below apply the plain (non-Schedule-Free) 8-bit update and read
+        # state['exp_avg'] + state['exp_avg_sq'] / state['absmax1'] +
+        # state['absmax2'] (AdamW) or state['exp_avg'] / state['absmax']
+        # (Lion), none of which _init_param_state allocates in Schedule-Free
+        # mode -- it allocates z / absmax_z (plus exp_avg_sq / absmax2 for
+        # AdamW) instead, so the combination raises KeyError inside the first
+        # backward pass. Refuse
+        # it here, where the message can say what to change, rather than
+        # accepting the option and failing (or worse, silently running a
+        # different algorithm than the one that was asked for).
+        if (optimizer_type.lower() in ("adamw8bit_ringbuffer", "lion8bit_ringbuffer")
+                and self.optimizer_schedule_free):
+            raise ValueError(
+                f"optimizer_schedule_free is not supported with the fused backward pass "
+                f"that Block Swap requires for '{optimizer_type}'. The per-parameter "
+                f"hooks implement the standard update only. "
+                f"Options: (1) set optimizer_schedule_free=false, "
+                f"(2) disable Block Swap (blocks_to_swap=0), which runs the "
+                f"Schedule-Free path inside optimizer.step()."
+            )
+
         # Patch optimizer with step_param method
         if optimizer_type.lower() == "adafactor":
             from .optimizers.adafactor_fused import patch_adafactor_fused
@@ -3556,14 +3625,24 @@ class BaseTrainer(ABC):
         # Create multiple optimizers by dividing parameters into groups
         from .optimizers.fused_optimizer_groups import create_optimizer_groups, FusedOptimizerGroups
 
+        # Configured hyperparameters, not hardcoded ones: this path re-creates
+        # every optimizer from scratch, so passing literals here discarded the
+        # user's optimizer_weight_decay / betas / epsilon for exactly the runs
+        # that need Block Swap. Lion takes its betas under a different keyword,
+        # the same split setup_optimizer() makes.
+        hyper = self._resolved_optimizer_hyperparameters()
+        group_kwargs: Dict[str, Any] = {}
+        if "lion" in optimizer_type.lower():
+            group_kwargs["lion_betas"] = (hyper["beta1"], hyper["beta2"])
         optimizers = create_optimizer_groups(
             params=trainable_params,
             optimizer_type=optimizer_type,
             num_groups=self.num_optimizer_groups,
             learning_rate=self.learning_rate,
-            weight_decay=0.01,
-            betas=(0.9, 0.999),
-            eps=1e-8,
+            weight_decay=hyper["weight_decay"],
+            betas=(hyper["beta1"], hyper["beta2"]),
+            eps=hyper["eps"],
+            **group_kwargs,
         )
 
         # Replace self.optimizer with first optimizer (for compatibility)

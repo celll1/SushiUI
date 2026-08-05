@@ -157,6 +157,30 @@ DEFAULT_SCOPE: Dict[str, bool] = {
 _FULL_SCOPE: Dict[str, bool] = {k: True for k in DEFAULT_SCOPE}
 
 
+def parse_scope_csv(scope_csv: Optional[str]) -> Dict[str, bool]:
+    """Parse a comma-separated scope string (e.g. "img_attn,txt_attn") into a scope dict.
+
+    Builds from an ALL-FALSE dict, so a scope can narrow as well as widen. The
+    caller used to start from ``DEFAULT_SCOPE`` (four of five groups already
+    True) and only ever set True, which made every narrowing selection a no-op:
+    a user who unticked img_mlp/txt_mlp still trained all four groups.
+
+    Empty input, or input naming nothing recognised, returns ``DEFAULT_SCOPE``
+    rather than an empty scope -- a LoRA with no target modules trains nothing.
+    Same contract as ``core/models/ideogram4/ideogram4_lora.parse_scope_csv``.
+    """
+    scope = {k: False for k in DEFAULT_SCOPE}
+    if not scope_csv:
+        return dict(DEFAULT_SCOPE)
+    for tok in scope_csv.split(","):
+        tok = tok.strip()
+        if tok in scope:
+            scope[tok] = True
+    if not any(scope.values()):
+        return dict(DEFAULT_SCOPE)
+    return scope
+
+
 def _set_module(parent: Any, attr: Any, module: nn.Module) -> None:
     """Assign module to parent.attr (str) or parent[attr] (int ModuleList index)."""
     if isinstance(attr, int):

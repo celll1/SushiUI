@@ -10357,8 +10357,13 @@ class TrainingRunCreateRequest(BaseModel):
     ema_decay: float = TRAINING_DEFAULTS["ema_decay"]
     ema_update_every: int = TRAINING_DEFAULTS["ema_update_every"]
     ema_device: str = TRAINING_DEFAULTS["ema_device"]
-    optimizer: str = "adamw8bit"  # Options: adamw, adamw8bit, paged_adamw, paged_adamw8bit, adafactor, lion8bit, paged_lion8bit
-    optimizer_is_paged: bool = False
+    # Options: adamw, adamw8bit, adamw8bit_ringbuffer, adafactor, lion8bit,
+    # lion8bit_ringbuffer, paged_adamw, paged_adamw8bit, paged_lion8bit.
+    # Paging is chosen by the NAME; there is deliberately no is_paged boolean
+    # (one existed, reached BaseTrainer and was read by nothing). A request
+    # that still sends optimizer_is_paged is ignored: this model does not
+    # declare the field and Pydantic's default extra="ignore" drops it.
+    optimizer: str = "adamw8bit"
     optimizer_cautious: bool = False
     optimizer_beta1: Optional[float] = None
     optimizer_beta2: Optional[float] = None

@@ -3968,8 +3968,10 @@ export interface TrainingRunCreateRequest {
   // Legacy boolean also accepted (true→"path", false→"off") for backwards
   // compatibility with older clients.
   rescan_before_training?: "off" | "path" | "smart" | "force" | boolean;
-  // Optimizer hyperparameters
-  optimizer_is_paged?: boolean;
+  // Optimizer hyperparameters.
+  // Paging is part of the optimizer NAME (paged_adamw / paged_adamw8bit /
+  // paged_lion8bit), not a boolean; the removed optimizer_is_paged flag was
+  // read by no trainer.
   optimizer_cautious?: boolean;
   optimizer_beta1?: number;
   optimizer_beta2?: number;

@@ -689,8 +689,10 @@ class BaseTrainer(ABC):
         activation_dispatch_threshold_mb: int = 4,
         # Fused optimizer groups (for any optimizer with Block Swap)
         num_optimizer_groups: int = 0,
-        # Optimizer options and hyperparameters
-        optimizer_is_paged: bool = False,
+        # Optimizer options and hyperparameters.
+        # (No optimizer_is_paged: paging is selected by the optimizer TYPE
+        # NAME -- paged_adamw / paged_adamw8bit / paged_lion8bit -- which is
+        # what OptimizerFactory dispatches on.)
         optimizer_cautious: bool = False,
         optimizer_beta1: Optional[float] = None,
         optimizer_beta2: Optional[float] = None,
@@ -932,7 +934,6 @@ class BaseTrainer(ABC):
         self.fused_optimizer_groups = None  # FusedOptimizerGroups instance (for any optimizer)
 
         # Optimizer options and hyperparameters (defaults will be used if None)
-        self.optimizer_is_paged = optimizer_is_paged
         self.optimizer_cautious = optimizer_cautious
         self.optimizer_beta1 = optimizer_beta1
         self.optimizer_beta2 = optimizer_beta2
@@ -3441,15 +3442,6 @@ class BaseTrainer(ABC):
                           f"'{optimizer_type}' and will not be applied "
                           f"(supported: adamw8bit_ringbuffer, lion8bit_ringbuffer)")
 
-            # optimizer_is_paged reaches every trainer (param_defaults -> routes
-            # -> YAML -> BaseTrainer) and is read by nothing: OptimizerFactory
-            # selects a paged optimizer from the TYPE NAME, not from a flag. Say
-            # so instead of accepting the checkbox and ignoring it.
-            if self.optimizer_is_paged and not optimizer_type.lower().startswith("paged_"):
-                print(f"{self.log_prefix} WARNING: optimizer_is_paged is not applied: paging is "
-                      f"selected by the optimizer type, and '{optimizer_type}' is not a paged one. "
-                      f"Choose paged_adamw, paged_adamw8bit or paged_lion8bit for a paged optimizer.")
-
             self.optimizer = OptimizerFactory.create_optimizer(
                 optimizer_type=optimizer_type,
                 params=param_groups,
@@ -3508,8 +3500,15 @@ class BaseTrainer(ABC):
                 # optimizer.step() after Block Swap may have moved some params to CPU. The
                 # ring-buffer optimizers must use num_optimizer_groups=0 (they register their
                 # own per-parameter fused-backward hooks instead).
+                # The paged_* names are here for the same reason as their
+                # un-prefixed siblings: bitsandbytes' PagedAdamW8bit /
+                # PagedLion8bit are 8-bit optimizers, and paging their STATE to
+                # host memory does nothing about the PARAMETER that Block Swap
+                # moved to the CPU. Omitting them let exactly the same crash
+                # through under a different name.
                 if optimizer_type.lower() in [
                     "adamw8bit", "lion8bit", "adafactor8bit",
+                    "paged_adamw8bit", "paged_lion8bit",
                     "adamw8bit_ringbuffer", "lion8bit_ringbuffer",
                 ]:
                     raise ValueError(

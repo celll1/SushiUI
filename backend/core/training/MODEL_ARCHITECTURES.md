@@ -548,7 +548,9 @@ text_encoder_2_lr: Optional[float] = None  # Text Encoder 2 LR
 ### Optimizer Hyperparameters
 
 ```python
-optimizer_is_paged: bool = False              # Paged optimizer (bitsandbytes)
+# Paging is part of the optimizer NAME (paged_adamw / paged_adamw8bit /
+# paged_lion8bit), which is what OptimizerFactory dispatches on. There is no
+# is_paged boolean.
 optimizer_cautious: bool = False              # Cautious mode (C-AdamW, C-Lion)
 optimizer_beta1: Optional[float] = None       # Beta1 (default: optimizer-specific)
 optimizer_beta2: Optional[float] = None       # Beta2 (default: optimizer-specific)

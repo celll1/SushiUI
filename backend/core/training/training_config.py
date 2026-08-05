@@ -100,8 +100,9 @@ def _build_train_section(
         train["ema_decay"] = p.get("ema_decay", 0.9999)
         train["ema_update_every"] = p.get("ema_update_every", 1)
         train["ema_device"] = p.get("ema_device", "cpu")
-    if p.get("optimizer_is_paged"):
-        train["optimizer_is_paged"] = p["optimizer_is_paged"]
+    # No optimizer_is_paged here: paging is part of the optimizer name
+    # (paged_adamw / paged_adamw8bit / paged_lion8bit). The key an older run's
+    # YAML may still carry is simply not read by anything.
     if p.get("optimizer_cautious"):
         train["optimizer_cautious"] = p["optimizer_cautious"]
     if p.get("optimizer_beta1") is not None:

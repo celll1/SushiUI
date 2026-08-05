@@ -66,9 +66,14 @@ RINGBUFFER_OPTIMIZERS = ("adamw8bit_ringbuffer", "lion8bit_ringbuffer")
 # The only two `optimizer*` keys VaeTrainer.build_optimizer consumes. Every
 # other one the diffusion generators can write (optimizer_cautious,
 # optimizer_schedule_free[_r|_weight_lr_power], optimizer_use_radam,
-# optimizer_warmup_steps, optimizer_stochastic_rounding, optimizer_is_paged,
+# optimizer_warmup_steps, optimizer_stochastic_rounding,
 # optimizer_beta1/beta2/epsilon) is refused in _validate rather than accepted
 # and dropped. Add a key here only together with the code that reads it.
+#
+# The refusal is by PREFIX, not by list, so it also still covers keys nothing
+# writes any more -- notably optimizer_is_paged, removed from the diffusion
+# surface but present in every YAML written before that. A VAE run handed one
+# is told to delete it, which is the right answer: it never did anything.
 _VAE_SUPPORTED_OPTIMIZER_KEYS = frozenset({"optimizer", "optimizer_weight_decay"})
 
 # ``diffusers.optimization.get_scheduler`` names this trainer can run.

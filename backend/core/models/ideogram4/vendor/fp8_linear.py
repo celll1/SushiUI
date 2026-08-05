@@ -69,8 +69,29 @@ FP8_SCALE_SUFFIX = ".weight_scale"
 FP8_TEXT_ENCODER_CONFIG_FLAG = "ideogram_fp8_weight_only"
 
 
+def _refuse_unsupported_quant_semantics(state_dict: dict[str, torch.Tensor]) -> None:
+    """Refuse a checkpoint whose DECLARED quantization contract we do not implement.
+
+    The fp8 twin of ``int8_linear._refuse_unsupported_quant_semantics``; see
+    that docstring and ``core.models.common.quantized_checkpoint_guard`` for the
+    mechanism. Imported lazily for the same import-cycle reason.
+    """
+    try:
+        from core.models.common.quantized_checkpoint_guard import (
+            refuse_unsupported_quant_semantics,
+        )
+    except Exception:  # pragma: no cover - defensive; never mask the guard itself
+        return
+    refuse_unsupported_quant_semantics(state_dict)
+
+
 def is_fp8_state_dict(state_dict: dict[str, torch.Tensor]) -> bool:
     """True if the checkpoint carries weight-only FP8 Linear weights.
+
+    Raises ``UnsupportedQuantSemanticsError`` first if the file declares a
+    quantization contract this build does not implement (a ``.comfy_quant``
+    marker, AWQ ``.pre_quant_scale`` vectors): Comfy's ``pruned_fp8_scaled``
+    shape is layout-compatible enough to answer True here.
 
     Keyed on BOTH the ``.weight_scale`` sibling and an ``e4m3`` weight, because
     ``int8_linear`` deliberately uses the IDENTICAL scale suffix and only the
@@ -87,6 +108,7 @@ def is_fp8_state_dict(state_dict: dict[str, torch.Tensor]) -> bool:
     produces -- answers True here and True to ``is_int8_state_dict``, and both
     swaps run in either order, each taking only its own layers.
     """
+    _refuse_unsupported_quant_semantics(state_dict)
     for key in state_dict:
         if not key.endswith(FP8_SCALE_SUFFIX):
             continue
@@ -867,7 +889,14 @@ def swap_linears_to_fp8(
     without raising. With the dtype test, a mixed checkpoint can run this and
     ``swap_linears_to_int8`` in either order and each takes only its own layers.
     Everything else loads normally in the compute dtype. Returns the count.
+
+    The DECLARED-semantics refusal runs on the top-level call only (``prefix``
+    empty; the recursion below always passes a non-empty one), so a caller that
+    reaches the swap without the census -- ``vendor/text_encoder.py`` does --
+    still cannot install weights whose contract this build does not implement.
     """
+    if not prefix:
+        _refuse_unsupported_quant_semantics(state_dict)
     swapped = 0
     for name, child in list(module.named_children()):
         child_prefix = f"{prefix}{name}"

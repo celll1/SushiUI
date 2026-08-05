@@ -25,20 +25,76 @@ fail loudly instead.
 This is deliberately a check on the STATE DICT, not on the file name or its
 metadata: the offline tool's output is named by the user, and a shard index
 carries no format flag the reader must trust.
+
+THE SECOND HALF: DECLARED SEMANTICS
+-----------------------------------
+Everything above answers "are these tensors codes rather than weights". A
+LAYOUT-compatible file can still be numerically incompatible, and the guards
+above cannot see it, because the incompatibility is declared in a SIDECAR
+tensor rather than in a dtype. Comfy-Org's ``int8_tensorwise`` distribution
+carries, per quantized Linear:
+
+    <layer>.weight        int8    [out, in]
+    <layer>.weight_scale  float32 [out, 1]
+    <layer>.comfy_quant   uint8   [N]   -> UTF-8 JSON
+
+and the JSON may read
+``{"format": "int8_tensorwise", "convrot": true, "convrot_groupsize": 256}``.
+``convrot`` means the stored codes quantize ``W @ H^T``, a Hadamard-rotated
+weight, not ``W``. ``int8 * weight_scale`` therefore reconstructs the ROTATED
+weight, and ``F.linear`` computes ``x H W^T`` -- the input silently passes
+through an orthogonal mixing. Not degraded: wrong. Correct inference needs the
+activation rotated too (or the weight un-rotated at load).
+
+Nothing in the layout guards notices: ``.comfy_quant`` ends in neither
+``.weight`` nor ``.weight_scale``, so the census ignores it; the swap helpers
+gate on "scale sibling present AND weight is int8", which such a file
+satisfies; and ``verify_quantized_swap``'s three counts then agree. The ONLY
+thing that stops the load today is incidental -- ``Int8Linear`` registers
+``weight_scale`` as ``(out,)`` and the file stores ``[out, 1]``, so
+``load_state_dict`` raises a size mismatch. Squeezing that scale, the obvious
+"fix", turns every guard green on a rotated model.
+
+So the semantic refusal below runs FIRST, ahead of the census and ahead of any
+shape adaptation, and a marker whose meaning this build does not implement is
+refused rather than ignored. The same trap exists for NVFP4/AWQ files, whose
+``.pre_quant_scale`` ``[in_features]`` vectors ComfyUI applies to the INPUT at
+runtime; ignoring those is equally wrong, so they are refused here too.
+
+SUPPORT IS DELIBERATELY NOT IMPLEMENTED HERE. The un-rotation is understood --
+the normalized regular Hadamard Comfy builds from ``convrot_groupsize`` is
+symmetric AND involutory (``H @ H == I``), so applying the same block rotation
+a second time recovers the original basis, which is exactly what
+comfy-kitchen's own ``dequantize_int8_convrot_weight`` does. An implementation
+would live in ``Int8Linear``'s dequant forward (carry ``convrot_groupsize``,
+rotate ``codes * scale`` by a cached ``[gs, gs]`` constant) and cost
+``out*in*gs`` FLOPs per forward. It is NOT written, and until it is, this guard
+is the whole of this repo's convrot handling. Evidence and the derivation:
+``scratchpad/minimax_h3_weight_formats.md``.
 """
 
 from __future__ import annotations
 
+import json
 from typing import Dict, List, Optional
 
 import torch
 
 __all__ = [
+    "COMFY_QUANT_MARKER_SUFFIX",
     "FLOAT8_WEIGHT_DTYPES",
     "INT_WEIGHT_DTYPES",
+    "KNOWN_COMFY_QUANT_FIELDS",
+    "KNOWN_COMFY_QUANT_FORMATS",
+    "PRE_QUANT_SCALE_SUFFIX",
     "QUANT_SCALE_SUFFIX",
     "QUANT_WEIGHT_DTYPES",
+    "UnsupportedQuantSemanticsError",
     "cast_float8_tensors",
+    "decode_comfy_quant_marker",
+    "comfy_quant_markers",
+    "unsupported_quant_semantics_report",
+    "refuse_unsupported_quant_semantics",
     "quantized_state_dict_report",
     "refuse_quantized_state_dict",
     "scaled_quantization_report",
@@ -79,7 +135,253 @@ INT_WEIGHT_DTYPES = _INT_WEIGHT_DTYPES
 QUANT_WEIGHT_DTYPES = _QUANT_WEIGHT_DTYPES
 
 
-def quantized_state_dict_report(state_dict: Dict[str, "torch.Tensor"]) -> Optional[Dict[str, object]]:
+# ---------------------------------------------------------------------------
+# Declared quantization semantics (Comfy-Org markers)
+# ---------------------------------------------------------------------------
+
+# The sidecar tensor Comfy-Org writes next to a quantized Linear. uint8, holding
+# UTF-8 JSON. Ends in neither ".weight" nor QUANT_SCALE_SUFFIX, which is exactly
+# why the census below cannot see it.
+COMFY_QUANT_MARKER_SUFFIX = ".comfy_quant"
+
+# The AWQ smoothing vector of an NVFP4/AWQ file: bf16 [in_features], applied to
+# the layer's INPUT at runtime (ComfyUI ``comfy/ops.py``:
+# ``input = input * pre_quant_scale``). A reader that installs the weights and
+# ignores this is as wrong as one that ignores a rotation, so its mere presence
+# is refused -- there is nothing to decode and nothing to be tolerant about.
+PRE_QUANT_SCALE_SUFFIX = ".pre_quant_scale"
+
+# Marker ``format`` strings whose weight LAYOUT this repo's Int8Linear/Fp8Linear
+# can express (per-output-row codes + scale). Membership here is not a promise
+# that the file loads -- Comfy stores the scale as [out, 1] and per-tensor
+# scalars, which our modules still reject on shape -- only that its declared
+# format is not, by itself, a numerically different contract.
+KNOWN_COMFY_QUANT_FORMATS = frozenset({
+    "int8_tensorwise",
+    "float8_e4m3fn",
+    "float8_e5m2",
+})
+
+# Marker fields whose meaning has been READ, from comfy-kitchen's quantizer and
+# Comfy-Org's format spec. Anything else is a semantic this build has never
+# looked at, and silently ignoring an unread field is the whole failure mode
+# this module exists to prevent -- so an unknown field is refused, not skipped.
+# ``convrot`` is listed as known and refused when TRUE: knowing what it means is
+# precisely why it cannot be ignored.
+KNOWN_COMFY_QUANT_FIELDS = frozenset({
+    "format",
+    "convrot",
+    "convrot_groupsize",
+    "full_precision_matrix_mult",
+})
+
+
+class UnsupportedQuantSemanticsError(RuntimeError):
+    """The checkpoint declares a quantization contract this build does not implement.
+
+    A ``RuntimeError`` subclass so every existing ``except RuntimeError`` around a
+    load still catches it, and a distinct type so a caller that wants to tell
+    "unreadable layout" from "unimplemented semantics" can.
+    """
+
+
+def decode_comfy_quant_marker(tensor: "torch.Tensor") -> Optional[Dict[str, object]]:
+    """Parse one ``.comfy_quant`` marker tensor; ``None`` if it cannot be read.
+
+    The marker is a 1-D uint8 tensor of UTF-8 JSON bytes. ``None`` means
+    UNKNOWN, never "absent": a marker that is present but garbled (truncated
+    shard, zero-element header proxy, a future non-JSON encoding) is positive
+    evidence that the file declares something, and the caller treats it as
+    unsupported for that reason.
+    """
+    try:
+        if tensor.numel() == 0:
+            return None
+        raw = bytes(tensor.detach().to(torch.uint8).reshape(-1).cpu().tolist())
+        parsed = json.loads(raw.decode("utf-8").rstrip("\x00"))
+    except Exception:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def comfy_quant_markers(
+    state_dict: Dict[str, "torch.Tensor"],
+) -> Dict[str, Optional[Dict[str, object]]]:
+    """``{layer path: parsed marker or None}`` for every ``.comfy_quant`` key.
+
+    The key is the layer stem (the marker suffix stripped), so it lines up with
+    the ``.weight`` / ``.weight_scale`` names the rest of this module speaks.
+    A ``None`` value is an undecodable marker -- see
+    ``decode_comfy_quant_marker``.
+    """
+    out: Dict[str, Optional[Dict[str, object]]] = {}
+    for key, value in (state_dict or {}).items():
+        if key.endswith(COMFY_QUANT_MARKER_SUFFIX):
+            out[key[: -len(COMFY_QUANT_MARKER_SUFFIX)]] = decode_comfy_quant_marker(value)
+    return out
+
+
+def unsupported_quant_semantics_report(
+    state_dict: Dict[str, "torch.Tensor"],
+) -> Optional[Dict[str, object]]:
+    """``None`` when the declared semantics are implementable here; else a census.
+
+    Pure inspection, no raising -- ``refuse_unsupported_quant_semantics`` turns
+    the census into the message. Four independent findings, any one sufficient:
+
+    * ``convrot_layers``      -- a marker declaring ``convrot: true``. The codes
+      quantize ``W @ H^T``; reconstructing with the scales alone gives a rotated
+      weight (see the module docstring).
+    * ``unknown_format_layers`` -- a marker whose ``format`` is not in
+      ``KNOWN_COMFY_QUANT_FORMATS``.
+    * ``unknown_field_layers`` -- a marker carrying a field this build has never
+      read. Ignoring an unread field is the failure mode itself.
+    * ``undecodable_markers`` -- a marker present but not parseable.
+    * ``pre_quant_scale_keys`` -- AWQ input smoothing vectors, applied to the
+      INPUT at runtime by the writer's own runtime.
+    """
+    if not state_dict:
+        return None
+    markers = comfy_quant_markers(state_dict)
+    pre_quant = [k for k in state_dict if k.endswith(PRE_QUANT_SCALE_SUFFIX)]
+    if not markers and not pre_quant:
+        return None
+
+    convrot: List[str] = []
+    unknown_format: List[str] = []
+    unknown_field: List[str] = []
+    undecodable: List[str] = []
+    formats: set = set()
+    groupsizes: set = set()
+    fields: set = set()
+    for layer, marker in sorted(markers.items()):
+        if marker is None:
+            undecodable.append(layer)
+            continue
+        declared = marker.get("format")
+        if isinstance(declared, str):
+            formats.add(declared)
+        if declared not in KNOWN_COMFY_QUANT_FORMATS:
+            unknown_format.append(layer)
+        extra = set(marker) - KNOWN_COMFY_QUANT_FIELDS
+        if extra:
+            unknown_field.append(layer)
+            fields |= extra
+        if marker.get("convrot"):
+            convrot.append(layer)
+            gs = marker.get("convrot_groupsize")
+            if isinstance(gs, int):
+                groupsizes.add(gs)
+
+    if not (convrot or unknown_format or unknown_field or undecodable or pre_quant):
+        # Markers exist, but every one declares a format and a field set this
+        # build implements and none asks for a rotation: an ordinary per-row
+        # scaled file that merely carries provenance. Let the layout guards
+        # decide it, exactly as they would with no marker at all.
+        return None
+
+    return {
+        "marker_keys": len(markers),
+        "convrot_layers": convrot,
+        "unknown_format_layers": unknown_format,
+        "unknown_field_layers": unknown_field,
+        "undecodable_markers": undecodable,
+        "pre_quant_scale_keys": pre_quant,
+        "declared_formats": sorted(formats),
+        "convrot_groupsizes": sorted(groupsizes),
+        "unknown_fields": sorted(str(f) for f in fields),
+    }
+
+
+def refuse_unsupported_quant_semantics(
+    state_dict: Dict[str, "torch.Tensor"],
+    *,
+    arch: Optional[str] = None,
+    path: Optional[str] = None,
+    label: str = "transformer",
+) -> None:
+    """Raise ``UnsupportedQuantSemanticsError`` on an unimplementable declaration.
+
+    Silent on every checkpoint that carries no ``.comfy_quant`` marker and no
+    ``.pre_quant_scale``, i.e. on everything this repo writes and on every file
+    it reads today, so it is safe to call unconditionally and EARLY. It is
+    called from ``quantized_state_dict_report`` (the census every supporting
+    loader runs before it swaps) and from the int8/fp8 detectors and swap
+    entry points themselves, so no ordering change and no scale-shape
+    adaptation can get in front of it.
+    """
+    report = unsupported_quant_semantics_report(state_dict)
+    if report is None:
+        return
+
+    where = f" ({path})" if path else ""
+    what = f"the {arch} {label}" if arch else f"the {label}"
+    reasons: List[str] = []
+    if report["convrot_layers"]:
+        layers = report["convrot_layers"]
+        gs = report["convrot_groupsizes"]
+        reasons.append(
+            f"{len(layers)} layer(s) declare \"convrot\": true"
+            + (f" (groupsize {', '.join(str(g) for g in gs)})" if gs else "")
+            + f" -- e.g. {', '.join(layers[:3])}. Their int8 codes quantize the "
+            f"HADAMARD-ROTATED weight W @ H^T, not W, so dequantizing with "
+            f"'{QUANT_SCALE_SUFFIX}' alone reconstructs a rotated weight and the "
+            f"forward silently mixes the input through an orthogonal matrix. That is "
+            f"a wrong model, not a degraded one, and it would load without a warning"
+        )
+    if report["unknown_format_layers"]:
+        layers = report["unknown_format_layers"]
+        fmts = report["declared_formats"] or ["<none>"]
+        reasons.append(
+            f"{len(layers)} layer(s) declare a quantization format this build does not "
+            f"implement ({', '.join(fmts)}) -- e.g. {', '.join(layers[:3])}"
+        )
+    if report["unknown_field_layers"]:
+        layers = report["unknown_field_layers"]
+        reasons.append(
+            f"{len(layers)} marker(s) carry field(s) whose meaning this build has never "
+            f"read ({', '.join(report['unknown_fields'])}) -- e.g. "
+            f"{', '.join(layers[:3])}; an unread field may declare another weight "
+            f"transform, and ignoring it is precisely the failure being guarded"
+        )
+    if report["undecodable_markers"]:
+        layers = report["undecodable_markers"]
+        reasons.append(
+            f"{len(layers)} '{COMFY_QUANT_MARKER_SUFFIX}' marker(s) are present but could "
+            f"not be decoded as UTF-8 JSON -- e.g. {', '.join(layers[:3])}; a marker that "
+            f"exists declares something, so an unreadable one is treated as unsupported "
+            f"rather than as absent"
+        )
+    if report["pre_quant_scale_keys"]:
+        keys = report["pre_quant_scale_keys"]
+        reasons.append(
+            f"{len(keys)} '{PRE_QUANT_SCALE_SUFFIX}' tensor(s) are present -- e.g. "
+            f"{', '.join(keys[:3])}. Those are AWQ input-smoothing vectors that the "
+            f"writer's runtime multiplies into the layer's INPUT; installing the weights "
+            f"without them is as wrong as ignoring a rotation"
+        )
+
+    raise UnsupportedQuantSemanticsError(
+        f"{what} checkpoint{where} declares weight-only quantization SEMANTICS this "
+        f"build does not implement: " + "; ".join(reasons) + ". "
+        f"What IS supported: per-output-row scaled int8/e4m3 weights with a "
+        f"'{QUANT_SCALE_SUFFIX}' sibling and NO '{COMFY_QUANT_MARKER_SUFFIX}' marker and "
+        f"NO '{PRE_QUANT_SCALE_SUFFIX}' tensor -- the layout that "
+        f"subapps/fp8_quantize/quantize_transformer_fp8.py and "
+        f"POST /models/export-quantized produce. Refusing rather than continuing: every "
+        f"other guard in this module would pass this file, because its LAYOUT is the "
+        f"supported one and only its meaning differs. Load an unquantized checkpoint (or "
+        f"one quantized by this repo) instead."
+    )
+
+
+def quantized_state_dict_report(
+    state_dict: Dict[str, "torch.Tensor"],
+    *,
+    arch: Optional[str] = None,
+    path: Optional[str] = None,
+    label: str = "transformer",
+) -> Optional[Dict[str, object]]:
     """``None`` for an ordinary checkpoint; a report dict for a quantized one.
 
     Two independent pieces of evidence, either of which is sufficient:
@@ -95,7 +397,15 @@ def quantized_state_dict_report(state_dict: Dict[str, "torch.Tensor"]) -> Option
     ``int_weight_keys``, which ``scaled_quantization_report`` needs to tell a
     plain dtype cast from a file whose scales are missing), and a few example
     key names for the message.
+
+    RAISES before it counts anything if the state dict declares quantization
+    SEMANTICS this build does not implement (``.comfy_quant`` markers,
+    ``.pre_quant_scale`` vectors). That check has to be first: such a file is
+    LAYOUT-compatible, so every count below, and every guard keyed off them,
+    agrees with it. ``arch``/``path``/``label`` are optional and feed only that
+    message.
     """
+    refuse_unsupported_quant_semantics(state_dict, arch=arch, path=path, label=label)
     if not state_dict:
         return None
     scale_keys: List[str] = []
@@ -314,7 +624,9 @@ def refuse_quantized_state_dict(
     SCALED quantization (a ``.weight_scale`` key), or scale-less int8/uint8
     weights (codes with no meaning as numbers, unlike a float8 cast).
     """
-    report = scaled_quantization_report(quantized_state_dict_report(state_dict), arch=arch, path=path, label=label)
+    report = scaled_quantization_report(
+        quantized_state_dict_report(state_dict, arch=arch, path=path, label=label),
+        arch=arch, path=path, label=label)
     if report is None:
         return
     try:

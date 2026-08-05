@@ -1088,7 +1088,7 @@ def resolve_video_defaults(params: Dict[str, Any], provided_keys, arch: Optional
 
 
 def validate_video_geometry(params: Dict[str, Any], arch: Optional[str],
-                            provided_keys=None, *, frame_key: str = "num_frames") -> List[str]:
+                            *, frame_key: str = "num_frames") -> List[str]:
     """Validate (and, where the arch says so, SNAP) a video request's geometry.
 
     Spec-driven: every rule comes from the arch's ``TemporalSpec``
@@ -1102,7 +1102,11 @@ def validate_video_geometry(params: Dict[str, Any], arch: Optional[str],
       invalid one is a hard 400 on an arch whose spec sets
       ``snap_invalid_length=False`` (LTX-2.3 — this is its documented, shipped
       behaviour) and is SNAPPED to the nearest valid length on an arch that sets
-      it True (MiniMax-H3), with a warning;
+      it True (MiniMax-H3), rounding UP to the next encodable length, with a
+      warning. The warning fires whether the offending value was sent by the
+      client or resolved from a default — deliberately, because a client that
+      asked for 130 frames and got 141 must be told either way — which is why
+      this function needs no knowledge of which keys the client actually set;
     * ``frame_rate`` is forced to ``fps_fixed`` where the arch has one, with a
       warning.
 

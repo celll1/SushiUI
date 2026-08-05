@@ -323,5 +323,113 @@ def test_temporal_spec_matches_the_measured_grid():
     # decoder needs 7. The spec must refuse it.
     assert not spec.is_valid_length(5)
     assert not spec.is_valid_length(21)
-    assert spec.snap_length(130) == 124
+    # Snapping rounds UP to the next encodable length, matching MiniMax-H3's own
+    # `align_num_frames`; an over-long request clamps to the largest length in
+    # the production range, and a too-short one to the floor.
+    assert spec.snap_length(130) == 141
+    assert spec.snap_length(125) == 141
+    assert spec.snap_length(141) == 141
     assert spec.snap_length(400) == 345
+    assert spec.snap_length(30) == 124
+    # The smoke gate lowers the floor to the VAE's, and rounding is still up.
+    assert spec.snap_length(30, smoke=True) == 39
+    assert spec.snap_length(2, smoke=True) == 22
+
+
+def test_suggested_lengths_are_offerable_clip_lengths():
+    """A length can be VALID without being worth suggesting."""
+    from core.models.components.wiring import LTX2_TEMPORAL, MINIMAX_H3_TEMPORAL
+
+    # LTX-2.3 accepts a 1-frame clip (unchanged) but must not OFFER one.
+    assert LTX2_TEMPORAL.is_valid_length(1)
+    assert LTX2_TEMPORAL.suggested_lengths(4) == [9, 17, 25, 33]
+    assert MINIMAX_H3_TEMPORAL.suggested_lengths(3) == [124, 141, 158]
+
+
+# ---------------------------------------------------------------------------
+# The preview hook
+# ---------------------------------------------------------------------------
+
+class _StubScheduler:
+    """Just enough scheduler to drive the loop, with an identifiable step."""
+
+    def __init__(self, timesteps):
+        self.timesteps = torch.tensor(timesteps, dtype=torch.float32)
+
+    def set_shift(self, shift):
+        self.shift = shift
+
+    def set_timesteps(self, steps, device=None):
+        pass
+
+    def set_begin_index(self, index):
+        pass
+
+    def step(self, velocity, timestep, sample, return_dict=False):
+        # Deliberately NOT `sample + sigma * velocity`, so a preview computed
+        # from the post-step tensor cannot accidentally look right.
+        return (sample - 0.25 * velocity,)
+
+
+def test_step_callback_gets_x0_from_x_t_as_unpatchified_latents():
+    """The preview estimate is ``x_t + sigma_t * v_t``, in LATENT space.
+
+    Two failure modes this pins, both of which produce a plausible-looking
+    preview: reading ``x_{t+1}`` (the tensor the scheduler just wrote) instead
+    of ``x_t`` (the one the velocity was predicted from), and handing the
+    callback PACKED ROWS, which no preview decoder in this repo can read.
+    """
+    latent_frames, latent_height, latent_width, channels = 2, 4, 4, 24
+    layout = ops.build_packed_layout(3, latent_frames, latent_height, latent_width, 5)
+    num_video_rows = layout["video_indices"].numel()
+    num_audio_rows = layout["audio_indices"].numel()
+    row_width = channels * 4
+
+    torch.manual_seed(0)
+    video_rows = torch.randn(num_video_rows, row_width)
+    audio_rows = torch.randn(num_audio_rows, 32)
+    video_rows_before = video_rows.clone()
+    velocity = torch.full((1, num_video_rows, row_width), 2.0)
+
+    def transformer(**kwargs):
+        return velocity, torch.zeros(1, num_audio_rows, 32)
+
+    seen = []
+    ops.denoise(
+        transformer, _StubScheduler([0.75]), _StubScheduler([0.75]),
+        prompt_embeds=torch.zeros(1, 3, 8), layout=layout,
+        video_rows=video_rows, audio_rows=audio_rows, num_inference_steps=1,
+        device="cpu", step_callback=lambda *a: seen.append(a),
+        preview_latent_shape=(latent_frames, latent_height, latent_width),
+        latent_channels=channels,
+    )
+
+    assert len(seen) == 1
+    index, total, latents, extra, pred_x0 = seen[0]
+    assert (index, total, extra) == (0, 1, None)
+    # Latents, not rows: [1, C, T, H, W].
+    assert latents.shape == (1, channels, latent_frames, latent_height, latent_width)
+    assert pred_x0.shape == latents.shape
+    # x0 = x_t + sigma * v, from the PRE-step rows (sigma = 1 - t = 0.25).
+    expected = ops.unpatchify_video_rows(video_rows_before + 0.25 * velocity[0],
+                                         latent_frames, latent_height, latent_width,
+                                         latent_channels=channels)
+    assert torch.allclose(pred_x0, expected, atol=1e-6)
+    # ... and the "latents" argument is the post-step state, also unpatchified.
+    assert torch.allclose(
+        latents,
+        ops.unpatchify_video_rows(video_rows, latent_frames, latent_height, latent_width,
+                                  latent_channels=channels),
+        atol=1e-6)
+
+
+def test_step_callback_without_preview_geometry_is_refused():
+    """A preview cannot be built from rows alone; the loop says so up front."""
+    layout = ops.build_packed_layout(3, 2, 4, 4, 5)
+    with pytest.raises(ValueError, match="preview_latent_shape"):
+        ops.denoise(
+            lambda **kwargs: None, _StubScheduler([0.75]), _StubScheduler([0.75]),
+            prompt_embeds=torch.zeros(1, 3, 8), layout=layout,
+            video_rows=torch.zeros(layout["video_indices"].numel(), 96),
+            audio_rows=torch.zeros(layout["audio_indices"].numel(), 32),
+            num_inference_steps=1, device="cpu", step_callback=lambda *a: None)

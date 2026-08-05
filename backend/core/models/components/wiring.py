@@ -211,7 +211,13 @@ class TemporalSpec:
     # route: LTX-2.3 has answered an invalid `num_frames` with a 400 since it
     # shipped and its openapi documents that, while MiniMax-H3's own reference
     # implementation rounds up to the next encodable length with a warning.
+    # `snap_length` rounds UP for the same reason.
     snap_invalid_length: bool = False
+    # The shortest length worth OFFERING to a client (None = the production
+    # floor). Validity and suggestion are different questions: LTX-2.3's grid
+    # starts at 1, and a 1-frame "video" is a valid request but not a clip
+    # length any UI should list.
+    suggested_min_frames: Optional[int] = None
     # Environment gate that lowers the PRODUCTION floor to the decodable floor.
     # Grid points below `min_frames` (MiniMax-H3: 22 ... 107) are valid for the
     # VAE and are what a smoke test or a training clip uses; they are simply not
@@ -233,33 +239,33 @@ class TemporalSpec:
         )
 
     def snap_length(self, num_frames: int, smoke: bool = False) -> int:
-        """The nearest valid length inside the production bounds.
+        """The next valid length AT OR ABOVE ``num_frames``, inside the bounds.
 
-        Ties go DOWN (the shorter clip), so a snap never silently costs more
-        compute than the caller asked for.
+        Rounds UP, which is what MiniMax-H3's own reference implementation does
+        (`align_num_frames` rounds a requested length up to the next encodable
+        one): a snap therefore never drops content the caller asked for. It is
+        clamped into ``[floor, max_frames]`` on the grid, so an over-long
+        request still lands on the largest length the model can generate.
         """
         lo = self.floor(smoke)
-        hi = self.max_frames if self.max_frames is not None else max(lo, num_frames)
-        # Round to the grid, then clamp into [lo, hi] on the grid.
-        k = round((num_frames - self.frame_offset) / self.frame_multiple)
-        candidates = {k - 1, k, k + 1}
-        lengths = sorted(
-            length
-            for length in (c * self.frame_multiple + self.frame_offset for c in candidates)
-            if lo <= length <= hi
-        )
-        if not lengths:
-            # The request is outside the bounds entirely: clamp to the nearest
-            # in-range grid point.
-            k_lo = -(-(lo - self.frame_offset) // self.frame_multiple)
-            k_hi = (hi - self.frame_offset) // self.frame_multiple
-            k = min(max(k, k_lo), k_hi)
-            return k * self.frame_multiple + self.frame_offset
-        return min(lengths, key=lambda length: (abs(length - num_frames), length))
+        hi = self.max_frames
+        # Ceiling division onto the grid, then clamp into [lo, hi] on the grid.
+        k = -(-(num_frames - self.frame_offset) // self.frame_multiple)
+        k_lo = -(-(lo - self.frame_offset) // self.frame_multiple)
+        k = max(k, k_lo)
+        if hi is not None:
+            k = min(k, (hi - self.frame_offset) // self.frame_multiple)
+        return k * self.frame_multiple + self.frame_offset
 
     def suggested_lengths(self, count: int = 8) -> List[int]:
-        """In-range valid lengths, for a client building a clip-length list."""
-        lo = max(self.min_frames, self.min_decodable_frames)
+        """In-range valid lengths, for a client building a clip-length list.
+
+        Starts at ``suggested_min_frames`` where the arch sets one — a length
+        can be VALID without being worth offering in a clip-length dropdown
+        (LTX-2.3 accepts a 1-frame clip, which is a still image).
+        """
+        lo = max(self.min_frames, self.min_decodable_frames,
+                 self.suggested_min_frames or 0)
         k = -(-(lo - self.frame_offset) // self.frame_multiple)
         out: List[int] = []
         while len(out) < count:
@@ -279,6 +285,10 @@ LTX2_TEMPORAL = TemporalSpec(
     min_decodable_frames=1, latent_frames=lambda t: (t - 1) // 8 + 1,
     fps_fixed=None, default_clip_lengths=(9, 17, 25, 33, 49),
     pixel_align=32, max_pixel_hw=None, snap_invalid_length=False,
+    # A 1-frame clip stays VALID (nothing about LTX-2.3's validation changes);
+    # it is simply not suggested. 9 = 8*1 + 1 is the shortest length that is a
+    # clip rather than a still, and is where `default_clip_lengths` starts too.
+    suggested_min_frames=9,
 )
 
 # MiniMax-H3. Everything here is MEASURED (Phase 0):

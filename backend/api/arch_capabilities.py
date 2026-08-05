@@ -325,9 +325,12 @@ _add("minimax_h3", "attention_impl",
 _add("minimax_h3", "vae_override",
      "VAE override is not supported on MiniMax-H3: it owns two autoencoders (a 24-channel causal video VAE and a separate 32-channel audio VAE), its video VAE takes ImageNet-normalised RGB rather than [-1, 1], and its tiling policy is pinned because changing it changes the output")
 
-# Training methods MiniMax-H3 does not offer. Enforced three ways: this table,
-# the absence of a full-parameter adapter for the arch, and a hard refusal in
-# the full_finetune trainer branch.
+# Training methods MiniMax-H3 does not offer. Enforced today by this table (a
+# client filters its method dropdown from it) and by the absence of any
+# MiniMax-H3 training code at all -- there is no arch handler, no adapter and no
+# trainer branch for it yet. The hard `ValueError` in the `full_finetune`
+# trainer branch lands with the training phase, together with the LoRA path it
+# has to refuse next to.
 _add_training_unsupported(
     "minimax_h3", "full_finetune",
     "MiniMax-H3's DiT is a 33 B dense transformer; its parameters, gradients and optimizer state do not fit the single-GPU 48 GB envelope this integration targets, so only LoRA training is implemented")
@@ -352,8 +355,17 @@ def video_constraints_payload() -> Dict[str, Dict[str, Any]]:
             "max_frames": spec.max_frames,
             "min_decodable_frames": spec.min_decodable_frames,
             "fps_fixed": spec.fps_fixed,
+            # ORIENTATION-AGNOSTIC `[short_edge, long_edge]`, NOT `[height,
+            # width]`: route validation compares min(w, h) against the first
+            # entry and max(w, h) against the second, so a client that read it
+            # as height/width would build wrong portrait options.
             "max_pixel_hw": list(spec.max_pixel_hw) if spec.max_pixel_hw else None,
             "pixel_align": spec.pixel_align,
+            # What an off-grid / out-of-range clip length does. The two video
+            # archs differ on exactly this (LTX-2.3 answers 400, MiniMax-H3
+            # snaps up and warns), and it cannot be derived from the fields
+            # above, so a client cannot get it right without this flag.
+            "snap_invalid_length": spec.snap_invalid_length,
             "suggested_frames": spec.suggested_lengths(),
         }
     return payload

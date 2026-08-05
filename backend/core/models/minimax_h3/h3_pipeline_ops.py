@@ -419,7 +419,18 @@ def encode_prompt(
     position_ids = torch.arange(sequence_length, device=device).unsqueeze(0)
     # Qwen3-VL's rotary expands a 2-D `position_ids` to its three mrope
     # sections, so a text-only presentation gets ordinary RoPE.
-    cos, sin = language_model.rotary_emb.to(device)(hidden, position_ids)
+    # The rotary module is moved for the length of this call and PUT BACK: it is
+    # the one submodule this function would otherwise mutate, and leaving it on
+    # the GPU makes any later CPU-side forward through the same object fail on a
+    # device mismatch (its `inv_freq` is a computed non-persistent buffer, so
+    # moving it costs nothing and detaches nothing from the file mapping).
+    rotary = language_model.rotary_emb
+    rotary_device = next((b.device for b in rotary.buffers()), None)
+    try:
+        cos, sin = rotary.to(device)(hidden, position_ids)
+    finally:
+        if rotary_device is not None:
+            rotary.to(rotary_device)
     causal_mask = torch.full((1, 1, sequence_length, sequence_length), float("-inf"),
                              device=device, dtype=torch.float32).triu(1)
 
@@ -465,6 +476,9 @@ def denoise(
     device: torch.device | str = "cuda",
     progress_callback: Optional[Callable[[int, int], None]] = None,
     step_callback: Optional[Callable[..., None]] = None,
+    preview_latent_shape: Optional[Tuple[int, int, int]] = None,
+    latent_channels: int = 24,
+    patch_size: Tuple[int, int, int] = (1, 2, 2),
     keyframe_noise_aug: float = VISUAL_COND_TIMESTEP,
     label: str = "MiniMax-H3",
 ) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -478,7 +492,20 @@ def denoise(
     evaluations. That is the scheduler's own contract (and K0.4 confirmed the
     grid's duplicate-collapse never fires at any step count this integration
     uses, so the mapping is exactly 1:1).
+
+    ``step_callback`` is the latent-preview hook, called as
+    ``(i, total, latents, None, pred_x0)`` with BOTH tensors unpatchified to
+    ``[1, C, T_lat, H_lat, W_lat]`` — the packed row layout is meaningless to
+    every preview decoder in this repo. It therefore needs the latent geometry:
+    pass ``preview_latent_shape=(T_lat, H_lat, W_lat)`` whenever a callback is
+    given (a missing shape is a ValueError rather than a silently packed
+    preview).
     """
+    if step_callback is not None and preview_latent_shape is None:
+        raise ValueError(
+            "denoise(step_callback=...) also needs preview_latent_shape=(T_lat, H_lat, W_lat): the "
+            "preview estimate is handed over as latents, not as packed rows.")
+
     torch_device = torch.device(device)
     scheduler.set_shift(SHIFT_VIDEO)
     audio_scheduler.set_shift(SHIFT_AUDIO)
@@ -521,6 +548,15 @@ def denoise(
             **layout_kwargs,
         )
 
+        # x0 = x_t + sigma_t * v_t -- the H3 convention, `+` not `-`. It reads
+        # x_t, the latent this step's velocity was predicted FROM, so it is
+        # computed BEFORE the scheduler overwrites those rows with x_{t+1}.
+        pred_x0_rows = None
+        if step_callback is not None:
+            sigma = 1.0 - float(timestep)
+            pred_x0_rows = (video_rows[n_cond_video:].float()
+                            + sigma * video_velocity[0, n_cond_video:].float())
+
         # Only the GENERATED rows are ever written, so any conditioning anchor
         # survives the whole loop by construction rather than by re-imposition.
         video_rows[n_cond_video:] = scheduler.step(
@@ -537,11 +573,12 @@ def denoise(
                 print(f"[{label}] progress_callback raised: {exc}")
         if step_callback is not None:
             try:
-                # x0 = x_t + sigma * v -- the H3 convention, `+` not `-`. Handed
-                # over as the preview estimate; the caller decodes it (or not).
-                sigma = 1.0 - float(timestep)
-                pred_x0 = video_rows[n_cond_video:] + sigma * video_velocity[0, n_cond_video:].float()
-                step_callback(i, total_steps, video_rows, None, pred_x0)
+                latent_frames, latent_height, latent_width = preview_latent_shape
+                unpack = lambda rows: unpatchify_video_rows(  # noqa: E731
+                    rows, latent_frames, latent_height, latent_width,
+                    latent_channels=latent_channels, patch_size=patch_size)
+                step_callback(i, total_steps, unpack(video_rows[n_cond_video:]), None,
+                              unpack(pred_x0_rows))
             except Exception as exc:
                 print(f"[{label}] step_callback raised: {exc}")
 
@@ -576,6 +613,19 @@ def decode_video(
     * the spatial TILING POLICY is pinned by the loader and is NOT a memory
       knob here: flipping it moves the decode by rel-RMS 0.212 on the same
       input (K0.5 supplementary). Nothing in this function touches it.
+
+    Two notes on the fp16 weights the loader casts to (MEASURED, Phase 2, with
+    the tiling policy held fixed on both arms: PSNR 77.74 dB / rel-RMS 2.764e-04
+    against a full-fp32 decode, 2.2 s / 5.19 GB against 7.3 s / 13.33 GB):
+
+    * upstream instead keeps fp32 weights and wraps this decode in
+      ``torch.autocast(float16)``, which is not the same computation (autocast
+      leaves the norms and reductions in fp32). The difference from our shape is
+      bounded by the fp32 A/B above and has not been separately measured;
+    * fp16 weights make ``torch.rms_norm`` fall off its fused path
+      ("Mismatch dtype between input and weight") inside the decoder. It is
+      numerically harmless -- the A/B above IS the fp16 path -- and costs only a
+      little of the 2.2 s.
     """
     torch_device = torch.device(device)
     mean = torch.tensor(list(latents_mean), device=torch_device).view(1, -1, 1, 1, 1)

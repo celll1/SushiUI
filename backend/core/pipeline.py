@@ -2683,7 +2683,10 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                 against the loaded arch's overlay by the route).
             progress_callback: Called as (step, total_steps) at each denoise step.
             step_callback: Per-step latent preview hook. Consumed by MiniMax-H3
-                (as `(i, total, latents, None, pred_x0)`); unused for LTX-2.3,
+                as `(i, total, latents, None, pred_x0)`, where both tensors are
+                unpatchified `[1, C, T_lat, H_lat, W_lat]` latents (NOT packed
+                rows) and `pred_x0` is `x_t + sigma_t * v_t` off the latent the
+                step's velocity was predicted from; unused for LTX-2.3,
                 whose pipeline exposes no equivalent. The video routes pass
                 None today — there is no video preview surface yet.
 

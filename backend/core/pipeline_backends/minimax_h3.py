@@ -109,12 +109,21 @@ class MiniMaxH3Mixin:
         device = "cuda" if torch.cuda.is_available() else "cpu"
         torch_device = torch.device(device)
 
+        # Every default this backend reads comes from the ONE resolver in
+        # `param_defaults` (a route-level or backend-level literal is exactly
+        # what that file exists to prevent). The route already resolved the
+        # request against this same map; resolving it again here only covers an
+        # internal caller (a smoke script, a training preview) that built the
+        # dict by hand.
+        from api.param_defaults import video_defaults_for_arch
+        defaults = video_defaults_for_arch("minimax_h3")
+
         prompt = (params.get("prompt") or "").strip()
-        width = int(params.get("width", 1344))
-        height = int(params.get("height", 768))
-        num_frames = int(params.get("num_frames", 124))
-        num_inference_steps = int(params.get("num_inference_steps", 20))
-        audio_enable = bool(params.get("audio_enable", True))
+        width = int(params.get("width", defaults["width"]))
+        height = int(params.get("height", defaults["height"]))
+        num_frames = int(params.get("num_frames", defaults["num_frames"]))
+        num_inference_steps = int(params.get("num_inference_steps", defaults["num_inference_steps"]))
+        audio_enable = bool(params.get("audio_enable", defaults["audio_enable"]))
 
         # The route has already validated and, where needed, snapped these (see
         # `TemporalSpec` + the txt2vid route). Re-derive the geometry rather than
@@ -200,6 +209,11 @@ class MiniMaxH3Mixin:
                     device=device,
                     progress_callback=progress_callback,
                     step_callback=step_callback,
+                    # Preview geometry: the loop hands the callback LATENTS, not
+                    # packed rows, so it needs the shape to unpatchify into.
+                    preview_latent_shape=(latent_frames, latent_height, latent_width),
+                    latent_channels=int(components.get("latent_channels", 24)),
+                    patch_size=tuple(components["transformer_config"]["patch_size"]),
                 )
         finally:
             # Back to the CPU before ANY decode: the video VAE's ViT decoder is
@@ -274,11 +288,13 @@ class MiniMaxH3Mixin:
             audio_out = ops.trim_audio_to_video(
                 waveform, num_frames, fps=float(components.get("fps", 24.0)),
                 sample_rate=audio_sample_rate)
-            peak = audio_out.abs().max()
-            if torch.isfinite(peak) and peak > 1.0:
-                # The decoder is not hard-clamped; a peak over full scale would
-                # wrap on the 16-bit mux instead of merely being loud.
-                audio_out = audio_out / peak
+            # The waveform is handed over AS THE DECODER PRODUCED IT. An earlier
+            # revision divided by the peak whenever it exceeded full scale, on
+            # the premise that the 16-bit mux would wrap; it does not --
+            # `utils/video_utils.py` clips to [-1, 1] before the int16 cast. A
+            # peak normalisation is therefore an unmeasured global gain change
+            # that neither MiniMax's reference implementation nor the LTX-2.3
+            # path applies, i.e. a silent divergence on any loud clip.
             print(f"[MiniMax-H3] audio decode: {audio_out.shape[-1]} sample(s) @ "
                   f"{audio_sample_rate} Hz")
         else:

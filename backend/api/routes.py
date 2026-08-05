@@ -49,6 +49,7 @@ from api.param_defaults import (
     TIMESTEP_SAMPLING_DEFAULTS_BY_ARCH,
     BUNDLE_VAE_DEFAULTS_BY_ARCH,
     VIDEO_GEN_ARCH_OVERLAYS,
+    video_defaults_for_arch,
 )
 from api.generation_utils import (
     process_controlnet_configs,
@@ -2450,7 +2451,7 @@ async def generate_txt2vid(
         # clip length. Inside the try because a snap emits a `warnings[]` entry,
         # which needs the generation context started above; a raise from here is
         # still re-raised as a 4xx by the except clause below.
-        validate_video_geometry(params, _vid_arch, request.model_fields_set)
+        validate_video_geometry(params, _vid_arch)
 
         # VAE/TE overrides are unsupported on both video archs
         # (accepted-but-ignored). The plan drops them (arch gating) and
@@ -3299,7 +3300,15 @@ async def generate_img2vid(
         _override_plan = plan_overrides(pipeline_manager, params.get("vae_path"), params.get("text_encoder_path"))
         apply_overrides(pipeline_manager, _override_plan)
         _ltx2_arch = (pipeline_manager.current_model_info or {}).get("type")
-        check_arch_capabilities(params, _ltx2_arch)
+        # The VIDEO defaults, not the image ones: `guidance_scale`,
+        # `num_frames`, `frame_rate` and friends do not exist in
+        # GENERATION_DEFAULTS at all, so without this every video request would
+        # read as having set them to a non-default value -- and any arch that
+        # declares one of them unsupported would warn on EVERY request,
+        # including the default one. Identical values for LTX-2.3 today; it
+        # stops being a no-op the moment a second arch reaches this endpoint.
+        check_arch_capabilities(params, _ltx2_arch,
+                                defaults=video_defaults_for_arch(_ltx2_arch, IMG2VID_DEFAULTS))
 
         print(f"img2vid generation params: {sanitize_params_for_logging(params)}")
 
@@ -3599,7 +3608,11 @@ async def generate_outpaint_video(
         _override_plan = plan_overrides(pipeline_manager, params.get("vae_path"), params.get("text_encoder_path"))
         apply_overrides(pipeline_manager, _override_plan)
         _ltx2_arch = (pipeline_manager.current_model_info or {}).get("type")
-        check_arch_capabilities(params, _ltx2_arch)
+        # See the same call in /generate/img2vid: judged against the VIDEO
+        # defaults (here the outpaint ones), or every request looks like it set
+        # every video-only key by hand.
+        check_arch_capabilities(params, _ltx2_arch,
+                                defaults=video_defaults_for_arch(_ltx2_arch, OUTPAINT_VIDEO_DEFAULTS))
 
         print(f"outpaint_vid generation params: {sanitize_params_for_logging(params)}")
 

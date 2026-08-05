@@ -158,9 +158,10 @@ paths:
         * `video_constraints` — architecture name -> the temporal/spatial
           generation constraints of a VIDEO architecture (`frame_multiple`,
           `frame_offset`, `min_frames`, `max_frames`, `min_decodable_frames`,
-          `fps_fixed`, `max_pixel_hw`, `pixel_align`, `suggested_frames`), so a
-          client can generate a valid clip-length list instead of hardcoding
-          one. Absent for non-video architectures.
+          `fps_fixed`, `max_pixel_hw` — `[short_edge, long_edge]`, not
+          `[height, width]` —, `pixel_align`, `snap_invalid_length`,
+          `suggested_frames`), so a client can generate a valid clip-length
+          list instead of hardcoding one. Absent for non-video architectures.
       tags: [Schema]
       responses:
         '200':
@@ -394,13 +395,19 @@ paths:
           num_frames=121, frame_rate=24.0, height=512, width=768.
 
         **MiniMax-H3 constraints (validated before generation):**
-        - `width` and `height` must both be divisible by 32, and neither edge
-          may exceed 1344 / the short edge 768 (the released canvas envelope).
+        - `width` and `height` must both be divisible by 32. SushiUI
+          additionally restricts the canvas to a short edge <= 768 and a long
+          edge <= 1344. That restriction is SushiUI policy, not a model limit:
+          MiniMax's own implementation enforces only the divisibility rule for
+          an explicit width/height, and applies its 768 short edge / 768*1344
+          area budget only when both are omitted.
         - `num_frames` must be of the form `17 * n + 5` with `n >= 1` (the
           video VAE's chunking; its shortest decodable clip is 22 frames), and
           must fall in `[124, 345]`. A value that is off the grid or outside
-          the range is SNAPPED to the nearest valid length and a `warnings[]`
-          entry states the rule — including when the value came from the client.
+          the range is SNAPPED — rounded UP to the next valid length, as
+          MiniMax-H3's own reference implementation does, then clamped into
+          `[124, 345]` — and a `warnings[]` entry states the rule, including
+          when the value came from the client.
         - `frame_rate` is fixed at 24.0; any other value is forced to 24.0 with
           a warning.
         - `guidance_scale` and `negative_prompt` are ignored: guidance is
@@ -5969,10 +5976,21 @@ components:
             * `min_decodable_frames` — a hard VAE floor that nothing overrides.
             * `fps_fixed` — the architecture's fixed frame rate, or null when
               the source rate is preserved.
-            * `max_pixel_hw` — `[height, width]` envelope, orientation-agnostic,
-              or null when uncapped.
+            * `max_pixel_hw` — `[short_edge, long_edge]` canvas envelope
+              (orientation-agnostic: the SHORTER of width/height is compared
+              against the first entry and the longer against the second, so
+              `[768, 1344]` admits both 1344x768 and 768x1344), or null when
+              uncapped. It is NOT `[height, width]`.
             * `pixel_align` — the multiple both spatial axes round to.
-            * `suggested_frames` — valid in-range lengths a client can offer.
+            * `snap_invalid_length` — what an off-grid or out-of-range clip
+              length does: `false` = the request is refused with a 400
+              (LTX-2.3), `true` = it is rounded UP to the next valid length and
+              a `warnings[]` entry states the rule (MiniMax-H3). The two video
+              architectures differ here, and the behaviour cannot be derived
+              from the fields above.
+            * `suggested_frames` — valid in-range lengths a client can offer in
+              a clip-length list. This is a subset of what validation accepts:
+              LTX-2.3 accepts a 1-frame clip but does not suggest one.
           additionalProperties:
             type: object
             additionalProperties: true
@@ -5986,6 +6004,7 @@ components:
               fps_fixed: 24.0
               max_pixel_hw: [768, 1344]
               pixel_align: 32
+              snap_invalid_length: true
               suggested_frames: [124, 141, 158, 175, 192]
         runtime_int8_archs:
           type: array
@@ -6880,17 +6899,17 @@ components:
           type: integer
           default: 768
           description: >-
-            Video width in pixels. Must be divisible by 32. On MiniMax-H3 it
-            must additionally fit the released canvas envelope (long edge
-            <= 1344, short edge <= 768).
+            Video width in pixels. Must be divisible by 32. On MiniMax-H3
+            SushiUI additionally restricts the canvas to a short edge <= 768
+            and a long edge <= 1344 (SushiUI policy, not a model limit).
           example: 768
         height:
           type: integer
           default: 512
           description: >-
-            Video height in pixels. Must be divisible by 32. On MiniMax-H3 it
-            must additionally fit the released canvas envelope (long edge
-            <= 1344, short edge <= 768).
+            Video height in pixels. Must be divisible by 32. On MiniMax-H3
+            SushiUI additionally restricts the canvas to a short edge <= 768
+            and a long edge <= 1344 (SushiUI policy, not a model limit).
           example: 512
         num_frames:
           type: integer

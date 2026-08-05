@@ -1143,6 +1143,18 @@ optimizer_cautious: false  # Must be false when schedule_free=true
 lr_scheduler: constant  # Schedule-Free handles LR internally
 ```
 
+**Block Swap との併用**: `blocks_to_swap > 0` の場合、RingBuffer optimizer は
+per-parameter の fused backward hook で更新する（`base_trainer.
+_setup_fused_backward_pass`）。この hook は標準（非 Schedule-Free）の 8-bit
+更新のみを実装しており、AdamW では `state['exp_avg']` / `state['exp_avg_sq']` /
+`state['absmax1']` / `state['absmax2']`、Lion では `state['exp_avg']` /
+`state['absmax']` を読む。Schedule-Free モードの `_init_param_state` は
+`exp_avg` / `absmax1`（Lion では `exp_avg` / `absmax`）を確保せず `z` /
+`absmax_z` を確保するため、組み合わせると backward の途中で KeyError になる。
+そのため `blocks_to_swap > 0` + `optimizer_schedule_free: true` は
+optimizer setup 時点で拒否される（`blocks_to_swap: 0` にすると
+`optimizer.step()` 内の Schedule-Free パスが動作する）。
+
 **Standard 8-bit（Schedule-Freeなし）**:
 
 ```yaml

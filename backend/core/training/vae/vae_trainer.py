@@ -639,7 +639,11 @@ class VaeTrainer:
                 f"allocated on the GPU - the same state placement as "
                 f"{plain}. The ring-buffer part of the name does not apply "
                 f"here; {plain} is the unambiguous spelling of what this run "
-                f"gets.")
+                f"gets. Its cautious / Schedule-Free / stochastic-rounding "
+                f"options are not part of the VAE config: build_optimizer "
+                f"passes optimizer, params, lr and weight_decay only, and "
+                f"vae_config refuses the other optimizer_* keys instead of "
+                f"accepting them.")
 
     def build_optimizer(self):
         from core.training.optimizer_factory import OptimizerFactory

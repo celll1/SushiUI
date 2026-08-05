@@ -137,15 +137,15 @@ class LoRATrainer(BaseTrainer):
             self.adapter = FLUX2LoRAAdapter(self, self.lora_rank, self.lora_alpha, self.lora_dtype)
             print(f"{self.log_prefix} Using FLUX2LoRAAdapter")
         elif self.is_lens:
-            from core.models.lens.lens_lora import DEFAULT_SCOPE as LENS_DEFAULT_SCOPE
+            from core.models.lens.lens_lora import parse_scope_csv
             scope_csv = (getattr(self, "lens_lora_scope", "")
                           or self.config.get("lens_lora_scope", "")
                           or "img_attn,txt_attn,img_mlp,txt_mlp")
-            scope = dict(LENS_DEFAULT_SCOPE)
-            for tok in scope_csv.split(","):
-                tok = tok.strip()
-                if tok in scope:
-                    scope[tok] = True
+            # parse_scope_csv builds from an all-false scope, so unticking a
+            # group in the panel actually removes it. The previous inline parse
+            # started from DEFAULT_SCOPE and only set True, so a narrowing
+            # selection was silently ignored. Same shape as every sibling arch.
+            scope = parse_scope_csv(scope_csv)
             self.adapter = LensLoRAAdapter(
                 self, self.lora_rank, self.lora_alpha, self.lora_dtype, scope=scope,
             )

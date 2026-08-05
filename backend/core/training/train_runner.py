@@ -2535,6 +2535,28 @@ def main():
             train_text_encoder = train_config.get('train_text_encoder', False)
             train_image_encoder = train_config.get('train_image_encoder', False)
 
+            # Get optimizer options and hyperparameters from train_config.
+            # Same keys, same defaults and the same read sites as the LoRA /
+            # ReLoRA / ControlNet branches. They were absent here, so a full
+            # fine-tune silently ran with the BaseTrainer fallbacks no matter
+            # what the user set: betas (0.9, 0.999), eps 1e-8, weight_decay 0.01,
+            # no cautious masking, no Schedule-Free -- and, because
+            # optimizer_warmup_steps also feeds the LR scheduler's
+            # num_warmup_steps, no LR warmup at all.
+            optimizer_is_paged = train_config.get('optimizer_is_paged', False)
+            optimizer_cautious = train_config.get('optimizer_cautious', False)
+            optimizer_beta1 = train_config.get('optimizer_beta1')
+            optimizer_beta2 = train_config.get('optimizer_beta2')
+            optimizer_epsilon = train_config.get('optimizer_epsilon')
+            optimizer_weight_decay = train_config.get('optimizer_weight_decay')
+
+            # Schedule-Free optimizer options (RingBuffer optimizers only)
+            optimizer_schedule_free = train_config.get('optimizer_schedule_free', False)
+            optimizer_warmup_steps = train_config.get('optimizer_warmup_steps', 0)
+            optimizer_schedule_free_r = train_config.get('optimizer_schedule_free_r', 0.0)
+            optimizer_schedule_free_weight_lr_power = train_config.get('optimizer_schedule_free_weight_lr_power', 2.0)
+            optimizer_use_radam = train_config.get('optimizer_use_radam', False)
+
             # Stochastic rounding for BF16 parameter updates (RingBuffer optimizers).
             # Full fine-tuning is where this matters: the block above forces
             # weight_dtype=bf16 for Z-Image, Anima, Ideogram 4, MiniT2I, Krea 2
@@ -2573,6 +2595,19 @@ def main():
                 activation_dispatch_residual_frac=train_config.get('activation_dispatch_residual_frac', 0.85),
                 activation_dispatch_threshold_mb=train_config.get('activation_dispatch_threshold_mb', 4),
                 num_optimizer_groups=train_config.get('num_optimizer_groups', 0),
+                # Optimizer options and hyperparameters
+                optimizer_is_paged=optimizer_is_paged,
+                optimizer_cautious=optimizer_cautious,
+                optimizer_beta1=optimizer_beta1,
+                optimizer_beta2=optimizer_beta2,
+                optimizer_epsilon=optimizer_epsilon,
+                optimizer_weight_decay=optimizer_weight_decay,
+                # Schedule-Free optimizer options
+                optimizer_schedule_free=optimizer_schedule_free,
+                optimizer_warmup_steps=optimizer_warmup_steps,
+                optimizer_schedule_free_r=optimizer_schedule_free_r,
+                optimizer_schedule_free_weight_lr_power=optimizer_schedule_free_weight_lr_power,
+                optimizer_use_radam=optimizer_use_radam,
                 # Stochastic rounding for BF16 parameter updates
                 optimizer_stochastic_rounding=optimizer_stochastic_rounding,
                 # Component-specific learning rates

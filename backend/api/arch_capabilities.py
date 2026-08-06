@@ -367,6 +367,13 @@ def video_constraints_payload() -> Dict[str, Dict[str, Any]]:
             # above, so a client cannot get it right without this flag.
             "snap_invalid_length": spec.snap_invalid_length,
             "suggested_frames": spec.suggested_lengths(),
+            # Step-count contract, for a client building a step-count control.
+            # Neither value is derivable from the fields above and the two
+            # video archs differ on both: LTX-2.3 runs N evaluations for N
+            # steps (minimum 1), MiniMax-H3 counts sigma grid points and runs
+            # N-1 (minimum 2). Below the minimum the route answers 400.
+            "min_inference_steps": spec.min_inference_steps,
+            "steps_are_sigma_grid_points": spec.steps_are_sigma_grid_points,
         }
     return payload
 

@@ -160,8 +160,10 @@ paths:
           `frame_offset`, `min_frames`, `max_frames`, `min_decodable_frames`,
           `fps_fixed`, `max_pixel_hw` — `[short_edge, long_edge]`, not
           `[height, width]` —, `pixel_align`, `snap_invalid_length`,
-          `suggested_frames`), so a client can generate a valid clip-length
-          list instead of hardcoding one. Absent for non-video architectures.
+          `suggested_frames`, `min_inference_steps`,
+          `steps_are_sigma_grid_points`), so a client can generate a valid
+          clip-length list and a valid step count instead of hardcoding them.
+          Absent for non-video architectures.
       tags: [Schema]
       responses:
         '200':
@@ -5991,6 +5993,15 @@ components:
             * `suggested_frames` — valid in-range lengths a client can offer in
               a clip-length list. This is a subset of what validation accepts:
               LTX-2.3 accepts a 1-frame clip but does not suggest one.
+            * `min_inference_steps` — the smallest `num_inference_steps` this
+              architecture's scheduler accepts. A smaller value is refused with
+              a 400 before any weights are touched. LTX-2.3: 1. MiniMax-H3: 2.
+            * `steps_are_sigma_grid_points` — how `num_inference_steps` maps to
+              model evaluations. `false` (LTX-2.3) = N steps run N evaluations.
+              `true` (MiniMax-H3) = N counts SIGMA GRID POINTS with the terminal
+              `0` included, so N steps run N-1 evaluations (a 20-step request
+              performs 19), and N=1 would run none — which is where that
+              architecture's `min_inference_steps` of 2 comes from.
           additionalProperties:
             type: object
             additionalProperties: true
@@ -6006,6 +6017,8 @@ components:
               pixel_align: 32
               snap_invalid_length: true
               suggested_frames: [124, 141, 158, 175, 192]
+              min_inference_steps: 2
+              steps_are_sigma_grid_points: true
         runtime_int8_archs:
           type: array
           description: |
@@ -6930,10 +6943,24 @@ components:
         num_inference_steps:
           type: integer
           default: 8
-          description: >-
+          minimum: 1
+          description: |
             Number of denoising steps (LTX-2.3 distilled default: 8). MiniMax-H3
             defaults to 20; MiniMax publishes no step count for this model, so
             20 is a community baseline rather than an official figure.
+
+            The step-count semantics are architecture-specific, and both are
+            served per architecture in the `video_constraints` block of
+            `GET /schema/arch-capabilities` (`min_inference_steps`,
+            `steps_are_sigma_grid_points`):
+
+            * LTX-2.3 — N steps run N model evaluations; the minimum is 1.
+            * MiniMax-H3 — N counts SIGMA GRID POINTS of a `linspace(1, 0, N)`
+              schedule with the terminal `0` included, and the timesteps are
+              `1 - sigmas[:-1]`, so N steps run **N-1** model evaluations (a
+              20-step request performs 19). N=1 would run none, so the minimum
+              is 2; a smaller value is refused with a 400 before the text
+              encoder runs.
           example: 8
         guidance_scale:
           type: number

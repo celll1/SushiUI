@@ -213,6 +213,25 @@ class TemporalSpec:
     # implementation rounds up to the next encodable length with a warning.
     # `snap_length` rounds UP for the same reason.
     snap_invalid_length: bool = False
+    # Step-count contract of the arch's SCHEDULER. Two different facts:
+    #
+    # * `min_inference_steps` is the smallest `num_inference_steps` the
+    #   scheduler accepts. Route validation refuses anything below it with a 400
+    #   BEFORE the text encoder runs, because the alternative is a 500 raised
+    #   from inside the sampler after a full (tens-of-seconds) text encode.
+    # * `steps_are_sigma_grid_points` says how the count maps to model
+    #   evaluations. LTX-2.3's FlowMatchEulerDiscreteScheduler builds N
+    #   timesteps and appends the terminal sigma separately, so N steps run N
+    #   evaluations and N=1 is legal. MiniMax-H3's scheduler builds a
+    #   `linspace(1, 0, N)` sigma grid with the terminal 0 INCLUDED and sets
+    #   `timesteps = 1 - sigmas[:-1]`, so N grid points run N-1 evaluations and
+    #   N=1 would run none -- which is exactly why its minimum is 2.
+    #
+    # They are declared separately rather than derived from each other: the
+    # minimum is a validation bound and could have another cause on a future
+    # arch, while the mapping is client-visible semantics either way.
+    min_inference_steps: int = 1
+    steps_are_sigma_grid_points: bool = False
     # The shortest length worth OFFERING to a client (None = the production
     # floor). Validity and suggestion are different questions: LTX-2.3's grid
     # starts at 1, and a 1-frame "video" is a valid request but not a clip
@@ -289,6 +308,10 @@ LTX2_TEMPORAL = TemporalSpec(
     # it is simply not suggested. 9 = 8*1 + 1 is the shortest length that is a
     # clip rather than a still, and is where `default_clip_lengths` starts too.
     suggested_min_frames=9,
+    # The step-count fields keep their defaults, MEASURED against the scheduler
+    # this arch actually loads (diffusers FlowMatchEulerDiscreteScheduler):
+    # `set_timesteps(1)` yields timesteps [1000.] with sigmas [1., 0.], i.e. one
+    # model evaluation. N steps = N evaluations, minimum 1.
 )
 
 # MiniMax-H3. Everything here is MEASURED (Phase 0):
@@ -309,6 +332,10 @@ MINIMAX_H3_TEMPORAL = TemporalSpec(
     latent_frames=lambda t: 1 if t <= 1 else -(-t // 17) * 5 - 3,
     fps_fixed=24.0, default_clip_lengths=(22, 39),
     pixel_align=32, max_pixel_hw=(768, 1344), snap_invalid_length=True,
+    # `num_inference_steps` counts sigma grid points (terminal 0 included), so
+    # it drives N-1 model evaluations; N=1 gives zero and the vendored
+    # scheduler's `set_timesteps` refuses it.
+    min_inference_steps=2, steps_are_sigma_grid_points=True,
 )
 
 TEMPORAL_SPECS: Dict[str, TemporalSpec] = {

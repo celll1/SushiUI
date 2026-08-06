@@ -554,6 +554,11 @@ export interface OutpaintVideoParams {
   input_offset_frames?: number;    // where the (trimmed) clip lands, in pixel frames of the OUTPUT timeline
   input_trim_start_frames?: number; // trim applied to the UPLOADED clip before placement
   input_trim_end_frames?: number;
+  // Omit to take the LOADED ARCHITECTURE's default, which differs: "regenerate"
+  // on LTX-2.3 (its generated track spans the whole timeline) and
+  // "preserve_input" on MiniMax-H3 (which generates audio only for the frames
+  // it generates, so "regenerate" leaves the preserved span silent). Resolve it
+  // client-side with `outpaintVideoDefaultsForArch`.
   outpaint_video_audio_mode?: "regenerate" | "preserve_input";
   video_lossless?: boolean;        // FFV1 bit-exact encode (not browser-playable)
   // --- Acceleration (same knobs as the image/video GenerationParams schema) ---
@@ -2487,7 +2492,14 @@ export const generateOutpaintVideo = async (
   formData.append("input_offset_frames", String(params.input_offset_frames ?? 0));
   formData.append("input_trim_start_frames", String(params.input_trim_start_frames ?? 0));
   formData.append("input_trim_end_frames", String(params.input_trim_end_frames ?? 0));
-  formData.append("outpaint_video_audio_mode", params.outpaint_video_audio_mode || "regenerate");
+  // Sent ONLY when the caller actually has a value. The backend field is a
+  // sentinel whose default is per-architecture ("regenerate" on LTX-2.3,
+  // "preserve_input" on MiniMax-H3, which generates audio only for the frames
+  // it generates), so appending a hardcoded fallback here would pin the base
+  // value and silently defeat the overlay.
+  if (params.outpaint_video_audio_mode) {
+    formData.append("outpaint_video_audio_mode", params.outpaint_video_audio_mode);
+  }
 
   // Attention backend: the global setting, exactly as every other sender reads
   // it. Honored by MiniMax-H3 (its transformer runs on SushiUI's conduit),

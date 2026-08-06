@@ -583,7 +583,12 @@ class MiniMaxH3Mixin:
           span's own position and the preserved span is left SILENT, with a
           warning saying so and naming the mode that fills it. Quietly
           substituting the input's audio here would make the two modes the same
-          thing while claiming to be different.
+          thing while claiming to be different. Because that outcome (extend a
+          clip that has sound, get back a video whose original half is silent)
+          is the wrong thing to hand someone who expressed no preference, it is
+          NOT this architecture's default -- ``OUTPAINT_VIDEO_ARCH_OVERLAYS``
+          defaults MiniMax-H3 to ``preserve_input``, so reaching this branch
+          means the caller asked for ``regenerate`` by name.
         * ``preserve_input`` splices each preserved span's ORIGINAL audio over
           it, through exactly the LTX-2.3 helpers (``extract_audio_window`` ->
           ``mux_audio_over_span``, 50 ms crossfade confined to the generated
@@ -596,7 +601,14 @@ class MiniMaxH3Mixin:
         """
         import numpy as _np
 
-        audio_mode = params.get("outpaint_video_audio_mode", "regenerate") or "regenerate"
+        # The fallback is this ARCHITECTURE's resolved default, not the base
+        # map's -- `params` always carries the key when the route built it, and
+        # a caller that assembled `params` by hand should land on the same
+        # answer an omitted form field lands on.
+        from api.param_defaults import outpaint_video_defaults_for_arch
+
+        audio_mode = (params.get("outpaint_video_audio_mode")
+                      or outpaint_video_defaults_for_arch("minimax_h3")["outpaint_video_audio_mode"])
         generated = audio_gen.numpy() if hasattr(audio_gen, "numpy") else _np.asarray(audio_gen)
         channels = generated.shape[0]
         total_samples = int(round((total_frames / frame_rate) * sample_rate)) if frame_rate else generated.shape[1]
@@ -610,9 +622,11 @@ class MiniMaxH3Mixin:
 
         if audio_mode != "preserve_input":
             warn(
-                "outpaint_video_audio_mode='regenerate': MiniMax-H3 generates audio only for the "
-                "frames it generates, so the preserved span carries no audio and is silent. Use "
-                "'preserve_input' to carry the input clip's own audio across it.",
+                "outpaint_video_audio_mode='regenerate' was requested explicitly (MiniMax-H3 "
+                "defaults to 'preserve_input'): this architecture generates audio only for the "
+                "frames it generates, so the preserved span carries no audio and is silent. Omit "
+                "the field, or send 'preserve_input', to carry the input clip's own audio across "
+                "it.",
                 code="outpaint_video_audio_preserved_span_silent",
             )
             return torch.from_numpy(full)

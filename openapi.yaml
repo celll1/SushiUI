@@ -6435,7 +6435,12 @@ components:
             other architecture, or a bf16 checkpoint on one of the three) is a
             NO-OP, not an error; the response's `warnings[]` reports it. The same
             channel reports a `"w8a8"` request that resolved to the dequantized
-            matmul because the per-device probe rejected every scaling mode. The
+            matmul, and NAMES THE CAUSE, which is not always the hardware: the
+            per-device probe may have rejected every scaling mode (a device/build
+            limitation), or the architecture's loader may pin its quantized
+            layers to the dequantized path for that checkpoint — `minimax_h3`
+            does exactly that for all 300 of its FP8 Linear modules, so `"w8a8"`
+            can never engage there and a newer GPU would not change it. The
             RESOLVED path is recorded separately in the image's `fp8_gemm`
             metadata field.
 
@@ -6446,7 +6451,7 @@ components:
           example: w8a8
         attention_type:
           type: string
-          enum: [normal, sage, flash, tq]
+          enum: [normal, native, sdpa, none, sage, flash, tq, sla]
           default: normal
           description: |
             Inference attention backend, applied to all model architectures via the
@@ -6460,6 +6465,20 @@ components:
             other head dims (e.g. Ideogram4 head_dim=256) fall back to native. Unsupported
             combinations (e.g. head_dim outside the backend's supported set, mask present)
             fall back to native automatically.
+
+            The enum is the FULL accepted vocabulary and is derived server-side from the
+            attention registry (`core.attention.known_backends`): `native`/`sdpa`/`none`
+            are alias spellings of `normal`, and `sla` is meaningful only for SLA-trained
+            Z-Image models (it degrades to native elsewhere). **A value outside this list
+            is rejected with HTTP 400** before the generation is opened — it used to be
+            absorbed into native, succeed, and be recorded on the gallery row as if it
+            had run.
+
+            The backend that ACTUALLY ran is recorded separately as `attention_backend`
+            (in the PNG metadata and the gallery row's `parameters`), observed per
+            attention call by the conduit. It is absent when the loaded architecture does
+            not route attention through the conduit; any downgrade is also reported
+            through the generation's `warnings[]`.
           example: normal
         attention_impl:
           type: string
@@ -7189,11 +7208,15 @@ components:
             weights are multiplied. The resolved path is recorded in the video's
             sidecar metadata as `fp8_gemm`, and an explicit `"w8a8"` that
             degraded to the dequantized matmul is reported through the
-            generation's `warnings[]`.
+            generation's `warnings[]` together with the cause — a device/build
+            limitation (the probe rejected every scaling mode) and an
+            architecture-policy pin are different things, and `minimax_h3` is
+            always the latter: its loader pins all 300 FP8 Linear modules to the
+            dequantized path for the released checkpoint.
           example: w8a8
         attention_type:
           type: string
-          enum: [normal, flash, sage, tq]
+          enum: [normal, native, sdpa, none, flash, sage, tq, sla]
           default: normal
           description: |
             Attention backend for this generation. Same vocabulary and same
@@ -7213,7 +7236,16 @@ components:
 
             A backend the conduit cannot satisfy for a given call is downgraded
             to `native` with the reason reported through the generation's
-            `warnings[]`; nothing here can fail a generation.
+            `warnings[]`; no such downgrade can fail a generation. A value
+            OUTSIDE the enum is a different matter and answers **HTTP 400**
+            before the run is opened: the enum is derived from the attention
+            registry (`core.attention.known_backends`), and an unknown backend
+            used to be absorbed into native with the only trace a console line
+            deduped once per process.
+
+            The backend that ACTUALLY ran is recorded on the gallery row as
+            `attention_backend` (observed per attention call by the conduit);
+            it is absent for `ltx2`, which never reaches the conduit.
           example: sage
 
     Img2VidRequest:

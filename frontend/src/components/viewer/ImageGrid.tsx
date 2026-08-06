@@ -1357,6 +1357,10 @@ export default function ImageGrid() {
                       {selectedImage.parameters?.attention_type && (
                         <div>
                           <span className="text-gray-500">Attention type:</span> {selectedImage.parameters.attention_type}
+                          {selectedImage.parameters?.attention_backend &&
+                            selectedImage.parameters.attention_backend !== selectedImage.parameters.attention_type && (
+                            <span className="text-gray-500"> (ran: {selectedImage.parameters.attention_backend})</span>
+                          )}
                         </div>
                       )}
                       {selectedImage.parameters?.attention_impl && (

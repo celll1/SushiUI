@@ -62,6 +62,7 @@ from api.generation_utils import (
     extract_vision_encoder_info,
     extract_vae_info,
     extract_fp8_gemm_info,
+    record_attention_backend,
     sanitize_params_for_logging,
     set_prompt_chunking_settings,
     calculate_generation_metadata,
@@ -94,6 +95,34 @@ _models_cache_timestamp: float = 0
 # Cache for TensorBoard EventAccumulators to avoid re-reading event files on every request
 # Key: (run_id, event_file_path), Value: (EventAccumulator, last_modified_time)
 _event_accumulator_cache: Dict[tuple, tuple] = {}
+
+
+def _validated_attention_type(value, default: Optional[str] = None) -> Optional[str]:
+    """Validate `attention_type` against the attention registry's vocabulary.
+
+    An unrecognized backend used to be absorbed into `native` by
+    `normalize_backend`, with the only trace a console line deduped ONCE PER
+    PROCESS -- so the generation succeeded, `warnings[]` was empty and the
+    gallery row recorded a backend that had never run. That is a client error,
+    and it is answered the way every other closed-vocabulary generation
+    parameter in this module answers one (`quantized_gemm_mode`, `loop_decode`,
+    `vae_tile_mode`): HTTP 400, raised BEFORE `start_generation` so no run is
+    opened.
+
+    The vocabulary is DERIVED from `core.attention` (registry keys + aliases +
+    passthrough), never restated here: a hand-written backend list is exactly
+    the drift this repo has been bitten by before.
+
+    Empty / missing resolves to `default`, so a client that omits the field (or
+    sends the empty string a `<select>` can produce) keeps the route's own
+    `param_defaults` value instead of being refused.
+    """
+    from core.attention import validate_backend
+    try:
+        return validate_backend(value, default=default, param="attention_type")
+    except ValueError as exc:
+        raise CustomValidationError("Invalid attention_type value", detail=str(exc))
+
 
 # Pydantic models for requests
 class LoginRequest(BaseModel):
@@ -629,7 +658,7 @@ async def generate_txt2img(
     nag_alpha: float = Form(0.25),
     nag_sigma_end: float = Form(3.0),
     nag_negative_prompt: str = Form(""),
-    attention_type: str = Form("normal"),
+    attention_type: str = Form(GENERATION_DEFAULTS["attention_type"]),
     attention_impl: str = Form("conduit"),
     unet_quantization: Optional[str] = Form(None),
     text_encoder_quantization: Optional[str] = Form(None),
@@ -703,6 +732,11 @@ async def generate_txt2img(
         quantized_gemm_mode = _normalize_qgm(quantized_gemm_mode)
     except ValueError as exc:
         raise ValidationError("Invalid quantized_gemm_mode value", detail=str(exc))
+    # Attention backend (attention_type): validated against the attention
+    # registry's own vocabulary, also before start_generation. An unknown value
+    # used to run native and be RECORDED as the unknown string.
+    attention_type = _validated_attention_type(
+        attention_type, GENERATION_DEFAULTS["attention_type"])
     if loop_decode not in ("full", "cheap", "none"):
         raise ValidationError(
             "Invalid loop_decode value",
@@ -1086,6 +1120,9 @@ async def generate_txt2img(
         # (probe rejected it, or the checkpoint has no quantized layers).
         from api.quantized_gemm import report_quantized_gemm_outcome
         report_quantized_gemm_outcome(quantized_gemm_mode, fp8_gemm, _current_arch)
+        # Attention backend that ACTUALLY ran (observed by the conduit), so the
+        # PNG metadata and the gallery row cannot name a backend that did not.
+        record_attention_backend(params, _gen_id)
 
         # Save image with metadata (include model info)
         filename = save_image_with_metadata(
@@ -1395,6 +1432,10 @@ async def _run_training_preview(
     run_id, output_dir = _get_active_training_for_preview(request.run_id)
     params: Dict[str, Any] = {**request.dict(exclude={"run_id"}), **extra_params}
     params["mode"] = mode
+    # Same closed vocabulary as the generation routes: an unknown backend is a
+    # 400 here too, rather than a string the trainer would absorb into native.
+    params["attention_type"] = _validated_attention_type(
+        params.get("attention_type"), GENERATION_DEFAULTS["attention_type"])
 
     request_id = make_request_id()
     try:
@@ -1610,7 +1651,7 @@ async def generate_img2img(
     nag_alpha: float = Form(0.25),
     nag_sigma_end: float = Form(3.0),
     nag_negative_prompt: str = Form(""),
-    attention_type: str = Form("normal"),
+    attention_type: str = Form(GENERATION_DEFAULTS["attention_type"]),
     attention_impl: str = Form("conduit"),
     unet_quantization: Optional[str] = Form(None),
     text_encoder_quantization: Optional[str] = Form(None),
@@ -1688,6 +1729,11 @@ async def generate_img2img(
         quantized_gemm_mode = _normalize_qgm(quantized_gemm_mode)
     except ValueError as exc:
         raise ValidationError("Invalid quantized_gemm_mode value", detail=str(exc))
+    # Attention backend (attention_type): validated against the attention
+    # registry's own vocabulary, also before start_generation. An unknown value
+    # used to run native and be RECORDED as the unknown string.
+    attention_type = _validated_attention_type(
+        attention_type, GENERATION_DEFAULTS["attention_type"])
     if loop_decode not in ("full", "cheap", "none"):
         raise ValidationError(
             "Invalid loop_decode value",
@@ -2059,6 +2105,9 @@ async def generate_img2img(
         # (probe rejected it, or the checkpoint has no quantized layers).
         from api.quantized_gemm import report_quantized_gemm_outcome
         report_quantized_gemm_outcome(quantized_gemm_mode, fp8_gemm, _current_arch)
+        # Attention backend that ACTUALLY ran (observed by the conduit), so the
+        # PNG metadata and the gallery row cannot name a backend that did not.
+        record_attention_backend(params, _gen_id)
 
         # Save image with metadata (include model info)
         filename = save_image_with_metadata(
@@ -2417,6 +2466,10 @@ async def generate_txt2vid(
     # start_generation so an invalid value is a 400 rather than a 500 from inside
     # the run. None (the default) leaves the process flags completely untouched.
     params["quantized_gemm_mode"] = _normalize_media_qgm(params.get("quantized_gemm_mode"))
+    # Attention backend, validated against the attention registry's vocabulary
+    # (same 400-before-start_generation contract as the image routes).
+    params["attention_type"] = _validated_attention_type(
+        params.get("attention_type"), TXT2VID_DEFAULTS["attention_type"])
 
     if not (getattr(pipeline_manager, "is_ltx2_model", False)
             or getattr(pipeline_manager, "is_minimax_h3_model", False)):
@@ -2508,6 +2561,11 @@ async def generate_txt2vid(
             fp8_gemm = extract_fp8_gemm_info(pipeline_manager)
         apply_generation_timings(params, time.perf_counter() - _gen_start)
         _record_media_gemm_outcome(params, fp8_gemm, _vid_arch)
+        # Attention backend that ACTUALLY ran, observed by the conduit. Empty
+        # (nothing recorded) on an architecture that does not route attention
+        # through it -- LTX-2.3 drives diffusers' own dispatch -- which is why
+        # nothing is written rather than the request being echoed back.
+        record_attention_backend(params, _gen_id)
 
         # VAE identity, exactly as the four image routes record it. The video
         # routes never called this, so a video gallery row carried no
@@ -3282,7 +3340,10 @@ async def generate_img2vid(
         "unet_quantization": unet_quantization,
         # Normalized here (before start_generation) so junk is a 400, not a 500.
         "quantized_gemm_mode": _normalize_media_qgm(quantized_gemm_mode),
-        "attention_type": attention_type,
+        # Validated (400 on an unknown backend) rather than silently absorbed
+        # into native, which is what recorded a backend that never ran.
+        "attention_type": _validated_attention_type(
+            attention_type, IMG2VID_DEFAULTS["attention_type"]),
         # The uploaded FILENAME, not the bytes: it is what the gallery row and
         # the capability warning can carry, and `None` is what "no last frame"
         # means for both. The image itself is read below.
@@ -3411,6 +3472,11 @@ async def generate_img2vid(
             fp8_gemm = extract_fp8_gemm_info(pipeline_manager)
         apply_generation_timings(params, time.perf_counter() - _gen_start)
         _record_media_gemm_outcome(params, fp8_gemm, _vid_arch)
+        # Attention backend that ACTUALLY ran, observed by the conduit. Empty
+        # (nothing recorded) on an architecture that does not route attention
+        # through it -- LTX-2.3 drives diffusers' own dispatch -- which is why
+        # nothing is written rather than the request being echoed back.
+        record_attention_backend(params, _gen_id)
 
         # See the note on the same call in /generate/txt2vid.
         vae_name, vae_hash = extract_vae_info(pipeline_manager)
@@ -3902,7 +3968,7 @@ async def generate_inpaint(
     nag_alpha: float = Form(0.25),
     nag_sigma_end: float = Form(3.0),
     nag_negative_prompt: str = Form(""),
-    attention_type: str = Form("normal"),
+    attention_type: str = Form(GENERATION_DEFAULTS["attention_type"]),
     attention_impl: str = Form("conduit"),
     unet_quantization: Optional[str] = Form(None),
     text_encoder_quantization: Optional[str] = Form(None),
@@ -3981,6 +4047,11 @@ async def generate_inpaint(
         quantized_gemm_mode = _normalize_qgm(quantized_gemm_mode)
     except ValueError as exc:
         raise ValidationError("Invalid quantized_gemm_mode value", detail=str(exc))
+    # Attention backend (attention_type): validated against the attention
+    # registry's own vocabulary, also before start_generation. An unknown value
+    # used to run native and be RECORDED as the unknown string.
+    attention_type = _validated_attention_type(
+        attention_type, GENERATION_DEFAULTS["attention_type"])
     if loop_decode not in ("full", "cheap", "none"):
         raise ValidationError(
             "Invalid loop_decode value",
@@ -4372,6 +4443,9 @@ async def generate_inpaint(
         # (probe rejected it, or the checkpoint has no quantized layers).
         from api.quantized_gemm import report_quantized_gemm_outcome
         report_quantized_gemm_outcome(quantized_gemm_mode, fp8_gemm, _current_arch)
+        # Attention backend that ACTUALLY ran (observed by the conduit), so the
+        # PNG metadata and the gallery row cannot name a backend that did not.
+        record_attention_backend(params, _gen_id)
 
         # Save image with metadata (include model info)
         filename = save_image_with_metadata(
@@ -4639,6 +4713,11 @@ async def generate_outpaint(
         quantized_gemm_mode = _normalize_qgm(quantized_gemm_mode)
     except ValueError as exc:
         raise ValidationError("Invalid quantized_gemm_mode value", detail=str(exc))
+    # Attention backend (attention_type): validated against the attention
+    # registry's own vocabulary, also before start_generation. An unknown value
+    # used to run native and be RECORDED as the unknown string.
+    attention_type = _validated_attention_type(
+        attention_type, GENERATION_DEFAULTS["attention_type"])
     if loop_decode not in ("full", "cheap", "none"):
         raise ValidationError(
             "Invalid loop_decode value",
@@ -5093,6 +5172,9 @@ async def generate_outpaint(
         # (probe rejected it, or the checkpoint has no quantized layers).
         from api.quantized_gemm import report_quantized_gemm_outcome
         report_quantized_gemm_outcome(quantized_gemm_mode, fp8_gemm, _current_arch)
+        # Attention backend that ACTUALLY ran (observed by the conduit), so the
+        # PNG metadata and the gallery row cannot name a backend that did not.
+        record_attention_backend(params, _gen_id)
 
         # Save image with metadata (include model info). params["width"]/["height"]
         # were overwritten by generate_outpaint to the resolved canvas size.

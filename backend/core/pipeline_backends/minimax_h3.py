@@ -1,13 +1,15 @@
 """MiniMax-H3 video backend mixin for DiffusionPipelineManager.
 
-Text-to-video-with-audio generation against the pruned MiniMax-H3 checkpoint.
+Video-with-audio generation against the pruned MiniMax-H3 checkpoint, from a
+prompt alone (``t2va``) or from first/last keyframes as well (``fl2va``).
 The loop itself lives in ``core.models.minimax_h3.h3_pipeline_ops`` (this repo
 owns it — upstream ships a Modular pipeline only); this mixin is the staging
 layer: it sequences the components on and off the GPU, resolves the request, and
 returns the LTX-2.3 video tuple contract so the route, the mux and the gallery
 need no new plumbing.
 
-Output contract of ``_generate_txt2vid_minimax_h3`` (identical to LTX-2.3's):
+Output contract of ``_generate_txt2vid_minimax_h3`` /
+``_generate_img2vid_minimax_h3`` (identical to LTX-2.3's):
     ``(frames, audio, audio_sample_rate, actual_seed)`` where
     ``frames`` is ``np.uint8 [T, H, W, 3]`` RGB,
     ``audio`` is a ``torch.FloatTensor [2, samples]`` on CPU (or None when
@@ -26,6 +28,9 @@ phases and each one gives the GPU back before the next starts:
      GPU for the length of one call (``h3_pipeline_ops.encode_prompt``). Moving
      the module instead costs +23 GB of resident RAM and 3.4x the wall time
      (K0.7). Only the layer-50 hidden state survives — kilobytes.
+  1b. **Keyframe encode (fl2va only).** The video VAE encodes each keyframe as a
+     single-frame clip and goes straight back to the CPU. It is the same
+     autoencoder phase 3 uses, run before the DiT is staged rather than after.
   2. **Denoise.** The DiT alone on the GPU, plus the packed sequence's
      activations.
   3. **Decode.** The DiT goes back to the CPU FIRST, then the video VAE decodes
@@ -37,12 +42,13 @@ same reason LTX-2.3 is, and there is no configuration in which the text encoder
 and the DiT are both wanted at once.
 """
 
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, Optional, Sequence, Tuple
 import random
 import time
 
 import numpy as np
 import torch
+from PIL import Image
 
 from core.inference.generation_timing import generation_timer
 
@@ -94,7 +100,59 @@ class MiniMaxH3Mixin:
         progress_callback: Optional[Callable] = None,
         step_callback: Optional[Callable] = None,
     ):
-        """Text-to-video (+ joint audio) generation with MiniMax-H3.
+        """Text-to-video (+ joint audio) generation with MiniMax-H3 (``t2va``).
+
+        Returns ``(frames, audio, audio_sample_rate, actual_seed)`` — see the
+        module docstring.
+        """
+        return self._generate_minimax_h3(
+            params, keyframes=(), label="txt2vid",
+            progress_callback=progress_callback, step_callback=step_callback)
+
+    def _generate_img2vid_minimax_h3(
+        self,
+        params: Dict[str, Any],
+        input_image,
+        last_frame_image=None,
+        progress_callback: Optional[Callable] = None,
+        step_callback: Optional[Callable] = None,
+    ):
+        """Keyframe-conditioned generation with MiniMax-H3 (``fl2va``).
+
+        ``input_image`` is the FIRST frame and the optional ``last_frame_image``
+        is the LAST one — MiniMax-H3 conditions on the two ends of the clip and
+        on nothing in between (its conditioning anchors are addressed by the
+        rotary clock's first and last frame positions, not by an arbitrary frame
+        index). Both are ordinary PIL images; each becomes one single-frame
+        visual condition.
+
+        Same return contract as ``_generate_txt2vid_minimax_h3``.
+        """
+        if input_image is None:
+            raise RuntimeError("img2vid requires an input image for the first-frame keyframe")
+        keyframes = [("first", input_image)]
+        if last_frame_image is not None:
+            keyframes.append(("last", last_frame_image))
+        return self._generate_minimax_h3(
+            params, keyframes=tuple(keyframes), label="img2vid",
+            progress_callback=progress_callback, step_callback=step_callback)
+
+    def _generate_minimax_h3(
+        self,
+        params: Dict[str, Any],
+        *,
+        keyframes: Sequence[Tuple[str, Any]] = (),
+        label: str = "txt2vid",
+        progress_callback: Optional[Callable] = None,
+        step_callback: Optional[Callable] = None,
+    ):
+        """The one MiniMax-H3 generation path, with 0-2 visual conditions.
+
+        ``keyframes`` is a sequence of ``(anchor, PIL.Image)`` in PACKED ORDER,
+        where anchor is ``"first"`` or ``"last"``. Empty is ``t2va``; one or two
+        entries is ``fl2va``. Nothing else about the run differs between the two
+        workflows — same layout builder, same draw order, same loop — which is
+        why they share this function rather than having one copy each.
 
         Returns ``(frames, audio, audio_sample_rate, actual_seed)`` — see the
         module docstring.
@@ -143,10 +201,21 @@ class MiniMaxH3Mixin:
         if seed < 0:
             seed = random.randint(0, 2 ** 32 - 1)
 
-        print(f"[MiniMax-H3] txt2vid: {width}x{height} num_frames={num_frames} "
+        # Visual conditioning anchors, in packed order. Resized to the generation
+        # canvas here (the VAE encodes exactly what it is given: a keyframe of a
+        # different size would produce a latent of a different size and the
+        # packed layout reserves `rows_per_frame` rows per anchor).
+        anchors = tuple(anchor for anchor, _image in keyframes)
+        keyframe_pixels = [
+            np.asarray(image.convert("RGB").resize((width, height), Image.LANCZOS), dtype=np.uint8)
+            for _anchor, image in keyframes
+        ]
+
+        print(f"[MiniMax-H3] {label}: {width}x{height} num_frames={num_frames} "
               f"(latent {latent_frames}x{latent_height}x{latent_width}, "
               f"{num_audio_latents} audio latents/ch) steps={num_inference_steps} "
-              f"seed={seed} audio={audio_enable}")
+              f"seed={seed} audio={audio_enable} "
+              f"conditions={list(anchors) if anchors else 'none (t2va)'}")
 
         if torch.cuda.is_available():
             torch.cuda.reset_peak_memory_stats()
@@ -171,24 +240,68 @@ class MiniMaxH3Mixin:
               f"(peak VRAM {self._minimax_h3_peak_vram():.2f} GB)")
 
         # ---- Layout + noise (drawn on the generation device, before staging) ----
+        patch_size = tuple(components["transformer_config"]["patch_size"])
+        latent_channels = int(components.get("latent_channels", 24))
         layout = ops.build_packed_layout(
             num_text_tokens, latent_frames, latent_height, latent_width, num_audio_latents,
-            patch_size=tuple(components["transformer_config"]["patch_size"]),
+            patch_size=patch_size,
+            keyframe_anchors=anchors,
             device=torch_device,
         )
         generator = torch.Generator(device=device).manual_seed(seed)
-        _conditions, video_noise, audio_rows = ops.draw_noise(
+        # ONE draw per visual condition FIRST, at that condition's own latent
+        # shape, then the video noise, then the audio noise -- the recorded
+        # order (K0.6). A condition that is not drawn, or drawn later, changes
+        # the video for the same seed.
+        condition_noises, video_noise, audio_rows = ops.draw_noise(
             generator,
-            video_latent_shape=(1, int(components.get("latent_channels", 24)),
-                                latent_frames, latent_height, latent_width),
+            video_latent_shape=(1, latent_channels, latent_frames, latent_height, latent_width),
             num_audio_latents=num_audio_latents,
-            condition_shapes=(),   # t2va has no visual conditioning (fl2va: Phase 3)
+            condition_shapes=tuple(
+                (1, latent_channels, 1, latent_height, latent_width) for _ in anchors),
             device=device,
             audio_latent_channels=int(components.get("audio_latent_channels", 32)),
         )
-        video_rows = ops.patchify_video_latents(
-            video_noise, tuple(components["transformer_config"]["patch_size"]))[0]
+        video_rows = ops.patchify_video_latents(video_noise, patch_size)[0]
         del video_noise
+
+        # ---- Visual conditioning (fl2va): VAE-encode the keyframes ----
+        # On the VIDEO VAE, before the DiT is staged: the two do not fit
+        # together, and this is a single-frame spatial encode (cheap) rather
+        # than the ViT decode at the end.
+        if keyframe_pixels:
+            cond_start = time.perf_counter()
+            self._minimax_h3_move("vae", torch_device)
+            try:
+                condition_latents = ops.encode_condition_images(
+                    components["vae"], keyframe_pixels,
+                    latents_mean=components["latents_mean"],
+                    latents_std=components["latents_std"],
+                    pixel_mean=components["pixel_mean"],
+                    pixel_std=components["pixel_std"],
+                    device=device,
+                )
+            finally:
+                self._minimax_h3_move("vae", "cpu")
+                self._minimax_h3_empty_cache()
+            condition_rows = ops.build_condition_rows(
+                components["scheduler"], condition_latents, condition_noises,
+                patch_size=patch_size,
+            ).to(video_rows.device, video_rows.dtype)
+            expected_rows = len(anchors) * layout["rows_per_frame"]
+            if condition_rows.shape[0] != expected_rows:
+                raise RuntimeError(
+                    f"MiniMax-H3 conditioning produced {condition_rows.shape[0]} row(s) where the "
+                    f"packed layout reserves {expected_rows} -- the keyframe latents do not match "
+                    f"the generation canvas.")
+            # The conditioning rows LEAD the video block; the loop protects them
+            # by never writing the first `num_condition_video_rows` entries.
+            video_rows = torch.cat([condition_rows, video_rows], dim=0)
+            del condition_latents, condition_rows
+            print(f"[MiniMax-H3] conditioned on {len(anchors)} keyframe(s) {list(anchors)} in "
+                  f"{time.perf_counter() - cond_start:.1f}s "
+                  f"(peak VRAM {self._minimax_h3_peak_vram():.2f} GB)")
+        del condition_noises
 
         # ---- Phase 2: denoise (DiT resident) ----
         transformer = components["transformer"]

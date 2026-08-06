@@ -26,7 +26,7 @@ import PromptEditor from "../common/PromptEditor";
 import LoopGenerationPanel, { LoopGenerationConfig } from "./LoopGenerationPanel";
 import QuantizedGemmSelect from "./QuantizedGemmSelect";
 import { migrateLoopGenerationConfig, computeLoopDecodeDirective } from "@/utils/loopGenerationInheritance";
-import { generateTxt2Img, generateImg2Img, generateTxt2Vid, Txt2VidParams, generateTxt2Aud, Txt2AudParams, generateTxt2ImgTrainingPreview, GenerationParams, getSamplers, getScheduleTypes, tokenizePrompt, generateTIPOPrompt, cancelGeneration, getCurrentModel, isLatentOnlyResult, getResultFilename, getResultSeed, getResultAncestralSeed, unetQuantizationOptions, normalizeUnetQuantization, transformerQuantizationLabel, archSupportsFeature } from "@/utils/api";
+import { generateTxt2Img, generateImg2Img, generateTxt2Vid, Txt2VidParams, generateTxt2Aud, Txt2AudParams, generateTxt2ImgTrainingPreview, GenerationParams, getSamplers, getScheduleTypes, tokenizePrompt, generateTIPOPrompt, cancelGeneration, getCurrentModel, isLatentOnlyResult, getResultFilename, getResultSeed, getResultAncestralSeed, unetQuantizationOptions, normalizeUnetQuantization, transformerQuantizationLabel, archSupportsFeature, videoFrameOptions, videoFrameLabel, archDisplayName } from "@/utils/api";
 import { useActiveTraining } from "@/hooks/useActiveTraining";
 import { wsClient, CFGMetrics } from "@/utils/websocket";
 import CFGMetricsGraph from "../common/CFGMetricsGraph";
@@ -135,11 +135,10 @@ const DEFAULT_PARAMS: GenerationParams = {
   vocal_language: "en",
 };
 
-// num_frames must be 8k+1 (LTX-2.3). Offer common lengths.
-const FRAME_OPTIONS = [9, 17, 25, 33, 49, 65, 81, 97, 121].map((n) => ({
-  value: String(n),
-  label: String(n),
-}));
+// The valid clip lengths differ per video architecture (LTX-2.3: 8k+1;
+// MiniMax-H3: 17n+5 within 124-345), so the option list comes from the
+// backend's own `video_constraints` payload via videoFrameOptions() below
+// rather than from a list kept here. See frontend/src/utils/api.ts.
 
 // Txt2Img's secondary options are grouped into a single-open tabbed accordion
 // (see the "Txt2Img Options" Card below, shared chrome via
@@ -354,6 +353,14 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
       return normalized === (prev.unet_quantization ?? null) ? prev : { ...prev, unet_quantization: normalized };
     });
   }, [archCapabilities, currentModelInfo?.model_info?.type]);
+  // The loaded architecture and the two capability gates the VIDEO controls
+  // read. `archSupportsFeature` treats an unknown arch (or a capability matrix
+  // that has not loaded) as supporting the feature, so a control is never
+  // hidden merely because the matrix was unavailable.
+  const loadedArch = currentModelInfo?.model_info?.type as string | undefined;
+  const loadedArchName = archDisplayName(loadedArch);
+  const supportsCfg = archSupportsFeature(archCapabilities, loadedArch, "cfg");
+  const supportsNegativePrompt = archSupportsFeature(archCapabilities, loadedArch, "negative_prompt");
   const [promptTokenCount, setPromptTokenCount] = useState<number>(0);
   const [negativePromptTokenCount, setNegativePromptTokenCount] = useState<number>(0);
   const [isTIPODialogOpen, setIsTIPODialogOpen] = useState(false);
@@ -3279,6 +3286,11 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
             </button>
           </div>
 
+          {/* Hidden on an architecture that declares negative prompting
+              unsupported: MiniMax-H3 is guidance-distilled and has no
+              unconditional branch, so there is nothing for a negative prompt to
+              steer away from. Capability-driven (see supportsNegativePrompt). */}
+          {supportsNegativePrompt && (
           <div className="relative">
             <TextareaWithTagSuggestions
               label="Negative Prompt"
@@ -3293,6 +3305,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
               {negativePromptTokenCount} tokens
             </div>
           </div>
+          )}
         </Card>
         )}
 
@@ -3400,7 +3413,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         )}
 
         {isVideo && (
-          <Card title="Video">
+          <Card title={`Video${loadedArchName ? ` (${loadedArchName})` : ""}`}>
             <div className="grid grid-cols-2 gap-2">
               <NumberInput
                 label="Width (÷32)"
@@ -3423,10 +3436,10 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
             </div>
 
             <Select
-              label="Frames (8k+1)"
+              label={videoFrameLabel(archCapabilities, loadedArch)}
               value={String(params.num_frames ?? 121)}
               onChange={(e) => setParams({ ...params, num_frames: parseInt(e.target.value) })}
-              options={FRAME_OPTIONS}
+              options={videoFrameOptions(archCapabilities, loadedArch)}
             />
 
             <NumberInput
@@ -3449,6 +3462,12 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                 step={1}
                 parse="int"
               />
+              {/* Guidance: hidden on an architecture that declares it
+                  unsupported (MiniMax-H3 is guidance-distilled — it has no
+                  guider and no unconditional branch, so the sampler takes no
+                  scale at all). Driven by the capability matrix, not by an arch
+                  name kept here. */}
+              {supportsCfg && (
               <NumberInput
                 label="Guidance Scale"
                 value={params.guidance_scale ?? 1.0}
@@ -3458,6 +3477,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                 step={0.1}
                 parse="float"
               />
+              )}
               <Input
                 type="number"
                 label="Seed"
@@ -3478,6 +3498,32 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
               />
               <span className="text-gray-300 text-sm">Audio</span>
             </label>
+
+            {/* Factual notes from MiniMax's own release documentation (README +
+                prompt-writing guide + the reproducible request scripts). No
+                quality claims: the prompt shape below is the output format of
+                MiniMax's H3-Context-IR stage, which is not open-sourced. */}
+            {loadedArch === "minimax_h3" && (
+              <div className="mt-3 text-xs text-gray-400 space-y-1">
+                <div>
+                  Prompts for this model are written as a structured block:
+                  <code className="mx-1">integrated_multimodal_description:</code>
+                  (shot by shot, with timecodes), then
+                  <code className="mx-1">overall_soundscape:</code> and
+                  <code className="mx-1">non_diegetic_music:</code>.
+                </div>
+                <div>
+                  Video and audio are generated jointly in one sequence; turning
+                  Audio off skips the audio decode and the mux, and the audio
+                  still takes part in generation.
+                </div>
+                <div>
+                  Steps count sigma schedule points, so N steps run N-1 model
+                  evaluations (minimum 2). MiniMax publishes no step count; 20
+                  is the community baseline.
+                </div>
+              </div>
+            )}
           </Card>
         )}
 

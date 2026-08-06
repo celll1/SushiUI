@@ -850,6 +850,17 @@ TXT2VID_DEFAULTS: Dict[str, Any] = dict(VIDEO_GEN_DEFAULTS)
 # it as frame 0 (conditioning_mask[:, :, 0] = 1); no extra first-frame-strength
 # knob is exposed since the pipeline __call__ does not accept one.
 IMG2VID_DEFAULTS: Dict[str, Any] = dict(VIDEO_GEN_DEFAULTS)
+# OPTIONAL second keyframe, uploaded as a multipart file. MiniMax-H3's `fl2va`
+# workflow conditions on the first and/or the last frame (0-2 visual anchors),
+# so img2vid needs a way to send the second one; `image` stays the first frame.
+# None = first-frame conditioning only, which is the whole of LTX-2.3's img2vid
+# behaviour (it declares this key unsupported and warns when it is sent).
+#
+# Kept out of VIDEO_GEN_DEFAULTS on purpose: txt2vid has no keyframe upload at
+# all, so the key exists only on the endpoint that can carry a file. The value
+# recorded in `params` (and on the gallery row) is the uploaded FILENAME, not
+# the bytes.
+IMG2VID_DEFAULTS["last_frame_image"] = None
 
 # ---------------------------------------------------------------------------
 # Video temporal outpaint (POST /generate/outpaint/video — LTX-2.3)

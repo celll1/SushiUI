@@ -462,24 +462,58 @@ paths:
   /generate/img2vid:
     post:
       tags: [generation]
-      summary: Generate video from a still-image first-frame keyframe (LTX-2.3)
+      summary: Generate video from still-image keyframes (LTX-2.3 or MiniMax-H3)
       description: |
-        Image-to-video generation using a loaded LTX-2.3 model. The uploaded
-        image is used as the first-frame keyframe (pinned as frame 0) and the
-        remaining frames are generated. Produces an H.264 mp4 (with an audio
-        track when `audio_enable` is true) and a gallery row.
+        Image-to-video generation using a loaded video model. The uploaded
+        `image` is used as the first-frame keyframe and the remaining frames are
+        generated. Produces an H.264 mp4 (with an audio track when
+        `audio_enable` is true) and a gallery row.
 
         **Requirements:**
-        - An LTX-2.3 model must be loaded (otherwise 400).
+        - An LTX-2.3 or MiniMax-H3 model must be loaded (otherwise 400).
         - Sent as multipart/form-data with the keyframe `image` file plus the
           txt2vid parameters as form fields.
 
-        **Constraints (validated before generation):**
+        **Per-architecture defaults.** Any field omitted from the form is filled
+        from the loaded architecture's resolved video defaults, i.e.
+        `video_arch_overlays` of `GET /schema/generation-defaults` merged over
+        the base `img2vid` defaults. The declared defaults below are the base
+        (LTX-2.3-shaped) values; an omitted field on MiniMax-H3 resolves to the
+        MiniMax-H3 overlay instead.
+
+        **LTX-2.3 constraints (validated before generation):**
         - `width` and `height` must both be divisible by 32.
         - `num_frames` must satisfy (num_frames - 1) % 8 == 0 (e.g. 9, 17, ..., 121).
+        - `last_frame_image` is ignored (LTX-2.3 conditions on the first frame
+          only); sending it emits an `unsupported_param` warning.
 
-        The keyframe is resized to (`width`, `height`) before conditioning. A
-        `source_image_hash` of the keyframe is stored on the gallery row.
+        **MiniMax-H3 constraints (the `fl2va` workflow, validated before
+        generation):**
+        - `image` is the FIRST frame; the optional `last_frame_image` is the
+          LAST frame. Both are VAE-encoded as single-frame conditioning anchors,
+          held at the model's own `keyframe_noise_aug` level for every step, and
+          are never overwritten by the sampler.
+        - `width` and `height` must both be divisible by 32. SushiUI
+          additionally restricts the canvas to a short edge <= 768 and a long
+          edge <= 1344. That restriction is SushiUI policy, not a model limit.
+        - `num_frames` must be of the form `17 * n + 5` with `n >= 1` and must
+          fall in `[124, 345]`; an off-grid or out-of-range value is SNAPPED
+          (rounded up, then clamped) with a `warnings[]` entry stating the rule.
+        - `frame_rate` is fixed at 24.0; any other value is forced with a warning.
+        - `num_inference_steps` counts sigma schedule grid points with the
+          terminal 0 included, so it drives `num_inference_steps - 1` model
+          evaluations; values below 2 are refused with 400. There is no official
+          step count for this model — the shipped default of 20 is a community
+          baseline.
+        - `guidance_scale` and `negative_prompt` are ignored (guidance is
+          distilled into the weights). A warning is emitted when either is set
+          to a NON-DEFAULT value.
+        - The soundtrack is generated jointly with the video in one packed
+          sequence; `audio_enable: false` skips the audio decode and the mux.
+
+        The keyframes are resized to (`width`, `height`) before conditioning. A
+        `source_image_hash` of the first-frame keyframe is stored on the gallery
+        row.
       operationId: generateImg2Vid
       requestBody:
         required: true
@@ -503,9 +537,8 @@ paths:
                   generation_type: "img2vid"
         '400':
           description: >-
-            Invalid parameters, or no LTX-2.3 model loaded. A loaded MiniMax-H3
-            model is refused here with its own reason: it is a video model whose
-            sampler is not wired to this endpoint yet.
+            Invalid parameters, or no video model loaded (neither LTX-2.3 nor
+            MiniMax-H3).
           content:
             application/json:
               schema:
@@ -7157,6 +7190,19 @@ components:
               type: string
               format: binary
               description: "First-frame keyframe image (multipart file upload). Resized to (width, height) before conditioning."
+            last_frame_image:
+              type: string
+              format: binary
+              nullable: true
+              description: >-
+                OPTIONAL last-frame keyframe image (multipart file upload),
+                MiniMax-H3 only. When present the generated clip is conditioned
+                on both ends: `image` anchors the first frame and this file
+                anchors the last one (MiniMax-H3's `fl2va` workflow, 2 visual
+                conditions). Resized to (width, height) like `image`. Omitted
+                (the default) means first-frame conditioning only. Ignored on
+                LTX-2.3, which conditions on the first frame only — sending it
+                there returns an `unsupported_param` entry in `warnings[]`.
 
     OutpaintVideoRequest:
       type: object

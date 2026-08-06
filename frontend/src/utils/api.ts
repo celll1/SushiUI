@@ -736,6 +736,13 @@ export interface Txt2VidParams {
 
 export interface Img2VidParams extends Txt2VidParams {
   // img2vid additionally uploads a keyframe `image` handled by generateImg2Vid()
+  //
+  // OPTIONAL second keyframe: the LAST frame, as a data URL (or a File).
+  // MiniMax-H3's `fl2va` workflow conditions on the two ENDS of the clip, so
+  // `image` is the first frame and this is the last one. null/undefined =
+  // first-frame conditioning only. LTX-2.3 declares it unsupported and answers
+  // with an `unsupported_param` warning if it is sent.
+  last_frame_image?: File | string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -899,10 +906,86 @@ export interface ArchCapabilities {
   // a superset of runtime_int8_archs in general, equal to it today. Optional so
   // an older backend without the key still type-checks.
   quantized_linear_archs?: string[];
+  // Per-VIDEO-arch TemporalSpec: the same table the video routes validate (and,
+  // where the arch says so, snap) against. Present only for video
+  // architectures. Optional so an older backend still type-checks.
+  video_constraints?: Record<string, VideoConstraints>;
+}
+
+// One video architecture's temporal/spatial contract, straight from the
+// backend's TemporalSpec (core/models/components/wiring.py). Every field is
+// something a client cannot derive from the others, which is why they are all
+// served rather than reconstructed here.
+export interface VideoConstraints {
+  frame_multiple: number;          // valid lengths are multiple*n + offset
+  frame_offset: number;
+  min_frames: number;              // production floor
+  max_frames: number | null;
+  min_decodable_frames: number;    // hard VAE floor, below the production one
+  fps_fixed: number | null;        // non-null = the arch generates at this fps only
+  // ORIENTATION-AGNOSTIC [short_edge, long_edge], NOT [height, width].
+  max_pixel_hw: [number, number] | null;
+  pixel_align: number;
+  // What an off-grid/out-of-range length does: true = snapped up with a
+  // warning (MiniMax-H3), false = 400 (LTX-2.3).
+  snap_invalid_length: boolean;
+  suggested_frames: number[];
+  min_inference_steps: number;
+  // true = the step count is a sigma GRID POINT count, so N drives N-1 model
+  // evaluations (MiniMax-H3); false = N steps run N evaluations (LTX-2.3).
+  steps_are_sigma_grid_points: boolean;
 }
 
 export const fetchArchCapabilities = async (): Promise<ArchCapabilities> =>
   (await api.get("/schema/arch-capabilities")).data;
+
+// The clip-length <Select> options for the loaded video arch, from the backend's
+// own valid-length rule. Falls back to LTX-2.3's historical hardcoded list only
+// when the matrix has not loaded (or the arch is unknown), so the offered
+// lengths are never a second copy of a rule the backend owns.
+export const videoFrameOptions = (
+  caps: ArchCapabilities | null | undefined,
+  arch: string | null | undefined
+): { value: string; label: string }[] => {
+  const suggested = arch ? caps?.video_constraints?.[arch]?.suggested_frames : undefined;
+  const lengths = suggested?.length ? suggested : [9, 17, 25, 33, 49, 65, 81, 97, 121];
+  return lengths.map((n) => ({ value: String(n), label: String(n) }));
+};
+
+// Label for that control, stating the arch's own rule ("17n+5, 124-345") rather
+// than a hardcoded "8k+1".
+export const videoFrameLabel = (
+  caps: ArchCapabilities | null | undefined,
+  arch: string | null | undefined
+): string => {
+  const c = arch ? caps?.video_constraints?.[arch] : undefined;
+  if (!c) return "Frames";
+  const rule = c.frame_offset === 0
+    ? `${c.frame_multiple}n`
+    : `${c.frame_multiple}n+${c.frame_offset}`;
+  const range = c.max_frames != null ? `, ${c.min_frames}-${c.max_frames}` : "";
+  return `Frames (${rule}${range})`;
+};
+
+// Human-readable architecture names. Used where a model's architecture is shown
+// to the user; MiniMax H3's entry also carries its required attribution.
+const ARCH_DISPLAY_NAMES: Record<string, string> = {
+  sd15: "Stable Diffusion 1.5",
+  sdxl: "SDXL",
+  zimage: "Z-Image",
+  flux2: "FLUX.2",
+  krea2: "Krea 2",
+  lens: "Lens",
+  anima: "Anima",
+  minit2i: "MiniT2I",
+  ideogram4: "Ideogram 4",
+  ltx2: "LTX-2.3",
+  acestep: "ACE-Step 1.5",
+  minimax_h3: "MiniMax H3",
+};
+
+export const archDisplayName = (arch: string | null | undefined): string =>
+  (arch && ARCH_DISPLAY_NAMES[arch]) || arch || "";
 
 // True when `arch` honors `feature`. An unknown arch, or capabilities that have
 // not loaded yet, are treated as SUPPORTING the feature — the same convention as
@@ -1718,6 +1801,18 @@ export const generateImg2Vid = async (params: Img2VidParams, image: File | strin
   }
   if (params.quantized_gemm_mode) {
     formData.append("quantized_gemm_mode", params.quantized_gemm_mode);
+  }
+  // Optional LAST-frame keyframe (MiniMax-H3 fl2va). Same File-or-data-URL
+  // handling as `image` above; omitted entirely when null/undefined, which is
+  // what makes the backend's `File(None)` sentinel mean "first frame only".
+  if (params.last_frame_image) {
+    if (typeof params.last_frame_image === "string") {
+      const lastResponse = await fetch(params.last_frame_image);
+      const lastBlob = await lastResponse.blob();
+      formData.append("last_frame_image", lastBlob, "last_frame.png");
+    } else {
+      formData.append("last_frame_image", params.last_frame_image);
+    }
   }
 
   const response = await api.post("/generate/img2vid", formData, {

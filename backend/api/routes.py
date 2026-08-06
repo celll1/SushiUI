@@ -387,11 +387,11 @@ def _reject_if_video_arch_unwired(endpoint: str):
     for, one endpoint over: it reads as "this model cannot make video", when in
     fact it is a video model whose sampler is not wired to THAT endpoint yet.
 
-    ``/generate/txt2vid`` no longer calls this: it dispatches to MiniMax-H3 for
-    real. The remaining callers are ``/generate/img2vid`` (H3's keyframe
-    conditioning path) and ``/generate/outpaint/video`` (its temporal-outpaint
-    path); drop each call as its endpoint gains an H3 branch, and delete this
-    helper with the last one.
+    ``/generate/txt2vid`` (t2va) and ``/generate/img2vid`` (fl2va) no longer
+    call this: both dispatch to MiniMax-H3 for real. The one remaining caller is
+    ``/generate/outpaint/video``, whose temporal-outpaint path is not wired for
+    this architecture yet; drop that call when it is, and delete this helper
+    with it.
     """
     if getattr(pipeline_manager, "is_minimax_h3_model", False):
         raise CustomValidationError(
@@ -3173,46 +3173,66 @@ async def generate_outpaint_audio(
 @router.post("/generate/img2vid")
 async def generate_img2vid(
     prompt: str = Form(...),
-    negative_prompt: Optional[str] = Form(TXT2VID_DEFAULTS["negative_prompt"]),
-    width: int = Form(TXT2VID_DEFAULTS["width"]),
-    height: int = Form(TXT2VID_DEFAULTS["height"]),
-    num_frames: int = Form(TXT2VID_DEFAULTS["num_frames"]),
-    frame_rate: float = Form(TXT2VID_DEFAULTS["frame_rate"]),
-    num_inference_steps: int = Form(TXT2VID_DEFAULTS["num_inference_steps"]),
-    guidance_scale: float = Form(TXT2VID_DEFAULTS["guidance_scale"]),
-    seed: int = Form(TXT2VID_DEFAULTS["seed"]),
-    num_videos_per_prompt: int = Form(TXT2VID_DEFAULTS["num_videos_per_prompt"]),
-    max_sequence_length: int = Form(TXT2VID_DEFAULTS["max_sequence_length"]),
-    audio_enable: bool = Form(TXT2VID_DEFAULTS["audio_enable"]),
-    blocks_to_swap: int = Form(TXT2VID_DEFAULTS["blocks_to_swap"]),
-    fbcache_enable: bool = Form(TXT2VID_DEFAULTS["fbcache_enable"]),
-    fbcache_threshold: float = Form(TXT2VID_DEFAULTS["fbcache_threshold"]),
-    fbcache_warmup_steps: int = Form(TXT2VID_DEFAULTS["fbcache_warmup_steps"]),
-    spectrum_enable: bool = Form(TXT2VID_DEFAULTS["spectrum_enable"]),
-    spectrum_w: float = Form(TXT2VID_DEFAULTS["spectrum_w"]),
-    spectrum_w_decay: float = Form(TXT2VID_DEFAULTS["spectrum_w_decay"]),
-    spectrum_delta_cap: float = Form(TXT2VID_DEFAULTS["spectrum_delta_cap"]),
-    spectrum_m: int = Form(TXT2VID_DEFAULTS["spectrum_m"]),
-    spectrum_lam: float = Form(TXT2VID_DEFAULTS["spectrum_lam"]),
-    spectrum_warmup_steps: int = Form(TXT2VID_DEFAULTS["spectrum_warmup_steps"]),
-    spectrum_window_size: int = Form(TXT2VID_DEFAULTS["spectrum_window_size"]),
-    spectrum_flex_window: float = Form(TXT2VID_DEFAULTS["spectrum_flex_window"]),
-    spectrum_tail: float = Form(TXT2VID_DEFAULTS["spectrum_tail"]),
-    spectrum_max_cache: int = Form(TXT2VID_DEFAULTS["spectrum_max_cache"]),
-    vae_path: Optional[str] = Form(TXT2VID_DEFAULTS["vae_path"]),
-    text_encoder_path: Optional[str] = Form(TXT2VID_DEFAULTS["text_encoder_path"]),
-    unet_quantization: Optional[str] = Form(TXT2VID_DEFAULTS["unet_quantization"]),
-    quantized_gemm_mode: Optional[str] = Form(TXT2VID_DEFAULTS["quantized_gemm_mode"]),
+    negative_prompt: Optional[str] = Form(IMG2VID_DEFAULTS["negative_prompt"]),
+    # The six keys a per-arch overlay can change (param_defaults
+    # VIDEO_GEN_ARCH_OVERLAYS) are declared as `Form(None)` SENTINELS, not as
+    # their base values: a multipart route has no `model_fields_set`, so an
+    # omitted field is only distinguishable from a sent one by the sentinel.
+    # Whatever comes back None is filled from `video_defaults_for_arch` below --
+    # which is what makes an omitted `num_frames` resolve to MiniMax-H3's 124
+    # instead of being validated (and snapped) against LTX-2.3's 121. The
+    # openapi schema keeps documenting the base values.
+    width: Optional[int] = Form(None),
+    height: Optional[int] = Form(None),
+    num_frames: Optional[int] = Form(None),
+    frame_rate: Optional[float] = Form(None),
+    num_inference_steps: Optional[int] = Form(None),
+    guidance_scale: Optional[float] = Form(None),
+    seed: int = Form(IMG2VID_DEFAULTS["seed"]),
+    num_videos_per_prompt: int = Form(IMG2VID_DEFAULTS["num_videos_per_prompt"]),
+    max_sequence_length: int = Form(IMG2VID_DEFAULTS["max_sequence_length"]),
+    audio_enable: bool = Form(IMG2VID_DEFAULTS["audio_enable"]),
+    blocks_to_swap: int = Form(IMG2VID_DEFAULTS["blocks_to_swap"]),
+    fbcache_enable: bool = Form(IMG2VID_DEFAULTS["fbcache_enable"]),
+    fbcache_threshold: float = Form(IMG2VID_DEFAULTS["fbcache_threshold"]),
+    fbcache_warmup_steps: int = Form(IMG2VID_DEFAULTS["fbcache_warmup_steps"]),
+    spectrum_enable: bool = Form(IMG2VID_DEFAULTS["spectrum_enable"]),
+    spectrum_w: float = Form(IMG2VID_DEFAULTS["spectrum_w"]),
+    spectrum_w_decay: float = Form(IMG2VID_DEFAULTS["spectrum_w_decay"]),
+    spectrum_delta_cap: float = Form(IMG2VID_DEFAULTS["spectrum_delta_cap"]),
+    spectrum_m: int = Form(IMG2VID_DEFAULTS["spectrum_m"]),
+    spectrum_lam: float = Form(IMG2VID_DEFAULTS["spectrum_lam"]),
+    spectrum_warmup_steps: int = Form(IMG2VID_DEFAULTS["spectrum_warmup_steps"]),
+    spectrum_window_size: int = Form(IMG2VID_DEFAULTS["spectrum_window_size"]),
+    spectrum_flex_window: float = Form(IMG2VID_DEFAULTS["spectrum_flex_window"]),
+    spectrum_tail: float = Form(IMG2VID_DEFAULTS["spectrum_tail"]),
+    spectrum_max_cache: int = Form(IMG2VID_DEFAULTS["spectrum_max_cache"]),
+    vae_path: Optional[str] = Form(IMG2VID_DEFAULTS["vae_path"]),
+    text_encoder_path: Optional[str] = Form(IMG2VID_DEFAULTS["text_encoder_path"]),
+    unet_quantization: Optional[str] = Form(IMG2VID_DEFAULTS["unet_quantization"]),
+    quantized_gemm_mode: Optional[str] = Form(IMG2VID_DEFAULTS["quantized_gemm_mode"]),
     controlnets: str = Form("[]"),  # JSON string; only is_style_transfer entries are meaningful for LTX-2.3
     image: UploadFile = File(...),
+    # OPTIONAL second keyframe: the LAST frame. MiniMax-H3's `fl2va` workflow
+    # conditions on the two ENDS of the clip (0-2 visual anchors); LTX-2.3
+    # conditions on the first frame only and declares this unsupported, so it is
+    # accepted-and-warned there rather than refused -- one endpoint, two archs.
+    last_frame_image: Optional[UploadFile] = File(None),
     db: Session = Depends(get_gallery_db)
 ):
-    """Generate a video from a still-image first-frame keyframe (LTX-2.3).
+    """Generate a video from still-image keyframes (LTX-2.3 or MiniMax-H3).
 
-    Multipart form: an uploaded keyframe image plus the txt2vid parameters. The
-    keyframe is VAE-encoded and pinned as frame 0. Produces an H.264 mp4 (with an
-    audio track when audio_enable is true) and a gallery row. Requires an LTX-2.3
-    model to be loaded.
+    Multipart form: an uploaded keyframe image plus the txt2vid parameters, and
+    optionally a `last_frame_image`. On LTX-2.3 the keyframe is VAE-encoded and
+    pinned as frame 0; on MiniMax-H3 each uploaded frame becomes a single-frame
+    visual conditioning anchor held at the model's `keyframe_noise_aug` level.
+    Produces an H.264 mp4 (with an audio track when audio_enable is true) and a
+    gallery row.
+
+    Any field the client omits is filled from the LOADED ARCHITECTURE's video
+    defaults, and the geometry is then validated against that architecture's
+    `TemporalSpec` -- the same two steps, in the same order, as
+    /generate/txt2vid.
     """
     from api.generation_status import start_generation, complete_generation, fail_generation, get_warnings
     from utils.video_utils import save_video_with_metadata
@@ -3250,6 +3270,10 @@ async def generate_img2vid(
         "unet_quantization": unet_quantization,
         # Normalized here (before start_generation) so junk is a 400, not a 500.
         "quantized_gemm_mode": _normalize_media_qgm(quantized_gemm_mode),
+        # The uploaded FILENAME, not the bytes: it is what the gallery row and
+        # the capability warning can carry, and `None` is what "no last frame"
+        # means for both. The image itself is read below.
+        "last_frame_image": getattr(last_frame_image, "filename", None) if last_frame_image else None,
     }
 
     # Training-free reference-style transfer (video). See generate_txt2vid's
@@ -3267,33 +3291,33 @@ async def generate_img2vid(
     params["style_transfers"] = style_transfers
     params["style_combine_mode"] = style_combine_mode
 
-    # Validate LTX-2.3 dimensional constraints before any GPU work (4xx, not 5xx).
-    if width % 32 != 0 or height % 32 != 0:
+    if not (getattr(pipeline_manager, "is_ltx2_model", False)
+            or getattr(pipeline_manager, "is_minimax_h3_model", False)):
         raise CustomValidationError(
-            "width and height must both be divisible by 32",
-            detail=f"Got width={width}, height={height}. Round each to the nearest multiple of 32.",
-        )
-    if num_frames % 8 != 1:
-        raise CustomValidationError(
-            "num_frames must satisfy (num_frames - 1) % 8 == 0",
-            detail=f"Got num_frames={num_frames}. Use values like 9, 17, ..., 121 (8k + 1).",
-        )
-    # Spec-driven step-count floor (TemporalSpec.min_inference_steps). A no-op
-    # for LTX-2.3, which is the only arch this endpoint dispatches today (a
-    # loaded MiniMax-H3 is refused just below); it is wired here so the check
-    # lands with the arch rather than after the next arch is dispatched.
-    validate_video_steps(params, (pipeline_manager.current_model_info or {}).get("type"))
-
-    # A loaded MiniMax-H3 is a VIDEO model this endpoint cannot dispatch yet;
-    # say so, rather than "no LTX-2.3 model loaded".
-    _reject_if_video_arch_unwired("/generate/img2vid")
-    if not getattr(pipeline_manager, "is_ltx2_model", False):
-        raise CustomValidationError(
-            "No LTX-2.3 model loaded",
-            detail="Load an LTX-2.3 video model before calling /generate/img2vid.",
+            "No video model loaded",
+            detail="Load an LTX-2.3 or MiniMax-H3 video model before calling /generate/img2vid.",
         )
 
-    # Read the uploaded keyframe.
+    # Per-architecture defaults, THEN spec-driven geometry validation -- the same
+    # order, and the same two helpers, as /generate/txt2vid. `_provided` is the
+    # multipart equivalent of Pydantic's `model_fields_set`: the overlaid keys
+    # that came back from their `Form(None)` sentinel with a value.
+    _vid_arch = (pipeline_manager.current_model_info or {}).get("type")
+    #
+    # Every OTHER key counts as provided: a multipart field that is not one of
+    # the sentinels already carries its declared `Form()` default, so re-filling
+    # it from the resolved map would overwrite REAL values -- `prompt` included,
+    # which `IMG2VID_DEFAULTS` carries as "".
+    _omitted = {key for key, value in (
+        ("width", width), ("height", height), ("num_frames", num_frames),
+        ("frame_rate", frame_rate), ("num_inference_steps", num_inference_steps),
+        ("guidance_scale", guidance_scale),
+    ) if value is None}
+    _provided = set(params) - _omitted
+    _vid_defaults = resolve_video_defaults(params, _provided, _vid_arch, IMG2VID_DEFAULTS)
+
+    # Read the uploaded keyframe(s). The first frame is required; the last frame
+    # is the optional second visual condition (MiniMax-H3 `fl2va`).
     try:
         image_data = await image.read()
         input_image = Image.open(io.BytesIO(image_data)).convert("RGB")
@@ -3302,25 +3326,41 @@ async def generate_img2vid(
             "Failed to read the uploaded keyframe image",
             detail=str(e),
         )
+    last_input_image = None
+    if last_frame_image is not None:
+        try:
+            last_frame_data = await last_frame_image.read()
+            last_input_image = Image.open(io.BytesIO(last_frame_data)).convert("RGB")
+        except Exception as e:
+            raise CustomValidationError(
+                "Failed to read the uploaded last-frame keyframe image",
+                detail=str(e),
+            )
 
     _gen_id = start_generation("img2vid")
     try:
         pipeline_manager.reset_cancel_flag()
 
+        # Inside the try because a snap emits a `warnings[]` entry, which needs
+        # the generation context started above; a raise from here is still
+        # re-raised as a 4xx by the except clause below. See the same pair of
+        # calls in /generate/txt2vid for what each one owns.
+        validate_video_geometry(params, _vid_arch)
+        validate_video_steps(params, _vid_arch)
+
         from api.arch_capabilities import check_arch_capabilities
         from api.generation_overrides import plan_overrides, apply_overrides
         _override_plan = plan_overrides(pipeline_manager, params.get("vae_path"), params.get("text_encoder_path"))
         apply_overrides(pipeline_manager, _override_plan)
-        _ltx2_arch = (pipeline_manager.current_model_info or {}).get("type")
-        # The VIDEO defaults, not the image ones: `guidance_scale`,
-        # `num_frames`, `frame_rate` and friends do not exist in
-        # GENERATION_DEFAULTS at all, so without this every video request would
-        # read as having set them to a non-default value -- and any arch that
-        # declares one of them unsupported would warn on EVERY request,
-        # including the default one. Identical values for LTX-2.3 today; it
-        # stops being a no-op the moment a second arch reaches this endpoint.
-        check_arch_capabilities(params, _ltx2_arch,
-                                defaults=video_defaults_for_arch(_ltx2_arch, IMG2VID_DEFAULTS))
+        # The RESOLVED per-arch VIDEO defaults, not the image ones:
+        # `guidance_scale`, `num_frames`, `frame_rate` and friends do not exist
+        # in GENERATION_DEFAULTS at all, so without this every video request
+        # would read as having set them to a non-default value -- and any arch
+        # that declares one of them unsupported (MiniMax-H3 declares both halves
+        # of the guidance pair) would warn on EVERY request, including the
+        # default one. `_vid_defaults` is the same map this request's omitted
+        # fields were filled from.
+        check_arch_capabilities(params, _vid_arch, defaults=_vid_defaults)
 
         print(f"img2vid generation params: {sanitize_params_for_logging(params)}")
 
@@ -3345,11 +3385,13 @@ async def generate_img2vid(
             apply_quantized_gemm_mode(params.get("quantized_gemm_mode"))
             frames, audio, audio_sample_rate, actual_seed = await _run_generation_in_executor(
                 loop, executor,
-                lambda: pipeline_manager.generate_img2vid(params, input_image, progress_callback=progress_callback)
+                lambda: pipeline_manager.generate_img2vid(
+                    params, input_image, progress_callback=progress_callback,
+                    last_frame_image=last_input_image)
             )
             fp8_gemm = extract_fp8_gemm_info(pipeline_manager)
         apply_generation_timings(params, time.perf_counter() - _gen_start)
-        _record_media_gemm_outcome(params, fp8_gemm, _ltx2_arch)
+        _record_media_gemm_outcome(params, fp8_gemm, _vid_arch)
 
         # See the note on the same call in /generate/txt2vid.
         vae_name, vae_hash = extract_vae_info(pipeline_manager)

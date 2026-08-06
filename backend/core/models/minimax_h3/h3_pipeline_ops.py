@@ -46,9 +46,12 @@ two places a re-derivation is easy to get subtly wrong are called out inline:
 5. **Conditioning rows are pinned**, at ``t = max(t_video, 0.999)`` for visual
    conditioning and ``t = 1.0`` for audio references, for every step. The loop
    only ever writes the GENERATED rows, so the anchors ride through unchanged.
-   (Phase 2 generates t2va only, so there are no conditioning rows yet; the
-   plumbing is here because the row-timestep plan is the same function either
-   way and splitting it later would be a second contract to keep in sync.)
+   The anchors themselves are built at the SAME level they are pinned at:
+   ``encode_condition_images`` produces the clean latent and
+   ``build_condition_rows`` mixes in that condition's own noise draw through the
+   scheduler's ``scale_noise`` (``x_t = t*x0 + (1-t)*noise``) at
+   ``keyframe_noise_aug`` — the released model was trained with slightly noised
+   anchors, so feeding it an exactly-clean one is off-distribution.
 
 THE TEXT ENCODER IS STREAMED, AND THE SHAPE OF THAT IS LOAD-BEARING
 -------------------------------------------------------------------
@@ -369,6 +372,104 @@ def draw_noise(
     audio_noise = torch.randn((num_audio_latents * AUDIO_CHANNELS, audio_latent_channels),
                               generator=generator, device=device, dtype=torch.float32)
     return condition_noises, video_noise, audio_noise
+
+
+# --------------------------------------------------------------------------
+# Visual conditioning (fl2va: first and/or last frame)
+# --------------------------------------------------------------------------
+
+@torch.no_grad()
+def encode_condition_images(
+    vae,
+    images: Sequence[np.ndarray],
+    *,
+    latents_mean: Sequence[float],
+    latents_std: Sequence[float],
+    pixel_mean: Sequence[float],
+    pixel_std: Sequence[float],
+    device: torch.device | str = "cuda",
+) -> List[torch.Tensor]:
+    """Keyframe images ``uint8 [H, W, 3]`` -> normalized latents ``[1, 24, 1, h, w]``.
+
+    The exact inverse of :func:`decode_video`'s pixel handling, and it has the
+    same two traps:
+
+    * the video VAE takes **ImageNet-normalised RGB over a [0, 1] base**, not
+      ``[-1, 1]`` like every other VAE in this repo, so the image is divided by
+      255 and then normalised with the ImageNet constants;
+    * the latents carry 24 PER-CHANNEL mean/std vectors and are normalised as
+      ``(z - mean) / std`` (decode applies the inverse). The fp32 config values
+      are used, not the fp16 copies in the weight file.
+
+    A single frame goes through the SPATIAL encoder alone: the vendored
+    ``AutoencoderKLMiniMaxH3._encode`` special-cases ``num_frames == 1`` and
+    returns exactly one latent frame, which is the geometry the packed layout
+    reserves ``rows_per_frame`` rows for.
+
+    The posterior is read at its **mode**, not sampled. Two reasons, both
+    deliberate: the request generator's draw sequence is a recorded contract
+    (K0.6 hashes one draw per condition, and a posterior sample would either add
+    a draw or silently consume the global RNG), and it matches how every other
+    keyframe/reference encode in this repo reads a latent distribution
+    (``ltx2``'s img2vid keyframe, ``krea2``, ``lens``, ``ideogram4``, ACE-Step's
+    reference audio). MiniMax's own reference wrapper (`klvae.encode_base`)
+    samples the posterior from the global RNG instead; the difference is one
+    posterior sigma of jitter on an anchor the sampler then holds fixed.
+    """
+    torch_device = torch.device(device)
+    vae_dtype = next(vae.parameters()).dtype
+    pix_mean = torch.tensor(list(pixel_mean), device=torch_device).view(1, -1, 1, 1, 1)
+    pix_std = torch.tensor(list(pixel_std), device=torch_device).view(1, -1, 1, 1, 1)
+    mean = torch.tensor(list(latents_mean), device=torch_device).view(1, -1, 1, 1, 1)
+    std = torch.tensor(list(latents_std), device=torch_device).view(1, -1, 1, 1, 1)
+
+    latents: List[torch.Tensor] = []
+    for image in images:
+        pixels = torch.from_numpy(np.ascontiguousarray(image)).to(torch_device, torch.float32)
+        # [H, W, 3] -> [1, 3, 1, H, W], the 5-D single-frame clip shape.
+        pixels = pixels.permute(2, 0, 1)[None, :, None] / 255.0
+        pixels = (pixels - pix_mean) / pix_std
+        posterior = vae.encode(pixels.to(vae_dtype), return_dict=True).latent_dist
+        latent = posterior.mode().float()
+        latents.append((latent - mean) / std)
+    return latents
+
+
+def build_condition_rows(
+    scheduler,
+    condition_latents: Sequence[torch.Tensor],
+    condition_noises: Sequence[torch.Tensor],
+    *,
+    keyframe_noise_aug: float = VISUAL_COND_TIMESTEP,
+    patch_size: Tuple[int, int, int] = (1, 2, 2),
+) -> torch.Tensor:
+    """The packed rows of the visual conditioning anchors, in packed order.
+
+    Each anchor is noised to ``keyframe_noise_aug`` with its OWN draw from
+    :func:`draw_noise` — the same level :func:`build_row_timesteps` then pins
+    that anchor's rows at for every step, so what the model is told about the
+    row and what the row contains agree. ``scale_noise`` is the vendored
+    scheduler's own forward process (``x_t = t*x0 + (1-t)*noise``, MiniMax-H3's
+    ``t`` convention where ``t = 1`` is clean).
+
+    Returns ``[num_conditions * rows_per_frame, C*pt*ph*pw]``, i.e. exactly the
+    block the layout reserves at the head of the video index range. An empty
+    condition list returns an empty tensor so the t2va path needs no branch.
+    """
+    if len(condition_latents) != len(condition_noises):
+        raise ValueError(
+            f"Every visual condition needs its own noise draw: got {len(condition_latents)} "
+            f"latent(s) and {len(condition_noises)} noise tensor(s).")
+    rows = [
+        patchify_video_latents(
+            scheduler.scale_noise(latent, keyframe_noise_aug, noise.to(latent.device, latent.dtype)),
+            patch_size,
+        )[0]
+        for latent, noise in zip(condition_latents, condition_noises)
+    ]
+    if not rows:
+        return torch.zeros(0, 0)
+    return torch.cat(rows, dim=0)
 
 
 # --------------------------------------------------------------------------

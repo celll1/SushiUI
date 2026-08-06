@@ -2707,14 +2707,22 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                    "model to use /generate/txt2vid.",
         )
 
-    def generate_img2vid(self, params: Dict[str, Any], input_image, progress_callback=None, step_callback=None):
-        """Generate a video from a still image first-frame keyframe (LTX-2.3 only).
+    def generate_img2vid(self, params: Dict[str, Any], input_image, progress_callback=None,
+                         step_callback=None, last_frame_image=None):
+        """Generate a video from still-image keyframes (LTX-2.3 or MiniMax-H3).
 
         Args:
-            params: Generation parameters (see IMG2VID_DEFAULTS).
-            input_image: PIL.Image used as the first-frame keyframe.
+            params: Generation parameters (see IMG2VID_DEFAULTS, resolved
+                against the loaded arch's overlay by the route).
+            input_image: PIL.Image used as the FIRST-frame keyframe.
             progress_callback: Called as (step, total_steps) at each denoise step.
-            step_callback: Reserved (unused for LTX-2.3 img2vid).
+            step_callback: Per-step latent preview hook. Consumed by MiniMax-H3
+                exactly as in generate_txt2vid; unused for LTX-2.3.
+            last_frame_image: Optional PIL.Image used as the LAST-frame keyframe
+                (MiniMax-H3's `fl2va` two-condition workflow). LTX-2.3's
+                image-to-video pipeline conditions on the first frame only and
+                ignores it -- the route warns via arch_capabilities rather than
+                refusing, because one endpoint serves both architectures.
 
         Returns:
             tuple: (frames, audio, audio_sample_rate, actual_seed) — identical
@@ -2722,11 +2730,16 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         """
         if self.is_ltx2_model:
             return self._generate_img2vid_ltx2(params, input_image, progress_callback, step_callback)
+        if self.is_minimax_h3_model:
+            return self._generate_img2vid_minimax_h3(
+                params, input_image, last_frame_image=last_frame_image,
+                progress_callback=progress_callback, step_callback=step_callback)
 
         from api.error_handlers import ValidationError
         raise ValidationError(
-            "Image-to-video generation requires an LTX-2.3 model",
-            detail="The currently loaded model is not a video model. Load an LTX-2.3 model to use /generate/img2vid.",
+            "Image-to-video generation requires a video model",
+            detail="The currently loaded model is not a video model. Load an LTX-2.3 or MiniMax-H3 "
+                   "model to use /generate/img2vid.",
         )
 
     def generate_vid_outpaint(

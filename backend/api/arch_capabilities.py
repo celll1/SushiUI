@@ -58,6 +58,10 @@ FEATURE_PARAMS: Dict[str, List[str]] = {
     # itself, not just its schedule.
     "cfg": ["guidance_scale", "cfg_scale"],
     "negative_prompt": ["negative_prompt"],
+    # POST /generate/img2vid's optional SECOND keyframe (the last frame).
+    # Meaningful only on an architecture that conditions on both ends of the
+    # clip; the value carried in `params` is the uploaded filename.
+    "last_frame_image": ["last_frame_image"],
 }
 
 # Human-readable label used in the warning message for each feature.
@@ -79,6 +83,7 @@ FEATURE_LABELS: Dict[str, str] = {
     "vae_override": "vae_path (VAE override)",
     "cfg": "guidance_scale/cfg_scale (classifier-free guidance)",
     "negative_prompt": "negative_prompt",
+    "last_frame_image": "last_frame_image (last-frame keyframe)",
 }
 
 # ---------------------------------------------------------------------------
@@ -167,6 +172,12 @@ _add("ltx2", "advanced_cfg",
      "CFG scheduling / dynamic thresholding / CFG-rescale run only in the U-Net sampling loop, not in the LTX-2.3 video sampler")
 _add("ltx2", "nag", "Normalized Attention Guidance is not implemented for the LTX-2.3 video model")
 _add("ltx2", "controlnets", "ControlNet is not supported for the LTX-2.3 video model")
+# The img2vid endpoint's optional SECOND keyframe. LTX-2.3's image-to-video
+# pipeline pins the uploaded image as frame 0 and takes no last-frame condition,
+# so a last frame sent here is accepted and dropped rather than refused (the
+# endpoint serves two architectures and only one of them reads the field).
+_add("ltx2", "last_frame_image",
+     "LTX-2.3's image-to-video pipeline conditions on the first frame only, so a last-frame keyframe has nothing to attach to")
 
 # ACE-Step 1.5 is an audio model (own DiT + flow-matching turbo sampler, driven
 # through /generate/txt2aud); none of the image-oriented guidance/conditioning

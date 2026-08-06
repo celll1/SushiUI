@@ -299,6 +299,90 @@ def test_audio_enable_does_not_perturb_the_draw_sequence():
 
 
 # ---------------------------------------------------------------------------
+# Visual conditioning (fl2va)
+# ---------------------------------------------------------------------------
+
+class _ScaleNoiseOnly:
+    """The vendored scheduler's `scale_noise`, isolated (no weights needed)."""
+
+    def scale_noise(self, sample, timestep, noise):
+        from core.models.minimax_h3.vendor.scheduling_minimax_h3 import MiniMaxH3Scheduler
+        return MiniMaxH3Scheduler.scale_noise(self, sample, timestep, noise)
+
+
+def test_condition_rows_are_noised_at_the_level_they_are_pinned_at():
+    """The anchor's CONTENT and the timestep the model is told agree.
+
+    ``build_condition_rows`` mixes each anchor with its own draw at
+    ``keyframe_noise_aug`` (``x_t = t*x0 + (1-t)*noise``), and
+    ``build_row_timesteps`` then pins those rows at the same ``t`` for every
+    step. Building a clean anchor and declaring it at 0.999 -- or noising at one
+    level and declaring another -- is off-distribution for a model trained with
+    noise-augmented anchors, and nothing downstream would notice.
+    """
+    latent = torch.randn(1, 24, 1, 4, 6, generator=torch.Generator().manual_seed(1))
+    noise = torch.randn_like(latent)
+    rows = ops.build_condition_rows(_ScaleNoiseOnly(), [latent], [noise])
+
+    t = ops.VISUAL_COND_TIMESTEP
+    expected = ops.patchify_video_latents(t * latent + (1.0 - t) * noise)[0]
+    assert rows.shape == (1 * 2 * 3, 24 * 4)
+    assert torch.allclose(rows, expected, atol=1e-6)
+
+    # ... and the row-timestep plan pins exactly those rows at that level.
+    layout = ops.build_packed_layout(3, 2, 4, 6, 5, keyframe_anchors=("first",))
+    unique, index = ops.build_row_timesteps(layout, 0.5, 0.4)
+    cond_rows = layout["video_indices"][:layout["num_condition_video_rows"]]
+    assert layout["num_condition_video_rows"] == rows.shape[0]
+    assert torch.allclose(unique[index[cond_rows]], torch.full((rows.shape[0],), t), atol=1e-6)
+
+
+def test_condition_rows_lead_the_video_block_in_packed_order():
+    """Anchor i occupies rows ``[i*rows_per_frame, (i+1)*rows_per_frame)``.
+
+    Two anchors in the wrong ORDER (last before first) keeps every index, every
+    count and every tag, and moves the two rotary anchor times onto each other's
+    rows -- the fl2va analogue of the row-major/channel-major audio mutant.
+    """
+    latents = [torch.full((1, 24, 1, 4, 6), float(v)) for v in (1.0, 2.0)]
+    zeros = [torch.zeros_like(l) for l in latents]
+    rows = ops.build_condition_rows(_ScaleNoiseOnly(), latents, zeros)
+    rows_per_frame = 2 * 3
+    assert rows.shape[0] == 2 * rows_per_frame
+    # `scale_noise` at t = 0.999 against zero noise scales, so compare ratios.
+    assert torch.allclose(rows[:rows_per_frame], rows[:rows_per_frame][0, 0].expand_as(rows[:rows_per_frame]))
+    assert float(rows[rows_per_frame, 0]) == pytest.approx(2.0 * float(rows[0, 0]))
+
+    layout = ops.build_packed_layout(3, 2, 4, 6, 5, keyframe_anchors=("first", "last"))
+    position = layout["position_ids"]
+    cond = layout["video_indices"][:layout["num_condition_video_rows"]]
+    first_time = position[cond[:rows_per_frame], 0]
+    last_time = position[cond[rows_per_frame:], 0]
+    assert torch.equal(first_time, first_time[:1].expand_as(first_time))
+    assert torch.equal(last_time, last_time[:1].expand_as(last_time))
+    # "first" sits at the start of the media clock (right after the text span)
+    # and "last" at the far end of it.
+    assert float(first_time[0]) == 3.0
+    assert float(last_time[0]) > float(first_time[0])
+    generated_time = position[layout["video_indices"][layout["num_condition_video_rows"]:], 0]
+    assert float(generated_time.min()) == float(first_time[0])
+    # The "last" anchor is placed by the reference's own pairwise-sum formula
+    # (`sum(spans) - ROPE_FRAME_RESCALE`), which lands PAST the last generated
+    # frame's rotary time rather than on it. Recorded as the contract rather
+    # than "corrected": K0.3 compared this layout against two independent ports
+    # on the fl2va cases and they agree exactly.
+    assert float(last_time[0]) > float(generated_time.max())
+
+
+def test_build_condition_rows_requires_one_draw_per_condition():
+    """A missing draw would silently shift the whole seed sequence."""
+    latent = torch.zeros(1, 24, 1, 4, 6)
+    with pytest.raises(ValueError, match="own noise draw"):
+        ops.build_condition_rows(_ScaleNoiseOnly(), [latent, latent], [torch.zeros_like(latent)])
+    assert ops.build_condition_rows(_ScaleNoiseOnly(), [], []).numel() == 0
+
+
+# ---------------------------------------------------------------------------
 # Frame geometry
 # ---------------------------------------------------------------------------
 

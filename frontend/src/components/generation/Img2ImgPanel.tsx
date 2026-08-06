@@ -27,7 +27,7 @@ import PromptEditor from "../common/PromptEditor";
 import LoopGenerationPanel, { LoopGenerationConfig } from "./LoopGenerationPanel";
 import QuantizedGemmSelect from "./QuantizedGemmSelect";
 import { migrateLoopGenerationConfig, computeLoopDecodeDirective } from "@/utils/loopGenerationInheritance";
-import { getSamplers, getScheduleTypes, generateImg2Img, generateImg2Vid, Img2VidParams, generateAud2Aud, Aud2AudParams, generateImg2ImgTrainingPreview, toBase64, LoRAConfig, ControlNetConfig, generateTIPOPrompt, cancelGeneration, getCurrentModel, isLatentOnlyResult, getResultFilename, getResultSeed, getResultAncestralSeed, unetQuantizationOptions, normalizeUnetQuantization, transformerQuantizationLabel } from "@/utils/api";
+import { getSamplers, getScheduleTypes, generateImg2Img, generateImg2Vid, Img2VidParams, generateAud2Aud, Aud2AudParams, generateImg2ImgTrainingPreview, toBase64, LoRAConfig, ControlNetConfig, generateTIPOPrompt, cancelGeneration, getCurrentModel, isLatentOnlyResult, getResultFilename, getResultSeed, getResultAncestralSeed, unetQuantizationOptions, normalizeUnetQuantization, transformerQuantizationLabel, archSupportsFeature, videoFrameOptions, videoFrameLabel, archDisplayName } from "@/utils/api";
 import { useActiveTraining } from "@/hooks/useActiveTraining";
 import { wsClient, CFGMetrics } from "@/utils/websocket";
 import CFGMetricsGraph from "../common/CFGMetricsGraph";
@@ -106,6 +106,10 @@ interface Img2ImgParams {
   // these into Img2VidParams for img2vid requests, with the input image as the keyframe).
   num_frames?: number;
   frame_rate?: number;
+  // OPTIONAL last-frame keyframe, as a data URL. The uploaded input image is
+  // the FIRST frame; this is the last one (MiniMax-H3 `fl2va`). null = no
+  // last-frame conditioning, which is every other architecture's only mode.
+  last_frame_image?: string | null;
   num_inference_steps?: number;
   guidance_scale?: number;
   num_videos_per_prompt?: number;
@@ -219,6 +223,7 @@ const DEFAULT_PARAMS: Img2ImgParams = {
   // these into Img2VidParams for img2vid requests, with the input image as the keyframe).
   num_frames: 121,
   frame_rate: 24.0,
+  last_frame_image: null,
   num_inference_steps: 8,
   guidance_scale: 1.0,
   num_videos_per_prompt: 1,
@@ -382,11 +387,10 @@ function isImg2ImgOptionsTabActive(tabId: Img2ImgOptionsTabId, params: Img2ImgPa
   }
 }
 
-// num_frames must be 8k+1 (LTX-2.3). Offer common lengths.
-const FRAME_OPTIONS = [9, 17, 25, 33, 49, 65, 81, 97, 121].map((n) => ({
-  value: String(n),
-  label: String(n),
-}));
+// The valid clip lengths differ per video architecture (LTX-2.3: 8k+1;
+// MiniMax-H3: 17n+5 within 124-345), so the option list comes from the
+// backend's own `video_constraints` payload via videoFrameOptions() below
+// rather than from a list kept here. See frontend/src/utils/api.ts.
 
 const STORAGE_KEY = "img2img_params";
 const LOOP_GENERATION_STORAGE_KEY = "img2img_loop_generation";
@@ -458,6 +462,15 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
       return normalized === (prev.unet_quantization ?? null) ? prev : { ...prev, unet_quantization: normalized };
     });
   }, [archCapabilities, currentModelInfo?.model_info?.type]);
+  // The loaded architecture and the capability gates the VIDEO controls read.
+  // `archSupportsFeature` treats an unknown arch (or a capability matrix that
+  // has not loaded) as supporting the feature, so a control is never hidden
+  // merely because the matrix was unavailable.
+  const loadedArch = currentModelInfo?.model_info?.type as string | undefined;
+  const loadedArchName = archDisplayName(loadedArch);
+  const supportsCfg = archSupportsFeature(archCapabilities, loadedArch, "cfg");
+  const supportsNegativePrompt = archSupportsFeature(archCapabilities, loadedArch, "negative_prompt");
+  const supportsLastFrame = archSupportsFeature(archCapabilities, loadedArch, "last_frame_image");
   const [isDragging, setIsDragging] = useState(false);
   const [isEditingImage, setIsEditingImage] = useState(false);
   const [sendImage, setSendImage] = useState(true);
@@ -929,7 +942,13 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
       // This prevents overwriting params sent from Gallery/other panels
       const saved = localStorage.getItem(STORAGE_KEY);
       const savedParams = saved ? JSON.parse(saved) : null;
-      const currentParamsStr = JSON.stringify(params);
+      // `last_frame_image` is a data URL, i.e. the whole IMAGE. It is kept out
+      // of the persisted copy for the same reason the input image has its own
+      // key (INPUT_IMAGE_STORAGE_KEY): a base64 image in the params blob eats
+      // the ~5 MB localStorage quota and, once it overflows, takes every OTHER
+      // persisted parameter down with it.
+      const { last_frame_image: _lastFrame, ...persistableParams } = params;
+      const currentParamsStr = JSON.stringify(persistableParams);
       const savedParamsStr = savedParams ? JSON.stringify(savedParams) : null;
 
       if (currentParamsStr !== savedParamsStr) {
@@ -938,7 +957,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
           controlnets: params.controlnets?.length || 0,
           prompt_length: params.prompt?.length || 0,
         });
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(params));
+        localStorage.setItem(STORAGE_KEY, currentParamsStr);
       }
     }
   }, [params, isMounted, isInitialLoad]);
@@ -1785,6 +1804,10 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         height: params.height,
         num_frames: params.num_frames,
         frame_rate: params.frame_rate,
+        // The optional SECOND keyframe (MiniMax-H3 fl2va). Carried into the
+        // queued item's params, because the queue is what the sender is handed
+        // -- a value left in `params` alone never reaches generateImg2Vid.
+        last_frame_image: params.last_frame_image ?? null,
         num_inference_steps: params.num_inference_steps,
         guidance_scale: params.guidance_scale,
         seed: params.seed,
@@ -3715,6 +3738,11 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
             </button>
           </div>
 
+          {/* Hidden on an architecture that declares negative prompting
+              unsupported: MiniMax-H3 is guidance-distilled and has no
+              unconditional branch, so there is nothing for a negative prompt to
+              steer away from. Capability-driven (see supportsNegativePrompt). */}
+          {supportsNegativePrompt && (
           <TextareaWithTagSuggestions
             label="Negative Prompt"
             placeholder="Enter negative prompt..."
@@ -3723,11 +3751,12 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
             onChange={(e) => setParams({ ...params, negative_prompt: e.target.value })}
             enableWeightControl={true}
           />
+          )}
         </Card>
         )}
 
         {isVideo && (
-          <Card title="Video">
+          <Card title={`Video${loadedArchName ? ` (${loadedArchName})` : ""}`}>
             <div className="grid grid-cols-2 gap-2">
               <NumberInput
                 label="Width (÷32)"
@@ -3750,10 +3779,10 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
             </div>
 
             <Select
-              label="Frames (8k+1)"
+              label={videoFrameLabel(archCapabilities, loadedArch)}
               value={String(params.num_frames ?? 121)}
               onChange={(e) => setParams({ ...params, num_frames: parseInt(e.target.value) })}
-              options={FRAME_OPTIONS}
+              options={videoFrameOptions(archCapabilities, loadedArch)}
             />
 
             <NumberInput
@@ -3776,6 +3805,12 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
                 step={1}
                 parse="int"
               />
+              {/* Guidance: hidden on an architecture that declares it
+                  unsupported (MiniMax-H3 is guidance-distilled — it has no
+                  guider and no unconditional branch, so the sampler takes no
+                  scale at all). Driven by the capability matrix, not by an arch
+                  name kept here. */}
+              {supportsCfg && (
               <NumberInput
                 label="Guidance Scale"
                 value={params.guidance_scale ?? 1.0}
@@ -3785,6 +3820,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
                 step={0.1}
                 parse="float"
               />
+              )}
               <Input
                 type="number"
                 label="Seed"
@@ -3805,6 +3841,77 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
               />
               <span className="text-gray-300 text-sm">Audio</span>
             </label>
+
+            {/* Optional LAST-frame keyframe. Rendered only on an architecture
+                that conditions on both ends of the clip: LTX-2.3 declares
+                `last_frame_image` unsupported (first frame only), MiniMax-H3
+                reads it as its second `fl2va` anchor. Capability-driven, so the
+                arch list stays in the backend table. */}
+            {supportsLastFrame && (
+              <div className="mt-3 space-y-2">
+                <label className="block text-sm font-medium text-gray-300">
+                  Last Frame (optional)
+                </label>
+                <p className="text-xs text-gray-400">
+                  The uploaded image above is the first frame. Adding one here
+                  conditions the end of the clip as well.
+                </p>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="file"
+                    accept="image/*"
+                    onChange={async (e) => {
+                      const file = e.target.files?.[0];
+                      if (!file) return;
+                      const dataUrl = await toBase64(file);
+                      setParams({ ...params, last_frame_image: dataUrl });
+                    }}
+                    className="text-xs text-gray-300"
+                  />
+                  {params.last_frame_image && (
+                    <button
+                      onClick={() => setParams({ ...params, last_frame_image: null })}
+                      className="px-2 py-1 text-xs bg-gray-700 hover:bg-gray-600 rounded"
+                    >
+                      Clear
+                    </button>
+                  )}
+                </div>
+                {params.last_frame_image && (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    src={params.last_frame_image}
+                    alt="Last frame keyframe"
+                    className="max-h-32 rounded border border-gray-700"
+                  />
+                )}
+              </div>
+            )}
+
+            {/* Factual notes from MiniMax's own release documentation (README +
+                prompt-writing guide + the reproducible request scripts). No
+                quality claims: the prompt shape below is the output format of
+                MiniMax's H3-Context-IR stage, which is not open-sourced. */}
+            {loadedArch === "minimax_h3" && (
+              <div className="mt-3 text-xs text-gray-400 space-y-1">
+                <div>
+                  Prompts for this model are written as a structured block:
+                  <code className="mx-1">integrated_multimodal_description:</code>
+                  (shot by shot, with timecodes), then
+                  <code className="mx-1">overall_soundscape:</code> and
+                  <code className="mx-1">non_diegetic_music:</code>.
+                </div>
+                <div>
+                  Keyframes are conditioning anchors at the two ends of the
+                  clip; there is no mid-timeline frame conditioning.
+                </div>
+                <div>
+                  Steps count sigma schedule points, so N steps run N-1 model
+                  evaluations (minimum 2). MiniMax publishes no step count; 20
+                  is the community baseline.
+                </div>
+              </div>
+            )}
           </Card>
         )}
 

@@ -5080,11 +5080,20 @@ class BaseTrainer(ABC):
         audio rows and excludes it from the audio loss, rather than training the
         audio head on silence that was never in the file.
         """
+        # EVERYTHING is brought to the CPU before stacking. The two producers
+        # disagree about device by construction: a cache HIT comes back on
+        # `self.device` (`load_clip_record` -> `torch.load(map_location=device)`)
+        # while a MISS returns `.cpu()` (the audio VAE encode), so a batch that
+        # mixes the two -- or mixes a source that has audio with one that does
+        # not, whose filler this function allocates -- would raise inside
+        # `torch.stack` mid-run. `train_step` moves the result to the training
+        # device anyway, so the CPU is both the safe and the free choice.
         mats, present = [], []
         for item, _dataset in batch:
             lat = item.get("_clip_audio_latent")
-            present.append(isinstance(lat, torch.Tensor))
-            mats.append(lat if isinstance(lat, torch.Tensor) else None)
+            ok = isinstance(lat, torch.Tensor)
+            present.append(ok)
+            mats.append(lat.detach().cpu() if ok else None)
         out = {"audio_present": torch.tensor(present, dtype=torch.bool)}
         real = [m for m in mats if m is not None]
         if not real:
@@ -5096,8 +5105,11 @@ class BaseTrainer(ABC):
             if m is None:
                 stacked.append(torch.zeros(rows, cols, dtype=real[0].dtype))
             elif m.shape[0] != rows:
-                # Only reachable if two items of one bucket disagreed on clip
-                # length, which the bucketer forbids; pad rather than crash.
+                # Reachable when a window at the very end of a source yields a
+                # short audio read (the clip span and the clip duration differ by
+                # one frame); the sample's rows are zero-padded to the batch shape
+                # and its `audio_present` flag still says the audio is real, which
+                # is what the loss reads.
                 pad = torch.zeros(rows - m.shape[0], cols, dtype=m.dtype)
                 stacked.append(torch.cat([m, pad], dim=0))
             else:

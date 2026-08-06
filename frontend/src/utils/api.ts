@@ -937,7 +937,29 @@ export interface ArchCapabilities {
   // where the arch says so, snap) against. Present only for video
   // architectures. Optional so an older backend still type-checks.
   video_constraints?: Record<string, VideoConstraints>;
+  // arch -> training method -> the factual reason that method is REFUSED.
+  //
+  // A DIFFERENT axis from `unsupported`, which is about generation parameters
+  // that are accepted and ignored. An entry here means the trainer RAISES, so a
+  // client must not offer the method: MiniMax-H3 declares `full_finetune`
+  // unsupported (33 B dense DiT, weight-only FP8 base). Served straight from the
+  // backend's TRAINING_UNSUPPORTED table so the dropdown, the refusal and the
+  // reason shown to the user all come from one source. Optional so an older
+  // backend without the key still type-checks.
+  training_unsupported?: Record<string, Record<string, string>>;
 }
+
+// The reason `method` is refused for `arch`, or undefined when it is offered.
+// Used to disable a training-method control AND to title it with the backend's
+// own wording rather than a second copy of it in the UI.
+export const trainingMethodUnsupportedReason = (
+  caps: ArchCapabilities | null | undefined,
+  arch: string | null | undefined,
+  method: string
+): string | undefined => {
+  if (!arch) return undefined;
+  return caps?.training_unsupported?.[arch]?.[method];
+};
 
 // One video architecture's temporal/spatial contract, straight from the
 // backend's TemporalSpec (core/models/components/wiring.py). Every field is
@@ -4217,6 +4239,11 @@ export interface TrainingRunCreateRequest {
   image_encoder_lr?: number | null;
   // Reconstruction loss
   reconstruction_loss_weight?: number;
+  // MiniMax-H3 only: weight of the AUDIO half of its joint objective
+  // (loss = video_mean + audio_loss_weight * audio_mean, each modality's
+  // velocity MSE averaged over tokens/channels/samples before weighting).
+  // 0 trains on the video half only. Ignored by every other architecture.
+  audio_loss_weight?: number;
   // Regularization
   regularization_type?: string | null;
   snr_regularization_weight?: number;

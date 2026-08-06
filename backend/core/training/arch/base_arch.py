@@ -133,9 +133,10 @@ class SampleContext:
 
 # Forward-ref only for typing; avoids a hard import cycle with wiring.py.
 try:  # pragma: no cover - typing convenience
-    from core.training.components.wiring import ComponentWiringSpec
+    from core.training.components.wiring import ComponentWiringSpec, TemporalSpec
 except Exception:  # pragma: no cover
     ComponentWiringSpec = Any  # type: ignore
+    TemporalSpec = Any  # type: ignore
 
 
 class ArchHandler(ABC):
@@ -165,6 +166,33 @@ class ArchHandler(ABC):
     #: the resolution-curriculum refit to align dims to the ARCH's requirement,
     #: not just to /8. Overridden to 16 by every patchified DiT handler below.
     pixel_align: int = 8
+
+    #: TEMPORAL analogue of ``pixel_align`` (Phase 6a): the arch's clip-length
+    #: grid, latent-frame closed form, fixed frame rate (if any), default
+    #: training clip lengths and canvas envelope, declared once in
+    #: ``core.models.components.wiring.TemporalSpec`` and shared with the
+    #: GENERATION side (route validation, ``/schema/arch-capabilities``).
+    #:
+    #: ``None`` for every image / audio architecture — that is also what makes
+    #: it the video predicate the trainer branches on
+    #: (``BaseTrainer._temporal_spec()``), instead of an ``is_<arch>`` flag that
+    #: has to be extended for each new video arch.
+    temporal: Optional["TemporalSpec"] = None
+
+    #: Token identifying the SPATIAL TILING configuration this arch's video VAE
+    #: uses to encode a training clip, folded into the clip cache key.
+    #:
+    #: Tiling is not a determinism nicety: on MiniMax-H3, flipping the shipped
+    #: tiling flags with everything else held fixed moved the latents by
+    #: rel-RMS 0.355 (384x384) / 0.0952 (640x384). A cached latent produced
+    #: under one policy is NOT interchangeable with generation under the other,
+    #: so the policy has to be part of the key.
+    #:
+    #: ``None`` means "this arch does not configure tiling for clip encode",
+    #: which is true of LTX-2.3 (``ltx2_ops.vae_encode_clip`` calls
+    #: ``vae.encode`` with whatever the loader set) and keeps its keys
+    #: unchanged. An arch that pins a policy sets a stable string here.
+    clip_vae_tiling_policy: Optional[str] = None
 
     def __init__(self, trainer: Any = None):
         # Optional back-reference (same contract as BaseLoRAAdapter). Canonical

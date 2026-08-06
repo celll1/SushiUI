@@ -208,6 +208,13 @@ class LatentCache:
         clip_length: int,
         stride: int,
         fps: Optional[float] = None,
+        *,
+        source_fps: Optional[float] = None,
+        target_fps: Optional[float] = None,
+        resample_policy: Optional[str] = None,
+        start_time: Optional[float] = None,
+        tiling_policy: Optional[str] = None,
+        audio_prep_version: Optional[str] = None,
     ) -> str:
         """
         Compute hash for a VIDEO CLIP cache key (P4b, 5D temporal latents).
@@ -217,15 +224,42 @@ class LatentCache:
         part of the key. This is intentionally separate from
         ``compute_image_hash`` so the existing 4D image cache is untouched.
 
+        BACKWARD COMPATIBILITY (Phase 6a). The first seven parameters produce
+        BYTE-IDENTICAL keys to the pre-Phase-6a implementation: the extra
+        keyword-only fields append to the key string only when they are set, and
+        ``resample_policy="index"`` (the historical, implicit LTX-2.3 policy) is
+        treated as unset. An LTX-2.3 user's existing cached latents therefore
+        stay addressable; ``temporal_bucketing_test.py`` pins the digests.
+
         Args:
             video_path: Path to the source video.
             width: Target clip width.
             height: Target clip height.
             clip_start: First source frame index of the clip.
-            clip_length: Number of sampled frames (LTX ``8*k + 1``).
+            clip_length: Number of sampled frames.
             stride: Gap between sampled frames.
             fps: Source frames-per-second (optional; folded in when provided so a
                 re-encoded/resampled source does not collide).
+            source_fps: Source rate, when the arch resamples (redundant with
+                ``fps`` in practice, kept explicit so the pair source->target is
+                readable in the key).
+            target_fps: Rate the decoded clip plays at. Fixed per arch
+                (MiniMax-H3: 24.0); None for archs that inherit the source rate.
+            resample_policy: ``"timestamp_nearest"`` or ``"index"``. Two clips
+                built from the same window under different policies are
+                DIFFERENT pixel data (measured: a 30 fps source yields source
+                indices [0,1,2,4,5,6,8,...] vs [0,1,2,3,...]).
+            start_time: Window start in SECONDS. The addressing unit of a
+                timestamp-resampled window; ``clip_start`` alone cannot express
+                a start that falls between source frames.
+            tiling_policy: Token identifying the VAE's spatial tiling
+                configuration. Load-bearing, not cosmetic: flipping the shipped
+                MiniMax-H3 tiling flags moved the latents by rel-RMS 0.355
+                (384x384, K0.5) and 0.0952 (640x384, Phase 0T), so a cache built
+                under one policy must never be served to a generation using the
+                other.
+            audio_prep_version: Token for the audio preprocessing chain, for
+                window-level records that also hold an audio latent (Phase 6b).
 
         Returns:
             Hash string.
@@ -235,7 +269,22 @@ class LatentCache:
             f"{video_path}_{width}_{height}"
             f"_s{int(clip_start)}_l{int(clip_length)}_st{int(stride)}{fps_token}"
         )
-        return hashlib.md5(key.encode()).hexdigest()
+        # Additive suffix. Empty for every legacy (index-sampled, no-tiling-token)
+        # call, which is what keeps existing keys byte-identical.
+        extra = ""
+        if source_fps is not None:
+            extra += f"_src{float(source_fps):.3f}"
+        if target_fps is not None:
+            extra += f"_tgt{float(target_fps):.3f}"
+        if resample_policy is not None and resample_policy != "index":
+            extra += f"_rs{resample_policy}"
+        if start_time is not None:
+            extra += f"_t{float(start_time):.6f}"
+        if tiling_policy is not None:
+            extra += f"_tile{tiling_policy}"
+        if audio_prep_version is not None:
+            extra += f"_aud{audio_prep_version}"
+        return hashlib.md5((key + extra).encode()).hexdigest()
 
     @staticmethod
     def compute_caption_hash(caption: str) -> str:
@@ -351,6 +400,13 @@ class LatentCache:
         latents: torch.Tensor,
         fps: Optional[float] = None,
         skip_existing: bool = True,
+        *,
+        source_fps: Optional[float] = None,
+        target_fps: Optional[float] = None,
+        resample_policy: Optional[str] = None,
+        start_time: Optional[float] = None,
+        tiling_policy: Optional[str] = None,
+        audio_prep_version: Optional[str] = None,
     ) -> bool:
         """
         Save a 5D temporal VAE latent for a video clip (P4b).
@@ -372,14 +428,17 @@ class LatentCache:
             True if written, False if skipped.
         """
         cache_hash = self.compute_clip_hash(
-            video_path, width, height, clip_start, clip_length, stride, fps
+            video_path, width, height, clip_start, clip_length, stride, fps,
+            source_fps=source_fps, target_fps=target_fps,
+            resample_policy=resample_policy, start_time=start_time,
+            tiling_policy=tiling_policy, audio_prep_version=audio_prep_version,
         )
         cache_path = self.latents_dir / f"{cache_hash}.pt"
 
         if skip_existing and cache_path.exists():
             return False
 
-        torch.save({
+        record = {
             'latents': latents.cpu(),
             'video_path': video_path,
             'width': width,
@@ -390,7 +449,17 @@ class LatentCache:
             'fps': (None if fps is None else float(fps)),
             'is_video_clip': True,
             'created_at': datetime.utcnow().isoformat(),
-        }, cache_path)
+        }
+        # Provenance for a resampled / policy-keyed window. Written only when the
+        # caller supplied it, so an LTX-2.3 record keeps exactly its old fields.
+        for name, value in (
+            ('source_fps', source_fps), ('target_fps', target_fps),
+            ('resample_policy', resample_policy), ('start_time', start_time),
+            ('tiling_policy', tiling_policy), ('audio_prep_version', audio_prep_version),
+        ):
+            if value is not None:
+                record[name] = value
+        torch.save(record, cache_path)
         return True
 
     def has_clip_latent(
@@ -402,10 +471,20 @@ class LatentCache:
         clip_length: int,
         stride: int,
         fps: Optional[float] = None,
+        *,
+        source_fps: Optional[float] = None,
+        target_fps: Optional[float] = None,
+        resample_policy: Optional[str] = None,
+        start_time: Optional[float] = None,
+        tiling_policy: Optional[str] = None,
+        audio_prep_version: Optional[str] = None,
     ) -> bool:
         """Check if a 5D clip latent exists in cache without loading it."""
         cache_hash = self.compute_clip_hash(
-            video_path, width, height, clip_start, clip_length, stride, fps
+            video_path, width, height, clip_start, clip_length, stride, fps,
+            source_fps=source_fps, target_fps=target_fps,
+            resample_policy=resample_policy, start_time=start_time,
+            tiling_policy=tiling_policy, audio_prep_version=audio_prep_version,
         )
         return (self.latents_dir / f"{cache_hash}.pt").exists()
 
@@ -419,6 +498,13 @@ class LatentCache:
         stride: int,
         fps: Optional[float] = None,
         device: str = 'cuda',
+        *,
+        source_fps: Optional[float] = None,
+        target_fps: Optional[float] = None,
+        resample_policy: Optional[str] = None,
+        start_time: Optional[float] = None,
+        tiling_policy: Optional[str] = None,
+        audio_prep_version: Optional[str] = None,
     ) -> Optional[torch.Tensor]:
         """
         Load a 5D temporal VAE latent for a video clip (P4b).
@@ -426,7 +512,10 @@ class LatentCache:
         Returns the 5D latent tensor ``[1, C, T, H', W']`` or None if not cached.
         """
         cache_hash = self.compute_clip_hash(
-            video_path, width, height, clip_start, clip_length, stride, fps
+            video_path, width, height, clip_start, clip_length, stride, fps,
+            source_fps=source_fps, target_fps=target_fps,
+            resample_policy=resample_policy, start_time=start_time,
+            tiling_policy=tiling_policy, audio_prep_version=audio_prep_version,
         )
         cache_path = self.latents_dir / f"{cache_hash}.pt"
 

@@ -486,14 +486,28 @@ class BucketManager:
 # byte-for-byte unchanged (running image trainers are unaffected).
 #
 # A video item's bucket is the PAIR:
-#     (spatial bucket ÷32-aligned, clip-length in frames)
-# The clip length is a valid LTX pixel count (8*k + 1). Batches built by
-# `VideoBucketManager.build_batch_indices` are uniform in BOTH the spatial bucket
-# AND the frame count, so the 5D latent tensors [1, C, T, H', W'] can stack.
+#     (spatial bucket ÷pixel_align-aligned, clip-length in frames)
+# Batches built by `VideoBucketManager.build_batch_indices` are uniform in BOTH
+# the spatial bucket AND the frame count, so the 5D latent tensors
+# [1, C, T, H', W'] can stack.
+#
+# TEMPORAL SPEC (Phase 6a). Which clip lengths are valid, what a clip length
+# means in latent frames, and whether the arch has a FIXED frame rate are
+# per-architecture facts, declared once in
+# `core.models.components.wiring.TemporalSpec` and passed in explicitly here.
+# `spec=None` keeps every function on the LTX-2.3 rule it has always used
+# (`8*k + 1`, source fps preserved, ÷32), so nothing about LTX-2.3 changes by
+# the parameter's existence.
 # ============================================================================
 
+from core.models.components.wiring import (  # noqa: E402
+    LTX2_TEMPORAL,
+    TemporalSpec,
+)
+
 # LTX temporal compression: a clip of L pixel frames -> (L-1)//8 + 1 latent
-# frames. Valid pixel clip lengths are 8*k + 1.
+# frames. Valid pixel clip lengths are 8*k + 1. Kept as the module fallback for
+# `spec=None` callers.
 _LTX_TEMPORAL_COMPRESSION = 8
 
 # Default allowed clip lengths (all 8*k + 1). Configurable per call.
@@ -503,28 +517,66 @@ DEFAULT_CLIP_LENGTHS: List[int] = [9, 17, 25, 33, 49]
 LTX_SPATIAL_DIVISIBILITY = 32
 
 
-def is_valid_clip_length(clip_length: int) -> bool:
-    """True if ``clip_length`` is a valid LTX pixel clip length (``8*k + 1``)."""
+def _spec_or_ltx(spec: Optional[TemporalSpec]) -> TemporalSpec:
+    """The spec to apply — the caller's, or LTX-2.3's (the historical default)."""
+    return spec if spec is not None else LTX2_TEMPORAL
+
+
+def is_valid_clip_length(clip_length: int, spec: Optional[TemporalSpec] = None) -> bool:
+    """True if ``clip_length`` is a valid pixel clip length for ``spec``.
+
+    ``spec=None`` is the LTX-2.3 rule ``8*k + 1``. MiniMax-H3's rule is
+    ``17*n + 5`` with a HARD decodable floor of 22 frames.
+
+    The ``int()`` coercion (and its except branch) is pre-existing behaviour and
+    is preserved verbatim: ``"9"`` and ``9.5`` are accepted, ``"x"``/``None``
+    are not.
+    """
     try:
         cl = int(clip_length)
     except (TypeError, ValueError):
         return False
-    return cl >= 1 and (cl - 1) % _LTX_TEMPORAL_COMPRESSION == 0
+    return _spec_or_ltx(spec).is_valid_length(cl)
 
 
-def clip_span(clip_length: int, stride: int) -> int:
+def clip_span(
+    clip_length: int,
+    stride: int,
+    spec: Optional[TemporalSpec] = None,
+    source_fps: Optional[float] = None,
+) -> int:
     """Number of SOURCE frames a ``clip_length``-frame clip (with ``stride``)
-    spans: ``(clip_length - 1) * stride + 1``."""
-    return (max(1, int(clip_length)) - 1) * max(1, int(stride)) + 1
+    spans.
+
+    Index-sampled archs (LTX-2.3): ``(clip_length - 1) * stride + 1`` — the
+    sampled indices ARE source indices.
+
+    Fixed-fps archs (MiniMax-H3, 24 fps): the clip occupies
+    ``clip_length*stride / fps_fixed`` seconds of the SOURCE timeline, which is
+    a different number of source frames whenever the source is not already at
+    the target rate — a 22-frame 24 fps clip spans 28 frames of a 30 fps
+    source. Without ``source_fps`` there is nothing to convert with, so the
+    index form is used (the pessimistic direction only for sources slower than
+    the target).
+    """
+    clip_length = max(1, int(clip_length))
+    stride = max(1, int(stride))
+    sp = _spec_or_ltx(spec)
+    if sp.fps_fixed is not None and source_fps:
+        # (clip_length - 1) target-frame gaps of 1/fps_fixed seconds each.
+        seconds = ((clip_length - 1) * stride) / float(sp.fps_fixed)
+        return int(round(seconds * float(source_fps))) + 1
+    return (clip_length - 1) * stride + 1
 
 
 def pick_clip_length(
     num_frames: int,
     stride: int = 1,
     allowed_clip_lengths: Optional[List[int]] = None,
+    spec: Optional[TemporalSpec] = None,
+    source_fps: Optional[float] = None,
 ) -> int:
-    """Pick the clip length (from ``allowed_clip_lengths``, all 8*k+1) for a video
-    of ``num_frames`` frames sampled at ``stride``.
+    """Pick the clip length for a video of ``num_frames`` frames at ``stride``.
 
     Chooses the LARGEST allowed length whose source span fits inside the video
     (``span <= num_frames``), so short videos get short clips and long videos get
@@ -535,39 +587,52 @@ def pick_clip_length(
     Args:
         num_frames: Total frames in the source video.
         stride: Gap between sampled frames (>= 1).
-        allowed_clip_lengths: Candidate lengths (default DEFAULT_CLIP_LENGTHS).
+        allowed_clip_lengths: Candidate lengths. Defaults to the spec's
+            ``default_clip_lengths`` (LTX-2.3: ``DEFAULT_CLIP_LENGTHS``).
+        spec: Per-arch temporal spec; None = LTX-2.3.
+        source_fps: Source frame rate, used only by fixed-fps archs to convert
+            the clip's duration into source frames.
 
     Returns:
-        A valid LTX clip length (8*k + 1).
+        A clip length valid for ``spec``.
     """
     stride = max(1, int(stride))
     num_frames = max(0, int(num_frames))
-    allowed = allowed_clip_lengths or DEFAULT_CLIP_LENGTHS
-    # Keep only valid 8*k+1 lengths, ascending, deduped.
-    valid = sorted({int(c) for c in allowed if is_valid_clip_length(c)})
+    sp = _spec_or_ltx(spec)
+    default_lengths = list(sp.default_clip_lengths) if spec is not None else DEFAULT_CLIP_LENGTHS
+    allowed = allowed_clip_lengths or default_lengths
+    # Keep only lengths valid for this arch, ascending, deduped.
+    valid = sorted({int(c) for c in allowed if is_valid_clip_length(c, spec)})
     if not valid:
-        valid = [1]
+        # Nothing usable was configured. For LTX-2.3 the historical fallback is
+        # [1] (a still); for an arch with a hard decodable floor a 1-frame clip
+        # is not loadable at all, so fall back to its own shortest valid length.
+        valid = [1] if spec is None else [sp.snap_length(sp.min_decodable_frames, smoke=True)]
 
-    fitting = [c for c in valid if clip_span(c, stride) <= num_frames]
+    fitting = [c for c in valid if clip_span(c, stride, spec, source_fps) <= num_frames]
     if fitting:
         return max(fitting)
     return valid[0]
 
 
-def get_ltx_spatial_bucket(
+def get_video_spatial_bucket(
     width: int,
     height: int,
     resolution: Optional[int] = None,
-    divisibility: int = LTX_SPATIAL_DIVISIBILITY,
+    divisibility: Optional[int] = None,
+    spec: Optional[TemporalSpec] = None,
 ) -> BucketResolution:
-    """Best ÷32-aligned spatial bucket for a (width, height) clip.
+    """Best ÷``divisibility``-aligned spatial bucket for a (width, height) clip.
 
-    Reuses the standard aspect-ratio bucket set but forces ÷32 divisibility
-    (LTX requires %32 spatial dims), never the SD ÷8/÷64 sets. Pure function; no
-    state mutation.
+    Reuses the standard aspect-ratio bucket set but forces the VIDEO arch's
+    alignment (LTX-2.3 and MiniMax-H3 both require %32), never the SD ÷8/÷64
+    sets. ``divisibility`` defaults to ``spec.pixel_align`` and then to 32.
+    Pure function; no state mutation.
     """
+    if divisibility is None:
+        divisibility = _spec_or_ltx(spec).pixel_align or LTX_SPATIAL_DIVISIBILITY
     return get_bucket_for_image_size(
-        width, height, resolution=resolution, divisibility=divisibility
+        width, height, resolution=resolution, divisibility=int(divisibility)
     )
 
 
@@ -585,17 +650,28 @@ class VideoBucketManager:
     def __init__(
         self,
         base_resolutions: List[int],
-        divisibility: int = LTX_SPATIAL_DIVISIBILITY,
+        divisibility: Optional[int] = None,
         allowed_clip_lengths: Optional[List[int]] = None,
         stride: int = 1,
         multi_resolution_mode: Literal["max", "random"] = "max",
+        temporal_spec: Optional[TemporalSpec] = None,
     ):
+        # `temporal_spec=None` is the LTX-2.3 rule this class shipped with.
+        self.temporal_spec = temporal_spec
+        sp = _spec_or_ltx(temporal_spec)
+        if divisibility is None:
+            divisibility = sp.pixel_align or LTX_SPATIAL_DIVISIBILITY
         if divisibility % _LTX_TEMPORAL_COMPRESSION and divisibility not in (8, 16, 32, 64):
-            pass  # allow any divisibility, but LTX callers pass 32
+            pass  # allow any divisibility, but video callers pass 32
         self.divisibility = int(divisibility)
         self.stride = max(1, int(stride))
-        allowed = allowed_clip_lengths or DEFAULT_CLIP_LENGTHS
-        self.allowed_clip_lengths = sorted({int(c) for c in allowed if is_valid_clip_length(c)}) or [1]
+        default_lengths = (list(sp.default_clip_lengths) if temporal_spec is not None
+                           else DEFAULT_CLIP_LENGTHS)
+        allowed = allowed_clip_lengths or default_lengths
+        self.allowed_clip_lengths = sorted(
+            {int(c) for c in allowed if is_valid_clip_length(c, temporal_spec)}
+        ) or ([1] if temporal_spec is None
+              else [sp.snap_length(sp.min_decodable_frames, smoke=True)])
 
         # Reuse BucketManager only for its precomputed ÷div spatial bucket lists.
         self._bm = BucketManager(
@@ -614,13 +690,20 @@ class VideoBucketManager:
         """÷div spatial bucket for a clip (no state mutation)."""
         return self._bm.select_bucket(width, height, target_resolution=target_resolution)
 
-    def pick_clip_length(self, num_frames: int, stride: Optional[int] = None) -> int:
+    def pick_clip_length(
+        self,
+        num_frames: int,
+        stride: Optional[int] = None,
+        source_fps: Optional[float] = None,
+    ) -> int:
         """Clip length for a video of ``num_frames`` frames (uses this manager's
-        allowed set + stride)."""
+        allowed set + stride + temporal spec)."""
         return pick_clip_length(
             num_frames,
             self.stride if stride is None else stride,
             self.allowed_clip_lengths,
+            spec=self.temporal_spec,
+            source_fps=source_fps,
         )
 
     def assign_video_to_bucket(
@@ -645,7 +728,7 @@ class VideoBucketManager:
         """
         eff_stride = self.stride if stride is None else max(1, int(stride))
         spatial = self.select_spatial_bucket(width, height, target_resolution=target_resolution)
-        clip_length = self.pick_clip_length(num_frames, eff_stride)
+        clip_length = self.pick_clip_length(num_frames, eff_stride, source_fps=fps)
 
         video_info = {
             "video_path": video_path,
@@ -661,6 +744,14 @@ class VideoBucketManager:
             "fps": (None if fps is None else float(fps)),
             "target_resolution": target_resolution,
         }
+        # Fixed-fps archs (MiniMax-H3): the clip is RESAMPLED to the arch's rate,
+        # so the item carries both numbers. ``fps`` keeps its meaning (the SOURCE
+        # rate, which is what the resampler and the cache key need) and
+        # ``target_fps`` is what the clip actually plays at. LTX-2.3 items never
+        # gain this key, so everything reading ``fps`` is unaffected.
+        sp = _spec_or_ltx(self.temporal_spec)
+        if sp.fps_fixed is not None:
+            video_info["target_fps"] = float(sp.fps_fixed)
         if dataset_unique_id is not None:
             video_info["dataset_unique_id"] = dataset_unique_id
 
@@ -672,6 +763,9 @@ class VideoBucketManager:
         self,
         video_info: Dict,
         clip_start: int,
+        start_time: Optional[float] = None,
+        tiling_policy: Optional[str] = None,
+        audio_prep_version: Optional[str] = None,
     ) -> Dict:
         """Build the argument dict for ``LatentCache.compute_clip_hash`` from a
         bucket assignment + the sampled window start, so the cache key reflects the
@@ -679,8 +773,18 @@ class VideoBucketManager:
 
         The returned keys match ``compute_clip_hash`` / ``save_clip_latent`` /
         ``load_clip_latent`` parameter names exactly.
+
+        For an index-sampled arch (LTX-2.3, ``temporal_spec=None``) the returned
+        dict is EXACTLY the seven historical keys — no extra field appears, so
+        existing cache files stay addressable.
+
+        For a fixed-fps arch the resampling and VAE-tiling policies join the key:
+        the same window decoded at a different target rate, or encoded with
+        tiling flipped, is a DIFFERENT latent (K0.5/Phase 0T measured rel-RMS
+        0.355 / 0.0952 for tiling alone), and must not be served from one cache
+        entry.
         """
-        return {
+        params = {
             "video_path": video_info["video_path"],
             "width": int(video_info["bucket_width"]),
             "height": int(video_info["bucket_height"]),
@@ -689,6 +793,17 @@ class VideoBucketManager:
             "stride": int(video_info["stride"]),
             "fps": video_info.get("fps"),
         }
+        sp = _spec_or_ltx(self.temporal_spec)
+        if sp.fps_fixed is not None:
+            params["source_fps"] = video_info.get("fps")
+            params["target_fps"] = float(sp.fps_fixed)
+            params["resample_policy"] = sp.resample_policy
+            params["start_time"] = (None if start_time is None else float(start_time))
+        if tiling_policy is not None:
+            params["tiling_policy"] = tiling_policy
+        if audio_prep_version is not None:
+            params["audio_prep_version"] = audio_prep_version
+        return params
 
     def get_bucket_counts(self) -> Dict[str, int]:
         """Count of items per ``WxHxLf`` bucket (for logging)."""

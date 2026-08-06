@@ -246,6 +246,29 @@ def _ltx2_unwrap(module: nn.Module) -> nn.Module:
     return module
 
 
+def _minimax_h3_unwrap(module: nn.Module) -> nn.Module:
+    """The INNER ``MiniMaxH3Transformer3DModel`` behind a block-loop wrapper.
+
+    Same shape and the same two motivations as ``_ltx2_unwrap`` above: the
+    wrapper delegates ``state_dict()``, so the exported KEYS would already be
+    right, but ``combined_linear_inventory`` walks ``named_modules()`` -- which
+    is NOT delegated, so through the wrapper every audit row would be named
+    ``transformer.<path>`` while the file's keys are ``<path>``.
+
+    One difference from LTX-2.3 worth stating rather than leaving to be
+    rediscovered: MiniMax-H3's wrapper is attached only for the duration of a
+    denoise (``pipeline_backends/minimax_h3.py`` unwraps in its ``finally``,
+    because the DiT is moved off the GPU after every generation anyway), so the
+    export normally sees the bare model and this hook is the identity. It stops
+    being merely defensive when training attaches the wrapper for a whole run.
+    Identity for every other architecture.
+    """
+    inner = getattr(module, "transformer", None)
+    if inner is not None and type(module).__name__ == "MiniMaxH3BlockLoopWrapper":
+        return inner
+    return module
+
+
 def acestep_export_metadata(config: dict) -> Dict[str, str]:
     """Metadata block for an exported ACE-Step 1.5 DiT.
 
@@ -311,6 +334,33 @@ def zimage_export_metadata(config: dict) -> Dict[str, str]:
     }
     if config:
         metadata["zimage_config"] = json.dumps(config, default=str)
+    return metadata
+
+
+def minimax_h3_export_metadata(config: dict) -> Dict[str, str]:
+    """Metadata block for a MiniMax-H3 DiT single file.
+
+    ``modelspec.architecture`` / ``model_type`` are written for the same reason
+    every other entry writes them (``detect_model_type`` consults metadata before
+    it falls back to key signatures), and MiniMax-H3's key-signature heuristic
+    (``keys_look_minimax_h3``: ``audio_proj_in`` / ``token_refiner`` /
+    ``adaln_t_table``) still matches the exported keys independently.
+
+    The transformer geometry is written as ``minimax_h3_config`` because the
+    loader SYNTHESISES it from the file header rather than reading a
+    ``config.json`` (the shipped ``official/transformer/config.json`` describes
+    the full-modulation variant and must not be applied to a pruned file), so
+    recording the geometry the artifact was produced against is provenance the
+    file cannot otherwise carry.
+    """
+    config = {k: v for k, v in dict(config or {}).items() if not str(k).startswith("_")}
+    metadata = {
+        "modelspec.architecture": "minimax_h3",
+        "model_type": "minimax_h3",
+        "format": "pt",
+    }
+    if config:
+        metadata["minimax_h3_config"] = json.dumps(config, default=str)
     return metadata
 
 
@@ -686,6 +736,55 @@ EXPORT_LAYOUTS: Dict[str, Dict[str, object]] = {
         "siblings": ("split_files/text_encoders", "split_files/vae"),
         "sibling_root": os.path.join("..", ".."),
         "output_subdir": os.path.join("split_files", "diffusion_models"),
+    },
+    "minimax_h3": {
+        # MiniMax-H3 ships the same flat ComfyUI-style tree as ACE-Step
+        # (``diffusion_models/`` + ``vae/`` + ``text_encoders/``, plus MiniMax's
+        # config-only ``official/``), and ``detect_minimax_h3_layout`` walks UP
+        # from a ``.safetensors`` file to the parent holding
+        # ``diffusion_models/``. So the export writes
+        # ``<root>/diffusion_models/<stem>.safetensors`` and junctions the three
+        # companion directories next to it.
+        #
+        # WHY THIS ENTRY EXISTS AT ALL, given that the released DiT is already
+        # weight-only FP8 and there is nothing here to quantize: the table is not
+        # only the export job's. ``generation_utils.extract_fp8_gemm_info``
+        # resolves an arch's quantized module as
+        # ``<arch>_components[layout_module_specs(arch)[0][0]]``, so without a
+        # layout every MiniMax-H3 generation would record no ``fp8_gemm`` at all
+        # and every ``quantized_gemm_mode="w8a8"`` request there would be
+        # reported as "the checkpoint carries no weight-only quantized Linear
+        # layers" -- on a checkpoint made of them. That is the exact defect
+        # ``quantized_capability_parity_test`` was written for, on FLUX.2.
+        #
+        # The export itself is legal but narrow: ``run_quantized_export`` refuses
+        # a module with no quantized Linears, and this DiT has 200, so a
+        # re-serialisation of the loaded fp8 model into a SushiUI single file
+        # would succeed. It is not a conversion -- the fp8 codes are what was
+        # loaded -- and no phase of this integration asks for one.
+        #
+        # No prefix on either side and no ``source_transform``: a live
+        # ``MiniMaxH3Transformer3DModel.state_dict()`` is keyed by bare module
+        # paths. NOTE that the released checkpoint's OWN keys are not those paths
+        # (the loader splits a fused qkv, swaps the SwiGLU halves and rewrites
+        # the AdaLN names), so the OFFLINE route is not wired for this arch and
+        # would need a ``source_transform`` first; the runtime route, which sees
+        # the module after the loader has done all of that, is the only one.
+        "modules": (("transformer", ""),),
+        "offline_prefix": "",
+        "source_prefix": "",
+        "metadata": minimax_h3_export_metadata,
+        # A generation with block swap or FBCache leaves
+        # ``minimax_h3_components["transformer"]`` holding a
+        # ``MiniMaxH3BlockLoopWrapper`` only for the duration of the denoise (the
+        # mixin unwraps in its ``finally``), so this hook is defence in depth
+        # rather than the load-bearing thing ``_ltx2_unwrap`` is -- and it will
+        # stop being merely defensive when training attaches the wrapper for the
+        # length of a run.
+        "unwrap": _minimax_h3_unwrap,
+        "siblings": ("vae", "text_encoders", "official"),
+        "sibling_root": "..",
+        "output_subdir": "diffusion_models",
     },
 }
 

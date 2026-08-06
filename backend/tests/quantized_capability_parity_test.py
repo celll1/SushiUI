@@ -231,6 +231,7 @@ _LOADER_ENTRY_POINTS = {
     ),
     "krea2": (("core.models.krea2.krea2_loader", "load_krea2_components"),),
     "ltx2": (("core.models.ltx2.loader", "load_ltx2_from_diffusers"),),
+    "minimax_h3": (("core.models.minimax_h3.loader", "load_minimax_h3_from_path"),),
     # Z-Image's PUBLIC entry point is `load_zimage_from_diffusers`, but that one
     # returns a bare NAME (`return components`) after delegating, so it carries
     # no statically readable dict literal at all. The function it delegates to is

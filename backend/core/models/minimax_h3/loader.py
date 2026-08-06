@@ -879,6 +879,41 @@ def _dit_quantization_policy(model: nn.Module) -> int:
     return disable_scaled_mm(model, label="MiniMax-H3 transformer")
 
 
+def _swap_minimax_h3_quantized_linears(model: nn.Module, state_dict: Dict[str, torch.Tensor],
+                                       dtype: torch.dtype) -> int:
+    """Replace the DiT's ``nn.Linear``s that have a quantized saved weight. Count.
+
+    INT8 and e4m3 are detected INDEPENDENTLY and both swaps run, for the reason
+    every sibling helper does it (``ltx2/loader._swap_ltx2_quantized_linears``,
+    ``model_loader._swap_flux2_quantized_linears``,
+    ``anima_loader._swap_quantized_linears``): the offline ``--format int8``
+    tool emits a MIXED file on purpose, and each detector gates on the weight
+    DTYPE as well as the shared ``.weight_scale`` suffix, so neither can claim
+    the other's layers and the call order does not matter. The released
+    MiniMax-H3 checkpoints are pure e4m3, so today only the second swap fires --
+    the int8 half is here because a SushiUI-exported artifact of this arch may
+    not be.
+
+    MiniMax-H3 needs no prefix argument: by the time this runs, ``_map_dit_state_dict``
+    has already rewritten every key to a module path.
+
+    The returned count is NOT decorative -- the caller compares it against the
+    header census (``verify_quantized_swap``) and refuses the load when they
+    disagree, because a quantized layer this helper did not take is a layer whose
+    fp8 CODES ``load_state_dict(assign=True)`` would install into a plain
+    parameter without a word.
+    """
+    from core.models.ideogram4.vendor.fp8_linear import is_fp8_state_dict, swap_linears_to_fp8
+    from core.models.ideogram4.vendor.int8_linear import is_int8_state_dict, swap_linears_to_int8
+
+    swapped = 0
+    if is_int8_state_dict(state_dict):
+        swapped += swap_linears_to_int8(model, state_dict, compute_dtype=dtype)
+    if is_fp8_state_dict(state_dict):
+        swapped += swap_linears_to_fp8(model, state_dict, compute_dtype=dtype)
+    return swapped
+
+
 def _build_transformer(dit_path: str, torch_dtype: torch.dtype,
                        official_dir: Optional[str]) -> Tuple[nn.Module, Dict[str, Any]]:
     """Instantiate the vendored transformer and load ``dit_path`` into it."""
@@ -888,9 +923,6 @@ def _build_transformer(dit_path: str, torch_dtype: torch.dtype,
     from core.models.common.quantized_checkpoint_guard import (
         quantized_state_dict_report, scaled_quantization_report, verify_quantized_swap,
     )
-    from core.models.ideogram4.vendor.fp8_linear import is_fp8_state_dict, swap_linears_to_fp8
-    from core.models.ideogram4.vendor.int8_linear import is_int8_state_dict, swap_linears_to_int8
-
     from .vendor import MiniMaxH3Transformer3DModel
 
     # THE GUARD, first of all -- ahead of the geometry synthesis, which can raise
@@ -926,10 +958,7 @@ def _build_transformer(dit_path: str, torch_dtype: torch.dtype,
 
         swapped = 0
         if report is not None:
-            if is_int8_state_dict(state_dict):
-                swapped += swap_linears_to_int8(model, state_dict, compute_dtype=torch_dtype)
-            if is_fp8_state_dict(state_dict):
-                swapped += swap_linears_to_fp8(model, state_dict, compute_dtype=torch_dtype)
+            swapped = _swap_minimax_h3_quantized_linears(model, state_dict, torch_dtype)
             verify_quantized_swap(report, swapped, arch="MiniMax-H3", path=dit_path,
                                   label="transformer")
 

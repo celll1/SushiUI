@@ -198,6 +198,11 @@ class Txt2VidRequest(BaseModel):
     # "dequant"). ltx2 is in QUANTIZED_LINEAR_ARCHS, so this really selects
     # something here; see api/quantized_gemm.py.
     quantized_gemm_mode: Optional[str] = TXT2VID_DEFAULTS["quantized_gemm_mode"]
+    # Attention backend for this generation ("normal"/"flash"/"sage"/"tq").
+    # Honored by MiniMax-H3 (its vendored transformer runs the unified conduit);
+    # LTX-2.3 uses diffusers' own dispatch and ignores it. Omitted -> the process
+    # setting.
+    attention_type: str = TXT2VID_DEFAULTS["attention_type"]
     # Training-free reference-style transfer (video self-attention KV
     # injection; see core.inference.style_ltx2). An entry with
     # is_style_transfer=true carries the style reference; extracted by
@@ -3211,6 +3216,8 @@ async def generate_img2vid(
     text_encoder_path: Optional[str] = Form(IMG2VID_DEFAULTS["text_encoder_path"]),
     unet_quantization: Optional[str] = Form(IMG2VID_DEFAULTS["unet_quantization"]),
     quantized_gemm_mode: Optional[str] = Form(IMG2VID_DEFAULTS["quantized_gemm_mode"]),
+    # See Txt2VidRequest.attention_type: honored by MiniMax-H3, ignored by LTX-2.3.
+    attention_type: str = Form(IMG2VID_DEFAULTS["attention_type"]),
     controlnets: str = Form("[]"),  # JSON string; only is_style_transfer entries are meaningful for LTX-2.3
     image: UploadFile = File(...),
     # OPTIONAL second keyframe: the LAST frame. MiniMax-H3's `fl2va` workflow
@@ -3275,6 +3282,7 @@ async def generate_img2vid(
         "unet_quantization": unet_quantization,
         # Normalized here (before start_generation) so junk is a 400, not a 500.
         "quantized_gemm_mode": _normalize_media_qgm(quantized_gemm_mode),
+        "attention_type": attention_type,
         # The uploaded FILENAME, not the bytes: it is what the gallery row and
         # the capability warning can carry, and `None` is what "no last frame"
         # means for both. The image itself is read below.

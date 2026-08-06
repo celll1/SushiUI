@@ -61,6 +61,14 @@
 #     NOT YET EXECUTED. No forward has run the shipped combination: Phase 0's
 #     smoke ran `adaln_proj` in bfloat16, and the Phase-1 loader installs it in
 #     float32. Phase 2's first real forward is this path's first execution.
+#   * attention runs through SushiUI's unified conduit
+#     (`core.attention.dispatch_attention`) instead of diffusers'
+#     `dispatch_attention_fn`, so the repo-wide `attention_type` vocabulary
+#     (native / flash / sage / tq) selects the kernel here as it does on every
+#     other architecture. The per-module `_attn_backend` / `_attn_mode` are
+#     stamped once per forward by `_stamp_attention_backend`; see
+#     `MiniMaxH3AttnProcessor.__call__`. Same shape as the Krea 2 and MiniT2I
+#     vendored transformers.
 #
 # Why vendored: the `minimax-h3` branch is versioned 0.36.0.dev0 and is not on
 # diffusers `main`; this repo runs diffusers 0.38.0 for ten other
@@ -90,10 +98,11 @@ from diffusers.configuration_utils import ConfigMixin, register_to_config
 from diffusers.loaders import PeftAdapterMixin
 from diffusers.utils import BaseOutput, apply_lora_scale, logging
 from diffusers.models.attention import AttentionMixin, AttentionModuleMixin, FeedForward
-from diffusers.models.attention_dispatch import dispatch_attention_fn
 from diffusers.models.cache_utils import CacheMixin
 from diffusers.models.embeddings import TimestepEmbedding, Timesteps
 from diffusers.models.modeling_utils import ModelMixin
+
+from core.attention import AttentionMode, dispatch_attention
 
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
@@ -239,6 +248,12 @@ class MiniMaxH3AttnProcessor:
     Full self-attention over one packed sequence. There is no cross-attention anywhere in MiniMax-H3.
     """
 
+    # SushiUI: the conduit's backend/mode are stamped onto the ATTENTION MODULE
+    # (`attn._attn_backend` / `attn._attn_mode`) once per forward, not onto the
+    # processor -- one processor instance is shared per attention module, and
+    # reading the module keeps a custom processor (a future style/NAG one) from
+    # having to re-plumb the selection. These two class attributes are the
+    # diffusers processor contract and are no longer read.
     _attention_backend = None
     _parallel_config = None
 
@@ -269,16 +284,24 @@ class MiniMaxH3AttnProcessor:
 
         # MiniMax-H3 packs one request into a single attention document, so the model passes no mask and every
         # attention backend stays available; `attention_mask` is here because it is the processor signature every
-        # other one in diffusers has, and a custom processor may need it.
-        hidden_states = dispatch_attention_fn(
+        # other one in diffusers has, and a custom processor may need it. (When one IS passed, the conduit's mask
+        # guard downgrades the mask-less backends to native by itself.)
+        #
+        # SushiUI: routed through the unified conduit. The tensors are already BSHD ([B, S, H, D] -- `unflatten`
+        # above splits the head axis out of the last dim, it does not transpose), which is the conduit's canonical
+        # layout, and q/k/v share `attn.heads`, so no GQA term is needed. head_dim is 128 on the released
+        # checkpoints, which is inside sage's {64, 96, 128} set and under flash's 256 cap, so both are reachable
+        # here rather than silently downgraded.
+        hidden_states = dispatch_attention(
             query,
             key,
             value,
             attn_mask=attention_mask,
             dropout_p=0.0,
             is_causal=False,
-            backend=self._attention_backend,
-            parallel_config=self._parallel_config,
+            backend=getattr(attn, "_attn_backend", "native"),
+            mode=getattr(attn, "_attn_mode", AttentionMode.INFERENCE),
+            layout="BSHD",
         )
         hidden_states = hidden_states.flatten(2, 3).type_as(query)
         hidden_states = attn.to_out[0](hidden_states)
@@ -652,6 +675,29 @@ class MiniMaxH3Transformer3DModel(ModelMixin, ConfigMixin, AttentionMixin, PeftA
 
         self.gradient_checkpointing = False
 
+    # SushiUI addition: attention-backend selection for the unified conduit.
+    def _stamp_attention_backend(self) -> None:
+        """Propagate this model's ``_attn_backend`` to every attention module.
+
+        The MODE is derived from the autograd state rather than configured:
+        inference under ``no_grad`` may use the inference-only backends (sage),
+        while a training forward with grad enabled must not, and the conduit
+        refuses them for ``AttentionMode.TRAINING``. Called from ``forward`` and
+        from ``MiniMaxH3BlockLoopWrapper._custom_forward``, so both the stock and
+        the re-owned block loop stamp it. Mirrors ``krea2/vendor/transformer.py``
+        and ``minit2i/vendor/mmjit.py``.
+
+        This covers the 2-layer token refiner's attention as well as the 50
+        blocks': both are ``MiniMaxH3Attention`` and both are reached by
+        ``self.modules()``.
+        """
+        backend = getattr(self, "_attn_backend", "native")
+        mode = AttentionMode.TRAINING if torch.is_grad_enabled() else AttentionMode.INFERENCE
+        for m in self.modules():
+            if isinstance(m, MiniMaxH3Attention):
+                m._attn_backend = backend
+                m._attn_mode = mode
+
     @apply_lora_scale("attention_kwargs")
     def forward(
         self,
@@ -704,6 +750,7 @@ class MiniMaxH3Transformer3DModel(ModelMixin, ConfigMixin, AttentionMixin, PeftA
                 `video_indices` and `audio_indices`.
         """
         # `attention_kwargs` is consumed by the `@apply_lora_scale` decorator on this method.
+        self._stamp_attention_backend()  # SushiUI: unified attention conduit
         if position_ids.ndim != 2 or position_ids.shape[-1] != 3:
             raise ValueError(f"`position_ids` must be a `(seq_len, 3)` tensor, got {list(position_ids.shape)}.")
         sequence_length = position_ids.shape[0]

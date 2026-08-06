@@ -3,8 +3,8 @@
 MiniMax-H3 ships as a diffusers **Modular** pipeline and nothing else: there is
 no stock ``DiffusionPipeline`` to drive (its ``model_index.json`` declares only
 ``MiniMaxH3ModularPipeline``). SushiUI needs per-step progress, cancellation,
-latent preview, its own strictly-sequential offload sequencing and, later, a
-block-loop wrapper for block swap / FBCache — none of which the Modular stack's
+latent preview, its own strictly-sequential offload sequencing and a block-loop
+wrapper for block swap — none of which the Modular stack's
 ``ComponentsManager`` auto-offload would tolerate. So, following the Anima
 precedent (``core/models/anima/anima_pipeline_ops.py``), the model classes are
 vendored and the loop lives here.

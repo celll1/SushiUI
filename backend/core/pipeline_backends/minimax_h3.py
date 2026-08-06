@@ -50,7 +50,33 @@ import numpy as np
 import torch
 from PIL import Image
 
+from config.settings import settings
 from core.inference.generation_timing import generation_timer
+
+
+def _is_lora_target(module) -> bool:
+    """Whether ``module`` is a Linear a MiniMax-H3 LoRA may wrap.
+
+    Delegates to the ONE shared predicate,
+    ``core.training.adapters.base_adapter.is_lora_wrappable_linear``, and exists
+    as a named module-level function for the reason
+    ``backend/tests/quantized_capability_parity_test.py`` states: the released
+    MiniMax-H3 DiT ships weight-only FP8, so 300 of its Linears are
+    ``Fp8Linear`` -- an ``nn.Module`` that is NOT an ``nn.Linear`` subclass. A
+    target predicate written as ``isinstance(m, nn.Linear)`` would drop every one
+    of them silently, and the run would "succeed" with a target count that looks
+    like a narrower scope. That defect has been found on four architectures in
+    this repo already.
+
+    Declared in THIS phase because this is the phase in which ``minimax_h3``
+    joins ``QUANTIZED_LINEAR_ARCHS`` and therefore comes under that parity test.
+    The generation-side LoRA application and the training adapter that will call
+    it land with the training phase; until then this is the arch's declared
+    predicate and nothing else.
+    """
+    from core.training.adapters.base_adapter import is_lora_wrappable_linear
+
+    return is_lora_wrappable_linear(module)
 
 
 class MiniMaxH3Mixin:
@@ -128,6 +154,158 @@ class MiniMaxH3Mixin:
         if not torch.cuda.is_available():
             return 0.0
         return torch.cuda.max_memory_allocated() / 2 ** 30
+
+    # ------------------------------------------------------------------
+    # Attention backend
+    # ------------------------------------------------------------------
+
+    def _minimax_h3_apply_attention_backend(self, transformer, params: Dict[str, Any]) -> str:
+        """Stamp the inference attention backend on the transformer. Returns it.
+
+        The vendored ``MiniMaxH3Transformer3DModel`` propagates ``_attn_backend``
+        to every ``MiniMaxH3Attention`` once per forward
+        (``_stamp_attention_backend``), so setting it on the model is enough for
+        the 50 blocks AND the 2-layer token refiner.
+
+        MiniMax-H3 attention is unmasked full self-attention over one packed
+        document with ``head_dim = 128`` and equal q/kv head counts, so no
+        conduit guard fires: sage and flash both run here rather than being
+        downgraded. Measure, do not assume -- the conduit logs the backend it
+        actually used.
+        """
+        from core.attention import normalize_backend
+
+        requested = params.get("attention_type", settings.attention_type)
+        backend = normalize_backend(requested)
+        inner = getattr(transformer, "transformer", transformer)
+        inner._attn_backend = backend
+        print(f"[MiniMax-H3] Attention backend: {backend} (from attention_type={requested!r})")
+        return backend
+
+    # ------------------------------------------------------------------
+    # Block swap (the block-loop wrapper)
+    # ------------------------------------------------------------------
+
+    def _ensure_minimax_h3_swap_and_offload(
+        self, params: Dict[str, Any], device: torch.device,
+    ):
+        """Stage the DiT onto ``device`` for the denoise loop. Returns the callable.
+
+        Returns ``(module, offloader)``: the object the sampler calls (the raw
+        transformer, or a ``MiniMaxH3BlockLoopWrapper`` when block swap needs the
+        re-owned block loop) and the block offloader to tear down afterwards
+        (``None`` when there is none).
+
+        TWO STATES:
+
+        * ``blocks_to_swap == 0`` (the default): the transformer is moved to the
+          device whole and the sampler calls it directly -- byte-identical to
+          the pre-Phase-4 path, with no wrapper in the call chain at all. Block
+          swap is the ONLY thing that wraps: FBCache was measured against the K3
+          protocol and dropped for this architecture (see the block-loop
+          wrapper's module docstring for the numbers), and Spectrum is declared
+          unsupported, so there is no second reason to wrap.
+        * ``blocks_to_swap > 0``: the NON-block modules (the three input
+          projections, the token refiner, the RoPE buffer, the output norm and
+          the two heads) are moved to the device, then
+          ``TransformerBlockOffloader`` places the block stack -- the first
+          ``50 - blocks_to_swap`` blocks resident and the rest weight-on-CPU.
+          The whole-model ``.to(device)`` is deliberately NOT used here: it would
+          put all 21 GB on the card and only then take some of it back off,
+          which is the opposite of what the request asked for.
+
+        WHY THE OFFLOADER IS PER-GENERATION rather than persistent wrapper state
+        (LTX-2.3's shape, and the source of the stale-offloader defect the
+        parity suite exists for): this architecture's DiT is moved off the GPU
+        at the end of EVERY generation -- the video VAE's 36-layer ViT decoder
+        and the DiT do not fit together -- so an offloader that survived the
+        generation would be holding device buffers for a model that is no longer
+        on the device. Building and cleaning it up inside one generation is not
+        a simplification, it is the only lifetime that matches the staging.
+
+        ``h2d_only`` is deliberately off. It coalesces each swappable block's
+        Linear weights into ONE flat buffer, which requires a single dtype
+        across them; a MiniMax-H3 block holds ``Fp8Linear`` weights
+        (``float8_e4m3fn``) next to the float32 ``adaln_proj.linear``, so the
+        offloader would detect the mixed dtype and fall back to the standard
+        swap anyway. Asking for the standard swap directly keeps the module's
+        own weights the owner of their storage, which is what makes the
+        end-of-generation ``.to("cpu")`` restore the model correctly.
+        """
+        from core.models.minimax_h3_block_loop_wrapper import MiniMaxH3BlockLoopWrapper
+
+        components = self.minimax_h3_components
+        transformer = components["transformer"]
+        # Defensive: a previous generation that was killed between the wrap and
+        # its `finally` would leave a wrapper here.
+        if isinstance(transformer, MiniMaxH3BlockLoopWrapper):
+            transformer = transformer.transformer
+            components["transformer"] = transformer
+
+        blocks_to_swap = int(params.get("blocks_to_swap", 0) or 0)
+        num_blocks = len(transformer.transformer_blocks)
+        if blocks_to_swap >= num_blocks:
+            print(f"[MiniMax-H3] blocks_to_swap={blocks_to_swap} >= {num_blocks} blocks; "
+                  f"clamping to {num_blocks - 1} (at least one block must stay resident)")
+            blocks_to_swap = num_blocks - 1
+
+        if blocks_to_swap <= 0:
+            self._minimax_h3_move("transformer", device)
+            return transformer, None
+
+        from core.memory_management import TransformerBlockOffloader
+
+        for name, child in transformer.named_children():
+            if name == "transformer_blocks":
+                continue
+            child.to(device)
+        # Buffers registered directly on the model (the AdaLN curve table) are
+        # not children and would otherwise stay on the CPU.
+        for _name, buf in transformer.named_buffers(recurse=False):
+            buf.data = buf.data.to(device)
+
+        offloader = TransformerBlockOffloader(
+            blocks=transformer.transformer_blocks,
+            blocks_to_swap=blocks_to_swap,
+            device=device,
+            target_dtype=transformer.dtype,
+            use_pinned_memory=False,
+            transformer=transformer,
+            supports_backward=False,
+            h2d_only=False,
+        )
+        offloader.prepare_block_devices_before_forward()
+
+        wrapper = MiniMaxH3BlockLoopWrapper(transformer, block_offloader=offloader)
+        components["transformer"] = wrapper
+        print(f"[MiniMax-H3] Block Swap enabled: {blocks_to_swap} of {num_blocks} blocks "
+              f"swapped (MiniMaxH3BlockLoopWrapper active)")
+        return wrapper, offloader
+
+    def _unstage_minimax_h3_transformer(self, offloader) -> None:
+        """Tear the block-loop wrapper down and put the DiT back on the CPU.
+
+        Runs in the generation's ``finally``, so a cancelled or failed denoise
+        cannot leave ``minimax_h3_components["transformer"]`` holding a wrapper
+        whose offloader references device buffers -- the stale-offloader state
+        that ``quantized_capability_parity_test`` exists over on the
+        architectures whose wrapper IS persistent.
+        """
+        from core.models.minimax_h3_block_loop_wrapper import MiniMaxH3BlockLoopWrapper
+
+        components = self.minimax_h3_components or {}
+        current = components.get("transformer")
+        if isinstance(current, MiniMaxH3BlockLoopWrapper):
+            components["transformer"] = current.transformer
+        if offloader is not None:
+            try:
+                offloader.cleanup()
+            except Exception as exc:  # teardown must never take a generation down
+                print(f"[MiniMax-H3] block offloader cleanup raised: {exc}")
+        # Whole-model move: with block swap the swappable blocks' weights are on
+        # the CPU already and this is a no-op for them; the resident blocks and
+        # the auxiliary modules come back.
+        self._minimax_h3_move("transformer", "cpu")
 
     # ------------------------------------------------------------------
     # Generation
@@ -343,10 +521,12 @@ class MiniMaxH3Mixin:
         del condition_noises
 
         # ---- Phase 2: denoise (DiT resident) ----
-        transformer = components["transformer"]
         prompt_embeds = prompt_embeds_cpu.to(torch_device)
         denoise_start = time.perf_counter()
-        self._minimax_h3_move("transformer", torch_device)
+        # Staging owns the device move: with block swap it places the block stack
+        # itself rather than moving all 21 GB on and some of it back off.
+        transformer, offloader = self._ensure_minimax_h3_swap_and_offload(params, torch_device)
+        self._minimax_h3_apply_attention_backend(transformer, params)
         try:
             with generation_timer.phase("denoise"):
                 video_rows, audio_rows = ops.denoise(
@@ -370,8 +550,10 @@ class MiniMaxH3Mixin:
         finally:
             # Back to the CPU before ANY decode: the video VAE's ViT decoder is
             # the second-largest allocation of the generation and the two do not
-            # fit together.
-            self._minimax_h3_move("transformer", "cpu")
+            # fit together. This also unwraps the block-loop wrapper and cleans
+            # up the block offloader.
+            self._unstage_minimax_h3_transformer(offloader)
+            del transformer
             del prompt_embeds
             self._minimax_h3_empty_cache()
         denoise_seconds = time.perf_counter() - denoise_start

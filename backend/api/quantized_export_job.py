@@ -85,8 +85,8 @@ def _model_source(pipeline_manager) -> Optional[str]:
 def _source_root(arch: str, source: Optional[str]) -> Optional[str]:
     """The directory a sibling junction set should be taken from.
 
-    For the two architectures whose loader walks UP from the weight file to a
-    model ROOT, that root is what the siblings live next to -- not the file's own
+    For the architectures whose loader walks UP from the weight file to a model
+    ROOT, that root is what the siblings live next to -- not the file's own
     directory:
 
     * Anima: ``<root>/split_files/diffusion_models/<dit>.safetensors``, with
@@ -97,8 +97,14 @@ def _source_root(arch: str, source: Optional[str]) -> Optional[str]:
       falling back to ``os.path.dirname`` would take the siblings from
       ``diffusion_models/`` -- which holds neither -- and produce an exported
       tree the loader cannot complete.
+    * MiniMax-H3: the same flat shape as ACE-Step
+      (``<root>/diffusion_models/<dit>.safetensors`` with ``vae/``,
+      ``text_encoders/`` and MiniMax's config-only ``official/`` beside it), and
+      the same consequence -- ``official/`` in particular is where the loader
+      reads every config and both tokenizers from, so an export that junctioned
+      from ``diffusion_models/`` would produce a tree with no geometry at all.
 
-    Both are asked THEIR OWN detector rather than having the walk re-implemented
+    Each is asked THEIR OWN detector rather than having the walk re-implemented
     here, so a layout change moves one file.
     """
     if not source or not os.path.exists(source):
@@ -106,6 +112,7 @@ def _source_root(arch: str, source: Optional[str]) -> Optional[str]:
     detectors = {
         "anima": ("core.models.anima.anima_loader", "detect_anima_split_layout"),
         "acestep": ("core.models.acestep.loader", "detect_acestep_layout"),
+        "minimax_h3": ("core.models.minimax_h3.loader", "detect_minimax_h3_layout"),
     }
     if arch in detectors:
         module_name, func_name = detectors[arch]

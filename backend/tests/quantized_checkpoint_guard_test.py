@@ -153,6 +153,8 @@ class SupportedLoaderTest(unittest.TestCase):
         "ltx2": ("core/models/ltx2/loader.py", "_swap_ltx2_quantized_linears"),
         "acestep": ("core/models/acestep/loader.py", "_swap_quantized_linears"),
         "zimage": ("core/model_loader.py", "_swap_zimage_quantized_linears"),
+        "minimax_h3": ("core/models/minimax_h3/loader.py",
+                       "_swap_minimax_h3_quantized_linears"),
     }
 
     def test_every_supported_arch_swaps_before_the_tolerant_load(self):

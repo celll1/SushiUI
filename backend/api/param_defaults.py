@@ -781,6 +781,19 @@ VIDEO_GEN_DEFAULTS: Dict[str, Any] = {
     # the in-place int8 conversion above produces the same classes. Same key and
     # same three values as the image routes' GENERATION_DEFAULTS entry.
     "quantized_gemm_mode": None,
+    # Which attention BACKEND runs the kernel ("normal"/"native", "flash",
+    # "sage", "tq"). Same key, same vocabulary and the same default as the image
+    # routes' GENERATION_DEFAULTS entry, which is why it is read from there
+    # rather than restated -- the string is normalized by ONE resolver
+    # (core.attention.normalize_backend) for every architecture.
+    #
+    # Honored today by MiniMax-H3, whose vendored transformer routes attention
+    # through the unified conduit. LTX-2.3 drives diffusers' own attention
+    # dispatch and does not read it (accepted-and-ignored, like every other
+    # per-arch parameter on these routes). A request that omits the field
+    # resolves to the process setting (`settings.attention_type`), so the
+    # existing .env / global selector keeps working unchanged.
+    "attention_type": GENERATION_DEFAULTS["attention_type"],
 }
 
 # ---------------------------------------------------------------------------

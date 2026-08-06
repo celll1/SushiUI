@@ -1,10 +1,13 @@
 # AGENTS.md
 
 SushiUI is a Stable-Diffusion-style web UI: a FastAPI backend (`backend/`)
-driving 9 diffusion architectures (SD1.5, SDXL, Z-Image, Flux2, Anima, Lens,
-Krea2, Ideogram4, MiniT2I) plus LoRA / full-parameter / tagger / VAE-decoder
-training, and a Next.js
-frontend (`frontend/`). Every capability is reachable through the versioned
+driving 12 diffusion architectures — 9 image (SD1.5, SDXL, Z-Image, Flux2,
+Anima, Lens, Krea2, Ideogram4, MiniT2I), 2 video (LTX-2.3, MiniMax-H3, both of
+which also generate audio jointly) and 1 audio (ACE-Step 1.5) — plus LoRA /
+full-parameter / tagger / VAE-decoder training, and a Next.js
+frontend (`frontend/`). The authoritative list is `ARCH_REGISTRY` in
+`backend/core/training/arch/__init__.py`; per-architecture facts are in
+`docs/guides/MODEL_FACTS.md`. Every capability is reachable through the versioned
 REST API under `/api/v1` (see `openapi.yaml`), so agents can drive and verify
 most changes without touching the UI. This file is the durable, checked-in
 subset of repo conventions for coding agents; read it before making changes.
@@ -49,7 +52,8 @@ subset of repo conventions for coding agents; read it before making changes.
 | Add/change an API parameter | `docs/guides/ADD_A_PARAMETER.md` |
 | Understand a generation request end-to-end | `docs/guides/REQUEST_LIFECYCLE.md` |
 | Find which file owns which responsibility | `docs/guides/ARCHITECTURE_MAP.md` |
-| Add a new model architecture | `docs/guides/ADD_A_MODEL_ARCHITECTURE.md` |
+| Add a new model architecture (incl. the extra surface a video arch needs) | `docs/guides/ADD_A_MODEL_ARCHITECTURE.md` |
+| Per-architecture facts (CFG convention, VAE, attention, weight formats, measured performance) | `docs/guides/MODEL_FACTS.md` |
 | Call the API directly (scripts, smoke tests) | `docs/guides/API_TESTING.md`, `examples/api/` |
 | WebSocket progress messages | `backend/api/WS_PROTOCOL.md` |
 | Training parameters / config | `backend/core/training/TRAINING_PARAMS_GUIDE.md`, `backend/core/training/API_REFERENCE.md` |

@@ -6024,8 +6024,12 @@ components:
               architectures differ here, and the behaviour cannot be derived
               from the fields above.
             * `suggested_frames` — valid in-range lengths a client can offer in
-              a clip-length list. This is a subset of what validation accepts:
-              LTX-2.3 accepts a 1-frame clip but does not suggest one.
+              a clip-length list. This is a subset of what validation accepts,
+              in two ways: LTX-2.3 accepts a 1-frame clip but does not suggest
+              one, and the list is capped at 16 entries for an architecture
+              whose valid lengths are unbounded (LTX-2.3 stops at 129).
+              A client holding a valid length that is not listed should offer it
+              as well rather than dropping it.
             * `min_inference_steps` — the smallest `num_inference_steps` this
               architecture's scheduler accepts. A smaller value is refused with
               a 400 before any weights are touched. LTX-2.3: 1. MiniMax-H3: 2.
@@ -6049,7 +6053,7 @@ components:
               max_pixel_hw: [768, 1344]
               pixel_align: 32
               snap_invalid_length: true
-              suggested_frames: [124, 141, 158, 175, 192]
+              suggested_frames: [124, 141, 158, 175, 192, 209, 226, 243, 260, 277, 294, 311, 328, 345]
               min_inference_steps: 2
               steps_are_sigma_grid_points: true
         runtime_int8_archs:

@@ -85,6 +85,45 @@ class MiniMaxH3Mixin:
             return
         module.to(device)
 
+    @staticmethod
+    def _minimax_h3_fit_keyframe(image, width: int, height: int, index: int):
+        """Put one keyframe onto the canvas, the way the released model does.
+
+        THE TWO ANCHORS ARE NOT TREATED THE SAME, and this asymmetry is the
+        reference implementation's, in both independent ports of it:
+
+        * the FIRST keyframe (``index == 0``) is the geometry anchor: MiniMax
+          derives the canvas from it when the request omits width/height, so
+          when a canvas is given the frame is simply STRETCHED onto it
+          (diffusers ``MiniMaxH3ResizeStep``: a plain PIL
+          ``resize((w, h), LANCZOS)``; ComfyUI: ``_resize(..., "disabled")``);
+        * every LATER keyframe is a FOLLOWER and is aspect-preserving
+          centre-cover-cropped (ComfyUI: ``_resize(..., "center")``), because it
+          has no say in the geometry and stretching it would hand the model a
+          distorted anchor it is then pinned to for the whole loop.
+
+        The arithmetic below is MiniMax's own, kept verbatim rather than
+        expressed through ``VaeImageProcessor(resize_mode="crop")``: that helper
+        sizes with floor division and centres with ``w // 2 - src_w // 2``,
+        where this rounds and centres with ``(src_w - w) // 2``. The two agree
+        on some aspect ratios and differ BY ONE PIXEL on others (106 of 218
+        sampled, per the diffusers block's own note), which moves the
+        conditioning latents off the reference implementation.
+        """
+        image = image.convert("RGB")
+        if image.size == (width, height):
+            return image
+        if index == 0:
+            return image.resize((width, height), Image.LANCZOS)
+        source_width, source_height = image.size
+        scale = max(width / source_width, height / source_height)
+        resized_size = (max(width, round(source_width * scale)),
+                        max(height, round(source_height * scale)))
+        left = max(0, (resized_size[0] - width) // 2)
+        top = max(0, (resized_size[1] - height) // 2)
+        resized = image.resize(resized_size, Image.LANCZOS)
+        return resized.crop((left, top, left + width, top + height))
+
     def _minimax_h3_peak_vram(self) -> float:
         if not torch.cuda.is_available():
             return 0.0
@@ -201,14 +240,14 @@ class MiniMaxH3Mixin:
         if seed < 0:
             seed = random.randint(0, 2 ** 32 - 1)
 
-        # Visual conditioning anchors, in packed order. Resized to the generation
-        # canvas here (the VAE encodes exactly what it is given: a keyframe of a
-        # different size would produce a latent of a different size and the
-        # packed layout reserves `rows_per_frame` rows per anchor).
+        # Visual conditioning anchors, in packed order, put onto the generation
+        # canvas here (the VAE encodes exactly what it is given, and the packed
+        # layout reserves `rows_per_frame` rows per anchor). The two anchors are
+        # NOT treated the same way -- see `_minimax_h3_fit_keyframe`.
         anchors = tuple(anchor for anchor, _image in keyframes)
         keyframe_pixels = [
-            np.asarray(image.convert("RGB").resize((width, height), Image.LANCZOS), dtype=np.uint8)
-            for _anchor, image in keyframes
+            np.asarray(self._minimax_h3_fit_keyframe(image, width, height, index), dtype=np.uint8)
+            for index, (_anchor, image) in enumerate(keyframes)
         ]
 
         print(f"[MiniMax-H3] {label}: {width}x{height} num_frames={num_frames} "

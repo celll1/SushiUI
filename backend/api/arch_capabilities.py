@@ -377,7 +377,13 @@ def video_constraints_payload() -> Dict[str, Dict[str, Any]]:
             # snaps up and warns), and it cannot be derived from the fields
             # above, so a client cannot get it right without this flag.
             "snap_invalid_length": spec.snap_invalid_length,
-            "suggested_frames": spec.suggested_lengths(),
+            # 16, not the default 8: a client builds its clip-length control
+            # from this list, and 8 entries stopped LTX-2.3's list at 65 --
+            # dropping 81/97/121, all valid `8k+1` lengths that were offered
+            # before this payload existed (121 is LTX-2.3's own default). 16
+            # covers that and is the whole of MiniMax-H3's range (124..345 is
+            # 14 lengths), so neither arch's list is truncated.
+            "suggested_frames": spec.suggested_lengths(16),
             # Step-count contract, for a client building a step-count control.
             # Neither value is derivable from the fields above and the two
             # video archs differ on both: LTX-2.3 runs N evaluations for N

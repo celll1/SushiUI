@@ -38,6 +38,7 @@ import hashlib
 import os
 import sys
 
+import numpy as np
 import pytest
 import torch
 
@@ -372,6 +373,116 @@ def test_condition_rows_lead_the_video_block_in_packed_order():
     # than "corrected": K0.3 compared this layout against two independent ports
     # on the fl2va cases and they agree exactly.
     assert float(last_time[0]) > float(generated_time.max())
+
+
+def test_the_first_keyframe_is_stretched_and_every_later_one_is_cover_cropped():
+    """The two anchors are put onto the canvas DIFFERENTLY, on purpose.
+
+    Both independent reference implementations do this (diffusers
+    ``MiniMaxH3ResizeStep``: `index == 0` plain resize, else cover-crop;
+    ComfyUI ``nodes_minimax_h3``: `"disabled"` vs `"center"`), because the first
+    keyframe is the geometry anchor while the follower has no say in the canvas.
+    Stretching the follower hands the model a distorted anchor it is then pinned
+    to for the whole loop, and nothing downstream can notice.
+
+    The arithmetic is checked against MiniMax's own, not against
+    ``VaeImageProcessor(resize_mode="crop")``: the two differ by one pixel on
+    many aspect ratios.
+    """
+    from PIL import Image as PILImage
+    from core.pipeline_backends.minimax_h3 import MiniMaxH3Mixin
+
+    fit = MiniMaxH3Mixin._minimax_h3_fit_keyframe
+    width, height = 640, 384
+
+    # A SQUARE follower on a 5:3 canvas: a stretch would keep the full image and
+    # squash it; the cover-crop scales to the width and cuts the top/bottom.
+    square = PILImage.new("RGB", (512, 512))
+    for y in range(512):                      # vertical ramp, so a crop is visible
+        for x in range(0, 512, 64):
+            square.putpixel((x, y), (y // 2, y // 2, y // 2))
+
+    stretched = fit(square, width, height, 0)
+    cropped = fit(square, width, height, 1)
+    assert stretched.size == (width, height)
+    assert cropped.size == (width, height)
+
+    # MiniMax's own follower arithmetic, recomputed here.
+    scale = max(width / 512, height / 512)                 # 1.25
+    resized_size = (max(width, round(512 * scale)), max(height, round(512 * scale)))
+    assert resized_size == (640, 640)
+    left, top = max(0, (resized_size[0] - width) // 2), max(0, (resized_size[1] - height) // 2)
+    assert (left, top) == (0, 128)
+    expected = square.resize(resized_size, PILImage.LANCZOS).crop(
+        (left, top, left + width, top + height))
+    assert list(cropped.getdata()) == list(expected.getdata())
+
+    # ... and the two paths really differ, so removing the crop fails this test
+    # rather than silently passing on a same-aspect image.
+    assert list(cropped.getdata()) != list(stretched.getdata())
+    # The crop keeps the MIDDLE of the vertical ramp; the stretch keeps its ends.
+    assert cropped.getpixel((0, 0))[0] > stretched.getpixel((0, 0))[0]
+
+    # A same-aspect follower is untouched by either path (identical geometry),
+    # and an already-exact-size frame is returned as-is.
+    exact = PILImage.new("RGB", (width, height), (7, 7, 7))
+    assert fit(exact, width, height, 1) is not None
+    assert list(fit(exact, width, height, 1).getdata()) == list(exact.getdata())
+
+
+class _StubPosteriorVae(torch.nn.Module):
+    """A VAE whose encode returns a posterior with a known mean and std."""
+
+    def __init__(self, std=3.0):
+        super().__init__()
+        self.weight = torch.nn.Parameter(torch.zeros(1))   # gives it a dtype
+        self.std = std
+
+    def encode(self, x, return_dict=True):
+        from diffusers.models.autoencoders.vae import DiagonalGaussianDistribution
+        from diffusers.models.modeling_outputs import AutoencoderKLOutput
+        b, _c, t, h, w = x.shape
+        mean = torch.full((b, 24, t, h, w), 2.0)
+        logvar = torch.full_like(mean, 2.0 * float(np.log(self.std)))
+        dist = DiagonalGaussianDistribution(torch.cat([mean, logvar], dim=1))
+        return AutoencoderKLOutput(latent_dist=dist) if return_dict else (dist,)
+
+
+def test_condition_encode_samples_under_a_fixed_seed_and_leaves_the_request_rng_alone():
+    """The released recipe: SAMPLE the posterior, under its own fixed seed.
+
+    Three separate contracts, each of which a "read the mode" shortcut breaks:
+
+    * it is a sample, not the mean (the mean would be a different conditioning
+      latent from the one MiniMax-H3's own implementations produce);
+    * the seed is FIXED (42, `KEYFRAME_ENCODE_SEED`), so the encode is
+      reproducible across runs of the same request;
+    * the generator is a FRESH one, so the request generator's draw sequence --
+      the contract K0.6 recorded -- is not perturbed by conditioning.
+    """
+    vae = _StubPosteriorVae()
+    image = (np.arange(4 * 6 * 3, dtype=np.uint8).reshape(4, 6, 3))
+    kwargs = dict(latents_mean=[0.0] * 24, latents_std=[1.0] * 24,
+                  pixel_mean=(0.5, 0.5, 0.5), pixel_std=(0.5, 0.5, 0.5), device="cpu")
+
+    first = ops.encode_condition_images(vae, [image], **kwargs)[0]
+    again = ops.encode_condition_images(vae, [image], **kwargs)[0]
+    assert torch.equal(first, again), "the conditioning encode is not reproducible"
+    assert not torch.allclose(first, torch.full_like(first, 2.0)), \
+        "the posterior was read at its mean instead of sampled"
+    # Exactly the upstream recipe: mean + std * N(0, 1) drawn from seed 42, then
+    # rounded through fp16.
+    expected = (2.0 + vae.std * torch.randn(
+        first.shape, generator=torch.Generator().manual_seed(ops.KEYFRAME_ENCODE_SEED))
+    ).to(torch.float16).float()
+    assert torch.equal(first, expected)
+
+    # The REQUEST generator is untouched: the draws after an encode are the
+    # draws that would have happened without one.
+    generator = torch.Generator().manual_seed(0)
+    ops.encode_condition_images(vae, [image, image], **kwargs)
+    after = torch.randn(8, generator=generator)
+    assert torch.equal(after, torch.randn(8, generator=torch.Generator().manual_seed(0)))
 
 
 def test_build_condition_rows_requires_one_draw_per_condition():

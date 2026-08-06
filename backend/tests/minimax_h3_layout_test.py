@@ -628,3 +628,191 @@ def test_step_callback_without_preview_geometry_is_refused():
             video_rows=torch.zeros(layout["video_indices"].numel(), 96),
             audio_rows=torch.zeros(layout["audio_indices"].numel(), 32),
             num_inference_steps=1, device="cpu", step_callback=lambda *a: None)
+
+
+# ---------------------------------------------------------------------------
+# ref2va: where the reference blocks sit in the packed order is a contract too
+# ---------------------------------------------------------------------------
+# `build_ref2va_packed_layout` is a port of the diffusers `minimax-h3` block
+# `MiniMaxH3Ref2VAPrepareLayoutStep.build_ref2va_packed_sequence`. It was
+# validated against a SECOND, independent port -- ComfyUI's `PackedLayout` with
+# its `refs` branch -- on the seven configurations below: identical sequence
+# length, identical ORDERED index tensors, identical conditioning row counts,
+# and a float64 position grid agreeing to <= 1e-4 after our fp32 cast. The
+# numbers recorded here are that comparison's, so the shipped function is pinned
+# to the cross-check rather than to a re-derivation of itself.
+#
+# The layout is `[text | reference blocks | target audio | target video]`, one
+# block per reference IN REQUEST ORDER, and a video reference's soundtrack packs
+# immediately BEFORE its own video rows. What that buys is the invariant the
+# denoise loop already relies on: every reference row precedes every generated
+# row of its own modality, so `video_indices` and `audio_indices` both lead with
+# their conditioning rows and the loop pins the anchors by never writing the
+# first `num_condition_*_rows` entries.
+
+# (label, text tokens, target, refs, S, cond_video_rows, cond_audio_rows) where
+# a ref is ("image", (T_lat, H_lat, W_lat)) | ("video", shape, audio_latents) |
+# ("audio", audio_latents).
+_REF_TARGET = (7, 24, 40, 37)   # T=22 @ 384x640
+_REF_BIG = (37, 48, 84, 207)    # T=124 @ 768x1344
+
+REF_CASES = [
+    ("1 image ref (2048 short edge, 4:3)", 40, _REF_TARGET,
+     [("image", (1, 128, 96))], 4866, 3072, 0),
+    ("3 image refs, mixed shapes", 120, _REF_TARGET,
+     [("image", (1, 128, 96)), ("image", (1, 96, 128)), ("image", (1, 64, 64))], 9042, 7168, 0),
+    ("1 video ref, no soundtrack", 200, _REF_TARGET,
+     [("video", (7, 34, 60), 0)], 5524, 3570, 0),
+    ("1 video ref WITH soundtrack", 200, _REF_TARGET,
+     [("video", (7, 34, 60), 37)], 5598, 3570, 74),
+    ("image + video+audio + standalone audio (T=124)", 512, _REF_BIG,
+     [("image", (1, 128, 96)), ("video", (12, 48, 84), 65), ("audio", 40)], 53600, 15168, 210),
+    ("9 image refs (the limit)", 64, _REF_TARGET,
+     [("image", (1, 64, 64))] * 9, 11034, 9216, 0),
+    ("interleaved: image, audio, video+audio", 300, _REF_TARGET,
+     [("image", (1, 96, 96)), ("audio", 20), ("video", (7, 34, 60), 37)], 8042, 5874, 114),
+]
+
+
+def _ref_layout(case):
+    _label, text_len, target, refs = case[:4]
+    blocks, shapes, audio_rows = [], [], []
+    for ref in refs:
+        if ref[0] == "image":
+            blocks.append(("image", False))
+            shapes.append(ref[1])
+        elif ref[0] == "video":
+            blocks.append(("video", ref[2] > 0))
+            shapes.append(ref[1])
+            if ref[2] > 0:
+                audio_rows.append(ref[2] * 2)
+        else:
+            blocks.append(("audio", True))
+            audio_rows.append(ref[1] * 2)
+    latent_t, latent_h, latent_w, audio_t = target
+    return ops.build_ref2va_packed_layout(
+        [ops.TEXT_TAG] * text_len, blocks, shapes, audio_rows,
+        latent_t, latent_h, latent_w, audio_t)
+
+
+@pytest.mark.parametrize("case", REF_CASES, ids=[c[0] for c in REF_CASES])
+def test_ref2va_recorded_row_counts(case):
+    """Sequence length and the two conditioning row counts, as cross-checked."""
+    _label, text_len, _target, _refs, seq_len, cond_video, cond_audio = case
+    layout = _ref_layout(case)
+    assert layout["sequence_length"] == seq_len
+    assert layout["num_condition_video_rows"] == cond_video
+    assert layout["num_condition_audio_rows"] == cond_audio
+    assert layout["text_indices"].numel() == text_len
+
+
+@pytest.mark.parametrize("case", REF_CASES, ids=[c[0] for c in REF_CASES])
+def test_ref2va_indices_are_ordered_disjoint_and_cover(case):
+    """Ascending within each modality, disjoint across them, covering [0, S)."""
+    layout = _ref_layout(case)
+    seq_len = layout["sequence_length"]
+    blocks = [layout["text_indices"], layout["audio_indices"], layout["video_indices"]]
+    for name, block in zip(("text", "audio", "video"), blocks):
+        assert torch.equal(block, block.sort().values), f"{name} indices are not ascending"
+    combined = torch.cat(blocks).sort().values
+    assert torch.equal(combined, torch.arange(seq_len))
+
+
+@pytest.mark.parametrize("case", REF_CASES, ids=[c[0] for c in REF_CASES])
+def test_ref2va_reference_rows_lead_and_precede_the_generated_rows(case):
+    """The invariant the denoise loop pins the anchors with.
+
+    Every reference row sits between the text span and the generated rows, so
+    the leading `num_condition_*_rows` entries of each index block are exactly
+    the conditioning ones -- which is what makes `rows[n_cond:] = step(...)`
+    protect them without re-imposing anything.
+    """
+    _label, text_len, target, _refs, seq_len, cond_video, cond_audio = case
+    layout = _ref_layout(case)
+    latent_t, latent_h, latent_w, audio_t = target
+    generated_video = latent_t * (latent_h // 2) * (latent_w // 2)
+    generated_audio = audio_t * ops.AUDIO_CHANNELS
+
+    video_indices, audio_indices = layout["video_indices"], layout["audio_indices"]
+    assert video_indices.numel() == cond_video + generated_video
+    assert audio_indices.numel() == cond_audio + generated_audio
+    if cond_video:
+        assert int(video_indices[cond_video - 1]) < int(video_indices[cond_video])
+        assert int(video_indices[:cond_video].max()) < int(video_indices[cond_video:].min())
+        assert int(video_indices.min()) >= text_len
+    if cond_audio:
+        assert int(audio_indices[:cond_audio].max()) < int(audio_indices[cond_audio:].min())
+    # The generated rows are the LAST two contiguous blocks: target audio, then
+    # target video.
+    assert torch.equal(video_indices[cond_video:], torch.arange(seq_len - generated_video, seq_len))
+    assert torch.equal(
+        audio_indices[cond_audio:],
+        torch.arange(seq_len - generated_video - generated_audio, seq_len - generated_video))
+
+
+@pytest.mark.parametrize("case", REF_CASES, ids=[c[0] for c in REF_CASES])
+def test_ref2va_modality_tags(case):
+    """A reference's rows carry its modality's tag, which AdaLN keys off."""
+    layout = _ref_layout(case)
+    tags = layout["token_tags"]
+    assert (tags[layout["text_indices"]] == ops.TEXT_TAG).all()
+    assert (tags[layout["audio_indices"]] == ops.AUDIO_TAG).all()
+    assert (tags[layout["video_indices"]] == ops.VIDEO_TAG).all()
+
+
+def test_ref2va_vision_block_rows_stay_tagged_video():
+    """A reference's vision block lives in the TEXT span but is tagged video.
+
+    `build_ref2va_presentation` emits `<|image_pad|>` runs tagged 0 (video); the
+    layout must carry those tags through rather than overwriting the whole text
+    span with the text tag.
+    """
+    text_tags = [ops.TEXT_TAG] * 5 + [ops.VIDEO_TAG] * 7 + [ops.TEXT_TAG] * 3
+    layout = ops.build_ref2va_packed_layout(
+        text_tags, [("image", False)], [(1, 8, 8)], [], 7, 24, 40, 37)
+    assert torch.equal(layout["token_tags"][:15], torch.tensor(text_tags))
+
+
+def test_ref2va_reference_order_is_semantic():
+    """Reordering the references is a different request, not the same one."""
+    tags = [ops.TEXT_TAG] * 40
+    first = ops.build_ref2va_packed_layout(
+        tags, [("image", False), ("audio", True)], [(1, 64, 64)], [40], 7, 24, 40, 37)
+    second = ops.build_ref2va_packed_layout(
+        tags, [("audio", True), ("image", False)], [(1, 64, 64)], [40], 7, 24, 40, 37)
+    assert first["sequence_length"] == second["sequence_length"]
+    # Same rows, different places: the index tables and the rotary clock differ.
+    assert not torch.equal(first["video_indices"], second["video_indices"])
+    assert not torch.equal(first["position_ids"], second["position_ids"])
+
+
+def test_ref2va_video_soundtrack_packs_before_its_own_video_rows():
+    """A video reference's audio rows lead its video rows and share their clock."""
+    tags = [ops.TEXT_TAG] * 10
+    layout = ops.build_ref2va_packed_layout(
+        tags, [("video", True)], [(7, 34, 60)], [74], 7, 24, 40, 37)
+    assert int(layout["audio_indices"][0]) == 10
+    assert int(layout["video_indices"][0]) == 10 + 74
+    position_ids = layout["position_ids"]
+    assert float(position_ids[10, 0]) == 10.0
+    assert float(position_ids[10 + 74, 0]) == 10.0
+
+
+def test_ref2va_image_reference_advances_the_clock_by_one():
+    """An image takes a single integer rotary slot, not a latent frame's 5/3."""
+    tags = [ops.TEXT_TAG] * 4
+    layout = ops.build_ref2va_packed_layout(
+        tags, [("image", False), ("image", False)], [(1, 8, 8), (1, 8, 8)], [], 7, 24, 40, 37)
+    position_ids = layout["position_ids"]
+    rows_per_image = (8 // 2) * (8 // 2)
+    assert float(position_ids[4, 0]) == 4.0
+    assert float(position_ids[4 + rows_per_image, 0]) == 5.0
+
+
+def test_ref2va_layout_matches_the_t2va_builder_with_no_references():
+    """No references == the t2va layout, so the two builders cannot drift."""
+    plain = ops.build_packed_layout(12, 7, 24, 40, 37)
+    empty = ops.build_ref2va_packed_layout([ops.TEXT_TAG] * 12, [], [], [], 7, 24, 40, 37)
+    assert empty["sequence_length"] == plain["sequence_length"]
+    for key in ("video_indices", "audio_indices", "text_indices", "token_tags", "position_ids"):
+        assert torch.equal(empty[key], plain[key]), key

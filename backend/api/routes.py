@@ -43,7 +43,8 @@ from auth import create_access_token, verify_credentials, require_auth
 from api.param_defaults import (
     GENERATION_DEFAULTS, TXT2IMG_DEFAULTS, IMG2IMG_DEFAULTS, INPAINT_DEFAULTS,
     OUTPAINT_DEFAULTS, OUTPAINT_VIDEO_DEFAULTS,
-    UPSCALE_DEFAULTS, TXT2VID_DEFAULTS, IMG2VID_DEFAULTS, TXT2AUD_DEFAULTS, AUD2AUD_DEFAULTS,
+    UPSCALE_DEFAULTS, TXT2VID_DEFAULTS, IMG2VID_DEFAULTS, REF2VID_DEFAULTS,
+    TXT2AUD_DEFAULTS, AUD2AUD_DEFAULTS,
     OUTPAINT_AUDIO_DEFAULTS,
     TRAINING_DEFAULTS, TAGGER_TRAINING_DEFAULTS, VAE_TRAINING_DEFAULTS,
     TIMESTEP_SAMPLING_DEFAULTS_BY_ARCH,
@@ -454,6 +455,7 @@ async def get_generation_defaults():
         "upscale": UPSCALE_DEFAULTS,
         "txt2vid": TXT2VID_DEFAULTS,
         "img2vid": IMG2VID_DEFAULTS,
+        "ref2vid": REF2VID_DEFAULTS,
         "outpaint_vid": OUTPAINT_VIDEO_DEFAULTS,
         "txt2aud": TXT2AUD_DEFAULTS,
         "aud2aud": AUD2AUD_DEFAULTS,
@@ -3558,6 +3560,366 @@ async def generate_img2vid(
         )
 
 
+@router.post("/generate/ref2vid")
+async def generate_ref2vid(
+    prompt: str = Form(...),
+    negative_prompt: Optional[str] = Form(REF2VID_DEFAULTS["negative_prompt"]),
+    # The six overlaid keys are `Form(None)` SENTINELS, exactly as in
+    # /generate/img2vid -- see that route for why a multipart endpoint cannot
+    # use Pydantic's `model_fields_set`.
+    width: Optional[int] = Form(None),
+    height: Optional[int] = Form(None),
+    num_frames: Optional[int] = Form(None),
+    frame_rate: Optional[float] = Form(None),
+    num_inference_steps: Optional[int] = Form(None),
+    guidance_scale: Optional[float] = Form(None),
+    seed: int = Form(REF2VID_DEFAULTS["seed"]),
+    num_videos_per_prompt: int = Form(REF2VID_DEFAULTS["num_videos_per_prompt"]),
+    max_sequence_length: int = Form(REF2VID_DEFAULTS["max_sequence_length"]),
+    audio_enable: bool = Form(REF2VID_DEFAULTS["audio_enable"]),
+    blocks_to_swap: int = Form(REF2VID_DEFAULTS["blocks_to_swap"]),
+    fbcache_enable: bool = Form(REF2VID_DEFAULTS["fbcache_enable"]),
+    fbcache_threshold: float = Form(REF2VID_DEFAULTS["fbcache_threshold"]),
+    fbcache_warmup_steps: int = Form(REF2VID_DEFAULTS["fbcache_warmup_steps"]),
+    spectrum_enable: bool = Form(REF2VID_DEFAULTS["spectrum_enable"]),
+    spectrum_w: float = Form(REF2VID_DEFAULTS["spectrum_w"]),
+    spectrum_w_decay: float = Form(REF2VID_DEFAULTS["spectrum_w_decay"]),
+    spectrum_delta_cap: float = Form(REF2VID_DEFAULTS["spectrum_delta_cap"]),
+    spectrum_m: int = Form(REF2VID_DEFAULTS["spectrum_m"]),
+    spectrum_lam: float = Form(REF2VID_DEFAULTS["spectrum_lam"]),
+    spectrum_warmup_steps: int = Form(REF2VID_DEFAULTS["spectrum_warmup_steps"]),
+    spectrum_window_size: int = Form(REF2VID_DEFAULTS["spectrum_window_size"]),
+    spectrum_flex_window: float = Form(REF2VID_DEFAULTS["spectrum_flex_window"]),
+    spectrum_tail: float = Form(REF2VID_DEFAULTS["spectrum_tail"]),
+    spectrum_max_cache: int = Form(REF2VID_DEFAULTS["spectrum_max_cache"]),
+    vae_path: Optional[str] = Form(REF2VID_DEFAULTS["vae_path"]),
+    text_encoder_path: Optional[str] = Form(REF2VID_DEFAULTS["text_encoder_path"]),
+    unet_quantization: Optional[str] = Form(REF2VID_DEFAULTS["unet_quantization"]),
+    quantized_gemm_mode: Optional[str] = Form(REF2VID_DEFAULTS["quantized_gemm_mode"]),
+    attention_type: str = Form(REF2VID_DEFAULTS["attention_type"]),
+    reference_image_size: str = Form(REF2VID_DEFAULTS["reference_image_size"]),
+    # The references. Every list is read in UPLOAD ORDER, and that order is
+    # semantic -- it labels the references in the prompt presentation and lays
+    # them out on the packed sequence's rotary clock.
+    reference_images: List[UploadFile] = File([]),
+    reference_videos: List[UploadFile] = File([]),
+    reference_video_audios: List[UploadFile] = File([]),
+    reference_audios: List[UploadFile] = File([]),
+    db: Session = Depends(get_gallery_db)
+):
+    """Generate a video from omni-references (MiniMax-H3 `ref2va` only).
+
+    Multipart form: up to 9 image, 3 video and 3 audio reference files (12 in
+    total) plus the txt2vid parameters. Each visual reference is VAE-encoded and
+    packed ahead of the generated rows, where the sampler never writes it, and
+    each reference is additionally shown to the Qwen3-VL conditioner as a
+    labelled vision block so the prompt can refer to it by name.
+
+    A DEDICATED endpoint rather than more files on /generate/img2vid: that
+    endpoint conditions on 1-2 keyframes pinned to the ends of the generated
+    clip and sharing its canvas, and its two architectures both serve it. This
+    one takes 12 heterogeneous files of three modalities at their own
+    resolutions and rates, in an order that changes the request, and only one
+    architecture -- one of its two transformer partitions, in fact -- implements
+    it at all.
+    """
+    from api.generation_status import start_generation, complete_generation, fail_generation, get_warnings
+    from utils.video_utils import save_video_with_metadata, load_video_frames
+    from core.models.minimax_h3 import h3_references as h3refs
+
+    # ---- Architecture gate. Two distinct refusals, because "no MiniMax-H3
+    # loaded" and "the wrong MiniMax-H3 partition is loaded" are different
+    # problems with different fixes. ----
+    if not getattr(pipeline_manager, "is_minimax_h3_model", False):
+        raise CustomValidationError(
+            "No MiniMax-H3 model loaded",
+            detail="Omni-reference conditioning (up to 9 images, 3 videos and 3 audio clips in one "
+                   "packed sequence) is a MiniMax-H3 `ref2va` workflow; no other architecture in "
+                   "this repo implements it. Load the MiniMax-H3 ref2va transformer before calling "
+                   "/generate/ref2vid.",
+        )
+    _variant = ((pipeline_manager.current_model_info or {}).get("variant") or "").lower()
+    if _variant != "ref2va":
+        raise CustomValidationError(
+            f"The loaded MiniMax-H3 transformer is the {_variant or 'unidentified'} variant, not ref2va",
+            detail="MiniMax-H3 ships TWO transformer partitions that share every other component: "
+                   "`fl2va` (which serves /generate/txt2vid, /generate/img2vid and "
+                   "/generate/outpaint/video) and `ref2va` (this endpoint). Reference conditioning "
+                   "is a trained behaviour of the ref2va partition alone, and the two files are "
+                   "otherwise indistinguishable -- same config, same size, no distinguishing key -- "
+                   "so running this request on the loaded one would silently produce a bad video "
+                   "rather than fail. Load "
+                   "diffusion_models/minimax_h3_ref2va_pruned_fp8_scaled.safetensors instead.",
+        )
+
+    # ---- The reference files, in upload order. An empty multipart part (a
+    # part with no filename) counts as absent, the same normalisation
+    # /generate/img2vid applies to `last_frame_image`. ----
+    def _present(files) -> List[UploadFile]:
+        return [f for f in (files or []) if f is not None and f.filename]
+
+    image_files = _present(reference_images)
+    video_files = _present(reference_videos)
+    video_audio_files = list(reference_video_audios or [])
+    audio_files = _present(reference_audios)
+
+    # Counts are validated BEFORE anything is read: these are the model's limits
+    # and a request that breaks them must not first pay for 12 file reads.
+    total_references = len(image_files) + len(video_files) + len(audio_files)
+    for kind, count, limit in (("image", len(image_files), h3refs.MAX_REFERENCE_IMAGES),
+                               ("video", len(video_files), h3refs.MAX_REFERENCE_VIDEOS),
+                               ("audio", len(audio_files), h3refs.MAX_REFERENCE_AUDIOS)):
+        if count > limit:
+            raise CustomValidationError(
+                f"MiniMax-H3 accepts at most {limit} {kind} reference(s)",
+                detail=f"Got {count}. The limit is the released checkpoint's, not SushiUI's.",
+            )
+    if total_references > h3refs.MAX_REFERENCES:
+        raise CustomValidationError(
+            f"MiniMax-H3 accepts at most {h3refs.MAX_REFERENCES} references in total",
+            detail=f"Got {total_references} ({len(image_files)} image, {len(video_files)} video, "
+                   f"{len(audio_files)} audio). The limit is the released checkpoint's, not "
+                   f"SushiUI's.",
+        )
+    if total_references == 0:
+        raise CustomValidationError(
+            "ref2vid needs at least one reference",
+            detail="Send at least one reference_images or reference_videos file, or use "
+                   "/generate/txt2vid for a text-only request.",
+        )
+    if not image_files and not video_files:
+        raise CustomValidationError(
+            "An audio reference cannot be the only kind sent",
+            detail="A standalone soundtrack never reaches the Qwen3-VL conditioner -- it is encoded "
+                   "by the audio VAE alone -- so a request built from audio references only "
+                   "conditions the vision stream on nothing. Pair it with at least one image or "
+                   "video reference.",
+        )
+    if len(video_audio_files) > len(video_files):
+        raise CustomValidationError(
+            "More reference_video_audios than reference_videos",
+            detail=f"Got {len(video_audio_files)} soundtrack(s) for {len(video_files)} reference "
+                   f"video(s). Entry n is the soundtrack of reference video n; send an empty part "
+                   f"to skip one.",
+        )
+    if reference_image_size not in ("max", "match"):
+        raise CustomValidationError(
+            "Invalid reference_image_size",
+            detail=f"Must be 'max' (the released 2048-pixel short edge) or 'match' (scale down to "
+                   f"the generation's pixel area), got {reference_image_size!r}.",
+        )
+
+    params = {
+        "prompt": prompt,
+        "negative_prompt": negative_prompt,
+        "width": width,
+        "height": height,
+        "num_frames": num_frames,
+        "frame_rate": frame_rate,
+        "num_inference_steps": num_inference_steps,
+        "guidance_scale": guidance_scale,
+        "seed": seed,
+        "num_videos_per_prompt": num_videos_per_prompt,
+        "max_sequence_length": max_sequence_length,
+        "audio_enable": audio_enable,
+        "blocks_to_swap": blocks_to_swap,
+        "fbcache_enable": fbcache_enable,
+        "fbcache_threshold": fbcache_threshold,
+        "fbcache_warmup_steps": fbcache_warmup_steps,
+        "spectrum_enable": spectrum_enable,
+        "spectrum_w": spectrum_w,
+        "spectrum_w_decay": spectrum_w_decay,
+        "spectrum_delta_cap": spectrum_delta_cap,
+        "spectrum_m": spectrum_m,
+        "spectrum_lam": spectrum_lam,
+        "spectrum_warmup_steps": spectrum_warmup_steps,
+        "spectrum_window_size": spectrum_window_size,
+        "spectrum_flex_window": spectrum_flex_window,
+        "spectrum_tail": spectrum_tail,
+        "spectrum_max_cache": spectrum_max_cache,
+        "vae_path": vae_path,
+        "text_encoder_path": text_encoder_path,
+        "unet_quantization": unet_quantization,
+        "quantized_gemm_mode": _normalize_media_qgm(quantized_gemm_mode),
+        "attention_type": _validated_attention_type(
+            attention_type, REF2VID_DEFAULTS["attention_type"]),
+        "reference_image_size": reference_image_size,
+        # The uploaded FILENAMES, in packed order -- what the gallery row can
+        # carry. The bytes never reach the database.
+        "reference_images": [f.filename for f in image_files] or None,
+        "reference_videos": [f.filename for f in video_files] or None,
+        "reference_audios": [f.filename for f in audio_files] or None,
+    }
+
+    _vid_arch = (pipeline_manager.current_model_info or {}).get("type")
+    _omitted = {key for key, value in (
+        ("width", width), ("height", height), ("num_frames", num_frames),
+        ("frame_rate", frame_rate), ("num_inference_steps", num_inference_steps),
+        ("guidance_scale", guidance_scale),
+    ) if value is None}
+    _provided = set(params) - _omitted
+    _vid_defaults = resolve_video_defaults(params, _provided, _vid_arch, REF2VID_DEFAULTS)
+
+    # ---- Read and decode the references, in PACKED order: images, then videos
+    # (each with its own soundtrack), then standalone audio. Decoding happens
+    # before the GPU slot is taken, so a malformed upload is a 400 that reserved
+    # nothing. The generated frame count is already resolved above, and it is
+    # what a reference video and every soundtrack are truncated to. ----
+    _decode_frames_cap = int(params["num_frames"])
+    references: List[h3refs.MiniMaxH3Reference] = []
+    try:
+        for upload in image_files:
+            data = await upload.read()
+            references.append(h3refs.MiniMaxH3Reference(
+                kind="image", image=Image.open(io.BytesIO(data)).convert("RGB"),
+                label=upload.filename))
+        for index, upload in enumerate(video_files):
+            data = await upload.read()
+            # A reference video is resampled to 24 fps and truncated to the
+            # generated length, so decoding more than the generated length's
+            # worth of source frames at the source rate can never be needed
+            # beyond the resample's own headroom (a slow-motion 8 fps source
+            # needs a third as many). The cap is the generated length scaled by
+            # the largest plausible ratio, which `load_video_frames` then trims.
+            frames, source_fps = load_video_frames(data, max_frames=max(1, _decode_frames_cap * 4))
+            soundtrack = None
+            sample_rate = None
+            audio_upload = video_audio_files[index] if index < len(video_audio_files) else None
+            if audio_upload is not None and audio_upload.filename:
+                soundtrack, sample_rate = h3refs.decode_audio_bytes(await audio_upload.read())
+            references.append(h3refs.MiniMaxH3Reference(
+                kind="video", frames=frames, fps=source_fps, audio=soundtrack,
+                sample_rate=sample_rate, label=upload.filename))
+        for upload in audio_files:
+            waveform, sample_rate = h3refs.decode_audio_bytes(await upload.read())
+            references.append(h3refs.MiniMaxH3Reference(
+                kind="audio", audio=waveform, sample_rate=sample_rate, label=upload.filename))
+    except CustomValidationError:
+        raise
+    except Exception as e:
+        raise CustomValidationError(
+            "Failed to read an uploaded reference",
+            detail=str(e),
+        )
+
+    _gen_id = start_generation("ref2vid")
+    try:
+        pipeline_manager.reset_cancel_flag()
+
+        validate_video_geometry(params, _vid_arch)
+        validate_video_steps(params, _vid_arch)
+
+        from api.arch_capabilities import check_arch_capabilities
+        from api.generation_overrides import plan_overrides, apply_overrides
+        _override_plan = plan_overrides(pipeline_manager, params.get("vae_path"), params.get("text_encoder_path"))
+        apply_overrides(pipeline_manager, _override_plan)
+        check_arch_capabilities(params, _vid_arch, defaults=_vid_defaults)
+
+        print(f"ref2vid generation params: {sanitize_params_for_logging(params)}")
+
+        def progress_callback(step, total_steps):
+            from api.generation_status import update_progress
+            total = max(total_steps, 1)
+            manager.send_progress_sync(step, total, f"Generating video: step {step}/{total}")
+            update_progress(step, total)
+
+        from core.gpu_coordinator import gpu_coordinator
+        from core.inference.generation_timing import generation_timer
+        loop = asyncio.get_event_loop()
+        generation_timer.reset()
+        _gen_start = time.perf_counter()
+        async with gpu_coordinator.generation_slot(estimated_peak_gb=40, timeout=120.0):
+            from api.quantized_gemm import apply_quantized_gemm_mode
+            apply_quantized_gemm_mode(params.get("quantized_gemm_mode"))
+            frames, audio, audio_sample_rate, actual_seed = await _run_generation_in_executor(
+                loop, executor,
+                lambda: pipeline_manager.generate_ref2vid(
+                    params, references, progress_callback=progress_callback)
+            )
+            fp8_gemm = extract_fp8_gemm_info(pipeline_manager)
+        apply_generation_timings(params, time.perf_counter() - _gen_start)
+        _record_media_gemm_outcome(params, fp8_gemm, _vid_arch)
+        record_attention_backend(params, _gen_id)
+
+        vae_name, vae_hash = extract_vae_info(pipeline_manager)
+        if vae_name:
+            params["vae_name"] = vae_name
+        if vae_hash:
+            params["vae_hash"] = vae_hash
+
+        params["seed"] = actual_seed
+
+        filename = save_video_with_metadata(
+            frames,
+            audio,
+            audio_sample_rate,
+            params,
+            "ref2vid",
+            model_info=pipeline_manager.current_model_info,
+        )
+
+        base_name = os.path.splitext(filename)[0]
+        poster_path = os.path.join(settings.outputs_dir, f"{base_name}.png")
+        if os.path.exists(poster_path):
+            create_thumbnail(poster_path)
+
+        num_frames_out = int(frames.shape[0])
+        fps_out = float(params.get("frame_rate", 24.0))
+        params_for_db = {k: v for k, v in params.items() if not k.startswith("_")}
+        params_for_db["num_frames"] = num_frames_out
+        params_for_db["fps"] = fps_out
+        params_for_db["duration"] = (num_frames_out / fps_out) if fps_out else 0.0
+        params_for_db["audio_enable"] = bool(params.get("audio_enable", True) and audio is not None)
+        params_for_db["is_video"] = True
+        # See /generate/img2vid: the gallery's cfg_scale / steps COLUMNS are
+        # filled from the image routes' key names, which a video request does
+        # not carry.
+        params_for_db["cfg_scale"] = float(params.get("guidance_scale", 1.0))
+        params_for_db["steps"] = int(params.get("num_inference_steps", 0))
+        _effective_warnings = get_warnings(_gen_id)
+        if _effective_warnings:
+            params_for_db["effective_warnings"] = _effective_warnings
+
+        model_name, model_hash = extract_model_info(pipeline_manager)
+
+        db_image = create_db_image_record(
+            GeneratedImage,
+            filename=filename,
+            params=params_for_db,
+            actual_seed=actual_seed,
+            generation_type="ref2vid",
+            image_hash="",
+            lora_names=None,
+            model_name=model_name,
+            model_hash=model_hash,
+        )
+        db.add(db_image)
+        db.commit()
+        db.refresh(db_image)
+
+        complete_generation({"image_id": db_image.id, "filename": filename, "seed": actual_seed}, generation_id=_gen_id)
+        return {"success": True, "image": db_image.to_dict(), "actual_seed": actual_seed, "warnings": get_warnings(_gen_id)}
+
+    except (GenerationError, CustomValidationError, NotFoundError) as e:
+        fail_generation(str(e), generation_id=_gen_id)
+        raise
+    except ValueError as e:
+        # The reference-normalisation rules (rates, resolutions, the 22-frame
+        # floor, the packed-order limits) raise ValueError from the ops layer.
+        # They are client errors about the uploaded media, not generation
+        # failures, so they must not be re-wrapped as a 500.
+        fail_generation(str(e), generation_id=_gen_id)
+        raise CustomValidationError("Invalid MiniMax-H3 reference", detail=str(e))
+    except Exception as e:
+        import traceback
+        error_detail = traceback.format_exc()
+        fail_generation(str(e), generation_id=_gen_id)
+        raise GenerationError(
+            "Reference-to-video generation failed",
+            detail=f"{str(e)}\n\n{error_detail}"
+        )
+
+
 @router.post("/generate/outpaint/video")
 async def generate_outpaint_video(
     prompt: str = Form(...),
@@ -5628,6 +5990,42 @@ async def get_models(db: Session = Depends(get_gallery_db), force_rescan: bool =
                             "vae_type": vae_type,
                         })
                     continue
+
+                # MiniMax-H3: the tree holds TWO transformer partitions that
+                # share every other component -- `fl2va` (txt2vid / img2vid /
+                # outpaint) and `ref2va` (/generate/ref2vid) -- and the workflow
+                # is selected by WHICH ONE IS LOADED. They are otherwise
+                # indistinguishable (same config, same byte size, no
+                # distinguishing key), so the DiT file is the variant, and each
+                # one is listed as its own selectable model rather than the tree
+                # being listed once and silently resolving to the first file.
+                # Same shape as the MiniT2I expansion above.
+                if architecture == "minimax_h3":
+                    from core.models.minimax_h3.loader import (
+                        detect_minimax_h3_layout, is_minimax_h3_safetensors,
+                    )
+                    _dit_dir = os.path.join(item_path, "diffusion_models")
+                    _dits = sorted(
+                        os.path.join(_dit_dir, f) for f in os.listdir(_dit_dir)
+                        if f.endswith(".safetensors")
+                        and is_minimax_h3_safetensors(os.path.join(_dit_dir, f))
+                    ) if os.path.isdir(_dit_dir) else []
+                    for _dit in _dits:
+                        _layout = detect_minimax_h3_layout(_dit) or {}
+                        models.append({
+                            "name": f"{item}/{os.path.basename(_dit)[:-len('.safetensors')]}",
+                            "path": _dit,
+                            "type": "safetensors",
+                            "source_type": "safetensors",
+                            "size_gb": round(os.path.getsize(_dit) / (1024 ** 3), 2),
+                            "source_dir": models_dir,
+                            "architecture": "minimax_h3",
+                            # Which workflows this entry can serve, so the
+                            # frontend does not have to parse a filename.
+                            "variant": _layout.get("variant"),
+                        })
+                    if _dits:
+                        continue
 
                 # Allow Anima split-files layouts even when there's no model_index.json
                 is_valid = ModelLoader.is_valid_diffusers_directory(item_path)

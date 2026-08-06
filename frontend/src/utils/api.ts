@@ -753,6 +753,35 @@ export interface Img2VidParams extends Txt2VidParams {
   last_frame_image?: File | string | null;
 }
 
+// ref2vid (MiniMax-H3 `ref2va`): the txt2vid parameter set plus how an image
+// reference is sized. The reference FILES travel separately (see
+// MiniMaxH3References) because they are uploads, not parameters.
+export interface Ref2VidParams extends Txt2VidParams {
+  // "max"  — the released recipe: every image reference on a 2048-pixel short
+  //          edge of its own, upscaling included and with no area cap.
+  // "match" — scale each image reference DOWN to the generation's pixel area.
+  //          Fewer reference rows, so a shorter packed sequence; a reference's
+  //          rows ride through every sampling step.
+  // Video references are unaffected either way: they always follow the canvas
+  // rule the generated video follows.
+  reference_image_size?: "max" | "match";
+}
+
+// The reference uploads of one ref2vid request, IN THE ORDER THE MODEL READS
+// THEM. That order is semantic: it fixes the <Picture i> / <Audio j> /
+// <Video k> labels the prompt refers to and lays the references out on the
+// packed sequence's shared rotary clock.
+//
+// `videoAudios` is POSITIONAL: entry n is the soundtrack of `videos[n]`, and a
+// video with no soundtrack holds its slot with null. The model's limits (9 / 3
+// / 3, 12 total, and never audio alone) are enforced server-side.
+export interface MiniMaxH3References {
+  images: File[];
+  videos: File[];
+  videoAudios: (File | null)[];
+  audios: File[];
+}
+
 // ---------------------------------------------------------------------------
 // Audio generation (ACE-Step 1.5) — txt2aud (JSON). Standalone request shape
 // (does not extend GenerationParams -- audio has no width/height/steps/sampler
@@ -1939,6 +1968,68 @@ export const generateImg2Vid = async (params: Img2VidParams, image: File | strin
   }
 
   const response = await api.post("/generate/img2vid", formData, {
+    headers: { "Content-Type": "multipart/form-data" },
+  });
+  return response.data;
+};
+
+// ref2vid: multipart POST /generate/ref2vid — MiniMax-H3's `ref2va` workflow,
+// which needs the ref2va transformer variant loaded (the fl2va one serves
+// txt2vid/img2vid/outpaint and is refused here by name).
+//
+// The ORDER of each list is semantic: it labels the references in the prompt
+// presentation (<Picture i> / <Audio j> / <Video k>) and lays them out on the
+// packed sequence's rotary clock, so the arrays are sent in the order the user
+// arranged them and are never sorted or regrouped here.
+export const generateRef2Vid = async (
+  params: Ref2VidParams,
+  references: MiniMaxH3References,
+) => {
+  const formData = new FormData();
+
+  formData.append("prompt", params.prompt);
+  formData.append("negative_prompt", params.negative_prompt || "");
+  formData.append("width", String(params.width ?? 1344));
+  formData.append("height", String(params.height ?? 768));
+  formData.append("num_frames", String(params.num_frames ?? 124));
+  formData.append("frame_rate", String(params.frame_rate ?? 24.0));
+  formData.append("num_inference_steps", String(params.num_inference_steps ?? 20));
+  formData.append("guidance_scale", String(params.guidance_scale ?? 1.0));
+  formData.append("seed", String(params.seed ?? -1));
+  formData.append("num_videos_per_prompt", String(params.num_videos_per_prompt ?? 1));
+  formData.append("max_sequence_length", String(params.max_sequence_length ?? 1024));
+  formData.append("audio_enable", String(params.audio_enable ?? true));
+  formData.append("reference_image_size", params.reference_image_size ?? "max");
+  if (params.vae_path) {
+    formData.append("vae_path", params.vae_path);
+  }
+  if (params.text_encoder_path) {
+    formData.append("text_encoder_path", params.text_encoder_path);
+  }
+  if (params.unet_quantization && params.unet_quantization !== "none") {
+    formData.append("unet_quantization", params.unet_quantization);
+  }
+  if (params.quantized_gemm_mode) {
+    formData.append("quantized_gemm_mode", params.quantized_gemm_mode);
+  }
+
+  // The reference files. Each list keeps its order; a video's soundtrack is
+  // positional, so a video with no sound sends an EMPTY part to hold its slot
+  // (the backend treats a part with no filename as absent).
+  (references.images || []).forEach((file) => formData.append("reference_images", file));
+  (references.videos || []).forEach((file) => formData.append("reference_videos", file));
+  if ((references.videoAudios || []).some((file) => file)) {
+    (references.videos || []).forEach((_video, index) => {
+      const soundtrack = (references.videoAudios || [])[index];
+      formData.append(
+        "reference_video_audios",
+        soundtrack ?? new File([], ""),
+      );
+    });
+  }
+  (references.audios || []).forEach((file) => formData.append("reference_audios", file));
+
+  const response = await api.post("/generate/ref2vid", formData, {
     headers: { "Content-Type": "multipart/form-data" },
   });
   return response.data;

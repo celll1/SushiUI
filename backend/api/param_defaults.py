@@ -876,6 +876,41 @@ IMG2VID_DEFAULTS: Dict[str, Any] = dict(VIDEO_GEN_DEFAULTS)
 IMG2VID_DEFAULTS["last_frame_image"] = None
 
 # ---------------------------------------------------------------------------
+# Omni-reference video (POST /generate/ref2vid — MiniMax-H3 `ref2va` only)
+# ---------------------------------------------------------------------------
+# Same parameter set as txt2vid plus the reference uploads: up to 9 images, 3
+# videos (each optionally carrying its own soundtrack) and 3 audio clips, at
+# most 12 files in total. Those limits are the released checkpoint's, not this
+# repo's, and are validated server-side.
+#
+# Unlike img2vid this endpoint serves ONE architecture: LTX-2.3 has no
+# omni-reference workflow at all, and MiniMax-H3 serves it from a SECOND
+# transformer partition (`transformer_ref`), so a request needs the ref2va
+# checkpoint loaded rather than merely a video model.
+REF2VID_DEFAULTS: Dict[str, Any] = dict(VIDEO_GEN_DEFAULTS)
+# How an IMAGE reference is sized before it is encoded, which is a real
+# cost/fidelity choice rather than a preference, because a reference's rows ride
+# through every sampling step:
+#
+#   "max"   - the released recipe (the diffusers `minimax-h3` setup block): each
+#             image is put on a short edge of its OWN, 2048 for the released
+#             checkpoint, upscaling included and with no area cap. An image
+#             reference never binds the generated geometry.
+#   "match" - ComfyUI's `ref_image_size="match"`: an aspect-preserving scale,
+#             DOWN ONLY, to the generation's pixel area. Fewer reference rows,
+#             so a shorter packed sequence.
+#
+# Video references are not affected: they are always put on the canvas their own
+# aspect ratio resolves to, by the same rule the generated video follows.
+REF2VID_DEFAULTS["reference_image_size"] = "max"
+# The uploaded FILENAMES of the references, recorded in `params` (and on the
+# gallery row) in packed order, exactly as img2vid records `last_frame_image` --
+# the bytes never go near the database.
+REF2VID_DEFAULTS["reference_images"] = None
+REF2VID_DEFAULTS["reference_videos"] = None
+REF2VID_DEFAULTS["reference_audios"] = None
+
+# ---------------------------------------------------------------------------
 # Video temporal outpaint (POST /generate/outpaint/video — LTX-2.3)
 # ---------------------------------------------------------------------------
 # Places a (optionally trimmed) input clip at a latent-frame offset inside a

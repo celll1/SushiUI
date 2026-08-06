@@ -202,6 +202,29 @@ def _temporal_position_grid(num_latent_frames: int, origin: float) -> torch.Tens
     return origin + torch.cat([torch.zeros(1, dtype=torch.float64), spans[:-1].cumsum(0)])
 
 
+def _fill_audio_positions(
+    position_ids: torch.Tensor,
+    rows: slice,
+    num_audio_latents: int,
+    rotary_time: float,
+    width_grid: torch.Tensor,
+) -> None:
+    """Place one CHANNEL-MAJOR audio block on the rotary grid.
+
+    Audio rows share the video's clock (one unit per latent: 40 latents/s ==
+    24 fps * 5/3), carry no height coordinate, and are pinned to the two
+    extremes of the width grid of THEIR OWN block -- the target grid for the
+    generated rows and for a standalone audio reference, the video's own grid
+    for a video reference's soundtrack.
+    """
+    time = rotary_time + torch.arange(num_audio_latents, dtype=torch.float64)
+    position_ids[rows, 0] = time.repeat(AUDIO_CHANNELS)
+    position_ids[rows, 2] = torch.cat([
+        torch.full((num_audio_latents,), float(width_grid[0]), dtype=torch.float64),
+        torch.full((num_audio_latents,), float(width_grid[-1]), dtype=torch.float64),
+    ])
+
+
 def build_packed_layout(
     num_text_tokens: int,
     num_latent_frames: int,
@@ -261,15 +284,9 @@ def build_packed_layout(
         position_ids[rows, 0] = anchor_time
         position_ids[rows, 1:] = frame_grid
 
-    # Audio rows are CHANNEL-MAJOR and share the video's rotary clock (one unit
-    # per latent: 40 latents/s == 24 fps * 5/3). They carry no height coordinate
-    # and are pinned to the two extremes of the width grid, one per channel.
-    audio_time = float(num_text_tokens) + torch.arange(num_audio_latents, dtype=torch.float64)
-    position_ids[audio_start:video_start, 0] = audio_time.repeat(AUDIO_CHANNELS)
-    position_ids[audio_start:video_start, 2] = torch.cat([
-        torch.full((num_audio_latents,), float(width_grid[0]), dtype=torch.float64),
-        torch.full((num_audio_rows - num_audio_latents,), float(width_grid[-1]), dtype=torch.float64),
-    ])
+    # Audio rows are CHANNEL-MAJOR and share the video's rotary clock.
+    _fill_audio_positions(position_ids, slice(audio_start, video_start), num_audio_latents,
+                          float(num_text_tokens), width_grid)
 
     video_position_ids = torch.empty(num_latent_frames, rows_per_frame, 3, dtype=torch.float64)
     video_position_ids[:, :, 0] = _temporal_position_grid(num_latent_frames, float(num_text_tokens))[:, None]
@@ -306,6 +323,170 @@ def build_packed_layout(
         "text_indices": text_indices,
         "num_condition_video_rows": num_condition_rows,
         "num_condition_audio_rows": 0,
+        "rows_per_frame": rows_per_frame,
+    }
+    if device is not None:
+        for key in ("position_ids", "token_tags", "video_indices", "audio_indices", "text_indices"):
+            layout[key] = layout[key].to(device)
+    return layout
+
+
+def build_ref2va_packed_layout(
+    text_token_tags: Sequence[int],
+    reference_blocks: Sequence[Tuple[str, bool]],
+    condition_latent_shapes: Sequence[Tuple[int, int, int]],
+    reference_audio_row_counts: Sequence[int],
+    num_latent_frames: int,
+    latent_height: int,
+    latent_width: int,
+    num_audio_latents: int,
+    *,
+    patch_size: Tuple[int, int, int] = (1, 2, 2),
+    device: Optional[torch.device | str] = None,
+) -> Dict[str, Any]:
+    """The ``[text | reference blocks | target audio | target video]`` layout.
+
+    Port of ``MiniMaxH3Ref2VAPrepareLayoutStep.build_ref2va_packed_sequence``.
+    Returns the same dict shape as :func:`build_packed_layout`, so the denoise
+    loop, the timestep plan and the decode path do not branch on the workflow.
+
+    WHERE THE REFERENCE ROWS SIT, AND WHY IT MATTERS THAT THEY SIT THERE
+    -------------------------------------------------------------------
+    One block per reference, in REQUEST order, between the text span and the
+    generated rows -- never after them. Within a block:
+
+    * an image reference contributes ``ref_video_rows`` and advances the shared
+      rotary clock by exactly 1.0 (a single integer slot, NOT a latent frame's
+      5/3 units);
+    * a standalone audio reference contributes channel-major audio rows on the
+      TARGET width grid and advances the clock by its latent count;
+    * a video reference contributes its soundtrack's audio rows FIRST and its
+      video rows second, both from the same clock origin (so the two are rotary-
+      aligned exactly as the generated audio and video are) on the video's own
+      width grid, and advances the clock by the larger of the two spans.
+
+    The generated audio and video rows then start from the origin the reference
+    blocks left behind. Because every reference row precedes every generated row
+    of its own modality, ``video_indices`` and ``audio_indices`` both list their
+    conditioning rows FIRST -- which is the invariant ``build_row_timesteps``
+    and the denoise loop rely on to pin the anchors and write only what is
+    generated. Nothing else about the loop changes for ``ref2va``.
+
+    Args:
+        text_token_tags: per-row modality tag of the presentation's text span
+            (text rows are 1; a reference's vision block is tagged 0/video).
+        reference_blocks: ``(kind, has_audio)`` per reference in packed order,
+            where kind is ``"image"``, ``"video"`` or ``"audio"``. ``has_audio``
+            is what decides whether a VIDEO reference reserves soundtrack rows
+            ahead of its video rows; it is always true for an audio reference
+            and always false for an image one.
+        condition_latent_shapes: ``(T_lat, H_lat, W_lat)`` per VISUAL reference,
+            in packed order -- the shape the VAE actually produced, so the
+            layout and the encoded conditioning can never disagree.
+        reference_audio_row_counts: packed row count per AUDIO-BEARING
+            reference, in packed order.
+    """
+    _, patch_h, patch_w = patch_size
+    text_tags = torch.as_tensor(list(text_token_tags), dtype=torch.long)
+    num_text_tokens = int(text_tags.numel())
+    rows_per_frame = (latent_height // patch_h) * (latent_width // patch_w)
+    num_target_video_rows = num_latent_frames * rows_per_frame
+    num_target_audio_rows = num_audio_latents * AUDIO_CHANNELS
+
+    visual_geometry = iter(tuple(shape) for shape in condition_latent_shapes)
+    audio_row_counts = iter(int(count) for count in reference_audio_row_counts)
+    num_condition_video_rows = sum(
+        frames * (height // patch_h) * (width // patch_w)
+        for frames, height, width in (tuple(shape) for shape in condition_latent_shapes))
+    num_condition_audio_rows = sum(int(count) for count in reference_audio_row_counts)
+    sequence_length = (num_text_tokens + num_condition_video_rows + num_condition_audio_rows
+                       + num_target_audio_rows + num_target_video_rows)
+
+    position_ids = torch.zeros(sequence_length, 3, dtype=torch.float64)
+    position_ids[:num_text_tokens, 0] = torch.arange(num_text_tokens, dtype=torch.float64)
+    target_frame_grid, target_width_grid = _frame_position_grid(
+        latent_height, latent_width, patch_h, patch_w)
+
+    video_index_blocks: List[torch.Tensor] = []
+    audio_index_blocks: List[torch.Tensor] = []
+    cursor = num_text_tokens
+    rotary_time = float(num_text_tokens)
+    for kind, has_audio in reference_blocks:
+        if kind == "image":
+            frames, height, width = next(visual_geometry)
+            num_rows = frames * (height // patch_h) * (width // patch_w)
+            rows = slice(cursor, cursor + num_rows)
+            cursor = rows.stop
+            video_index_blocks.append(torch.arange(rows.start, rows.stop))
+            frame_grid, _ = _frame_position_grid(height, width, patch_h, patch_w)
+            position_ids[rows, 0] = rotary_time
+            position_ids[rows, 1:] = frame_grid.repeat(frames, 1)
+            rotary_time += 1.0
+        elif kind == "audio":
+            num_rows = next(audio_row_counts)
+            rows = slice(cursor, cursor + num_rows)
+            cursor = rows.stop
+            audio_index_blocks.append(torch.arange(rows.start, rows.stop))
+            reference_audio_latents = num_rows // AUDIO_CHANNELS
+            _fill_audio_positions(position_ids, rows, reference_audio_latents, rotary_time,
+                                  target_width_grid)
+            rotary_time += float(reference_audio_latents)
+        elif kind == "video":
+            num_audio_rows = next(audio_row_counts) if has_audio else 0
+            frames, height, width = next(visual_geometry)
+            num_video_rows = frames * (height // patch_h) * (width // patch_w)
+            audio_rows = slice(cursor, cursor + num_audio_rows)
+            video_rows = slice(audio_rows.stop, audio_rows.stop + num_video_rows)
+            cursor = video_rows.stop
+            if num_audio_rows:
+                audio_index_blocks.append(torch.arange(audio_rows.start, audio_rows.stop))
+            video_index_blocks.append(torch.arange(video_rows.start, video_rows.stop))
+
+            frame_grid, width_grid = _frame_position_grid(height, width, patch_h, patch_w)
+            reference_audio_latents = num_audio_rows // AUDIO_CHANNELS
+            if num_audio_rows:
+                _fill_audio_positions(position_ids, audio_rows, reference_audio_latents,
+                                      rotary_time, width_grid)
+            frame_time = _temporal_position_grid(frames, rotary_time)
+            position_ids[video_rows, 0] = frame_time.repeat_interleave(frame_grid.shape[0])
+            position_ids[video_rows, 1:] = frame_grid.repeat(frames, 1)
+            # SEQUENTIAL float64 sum, deliberately NOT the pairwise sum the
+            # `"last"` keyframe anchor uses: the reference implementation keeps
+            # both, one per call site, and the two differ in the last ulp from
+            # 16 latent frames onwards.
+            video_span = sum(
+                ROPE_FRAME_RESCALE * ROPE_FRAMES_PER_LATENT[index % len(ROPE_FRAMES_PER_LATENT)]
+                for index in range(frames))
+            rotary_time += max(float(reference_audio_latents), video_span)
+        else:
+            raise ValueError(f"A reference must be an 'image', a 'video' or an 'audio', got {kind!r}.")
+
+    audio_start = cursor
+    video_start = audio_start + num_target_audio_rows
+    _fill_audio_positions(position_ids, slice(audio_start, video_start), num_audio_latents,
+                          rotary_time, target_width_grid)
+    frame_time = _temporal_position_grid(num_latent_frames, rotary_time)
+    position_ids[video_start:, 0] = frame_time.repeat_interleave(target_frame_grid.shape[0])
+    position_ids[video_start:, 1:] = target_frame_grid.repeat(num_latent_frames, 1)
+
+    video_indices = torch.cat(video_index_blocks + [torch.arange(video_start, sequence_length)])
+    audio_indices = torch.cat(audio_index_blocks + [torch.arange(audio_start, video_start)])
+    text_indices = torch.arange(num_text_tokens)
+
+    token_tags = torch.empty(sequence_length, dtype=torch.long)
+    token_tags[text_indices] = text_tags
+    token_tags[audio_indices] = AUDIO_TAG
+    token_tags[video_indices] = VIDEO_TAG
+
+    layout: Dict[str, Any] = {
+        "sequence_length": sequence_length,
+        "position_ids": position_ids.to(torch.float32),
+        "token_tags": token_tags,
+        "video_indices": video_indices,
+        "audio_indices": audio_indices,
+        "text_indices": text_indices,
+        "num_condition_video_rows": num_condition_video_rows,
+        "num_condition_audio_rows": num_condition_audio_rows,
         "rows_per_frame": rows_per_frame,
     }
     if device is not None:
@@ -431,6 +612,42 @@ def encode_condition_images(
       the loader's fp16 VAE cast and would diverge silently if that cast ever
       changed, so it is written out here.
     """
+    return [
+        encode_visual_condition(
+            vae, np.asarray(image)[None],
+            latents_mean=latents_mean, latents_std=latents_std,
+            pixel_mean=pixel_mean, pixel_std=pixel_std,
+            device=device, encode_seed=encode_seed,
+        )
+        for image in images
+    ]
+
+
+@torch.no_grad()
+def encode_visual_condition(
+    vae,
+    frames: np.ndarray,
+    *,
+    latents_mean: Sequence[float],
+    latents_std: Sequence[float],
+    pixel_mean: Sequence[float],
+    pixel_std: Sequence[float],
+    device: torch.device | str = "cuda",
+    encode_seed: int = KEYFRAME_ENCODE_SEED,
+) -> torch.Tensor:
+    """One visual condition: ``uint8 [T, H, W, 3]`` -> ``[1, 24, T_lat, h, w]``.
+
+    The single recipe behind BOTH conditioning paths -- an ``fl2va`` keyframe
+    (``T == 1``) and a ``ref2va`` image or video reference -- so the two cannot
+    drift apart. ``T == 1`` goes through the SPATIAL encoder alone (the vendored
+    ``_encode`` special-cases it and returns exactly one latent frame); a frame
+    stack goes through the temporal chunking, which is what turns ``17n + 5``
+    frames into ``5n + 2`` latent frames.
+
+    See :func:`encode_condition_images` for the two easily-dropped steps of the
+    released recipe this implements (the seeded posterior SAMPLE and the float16
+    round trip) and the two pixel/latent conventions it owes the VAE.
+    """
     torch_device = torch.device(device)
     vae_dtype = next(vae.parameters()).dtype
     pix_mean = torch.tensor(list(pixel_mean), device=torch_device).view(1, -1, 1, 1, 1)
@@ -438,21 +655,17 @@ def encode_condition_images(
     mean = torch.tensor(list(latents_mean), device=torch_device).view(1, -1, 1, 1, 1)
     std = torch.tensor(list(latents_std), device=torch_device).view(1, -1, 1, 1, 1)
 
-    latents: List[torch.Tensor] = []
-    for image in images:
-        pixels = torch.from_numpy(np.ascontiguousarray(image)).to(torch_device, torch.float32)
-        # [H, W, 3] -> [1, 3, 1, H, W], the 5-D single-frame clip shape.
-        pixels = pixels.permute(2, 0, 1)[None, :, None] / 255.0
-        pixels = (pixels - pix_mean) / pix_std
-        posterior = vae.encode(pixels.to(vae_dtype), return_dict=True).latent_dist
-        # A CPU generator against CUDA parameters is deliberate and is what
-        # upstream does: `randn_tensor` draws on the generator's device and moves
-        # the result, so the sample is identical on either device.
-        latent = posterior.sample(
-            generator=torch.Generator().manual_seed(int(encode_seed)))
-        latent = latent.to(torch.float16).float()
-        latents.append((latent - mean) / std)
-    return latents
+    pixels = torch.from_numpy(np.ascontiguousarray(frames)).to(torch_device, torch.float32)
+    # [T, H, W, 3] -> [1, 3, T, H, W], the 5-D clip shape the VAE takes.
+    pixels = pixels.permute(3, 0, 1, 2)[None] / 255.0
+    pixels = (pixels - pix_mean) / pix_std
+    posterior = vae.encode(pixels.to(vae_dtype), return_dict=True).latent_dist
+    # A CPU generator against CUDA parameters is deliberate and is what upstream
+    # does: `randn_tensor` draws on the generator's device and moves the result,
+    # so the sample is identical on either device.
+    latent = posterior.sample(generator=torch.Generator().manual_seed(int(encode_seed)))
+    latent = latent.to(torch.float16).float()
+    return (latent - mean) / std
 
 
 def build_condition_rows(
@@ -533,13 +746,178 @@ def encode_prompt(
     if max_tokens is not None and len(token_ids) > max_tokens:
         token_ids = token_ids[:max_tokens]
 
-    input_ids = torch.tensor([token_ids], dtype=torch.long, device=device)
-    sequence_length = input_ids.shape[1]
+    hidden = encode_presentation(text_encoder, token_ids, device=device, dtype=dtype, layer=layer)
+    return hidden, len(token_ids)
 
-    hidden = language_model.embed_tokens(input_ids.cpu()).to(device, torch.float32)
-    position_ids = torch.arange(sequence_length, device=device).unsqueeze(0)
-    # Qwen3-VL's rotary expands a 2-D `position_ids` to its three mrope
-    # sections, so a text-only presentation gets ordinary RoPE.
+
+def _gpu_module_params(module, device) -> Dict[str, torch.Tensor]:
+    """One module's parameters and buffers, on ``device`` in float32.
+
+    The dict `torch.func.functional_call` runs the module with. Building it
+    instead of moving the module is the whole point (see the module docstring):
+    the CPU tensors stay attached to the memory-mapped file, so a 48 GiB encoder
+    never materialises an anonymous copy of itself.
+    """
+    gpu_params = {name: tensor.to(device, torch.float32)
+                  for name, tensor in module.named_parameters()}
+    gpu_params.update({
+        # A non-float buffer (a mask, an index) must keep its dtype.
+        name: tensor.to(device, torch.float32) if tensor.is_floating_point() else tensor.to(device)
+        for name, tensor in module.named_buffers()
+    })
+    return gpu_params
+
+
+@torch.no_grad()
+def _encode_vision_blocks(
+    text_encoder,
+    vision_inputs: Dict[str, torch.Tensor],
+    device: torch.device | str,
+) -> Dict[str, Any]:
+    """Run the Qwen3-VL vision tower over a presentation's blocks.
+
+    Returns ``{"image_embeds", "video_embeds", "image_deepstack",
+    "video_deepstack"}`` (each ``None`` when that modality is absent). The tower
+    is 1.1 GB of the 48 GiB file (MEASURED) and is called through
+    ``functional_call`` for the same reason the decoder layers are: moving it
+    would detach its weights from the file mapping for the rest of the process.
+
+    ``deepstack`` is not optional decoration. Qwen3-VL feeds three intermediate
+    vision-tower feature maps back into the FIRST decoder layers at the visual
+    rows (``Qwen3VLTextModel._deepstack_process``); a presentation encoded
+    without them is a different conditioning, silently.
+    """
+    visual = text_encoder.model.visual
+    merge_area = visual.spatial_merge_size ** 2
+    gpu_params = _gpu_module_params(visual, device)
+    result: Dict[str, Any] = {"image_embeds": None, "video_embeds": None,
+                              "image_deepstack": None, "video_deepstack": None}
+    try:
+        for prefix, grid_key, out_key, deep_key in (
+                ("pixel_values", "image_grid_thw", "image_embeds", "image_deepstack"),
+                ("pixel_values_videos", "video_grid_thw", "video_embeds", "video_deepstack")):
+            pixels = vision_inputs.get(prefix)
+            if pixels is None:
+                continue
+            grid = vision_inputs[grid_key].to(device)
+            output = torch.func.functional_call(
+                visual, gpu_params,
+                args=(pixels.to(device, torch.float32),),
+                kwargs=dict(grid_thw=grid),
+            )
+            merged = output.pooler_output if hasattr(output, "pooler_output") else output[1]
+            deepstack = output.deepstack_features if hasattr(output, "deepstack_features") else output[2]
+            # `get_image_features` splits the merged rows per image/video and
+            # then concatenates them again; the split exists for callers that
+            # need per-item embeddings, so the concatenation is the same tensor.
+            split_sizes = (grid.prod(-1) // merge_area).tolist()
+            if sum(split_sizes) != merged.shape[0]:  # pragma: no cover - shape contract
+                raise RuntimeError(
+                    f"The Qwen3-VL vision tower produced {merged.shape[0]} merged row(s) where its "
+                    f"grid says {sum(split_sizes)}.")
+            result[out_key] = merged
+            result[deep_key] = deepstack
+    finally:
+        del gpu_params
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    return result
+
+
+@torch.no_grad()
+def encode_presentation(
+    text_encoder,
+    token_ids: Sequence[int],
+    *,
+    vision_inputs: Optional[Dict[str, torch.Tensor]] = None,
+    device: torch.device | str = "cuda",
+    dtype: torch.dtype = torch.bfloat16,
+    layer: int = TEXT_ENCODER_LAYER,
+) -> torch.Tensor:
+    """The layer-``layer`` hidden state of one tokenized presentation.
+
+    ``[1, S, 5120]`` on the CPU. This is MiniMax-H3's conditioning for every
+    workflow: a ``t2va`` presentation is the prompt verbatim, and an ``fl2va`` /
+    ``ref2va`` one additionally carries a label and a vision block per keyframe
+    or reference (``vision_inputs`` holds those blocks' pixels by the
+    conditioner's own parameter names). The read is WITHOUT the final norm --
+    the released file is truncated to exactly ``layer`` layers and the loader
+    installs an ``nn.Identity`` in place of that norm.
+
+    THREE THINGS THE VISION PATH OWES ``Qwen3VLModel.forward`` and that a
+    hand-written layer loop drops by default:
+
+    1. the merged vision rows are scattered into the embeddings at the
+       modality's placeholder tokens (``<|image_pad|>`` / ``<|video_pad|>``);
+    2. **deepstack** -- three intermediate tower feature maps are ADDED to the
+       visual rows after each of the first decoder layers;
+    3. **mrope** -- with a vision block present the position ids are the 3-D
+       ``(t, h, w)`` grid ``get_rope_index`` builds, not ``arange``.
+
+    Each decoder layer's parameters are materialised on the GPU in float32 and
+    the layer is called through ``torch.func.functional_call``; the CPU weights
+    are never touched, so they stay memory-mapped (73 GB vs 49.8 GB peak RSS,
+    K0.7 — see the module docstring).
+    """
+    model = text_encoder.model
+    language_model = model.language_model
+    config = text_encoder.config
+    token_list = list(token_ids)
+    if not token_list:
+        raise ValueError("MiniMax-H3 needs a non-empty presentation to condition on.")
+
+    input_ids = torch.tensor([token_list], dtype=torch.long)
+    sequence_length = input_ids.shape[1]
+    hidden = language_model.embed_tokens(input_ids).to(device, torch.float32)
+
+    visual_mask = None
+    deepstack_embeds = None
+    if vision_inputs:
+        vision = _encode_vision_blocks(text_encoder, vision_inputs, device)
+        device_ids = input_ids.to(device)
+        image_mask = (device_ids == config.image_token_id) if vision["image_embeds"] is not None else None
+        video_mask = (device_ids == config.video_token_id) if vision["video_embeds"] is not None else None
+        for mask, embeds, name in ((image_mask, vision["image_embeds"], "image"),
+                                   (video_mask, vision["video_embeds"], "video")):
+            if mask is None:
+                continue
+            if int(mask.sum()) != embeds.shape[0]:
+                raise RuntimeError(
+                    f"MiniMax-H3's presentation reserves {int(mask.sum())} {name} placeholder "
+                    f"token(s) but the vision tower produced {embeds.shape[0]} row(s).")
+            hidden = hidden.masked_scatter(mask[..., None].expand_as(hidden), embeds.to(hidden.dtype))
+
+        # Deepstack, joined exactly as `Qwen3VLModel.forward` joins it when both
+        # modalities are present: one row block per visual position, in sequence
+        # order, with each modality writing its own rows.
+        if image_mask is not None and video_mask is not None:
+            visual_mask = image_mask | video_mask
+            image_joint, video_joint = image_mask[visual_mask], video_mask[visual_mask]
+            deepstack_embeds = []
+            for image_embed, video_embed in zip(vision["image_deepstack"], vision["video_deepstack"]):
+                joint = image_embed.new_zeros(int(visual_mask.sum()), image_embed.shape[-1])
+                joint[image_joint] = image_embed
+                joint[video_joint] = video_embed
+                deepstack_embeds.append(joint)
+        elif image_mask is not None:
+            visual_mask, deepstack_embeds = image_mask, vision["image_deepstack"]
+        elif video_mask is not None:
+            visual_mask, deepstack_embeds = video_mask, vision["video_deepstack"]
+
+        # mrope: the (t, h, w) grid, computed by the conditioner's own helper so
+        # the vision blocks' spatial layout is the one it was trained with.
+        position_ids, _deltas = model.get_rope_index(
+            input_ids,
+            vision_inputs.get("image_grid_thw"),
+            vision_inputs.get("video_grid_thw"),
+            attention_mask=torch.ones_like(input_ids),
+        )
+        position_ids = position_ids.to(device)
+    else:
+        # Qwen3-VL's rotary expands a 2-D `position_ids` to its three mrope
+        # sections, so a text-only presentation gets ordinary RoPE.
+        position_ids = torch.arange(sequence_length, device=device).unsqueeze(0)
+
     # The rotary module is moved for the length of this call and PUT BACK: it is
     # the one submodule this function would otherwise mutate, and leaving it on
     # the GPU makes any later CPU-side forward through the same object fail on a
@@ -552,31 +930,31 @@ def encode_prompt(
     finally:
         if rotary_device is not None:
             rotary.to(rotary_device)
+    # The 1-D positions the attention (and the causal mask) use: mrope's three
+    # sections share one text clock, which is `position_ids[0]`.
+    text_position_ids = position_ids[0] if position_ids.ndim == 3 else position_ids
     causal_mask = torch.full((1, 1, sequence_length, sequence_length), float("-inf"),
                              device=device, dtype=torch.float32).triu(1)
 
-    for decoder_layer in language_model.layers:
-        gpu_params = {name: tensor.to(device, torch.float32)
-                      for name, tensor in decoder_layer.named_parameters()}
-        gpu_params.update({
-            # A non-float buffer (a mask, an index) must keep its dtype.
-            name: tensor.to(device, torch.float32) if tensor.is_floating_point() else tensor.to(device)
-            for name, tensor in decoder_layer.named_buffers()
-        })
+    for index, decoder_layer in enumerate(language_model.layers):
+        gpu_params = _gpu_module_params(decoder_layer, device)
         result = torch.func.functional_call(
             decoder_layer, gpu_params,
             kwargs=dict(hidden_states=hidden, position_embeddings=(cos, sin),
-                        attention_mask=causal_mask, position_ids=position_ids,
+                        attention_mask=causal_mask, position_ids=text_position_ids,
                         past_key_values=None, use_cache=False),
         )
         hidden = result[0] if isinstance(result, tuple) else result
+        if deepstack_embeds is not None and index < len(deepstack_embeds):
+            hidden = hidden.clone()
+            hidden[visual_mask, :] = hidden[visual_mask, :] + deepstack_embeds[index].to(hidden.dtype)
         del gpu_params
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
     if not torch.isfinite(hidden).all():
         raise RuntimeError("The MiniMax-H3 text encoder produced non-finite hidden states.")
-    return hidden.to("cpu", dtype), sequence_length
+    return hidden.to("cpu", dtype)
 
 
 # --------------------------------------------------------------------------

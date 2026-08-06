@@ -2742,6 +2742,44 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                    "model to use /generate/img2vid.",
         )
 
+    def generate_ref2vid(self, params: Dict[str, Any], references, progress_callback=None,
+                         step_callback=None):
+        """Generate a video from omni-references (MiniMax-H3 `ref2va` only).
+
+        Args:
+            params: Generation parameters (see REF2VID_DEFAULTS, resolved
+                against the loaded arch's overlay by the route).
+            references: `core.models.minimax_h3.h3_references.MiniMaxH3Reference`
+                list, IN THE ORDER THE MODEL READS THEM -- the order labels the
+                references in the prompt presentation and lays them out on the
+                packed sequence's rotary clock.
+            progress_callback: Called as (step, total_steps) at each denoise step.
+            step_callback: Per-step latent preview hook, exactly as in
+                generate_txt2vid.
+
+        Returns:
+            tuple: (frames, audio, audio_sample_rate, actual_seed) -- identical
+            contract to generate_txt2vid.
+
+        Raises:
+            ValidationError: if the loaded model is not MiniMax-H3. There is no
+                second architecture to dispatch to: LTX-2.3 has no
+                omni-reference workflow, which is why this endpoint is not one
+                of the two-architecture video routes.
+        """
+        if self.is_minimax_h3_model:
+            return self._generate_ref2vid_minimax_h3(
+                params, references, progress_callback=progress_callback,
+                step_callback=step_callback)
+
+        from api.error_handlers import ValidationError
+        raise ValidationError(
+            "Reference-to-video generation requires a MiniMax-H3 ref2va model",
+            detail="The currently loaded model is not MiniMax-H3. Omni-reference conditioning "
+                   "(up to 9 images, 3 videos and 3 audio clips in one packed sequence) is a "
+                   "MiniMax-H3 ref2va workflow; no other architecture in this repo implements it.",
+        )
+
     def generate_vid_outpaint(
         self,
         params: Dict[str, Any],

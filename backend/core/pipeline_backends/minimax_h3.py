@@ -354,6 +354,37 @@ class MiniMaxH3Mixin:
             params, keyframes=tuple(keyframes), label="img2vid",
             progress_callback=progress_callback, step_callback=step_callback)
 
+    def _generate_ref2vid_minimax_h3(
+        self,
+        params: Dict[str, Any],
+        references,
+        progress_callback: Optional[Callable] = None,
+        step_callback: Optional[Callable] = None,
+    ):
+        """Omni-reference generation with MiniMax-H3 (``ref2va``).
+
+        ``references`` is a sequence of
+        ``core.models.minimax_h3.h3_references.MiniMaxH3Reference`` **in the
+        order the model should read them**: that order labels them in the prompt
+        presentation (``<Picture i>`` / ``<Audio j>`` / ``<Video k>``) and lays
+        them out on the packed sequence's shared rotary clock, so a different
+        order is a different request. Nothing here sorts or regroups them.
+
+        THIS NEEDS THE ``ref2va`` TRANSFORMER, and refuses rather than running on
+        the other one. The two released single files are structurally identical
+        (same config, byte-identical size, no distinguishing key), so a mismatch
+        cannot be detected from the weights and would simply produce a bad video:
+        reference conditioning is a trained behaviour of ``transformer_ref``, and
+        the ``fl2va`` partition was never trained to read reference rows.
+
+        Same return contract as ``_generate_txt2vid_minimax_h3``.
+        """
+        if not references:
+            raise RuntimeError("ref2vid requires at least one reference")
+        return self._generate_minimax_h3(
+            params, references=tuple(references), label="ref2vid",
+            progress_callback=progress_callback, step_callback=step_callback)
+
     def _generate_vidoutpaint_minimax_h3(
         self,
         params: Dict[str, Any],
@@ -685,27 +716,52 @@ class MiniMaxH3Mixin:
         params: Dict[str, Any],
         *,
         keyframes: Sequence[Tuple[str, Any]] = (),
+        references: Sequence[Any] = (),
         label: str = "txt2vid",
         progress_callback: Optional[Callable] = None,
         step_callback: Optional[Callable] = None,
     ):
-        """The one MiniMax-H3 generation path, with 0-2 visual conditions.
+        """The one MiniMax-H3 generation path, for all three workflows.
 
         ``keyframes`` is a sequence of ``(anchor, PIL.Image)`` in PACKED ORDER,
         where anchor is ``"first"`` or ``"last"``. Empty is ``t2va``; one or two
-        entries is ``fl2va``. Nothing else about the run differs between the two
-        workflows — same layout builder, same draw order, same loop — which is
-        why they share this function rather than having one copy each.
+        entries is ``fl2va``.
+
+        ``references`` is a ``ref2va`` request's reference list, also in packed
+        order (see ``_generate_ref2vid_minimax_h3``). It is mutually exclusive
+        with ``keyframes``: the released ``ref2va`` partition has no keyframe
+        presentation, and the ``fl2va`` one has no reference rows.
+
+        What actually differs between the three is small and local — which
+        presentation the conditioner reads, what gets VAE-encoded as
+        conditioning, and which layout builder lays the rows out. The draw
+        order, the packed denoise loop, the offload sequencing and the decode
+        are ONE implementation, which is why they share this function rather
+        than having a copy each.
 
         Returns ``(frames, audio, audio_sample_rate, actual_seed)`` — see the
         module docstring.
         """
         from core.models.minimax_h3 import h3_pipeline_ops as ops
+        from core.models.minimax_h3 import h3_references as refs
         from core.models.minimax_h3.loader import minimax_h3_latent_frames
 
         components = getattr(self, "minimax_h3_components", None)
         if not components:
             raise RuntimeError("MiniMax-H3 components are not loaded. Load a MiniMax-H3 model first.")
+        if keyframes and references:
+            raise RuntimeError(
+                "MiniMax-H3 conditions on keyframes (fl2va) or on references (ref2va), never both: "
+                "they are two different transformer partitions with two different presentations.")
+        if references and (components.get("variant") or "") != "ref2va":
+            raise RuntimeError(
+                f"ref2vid needs the MiniMax-H3 ref2va transformer, but the loaded checkpoint is "
+                f"{components.get('variant') or 'an unidentified variant'} "
+                f"({components.get('dit_path')}). Load "
+                f"diffusion_models/minimax_h3_ref2va_pruned_fp8_scaled.safetensors -- reference "
+                f"conditioning is a trained behaviour of that partition alone, and the two files "
+                f"are otherwise indistinguishable, so running it here would silently produce a bad "
+                f"video rather than fail.")
 
         device = "cuda" if torch.cuda.is_available() else "cpu"
         torch_device = torch.device(device)
@@ -754,11 +810,32 @@ class MiniMaxH3Mixin:
             for index, (_anchor, image) in enumerate(keyframes)
         ]
 
+        # ---- ref2va: normalise the references onto the model's own rates and
+        # resolutions FIRST. Everything downstream reads the normalised media:
+        # the presentation labels it, the VAEs encode it, and the layout is
+        # built from the shapes those encodes produce.
+        normalized_references: list = []
+        if references:
+            image_canvas = None
+            reference_image_size = str(params.get("reference_image_size")
+                                       or defaults.get("reference_image_size", "max")).lower()
+            if reference_image_size == "match":
+                image_canvas = (height, width)
+            normalized_references = refs.normalize_references(
+                references,
+                num_frames=num_frames,
+                fps=float(components.get("fps", 24.0)),
+                audio_sample_rate=int(components.get("audio_sample_rate", 32000)),
+                image_canvas=image_canvas,
+            )
+
         print(f"[MiniMax-H3] {label}: {width}x{height} num_frames={num_frames} "
               f"(latent {latent_frames}x{latent_height}x{latent_width}, "
               f"{num_audio_latents} audio latents/ch) steps={num_inference_steps} "
               f"seed={seed} audio={audio_enable} "
-              f"conditions={list(anchors) if anchors else 'none (t2va)'}")
+              f"conditions={list(anchors) if anchors else 'none (t2va)'}"
+              + (f" references=[{refs.describe_references(normalized_references)}]"
+                 if normalized_references else ""))
 
         if torch.cuda.is_available():
             torch.cuda.reset_peak_memory_stats()
@@ -772,79 +849,151 @@ class MiniMaxH3Mixin:
                 "MiniMax-H3 is missing its text encoder or tokenizer, so a prompt cannot be "
                 "encoded. Load the model with its text_encoders/ and official/tokenizer/ trees.")
         encode_start = time.perf_counter()
+        text_token_tags = None
         with generation_timer.phase("text_encode"):
-            prompt_embeds_cpu, num_text_tokens = ops.encode_prompt(
-                text_encoder, tokenizer, prompt, device=device,
-                dtype=torch.bfloat16, layer=ops.TEXT_ENCODER_LAYER,
-            )
+            if normalized_references:
+                # The ref2va PRESENTATION: a label and a vision block per
+                # reference, then the prompt verbatim. The vision blocks' rows
+                # are tagged VIDEO, not text, which is what the transformer's
+                # AdaLN modulation keys off -- so the tags travel with the
+                # embeddings into the layout.
+                token_ids, text_token_tags, vision_inputs = refs.build_ref2va_presentation(
+                    tokenizer, components.get("processor"), prompt, normalized_references,
+                    fps=float(components.get("fps", 24.0)),
+                    text_tag=ops.TEXT_TAG, video_tag=ops.VIDEO_TAG,
+                )
+                prompt_embeds_cpu = ops.encode_presentation(
+                    text_encoder, token_ids, vision_inputs=vision_inputs, device=device,
+                    dtype=torch.bfloat16, layer=ops.TEXT_ENCODER_LAYER,
+                )
+                num_text_tokens = len(token_ids)
+            else:
+                prompt_embeds_cpu, num_text_tokens = ops.encode_prompt(
+                    text_encoder, tokenizer, prompt, device=device,
+                    dtype=torch.bfloat16, layer=ops.TEXT_ENCODER_LAYER,
+                )
         self._minimax_h3_empty_cache()
         print(f"[MiniMax-H3] prompt encoded: {num_text_tokens} token(s) in "
               f"{time.perf_counter() - encode_start:.1f}s "
               f"(peak VRAM {self._minimax_h3_peak_vram():.2f} GB)")
 
-        # ---- Layout + noise (drawn on the generation device, before staging) ----
+        # ---- Visual (and, for ref2va, audio) conditioning: VAE-encode it ----
+        # On the VAEs, BEFORE the DiT is staged: the two do not fit together.
+        # The conditioning latents' shapes are what the layout reserves rows for
+        # and what the noise draws are sized from, so this runs first for every
+        # conditioned workflow.
         patch_size = tuple(components["transformer_config"]["patch_size"])
         latent_channels = int(components.get("latent_channels", 24))
-        layout = ops.build_packed_layout(
-            num_text_tokens, latent_frames, latent_height, latent_width, num_audio_latents,
-            patch_size=patch_size,
-            keyframe_anchors=anchors,
-            device=torch_device,
-        )
+        condition_latents: list = []
+        audio_condition_rows: list = []
+        if keyframe_pixels or normalized_references:
+            cond_start = time.perf_counter()
+            self._minimax_h3_move("vae", torch_device)
+            try:
+                if keyframe_pixels:
+                    condition_latents = ops.encode_condition_images(
+                        components["vae"], keyframe_pixels,
+                        latents_mean=components["latents_mean"],
+                        latents_std=components["latents_std"],
+                        pixel_mean=components["pixel_mean"],
+                        pixel_std=components["pixel_std"],
+                        device=device,
+                    )
+                else:
+                    condition_latents = refs.encode_reference_visuals(
+                        components["vae"], normalized_references,
+                        latents_mean=components["latents_mean"],
+                        latents_std=components["latents_std"],
+                        pixel_mean=components["pixel_mean"],
+                        pixel_std=components["pixel_std"],
+                        device=device,
+                    )
+            finally:
+                self._minimax_h3_move("vae", "cpu")
+                self._minimax_h3_empty_cache()
+            if any(getattr(reference, "has_audio", False) for reference in normalized_references):
+                # The audio VAE is 0.6 GB and is the ONLY component needed here,
+                # so it is staged on its own after the video VAE has gone back.
+                self._minimax_h3_move("audio_vae", torch_device)
+                try:
+                    audio_condition_rows = refs.encode_reference_audio_rows(
+                        components["audio_vae"], normalized_references,
+                        latents_mean=components["audio_latents_mean"],
+                        latents_std=components["audio_latents_std"],
+                        audio_latent_channels=int(components.get("audio_latent_channels", 32)),
+                        device=device,
+                    )
+                finally:
+                    self._minimax_h3_move("audio_vae", "cpu")
+                    self._minimax_h3_empty_cache()
+            print(f"[MiniMax-H3] conditioning encoded in "
+                  f"{time.perf_counter() - cond_start:.1f}s: "
+                  f"{len(condition_latents)} visual, {len(audio_condition_rows)} audio "
+                  f"(peak VRAM {self._minimax_h3_peak_vram():.2f} GB)")
+
+        # ---- Layout + noise (drawn on the generation device, before staging) ----
+        if normalized_references:
+            layout = ops.build_ref2va_packed_layout(
+                text_token_tags,
+                [(reference.kind, reference.has_audio) for reference in normalized_references],
+                [tuple(latent.shape[2:5]) for latent in condition_latents],
+                [rows.shape[0] for rows in audio_condition_rows],
+                latent_frames, latent_height, latent_width, num_audio_latents,
+                patch_size=patch_size,
+                device=torch_device,
+            )
+        else:
+            layout = ops.build_packed_layout(
+                num_text_tokens, latent_frames, latent_height, latent_width, num_audio_latents,
+                patch_size=patch_size,
+                keyframe_anchors=anchors,
+                device=torch_device,
+            )
         generator = torch.Generator(device=device).manual_seed(seed)
         # ONE draw per visual condition FIRST, at that condition's own latent
-        # shape, then the video noise, then the audio noise -- the recorded
-        # order (K0.6). A condition that is not drawn, or drawn later, changes
-        # the video for the same seed.
+        # shape (they do NOT share one on ref2va), then the video noise, then
+        # the audio noise -- the recorded order (K0.6). A condition that is not
+        # drawn, or drawn later, changes the video for the same seed. Reference
+        # SOUNDTRACKS take no draw at all: they condition clean.
         condition_noises, video_noise, audio_rows = ops.draw_noise(
             generator,
             video_latent_shape=(1, latent_channels, latent_frames, latent_height, latent_width),
             num_audio_latents=num_audio_latents,
-            condition_shapes=tuple(
-                (1, latent_channels, 1, latent_height, latent_width) for _ in anchors),
+            condition_shapes=tuple(tuple(latent.shape) for latent in condition_latents),
             device=device,
             audio_latent_channels=int(components.get("audio_latent_channels", 32)),
         )
         video_rows = ops.patchify_video_latents(video_noise, patch_size)[0]
         del video_noise
 
-        # ---- Visual conditioning (fl2va): VAE-encode the keyframes ----
-        # On the VIDEO VAE, before the DiT is staged: the two do not fit
-        # together, and this is a single-frame spatial encode (cheap) rather
-        # than the ViT decode at the end.
-        if keyframe_pixels:
-            cond_start = time.perf_counter()
-            self._minimax_h3_move("vae", torch_device)
-            try:
-                condition_latents = ops.encode_condition_images(
-                    components["vae"], keyframe_pixels,
-                    latents_mean=components["latents_mean"],
-                    latents_std=components["latents_std"],
-                    pixel_mean=components["pixel_mean"],
-                    pixel_std=components["pixel_std"],
-                    device=device,
-                )
-            finally:
-                self._minimax_h3_move("vae", "cpu")
-                self._minimax_h3_empty_cache()
+        if condition_latents:
             condition_rows = ops.build_condition_rows(
                 components["scheduler"], condition_latents, condition_noises,
                 patch_size=patch_size,
             ).to(video_rows.device, video_rows.dtype)
-            expected_rows = len(anchors) * layout["rows_per_frame"]
+            expected_rows = int(layout["num_condition_video_rows"])
             if condition_rows.shape[0] != expected_rows:
                 raise RuntimeError(
                     f"MiniMax-H3 conditioning produced {condition_rows.shape[0]} row(s) where the "
-                    f"packed layout reserves {expected_rows} -- the keyframe latents do not match "
-                    f"the generation canvas.")
+                    f"packed layout reserves {expected_rows} -- the conditioning latents do not "
+                    f"match the geometry the layout was built from.")
             # The conditioning rows LEAD the video block; the loop protects them
             # by never writing the first `num_condition_video_rows` entries.
             video_rows = torch.cat([condition_rows, video_rows], dim=0)
-            del condition_latents, condition_rows
-            print(f"[MiniMax-H3] conditioned on {len(anchors)} keyframe(s) {list(anchors)} in "
-                  f"{time.perf_counter() - cond_start:.1f}s "
-                  f"(peak VRAM {self._minimax_h3_peak_vram():.2f} GB)")
-        del condition_noises
+            del condition_rows
+        if audio_condition_rows:
+            reference_audio_rows = torch.cat(
+                [rows.to(audio_rows.device, audio_rows.dtype) for rows in audio_condition_rows])
+            expected_audio_rows = int(layout["num_condition_audio_rows"])
+            if reference_audio_rows.shape[0] != expected_audio_rows:
+                raise RuntimeError(
+                    f"MiniMax-H3 reference soundtracks pack into {reference_audio_rows.shape[0]} "
+                    f"row(s) where the packed layout reserves {expected_audio_rows}.")
+            # Same invariant on the audio side: reference rows lead, and the
+            # loop never writes them, so a soundtrack rides through at t = 1.0.
+            audio_rows = torch.cat([reference_audio_rows, audio_rows], dim=0)
+            del reference_audio_rows
+        del condition_latents, audio_condition_rows, condition_noises
 
         # ---- Phase 2: denoise (DiT resident) ----
         prompt_embeds = prompt_embeds_cpu.to(torch_device)

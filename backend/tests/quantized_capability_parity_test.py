@@ -604,6 +604,11 @@ _QUANTIZED_GEMM_ROUTES = frozenset({
     "/generate/inpaint/training-preview",
     "/generate/txt2vid",
     "/generate/img2vid",
+    # MiniMax-H3 omni-reference video. Serves ONE architecture, and that
+    # architecture is in QUANTIZED_LINEAR_ARCHS (the released DiT ships
+    # weight-only FP8, so 300 of its Linears are `Fp8Linear`), so both
+    # parameters govern modules this route really runs.
+    "/generate/ref2vid",
     "/generate/outpaint/video",
     # ACE-Step audio. These three were in the unquantized set below while
     # `acestep` was in neither tuple. It is now in BOTH: its loader swaps in

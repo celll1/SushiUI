@@ -2154,6 +2154,18 @@ class ModelLoader:
             print(f"[ModelLoader] Loading as Krea 2 (single-file)")
             return ModelLoader.load_krea2_from_path(file_path, torch.bfloat16)
 
+        # MiniMax-H3 DiT single file. Selecting the FILE rather than the tree is
+        # how the transformer VARIANT is chosen: MiniMax ships two partitions
+        # (`fl2va`, which serves txt2vid/img2vid/outpaint, and `ref2va`, which
+        # serves /generate/ref2vid) that share every other component and are
+        # otherwise indistinguishable -- same config, same byte size, no
+        # distinguishing key -- so the filename is the only thing that says
+        # which one this is. The loader walks up from the file to the tree and
+        # takes the remaining components from it.
+        if model_type == "minimax_h3":
+            print(f"[ModelLoader] Loading as MiniMax-H3 (DiT single file; variant selected by file)")
+            return ModelLoader.load_minimax_h3_from_path(file_path, torch.bfloat16)
+
         is_v_prediction = ModelLoader.detect_v_prediction(file_path)
 
         # Reconstruct the SD1.5 / SDXL pipeline (custom-arch aware). Shared with the

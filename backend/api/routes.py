@@ -68,6 +68,7 @@ from api.generation_utils import (
     apply_generation_timings,
     resolve_video_defaults,
     validate_video_geometry,
+    validate_video_steps,
 )
 from api.error_handlers import (
     GenerationError,
@@ -2452,6 +2453,12 @@ async def generate_txt2vid(
         # which needs the generation context started above; a raise from here is
         # still re-raised as a 4xx by the except clause below.
         validate_video_geometry(params, _vid_arch)
+        # Same place, same source (TemporalSpec): a step count the arch's
+        # scheduler cannot build a schedule from. It has to be checked HERE and
+        # not left to the sampler -- MiniMax-H3 raised for num_inference_steps=1
+        # only after a full text encode, turning a bad request into a 500 that
+        # cost tens of seconds.
+        validate_video_steps(params, _vid_arch)
 
         # VAE/TE overrides are unsupported on both video archs
         # (accepted-but-ignored). The plan drops them (arch gating) and
@@ -3271,6 +3278,11 @@ async def generate_img2vid(
             "num_frames must satisfy (num_frames - 1) % 8 == 0",
             detail=f"Got num_frames={num_frames}. Use values like 9, 17, ..., 121 (8k + 1).",
         )
+    # Spec-driven step-count floor (TemporalSpec.min_inference_steps). A no-op
+    # for LTX-2.3, which is the only arch this endpoint dispatches today (a
+    # loaded MiniMax-H3 is refused just below); it is wired here so the check
+    # lands with the arch rather than after the next arch is dispatched.
+    validate_video_steps(params, (pipeline_manager.current_model_info or {}).get("type"))
 
     # A loaded MiniMax-H3 is a VIDEO model this endpoint cannot dispatch yet;
     # say so, rather than "no LTX-2.3 model loaded".
@@ -3506,6 +3518,11 @@ async def generate_outpaint_video(
             "frame_rate must be > 0",
             detail=f"Got frame_rate={frame_rate}.",
         )
+    # Spec-driven step-count floor (TemporalSpec.min_inference_steps). `params`
+    # is not built until after the upload is decoded, so the value is passed on
+    # its own. A no-op for LTX-2.3, the only arch this endpoint dispatches today.
+    validate_video_steps({"num_inference_steps": num_inference_steps},
+                         (pipeline_manager.current_model_info or {}).get("type"))
     if outpaint_video_audio_mode not in ("regenerate", "preserve_input"):
         raise CustomValidationError(
             "Invalid outpaint_video_audio_mode",

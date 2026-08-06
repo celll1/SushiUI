@@ -1087,6 +1087,52 @@ def resolve_video_defaults(params: Dict[str, Any], provided_keys, arch: Optional
     return resolved
 
 
+def validate_video_steps(params: Dict[str, Any], arch: Optional[str],
+                         *, steps_key: str = "num_inference_steps") -> None:
+    """Refuse a step count the arch's SCHEDULER cannot build a schedule from.
+
+    Spec-driven, exactly like ``validate_video_geometry``: the bound comes from
+    the arch's ``TemporalSpec.min_inference_steps`` rather than from a literal
+    at the route, because it is arch-specific. LTX-2.3's
+    ``FlowMatchEulerDiscreteScheduler`` runs N evaluations for N steps and
+    accepts N=1; MiniMax-H3's scheduler counts sigma GRID POINTS with the
+    terminal 0 included, so N drives N-1 evaluations and N=1 drives none — its
+    ``set_timesteps`` raises for N < 2.
+
+    Without this, an under-minimum request paid for a full text encode (tens of
+    seconds) and then died as a 500 from inside the sampler. Called next to
+    ``validate_video_geometry``, i.e. before any weight is touched, so the
+    answer is a fast 400 instead.
+
+    Non-video / unrecognised archs, and an arch whose minimum is 1 (nothing to
+    enforce beyond the positivity every sampler needs), are left alone.
+    """
+    from api.error_handlers import ValidationError
+    from core.models.components.wiring import temporal_spec_for_arch
+
+    spec = temporal_spec_for_arch(arch)
+    if spec is None:
+        return
+
+    steps = int(params.get(steps_key, spec.min_inference_steps))
+    if steps >= spec.min_inference_steps:
+        return
+
+    if spec.steps_are_sigma_grid_points:
+        detail = (
+            f"Got {steps_key}={steps}. On this model {steps_key} counts sigma schedule grid "
+            f"points with the terminal 0 included, so it drives {steps_key} - 1 model "
+            f"evaluations; {spec.min_inference_steps} is the smallest count that runs any."
+        )
+    else:
+        detail = (f"Got {steps_key}={steps}. This model's scheduler needs at least "
+                  f"{spec.min_inference_steps}.")
+    raise ValidationError(
+        f"{steps_key} must be at least {spec.min_inference_steps} for this model",
+        detail=detail,
+    )
+
+
 def validate_video_geometry(params: Dict[str, Any], arch: Optional[str],
                             *, frame_key: str = "num_frames") -> List[str]:
     """Validate (and, where the arch says so, SNAP) a video request's geometry.

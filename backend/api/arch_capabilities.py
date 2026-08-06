@@ -376,12 +376,16 @@ _add("minimax_h3", "attention_impl",
 _add("minimax_h3", "vae_override",
      "VAE override is not supported on MiniMax-H3: it owns two autoencoders (a 24-channel causal video VAE and a separate 32-channel audio VAE), its video VAE takes ImageNet-normalised RGB rather than [-1, 1], and its tiling policy is pinned because changing it changes the output")
 
-# Training methods MiniMax-H3 does not offer. Enforced today by this table (a
-# client filters its method dropdown from it) and by the absence of any
-# MiniMax-H3 training code at all -- there is no arch handler, no adapter and no
-# trainer branch for it yet. The hard `ValueError` in the `full_finetune`
-# trainer branch lands with the training phase, together with the LoRA path it
-# has to refuse next to.
+# Training methods MiniMax-H3 does not offer. Refused in THREE layers, all of
+# them live:
+#   1. this table -- a client filters its training-method dropdown from it, so a
+#      full fine-tune is not offerable in the first place;
+#   2. the deliberate absence of a `MiniMaxH3FullParameterAdapter` class in
+#      `core/training/adapters/minimax_h3_adapter.py` (that module exports the
+#      LoRA adapter only);
+#   3. a hard `ValueError` in `full_parameter_trainer._create_adapter`, which
+#      fires before any model is loaded if a run is queued anyway.
+# LoRA training IS implemented (arch handler + ops + adapter, Phase 6b).
 _add_training_unsupported(
     "minimax_h3", "full_finetune",
     "MiniMax-H3's DiT is a 33 B dense transformer; its parameters, gradients and optimizer state do not fit the single-GPU 48 GB envelope this integration targets, so only LoRA training is implemented")

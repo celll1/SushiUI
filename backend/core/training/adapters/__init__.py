@@ -18,6 +18,10 @@ from .ideogram4_adapter import Ideogram4LoRAAdapter, Ideogram4FullParameterAdapt
 from .minit2i_adapter import MiniT2ILoRAAdapter, MiniT2IFullParameterAdapter
 from .krea2_adapter import Krea2LoRAAdapter, Krea2FullParameterAdapter
 from .ltx2_adapter import Ltx2LoRAAdapter, Ltx2FullParameterAdapter
+# MiniMax-H3 exports a LoRA adapter ONLY: full fine-tuning is refused for this
+# architecture (design section 7) and the absence of a FullParameterAdapter class
+# here is one of the three layers of that refusal.
+from .minimax_h3_adapter import MiniMaxH3LoRAAdapter
 from .acestep_adapter import AceStepLoRAAdapter, AceStepFullParameterAdapter
 from .base_controlnet_adapter import BaseControlNetAdapter
 from .controlnet_sd15_adapter import ControlNetSD15Adapter
@@ -47,6 +51,7 @@ __all__ = [
     "Krea2FullParameterAdapter",
     "Ltx2LoRAAdapter",
     "Ltx2FullParameterAdapter",
+    "MiniMaxH3LoRAAdapter",
     "AceStepLoRAAdapter",
     "AceStepFullParameterAdapter",
     "BaseControlNetAdapter",

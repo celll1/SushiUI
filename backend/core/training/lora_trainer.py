@@ -38,6 +38,7 @@ from .adapters import (
     MiniT2ILoRAAdapter,
     Krea2LoRAAdapter,
     Ltx2LoRAAdapter,
+    MiniMaxH3LoRAAdapter,
     AceStepLoRAAdapter,
 )
 
@@ -119,6 +120,12 @@ class LoRATrainer(BaseTrainer):
             self.setup_ltx2_block_swap()
         if hasattr(self, "setup_acestep_block_swap"):
             self.setup_acestep_block_swap()
+        if getattr(self, "is_minimax_h3", False):
+            # Block swap is NOT required for this arch (measured: 22.45 GB peak
+            # at 384x640x22 and 25.63 GB at the largest registered cell, both
+            # unswapped) but the knob exists, and the ordering contract is the
+            # same as every other arch's: after the LoRA wrap, never before.
+            self.arch.setup_block_swap(self)
 
         print(f"{self.log_prefix} Initialized (rank={self.lora_rank}, alpha={self.lora_alpha})")
         ve_status = getattr(self, '_train_vision_encoder', False)
@@ -223,6 +230,21 @@ class LoRATrainer(BaseTrainer):
                 self, self.lora_rank, self.lora_alpha, self.lora_dtype, scope=scope,
             )
             print(f"{self.log_prefix} Using Ltx2LoRAAdapter (scope={scope})")
+        elif self.is_minimax_h3:
+            # Scope from config; default attention+ff, which IS the design's
+            # target set (300 modules / 83.1 M params at rank 16 across all 50
+            # blocks). The I/O heads, the token refiner and AdaLN are excluded
+            # permanently and are not reachable from any scope string -- see
+            # adapters/minimax_h3_adapter.py for the reason per exclusion.
+            from core.training.adapters.minimax_h3_adapter import parse_scope_csv
+            scope_csv = (getattr(self, "minimax_h3_lora_scope", "")
+                          or self.config.get("minimax_h3_lora_scope", "")
+                          or "attention,ff")
+            scope = parse_scope_csv(scope_csv)
+            self.adapter = MiniMaxH3LoRAAdapter(
+                self, self.lora_rank, self.lora_alpha, self.lora_dtype, scope=scope,
+            )
+            print(f"{self.log_prefix} Using MiniMaxH3LoRAAdapter (scope={scope})")
         elif self.is_acestep:
             # Parse scope from config; default to attention-only (audio LoRA).
             scope_csv = (getattr(self, "acestep_lora_scope", "")

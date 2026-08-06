@@ -10968,6 +10968,8 @@ class TrainingRunCreateRequest(BaseModel):
     cpu_offload_checkpointing: bool = TRAINING_DEFAULTS["cpu_offload_checkpointing"]
     async_cpu_offload_checkpointing: bool = TRAINING_DEFAULTS["async_cpu_offload_checkpointing"]
     fp8_base_dtype: Optional[str] = TRAINING_DEFAULTS["fp8_base_dtype"]
+    # MiniMax-H3 only: weight of the audio half of its joint objective.
+    audio_loss_weight: float = TRAINING_DEFAULTS["audio_loss_weight"]
     # torch.compile (opt-in DiT training acceleration). "off" (default) |
     # "default" | "reduce-overhead" | "max-autotune-no-cudagraphs". Gated to
     # DiT full-parameter FT; skipped for LoRA / block swap; falls back to eager

@@ -1246,6 +1246,11 @@ BaseTrainer(
 - `debug_vram` (bool): Enable VRAM debugging logs (default: False)
 - `use_flash_attention` (bool): Enable Flash Attention (default: False)
 - `min_snr_gamma` (float): Min-SNR gamma value for loss weighting (default: 5.0)
+- `audio_loss_weight` (float, via `train_config`): MiniMax-H3 only — weight of the
+  audio half of its joint objective, `loss = video_mean + audio_loss_weight *
+  audio_mean` with each modality's velocity MSE averaged over tokens, channels and
+  samples before weighting (default: 1.0, from `TRAINING_DEFAULTS`). `0.0` trains on
+  the video half only. Every other architecture leaves it unread.
 
 **Important Notes**:
 - This is an **abstract class** - use `LoRATrainer` or `FullParameterTrainer` instead
@@ -1271,7 +1276,9 @@ BaseTrainer(
 | `debug_vram` | bool | VRAM debugging enabled |
 | `use_flash_attention` | bool | Flash Attention enabled |
 | `min_snr_gamma` | float | Min-SNR gamma value |
+| `audio_loss_weight` | float | MiniMax-H3 joint video+audio objective weight |
 | `is_zimage` | bool | True if Z-Image model |
+| `is_minimax_h3` | bool | True if MiniMax-H3 model (LoRA only; full FT is refused) |
 | `is_sdxl` | bool | True if SDXL model |
 | `vae` | AutoencoderKL | VAE model |
 | `unet` | UNet2DConditionModel \| None | U-Net (SD1.5/SDXL only) |

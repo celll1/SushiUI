@@ -10866,6 +10866,34 @@ components:
         fp8_base_dtype:
           type: 'string'
           nullable: true
+        audio_loss_weight:
+          type: 'number'
+          default: 1.0
+          minimum: 0.0
+          example: 1.0
+          description: |
+            MiniMax-H3 only: weight of the AUDIO half of its joint objective.
+            Ignored by every other architecture.
+
+            MiniMax-H3 is a single stream — its packed sequence carries video and
+            audio rows through the same 50 blocks, and every LoRA-targeted weight
+            is shared by both modalities, so a video-only objective still moves
+            audio behaviour.
+
+            `loss = video_mean + audio_loss_weight * audio_mean`, where each
+            modality's velocity MSE is averaged over tokens, channels and samples
+            BEFORE weighting, so the weight's meaning does not depend on the ~20x
+            difference in row counts between the two modalities.
+
+            `0.0` trains on the video half only (the audio rows still ride along
+            in the packed sequence — they are structural — but contribute no
+            gradient).
+
+            The default of 1.0 comes from a pre-registered three-regime
+            experiment on a fixed dataset (200 steps per regime, fixed evaluation
+            draws): the joint real-audio objective reached a held-out video loss
+            0.44% better than the video-only one while its held-out audio loss
+            was 19% lower.
         torch_compile:
           type: 'string'
           default: 'off'

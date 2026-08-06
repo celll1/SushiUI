@@ -1559,6 +1559,26 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     # (Full FT needs trainable base weights — flag is silently ignored).
     # None | "fp8_e4m3fn" | "fp8_e5m2".
     "fp8_base_dtype": None,
+    # ---- MiniMax-H3: weight of the AUDIO half of the joint objective ----
+    # H3 is a single stream: its packed sequence carries video AND audio rows and
+    # every LoRA-targeted weight is shared by both, so a video-only objective
+    # still moves audio behaviour. `loss = video_mean + audio_loss_weight *
+    # audio_mean`, each modality's velocity MSE averaged over tokens, channels
+    # and samples BEFORE weighting, so the weight's meaning does not depend on
+    # the ~20x difference in row counts.
+    #
+    # 1.0 is the value the design's PRE-REGISTERED three-regime experiment
+    # selected (Phase 0T, 200 steps per regime, fixed dataset and fixed
+    # evaluation draws): joint real-audio loss reached a held-out VIDEO loss
+    # 0.44 % BETTER than the video-only regime (0.295489 vs 0.296808 -- inside
+    # the "not worse by 2 %" bar) while its held-out AUDIO loss was 19 % lower
+    # (0.346591 vs 0.429390), which is rule 1 of the registered decision rule.
+    # 0.0 reproduces a video-only objective; it is exposed because a dataset
+    # whose audio is voiceover, music or editing artefacts is a real case, and
+    # the experiment measured optimisation behaviour on one small fixed dataset,
+    # not the quality of any particular corpus.
+    # Ignored by every other architecture.
+    "audio_loss_weight": 1.0,
     # ---- torch.compile (opt-in DiT training acceleration) ----
     # Wraps the DiT transformer's forward with torch.compile (Inductor) once,
     # after model/dtype/device + gradient-checkpointing setup, before the loop.

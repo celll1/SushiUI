@@ -240,6 +240,10 @@ def _build_train_section(
     train["cpu_offload_checkpointing"] = p.get("cpu_offload_checkpointing", False)
     train["async_cpu_offload_checkpointing"] = p.get("async_cpu_offload_checkpointing", False)
     train["fp8_base_dtype"] = p.get("fp8_base_dtype", None)
+    # MiniMax-H3 joint video+audio objective weight. Read unconditionally; every
+    # other architecture ignores it. SSoT: api/param_defaults.TRAINING_DEFAULTS.
+    from api.param_defaults import TRAINING_DEFAULTS as _TD
+    train["audio_loss_weight"] = p.get("audio_loss_weight", _TD["audio_loss_weight"])
     # torch.compile (opt-in DiT training acceleration). Persisted so resumes
     # reproduce the same compile mode. Non-DiT / LoRA / block-swap runs read it
     # but the trainer no-ops with a warning.

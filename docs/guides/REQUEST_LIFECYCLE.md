@@ -58,12 +58,18 @@ are in `docs/guides/MODEL_FACTS.md`.
    (`videoFrameOptions` in `frontend/src/utils/api.ts`), and hides the CFG and
    negative-prompt controls when the loaded architecture declares them
    unsupported (`archSupportsFeature`). `Img2ImgPanel.tsx` is the img2vid
-   equivalent.
+   equivalent. When the loaded model is MiniMax-H3's `ref2va` transformer
+   partition (`model_info.variant`), `Txt2ImgPanel.tsx` additionally renders
+   `MiniMaxH3ReferenceSelector.tsx` and routes the request to `ref2vid` as soon
+   as it carries at least one reference; with no references the same partition
+   still serves a plain txt2vid request.
 2. **`frontend/src/utils/api.ts`** — `generateTxt2Vid` posts a **JSON** body to
    `/generate/txt2vid` (unlike the image routes, which are all multipart).
    `generateImg2Vid` is multipart because it carries an uploaded keyframe
    `image`, plus an optional `last_frame_image` for architectures that condition
-   on a last frame as well.
+   on a last frame as well. `generateRef2Vid` is multipart for the same reason
+   and appends its reference files in packed order, because on `/generate/ref2vid`
+   the order the files are sent is part of the request.
 3. **`backend/api/routes.py::generate_txt2vid`** — a `Txt2VidRequest` Pydantic
    body. In order:
    - `quantized_gemm_mode` and `attention_type` are normalized/validated first,
@@ -133,6 +139,16 @@ MiniMax-H3 is asked only for the missing span and the output is a
 concatenation — and **which placements are offered is an architecture
 property**, decided by what that model's conditioning can anchor. See
 `docs/guides/MODEL_FACTS.md`.
+
+`POST /generate/ref2vid` is multipart for its reference files and follows the
+same route shape and output contract, with two gates ahead of everything else:
+a MiniMax-H3 model must be loaded, and its transformer variant must be `ref2va`
+— the two refusals are separate because "no H3 loaded" and "the wrong H3
+partition loaded" have different fixes. Reference counts are validated before
+any upload is read, and the files are decoded before the GPU slot is taken, so
+a bad request pays for neither. `PipelineManager.generate_ref2vid` has no second
+architecture to dispatch to. See `openapi.yaml` for the request surface and
+`docs/guides/MODEL_FACTS.md` for what the references cost.
 
 ## Progress reporting
 

@@ -162,14 +162,15 @@ MINIMAX_H3_WIRING = ComponentWiringSpec(
 # validation and the frontend all read one table instead of growing their own
 # `if arch == ...`.
 #
-# SCOPE OF THIS REVISION (Phase 2 of the MiniMax-H3 integration): the
-# GENERATION side consumes this — route validation and the `video_constraints`
-# block of `GET /schema/arch-capabilities`. Threading it through the TRAINING
-# call chain (`VideoBucketManager`, `video_loader.load_clip` /
-# `encode_and_cache_clip`, the trainer's clip-encode sites, the clip cache key
-# and 24 fps resampling) is a separate, larger refactor of shared LTX-serving
-# code and is deliberately NOT started here; until it lands those functions keep
-# their current hardcoded LTX-2.3 rule.
+# CONSUMED BY BOTH SIDES as of Phase 6a:
+#   * generation — route validation and the `video_constraints` block of
+#     `GET /schema/arch-capabilities`;
+#   * training — `bucketing`'s temporal section, `video_loader` (window
+#     sampling, `load_clip`, `encode_and_cache_clip`), the clip cache key
+#     (`LatentCache.compute_clip_hash`) and the `base_trainer` clip-encode
+#     sites, all of which take an explicit `spec` parameter and fall back to
+#     the LTX-2.3 rule when it is absent. `ArchHandler.temporal` is where a
+#     trainer reads its arch's spec (the temporal analogue of `pixel_align`).
 # ---------------------------------------------------------------------------
 
 @dataclass(frozen=True)
@@ -254,6 +255,31 @@ class TemporalSpec:
     # reachable through ordinary API validation. Set the variable in a shell that
     # is deliberately running a short clip; the request still warns.
     smoke_override_env: str = "SUSHI_TEMPORAL_SMOKE"
+
+    @property
+    def resample_policy(self) -> str:
+        """How training turns a source video into this arch's frame rate.
+
+        ``"index"`` — the legacy LTX-2.3 rule: sampled source frames are
+        ``start_frame + i*stride`` and the clip simply INHERITS the source fps
+        (which is then carried per-sample into the RoPE coords).
+
+        ``"timestamp_nearest"`` — the arch has a fixed frame rate, so target
+        frame ``i`` is the source frame nearest ``start_time + i*stride /
+        fps_fixed``. Without this, a 30 fps window labelled "24 fps" plays 25 %
+        fast and its audio desynchronises.
+
+        This string is part of the clip cache key, so a cache built under one
+        policy can never be read as if it had been built under the other.
+        """
+        return "index" if self.fps_fixed is None else "timestamp_nearest"
+
+    def clip_duration(self, clip_length: int, stride: int = 1) -> Optional[float]:
+        """Seconds of OUTPUT timeline a clip occupies, or None when the arch has
+        no fixed rate (LTX-2.3 clips are as long as their source says)."""
+        if self.fps_fixed is None:
+            return None
+        return (max(1, int(clip_length)) * max(1, int(stride))) / float(self.fps_fixed)
 
     def floor(self, smoke: bool = False) -> int:
         """The effective minimum clip length -- production, or the VAE floor."""

@@ -5019,7 +5019,11 @@ class BaseTrainer(ABC):
         from core.training.ops.ltx2_ops import _DEFAULT_FPS
         vals = []
         for item, _dataset in batch:
-            v = item.get("fps")
+            # A clip RESAMPLED to a fixed rate (Phase 6a) plays at target_fps,
+            # not at the source rate — the model must be told the rate of the
+            # frames it is actually given. LTX-2.3 items never carry
+            # ``target_fps``, so this reads ``fps`` exactly as before.
+            v = item.get("target_fps") or item.get("fps")
             vals.append(float(v) if v else _DEFAULT_FPS)
         return torch.tensor(vals, dtype=torch.float32)
 
@@ -6671,12 +6675,13 @@ class BaseTrainer(ABC):
 
                     # Video-clip item (P4/P5): item_type=="video" carries a
                     # video_path + clip window; encode a 5D clip latent via the
-                    # LTX video VAE (encode_and_cache_clip seam). item_type=="single"
+                    # video VAE (encode_and_cache_clip seam). item_type=="single"
                     # (stills) fall through to the still encode below, which for
-                    # LTX2 also yields a 5D T=1 latent (same train_step).
-                    if self.is_ltx2 and item.get("item_type") == "video":
+                    # a 5D arch also yields a 5D T=1 latent (same train_step).
+                    if self._temporal_spec() is not None and item.get("item_type") == "video":
                         try:
                             from core.training.video_loader import encode_and_cache_clip
+                            _spec = self._temporal_spec()
                             v_path = item.get("video_path") or item["image_path"]
                             v_w = int(item.get("bucket_width", item["width"]))
                             v_h = int(item.get("bucket_height", item["height"]))
@@ -6684,20 +6689,25 @@ class BaseTrainer(ABC):
                             stride = int(item.get("stride", 1))
                             fps = item.get("fps")
                             from core.training.video_loader import sample_clip_window
-                            clip_start = sample_clip_window(
+                            window = sample_clip_window(
                                 int(item.get("num_frames", clip_length)),
                                 clip_length, stride, training=True,
+                                spec=_spec, source_fps=fps,
                             )
                             encode_and_cache_clip(
                                 cache=cache,
                                 video_path=v_path,
                                 width=v_w, height=v_h,
-                                clip_start=clip_start,
+                                clip_start=window.start_frame,
                                 clip_length=clip_length,
                                 stride=stride,
                                 vae_encode_clip=lambda clip: self.arch.vae_encode_clip(self, clip),
                                 fps=fps,
                                 device=str(self.device),
+                                spec=_spec,
+                                start_time=window.start_time,
+                                source_fps=fps,
+                                tiling_policy=self._clip_vae_tiling_policy(),
                             )
                             iteration_count += 1
                             processed_items += 1
@@ -6806,30 +6816,53 @@ class BaseTrainer(ABC):
             if (main_on_gpu or te_on_gpu or te2_on_gpu) and torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
-    def _annotate_ltx2_video_items(self, datasets, base_resolutions) -> int:
-        """Route LTX-2.3 video items through VideoBucketManager (P5 video wiring).
+    def _temporal_spec(self):
+        """This trainer's ``TemporalSpec``, or None when the arch is not a video
+        architecture (Phase 6a).
 
-        For every ``item_type=="video"`` item, assigns a (÷32 spatial bucket,
-        clip_length) via ``VideoBucketManager.assign_video_to_bucket`` and copies
-        the resulting fields (``bucket_width``/``bucket_height``/``clip_length``/
-        ``stride``/``num_frames``/``fps``/``item_type``/``video_path``) onto the item
-        dict in place. These are exactly the keys the 5 video encode-site guards +
-        ``_encode_ltx2_video_clip`` read. Image items are untouched (this only runs
-        for LTX-2.3 and only visits item_type=="video" items), so image bucketing is
+        This is the VIDEO predicate the clip paths branch on. It is declared on
+        the arch handler (``ArchHandler.temporal``, the temporal analogue of
+        ``pixel_align``) so a second video architecture is one table entry, not
+        another ``is_<arch>`` flag threaded through six call sites. Today
+        exactly one handler declares it — ltx2 — so every guard below is
+        equivalent to the ``self.is_ltx2`` check it replaces.
+        """
+        return getattr(getattr(self, "arch", None), "temporal", None)
+
+    def _clip_vae_tiling_policy(self) -> Optional[str]:
+        """Token for the arch's clip-encode VAE tiling policy (cache key)."""
+        return getattr(getattr(self, "arch", None), "clip_vae_tiling_policy", None)
+
+    def _annotate_video_items(self, datasets, base_resolutions) -> int:
+        """Route video items through VideoBucketManager (P5 video wiring).
+
+        For every ``item_type=="video"`` item, assigns a (÷pixel_align spatial
+        bucket, clip_length) via ``VideoBucketManager.assign_video_to_bucket``
+        and copies the resulting fields (``bucket_width``/``bucket_height``/
+        ``clip_length``/``stride``/``num_frames``/``fps``/``target_fps``/
+        ``item_type``/``video_path``) onto the item dict in place. These are
+        exactly the keys the 5 video encode-site guards + ``_encode_video_clip``
+        read. Image items are untouched (this only runs for a video arch and
+        only visits item_type=="video" items), so image bucketing is
         byte-for-byte unchanged.
+
+        The arch's ``TemporalSpec`` drives which clip lengths are legal and
+        whether the clip is resampled to a fixed frame rate; ``None`` (a
+        non-video arch) is an immediate no-op.
 
         Returns the number of video items annotated.
         """
-        if not self.is_ltx2:
+        spec = self._temporal_spec()
+        if spec is None:
             return 0
 
-        from core.training.bucketing import VideoBucketManager, DEFAULT_CLIP_LENGTHS
+        from core.training.bucketing import VideoBucketManager
 
         base_res = base_resolutions or [1024]
         allowed = (
             self.config.get("ltx2_clip_lengths")
             or self.config.get("allowed_clip_lengths")
-            or DEFAULT_CLIP_LENGTHS
+            or list(spec.default_clip_lengths)
         )
         stride = int(
             self.config.get("ltx2_clip_stride",
@@ -6840,6 +6873,7 @@ class BaseTrainer(ABC):
             base_resolutions=list(base_res),
             allowed_clip_lengths=list(allowed),
             stride=stride,
+            temporal_spec=spec,
         )
 
         count = 0
@@ -6870,6 +6904,12 @@ class BaseTrainer(ABC):
                 item["num_frames"] = video_info["num_frames"]
                 if video_info.get("fps") is not None:
                     item["fps"] = video_info["fps"]
+                # Fixed-fps archs only (MiniMax-H3): the rate the RESAMPLED clip
+                # plays at, distinct from item["fps"] (still the source rate,
+                # which the resampler and the cache key need). LTX-2.3 items
+                # never gain this key.
+                if video_info.get("target_fps") is not None:
+                    item["target_fps"] = video_info["target_fps"]
                 # Keep width/height consistent with the chosen ÷32 spatial bucket so
                 # any code reading item["width"]/["height"] agrees with the encode.
                 item["width"] = video_info["bucket_width"]
@@ -6877,38 +6917,45 @@ class BaseTrainer(ABC):
                 count += 1
 
         if count:
-            print(f"{self.log_prefix} [LTX2 video] Assigned {count} video item(s) to "
-                  f"(spatial÷32, clip_length) buckets: {vbm.get_bucket_counts()}")
+            print(f"{self.log_prefix} [{self.arch.name} video] Assigned {count} video "
+                  f"item(s) to (spatial÷{vbm.divisibility}, clip_length) buckets: "
+                  f"{vbm.get_bucket_counts()}")
         return count
 
-    def _encode_ltx2_video_clip(self, item: Dict[str, Any]) -> torch.Tensor:
-        """Encode an LTX-2.3 video-clip item to a 5D latent ``[1, 128, T_lat, H', W']``.
+    def _encode_video_clip(self, item: Dict[str, Any]) -> torch.Tensor:
+        """Encode a video-clip item to a 5D latent ``[1, C, T_lat, H', W']``.
 
         Mirrors the video-clip branch in ``_generate_latent_cache_with_offloading``
-        (~L5558) but returns the latent directly (no cache write) so the swap /
+        but returns the latent directly (no cache write) so the swap /
         on-the-fly latent paths can route ``item_type=="video"`` items through the
-        LTX video VAE instead of ``PIL.Image.open`` (which cannot read ``.webm``).
+        video VAE instead of ``PIL.Image.open`` (which cannot read ``.webm``).
 
         Uses ``video_loader.sample_clip_window`` + ``load_clip`` (clip window from
-        the item's VideoBucketManager params) and ``arch.vae_encode_clip`` (LTX VAE
-        + latents_mean/std normalisation). The VAE is assumed already GPU-resident
+        the item's VideoBucketManager params, with the arch's ``TemporalSpec`` so
+        a fixed-fps arch resamples instead of relabelling) and
+        ``arch.vae_encode_clip``. The VAE is assumed already GPU-resident
         (callers move it before the encode loop, same as the still path).
         """
         from core.training.video_loader import load_clip, sample_clip_window
 
+        spec = self._temporal_spec()
         v_path = item.get("video_path") or item["image_path"]
         v_w = int(item.get("bucket_width", item.get("width")))
         v_h = int(item.get("bucket_height", item.get("height")))
         clip_length = int(item["clip_length"])
         stride = int(item.get("stride", 1))
-        clip_start = sample_clip_window(
+        source_fps = item.get("fps")
+        window = sample_clip_window(
             int(item.get("num_frames", clip_length)),
             clip_length, stride, training=True,
+            spec=spec, source_fps=source_fps,
         )
         clip = load_clip(
-            v_path, clip_length, clip_start, stride, target_w=v_w, target_h=v_h,
+            v_path, clip_length, window.start_frame, stride,
+            target_w=v_w, target_h=v_h,
+            spec=spec, start_time=window.start_time, source_fps=source_fps,
         )  # [T, C, H, W]
-        # arch.vae_encode_clip(trainer, clip) -> [1, 128, T_lat, H', W'] (normalised).
+        # arch.vae_encode_clip(trainer, clip) -> [1, C, T_lat, H', W'] (normalised).
         return self.arch.vae_encode_clip(self, clip)
 
     def _regenerate_single_latent(
@@ -7812,13 +7859,13 @@ class BaseTrainer(ABC):
             bucket_manager = None
             print(f"{self.log_prefix} Bucketing disabled")
 
-        # LTX-2.3 VIDEO items: route through VideoBucketManager to attach
+        # VIDEO items: route through VideoBucketManager to attach
         # clip_length/stride/bucket dims/fps BEFORE the image bucketing loop below
         # (which skips item_type=="video"). Runs regardless of enable_bucketing so
-        # video items always gain the keys _encode_ltx2_video_clip reads. No-op for
-        # non-LTX2 and for datasets without video items.
-        if self.is_ltx2:
-            self._annotate_ltx2_video_items(datasets, base_resolutions)
+        # video items always gain the keys _encode_video_clip reads. No-op for a
+        # non-video arch (no TemporalSpec) and for datasets without video items.
+        if self._temporal_spec() is not None:
+            self._annotate_video_items(datasets, base_resolutions)
 
         # Epoch-dynamic crop planner (SDXL only). Re-buckets each item per epoch from a
         # constrained random crop (scale/crop extrapolation). Requires bucketing + SDXL.
@@ -8084,13 +8131,13 @@ class BaseTrainer(ABC):
             _bucket_done = 0
             for dataset in datasets:
                 for item in dataset.items:
-                    # LTX-2.3 video items already bucketed by VideoBucketManager
+                    # Video items already bucketed by VideoBucketManager
                     # (÷32 spatial + clip_length); never run them through the image
                     # BucketManager (would overwrite bucket dims / drop clip fields).
                     # ACE-Step audio items have no spatial dims at all (no
                     # image_path-shaped width/height concept) — also skipped;
                     # batched separately below (acestep_audio_batches).
-                    if (self.is_ltx2 and item.get("item_type") == "video") or \
+                    if (self._temporal_spec() is not None and item.get("item_type") == "video") or \
                        (self.is_acestep and item.get("item_type") == "audio"):
                         continue
                     # For ve_reconstruction_mode items: inject reference_images BEFORE bucketing
@@ -8174,10 +8221,10 @@ class BaseTrainer(ABC):
             _nb_clamped = 0
             for dataset in datasets:
                 for item in dataset.items:
-                    # LTX-2.3 video items keep their VideoBucketManager ÷32 dims
+                    # Video items keep their VideoBucketManager ÷32 dims
                     # (do not re-fit into the still base-area path). ACE-Step
                     # audio items have no width/height concept — also skipped.
-                    if (self.is_ltx2 and item.get("item_type") == "video") or \
+                    if (self._temporal_spec() is not None and item.get("item_type") == "video") or \
                        (self.is_acestep and item.get("item_type") == "audio"):
                         continue
                     w = int(item.get("width") or 0)
@@ -8972,16 +9019,17 @@ class BaseTrainer(ABC):
                 # item_type=="video" items (P5 skip-guards), so for a video dataset it
                 # yields ZERO batches -> "Buffer pre-filled with 0 latents" -> 0 steps.
                 # Build video batches directly from the annotated video item dicts (fields
-                # set by _annotate_ltx2_video_items), grouping by
+                # set by _annotate_video_items), grouping by
                 # (bucket_width, bucket_height, clip_length) so each batch is UNIFORM in
                 # (spatial, frame-count) -- required for the 5D latents to stack (P4c).
                 # Each emitted batch has the SAME shape as the image path: [(item, dataset), ...].
                 # Grouped from the annotated item dicts directly (not VBM.build_batch_indices)
                 # so item["image_path"] stays the real training key and there is no coupling
-                # to VideoBucketManager internals. No-op (empty) for non-LTX2 and for
-                # image-only datasets, so the image path stays byte-for-byte unchanged.
+                # to VideoBucketManager internals. No-op (empty) for a non-video arch
+                # and for image-only datasets, so the image path stays byte-for-byte
+                # unchanged.
                 ltx2_video_batches = []
-                if self.is_ltx2:
+                if self._temporal_spec() is not None:
                     from collections import OrderedDict as _OD
                     _vgroups = _OD()
                     for _item, _dataset in all_items:
@@ -9388,8 +9436,8 @@ class BaseTrainer(ABC):
                             # LTX-2.3 video clip: item_type=="video" carries a .webm
                             # video_path (never a still image); encode a 5D clip
                             # latent via the LTX video VAE instead of Image.open.
-                            if self.is_ltx2 and item.get("item_type") == "video":
-                                latent = self._encode_ltx2_video_clip(item)
+                            if self._temporal_spec() is not None and item.get("item_type") == "video":
+                                latent = self._encode_video_clip(item)
                                 latent_swap_buffer[image_path] = (latent.cpu(), caption)
                                 if self.debug_vram and idx % 50 == 0:
                                     _vramdiag(f"prefill_item_{idx}")
@@ -9812,8 +9860,8 @@ class BaseTrainer(ABC):
                             try:
                                 # LTX-2.3 video clip: encode a 5D clip latent via the
                                 # LTX video VAE (Image.open cannot read .webm).
-                                if self.is_ltx2 and item.get("item_type") == "video":
-                                    latent = self._encode_ltx2_video_clip(item)
+                                if self._temporal_spec() is not None and item.get("item_type") == "video":
+                                    latent = self._encode_video_clip(item)
                                     latent_swap_buffer[image_path] = (latent.cpu(), caption)
                                     if progress_callback and idx % 10 == 0:
                                         progress_callback(
@@ -9929,8 +9977,8 @@ class BaseTrainer(ABC):
                                     self.move_vae_to_gpu()
                                     # LTX-2.3 video clip: encode a 5D clip latent via
                                     # the LTX video VAE (Image.open cannot read .webm).
-                                    if self.is_ltx2 and item.get("item_type") == "video":
-                                        latent = self._encode_ltx2_video_clip(item)
+                                    if self._temporal_spec() is not None and item.get("item_type") == "video":
+                                        latent = self._encode_video_clip(item)
                                         latent = latent.to(self.device)
                                         latents_list.append(latent)
                                         self.move_vae_to_cpu()
@@ -9977,7 +10025,7 @@ class BaseTrainer(ABC):
                             # width/height-keyed shape-validation chain below would also
                             # crash on None//int). Mirrors the LTX-2.3 video-clip
                             # special-case elsewhere in this same loop
-                            # (_encode_ltx2_video_clip), except audio clips ARE
+                            # (_encode_video_clip), except audio clips ARE
                             # disk-cached (no random per-step re-crop -- audio_loader.py's
                             # docstring: clips are taken from a fixed START offset, so a
                             # cache hit is always valid, unlike video's intentional
@@ -10054,8 +10102,8 @@ class BaseTrainer(ABC):
                             try:
                                 # LTX-2.3 video clip: encode a 5D clip latent via the
                                 # LTX video VAE (Image.open cannot read .webm).
-                                if self.is_ltx2 and item.get("item_type") == "video":
-                                    latents_list.append(self._encode_ltx2_video_clip(item))
+                                if self._temporal_spec() is not None and item.get("item_type") == "video":
+                                    latents_list.append(self._encode_video_clip(item))
                                 else:
                                     _danb_b = item.get("_danbooru_image_bytes")
                                     if _danb_b is not None:

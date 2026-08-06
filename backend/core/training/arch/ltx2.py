@@ -9,13 +9,22 @@ handler shape). Stills train as degenerate 1-frame clips (T=1) through the SAME
 from __future__ import annotations
 
 from core.training.arch.base_arch import ArchHandler, SampleContext, TrainStepContext
-from core.training.components.wiring import LTX2_WIRING
+from core.training.components.wiring import LTX2_TEMPORAL, LTX2_WIRING
 
 
 class Ltx2ArchHandler(ArchHandler):
     name = "ltx2"
     wiring = LTX2_WIRING
     pixel_align = 32  # LTX spatial VAE downscale (÷32); dims must be a multiple of 32.
+    # Temporal contract: 8*k+1 clip lengths, (L-1)//8+1 latent frames, NO fixed
+    # frame rate (the clip keeps its source fps, which train_step feeds to the
+    # RoPE coords per sample). These are exactly the rules the video loader and
+    # bucketer applied by hardcoding before Phase 6a made them declarative.
+    temporal = LTX2_TEMPORAL
+    # ltx2_ops.vae_encode_clip does not configure VAE tiling, so there is no
+    # policy to key on and LTX-2.3 clip-cache keys are unchanged. See
+    # ArchHandler.clip_vae_tiling_policy for why this matters when an arch does.
+    clip_vae_tiling_policy = None
 
     def load_components(self, trainer) -> None:
         from core.training.ops import ltx2_ops

@@ -26,42 +26,12 @@ import torch
 from PIL import Image
 
 
-def _center_crop_resize_frames(frames: np.ndarray, target_width: int, target_height: int) -> np.ndarray:
-    """Center-crop (to the target aspect ratio) then LANCZOS-resize every
-    frame to (target_width, target_height). Returns `frames` unchanged when
-    the source already matches exactly.
-
-    Mirrors the image-outpaint convention (`core.inference.outpaint_utils
-    .build_outpaint_canvas`'s crop -> LANCZOS-resize-once pipeline): the
-    RESULT of this preprocessing -- not the raw uploaded clip -- becomes the
-    exact-preserved content for non-conforming (non-target-resolution, or
-    non-÷32) inputs. Every frame in a single LTX-2.3 video shares one
-    resolution, so (unlike image outpaint's separate canvas/place sizes)
-    there is a single target here: `params["width"]`/`params["height"]`.
-    """
-    num_frames, src_h, src_w, channels = frames.shape
-    if src_w == target_width and src_h == target_height:
-        return frames
-
-    target_ar = target_width / target_height
-    src_ar = src_w / src_h
-    if src_ar > target_ar:
-        new_w = max(1, int(round(src_h * target_ar)))
-        x0 = (src_w - new_w) // 2
-        cropped = frames[:, :, x0:x0 + new_w, :]
-    elif src_ar < target_ar:
-        new_h = max(1, int(round(src_w / target_ar)))
-        y0 = (src_h - new_h) // 2
-        cropped = frames[:, y0:y0 + new_h, :, :]
-    else:
-        cropped = frames
-
-    out = np.empty((num_frames, target_height, target_width, channels), dtype=np.uint8)
-    for i in range(num_frames):
-        img = Image.fromarray(cropped[i], mode="RGB")
-        img = img.resize((target_width, target_height), Image.Resampling.LANCZOS)
-        out[i] = np.array(img)
-    return out
+# The preserved-span preprocessing is shared with every other video backend's
+# temporal outpaint (MiniMax-H3's, today) and therefore lives in the
+# architecture-neutral `outpaint_utils` next to the image-outpaint convention it
+# mirrors. Imported under its historical private name so this module's call
+# sites and comments still read the same.
+from core.inference.outpaint_utils import center_crop_resize_frames as _center_crop_resize_frames
 
 
 def _snap_offset_to_latent_index(

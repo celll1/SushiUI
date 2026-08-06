@@ -2750,15 +2750,29 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         input_audio,
         progress_callback=None,
         step_callback=None,
+        bridge_frames=None,
+        bridge_fps=None,
+        bridge_audio=None,
     ):
-        """Video temporal outpaint: place a (trimmed) input clip at a
-        latent-frame offset inside a LONGER output timeline and generate the
-        frames before/after (LTX-2.3 only).
+        """Video temporal outpaint: place a (trimmed) input clip inside a
+        LONGER output timeline and generate the frames before/after.
 
-        Pure orchestration over the stock `diffusers.LTX2ConditionPipeline`
-        (no new denoise loop) -- see
-        `core.pipeline_backends.ltx2._generate_vidoutpaint_ltx2` and
-        `scratchpad/outpaint_design.md` section 4.
+        The two video architectures do this by DIFFERENT mechanisms, because
+        their conditioning differs, and the difference is visible in the
+        contract rather than hidden behind it:
+
+        * **LTX-2.3** — pure orchestration over the stock
+          `diffusers.LTX2ConditionPipeline` (no new denoise loop): the whole
+          timeline is generated with the clip pinned at an arbitrary latent
+          index, and the input is pasted back frame-exact afterwards. Any
+          offset is placeable. See `_generate_vidoutpaint_ltx2` and
+          `scratchpad/outpaint_design.md` section 4.
+        * **MiniMax-H3** — only the MISSING span is generated, anchored on the
+          preserved clip's boundary frame(s), and the result is concatenated
+          with the untouched input. It conditions on first/last frames only, so
+          the clip must abut a timeline boundary or bridge two clips; a
+          mid-timeline placement is refused with that reason. See
+          `_generate_vidoutpaint_minimax_h3`.
 
         Args:
             params: see `OUTPAINT_VIDEO_DEFAULTS`.
@@ -2768,21 +2782,40 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             input_audio: WAV bytes of the input clip's original audio track
                 (see `utils.video_utils.extract_audio_stream`), or None.
             progress_callback: Called as (step, total_steps) at each denoise step.
-            step_callback: Reserved (unused for LTX-2.3 vid_outpaint).
+            step_callback: Per-step latent preview hook. Consumed by MiniMax-H3
+                exactly as in generate_txt2vid; unused for LTX-2.3.
+            bridge_frames / bridge_fps / bridge_audio: the same three things for
+                an optional SECOND clip preserved at the END of the timeline,
+                which turns the request into a bridge. Only an architecture
+                whose `TemporalSpec` lists the `bridge` placement accepts them.
 
         Returns:
             tuple: (frames, audio, audio_sample_rate, actual_seed) --
             identical contract to generate_img2vid/generate_txt2vid.
         """
+        from api.error_handlers import ValidationError
+
         if self.is_ltx2_model:
+            if bridge_frames is not None:
+                raise ValidationError(
+                    "this model has no bridge placement",
+                    detail="bridge_video adds a SECOND preserved clip at the end of the timeline, "
+                           "which is a placement only an architecture that conditions on boundary "
+                           "frames needs. LTX-2.3 places one clip at an arbitrary offset instead.",
+                )
             return self._generate_vidoutpaint_ltx2(
                 params, video_frames, fps, input_audio, progress_callback, step_callback
             )
+        if self.is_minimax_h3_model:
+            return self._generate_vidoutpaint_minimax_h3(
+                params, video_frames, fps, input_audio, progress_callback, step_callback,
+                bridge_frames=bridge_frames, bridge_fps=bridge_fps, bridge_audio=bridge_audio,
+            )
 
-        from api.error_handlers import ValidationError
         raise ValidationError(
-            "Video outpaint requires an LTX-2.3 model",
-            detail="The currently loaded model is not a video model. Load an LTX-2.3 model to use /generate/outpaint/video.",
+            "Video outpaint requires a video model",
+            detail="The currently loaded model is not a video model. Load an LTX-2.3 or MiniMax-H3 "
+                   "model to use /generate/outpaint/video.",
         )
 
     def generate_txt2aud(self, params: Dict[str, Any], progress_callback=None, step_callback=None):

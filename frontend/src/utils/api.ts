@@ -579,6 +579,9 @@ export interface OutpaintVideoParams {
   unet_quantization?: string | null;
   // Quantized-GEMM path (see Txt2VidParams.quantized_gemm_mode).
   quantized_gemm_mode?: QuantizedGemmMode;
+  // Attention backend (see Txt2VidParams.attention_type). Filled from the
+  // global localStorage setting by the sender, like every other route.
+  attention_type?: string;
 }
 
 export interface UpscaleParams {
@@ -855,7 +858,26 @@ export interface GenerationDefaultsResponse {
   img2vid: Partial<Img2VidParams> & Record<string, unknown>;
   txt2aud: Partial<Txt2AudParams> & Record<string, unknown>;
   aud2aud: Partial<Aud2AudParams> & Record<string, unknown>;
+  // Per-architecture video overrides (backend VIDEO_GEN_ARCH_OVERLAYS /
+  // OUTPAINT_VIDEO_ARCH_OVERLAYS). A video default resolves as
+  // `base | video_arch_overlays[arch]`, and an outpaint-video one as that
+  // again with `outpaint_video_arch_overlays[arch]` on top -- exactly what the
+  // routes do server-side for every field a request omits. Optional so an
+  // older backend without the keys still type-checks.
+  video_arch_overlays?: Record<string, Record<string, unknown>>;
+  outpaint_video_arch_overlays?: Record<string, Record<string, unknown>>;
 }
+
+// The outpaint-video defaults for one architecture, resolved from the SAME
+// three layers the backend resolves them from, in the same order.
+export const outpaintVideoDefaultsForArch = (
+  defaults: GenerationDefaultsResponse | null | undefined,
+  arch: string | null | undefined
+): Record<string, unknown> => ({
+  ...(defaults?.outpaint_vid || {}),
+  ...((arch && defaults?.video_arch_overlays?.[arch]) || {}),
+  ...((arch && defaults?.outpaint_video_arch_overlays?.[arch]) || {}),
+});
 
 export const fetchGenerationDefaults = async (): Promise<GenerationDefaultsResponse> =>
   (await api.get("/schema/generation-defaults")).data;
@@ -934,7 +956,27 @@ export interface VideoConstraints {
   // true = the step count is a sigma GRID POINT count, so N drives N-1 model
   // evaluations (MiniMax-H3); false = N steps run N evaluations (LTX-2.3).
   steps_are_sigma_grid_points: boolean;
+  // Where POST /generate/outpaint/video may place the input clip on this arch.
+  // ["free"] (LTX-2.3) = any offset. ["extend_forward","extend_backward",
+  // "bridge"] (MiniMax-H3) = boundary placements only: it conditions on the
+  // first and/or last frame of the span it generates, so the clip must abut a
+  // timeline boundary or bridge two clips. Optional so an older backend
+  // without the key still type-checks (treated as "free" by the helper below).
+  outpaint_placements?: string[];
 }
+
+// The temporal-outpaint placements the loaded arch can anchor, from the
+// backend's own table. An unknown arch (or a backend that does not serve the
+// key) is treated as unconstrained, the same "assume supported" convention as
+// archSupportsFeature -- the backend re-validates and answers 400 regardless.
+export const videoOutpaintPlacements = (
+  caps: ArchCapabilities | null | undefined,
+  arch: string | null | undefined
+): string[] => {
+  const c = arch ? caps?.video_constraints?.[arch] : undefined;
+  const placements = c?.outpaint_placements;
+  return placements && placements.length ? placements : ["free"];
+};
 
 export const fetchArchCapabilities = async (): Promise<ArchCapabilities> =>
   (await api.get("/schema/arch-capabilities")).data;
@@ -2397,7 +2439,11 @@ export const generateOutpaint = async (params: OutpaintParams, image: File | str
 // (CLAUDE.md param-threading) plus the placement fields; every
 // OutpaintVideoParams field is appended explicitly, matching the Form
 // parameter names of routes.py's generate_outpaint_video 1:1.
-export const generateOutpaintVideo = async (params: OutpaintVideoParams, video: File | string) => {
+export const generateOutpaintVideo = async (
+  params: OutpaintVideoParams,
+  video: File | string,
+  bridgeVideo?: File | string | null
+) => {
   const formData = new FormData();
 
   // Handle both File objects and data URLs (mirrors generateImg2Vid's `image` handling).
@@ -2407,6 +2453,21 @@ export const generateOutpaintVideo = async (params: OutpaintVideoParams, video: 
     formData.append("video", blob, "input.mp4");
   } else {
     formData.append("video", video);
+  }
+
+  // BRIDGE placement: a second clip preserved at the END of the timeline, with
+  // the generated span between the two. Appended only when present -- the
+  // field's presence is what selects the placement server-side, and an
+  // architecture without a bridge placement answers 400 rather than ignoring
+  // it (ignoring it would silently produce a one-clip result).
+  if (bridgeVideo) {
+    if (typeof bridgeVideo === "string") {
+      const response = await fetch(bridgeVideo);
+      const blob = await response.blob();
+      formData.append("bridge_video", blob, "bridge.mp4");
+    } else {
+      formData.append("bridge_video", bridgeVideo);
+    }
   }
 
   formData.append("prompt", params.prompt);
@@ -2427,6 +2488,12 @@ export const generateOutpaintVideo = async (params: OutpaintVideoParams, video: 
   formData.append("input_trim_start_frames", String(params.input_trim_start_frames ?? 0));
   formData.append("input_trim_end_frames", String(params.input_trim_end_frames ?? 0));
   formData.append("outpaint_video_audio_mode", params.outpaint_video_audio_mode || "regenerate");
+
+  // Attention backend: the global setting, exactly as every other sender reads
+  // it. Honored by MiniMax-H3 (its transformer runs on SushiUI's conduit),
+  // accepted-and-warned by LTX-2.3.
+  const attentionType = typeof window !== 'undefined' ? localStorage.getItem('attention_type') : null;
+  formData.append("attention_type", params.attention_type || attentionType || "normal");
 
   // Acceleration (block swap / FBCache / Spectrum)
   formData.append("blocks_to_swap", String(params.blocks_to_swap ?? 0));

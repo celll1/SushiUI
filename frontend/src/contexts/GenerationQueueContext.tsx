@@ -15,6 +15,12 @@ export interface QueueItem {
   inputLatentId?: string;
   inputAudio?: File; // For aud2aud / outpaint_aud (reference clip; a File, unlike inputImage's base64 string)
   inputVideo?: File; // For outpaint_vid (uploaded clip; a File, mirrors inputAudio -- avoids a giant base64 string)
+  // For outpaint_vid BRIDGE placement only: the second clip, preserved at the
+  // END of the timeline, with the generated span between the two. Only an
+  // architecture whose video_constraints.outpaint_placements contains "bridge"
+  // (MiniMax-H3, which conditions on boundary frames and can anchor both ends
+  // of a gap) accepts it; the backend refuses it on any other.
+  bridgeVideo?: File;
   maskImage?: string; // For inpaint only
   status: "pending" | "generating" | "completed" | "failed";
   addedAt: number;

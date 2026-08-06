@@ -47,7 +47,8 @@ two places a re-derivation is easy to get subtly wrong are called out inline:
    conditioning and ``t = 1.0`` for audio references, for every step. The loop
    only ever writes the GENERATED rows, so the anchors ride through unchanged.
    The anchors themselves are built at the SAME level they are pinned at:
-   ``encode_condition_images`` produces the clean latent and
+   ``encode_condition_images`` produces the clean latent (posterior SAMPLED
+   under the fixed ``KEYFRAME_ENCODE_SEED``, then rounded through fp16) and
    ``build_condition_rows`` mixes in that condition's own noise draw through the
    scheduler's ``scale_noise`` (``x_t = t*x0 + (1-t)*noise``) at
    ``keyframe_noise_aug`` — the released model was trained with slightly noised
@@ -89,6 +90,13 @@ AUDIO_TAG = 2
 # the `t` an audio reference is held at.
 VISUAL_COND_TIMESTEP = 0.999
 AUDIO_COND_TIMESTEP = 1.0
+
+# The seed the visual-conditioning posterior is SAMPLED under. Fixed by the
+# released implementation (diffusers `components.keyframe_encode_seed = 42`) and
+# deliberately independent of the request seed: the conditioning encode is
+# reproducible, and it consumes none of the request generator's draws, so the
+# recorded draw order (K0.6) is untouched.
+KEYFRAME_ENCODE_SEED = 42
 
 # Sigma shifts of the two schedules.
 SHIFT_VIDEO = 12.0
@@ -388,6 +396,7 @@ def encode_condition_images(
     pixel_mean: Sequence[float],
     pixel_std: Sequence[float],
     device: torch.device | str = "cuda",
+    encode_seed: int = KEYFRAME_ENCODE_SEED,
 ) -> List[torch.Tensor]:
     """Keyframe images ``uint8 [H, W, 3]`` -> normalized latents ``[1, 24, 1, h, w]``.
 
@@ -406,15 +415,21 @@ def encode_condition_images(
     returns exactly one latent frame, which is the geometry the packed layout
     reserves ``rows_per_frame`` rows for.
 
-    The posterior is read at its **mode**, not sampled. Two reasons, both
-    deliberate: the request generator's draw sequence is a recorded contract
-    (K0.6 hashes one draw per condition, and a posterior sample would either add
-    a draw or silently consume the global RNG), and it matches how every other
-    keyframe/reference encode in this repo reads a latent distribution
-    (``ltx2``'s img2vid keyframe, ``krea2``, ``lens``, ``ideogram4``, ACE-Step's
-    reference audio). MiniMax's own reference wrapper (`klvae.encode_base`)
-    samples the posterior from the global RNG instead; the difference is one
-    posterior sigma of jitter on an anchor the sampler then holds fixed.
+    Two more steps of the released recipe, both easy to drop and neither
+    optional (diffusers ``encode_vae_condition``, whose docstring says "every
+    part of it is needed to reproduce its conditioning"):
+
+    * the posterior is **SAMPLED, not read at its mode**, under a FRESH CPU
+      generator seeded at ``encode_seed`` (42 upstream) rather than from the
+      request's generator. That is what makes the sample both deterministic and
+      invisible to the recorded draw order: the request generator is never
+      touched, so K0.6's one-draw-per-condition sequence is unchanged (the
+      layout test asserts this);
+    * the sampled latent is **rounded to float16 and back** before
+      normalisation — about 11 bits of every conditioning latent. Upstream does
+      it explicitly; this port would otherwise inherit it only implicitly from
+      the loader's fp16 VAE cast and would diverge silently if that cast ever
+      changed, so it is written out here.
     """
     torch_device = torch.device(device)
     vae_dtype = next(vae.parameters()).dtype
@@ -430,7 +445,12 @@ def encode_condition_images(
         pixels = pixels.permute(2, 0, 1)[None, :, None] / 255.0
         pixels = (pixels - pix_mean) / pix_std
         posterior = vae.encode(pixels.to(vae_dtype), return_dict=True).latent_dist
-        latent = posterior.mode().float()
+        # A CPU generator against CUDA parameters is deliberate and is what
+        # upstream does: `randn_tensor` draws on the generator's device and moves
+        # the result, so the sample is identical on either device.
+        latent = posterior.sample(
+            generator=torch.Generator().manual_seed(int(encode_seed)))
+        latent = latent.to(torch.float16).float()
         latents.append((latent - mean) / std)
     return latents
 

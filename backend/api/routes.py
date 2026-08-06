@@ -3237,6 +3237,11 @@ async def generate_img2vid(
     from api.generation_status import start_generation, complete_generation, fail_generation, get_warnings
     from utils.video_utils import save_video_with_metadata
 
+    # The optional last-frame upload, normalised once: an absent part and a part
+    # with no filename both mean "no last frame".
+    _last_frame = last_frame_image if (last_frame_image is not None
+                                       and last_frame_image.filename) else None
+
     params = {
         "prompt": prompt,
         "negative_prompt": negative_prompt,
@@ -3273,7 +3278,13 @@ async def generate_img2vid(
         # The uploaded FILENAME, not the bytes: it is what the gallery row and
         # the capability warning can carry, and `None` is what "no last frame"
         # means for both. The image itself is read below.
-        "last_frame_image": getattr(last_frame_image, "filename", None) if last_frame_image else None,
+        #
+        # ONE test decides both this record and the read below (`_last_frame`),
+        # so "a last frame was sent" cannot be answered two different ways: a
+        # part present but EMPTY (`filename == ""`) is treated as absent, rather
+        # than warning about an ignored keyframe on LTX-2.3 while conditioning
+        # on nothing, or being read as a keyframe the warning never mentioned.
+        "last_frame_image": _last_frame.filename if _last_frame is not None else None,
     }
 
     # Training-free reference-style transfer (video). See generate_txt2vid's
@@ -3327,9 +3338,9 @@ async def generate_img2vid(
             detail=str(e),
         )
     last_input_image = None
-    if last_frame_image is not None:
+    if _last_frame is not None:
         try:
-            last_frame_data = await last_frame_image.read()
+            last_frame_data = await _last_frame.read()
             last_input_image = Image.open(io.BytesIO(last_frame_data)).convert("RGB")
         except Exception as e:
             raise CustomValidationError(

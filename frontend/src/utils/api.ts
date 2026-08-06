@@ -939,17 +939,71 @@ export interface VideoConstraints {
 export const fetchArchCapabilities = async (): Promise<ArchCapabilities> =>
   (await api.get("/schema/arch-capabilities")).data;
 
+// True when `frames` is a length the architecture really accepts: on the grid
+// (`multiple * n + offset`) and inside the production range. `suggested_frames`
+// is only a SUBSET of these (it is capped, and LTX-2.3 omits lengths it accepts
+// but does not advertise), so this is what decides whether a value the user
+// already holds may stay.
+export const isValidVideoFrameCount = (
+  caps: ArchCapabilities | null | undefined,
+  arch: string | null | undefined,
+  frames: number | null | undefined
+): boolean => {
+  const c = arch ? caps?.video_constraints?.[arch] : undefined;
+  if (!c || frames == null || !Number.isFinite(frames)) return false;
+  if (frames < c.min_frames) return false;
+  if (c.max_frames != null && frames > c.max_frames) return false;
+  const k = (frames - c.frame_offset) / c.frame_multiple;
+  return Number.isInteger(k) && k >= 0;
+};
+
 // The clip-length <Select> options for the loaded video arch, from the backend's
 // own valid-length rule. Falls back to LTX-2.3's historical hardcoded list only
 // when the matrix has not loaded (or the arch is unknown), so the offered
 // lengths are never a second copy of a rule the backend owns.
+//
+// `current` — the value the control is bound to. A <select> renders ONLY the
+// options it is handed, so a current value missing from the list makes the
+// control render BLANK while the panel keeps sending that value. If it is a
+// length this architecture accepts it is merged in (in order); if it is not,
+// normalizeVideoFrames() below is what replaces it.
 export const videoFrameOptions = (
   caps: ArchCapabilities | null | undefined,
-  arch: string | null | undefined
+  arch: string | null | undefined,
+  current?: number | null
 ): { value: string; label: string }[] => {
   const suggested = arch ? caps?.video_constraints?.[arch]?.suggested_frames : undefined;
-  const lengths = suggested?.length ? suggested : [9, 17, 25, 33, 49, 65, 81, 97, 121];
+  const lengths = suggested?.length ? [...suggested] : [9, 17, 25, 33, 49, 65, 81, 97, 121];
+  if (current != null && !lengths.includes(current)) {
+    // Unknown arch / matrix not loaded: keep the value rather than blanking the
+    // control, the same "assume supported" convention as archSupportsFeature.
+    const known = !!(arch && caps?.video_constraints?.[arch]);
+    if (!known || isValidVideoFrameCount(caps, arch, current)) {
+      lengths.push(current);
+      lengths.sort((a, b) => a - b);
+    }
+  }
   return lengths.map((n) => ({ value: String(n), label: String(n) }));
+};
+
+// The clip length to hold after the loaded architecture changed: the current
+// value when that architecture accepts it, otherwise the NEAREST offered length
+// (ties go up). Mirrors normalizeUnetQuantization: a value carried over from
+// another architecture -- LTX-2.3's 121 onto MiniMax-H3, whose grid starts at
+// 124 -- would otherwise sit in the control unselectable and be sent anyway,
+// only to be snapped server-side with a warning.
+export const normalizeVideoFrames = (
+  caps: ArchCapabilities | null | undefined,
+  arch: string | null | undefined,
+  frames: number | null | undefined
+): number | null => {
+  const c = arch ? caps?.video_constraints?.[arch] : undefined;
+  if (!c || frames == null) return frames ?? null;
+  if (isValidVideoFrameCount(caps, arch, frames)) return frames;
+  const offered = c.suggested_frames?.length ? c.suggested_frames : null;
+  if (!offered) return frames;
+  return offered.reduce((best, n) =>
+    Math.abs(n - frames) < Math.abs(best - frames) ? n : best, offered[0]);
 };
 
 // Label for that control, stating the arch's own rule ("17n+5, 124-345") rather

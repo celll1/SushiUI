@@ -26,7 +26,7 @@ import PromptEditor from "../common/PromptEditor";
 import LoopGenerationPanel, { LoopGenerationConfig } from "./LoopGenerationPanel";
 import QuantizedGemmSelect from "./QuantizedGemmSelect";
 import { migrateLoopGenerationConfig, computeLoopDecodeDirective } from "@/utils/loopGenerationInheritance";
-import { generateTxt2Img, generateImg2Img, generateTxt2Vid, Txt2VidParams, generateTxt2Aud, Txt2AudParams, generateTxt2ImgTrainingPreview, GenerationParams, getSamplers, getScheduleTypes, tokenizePrompt, generateTIPOPrompt, cancelGeneration, getCurrentModel, isLatentOnlyResult, getResultFilename, getResultSeed, getResultAncestralSeed, unetQuantizationOptions, normalizeUnetQuantization, transformerQuantizationLabel, archSupportsFeature, videoFrameOptions, videoFrameLabel, archDisplayName } from "@/utils/api";
+import { generateTxt2Img, generateImg2Img, generateTxt2Vid, Txt2VidParams, generateTxt2Aud, Txt2AudParams, generateTxt2ImgTrainingPreview, GenerationParams, getSamplers, getScheduleTypes, tokenizePrompt, generateTIPOPrompt, cancelGeneration, getCurrentModel, isLatentOnlyResult, getResultFilename, getResultSeed, getResultAncestralSeed, unetQuantizationOptions, normalizeUnetQuantization, transformerQuantizationLabel, archSupportsFeature, videoFrameOptions, videoFrameLabel, archDisplayName, normalizeVideoFrames } from "@/utils/api";
 import { useActiveTraining } from "@/hooks/useActiveTraining";
 import { wsClient, CFGMetrics } from "@/utils/websocket";
 import CFGMetricsGraph from "../common/CFGMetricsGraph";
@@ -361,6 +361,20 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
   const loadedArchName = archDisplayName(loadedArch);
   const supportsCfg = archSupportsFeature(archCapabilities, loadedArch, "cfg");
   const supportsNegativePrompt = archSupportsFeature(archCapabilities, loadedArch, "negative_prompt");
+  // Snap a persisted clip length the LOADED video architecture does not accept
+  // (LTX-2.3's 121 carried onto MiniMax-H3, whose grid starts at 124). Same
+  // shape and same reason as the unet_quantization normaliser above: otherwise
+  // the <select> holds a value absent from its options and the panel keeps
+  // sending it, only for the backend to snap it and warn.
+  useEffect(() => {
+    if (!archCapabilities || !loadedArch) return;
+    setParams((prev) => {
+      const normalized = normalizeVideoFrames(archCapabilities, loadedArch, prev.num_frames ?? null);
+      return normalized == null || normalized === prev.num_frames
+        ? prev
+        : { ...prev, num_frames: normalized };
+    });
+  }, [archCapabilities, loadedArch]);
   const [promptTokenCount, setPromptTokenCount] = useState<number>(0);
   const [negativePromptTokenCount, setNegativePromptTokenCount] = useState<number>(0);
   const [isTIPODialogOpen, setIsTIPODialogOpen] = useState(false);
@@ -3439,7 +3453,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
               label={videoFrameLabel(archCapabilities, loadedArch)}
               value={String(params.num_frames ?? 121)}
               onChange={(e) => setParams({ ...params, num_frames: parseInt(e.target.value) })}
-              options={videoFrameOptions(archCapabilities, loadedArch)}
+              options={videoFrameOptions(archCapabilities, loadedArch, params.num_frames ?? null)}
             />
 
             <NumberInput

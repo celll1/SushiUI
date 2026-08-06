@@ -27,7 +27,7 @@ import PromptEditor from "../common/PromptEditor";
 import LoopGenerationPanel, { LoopGenerationConfig } from "./LoopGenerationPanel";
 import QuantizedGemmSelect from "./QuantizedGemmSelect";
 import { migrateLoopGenerationConfig, computeLoopDecodeDirective } from "@/utils/loopGenerationInheritance";
-import { getSamplers, getScheduleTypes, generateImg2Img, generateImg2Vid, Img2VidParams, generateAud2Aud, Aud2AudParams, generateImg2ImgTrainingPreview, toBase64, LoRAConfig, ControlNetConfig, generateTIPOPrompt, cancelGeneration, getCurrentModel, isLatentOnlyResult, getResultFilename, getResultSeed, getResultAncestralSeed, unetQuantizationOptions, normalizeUnetQuantization, transformerQuantizationLabel, archSupportsFeature, videoFrameOptions, videoFrameLabel, archDisplayName } from "@/utils/api";
+import { getSamplers, getScheduleTypes, generateImg2Img, generateImg2Vid, Img2VidParams, generateAud2Aud, Aud2AudParams, generateImg2ImgTrainingPreview, toBase64, LoRAConfig, ControlNetConfig, generateTIPOPrompt, cancelGeneration, getCurrentModel, isLatentOnlyResult, getResultFilename, getResultSeed, getResultAncestralSeed, unetQuantizationOptions, normalizeUnetQuantization, transformerQuantizationLabel, archSupportsFeature, videoFrameOptions, videoFrameLabel, archDisplayName, normalizeVideoFrames } from "@/utils/api";
 import { useActiveTraining } from "@/hooks/useActiveTraining";
 import { wsClient, CFGMetrics } from "@/utils/websocket";
 import CFGMetricsGraph from "../common/CFGMetricsGraph";
@@ -397,6 +397,12 @@ const LOOP_GENERATION_STORAGE_KEY = "img2img_loop_generation";
 const PREVIEW_STORAGE_KEY = "img2img_preview";
 const INPUT_IMAGE_STORAGE_KEY = "img2img_input_image";
 const REF_IMAGES_STORAGE_KEY = "img2img_ref_images";
+// The optional last-frame keyframe (a data URL) gets its OWN key, exactly like
+// the input image above: it is an IMAGE, so it must not ride the params blob
+// into the ~5 MB localStorage quota -- but keeping it out of that blob without
+// storing it anywhere made it the one parameter that silently vanished on
+// reload while every other one came back.
+const LAST_FRAME_STORAGE_KEY = "img2img_last_frame_image";
 
 interface Img2ImgPanelProps {
   onImageGenerated?: (imageUrl: string) => void;
@@ -470,6 +476,20 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
   const loadedArchName = archDisplayName(loadedArch);
   const supportsCfg = archSupportsFeature(archCapabilities, loadedArch, "cfg");
   const supportsNegativePrompt = archSupportsFeature(archCapabilities, loadedArch, "negative_prompt");
+  // Snap a persisted clip length the LOADED video architecture does not accept
+  // (LTX-2.3's 121 carried onto MiniMax-H3, whose grid starts at 124). Same
+  // shape and same reason as the unet_quantization normaliser above: otherwise
+  // the <select> holds a value absent from its options and the panel keeps
+  // sending it, only for the backend to snap it and warn.
+  useEffect(() => {
+    if (!archCapabilities || !loadedArch) return;
+    setParams((prev) => {
+      const normalized = normalizeVideoFrames(archCapabilities, loadedArch, prev.num_frames ?? null);
+      return normalized == null || normalized === prev.num_frames
+        ? prev
+        : { ...prev, num_frames: normalized };
+    });
+  }, [archCapabilities, loadedArch]);
   const supportsLastFrame = archSupportsFeature(archCapabilities, loadedArch, "last_frame_image");
   const [isDragging, setIsDragging] = useState(false);
   const [isEditingImage, setIsEditingImage] = useState(false);
@@ -607,6 +627,14 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         } catch (error) {
           console.error("Failed to load saved params:", error);
         }
+      }
+
+      // The last-frame keyframe lives under its own key (it is an image, so it
+      // is kept out of the params blob), and is restored whether or not any
+      // params were persisted.
+      const savedLastFrame = localStorage.getItem(LAST_FRAME_STORAGE_KEY);
+      if (savedLastFrame) {
+        setParams((prev) => ({ ...prev, last_frame_image: savedLastFrame }));
       }
 
       // Load preview image
@@ -961,6 +989,22 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
       }
     }
   }, [params, isMounted, isInitialLoad]);
+
+  // The last-frame keyframe, under its own key (see LAST_FRAME_STORAGE_KEY).
+  // Written best-effort: a large upload can exceed the quota, and when it does
+  // only this one value is lost instead of every persisted parameter.
+  useEffect(() => {
+    if (!isMounted || isInitialLoad) return;
+    try {
+      if (params.last_frame_image) {
+        localStorage.setItem(LAST_FRAME_STORAGE_KEY, params.last_frame_image);
+      } else {
+        localStorage.removeItem(LAST_FRAME_STORAGE_KEY);
+      }
+    } catch (error) {
+      console.warn("[Img2Img] Could not persist the last-frame keyframe:", error);
+    }
+  }, [params.last_frame_image, isMounted, isInitialLoad]);
 
   // Listen for localStorage changes from Gallery/Preview (send to feature)
   useEffect(() => {
@@ -3782,7 +3826,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
               label={videoFrameLabel(archCapabilities, loadedArch)}
               value={String(params.num_frames ?? 121)}
               onChange={(e) => setParams({ ...params, num_frames: parseInt(e.target.value) })}
-              options={videoFrameOptions(archCapabilities, loadedArch)}
+              options={videoFrameOptions(archCapabilities, loadedArch, params.num_frames ?? null)}
             />
 
             <NumberInput

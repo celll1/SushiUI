@@ -19,6 +19,12 @@ export interface ModelInfo {
   type?: string;
   is_video?: boolean;
   is_audio?: boolean;
+  // MiniMax-H3 only: which of the two released transformer partitions is
+  // loaded ("fl2va" | "ref2va"). They share every other component and are
+  // otherwise indistinguishable, and which one is loaded decides which
+  // workflows the model can serve -- ref2va is the only one that reads
+  // reference rows (/generate/ref2vid).
+  variant?: string;
   source?: string;
   is_v_prediction?: boolean;
   [key: string]: unknown;

@@ -575,6 +575,117 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /generate/ref2vid:
+    post:
+      tags: [generation]
+      summary: Generate video from omni-references (MiniMax-H3 ref2va only)
+      description: |
+        Omni-reference video generation: the prompt is conditioned on an ordered
+        list of reference media — up to 9 images, 3 videos (each optionally
+        carrying its own soundtrack) and 3 audio clips, at most 12 files in
+        total. Produces an H.264 mp4 (with an audio track when `audio_enable`
+        is true) and a gallery row, exactly like `/generate/txt2vid`.
+
+        **Requirements:**
+        - A MiniMax-H3 model whose transformer variant is `ref2va` must be
+          loaded (otherwise 400). This is the second of the two released
+          MiniMax-H3 transformer partitions: the `fl2va` file that serves
+          `/generate/txt2vid` and `/generate/img2vid` was never trained to read
+          reference rows, and the two files are otherwise indistinguishable, so
+          a mismatch is refused by name rather than run. `GET /models/current`
+          reports the loaded variant as `model_info.variant`.
+        - No other architecture implements this workflow; unlike
+          `/generate/img2vid` this endpoint serves ONE architecture.
+        - Sent as multipart/form-data with the reference files plus the txt2vid
+          parameters as form fields.
+
+        **Why this is not `/generate/img2vid` with more files.** An img2vid
+        request conditions on 1-2 keyframes that are placed at fixed ends of the
+        generated clip and share its canvas. A ref2va request conditions on up
+        to 12 heterogeneous files of three modalities, encoded at their own
+        resolutions and rates, whose ORDER is semantic. They are different
+        requests with different validation.
+
+        **The reference order is semantic, twice over.** It fixes the
+        `<Picture i>` / `<Audio j>` / `<Video k>` labels the prompt can refer to,
+        and it lays the references out on the packed sequence's shared rotary
+        clock. The packed order is: every `reference_images` entry in upload
+        order, then every `reference_videos` entry (each preceded by its own
+        `reference_video_audios` soundtrack when one is sent), then every
+        `reference_audios` entry. Referring to a reference by its label in the
+        prompt (for example "the woman in `<Picture 1>` walks through the room
+        from `<Video 1>`") is how the released model was prompted.
+
+        **Limits (the model's, validated server-side, 400 with the reason):**
+        - at most 9 image, 3 video and 3 audio references, and at most 12 in
+          total;
+        - an audio reference cannot be the only kind sent: a standalone
+          soundtrack never reaches the conditioner, so a request built from
+          audio alone conditions the vision stream on nothing;
+        - a `reference_video_audios` entry must be positionally paired with a
+          `reference_videos` entry;
+        - a reference video must run at least 22 frames once resampled to
+          24 fps and truncated to the generated duration.
+
+        **Normalisation applied to every reference (MiniMax-H3's own):**
+        - an image reference is put on a short edge of its own — 2048 for the
+          released checkpoint, upscaling included and with no area cap — under
+          the default `reference_image_size: max`; `match` instead scales it
+          down to the generation's pixel area, which shortens the packed
+          sequence because reference rows ride through every sampling step;
+        - a video reference is resampled to 24 fps by dropping and duplicating
+          whole frames, truncated to the generated duration, and put on the
+          canvas its OWN aspect ratio resolves to;
+        - a soundtrack is truncated to the generated duration and resampled to
+          the audio VAE's 32 kHz, mono upmixed to stereo.
+
+        **The same MiniMax-H3 constraints as `/generate/txt2vid` apply**:
+        `width`/`height` divisible by 32 with SushiUI's short edge <= 768 /
+        long edge <= 1344 policy restriction; `num_frames` of the form
+        `17 * n + 5` in `[124, 345]`, snapped with a `warnings[]` entry;
+        `frame_rate` fixed at 24.0; `num_inference_steps` counting sigma grid
+        points, so it drives `num_inference_steps - 1` model evaluations and
+        values below 2 are refused; `guidance_scale` / `negative_prompt`
+        ignored, with a warning when set to a non-default value.
+      operationId: generateRef2Vid
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Ref2VidRequest'
+      responses:
+        '200':
+          description: Generation successful
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenerationResponse'
+              example:
+                success: true
+                actual_seed: 1234567890
+                image:
+                  id: 47
+                  filename: "ref2vid_20260807_120000_1234567890.mp4"
+                  generation_type: "ref2vid"
+        '400':
+          description: >-
+            Invalid parameters; no MiniMax-H3 model loaded; a MiniMax-H3 model
+            loaded from the `fl2va` transformer variant instead of `ref2va`; or
+            a reference list that exceeds the model's limits (>9 images,
+            >3 videos, >3 audio, >12 total, audio-only, an unpaired video
+            soundtrack, or a reference video shorter than 22 frames at 24 fps).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Generation failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /generate/txt2aud:
     post:
       tags: [generation]
@@ -7376,6 +7487,89 @@ components:
                 (the default) means first-frame conditioning only. Ignored on
                 LTX-2.3, which conditions on the first frame only — sending it
                 there returns an `unsupported_param` entry in `warnings[]`.
+
+    Ref2VidRequest:
+      allOf:
+        - $ref: '#/components/schemas/Txt2VidRequest'
+        - type: object
+          description: |
+            The txt2vid parameter set plus the `ref2va` reference uploads. At
+            least one image or video reference is required; audio references
+            cannot stand alone. Every list is read in UPLOAD ORDER, and the
+            packed order is images, then videos (each preceded by its own
+            soundtrack), then standalone audio.
+
+            `controlnets` is inherited from `Txt2VidRequest` but is not read by
+            this endpoint: its only video use is LTX-2.3 style transfer, and
+            this endpoint serves MiniMax-H3 alone.
+          properties:
+            reference_images:
+              type: array
+              maxItems: 9
+              items:
+                type: string
+                format: binary
+              description: >-
+                Subject / style / scene reference images (multipart file
+                uploads), at most 9. Each is encoded at a short edge of its own
+                (see `reference_image_size`) and never binds the generated
+                geometry. Referred to in the prompt as `<Picture i>`, numbered
+                from 1 in upload order.
+            reference_videos:
+              type: array
+              maxItems: 3
+              items:
+                type: string
+                format: binary
+              description: >-
+                Motion / camera reference clips (multipart file uploads), at
+                most 3. Each is resampled to 24 fps, truncated to the generated
+                duration, and put on the canvas its own aspect ratio resolves
+                to; it must run at least 22 frames after that. The clip's own
+                embedded soundtrack is NOT read — send it explicitly as the
+                positionally matching `reference_video_audios` entry. Referred
+                to in the prompt as `<Video k>`.
+            reference_video_audios:
+              type: array
+              maxItems: 3
+              items:
+                type: string
+                format: binary
+              description: >-
+                Soundtrack of the same-position `reference_videos` entry
+                (multipart file uploads), at most 3. Entry `n` belongs to
+                reference video `n`; sending more of these than videos is a 400.
+                A video reference's soundtrack packs immediately BEFORE its
+                video rows and shares their rotary origin, and is labelled
+                `<Audio j>` ahead of that video's `<Video k>`. Send an empty
+                part to skip a video's soundtrack while supplying a later one.
+            reference_audios:
+              type: array
+              maxItems: 3
+              items:
+                type: string
+                format: binary
+              description: >-
+                Standalone voice / music references (multipart file uploads), at
+                most 3, packed after every image and video reference. They never
+                reach the conditioner (only the audio VAE), so a request built
+                from audio references alone is a 400. Referred to in the prompt
+                as `<Audio j>`, numbered across soundtracks and standalone
+                clips alike in packed order.
+            reference_image_size:
+              type: string
+              enum: [max, match]
+              default: max
+              description: >-
+                How an IMAGE reference is sized before encoding. `max` is the
+                released recipe — each image on a short edge of its own, 2048
+                for the released checkpoint, upscaling included and with no area
+                cap. `match` scales it down (never up) to the generation's pixel
+                area, which produces fewer reference rows and therefore a
+                shorter packed sequence, since reference rows ride through every
+                sampling step. Video references are unaffected: they always
+                follow the canvas rule the generated video follows.
+              example: max
 
     OutpaintVideoRequest:
       type: object

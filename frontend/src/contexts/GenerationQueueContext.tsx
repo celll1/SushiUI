@@ -2,12 +2,12 @@
 
 import { createContext, useContext, useState, useCallback, ReactNode, useEffect, useRef } from "react";
 import { usePathname } from "next/navigation";
-import { GenerationParams, Img2ImgParams, InpaintParams, OutpaintParams, OutpaintVideoParams, OutpaintAudioParams, UpscaleParams, Txt2VidParams, Img2VidParams, Txt2AudParams, Aud2AudParams } from "@/utils/api";
+import { GenerationParams, Img2ImgParams, InpaintParams, OutpaintParams, OutpaintVideoParams, OutpaintAudioParams, UpscaleParams, Txt2VidParams, Img2VidParams, Ref2VidParams, MiniMaxH3References, Txt2AudParams, Aud2AudParams } from "@/utils/api";
 
 export interface QueueItem {
   id: string;
-  type: "txt2img" | "img2img" | "inpaint" | "outpaint" | "outpaint_vid" | "outpaint_aud" | "upscale" | "txt2vid" | "img2vid" | "txt2aud" | "aud2aud";
-  params: GenerationParams | Img2ImgParams | InpaintParams | OutpaintParams | OutpaintVideoParams | OutpaintAudioParams | UpscaleParams | Txt2VidParams | Img2VidParams | Txt2AudParams | Aud2AudParams;
+  type: "txt2img" | "img2img" | "inpaint" | "outpaint" | "outpaint_vid" | "outpaint_aud" | "upscale" | "txt2vid" | "img2vid" | "ref2vid" | "txt2aud" | "aud2aud";
+  params: GenerationParams | Img2ImgParams | InpaintParams | OutpaintParams | OutpaintVideoParams | OutpaintAudioParams | UpscaleParams | Txt2VidParams | Img2VidParams | Ref2VidParams | Txt2AudParams | Aud2AudParams;
   inputImage?: string; // For img2img, inpaint, and outpaint
   // Server-cached latent to chain from instead of an image (loop-generation
   // decodeMode "final-only" latent passthrough; img2img only — set by the
@@ -21,6 +21,11 @@ export interface QueueItem {
   // (MiniMax-H3, which conditions on boundary frames and can anchor both ends
   // of a gap) accepts it; the backend refuses it on any other.
   bridgeVideo?: File;
+  // For ref2vid (MiniMax-H3 ref2va) only: the reference uploads, IN THE ORDER
+  // THE MODEL READS THEM. They ride on the item -- like inputAudio/inputVideo,
+  // and unlike inputImage's base64 string -- so a queued request keeps the
+  // references it was built with even after the panel's inputs change.
+  references?: MiniMaxH3References;
   maskImage?: string; // For inpaint only
   status: "pending" | "generating" | "completed" | "failed";
   addedAt: number;

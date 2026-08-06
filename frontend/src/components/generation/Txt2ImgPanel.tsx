@@ -15,6 +15,7 @@ import Select from "../common/Select";
 import ModelLoadSection from "../common/ModelLoadSection";
 import LoRASelector from "../common/LoRASelector";
 import ControlNetSelector from "../common/ControlNetSelector";
+import MiniMaxH3ReferenceSelector, { EMPTY_MINIMAX_H3_REFERENCES, countMiniMaxH3References } from "../common/MiniMaxH3ReferenceSelector";
 import TIPODialog, { TIPOSettings } from "../common/TIPODialog";
 import { fixFloatingPointParams } from "@/utils/numberUtils";
 import ImageViewer from "../common/ImageViewer";
@@ -26,7 +27,7 @@ import PromptEditor from "../common/PromptEditor";
 import LoopGenerationPanel, { LoopGenerationConfig } from "./LoopGenerationPanel";
 import QuantizedGemmSelect from "./QuantizedGemmSelect";
 import { migrateLoopGenerationConfig, computeLoopDecodeDirective } from "@/utils/loopGenerationInheritance";
-import { generateTxt2Img, generateImg2Img, generateTxt2Vid, Txt2VidParams, generateTxt2Aud, Txt2AudParams, generateTxt2ImgTrainingPreview, GenerationParams, getSamplers, getScheduleTypes, tokenizePrompt, generateTIPOPrompt, cancelGeneration, getCurrentModel, isLatentOnlyResult, getResultFilename, getResultSeed, getResultAncestralSeed, unetQuantizationOptions, normalizeUnetQuantization, transformerQuantizationLabel, archSupportsFeature, videoFrameOptions, videoFrameLabel, archDisplayName, normalizeVideoFrames } from "@/utils/api";
+import { generateTxt2Img, generateImg2Img, generateTxt2Vid, Txt2VidParams, generateRef2Vid, Ref2VidParams, MiniMaxH3References, generateTxt2Aud, Txt2AudParams, generateTxt2ImgTrainingPreview, GenerationParams, getSamplers, getScheduleTypes, tokenizePrompt, generateTIPOPrompt, cancelGeneration, getCurrentModel, isLatentOnlyResult, getResultFilename, getResultSeed, getResultAncestralSeed, unetQuantizationOptions, normalizeUnetQuantization, transformerQuantizationLabel, archSupportsFeature, videoFrameOptions, videoFrameLabel, archDisplayName, normalizeVideoFrames } from "@/utils/api";
 import { useActiveTraining } from "@/hooks/useActiveTraining";
 import { wsClient, CFGMetrics } from "@/utils/websocket";
 import CFGMetricsGraph from "../common/CFGMetricsGraph";
@@ -286,6 +287,13 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
   const [generatedImage, setGeneratedImage] = useState<string | null>(null);
   // Video output (produced when a video model is loaded / txt2vid queue item).
   const [generatedVideo, setGeneratedVideo] = useState<string | null>(null);
+  // MiniMax-H3 ref2va references. Kept as local UI state (they are file
+  // uploads, like the aud2aud reference clip, not generation parameters) and
+  // carried on the queue item so a queued request keeps the references it was
+  // built with.
+  const [h3References, setH3References] = useState<MiniMaxH3References>(
+    EMPTY_MINIMAX_H3_REFERENCES);
+  const [h3ReferenceImageSize, setH3ReferenceImageSize] = useState<"max" | "match">("max");
   const [generatedVideoInfo, setGeneratedVideoInfo] = useState<{ num_frames?: number; fps?: number; duration?: number } | null>(null);
   // Audio output (produced when an audio model is loaded / txt2aud queue item).
   const [generatedAudio, setGeneratedAudio] = useState<string | null>(null);
@@ -359,6 +367,14 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
   // hidden merely because the matrix was unavailable.
   const loadedArch = currentModelInfo?.model_info?.type as string | undefined;
   const loadedArchName = archDisplayName(loadedArch);
+  // MiniMax-H3 ships TWO transformer partitions that share every other
+  // component: `fl2va` (txt2vid / img2vid / video outpaint) and `ref2va`
+  // (omni-reference). Which one is loaded IS the workflow, so the reference
+  // inputs appear only for the one that was trained to read reference rows —
+  // the backend refuses the other by name rather than running it.
+  const isRef2Va =
+    loadedArch === "minimax_h3" &&
+    (currentModelInfo?.model_info?.variant as string | undefined) === "ref2va";
   const supportsCfg = archSupportsFeature(archCapabilities, loadedArch, "cfg");
   const supportsNegativePrompt = archSupportsFeature(archCapabilities, loadedArch, "negative_prompt");
   // Snap a persisted clip length the LOADED video architecture does not accept
@@ -1450,6 +1466,23 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         // is rendered for a loaded LTX-2.3 model and must actually be sent.
         quantized_gemm_mode: params.quantized_gemm_mode,
       };
+      // MiniMax-H3 ref2va with at least one reference goes to the dedicated
+      // omni-reference endpoint instead: it is a different request (12
+      // heterogeneous files, whose order is semantic), and it is the only thing
+      // the loaded transformer partition was trained for. With no references
+      // the same partition still serves a plain text-to-video request.
+      if (isRef2Va && countMiniMaxH3References(h3References) > 0) {
+        addToQueue({
+          type: "ref2vid",
+          params: {
+            ...videoParams,
+            reference_image_size: h3ReferenceImageSize,
+          } as any,
+          references: h3References,
+          prompt: processedPrompt,
+        });
+        return;
+      }
       addToQueue({
         type: "txt2vid",
         params: videoParams as any,
@@ -1868,9 +1901,10 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
       return;
     }
 
-    // Video branch: txt2vid item (a video model is loaded). Produces an .mp4
-    // and renders a <video> instead of an <img>. No loop-generation handling.
-    if (nextItem.type === "txt2vid") {
+    // Video branch: txt2vid, or ref2vid when the loaded MiniMax-H3 partition is
+    // ref2va and the request carries references. Both produce an .mp4 and
+    // render a <video> instead of an <img>; no loop-generation handling.
+    if (nextItem.type === "txt2vid" || nextItem.type === "ref2vid") {
       setIsGenerating(true);
       setProgress(0);
       setProgressMessage("");
@@ -1879,7 +1913,11 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
       setGeneratedImage(null);
       setGeneratedVideo(null);
       try {
-        const result = await generateTxt2Vid(nextItem.params as Txt2VidParams);
+        const result = nextItem.type === "ref2vid"
+          ? await generateRef2Vid(
+              nextItem.params as Ref2VidParams,
+              nextItem.references ?? EMPTY_MINIMAX_H3_REFERENCES)
+          : await generateTxt2Vid(nextItem.params as Txt2VidParams);
         const videoUrl = `/outputs/${result.image.filename}`;
         setGeneratedVideo(videoUrl);
         setGeneratedVideoInfo({
@@ -1896,8 +1934,8 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
           if (processQueueRef.current) processQueueRef.current();
         }, 100);
       } catch (error: any) {
-        console.error("[Txt2Img] txt2vid generation failed:", error);
-        alert("txt2vid generation failed. Please check console for details.");
+        console.error(`[Txt2Img] ${nextItem.type} generation failed:`, error);
+        alert(`${nextItem.type} generation failed: ${error?.response?.data?.detail || error?.response?.data?.error || "see the console for details."}`);
         setIsGenerating(false);
         setProgress(0);
         setProgressMessage("");
@@ -3539,6 +3577,22 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
               </div>
             )}
           </Card>
+        )}
+
+        {/* Reference inputs for MiniMax-H3's ref2va partition. This is the
+            reference/ControlNet area of a video request: the ControlNet
+            selector below is image-only (its video use is LTX-2.3 style
+            transfer), so the omni-reference inputs live here, directly under
+            the Video card. With no references the same model still serves a
+            plain text-to-video request. */}
+        {isVideo && isRef2Va && (
+          <MiniMaxH3ReferenceSelector
+            value={h3References}
+            onChange={setH3References}
+            referenceImageSize={h3ReferenceImageSize}
+            onReferenceImageSizeChange={setH3ReferenceImageSize}
+            disabled={isGenerating}
+          />
         )}
 
         {!isVideo && !isAudio && (<>

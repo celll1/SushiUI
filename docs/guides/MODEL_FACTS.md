@@ -19,7 +19,7 @@ them. No subjective performance claims.
 | anima | DiT (Cosmos-Predict2 style) | Qwen3-0.6B (`Qwen3Model`) + 6-layer LLM Adapter; T5 tokenizer feeds adapter target ids | velocity / flow (rectified flow) | latent, Qwen-Image VAE (`AutoencoderKLQwenImage`-style, 16ch) | (verify) standard CFG via `_anima_encode_nag_neg` | conduit tq infer / native train (`attn_mode` torch/flash blocks tq) | split-files layout (`split_files/diffusion_models` \| `text_encoders` \| `vae`) or single DiT `.safetensors`; Qwen3 + Qwen-Image VAE auto-discovered by filename patterns | `anima_adapter.py`; DiT + optional LLM-Adapter-only training; Qwen3 TE + VAE frozen |
 | krea2 | MM-DiT (single-stream) | Qwen3-VL-4B-Instruct (frozen) | velocity / flow (rectified flow) | latent, `AutoencoderKLQwenImage` 16ch (latents_mean/std) | `guidance = cfg_scale - 1` (default cfg 4.5); distilled/turbo disables CFG (guidance 0) | conduit (tq usable, GQA) (verify infer/train head_dim) | diffusers dir (`Krea2Pipeline`), transformer-only dir (auto-complement), single-file (diffusers/raw/comfy/sushiUI TE+DiT combined); TE `Qwen/Qwen3-VL-4B-Instruct`, VAE `Qwen/Qwen-Image` `vae` (env `KREA2_TE_DIR`/`KREA2_VAE_DIR` overrides) | `krea2_adapter.py`; transformer only, Qwen3-VL TE ALWAYS frozen (`train_text_encoder` rejected), VAE frozen; train_runner forces bf16 |
 | ltx2 | joint video+audio DiT (`LTX2VideoTransformer3DModel`) | Gemma-3 text encoder (frozen) | velocity / flow (`LTX2Pipeline`/`LTX2ImageToVideoPipeline`, txt2vid + img2vid) | 5D video latent (`[T,H,W]`) via LTX video VAE (tiling enabled) + separate audio VAE/vocoder | plain CFG (`guidance_scale`); img2vid pins frame 0 via `conditioning_mask` | n/a (own pipeline backend, not conduit-routed) | not in the single-file completion matrix above (own loader) | own trainer ops (`ltx2_ops.py`); see row-level notes for AP1-3 speed/lightweight features |
-| minimax_h3 | joint video+audio DiT, **single stream, no cross-attention** (vendored `MiniMaxH3Transformer3DModel`, 50 blocks, 33 B dense): one packed sequence of `[text \| conditioning \| audio \| video]` rows scattered by `index_copy`, split back by `index_select` | Qwen3-VL-32B (`Qwen3VLForConditionalGeneration`), truncated to **50 decoder layers**, unnormalised hidden state after layer 50, 5120-dim; frozen, never moved (layer-streamed off the mmap) | velocity / flow with the sign **opposite** to the usual convention, `x0 = x_t + σ·v` (vendored `MiniMaxH3Scheduler`); **two sigma schedules**, video shift 12.0 and audio shift 3.0, each stream stepped on its own grid once per loop iteration | 5-D 24-ch video latent, `AutoencoderKLMiniMaxH3` (16× spatial / 4× temporal, 36-layer ViT decoder, fp16, **pinned tiling policy**), pixels ImageNet-normalised RGB over `[0,1]` (not `[-1,1]`); **separate** 32-ch audio VAE (fp32, 32 kHz stereo) | **none** — no `guidance_scale`, no `negative_prompt`, no unconditional branch; guidance is distilled into the weights, one forward per step. Both keys are accepted and warned on a non-default value | conduit-routed, head_dim 128, equal q/kv heads, no mask → no capability guard fires, so native/flash/sage/tq all really run; sage refused in TRAINING mode by the shared mode guard | ComfyUI-style flat tree (`diffusion_models/` + `text_encoders/` + `vae/`) plus MiniMax's config-only `official/` for geometry, tokenizer and normalization vectors; shipped DiT is the `*_pruned_fp8_scaled` single file | `minimax_h3_adapter.py`, **LoRA only** — full fine-tuning refused in three layers; TE and both VAEs frozen; block swap optional (opt-in) |
+| minimax_h3 | joint video+audio DiT, **single stream, no cross-attention** (vendored `MiniMaxH3Transformer3DModel`, 50 blocks, 33 B dense): one packed sequence of `[text \| conditioning \| audio \| video]` rows scattered by `index_copy`, split back by `index_select` | Qwen3-VL-32B (`Qwen3VLForConditionalGeneration`), truncated to **50 decoder layers**, unnormalised hidden state after layer 50, 5120-dim; frozen, never moved (layer-streamed off the mmap) | velocity / flow with the sign **opposite** to the usual convention, `x0 = x_t + σ·v` (vendored `MiniMaxH3Scheduler`); **two sigma schedules**, video shift 12.0 and audio shift 3.0, each stream stepped on its own grid once per loop iteration | 5-D 24-ch video latent, `AutoencoderKLMiniMaxH3` (16× spatial / 4× temporal, 36-layer ViT decoder, fp16, **pinned tiling policy**), pixels ImageNet-normalised RGB over `[0,1]` (not `[-1,1]`); **separate** 32-ch audio VAE (fp32, 32 kHz stereo) | **none** — no `guidance_scale`, no `negative_prompt`, no unconditional branch; guidance is distilled into the weights, one forward per step. Both keys are accepted and warned on a non-default value | conduit-routed, head_dim 128, equal q/kv heads, no mask → no capability guard fires, so native/flash/sage/tq all really run; sage refused in TRAINING mode by the shared mode guard | ComfyUI-style flat tree (`diffusion_models/` + `text_encoders/` + `vae/`) plus MiniMax's config-only `official/` for geometry, tokenizer and normalization vectors; shipped DiT is the `*_pruned_fp8_scaled` single file, of which **two interchangeable-looking partitions** exist (`fl2va`, `ref2va`) — selecting the FILE selects the workflow, and the filename is the only discriminator | `minimax_h3_adapter.py`, **LoRA only** — full fine-tuning refused in three layers; TE and both VAEs frozen; block swap optional (opt-in) |
 
 ## VRAM management: keep_models_hot (opt-in, all image archs except ltx2)
 
@@ -732,7 +732,8 @@ a generation without style transfer.
     activations), not optimizer-excluded. Requires `blocks_to_swap == 0`;
     mutually exclusive with TREAD and with stochastic-depth (`block_skip_rate`).
 - **minimax_h3** — Joint video+audio generation (`t2va` from a prompt, `fl2va`
-  from a first and/or last keyframe), plus temporal outpaint. Second video arch,
+  from a first and/or last keyframe, `ref2va` from an ordered list of image,
+  video and audio references), plus temporal outpaint. Second video arch,
   loaded and routed separately from the image-model detection like ltx2. The
   denoise loop is repo-owned (`core/models/minimax_h3/h3_pipeline_ops.py`) —
   upstream ships a Modular pipeline only — over vendored, frozen model classes
@@ -967,6 +968,102 @@ a generation without style transfer.
     LTX-2.3 the same flag only discards audio after the pipeline returns it.
     H3's audio is not independently addressable, so `/generate/txt2aud` refuses
     an H3 model with that reason rather than the generic "no ACE-Step model".
+  - **The conditioner's vision path owes `Qwen3VLModel.forward` three things**,
+    and a hand-written decoder loop drops two of them by default: the merged
+    vision rows scattered into the embeddings at the `<|image_pad|>` /
+    `<|video_pad|>` placeholders; **deepstack**, three intermediate tower feature
+    maps ADDED to the visual rows after each of the first decoder layers; and
+    **mrope**, the 3-D `(t, h, w)` positions `get_rope_index` builds for a
+    sequence containing a vision block, in place of `arange`. All three are
+    implemented in `h3_pipeline_ops.encode_prompt`. **Omitting either of the last
+    two produces finite, correctly-shaped and silently wrong conditioning**, so
+    the K0.7 probe — which spliced merged vision rows in and ran plain 1-D
+    positions — does not stand as verification of this path, which is the thing
+    it was meant to rule out. What K0.7 does establish is the layer-streaming
+    measurement: `functional_call` off the mmap at **49.82 GB flat RSS and
+    13.5 s/prompt**, against **73.08 GB peak, pagefile growth and 46 s/prompt**
+    for the `layer.to(cuda)`/`layer.to(cpu)` shape, on this box.
+  - **Omni-reference generation (`ref2va`) runs on a SECOND transformer, and
+    which file is loaded IS the workflow.** `POST /generate/ref2vid` conditions a
+    generation on an ordered list of image, video (each with an optional
+    positional soundtrack) and standalone audio references; the request surface,
+    the per-modality and total limits and every refusal are in `openapi.yaml`,
+    the limits themselves are constants at the top of
+    `core/models/minimax_h3/h3_references.py`, and the media normalisation lives
+    in that module. It is a dedicated endpoint rather than more files on
+    `/generate/img2vid`: that route pins 1–2 keyframes to the ends of the
+    generated clip on its canvas and both video archs serve it, while this one
+    takes heterogeneous files of three modalities at their own resolutions and
+    rates and only one transformer partition implements it.
+    - **The variant is read off the filename because nothing else distinguishes
+      the two files**: both released DiTs are exactly 20,958,205,608 bytes, both
+      have their config synthesised from their own header, and neither carries
+      metadata. `detect_minimax_h3_layout` puts `fl2va`/`ref2va` in
+      `layout["variant"]`, the loaded components carry it into
+      `current_model_info`, `GET /models/current` reports it as
+      `model_info.variant`, and `/generate/ref2vid` refuses any other variant by
+      naming the file to load instead — a mismatch cannot be detected from the
+      weights and would produce a bad video rather than an error. `GET /models`
+      expands an H3 tree into one entry per DiT file carrying `variant` (the
+      MiniT2I treatment) instead of listing the tree once and silently resolving
+      to the first file. **Caveat:** that expansion only runs for a tree sitting
+      directly under a configured models directory (`settings.models_dir` plus
+      the user's `model_dirs`), and it has not been exercised live here, where
+      the tree is outside those directories and the file is loaded by path.
+      Detection itself does not need a root `model_index.json`:
+      `_looks_like_minimax_h3` also accepts a `diffusion_models/` folder holding
+      a DiT with the key signature.
+    - **The reference ORDER is semantic, twice over**, so nothing sorts or
+      regroups a request: it numbers the `<Picture i>` / `<Audio j>` /
+      `<Video k>` labels the prompt refers to, and it lays the references out on
+      the packed sequence's shared rotary clock.
+    - **Layout**: `[text | reference blocks in request order | target audio |
+      target video]`. Each block advances one shared clock — an image by exactly
+      1.0 (a single integer slot, not a latent frame's 5/3), a standalone audio
+      block by its latent count on the target width grid, and a video reference
+      by `max(audio_latents, video_span)`, with its soundtrack rows packed
+      immediately BEFORE its own video rows from the same clock origin.
+      `build_ref2va_packed_layout` was established the way K0.3 established the
+      `t2va`/`fl2va` layout — against an independent port of ComfyUI's
+      `PackedLayout`, on seven configurations, comparing sequence length, ORDERED
+      index tensors, conditioning row counts and the float64 position grid
+      (≤1e-4 after the shipped fp32 cast) — and is pinned as literals in
+      `backend/tests/minimax_h3_layout_test.py` alongside reordering and
+      soundtrack-placement controls. Because every reference row precedes every
+      generated row of its OWN modality, `video_indices`/`audio_indices` still
+      lead with their conditioning rows, so **`build_row_timesteps` and the
+      denoise loop needed no change at all**.
+    - **A reference is not free, and a video reference cannot be made cheap** —
+      its rows ride through every sampling step. `reference_image_size` (default
+      `max`, the released recipe) governs IMAGES only: `max` puts each image on a
+      2048-pixel short edge of its own, upscaling included and with no area cap,
+      so a square one contributes 4,096 rows against the 8,880-row target of a
+      640×384×124 generation, while `match` scales it down to the generation's
+      pixel area. A video reference is put on the 768-short-edge canvas its own
+      aspect ratio resolves to (`resolve_canvas_size`) regardless of source size,
+      upscaling included, so a 124-frame 16:9 one is 37 latent frames × 1,008
+      rows = **37,296 rows, more than the target itself**, and no parameter
+      reduces it.
+    - **Two refusals rather than approximations**: an audio reference cannot be
+      the only kind sent (a standalone soundtrack never reaches the Qwen3-VL
+      conditioner, so such a request conditions the vision stream on nothing),
+      and a reference video shorter than 22 frames once resampled to 24 fps and
+      truncated to the generated length is refused rather than snapped —
+      upstream's `max(1, (n−5)//17)*17+5` claims 22 frames while feeding fewer,
+      and the floor comes from two directions at once (the video VAE's 17n+5
+      chunk grid, and the conditioner needing ≥13 frames to fill one merged
+      vision block).
+    - **Measured** (four live generations through the endpoint at 640×384×124 on
+      the ref2va file, `blocks_to_swap=0`, fp8 DiT on the dequant path, empty
+      `warnings[]`; the gallery rows of all four are in
+      `scratchpad/h3_ref2vid_run{1..4}.json`, and two were timed): one image
+      reference at 6 steps (5 evaluations) **190 s wall / 22.65 GB peak**; one
+      image + one video
+      reference with its soundtrack, at 4 steps (3 evaluations) and
+      `reference_image_size=match`, **177 s / 23.65 GB**. **These two are not a
+      like-for-like pair** — different step counts and different image sizing —
+      so they bound the observed cost rather than isolating a video reference's.
+      Loading the ref2va file took 26 s, with system RAM peaking at 64.1 GB used.
   - **Temporal outpaint conditions on ONE boundary frame**, and the endpoint's
     shape is entirely that fact. H3 has no analogue of
     `LTX2VideoCondition.index` (no index-addressable conditioning) and no
@@ -993,9 +1090,11 @@ a generation without style transfer.
     its delta) while being structurally incapable of seeing a subject-identity
     break a few seconds later — so any future seam metric needs an appearance
     term as well as a motion term, and should measure the whole generated span.
-    **No seam-hider is added**, and reference conditioning (`ref2va`, not
-    implemented) is not offered as the fix for this: it is a different feature
-    that would have to earn that claim on its own measurement.
+    **No seam-hider is added**, and reference conditioning (`ref2va`, now
+    implemented — see the omni-reference bullet above) is still not offered as
+    the fix for this: what was measured there is that reference conditioning
+    reaches the model, not that it holds identity across a join, and it is a
+    different feature that would have to earn that claim on its own measurement.
   - **Attribution**: the UI displays this architecture as "MiniMax H3", which the
     model's license requires (`archDisplayName` in `frontend/src/utils/api.ts`,
     `_ARCH_DISPLAY_NAMES` in `int8_runtime_quantize.py`).
@@ -1017,9 +1116,15 @@ a generation without style transfer.
   header-driven config synthesis, the two QKV conventions, SwiGLU swap, audio
   weight-norm fold, TE prefix rewrite, the pinned VAE tiling policy and the
   fp8 dequant-only quantization policy. `h3_pipeline_ops.py` is the repo-owned
-  denoise loop and both decodes; `core/models/minimax_h3/vendor/` holds the
-  frozen model classes (transformer with the ported AdaLN curve, both VAEs, the
-  scheduler).
+  denoise loop, both packed-layout builders (`t2va`/`fl2va` and `ref2va`), the
+  layer-streamed `encode_prompt` (placeholder scatter + deepstack + mrope) and
+  both decodes; `core/models/minimax_h3/vendor/` holds the frozen model classes
+  (transformer with the ported AdaLN curve, both VAEs, the scheduler).
+- `backend/core/models/minimax_h3/h3_references.py` — the `ref2va` media side:
+  the released checkpoint's reference limits, the canvas and 2048-short-edge
+  rules, the 24 fps / 32 kHz normalisation, the VAE-grid refusal for short
+  reference videos, and the labelled `<Picture i>` / `<Audio j>` / `<Video k>`
+  presentation the conditioner reads.
 - `backend/core/models/minimax_h3_block_loop_wrapper.py` — block-loop
   re-ownership for block swap and gradient checkpointing; its docstring holds
   the FBCache measurement and why the feature was removed rather than disabled.

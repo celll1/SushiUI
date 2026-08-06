@@ -43,6 +43,8 @@ import {
   unetQuantizationOptions,
   normalizeUnetQuantization,
   transformerQuantizationLabel,
+  videoOutpaintPlacements,
+  outpaintVideoDefaultsForArch,
 } from "@/utils/api";
 import { wsClient, CFGMetrics } from "@/utils/websocket";
 import { saveTempImage, loadTempImage, deleteTempImageRef } from "@/utils/tempImageStorage";
@@ -459,6 +461,12 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
   const [videoFile, setVideoFile] = useState<File | null>(null);
   const [videoPreviewUrl, setVideoPreviewUrl] = useState<string | null>(null);
   const [videoDurationSec, setVideoDurationSec] = useState<number | null>(null);
+  // BRIDGE placement only (an architecture whose video_constraints
+  // .outpaint_placements contains "bridge"): the second clip, preserved at the
+  // END of the timeline, with the generated span between the two.
+  const [bridgeVideoFile, setBridgeVideoFile] = useState<File | null>(null);
+  const [bridgeVideoPreviewUrl, setBridgeVideoPreviewUrl] = useState<string | null>(null);
+  const [bridgeVideoDurationSec, setBridgeVideoDurationSec] = useState<number | null>(null);
   const [generatedVideo, setGeneratedVideo] = useState<string | null>(null);
   const [generatedVideoInfo, setGeneratedVideoInfo] = useState<{ num_frames?: number; fps?: number; duration?: number } | null>(null);
   const [generatedVideoSeed, setGeneratedVideoSeed] = useState<number | null>(null);
@@ -1090,8 +1098,45 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
     setParams(prev => ({ ...prev, input_offset_frames: 0, input_trim_start_frames: 0, input_trim_end_frames: 0 }));
   };
 
-  // Backend rule: total_frames must satisfy (n-1) % 8 == 0, minimum 9.
-  const snapTotalFrames = (n: number): number => Math.max(9, n - (n % 8) + 1);
+  const handleBridgeVideoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!file.type.startsWith('video/')) {
+      alert('Please upload a valid video file');
+      return;
+    }
+    if (bridgeVideoPreviewUrl) URL.revokeObjectURL(bridgeVideoPreviewUrl);
+    setBridgeVideoFile(file);
+    setBridgeVideoDurationSec(null);
+    setBridgeVideoPreviewUrl(URL.createObjectURL(file));
+  };
+
+  const handleClearBridgeVideo = () => {
+    if (bridgeVideoPreviewUrl) URL.revokeObjectURL(bridgeVideoPreviewUrl);
+    setBridgeVideoFile(null);
+    setBridgeVideoPreviewUrl(null);
+    setBridgeVideoDurationSec(null);
+  };
+
+  // --- Placement, from the loaded architecture's own conditioning rule ---
+  //
+  // `outpaint_placements` (GET /schema/arch-capabilities -> video_constraints)
+  // is the single source: ["free"] means the clip can sit anywhere in the
+  // timeline (LTX-2.3 conditions on an arbitrary latent index), while a
+  // boundary-conditioned architecture (MiniMax-H3 conditions on the first
+  // and/or last frame of the span it generates) lists only the placements it
+  // can anchor. No arch name appears here.
+  const loadedArchType = currentModelInfo?.model_info?.type as string | undefined;
+  const outpaintPlacements = videoOutpaintPlacements(archCapabilities, loadedArchType);
+  const boundaryPlacementOnly = !outpaintPlacements.includes("free");
+
+  // Backend rule (LTX-2.3): total_frames must satisfy (n-1) % 8 == 0, minimum 9.
+  // On a boundary-conditioned architecture the grid binds the GENERATED span,
+  // not this number (the preserved frames are pasted, never sampled), so the
+  // total is left alone and the backend reports the effective length it
+  // resolved to.
+  const snapTotalFrames = (n: number): number =>
+    boundaryPlacementOnly ? Math.max(2, Math.round(n)) : Math.max(9, n - (n % 8) + 1);
 
   // Nearest valid LTX-2.3 latent-frame pixel start: {0, 1, 9, 17, ..., 8k+1}.
   // A UX nicety only -- the backend re-snaps (and warns) server-side
@@ -1109,6 +1154,48 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
   const videoRawFrames = videoDurationSec != null
     ? Math.max(1, Math.round(videoDurationSec * (params.frame_rate ?? 24.0)))
     : 0;
+  const videoPlacedFrames = Math.max(
+    1,
+    videoRawFrames - (params.input_trim_start_frames ?? 0) - (params.input_trim_end_frames ?? 0)
+  );
+  // The only two offsets a boundary-conditioned architecture accepts: flush
+  // with the start of the timeline, or flush with its end.
+  const boundaryEndOffset = Math.max(0, (params.total_frames ?? 0) - videoPlacedFrames);
+  const snapBoundaryOffset = (raw: number): number =>
+    Math.abs(raw - 0) <= Math.abs(raw - boundaryEndOffset) ? 0 : boundaryEndOffset;
+  // The placement is DERIVED from the offset + whether a bridge clip is
+  // present, so there is one source of truth for it (the same derivation the
+  // backend does) rather than a second selector state that can disagree.
+  const videoPlacement: "extend_forward" | "extend_backward" | "bridge" =
+    bridgeVideoFile ? "bridge"
+      : (params.input_offset_frames ?? 0) === 0 ? "extend_forward"
+        : "extend_backward";
+  const setVideoPlacement = (next: "extend_forward" | "extend_backward" | "bridge") => {
+    if (next !== "bridge" && bridgeVideoFile) handleClearBridgeVideo();
+    setParams(prev => ({
+      ...prev,
+      input_offset_frames: next === "extend_backward" ? boundaryEndOffset : 0,
+    }));
+  };
+
+  // A `total_frames` the loaded architecture cannot serve at all -- below the
+  // shortest span it can generate -- is replaced by that architecture's own
+  // default from the SAME overlay chain the backend resolves from. Mirrors
+  // Txt2ImgPanel's normalizeVideoFrames effect: otherwise a value carried over
+  // from another architecture sits in the control and is sent anyway, only to
+  // be bumped server-side with a warning.
+  useEffect(() => {
+    if (!archCapabilities || !loadedArchType || !generationDefaults) return;
+    const constraints = archCapabilities.video_constraints?.[loadedArchType];
+    if (!constraints) return;
+    const archDefault = outpaintVideoDefaultsForArch(generationDefaults, loadedArchType)
+      .total_frames as number | undefined;
+    setParams(prev => (
+      (prev.total_frames ?? 0) < constraints.min_frames && archDefault != null
+        ? { ...prev, total_frames: archDefault }
+        : prev
+    ));
+  }, [archCapabilities, generationDefaults, loadedArchType]);
 
   // --- Audio temporal outpaint (outpaint_aud) input clip handling ---
 
@@ -1336,6 +1423,9 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
         type: "outpaint_vid",
         params: videoParams as any,
         inputVideo: videoFile,
+        // Bridge placement only; undefined otherwise, and the backend refuses
+        // it on an architecture that has no bridge placement.
+        bridgeVideo: bridgeVideoFile || undefined,
         prompt: processedPrompt,
       });
       return;
@@ -1424,7 +1514,8 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
         if (!clip) {
           throw new Error("No input video available for video outpaint generation");
         }
-        const result = await generateOutpaintVideo(nextItem.params as OutpaintVideoParams, clip);
+        const result = await generateOutpaintVideo(
+          nextItem.params as OutpaintVideoParams, clip, nextItem.bridgeVideo);
         const videoUrl = `/outputs/${getResultFilename(result)}`;
         setGeneratedVideo(videoUrl);
         setGeneratedVideoSeed(getResultSeed(result));
@@ -2672,6 +2763,63 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
 
         {isVideo && (
         <Card title="Temporal Placement">
+          {boundaryPlacementOnly && (
+            <div className="mb-4 space-y-3">
+              <Select
+                label="Placement"
+                value={videoPlacement}
+                onChange={(e) => setVideoPlacement(e.target.value as "extend_forward" | "extend_backward" | "bridge")}
+                options={[
+                  ...(outpaintPlacements.includes("extend_forward")
+                    ? [{ value: "extend_forward", label: "Extend forward (generate after the clip)" }] : []),
+                  ...(outpaintPlacements.includes("extend_backward")
+                    ? [{ value: "extend_backward", label: "Extend backward (generate before the clip)" }] : []),
+                  ...(outpaintPlacements.includes("bridge")
+                    ? [{ value: "bridge", label: "Bridge (generate between two clips)" }] : []),
+                ]}
+              />
+              <p className="text-xs text-gray-500">
+                This model conditions on the first and/or last frame of the span it generates, so the
+                input clip must sit at the start or the end of the timeline, or at both ends of a
+                bridge. Interior source motion is not provided to the model. The generated span is
+                what has to be a length the model can produce, so the effective output length is
+                reported with the result.
+              </p>
+              {videoPlacement === "bridge" && (
+                <div className="space-y-2">
+                  <label className="block text-xs text-gray-400">Second clip (preserved at the end)</label>
+                  {bridgeVideoPreviewUrl ? (
+                    <div className="space-y-2">
+                      <video
+                        src={bridgeVideoPreviewUrl}
+                        className="w-full max-h-40 rounded border border-gray-700"
+                        controls
+                        onLoadedMetadata={(e) => {
+                          const d = e.currentTarget.duration;
+                          if (Number.isFinite(d) && d > 0) setBridgeVideoDurationSec(d);
+                        }}
+                      />
+                      <button
+                        type="button"
+                        onClick={handleClearBridgeVideo}
+                        className="text-xs text-gray-400 hover:text-gray-200 underline"
+                      >
+                        Remove second clip
+                      </button>
+                    </div>
+                  ) : (
+                    <input type="file" accept="video/*" onChange={handleBridgeVideoUpload}
+                           className="block w-full text-xs text-gray-300" />
+                  )}
+                  {bridgeVideoDurationSec != null && (
+                    <p className="text-xs text-gray-500">
+                      {bridgeVideoDurationSec.toFixed(2)}s (~{Math.round(bridgeVideoDurationSec * (params.frame_rate ?? 24.0))} frames) preserved at the end.
+                    </p>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
           <OutpaintTimeline
             totalUnits={params.total_frames ?? 121}
             onTotalUnitsChange={(v) => setParams(prev => ({ ...prev, total_frames: v }))}
@@ -2685,15 +2833,17 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
             onTrimEndChange={(v) => setParams(prev => ({ ...prev, input_trim_end_frames: v }))}
             offset={params.input_offset_frames ?? 0}
             onOffsetChange={(v) => setParams(prev => ({ ...prev, input_offset_frames: v }))}
-            offsetSnapFn={snapLtxOffset}
-            gridSize={8}
+            offsetSnapFn={boundaryPlacementOnly ? snapBoundaryOffset : snapLtxOffset}
+            gridSize={boundaryPlacementOnly ? 1 : 8}
             minSegmentLength={1}
             unitRate={params.frame_rate ?? 24.0}
             unitLabel="frames"
             disabled={!videoPreviewUrl}
           />
           <p className="text-xs text-gray-500 mt-2">
-            Offset is snapped to the nearest valid LTX-2.3 latent frame index (0, 1, 9, 17, ...); the backend re-snaps and warns if it differs.
+            {boundaryPlacementOnly
+              ? "Dragging the clip snaps it to the start or the end of the timeline -- the only two offsets this model can anchor. A mid-timeline offset is refused by the backend rather than approximated."
+              : "Offset is snapped to the nearest valid LTX-2.3 latent frame index (0, 1, 9, 17, ...); the backend re-snaps and warns if it differs."}
           </p>
         </Card>
         )}
@@ -3410,13 +3560,20 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
                 value={params.outpaint_video_audio_mode || "regenerate"}
                 onChange={(e) => setParams({ ...params, outpaint_video_audio_mode: e.target.value as "regenerate" | "preserve_input" })}
                 options={[
-                  { value: "regenerate", label: "Regenerate whole track" },
+                  { value: "regenerate", label: boundaryPlacementOnly ? "Regenerate (generated span only)" : "Regenerate whole track" },
                   { value: "preserve_input", label: "Preserve input clip audio" },
                 ]}
               />
               <p className="text-xs text-gray-500 mt-1">
                 "Preserve input clip audio" mutes the generated track over the placed span and mixes the uploaded clip's own audio in instead; falls back to "regenerate" (with a warning) if the clip has no audio stream.
               </p>
+              {boundaryPlacementOnly && (
+                <p className="text-xs text-gray-500 mt-1">
+                  This model generates audio jointly with video, so it produces audio only for the
+                  frames it generates. Under "Regenerate" the preserved span carries no audio and is
+                  silent; "Preserve input clip audio" is what fills it.
+                </p>
+              )}
             </div>
           )}
 

@@ -1185,7 +1185,7 @@ def validate_video_steps(params: Dict[str, Any], arch: Optional[str],
 
 
 def validate_video_geometry(params: Dict[str, Any], arch: Optional[str],
-                            *, frame_key: str = "num_frames") -> List[str]:
+                            *, frame_key: Optional[str] = "num_frames") -> List[str]:
     """Validate (and, where the arch says so, SNAP) a video request's geometry.
 
     Spec-driven: every rule comes from the arch's ``TemporalSpec``
@@ -1195,7 +1195,13 @@ def validate_video_geometry(params: Dict[str, Any], arch: Optional[str],
     * spatial axes must be multiples of ``pixel_align`` and must fit
       ``max_pixel_hw`` (orientation-agnostic) — both are hard 400s, because a
       canvas is not something to silently change under a caller;
-    * ``frame_key`` must be a valid clip length in the production range. An
+    * ``frame_key`` must be a valid clip length in the production range —
+      unless it is None, which skips the clip-length rule entirely and leaves
+      only the spatial and frame-rate rules. That is not a convenience: on
+      ``/generate/outpaint/video`` the length the client sends is the OUTPUT
+      timeline's, while the length that has to be on the grid is the GENERATED
+      span's (the preserved frames are pasted, never sampled), and that span is
+      resolved by ``plan_video_outpaint_placement`` instead. An
       invalid one is a hard 400 on an arch whose spec sets
       ``snap_invalid_length=False`` (LTX-2.3 — this is its documented, shipped
       behaviour) and is SNAPPED to the nearest valid length on an arch that sets
@@ -1257,9 +1263,15 @@ def validate_video_geometry(params: Dict[str, Any], arch: Optional[str],
     # lowers `min_decodable_frames`, which the decoder cannot go below at all.
     smoke = bool(os.environ.get(spec.smoke_override_env))
     floor = spec.floor(smoke)
-    num_frames = int(params.get(frame_key, 0))
-    in_range = floor <= num_frames and (spec.max_frames is None or num_frames <= spec.max_frames)
-    if not (spec.is_valid_length(num_frames) and in_range):
+    if frame_key is None:
+        num_frames = None
+    else:
+        num_frames = int(params.get(frame_key, 0))
+    in_range = num_frames is not None and floor <= num_frames and (
+        spec.max_frames is None or num_frames <= spec.max_frames)
+    if num_frames is None:
+        pass
+    elif not (spec.is_valid_length(num_frames) and in_range):
         if not spec.snap_invalid_length:
             raise ValidationError(
                 f"{frame_key} must satisfy ({frame_key} - {spec.frame_offset}) % "
@@ -1285,3 +1297,133 @@ def validate_video_geometry(params: Dict[str, Any], arch: Optional[str],
                  f"fixed {spec.fps_fixed} fps; using {spec.fps_fixed}.")
 
     return warnings
+
+
+def plan_video_outpaint_placement(
+    params: Dict[str, Any],
+    arch: Optional[str],
+    *,
+    head_frames: int,
+    tail_frames: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Resolve a temporal-outpaint request against the arch's placement rule.
+
+    PURE (no warnings, no mutation) so the route can call it for a fast 400
+    before the GPU slot and the backend can recompute the same numbers without
+    trusting a caller-supplied plan. Both call THIS function; the arithmetic
+    exists once.
+
+    ``head_frames`` is the length of the (already trimmed) uploaded clip and
+    ``tail_frames`` the length of the optional second (bridge) clip, or None
+    when there is none.
+
+    Returns, for an arch whose ``TemporalSpec.outpaint_placements`` is
+    ``("free",)`` (LTX-2.3) or which has no spec at all::
+
+        {"placement": "free"}
+
+    and for a boundary-conditioned arch (MiniMax-H3)::
+
+        {"placement": "extend_forward" | "extend_backward" | "bridge",
+         "head_frames": int, "tail_frames": int,       # preserved, exactly
+         "generated_frames": int,                      # a VALID clip length
+         "total_frames": int,                          # effective output length
+         "requested_total_frames": int,
+         "shared_anchor_frames": int}                  # 1 for an extend, 2 for a bridge
+
+    The generated span -- not the total -- is what has to be a length the model
+    can generate, because the preserved frames are pasted rather than sampled.
+    Its first (and, for a bridge, last) frame is the anchor, i.e. the SAME
+    instant as the preserved frame it was taken from, so it is not emitted
+    twice: ``total = head + tail + generated - shared_anchor_frames``.
+
+    Raises ``ValidationError`` for a placement the architecture cannot anchor,
+    naming the reason and the offsets that would work.
+    """
+    from api.error_handlers import ValidationError
+    from core.models.components.wiring import temporal_spec_for_arch
+
+    spec = temporal_spec_for_arch(arch)
+    placements = tuple(spec.outpaint_placements) if spec is not None else ("free",)
+
+    if "free" in placements:
+        if tail_frames is not None:
+            raise ValidationError(
+                "this model has no bridge placement",
+                detail="bridge_video adds a SECOND preserved clip at the end of the timeline, "
+                       "which is a placement only an architecture that conditions on boundary "
+                       "frames needs. The loaded model places one clip at an arbitrary offset "
+                       "instead; upload a single `video` and set input_offset_frames.",
+            )
+        return {"placement": "free"}
+
+    if head_frames < 1:
+        raise ValidationError(
+            "video outpaint needs at least one input frame",
+            detail=f"The (trimmed) input clip has {head_frames} frames.",
+        )
+
+    requested_total = int(params.get("total_frames") or 0)
+    offset = int(params.get("input_offset_frames") or 0)
+    boundary_reason = (
+        "MiniMax-H3 conditions on boundary frames only; mid-timeline placement requires "
+        "index-addressable conditioning this architecture does not have."
+    )
+
+    if tail_frames is not None:
+        if "bridge" not in placements:
+            raise ValidationError(
+                "this model has no bridge placement",
+                detail=boundary_reason,
+            )
+        if tail_frames < 1:
+            raise ValidationError(
+                "the bridge clip has no frames",
+                detail=f"The (trimmed) bridge clip has {tail_frames} frames.",
+            )
+        if offset != 0:
+            raise ValidationError(
+                "a bridge places the first clip at the start of the timeline",
+                detail=f"Got input_offset_frames={offset}. In a bridge the uploaded `video` is "
+                       f"preserved at the head and `bridge_video` at the tail, so the only valid "
+                       f"offset for the head clip is 0.",
+            )
+        placement = "bridge"
+        shared = 2
+        tail = int(tail_frames)
+    else:
+        tail = 0
+        shared = 1
+        if offset == 0:
+            placement = "extend_forward"
+        elif offset + head_frames == requested_total:
+            placement = "extend_backward"
+        else:
+            raise ValidationError(
+                "this model cannot place the clip at that offset",
+                detail=f"{boundary_reason} Got input_offset_frames={offset} with a "
+                       f"{head_frames}-frame clip in a {requested_total}-frame timeline. Use 0 "
+                       f"(extend forward, the clip's last frame anchors the generated span) or "
+                       f"{max(0, requested_total - head_frames)} (extend backward, its first "
+                       f"frame anchors it), or upload a second clip as bridge_video to generate "
+                       f"the span between two clips.",
+            )
+        if placement not in placements:
+            raise ValidationError(
+                f"this model does not support the {placement.replace('_', '-')} placement",
+                detail=boundary_reason,
+            )
+
+    preserved = head_frames + tail
+    smoke = bool(os.environ.get(spec.smoke_override_env))
+    requested_generated = max(1, requested_total - preserved + shared)
+    generated = spec.snap_length(requested_generated, smoke)
+    return {
+        "placement": placement,
+        "head_frames": int(head_frames),
+        "tail_frames": tail,
+        "generated_frames": int(generated),
+        "total_frames": int(preserved + generated - shared),
+        "requested_total_frames": requested_total,
+        "shared_anchor_frames": shared,
+    }

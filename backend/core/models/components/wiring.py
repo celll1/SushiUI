@@ -232,6 +232,16 @@ class TemporalSpec:
     # arch, while the mapping is client-visible semantics either way.
     min_inference_steps: int = 1
     steps_are_sigma_grid_points: bool = False
+    # Where `POST /generate/outpaint/video` may place the input clip on this
+    # architecture. This is a CONDITIONING property, not a policy: LTX-2.3's
+    # `LTX2VideoCondition.index` addresses an arbitrary latent frame, so the
+    # clip goes anywhere ("free"); MiniMax-H3 conditions on the first and/or
+    # last frame of what it generates and has no index-addressable conditioning
+    # and no denoising-strength v2v, so the clip must abut a boundary
+    # ("extend_forward" / "extend_backward") or sit at both ends of a generated
+    # gap ("bridge", two uploads). An offset that is neither is refused with
+    # that reason rather than approximated by a nearby placement.
+    outpaint_placements: Tuple[str, ...] = ("free",)
     # The shortest length worth OFFERING to a client (None = the production
     # floor). Validity and suggestion are different questions: LTX-2.3's grid
     # starts at 1, and a 1-frame "video" is a valid request but not a clip
@@ -336,6 +346,10 @@ MINIMAX_H3_TEMPORAL = TemporalSpec(
     # it drives N-1 model evaluations; N=1 gives zero and the vendored
     # scheduler's `set_timesteps` refuses it.
     min_inference_steps=2, steps_are_sigma_grid_points=True,
+    # Boundary conditioning only -- see the field's comment. The generated span
+    # is anchored on the preserved clip's last frame (extend-forward), its first
+    # frame (extend-backward), or both ends of a two-clip bridge.
+    outpaint_placements=("extend_forward", "extend_backward", "bridge"),
 )
 
 TEMPORAL_SPECS: Dict[str, TemporalSpec] = {

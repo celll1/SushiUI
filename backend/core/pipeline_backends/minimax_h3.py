@@ -354,6 +354,318 @@ class MiniMaxH3Mixin:
             params, keyframes=tuple(keyframes), label="img2vid",
             progress_callback=progress_callback, step_callback=step_callback)
 
+    def _generate_vidoutpaint_minimax_h3(
+        self,
+        params: Dict[str, Any],
+        video_frames: np.ndarray,
+        fps: float,
+        input_audio: Optional[bytes],
+        progress_callback: Optional[Callable] = None,
+        step_callback: Optional[Callable] = None,
+        *,
+        bridge_frames: Optional[np.ndarray] = None,
+        bridge_fps: Optional[float] = None,
+        bridge_audio: Optional[bytes] = None,
+    ):
+        """Temporal outpaint with MiniMax-H3: extend a clip, or bridge two.
+
+        WHAT THIS ARCHITECTURE CAN AND CANNOT DO, because the shape of this
+        function is entirely that fact: MiniMax-H3 conditions on the FIRST
+        and/or the LAST frame of the span it generates. It has no analogue of
+        ``LTX2VideoCondition.index`` (no index-addressable conditioning) and no
+        denoising-strength video-to-video path, so there is no mechanism by
+        which a clip sitting in the MIDDLE of a longer timeline could condition
+        what is generated around it. The endpoint therefore serves exactly the
+        three placements the conditioning can anchor -- extend-forward,
+        extend-backward, bridge -- and refuses everything else with that reason
+        (``generation_utils.plan_video_outpaint_placement``) rather than
+        approximating it with a nearby placement.
+
+        Consequences worth stating plainly:
+
+        * **The preserved frames are not generated at all.** LTX-2.3 generates
+          the whole timeline and this repo pastes the input back over its span;
+          here the model is asked only for the missing span, and the output is
+          a concatenation. Exactness is by construction, not by a corrective
+          paste -- and it holds for every frame of the input, with no
+          frame-grid rounding of the preserved side (the ``17n + 5`` rule binds
+          the GENERATED span only, which is what the model actually samples).
+        * **The anchor frame is not emitted twice.** The generated clip's frame
+          0 IS the anchor, i.e. the same instant as the last preserved frame it
+          was taken from, so it is dropped from the concatenation; a bridge
+          drops both ends. An extend of a P-frame clip by a G-frame span is
+          ``P + G - 1`` frames long.
+        * **Interior source motion is not provided to the model.** Only the
+          boundary frame is. Nothing here compensates for that, and the seam is
+          measured rather than hidden (design K5).
+
+        Args:
+            params: see ``OUTPAINT_VIDEO_DEFAULTS``. ``total_frames`` is a
+                REQUESTED output length; the generated span is solved for and
+                rounded up to the arch's grid, and the effective values are
+                written back into ``params`` (so the route's ``params.copy()``
+                carries them to the gallery row) and warned about.
+            video_frames: np.uint8 [T, H, W, 3] decoded HEAD clip.
+            fps: the head clip's own probed frame rate. Used ONLY to cut its
+                original audio track for ``preserve_input``.
+            input_audio: WAV bytes of the head clip's original audio, or None.
+            bridge_frames / bridge_fps / bridge_audio: the same three things for
+                the optional TAIL clip, which turns the request into a bridge.
+                ``input_trim_*`` apply to the head clip only.
+
+        Returns:
+            ``(frames, audio, audio_sample_rate, actual_seed)`` -- the same
+            tuple contract as every other video generate path.
+        """
+        from api.error_handlers import ValidationError
+        from api.generation_utils import plan_video_outpaint_placement
+        from core.inference.outpaint_utils import center_crop_resize_frames
+
+        if not getattr(self, "minimax_h3_components", None):
+            raise RuntimeError("MiniMax-H3 components are not loaded. Load a MiniMax-H3 model first.")
+        if video_frames is None or len(video_frames) == 0:
+            raise RuntimeError("vid_outpaint requires a decoded input video clip")
+
+        width = int(params.get("width", 960))
+        height = int(params.get("height", 544))
+
+        # ---- Trim the head clip (pixel frames), then preprocess ONCE ----
+        trim_start = max(0, int(params.get("input_trim_start_frames", 0) or 0))
+        trim_end = max(0, int(params.get("input_trim_end_frames", 0) or 0))
+        total_src = video_frames.shape[0]
+        end_idx = total_src - trim_end if trim_end > 0 else total_src
+        trimmed = video_frames[trim_start:end_idx]
+        if trimmed.shape[0] < 1:
+            raise ValidationError(
+                "vid_outpaint input trim leaves no frames",
+                detail=f"input has {total_src} frames; trim_start={trim_start}, trim_end={trim_end}",
+            )
+        # The RESULT of this preprocessing -- not the raw upload -- is the
+        # exact-preserved content (the same convention the image and LTX-2.3
+        # outpaint paths state), and it is the same shared helper they call.
+        head = center_crop_resize_frames(trimmed, width, height)
+        tail = None
+        if bridge_frames is not None and len(bridge_frames) > 0:
+            tail = center_crop_resize_frames(bridge_frames, width, height)
+
+        arch = (getattr(self, "current_model_info", None) or {}).get("type")
+        plan = plan_video_outpaint_placement(
+            params, arch or "minimax_h3",
+            head_frames=int(head.shape[0]),
+            tail_frames=int(tail.shape[0]) if tail is not None else None,
+        )
+        placement = plan["placement"]
+        generated_frames = int(plan["generated_frames"])
+        out_frames_total = int(plan["total_frames"])
+        frame_rate = float(params.get("frame_rate", 24.0)) or 24.0
+
+        try:
+            from api.generation_status import add_warning
+        except Exception:  # pragma: no cover - status module always present in-process
+            add_warning = None
+
+        def warn(message: str, code: str) -> None:
+            print(f"[MiniMax-H3] vid_outpaint: {message}")
+            if add_warning is not None:
+                try:
+                    add_warning(message, code=code)
+                except Exception:
+                    pass
+
+        if out_frames_total != int(plan["requested_total_frames"]):
+            warn(
+                f"total_frames={plan['requested_total_frames']} is not reachable by generating a "
+                f"valid clip length next to a {plan['head_frames'] + plan['tail_frames']}-frame "
+                f"preserved span; generated {generated_frames} frame(s) (17n+5) for an effective "
+                f"output of {out_frames_total} frames. The anchor frame is shared with the "
+                f"preserved clip and is emitted once.",
+                code="outpaint_video_total_frames_adjusted",
+            )
+
+        # ---- The conditioning anchors: boundary frames of the preserved
+        # clip(s), in PACKED order (first, then last). ----
+        keyframes = []
+        if placement == "extend_forward":
+            keyframes.append(("first", Image.fromarray(head[-1])))
+        elif placement == "extend_backward":
+            keyframes.append(("last", Image.fromarray(head[0])))
+        else:  # bridge: both ends are anchored, in packed order
+            keyframes.append(("first", Image.fromarray(head[-1])))
+            keyframes.append(("last", Image.fromarray(tail[0])))
+
+        print(f"[MiniMax-H3] vid_outpaint: {placement} {width}x{height} "
+              f"preserved head={plan['head_frames']} tail={plan['tail_frames']} "
+              f"generated={generated_frames} -> {out_frames_total} frame(s) @ {frame_rate} fps")
+
+        # Only the generated span is sampled; everything else about the run is
+        # an ordinary fl2va generation, so it goes through the ONE generation
+        # path rather than a second copy of the staging/denoise/decode sequence.
+        sub_params = dict(params)
+        sub_params["num_frames"] = generated_frames
+        frames_gen, audio_gen, audio_sample_rate, seed = self._generate_minimax_h3(
+            sub_params, keyframes=tuple(keyframes), label="vid_outpaint",
+            progress_callback=progress_callback, step_callback=step_callback,
+        )
+        if frames_gen.shape[0] != generated_frames:  # pragma: no cover - decode guarantees it
+            raise RuntimeError(
+                f"MiniMax-H3 returned {frames_gen.shape[0]} generated frame(s) where the placement "
+                f"plan expects {generated_frames}.")
+
+        # ---- Assemble. The anchor frame(s) of the GENERATED span are dropped:
+        # they are the model's reconstruction of a frame we are preserving
+        # exactly, at the same instant. ----
+        if placement == "extend_forward":
+            frames_out = np.concatenate([head, frames_gen[1:]], axis=0)
+            preserved_spans = [(0, plan["head_frames"], input_audio, fps, trim_start)]
+            gen_audio_start_frame = plan["head_frames"] - 1
+        elif placement == "extend_backward":
+            frames_out = np.concatenate([frames_gen[:-1], head], axis=0)
+            preserved_spans = [(generated_frames - 1, out_frames_total, input_audio, fps, trim_start)]
+            gen_audio_start_frame = 0
+        else:  # bridge
+            frames_out = np.concatenate([head, frames_gen[1:-1], tail], axis=0)
+            preserved_spans = [
+                (0, plan["head_frames"], input_audio, fps, trim_start),
+                (out_frames_total - plan["tail_frames"], out_frames_total,
+                 bridge_audio, float(bridge_fps or frame_rate), 0),
+            ]
+            gen_audio_start_frame = plan["head_frames"] - 1
+
+        if frames_out.shape[0] != out_frames_total:  # pragma: no cover - arithmetic above
+            raise RuntimeError(
+                f"MiniMax-H3 vid_outpaint assembled {frames_out.shape[0]} frame(s) where the plan "
+                f"expects {out_frames_total}.")
+
+        # Recorded in place so routes.py's `params.copy()` -> gallery metadata /
+        # DB path picks them up without knowing this arch exists.
+        params["outpaint_video_placement"] = placement
+        params["outpaint_generated_frames"] = generated_frames
+        params["outpaint_effective_preserved_frames"] = plan["head_frames"] + plan["tail_frames"]
+        params["outpaint_effective_pixel_start"] = int(preserved_spans[0][0])
+        params["outpaint_effective_pixel_end"] = int(preserved_spans[0][1])
+        params["total_frames"] = out_frames_total
+        params["num_frames"] = out_frames_total
+
+        audio_out = audio_gen
+        if audio_gen is not None and audio_sample_rate:
+            audio_out = self._minimax_h3_outpaint_audio(
+                audio_gen, audio_sample_rate, params,
+                total_frames=out_frames_total, frame_rate=frame_rate,
+                gen_audio_start_frame=gen_audio_start_frame,
+                preserved_spans=preserved_spans, warn=warn,
+            )
+
+        return frames_out, audio_out, audio_sample_rate, seed
+
+    def _minimax_h3_outpaint_audio(
+        self,
+        audio_gen,
+        sample_rate: int,
+        params: Dict[str, Any],
+        *,
+        total_frames: int,
+        frame_rate: float,
+        gen_audio_start_frame: int,
+        preserved_spans,
+        warn: Callable[[str, str], None],
+    ):
+        """Lay the generated audio onto the OUTPUT timeline, per audio mode.
+
+        WHY THIS IS NOT LTX-2.3's AUDIO PATH, and cannot be: MiniMax-H3
+        generates audio and video jointly, in one packed sequence, for one
+        span. It produced audio for the GENERATED frames and for nothing else,
+        because it was never asked to generate the preserved frames. So the two
+        modes cannot both mean what they mean on LTX-2.3, where the pipeline
+        hands back a whole-timeline track:
+
+        * ``regenerate`` -- "do not carry the input clip's audio over" -- is
+          honoured literally: the generated track is placed at the generated
+          span's own position and the preserved span is left SILENT, with a
+          warning saying so and naming the mode that fills it. Quietly
+          substituting the input's audio here would make the two modes the same
+          thing while claiming to be different.
+        * ``preserve_input`` splices each preserved span's ORIGINAL audio over
+          it, through exactly the LTX-2.3 helpers (``extract_audio_window`` ->
+          ``mux_audio_over_span``, 50 ms crossfade confined to the generated
+          side), so an input audio sample is never resampled twice or
+          crossfaded away.
+
+        The generated track is placed at ``gen_audio_start_frame`` rather than
+        at the first NEW frame: the anchor frame is part of the generated span's
+        own clock, so aligning on it is what keeps A and V in sync.
+        """
+        import numpy as _np
+
+        audio_mode = params.get("outpaint_video_audio_mode", "regenerate") or "regenerate"
+        generated = audio_gen.numpy() if hasattr(audio_gen, "numpy") else _np.asarray(audio_gen)
+        channels = generated.shape[0]
+        total_samples = int(round((total_frames / frame_rate) * sample_rate)) if frame_rate else generated.shape[1]
+
+        full = _np.zeros((channels, total_samples), dtype=generated.dtype)
+        start = int(round((gen_audio_start_frame / frame_rate) * sample_rate)) if frame_rate else 0
+        start = max(0, min(start, total_samples))
+        width = min(generated.shape[1], total_samples - start)
+        if width > 0:
+            full[:, start:start + width] = generated[:, :width]
+
+        if audio_mode != "preserve_input":
+            warn(
+                "outpaint_video_audio_mode='regenerate': MiniMax-H3 generates audio only for the "
+                "frames it generates, so the preserved span carries no audio and is silent. Use "
+                "'preserve_input' to carry the input clip's own audio across it.",
+                code="outpaint_video_audio_preserved_span_silent",
+            )
+            return torch.from_numpy(full)
+
+        from utils.video_utils import extract_audio_window, mux_audio_over_span
+
+        for span_start, span_end, src_audio, src_fps, src_trim_start in preserved_spans:
+            span_frames = int(span_end) - int(span_start)
+            if span_frames <= 0:
+                continue
+            if src_audio is None:
+                warn(
+                    "preserve_input audio mode requested but a preserved clip has no audio stream; "
+                    "its span is left silent",
+                    code="outpaint_video_no_input_audio",
+                )
+                continue
+            offset_sec = span_start / frame_rate
+            target_dur_sec = span_frames / frame_rate
+            src_fps = float(src_fps or frame_rate)
+            src_start_sec = (src_trim_start / src_fps) if src_fps else 0.0
+            src_dur_sec = (span_frames / src_fps) if src_fps else target_dur_sec
+            if target_dur_sec > 0 and abs(src_dur_sec - target_dur_sec) / target_dur_sec > 0.005:
+                warn(
+                    f"preserve_input audio was time-stretched ({src_dur_sec:.3f}s -> "
+                    f"{target_dur_sec:.3f}s) because a preserved clip's frame rate ({src_fps:.3f}) "
+                    f"differs from MiniMax-H3's fixed {frame_rate:.3f} fps",
+                    code="outpaint_video_audio_stretched",
+                )
+            try:
+                window = extract_audio_window(
+                    src_audio, src_start_sec, src_dur_sec, target_dur_sec,
+                    sample_rate=sample_rate, channels=channels,
+                )
+            except Exception as exc:
+                window = None
+                print(f"[MiniMax-H3] vid_outpaint audio window extraction raised: {exc}")
+            if window is None:
+                # NEVER overwrite with silence on a failure -- leave whatever is
+                # already there (the generated track, or the silence the mode
+                # already warned about).
+                warn(
+                    "preserve_input audio window extraction failed; that span was left as generated",
+                    code="outpaint_video_audio_extract_failed",
+                )
+                continue
+            full = mux_audio_over_span(
+                full, window, offset_sec=offset_sec, dur_sec=target_dur_sec,
+                sample_rate=sample_rate, crossfade_ms=50.0,
+            )
+
+        return torch.from_numpy(full)
+
     def _generate_minimax_h3(
         self,
         params: Dict[str, Any],

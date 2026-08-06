@@ -920,7 +920,46 @@ OUTPAINT_VIDEO_DEFAULTS: Dict[str, Any] = {
     # for archival/verification of the exact preserved frames, not casual
     # playback.
     "video_lossless": False,
+    # OPTIONAL second uploaded clip, preserved at the END of the output
+    # timeline, which turns the request into a BRIDGE: `video` is preserved at
+    # the head, this one at the tail, and the span between them is generated.
+    # Only an architecture whose TemporalSpec lists the `bridge` placement
+    # (MiniMax-H3) accepts it; LTX-2.3 refuses it with that reason.
+    #
+    # Kept here rather than in VIDEO_GEN_DEFAULTS for the same reason
+    # IMG2VID_DEFAULTS["last_frame_image"] is: only an endpoint that carries
+    # file uploads can have it. The value recorded in `params` (and on the
+    # gallery row) is the uploaded FILENAME, not the bytes.
+    "bridge_video": None,
 }
+
+# Per-architecture overlay for the keys that exist ONLY on the video-outpaint
+# endpoint. `VIDEO_GEN_ARCH_OVERLAYS` above cannot carry them: it is merged into
+# txt2vid/img2vid too, where `total_frames` does not exist.
+#
+# `total_frames`'s base 121 is a length on LTX-2.3's 8k+1 grid; MiniMax-H3
+# cannot produce it. 248 is that architecture's default REQUEST -- roughly a
+# doubling of its own 124-frame default clip -- and, like every other
+# MiniMax-H3 video length, what actually runs is the value the generated span
+# snaps to (the endpoint solves for the generated span, not for the total, and
+# reports the effective output length in `warnings[]`).
+OUTPAINT_VIDEO_ARCH_OVERLAYS: Dict[str, Dict[str, Any]] = {
+    "minimax_h3": {
+        "total_frames": 248,
+    },
+}
+
+
+def outpaint_video_defaults_for_arch(arch: Optional[str]) -> Dict[str, Any]:
+    """`OUTPAINT_VIDEO_DEFAULTS` resolved for ``arch``.
+
+    Two overlays, in order: the shared video one (canvas, frame rate, steps)
+    and then the outpaint-only one. Same contract as `video_defaults_for_arch`
+    -- an unknown or missing arch returns the base map unchanged.
+    """
+    resolved = video_defaults_for_arch(arch, OUTPAINT_VIDEO_DEFAULTS)
+    resolved.update(OUTPAINT_VIDEO_ARCH_OVERLAYS.get(arch or "", {}))
+    return resolved
 
 # ---------------------------------------------------------------------------
 # Audio generation (POST /generate/txt2aud — ACE-Step 1.5 turbo)

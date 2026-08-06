@@ -161,8 +161,9 @@ paths:
           `fps_fixed`, `max_pixel_hw` — `[short_edge, long_edge]`, not
           `[height, width]` —, `pixel_align`, `snap_invalid_length`,
           `suggested_frames`, `min_inference_steps`,
-          `steps_are_sigma_grid_points`), so a client can generate a valid
-          clip-length list and a valid step count instead of hardcoding them.
+          `steps_are_sigma_grid_points`, `outpaint_placements`), so a client
+          can generate a valid clip-length list, a valid step count and a valid
+          temporal-outpaint placement instead of hardcoding them.
           Absent for non-video architectures.
       tags: [Schema]
       responses:
@@ -205,6 +206,14 @@ paths:
         `base | video_arch_overlays[arch]`, which is exactly what the video
         routes do server-side for every field a request omits. An architecture
         absent from the map takes the base values unchanged.
+
+        `outpaint_video_arch_overlays` carries the same thing for the keys that
+        exist ONLY on `POST /generate/outpaint/video`
+        (`OUTPAINT_VIDEO_ARCH_OVERLAYS`) — chiefly `total_frames`, whose base
+        value (121) is on LTX-2.3's `8k+1` grid and is not a length MiniMax-H3
+        can produce. A client resolves an outpaint-video default as
+        `outpaint_vid | video_arch_overlays[arch] | outpaint_video_arch_overlays[arch]`,
+        in that order, which is what the route does.
       tags: [Schema]
       responses:
         '200':
@@ -247,6 +256,18 @@ paths:
                         num_frames: 124
                         frame_rate: 24.0
                         num_inference_steps: 20
+                  outpaint_video_arch_overlays:
+                    type: object
+                    description: >-
+                      Architecture name -> the outpaint-video-only default keys
+                      that differ from the base ones on that architecture,
+                      applied on top of `video_arch_overlays`.
+                    additionalProperties:
+                      type: object
+                      additionalProperties: true
+                    example:
+                      minimax_h3:
+                        total_frames: 248
   /schema/training-defaults:
     get:
       summary: Get default parameter values for LoRA / Full-FT training
@@ -961,23 +982,64 @@ paths:
   /generate/outpaint/video:
     post:
       tags: [generation]
-      summary: Video temporal outpaint (place a clip at an offset in a longer timeline, LTX-2.3)
+      summary: Video temporal outpaint (place a clip at an offset in a longer timeline, LTX-2.3 / MiniMax-H3)
       description: |
         Places a (optionally trimmed) input `video` clip at a frame offset
         inside a LONGER `total_frames` output timeline and generates the
-        frames before/after with a loaded LTX-2.3 model. Internally
-        delegates to the stock `diffusers.LTX2ConditionPipeline`
-        (`LTX2VideoCondition`) -- no new denoise loop, no mask upload.
+        frames before/after with a loaded video model.
+
+        **On LTX-2.3** this delegates to the stock
+        `diffusers.LTX2ConditionPipeline` (`LTX2VideoCondition`) -- no new
+        denoise loop, no mask upload -- and the clip may be placed at ANY
+        offset, because that pipeline's condition addresses an arbitrary latent
+        frame.
+
+        **On MiniMax-H3 the placement is restricted to the timeline's
+        boundaries**, and the restriction is architectural rather than a
+        limitation of this endpoint: MiniMax-H3 conditions on the FIRST and/or
+        LAST frame of the span it generates and has no index-addressable
+        conditioning and no denoising-strength video-to-video path. The three
+        placements it serves are
+        * **extend-forward** (`input_offset_frames = 0`): the input's LAST
+          frame becomes the first-frame anchor and the generated span is
+          appended after the input;
+        * **extend-backward**
+          (`input_offset_frames + placed_frames = total_frames`): the mirror --
+          the input's FIRST frame becomes the last-frame anchor and the
+          generated span is prepended;
+        * **bridge** (a second `bridge_video` upload, with
+          `input_offset_frames = 0`): `video` is preserved at the head,
+          `bridge_video` at the tail, and the gap between them is generated
+          from the head clip's last frame (first-frame anchor) and the tail
+          clip's first frame (last-frame anchor).
+
+        Any other `input_offset_frames` is refused with a 400 whose message is
+        that reason. It is not silently approximated by a nearby placement.
+
+        The anchor frame is the SAME instant as the preserved frame it is taken
+        from, so it is not emitted twice: an extend produces
+        `placed + generated - 1` frames and a bridge produces
+        `head + generated + tail - 2`. `total_frames` is therefore a REQUESTED
+        output length on MiniMax-H3 -- the generated span alone must be a valid
+        `17n + 5` length in the model's production range, so the endpoint solves
+        for that span, rounds it UP to the grid, and returns the effective
+        output length in the response's `warnings[]` when it differs from the
+        request. Conditioning uses boundary frames only; interior source motion
+        is not provided to the model.
 
         **Strict preservation guarantee:** the placed input frames in the
         returned video are BYTE-IDENTICAL to the (trimmed + preprocessed)
         input clip, over the EFFECTIVE placed span (which may be shorter
         than the full trimmed clip if it runs past `total_frames` -- see
         `input_offset_frames`). This is enforced by an unconditional
-        frame-exact paste performed AFTER generation.
+        frame-exact paste performed AFTER generation on LTX-2.3, and by
+        construction on MiniMax-H3, which never generates over the preserved
+        span at all. In both cases the returned frames are exact; only an
+        FFV1 encode (`video_lossless`) keeps them exact through the FILE as
+        well, since H.264 is lossy.
 
-        **÷32 preprocessing:** every frame in a single LTX-2.3 video shares
-        one resolution (`width`x`height`, both required ÷32 like
+        **÷32 preprocessing:** every frame in one output video shares one
+        resolution (`width`x`height`, both required ÷32 like
         `/generate/txt2vid`). A clip whose native resolution or aspect ratio
         does not match is center-cropped and LANCZOS-resized ONCE to that
         resolution -- the PREPROCESSED frames (not the raw upload) become
@@ -985,29 +1047,44 @@ paths:
         placed-image RESIZE convention.
 
         **Placement:** `input_offset_frames` is a desired PIXEL frame offset
-        into the output timeline. Because `LTX2VideoCondition.index`
-        addresses a LATENT frame (temporal compression 8x), it is snapped
-        server-side to the nearest valid pixel start
-        ({0, 1, 9, 17, ..., 8m+1}) -- a warning is returned in the response
-        when snapping changes the requested offset. `input_trim_start_frames`
-        / `input_trim_end_frames` trim the UPLOADED clip itself (in the
-        clip's own pixel frames) before placement.
+        into the output timeline. On LTX-2.3, because
+        `LTX2VideoCondition.index` addresses a LATENT frame (temporal
+        compression 8x), it is snapped server-side to the nearest valid pixel
+        start ({0, 1, 9, 17, ..., 8m+1}) -- a warning is returned in the
+        response when snapping changes the requested offset. On MiniMax-H3 it
+        selects the placement (see above) and is not snapped: a value that is
+        neither boundary is a 400. `input_trim_start_frames` /
+        `input_trim_end_frames` trim the UPLOADED clip itself (in the clip's
+        own pixel frames) before placement. `GET /schema/arch-capabilities`'s
+        `video_constraints[arch].outpaint_placements` states which placements
+        the loaded architecture accepts.
 
         **Audio (`outpaint_video_audio_mode`, only relevant when
         `audio_enable` is true):**
-        - `regenerate` (default): use LTX-2.3's own whole-timeline generated
-          audio as-is. The input clip's own audio is NOT preserved.
+        - `regenerate` (default): use the model's own generated audio as-is.
+          The input clip's own audio is NOT preserved. On LTX-2.3 that
+          generated track spans the WHOLE timeline. On MiniMax-H3 it spans
+          only the GENERATED frames -- that architecture produces audio
+          jointly with video and cannot produce audio for frames it does not
+          generate -- so the preserved span is left SILENT and a warning says
+          so; use `preserve_input` to carry the input clip's own audio across
+          it.
         - `preserve_input`: after generation, mux the input clip's ORIGINAL
-          audio over its placed span, keeping the LTX-generated audio
+          audio over its placed span, keeping the model-generated audio
           outside that span, with a ~50ms crossfade confined to the
           GENERATED side of each boundary so every input audio sample stays
           exact. Falls back to `regenerate` (with a warning) if the
           uploaded clip has no audio stream.
 
         **Requirements:**
-        - An LTX-2.3 model must be loaded (otherwise 400).
-        - `width`/`height` divisible by 32; `total_frames` must satisfy
-          `(total_frames - 1) % 8 == 0`.
+        - An LTX-2.3 or MiniMax-H3 model must be loaded (otherwise 400).
+        - `width`/`height` divisible by the loaded architecture's
+          `pixel_align` (32 for both) and inside its `max_pixel_hw` envelope
+          where it has one (MiniMax-H3: short edge ≤ 768, long edge ≤ 1344).
+        - LTX-2.3: `total_frames` must satisfy `(total_frames - 1) % 8 == 0`.
+          MiniMax-H3: the GENERATED span implied by `total_frames` and the
+          placed clip length must be a valid `17n + 5` length in 124..345; it
+          is rounded up to that grid, with a warning, when it is not.
       operationId: generateOutpaintVideo
       requestBody:
         required: true
@@ -1031,9 +1108,11 @@ paths:
                   generation_type: "outpaint_vid"
         '400':
           description: >-
-            Invalid parameters, or no LTX-2.3 model loaded. A loaded MiniMax-H3
-            model is refused here with its own reason: it is a video model whose
-            sampler is not wired to this endpoint yet.
+            Invalid parameters, or no video model loaded. Also returned when
+            the requested `input_offset_frames` is not a placement the loaded
+            architecture supports (MiniMax-H3: anything other than the start,
+            the end, or a bridge), or when `bridge_video` is sent to an
+            architecture that has no bridge placement.
           content:
             application/json:
               schema:
@@ -6039,6 +6118,20 @@ components:
               `0` included, so N steps run N-1 evaluations (a 20-step request
               performs 19), and N=1 would run none — which is where that
               architecture's `min_inference_steps` of 2 comes from.
+            * `outpaint_placements` — where `POST /generate/outpaint/video` may
+              place the input clip on this architecture.
+              `["free"]` (LTX-2.3) = any offset; its `LTX2VideoCondition.index`
+              addresses an arbitrary latent frame, so the clip can sit anywhere
+              in the output timeline.
+              `["extend_forward", "extend_backward", "bridge"]` (MiniMax-H3) =
+              boundary placements only: MiniMax-H3 conditions on the FIRST
+              and/or LAST frame of what it generates and has no
+              index-addressable conditioning, so the input clip must abut the
+              start of the timeline (`input_offset_frames = 0`), abut its end
+              (`input_offset_frames + placed_frames = total_frames`), or, with a
+              second `bridge_video` upload, sit at both ends with the generated
+              span between them. Any other offset is refused with a 400 stating
+              that reason; it is not approximated.
           additionalProperties:
             type: object
             additionalProperties: true
@@ -6056,6 +6149,7 @@ components:
               suggested_frames: [124, 141, 158, 175, 192, 209, 226, 243, 260, 277, 294, 311, 328, 345]
               min_inference_steps: 2
               steps_are_sigma_grid_points: true
+              outpaint_placements: [extend_forward, extend_backward, bridge]
         runtime_int8_archs:
           type: array
           description: |
@@ -7297,7 +7391,21 @@ components:
         video:
           type: string
           format: binary
-          description: "Input video clip to place inside the output timeline (any ffmpeg-demuxable container)."
+          description: "Input video clip to place inside the output timeline (any ffmpeg-demuxable container). In a MiniMax-H3 bridge this is the HEAD clip, the one the generated span continues FROM."
+        bridge_video:
+          type: string
+          format: binary
+          description: |
+            OPTIONAL second clip, preserved at the END of the output timeline,
+            turning the request into a BRIDGE: `video` is preserved at the head,
+            this clip at the tail, and the span between them is generated from
+            the head clip's last frame and this clip's first frame.
+
+            Only accepted on an architecture whose
+            `video_constraints[arch].outpaint_placements` contains `bridge`
+            (MiniMax-H3). Sending it with an LTX-2.3 model loaded is a 400: that
+            architecture places one arbitrary-offset condition and has no
+            two-clip bridge path here. Requires `input_offset_frames = 0`.
         width:
           type: integer
           multipleOf: 32
@@ -7313,7 +7421,17 @@ components:
         total_frames:
           type: integer
           default: 121
-          description: "Total number of frames in the OUTPUT timeline. Must satisfy (total_frames - 1) % 8 == 0."
+          description: |
+            Total number of frames in the OUTPUT timeline.
+
+            LTX-2.3: must satisfy (total_frames - 1) % 8 == 0; the value is
+            exact. MiniMax-H3: a REQUESTED length. The generated span (this
+            value minus the preserved clip length(s), plus the shared anchor
+            frame(s)) is what has to land on that architecture's 17n+5 grid
+            inside 124..345, so it is rounded UP to the grid and the effective
+            output length is reported in `warnings[]`. The MiniMax-H3 default
+            resolves to 248 through
+            `outpaint_video_arch_overlays` of GET /schema/generation-defaults.
           example: 121
         frame_rate:
           type: number
@@ -7354,10 +7472,17 @@ components:
           default: 0
           description: |
             Desired PIXEL frame offset (in the OUTPUT timeline) at which the
-            (trimmed) input clip is placed. Snapped server-side to the
-            nearest valid latent frame index's pixel start
-            ({0, 1, 9, 17, ..., 8m+1}) -- a warning is added to the response
-            when the requested value is not already a valid pixel start.
+            (trimmed) input clip is placed.
+
+            LTX-2.3: snapped server-side to the nearest valid latent frame
+            index's pixel start ({0, 1, 9, 17, ..., 8m+1}) -- a warning is
+            added to the response when the requested value is not already a
+            valid pixel start.
+
+            MiniMax-H3: it SELECTS the placement instead, and is not snapped.
+            `0` is extend-forward (or, with `bridge_video`, a bridge);
+            `total_frames - placed_frames` is extend-backward; anything else is
+            a 400, because that architecture conditions on boundary frames only.
           example: 0
         input_trim_start_frames:
           type: integer
@@ -7374,19 +7499,33 @@ components:
           enum: [regenerate, preserve_input]
           default: regenerate
           description: |
-            "regenerate": use LTX-2.3's own whole-timeline generated audio
-            as-is (the input clip's own audio is NOT preserved).
+            "regenerate": use the model's own generated audio as-is (the input
+            clip's own audio is NOT preserved). On LTX-2.3 that track spans the
+            whole timeline; on MiniMax-H3 it spans only the GENERATED frames --
+            audio is produced jointly with video there, so the preserved span
+            has no generated audio and is left silent, with a warning.
             "preserve_input": mux the input clip's ORIGINAL audio over its
-            placed span after generation, keeping LTX-generated audio
+            placed span after generation, keeping the model-generated audio
             outside that span, with a ~50ms crossfade confined to the
             GENERATED side of each boundary. Falls back to "regenerate"
             (with a warning) if the uploaded clip has no audio stream. Only
             relevant when audio_enable is true.
           example: regenerate
+        attention_type:
+          type: string
+          enum: [normal, native, sdpa, none, flash, sage, tq, sla]
+          default: normal
+          description: |
+            Attention backend for this generation, with exactly the semantics of
+            `Img2VidRequest.attention_type`: one resolver
+            (`core.attention.normalize_backend`) for every architecture, omitting
+            the field falls back to the process-wide setting, honored by
+            `minimax_h3` and accepted-with-a-warning by `ltx2`.
+          example: normal
         blocks_to_swap:
           type: integer
           default: 0
-          description: "Number of LTX-2.3 transformer blocks kept CPU-resident and streamed to GPU during the denoise loop. 0 disables block swap."
+          description: "Number of transformer blocks kept CPU-resident and streamed to GPU during the denoise loop. 0 disables block swap."
           example: 0
         fbcache_enable:
           type: boolean

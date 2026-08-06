@@ -232,6 +232,47 @@ def _fill_canvas(
     raise ValueError(f"Unknown outpaint_fill_mode: {fill_mode!r}")
 
 
+def center_crop_resize_frames(frames: np.ndarray, target_width: int, target_height: int) -> np.ndarray:
+    """Center-crop (to the target aspect ratio) then LANCZOS-resize every
+    frame to (target_width, target_height). Returns `frames` unchanged when
+    the source already matches exactly.
+
+    The TEMPORAL-outpaint counterpart of ``build_outpaint_canvas``'s crop ->
+    LANCZOS-resize-once pipeline, and it lives here for the same reason:
+    the RESULT of this preprocessing -- not the raw uploaded clip -- is what
+    the strict-preservation guarantee is about. Every frame of one output video
+    shares one resolution, so (unlike image outpaint's separate canvas/place
+    sizes) there is a single target here: ``params["width"]``/``["height"]``.
+
+    Architecture-neutral by construction (numpy + PIL only) and shared by every
+    video backend's outpaint path -- LTX-2.3's and MiniMax-H3's preserved spans
+    must be preprocessed identically or "byte-exact" would mean two things.
+    """
+    num_frames, src_h, src_w, channels = frames.shape
+    if src_w == target_width and src_h == target_height:
+        return frames
+
+    target_ar = target_width / target_height
+    src_ar = src_w / src_h
+    if src_ar > target_ar:
+        new_w = max(1, int(round(src_h * target_ar)))
+        x0 = (src_w - new_w) // 2
+        cropped = frames[:, :, x0:x0 + new_w, :]
+    elif src_ar < target_ar:
+        new_h = max(1, int(round(src_w / target_ar)))
+        y0 = (src_h - new_h) // 2
+        cropped = frames[:, y0:y0 + new_h, :, :]
+    else:
+        cropped = frames
+
+    out = np.empty((num_frames, target_height, target_width, channels), dtype=np.uint8)
+    for i in range(num_frames):
+        img = Image.fromarray(cropped[i], mode="RGB")
+        img = img.resize((target_width, target_height), Image.Resampling.LANCZOS)
+        out[i] = np.array(img)
+    return out
+
+
 def build_outpaint_canvas(
     input_img: Image.Image, params: Dict[str, Any], align: int = 16
 ) -> Tuple[Image.Image, Image.Image, Tuple[int, int, int, int]]:

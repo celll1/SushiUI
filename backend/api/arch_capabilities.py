@@ -431,6 +431,12 @@ def video_constraints_payload() -> Dict[str, Dict[str, Any]]:
             # N-1 (minimum 2). Below the minimum the route answers 400.
             "min_inference_steps": spec.min_inference_steps,
             "steps_are_sigma_grid_points": spec.steps_are_sigma_grid_points,
+            # Which temporal-outpaint placements the arch's CONDITIONING can
+            # serve. A client builds its placement control from this instead of
+            # hardcoding an arch check: "free" means any offset (LTX-2.3),
+            # while MiniMax-H3 lists only the boundary placements it can
+            # actually anchor.
+            "outpaint_placements": list(spec.outpaint_placements),
         }
     return payload
 

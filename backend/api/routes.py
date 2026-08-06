@@ -49,6 +49,7 @@ from api.param_defaults import (
     TIMESTEP_SAMPLING_DEFAULTS_BY_ARCH,
     BUNDLE_VAE_DEFAULTS_BY_ARCH,
     VIDEO_GEN_ARCH_OVERLAYS,
+    OUTPAINT_VIDEO_ARCH_OVERLAYS,
     video_defaults_for_arch,
 )
 from api.generation_utils import (
@@ -412,28 +413,11 @@ def _reject_if_video_model_on_audio_route(endpoint: str):
         )
 
 
-def _reject_if_video_arch_unwired(endpoint: str):
-    """Refuse a VIDEO route for a loaded video model it cannot dispatch yet.
-
-    A video route that gates on ``is_ltx2_model`` answers "No LTX-2.3 model
-    loaded" for anything else. With a MiniMax-H3 model loaded that is true and
-    useless -- the same defect ``_reject_if_video_model_on_audio_route`` exists
-    for, one endpoint over: it reads as "this model cannot make video", when in
-    fact it is a video model whose sampler is not wired to THAT endpoint yet.
-
-    ``/generate/txt2vid`` (t2va) and ``/generate/img2vid`` (fl2va) no longer
-    call this: both dispatch to MiniMax-H3 for real. The one remaining caller is
-    ``/generate/outpaint/video``, whose temporal-outpaint path is not wired for
-    this architecture yet; drop that call when it is, and delete this helper
-    with it.
-    """
-    if getattr(pipeline_manager, "is_minimax_h3_model", False):
-        raise CustomValidationError(
-            "MiniMax-H3 video generation is not available yet",
-            detail=f"A MiniMax-H3 model is loaded. It is a video model, but {endpoint} currently "
-                   f"dispatches only to LTX-2.3 — MiniMax-H3's sampler is not wired yet. Load an "
-                   f"LTX-2.3 model to use {endpoint}.",
-        )
+# NOTE: `_reject_if_video_arch_unwired` lived here. It refused a video endpoint
+# that dispatched only to LTX-2.3 while a MiniMax-H3 model was loaded, with that
+# reason rather than "no LTX-2.3 model loaded". Every video endpoint --
+# txt2vid, img2vid and now outpaint/video -- dispatches to both architectures,
+# so it had no callers left and is deleted rather than kept as a dead branch.
 
 
 def _reject_if_audio_model():
@@ -456,9 +440,13 @@ async def get_generation_defaults():
     ``video_arch_overlays`` carries the per-architecture video overrides, so a
     client resolves a video default as `base | overlay[arch]` — exactly what the
     video routes do server-side for every field a request omits.
+    ``outpaint_video_arch_overlays`` is the same thing for the keys that exist
+    only on `/generate/outpaint/video` (chiefly `total_frames`, whose base value
+    is on LTX-2.3's grid), applied on top of the video overlay.
     """
     return {
         "video_arch_overlays": VIDEO_GEN_ARCH_OVERLAYS,
+        "outpaint_video_arch_overlays": OUTPAINT_VIDEO_ARCH_OVERLAYS,
         "txt2img": TXT2IMG_DEFAULTS,
         "img2img": IMG2IMG_DEFAULTS,
         "inpaint":  INPAINT_DEFAULTS,
@@ -3574,12 +3562,18 @@ async def generate_img2vid(
 async def generate_outpaint_video(
     prompt: str = Form(...),
     negative_prompt: Optional[str] = Form(OUTPAINT_VIDEO_DEFAULTS["negative_prompt"]),
-    width: int = Form(OUTPAINT_VIDEO_DEFAULTS["width"]),
-    height: int = Form(OUTPAINT_VIDEO_DEFAULTS["height"]),
-    total_frames: int = Form(OUTPAINT_VIDEO_DEFAULTS["total_frames"]),
-    frame_rate: float = Form(OUTPAINT_VIDEO_DEFAULTS["frame_rate"]),
-    num_inference_steps: int = Form(OUTPAINT_VIDEO_DEFAULTS["num_inference_steps"]),
-    guidance_scale: float = Form(OUTPAINT_VIDEO_DEFAULTS["guidance_scale"]),
+    # The six keys a per-arch overlay can change are `Form(None)` SENTINELS,
+    # exactly as in /generate/img2vid: a multipart route has no
+    # `model_fields_set`, so an omitted field is only distinguishable from a
+    # sent one by the sentinel, and whatever comes back None is filled from the
+    # resolved per-arch map below. `total_frames` is in the set because its base
+    # 121 is on LTX-2.3's 8k+1 grid and is not a length MiniMax-H3 can produce.
+    width: Optional[int] = Form(None),
+    height: Optional[int] = Form(None),
+    total_frames: Optional[int] = Form(None),
+    frame_rate: Optional[float] = Form(None),
+    num_inference_steps: Optional[int] = Form(None),
+    guidance_scale: Optional[float] = Form(None),
     seed: int = Form(OUTPAINT_VIDEO_DEFAULTS["seed"]),
     num_videos_per_prompt: int = Form(OUTPAINT_VIDEO_DEFAULTS["num_videos_per_prompt"]),
     max_sequence_length: int = Form(OUTPAINT_VIDEO_DEFAULTS["max_sequence_length"]),
@@ -3590,6 +3584,12 @@ async def generate_outpaint_video(
     input_trim_start_frames: int = Form(OUTPAINT_VIDEO_DEFAULTS["input_trim_start_frames"]),
     input_trim_end_frames: int = Form(OUTPAINT_VIDEO_DEFAULTS["input_trim_end_frames"]),
     outpaint_video_audio_mode: str = Form(OUTPAINT_VIDEO_DEFAULTS["outpaint_video_audio_mode"]),
+    # See Img2VidRequest.attention_type: honored by MiniMax-H3, ignored by
+    # LTX-2.3. `OUTPAINT_VIDEO_DEFAULTS` has carried this key since it was
+    # derived from VIDEO_GEN_DEFAULTS, but the route had no field for it while
+    # this endpoint served LTX-2.3 alone -- which meant the ONE architecture
+    # that honors it could not be given it here.
+    attention_type: str = Form(OUTPAINT_VIDEO_DEFAULTS["attention_type"]),
     blocks_to_swap: int = Form(OUTPAINT_VIDEO_DEFAULTS["blocks_to_swap"]),
     fbcache_enable: bool = Form(OUTPAINT_VIDEO_DEFAULTS["fbcache_enable"]),
     fbcache_threshold: float = Form(OUTPAINT_VIDEO_DEFAULTS["fbcache_threshold"]),
@@ -3611,35 +3611,119 @@ async def generate_outpaint_video(
     quantized_gemm_mode: Optional[str] = Form(OUTPAINT_VIDEO_DEFAULTS["quantized_gemm_mode"]),
     video_lossless: bool = Form(OUTPAINT_VIDEO_DEFAULTS["video_lossless"]),
     video: UploadFile = File(...),
+    # OPTIONAL second clip, preserved at the END of the timeline: the BRIDGE
+    # placement. Only an architecture whose TemporalSpec lists `bridge`
+    # (MiniMax-H3, which conditions on boundary frames and can therefore anchor
+    # both ends of a generated gap) accepts it; LTX-2.3 refuses it with that
+    # reason rather than ignoring it, because ignoring a second uploaded clip
+    # would silently produce a one-clip result.
+    bridge_video: Optional[UploadFile] = File(None),
     db: Session = Depends(get_gallery_db)
 ):
-    """Video temporal outpaint (LTX-2.3): place a (trimmed) input clip at a
-    frame offset inside a LONGER output timeline and generate the frames
-    before/after. Multipart form: an uploaded `video` clip plus the
-    parameters below.
+    """Video temporal outpaint (LTX-2.3 or MiniMax-H3): place a (trimmed) input
+    clip inside a LONGER output timeline and generate the frames before/after.
+    Multipart form: an uploaded `video` clip, optionally a second
+    `bridge_video`, plus the parameters below.
 
     Non-÷32 clips are preprocessed ONCE (center-crop + resize to
     `width`x`height`, the same resolution the whole output timeline shares)
     and the PREPROCESSED frames become the exact-preserved content (mirrors
-    `/generate/outpaint`'s RESIZE convention). `input_offset_frames` is
-    snapped server-side to the nearest valid LTX-2.3 latent frame index (a
-    warning is added if snapped). Produces an mp4 (H.264, or FFV1 when
-    `video_lossless` is true) and a gallery row. Requires an LTX-2.3 model
-    to be loaded.
+    `/generate/outpaint`'s RESIZE convention).
+
+    The two architectures place the clip by different mechanisms and this
+    endpoint does not paper over the difference:
+
+    * **LTX-2.3** generates the whole timeline with the clip pinned at an
+      arbitrary latent index and pastes the input back frame-exact.
+      `input_offset_frames` is snapped server-side to the nearest valid latent
+      frame index (a warning is added if snapped), and `total_frames` is what
+      must satisfy `(n - 1) % 8 == 0`.
+    * **MiniMax-H3** conditions on the FIRST and/or LAST frame of the span it
+      generates, so only the missing span is generated and the result is
+      concatenated with the untouched input. `input_offset_frames` therefore
+      SELECTS the placement -- 0 (extend forward), `total_frames - placed`
+      (extend backward), or 0 with a `bridge_video` (bridge) -- and anything
+      else is a 400 stating that reason. The `17n + 5` rule binds the
+      GENERATED span, which is solved for and rounded up, so `total_frames` is
+      a request and the effective output length comes back in `warnings[]`.
+
+    Produces an mp4 (H.264, or FFV1 when `video_lossless` is true) and a
+    gallery row. Requires a video model to be loaded.
     """
     from api.generation_status import start_generation, complete_generation, fail_generation, get_warnings
     from utils.video_utils import save_video_with_metadata, load_video_frames, extract_audio_stream
+    from api.generation_utils import plan_video_outpaint_placement
+    from api.param_defaults import outpaint_video_defaults_for_arch
+    from core.models.components.wiring import temporal_spec_for_arch
 
-    if width < 32 or height < 32 or width % 32 != 0 or height % 32 != 0:
+    if not (getattr(pipeline_manager, "is_ltx2_model", False)
+            or getattr(pipeline_manager, "is_minimax_h3_model", False)):
         raise CustomValidationError(
-            "width and height must both be >= 32 and divisible by 32",
-            detail=f"Got width={width}, height={height}. Round each to a multiple of 32, minimum 32.",
+            "No video model loaded",
+            detail="Load an LTX-2.3 or MiniMax-H3 video model before calling "
+                   "/generate/outpaint/video.",
         )
-    if total_frames < 9 or total_frames % 8 != 1:
+    if outpaint_video_audio_mode not in ("regenerate", "preserve_input"):
         raise CustomValidationError(
-            "total_frames must be >= 9 and satisfy (total_frames - 1) % 8 == 0",
-            detail=f"Got total_frames={total_frames}. Use values like 9, 17, ..., 121 (8k + 1, k >= 1).",
+            "Invalid outpaint_video_audio_mode",
+            detail=f"Must be 'regenerate' or 'preserve_input', got {outpaint_video_audio_mode!r}.",
         )
+
+    # Per-architecture defaults FIRST: the decode bound and every geometry check
+    # below read `total_frames`, which is one of the overlaid keys. Resolving
+    # from `outpaint_video_defaults_for_arch` (base -> video overlay -> outpaint
+    # overlay) is what makes an omitted `total_frames` resolve to MiniMax-H3's
+    # 248 instead of being validated against LTX-2.3's 121.
+    _vid_arch = (pipeline_manager.current_model_info or {}).get("type")
+    _resolved = outpaint_video_defaults_for_arch(_vid_arch)
+    if width is None:
+        width = int(_resolved["width"])
+    if height is None:
+        height = int(_resolved["height"])
+    if total_frames is None:
+        total_frames = int(_resolved["total_frames"])
+    if frame_rate is None:
+        frame_rate = float(_resolved["frame_rate"])
+    if num_inference_steps is None:
+        num_inference_steps = int(_resolved["num_inference_steps"])
+    if guidance_scale is None:
+        guidance_scale = float(_resolved["guidance_scale"])
+
+    _spec = temporal_spec_for_arch(_vid_arch)
+    _placements = tuple(_spec.outpaint_placements) if _spec is not None else ("free",)
+    _align = _spec.pixel_align if _spec is not None else 32
+    if width < _align or height < _align or width % _align != 0 or height % _align != 0:
+        raise CustomValidationError(
+            f"width and height must both be >= {_align} and divisible by {_align}",
+            detail=f"Got width={width}, height={height}. Round each to a multiple of {_align}, "
+                   f"minimum {_align}.",
+        )
+    if _spec is not None and _spec.max_pixel_hw is not None:
+        _short_cap, _long_cap = min(_spec.max_pixel_hw), max(_spec.max_pixel_hw)
+        if min(width, height) > _short_cap or max(width, height) > _long_cap:
+            raise CustomValidationError(
+                f"the canvas exceeds this model's {_short_cap}x{_long_cap} envelope",
+                detail=f"Got {width}x{height}. The loaded model generates with a short edge of at "
+                       f"most {_short_cap} and a long edge of at most {_long_cap}, in either "
+                       f"orientation.",
+            )
+    if "free" in _placements:
+        # LTX-2.3's shipped contract, unchanged: the OUTPUT timeline is what the
+        # model generates end to end, so it is what must sit on the 8k+1 grid.
+        if total_frames < 9 or total_frames % 8 != 1:
+            raise CustomValidationError(
+                "total_frames must be >= 9 and satisfy (total_frames - 1) % 8 == 0",
+                detail=f"Got total_frames={total_frames}. Use values like 9, 17, ..., 121 (8k + 1, k >= 1).",
+            )
+    else:
+        # A boundary-conditioned arch generates only the MISSING span, so the
+        # grid rule binds that span (resolved by plan_video_outpaint_placement
+        # once the clip lengths are known) and not this number.
+        if total_frames < 2:
+            raise CustomValidationError(
+                "total_frames must be at least 2",
+                detail=f"Got total_frames={total_frames}.",
+            )
     if frame_rate <= 0:
         raise CustomValidationError(
             "frame_rate must be > 0",
@@ -3647,22 +3731,15 @@ async def generate_outpaint_video(
         )
     # Spec-driven step-count floor (TemporalSpec.min_inference_steps). `params`
     # is not built until after the upload is decoded, so the value is passed on
-    # its own. A no-op for LTX-2.3, the only arch this endpoint dispatches today.
-    validate_video_steps({"num_inference_steps": num_inference_steps},
-                         (pipeline_manager.current_model_info or {}).get("type"))
-    if outpaint_video_audio_mode not in ("regenerate", "preserve_input"):
+    # its own.
+    validate_video_steps({"num_inference_steps": num_inference_steps}, _vid_arch)
+    if bridge_video is not None and "bridge" not in _placements:
         raise CustomValidationError(
-            "Invalid outpaint_video_audio_mode",
-            detail=f"Must be 'regenerate' or 'preserve_input', got {outpaint_video_audio_mode!r}.",
-        )
-
-    # A loaded MiniMax-H3 is a VIDEO model this endpoint cannot dispatch yet;
-    # say so, rather than "no LTX-2.3 model loaded".
-    _reject_if_video_arch_unwired("/generate/outpaint/video")
-    if not getattr(pipeline_manager, "is_ltx2_model", False):
-        raise CustomValidationError(
-            "No LTX-2.3 model loaded",
-            detail="Load an LTX-2.3 video model before calling /generate/outpaint/video.",
+            "this model has no bridge placement",
+            detail="bridge_video adds a SECOND preserved clip at the end of the timeline, which is "
+                   "a placement only an architecture that conditions on boundary frames needs. The "
+                   "loaded model places one clip at an arbitrary offset instead; upload a single "
+                   "`video` and set input_offset_frames.",
         )
 
     # Decode the uploaded clip + (best-effort) extract its original audio
@@ -3686,9 +3763,28 @@ async def generate_outpaint_video(
             detail=str(e),
         )
 
+    bridge_frames = None
+    bridge_source_fps = None
+    bridge_audio = None
+    if bridge_video is not None:
+        try:
+            bridge_data = await bridge_video.read()
+            bridge_frames, bridge_source_fps = load_video_frames(
+                bridge_data, max_frames=total_frames
+            )
+        except CustomValidationError:
+            raise
+        except Exception as e:
+            raise CustomValidationError(
+                "Failed to decode the uploaded bridge video clip",
+                detail=str(e),
+            )
+
     input_audio = None
     if audio_enable and outpaint_video_audio_mode == "preserve_input":
         input_audio = extract_audio_stream(video_data)
+        if bridge_video is not None:
+            bridge_audio = extract_audio_stream(bridge_data)
 
     params = {
         "prompt": prompt,
@@ -3708,6 +3804,11 @@ async def generate_outpaint_video(
         "input_trim_start_frames": input_trim_start_frames,
         "input_trim_end_frames": input_trim_end_frames,
         "outpaint_video_audio_mode": outpaint_video_audio_mode,
+        # Validated against the attention registry's vocabulary, same
+        # 400-before-start_generation contract as every other route that takes
+        # it (`attention_type_validation_test` is the forcing function).
+        "attention_type": _validated_attention_type(
+            attention_type, OUTPAINT_VIDEO_DEFAULTS["attention_type"]),
         "blocks_to_swap": blocks_to_swap,
         "fbcache_enable": fbcache_enable,
         "fbcache_threshold": fbcache_threshold,
@@ -3729,6 +3830,9 @@ async def generate_outpaint_video(
         # Normalized here (before start_generation) so junk is a 400, not a 500.
         "quantized_gemm_mode": _normalize_media_qgm(quantized_gemm_mode),
         "video_lossless": video_lossless,
+        # The uploaded FILENAME (never the bytes), so the gallery row records
+        # that this was a bridge and which clip closed it.
+        "bridge_video": getattr(bridge_video, "filename", None) if bridge_video is not None else None,
     }
 
     # Reject a clip that cannot fit at all (trim leaves nothing) -- cheap
@@ -3743,20 +3847,42 @@ async def generate_outpaint_video(
                    f"input_trim_end_frames={input_trim_end_frames}.",
         )
 
+    # Placement, against the loaded arch's own conditioning rule. Called HERE
+    # (pure, no warnings, no GPU) so a placement this architecture cannot anchor
+    # is a fast 400 rather than a failure after a 30-second text encode; the
+    # backend calls the same function again and is what warns, so the arithmetic
+    # is never duplicated. A "free" arch resolves trivially and keeps today's
+    # behaviour.
+    plan_video_outpaint_placement(
+        params, _vid_arch,
+        head_frames=int(trimmed_len),
+        tail_frames=int(bridge_frames.shape[0]) if bridge_frames is not None else None,
+    )
+
     _gen_id = start_generation("outpaint_vid")
     try:
         pipeline_manager.reset_cancel_flag()
+
+        # Inside the try because a forced frame rate emits a `warnings[]` entry,
+        # which needs the generation context started above. `frame_key=None`:
+        # the length that has to be on the arch's grid is the GENERATED span's,
+        # not this endpoint's OUTPUT timeline (the preserved frames are pasted,
+        # never sampled), and the span is resolved by the placement planner.
+        # Spatial validation already ran above as a pre-decode 400.
+        validate_video_geometry(params, _vid_arch, frame_key=None)
+        validate_video_steps(params, _vid_arch)
 
         from api.arch_capabilities import check_arch_capabilities
         from api.generation_overrides import plan_overrides, apply_overrides
         _override_plan = plan_overrides(pipeline_manager, params.get("vae_path"), params.get("text_encoder_path"))
         apply_overrides(pipeline_manager, _override_plan)
-        _ltx2_arch = (pipeline_manager.current_model_info or {}).get("type")
         # See the same call in /generate/img2vid: judged against the VIDEO
-        # defaults (here the outpaint ones), or every request looks like it set
-        # every video-only key by hand.
-        check_arch_capabilities(params, _ltx2_arch,
-                                defaults=video_defaults_for_arch(_ltx2_arch, OUTPAINT_VIDEO_DEFAULTS))
+        # defaults (here the outpaint ones, INCLUDING the outpaint-only
+        # overlay), or every request looks like it set every video-only key by
+        # hand -- and on a guidance-distilled arch that means a spurious
+        # ignored-guidance warning on every single request.
+        check_arch_capabilities(params, _vid_arch,
+                                defaults=outpaint_video_defaults_for_arch(_vid_arch))
 
         print(f"outpaint_vid generation params: {sanitize_params_for_logging(params)}")
 
@@ -3780,12 +3906,19 @@ async def generate_outpaint_video(
             frames, audio, audio_sample_rate, actual_seed = await _run_generation_in_executor(
                 loop, executor,
                 lambda: pipeline_manager.generate_vid_outpaint(
-                    params, video_frames, source_fps, input_audio, progress_callback=progress_callback
+                    params, video_frames, source_fps, input_audio,
+                    progress_callback=progress_callback,
+                    bridge_frames=bridge_frames, bridge_fps=bridge_source_fps,
+                    bridge_audio=bridge_audio,
                 )
             )
             fp8_gemm = extract_fp8_gemm_info(pipeline_manager)
         apply_generation_timings(params, time.perf_counter() - _gen_start)
-        _record_media_gemm_outcome(params, fp8_gemm, _ltx2_arch)
+        _record_media_gemm_outcome(params, fp8_gemm, _vid_arch)
+        # See the same call in /generate/img2vid: the backend the conduit really
+        # used, not the one that was asked for. Nothing is written on an
+        # architecture that does not route attention through the conduit.
+        record_attention_backend(params, _gen_id)
 
         # See the note on the same call in /generate/txt2vid.
         vae_name, vae_hash = extract_vae_info(pipeline_manager)

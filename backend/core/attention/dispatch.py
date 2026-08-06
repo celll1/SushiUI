@@ -33,6 +33,7 @@ from .config import (
     resolve_backend,
     to_diffusers_backend,  # noqa: F401 - re-exported for callers via __init__
 )
+from .observed import note_backend
 from .registry import BACKENDS
 
 # One-time dedup for the "which backend is actually running" info log.
@@ -178,6 +179,7 @@ def dispatch_attention(
     if out is None and resolved != "native":
         # Kernel failed at runtime -> fall back to native (never raise).
         _log_backend_used("native", fell_back_from=resolved)
+        note_backend("native")
         out = BACKENDS["native"].fn(
             q,
             k,
@@ -190,6 +192,9 @@ def dispatch_attention(
         )
     elif out is not None:
         _log_backend_used(resolved)
+        # Record the backend that actually produced this call's output, so the
+        # generation's row can name what RAN rather than what was requested.
+        note_backend(resolved)
 
     if out is None:
         # Native is the terminal fallback; if it also failed, surface the error

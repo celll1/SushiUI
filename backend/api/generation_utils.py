@@ -523,6 +523,57 @@ def prepare_params_for_db(params: Dict[str, Any], calculate_image_hash) -> Dict[
     return params_for_db
 
 
+def record_attention_backend(params: Dict[str, Any],
+                             generation_id: Optional[int] = None) -> Optional[str]:
+    """Record the attention backend(s) that ACTUALLY ran, and warn on a downgrade.
+
+    ``params["attention_type"]`` is the REQUESTED string; it is not evidence of
+    what executed, because the conduit downgrades per call (capability guard,
+    or a kernel that failed and fell back to native). This writes the observed
+    backend(s) under ``params["attention_backend"]`` -- one value, or several
+    joined with "+" when a generation genuinely ran more than one (e.g. a mixed
+    head_dim model where one attention shape is refused by the requested
+    backend) -- so the gallery row and the PNG metadata can never name a backend
+    that did not run.
+
+    Nothing is written when nothing was observed. That is the honest state for
+    an architecture that does not route attention through the conduit (LTX-2.3,
+    the diffusers-dispatch paths), and it is preferable to echoing the request.
+
+    Also files ONE ``attention_downgrade`` warning when the requested backend is
+    absent from what ran -- the conduit's own per-call warnings already cover
+    the guard and kernel-failure cases, but this one is stated per generation in
+    terms of the request, and covers any future path that degrades silently.
+
+    Returns the recorded label, or None. Never raises.
+    """
+    try:
+        from core.attention import normalize_backend, observed_backends
+
+        used = observed_backends(generation_id)
+        if not used:
+            return None
+        label = "+".join(used)
+        params["attention_backend"] = label
+        requested = params.get("attention_type")
+        if requested is not None and normalize_backend(requested) not in used:
+            try:
+                from api.generation_status import add_warning
+
+                add_warning(
+                    f"attention_type={requested!r} was requested but the attention "
+                    f"conduit ran {label} for this generation; the row records the "
+                    f"backend that actually ran.",
+                    code="attention_downgrade",
+                )
+            except Exception:
+                pass
+        return label
+    except Exception as exc:  # pragma: no cover - defensive
+        print(f"[Attention] Could not record the resolved attention backend: {exc}")
+        return None
+
+
 # ====================
 # Priority 2: 中程度の重複
 # ====================

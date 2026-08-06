@@ -124,6 +124,95 @@ def apply_quantized_gemm_mode(mode: Optional[str]) -> Optional[Dict[str, Any]]:
     return result
 
 
+def _gemm_flags_enabled() -> Dict[str, Optional[bool]]:
+    """Current process state of the two W8A8 flags (``None`` when unreadable).
+
+    Read back rather than assumed: ``apply_quantized_gemm_mode`` sets both flags
+    best-effort, so a build where a vendor module cannot be imported leaves the
+    flag where it was, and the resulting dequant has a THIRD cause that is
+    neither the hardware nor a policy pin.
+    """
+    state: Dict[str, Optional[bool]] = {"fp8": None, "int8": None}
+    try:
+        from core.models.ideogram4.vendor.fp8_linear import get_scaled_mm_state
+
+        state["fp8"] = bool(get_scaled_mm_state().get("enabled"))
+    except Exception:
+        pass
+    try:
+        from core.models.ideogram4.vendor.int8_linear import get_int8_mm_state
+
+        state["int8"] = bool(get_int8_mm_state().get("enabled"))
+    except Exception:
+        pass
+    return state
+
+
+def _dequant_cause(label: str, arch: Optional[str]) -> str:
+    """Explain WHY a ``w8a8`` request resolved to the dequantized matmul.
+
+    "The W8A8 path is unavailable on this device/build" -- what this used to say
+    for every case -- is false for an architecture whose LOADER pins its layers
+    to the dequant path, and it points the reader at a GPU upgrade that would
+    change nothing. MiniMax-H3 is exactly that case: `disable_scaled_mm` is
+    called over the whole DiT at load time because 50 of the checkpoint's 200
+    quantized tensors are marked `full_precision_matrix_mult` and the other 150
+    carry an `input_scale` this repo's `Fp8Linear` does not read, and that pin
+    outranks both the env flag and this request.
+
+    The cause is DERIVED from the resolved label plus the process flag, not from
+    an arch list, because `describe_gemm_path` already separates them:
+
+    * a BARE ``dequant`` / ``int8_dequant`` stem means "the flag is off, or
+      every owned layer opted out" -- so with the flag confirmed ON it can only
+      be the per-module opt-out, i.e. the loader's policy pin;
+    * ``(scaled_mm unavailable)`` / ``(int_mm unavailable)`` means the
+      per-device probe rejected every scaling mode -- the genuine
+      device/build limitation;
+    * ``(... unprobed)`` means no quantized forward reached the probe at all.
+    """
+    flags = _gemm_flags_enabled()
+    reasons = []
+    for stem, fmt, flag_key, kernel in (
+        ("int8_dequant", "INT8", "int8", "torch._int_mm"),
+        ("dequant", "FP8", "fp8", "torch._scaled_mm"),
+    ):
+        parts = [p for p in label.split("+") if p.startswith(stem)]
+        if not parts:
+            continue
+        part = parts[0]
+        enabled = flags.get(flag_key)
+        if "unavailable" in part:
+            reasons.append(
+                f"The {fmt} W8A8 path is unavailable on this device/build: the "
+                f"per-device probe rejected every {kernel} scaling mode for these layers."
+            )
+        elif "unprobed" in part:
+            reasons.append(
+                f"The {fmt} W8A8 path was enabled but no quantized Linear forward "
+                "reached the probe in this process, so no layer ran it."
+            )
+        elif enabled is False:
+            reasons.append(
+                f"The {fmt} W8A8 process flag is off: this request could not set it "
+                "(see the console for the setter failure)."
+            )
+        else:
+            reasons.append(
+                f"The {fmt} W8A8 flag is on and this is NOT a device or build "
+                f"limitation: every quantized Linear layer of the loaded "
+                f"'{arch}' model is pinned to the dequantized path by its loader "
+                "(disable_scaled_mm), which outranks this request. That pin is a "
+                "property of the checkpoint's declared quantization semantics, so "
+                "a different GPU would resolve the same way."
+            )
+        # Only the first matching stem per format is described; `label.split("+")`
+        # holds at most one stem per format by construction.
+    return " ".join(reasons) if reasons else (
+        "The W8A8 path did not run for these layers."
+    )
+
+
 def report_quantized_gemm_outcome(
     mode: Optional[str], fp8_gemm_label: str, arch: Optional[str]
 ) -> Optional[str]:
@@ -167,8 +256,8 @@ def report_quantized_gemm_outcome(
         else:
             message = (
                 "quantized_gemm_mode='w8a8' was requested but the dequantized "
-                f"matmul ran (resolved path: {label}). The W8A8 path is "
-                "unavailable on this device/build for these layers."
+                f"matmul ran (resolved path: {label}). "
+                + _dequant_cause(label, arch)
             )
         try:
             from api.generation_status import add_warning

@@ -45,6 +45,61 @@ _normalize_warned = set()
 _downgrade_logged = set()
 
 
+def known_backends() -> tuple:
+    """Every backend string this resolver recognises, sorted.
+
+    DERIVED from the three tables that define the vocabulary -- the registry
+    (``BACKENDS``), the alias map and the passthrough set -- so a new backend is
+    accepted by the API the moment it is registered, and no caller-facing
+    validation list can drift away from what ``normalize_backend`` does. The
+    ``None`` key of ``_ALIASES`` (meaning "not set") is not a string and is
+    excluded; "not set" is handled by ``validate_backend``'s ``default``.
+    """
+    names = set(BACKENDS) | set(_PASSTHROUGH)
+    names |= {alias for alias in _ALIASES if isinstance(alias, str)}
+    return tuple(sorted(names))
+
+
+def is_known_backend(backend: Optional[str]) -> bool:
+    """True when ``backend`` is a string this resolver recognises (case/space-insensitive)."""
+    if not isinstance(backend, str):
+        return False
+    return backend.strip().lower() in known_backends()
+
+
+def validate_backend(backend, *, default: Optional[str] = None,
+                     param: str = "attention_type") -> Optional[str]:
+    """Return the recognised backend string, or raise ``ValueError``.
+
+    The API-facing counterpart of ``normalize_backend``: where that one absorbs
+    an unknown string into ``native`` (with a once-per-process console line, so
+    a second bad request leaves no trace at all), this one REFUSES it, so a
+    caller learns its value did not select what it asked for.
+
+    * ``None`` / empty / whitespace -> ``default`` (the "not set" tier; the
+      caller owns the default, this module never invents one).
+    * A recognised string -> that string, stripped and lower-cased. It is NOT
+      alias-resolved: the requested spelling is what routes and metadata keep
+      recording, and the RESOLVED backend is reported separately by
+      ``core.attention.observed``.
+    * Anything else -> ``ValueError`` naming the accepted vocabulary.
+    """
+    if backend is None:
+        return default
+    if not isinstance(backend, str):
+        raise ValueError(
+            f"{param} must be a string, one of {', '.join(known_backends())}; got {backend!r}"
+        )
+    key = backend.strip().lower()
+    if not key:
+        return default
+    if key not in known_backends():
+        raise ValueError(
+            f"{param} must be one of {', '.join(known_backends())}; got {backend!r}"
+        )
+    return key
+
+
 def normalize_backend(backend: Optional[str]) -> str:
     """Normalize a backend string to a canonical key.
 

@@ -291,6 +291,15 @@ def save_image_with_metadata(
     metadata.add_text("attention_type", attention_type)
     attention_impl = params.get("attention_impl") or "conduit"
     metadata.add_text("attention_impl", attention_impl)
+    # ...and the backend that ACTUALLY ran, observed by the conduit for this
+    # generation (``api.generation_utils.record_attention_backend``). Written
+    # only when there is evidence: absent means the architecture does not route
+    # attention through the conduit, not that it ran the requested backend. The
+    # pair (requested, ran) is what makes a per-call downgrade legible after the
+    # fact -- the same shape as quantized_gemm_mode/fp8_gemm above.
+    attention_backend = params.get("attention_backend")
+    if attention_backend:
+        metadata.add_text("attention_backend", str(attention_backend))
 
     # Generation timing (informational, not reproducibility-affecting). Written
     # whenever present — total wall time is always recorded by the endpoint; the

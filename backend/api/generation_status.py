@@ -120,6 +120,15 @@ def start_generation(generation_type: str) -> int:
         # the live warnings of the newest generation.
         _state["warnings"] = _buckets[gen_id]
     _current_generation.set(gen_id)
+    # Start recording which attention backend(s) this generation actually runs
+    # (see core/attention/observed.py). Best-effort and lazily imported: the
+    # status store must not hard-depend on the attention conduit, and a build
+    # without it still generates.
+    try:
+        from core.attention.observed import begin_generation as _begin_attention
+        _begin_attention(gen_id)
+    except Exception:
+        pass
     return gen_id
 
 

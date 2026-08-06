@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import { X, Save, FolderOpen, Trash2 } from "lucide-react";
-import { createTrainingRun, updateTrainingRun, listDatasets, Dataset, TrainingRun, getModels, DatasetConfigItem, getRandomCaption, getSamplers, getScheduleTypes, listTrainingPresets, createTrainingPreset, deleteTrainingPreset, TrainingPreset, getTrainingRunParams, updateTrainingConfig, getControlNets, SamplePrompt, TrainingRunCreateRequest, listTrainingRuns } from "@/utils/api";
+import { createTrainingRun, updateTrainingRun, listDatasets, Dataset, TrainingRun, getModels, DatasetConfigItem, getRandomCaption, getSamplers, getScheduleTypes, listTrainingPresets, createTrainingPreset, deleteTrainingPreset, TrainingPreset, getTrainingRunParams, updateTrainingConfig, getControlNets, SamplePrompt, TrainingRunCreateRequest, listTrainingRuns, trainingMethodUnsupportedReason } from "@/utils/api";
 import { useStartup } from "@/contexts/StartupContext";
 import { saveTempImage, loadTempImage, deleteTempImageRef } from "@/utils/tempImageStorage";
 import TextareaWithTagSuggestions from "../common/TextareaWithTagSuggestions";
@@ -40,6 +40,11 @@ interface ModelInfo {
 // parameters, which is the only thing stochastic rounding can act on.
 const FORCED_BF16_ARCHITECTURES = new Set([
   "zimage", "anima", "ideogram4", "minit2i", "krea2", "lens", "ltx2", "acestep",
+  // MiniMax-H3: bf16 is not merely its native precision, it is the dtype its
+  // weight-only FP8 Linears DEQUANTIZE INTO inside every forward. Left at the
+  // non-bf16 default (fp32) the whole 50-block stack runs fp32 and the per-block
+  // dequantized-weight transient roughly doubles -- silently.
+  "minimax_h3",
 ]);
 
 // Optimizer configuration: defines available options and defaults for each optimizer
@@ -186,6 +191,10 @@ const DEFAULT_PARAMS: TrainingRunCreateRequest = {
   attention_impl: "conduit",
   min_snr_gamma: 5.0,
   reconstruction_loss_weight: 0.0,
+  // MiniMax-H3 only: weight of the audio half of its joint objective.
+  // Overwritten by trainingDefaults on startup; literal here is the
+  // no-backend fallback (and matches TRAINING_DEFAULTS).
+  audio_loss_weight: 1.0,
   text_encoding_mode: "swap_onthefly",
   text_encoding_swap_interval: 256,
   latent_encoding_mode: "swap_onthefly",
@@ -308,7 +317,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   //   4. Add UI input: read `params.x`, write via `updateParam("x", v)`
   //   No changes to getRequestData/applyParamsToState required.
   const [params, setParams] = useState<TrainingRunCreateRequest>(DEFAULT_PARAMS);
-  const { trainingDefaults, timestepDefaultsByArch, bundleVaeDefaultsByArch } = useStartup();
+  const { trainingDefaults, timestepDefaultsByArch, bundleVaeDefaultsByArch, archCapabilities } = useStartup();
 
   // Apply backend-fetched defaults when they arrive (only for new runs, not edit mode)
   useEffect(() => {
@@ -542,6 +551,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const attentionImpl = params.attention_impl ?? "conduit";
   const minSnrGamma = params.min_snr_gamma ?? 5.0;
   const reconstructionLossWeight = params.reconstruction_loss_weight ?? 0.0;
+  const audioLossWeight = params.audio_loss_weight ?? 1.0;
 
   // Text encoding mode (Phase 3i: migrated to params)
   const textEncodingMode = params.text_encoding_mode ?? "swap_onthefly";
@@ -658,6 +668,22 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     const model = availableModels.find(m => m.path === modelPath);
     return model?.architecture;
   };
+
+  // The backend's own reason a training method is REFUSED for this base model,
+  // or undefined when it is offered. Read from GET /schema/arch-capabilities
+  // (`training_unsupported`), so the disabled control, its tooltip and the
+  // trainer's exception all come from ONE table instead of the UI carrying a
+  // second copy of the policy. Ideogram 4's full-FT block below predates this
+  // table and keeps its hardcoded check; new entries need no UI change at all.
+  const unsupportedTrainingMethod = (method: string): string | undefined =>
+    trainingMethodUnsupportedReason(
+      archCapabilities, getModelArchitecture(baseModelPath), method
+    );
+
+  // MiniMax-H3 is the only architecture that reads audio_loss_weight (the only
+  // one whose packed training sequence carries audio rows), so its control is
+  // shown only for it rather than as a knob that silently does nothing.
+  const isMiniMaxH3Model = getModelArchitecture(baseModelPath) === "minimax_h3";
 
   const isSDOrSDXLModel = (modelPath: string): boolean => {
     const arch = getModelArchitecture(modelPath);
@@ -804,6 +830,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       use_flash_attention: params.use_flash_attention,
       min_snr_gamma: params.min_snr_gamma,
       reconstruction_loss_weight: params.reconstruction_loss_weight,
+      audio_loss_weight: params.audio_loss_weight,
       text_encoding_mode: params.text_encoding_mode,
       text_encoding_swap_interval: params.text_encoding_swap_interval,
       use_reference_images: params.use_reference_images,
@@ -1047,6 +1074,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       "unet_lr", "text_encoder_lr", "text_encoder_1_lr", "text_encoder_2_lr", "image_encoder_lr",
       "weight_dtype", "training_dtype", "output_dtype", "vae_dtype",
       "mixed_precision", "attention_backend", "attention_impl", "use_flash_attention", "min_snr_gamma", "reconstruction_loss_weight",
+      "audio_loss_weight",
       "text_encoding_mode", "text_encoding_swap_interval",
       "latent_encoding_mode", "latent_encoding_swap_interval",
       "minit2i_label_drop_rate", "minit2i_lr_factor", "minit2i_flan_t5_path", "minit2i_scratch_init_from",
@@ -1252,7 +1280,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       updateParam("train_vision_encoder", false);
     } else if (
       arch === "anima" || arch === "lens" || arch === "ideogram4" ||
-      arch === "minit2i" || arch === "krea2" || arch === "ltx2" || arch === "acestep"
+      arch === "minit2i" || arch === "krea2" || arch === "ltx2" || arch === "acestep" ||
+      arch === "minimax_h3"
     ) {
       // Other bf16-native DiT archs: same bf16 dtype preset as Z-Image/FLUX.2.
       // These models' weights are bfloat16, so bf16 training is the correct default
@@ -1319,14 +1348,23 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [baseModelPath, bundleVaeDefaultsByArch]);
 
-  // Ideogram 4 does not support Full Fine-tune (fp8 base; VRAM-impractical) —
-  // fall back to LoRA if a full-FT method was carried over from another model/preset.
+  // Fall back to LoRA when the selected training method is not offered for the
+  // selected base model: either because the backend's TRAINING_UNSUPPORTED table
+  // says so (MiniMax-H3 full fine-tune) or by the older hardcoded Ideogram 4 rule
+  // (fp8 base; VRAM-impractical). `archCapabilities` is in the deps because it
+  // arrives asynchronously — a model chosen before it loads must still be
+  // re-checked once it does.
   useEffect(() => {
+    // A method the backend refuses for this architecture cannot stay selected
+    // after a model switch (the run would be rejected at submit time instead).
+    if (unsupportedTrainingMethod(trainingMethod)) {
+      setTrainingMethod("lora");
+    }
     if (isIdeogram4Model(baseModelPath) && (trainingMethod === "full_finetune" || trainingMethod === "relora")) {
       setTrainingMethod("lora");
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [baseModelPath, trainingMethod]);
+  }, [baseModelPath, trainingMethod, archCapabilities]);
 
 
   // Reset optimizer hyperparameters when optimizer changes
@@ -2238,9 +2276,16 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               />
               <span className={`text-sm ${fromScratchMiniT2I ? 'text-gray-500' : ''}`}>LoRA (Recommended)</span>
             </label>
+            {(() => {
+              const fullFtReason = unsupportedTrainingMethod("full_finetune");
+              const fullFtBlocked = isIdeogram4Model(baseModelPath) || !!fullFtReason;
+              const title = isIdeogram4Model(baseModelPath)
+                ? 'Ideogram 4 Full Fine-tune is not supported (fp8 base; VRAM-impractical for individuals). Use LoRA.'
+                : fullFtReason;
+              return (
             <label
-              className={`flex items-center space-x-2 ${isIdeogram4Model(baseModelPath) ? 'cursor-not-allowed' : 'cursor-pointer'}`}
-              title={isIdeogram4Model(baseModelPath) ? 'Ideogram 4 Full Fine-tune is not supported (fp8 base; VRAM-impractical for individuals). Use LoRA.' : undefined}
+              className={`flex items-center space-x-2 ${fullFtBlocked ? 'cursor-not-allowed' : 'cursor-pointer'}`}
+              title={title}
             >
               <input
                 type="radio"
@@ -2248,13 +2293,15 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 value="full_finetune"
                 checked={trainingMethod === "full_finetune"}
                 onChange={() => setTrainingMethod("full_finetune")}
-                disabled={isIdeogram4Model(baseModelPath)}
+                disabled={fullFtBlocked}
                 className="text-blue-600 focus:ring-blue-500"
               />
-              <span className={`text-sm ${isIdeogram4Model(baseModelPath) ? 'text-gray-500' : ''}`}>
-                Full Fine-tune{isIdeogram4Model(baseModelPath) ? ' (N/A for Ideogram 4)' : ''}
+              <span className={`text-sm ${fullFtBlocked ? 'text-gray-500' : ''}`}>
+                Full Fine-tune{isIdeogram4Model(baseModelPath) ? ' (N/A for Ideogram 4)' : (fullFtReason ? ' (not supported for this model)' : '')}
               </span>
             </label>
+              );
+            })()}
             <label className="flex items-center space-x-2 cursor-pointer">
               <input
                 type="radio"
@@ -4297,6 +4344,34 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 Default: 0.0 (prediction loss only). Dual loss: loss = (1-β)*pred_loss + β*recon_loss. Try 0.1 for faster learning in noisy timesteps.
               </p>
             </div>
+
+            {/* Audio Loss Weight (MiniMax-H3 only) */}
+            {isMiniMaxH3Model && (
+              <div>
+                <label htmlFor="audio-loss-weight" className="block text-xs font-medium text-gray-400 mb-1">
+                  Audio Loss Weight
+                </label>
+                <input
+                  type="number"
+                  id="audio-loss-weight"
+                  value={audioLossWeight}
+                  onChange={(e) => updateParam("audio_loss_weight", e.target.value === '' ? (undefined as any) : parseFloat(e.target.value))}
+                  onBlur={(e) => {
+                    const v = parseFloat(e.target.value);
+                    if (e.target.value === '' || isNaN(v) || v < 0) updateParam("audio_loss_weight", 1.0);
+                  }}
+                  step={0.1}
+                  min={0}
+                  className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs"
+                />
+                <p className="text-xs text-gray-500">
+                  Default: 1.0. loss = video_mean + weight * audio_mean (each modality&apos;s
+                  velocity MSE averaged over tokens, channels and samples before weighting).
+                  0 trains on the video half only; the audio rows still ride along in the
+                  packed sequence because they are part of its structure.
+                </p>
+              </div>
+            )}
           </div>
 
           <p className="text-xs text-gray-500">
@@ -5474,6 +5549,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
           <div className="text-xs text-gray-500 space-y-1">
             <p><strong>Swap On-the-Fly:</strong> VAE swaps with main model (U-Net or Transformer) every N steps. Uses DRAM buffer (~64MB for 256 steps). Recommended for VRAM efficiency.</p>
             <p><strong>Pre-Encoded Cache:</strong> Pre-encode all images to latents and cache to disk. Uses more disk space but no VRAM for VAE during training.</p>
+            <p className="text-gray-400"><strong>Video datasets:</strong> a cached clip is addressed by its WINDOW, so this mode encodes and reuses ONE fixed (centred) window per video for the whole run — no temporal augmentation. The other two modes sample a fresh random window every time the clip is encoded.</p>
             <p><strong>On-the-Fly GPU:</strong> Encode images on GPU without cache. VAE stays on GPU, uses more VRAM.</p>
           </div>
         </div>

@@ -1252,6 +1252,13 @@ BaseTrainer(
   samples before weighting (default: 1.0, from `TRAINING_DEFAULTS`). `0.0` trains on
   the video half only. Every other architecture leaves it unread.
 
+**Video datasets and `latent_encoding_mode`**: a cached video-clip latent is keyed by
+its WINDOW (`compute_clip_hash`), so `pre_encoded_cache` encodes and then reuses ONE
+fixed (centred) window per video for the whole run — it gives no temporal augmentation.
+`swap_onthefly` and `onthefly_gpu` sample a fresh random window each time a clip is
+encoded. This is inherent to addressing a disk cache by window, not a limitation of a
+particular architecture.
+
 **Important Notes**:
 - This is an **abstract class** - use `LoRATrainer` or `FullParameterTrainer` instead
 - Automatically detects model type (SD1.5, SDXL, Z-Image)

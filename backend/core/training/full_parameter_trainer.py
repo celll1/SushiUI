@@ -70,6 +70,14 @@ class FullParameterTrainer(BaseTrainer):
         self.train_text_encoder = train_text_encoder
         self.train_image_encoder = train_image_encoder
 
+        # Architectures that refuse full fine-tuning are refused HERE, before
+        # super().__init__() -- which loads the model. `_create_adapter()` runs
+        # far below that, so a refusal expressed only there is paid for with the
+        # entire load first (MiniMax-H3: a 21 GB DiT plus a 48 GiB memory-mapped
+        # text encoder, minutes of work and a documented RAM cliff, to reach a
+        # message that was knowable from the checkpoint header alone).
+        self._refuse_unsupported_full_finetune(kwargs.get("model_path"))
+
         # Initialize base trainer (loads model components)
         super().__init__(**kwargs)
 
@@ -107,6 +115,31 @@ class FullParameterTrainer(BaseTrainer):
         # Note: Vision Encoder training status is determined in train() after VE is loaded
         print(f"{self.log_prefix} Training U-Net: {self.train_unet}, Text Encoder: {self.train_text_encoder}, Image Encoder: {self.train_image_encoder}")
 
+    @staticmethod
+    def _refuse_unsupported_full_finetune(model_path):
+        """Raise for an architecture that does not offer full fine-tuning, from
+        the CHECKPOINT alone -- before anything is loaded.
+
+        Reads the same table the API serves
+        (`api.arch_capabilities.TRAINING_UNSUPPORTED`, which a client filters its
+        method dropdown from) so the refusal, the dropdown and the documented
+        reason can never disagree. Detection failures are non-fatal: an
+        unreadable path is the loader's error to report, not this guard's.
+        """
+        if not model_path:
+            return
+        try:
+            from core.model_loader import ModelLoader
+            arch = ModelLoader.detect_model_type(model_path)
+        except Exception:
+            return
+        from api.arch_capabilities import TRAINING_UNSUPPORTED
+        reason = (TRAINING_UNSUPPORTED.get(arch) or {}).get("full_finetune")
+        if reason:
+            raise ValueError(
+                f"Full fine-tuning is not supported for architecture '{arch}': {reason} "
+                f"Use training_method='lora'.")
+
     def _create_adapter(self):
         """Create model-specific Full Parameter adapter based on detected model type."""
         if self.is_zimage:
@@ -143,12 +176,17 @@ class FullParameterTrainer(BaseTrainer):
             # LAYER 3 of the three-layer full-FT refusal for this architecture
             # (design section 7). Layer 1 is
             # `api.arch_capabilities.TRAINING_UNSUPPORTED["minimax_h3"]
-            # ["full_finetune"]`, which a client filters its method dropdown
-            # from; layer 2 is the deliberate ABSENCE of a
+            # ["full_finetune"]`, which the UI filters its method dropdown from;
+            # layer 2 is the deliberate ABSENCE of a
             # MiniMaxH3FullParameterAdapter class in
-            # `adapters/minimax_h3_adapter.py`. This is the one that fires if a
-            # run is queued anyway -- loudly, before any model is loaded, rather
-            # than as an out-of-memory failure twenty minutes in.
+            # `adapters/minimax_h3_adapter.py`.
+            #
+            # The refusal a queued run actually hits is
+            # `_refuse_unsupported_full_finetune`, raised BEFORE super().__init__()
+            # loads anything. This branch is the backstop for a caller that
+            # constructs the trainer some other way (a direct subclass, a test), so
+            # the absence of an adapter can never be reached as a silent fallthrough
+            # to the SD1.5 one.
             raise ValueError(
                 "Full fine-tuning is not supported for MiniMax-H3. Its DiT is a 33 B dense "
                 "transformer: parameters, gradients and optimizer state do not fit the "

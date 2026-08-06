@@ -90,6 +90,47 @@ def minimax_h3_vae_tiling_token() -> str:
 # Loading / setup
 # ----------------------------------------------------------------------
 
+def normalize_dtypes(trainer) -> None:
+    """Force ``weight_dtype`` / ``training_dtype`` to bf16, UNCONDITIONALLY.
+
+    Not merely a correction for fp16. ``weight_dtype`` is handed straight to
+    ``load_minimax_h3_from_path``, and it is the dtype the 300 weight-only FP8
+    Linears DEQUANTIZE INTO inside every forward. Under fp32 the whole 50-block
+    stack therefore runs in fp32 and the per-block dequantized-weight transient
+    roughly doubles -- silently, with no error, producing a run that is a
+    different function from the measured one (22.44 GB peak at 384x640x22; the
+    larger registered cells become out-of-memory candidates).
+
+    fp32 is not a hypothetical: it is the dtype preset a client applies to any
+    architecture that is not on its bf16-native list, so this is the ORDINARY
+    path for a UI-started run, not an exotic one. `train_runner`'s
+    ``_is_bf16_native_base_model`` and the frontend's preset both name
+    ``minimax_h3`` so the config that arrives is already right; this is the
+    second line of defence, and the one that also covers a hand-written YAML.
+
+    Every non-bf16 dtype is replaced and the original logged, so a run can never
+    be quietly executed in a precision nobody measured.
+    """
+    training_dtype_overridden = False
+    for attr in ("weight_dtype", "training_dtype"):
+        was = getattr(trainer, attr, None)
+        if was is not None and was != torch.bfloat16:
+            print(f"{trainer.log_prefix} MiniMax-H3's block stack is bf16 (it is what the "
+                  f"FP8 codes dequantize into); overriding {attr}: {was} -> bfloat16")
+            setattr(trainer, attr, torch.bfloat16)
+            if attr == "training_dtype":
+                training_dtype_overridden = True
+    trainer.dtype = trainer.weight_dtype
+    if training_dtype_overridden and getattr(trainer, "use_grad_scaler", False):
+        # The scaler was configured from the ORIGINAL training_dtype in
+        # BaseTrainer.__init__. bf16 needs no gradient scaling, and a scaler left
+        # over from an fp16 config raises "Attempting to unscale FP16 gradients".
+        print(f"{trainer.log_prefix} Disabling GradScaler (MiniMax-H3 forced to bf16; "
+              f"bf16 needs no gradient scaling)")
+        trainer.use_grad_scaler = False
+        trainer.grad_scaler = None
+
+
 def load_components(trainer) -> None:
     """Load MiniMax-H3 components for training.
 
@@ -98,26 +139,29 @@ def load_components(trainer) -> None:
     model generation runs — including the FP8 Linear swap, the fp32 AdaLN
     projections, the fp16 video VAE and the pinned VAE tiling policy.
     """
+    # Batch size is an ARCHITECTURAL constraint here and is knowable now, before
+    # the model, the latent cache and the caption cache are built. MiniMax-H3
+    # packs the caption's own rows into one attention DOCUMENT and its forward
+    # takes no attention mask at all, so a batch of two captions of different
+    # token counts would attend to the zero-padding of the shorter one -- and its
+    # `timestep_indices` is a `(seq_len,)` tensor with no batch axis, so one
+    # timestep vector has to serve every sample regardless. `train_step` keeps a
+    # backstop check on the token counts; this is the one a user actually meets.
+    _bs = int(trainer.config.get("batch_size", 1) or 1)
+    if _bs > 1:
+        raise ValueError(
+            f"MiniMax-H3 training requires batch_size=1 (got {_bs}). Its packed sequence is a "
+            f"single attention document that includes the caption's own rows, and its forward "
+            f"accepts no attention mask, so two captions of different token counts cannot share "
+            f"a batch; its per-row timestep index vector also has no batch axis, so one noise "
+            f"level serves the whole batch. Use gradient_accumulation_steps to raise the "
+            f"effective batch size instead -- the measured configuration space (384x640x22 "
+            f"through 512x768x39) is batch 1.")
+
     print(f"{trainer.log_prefix} Detected MiniMax-H3 model")
     print(f"{trainer.log_prefix} Loading MiniMax-H3 components from {trainer.model_path}")
 
-    # bf16 is the block stack's compute dtype (what the loader dequantizes the
-    # FP8 codes INTO and what the checkpoint's non-quantized blocks are stored
-    # in). fp16 is not a supported alternative here, so a run configured for it
-    # is corrected rather than allowed to produce a differently-rounded base.
-    _training_dtype_overridden = False
-    for _attr in ("weight_dtype", "training_dtype"):
-        if getattr(trainer, _attr, None) == torch.float16:
-            print(f"{trainer.log_prefix} MiniMax-H3's block stack is bf16; overriding "
-                  f"{_attr}: float16 -> bfloat16")
-            setattr(trainer, _attr, torch.bfloat16)
-            if _attr == "training_dtype":
-                _training_dtype_overridden = True
-    trainer.dtype = trainer.weight_dtype
-    if _training_dtype_overridden and getattr(trainer, "use_grad_scaler", False):
-        print(f"{trainer.log_prefix} Disabling GradScaler (MiniMax-H3 forced to bf16)")
-        trainer.use_grad_scaler = False
-        trainer.grad_scaler = None
+    normalize_dtypes(trainer)
 
     from core.model_loader import ModelLoader
     components = ModelLoader.load_minimax_h3_from_path(trainer.model_path, trainer.weight_dtype)
@@ -469,6 +513,24 @@ def _shift_sigma(u: float, shift: float) -> float:
     return shift * u / (1.0 + (shift - 1.0) * u)
 
 
+def _warn_if_shifted_sampler(trainer) -> None:
+    """Announce, once per run, that a non-uniform timestep distribution composes
+    with MiniMax-H3's own sigma shifts rather than replacing them."""
+    if getattr(trainer, "_warned_h3_timestep_composition", False):
+        return
+    sampler = getattr(trainer, "timestep_sampler", None)
+    if sampler is None or type(sampler).__name__ == "UniformTimestepSampler":
+        return
+    trainer._warned_h3_timestep_composition = True
+    print(f"{trainer.log_prefix} NOTE: timestep_sampling is "
+          f"{type(sampler).__name__}, and for MiniMax-H3 the sampler's output is the "
+          f"PRE-SHIFT draw u, not sigma: train_step applies the model's own shift 12 "
+          f"(video) / shift 3 (audio) on top of it, so the two COMPOSE and the "
+          f"resulting sigma distribution is pushed further toward 1 than the "
+          f"distribution you configured. Uniform (the registered per-arch default) "
+          f"is what reproduces the schedule this model is sampled at.")
+
+
 def _layout_for(trainer, num_text_tokens: int, t_lat: int, lat_h: int, lat_w: int,
                 n_aud: int) -> Dict[str, Any]:
     """Cached ``build_packed_layout`` for one geometry.
@@ -556,6 +618,10 @@ def train_step(
                                      non_blocking=True)
 
     counts = h3_aux.get("num_text_tokens") if isinstance(h3_aux, dict) else None
+    # BACKSTOP. The batch-size constraint is refused at config time in
+    # `load_components`; this catches a caller that built the trainer another way
+    # (a direct construction, a test) before the padding can silently become
+    # conditioning.
     if isinstance(counts, torch.Tensor) and counts.numel() > 0:
         uniq = torch.unique(counts.reshape(-1))
         if uniq.numel() != 1:
@@ -599,10 +665,25 @@ def train_step(
         audio_mask = torch.full((batch_size,), 1.0 if audio is not None else 0.0,
                                 device=device)
 
-    # --- sigma: ONE uniform draw, both schedules (K0.4's inference pair) ---
+    # --- sigma: ONE draw, BOTH schedules (K0.4's inference pair) ---
+    #
+    # What the sampler's output MEANS is arch-specific and the two video archs
+    # read it differently on purpose. LTX-2.3 consumes it directly AS sigma;
+    # MiniMax-H3 consumes it as the PRE-SHIFT uniform `u` and then applies its
+    # own two shifts, because that is what its scheduler does at inference
+    # (`linspace(1, 0, N)` -> shift 12 for video, shift 3 for audio). Uniform `u`
+    # therefore reproduces the sigma distribution the released model is actually
+    # sampled at, which is why `TIMESTEP_SAMPLING_DEFAULTS_BY_ARCH` registers
+    # uniform for this arch.
+    #
+    # A non-uniform configured distribution COMPOSES with those shifts rather
+    # than replacing them (a logit-normal biased toward 1 becomes far more biased
+    # after shift 12). That is a legitimate thing to want and is not blocked --
+    # but it must not happen silently, so it is announced once per run.
     if timesteps is not None and torch.is_tensor(timesteps) and timesteps.numel() > 0:
         u = float(timesteps.reshape(-1)[0].item())
     elif getattr(trainer, "timestep_sampler", None) is not None:
+        _warn_if_shifted_sampler(trainer)
         u = float(trainer.timestep_sampler.sample(1, device).reshape(-1)[0].item())
     else:
         u = float(torch.rand((), device=device).item())

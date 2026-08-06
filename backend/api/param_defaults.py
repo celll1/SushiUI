@@ -1683,6 +1683,15 @@ TIMESTEP_SAMPLING_DEFAULTS_BY_ARCH: Dict[str, Any] = {
     # Krea 2: uniform sigma sampling; the resolution schedule bias comes from the
     # discrete flow shift (krea2_discrete_flow_shift, applied in train_step_krea2).
     "krea2": {"distribution": "uniform", "min_timestep": 0.0, "max_timestep": 1.0},
+    # MiniMax-H3: uniform, and REGISTERED rather than left to fall through to
+    # "_default", because for this architecture the sampler's output is not a
+    # sigma -- it is the PRE-SHIFT uniform draw `u`, which train_step then puts
+    # through the model's own two schedules (shift 12 for the video rows, shift 3
+    # for the audio rows, from the SAME draw, exactly as inference does). Uniform
+    # `u` therefore reproduces the sigma distribution the released model is
+    # sampled at; a non-uniform distribution here COMPOSES with those shifts
+    # instead of replacing them (train_step warns once when it sees one).
+    "minimax_h3": {"distribution": "uniform", "min_timestep": 0.0, "max_timestep": 1.0},
 }
 
 # ---------------------------------------------------------------------------

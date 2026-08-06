@@ -551,13 +551,22 @@ def clip_span(
     Index-sampled archs (LTX-2.3): ``(clip_length - 1) * stride + 1`` — the
     sampled indices ARE source indices.
 
-    Fixed-fps archs (MiniMax-H3, 24 fps): the clip occupies
-    ``clip_length*stride / fps_fixed`` seconds of the SOURCE timeline, which is
-    a different number of source frames whenever the source is not already at
-    the target rate — a 22-frame 24 fps clip spans 28 frames of a 30 fps
-    source. Without ``source_fps`` there is nothing to convert with, so the
-    index form is used (the pessimistic direction only for sources slower than
-    the target).
+    Fixed-fps archs (MiniMax-H3, 24 fps): the clip covers
+    ``(clip_length - 1)*stride / fps_fixed`` seconds of the SOURCE timeline --
+    the span of its ``clip_length - 1`` inter-frame GAPS -- which is a different
+    number of source frames whenever the source is not already at the target
+    rate. Worked example, matching what this function returns: a 22-frame clip at
+    24 fps spans 21 gaps = 0.875 s, which is 26.25 -> 26 source frames at 30 fps,
+    plus the first frame itself = **27**. Without ``source_fps`` there is nothing
+    to convert with, so the index form is used (the pessimistic direction only
+    for sources slower than the target).
+
+    Note the deliberate one-frame difference from ``TemporalSpec.clip_duration``,
+    which is ``clip_length*stride / fps_fixed`` -- the DURATION the clip occupies
+    on the output timeline (22 frames of output = 22/24 s of playback), not the
+    instant-to-instant span of its samples. Both are correct for their own
+    question; see the audio-window sizing in ``video_loader.encode_and_cache_clip``
+    for the place where the distinction is load-bearing.
     """
     clip_length = max(1, int(clip_length))
     stride = max(1, int(stride))

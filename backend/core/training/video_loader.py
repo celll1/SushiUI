@@ -61,6 +61,24 @@ def clip_latent_frames(clip_length: int, spec: Optional[TemporalSpec] = None) ->
     return int(_spec_or_ltx(spec).latent_frames(int(clip_length)))
 
 
+def expected_audio_rows(clip_length: int, stride: int = 1,
+                        spec: Optional[TemporalSpec] = None,
+                        latents_per_second: float = 40.0,
+                        channels: int = 2) -> int:
+    """Rows a full audio window for this clip should have, or 0 when the arch has
+    no fixed rate (and therefore no window-level audio latent).
+
+    ``2 * round(T / fps * latents_per_second)`` -- the closed form measured on
+    MiniMax-H3 (22 -> 37 per channel, 39 -> 65), stated here so a short read can
+    be RECOGNISED as short instead of silently becoming the batch's row count.
+    """
+    sp = _spec_or_ltx(spec)
+    duration = sp.clip_duration(clip_length, stride)
+    if duration is None:
+        return 0
+    return int(round(duration * float(latents_per_second))) * int(channels)
+
+
 class ClipWindow(NamedTuple):
     """A sampled clip window, addressed BOTH ways.
 
@@ -511,10 +529,30 @@ def encode_and_cache_clip(
             f"[1, C, T, H', W'], got {latents.dim()}D {tuple(latents.shape)}"
         )
 
-    # The audio half of the SAME window, cut by the same timestamps. Duration
-    # comes from the arch's own fixed frame rate when it has one; an arch that
-    # inherits the source rate has no audio seam at all (audio_encode_window is
-    # None for it), so there is nothing to size.
+    # The audio half of the SAME window, cut by the same timestamps.
+    #
+    # Sized by `TemporalSpec.clip_duration` (`clip_length*stride / fps_fixed`, the
+    # duration the clip occupies on the OUTPUT timeline) because that is what the
+    # audio latent count is defined against: `T_aud = round(T/fps*40)`, measured.
+    # Sizing it from `bucketing.clip_span` instead -- which measures first sample
+    # to LAST sample, i.e. `clip_length - 1` gaps -- would return fewer rows than
+    # the packed layout's geometry contract calls for.
+    #
+    # The two agree exactly at stride 1 on a source already at `fps_fixed`
+    # (22 frames: span 22 source frames, duration 22/24 s = 22 source frames).
+    # They can differ by up to ONE target frame when the source is RESAMPLED
+    # (22 frames of a 30 fps source: span reserves 27, the duration wants 27.5) or
+    # when stride > 1. `sample_clip_window` places windows using the span, so a
+    # window sitting hard against the end of a source can ask for a fraction of a
+    # frame of audio past EOF; ffmpeg then returns a short read and the record
+    # holds fewer than `2*round(T/fps*40)` rows.
+    #
+    # Deliberately NOT shortened to fit (that would desynchronise the audio from
+    # the frames it was cut with) and deliberately NOT raised (one edge window
+    # must not kill a run). The short read is reported with its numbers, and the
+    # collation zero-pads it to the batch shape while still reporting the sample
+    # as having audio -- so a systematically short dataset is visible in the log
+    # instead of being silently absorbed.
     audio_latents = None
     has_audio = None
     if audio_encode_window is not None:
@@ -527,6 +565,15 @@ def encode_and_cache_clip(
             (clip_start / float(eff_source_fps)) if eff_source_fps else 0.0)
         audio_latents = audio_encode_window(start_sec, float(duration))
         has_audio = audio_latents is not None
+        if audio_latents is not None:
+            expected_rows = expected_audio_rows(clip_length, stride, _spec)
+            if expected_rows and int(audio_latents.shape[0]) < expected_rows:
+                print(f"[VideoLoader] NOTE: audio window for {video_path} "
+                      f"(start {start_sec:.3f}s, {duration:.3f}s) returned "
+                      f"{int(audio_latents.shape[0])} of {expected_rows} rows -- the "
+                      f"requested window runs past the end of the source's audio "
+                      f"track. The clip's frames are unaffected; the missing rows "
+                      f"are zero-padded at collation.")
 
     cache.save_clip_latent(
         video_path, width, height, clip_start, clip_length, stride,

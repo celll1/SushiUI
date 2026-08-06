@@ -117,17 +117,28 @@ def _is_krea2_base_model(base_model_path: str) -> bool:
 
 
 def _is_bf16_native_base_model(base_model_path: str) -> bool:
-    """Lens / LTX-2.3 / ACE-Step: bf16-native DiT / audio archs NOT caught by the
-    per-name checks above. bf16 is their correct training dtype and is REQUIRED for
-    Full fine-tune (fp16 Full-FT is rejected by the trainer -- GradScaler.unscale_
-    needs fp32 master params; bf16 needs no scaler). Path-name match first, then
-    key/config detection for renamed checkpoints."""
+    """Lens / LTX-2.3 / ACE-Step / MiniMax-H3: bf16-native DiT / audio archs NOT
+    caught by the per-name checks above. bf16 is their correct training dtype and
+    is REQUIRED for Full fine-tune (fp16 Full-FT is rejected by the trainer --
+    GradScaler.unscale_ needs fp32 master params; bf16 needs no scaler). Path-name
+    match first, then key/config detection for renamed checkpoints.
+
+    MiniMax-H3 is here for a sharper reason than "native precision": its released
+    DiT is weight-only FP8 and `weight_dtype` is the dtype those codes DEQUANTIZE
+    INTO inside every forward. Left at the non-bf16-native default (fp32), the
+    50-block stack runs fp32 and the per-block dequantized-weight transient
+    roughly doubles -- no error, just a run that is a different function from the
+    measured one. `minimax_h3_ops.load_components` normalizes it as a second line
+    of defence; this keeps the config that reaches the trainer honest in the first
+    place."""
     lowered = (base_model_path or "").lower()
-    if any(s in lowered for s in ("lens", "ltx", "ace-step", "acestep")):
+    if any(s in lowered for s in ("lens", "ltx", "ace-step", "acestep",
+                                  "minimax", "minimax_h3", "minimax-h3")):
         return True
     try:
         from core.model_loader import ModelLoader
-        return ModelLoader.detect_model_type(base_model_path) in ("lens", "ltx2", "acestep")
+        return ModelLoader.detect_model_type(base_model_path) in (
+            "lens", "ltx2", "acestep", "minimax_h3")
     except Exception:
         return False
 

@@ -636,6 +636,41 @@ def get_video_spatial_bucket(
     )
 
 
+def clip_cache_key_extras(
+    spec: Optional[TemporalSpec],
+    *,
+    source_fps: Optional[float] = None,
+    start_time: Optional[float] = None,
+    tiling_policy: Optional[str] = None,
+    audio_prep_version: Optional[str] = None,
+) -> Dict:
+    """The POLICY half of a clip cache key: the fields that describe HOW the
+    window was turned into a latent, as opposed to WHICH window it was.
+
+    THE single place this is derived. Both callers go through it -- the bucket
+    manager's ``clip_cache_params`` (which prepends the window fields) and
+    ``video_loader.encode_and_cache_clip`` (which passes them straight to
+    ``LatentCache``) -- so a policy field can never be part of one caller's key
+    and absent from the other's, which would produce two addresses for one
+    window and a cache that silently never hits.
+
+    Empty for an index-sampled arch with no tiling or audio policy (LTX-2.3),
+    which is what keeps existing LTX-2.3 cache files addressable.
+    """
+    sp = _spec_or_ltx(spec)
+    extras: Dict = {}
+    if sp.fps_fixed is not None:
+        extras["source_fps"] = source_fps
+        extras["target_fps"] = float(sp.fps_fixed)
+        extras["resample_policy"] = sp.resample_policy
+        extras["start_time"] = (None if start_time is None else float(start_time))
+    if tiling_policy is not None:
+        extras["tiling_policy"] = tiling_policy
+    if audio_prep_version is not None:
+        extras["audio_prep_version"] = audio_prep_version
+    return extras
+
+
 class VideoBucketManager:
     """Temporal bucketing for LTX video clips (P4c).
 
@@ -793,16 +828,13 @@ class VideoBucketManager:
             "stride": int(video_info["stride"]),
             "fps": video_info.get("fps"),
         }
-        sp = _spec_or_ltx(self.temporal_spec)
-        if sp.fps_fixed is not None:
-            params["source_fps"] = video_info.get("fps")
-            params["target_fps"] = float(sp.fps_fixed)
-            params["resample_policy"] = sp.resample_policy
-            params["start_time"] = (None if start_time is None else float(start_time))
-        if tiling_policy is not None:
-            params["tiling_policy"] = tiling_policy
-        if audio_prep_version is not None:
-            params["audio_prep_version"] = audio_prep_version
+        params.update(clip_cache_key_extras(
+            self.temporal_spec,
+            source_fps=video_info.get("fps"),
+            start_time=start_time,
+            tiling_policy=tiling_policy,
+            audio_prep_version=audio_prep_version,
+        ))
         return params
 
     def get_bucket_counts(self) -> Dict[str, int]:

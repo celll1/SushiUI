@@ -194,6 +194,15 @@ class ArchHandler(ABC):
     #: unchanged. An arch that pins a policy sets a stable string here.
     clip_vae_tiling_policy: Optional[str] = None
 
+    #: Token identifying the AUDIO preprocessing chain of a window-level clip
+    #: record (Phase 6b). ``None`` for an arch whose clip record holds only a
+    #: video latent — which keeps LTX-2.3's keys unchanged — and a stable string
+    #: for one whose record also holds the window's audio latent
+    #: (``vae_encode_clip_audio`` below). Part of the clip cache key for the same
+    #: reason the tiling policy is: two records built by different audio chains
+    #: are different data and must not share an address.
+    clip_audio_prep_version: Optional[str] = None
+
     def __init__(self, trainer: Any = None):
         # Optional back-reference (same contract as BaseLoRAAdapter). Canonical
         # methods still take ``trainer`` explicitly; this is a convenience only.
@@ -247,6 +256,23 @@ class ArchHandler(ABC):
         fully self-contained and returns the final CPU tensor directly.
         ``image`` (PIL) is used by the Lens/Ideogram4/Krea2 branches."""
         raise NotImplementedError
+
+    def vae_encode_clip_audio(self, trainer, video_path: str, start_time: float,
+                              duration: float):
+        """The AUDIO latent of the same clip window ``vae_encode_clip`` encodes.
+
+        Default ``None``: an arch whose clip record is video-only (LTX-2.3 —
+        which trains video-only with a grad-free dummy audio branch) never
+        produces one, and the cache record then carries exactly the fields it
+        always had. MiniMax-H3 overrides it, because its audio rows are part of
+        the SAME packed sequence its video rows are and its LoRA targets are
+        shared by both modalities.
+
+        Cut by the SAME ``[start_time, start_time + duration)`` window as the
+        frames, so A/V alignment is a construction property. ``None`` also means
+        "this source has no audio", which the arch's train step must handle.
+        """
+        return None
 
     @abstractmethod
     def vae_decode(self, trainer, latents, *, latent_h: int, latent_w: int) -> torch.Tensor:

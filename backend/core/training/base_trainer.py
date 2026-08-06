@@ -1089,6 +1089,15 @@ class BaseTrainer(ABC):
         if self.bundle_vae is not None:
             self.bundle_vae = bool(self.bundle_vae)
 
+        # MiniMax-H3's joint video+audio objective weight (SSoT:
+        # api/param_defaults.TRAINING_DEFAULTS). Read from the run config rather
+        # than added as a positional trainer argument because it is an
+        # arch-specific knob, the same way fp8_base_dtype / *_lora_scope are;
+        # every other architecture leaves it unread.
+        from api.param_defaults import TRAINING_DEFAULTS as _TD_AUDIO
+        self.audio_loss_weight = float(
+            self.config.get("audio_loss_weight", _TD_AUDIO["audio_loss_weight"]))
+
         # Per-run gradient checkpointing toggle. Default True preserves the prior
         # unconditional behavior; set False to trade VRAM for speed. Gated at every
         # enable_gradient_checkpointing / gradient_checkpointing_enable call site via
@@ -1269,6 +1278,7 @@ class BaseTrainer(ABC):
         self.is_minit2i = (model_type == "minit2i")
         self.is_krea2 = (model_type == "krea2")
         self.is_ltx2 = (model_type == "ltx2")
+        self.is_minimax_h3 = (model_type == "minimax_h3")
         self.is_acestep = (model_type == "acestep")
         self.is_sdxl = False
 
@@ -1283,9 +1293,12 @@ class BaseTrainer(ABC):
         from core.training.ops import (
             sd_sdxl_ops, zimage_ops, anima_ops, lens_ops, ideogram4_ops,
             minit2i_ops, krea2_ops, flux2_ops, ltx2_ops, acestep_ops,
+            minimax_h3_ops,
         )
         if self.is_ltx2:
             ltx2_ops.load_components(self)
+        elif self.is_minimax_h3:
+            minimax_h3_ops.load_components(self)
         elif self.is_acestep:
             acestep_ops.load_components(self)
         elif self.is_zimage:
@@ -1869,6 +1882,7 @@ class BaseTrainer(ABC):
         self.is_minit2i = (model_type == "minit2i")
         self.is_krea2 = (model_type == "krea2")
         self.is_ltx2 = (model_type == "ltx2")
+        self.is_minimax_h3 = (model_type == "minimax_h3")
         self.is_acestep = (model_type == "acestep")
         self.is_sdxl = False
 
@@ -4383,6 +4397,15 @@ class BaseTrainer(ABC):
             from core.training.ops import ltx2_ops
             video_emb, aux = ltx2_ops.encode_prompt(self, caption)
             return video_emb, aux
+        elif self.is_minimax_h3:
+            # MiniMax-H3: Qwen3-VL layer-50 hidden states + a one-key aux dict
+            # {num_text_tokens}. There is no text mask and no per-modality
+            # connector -- the caption's own rows are packed into the attended
+            # sequence, so its TOKEN COUNT is what train_step needs (and what the
+            # batch assembly's zero-padding would otherwise destroy).
+            from core.training.ops import minimax_h3_ops
+            text_emb, aux = minimax_h3_ops.encode_prompt(self, caption)
+            return text_emb, aux
         elif self.is_acestep:
             # ACE-Step: Qwen3 "# Caption" hidden states + aux dict
             # {text_attention_mask, lyric_hidden_states, lyric_attention_mask}
@@ -4497,6 +4520,15 @@ class BaseTrainer(ABC):
 
     def move_text_encoder_to_gpu(self):
         """Move Text Encoder(s) to GPU for encoding."""
+        if self.is_minimax_h3:
+            # MiniMax-H3's Qwen3-VL conditioner is NEVER moved, in either
+            # direction. `.to()` detaches all 902 of its tensors from the file
+            # mapping and turns a memory-mapped 48 GiB module into an anonymous
+            # resident copy (73.08 GB peak RSS against 49.82 GB, MEASURED) -- and
+            # it does not fit in VRAM in any case. Its GPU work is done one
+            # decoder layer at a time by `h3_pipeline_ops.encode_prompt` via
+            # `torch.func.functional_call`, which never writes back.
+            return
         if self.is_lens:
             # Lens mxfp4 TE: .to('cpu') cannot free the kernels CUDA buffers, so
             # move_text_encoder_to_cpu() deletes the object entirely.  Reload here
@@ -4534,6 +4566,10 @@ class BaseTrainer(ABC):
 
     def move_text_encoder_to_cpu(self):
         """Move Text Encoder(s) to CPU to free VRAM."""
+        if self.is_minimax_h3:
+            # Already CPU/memory-mapped and must stay that way -- see
+            # move_text_encoder_to_gpu.
+            return
         if self.is_lens:
             # .to('cpu') only moves the non-quantised PyTorch params; the kernels
             # library FP4 CUDA buffers (~9.7 GB) remain allocated.  The only way
@@ -4553,7 +4589,7 @@ class BaseTrainer(ABC):
 
     def move_main_model_to_gpu(self):
         """Move main model (U-Net or Transformer) to GPU for training."""
-        if self.is_zimage or self.is_anima or self.is_lens or self.is_ideogram4 or self.is_minit2i or self.is_krea2 or self.is_ltx2 or self.is_acestep:
+        if self.is_zimage or self.is_anima or self.is_lens or self.is_ideogram4 or self.is_minit2i or self.is_krea2 or self.is_ltx2 or self.is_acestep or self.is_minimax_h3:
             if self.transformer_original is not None:
                 self.transformer_original.to(self.device)
         else:
@@ -4562,7 +4598,7 @@ class BaseTrainer(ABC):
 
     def move_main_model_to_cpu(self):
         """Move main model (U-Net or Transformer) to CPU to free VRAM."""
-        if self.is_zimage or self.is_anima or self.is_lens or self.is_ideogram4 or self.is_minit2i or self.is_krea2 or self.is_ltx2 or self.is_acestep:
+        if self.is_zimage or self.is_anima or self.is_lens or self.is_ideogram4 or self.is_minit2i or self.is_krea2 or self.is_ltx2 or self.is_acestep or self.is_minimax_h3:
             if self.transformer_original is not None:
                 self.transformer_original.to("cpu")
         else:
@@ -4615,7 +4651,7 @@ class BaseTrainer(ABC):
         Mirrors the arch dispatch in move_main_model_to_cpu/gpu so the three stay
         consistent. Returns None if the module is not present.
         """
-        if self.is_zimage or self.is_anima or self.is_lens or self.is_ideogram4 or self.is_minit2i or self.is_krea2 or self.is_ltx2 or self.is_acestep:
+        if self.is_zimage or self.is_anima or self.is_lens or self.is_ideogram4 or self.is_minit2i or self.is_krea2 or self.is_ltx2 or self.is_acestep or self.is_minimax_h3:
             return getattr(self, "transformer_original", None)
         return getattr(self, "unet", None)
 
@@ -5026,6 +5062,48 @@ class BaseTrainer(ABC):
             v = item.get("target_fps") or item.get("fps")
             vals.append(float(v) if v else _DEFAULT_FPS)
         return torch.tensor(vals, dtype=torch.float32)
+
+    @staticmethod
+    def _minimax_h3_batch_audio(batch):
+        """Build MiniMax-H3's per-sample AUDIO payload from the batch ITEMS.
+
+        The window's audio latent belongs to the sampled CLIP, not to the caption
+        (design section 10 / audit 5.2), so it never travels in the per-caption
+        text aux. It is stashed on the item by ``_encode_video_clip`` /
+        ``_load_or_encode_video_clip`` -- the same call that produced that
+        window's VIDEO latent, from the SAME timestamps -- and collected here in
+        batch order.
+
+        Returns ``{"audio_latents": [B, 2*T_aud, 32] or absent,
+        "audio_present": [B] bool}``. A silent or audio-less source contributes
+        zero rows and a False flag; ``train_step`` then feeds that sample noise
+        audio rows and excludes it from the audio loss, rather than training the
+        audio head on silence that was never in the file.
+        """
+        mats, present = [], []
+        for item, _dataset in batch:
+            lat = item.get("_clip_audio_latent")
+            present.append(isinstance(lat, torch.Tensor))
+            mats.append(lat if isinstance(lat, torch.Tensor) else None)
+        out = {"audio_present": torch.tensor(present, dtype=torch.bool)}
+        real = [m for m in mats if m is not None]
+        if not real:
+            return out
+        rows = max(m.shape[0] for m in real)
+        cols = real[0].shape[1]
+        stacked = []
+        for m in mats:
+            if m is None:
+                stacked.append(torch.zeros(rows, cols, dtype=real[0].dtype))
+            elif m.shape[0] != rows:
+                # Only reachable if two items of one bucket disagreed on clip
+                # length, which the bucketer forbids; pad rather than crash.
+                pad = torch.zeros(rows - m.shape[0], cols, dtype=m.dtype)
+                stacked.append(torch.cat([m, pad], dim=0))
+            else:
+                stacked.append(m)
+        out["audio_latents"] = torch.stack(stacked, dim=0)
+        return out
 
     @staticmethod
     def _slice_aux(aux, lo, hi):
@@ -5552,6 +5630,25 @@ class BaseTrainer(ABC):
                 latents=mnt_latents,
                 text_embeddings=mnt_text_embeddings,
                 anima_aux=ltx2_aux,
+                timesteps=timesteps,
+                debug_save_path=debug_save_path,
+                debug_captions=batch_captions if debug_save_path else None,
+                debug_reference_image_paths=batch_reference_paths if debug_save_path else None,
+                profile_vram=self.debug_vram,
+                alphas_cumprod_cached=alphas_cumprod_cached,
+            )
+            loss, pred_loss, recon_loss = self.arch.train_step(self, ctx)
+        elif self.is_minimax_h3:
+            # MiniMax-H3 carries {num_text_tokens, audio_latents, audio_present}
+            # in mnt_attention_mask as a dict (collate_aux + the per-clip audio
+            # injection below), same pattern as ltx2/anima. latents are 5D
+            # [B, 24, T_lat, H', W'].
+            from core.training.arch.base_arch import TrainStepContext
+            h3_aux = mnt_attention_mask if isinstance(mnt_attention_mask, dict) else {}
+            ctx = TrainStepContext(
+                latents=mnt_latents,
+                text_embeddings=mnt_text_embeddings,
+                anima_aux=h3_aux,
                 timesteps=timesteps,
                 debug_save_path=debug_save_path,
                 debug_captions=batch_captions if debug_save_path else None,
@@ -6682,18 +6779,15 @@ class BaseTrainer(ABC):
                         try:
                             from core.training.video_loader import encode_and_cache_clip
                             _spec = self._temporal_spec()
-                            v_path = item.get("video_path") or item["image_path"]
-                            v_w = int(item.get("bucket_width", item["width"]))
-                            v_h = int(item.get("bucket_height", item["height"]))
-                            clip_length = int(item["clip_length"])
-                            stride = int(item.get("stride", 1))
-                            fps = item.get("fps")
-                            from core.training.video_loader import sample_clip_window
-                            window = sample_clip_window(
-                                int(item.get("num_frames", clip_length)),
-                                clip_length, stride, training=True,
-                                spec=_spec, source_fps=fps,
-                            )
+                            # DETERMINISTIC (centered) window, not a random one.
+                            # A cache entry is addressed by its window, so a
+                            # randomly-sampled write can never be read back --
+                            # the reader would compute a different key every
+                            # time. `_video_clip_window(training=False)` is the
+                            # same call the pre_encoded_cache READ makes, which
+                            # is what makes the two agree by construction.
+                            (v_path, v_w, v_h, clip_length, stride, fps,
+                             window) = self._video_clip_window(item, training=False)
                             encode_and_cache_clip(
                                 cache=cache,
                                 video_path=v_path,
@@ -6708,6 +6802,8 @@ class BaseTrainer(ABC):
                                 start_time=window.start_time,
                                 source_fps=fps,
                                 tiling_policy=self._clip_vae_tiling_policy(),
+                                audio_prep_version=self._clip_audio_prep_version(),
+                                audio_encode_window=self._clip_audio_seam(v_path),
                             )
                             iteration_count += 1
                             processed_items += 1
@@ -6936,7 +7032,37 @@ class BaseTrainer(ABC):
         ``arch.vae_encode_clip``. The VAE is assumed already GPU-resident
         (callers move it before the encode loop, same as the still path).
         """
-        from core.training.video_loader import load_clip, sample_clip_window
+        from core.training.video_loader import load_clip
+
+        spec = self._temporal_spec()
+        v_path, v_w, v_h, clip_length, stride, source_fps, window = self._video_clip_window(
+            item, training=True)
+        clip = load_clip(
+            v_path, clip_length, window.start_frame, stride,
+            target_w=v_w, target_h=v_h,
+            spec=spec, start_time=window.start_time, source_fps=source_fps,
+        )  # [T, C, H, W]
+        # arch.vae_encode_clip(trainer, clip) -> [1, C, T_lat, H', W'] (normalised).
+        latents = self.arch.vae_encode_clip(self, clip)
+        # The AUDIO half of the SAME window, for an arch whose packed sequence
+        # carries audio rows (MiniMax-H3). Stashed on the item because that is
+        # where the batch assembly collects per-CLIP payloads from
+        # (_minimax_h3_batch_audio); no-op for a video-only arch, whose handler
+        # inherits the base-class seam and returns None.
+        self._stash_clip_audio(item, spec, v_path, window, clip_length, stride)
+        return latents
+
+    def _video_clip_window(self, item: Dict[str, Any], *, training: bool):
+        """Resolve one video item's clip window + geometry (shared by every video
+        encode site, so the window a cache WRITE used and the window a cache READ
+        recomputes can never drift apart).
+
+        ``training=True`` samples a RANDOM window (a fresh crop of the timeline
+        every step, which is the point of the swap / on-the-fly modes);
+        ``training=False`` takes the CENTERED window, which is deterministic and
+        is therefore the only one a disk cache can address.
+        """
+        from core.training.video_loader import sample_clip_window
 
         spec = self._temporal_spec()
         v_path = item.get("video_path") or item["image_path"]
@@ -6947,16 +7073,78 @@ class BaseTrainer(ABC):
         source_fps = item.get("fps")
         window = sample_clip_window(
             int(item.get("num_frames", clip_length)),
-            clip_length, stride, training=True,
+            clip_length, stride, training=training,
             spec=spec, source_fps=source_fps,
         )
-        clip = load_clip(
-            v_path, clip_length, window.start_frame, stride,
-            target_w=v_w, target_h=v_h,
-            spec=spec, start_time=window.start_time, source_fps=source_fps,
-        )  # [T, C, H, W]
-        # arch.vae_encode_clip(trainer, clip) -> [1, C, T_lat, H', W'] (normalised).
-        return self.arch.vae_encode_clip(self, clip)
+        return v_path, v_w, v_h, clip_length, stride, source_fps, window
+
+    def _stash_clip_audio(self, item, spec, video_path, window, clip_length, stride):
+        """Encode this window's AUDIO latent and put it on the item for the batch
+        assembly to collect.
+
+        A source without an audio track yields ``None``, which the train step
+        reads as an explicit SILENT window rather than as missing data.
+        """
+        arch = getattr(self, "arch", None)
+        if arch is None or spec is None:
+            return
+        duration = spec.clip_duration(clip_length, stride)
+        if duration is None or getattr(arch, "clip_audio_prep_version", None) is None:
+            item["_clip_audio_latent"] = None
+            return
+        try:
+            item["_clip_audio_latent"] = arch.vae_encode_clip_audio(
+                self, video_path, float(window.start_time), float(duration))
+        except Exception as e:  # noqa: BLE001
+            print(f"{self.log_prefix} WARNING: clip audio encode failed for "
+                  f"{os.path.basename(str(video_path))}: {e}")
+            item["_clip_audio_latent"] = None
+
+    def _load_or_encode_video_clip(self, item: Dict[str, Any], cache) -> torch.Tensor:
+        """Video-clip latent for the ``pre_encoded_cache`` mode, THROUGH the clip
+        cache.
+
+        The generic ``cache.load_latent(image_path, w, h)`` path is keyed by
+        ``compute_image_hash`` and cannot address a clip record at all (clip
+        records are keyed by WINDOW), so a video item that reached it was
+        guaranteed to miss and fall into ``_regenerate_single_latent``, which
+        opens the path with PIL. This routes video items to the window-level
+        record instead -- the same ``encode_and_cache_clip`` seam the pre-encode
+        pass writes with, on the deterministic (centered) window, so the write and
+        the read address the same key.
+        """
+        from core.training.video_loader import encode_and_cache_clip
+
+        spec = self._temporal_spec()
+        v_path, v_w, v_h, clip_length, stride, source_fps, window = self._video_clip_window(
+            item, training=False)
+        result = encode_and_cache_clip(
+            cache=cache,
+            video_path=v_path, width=v_w, height=v_h,
+            clip_start=window.start_frame, clip_length=clip_length, stride=stride,
+            vae_encode_clip=lambda clip: self.arch.vae_encode_clip(self, clip),
+            fps=source_fps, device=str(self.device), spec=spec,
+            start_time=window.start_time, source_fps=source_fps,
+            tiling_policy=self._clip_vae_tiling_policy(),
+            audio_prep_version=self._clip_audio_prep_version(),
+            audio_encode_window=self._clip_audio_seam(v_path),
+            return_record=True,
+        )
+        item["_clip_audio_latent"] = result.get("audio_latents")
+        return result["latents"]
+
+    def _clip_audio_seam(self, video_path: str):
+        """The ``(start_sec, duration_sec) -> audio latent`` callable for this
+        arch, or None when its clip record is video-only."""
+        arch = getattr(self, "arch", None)
+        if arch is None or getattr(arch, "clip_audio_prep_version", None) is None:
+            return None
+        return lambda start_sec, duration: arch.vae_encode_clip_audio(
+            self, video_path, float(start_sec), float(duration))
+
+    def _clip_audio_prep_version(self) -> Optional[str]:
+        """Token for the arch's clip-record audio preprocessing chain (cache key)."""
+        return getattr(getattr(self, "arch", None), "clip_audio_prep_version", None)
 
     def _regenerate_single_latent(
         self,
@@ -7289,6 +7477,11 @@ class BaseTrainer(ABC):
                         # LTX-2.3 aux is a dict {audio_text_embedding, mask, fps};
                         # persisted (cannot be cheaply reconstructed like anima).
                         auxiliary_path = cache_dir / f"{caption_hash}_ltx2aux.pt"
+                    elif self.is_minimax_h3:
+                        # MiniMax-H3 aux is a dict {num_text_tokens}; persisted
+                        # alongside the embedding because the packed layout's row
+                        # count depends on it (see encode_caption).
+                        auxiliary_path = cache_dir / f"{caption_hash}_h3aux.pt"
                     elif self.is_acestep:
                         # ACE-Step aux is a dict {text_attention_mask,
                         # lyric_hidden_states, lyric_attention_mask}; persisted
@@ -7346,6 +7539,9 @@ class BaseTrainer(ABC):
                             elif self.is_ltx2 and auxiliary_cpu is not None:
                                 ltx2aux_path = cache_dir / f"{caption_hash}_ltx2aux.pt"
                                 torch.save(auxiliary_cpu, ltx2aux_path)
+                            elif self.is_minimax_h3 and auxiliary_cpu is not None:
+                                h3aux_path = cache_dir / f"{caption_hash}_h3aux.pt"
+                                torch.save(auxiliary_cpu, h3aux_path)
                             elif self.is_acestep and auxiliary_cpu is not None:
                                 acestepaux_path = cache_dir / f"{caption_hash}_acestepauxv2.pt"
                                 torch.save(auxiliary_cpu, acestepaux_path)
@@ -7417,6 +7613,8 @@ class BaseTrainer(ABC):
             auxiliary_path = cache_dir / f"{caption_hash}_mask.pt"
         elif self.is_ltx2:
             auxiliary_path = cache_dir / f"{caption_hash}_ltx2aux.pt"
+        elif self.is_minimax_h3:
+            auxiliary_path = cache_dir / f"{caption_hash}_h3aux.pt"
         elif self.is_acestep:
             # "v2" suffix -- see _validate_and_generate_text_encoder_caches's
             # matching comment (aux schema gained lyric_* keys).
@@ -7914,6 +8112,7 @@ class BaseTrainer(ABC):
                 "flux2" if self.is_flux2 else
                 "anima" if self.is_anima else
                 "ltx2" if self.is_ltx2 else
+                "minimax_h3" if self.is_minimax_h3 else
                 "lens" if self.is_lens else
                 "ideogram4" if self.is_ideogram4 else
                 "krea2" if self.is_krea2 else
@@ -10035,6 +10234,14 @@ class BaseTrainer(ABC):
                             if self.is_acestep and item.get("item_type") == "audio":
                                 latent = self._load_or_regenerate_acestep_audio_latent(item, cache)
                                 latents_list.append(latent)
+                            elif self._temporal_spec() is not None and item.get("item_type") == "video":
+                                # Video clip: keyed by WINDOW (compute_clip_hash),
+                                # not by (path, w, h). The generic load_latent
+                                # below cannot address it and would miss into
+                                # _regenerate_single_latent -> PIL.Image.open on a
+                                # .webm/.mp4. Same seam the pre-encode pass wrote
+                                # with, so this is a hit.
+                                latents_list.append(self._load_or_encode_video_clip(item, cache))
                             else:
                                 # Load from disk cache
                                 latent = cache.load_latent(item["image_path"], width, height)
@@ -10518,6 +10725,13 @@ class BaseTrainer(ABC):
                         # per-sample fps tensor [B] from the batch items here.
                         attention_mask = self.arch.collate_aux(self, auxiliary_data_list)
                         attention_mask["fps"] = self._ltx2_batch_fps_tensor(batch)
+                    elif self.is_minimax_h3:
+                        # MiniMax-H3 aux is a per-item dict {num_text_tokens};
+                        # the WINDOW's audio latent is a property of the sampled
+                        # CLIP, not of the caption, so it is injected here from
+                        # the batch items (mirrors ltx2's per-clip fps).
+                        attention_mask = self.arch.collate_aux(self, auxiliary_data_list)
+                        attention_mask.update(self._minimax_h3_batch_audio(batch))
                     elif self.is_acestep:
                         # ACE-Step aux is a per-item dict {text_attention_mask};
                         # collate into one dict carried through attention_mask
@@ -10711,6 +10925,12 @@ class BaseTrainer(ABC):
                                 # the batch items (not the per-caption text aux).
                                 mnt_attention_mask = self.arch.collate_aux(self, mnt_auxiliary_data_list)
                                 mnt_attention_mask["fps"] = self._ltx2_batch_fps_tensor(batch)
+                                mnt_pooled_embeddings = None
+                            elif self.is_minimax_h3:
+                                # MiniMax-H3: per-item dict + the per-clip audio
+                                # latent injected from the batch items.
+                                mnt_attention_mask = self.arch.collate_aux(self, mnt_auxiliary_data_list)
+                                mnt_attention_mask.update(self._minimax_h3_batch_audio(batch))
                                 mnt_pooled_embeddings = None
                             elif self.is_acestep:
                                 # ACE-Step: per-item dict → one collated aux dict.

@@ -139,6 +139,22 @@ class FullParameterTrainer(BaseTrainer):
         elif self.is_ltx2:
             self.adapter = Ltx2FullParameterAdapter(self)
             print(f"{self.log_prefix} Using Ltx2FullParameterAdapter")
+        elif self.is_minimax_h3:
+            # LAYER 3 of the three-layer full-FT refusal for this architecture
+            # (design section 7). Layer 1 is
+            # `api.arch_capabilities.TRAINING_UNSUPPORTED["minimax_h3"]
+            # ["full_finetune"]`, which a client filters its method dropdown
+            # from; layer 2 is the deliberate ABSENCE of a
+            # MiniMaxH3FullParameterAdapter class in
+            # `adapters/minimax_h3_adapter.py`. This is the one that fires if a
+            # run is queued anyway -- loudly, before any model is loaded, rather
+            # than as an out-of-memory failure twenty minutes in.
+            raise ValueError(
+                "Full fine-tuning is not supported for MiniMax-H3. Its DiT is a 33 B dense "
+                "transformer: parameters, gradients and optimizer state do not fit the "
+                "single-GPU 48 GB envelope this integration targets, and the released base is "
+                "weight-only FP8 (a full fine-tune would have to dequantize it first). Use "
+                "training_method='lora' -- LoRA is measured at 22.45 GB peak on this box.")
         elif self.is_acestep:
             self.adapter = AceStepFullParameterAdapter(self)
             print(f"{self.log_prefix} Using AceStepFullParameterAdapter")

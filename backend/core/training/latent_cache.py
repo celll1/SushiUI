@@ -10,7 +10,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 from datetime import datetime
 
 import torch
@@ -407,6 +407,8 @@ class LatentCache:
         start_time: Optional[float] = None,
         tiling_policy: Optional[str] = None,
         audio_prep_version: Optional[str] = None,
+        audio_latents: Optional[torch.Tensor] = None,
+        has_audio: Optional[bool] = None,
     ) -> bool:
         """
         Save a 5D temporal VAE latent for a video clip (P4b).
@@ -423,6 +425,17 @@ class LatentCache:
                 H'=H/32, W'=W/32, T=(clip_length-1)//8+1).
             fps: Source fps (folded into the key when provided).
             skip_existing: Skip write if the cache file already exists.
+            audio_latents: OPTIONAL audio latent of the SAME window, making this
+                a WINDOW-LEVEL record rather than a video-only one (Phase 6b,
+                MiniMax-H3). It has to live here and not in the per-caption text
+                aux: an audio latent depends on the sampled clip WINDOW, which a
+                caption knows nothing about. ``None`` writes no audio field at
+                all, so an LTX-2.3 record keeps exactly the shape it always had.
+            has_audio: Explicit "this source HAS an audio track" flag. Recorded
+                separately from ``audio_latents is not None`` so a genuinely
+                SILENT window (no track, or extraction refused) is a stored fact
+                the reader can act on, not an absence indistinguishable from an
+                old record written before audio existed.
 
         Returns:
             True if written, False if skipped.
@@ -459,6 +472,15 @@ class LatentCache:
         ):
             if value is not None:
                 record[name] = value
+        # Window-level (video + audio) record. `is_window_record` is what tells a
+        # reader that the absence of `audio_latents` means SILENT rather than
+        # "written by a video-only writer".
+        if audio_latents is not None or has_audio is not None:
+            record['is_window_record'] = True
+            record['has_audio'] = bool(has_audio if has_audio is not None
+                                       else audio_latents is not None)
+            record['audio_latents'] = (None if audio_latents is None
+                                       else audio_latents.detach().cpu())
         torch.save(record, cache_path)
         return True
 
@@ -528,6 +550,52 @@ class LatentCache:
             return latents
         except Exception as e:
             print(f"[LatentCache] Warning: Failed to load cached clip latent {cache_path}: {e}")
+            return None
+
+    def load_clip_record(
+        self,
+        video_path: str,
+        width: int,
+        height: int,
+        clip_start: int,
+        clip_length: int,
+        stride: int,
+        fps: Optional[float] = None,
+        device: str = 'cuda',
+        *,
+        source_fps: Optional[float] = None,
+        target_fps: Optional[float] = None,
+        resample_policy: Optional[str] = None,
+        start_time: Optional[float] = None,
+        tiling_policy: Optional[str] = None,
+        audio_prep_version: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """The WHOLE cached clip record, not just its video latent (Phase 6b).
+
+        ``load_clip_latent`` stays the video-only accessor every existing caller
+        uses; this one exists because a MiniMax-H3 window record also carries the
+        audio latent of the same window, and a caller that needs both must not
+        have to read the file twice or reach into the private layout.
+
+        Returns ``{"latents", "audio_latents", "has_audio", ...provenance}`` or
+        ``None`` on a miss. ``audio_latents`` is absent for a video-only record.
+        """
+        cache_hash = self.compute_clip_hash(
+            video_path, width, height, clip_start, clip_length, stride, fps,
+            source_fps=source_fps, target_fps=target_fps,
+            resample_policy=resample_policy, start_time=start_time,
+            tiling_policy=tiling_policy, audio_prep_version=audio_prep_version,
+        )
+        cache_path = self.latents_dir / f"{cache_hash}.pt"
+        if not cache_path.exists():
+            return None
+        try:
+            data = torch.load(cache_path, map_location=device)
+            if not isinstance(data, dict):
+                return {'latents': data}
+            return data
+        except Exception as e:
+            print(f"[LatentCache] Warning: Failed to load cached clip record {cache_path}: {e}")
             return None
 
     @staticmethod

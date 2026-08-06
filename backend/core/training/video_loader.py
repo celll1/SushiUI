@@ -35,6 +35,7 @@ import torch
 
 from core.models.components.wiring import LTX2_TEMPORAL, TemporalSpec
 from core.training.bucketing import (
+    clip_cache_key_extras,
     clip_span,
     is_valid_clip_length,
 )
@@ -414,6 +415,8 @@ def encode_and_cache_clip(
     source_fps: Optional[float] = None,
     tiling_policy: Optional[str] = None,
     audio_prep_version: Optional[str] = None,
+    audio_encode_window=None,
+    return_record: bool = False,
 ):
     """Encode-integration SEAM for P5 (ltx2 arch handler).
 
@@ -453,33 +456,47 @@ def encode_and_cache_clip(
             interchangeable with the other.
         audio_prep_version: Audio preprocessing token (Phase 6b's window-level
             video+audio record).
+        audio_encode_window: OPTIONAL callable ``(start_sec, duration_sec) ->
+            audio latent or None``, making the written record WINDOW-LEVEL (video
+            AND audio under one key) instead of video-only. It is called with the
+            window's own start time and the arch's own clip duration, i.e. the
+            SAME timestamps the frames were sampled at, which is what makes A/V
+            alignment a property of the construction. ``None`` (every LTX-2.3
+            call) writes exactly the record this function always wrote.
+        return_record: Return the whole record dict
+            ``{"latents", "audio_latents", "has_audio"}`` instead of just the 5D
+            video latent. Off by default so existing callers are unchanged.
 
     Returns:
-        5D latent tensor ``[1, C, T, H', W']``.
+        5D latent tensor ``[1, C, T, H', W']``, or the record dict when
+        ``return_record``.
     """
     _spec = _spec_or_ltx(spec)
     eff_source_fps = source_fps if source_fps is not None else fps
-    # Key extras are EMPTY for an index-sampled arch, which is what keeps
-    # existing LTX-2.3 cache files addressable.
-    key_extras = {}
-    if _spec.fps_fixed is not None:
-        key_extras = {
-            "source_fps": eff_source_fps,
-            "target_fps": float(_spec.fps_fixed),
-            "resample_policy": _spec.resample_policy,
-            "start_time": (None if start_time is None else float(start_time)),
-        }
-    if tiling_policy is not None:
-        key_extras["tiling_policy"] = tiling_policy
-    if audio_prep_version is not None:
-        key_extras["audio_prep_version"] = audio_prep_version
-
-    cached = cache.load_clip_latent(
-        video_path, width, height, clip_start, clip_length, stride, fps,
-        device=device, **key_extras,
+    # Derived by `bucketing.clip_cache_key_extras`, the ONE place the policy half
+    # of a clip cache key is built -- shared with `VideoBucketManager.
+    # clip_cache_params` so the two can never disagree about which policy fields
+    # belong in the key. Empty for an index-sampled arch with no tiling/audio
+    # policy, which is what keeps existing LTX-2.3 cache files addressable.
+    key_extras = clip_cache_key_extras(
+        spec, source_fps=eff_source_fps, start_time=start_time,
+        tiling_policy=tiling_policy, audio_prep_version=audio_prep_version,
     )
-    if cached is not None:
-        return cached
+
+    if return_record:
+        record = cache.load_clip_record(
+            video_path, width, height, clip_start, clip_length, stride, fps,
+            device=device, **key_extras,
+        )
+        if record is not None and record.get("latents") is not None:
+            return record
+    else:
+        cached = cache.load_clip_latent(
+            video_path, width, height, clip_start, clip_length, stride, fps,
+            device=device, **key_extras,
+        )
+        if cached is not None:
+            return cached
 
     clip = load_clip(
         video_path, clip_length, clip_start, stride, target_w=width, target_h=height,
@@ -494,8 +511,29 @@ def encode_and_cache_clip(
             f"[1, C, T, H', W'], got {latents.dim()}D {tuple(latents.shape)}"
         )
 
+    # The audio half of the SAME window, cut by the same timestamps. Duration
+    # comes from the arch's own fixed frame rate when it has one; an arch that
+    # inherits the source rate has no audio seam at all (audio_encode_window is
+    # None for it), so there is nothing to size.
+    audio_latents = None
+    has_audio = None
+    if audio_encode_window is not None:
+        duration = _spec.clip_duration(clip_length, stride)
+        if duration is None:
+            raise ValueError(
+                "[VideoLoader] audio_encode_window needs a fixed-frame-rate arch: "
+                "clip_duration is undefined when spec.fps_fixed is None")
+        start_sec = float(start_time) if start_time is not None else (
+            (clip_start / float(eff_source_fps)) if eff_source_fps else 0.0)
+        audio_latents = audio_encode_window(start_sec, float(duration))
+        has_audio = audio_latents is not None
+
     cache.save_clip_latent(
         video_path, width, height, clip_start, clip_length, stride,
-        latents, fps=fps, skip_existing=skip_existing, **key_extras,
+        latents, fps=fps, skip_existing=skip_existing,
+        audio_latents=audio_latents, has_audio=has_audio, **key_extras,
     )
+    if return_record:
+        return {"latents": latents, "audio_latents": audio_latents,
+                "has_audio": bool(has_audio) if has_audio is not None else None}
     return latents

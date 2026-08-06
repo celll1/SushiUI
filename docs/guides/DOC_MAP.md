@@ -17,11 +17,11 @@ Local-only files that may be absent in a fresh clone are listed separately.
 |---|---|
 | `docs/guides/DOC_MAP.md` | This file. |
 | `docs/guides/ARCHITECTURE_MAP.md` | Directory tree + backend/frontend module responsibilities. |
-| `docs/guides/REQUEST_LIFECYCLE.md` | End-to-end generation request flow (frontend to DB to gallery). |
+| `docs/guides/REQUEST_LIFECYCLE.md` | End-to-end request flow (frontend to DB to gallery) for image generation, video generation and model load. |
 | `docs/guides/ADD_A_PARAMETER.md` | Ordered checklist for threading a new API parameter through the stack. |
-| `docs/guides/ADD_A_MODEL_ARCHITECTURE.md` | Procedure for adding a 10th diffusion architecture. |
+| `docs/guides/ADD_A_MODEL_ARCHITECTURE.md` | Procedure for adding another diffusion architecture (12 exist), including the extra surface a video/audio architecture needs. |
 | `docs/guides/API_TESTING.md` | Safe vs. owner-sanctioned endpoints, dry-run convention, restart polling. |
-| `docs/guides/MODEL_FACTS.md` | Per-architecture facts reference, including LTX-2.3 video-model speed/lightweight features. |
+| `docs/guides/MODEL_FACTS.md` | Per-architecture facts reference for all 12 architectures, including the video models' (LTX-2.3, MiniMax-H3) measured performance and their accepted/refused feature set. |
 | `docs/guides/VAE_TRAINING.md` | Read when running/changing a `vae_decoder` (decoder-only, encoder-frozen) fine-tune, or before touching its loss defaults or refusal gate. |
 | `docs/guides/VAE_DECODE_BEHAVIOR.md` | Read before working on tiled decode, seams, or any claim about what a VAE decoder adds/loses — the measured non-locality decomposition and artifact facts live here. |
 | `docs/guides/VAE_TRAINING_RESOLUTION.md` | Read to understand what a VAE fine-tune's crop policy and `resolution` feed the decoder, why bucketing is skipped, and how its memory/time scale — the measured analysis (gradient checkpointing vs ActDispatch vs tiling), which is knowledge rather than a set of `vae_decoder` config keys. The knobs that do exist are in `VAE_TRAINING.md`. |

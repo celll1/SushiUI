@@ -16,9 +16,10 @@ them. No subjective performance claims.
 | ideogram4 | DiT (dual transformer) | Qwen3-VL (`Qwen3VLModel`, weight-only FP8; 13-layer features → 53248-dim) | velocity / flow | latent, `AutoencoderKLFlux2` 32ch (128ch packed flat-seq) | asymmetric CFG: conditional `transformer` + separate `unconditional_transformer` (zeroed-text branch); `guidance_scale` default 7.0 | diffusers dispatch; native / native (head_dim 256; no tq entry) | diffusers-layout dir with `transformer/` + `unconditional_transformer/` + `text_encoder/` (FP8) + `vae/`; combined single-file via `unconditional_transformer.` prefix; fused-qkv → split remap | `ideogram4_adapter.py`; TE frozen; optionally trains unconditional transformer; LoRA over frozen Fp8Linear |
 | lens | MM-DiT | GPT-OSS MoE (`LensGptOssEncoder`, 24-layer, multi-layer features, mxfp4) | velocity / flow | latent, `AutoencoderKLFlux2` | standard CFG blend; `guidance_scale` default 4.0 | conduit; tq / tq (head_dim 64) | diffusers dir (`LensPipeline`/`LensTransformer2DModel`); net.* full-FT single-file; own `vae/` else FLUX.2-klein-4B vae store | `lens_adapter.py`; GPT-OSS TE always frozen; VAE frozen |
 | minit2i (b16/l16) | MM-DiT (MM-JiT) | FLAN-T5-Large (`T5`, frozen) | sample (x0) / flow (`MiniT2IFlowMatchScheduler`) | pixel-space (no VAE) by default; optional latent VAE variant (`is_latent` when vae_type != none) | plain CFG with `cfg_interval`; `cfg_scale` default 6.0 | conduit; b16 tq (head_dim 64) / l16 native (head_dim 52→56 padded) — same infer/train | diffusers variant dir (`transformer/` + `scheduler/`), single-file (variant auto-detected), `scratch:minit2i:` sentinel; FLAN-T5 from explicit path / sibling `flan-t5-large` dir / hub `google/flan-t5-large` | `minit2i_adapter.py`; TE frozen; pixel variant skips VAE decode |
-| anima | DiT (Cosmos-Predict2 style) | Qwen3-0.6B (`Qwen3Model`) + 6-layer LLM Adapter; T5 tokenizer feeds adapter target ids | velocity / flow (rectified flow) | latent, Qwen-Image VAE (`AutoencoderKLQwenImage`-style, 16ch) | (verify) standard CFG via `_anima_encode_nag_neg` | conduit tq infer / native train (`attn_mode` torch/flash blocks tq) | split-files layout (`split_files/diffusion_models|text_encoders|vae`) or single DiT `.safetensors`; Qwen3 + Qwen-Image VAE auto-discovered by filename patterns | `anima_adapter.py`; DiT + optional LLM-Adapter-only training; Qwen3 TE + VAE frozen |
+| anima | DiT (Cosmos-Predict2 style) | Qwen3-0.6B (`Qwen3Model`) + 6-layer LLM Adapter; T5 tokenizer feeds adapter target ids | velocity / flow (rectified flow) | latent, Qwen-Image VAE (`AutoencoderKLQwenImage`-style, 16ch) | (verify) standard CFG via `_anima_encode_nag_neg` | conduit tq infer / native train (`attn_mode` torch/flash blocks tq) | split-files layout (`split_files/diffusion_models` \| `text_encoders` \| `vae`) or single DiT `.safetensors`; Qwen3 + Qwen-Image VAE auto-discovered by filename patterns | `anima_adapter.py`; DiT + optional LLM-Adapter-only training; Qwen3 TE + VAE frozen |
 | krea2 | MM-DiT (single-stream) | Qwen3-VL-4B-Instruct (frozen) | velocity / flow (rectified flow) | latent, `AutoencoderKLQwenImage` 16ch (latents_mean/std) | `guidance = cfg_scale - 1` (default cfg 4.5); distilled/turbo disables CFG (guidance 0) | conduit (tq usable, GQA) (verify infer/train head_dim) | diffusers dir (`Krea2Pipeline`), transformer-only dir (auto-complement), single-file (diffusers/raw/comfy/sushiUI TE+DiT combined); TE `Qwen/Qwen3-VL-4B-Instruct`, VAE `Qwen/Qwen-Image` `vae` (env `KREA2_TE_DIR`/`KREA2_VAE_DIR` overrides) | `krea2_adapter.py`; transformer only, Qwen3-VL TE ALWAYS frozen (`train_text_encoder` rejected), VAE frozen; train_runner forces bf16 |
 | ltx2 | joint video+audio DiT (`LTX2VideoTransformer3DModel`) | Gemma-3 text encoder (frozen) | velocity / flow (`LTX2Pipeline`/`LTX2ImageToVideoPipeline`, txt2vid + img2vid) | 5D video latent (`[T,H,W]`) via LTX video VAE (tiling enabled) + separate audio VAE/vocoder | plain CFG (`guidance_scale`); img2vid pins frame 0 via `conditioning_mask` | n/a (own pipeline backend, not conduit-routed) | not in the single-file completion matrix above (own loader) | own trainer ops (`ltx2_ops.py`); see row-level notes for AP1-3 speed/lightweight features |
+| minimax_h3 | joint video+audio DiT, **single stream, no cross-attention** (vendored `MiniMaxH3Transformer3DModel`, 50 blocks, 33 B dense): one packed sequence of `[text \| conditioning \| audio \| video]` rows scattered by `index_copy`, split back by `index_select` | Qwen3-VL-32B (`Qwen3VLForConditionalGeneration`), truncated to **50 decoder layers**, unnormalised hidden state after layer 50, 5120-dim; frozen, never moved (layer-streamed off the mmap) | velocity / flow with the sign **opposite** to the usual convention, `x0 = x_t + σ·v` (vendored `MiniMaxH3Scheduler`); **two sigma schedules**, video shift 12.0 and audio shift 3.0, each stream stepped on its own grid once per loop iteration | 5-D 24-ch video latent, `AutoencoderKLMiniMaxH3` (16× spatial / 4× temporal, 36-layer ViT decoder, fp16, **pinned tiling policy**), pixels ImageNet-normalised RGB over `[0,1]` (not `[-1,1]`); **separate** 32-ch audio VAE (fp32, 32 kHz stereo) | **none** — no `guidance_scale`, no `negative_prompt`, no unconditional branch; guidance is distilled into the weights, one forward per step. Both keys are accepted and warned on a non-default value | conduit-routed, head_dim 128, equal q/kv heads, no mask → no capability guard fires, so native/flash/sage/tq all really run; sage refused in TRAINING mode by the shared mode guard | ComfyUI-style flat tree (`diffusion_models/` + `text_encoders/` + `vae/`) plus MiniMax's config-only `official/` for geometry, tokenizer and normalization vectors; shipped DiT is the `*_pruned_fp8_scaled` single file | `minimax_h3_adapter.py`, **LoRA only** — full fine-tuning refused in three layers; TE and both VAEs frozen; block swap optional (opt-in) |
 
 ## VRAM management: keep_models_hot (opt-in, all image archs except ltx2)
 
@@ -64,6 +65,11 @@ reused verbatim by SD1.5/SDXL (`pipeline.py`) and all 7 DiT image archs
   generation request path; LTX-2.3 uses diffusers accelerate's
   `enable_model_cpu_offload` hooks, and its longer denoise loop makes
   per-generation re-staging overhead comparatively small.
+- **minimax_h3 and acestep are excluded too**, for the same reason plus, on
+  MiniMax-H3, a structural one: its components are 21 GB (DiT) + 51.5 GB (text
+  encoder) + 5.2 GB + 0.6 GB against a 48 GB card, so there is no configuration
+  in which two of them are wanted resident at once. `core/keep_hot.py` is not
+  imported by `pipeline_backends/{ltx2,acestep,minimax_h3}.py`.
 - **Frontend**: the generation queue (`GenerationQueueContext`) sets
   `keep_models_hot = true` on every queued item except the last one in a
   back-to-back run on txt2img/img2img/inpaint; the last item sends `false`
@@ -89,6 +95,8 @@ Measurements, the non-locality decomposition and the two tiling options are in
 | `AutoencoderKLFlux2` | flux2, lens, ideogram4 (32ch) | 4-D | **30** | 1 | supported (untested); 2×2 patchify + latent BatchNorm live *outside* `decode` |
 | `AutoencoderKLQwenImage` (16ch) | anima, krea2 | **5-D** `(B,C,T,H,W)` | **0** (RMSNorm over channels) | 1 | **not offered** for `vae_source: "model"` (5-D `_encode` vs a 4-D pixel batch) |
 | `AutoencoderKLLTXVideo` | ltx2 | **5-D** | n/a (video VAE, not measured) | n/a | **not offered** |
+| `AutoencoderKLMiniMaxH3` (24ch) | minimax_h3 (video) | **5-D** | present (`MiniMaxH3VideoGroupNorm` in the conv encoder; the decoder is a 36-layer ViT with RMSNorm) | ViT decoder is all attention | **not offered** (5-D, and its tiling policy is pinned — see the row-level notes) |
+| `AutoencoderKLMiniMaxH3Audio` (32ch) | minimax_h3 (audio) | 3-D waveform latent | n/a (DAC/BigVGAN-derived 1-D stack) | n/a | **not offered** |
 | none | minit2i (default variants) | pixel-space | n/a | n/a | **not offered** (no VAE) |
 
 Consequences:
@@ -723,6 +731,274 @@ a generation without style transfer.
     blocks. Skipped blocks are gradient-starved (no retained backward
     activations), not optimizer-excluded. Requires `blocks_to_swap == 0`;
     mutually exclusive with TREAD and with stochastic-depth (`block_skip_rate`).
+- **minimax_h3** — Joint video+audio generation (`t2va` from a prompt, `fl2va`
+  from a first and/or last keyframe), plus temporal outpaint. Second video arch,
+  loaded and routed separately from the image-model detection like ltx2. The
+  denoise loop is repo-owned (`core/models/minimax_h3/h3_pipeline_ops.py`) —
+  upstream ships a Modular pipeline only — over vendored, frozen model classes
+  (`core/models/minimax_h3/vendor/`). Every number below is measured on an
+  RTX 6000 Ada 48 GB (sm_89) with 93.6 GB RAM; the protocols and full tables are
+  in `scratchpad/minimax_h3_{k0,phase0t,phase2,phase4}_results.md`.
+  - **Two schedules, two grids.** The loop steps the video rows on the shift-12.0
+    sigma grid and the audio rows on the shift-3.0 grid, once per iteration —
+    the diffusers reference shape, exact on each stream's own grid. (ComfyUI
+    integrates the video grid alone and scales the audio velocity by
+    `dσ_a/dσ_v` because its sampler knows one schedule; the two agree to first
+    order, and that slope was verified against fp64 autograd. The design
+    document specified the ComfyUI shape; the shipped code follows diffusers,
+    and this row follows the code.) Conditioning rows are pinned for every step
+    — `max(t_video, 0.999)` for visual anchors, `1.0` for audio references — and
+    the loop only ever writes generated rows. Anchors are built slightly noised
+    (`keyframe_noise_aug`), because the released model was trained that way and
+    an exactly-clean anchor is off-distribution.
+  - **No CFG and no negative prompt, structurally.** Guidance is distilled into
+    the weights: there is no unconditional branch and the sampler takes no
+    guidance scale, so a step is one forward pass. Both keys stay in the shared
+    video request schema and are **accepted-and-warned**, never a 400 — and the
+    warning fires only on a **non-default** value, because the frontend always
+    sends a full parameter object. `check_arch_capabilities` is passed the
+    RESOLVED per-arch video defaults for exactly that reason
+    (`api/arch_capabilities.py`, `api/param_defaults.video_defaults_for_arch`);
+    the same fix retroactively makes LTX-2.3's video-key warnings honest.
+  - **Frame geometry is a hard grid, and there are two different floors.** Valid
+    lengths are `17n + 5`; `latent_frames(T) = ceil(T/17)*5 − 3` for `T ≥ 2`
+    (`1` at `T = 1`, the spatial-only image-conditioning path). `T = 5` is on the
+    grid but **cannot be decoded** — the VAE floor is **22 frames / 0.917 s** and
+    nothing overrides it. Production generation bounds are **124–345**
+    (ComfyUI's node pins the trained range at ~124–362; the README states 4–15 s
+    output; 345 = 17·20+5 = 14.375 s is the largest grid point ≤ 15 s). An
+    invalid `num_frames` is snapped UP to the next valid length inside the
+    bounds with a `warnings[]` entry naming the rule — which is what the model's
+    own `align_num_frames` does, so a snap never drops requested content.
+    **fps is fixed at 24** and a different `frame_rate` is forced back with a
+    warning. All of this is declarative in `MINIMAX_H3_TEMPORAL`
+    (`core/models/components/wiring.py`), read by route validation, bucketing,
+    the video loader, the clip-cache key and the `video_constraints` block of
+    `GET /schema/arch-capabilities` — there is no `if arch ==` in shared code.
+  - **`num_inference_steps` counts sigma GRID POINTS, so N steps = N−1 model
+    evaluations**, and the vendored scheduler refuses `N = 1`. The minimum is
+    validated at the route next to the geometry check, because leaving it to the
+    sampler turned a bad request into an HTTP 500 that had already paid for a
+    full text encode. **There is no official step count for this model**: MiniMax
+    publishes none (their reproducible scripts are HTTP calls to their own server
+    and expose no sampler knobs) and the 50 in the diffusers examples is that
+    library's generic template default. The shipped 20 is a **community
+    baseline** and is described as exactly that everywhere it is user-visible
+    (`VIDEO_GEN_ARCH_OVERLAYS["minimax_h3"]`).
+  - **Shipped weight formats, and why.** The released checkpoints are the
+    "pruned" variant: they carry **no `time_embedder.*` keys at all** and instead
+    an `adaln_t_table [1025, 8]` buffer plus per-block `adaln_proj.linear` of
+    width 8. Upstream diffusers implements only the full-modulation AdaLN, so the
+    curve lookup was **ported from ComfyUI** (Apache-2.0, attributed) into the
+    vendored transformer and is **bitwise identical** to ComfyUI's lookup on all
+    1025 grid points, all 1024 midpoints and the endpoints (K0.2). Two traps the
+    loader honours: the SiLU is **baked into the table** (applying it again is
+    silently wrong) and `adaln_proj` runs in fp32. The transformer config is
+    therefore **synthesised from the file's own header**: the published
+    `transformer/config.json` describes the full-modulation variant and must not
+    be applied to a pruned file. The generation file is `*_pruned_fp8_scaled` (21 GB,
+    weight-only FP8): its 200 quantized tensors become **300 live `Fp8Linear`
+    modules** because the loader splits each fused qkv (both counts are printed
+    on load; quote them rather than deriving one from the other).
+  - **Two opposite QKV conventions in one distribution.** The DiT single file is
+    already `[q|k|v]` CONTIGUOUS and must NOT be de-interleaved (this contradicts
+    the upstream conversion script's premise); the video VAE decoder's `to_qkv`
+    IS per-head interleaved and MUST be. Both were discriminated by measured RoPE
+    row-norm signatures. Getting either backwards produces a model that loads
+    perfectly and generates noise. Also at load: SwiGLU halves are swapped
+    (`[gate; up]` → `[hidden; gate]`), the audio VAE's pre-folded weight norm is
+    removed from 172 modules first (else 268 missing / 134 unexpected keys), and
+    a three-rule prefix rewrite maps the text encoder onto transformers'
+    `Qwen3VLForConditionalGeneration` with exactly two missing keys
+    (`lm_head.weight`, `model.language_model.norm.weight`), neither of which the
+    layer-50 read uses. All four component loads pass through
+    `models/common/quantized_checkpoint_guard` before any tensor is installed, so
+    the co-distributed `*_int8_convrot` files are refused rather than silently
+    mis-loaded.
+  - **W8A8 is off for the whole architecture, permanently for this file.** The
+    fp8 sidecars are per-tensor SCALARS (broadcast at load, not the
+    `(out_features,)` vector `Fp8Linear` expects); 50 of the 200 quantized
+    tensors — exactly the 50 `mlp.fc2` — carry
+    `{"format":"float8_e4m3fn","full_precision_matrix_mult":true}`, i.e. the
+    writer declares their product must not be computed in fp8; and the other 150
+    carry an `input_scale` this repo's `Fp8Linear` does not read. The loader
+    therefore calls `disable_scaled_mm` over the whole DiT, which outranks the
+    `SUSHI_FP8_SCALED_MM` env flag and the `quantized_gemm_mode` request alike, so
+    `"w8a8"` is accepted and resolves to dequant with a `quantization_fallback`
+    warning naming the resolved path. `minimax_h3` is in `QUANTIZED_LINEAR_ARCHS`
+    (hence its LoRA target predicate goes through `is_lora_wrappable_linear`, not
+    `isinstance(x, nn.Linear)`, which would silently drop all 300 `Fp8Linear`
+    targets) but deliberately **not** in `RUNTIME_INT8_ARCHS`: the shipped DiT is
+    already quantized, so there is no unquantized transformer to convert. The
+    reason is recorded in `ARCH_QUANT_POLICY["minimax_h3"]` rather than left as an
+    absence.
+  - **Generation, measured** (seed 0, the official t2va prompt, `num_frames=124`,
+    20 steps = 19 evaluations, fp8 DiT resident, no block swap, one discarded
+    warm-up then the median of 3 runs, driven through
+    `POST /generate/txt2vid` on **native SDPA** — no attention backend was
+    registered yet at that point):
+
+    | point | median wall | text encode | denoise | s/eval | decode | peak VRAM |
+    |---|---|---|---|---|---|---|
+    | 960×544×124 | **431.5 s (7:12)** | 27.5–33.3 s | ~353 s | 18.6 | ~20 s | **24.25 GB** |
+    | 1344×768×124 | **1052.5 s (17:32)** | 33.8–36.8 s | ~939 s | 49.5 | ~38 s | **28.73 GB** |
+
+    The text-encode peak (1.85 GB) is canvas-independent by construction. The
+    denoise peak is ~21 GB of resident fp8 weights plus a transient of ~3.2 GB
+    and ~7.7 GB respectively. The shipped default canvas is 1344×768×124 and is
+    not capped.
+  - **Attention conduit, measured** (960×544×124, 20 steps, same protocol, one
+    process, the backend that actually ran read off the conduit's own log line):
+    flash **−13.7 % wall / −14.9 % denoise**, sage **−18.9 % wall / −23.3 %
+    denoise**, both against native SDPA. Peak VRAM is 23.04 GB for all three —
+    the peak is resident weights plus packed-sequence activations, not the
+    attention workspace. **The default is still `normal` (native)**: sage is an
+    INT8 kernel and flash-2 reassociates the softmax accumulation, and that phase
+    measured speed, not image quality.
+  - **Block swap costs no measurable step time here** (same point, sage
+    throughout): `blocks_to_swap` 25/50 → **14.52 GB peak (−37 %)**, 40/50 →
+    **9.07 GB (−61 %)**, with every denoise figure — swap and no-swap — landing
+    inside the 300.7–313.1 s no-swap spread. At ~15 s per model evaluation the
+    PCIe transfer hides completely. It stays **opt-in and off by default**,
+    because the DiT fits resident at both registered canvases. `h2d_only` is
+    deliberately off: a block mixes `float8_e4m3fn` `Fp8Linear` weights with a
+    float32 `adaln_proj.linear`, so the coalesced flat master would be refused for
+    mixed dtype anyway. The offloader is built and torn down **per generation**,
+    because the DiT leaves the GPU at the end of every generation (the video
+    VAE's 36-layer ViT decoder and the DiT do not fit together).
+  - **FBCache is implemented, measured, and DROPPED** — not disabled, removed.
+    The K3 protocol was registered before any result (seeds {0,1,2}, 960×544×124
+    at 20 steps, thresholds {0.08, 0.12, 0.20}, `warmup_steps=1`, flash on every
+    arm including the baselines) and required hit rate ≥ 0.15 **and** LPIPS
+    (AlexNet) ≤ 0.05 **and** SSIM ≥ 0.95. Measured: hit rate clears its bar by
+    **2.8–5.6×** (0.421 / 0.632 / 0.842, identical across all three seeds) while
+    **every one of the nine cells misses the quality bars** — best case LPIPS
+    **0.263** against 0.05 and SSIM **0.656** against 0.95. Why, since the shape
+    is the reusable part: FBCache decides on the relative L1 change of the FIRST
+    block's residual, and the shift-12 video schedule packs the steps into the
+    low-sigma tail where consecutive residuals are close in NORM while the video
+    content is still moving, so the proxy reads "nothing changed" on steps that
+    change a great deal. That is a property of the schedule, not a tuning
+    failure. Spectrum/SFF is separately declared unsupported (it ships only on a
+    real visual-quality pass, and none is planned here), so block swap is the
+    only thing that wraps: with `blocks_to_swap == 0` the sampler calls the
+    transformer directly and no wrapper is in the call chain at all.
+  - **The video VAE's tiling policy is load-bearing, not a memory knob.** With
+    the same weights and the same input, flipping only the shipped tiling flags
+    moved the **latents by rel-RMS 0.355** (384×384) / **0.0952** (640×384) and
+    the **decode by rel-RMS 0.212**. The policy is therefore PINNED in the loader
+    (`MINIMAX_H3_VAE_TILING_POLICY`, 256 px tiles / 64 px overlap), reported in
+    the component dict, and is **part of the training clip-cache key**
+    (`LatentCache.compute_clip_hash(..., tiling_policy=...)`) so cached latents
+    cannot silently disagree with what generation produces. It is **not** the
+    user-facing `vae_tiling` generation parameter and must never be wired to it:
+    that one trades peak VRAM, this one changes the output. Any A/B on this VAE
+    has to hold tiling fixed or it measures tiling instead of the thing under
+    test — which is how the fp16-vs-fp32 decode comparison was run: fp16 weights
+    are **77.74 dB PSNR / 2.764e-04 rel-RMS** against fp32 weights on a real
+    decode (2.2 s / 5.19 GB vs 7.3 s / 13.33 GB), so fp16 is the shipped dtype.
+    Still open and not claimed: upstream keeps fp32 weights under
+    `torch.autocast(float16)`, which is a different computation from casting the
+    weights, and that comparison has not been run.
+  - **LoRA training** (`arch/minimax_h3.py` + `ops/minimax_h3_ops.py` +
+    `adapters/minimax_h3_adapter.py`). Targets are the per-block attention
+    projections (`to_q/to_k/to_v/to_out.0`) and the SwiGLU FFN linears
+    (`ff.net.0.proj`, `ff.net.2`) across all 50 blocks — **300 modules /
+    83.1 M trainable parameters at rank 16** (measured; that this equals the
+    number of live `Fp8Linear` modules is a coincidence of 6 leaves × 50 blocks,
+    not the same set). Permanently excluded,
+    with reasons, not deferred: the modality I/O heads
+    (`proj_in`/`audio_proj_in`/`proj_out`/`audio_proj_out`, structurally
+    load-bearing for the packed-sequence split), the 2-layer `token_refiner`
+    (its output conditions both modality heads and upstream documents no training
+    formulation for it), and AdaLN (a frozen table plus a projection). Measured on
+    the registered matrix (batch 1, gradient checkpointing, fp8-resident base with
+    dequant inside the forward, AdamW lr 1e-4): **384×640×22 → 5.15 s/step median
+    and 23.08 GB peak** over a 100-step run (a single step measured 22.45 GB
+    peak / 4.9 s), and all four registered cells fit — 384×640×39 8.63 s /
+    24.11 GB, 512×768×22 7.93 s / 23.89 GB, 512×768×39 14.47 s / 25.63 GB. Cost
+    is close to linear in packed-sequence length (~2.9 ms per row per step,
+    ~+0.53 GB peak per 1000 rows). No memory-escalation rung was needed;
+    gradient checkpointing is what makes dequant-in-forward affordable, and the
+    two together are the load-bearing interaction. A 100-step numerics smoke on
+    identical repeated inputs produced no non-finite value, no dead block group,
+    and loss −20.95 %; a saved adapter reloaded onto a freshly built model
+    reproduced the pre-save forward **bitwise**.
+  - **`audio_loss_weight` (default 1.0) is a joint objective, not a mixing
+    knob.** H3 is one stream: every LoRA-targeted weight is shared by the audio
+    path, so a video-only objective still moves audio behaviour. The loss is
+    `video_mean + audio_loss_weight * audio_mean` with each modality's velocity
+    MSE averaged over tokens, channels and samples **before** weighting, so the
+    weight's meaning does not depend on the ~20× difference in row counts. 1.0 is
+    what the design's pre-registered three-regime experiment selected (200 steps
+    per regime, fixed dataset, fixed evaluation draws): joint real-audio loss
+    reached a held-out VIDEO loss 0.44 % better than the video-only regime
+    (inside its "not worse by 2 %" bar) while its held-out AUDIO loss was 19 %
+    lower. `0.0` reproduces a video-only objective and is exposed because a
+    dataset whose audio is voiceover, music or editing artefacts is a real case.
+  - **Full fine-tuning is refused**, in three live layers: the
+    `TRAINING_UNSUPPORTED["minimax_h3"]["full_finetune"]` declaration served by
+    `GET /schema/arch-capabilities` (which the training UI filters its method
+    dropdown from), the deliberate absence of a `MiniMaxH3FullParameterAdapter`
+    class, and a hard `ValueError` in `full_parameter_trainer` —
+    `_refuse_unsupported_full_finetune` raised before `super().__init__()` loads
+    anything, with the adapter-selection branch as a backstop so the missing
+    adapter can never fall through to SD1.5's.
+    Reason: a 33 B dense DiT's parameters, gradients and optimizer state do not
+    fit the single-GPU 48 GB envelope this integration targets.
+  - **Training clips use the grid, not the production bounds.** Default clip
+    lengths are `(22, 39)`; bucketing validates against the grid plus the 22-frame
+    decodable floor, so a short training bucket is not a violation of the 124–345
+    generation range. Clip sampling on this arch is **timestamp-based** because
+    `fps_fixed` is set — target frame *i* is the source frame nearest
+    `start_time + i/24`, and the audio window is cut by the same timestamps, so
+    A/V stay aligned by construction. The clip-cache key carries `source_fps`,
+    `target_fps`, `resample_policy`, `start_time`, the tiling policy and an audio
+    prep version; LTX-2.3's legacy seven-argument keys are byte-identical to
+    before.
+  - **`audio_enable=false` is H3-specific**: it skips the audio VAE decode and
+    the mux. The audio rows still ride the packed sequence and still influence
+    video through self-attention, and the flag does not perturb the noise draw
+    order (one draw per visual condition in packed order, then the video noise
+    as a 5-D latent, then the audio noise directly in ROW layout — drawing it
+    per-channel and permuting gives different numbers from the same seed) —
+    verified by hash for t2va, fl2va with 1 and 2 keyframes, and
+    `audio_enable=False`. On
+    LTX-2.3 the same flag only discards audio after the pipeline returns it.
+    H3's audio is not independently addressable, so `/generate/txt2aud` refuses
+    an H3 model with that reason rather than the generic "no ACE-Step model".
+  - **Temporal outpaint conditions on ONE boundary frame**, and the endpoint's
+    shape is entirely that fact. H3 has no analogue of
+    `LTX2VideoCondition.index` (no index-addressable conditioning) and no
+    denoising-strength video-to-video path, so a clip sitting in the MIDDLE of a
+    longer timeline cannot condition what is generated around it: the endpoint
+    serves exactly **extend-forward, extend-backward and bridge**, and refuses
+    any other placement with that reason instead of approximating it. Two
+    consequences: the preserved frames are **not generated at all** (the output
+    is a concatenation, so exactness is by construction rather than by a
+    corrective paste, and the `17n+5` rule binds the generated span only), and
+    the anchor frame is not emitted twice (extending a P-frame clip by a G-frame
+    span yields `P + G − 1` frames; a bridge drops both ends).
+    **Limitation, stated plainly because the measurement says to:** the model
+    receives that one boundary frame and never the motion or context behind it,
+    so **subject identity across and beyond the join is not guaranteed**, and a
+    defocused, motion-blurred or occluded boundary frame is a weak anchor. In the
+    registered seam review (3 clips fixed and hashed before any H3 outpaint code
+    existed, extend-forward 124→248, seed 0) the **seam itself was invisible in
+    all three clips** to an owner reviewing them unmarked; the one drift that was
+    noticed happened **inside the generated span** after a focus excursion, which
+    the registered optical-flow metric treats as interior baseline and, by
+    construction, never tests. That metric has live error in both directions — it
+    failed a clip whose seam was fine (a camera event near the boundary raises
+    its delta) while being structurally incapable of seeing a subject-identity
+    break a few seconds later — so any future seam metric needs an appearance
+    term as well as a motion term, and should measure the whole generated span.
+    **No seam-hider is added**, and reference conditioning (`ref2va`, not
+    implemented) is not offered as the fix for this: it is a different feature
+    that would have to earn that claim on its own measurement.
+  - **Attribution**: the UI displays this architecture as "MiniMax H3", which the
+    model's license requires (`archDisplayName` in `frontend/src/utils/api.ts`,
+    `_ARCH_DISPLAY_NAMES` in `int8_runtime_quantize.py`).
 
 ## Anchors used
 
@@ -737,6 +1013,22 @@ a generation without style transfer.
   for training).
 - `backend/core/training/ops/ltx2_ops.py` — LTX-2.3 training forward, TREAD/
   BlockSkip config attach/detach per step.
+- `backend/core/models/minimax_h3/loader.py` — MiniMax-H3 component loading:
+  header-driven config synthesis, the two QKV conventions, SwiGLU swap, audio
+  weight-norm fold, TE prefix rewrite, the pinned VAE tiling policy and the
+  fp8 dequant-only quantization policy. `h3_pipeline_ops.py` is the repo-owned
+  denoise loop and both decodes; `core/models/minimax_h3/vendor/` holds the
+  frozen model classes (transformer with the ported AdaLN curve, both VAEs, the
+  scheduler).
+- `backend/core/models/minimax_h3_block_loop_wrapper.py` — block-loop
+  re-ownership for block swap and gradient checkpointing; its docstring holds
+  the FBCache measurement and why the feature was removed rather than disabled.
+- `backend/core/models/components/wiring.py` — `TemporalSpec` /
+  `TEMPORAL_SPECS`: the per-video-arch clip-length, frame-rate and canvas
+  contract read by route validation, bucketing, the video loader, the clip-cache
+  key and `GET /schema/arch-capabilities`.
+- `backend/core/training/{arch,ops,adapters}/minimax_h3*.py` — LoRA training
+  path (target set, joint video+audio objective, `audio_loss_weight`).
 - `backend/core/inference/custom_sampling.py` — SD/SDXL CFG short-circuit at cfg==1.0.
 - `backend/core/models/{lens,ideogram4,minit2i,krea2,anima}/*_loader.py` — component
   classes, completion sources (sibling dirs / hub fallbacks / env overrides).

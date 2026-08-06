@@ -175,7 +175,7 @@ paths:
               example:
                 unsupported:
                   sdxl:
-                    quantized_gemm: "this architecture's checkpoints hold plain floating-point Linear weights; the quantized-GEMM path selection applies only to the weight-only quantized Linear layers used by ACE-Step, Anima, FLUX.2, Ideogram 4, Krea 2, LTX-2.3 and Z-Image"
+                    quantized_gemm: "this architecture's checkpoints hold plain floating-point Linear weights; the quantized-GEMM path selection applies only to the weight-only quantized Linear layers used by ACE-Step, Anima, FLUX.2, Ideogram 4, Krea 2, LTX-2.3, MiniMax H3 and Z-Image"
                   krea2:
                     unet_quantization: "FP8 quantization on this architecture is selected by checkpoint format at load time (bf16 or weight-only FP8 checkpoints); the only per-generation unet_quantization value applied is 'int8', which converts an unquantized transformer in place once per model load"
                 supported_values:
@@ -188,7 +188,7 @@ paths:
                   quantized_gemm: "quantized_gemm_mode (quantized GEMM path)"
                   unet_quantization: "unet_quantization"
                 runtime_int8_archs: [anima, krea2, flux2, ideogram4, ltx2, acestep, zimage]
-                quantized_linear_archs: [acestep, anima, flux2, ideogram4, krea2, ltx2, zimage]
+                quantized_linear_archs: [acestep, anima, flux2, ideogram4, krea2, ltx2, minimax_h3, zimage]
   /schema/generation-defaults:
     get:
       summary: Get default parameter values for txt2img/img2img/inpaint generation
@@ -5774,7 +5774,7 @@ components:
           nullable: true
           description: |
             Architecture being exported: one of `acestep`, `anima`, `flux2`,
-            `ideogram4`, `krea2`, `ltx2`, `zimage` (the keys of the backend's
+            `ideogram4`, `krea2`, `ltx2`, `minimax_h3`, `zimage` (the keys of the backend's
             `EXPORT_LAYOUTS` table, pinned by
             `quantized_capability_parity_test`).
           example: anima
@@ -6077,11 +6077,13 @@ components:
             `QUANTIZED_LINEAR_ARCHS` in
             `backend/core/models/common/int8_runtime_quantize.py`. A superset of
             `runtime_int8_archs` in general (an architecture can read a quantized
-            checkpoint without having an in-place converter), and equal to it
-            today.
+            checkpoint without having an in-place converter), and a STRICT
+            superset of it today: `minimax_h3` ships a weight-only FP8 DiT and
+            therefore owns quantized Linear layers, but has no in-place runtime
+            converter because there is no unquantized transformer to convert.
           items:
             type: string
-          example: [acestep, anima, flux2, ideogram4, krea2, ltx2, zimage]
+          example: [acestep, anima, flux2, ideogram4, krea2, ltx2, minimax_h3, zimage]
     Fp8ScaledMmState:
       type: object
       required: [enabled, origin, resolved_modes]
@@ -6399,10 +6401,17 @@ components:
 
             Consumed only by the architectures whose loaders swap in the
             quantized Linear classes — `acestep`, `anima`, `flux2`, `ideogram4`,
-            `krea2`, `ltx2`, `zimage`
+            `krea2`, `ltx2`, `minimax_h3`, `zimage`
             (the `quantized_linear_archs` list of
             `GET /schema/arch-capabilities`, which is derived from the backend's
             own tuple and is the authority if this sentence ever drifts).
+            One of them accepts the parameter and always resolves to `dequant`:
+            `minimax_h3`'s loader pins all 300 of its FP8 Linear modules to
+            the dequantized path (of the 200 quantized tensors in the file, 50
+            are marked `full_precision_matrix_mult` and the other 150 carry an
+            activation scale this backend does not read), and that pin
+            outranks this request — a `"w8a8"` there is reported through the
+            generation's `warnings[]` rather than silently ignored.
             Whether a given layer is FP8 or INT8 is
             fixed by the checkpoint, not by this parameter, so this is ONE axis
             that drives both process flags rather than two independent booleans.
@@ -7182,6 +7191,30 @@ components:
             degraded to the dequantized matmul is reported through the
             generation's `warnings[]`.
           example: w8a8
+        attention_type:
+          type: string
+          enum: [normal, flash, sage, tq]
+          default: normal
+          description: |
+            Attention backend for this generation. Same vocabulary and same
+            normalization as `GenerationParams.attention_type` on the image
+            routes — one resolver (`core.attention.normalize_backend`) for every
+            architecture — and omitting the field falls back to the process-wide
+            setting rather than to a route-local literal.
+
+            **Honored by `minimax_h3`**, whose vendored transformer routes its
+            attention through SushiUI's unified conduit. Its attention is
+            unmasked full self-attention over one packed document with
+            `head_dim = 128` and equal q/kv head counts, so neither `sage` nor
+            `flash` is downgraded by a capability guard; `tq` is available on the
+            same conduit. **Ignored by `ltx2`**, which drives diffusers' own
+            attention dispatch — accepted with a capability warning like every
+            other per-architecture parameter on these routes.
+
+            A backend the conduit cannot satisfy for a given call is downgraded
+            to `native` with the reason reported through the generation's
+            `warnings[]`; nothing here can fail a generation.
+          example: sage
 
     Img2VidRequest:
       allOf:

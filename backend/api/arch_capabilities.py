@@ -49,6 +49,11 @@ FEATURE_PARAMS: Dict[str, List[str]] = {
     "text_encoder_quantization": ["text_encoder_quantization"],
     "cpu_text_encoding": ["cpu_text_encoding"],
     "attention_impl": ["attention_impl"],
+    # Which attention BACKEND runs the kernel (native/flash/sage/tq). Every
+    # image architecture honors it, and so does MiniMax-H3 (its vendored
+    # transformer routes attention through the unified conduit); an architecture
+    # that drives diffusers' own attention dispatch instead declares it below.
+    "attention_type": ["attention_type"],
     "vae_drift_correction": ["vae_drift_correction"],
     "flatten_in_loop": ["flatten_in_loop"],
     "te_override": ["text_encoder_path"],
@@ -77,6 +82,7 @@ FEATURE_LABELS: Dict[str, str] = {
     "text_encoder_quantization": "text_encoder_quantization",
     "cpu_text_encoding": "cpu_text_encoding",
     "attention_impl": "attention_impl",
+    "attention_type": "attention_type (attention backend)",
     "vae_drift_correction": "vae_drift_correction (VAE DC-drift correction)",
     "flatten_in_loop": "flatten_in_loop (in-loop hard background flatten)",
     "te_override": "text_encoder_path (text-encoder override)",
@@ -162,6 +168,21 @@ for _a in [a for a in _SPECTRUM_UNSUPPORTED if a != "flux2"]:
     _add(_a, "fbcache",
          "First Block Cache is not implemented for this architecture's sampler")
 
+# ...except that on MiniMax-H3 it WAS implemented, measured against a
+# pre-registered protocol, and dropped -- so the generic reason above would be
+# false and is overwritten with the real one. The protocol (registered before any
+# result): seeds {0,1,2}, 960x544x124 at 20 steps, thresholds {0.08, 0.12, 0.20},
+# warmup 1; ship only if some threshold reaches hit rate >= 0.15 AND decoded-frame
+# LPIPS(AlexNet) <= 0.05 AND SSIM >= 0.95. The hit rates were huge (0.42 / 0.63 /
+# 0.84) and the quality was not close at any of the nine cells: best case LPIPS
+# 0.263 (bar 0.05) and SSIM 0.656 (bar 0.95). MiniMax-H3's video schedule uses
+# shift 12.0, which packs the steps into the low-sigma tail where consecutive
+# first-block residuals are close in norm while the video is still moving, so the
+# cache's similarity proxy misreads the trajectory and no threshold separates the
+# two. Numbers: scratchpad/minimax_h3_phase4_results.md.
+_add("minimax_h3", "fbcache",
+     "First Block Cache was measured on MiniMax-H3 and is not offered: its similarity test misreads this architecture's shift-12 schedule, so the cache skipped 42-84% of the model evaluations and the decoded video diverged far outside the quality bar registered for it (best case LPIPS 0.26 against a 0.05 bar, SSIM 0.66 against 0.95)")
+
 # NAG, ControlNet: not supported by Krea 2.
 _add("krea2", "nag", "Normalized Attention Guidance is not implemented for Krea 2")
 _add("krea2", "controlnets", "ControlNet is not supported for Krea 2")
@@ -178,6 +199,10 @@ _add("ltx2", "controlnets", "ControlNet is not supported for the LTX-2.3 video m
 # endpoint serves two architectures and only one of them reads the field).
 _add("ltx2", "last_frame_image",
      "LTX-2.3's image-to-video pipeline conditions on the first frame only, so a last-frame keyframe has nothing to attach to")
+# The video routes carry `attention_type` because MiniMax-H3 honors it; LTX-2.3
+# runs the diffusers transformer's own attention dispatch and never consults it.
+_add("ltx2", "attention_type",
+     "LTX-2.3 runs diffusers' own attention dispatch rather than SushiUI's attention conduit, so the attention backend is not selectable per generation for this architecture")
 
 # ACE-Step 1.5 is an audio model (own DiT + flow-matching turbo sampler, driven
 # through /generate/txt2aud); none of the image-oriented guidance/conditioning
@@ -320,11 +345,26 @@ _add("minimax_h3", "nag",
      "Normalized Attention Guidance is not implemented for the MiniMax-H3 video model")
 _add("minimax_h3", "controlnets",
      "ControlNet is not supported for the MiniMax-H3 video model")
-# Quantization. The reason the generic `quantized_gemm` loop above would give is
-# WRONG for this arch -- its released DiT is fp8-quantized -- so it is restated
-# here with the real reason and overwrites the loop's text.
-_add("minimax_h3", "quantized_gemm",
-     "the released MiniMax-H3 DiT is weight-only FP8, but its scale sidecars are per-tensor scalars and 50 of its 200 quantized Linear layers are marked full_precision_matrix_mult, so every layer of this architecture is pinned to the dequantized path and there is no GEMM to select")
+# Quantization. NOTE WHAT IS *NOT* DECLARED HERE: `quantized_gemm`.
+#
+# `minimax_h3` is in `QUANTIZED_LINEAR_ARCHS` (its loader really does swap 200
+# `nn.Linear` for `Fp8Linear`), and that tuple is what grants the capability, so
+# an entry here would contradict it -- `quantized_capability_parity_test`
+# enforces exactly that, because "the table says unsupported while the loader
+# owns quantized Linears" is how an architecture's LoRA target predicate stops
+# being checked against the isinstance(nn.Linear) trap.
+#
+# The honest statement about `quantized_gemm_mode` on this architecture is not
+# "unsupported" but "accepted and always resolves to dequant": the loader pins
+# all 300 of the DiT's Fp8Linear modules to the dequantized path with
+# `disable_scaled_mm`, which outranks the request, so `"w8a8"` produces a
+# `quantization_fallback` warning naming the resolved path
+# (`report_quantized_gemm_outcome` reads the real label out of
+# `extract_fp8_gemm_info`) rather than silence. The reason is recorded in
+# `ARCH_QUANT_POLICY["minimax_h3"]` and in
+# `models/minimax_h3/loader.py::_dit_quantization_policy`; both scale sidecars
+# being per-tensor scalars and 50 of the file's 200 quantized tensors being
+# marked `full_precision_matrix_mult` are what make it permanent for this file.
 _add("minimax_h3", "unet_quantization",
      "the released MiniMax-H3 DiT already ships weight-only FP8-quantized, so there is no unquantized transformer for the per-generation converter to convert")
 _add("minimax_h3", "text_encoder_quantization",

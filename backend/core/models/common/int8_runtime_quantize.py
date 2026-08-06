@@ -306,6 +306,64 @@ ARCH_QUANT_POLICY: Dict[str, Dict[str, object]] = {
             "one at every resolution measured, so Anima ships filtered."
         ),
     },
+    "minimax_h3": {
+        # DEQUANT-ONLY, AND NOT WIRED FOR THE RUNTIME CONVERTER. This entry is
+        # here to RECORD that (an arch silently absent from this table would read
+        # as an oversight), not to configure a conversion this arch never runs --
+        # `minimax_h3` is deliberately NOT in RUNTIME_INT8_ARCHS below.
+        #
+        # Why there is no runtime conversion. The released generation checkpoint
+        # (`minimax_h3_fl2va_pruned_fp8_scaled.safetensors`, 21 GB) is ALREADY
+        # weight-only FP8: its loader swaps 300 `nn.Linear` modules for
+        # `Fp8Linear` before the first forward, so there is no unquantized
+        # transformer for an in-place converter to convert. The `*_pruned_bf16`
+        # variant (40 GB) exists upstream and is not downloaded; if it ever
+        # becomes the generation file, THAT is the condition under which this
+        # entry gains a runtime path, and the note is here so the decision is
+        # re-read rather than re-derived.
+        #
+        # COUNTS, because two different ones are correct and they get confused:
+        # the FILE carries 200 quantized tensors (what carries a `.comfy_quant`
+        # marker) and the LIVE model holds 300 `Fp8Linear` modules, because the
+        # loader splits each fused qkv tensor into three. Both numbers are
+        # printed by the loader on every load; quote it rather than deriving
+        # either from the other.
+        #
+        # Why W8A8 is off for the whole architecture. Two measured facts about
+        # the file, both in `models/minimax_h3/loader.py::_dit_quantization_policy`:
+        # 50 of the 200 quantized tensors -- exactly the 50 `mlp.fc2` -- carry
+        # `{"format": "float8_e4m3fn", "full_precision_matrix_mult": true}`, i.e.
+        # the writer declares their product must NOT be computed in fp8; and the
+        # other 150 carry an `input_scale` that this repo's `Fp8Linear` does not
+        # read (it quantizes activations dynamically), so running them through
+        # the scaled GEMM would apply a different activation-scaling contract
+        # than the file declares. The loader therefore calls `disable_scaled_mm`
+        # over the WHOLE DiT at load time, which is the authoritative per-module
+        # gate (it outranks the `SUSHI_FP8_SCALED_MM` env flag, the
+        # `quantized_gemm_mode` request and grad mode alike). K0.1 verified all
+        # four gates structurally, including a negative control proving the fast
+        # path IS reachable when it is allowed to be.
+        #
+        # CONSEQUENCE FOR `quantized_gemm_mode`, stated so it is not a surprise:
+        # this architecture accepts the parameter (it is in
+        # QUANTIZED_LINEAR_ARCHS, because it really does own quantized Linears),
+        # and `"w8a8"` resolves to the dequantized matmul anyway. That is
+        # reported, not silent: `report_quantized_gemm_outcome` reads the
+        # RESOLVED path out of `extract_fp8_gemm_info` and files a
+        # `quantization_fallback` warning on the generation.
+        "skip_below_work_gate": False,
+        "excludes": (),
+        "note": (
+            "MiniMax-H3's released DiT ships weight-only FP8 (200 quantized tensors in the "
+            "file; 300 Fp8Linear modules once the loader has split the fused qkv), so no "
+            "runtime int8 conversion is registered for it -- there is no "
+            "unquantized transformer to convert. Its quantization policy is DEQUANT-ONLY and "
+            "is enforced at load time by disable_scaled_mm over the whole DiT, because 50 of "
+            "the 200 tensors are marked full_precision_matrix_mult and the other 150 carry an "
+            "input_scale this repo's Fp8Linear does not read. A runtime path becomes "
+            "relevant only if the *_pruned_bf16 variant ever becomes the generation file."
+        ),
+    },
 }
 
 # Architectures the RUNTIME converter is wired for. A superset entry in
@@ -321,6 +379,14 @@ ARCH_QUANT_POLICY: Dict[str, Dict[str, object]] = {
 #   * frontend/src/utils/api.ts          -- reads that field instead of its own
 #     hardcoded list.
 # Adding an arch here is therefore the whole rollout switch on the UI side.
+#
+# `minimax_h3` IS DELIBERATELY ABSENT and that absence is a decision, not a gap:
+# its released generation checkpoint is already weight-only FP8, so there is no
+# unquantized transformer for the in-place converter to act on. See its
+# ARCH_QUANT_POLICY entry above for the full reason and for the one condition
+# that would change it (the *_pruned_bf16 variant becoming the generation file).
+# It IS in QUANTIZED_LINEAR_ARCHS below, because its loader really does swap in
+# the quantized Linear classes.
 RUNTIME_INT8_ARCHS = ("anima", "krea2", "flux2", "ideogram4", "ltx2", "acestep",
                       "zimage")
 
@@ -332,7 +398,12 @@ RUNTIME_INT8_ARCHS = ("anima", "krea2", "flux2", "ideogram4", "ltx2", "acestep",
 # quantized Linears all the same), the two sets coincide today, and the next arch
 # whose loader reads a quantized file before its runtime path is wired will make
 # them differ again. Consumed by ``backend/api/quantized_gemm.py``.
-QUANTIZED_LINEAR_ARCHS = tuple(sorted({"ideogram4", *RUNTIME_INT8_ARCHS}))
+#
+# ``minimax_h3`` is that next arch: its loader swaps 200 ``nn.Linear`` for
+# ``Fp8Linear`` from the released `*_pruned_fp8_scaled` file, and it has no
+# runtime int8 path (see RUNTIME_INT8_ARCHS above). So the two sets are a strict
+# superset relation again, which is why this stays an expression.
+QUANTIZED_LINEAR_ARCHS = tuple(sorted({"ideogram4", "minimax_h3", *RUNTIME_INT8_ARCHS}))
 
 # Display spelling of an arch id, for user-facing prose only. Every arch that
 # can appear in either tuple above needs an entry; ``arch_names`` falls back to
@@ -349,6 +420,7 @@ ARCH_DISPLAY_NAMES: Dict[str, str] = {
     "sdxl": "SDXL",
     "ltx2": "LTX-2.3",
     "acestep": "ACE-Step",
+    "minimax_h3": "MiniMax H3",
 }
 
 

@@ -130,6 +130,13 @@ BACKENDS = {
     #   MiniT2I     : tq(b16 64) / native(l16 52->56 padded)  | same for training.
     #   Anima       : tq / native    (inference: conduit _attention_backend='tq';
     #                 training: attn_mode{'torch','flash'} mapping blocks tq).
+    #   MiniMax-H3  : conduit-routed (vendored transformer calls
+    #                 dispatch_attention with the request's attention_type).
+    #                 head_dim 128, equal q/kv heads, no mask -- one packed
+    #                 self-attention document -- so NO capability guard fires and
+    #                 flash / sage / tq all run rather than downgrading. sage is
+    #                 refused in TRAINING mode by the shared MODE guard, which is
+    #                 the only downgrade this arch can hit.
     "tq": AttentionBackend(
         name="tq",
         fn=_tq_attn,

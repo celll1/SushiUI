@@ -209,9 +209,12 @@ paths:
 
         `outpaint_video_arch_overlays` carries the same thing for the keys that
         exist ONLY on `POST /generate/outpaint/video`
-        (`OUTPAINT_VIDEO_ARCH_OVERLAYS`) — chiefly `total_frames`, whose base
+        (`OUTPAINT_VIDEO_ARCH_OVERLAYS`) — `total_frames`, whose base
         value (121) is on LTX-2.3's `8k+1` grid and is not a length MiniMax-H3
-        can produce. A client resolves an outpaint-video default as
+        can produce, and `outpaint_video_audio_mode`, whose base `regenerate`
+        leaves the preserved span silent on an architecture that generates
+        audio only for the frames it generates (MiniMax-H3 overlays
+        `preserve_input`). A client resolves an outpaint-video default as
         `outpaint_vid | video_arch_overlays[arch] | outpaint_video_arch_overlays[arch]`,
         in that order, which is what the route does.
       tags: [Schema]
@@ -268,6 +271,7 @@ paths:
                     example:
                       minimax_h3:
                         total_frames: 248
+                        outpaint_video_audio_mode: preserve_input
   /schema/training-defaults:
     get:
       summary: Get default parameter values for LoRA / Full-FT training
@@ -1060,15 +1064,21 @@ paths:
         the loaded architecture accepts.
 
         **Audio (`outpaint_video_audio_mode`, only relevant when
-        `audio_enable` is true):**
-        - `regenerate` (default): use the model's own generated audio as-is.
+        `audio_enable` is true). The default is PER-ARCHITECTURE:
+        `regenerate` on LTX-2.3, `preserve_input` on MiniMax-H3 (see
+        `outpaint_video_arch_overlays` of GET /schema/generation-defaults) —
+        because the two modes do not have the same consequence on the two
+        architectures:**
+        - `regenerate`: use the model's own generated audio as-is.
           The input clip's own audio is NOT preserved. On LTX-2.3 that
-          generated track spans the WHOLE timeline. On MiniMax-H3 it spans
-          only the GENERATED frames -- that architecture produces audio
-          jointly with video and cannot produce audio for frames it does not
-          generate -- so the preserved span is left SILENT and a warning says
-          so; use `preserve_input` to carry the input clip's own audio across
-          it.
+          generated track spans the WHOLE timeline, so the preserved span
+          still has sound and this is the harmless default there. On
+          MiniMax-H3 it spans only the GENERATED frames -- that architecture
+          produces audio jointly with video and cannot produce audio for
+          frames it does not generate -- so the preserved span is left SILENT
+          and a warning says so. That is why it is not the default there;
+          asking for it by name on MiniMax-H3 means asking for a silent
+          preserved span.
         - `preserve_input`: after generation, mux the input clip's ORIGINAL
           audio over its placed span, keeping the model-generated audio
           outside that span, with a ~50ms crossfade confined to the
@@ -7510,6 +7520,14 @@ components:
             GENERATED side of each boundary. Falls back to "regenerate"
             (with a warning) if the uploaded clip has no audio stream. Only
             relevant when audio_enable is true.
+
+            PER-ARCHITECTURE DEFAULT. The `default: regenerate` above is the
+            base value and is what LTX-2.3 resolves to. MiniMax-H3 resolves to
+            `preserve_input` through `outpaint_video_arch_overlays` of
+            GET /schema/generation-defaults, because "regenerate" on that
+            architecture means the preserved half of the output has no sound at
+            all. Omit the field to get the loaded architecture's default; send
+            it to pin a mode regardless of architecture.
           example: regenerate
         attention_type:
           type: string

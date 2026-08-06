@@ -3583,7 +3583,12 @@ async def generate_outpaint_video(
     input_offset_frames: int = Form(OUTPAINT_VIDEO_DEFAULTS["input_offset_frames"]),
     input_trim_start_frames: int = Form(OUTPAINT_VIDEO_DEFAULTS["input_trim_start_frames"]),
     input_trim_end_frames: int = Form(OUTPAINT_VIDEO_DEFAULTS["input_trim_end_frames"]),
-    outpaint_video_audio_mode: str = Form(OUTPAINT_VIDEO_DEFAULTS["outpaint_video_audio_mode"]),
+    # SENTINEL, for the same reason the six geometry fields above are: the base
+    # "regenerate" is an LTX-2.3 semantic (its generated track spans the whole
+    # timeline), while MiniMax-H3 generates audio only for the frames it
+    # generates and so overlays "preserve_input" -- an omitted field has to be
+    # able to reach that overlay instead of freezing the base value here.
+    outpaint_video_audio_mode: Optional[str] = Form(None),
     # See Img2VidRequest.attention_type: honored by MiniMax-H3, ignored by
     # LTX-2.3. `OUTPAINT_VIDEO_DEFAULTS` has carried this key since it was
     # derived from VIDEO_GEN_DEFAULTS, but the route had no field for it while
@@ -3663,7 +3668,8 @@ async def generate_outpaint_video(
             detail="Load an LTX-2.3 or MiniMax-H3 video model before calling "
                    "/generate/outpaint/video.",
         )
-    if outpaint_video_audio_mode not in ("regenerate", "preserve_input"):
+    if outpaint_video_audio_mode is not None and outpaint_video_audio_mode not in (
+            "regenerate", "preserve_input"):
         raise CustomValidationError(
             "Invalid outpaint_video_audio_mode",
             detail=f"Must be 'regenerate' or 'preserve_input', got {outpaint_video_audio_mode!r}.",
@@ -3688,6 +3694,8 @@ async def generate_outpaint_video(
         num_inference_steps = int(_resolved["num_inference_steps"])
     if guidance_scale is None:
         guidance_scale = float(_resolved["guidance_scale"])
+    if outpaint_video_audio_mode is None:
+        outpaint_video_audio_mode = str(_resolved["outpaint_video_audio_mode"])
 
     _spec = temporal_spec_for_arch(_vid_arch)
     _placements = tuple(_spec.outpaint_placements) if _spec is not None else ("free",)

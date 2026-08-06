@@ -85,6 +85,14 @@ interface OutpaintPanelParams extends ApiOutpaintParams {
   input_trim_start_frames?: number;
   input_trim_end_frames?: number;
   outpaint_video_audio_mode?: "regenerate" | "preserve_input";
+  // PANEL-LOCAL, never sent: which architecture `outpaint_video_audio_mode`
+  // above was last resolved FOR. The backend default for that field is
+  // per-architecture (`outpaint_video_arch_overlays`), so a value stored from
+  // a session with a different model loaded is not a preference, it is a
+  // stale default -- this marker is what tells the two apart, so switching
+  // architecture re-resolves while a deliberate choice on the CURRENT
+  // architecture survives reloads.
+  outpaint_video_audio_mode_arch?: string | null;
   video_lossless?: boolean;
   video_blocks_to_swap?: number;
   // --- Audio temporal outpaint (outpaint_aud, ACE-Step 1.5 extend) ---
@@ -266,6 +274,7 @@ const DEFAULT_PARAMS: OutpaintPanelParams = {
   input_trim_start_frames: 0,
   input_trim_end_frames: 0,
   outpaint_video_audio_mode: "regenerate",
+  outpaint_video_audio_mode_arch: null,
   video_lossless: false,
   video_blocks_to_swap: 0,
   // --- Audio temporal outpaint (outpaint_aud, ACE-Step 1.5 extend) ---
@@ -1196,6 +1205,35 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
         : prev
     ));
   }, [archCapabilities, generationDefaults, loadedArchType]);
+
+  // The audio mode's DEFAULT is per-architecture too, and unlike total_frames
+  // there is no invalid value to detect: "regenerate" is selectable
+  // everywhere, it just means something different per architecture (on one
+  // that generates audio only for the frames it generates, it leaves the
+  // preserved span silent, which is why that architecture's default is
+  // "preserve_input"). So the trigger is the ARCHITECTURE changing rather than
+  // the value being out of range: re-resolve from the same overlay chain the
+  // backend resolves from, and record which arch the answer belongs to. A
+  // choice the user makes afterwards leaves the marker matching and is
+  // therefore never overwritten, including across reloads.
+  const archAudioMode =
+    (outpaintVideoDefaultsForArch(generationDefaults, loadedArchType)
+      .outpaint_video_audio_mode as "regenerate" | "preserve_input" | undefined)
+    ?? DEFAULT_PARAMS.outpaint_video_audio_mode!;
+  useEffect(() => {
+    if (!generationDefaults || !loadedArchType) return;
+    const resolved = outpaintVideoDefaultsForArch(generationDefaults, loadedArchType)
+      .outpaint_video_audio_mode as "regenerate" | "preserve_input" | undefined;
+    setParams(prev => (
+      prev.outpaint_video_audio_mode_arch === loadedArchType
+        ? prev
+        : {
+          ...prev,
+          outpaint_video_audio_mode: resolved ?? prev.outpaint_video_audio_mode,
+          outpaint_video_audio_mode_arch: loadedArchType,
+        }
+    ));
+  }, [generationDefaults, loadedArchType]);
 
   // --- Audio temporal outpaint (outpaint_aud) input clip handling ---
 
@@ -3557,7 +3595,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
             <div className="ml-6 mt-1">
               <Select
                 label="Audio mode"
-                value={params.outpaint_video_audio_mode || "regenerate"}
+                value={params.outpaint_video_audio_mode || archAudioMode}
                 onChange={(e) => setParams({ ...params, outpaint_video_audio_mode: e.target.value as "regenerate" | "preserve_input" })}
                 options={[
                   { value: "regenerate", label: boundaryPlacementOnly ? "Regenerate (generated span only)" : "Regenerate whole track" },
@@ -3571,7 +3609,8 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
                 <p className="text-xs text-gray-500 mt-1">
                   This model generates audio jointly with video, so it produces audio only for the
                   frames it generates. Under "Regenerate" the preserved span carries no audio and is
-                  silent; "Preserve input clip audio" is what fills it.
+                  silent; "Preserve input clip audio" is what fills it
+                  {archAudioMode === "preserve_input" && ", and is this model's default for that reason"}.
                 </p>
               )}
             </div>

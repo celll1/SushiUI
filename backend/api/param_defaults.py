@@ -900,14 +900,20 @@ OUTPAINT_VIDEO_DEFAULTS: Dict[str, Any] = {
     # no trim (use the whole clip, subject to fitting inside total_frames).
     "input_trim_start_frames": 0,
     "input_trim_end_frames": 0,
-    # "regenerate" (default) = use LTX's own whole-timeline generated audio
-    # as-is (the input clip's own audio is NOT preserved). "preserve_input" =
-    # after generation, mux the input clip's ORIGINAL audio over its placed
-    # span, keeping LTX-generated audio outside that span, with a short
-    # crossfade confined to the GENERATED side of each boundary so every
-    # input audio sample stays exact. Only relevant when audio_enable is
-    # true; falls back to "regenerate" (with a warning) if the uploaded clip
-    # has no audio stream.
+    # "regenerate" = use the model's own generated audio as-is (the input
+    # clip's own audio is NOT preserved). "preserve_input" = after generation,
+    # mux the input clip's ORIGINAL audio over its placed span, keeping the
+    # model-generated audio outside that span, with a short crossfade confined
+    # to the GENERATED side of each boundary so every input audio sample stays
+    # exact. Only relevant when audio_enable is true; falls back to
+    # "regenerate" (with a warning) if the uploaded clip has no audio stream.
+    #
+    # The base value is LTX-2.3's, where "regenerate" is a benign default: that
+    # pipeline hands back a track spanning the WHOLE output timeline, so the
+    # preserved span still carries (model-generated) sound. On an architecture
+    # that generates audio only for the frames it generates, "regenerate"
+    # leaves the preserved span SILENT -- see OUTPAINT_VIDEO_ARCH_OVERLAYS,
+    # which is where that architecture's different default lives.
     "outpaint_video_audio_mode": "regenerate",
     # When true, encode the output with FFV1 (`-pix_fmt rgb24`, no forced
     # colorspace conversion) instead of libx264, so the pasted input frames
@@ -943,9 +949,20 @@ OUTPAINT_VIDEO_DEFAULTS: Dict[str, Any] = {
 # MiniMax-H3 video length, what actually runs is the value the generated span
 # snaps to (the endpoint solves for the generated span, not for the total, and
 # reports the effective output length in `warnings[]`).
+#
+# `outpaint_video_audio_mode`'s base "regenerate" is likewise an LTX-2.3
+# semantic. MiniMax-H3 generates audio and video jointly for ONE span, so it
+# produces audio only for the frames it generates: under "regenerate" the
+# preserved span is left silent, which for the commonest request (extend a clip
+# that has sound) means the ORIGINAL audio disappears from the output. That
+# outcome is correct for the mode -- the mode means "do not carry the input's
+# audio over" -- but it is the wrong thing to do by default, so this
+# architecture defaults to "preserve_input" instead. Both modes stay
+# selectable; only which one you get for free changes.
 OUTPAINT_VIDEO_ARCH_OVERLAYS: Dict[str, Dict[str, Any]] = {
     "minimax_h3": {
         "total_frames": 248,
+        "outpaint_video_audio_mode": "preserve_input",
     },
 }
 

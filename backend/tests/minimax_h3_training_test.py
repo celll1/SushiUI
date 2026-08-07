@@ -322,3 +322,177 @@ def test_clip_span_docstring_matches_clip_span():
     assert clip_span(22, 1, MINIMAX_H3_TEMPORAL, 30.0) == 27
     assert "27" in clip_span.__doc__
     assert "28 frames of a 30 fps" not in clip_span.__doc__
+
+
+# ===========================================================================
+# Native T_lat = 1 image-dataset training (Q1 overturn)
+#
+# Two changes, both in ops/minimax_h3_ops.py, and each test below names the one
+# it pins together with how it FAILS IF THE FIX IS REVERTED:
+#
+#   Q1a  `vae_encode` used to `raise NotImplementedError` on a still. It now
+#        encodes the still as a degenerate 1-frame clip -- the SAME quantity the
+#        causal encoder produces for latent frame 0 of any clip that starts with
+#        that pixel frame (measured rel-RMS 5e-4 in normalised latent space).
+#        Revert -> every test in this block raises NotImplementedError.
+#   Q1b  `_pixel_frames_for` used to invert the 17n+5 grid unconditionally and
+#        clamp `T_lat = 1` to n=1, handing back 22 frames -> 37 audio latents ->
+#        74 NOISE audio rows for a single image. A still spans no time; its
+#        audio budget is 0. Revert -> `test_a_still_gets_no_audio_budget` sees 22.
+# ===========================================================================
+
+_MINIMAX_H3_PIXEL_MEAN = (0.48145466, 0.4578275, 0.40821073)
+_MINIMAX_H3_PIXEL_STD = (0.26862954, 0.26130258, 0.27577711)
+
+
+class _RecordingLatentDist:
+    """`.mode()` is deterministic; `.sample()` is a TRAP.
+
+    The cache-reproducibility rule this arch's clip encode states is that the
+    posterior is read at its MODE -- rebuilding the same record must be bitwise
+    identical or the cache key stops meaning what it says. Making `.sample()`
+    raise turns "we took the mode" from a comment into a test.
+    """
+
+    def __init__(self, x):
+        self._x = x
+
+    def mode(self):
+        b, _c, t, h, w = self._x.shape
+        pooled = torch.nn.functional.avg_pool3d(self._x, kernel_size=(1, 16, 16))
+        return pooled.repeat(1, 8, 1, 1, 1)          # 3 -> 24 channels
+
+    def sample(self):
+        raise AssertionError(
+            "minimax_h3 must read the video posterior at its MODE, not sample it: a "
+            "cached training latent has to be reproducible.")
+
+
+class _FakeVAEOut:
+    def __init__(self, x):
+        self.latent_dist = _RecordingLatentDist(x)
+
+
+class _FakeVideoVAE(torch.nn.Module):
+    """Records exactly what the encoder was handed (shape AND values)."""
+
+    def __init__(self):
+        super().__init__()
+        self.marker = torch.nn.Parameter(torch.zeros(1, dtype=torch.float32))
+        self.seen = None
+
+    def encode(self, x):
+        self.seen = x.detach().clone()
+        return _FakeVAEOut(x)
+
+
+class _FakeEncodeTrainer:
+    """The narrow surface `vae_encode` / `vae_encode_clip` read."""
+
+    def __init__(self):
+        self.log_prefix = "[test]"
+        self.vae = _FakeVideoVAE()
+        self.minimax_h3_pixel_mean = _MINIMAX_H3_PIXEL_MEAN
+        self.minimax_h3_pixel_std = _MINIMAX_H3_PIXEL_STD
+        # 24 distinct per-channel vectors, so a transposed / broadcast-wrong
+        # normalisation cannot pass by symmetry.
+        self.minimax_h3_latents_mean = [0.01 * i for i in range(24)]
+        self.minimax_h3_latents_std = [1.0 + 0.05 * i for i in range(24)]
+
+
+def _still(h=64, w=96, seed=0):
+    g = torch.Generator().manual_seed(seed)
+    return torch.rand(1, 3, h, w, generator=g) * 2.0 - 1.0     # [-1, 1], as encode_image stages it
+
+
+def test_a_still_encodes_to_a_5d_t1_latent():
+    """Q1a. The still must come back as the SAME 5-D object `train_step` takes
+    for a video window, with T_lat = 1 and the 16x spatial compression."""
+    t = _FakeEncodeTrainer()
+    lat = OPS.vae_encode(t, _still(64, 96))
+    assert lat.dim() == 5
+    assert tuple(lat.shape) == (1, 24, 1, 64 // 16, 96 // 16)
+    assert torch.isfinite(lat).all()
+
+
+def test_a_still_is_remapped_to_imagenet_normalised_rgb_over_0_1():
+    """Q1a. This VAE wants ImageNet-normalised RGB over a [0, 1] base, while the
+    shared `encode_image` staging hands over [-1, 1]. Reverting the remap (i.e.
+    feeding the [-1, 1] tensor straight in) changes every encoded value, so the
+    exact expected tensor is recomputed here rather than spot-checked."""
+    t = _FakeEncodeTrainer()
+    px = _still(32, 32, seed=3)
+    OPS.vae_encode(t, px)
+
+    mean = torch.tensor(_MINIMAX_H3_PIXEL_MEAN).view(1, 3, 1, 1)
+    std = torch.tensor(_MINIMAX_H3_PIXEL_STD).view(1, 3, 1, 1)
+    expected = (((px + 1.0) / 2.0 - mean) / std).unsqueeze(2)   # [1, 3, 1, H, W]
+    assert tuple(t.vae.seen.shape) == (1, 3, 1, 32, 32)
+    assert torch.allclose(t.vae.seen, expected, atol=1e-6)
+    # Negative control on the remap itself: the un-remapped tensor is a DIFFERENT
+    # tensor, so this test cannot pass against a `vae_encode` that skipped it.
+    assert not torch.allclose(t.vae.seen, px.unsqueeze(2), atol=1e-3)
+
+
+def test_a_still_encode_reads_the_posterior_mode_not_a_sample():
+    """Q1a. `_RecordingLatentDist.sample()` raises; reaching it fails the test.
+    A cached training latent must be reproducible bitwise."""
+    t = _FakeEncodeTrainer()
+    OPS.vae_encode(t, _still(32, 32))       # would raise AssertionError if sampled
+
+
+def test_a_still_and_a_one_frame_clip_encode_identically():
+    """Q1a. The still path is `vae_encode_clip` at T = 1 and the two must not
+    drift apart -- a still's latent IS latent frame 0 of a clip that starts with
+    it (rel-RMS 5e-4 measured against the real VAE). Bitwise here because the
+    same arithmetic runs on both sides."""
+    px = _still(32, 48, seed=7)
+    a = OPS.vae_encode(_FakeEncodeTrainer(), px)
+    # vae_encode_clip takes [T, C, H, W]; T = 1 is the same pixel content.
+    b = OPS.vae_encode_clip(_FakeEncodeTrainer(), px[0].unsqueeze(0))
+    assert torch.equal(a, b)
+
+
+def test_a_still_gets_no_audio_budget():
+    """Q1b. `_pixel_frames_for` inverts the 17n+5 clip grid, and T_lat = 1 is not
+    on that grid. The pre-fix `max(1, round((1-2)/5))` clamped to n=1 and claimed
+    22 pixel frames -> 37 audio latents -> 74 rows of pure noise attached to
+    something with no time span at all. Revert -> this sees 22 / 74."""
+    from core.models.minimax_h3.h3_pipeline_ops import AUDIO_CHANNELS, audio_latent_frames
+
+    t = _FakeEncodeTrainer()
+    assert OPS._pixel_frames_for(t, 1) == 0
+    n_aud = audio_latent_frames(OPS._pixel_frames_for(t, 1), fps=24.0, latents_per_second=40.0)
+    assert n_aud == 0
+    assert n_aud * AUDIO_CHANNELS == 0
+
+
+def test_the_video_grid_inversion_is_untouched():
+    """Negative control for Q1b: the fix must special-case T_lat = 1 ONLY. If it
+    had instead been written as a general inverse (or the guard swallowed the
+    grid), the two measured video grid points would move and every audio-less
+    VIDEO batch would get the wrong row count."""
+    from core.models.minimax_h3.h3_pipeline_ops import AUDIO_CHANNELS, audio_latent_frames
+
+    t = _FakeEncodeTrainer()
+    assert OPS._pixel_frames_for(t, 7) == 22       # measured grid point
+    assert OPS._pixel_frames_for(t, 12) == 39      # measured grid point
+    assert audio_latent_frames(22) * AUDIO_CHANNELS == 74
+    assert audio_latent_frames(39) * AUDIO_CHANNELS == 130
+
+
+def test_the_packed_layout_accepts_zero_audio_latents():
+    """Q1b, structural: with n_aud = 0 the audio index block is EMPTY and the
+    video rows must still be placed correctly. Uses the generation path's own
+    builder (the one training shares), not a training-side reimplementation."""
+    from core.models.minimax_h3.h3_pipeline_ops import build_packed_layout, build_row_timesteps
+
+    lay = build_packed_layout(11, 1, 4, 6, 0)
+    rows_per_frame = (4 // 2) * (6 // 2)
+    assert lay["sequence_length"] == 11 + rows_per_frame
+    assert lay["audio_indices"].numel() == 0
+    assert lay["video_indices"].numel() == rows_per_frame
+    # And the per-row timestep vector still builds (an empty index assignment).
+    uniq, idx = build_row_timesteps(lay, 0.3, 0.7)
+    assert idx.shape == (lay["sequence_length"],)
+    assert torch.isfinite(uniq).all()

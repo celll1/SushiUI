@@ -780,6 +780,242 @@ class MiniMaxH3Mixin:
 
         return torch.from_numpy(full)
 
+    def _generate_vidinpaint_minimax_h3(
+        self,
+        params: Dict[str, Any],
+        video_frames: np.ndarray,
+        fps: float,
+        input_audio: Optional[bytes],
+        progress_callback: Optional[Callable] = None,
+        step_callback: Optional[Callable] = None,
+    ):
+        """Temporal inpaint with MiniMax-H3: regenerate one time range in place.
+
+        PIN FOR CONDITIONING, PASTE FOR EXACTNESS -- the two halves are separate
+        and each is needed:
+
+        * the clip is encoded once and the latent frames OUTSIDE the range are
+          pinned at ``VISUAL_COND_TIMESTEP`` and never denoised, so the model
+          generates the range against the rest of the clip. The released fl2va
+          weights honour that at the decoder's floor (preserved-span RMS 3.12
+          against a VAE round-trip floor of 3.15, control 75.69 --
+          ``scratchpad/minimax_h3_ti_probe_results.md``);
+        * the source pixels are then pasted back over the preserved region. The
+          pin alone returns those frames through a VAE round trip (3.20 RMS,
+          38.04 dB) plus up to 2.97 RMS of decoder bleed within ~15 frames of a
+          boundary, so "preserved" is true with the paste and false without it.
+          The paste is not a toggle for that reason.
+
+        The output is the same length as the TRIMMED input, which is why this is
+        not a placement of the outpaint endpoint: there, ``17n + 5`` binds the
+        generated span; here every frame of the clip has a row, so the trimmed
+        clip itself must be a valid length. It is never snapped.
+
+        Exactness is claimed of the returned frames and of an FFV1 encode
+        (``video_lossless``); the default H.264 mp4 is lossy for preserved and
+        generated frames alike, the same scoping the outpaint path states.
+
+        Args:
+            params: see ``INPAINT_VIDEO_DEFAULTS``. ``regenerate_start_frame`` /
+                ``regenerate_end_frame`` are pixel frames of the trimmed clip,
+                start inclusive and end exclusive; the effective (latent-group
+                aligned) span is written back into ``params``.
+            video_frames: np.uint8 [T, H, W, 3] decoded input clip.
+            fps: the clip's own probed frame rate, used only to cut its original
+                audio track for ``preserve_input``.
+            input_audio: WAV bytes of the clip's original audio, or None.
+
+        Returns:
+            ``(frames, audio, audio_sample_rate, actual_seed)`` -- the same
+            tuple contract as every other video generate path.
+        """
+        from api.error_handlers import ValidationError
+        from api.generation_utils import plan_video_inpaint_span, MINIMAX_H3_DOCUMENTED_ANCHOR_SCOPE
+        from core.inference.outpaint_utils import center_crop_resize_frames
+
+        if not getattr(self, "minimax_h3_components", None):
+            raise RuntimeError("MiniMax-H3 components are not loaded. Load a MiniMax-H3 model first.")
+        if video_frames is None or len(video_frames) == 0:
+            raise RuntimeError("vid_inpaint requires a decoded input video clip")
+
+        width = int(params.get("width", 960))
+        height = int(params.get("height", 544))
+
+        trim_start = max(0, int(params.get("input_trim_start_frames", 0) or 0))
+        trim_end = max(0, int(params.get("input_trim_end_frames", 0) or 0))
+        total_src = video_frames.shape[0]
+        end_idx = total_src - trim_end if trim_end > 0 else total_src
+        trimmed = video_frames[trim_start:end_idx]
+        if trimmed.shape[0] < 1:
+            raise ValidationError(
+                "vid_inpaint input trim leaves no frames",
+                detail=f"input has {total_src} frames; trim_start={trim_start}, trim_end={trim_end}",
+            )
+        # The RESULT of this preprocessing is the preserved content, the same
+        # convention the image and video outpaint paths state.
+        clip = center_crop_resize_frames(trimmed, width, height)
+
+        arch = (getattr(self, "current_model_info", None) or {}).get("type")
+        plan = plan_video_inpaint_span(params, arch or "minimax_h3",
+                                       clip_frames=int(clip.shape[0]))
+        start_frame = int(plan["start_frame"])
+        end_frame = int(plan["end_frame"])
+        clip_frames = int(plan["clip_frames"])
+        frame_rate = float(params.get("frame_rate", 24.0)) or 24.0
+
+        try:
+            from api.generation_status import add_warning
+        except Exception:  # pragma: no cover - status module always present in-process
+            add_warning = None
+
+        def warn(message: str, code: str) -> None:
+            print(f"[MiniMax-H3] vid_inpaint: {message}")
+            if add_warning is not None:
+                try:
+                    add_warning(message, code=code)
+                except Exception:
+                    pass
+
+        if plan["snapped"]:
+            warn(
+                f"frames {plan['requested_start']}-{plan['requested_end']} were expanded to "
+                f"{start_frame}-{end_frame}: the video VAE stores frames in groups of up to 4 and "
+                f"a group is regenerated or preserved as a whole, so a range is expanded outward "
+                f"to group boundaries rather than shrunk.",
+                code="inpaint_video_range_snapped",
+            )
+        warn(
+            "This request conditions MiniMax-H3 outside the documented shape (frames of the clip "
+            "pinned at interior positions while a range between them is regenerated). "
+            f"{MINIMAX_H3_DOCUMENTED_ANCHOR_SCOPE}; the same pinning mechanism is used here at "
+            "other positions.",
+            code="minimax_h3_undocumented_conditioning",
+        )
+
+        # ---- Audio. `preserve_input` pins the clip's own track across the WHOLE
+        # clip through the shipped ia2v machinery and muxes it back verbatim, so
+        # the regenerated span has the original soundtrack both to condition on
+        # and in the output. There is no second audio path here: the pin and the
+        # exact mux are both `_generate_minimax_h3`'s ia2v behaviour. ----
+        audio_mode = str(params.get("inpaint_video_audio_mode") or "regenerate")
+        pinned_audio = None
+        if audio_mode == "preserve_input":
+            pinned_audio = self._minimax_h3_inpaint_pinned_audio(
+                input_audio, clip_frames=clip_frames, source_fps=float(fps or frame_rate),
+                trim_start=trim_start, frame_rate=frame_rate, warn=warn)
+            if pinned_audio is None:
+                audio_mode = "regenerate"
+                params["inpaint_video_audio_mode"] = "regenerate"
+            elif not params.get("audio_enable", True):
+                warn("audio_enable is false: the clip's own track still conditions the generation "
+                     "(its rows ride the packed sequence at t = 1.0), and nothing is muxed into "
+                     "the output file.",
+                     code="minimax_h3_input_audio_not_muxed")
+
+        print(f"[MiniMax-H3] vid_inpaint: {width}x{height} clip={clip_frames} frame(s) "
+              f"regenerate {start_frame}..{end_frame} "
+              f"({len(plan['regenerate_latent_frames'])} of {plan['latent_frames']} latent "
+              f"frames) audio={audio_mode} @ {frame_rate} fps")
+
+        sub_params = dict(params)
+        sub_params["num_frames"] = clip_frames
+        frames_gen, audio_out, audio_sample_rate, seed = self._generate_minimax_h3(
+            sub_params, pinned_video_frames=plan["pinned_latent_frames"],
+            pinned_video_source=clip, input_audio=pinned_audio, label="vid_inpaint",
+            progress_callback=progress_callback, step_callback=step_callback,
+        )
+        if frames_gen.shape[0] != clip_frames:  # pragma: no cover - decode guarantees it
+            raise RuntimeError(
+                f"MiniMax-H3 returned {frames_gen.shape[0]} frame(s) where this clip is "
+                f"{clip_frames}.")
+
+        # ---- The paste. Everything outside the regenerated range is the input's
+        # own pixels; the range itself is untouched.
+        frames_out = np.array(frames_gen, dtype=np.uint8, copy=True)
+        frames_out[:start_frame] = clip[:start_frame]
+        frames_out[end_frame:] = clip[end_frame:]
+
+        params["num_frames"] = clip_frames
+        params["inpaint_video_effective_start_frame"] = start_frame
+        params["inpaint_video_effective_end_frame"] = end_frame
+        params["inpaint_video_preserved_frames"] = clip_frames - (end_frame - start_frame)
+
+        return frames_out, audio_out, audio_sample_rate, seed
+
+    def _minimax_h3_inpaint_pinned_audio(
+        self,
+        input_audio: Optional[bytes],
+        *,
+        clip_frames: int,
+        source_fps: float,
+        trim_start: int,
+        frame_rate: float,
+        warn: Callable[[str, str], None],
+    ):
+        """The clip's own track as the ia2v condition, or None to fall back.
+
+        Cut out of the uploaded clip with the SAME helper the outpaint path
+        splices with (``extract_audio_window``: trim, pitch-preserving stretch
+        when the source frame rate differs from this model's fixed 24 fps, then
+        resample), and handed to ``prepare_pinned_audio`` -- so a track this
+        endpoint pins and a track ``/generate/img2vid`` pins are the same object
+        by the time the model sees it.
+
+        The window asked for is the model's AUDIO GRID duration, which is a few
+        milliseconds longer than the clip's own (124 frames -> 207 latents ->
+        5.175 s against 5.167 s): both the encoded slice and the muxed slice
+        come out of this one waveform, so the longer of the two is what has to
+        be filled.
+
+        Returns None -- with a warning -- for every recoverable failure, and the
+        caller then generates the audio instead of pinning it.
+        """
+        from core.models.minimax_h3 import h3_references as refs
+        from utils.video_utils import extract_audio_window
+
+        if not input_audio:
+            warn("inpaint_video_audio_mode='preserve_input' was requested but the uploaded clip "
+                 "has no audio stream; the soundtrack is generated instead",
+                 code="inpaint_video_no_input_audio")
+            return None
+
+        components = self.minimax_h3_components
+        sample_rate = int(components.get("audio_sample_rate", 32000))
+        required, _grid, _clip = refs.pinned_audio_sample_counts(
+            clip_frames, fps=frame_rate, sample_rate=sample_rate,
+            latent_rate=float(components.get("audio_latent_rate", 40.0)))
+        target_dur_sec = required / float(sample_rate)
+        source_fps = float(source_fps or frame_rate)
+        # The frames occupy `target_dur_sec` of OUTPUT time but were captured
+        # over `frame_rate / source_fps` as much SOURCE time.
+        src_dur_sec = target_dur_sec * (frame_rate / source_fps)
+        if abs(src_dur_sec - target_dur_sec) / target_dur_sec > 0.005:
+            warn(f"preserve_input audio was time-stretched ({src_dur_sec:.3f}s -> "
+                 f"{target_dur_sec:.3f}s) because the uploaded clip's frame rate "
+                 f"({source_fps:.3f}) differs from MiniMax-H3's fixed {frame_rate:.3f} fps",
+                 code="inpaint_video_audio_stretched")
+        try:
+            window = extract_audio_window(
+                input_audio, trim_start / source_fps, src_dur_sec, target_dur_sec,
+                sample_rate=sample_rate, channels=2,
+            )
+        except Exception as exc:
+            window = None
+            print(f"[MiniMax-H3] vid_inpaint audio window extraction raised: {exc}")
+        if window is None:
+            warn("preserve_input audio window extraction failed; the soundtrack is generated "
+                 "instead", code="inpaint_video_audio_extract_failed")
+            return None
+        try:
+            return refs.prepare_pinned_audio(
+                torch.from_numpy(np.ascontiguousarray(window)), sample_rate,
+                num_frames=clip_frames, fps=frame_rate, target_sample_rate=sample_rate,
+                latent_rate=float(components.get("audio_latent_rate", 40.0)))
+        except ValueError as exc:
+            warn(f"preserve_input audio could not condition this clip ({exc}); the soundtrack is "
+                 f"generated instead", code="inpaint_video_audio_extract_failed")
+            return None
+
     def _generate_minimax_h3(
         self,
         params: Dict[str, Any],
@@ -787,6 +1023,8 @@ class MiniMaxH3Mixin:
         keyframes: Sequence[Tuple[Any, Any]] = (),
         references: Sequence[Any] = (),
         input_audio=None,
+        pinned_video_frames: Sequence[int] = (),
+        pinned_video_source: Optional[np.ndarray] = None,
         label: str = "txt2vid",
         progress_callback: Optional[Callable] = None,
         step_callback: Optional[Callable] = None,
@@ -815,6 +1053,18 @@ class MiniMaxH3Mixin:
         ref2va reaches an audio track through its own reference block, at a
         different rotary offset.
 
+        ``pinned_video_frames`` / ``pinned_video_source`` are temporal inpaint:
+        the LATENT frames of the clip that are supplied at (near) their true
+        value and never denoised, and the trimmed source clip
+        (``uint8 [T, H, W, 3]``) they are taken from. Their rows are permuted to
+        the head of the video block by ``build_packed_layout``, the substitution
+        below FOLLOWS the noise draw exactly as the ia2v one does, and the
+        decode un-permutes -- so at one seed the generated frames see the same
+        noise a t2va run would. The pinned frames come back through a VAE round
+        trip (3.20 RMS, measured); what makes them exact is the caller's paste
+        (``_generate_vidinpaint_minimax_h3``), never this path. Mutually
+        exclusive with keyframes and references, which claim the same prefix.
+
         What actually differs between the three is small and local — which
         presentation the conditioner reads, what gets VAE-encoded as
         conditioning, and which layout builder lays the rows out. The draw
@@ -836,6 +1086,16 @@ class MiniMaxH3Mixin:
             raise RuntimeError(
                 "MiniMax-H3 conditions on keyframes (fl2va) or on references (ref2va), never both: "
                 "they are two different transformer partitions with two different presentations.")
+        if len(pinned_video_frames) and (keyframes or references):
+            raise RuntimeError(
+                "MiniMax-H3 cannot combine pinned video frames with keyframes or references: the "
+                "pin re-uses the video block's conditioning prefix for rows of the clip itself, "
+                "and an anchor or a reference reserves that same prefix for rows of its own.")
+        if len(pinned_video_frames) != 0 and pinned_video_source is None:
+            raise RuntimeError(
+                "MiniMax-H3 temporal inpaint needs the source clip the pinned frames are taken "
+                "from: pinned_video_frames names latent frames, pinned_video_source supplies the "
+                "pixels they are encoded from.")
         if input_audio is not None and references:
             raise RuntimeError(
                 "MiniMax-H3 cannot pin an input audio track on a ref2va request: a reference "
@@ -980,6 +1240,38 @@ class MiniMaxH3Mixin:
         # every other path downstream tests against: an empty list would be
         # indistinguishable from "a track that encoded to nothing".
         pinned_audio_rows = None
+        # Temporal inpaint's source rows, in FRAME-MAJOR order (the permutation
+        # is applied to the whole video block after the noise draw, not here).
+        pinned_video_rows = None
+        if pinned_video_source is not None:
+            clip_start = time.perf_counter()
+            self._minimax_h3_move("vae", torch_device)
+            try:
+                # ONE encode of the whole clip, through the same recipe a ref2va
+                # video reference takes -- the T > 1 branch, so the temporally
+                # chunked latents line up frame for frame with the target grid.
+                clip_latents = ops.encode_visual_condition(
+                    components["vae"], np.asarray(pinned_video_source, dtype=np.uint8),
+                    latents_mean=components["latents_mean"],
+                    latents_std=components["latents_std"],
+                    pixel_mean=components["pixel_mean"],
+                    pixel_std=components["pixel_std"],
+                    device=device,
+                )
+            finally:
+                self._minimax_h3_move("vae", "cpu")
+                self._minimax_h3_empty_cache()
+            if tuple(clip_latents.shape[2:5]) != (latent_frames, latent_height, latent_width):
+                raise RuntimeError(
+                    f"MiniMax-H3 temporal inpaint encoded its source clip to "
+                    f"{tuple(clip_latents.shape[2:5])} latent frames/height/width where this "
+                    f"request's grid is {(latent_frames, latent_height, latent_width)} -- the clip "
+                    f"handed over is not the clip the layout is built from.")
+            pinned_video_rows = ops.patchify_video_latents(clip_latents, patch_size)[0]
+            del clip_latents
+            print(f"[MiniMax-H3] source clip encoded in {time.perf_counter() - clip_start:.1f}s: "
+                  f"{pinned_video_source.shape[0]} frame(s) -> {pinned_video_rows.shape[0]} row(s) "
+                  f"(peak VRAM {self._minimax_h3_peak_vram():.2f} GB)")
         if keyframe_pixels or normalized_references:
             cond_start = time.perf_counter()
             self._minimax_h3_move("vae", torch_device)
@@ -1084,6 +1376,7 @@ class MiniMaxH3Mixin:
                 num_text_tokens, latent_frames, latent_height, latent_width, num_audio_latents,
                 patch_size=patch_size,
                 keyframe_anchors=anchors,
+                pinned_video_frames=tuple(pinned_video_frames),
                 # ia2v needs no rows of its own: the target audio rows are
                 # already on the target's clock, and this flag only moves them
                 # from "generated" to "conditioning" in the row-timestep plan.
@@ -1106,6 +1399,30 @@ class MiniMaxH3Mixin:
         )
         video_rows = ops.patchify_video_latents(video_noise, patch_size)[0]
         del video_noise
+
+        if pinned_video_rows is not None:
+            # Substitute AFTER the draw, for the reason the audio substitution
+            # below states: the draw order is what makes the generated frames'
+            # noise the same at one seed whether or not anything is pinned. Each
+            # pinned row is noised to VISUAL_COND_TIMESTEP with ITS OWN row of
+            # that draw, through the scheduler's own forward process -- the
+            # recipe `build_condition_rows` uses for a keyframe anchor.
+            rows_per_frame = int(layout["rows_per_frame"])
+            pin_rows = torch.cat([
+                torch.arange(frame * rows_per_frame, (frame + 1) * rows_per_frame)
+                for frame in sorted(int(f) for f in pinned_video_frames)]).to(video_rows.device)
+            source = pinned_video_rows.to(video_rows.device, video_rows.dtype)
+            video_rows[pin_rows] = components["scheduler"].scale_noise(
+                source[pin_rows], ops.VISUAL_COND_TIMESTEP, video_rows[pin_rows])
+            del source, pinned_video_rows
+            # Frame-major -> packed. The layout permuted `video_indices` the same
+            # way, and the transformer addresses rows by that index list, so the
+            # two permutations cancel inside the forward.
+            video_rows = video_rows[layout["video_row_permutation"].to(video_rows.device)]
+            print(f"[MiniMax-H3] temporal inpaint: {pin_rows.numel()} of {video_rows.shape[0]} "
+                  f"video row(s) pinned at t={ops.VISUAL_COND_TIMESTEP} "
+                  f"(latent frames {list(pinned_video_frames)[:4]}"
+                  f"{'...' if len(pinned_video_frames) > 4 else ''})")
 
         if pinned_audio_rows is not None:
             # THE AUDIO DRAW ABOVE HAPPENED AND IS DISCARDED HERE, deliberately.
@@ -1175,6 +1492,10 @@ class MiniMaxH3Mixin:
                     # Preview geometry: the loop hands the callback LATENTS, not
                     # packed rows, so it needs the shape to unpatchify into.
                     preview_latent_shape=(latent_frames, latent_height, latent_width),
+                    # Non-None only for a pinned request, and read only by the
+                    # preview: with pinned frames the conditioning prefix IS clip
+                    # content, so the preview shows the whole clip in frame order.
+                    video_row_order=layout["video_row_order"],
                     latent_channels=int(components.get("latent_channels", 24)),
                     patch_size=tuple(components["transformer_config"]["patch_size"]),
                 )
@@ -1199,11 +1520,20 @@ class MiniMaxH3Mixin:
         # ---- Phase 3: decode ----
         n_cond_video = layout["num_condition_video_rows"]
         n_cond_audio = layout["num_condition_audio_rows"]
+        video_row_order = layout["video_row_order"]
+        # With pinned frames the conditioning rows are rows of THIS clip, so the
+        # decode takes every video row and restores frame-major order; with
+        # anchors or references they are separate content and the tail is the
+        # clip. `video_row_order` is None in the second case, which is the same
+        # test the preview makes.
+        clip_rows = (video_rows[n_cond_video:] if video_row_order is None
+                     else video_rows[video_row_order.to(video_rows.device)])
         latents = ops.unpatchify_video_rows(
-            video_rows[n_cond_video:], latent_frames, latent_height, latent_width,
+            clip_rows, latent_frames, latent_height, latent_width,
             latent_channels=int(components.get("latent_channels", 24)),
             patch_size=tuple(components["transformer_config"]["patch_size"]),
         )
+        del clip_rows
         del video_rows
 
         decode_start = time.perf_counter()

@@ -4,7 +4,7 @@ Generation endpoint shared utilities
 
 このモジュールは、txt2img/img2img/inpaintエンドポイント間のコード重複を削減します。
 """
-from typing import List, Dict, Any, Optional, Callable
+from typing import List, Dict, Any, Optional, Callable, Tuple
 from PIL import Image
 import base64
 from io import BytesIO
@@ -1438,6 +1438,141 @@ def plan_video_outpaint_placement(
         "total_frames": int(preserved + generated - shared),
         "requested_total_frames": requested_total,
         "shared_anchor_frames": shared,
+    }
+
+
+def latent_frame_spans(spec, num_latent_frames: int) -> List[Tuple[int, int]]:
+    """``[(pixel_start, pixel_end_exclusive), ...]`` per latent frame.
+
+    Cycles ``spec.latent_chunk_pattern``; empty pattern means the arch has not
+    declared its chunking and there is nothing to compute.
+    """
+    pattern = tuple(spec.latent_chunk_pattern)
+    spans: List[Tuple[int, int]] = []
+    cursor = 0
+    for index in range(int(num_latent_frames)):
+        width = pattern[index % len(pattern)]
+        spans.append((cursor, cursor + width))
+        cursor += width
+    return spans
+
+
+def plan_video_inpaint_span(
+    params: Dict[str, Any],
+    arch: Optional[str],
+    *,
+    clip_frames: int,
+) -> Dict[str, Any]:
+    """Resolve a temporal-inpaint request against the arch's latent chunking.
+
+    PURE (no warnings, no mutation), for the same reason
+    :func:`plan_video_outpaint_placement` is: the route calls it for a fast 400
+    before the GPU slot and the backend calls it again for the numbers it
+    generates from, so the arithmetic exists once.
+
+    ``clip_frames`` is the length of the TRIMMED uploaded clip, which is also
+    the output length -- every frame of it has a row in the packed sequence, so
+    it is the clip and not a generated span that must be a valid length. It is
+    never snapped: snapping a clip length here means deleting frames the caller
+    said to keep, so an invalid length is a 400 naming the trims that reach the
+    nearest valid ones.
+
+    Returns::
+
+        {"clip_frames": int, "latent_frames": int,
+         "requested_start": int, "requested_end": int,      # as asked, pixels
+         "start_frame": int, "end_frame": int,              # after the snap
+         "snapped": bool,
+         "regenerate_latent_frames": (int, ...),
+         "pinned_latent_frames": (int, ...)}                # everything else
+
+    The requested range is expanded OUTWARD to latent-frame boundaries (a latent
+    frame is pinned or generated whole), never shrunk: at a boundary the
+    caller's "regenerate this" wins over "keep that", which is what an image
+    inpaint mask's dilation already means.
+
+    Raises ``ValidationError`` for an architecture with no declared chunking, an
+    invalid clip length, an empty/out-of-range range, or a range that leaves
+    nothing preserved.
+    """
+    from api.error_handlers import ValidationError
+    from core.models.components.wiring import temporal_spec_for_arch
+
+    spec = temporal_spec_for_arch(arch)
+    if spec is None or not spec.latent_chunk_pattern:
+        raise ValidationError(
+            "this model has no temporal inpaint",
+            detail="Regenerating a time range in place needs the architecture's video-VAE "
+                   "temporal chunking, which decides the smallest range that can be addressed. "
+                   f"'{arch or 'the loaded model'}' does not declare one, so this endpoint cannot "
+                   "serve it.",
+        )
+
+    clip_frames = int(clip_frames)
+    smoke = bool(os.environ.get(spec.smoke_override_env))
+    floor = spec.floor(smoke)
+    in_range = floor <= clip_frames and (spec.max_frames is None or clip_frames <= spec.max_frames)
+    if not (spec.is_valid_length(clip_frames) and in_range):
+        why = (f"The trimmed clip is {clip_frames} frame(s). Temporal inpaint samples the WHOLE "
+               f"clip -- every frame has a row in the packed sequence -- so the clip itself must "
+               f"be a valid length: {spec.frame_multiple} * n + {spec.frame_offset}, between "
+               f"{floor} and {spec.max_frames}. The length is not snapped here, because snapping "
+               f"it would silently delete frames you asked to keep. ")
+        if clip_frames < floor:
+            raise ValidationError(
+                "the trimmed clip is shorter than this model's shortest clip",
+                detail=why + f"A shorter clip cannot be trimmed into range; it needs at least "
+                             f"{floor} frames.",
+            )
+        # The valid length at or below the clip: reachable by trimming.
+        below = spec.snap_length(clip_frames, smoke)
+        if below > clip_frames or (spec.max_frames is not None and below > spec.max_frames):
+            below -= spec.frame_multiple
+        below = min(below, spec.max_frames) if spec.max_frames is not None else below
+        raise ValidationError(
+            "the trimmed clip is not a length this model can generate",
+            detail=why + f"Trim {clip_frames - below} more frame(s) (input_trim_start_frames + "
+                         f"input_trim_end_frames) to reach {below}.",
+        )
+
+    requested_start = int(params.get("regenerate_start_frame") or 0)
+    requested_end = int(params.get("regenerate_end_frame") or 0)
+    if not (0 <= requested_start < requested_end <= clip_frames):
+        raise ValidationError(
+            "the regenerate range is not inside the clip",
+            detail=f"Got regenerate_start_frame={requested_start}, "
+                   f"regenerate_end_frame={requested_end} for a {clip_frames}-frame trimmed clip. "
+                   f"The range is [start, end) -- start inclusive, end exclusive -- so it needs "
+                   f"0 <= start < end <= {clip_frames}.",
+        )
+
+    num_latent_frames = int(spec.latent_frames(clip_frames))
+    spans = latent_frame_spans(spec, num_latent_frames)
+    regenerate = tuple(index for index, (lo, hi) in enumerate(spans)
+                       if lo < requested_end and hi > requested_start)
+    start_frame = spans[regenerate[0]][0]
+    end_frame = spans[regenerate[-1]][1]
+    pinned = tuple(index for index in range(num_latent_frames) if index not in set(regenerate))
+    if not pinned:
+        raise ValidationError(
+            "nothing is preserved",
+            detail=f"Frames {start_frame}..{end_frame} cover the whole {clip_frames}-frame clip "
+                   f"after the range was expanded to latent-frame boundaries, so there is no "
+                   f"preserved content to condition on or to paste back. Generating a whole clip "
+                   f"from a prompt is /generate/txt2vid; conditioning it on stills is "
+                   f"/generate/img2vid.",
+        )
+
+    return {
+        "clip_frames": clip_frames,
+        "latent_frames": num_latent_frames,
+        "requested_start": requested_start,
+        "requested_end": requested_end,
+        "start_frame": int(start_frame),
+        "end_frame": int(end_frame),
+        "snapped": bool(start_frame != requested_start or end_frame != requested_end),
+        "regenerate_latent_frames": regenerate,
+        "pinned_latent_frames": pinned,
     }
 
 

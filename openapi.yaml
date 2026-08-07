@@ -217,6 +217,14 @@ paths:
         `preserve_input`). A client resolves an outpaint-video default as
         `outpaint_vid | video_arch_overlays[arch] | outpaint_video_arch_overlays[arch]`,
         in that order, which is what the route does.
+
+        `inpaint_video_arch_overlays` is the same mechanism for
+        `POST /generate/inpaint/video` (`INPAINT_VIDEO_ARCH_OVERLAYS`):
+        `inpaint_video_audio_mode`, whose base `regenerate` would hand back a
+        preserved span with a soundtrack drawn against a regenerated timeline,
+        so MiniMax-H3 overlays `preserve_input`. `inpaint_vid` carries no
+        clip-length key at all — that endpoint's output is as long as the
+        trimmed input.
       tags: [Schema]
       responses:
         '200':
@@ -239,6 +247,9 @@ paths:
                     type: object
                     additionalProperties: true
                   outpaint_vid:
+                    type: object
+                    additionalProperties: true
+                  inpaint_vid:
                     type: object
                     additionalProperties: true
                   outpaint_aud:
@@ -272,6 +283,18 @@ paths:
                       minimax_h3:
                         total_frames: 248
                         outpaint_video_audio_mode: preserve_input
+                  inpaint_video_arch_overlays:
+                    type: object
+                    description: >-
+                      Architecture name -> the inpaint-video-only default keys
+                      that differ from the base ones on that architecture,
+                      applied on top of `video_arch_overlays`.
+                    additionalProperties:
+                      type: object
+                      additionalProperties: true
+                    example:
+                      minimax_h3:
+                        inpaint_video_audio_mode: preserve_input
   /schema/training-defaults:
     get:
       summary: Get default parameter values for LoRA / Full-FT training
@@ -386,6 +409,7 @@ paths:
             (ACE-Step) is rejected here by architecture, each with its own
             reason and the endpoint to use instead. The suggested endpoint matches the
             request shape of the route that was called (img2img -> /generate/img2vid
+            or /generate/aud2aud, inpaint -> /generate/inpaint/video on MiniMax-H3
             or /generate/aud2aud, outpaint -> /generate/outpaint/video or
             /generate/outpaint/audio), not always the text-only one.
           content:
@@ -1004,6 +1028,7 @@ paths:
             (ACE-Step) is rejected here by architecture, each with its own
             reason and the endpoint to use instead. The suggested endpoint matches the
             request shape of the route that was called (img2img -> /generate/img2vid
+            or /generate/aud2aud, inpaint -> /generate/inpaint/video on MiniMax-H3
             or /generate/aud2aud, outpaint -> /generate/outpaint/video or
             /generate/outpaint/audio), not always the text-only one.
           content:
@@ -1058,8 +1083,127 @@ paths:
             (ACE-Step) is rejected here by architecture, each with its own
             reason and the endpoint to use instead. The suggested endpoint matches the
             request shape of the route that was called (img2img -> /generate/img2vid
+            or /generate/aud2aud, inpaint -> /generate/inpaint/video on MiniMax-H3
             or /generate/aud2aud, outpaint -> /generate/outpaint/video or
             /generate/outpaint/audio), not always the text-only one.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Generation failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /generate/inpaint/video:
+    post:
+      tags: [generation]
+      summary: Video temporal inpaint (regenerate a time range of a clip, MiniMax-H3)
+      description: |
+        Regenerates the frames in
+        `[regenerate_start_frame, regenerate_end_frame)` of an uploaded `video`
+        clip and preserves the rest. The output is the same length as the
+        TRIMMED input, which is why there is no `num_frames`/`total_frames`
+        field.
+
+        **Mechanism, in one sentence each.** The clip is VAE-encoded once and
+        the latent frames OUTSIDE the range are pinned at the model's
+        conditioning noise level and never denoised, so the selected range is
+        generated against the rest of the clip. **Preserved frames are the
+        input's own pixels, pasted back after decode**; the model conditions on
+        their re-encoded latents while generating the selected range. The paste
+        is unconditional and is what makes "preserved" true: without it the kept
+        frames come back through a VAE round trip.
+
+        Between the pasted and the generated pixels there is a cut at the range
+        edges, the same kind `/generate/outpaint` carries. Exactness is claimed
+        of the returned frames and of an FFV1 encode (`video_lossless`); the
+        default H.264 mp4 is lossy for preserved and generated frames alike.
+
+        **Granularity.** The video VAE stores frames in groups of up to 4
+        (MiniMax-H3's temporal chunking is `(1, 4, 4, 4, 4)` repeating), and a
+        group is regenerated or preserved as a whole. A requested range is
+        therefore expanded OUTWARD to group boundaries -- never shrunk, so the
+        caller's "regenerate this" wins over "keep that" at a boundary -- and
+        the effective pixel span is reported in the response's `warnings[]` when
+        the expansion changed the request.
+
+        **Length.** Temporal inpaint samples the WHOLE clip, so the TRIMMED
+        input must itself be a valid clip length (`17n + 5` in 124..345 on
+        MiniMax-H3). It is never snapped -- snapping a clip length means
+        silently deleting frames the caller said to keep -- so an invalid length
+        is a 400 naming the nearest valid lengths and the trim that reaches
+        them. This is the inverse of `/generate/outpaint/video`, where the grid
+        binds the GENERATED span, and is why the two are separate endpoints.
+
+        **Range shape.** One contiguous range per request. The measured shape is
+        one span with two boundaries; a multi-range request is a different
+        object and is not expressed by this API.
+
+        **Audio (`inpaint_video_audio_mode`, only relevant when `audio_enable`
+        is true).**
+        - `preserve_input` (the MiniMax-H3 default): the clip's own track is
+          pinned as conditioning across the whole clip -- the same mechanism
+          `/generate/img2vid`'s `input_audio` uses -- and muxed back verbatim,
+          so the regenerated span has the original soundtrack both to condition
+          on and in the output. Falls back to `regenerate`, with a warning, when
+          the uploaded clip has no audio stream. The exactness of the muxed
+          track is of the handoff: the mp4 encodes AAC unless `video_lossless`
+          asks for FLAC.
+        - `regenerate`: the audio rows are generated for the whole clip, so the
+          preserved video span carries generated audio that need not match its
+          visuals.
+
+        **Outside the model card.** MiniMax documents `fl2va` for first- and
+        last-frame conditioning with up to two images; pinning frames at
+        interior positions uses the same mechanism and is not covered by the
+        card. Every request through this endpoint therefore carries one
+        `warnings[]` entry with code `minimax_h3_undocumented_conditioning`.
+
+        **Requirements:**
+        - A MiniMax-H3 `fl2va` model must be loaded. A `ref2va` checkpoint is
+          refused (the mid-clip pin is measured on `fl2va`), and so is every
+          other architecture -- LTX-2.3's conditions carry whole clips at latent
+          indices rather than pinning frames of the target itself.
+        - `width`/`height` divisible by 32 and inside the model's envelope
+          (short edge ≤ 768, long edge ≤ 1344).
+        - The range must leave something preserved; a whole-clip range is
+          `/generate/txt2vid`.
+      operationId: generateInpaintVideo
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/InpaintVideoRequest'
+      responses:
+        '200':
+          description: Generation successful
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenerationResponse'
+              example:
+                success: true
+                actual_seed: 4242
+                warnings:
+                  - code: minimax_h3_undocumented_conditioning
+                    message: >-
+                      This request conditions MiniMax-H3 outside the documented shape
+                      (frames of the clip pinned at interior positions while a range
+                      between them is regenerated).
+                image:
+                  id: 91
+                  filename: "inpaint_vid_20260808_120000_4242.mp4"
+                  generation_type: "inpaint_vid"
+        '400':
+          description: >-
+            Invalid parameters, or no MiniMax-H3 fl2va model loaded. Also
+            returned when the TRIMMED clip is not a valid clip length (it is
+            never snapped), when the range is empty or outside the clip, or
+            when the range leaves nothing preserved.
           content:
             application/json:
               schema:
@@ -1139,6 +1283,7 @@ paths:
             (ACE-Step) is rejected here by architecture, each with its own
             reason and the endpoint to use instead. The suggested endpoint matches the
             request shape of the route that was called (img2img -> /generate/img2vid
+            or /generate/aud2aud, inpaint -> /generate/inpaint/video on MiniMax-H3
             or /generate/aud2aud, outpaint -> /generate/outpaint/video or
             /generate/outpaint/audio), not always the text-only one.
           content:
@@ -7986,6 +8131,222 @@ components:
             (FFV1 has no mainstream browser decoder) -- intended for
             archival/verification of the exact preserved frames, not casual
             playback.
+          example: false
+
+    InpaintVideoRequest:
+      type: object
+      required:
+        - prompt
+        - video
+        - regenerate_start_frame
+        - regenerate_end_frame
+      description: |
+        Distinct from `OutpaintVideoRequest`: there is no output-length field at
+        all (the output is as long as the trimmed input) and no placement or
+        bridge field; the range to regenerate takes their place. All other
+        video-generation knobs (block swap / FBCache / Spectrum / per-generation
+        component overrides) are the same as `Txt2VidRequest`.
+      properties:
+        prompt:
+          type: string
+          description: "Text prompt describing the regenerated range. The preserved frames are the input's own pixels and are not described by it."
+          example: "A cat playing a piano on a stage, warm stage lighting"
+        negative_prompt:
+          type: string
+          default: ""
+          description: "Content to steer away from. Applied only when guidance_scale > 1."
+        video:
+          type: string
+          format: binary
+          description: "The clip to inpaint (any ffmpeg-demuxable container). Its TRIMMED length is the output length and must be a valid clip length for the loaded model."
+        regenerate_start_frame:
+          type: integer
+          description: |
+            First PIXEL frame of the range to regenerate, in the TRIMMED clip's
+            own frames, INCLUSIVE. Expanded outward to a latent-group boundary
+            (see the endpoint's granularity note); the effective span is
+            reported in `warnings[]` when the expansion changed the request.
+          example: 40
+        regenerate_end_frame:
+          type: integer
+          description: |
+            End of the range to regenerate, EXCLUSIVE (Python-slice
+            convention): `start=40, end=85` regenerates frames 40..84, i.e. 45
+            frames. Expanded outward to a latent-group boundary like the start.
+          example: 85
+        width:
+          type: integer
+          multipleOf: 32
+          default: 768
+          description: "Output video width in pixels. The uploaded clip is center-cropped + resized to this resolution, and the PREPROCESSED frames are what the preserved region is pasted from. The MiniMax-H3 default resolves to 1344 through `video_arch_overlays` of GET /schema/generation-defaults."
+          example: 640
+        height:
+          type: integer
+          multipleOf: 32
+          default: 512
+          description: "Output video height in pixels. Must be divisible by 32."
+          example: 384
+        frame_rate:
+          type: number
+          default: 24.0
+          description: "Output frames per second. MiniMax-H3 is a fixed 24 fps model and forces this value with a warning."
+          example: 24.0
+        num_inference_steps:
+          type: integer
+          default: 8
+          description: "Number of denoising steps. The MiniMax-H3 default resolves to 20; its scheduler counts sigma grid points, so the minimum is 2."
+          example: 20
+        guidance_scale:
+          type: number
+          default: 1.0
+          description: "Classifier-free guidance scale. MiniMax-H3 is guidance-distilled and ignores it."
+          example: 1.0
+        seed:
+          type: integer
+          default: -1
+          description: "Random seed. -1 draws a random seed (returned in actual_seed)."
+          example: -1
+        num_videos_per_prompt:
+          type: integer
+          default: 1
+          example: 1
+        max_sequence_length:
+          type: integer
+          default: 1024
+          example: 1024
+        audio_enable:
+          type: boolean
+          default: true
+          description: "When true, mux an audio track into the mp4 (see inpaint_video_audio_mode for its source). When false the audio rows still ride the packed sequence and still influence the video."
+          example: true
+        input_trim_start_frames:
+          type: integer
+          default: 0
+          description: "Trim this many PIXEL frames off the START of the uploaded clip before anything else. The regenerate range is expressed in the TRIMMED clip's frames."
+          example: 0
+        input_trim_end_frames:
+          type: integer
+          default: 0
+          description: "Trim this many PIXEL frames off the END of the uploaded clip. This is the field that brings an over-long clip down onto the model's clip-length grid."
+          example: 0
+        inpaint_video_audio_mode:
+          type: string
+          enum: [regenerate, preserve_input]
+          default: regenerate
+          description: |
+            "preserve_input": pin the clip's own track as conditioning across
+            the whole clip and mux it back verbatim, so the regenerated span
+            carries the original soundtrack. Falls back to "regenerate" (with a
+            warning) when the clip has no audio stream.
+            "regenerate": generate the soundtrack for the whole clip, so the
+            preserved video span carries generated audio that need not match its
+            visuals. Only relevant when audio_enable is true.
+
+            PER-ARCHITECTURE DEFAULT. The `default: regenerate` above is the
+            architecture-neutral base value; MiniMax-H3 resolves to
+            `preserve_input` through `inpaint_video_arch_overlays` of
+            GET /schema/generation-defaults. Omit the field to get the loaded
+            architecture's default.
+          example: preserve_input
+        attention_type:
+          type: string
+          enum: [normal, native, sdpa, none, flash, sage, tq, sla]
+          default: normal
+          description: "Attention backend for this generation, with exactly the semantics of `Img2VidRequest.attention_type`."
+          example: normal
+        blocks_to_swap:
+          type: integer
+          default: 0
+          description: "Number of transformer blocks kept CPU-resident and streamed to GPU during the denoise loop. 0 disables block swap."
+          example: 0
+        fbcache_enable:
+          type: boolean
+          default: false
+          example: false
+        fbcache_threshold:
+          type: number
+          default: 0.12
+          example: 0.12
+        fbcache_warmup_steps:
+          type: integer
+          default: 1
+          example: 1
+        spectrum_enable:
+          type: boolean
+          default: false
+          example: false
+        spectrum_w:
+          type: number
+          default: 0.5
+          example: 0.5
+        spectrum_w_decay:
+          type: number
+          default: 0.0
+          example: 0.0
+        spectrum_delta_cap:
+          type: number
+          default: 0.0
+          example: 0.0
+        spectrum_m:
+          type: integer
+          default: 4
+          example: 4
+        spectrum_lam:
+          type: number
+          default: 0.1
+          example: 0.1
+        spectrum_warmup_steps:
+          type: integer
+          default: 3
+          example: 3
+        spectrum_window_size:
+          type: integer
+          default: 4
+          example: 4
+        spectrum_flex_window:
+          type: number
+          default: 0.75
+          example: 0.75
+        spectrum_tail:
+          type: number
+          default: 0.12
+          example: 0.12
+        spectrum_max_cache:
+          type: integer
+          default: 0
+          example: 0
+        vae_path:
+          type: string
+          nullable: true
+          description: "Per-generation VAE override."
+        text_encoder_path:
+          type: string
+          nullable: true
+          description: "Per-generation text-encoder override."
+        unet_quantization:
+          type: string
+          nullable: true
+          enum: [none, fp8_e4m3fn, fp8_e5m2, int8]
+          default: null
+          description: "Transformer quantization mode for the video DiT; identical semantics to `Txt2VidRequest.unet_quantization`."
+          example: null
+        quantized_gemm_mode:
+          type: string
+          nullable: true
+          enum: [w8a8, dequant, null]
+          default: null
+          description: "Per-generation GEMM path for already-quantized Linear weights; identical semantics to `Txt2VidRequest.quantized_gemm_mode`."
+          example: w8a8
+        video_lossless:
+          type: boolean
+          default: false
+          description: |
+            When true, encodes the output with FFV1 (`-pix_fmt rgb24`) instead
+            of H.264, which is what carries the pasted preserved frames into the
+            FILE bit-exact -- "libx264 -qp 0" is NOT actually bit-exact. Audio
+            uses FLAC instead of AAC in this mode. Much larger files, and the
+            result generally will NOT play in a browser's native <video>
+            element.
           example: false
 
     Txt2AudRequest:

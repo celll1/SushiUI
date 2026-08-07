@@ -95,11 +95,19 @@ def test_img2img_refusal_does_not_suggest_the_text_only_route(h3_loaded):
     assert "/generate/txt2vid" not in str(excinfo.value)
 
 
-def test_inpaint_has_no_video_counterpart_but_still_gets_alternatives(h3_loaded):
-    """There is no video inpainting route; name what CAN be done instead."""
+def test_inpaint_names_its_counterpart_where_there_is_one(h3_loaded):
+    """MiniMax-H3 gained one (/generate/inpaint/video); LTX-2.3 has none."""
+    with pytest.raises(CustomValidationError) as excinfo:
+        routes._reject_if_video_model("/generate/inpaint")
+    assert "use /generate/inpaint/video" in str(excinfo.value), str(excinfo.value)
+
+
+def test_inpaint_on_ltx2_still_gets_alternatives(ltx2_loaded):
+    """Temporal inpaint is not implemented there, so it must not be suggested."""
     with pytest.raises(CustomValidationError) as excinfo:
         routes._reject_if_video_model("/generate/inpaint")
     message = str(excinfo.value)
+    assert "/generate/inpaint/video" not in message, message
     assert "/generate/img2vid" in message, message
     assert "/generate/outpaint/video" in message, message
 

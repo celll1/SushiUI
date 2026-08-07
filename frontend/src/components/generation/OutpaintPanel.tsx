@@ -475,6 +475,13 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
   const [videoFile, setVideoFile] = useState<File | null>(null);
   const [videoPreviewUrl, setVideoPreviewUrl] = useState<string | null>(null);
   const [videoDurationSec, setVideoDurationSec] = useState<number | null>(null);
+  // The uploaded clip's own pixel size, read off the <video> element's
+  // metadata. Only used by the video card's Scale size mode -- the same
+  // "derive the output size from the input's dimensions" the image panels'
+  // img2img control has; the request itself still carries width/height.
+  const [inputVideoSize, setInputVideoSize] = useState<{ width: number; height: number } | null>(null);
+  const [videoSizeMode, setVideoSizeMode] = useState<"absolute" | "scale">("absolute");
+  const [videoScale, setVideoScale] = useState<number>(1.0);
   // BRIDGE placement only (an architecture whose video_constraints
   // .outpaint_placements contains "bridge"): the second clip, preserved at the
   // END of the timeline, with the generated span between the two.
@@ -1195,10 +1202,52 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
     if (file) processVideoFile(file);
   };
 
+  // Round a scaled dimension onto the video grid the width/height controls
+  // advertise ("÷32"), so Scale mode can never hand the request a size the
+  // server would have to snap.
+  const VIDEO_SIZE_SNAP = 32;
+  const snapVideoSize = (value: number) =>
+    Math.max(VIDEO_SIZE_SNAP, Math.round(value / VIDEO_SIZE_SNAP) * VIDEO_SIZE_SNAP);
+
+  const handleVideoScaleChange = (newScale: number) => {
+    setVideoScale(newScale);
+    if (inputVideoSize && videoSizeMode === "scale") {
+      setParams(prev => ({
+        ...prev,
+        width: snapVideoSize(inputVideoSize.width * newScale),
+        height: snapVideoSize(inputVideoSize.height * newScale),
+      }));
+    }
+  };
+
+  const handleVideoSizeModeChange = (newMode: "absolute" | "scale") => {
+    setVideoSizeMode(newMode);
+    if (newMode === "scale" && inputVideoSize) {
+      setParams(prev => ({
+        ...prev,
+        width: snapVideoSize(inputVideoSize.width * videoScale),
+        height: snapVideoSize(inputVideoSize.height * videoScale),
+      }));
+    }
+  };
+
   const handleVideoLoadedMetadata = (e: React.SyntheticEvent<HTMLVideoElement>) => {
     const duration = e.currentTarget.duration;
     if (Number.isFinite(duration) && duration > 0) {
       setVideoDurationSec(duration);
+    }
+    const { videoWidth, videoHeight } = e.currentTarget;
+    if (videoWidth > 0 && videoHeight > 0) {
+      setInputVideoSize({ width: videoWidth, height: videoHeight });
+      // A clip loaded while Scale mode is on re-derives the output size from
+      // the new clip, exactly as img2img's input image does.
+      if (videoSizeMode === "scale") {
+        setParams(prev => ({
+          ...prev,
+          width: snapVideoSize(videoWidth * videoScale),
+          height: snapVideoSize(videoHeight * videoScale),
+        }));
+      }
     }
   };
 
@@ -1209,6 +1258,9 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
     setVideoFile(null);
     setVideoPreviewUrl(null);
     setVideoDurationSec(null);
+    setInputVideoSize(null);
+    // Scale mode has nothing to scale from once the clip is gone.
+    setVideoSizeMode("absolute");
     setParams(prev => ({ ...prev, input_offset_frames: 0, input_trim_start_frames: 0, input_trim_end_frames: 0 }));
   };
 
@@ -3625,49 +3677,108 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
 
         {isVideo && (
         <Card title="Video">
-          <div className="grid grid-cols-2 gap-2">
-            <NumberInput
-              label="Width (÷32)"
-              value={params.width ?? 768}
-              onCommit={(v) => setParams({ ...params, width: v })}
-              min={32}
-              max={2048}
-              step={32}
-              parse="int"
-            />
-            <NumberInput
-              label="Height (÷32)"
-              value={params.height ?? 512}
-              onCommit={(v) => setParams({ ...params, height: v })}
-              min={32}
-              max={2048}
-              step={32}
-              parse="int"
-            />
+          {/* Resolution in the image models' Parameters-card shape: labelled
+              sliders with a numeric entry beside them (common/Slider) in the
+              same two-column grid, plus the Absolute/Scale size mode -- Scale
+              derives width/height from the uploaded clip's own dimensions,
+              rounded onto the ÷32 grid these controls advertise. */}
+          <div className="mb-4">
+            <div className="flex items-center justify-between mb-2">
+              <label className="block text-sm font-medium text-gray-300">
+                Size Mode
+              </label>
+              <div className="flex gap-2">
+                <Button
+                  onClick={() => handleVideoSizeModeChange("absolute")}
+                  variant={videoSizeMode === "absolute" ? "primary" : "secondary"}
+                  size="sm"
+                >
+                  Absolute
+                </Button>
+                <Button
+                  onClick={() => handleVideoSizeModeChange("scale")}
+                  variant={videoSizeMode === "scale" ? "primary" : "secondary"}
+                  size="sm"
+                  disabled={!inputVideoSize}
+                  title={!inputVideoSize ? "Load an input clip first" : ""}
+                >
+                  Scale
+                </Button>
+              </div>
+            </div>
+
+            {videoSizeMode === "absolute" ? (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <Slider
+                  label="Width (÷32)"
+                  min={32}
+                  max={2048}
+                  step={32}
+                  value={params.width ?? 768}
+                  onChange={(e) => setParams({ ...params, width: parseInt(e.target.value) })}
+                />
+                <Slider
+                  label="Height (÷32)"
+                  min={32}
+                  max={2048}
+                  step={32}
+                  value={params.height ?? 512}
+                  onChange={(e) => setParams({ ...params, height: parseInt(e.target.value) })}
+                />
+              </div>
+            ) : (
+              <div>
+                <Slider
+                  label={`Scale (${params.width}x${params.height})`}
+                  min={0.25}
+                  max={4.0}
+                  step={0.25}
+                  value={videoScale}
+                  onChange={(e) => handleVideoScaleChange(parseFloat(e.target.value))}
+                />
+                {inputVideoSize && (
+                  <p className="text-xs text-gray-500 mt-1">
+                    Input clip: {inputVideoSize.width}x{inputVideoSize.height} · rounded to a
+                    multiple of 32
+                  </p>
+                )}
+              </div>
+            )}
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mt-2">
-            <NumberInput
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-2">
+            <Slider
               label="Steps"
-              value={params.num_inference_steps ?? 8}
-              onCommit={(v) => setParams({ ...params, num_inference_steps: v })}
               min={1}
               max={100}
               step={1}
-              parse="int"
+              value={params.num_inference_steps ?? 8}
+              onChange={(e) => setParams({ ...params, num_inference_steps: parseInt(e.target.value) })}
             />
-            <NumberInput
+            <Slider
               label="Guidance Scale"
-              value={params.guidance_scale ?? 1.0}
-              onCommit={(v) => setParams({ ...params, guidance_scale: v })}
               min={0}
               max={20}
               step={0.1}
-              parse="float"
+              value={params.guidance_scale ?? 1.0}
+              onChange={(e) => setParams({ ...params, guidance_scale: parseFloat(e.target.value) })}
             />
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-2">
+            <Slider
+              label="Frame Rate (fps)"
+              min={1}
+              max={60}
+              step={1}
+              value={params.frame_rate ?? 24.0}
+              onChange={(e) => setParams({ ...params, frame_rate: parseFloat(e.target.value) })}
+            />
+            {/* Seed: the image path's control (same label styling, same
+                randomise / reset-to--1 / reuse-the-result's-seed buttons). */}
             <div>
-              <label className="block text-xs text-gray-400 mb-1">Seed</label>
-              <div className="flex gap-1">
+              <label className="block text-sm font-medium text-gray-300 mb-1">Seed</label>
+              <div className="flex gap-2">
                 <NumberInput
                   value={params.seed ?? -1}
                   onCommit={(v) => setParams({ ...params, seed: v })}
@@ -3701,18 +3812,6 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
                 </Button>
               </div>
             </div>
-          </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-2">
-            <NumberInput
-              label="Frame Rate (fps)"
-              value={params.frame_rate ?? 24.0}
-              onCommit={(v) => setParams({ ...params, frame_rate: v })}
-              min={1}
-              max={60}
-              step={1}
-              parse="float"
-            />
           </div>
 
           <label className="flex items-center gap-2 cursor-pointer mt-2">
@@ -3782,6 +3881,10 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
           </div>
           {(params.video_blocks_to_swap ?? 0) > 0 && (
             <div className="ml-6 mt-1">
+              {/* NumberInput puts `label` on aria-label only and renders no
+                  visible text, so the caption is drawn here (the same way the
+                  image panels' number fields are wrapped). */}
+              <label className="block text-xs text-gray-400 mb-1">Blocks to swap</label>
               <NumberInput
                 label="Blocks to swap"
                 value={params.video_blocks_to_swap ?? 10}

@@ -5,6 +5,20 @@ import { cn } from "@/lib/utils";
 
 interface NumberInputProps {
   id?: string;
+  /**
+   * ACCESSIBLE NAME ONLY — this is passed to `aria-label` and NOTHING IS
+   * DRAWN. A caller that wants a caption on screen must render its own
+   * `<label>` next to the field (that is what the generation panels do, and
+   * what `common/Slider` does for its own numeric box).
+   *
+   * This component deliberately does not render one: it is a bare `<input>` by
+   * design, and several callers already draw their own label around it
+   * (`PostEditControls` puts the box inside a slider row with a fixed `w-14`
+   * width; `OutpaintPanel`'s FBCache fields wrap it in a `<label>` with the
+   * text inline). Rendering a label here would duplicate that text and change
+   * the layout of every one of those rows, so the caption stays the caller's
+   * job.
+   */
   label?: string;
   /** Current committed value (from params/state). */
   value: number;

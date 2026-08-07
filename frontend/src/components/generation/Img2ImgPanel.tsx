@@ -418,6 +418,15 @@ const REF_IMAGES_STORAGE_KEY = "img2img_ref_images";
 // reload while every other one came back.
 const LAST_FRAME_STORAGE_KEY = "img2img_last_frame_image";
 
+/**
+ * A conditioning image OTHER than the uploaded input image, addressed by the
+ * slot it lives in. `keyframe` is `params.keyframes[index]`; `last` is the
+ * `last_frame_image` alias (an anchor at the clip's last frame). The input
+ * image itself is not an ExtraAnchor: it has its own File/preview/temp-storage
+ * plumbing and keeps it.
+ */
+type ExtraAnchor = { kind: "keyframe"; index: number } | { kind: "last" };
+
 interface Img2ImgPanelProps {
   onImageGenerated?: (imageUrl: string) => void;
   onTabChange?: (tab: "txt2img" | "img2img" | "inpaint" | "outpaint" | "upscale") => void;
@@ -431,6 +440,10 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
   // Video output (produced when a video model is loaded / img2vid queue item).
   const [generatedVideo, setGeneratedVideo] = useState<string | null>(null);
   const [generatedVideoInfo, setGeneratedVideoInfo] = useState<{ num_frames?: number; fps?: number; duration?: number } | null>(null);
+  // Seed the last video result actually ran with, so the video card's seed
+  // control has the same "reuse the seed from the preview" button the image
+  // path has (StoredVideoPreview carries it, as it does in OutpaintPanel).
+  const [generatedVideoSeed, setGeneratedVideoSeed] = useState<number | null>(null);
   // Audio output (produced when an audio model is loaded / aud2aud queue item).
   const [generatedAudio, setGeneratedAudio] = useState<string | null>(null);
   const [generatedAudioInfo, setGeneratedAudioInfo] = useState<{ duration?: number; sample_rate?: number } | null>(null);
@@ -460,6 +473,12 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
   const [inputImageSize, setInputImageSize] = useState<{ width: number; height: number } | null>(null);
   const [sizeMode, setSizeMode] = useState<"absolute" | "scale">("absolute");
   const [scale, setScale] = useState<number>(1.0);
+  // Grid a scale-derived resolution is rounded onto. The image path has always
+  // used 64; a video model's own control is labelled "÷32", so scaling on a
+  // video model must not hand it a size off that grid (the server would snap
+  // it and warn). Multiples of 64 are multiples of 32, so this only ever
+  // loosens the rounding, never breaks the image path.
+  const sizeSnap = isVideo ? 32 : 64;
   const [progress, setProgress] = useState(0);
   const [totalSteps, setTotalSteps] = useState(0);
   // Streamed progress-phase label (e.g. "Step 12/28" or "PiD decode (tile 3/9)").
@@ -526,12 +545,31 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
   // without being able to read an audio track at all.
   const supportsAudioConditioning = archSupportsFeature(
     archCapabilities, loadedArch, "audio_conditioning");
+  // The input card takes MORE THAN ONE image exactly where the loaded
+  // architecture has somewhere to put a second one -- keyframe placement, or
+  // the last-frame slot on its own. On an image model, and on a video model
+  // that conditions on the first frame only (LTX-2.3), it stays the
+  // single-image card it has always been rather than growing a tab strip with
+  // one tab in it.
+  const multiImageInput = isVideo && (supportsKeyframePlacement || supportsLastFrame);
   // The track itself, as a File and NOT in `params`: it is an upload, so it
   // rides on the queue item the way aud2aud's reference clip and outpaint_vid's
   // source clip do, and it never reaches the persisted params blob.
   const [inputAudioTrack, setInputAudioTrack] = useState<File | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [isEditingImage, setIsEditingImage] = useState(false);
+  // ── Multi-image (tabbed) input, for a video architecture that takes more
+  // than one conditioning image. `input` is the uploaded input image (the
+  // img2vid keyframe); the other tabs are the extra anchors, which are the
+  // same two storage slots the timeline draws: `params.keyframes[i]` and the
+  // `last_frame_image` alias. On an image model none of this renders and the
+  // card is the single-image one it has always been.
+  const [activeInputTab, setActiveInputTab] = useState<string>("input");
+  // The extra anchor currently open in the paint editor. The input image keeps
+  // its own `isEditingImage` flag (untouched image-model path); the two are
+  // mutually exclusive because only one tab is on screen at a time.
+  const [editingExtraAnchor, setEditingExtraAnchor] = useState<ExtraAnchor | null>(null);
+  const addAnchorInputRef = useRef<HTMLInputElement>(null);
   const [sendImage, setSendImage] = useState(true);
   const [sendPrompt, setSendPrompt] = useState(true);
   const [sendParameters, setSendParameters] = useState(true);
@@ -690,6 +728,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
       if (savedVideo) {
         setGeneratedVideo(savedVideo.url);
         setGeneratedVideoInfo(savedVideo.info);
+        setGeneratedVideoSeed(savedVideo.seed ?? null);
       }
 
       // Load preview audio (aud2aud result). Same reasoning as the video above:
@@ -876,6 +915,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
           clearVideoPreview(PREVIEW_KEYS);
           setGeneratedVideo(null);
           setGeneratedVideoInfo(null);
+          setGeneratedVideoSeed(null);
         }
       }
 
@@ -1188,9 +1228,13 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
   // the frame/fps/duration line are stored -- never the clip bytes.
   useEffect(() => {
     if (isMounted && generatedVideo) {
-      saveVideoPreview(PREVIEW_KEYS, { url: generatedVideo, info: generatedVideoInfo });
+      saveVideoPreview(PREVIEW_KEYS, {
+        url: generatedVideo,
+        info: generatedVideoInfo,
+        seed: generatedVideoSeed,
+      });
     }
-  }, [generatedVideo, generatedVideoInfo, isMounted]);
+  }, [generatedVideo, generatedVideoInfo, generatedVideoSeed, isMounted]);
 
   // Save preview audio to localStorage whenever it changes. Only the URL and
   // the duration/sample-rate line are stored -- never the audio bytes.
@@ -1295,8 +1339,8 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         setInputImageSize({ width: img.width, height: img.height });
         // If in scale mode, update width/height based on scale
         if (sizeMode === "scale") {
-          const scaledWidth = Math.round(img.width * scale / 64) * 64;
-          const scaledHeight = Math.round(img.height * scale / 64) * 64;
+          const scaledWidth = Math.round(img.width * scale / sizeSnap) * sizeSnap;
+          const scaledHeight = Math.round(img.height * scale / sizeSnap) * sizeSnap;
           setParams({ ...params, width: scaledWidth, height: scaledHeight });
         }
       };
@@ -1305,13 +1349,10 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
     reader.readAsDataURL(file);
   };
 
-  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      processImageFile(file);
-    }
-  };
-
+  // NOTE: the input card's file-picker and drop handlers now live in
+  // renderImageDropZone (one per tab) and call processImageFile / the anchor
+  // setters directly, so the old single-image handleImageUpload/handleDrop
+  // wrappers are gone. handleDragOver/handleDragLeave are still shared.
   const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
     e.stopPropagation();
@@ -1324,22 +1365,11 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
     setIsDragging(false);
   };
 
-  const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsDragging(false);
-
-    const file = e.dataTransfer.files?.[0];
-    if (file) {
-      processImageFile(file);
-    }
-  };
-
-  const handleScaleChange = (newScale: number) => {
+  const handleScaleChange =(newScale: number) => {
     setScale(newScale);
     if (inputImageSize && sizeMode === "scale") {
-      const scaledWidth = Math.round(inputImageSize.width * newScale / 64) * 64;
-      const scaledHeight = Math.round(inputImageSize.height * newScale / 64) * 64;
+      const scaledWidth = Math.round(inputImageSize.width * newScale / sizeSnap) * sizeSnap;
+      const scaledHeight = Math.round(inputImageSize.height * newScale / sizeSnap) * sizeSnap;
       setParams({ ...params, width: scaledWidth, height: scaledHeight });
     }
   };
@@ -1348,8 +1378,8 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
     setSizeMode(newMode);
     if (newMode === "scale" && inputImageSize) {
       // Switch to scale mode - update dimensions based on current scale
-      const scaledWidth = Math.round(inputImageSize.width * scale / 64) * 64;
-      const scaledHeight = Math.round(inputImageSize.height * scale / 64) * 64;
+      const scaledWidth = Math.round(inputImageSize.width * scale / sizeSnap) * sizeSnap;
+      const scaledHeight = Math.round(inputImageSize.height * scale / sizeSnap) * sizeSnap;
       setParams({ ...params, width: scaledWidth, height: scaledHeight });
     }
   };
@@ -1371,6 +1401,77 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         localStorage.removeItem(INPUT_IMAGE_STORAGE_KEY);
       }
     }
+  };
+
+  // ── Extra conditioning images (video architectures) ──────────────────────
+  // The tabbed INPUT IMAGES card edits the same two slots the keyframe
+  // timeline draws, so both controls stay in sync by construction: there is no
+  // third copy of an image anywhere. Data URLs live in `params.keyframes` /
+  // `params.last_frame_image`; `keyframes` is deliberately excluded from the
+  // persisted params blob (see the save effect) so image bytes never enter the
+  // ~5 MB localStorage quota.
+  const anchorImage = (anchor: ExtraAnchor): string | null => {
+    if (anchor.kind === "last") return params.last_frame_image ?? null;
+    const image = params.keyframes?.[anchor.index]?.image;
+    return typeof image === "string" ? image : null;
+  };
+
+  const setAnchorImage = (anchor: ExtraAnchor, dataUrl: string) => {
+    if (anchor.kind === "last") {
+      setParams((prev) => ({ ...prev, last_frame_image: dataUrl }));
+      return;
+    }
+    setParams((prev) => ({
+      ...prev,
+      keyframes: (prev.keyframes ?? []).map((keyframe, index) =>
+        index === anchor.index ? { ...keyframe, image: dataUrl } : keyframe,
+      ),
+    }));
+  };
+
+  const removeAnchor = (anchor: ExtraAnchor) => {
+    if (anchor.kind === "last") {
+      setParams((prev) => ({ ...prev, last_frame_image: null }));
+    } else {
+      setParams((prev) => ({
+        ...prev,
+        keyframes: (prev.keyframes ?? []).filter((_k, index) => index !== anchor.index),
+      }));
+    }
+    setActiveInputTab("input");
+  };
+
+  /**
+   * Add an image as a new anchor and open its tab.
+   *
+   * On an architecture with keyframe PLACEMENT it becomes a `keyframes` entry
+   * on a free frame near the middle (the same free-frame search the timeline's
+   * own "Add keyframe" does, so two adds never collide); on one that only has
+   * the last-frame slot it fills that slot instead, because a `keyframes`
+   * entry would be accepted and dropped there.
+   */
+  const addAnchorImage = (dataUrl: string) => {
+    const lastIndex = Math.max(0, (params.num_frames ?? 124) - 1);
+    if (!supportsKeyframePlacement) {
+      setParams((prev) => ({ ...prev, last_frame_image: dataUrl }));
+      setActiveInputTab("last");
+      return;
+    }
+    const resolve = (requested: number) => (requested === -1 ? lastIndex : requested);
+    const taken = new Set<number>([
+      resolve(params.input_image_frame_index ?? 0),
+      ...(params.keyframes ?? []).map((keyframe) => resolve(keyframe.frame_index)),
+      ...(params.last_frame_image ? [lastIndex] : []),
+    ]);
+    let frame = Math.floor(lastIndex / 2);
+    while (frame < lastIndex && taken.has(frame)) frame += 1;
+    while (frame > 0 && taken.has(frame)) frame -= 1;
+    const nextIndex = (params.keyframes ?? []).length;
+    setParams((prev) => ({
+      ...prev,
+      keyframes: [...(prev.keyframes ?? []), { image: dataUrl, frame_index: frame }],
+    }));
+    setActiveInputTab(`kf-${nextIndex}`);
   };
 
   // Reference audio clip (aud2aud cover source). Kept in-memory only (a blob
@@ -2392,6 +2493,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
       setGeneratedImage(null);
       setGeneratedVideo(null);
       setGeneratedVideoInfo(null);
+      setGeneratedVideoSeed(null);
       setGeneratedAudio(null);
       setGeneratedAudioInfo(null);
       try {
@@ -2414,6 +2516,9 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
           fps: result.image.fps,
           duration: result.image.duration,
         });
+        // The seed the run actually used (-1 in the request means "pick one"),
+        // so the seed control's reuse button can pin it for the next run.
+        setGeneratedVideoSeed(getResultSeed(result));
         if (onImageGenerated) onImageGenerated(videoUrl);
         setIsGenerating(false);
         setProgress(0);
@@ -3597,6 +3702,126 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
     ),
   };
 
+  // ── INPUT IMAGES tabs ────────────────────────────────────────────────────
+  // One tab per conditioning image, in timeline order of the slots they live
+  // in: the input image first, then each `keyframes` entry, then the
+  // last-frame alias when it holds an image. Labels carry the frame the anchor
+  // is on so the tab strip and the timeline agree without cross-referencing.
+  const videoLastIndex = Math.max(0, (params.num_frames ?? 124) - 1);
+  const inputTabs: Array<{ id: string; label: string; anchor: ExtraAnchor | null }> = [
+    {
+      id: "input",
+      label: supportsKeyframePlacement
+        ? `Input · f${(params.input_image_frame_index ?? 0) === -1 ? videoLastIndex : (params.input_image_frame_index ?? 0)}`
+        : "Input",
+      anchor: null,
+    },
+    ...(params.keyframes ?? []).map((keyframe, index) => ({
+      id: `kf-${index}`,
+      label: `KF ${index + 1} · f${keyframe.frame_index === -1 ? videoLastIndex : keyframe.frame_index}`,
+      anchor: { kind: "keyframe" as const, index },
+    })),
+    ...(params.last_frame_image
+      ? [{ id: "last", label: "Last frame", anchor: { kind: "last" as const } }]
+      : []),
+  ];
+  // A removed tab must not leave the card blank: fall back to the input image.
+  const activeInputTabId = inputTabs.some((tab) => tab.id === activeInputTab)
+    ? activeInputTab
+    : "input";
+  const activeInputAnchor =
+    inputTabs.find((tab) => tab.id === activeInputTabId)?.anchor ?? null;
+  const loadedInputImageCount =
+    (inputImagePreview ? 1 : 0) +
+    (params.keyframes ?? []).filter((keyframe) => typeof keyframe.image === "string").length +
+    (params.last_frame_image ? 1 : 0);
+
+  /**
+   * The image drop zone, with every affordance the single input image has: a
+   * file picker, a Clear button, drag-and-drop, and DOUBLE-CLICK THROUGH TO
+   * THE PAINT EDITOR. Rendered once per tab so each anchor gets all of them --
+   * this is the same markup the single-image card used, parameterised by which
+   * slot it reads and writes.
+   */
+  const renderImageDropZone = (options: {
+    preview: string | null;
+    onFile: (file: File) => void;
+    onClear: () => void;
+    onEdit: () => void;
+    clearTitle: string;
+    emptyText: string;
+  }) => (
+    <div className="space-y-4">
+      <div className="flex gap-2">
+        <input
+          type="file"
+          accept="image/png,image/jpeg,image/jpg,image/webp"
+          onChange={(e) => {
+            const file = e.target.files?.[0];
+            if (file) options.onFile(file);
+            e.target.value = "";
+          }}
+          className="flex-1 block w-full text-sm text-gray-400
+            file:mr-4 file:py-2 file:px-4
+            file:rounded-lg file:border-0
+            file:text-sm file:font-medium
+            file:bg-blue-600 file:text-white
+            hover:file:bg-blue-700
+            file:cursor-pointer cursor-pointer"
+        />
+        {options.preview && (
+          <Button
+            onClick={options.onClear}
+            variant="secondary"
+            size="sm"
+            title={options.clearTitle}
+          >
+            Clear
+          </Button>
+        )}
+      </div>
+      <div
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          setIsDragging(false);
+          const file = e.dataTransfer.files?.[0];
+          if (file) options.onFile(file);
+        }}
+        onDoubleClick={() => {
+          if (options.preview) options.onEdit();
+        }}
+        className={`aspect-square bg-gray-800 rounded-lg overflow-hidden border-2 border-dashed transition-colors ${
+          isDragging
+            ? 'border-blue-500 bg-gray-700'
+            : 'border-gray-600'
+        } ${options.preview ? 'cursor-pointer' : ''}`}
+        title={options.preview ? "Double-click to edit image" : ""}
+      >
+        {options.preview ? (
+          <img
+            src={options.preview}
+            alt="Input"
+            className="w-full h-full object-contain"
+          />
+        ) : (
+          <div className="w-full h-full flex items-center justify-center">
+            <p className="text-gray-500 text-center px-4">
+              {isDragging ? 'Drop image here' : options.emptyText}
+            </p>
+          </div>
+        )}
+      </div>
+      {options.preview && (
+        <p className="text-xs text-gray-500 text-center">
+          💡 Double-click the image to edit with built-in paint tool
+        </p>
+      )}
+    </div>
+  );
+
   return (
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
       {/* Parameters Panel */}
@@ -3643,78 +3868,140 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
 
         {!isAudio && (
         <Card
-          title="Input Image"
+          title={multiImageInput ? "Input Images" : "Input Image"}
           collapsible={true}
           defaultCollapsed={true}
           storageKey="img2img_input_collapsed"
           collapsedPreview={
-            inputImagePreview ? (
+            multiImageInput ? (
+              loadedInputImageCount > 0 ? (
+                <span className="text-green-400 text-sm">
+                  ✓ {loadedInputImageCount} image{loadedInputImageCount > 1 ? "s" : ""}
+                </span>
+              ) : (
+                <span className="text-gray-500 text-sm">No images</span>
+              )
+            ) : inputImagePreview ? (
               <span className="text-green-400 text-sm">✓ Image loaded</span>
             ) : (
               <span className="text-gray-500 text-sm">No image</span>
             )
           }
         >
-          <div className="space-y-4">
-            <div className="flex gap-2">
-              <input
-                type="file"
-                accept="image/png,image/jpeg,image/jpg,image/webp"
-                onChange={handleImageUpload}
-                className="flex-1 block w-full text-sm text-gray-400
-                  file:mr-4 file:py-2 file:px-4
-                  file:rounded-lg file:border-0
-                  file:text-sm file:font-medium
-                  file:bg-blue-600 file:text-white
-                  hover:file:bg-blue-700
-                  file:cursor-pointer cursor-pointer"
-              />
-              {inputImagePreview && (
-                <Button
-                  onClick={handleClearInputImage}
-                  variant="secondary"
-                  size="sm"
-                  title="Clear input image"
+          {/* TAB STRIP -- only where the loaded architecture takes more than
+              one conditioning image (see multiImageInput). Each tab is one
+              anchor and gets the full set of affordances below. */}
+          {multiImageInput && (
+            <div className="mb-3 space-y-2">
+              <div className="flex flex-wrap items-center gap-1">
+                {inputTabs.map((tab) => (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    onClick={() => setActiveInputTab(tab.id)}
+                    className={`px-2 py-1 text-xs rounded transition-colors ${
+                      tab.id === activeInputTabId
+                        ? "bg-blue-600 text-white"
+                        : "bg-gray-700 text-gray-300 hover:bg-gray-600"
+                    }`}
+                  >
+                    {tab.label}
+                  </button>
+                ))}
+                <button
+                  type="button"
+                  disabled={!supportsKeyframePlacement && !!params.last_frame_image}
+                  onClick={() => addAnchorInputRef.current?.click()}
+                  className="px-2 py-1 text-xs rounded bg-gray-700 text-gray-300 hover:bg-gray-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                  title={
+                    supportsKeyframePlacement
+                      ? "Add another conditioning image (placed on a free frame; move it on the timeline)"
+                      : params.last_frame_image
+                        ? "This architecture conditions on the first and last frame only, and the last-frame slot is taken"
+                        : "Add the last-frame conditioning image"
+                  }
                 >
-                  Clear
-                </Button>
-              )}
-            </div>
-            <div
-              onDragOver={handleDragOver}
-              onDragLeave={handleDragLeave}
-              onDrop={handleDrop}
-              onDoubleClick={handleEditImage}
-              className={`aspect-square bg-gray-800 rounded-lg overflow-hidden border-2 border-dashed transition-colors ${
-                isDragging
-                  ? 'border-blue-500 bg-gray-700'
-                  : 'border-gray-600'
-              } ${inputImagePreview ? 'cursor-pointer' : ''}`}
-              title={inputImagePreview ? "Double-click to edit image" : ""}
-            >
-              {inputImagePreview ? (
-                <img
-                  src={inputImagePreview}
-                  alt="Input"
-                  className="w-full h-full object-contain"
+                  + Image
+                </button>
+                <input
+                  ref={addAnchorInputRef}
+                  type="file"
+                  accept="image/png,image/jpeg,image/jpg,image/webp"
+                  className="hidden"
+                  onChange={async (e) => {
+                    const file = e.target.files?.[0];
+                    e.target.value = "";
+                    if (!file) return;
+                    addAnchorImage(await toBase64(file));
+                  }}
                 />
-              ) : (
-                <div className="w-full h-full flex items-center justify-center">
-                  <p className="text-gray-500 text-center px-4">
-                    {isDragging
-                      ? 'Drop image here'
-                      : 'Drag and drop an image here or use the file picker above'}
-                  </p>
-                </div>
-              )}
-            </div>
-            {inputImagePreview && (
-              <p className="text-xs text-gray-500 text-center">
-                💡 Double-click the image to edit with built-in paint tool
+              </div>
+              <p className="text-xs text-gray-500">
+                {supportsKeyframePlacement
+                  ? "Every image here is one conditioning anchor pinned to one exact frame. Placement is on the Keyframes timeline below."
+                  : "The input image conditions the first frame; the last-frame image conditions the end of the clip."}
               </p>
-            )}
-          </div>
+            </div>
+          )}
+
+          {activeInputAnchor === null
+            ? renderImageDropZone({
+                preview: inputImagePreview,
+                onFile: processImageFile,
+                onClear: handleClearInputImage,
+                onEdit: handleEditImage,
+                clearTitle: "Clear input image",
+                emptyText: "Drag and drop an image here or use the file picker above",
+              })
+            : renderImageDropZone({
+                preview: anchorImage(activeInputAnchor),
+                onFile: async (file) => setAnchorImage(activeInputAnchor, await toBase64(file)),
+                onClear: () => removeAnchor(activeInputAnchor),
+                onEdit: () => setEditingExtraAnchor(activeInputAnchor),
+                clearTitle:
+                  activeInputAnchor.kind === "last"
+                    ? "Remove the last-frame image"
+                    : "Remove this keyframe",
+                emptyText: "Drag and drop an image here or use the file picker above",
+              })}
         </Card>
+        )}
+
+        {/* KEYFRAME PLACEMENT + the audio-conditioning lane, immediately after
+            INPUT IMAGES and above the prompt: these say WHERE the images that
+            were just uploaded land (and what soundtrack they are generated
+            against), so they belong with them rather than in the Video card's
+            sampler settings. Clip length and frame rate stay in the Video card
+            -- the timeline reads them and reports the resulting placement. */}
+        {isVideo && supportsKeyframePlacement && (
+          <Card title="Keyframes">
+            <MiniMaxH3KeyframeTimeline
+              numFrames={params.num_frames ?? 124}
+              frameRate={params.frame_rate ?? 24}
+              inputImage={inputImagePreview}
+              inputImageFrameIndex={params.input_image_frame_index ?? 0}
+              onInputImageFrameIndexChange={(frameIndex) =>
+                setParams({ ...params, input_image_frame_index: frameIndex })
+              }
+              keyframes={params.keyframes ?? []}
+              onKeyframesChange={(keyframes) => setParams({ ...params, keyframes })}
+              lastFrameImage={params.last_frame_image ?? null}
+              onLastFrameImageChange={(dataUrl) =>
+                setParams({ ...params, last_frame_image: dataUrl })
+              }
+              // The audio lane appears only where the architecture reads a
+              // track; passing no handler is what hides it.
+              inputAudio={supportsAudioConditioning ? inputAudioTrack : null}
+              onInputAudioChange={
+                supportsAudioConditioning ? setInputAudioTrack : undefined
+              }
+              // With the Audio toggle in the Video card off, nothing is muxed at
+              // all; the lane says so rather than describing an output file that
+              // will have no audio track.
+              audioEnabled={params.audio_enable !== false}
+              disabled={isGenerating}
+            />
+          </Card>
         )}
 
         {isAudio && (
@@ -3958,79 +4245,164 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
 
         {isVideo && (
           <Card title={`Video${loadedArchName ? ` (${loadedArchName})` : ""}`}>
-            <div className="grid grid-cols-2 gap-2">
-              <NumberInput
-                label="Width (÷32)"
-                value={params.width ?? 768}
-                onCommit={(v) => setParams({ ...params, width: v })}
-                min={32}
-                max={2048}
-                step={32}
-                parse="int"
-              />
-              <NumberInput
-                label="Height (÷32)"
-                value={params.height ?? 512}
-                onCommit={(v) => setParams({ ...params, height: v })}
-                min={32}
-                max={2048}
-                step={32}
-                parse="int"
-              />
-            </div>
+            {/* Resolution, in the image models' Parameters-card shape: a
+                labelled slider with a numeric entry beside it (common/Slider),
+                laid out in the same two-column grid, and the same
+                Absolute/Scale size mode -- scale derives width/height from the
+                uploaded image's own dimensions. Video snaps to 32 rather than
+                the image path's 64 (see sizeSnap). */}
+            <div className="space-y-4">
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <label className="block text-sm font-medium text-gray-300">
+                    Size Mode
+                  </label>
+                  <div className="flex gap-2">
+                    <Button
+                      onClick={() => handleSizeModeChange("absolute")}
+                      variant={sizeMode === "absolute" ? "primary" : "secondary"}
+                      size="sm"
+                    >
+                      Absolute
+                    </Button>
+                    <Button
+                      onClick={() => handleSizeModeChange("scale")}
+                      variant={sizeMode === "scale" ? "primary" : "secondary"}
+                      size="sm"
+                      disabled={!inputImageSize}
+                      title={!inputImageSize ? "Load an input image first" : ""}
+                    >
+                      Scale
+                    </Button>
+                  </div>
+                </div>
 
-            <Select
-              label={videoFrameLabel(archCapabilities, loadedArch)}
-              value={String(params.num_frames ?? 121)}
-              onChange={(e) => setParams({ ...params, num_frames: parseInt(e.target.value) })}
-              options={videoFrameOptions(archCapabilities, loadedArch, params.num_frames ?? null)}
-            />
+                {sizeMode === "absolute" ? (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <Slider
+                      label="Width (÷32)"
+                      min={32}
+                      max={2048}
+                      step={32}
+                      value={params.width ?? 768}
+                      onChange={(e) => setParams({ ...params, width: parseInt(e.target.value) })}
+                    />
+                    <Slider
+                      label="Height (÷32)"
+                      min={32}
+                      max={2048}
+                      step={32}
+                      value={params.height ?? 512}
+                      onChange={(e) => setParams({ ...params, height: parseInt(e.target.value) })}
+                    />
+                  </div>
+                ) : (
+                  <div>
+                    <Slider
+                      label={`Scale (${params.width}x${params.height})`}
+                      min={0.25}
+                      max={4.0}
+                      step={0.25}
+                      value={scale}
+                      onChange={(e) => handleScaleChange(parseFloat(e.target.value))}
+                    />
+                    {inputImageSize && (
+                      <p className="text-xs text-gray-500 mt-1">
+                        Original: {inputImageSize.width}x{inputImageSize.height} · rounded to a
+                        multiple of 32
+                      </p>
+                    )}
+                  </div>
+                )}
+              </div>
 
-            <NumberInput
-              label="Frame Rate (fps)"
-              value={params.frame_rate ?? 24.0}
-              onCommit={(v) => setParams({ ...params, frame_rate: v })}
-              min={1}
-              max={60}
-              step={1}
-              parse="float"
-            />
+              <Select
+                label={videoFrameLabel(archCapabilities, loadedArch)}
+                value={String(params.num_frames ?? 121)}
+                onChange={(e) => setParams({ ...params, num_frames: parseInt(e.target.value) })}
+                options={videoFrameOptions(archCapabilities, loadedArch, params.num_frames ?? null)}
+              />
 
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mt-2">
-              <NumberInput
-                label="Steps"
-                value={params.num_inference_steps ?? 8}
-                onCommit={(v) => setParams({ ...params, num_inference_steps: v })}
-                min={1}
-                max={100}
-                step={1}
-                parse="int"
-              />
-              {/* Guidance: hidden on an architecture that declares it
-                  unsupported (MiniMax-H3 is guidance-distilled — it has no
-                  guider and no unconditional branch, so the sampler takes no
-                  scale at all). Driven by the capability matrix, not by an arch
-                  name kept here. */}
-              {supportsCfg && (
-              <NumberInput
-                label="Guidance Scale"
-                value={params.guidance_scale ?? 1.0}
-                onCommit={(v) => setParams({ ...params, guidance_scale: v })}
-                min={0}
-                max={20}
-                step={0.1}
-                parse="float"
-              />
-              )}
-              <Input
-                type="number"
-                label="Seed"
-                value={params.seed ?? -1}
-                onChange={(e) => {
-                  const parsed = parseInt(e.target.value);
-                  setParams({ ...params, seed: Number.isNaN(parsed) ? -1 : parsed });
-                }}
-              />
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <Slider
+                  label="Steps"
+                  min={1}
+                  max={100}
+                  step={1}
+                  value={params.num_inference_steps ?? 8}
+                  onChange={(e) => setParams({ ...params, num_inference_steps: parseInt(e.target.value) })}
+                />
+                <Slider
+                  label="Frame Rate (fps)"
+                  min={1}
+                  max={60}
+                  step={1}
+                  value={params.frame_rate ?? 24.0}
+                  onChange={(e) => setParams({ ...params, frame_rate: parseFloat(e.target.value) })}
+                />
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                {/* Guidance: hidden on an architecture that declares it
+                    unsupported (MiniMax-H3 is guidance-distilled — it has no
+                    guider and no unconditional branch, so the sampler takes no
+                    scale at all). Driven by the capability matrix, not by an
+                    arch name kept here. */}
+                {supportsCfg && (
+                  <Slider
+                    label="Guidance Scale"
+                    min={0}
+                    max={20}
+                    step={0.1}
+                    value={params.guidance_scale ?? 1.0}
+                    onChange={(e) => setParams({ ...params, guidance_scale: parseFloat(e.target.value) })}
+                  />
+                )}
+                {/* Seed: the image path's control, verbatim -- a labelled
+                    number field plus randomise / reset-to--1 / reuse-the-
+                    preview's-seed. */}
+                <div>
+                  <label className="block text-sm font-medium text-gray-300 mb-1">
+                    Seed
+                  </label>
+                  <div className="flex gap-2">
+                    <Input
+                      type="number"
+                      value={params.seed ?? -1}
+                      onChange={(e) => {
+                        const parsed = parseInt(e.target.value);
+                        setParams({ ...params, seed: Number.isNaN(parsed) ? -1 : parsed });
+                      }}
+                      className="flex-1 min-w-0"
+                    />
+                    <Button
+                      onClick={() => setParams({ ...params, seed: Math.floor(Math.random() * 2147483647) })}
+                      variant="secondary"
+                      size="sm"
+                      title="Random seed"
+                    >
+                      🎲
+                    </Button>
+                    <Button
+                      onClick={() => setParams({ ...params, seed: -1 })}
+                      variant="secondary"
+                      size="sm"
+                      title="Reset to random (-1)"
+                    >
+                      -1
+                    </Button>
+                    <Button
+                      onClick={() => generatedVideoSeed !== null && setParams({ ...params, seed: generatedVideoSeed })}
+                      variant="secondary"
+                      size="sm"
+                      title="Use seed from the result video"
+                      disabled={generatedVideoSeed === null}
+                    >
+                      ♻️
+                    </Button>
+                  </div>
+                </div>
+              </div>
             </div>
 
             <label className="flex items-center gap-2 cursor-pointer mt-2">
@@ -4043,84 +4415,14 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
               <span className="text-gray-300 text-sm">Audio</span>
             </label>
 
-            {/* Keyframe PLACEMENT: the timeline, on an architecture that
-                honors per-anchor frame indices (MiniMax-H3). It subsumes the
-                last-frame box below, rendering that anchor as its "last" chip,
-                so the two are mutually exclusive. */}
-            {supportsKeyframePlacement && (
-              <MiniMaxH3KeyframeTimeline
-                numFrames={params.num_frames ?? 124}
-                frameRate={params.frame_rate ?? 24}
-                inputImage={inputImagePreview}
-                inputImageFrameIndex={params.input_image_frame_index ?? 0}
-                onInputImageFrameIndexChange={(frameIndex) =>
-                  setParams({ ...params, input_image_frame_index: frameIndex })
-                }
-                keyframes={params.keyframes ?? []}
-                onKeyframesChange={(keyframes) => setParams({ ...params, keyframes })}
-                lastFrameImage={params.last_frame_image ?? null}
-                onLastFrameImageChange={(dataUrl) =>
-                  setParams({ ...params, last_frame_image: dataUrl })
-                }
-                // The audio lane appears only where the architecture reads a
-                // track; passing no handler is what hides it.
-                inputAudio={supportsAudioConditioning ? inputAudioTrack : null}
-                onInputAudioChange={
-                  supportsAudioConditioning ? setInputAudioTrack : undefined
-                }
-                // With the Audio toggle above off, nothing is muxed at all; the
-                // lane says so rather than describing an output file that will
-                // have no audio track.
-                audioEnabled={params.audio_enable !== false}
-                disabled={isGenerating}
-              />
-            )}
-
-            {/* Optional LAST-frame keyframe. Rendered only on an architecture
-                that conditions on both ends of the clip: LTX-2.3 declares
-                `last_frame_image` unsupported (first frame only), MiniMax-H3
-                reads it as one of its `fl2va` anchors. Capability-driven, so
-                the arch list stays in the backend table. */}
-            {supportsLastFrame && !supportsKeyframePlacement && (
-              <div className="mt-3 space-y-2">
-                <label className="block text-sm font-medium text-gray-300">
-                  Last Frame (optional)
-                </label>
-                <p className="text-xs text-gray-400">
-                  The uploaded image above is the first frame. Adding one here
-                  conditions the end of the clip as well.
-                </p>
-                <div className="flex items-center gap-2">
-                  <input
-                    type="file"
-                    accept="image/*"
-                    onChange={async (e) => {
-                      const file = e.target.files?.[0];
-                      if (!file) return;
-                      const dataUrl = await toBase64(file);
-                      setParams({ ...params, last_frame_image: dataUrl });
-                    }}
-                    className="text-xs text-gray-300"
-                  />
-                  {params.last_frame_image && (
-                    <button
-                      onClick={() => setParams({ ...params, last_frame_image: null })}
-                      className="px-2 py-1 text-xs bg-gray-700 hover:bg-gray-600 rounded"
-                    >
-                      Clear
-                    </button>
-                  )}
-                </div>
-                {params.last_frame_image && (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img
-                    src={params.last_frame_image}
-                    alt="Last frame keyframe"
-                    className="max-h-32 rounded border border-gray-700"
-                  />
-                )}
-              </div>
-            )}
+            {/* The keyframe timeline and the optional last-frame image used to
+                live here. Both are now anchors of the INPUT IMAGES card and
+                its Keyframes timeline, directly above the prompt: the images
+                and where they land belong together, and the last-frame slot is
+                one of those anchors (the timeline's "last" chip, or the "Last
+                frame" tab on an architecture that has the slot without
+                per-anchor placement). This card keeps the clip settings the
+                timeline reads: resolution, length, frame rate, steps. */}
 
             {/* Factual notes from MiniMax's own release documentation (README +
                 prompt-writing guide + the reproducible request scripts). No
@@ -5072,6 +5374,21 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
           imageUrl={inputImagePreview}
           onSave={handleSaveEditedImage}
           onClose={() => setIsEditingImage(false)}
+        />
+      )}
+
+      {/* Image Editor Overlay for the EXTRA conditioning images (keyframes /
+          last frame). Same editor and the same double-click entry point the
+          input image has; it writes the edited data URL straight back into the
+          slot the tab is bound to. */}
+      {editingExtraAnchor && anchorImage(editingExtraAnchor) && (
+        <ImageEditor
+          imageUrl={anchorImage(editingExtraAnchor)!}
+          onSave={(editedImageUrl) => {
+            setAnchorImage(editingExtraAnchor, editedImageUrl);
+            setEditingExtraAnchor(null);
+          }}
+          onClose={() => setEditingExtraAnchor(null)}
         />
       )}
 

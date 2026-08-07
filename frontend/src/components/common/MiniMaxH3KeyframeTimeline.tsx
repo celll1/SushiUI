@@ -10,9 +10,16 @@ import { MiniMaxH3Keyframe, toBase64 } from "@/utils/api";
  * Each anchor is an image pinned to ONE EXACT PIXEL FRAME of the generated
  * clip: the packed sequence's time axis is pixel-frame time, so a frame index
  * has an exact rotary coordinate and there is nothing to snap an anchor to.
- * The addressable unit is therefore the integer frame, and this control never
- * draws a continuous slider — placement the model does not have must not be
- * implied by the UI.
+ * The addressable unit is therefore the integer frame.
+ *
+ * DRAGGING IS DISCRETE. A marker can be dragged along the track and the track
+ * looks slider-like, but the pointer position is rounded to a whole frame on
+ * every move, the marker snaps to that frame's position rather than following
+ * the cursor, and the frame number it lands on is drawn on the marker. Arrow
+ * keys step it by exactly one frame. So the interaction is a picker over
+ * `lastIndex + 1` positions, not a continuous scrubber: the UI must not imply
+ * sub-frame placement the model does not have. The numeric entry below the
+ * track stays authoritative and editable for the same reason.
  *
  * WHAT THE THREE STORAGE SLOTS ARE (they are not redundant):
  *
@@ -86,6 +93,9 @@ interface Chip {
   editable: boolean;
 }
 
+/** Half the marker thumbnail's width (w-14 = 56px), in px. */
+const MARKER_HALF_PX = 28;
+
 function resolveFrame(requested: number, numFrames: number): number {
   return requested === -1 ? Math.max(0, numFrames - 1) : requested;
 }
@@ -107,6 +117,11 @@ export default function MiniMaxH3KeyframeTimeline({
 }: MiniMaxH3KeyframeTimelineProps) {
   const fileInput = useRef<HTMLInputElement>(null);
   const audioInput = useRef<HTMLInputElement>(null);
+  const trackRef = useRef<HTMLDivElement>(null);
+  // The marker currently being dragged, by chip key. Only one at a time; the
+  // pointer is captured by the marker itself so the drag survives leaving the
+  // track's box.
+  const [dragKey, setDragKey] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   // Duration of the picked file, read from an <audio> element rather than
   // decoded: it is only used to tell the user whether the track is long enough
@@ -115,6 +130,24 @@ export default function MiniMaxH3KeyframeTimeline({
   const lastIndex = Math.max(0, numFrames - 1);
   const fps = frameRate > 0 ? frameRate : 24;
   const clipSeconds = numFrames / fps;
+
+  // Frame 0 and the last frame are drawn HALF A MARKER inside the track's box,
+  // so an anchor at either end is fully visible instead of hanging outside the
+  // card. The drag mapping below uses the same inset, so the frame the pointer
+  // resolves to is the frame the marker is drawn on.
+  const markerLeft = (percent: number) =>
+    `calc(${MARKER_HALF_PX}px + (100% - ${MARKER_HALF_PX * 2}px) * ${percent / 100})`;
+
+  /** Pointer x -> the WHOLE frame it is nearest. Never returns a fraction. */
+  const frameFromClientX = (clientX: number): number => {
+    const el = trackRef.current;
+    if (!el || lastIndex <= 0) return 0;
+    const rect = el.getBoundingClientRect();
+    const usable = rect.width - MARKER_HALF_PX * 2;
+    if (usable <= 0) return 0;
+    const ratio = (clientX - rect.left - MARKER_HALF_PX) / usable;
+    return Math.max(0, Math.min(lastIndex, Math.round(ratio * lastIndex)));
+  };
 
   useEffect(() => {
     if (!inputAudio) {
@@ -282,19 +315,100 @@ export default function MiniMaxH3KeyframeTimeline({
       />
 
       {/* The track. Positions are exact frames, so the markers sit at
-          frame/lastIndex and carry the frame number itself. */}
-      <div className="relative h-6 rounded bg-gray-800 border border-gray-700">
-        {chips.map((chip) => (
-          <div
-            key={chip.key}
-            className="absolute top-0 h-full w-[2px] bg-blue-400"
-            style={{ left: `${lastIndex > 0 ? (chip.frame / lastIndex) * 100 : 0}%` }}
-            title={`${chip.label} @ frame ${chip.frame}`}
-          />
-        ))}
-        <span className="absolute right-1 top-0 text-[10px] leading-6 text-gray-400">
+          frame/lastIndex and carry the frame number itself. Each marker is a
+          drag handle whose position is rounded to a whole frame on every
+          pointer move (see the discrete-dragging note at the top of the file);
+          the thumbnail rides with it so an anchor is identifiable where it
+          sits. */}
+      <div
+        ref={trackRef}
+        className="relative h-20 rounded bg-gray-800 border border-gray-700 select-none"
+      >
+        {/* Baseline the markers stand on. */}
+        <div className="absolute left-0 right-0 bottom-6 h-[2px] bg-gray-600" />
+        <span className="absolute right-1 bottom-1 text-[10px] text-gray-400">
           {numFrames} frames · {(numFrames / fps).toFixed(2)}s
         </span>
+        <span className="absolute left-1 bottom-1 text-[10px] text-gray-500">
+          frame 0
+        </span>
+        {chips.map((chip) => {
+          const percent = lastIndex > 0 ? (chip.frame / lastIndex) * 100 : 0;
+          const draggable = !disabled && chip.editable && chip.requested !== -1;
+          return (
+            <div
+              key={chip.key}
+              className="absolute bottom-6 -translate-x-1/2 flex flex-col items-center"
+              style={{ left: markerLeft(percent) }}
+            >
+              <div
+                role={draggable ? "slider" : undefined}
+                tabIndex={draggable ? 0 : -1}
+                aria-label={draggable ? `${chip.label} frame` : undefined}
+                aria-valuemin={draggable ? 0 : undefined}
+                aria-valuemax={draggable ? lastIndex : undefined}
+                aria-valuenow={draggable ? chip.frame : undefined}
+                title={
+                  draggable
+                    ? `${chip.label} @ frame ${chip.frame} — drag along the track, or use the arrow keys, to move it one whole frame at a time`
+                    : `${chip.label} @ frame ${chip.frame} (pinned to the end of the clip)`
+                }
+                className={`relative rounded border ${
+                  dragKey === chip.key ? "border-blue-400" : "border-gray-600"
+                } ${draggable ? "cursor-grab active:cursor-grabbing" : "cursor-default"} ${
+                  draggable ? "focus:outline-none focus:ring-2 focus:ring-blue-500" : ""
+                } bg-gray-900 overflow-hidden`}
+                onPointerDown={(e) => {
+                  if (!draggable) return;
+                  e.preventDefault();
+                  e.currentTarget.setPointerCapture(e.pointerId);
+                  setDragKey(chip.key);
+                  setNotice(null);
+                }}
+                onPointerMove={(e) => {
+                  if (dragKey !== chip.key) return;
+                  const frame = frameFromClientX(e.clientX);
+                  if (frame !== chip.requested) setFrame(chip.source, frame);
+                }}
+                onPointerUp={(e) => {
+                  if (dragKey !== chip.key) return;
+                  e.currentTarget.releasePointerCapture(e.pointerId);
+                  setDragKey(null);
+                }}
+                onPointerCancel={() => setDragKey(null)}
+                onKeyDown={(e) => {
+                  if (!draggable) return;
+                  const delta =
+                    e.key === "ArrowLeft" ? -1 : e.key === "ArrowRight" ? 1 : 0;
+                  if (delta === 0) return;
+                  e.preventDefault();
+                  setFrame(
+                    chip.source,
+                    Math.max(0, Math.min(lastIndex, chip.frame + delta)),
+                  );
+                }}
+              >
+                {chip.image ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    src={chip.image}
+                    alt={chip.label}
+                    draggable={false}
+                    className="h-9 w-14 object-cover pointer-events-none"
+                  />
+                ) : (
+                  <span className="block h-9 w-14 bg-gray-800" />
+                )}
+              </div>
+              {/* The exact frame the anchor is on, drawn under the marker so a
+                  drag never has to be interpreted from a pixel position. */}
+              <span className="mt-0.5 text-[10px] leading-3 text-gray-300 bg-gray-900/80 px-1 rounded">
+                {chip.requested === -1 ? `end (${chip.frame})` : chip.frame}
+              </span>
+              <span className="h-2 w-[2px] bg-blue-400" />
+            </div>
+          );
+        })}
       </div>
 
       <div className="space-y-1">
@@ -452,9 +566,12 @@ export default function MiniMaxH3KeyframeTimeline({
 
       <div className="text-xs text-gray-400 space-y-1">
         <div>
-          Anchors are placed on exact frames ({fps} fps). Clip length must be
-          17n+5 frames; the server snaps an invalid length and warns, and
-          &quot;pin to end&quot; follows whatever length that produces.
+          Anchors are placed on exact frames ({fps} fps): drag a marker along
+          the track (or focus it and use the arrow keys) and it snaps to a whole
+          frame — there is no sub-frame placement — or type the frame directly
+          below. Clip length must be 17n+5 frames; the server snaps an invalid
+          length and warns, and &quot;pin to end&quot; follows whatever length
+          that produces.
         </div>
         <div>
           The released MiniMax-H3 weights are documented for first- and

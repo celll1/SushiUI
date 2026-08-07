@@ -1688,7 +1688,7 @@ class BaseTrainer(ABC):
         # Align to the ARCH's pixel requirement, not just the VAE /8: patchified
         # DiTs (anima/lens/krea2/flux2/zimage/minit2i/ideogram4) require /16 and
         # assert on non-conforming dims (see ArchHandler.pixel_align). SD/SDXL = 8.
-        align = int(getattr(getattr(self, "arch", None), "pixel_align", 8))
+        align = self._arch_pixel_align()
         nb_base = max(int(r) for r in active_base_resolutions)
         nb_max_area = nb_base * nb_base
         for item, dataset in all_items:
@@ -7189,6 +7189,51 @@ class BaseTrainer(ABC):
         """Token for the arch's clip-record audio preprocessing chain (cache key)."""
         return getattr(getattr(self, "arch", None), "clip_audio_prep_version", None)
 
+    def _arch_pixel_align(self) -> int:
+        """The multiple every STILL canvas dimension must be a multiple of.
+
+        One reader for the three places that need it: the still `BucketManager`,
+        the one-time base-area fit and the per-epoch re-fit. They were three
+        separate expressions and the bucket one was a hardcoded `8`, which is the
+        only value that is wrong for a patchified DiT: at base 640, 37 of the 42
+        generated buckets are not /32 and 29 are not /16, and a 1120x360 image
+        gives MiniMax-H3 an odd latent height that `patchify_video_latents`
+        refuses -- mid-run, after the whole caching pass.
+
+        SD/SDXL declare 8, so their bucket lists are unchanged; 512 and 1024
+        generate an identical list under any of 8/16/32 in any case.
+        """
+        return int(getattr(getattr(self, "arch", None), "pixel_align", 8))
+
+    @staticmethod
+    def _still_latent_5d_is_valid(latent, width: int, height: int) -> bool:
+        """Is this cached 5D STILL latent ``[1, C, 1, H/vsf, W/vsf]`` this bucket's?
+
+        A video arch routes a still through the same 5D ``train_step`` as a clip
+        (``ltx2_ops.vae_encode`` / ``minimax_h3_ops.vae_encode``, T=1), so its
+        cached record carries a TEMPORAL axis at index 2. The generic 4D check
+        compares that axis against ``height // 8`` and mismatches on EVERY still
+        (1 != 48 at 384), so the loop needs a 5D-aware predicate rather than a
+        blanket skip.
+
+        The spatial factor is per-arch (MiniMax-H3 /16, LTX-2.3 /32) and is not
+        declared anywhere this loop can read, so what is checked is what is
+        knowable: exactly one latent frame, and both axes reduced from THIS
+        bucket's canvas by the SAME integer factor. That still catches the case
+        the branch exists for -- a record cached at a different bucket -- because
+        a stale ``(lh, lw)`` does not generally divide the new canvas evenly by
+        one common factor (e.g. a 512x768 H3 record against a 384x640 bucket:
+        384 % 32 == 0 but 640 % 48 != 0).
+        """
+        if getattr(latent, "ndim", 0) != 5 or int(latent.shape[2]) != 1:
+            return False
+        lh, lw = int(latent.shape[3]), int(latent.shape[4])
+        if lh <= 0 or lw <= 0:
+            return False
+        if int(height) % lh or int(width) % lw:
+            return False
+        return (int(height) // lh) == (int(width) // lw)
+
     def _regenerate_single_latent(
         self,
         image_path: str,
@@ -7230,7 +7275,18 @@ class BaseTrainer(ABC):
             transformer_device = next(self.transformer.parameters()).device
             text_encoder_device = next(self.text_encoder.parameters()).device
         else:
-            unet_device = next(self.unet.parameters()).device
+            # NOT `self.unet`: every DiT arch leaves it None (see e.g.
+            # minimax_h3_ops.load_components), so the bare attribute access turns
+            # this FALLBACK -- reached from a cache warning, i.e. a path that is
+            # meant to recover -- into an uncaught
+            # `AttributeError: 'NoneType' object has no attribute 'parameters'`.
+            # `_main_model_module()` is the existing shared resolver
+            # (Transformer for DiT archs, U-Net otherwise) and mirrors
+            # move_main_model_to_cpu/gpu, so the offload below moves the module
+            # that is actually resident.
+            main_module = self._main_model_module()
+            unet_device = (next(main_module.parameters()).device
+                           if main_module is not None else None)
             if self.text_encoder:
                 text_encoder_device = next(self.text_encoder.parameters()).device
             if self.is_sdxl and self.text_encoder_2:
@@ -7248,9 +7304,9 @@ class BaseTrainer(ABC):
                     print(f"{self.log_prefix} [Latent Regeneration] Moving Text Encoder to CPU...")
                     self.text_encoder.to('cpu')
             else:
-                if unet_device != torch.device('cpu'):
-                    print(f"{self.log_prefix} [Latent Regeneration] Moving U-Net to CPU...")
-                    self.unet.to('cpu')
+                if main_module is not None and unet_device != torch.device('cpu'):
+                    print(f"{self.log_prefix} [Latent Regeneration] Moving main model to CPU...")
+                    main_module.to('cpu')
                 if self.text_encoder and text_encoder_device != torch.device('cpu'):
                     print(f"{self.log_prefix} [Latent Regeneration] Moving Text Encoder to CPU...")
                     self.text_encoder.to('cpu')
@@ -7293,8 +7349,8 @@ class BaseTrainer(ABC):
                 if text_encoder_device != torch.device('cpu'):
                     self.text_encoder.to(text_encoder_device)
             else:
-                if unet_device != torch.device('cpu'):
-                    self.unet.to(unet_device)
+                if main_module is not None and unet_device != torch.device('cpu'):
+                    main_module.to(unet_device)
                 if self.text_encoder and text_encoder_device != torch.device('cpu'):
                     self.text_encoder.to(text_encoder_device)
                 if self.is_sdxl and self.text_encoder_2 and text_encoder_2_device != torch.device('cpu'):
@@ -8086,14 +8142,18 @@ class BaseTrainer(ABC):
             # Enable reference separation when use_reference_images is enabled for FLUX.2
             separate_by_reference = use_reference_images and self.is_flux2
 
+            # Align to the ARCH's pixel requirement, not a hardcoded /8 -- the
+            # same read the two NO-bucketing fit paths already do. See
+            # `_arch_pixel_align` for the measured reason.
+            _bucket_align = self._arch_pixel_align()
             bucket_manager = BucketManager(
                 base_resolutions=base_resolutions,
-                divisibility=8,
+                divisibility=_bucket_align,
                 strategy=bucket_strategy,
                 multi_resolution_mode=multi_resolution_mode,
                 separate_by_reference=separate_by_reference
             )
-            print(f"{self.log_prefix} Bucketing enabled: base_resolutions={base_resolutions}, strategy={bucket_strategy}, mode={multi_resolution_mode}")
+            print(f"{self.log_prefix} Bucketing enabled: base_resolutions={base_resolutions}, strategy={bucket_strategy}, mode={multi_resolution_mode}, divisibility={_bucket_align}")
             if separate_by_reference:
                 print(f"{self.log_prefix} Reference separation enabled: batches will be separated by reference image availability")
         else:
@@ -8457,7 +8517,7 @@ class BaseTrainer(ABC):
             # Align to the ARCH's pixel requirement, not just the VAE /8: patchified
             # DiTs (anima/lens/krea2/flux2/zimage/minit2i/ideogram4) require /16 and
             # assert on non-/16 dims (see ArchHandler.pixel_align). SD/SDXL = 8.
-            _nb_align = int(getattr(getattr(self, "arch", None), "pixel_align", 8))
+            _nb_align = self._arch_pixel_align()
             _nb_base = max(int(r) for r in _nb_res)
             _nb_max_area = _nb_base * _nb_base
             _nb_clamped = 0
@@ -10319,6 +10379,20 @@ class BaseTrainer(ABC):
                                     if latent.ndim != 3 or latent.shape[1] != expected_seq_len or latent.shape[2] != 64:
                                         print(f"{self.log_prefix} WARNING: Krea 2 latent shape mismatch for {item['image_path']}")
                                         print(f"{self.log_prefix}   Expected: [1, {expected_seq_len}, 64]  Got: {list(latent.shape)}")
+                                        print(f"{self.log_prefix}   Regenerating latent...")
+                                        latent = self._regenerate_single_latent(item["image_path"], width, height, cache, latent_caches)
+                                elif latent.ndim == 5:
+                                    # A VIDEO arch's STILL: [1, C, 1, H/vsf, W/vsf].
+                                    # LTX-2.3 and MiniMax-H3 route a still through the
+                                    # SAME 5D train_step as a clip (T=1), so its cached
+                                    # latent has a TEMPORAL axis at index 2 -- which the
+                                    # 4D check below compares against `height // 8`,
+                                    # mismatching every single time (1 != 48 at 384) and
+                                    # sending a perfectly good latent into
+                                    # `_regenerate_single_latent` on the first batch.
+                                    if not self._still_latent_5d_is_valid(latent, width, height):
+                                        print(f"{self.log_prefix} WARNING: 5D still-latent shape mismatch for {item['image_path']}")
+                                        print(f"{self.log_prefix}   Expected: [1, C, 1, {height}/vsf, {width}/vsf]  Got: {list(latent.shape)}")
                                         print(f"{self.log_prefix}   Regenerating latent...")
                                         latent = self._regenerate_single_latent(item["image_path"], width, height, cache, latent_caches)
                                 elif not (self.is_lens or self.is_ideogram4):

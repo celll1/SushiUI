@@ -487,6 +487,30 @@ def _cached_audio_stream(trainer, video_path: str) -> Optional[bytes]:
     return wav_bytes
 
 
+def _pixels_from_pil(image, expect_h: int, expect_w: int) -> Optional[torch.Tensor]:
+    """``PIL.Image`` -> fp32 ``[1, 3, H, W]`` in ``[-1, 1]``.
+
+    VERBATIM the arithmetic ``BaseTrainer.encode_image`` uses to build the tensor
+    it then down-casts (``np.array(img).astype(float32) / 255`` then
+    ``(x - 0.5) * 2``), NOT an equivalent rearrangement — the point is to obtain
+    the same numbers at full precision, and `x*2 - 1` rounds differently.
+
+    Returns ``None`` (caller keeps the staged tensor) if the image does not match
+    the expected canvas, so a caller that resized outside ``encode_image`` can
+    never have its geometry silently replaced.
+    """
+    try:
+        import numpy as np
+
+        arr = np.array(image.convert("RGB")).astype(np.float32) / 255.0
+        arr = (arr - 0.5) * 2.0
+        if arr.shape[0] != int(expect_h) or arr.shape[1] != int(expect_w):
+            return None
+        return torch.from_numpy(arr).permute(2, 0, 1).unsqueeze(0)
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def vae_encode(trainer, image_tensor, *, image=None, width=None, height=None,
                vae_device=None, debug_preprocessing=False):
     """Still-image encode — ``[1, 3, H, W]`` in ``[-1, 1]`` -> ``[1, 24, 1, H/16, W/16]``.
@@ -497,7 +521,19 @@ def vae_encode(trainer, image_tensor, *, image=None, width=None, height=None,
     ``vae_encode_clip`` at ``T = 1``; the two must not drift apart, because a
     still's latent and a clip's latent frame 0 are meant to be the same object.
 
-    They MEASURABLY are. The encoder is causal with ``frame_pre_padding = 3`` and
+    They measurably are, and this branch takes one extra step so that the claim
+    holds THROUGH THE SHIPPED PATH and not merely when called with fp32 pixels.
+    ``BaseTrainer.encode_image`` builds the ``[-1, 1]`` tensor in fp32 and then
+    casts it to ``vae_dtype`` (fp16 for this arch) BEFORE dispatching here, while
+    ``vae_encode_clip`` is handed fp32 pixels by the video loader. Remapping an
+    already-fp16-rounded pixel therefore differs from remapping the fp32 one by
+    ~5e-4 relative — the same order as the agreement being claimed, which would
+    make the claim untestable. ``encode_image`` also passes the FINAL (cropped,
+    resized) PIL image, so the fp32 tensor is rebuilt from it here with
+    ``encode_image``'s own arithmetic and the two paths run identical inputs.
+    When no ``image`` is supplied (a direct caller), the given tensor is used.
+
+    The encoder is causal with ``frame_pre_padding = 3`` and
     ``temporal_compression_ratio = 4``, so latent frame 0 covers
     ``(pad, pad, pad, frame0)`` — a pure function of pixel frame 0 — and this
     branch computes precisely that quantity. Encoding a still and taking latent
@@ -528,11 +564,17 @@ def vae_encode(trainer, image_tensor, *, image=None, width=None, height=None,
     dev = vae_device if vae_device is not None else next(vae.parameters()).device
     vae_dtype = next(vae.parameters()).dtype
 
+    px = image_tensor
+    if image is not None and px.dtype != torch.float32:
+        px32 = _pixels_from_pil(image, px.shape[-2], px.shape[-1])
+        if px32 is not None:
+            px = px32.to(device=px.device)
+
     pix_mean = torch.tensor(list(trainer.minimax_h3_pixel_mean),
-                            dtype=torch.float32, device=image_tensor.device).view(1, -1, 1, 1)
+                            dtype=torch.float32, device=px.device).view(1, -1, 1, 1)
     pix_std = torch.tensor(list(trainer.minimax_h3_pixel_std),
-                           dtype=torch.float32, device=image_tensor.device).view(1, -1, 1, 1)
-    x = ((image_tensor.float() + 1.0) / 2.0 - pix_mean) / pix_std   # [1, 3, H, W]
+                           dtype=torch.float32, device=px.device).view(1, -1, 1, 1)
+    x = ((px.float() + 1.0) / 2.0 - pix_mean) / pix_std             # [1, 3, H, W]
     x = x.unsqueeze(2)                                              # [1, 3, 1, H, W]
     with torch.no_grad():
         z = vae.encode(x.to(device=dev, dtype=vae_dtype)).latent_dist.mode()

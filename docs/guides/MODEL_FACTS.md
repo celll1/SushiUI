@@ -732,8 +732,9 @@ a generation without style transfer.
     activations), not optimizer-excluded. Requires `blocks_to_swap == 0`;
     mutually exclusive with TREAD and with stochastic-depth (`block_skip_rate`).
 - **minimax_h3** — Joint video+audio generation (`t2va` from a prompt, `fl2va`
-  from keyframes placed at named frames, `ref2va` from an ordered list of image,
-  video and audio references), plus temporal outpaint. Second video arch,
+  from keyframes placed at named frames and/or an audio track the video is
+  generated against, `ref2va` from an ordered list of image, video and audio
+  references), plus temporal outpaint. Second video arch,
   loaded and routed separately from the image-model detection like ltx2. The
   denoise loop is repo-owned (`core/models/minimax_h3/h3_pipeline_ops.py`) —
   upstream ships a Modular pipeline only — over vendored, frozen model classes
@@ -799,6 +800,72 @@ a generation without style transfer.
       That is a change of rule from "the packed-first anchor is stretched", and
       it leaves video outpaint's own anchors untouched because they arrive
       already at `(width, height)` from `center_crop_resize_frames`.
+  - **An uploaded audio track can drive the video (ia2v), whole clip only, and
+    that is measured rather than documented.** `AUDIO_COND_TIMESTEP` is 1.0 and
+    the forward process is `x_t = t·x0 + (1−t)·noise`, so an audio row supplied
+    at t = 1 is **exactly clean** — the literal analogue of the outside of an
+    i2i mask. The generated clip's own audio rows already sit on the target's
+    rotary clock, so pinning the whole track needs **no layout change at all**:
+    `build_packed_layout(pin_target_audio=True)` moves
+    `num_condition_audio_rows` from 0 to every audio row, `build_row_timesteps`
+    pins them, and `denoise` is left an empty slice to write. Exposed as
+    `POST /generate/img2vid`'s `input_audio`.
+    - **What was measured**, against the pre-registered A2 criterion (own-track
+      flow-energy correlation beats the other track's in ≥ 3 of 4 arms;
+      transient → nearest contact ≤ 2 frames for ≥ 8 of 12): at **1344×768 ×
+      124 frames, 6 steps**, image + pinned track scored **4/4** and **12/12**,
+      and pinned track with **no image at all** scored **4/4** and 9/12
+      (`scratchpad/minimax_h3_c0_results.md`). Through the shipped route at
+      **640×384 × 124 frames, 4 steps**, two seeds × two synthetic transient
+      tracks: image + track **4/4** own-beats-other (own r +0.35…+0.51, other
+      −0.12…+0.01) and 11/12 transients within 2 frames; imageless **4/4** (own
+      r +0.23…+0.59, other −0.15…+0.17) with the contact metric measurable in
+      only 2 of 4 arms there (4/6 within 2 frames; the blob tracker found the
+      ball in under a quarter of the frames in the other two).
+    - **The scope of that measurement**, stated because a user will assume more:
+      the tracks were **impulsive** — sharp broadband transients over silence,
+      three per track. **Speech, pitch and timbre were not measured at all**,
+      and nothing here says the model follows them. Video only; one prompt
+      family; seeds 4242/12345; 4 and 6 sampling steps against a shipped default
+      of 20.
+    - **Whole clip only, and that is the row layout rather than a policy.**
+      `num_condition_audio_rows` is a PREFIX count and the audio rows are
+      CHANNEL-MAJOR, so pinning "half" of them pins one stereo channel's entire
+      timeline, not half the clip in both channels. Partial-timeline placement
+      needs the counts generalised to index sets (in the layout dict and in
+      `build_row_timesteps`) plus its own measurement; it is refused with that
+      reason, not approximated. The UI draws the lane full width and gives it no
+      offset handles for the same reason.
+    - **A short track is a 400, not a pad.** The required length is the clip's
+      audio GRID — `round(T/24·40)` latents × 800 samples — or the video's own
+      duration, whichever is longer (124 frames: 165 600 samples = 5.175 s
+      against 5.167 s of video). Padding the remainder with silence would build
+      a half-pinned, half-silent timeline, which is a shape nothing has
+      measured. A longer track is trimmed to the clip, head-aligned.
+    - **The output is the SOURCE waveform, not a decode.** The pinned rows are
+      never written, so decoding them would only round-trip the upload through
+      the audio VAE; `trim_audio_to_video` slices the uploaded samples instead.
+      That exactness is of the HANDOFF: the mp4's audio is AAC (as it is for a
+      generated soundtrack), so the file is a lossy encoding of them — measured
+      on a full-scale broadband transient track, RMS deviation 0.0010–0.0194
+      against 0.060 versus the other track, exact zeros preserved in the silent
+      stretches, alignment exact at lag 0.
+    - **The noise draw is unchanged.** All three draws happen in the recorded
+      K0.6 order and the audio draw is DISCARDED after the fact, so the video
+      noise is bit-identical to a free-audio run at the same seed. Skipping the
+      draw would move the generator; `minimax_h3_ia2v_test` asserts the
+      generator's state after `draw_noise` is the same either way.
+    - **`input_image` is not required with a track.** The design assumed it was
+      and the assumption was wrong: the original ia2v probes had no keyframe at
+      all, and pure a2v passes the same criterion. `/generate/img2vid` therefore
+      accepts `image`, `input_audio`, or both, and refuses only a request that
+      uploads no media (which is `/generate/txt2vid`). `image` stays required on
+      LTX-2.3, whose image-to-video pipeline has no other conditioning input.
+    - **None of it is in MiniMax's model card.** A request that sends
+      `input_audio` returns one `minimax_h3_undocumented_conditioning` entry in
+      `warnings[]` — the same entry placement uses, folded together so a
+      request that does both is warned once — and the control states the scope
+      in one sentence, including that richer audio is unmeasured.
   - **No CFG and no negative prompt, structurally.** Guidance is distilled into
     the weights: there is no unconditional branch and the sampler takes no
     guidance scale, so a step is one forward pass. Both keys stay in the shared

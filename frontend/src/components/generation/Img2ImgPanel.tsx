@@ -521,6 +521,15 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
   // as its own chip), so exactly one of the two controls is shown.
   const supportsKeyframePlacement = archSupportsFeature(
     archCapabilities, loadedArch, "keyframe_placement");
+  // ia2v: an uploaded track the video is generated against (MiniMax-H3). A
+  // third, independent capability -- an architecture can place image keyframes
+  // without being able to read an audio track at all.
+  const supportsAudioConditioning = archSupportsFeature(
+    archCapabilities, loadedArch, "audio_conditioning");
+  // The track itself, as a File and NOT in `params`: it is an upload, so it
+  // rides on the queue item the way aud2aud's reference clip and outpaint_vid's
+  // source clip do, and it never reaches the persisted params blob.
+  const [inputAudioTrack, setInputAudioTrack] = useState<File | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [isEditingImage, setIsEditingImage] = useState(false);
   const [sendImage, setSendImage] = useState(true);
@@ -1992,6 +2001,11 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         type: "img2vid",
         params: videoParams as any,
         inputImage: imageBase64,
+        // The ia2v track rides on the ITEM, like every other upload the queue
+        // carries, so a queued request keeps the track it was built with after
+        // the panel's own picker changes. Only sent where the loaded
+        // architecture reads it.
+        inputAudio: (supportsAudioConditioning && inputAudioTrack) ? inputAudioTrack : undefined,
         prompt: processedPrompt,
       });
       return;
@@ -2385,7 +2399,14 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         if (!keyframe) {
           throw new Error("No keyframe image available for img2vid generation");
         }
-        const result = await generateImg2Vid(nextItem.params as Img2VidParams, keyframe);
+        // The uploaded track lives on the item (it is a File); the sender reads
+        // it from the params object, so it is merged in HERE -- the same
+        // dequeue-time site every other upload-carrying request rebuilds.
+        const apiParams: Img2VidParams = {
+          ...(nextItem.params as Img2VidParams),
+          input_audio: nextItem.inputAudio ?? null,
+        };
+        const result = await generateImg2Vid(apiParams, keyframe);
         const videoUrl = `/outputs/${result.image.filename}`;
         setGeneratedVideo(videoUrl);
         setGeneratedVideoInfo({
@@ -4040,6 +4061,12 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
                 lastFrameImage={params.last_frame_image ?? null}
                 onLastFrameImageChange={(dataUrl) =>
                   setParams({ ...params, last_frame_image: dataUrl })
+                }
+                // The audio lane appears only where the architecture reads a
+                // track; passing no handler is what hides it.
+                inputAudio={supportsAudioConditioning ? inputAudioTrack : null}
+                onInputAudioChange={
+                  supportsAudioConditioning ? setInputAudioTrack : undefined
                 }
                 disabled={isGenerating}
               />

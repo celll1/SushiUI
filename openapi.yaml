@@ -492,15 +492,20 @@ paths:
       tags: [generation]
       summary: Generate video from still-image keyframes (LTX-2.3 or MiniMax-H3)
       description: |
-        Image-to-video generation using a loaded video model. The uploaded
-        `image` is used as the first-frame keyframe and the remaining frames are
-        generated. Produces an H.264 mp4 (with an audio track when
+        Video generation from uploaded media: keyframe images and/or (on
+        MiniMax-H3) an `input_audio` track. The uploaded `image` is a
+        conditioning anchor — the first frame by default — and the remaining
+        frames are generated. Produces an H.264 mp4 (with an audio track when
         `audio_enable` is true) and a gallery row.
 
         **Requirements:**
         - An LTX-2.3 or MiniMax-H3 model must be loaded (otherwise 400).
-        - Sent as multipart/form-data with the keyframe `image` file plus the
+        - Sent as multipart/form-data with the uploaded file(s) plus the
           txt2vid parameters as form fields.
+        - At least one conditioning medium: `image`, or `input_audio` on
+          MiniMax-H3, or both. `image` is required on LTX-2.3, whose
+          image-to-video pipeline has no other conditioning input. A request
+          with no media at all is a 400 pointing at `/generate/txt2vid`.
 
         **Per-architecture defaults.** Any field omitted from the form is filled
         from the loaded architecture's resolved video defaults, i.e.
@@ -564,10 +569,25 @@ paths:
           to a NON-DEFAULT value.
         - The soundtrack is generated jointly with the video in one packed
           sequence; `audio_enable: false` skips the audio decode and the mux.
+        - `input_audio` inverts that: the supplied track's rows are pinned at
+          t = 1.0 across the WHOLE clip and the video is generated against
+          them, and the uploaded samples are handed to the muxer unchanged
+          (the mp4's AAC track is a lossy encoding of them, as it is for a
+          generated soundtrack).
+          Partial-timeline placement is not supported — the condition count is
+          a prefix and the audio rows are channel-major, so pinning "half" the
+          timeline would pin one stereo channel's whole track. A shorter track
+          is a 400 rather than a pad. See the `input_audio` field.
+        - With `input_audio` present, `image` may be omitted: the clip is then
+          conditioned on the prompt and the audio alone.
+        - The video noise draw is unaffected by `input_audio`: all three noise
+          draws still happen in the recorded order and the audio draw is
+          discarded, so the same seed produces the same video noise with and
+          without a pinned track.
 
         The keyframes are resized to (`width`, `height`) before conditioning. A
-        `source_image_hash` of the first-frame keyframe is stored on the gallery
-        row.
+        `source_image_hash` of the first uploaded keyframe is stored on the
+        gallery row (null when the request sends no image).
       operationId: generateImg2Vid
       requestBody:
         required: true
@@ -7505,13 +7525,24 @@ components:
       allOf:
         - $ref: '#/components/schemas/Txt2VidRequest'
         - type: object
-          required:
-            - image
+          description: |
+            The txt2vid parameter set plus the media this endpoint conditions
+            on: keyframe images and/or an `input_audio` track. At least one of
+            them is required — `image` alone, `input_audio` alone, or both. A
+            request with neither belongs on `/generate/txt2vid`.
+
+            `image` is required on LTX-2.3, whose image-to-video pipeline has
+            no other conditioning input.
           properties:
             image:
               type: string
               format: binary
-              description: "First-frame keyframe image (multipart file upload). Resized to (width, height) before conditioning."
+              description: >-
+                Keyframe image (multipart file upload), placed at
+                `input_image_frame_index` (the first frame by default) and
+                resized to (width, height) before conditioning. OPTIONAL on
+                MiniMax-H3 when `input_audio` is sent — a pinned audio track
+                conditions the clip on its own — and required otherwise.
             last_frame_image:
               type: string
               format: binary
@@ -7567,6 +7598,39 @@ components:
                 frame, `-1` the resolved last frame, and any other value that
                 exact pixel frame. One integer per uploaded keyframe.
               example: [60]
+            input_audio:
+              type: string
+              format: binary
+              nullable: true
+              description: >-
+                OPTIONAL audio track (multipart file upload) that the video is
+                generated against, MiniMax-H3 only. The track is decoded,
+                resampled to 32 kHz stereo (a mono file is duplicated to both
+                channels), encoded by the audio VAE and packed as the clip's
+                own audio rows, held at t = 1.0 for every step — i.e. supplied
+                at their true value and never denoised, the same mechanism a
+                `/generate/ref2vid` reference soundtrack uses, at the generated
+                clip's own rotary positions.
+
+                The track conditions the ENTIRE clip; partial-timeline
+                placement is not supported. A track shorter than the clip is a
+                400 naming the required duration; a longer one is trimmed to
+                the clip, head-aligned.
+
+                The output carries the SOURCE waveform: the uploaded samples
+                are handed to the muxer unchanged, sample for sample, and not a
+                decode of the pinned latents (those rows are never written, so
+                decoding them would only round-trip the input through the VAE).
+                The mp4's audio track is AAC-encoded like every other video this
+                API writes, so the FILE is a lossy encoding of those samples
+                rather than a bit copy of them. With `audio_enable` false the
+                rows still condition the video and nothing is muxed.
+
+                Sending this field emits one
+                `minimax_h3_undocumented_conditioning` entry in `warnings[]`:
+                MiniMax's model card documents `fl2va` for image keyframes, and
+                audio conditioning is the same pinning mechanism applied to the
+                audio rows. Ignored on LTX-2.3 (`unsupported_param` warning).
 
     Ref2VidRequest:
       allOf:

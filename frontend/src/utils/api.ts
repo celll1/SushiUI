@@ -769,6 +769,13 @@ export interface Img2VidParams extends Txt2VidParams {
   // keyframe_frame_indices); the ORDER is not semantic, since the server packs
   // anchors in ascending frame order.
   keyframes?: MiniMaxH3Keyframe[];
+  // An audio track the video is generated AGAINST (MiniMax-H3). Its rows are
+  // pinned clean across the WHOLE clip -- there is no offset or duration to
+  // send, because partial-timeline placement is not supported -- and the muxed
+  // output carries this file's samples rather than a decode. A track shorter
+  // than the clip is a 400. LTX-2.3 declares it unsupported and answers with an
+  // `unsupported_param` warning if it is sent.
+  input_audio?: File | null;
 }
 
 // ref2vid (MiniMax-H3 `ref2va`): the txt2vid parameter set plus how an image
@@ -1934,7 +1941,13 @@ export const generateTxt2Vid = async (params: Txt2VidParams) => {
 
 // img2vid: multipart POST /generate/img2vid with an uploaded keyframe `image`.
 // Every IMG2VID field is appended explicitly (CLAUDE.md param-threading).
-export const generateImg2Vid = async (params: Img2VidParams, image: File | string) => {
+// `image` is nullable because the endpoint's `image` part is optional when an
+// `input_audio` track is sent: a pinned track conditions the clip on its own
+// (MiniMax-H3). Sending neither is a 400 that points at /generate/txt2vid.
+export const generateImg2Vid = async (
+  params: Img2VidParams,
+  image: File | string | null,
+) => {
   const formData = new FormData();
 
   // Handle both File objects and data URLs
@@ -1942,7 +1955,7 @@ export const generateImg2Vid = async (params: Img2VidParams, image: File | strin
     const response = await fetch(image);
     const blob = await response.blob();
     formData.append("image", blob, "keyframe.png");
-  } else {
+  } else if (image) {
     formData.append("image", image);
   }
 
@@ -2002,6 +2015,14 @@ export const generateImg2Vid = async (params: Img2VidParams, image: File | strin
       formData.append("keyframe_images", keyframe.image);
     }
     formData.append("keyframe_frame_indices", String(keyframe.frame_index));
+  }
+  // The ia2v track. Appended only when there is one, so the backend's
+  // `File(None)` sentinel keeps meaning "generate the soundtrack jointly".
+  // There is no offset or length to send with it: the pin covers the whole
+  // clip, and a track shorter than the clip is refused server-side rather than
+  // padded.
+  if (params.input_audio) {
+    formData.append("input_audio", params.input_audio);
   }
 
   const response = await api.post("/generate/img2vid", formData, {

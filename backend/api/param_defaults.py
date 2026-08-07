@@ -893,6 +893,17 @@ IMG2VID_DEFAULTS["input_image_frame_index"] = 0
 # `params` (and on the gallery row) is the uploaded FILENAMES, not the bytes.
 IMG2VID_DEFAULTS["keyframe_images"] = None
 IMG2VID_DEFAULTS["keyframe_frame_indices"] = None
+# An audio track the video is generated AGAINST (MiniMax-H3 `fl2va`), uploaded
+# as a multipart file. Its rows are pinned at t = 1.0 for the whole clip -- the
+# model's forward process is `x_t = t*x0 + (1-t)*noise`, so t = 1 is exactly
+# clean -- and the sampler never writes them. None = the soundtrack is generated
+# jointly with the video, which is every request before this existed and the
+# whole of LTX-2.3's behaviour (it declares this key unsupported and warns).
+#
+# Kept out of VIDEO_GEN_DEFAULTS for the same reason the keyframe keys are: only
+# an endpoint that carries file uploads can have it. The value recorded in
+# `params` (and on the gallery row) is the uploaded FILENAME, not the samples.
+IMG2VID_DEFAULTS["input_audio"] = None
 
 # ---------------------------------------------------------------------------
 # Omni-reference video (POST /generate/ref2vid — MiniMax-H3 `ref2va` only)

@@ -2708,13 +2708,17 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         )
 
     def generate_img2vid(self, params: Dict[str, Any], input_image, progress_callback=None,
-                         step_callback=None, last_frame_image=None, keyframes=None):
-        """Generate a video from still-image keyframes (LTX-2.3 or MiniMax-H3).
+                         step_callback=None, last_frame_image=None, keyframes=None,
+                         input_audio=None):
+        """Generate a video from uploaded media (LTX-2.3 or MiniMax-H3).
 
         Args:
             params: Generation parameters (see IMG2VID_DEFAULTS, resolved
                 against the loaded arch's overlay by the route).
-            input_image: PIL.Image used as the FIRST-frame keyframe.
+            input_image: PIL.Image used as a keyframe (the first frame unless
+                the route placed it elsewhere). May be None on MiniMax-H3 when
+                `input_audio` is supplied -- that request conditions on the
+                prompt and the audio alone. LTX-2.3 always needs one.
             progress_callback: Called as (step, total_steps) at each denoise step.
             step_callback: Per-step latent preview hook. Consumed by MiniMax-H3
                 exactly as in generate_txt2vid; unused for LTX-2.3.
@@ -2732,6 +2736,14 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                 the pre-placement shape (input_image first, last_frame_image
                 last). Ignored by LTX-2.3, which pins the uploaded image as
                 frame 0 and declares `keyframe_placement` unsupported.
+            input_audio: ia2v track for MiniMax-H3 -- a `[2, samples]` float32
+                waveform, already at the audio VAE's rate and at the exact
+                length this clip needs (`h3_references.prepare_pinned_audio`,
+                called by the route so a too-short track is a 400 rather than a
+                failed generation). Its rows are pinned clean across the whole
+                clip and the video is generated against them; the returned
+                audio is the source waveform, not a decode. Ignored by LTX-2.3,
+                which declares `audio_conditioning` unsupported.
 
         Returns:
             tuple: (frames, audio, audio_sample_rate, actual_seed) — identical
@@ -2743,7 +2755,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             return self._generate_img2vid_minimax_h3(
                 params, input_image, last_frame_image=last_frame_image,
                 progress_callback=progress_callback, step_callback=step_callback,
-                keyframes=keyframes)
+                keyframes=keyframes, input_audio=input_audio)
 
         from api.error_handlers import ValidationError
         raise ValidationError(

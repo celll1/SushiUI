@@ -27,6 +27,14 @@ import { MiniMaxH3Keyframe, toBase64 } from "@/utils/api";
  * than a convenience: the server snaps the clip length to the model's own
  * `17n + 5` grid after the request is sent, so a client cannot know the last
  * index at the time it builds the request.
+ *
+ * THE AUDIO LANE beneath the track is a different kind of conditioning and is
+ * drawn differently on purpose: an uploaded track's rows are the clip's OWN
+ * audio rows, pinned clean for every frame, so the bar spans the whole track
+ * and carries no offset handles. Whole-clip is not a default here — it is the
+ * only supported placement, because the condition count is a prefix and the
+ * audio rows are channel-major, so "half" would pin one stereo channel's entire
+ * timeline. Drawing handles would promise a feature that does not exist.
  */
 
 interface MiniMaxH3KeyframeTimelineProps {
@@ -43,6 +51,13 @@ interface MiniMaxH3KeyframeTimelineProps {
   /** The alias slot: a data URL, or null when there is no end anchor. */
   lastFrameImage: string | null;
   onLastFrameImageChange: (dataUrl: string | null) => void;
+  /**
+   * The ia2v lane. Omit both to hide it: the lane is rendered only where the
+   * loaded architecture declares `audio_conditioning`, so the panel decides,
+   * not this component.
+   */
+  inputAudio?: File | null;
+  onInputAudioChange?: (file: File | null) => void;
   disabled?: boolean;
 }
 
@@ -79,12 +94,40 @@ export default function MiniMaxH3KeyframeTimeline({
   onKeyframesChange,
   lastFrameImage,
   onLastFrameImageChange,
+  inputAudio = null,
+  onInputAudioChange,
   disabled = false,
 }: MiniMaxH3KeyframeTimelineProps) {
   const fileInput = useRef<HTMLInputElement>(null);
+  const audioInput = useRef<HTMLInputElement>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  // Duration of the picked file, read from an <audio> element rather than
+  // decoded: it is only used to tell the user whether the track is long enough
+  // BEFORE the request, and the server does the authoritative check.
+  const [audioSeconds, setAudioSeconds] = useState<number | null>(null);
   const lastIndex = Math.max(0, numFrames - 1);
   const fps = frameRate > 0 ? frameRate : 24;
+  const clipSeconds = numFrames / fps;
+
+  useEffect(() => {
+    if (!inputAudio) {
+      setAudioSeconds(null);
+      return;
+    }
+    const url = URL.createObjectURL(inputAudio);
+    const probe = new Audio();
+    probe.preload = "metadata";
+    probe.onloadedmetadata = () => {
+      setAudioSeconds(Number.isFinite(probe.duration) ? probe.duration : null);
+      URL.revokeObjectURL(url);
+    };
+    probe.onerror = () => {
+      setAudioSeconds(null);
+      URL.revokeObjectURL(url);
+    };
+    probe.src = url;
+    return () => URL.revokeObjectURL(url);
+  }, [inputAudio]);
 
   const chips: Chip[] = useMemo(() => {
     const built: Chip[] = [
@@ -305,6 +348,87 @@ export default function MiniMaxH3KeyframeTimeline({
         ))}
       </div>
 
+      {/* The ia2v lane. FULL WIDTH BECAUSE WHOLE-CLIP IS THE ONLY SUPPORTED
+          PLACEMENT: the track's rows are the clip's own audio rows, pinned for
+          every frame, so there is no offset to drag and no handles are drawn
+          for a control that does not exist. */}
+      {onInputAudioChange && (
+        <div className="mt-3 space-y-1 border-t border-gray-800 pt-2">
+          <div className="flex items-center justify-between">
+            <label className="block text-sm font-medium text-gray-300">
+              Input audio (optional)
+            </label>
+            <div className="flex items-center gap-2">
+              <Button
+                variant="secondary"
+                size="sm"
+                disabled={disabled}
+                onClick={() => audioInput.current?.click()}
+              >
+                {inputAudio ? "Replace" : "Choose audio"}
+              </Button>
+              {inputAudio && (
+                <button
+                  type="button"
+                  className="text-red-400 hover:text-red-300 px-1"
+                  disabled={disabled}
+                  onClick={() => onInputAudioChange(null)}
+                  title="Remove the input audio track"
+                >
+                  ✕
+                </button>
+              )}
+            </div>
+          </div>
+          <input
+            ref={audioInput}
+            type="file"
+            accept="audio/*"
+            className="hidden"
+            onChange={(e) => {
+              onInputAudioChange(e.target.files?.[0] ?? null);
+              e.target.value = "";
+            }}
+          />
+          <div
+            className={`relative h-6 rounded border ${
+              inputAudio
+                ? "bg-emerald-900/40 border-emerald-700"
+                : "bg-gray-800 border-gray-700 border-dashed"
+            }`}
+            title={
+              "The track conditions the entire clip. A longer track is trimmed to the clip; " +
+              "a shorter one is refused, not padded."
+            }
+          >
+            <span className="absolute left-2 top-0 text-[10px] leading-6 text-gray-300 truncate max-w-[70%]">
+              {inputAudio ? inputAudio.name : "No track — the soundtrack is generated with the video"}
+            </span>
+            {inputAudio && (
+              <span className="absolute right-2 top-0 text-[10px] leading-6 text-gray-400">
+                whole clip
+              </span>
+            )}
+          </div>
+          {inputAudio && (
+            <p
+              className={`text-xs ${
+                audioSeconds !== null && audioSeconds + 0.02 < clipSeconds
+                  ? "text-amber-400"
+                  : "text-gray-400"
+              }`}
+            >
+              {audioSeconds !== null
+                ? `Track ${audioSeconds.toFixed(2)}s · clip ${clipSeconds.toFixed(2)}s.`
+                : `Clip ${clipSeconds.toFixed(2)}s.`}{" "}
+              The track conditions the entire clip; partial-timeline placement is
+              not supported. A longer track is trimmed to the clip, a shorter one
+              is refused. The output carries this file&apos;s audio unchanged.
+            </p>
+          )}
+        </div>
+      )}
+
       {collisions.length > 0 && (
         <p className="text-xs text-amber-400">
           Two anchors are on frame {collisions.join(", ")}. One frame holds one
@@ -321,10 +445,16 @@ export default function MiniMaxH3KeyframeTimeline({
         </div>
         <div>
           The released MiniMax-H3 weights are documented for first- and
-          last-frame conditioning with up to two images. Intermediate placement
-          and additional anchors use the same mechanism at other positions; they
-          are not covered by MiniMax&apos;s model card.
+          last-frame conditioning with up to two images. Intermediate placement,
+          additional anchors and audio conditioning use the same mechanism at
+          other positions; they are not covered by MiniMax&apos;s model card.
         </div>
+        {onInputAudioChange && (
+          <div>
+            Audio conditioning was measured with impulsive material (sharp
+            transients). Speech, pitch and timbre were not measured.
+          </div>
+        )}
       </div>
     </div>
   );

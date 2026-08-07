@@ -302,6 +302,7 @@ def build_packed_layout(
     *,
     patch_size: Tuple[int, int, int] = (1, 2, 2),
     keyframe_anchors: Sequence["int | str"] = (),
+    pin_target_audio: bool = False,
     text_token_tags: Optional[torch.Tensor] = None,
     device: Optional[torch.device | str] = None,
 ) -> Dict[str, Any]:
@@ -318,6 +319,24 @@ def build_packed_layout(
     Placement costs nothing structurally -- an anchor occupies
     ``rows_per_frame`` rows wherever it sits, and every other tensor here is
     independent of its time -- so the string cases stay byte-identical.
+
+    ``pin_target_audio`` is ia2v (``/generate/img2vid``'s ``input_audio``): the
+    generated clip's OWN audio rows are supplied at their true value and never
+    denoised. It changes exactly one number in the returned dict --
+    ``num_condition_audio_rows`` becomes every audio row instead of 0 -- because
+    a pinned whole track needs no rows of its own: the target audio rows already
+    sit on the target's clock (``_fill_audio_positions``), and
+    ``build_row_timesteps`` pins ``audio_indices[:n_cond_audio]`` at
+    ``AUDIO_COND_TIMESTEP`` (1.0, which is EXACTLY CLEAN under this model's
+    ``x_t = t*x0 + (1-t)*noise``), leaving ``denoise`` an empty slice to write.
+    Every tensor built here is identical either way, which is why this is a flag
+    and not a second builder.
+
+    WHOLE TRACK ONLY, and that is a property of the row layout rather than a
+    policy: the count is a PREFIX and the audio rows are CHANNEL-MAJOR, so a
+    "half" prefix pins one stereo channel's entire timeline, not the first half
+    of the clip in both channels. Partial-timeline pinning needs the counts
+    generalised to index sets, in this dict and in ``build_row_timesteps``.
 
     Returns the tensors the transformer reads by name plus the two conditioning
     row counts, which the loop needs to know which rows it may write.
@@ -386,7 +405,7 @@ def build_packed_layout(
         "audio_indices": audio_indices,
         "text_indices": text_indices,
         "num_condition_video_rows": num_condition_rows,
-        "num_condition_audio_rows": 0,
+        "num_condition_audio_rows": num_audio_rows if pin_target_audio else 0,
         "rows_per_frame": rows_per_frame,
     }
     if device is not None:

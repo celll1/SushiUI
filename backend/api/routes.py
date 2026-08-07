@@ -3318,7 +3318,11 @@ async def generate_img2vid(
     # is the whole reason for the sentinel: the snap happens here, so a client
     # cannot compute the last index itself.
     input_image_frame_index: int = Form(IMG2VID_DEFAULTS["input_image_frame_index"]),
-    image: UploadFile = File(...),
+    # OPTIONAL since ia2v: a request that sends `input_audio` may send no image
+    # at all, and is then conditioned on the prompt and the track alone. The
+    # "at least one conditioning medium" rule is enforced below, per
+    # architecture -- LTX-2.3's image-to-video pipeline has no other input.
+    image: Optional[UploadFile] = File(None),
     # OPTIONAL second keyframe: the LAST frame. MiniMax-H3's `fl2va` workflow
     # conditions on the two ENDS of the clip (0-2 visual anchors); LTX-2.3
     # conditions on the first frame only and declares this unsupported, so it is
@@ -3334,24 +3338,41 @@ async def generate_img2vid(
     # (image, frame) pairs.
     keyframe_images: List[UploadFile] = File([]),
     keyframe_frame_indices: List[int] = Form([]),
+    # An audio track the video is generated AGAINST (MiniMax-H3). Its rows are
+    # pinned at t = 1.0 -- exactly clean, since the forward process is
+    # `x_t = t*x0 + (1-t)*noise` -- across the WHOLE clip, and the muxed output
+    # carries the source samples rather than a decode of rows nothing wrote.
+    input_audio: Optional[UploadFile] = File(None),
     db: Session = Depends(get_gallery_db)
 ):
-    """Generate a video from still-image keyframes (LTX-2.3 or MiniMax-H3).
+    """Generate a video from uploaded media (LTX-2.3 or MiniMax-H3).
 
-    Multipart form: an uploaded keyframe image plus the txt2vid parameters, and
-    optionally a `last_frame_image` and further `keyframe_images` with their
-    `keyframe_frame_indices`. On LTX-2.3 the keyframe is VAE-encoded and pinned
-    as frame 0 (placement is declared unsupported and warned); on MiniMax-H3
-    each uploaded frame becomes a single-frame visual conditioning anchor held
-    at the model's `keyframe_noise_aug` level and pinned at ITS OWN frame's
-    rotary position. Produces an H.264 mp4 (with an audio track when
-    audio_enable is true) and a gallery row.
+    Multipart form: the txt2vid parameters plus the media this endpoint
+    conditions on -- a keyframe `image`, optionally a `last_frame_image` and
+    further `keyframe_images` with their `keyframe_frame_indices`, and
+    optionally an `input_audio` track. On LTX-2.3 the keyframe is VAE-encoded
+    and pinned as frame 0 (placement and audio conditioning are declared
+    unsupported and warned); on MiniMax-H3 each uploaded frame becomes a
+    single-frame visual conditioning anchor held at the model's
+    `keyframe_noise_aug` level and pinned at ITS OWN frame's rotary position.
+    Produces an H.264 mp4 (with an audio track when audio_enable is true) and a
+    gallery row.
+
+    WHAT "img2vid" MEANS NOW: the route that carries the media a video is
+    conditioned on, images and/or audio, at least one of them. `input_audio`
+    conditions the clip on its own (measured), so the image is optional when a
+    track is sent -- but the endpoint keeps its name and its shape rather than
+    growing a fourth video route, and /generate/txt2vid stays the JSON route
+    that uploads nothing.
 
     Placement is resolved after the clip length is validated and snapped, and
     it is resolved for the whole request at once (`plan_keyframe_placements`):
     `-1` becomes the snapped clip's last index, the two ends become the
     `"first"`/`"last"` anchors that reproduce the pre-placement layout byte for
-    byte, and the anchors are packed in ascending frame order.
+    byte, and the anchors are packed in ascending frame order. The audio track
+    is prepared (resampled, trimmed, length-checked) in the same place and for
+    the same reason: its required length is a function of the SNAPPED clip
+    length.
 
     Any field the client omits is filled from the LOADED ARCHITECTURE's video
     defaults, and the geometry is then validated against that architecture's
@@ -3370,6 +3391,10 @@ async def generate_img2vid(
     # read: a mismatched request must not first pay for the file reads.
     _keyframes = [f for f in (keyframe_images or []) if f is not None and f.filename]
     _keyframe_indices = list(keyframe_frame_indices or [])
+    # `image` is a File(None) now, so it gets the same test as every other
+    # upload here: a part with no filename is a part that was not sent.
+    _image = image if (image is not None and image.filename) else None
+    _input_audio = input_audio if (input_audio is not None and input_audio.filename) else None
     if len(_keyframes) != len(_keyframe_indices):
         raise CustomValidationError(
             "keyframe_images and keyframe_frame_indices must be the same length",
@@ -3432,6 +3457,11 @@ async def generate_img2vid(
         "input_image_frame_index": input_image_frame_index,
         "keyframe_images": [f.filename for f in _keyframes] or None,
         "keyframe_frame_indices": list(_keyframe_indices) or None,
+        # The ia2v track, recorded the same way: the uploaded FILENAME, never
+        # the samples. Non-None is also what makes `check_arch_capabilities`
+        # read the field as user-set and warn on an architecture that ignores
+        # it (the default in IMG2VID_DEFAULTS is None).
+        "input_audio": _input_audio.filename if _input_audio is not None else None,
     }
 
     # Training-free reference-style transfer (video). See generate_txt2vid's
@@ -3476,6 +3506,29 @@ async def generate_img2vid(
                        "/generate/ref2vid with the loaded checkpoint.",
             )
 
+    # ---- At least one conditioning medium, and WHICH ones this architecture
+    # can read. `image` stopped being a required part when `input_audio`
+    # shipped: a pinned track conditions the clip on its own (measured), so an
+    # imageless request is a real ia2v request rather than a malformed img2vid
+    # one. It is still required on LTX-2.3, whose image-to-video pipeline takes
+    # no other conditioning input at all -- there the missing part is a refusal
+    # with that reason, not an accepted-and-warned field. ----
+    if _image is None and _input_audio is None and not _keyframes:
+        raise CustomValidationError(
+            "img2vid needs something to condition on",
+            detail="Send a keyframe `image` (and optionally `last_frame_image` / "
+                   "`keyframe_images`), or an `input_audio` track on MiniMax-H3, or both. A "
+                   "request that uploads no media at all is /generate/txt2vid.",
+        )
+    if _image is None and getattr(pipeline_manager, "is_ltx2_model", False):
+        raise CustomValidationError(
+            "LTX-2.3 image-to-video needs an input image",
+            detail="LTX-2.3's image-to-video pipeline conditions on one uploaded frame and has no "
+                   "other conditioning input -- it takes no per-keyframe frame index and no audio "
+                   "track -- so there is nothing for this request to generate from. Send `image`, "
+                   "or use /generate/txt2vid.",
+        )
+
     # Per-architecture defaults, THEN spec-driven geometry validation -- the same
     # order, and the same two helpers, as /generate/txt2vid. `_provided` is the
     # multipart equivalent of Pydantic's `model_fields_set`: the overlaid keys
@@ -3494,16 +3547,31 @@ async def generate_img2vid(
     _provided = set(params) - _omitted
     _vid_defaults = resolve_video_defaults(params, _provided, _vid_arch, IMG2VID_DEFAULTS)
 
-    # Read the uploaded keyframe(s). The first frame is required; the last frame
-    # is the optional second visual condition (MiniMax-H3 `fl2va`).
-    try:
-        image_data = await image.read()
-        input_image = Image.open(io.BytesIO(image_data)).convert("RGB")
-    except Exception as e:
-        raise CustomValidationError(
-            "Failed to read the uploaded keyframe image",
-            detail=str(e),
-        )
+    # Read the uploaded keyframe(s), and the ia2v track if there is one. Every
+    # decode happens here, before the generation context and the GPU slot, so a
+    # malformed upload is a 400 that reserved nothing.
+    input_image = None
+    if _image is not None:
+        try:
+            image_data = await _image.read()
+            input_image = Image.open(io.BytesIO(image_data)).convert("RGB")
+        except Exception as e:
+            raise CustomValidationError(
+                "Failed to read the uploaded keyframe image",
+                detail=str(e),
+            )
+    input_audio_waveform = None
+    input_audio_sample_rate = None
+    if _input_audio is not None:
+        from core.models.minimax_h3 import h3_references as _h3refs
+        try:
+            input_audio_waveform, input_audio_sample_rate = _h3refs.decode_audio_bytes(
+                await _input_audio.read())
+        except Exception as e:
+            raise CustomValidationError(
+                "Failed to read the uploaded input audio track",
+                detail=str(e),
+            )
     last_input_image = None
     if _last_frame is not None:
         try:
@@ -3558,8 +3626,16 @@ async def generate_img2vid(
         # uploaded image as frame 0, has already been warned about by
         # `check_arch_capabilities`, and keeps the pre-placement call shape. ----
         keyframe_plan = None
+        # Every shape of THIS request that is outside MiniMax's model card,
+        # collected here and warned about ONCE below -- placement and audio
+        # conditioning are the same claim ("the released weights honor this
+        # mechanism at a position the card does not describe") and a user should
+        # read it once, not once per feature.
+        undocumented = []
         if arch_supports_feature(_vid_arch, "keyframe_placement"):
-            placement_requests = [("image", input_image_frame_index)]
+            placement_requests = []
+            if _image is not None:
+                placement_requests.append(("image", input_image_frame_index))
             placement_requests += [(f"keyframe_images[{position}]", index)
                                    for position, index in enumerate(_keyframe_indices)]
             if _last_frame is not None:
@@ -3572,19 +3648,53 @@ async def generate_img2vid(
             keyframe_plan = [(entry["anchor"], sources[entry["source"]])
                              for entry in plan["anchors"]]
             params["keyframe_resolved_frames"] = [entry["frame"] for entry in plan["anchors"]]
+            undocumented += plan["undocumented"]
 
-            # ONE warning for the whole request, not one per anchor: the shapes
-            # below work on the released weights (measured) and are simply
-            # outside what MiniMax documents, so the entry states that scope and
-            # nothing else. A working feature is not buried in warnings.
-            if plan["undocumented"]:
-                add_warning(
-                    "This request places keyframes outside the documented shape ("
-                    + "; ".join(plan["undocumented"])
-                    + f"). {MINIMAX_H3_DOCUMENTED_ANCHOR_SCOPE}; the placement mechanism is the "
-                      "same one at other positions.",
-                    code="minimax_h3_undocumented_conditioning",
+        # ---- ia2v: prepare the track against the SNAPPED clip length, for the
+        # same reason placement is resolved here. How many samples the model
+        # needs is `round(T/24*40)` audio latents x 800 samples, and how many
+        # the mux needs is `round(T/24*32000)`; both are functions of the length
+        # `validate_video_geometry` just decided, so neither can be checked at
+        # the client. A track shorter than that is a 400 naming both durations
+        # -- padding the remainder with silence would build a half-pinned,
+        # half-silent timeline, which is a shape nothing has measured. ----
+        input_audio_prepared = None
+        if input_audio_waveform is not None and arch_supports_feature(_vid_arch, "audio_conditioning"):
+            from core.models.minimax_h3 import h3_references as _h3refs
+            try:
+                input_audio_prepared = _h3refs.prepare_pinned_audio(
+                    input_audio_waveform, int(input_audio_sample_rate),
+                    num_frames=int(params.get("num_frames") or 0),
+                    fps=float(params.get("frame_rate") or 24.0),
                 )
+            except ValueError as e:
+                raise CustomValidationError(
+                    "The uploaded input audio track cannot condition this clip",
+                    detail=str(e),
+                )
+            undocumented.append(
+                "an input audio track pinned clean across the whole clip, which the video is "
+                "generated against")
+            if not params.get("audio_enable", True):
+                add_warning(
+                    "audio_enable is false and an input_audio track was sent: the track still "
+                    "conditions the video (its rows ride the packed sequence at t = 1.0), and "
+                    "nothing is muxed into the output file.",
+                    code="minimax_h3_input_audio_not_muxed",
+                )
+
+        # ONE warning for the whole request, not one per anchor and not one per
+        # feature: the shapes below work on the released weights (measured) and
+        # are simply outside what MiniMax documents, so the entry states that
+        # scope and nothing else. A working feature is not buried in warnings.
+        if undocumented:
+            add_warning(
+                "This request conditions MiniMax-H3 outside the documented shape ("
+                + "; ".join(undocumented)
+                + f"). {MINIMAX_H3_DOCUMENTED_ANCHOR_SCOPE}; the same pinning mechanism is used "
+                  "here at other positions and on the audio rows.",
+                code="minimax_h3_undocumented_conditioning",
+            )
 
         print(f"img2vid generation params: {sanitize_params_for_logging(params)}")
 
@@ -3611,7 +3721,8 @@ async def generate_img2vid(
                 loop, executor,
                 lambda: pipeline_manager.generate_img2vid(
                     params, input_image, progress_callback=progress_callback,
-                    last_frame_image=last_input_image, keyframes=keyframe_plan)
+                    last_frame_image=last_input_image, keyframes=keyframe_plan,
+                    input_audio=input_audio_prepared)
             )
             fp8_gemm = extract_fp8_gemm_info(pipeline_manager)
         apply_generation_timings(params, time.perf_counter() - _gen_start)
@@ -3631,14 +3742,17 @@ async def generate_img2vid(
 
         params["seed"] = actual_seed
 
-        # Hash the keyframe (reuses the img2img/upscale metadata helper).
+        # Hash the keyframe (reuses the img2img/upscale metadata helper). An
+        # imageless ia2v request has no source image to hash, and the column
+        # stays null rather than being filled with the generated frame -- that
+        # hash means "what this was made from", and audio is not it.
         metadata = calculate_generation_metadata(
             Image.fromarray(frames[0]),
             [],
             extract_lora_names,
             calculate_image_hash,
             source_image=input_image,
-        )
+        ) if input_image is not None else {}
         params["source_image_hash"] = metadata.get("source_image_hash")
 
         # Encode mp4 (+ mux audio), poster PNG, and sidecar JSON.

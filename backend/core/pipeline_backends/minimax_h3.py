@@ -1,7 +1,9 @@
 """MiniMax-H3 video backend mixin for DiffusionPipelineManager.
 
 Video-with-audio generation against the pruned MiniMax-H3 checkpoint, from a
-prompt alone (``t2va``) or from first/last keyframes as well (``fl2va``).
+prompt alone (``t2va``) or, on ``fl2va``, from keyframes placed at named frames
+and/or an uploaded audio track the video is generated against (ia2v: the track's
+rows are pinned clean for the whole clip and the sampler never writes them).
 The loop itself lives in ``core.models.minimax_h3.h3_pipeline_ops`` (this repo
 owns it — upstream ships a Modular pipeline only); this mixin is the staging
 layer: it sequences the components on and off the GPU, resolves the request, and
@@ -31,6 +33,8 @@ phases and each one gives the GPU back before the next starts:
   1b. **Keyframe encode (fl2va only).** The video VAE encodes each keyframe as a
      single-frame clip and goes straight back to the CPU. It is the same
      autoencoder phase 3 uses, run before the DiT is staged rather than after.
+     An ia2v track is encoded here too, by the audio VAE alone (0.6 GB), staged
+     after the video VAE has gone back.
   2. **Denoise.** The DiT alone on the GPU, plus the packed sequence's
      activations.
   3. **Decode.** The DiT goes back to the CPU FIRST, then the video VAE decodes
@@ -354,6 +358,7 @@ class MiniMaxH3Mixin:
         progress_callback: Optional[Callable] = None,
         step_callback: Optional[Callable] = None,
         keyframes: Optional[Sequence[Tuple[Any, Any]]] = None,
+        input_audio=None,
     ):
         """Keyframe-conditioned generation with MiniMax-H3 (``fl2va``).
 
@@ -373,18 +378,27 @@ class MiniMaxH3Mixin:
         has not been through the route). Equivalent to
         ``[("first", input_image)]`` plus ``("last", last_frame_image)``.
 
+        ``input_audio`` — an ia2v track, already 32 kHz stereo at the exact
+        length this clip needs (``h3_references.prepare_pinned_audio``). Its
+        rows are pinned clean for the whole clip and the video is generated
+        against them. WITH ONE SUPPLIED, KEYFRAMES ARE OPTIONAL: an imageless
+        request is audio + prompt conditioning, which is measured working, and
+        it is the one shape of this route that carries no image.
+
         Same return contract as ``_generate_txt2vid_minimax_h3``.
         """
         if keyframes is None:
-            if input_image is None:
+            if input_image is None and input_audio is None:
                 raise RuntimeError("img2vid requires an input image for the first-frame keyframe")
-            keyframes = [("first", input_image)]
+            keyframes = [] if input_image is None else [("first", input_image)]
             if last_frame_image is not None:
                 keyframes.append(("last", last_frame_image))
-        if not keyframes:
-            raise RuntimeError("img2vid requires at least one keyframe image")
+        if not keyframes and input_audio is None:
+            raise RuntimeError(
+                "img2vid requires at least one keyframe image, or an input audio track to "
+                "condition on")
         return self._generate_minimax_h3(
-            params, keyframes=tuple(keyframes), label="img2vid",
+            params, keyframes=tuple(keyframes), label="img2vid", input_audio=input_audio,
             progress_callback=progress_callback, step_callback=step_callback)
 
     def _generate_ref2vid_minimax_h3(
@@ -767,6 +781,7 @@ class MiniMaxH3Mixin:
         *,
         keyframes: Sequence[Tuple[Any, Any]] = (),
         references: Sequence[Any] = (),
+        input_audio=None,
         label: str = "txt2vid",
         progress_callback: Optional[Callable] = None,
         step_callback: Optional[Callable] = None,
@@ -782,6 +797,18 @@ class MiniMaxH3Mixin:
         order (see ``_generate_ref2vid_minimax_h3``). It is mutually exclusive
         with ``keyframes``: the released ``ref2va`` partition has no keyframe
         presentation, and the ``fl2va`` one has no reference rows.
+
+        ``input_audio`` is ia2v: a ``[2, samples]`` float32 waveform, already at
+        the audio VAE's rate and at the exact length this clip needs
+        (``h3_references.prepare_pinned_audio``). Its VAE encoding becomes the
+        clip's OWN audio rows, pinned at ``AUDIO_COND_TIMESTEP`` = 1.0 -- exactly
+        clean, since the forward process is ``x_t = t*x0 + (1-t)*noise`` -- so
+        the sampler never writes them and the video is generated against a fixed
+        soundtrack. THE AUDIO NOISE IS STILL DRAWN and then discarded, which is
+        what keeps the video noise bit-identical to a free-audio run at the same
+        seed (K0.6's recorded order). Mutually exclusive with ``references``:
+        ref2va reaches an audio track through its own reference block, at a
+        different rotary offset.
 
         What actually differs between the three is small and local — which
         presentation the conditioner reads, what gets VAE-encoded as
@@ -804,6 +831,11 @@ class MiniMaxH3Mixin:
             raise RuntimeError(
                 "MiniMax-H3 conditions on keyframes (fl2va) or on references (ref2va), never both: "
                 "they are two different transformer partitions with two different presentations.")
+        if input_audio is not None and references:
+            raise RuntimeError(
+                "MiniMax-H3 cannot pin an input audio track on a ref2va request: a reference "
+                "soundtrack already occupies its own block at its own rotary offset, while ia2v "
+                "pins the TARGET's audio rows. Send the track as an audio reference instead.")
         if references and (components.get("variant") or "") != "ref2va":
             raise RuntimeError(
                 f"ref2vid needs the MiniMax-H3 ref2va transformer, but the loaded checkpoint is "
@@ -886,7 +918,9 @@ class MiniMaxH3Mixin:
               f"seed={seed} audio={audio_enable} "
               f"conditions={list(anchors) if anchors else 'none (t2va)'}"
               + (f" references=[{refs.describe_references(normalized_references)}]"
-                 if normalized_references else ""))
+                 if normalized_references else "")
+              + (f" input_audio={int(input_audio.shape[-1])} sample(s) pinned"
+                 if input_audio is not None else ""))
 
         if torch.cuda.is_available():
             torch.cuda.reset_peak_memory_stats()
@@ -937,6 +971,10 @@ class MiniMaxH3Mixin:
         latent_channels = int(components.get("latent_channels", 24))
         condition_latents: list = []
         audio_condition_rows: list = []
+        # The ia2v track's rows, once encoded. `None` (not an empty list) is what
+        # every other path downstream tests against: an empty list would be
+        # indistinguishable from "a track that encoded to nothing".
+        pinned_audio_rows = None
         if keyframe_pixels or normalized_references:
             cond_start = time.perf_counter()
             self._minimax_h3_move("vae", torch_device)
@@ -982,6 +1020,49 @@ class MiniMaxH3Mixin:
                   f"{len(condition_latents)} visual, {len(audio_condition_rows)} audio "
                   f"(peak VRAM {self._minimax_h3_peak_vram():.2f} GB)")
 
+        # ---- ia2v: the pinned track, through the SAME audio-VAE recipe a
+        # reference soundtrack takes (posterior MODE, never a sample, then the
+        # per-channel normalisation), so the two conditioning paths cannot
+        # drift. The clip's audio grid is `num_audio_latents` latents per
+        # channel and the encoder emits one per 800 samples, so exactly that
+        # many samples are handed over -- the rest of the prepared waveform is
+        # the mux's, not the model's. ----
+        if input_audio is not None:
+            audio_start_time = time.perf_counter()
+            _required, grid_samples, _clip_samples = refs.pinned_audio_sample_counts(
+                num_frames,
+                fps=float(components.get("fps", 24.0)),
+                sample_rate=int(components.get("audio_sample_rate", 32000)),
+                latent_rate=float(components.get("audio_latent_rate", 40.0)),
+            )
+            self._minimax_h3_move("audio_vae", torch_device)
+            try:
+                pinned_audio_rows = refs.encode_reference_audio_rows(
+                    components["audio_vae"],
+                    [refs.MiniMaxH3Reference(
+                        kind="audio", audio=input_audio[:, :grid_samples],
+                        sample_rate=int(components.get("audio_sample_rate", 32000)),
+                        label="input_audio")],
+                    latents_mean=components["audio_latents_mean"],
+                    latents_std=components["audio_latents_std"],
+                    audio_latent_channels=int(components.get("audio_latent_channels", 32)),
+                    device=device,
+                )[0]
+            finally:
+                self._minimax_h3_move("audio_vae", "cpu")
+                self._minimax_h3_empty_cache()
+            expected = num_audio_latents * ops.AUDIO_CHANNELS
+            if pinned_audio_rows.shape[0] != expected:
+                raise RuntimeError(
+                    f"MiniMax-H3 input audio encoded to {pinned_audio_rows.shape[0]} row(s) where "
+                    f"this clip's audio grid is {expected} ({num_audio_latents} latent(s) x "
+                    f"{ops.AUDIO_CHANNELS} channels) -- the prepared waveform does not match the "
+                    f"geometry the layout is built from.")
+            print(f"[MiniMax-H3] input audio encoded in "
+                  f"{time.perf_counter() - audio_start_time:.1f}s: "
+                  f"{grid_samples} sample(s) -> {pinned_audio_rows.shape[0]} pinned row(s) "
+                  f"(peak VRAM {self._minimax_h3_peak_vram():.2f} GB)")
+
         # ---- Layout + noise (drawn on the generation device, before staging) ----
         if normalized_references:
             layout = ops.build_ref2va_packed_layout(
@@ -998,6 +1079,10 @@ class MiniMaxH3Mixin:
                 num_text_tokens, latent_frames, latent_height, latent_width, num_audio_latents,
                 patch_size=patch_size,
                 keyframe_anchors=anchors,
+                # ia2v needs no rows of its own: the target audio rows are
+                # already on the target's clock, and this flag only moves them
+                # from "generated" to "conditioning" in the row-timestep plan.
+                pin_target_audio=pinned_audio_rows is not None,
                 device=torch_device,
             )
         generator = torch.Generator(device=device).manual_seed(seed)
@@ -1016,6 +1101,21 @@ class MiniMaxH3Mixin:
         )
         video_rows = ops.patchify_video_latents(video_noise, patch_size)[0]
         del video_noise
+
+        if pinned_audio_rows is not None:
+            # THE AUDIO DRAW ABOVE HAPPENED AND IS DISCARDED HERE, deliberately.
+            # `draw_noise` is one generator drawing three things in a recorded
+            # order (K0.6), so skipping the audio draw would not save anything
+            # -- it would move the generator's state and change the VIDEO noise
+            # of every ia2v request. Substituting after the fact is what makes a
+            # pinned run and a free-audio run bit-identical in video noise at
+            # the same seed; `minimax_h3_ia2v_test` asserts exactly that.
+            if pinned_audio_rows.shape != audio_rows.shape:
+                raise RuntimeError(
+                    f"MiniMax-H3 input audio packs into {tuple(pinned_audio_rows.shape)} where "
+                    f"this clip's audio rows are {tuple(audio_rows.shape)}.")
+            audio_rows = pinned_audio_rows.to(audio_rows.device, audio_rows.dtype)
+            del pinned_audio_rows
 
         if condition_latents:
             condition_rows = ops.build_condition_rows(
@@ -1129,7 +1229,27 @@ class MiniMaxH3Mixin:
         # pipeline already produced.
         audio_out = None
         audio_sample_rate = None
-        if audio_enable:
+        if audio_enable and input_audio is not None:
+            # ia2v: the SOURCE waveform is handed back, sample for sample. The
+            # pinned rows were never written, so decoding them would return a
+            # VAE round trip of the input and nothing else -- strictly worse
+            # than the samples that are already in hand. This is the same
+            # exact-preservation stance the outpaint path's `preserve_input`
+            # takes. The trim is the one the decode path uses, so the muxed
+            # track ends with the last frame either way.
+            #
+            # WHAT THIS DOES NOT PROMISE: the mp4. `save_video_with_metadata`
+            # encodes audio as AAC unless a caller asks for lossless, so the
+            # FILE carries a lossy encoding of these samples -- exactly as it
+            # does for a generated soundtrack. The exactness is of the handoff.
+            audio_sample_rate = int(components.get("audio_sample_rate", 32000))
+            audio_out = ops.trim_audio_to_video(
+                input_audio, num_frames, fps=float(components.get("fps", 24.0)),
+                sample_rate=audio_sample_rate)
+            print(f"[MiniMax-H3] input audio muxed unchanged: {audio_out.shape[-1]} sample(s) @ "
+                  f"{audio_sample_rate} Hz (the pinned rows are never denoised, so there is "
+                  f"nothing to decode)")
+        elif audio_enable:
             audio_latents = ops.unpack_audio_rows(audio_rows[n_cond_audio:], num_audio_latents)
             self._minimax_h3_move("audio_vae", torch_device)
             try:

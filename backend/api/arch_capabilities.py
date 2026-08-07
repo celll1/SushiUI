@@ -75,6 +75,12 @@ FEATURE_PARAMS: Dict[str, List[str]] = {
     # second. The frontend gates its keyframe timeline on this key.
     "keyframe_placement": ["input_image_frame_index", "keyframe_images",
                            "keyframe_frame_indices"],
+    # POST /generate/img2vid's `input_audio`: an uploaded track the video is
+    # generated AGAINST, pinned clean across the whole clip. A separate claim
+    # again -- an architecture can place image keyframes without being able to
+    # condition on audio at all -- and the frontend gates its audio lane on it.
+    # The value carried in `params` is the uploaded filename.
+    "audio_conditioning": ["input_audio"],
 }
 
 # Human-readable label used in the warning message for each feature.
@@ -99,6 +105,7 @@ FEATURE_LABELS: Dict[str, str] = {
     "negative_prompt": "negative_prompt",
     "last_frame_image": "last_frame_image (last-frame keyframe)",
     "keyframe_placement": "input_image_frame_index/keyframe_images/keyframe_frame_indices (keyframe placement)",
+    "audio_conditioning": "input_audio (audio-conditioned video)",
 }
 
 # ---------------------------------------------------------------------------
@@ -216,6 +223,11 @@ _add("ltx2", "last_frame_image",
 # does not expose it.)
 _add("ltx2", "keyframe_placement",
      "LTX-2.3's image-to-video pipeline pins the uploaded image as frame 0 and takes no per-keyframe frame index, so a keyframe placement has nothing to apply to")
+# Audio CONDITIONING on the same endpoint. LTX-2.3 generates a soundtrack
+# jointly with the video, but its pipeline exposes no way to supply one: there
+# is no audio conditioning input to pin an uploaded track to.
+_add("ltx2", "audio_conditioning",
+     "LTX-2.3 generates its soundtrack jointly with the video and its image-to-video pipeline takes no audio conditioning input, so an uploaded track has nothing to attach to")
 # The video routes carry `attention_type` because MiniMax-H3 honors it; LTX-2.3
 # runs the diffusers transformer's own attention dispatch and never consults it.
 _add("ltx2", "attention_type",

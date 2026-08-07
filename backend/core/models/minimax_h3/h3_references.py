@@ -349,6 +349,111 @@ def normalize_reference_audio(
     return torchaudio.transforms.Resample(sample_rate, target_sample_rate)(waveform)
 
 
+def pinned_audio_sample_counts(
+    num_frames: int,
+    *,
+    fps: float = 24.0,
+    sample_rate: int = 32000,
+    latent_rate: float = 40.0,
+) -> Tuple[int, int, int]:
+    """How many samples an ia2v track must carry: ``(required, grid, clip)``.
+
+    TWO exact lengths, and they are not the same number:
+
+    * ``grid`` — ``num_audio_latents * (sample_rate / latent_rate)``, the
+      samples the audio VAE turns into EXACTLY the audio latents the packed
+      layout reserves rows for. ``num_audio_latents`` is ``round(T/fps*40)``, so
+      the grid can land either side of the clip's own duration (124 frames ->
+      207 latents -> 5.175 s against a 5.167 s clip; 5 frames -> 8 latents ->
+      0.200 s against 0.208 s).
+    * ``clip`` — ``round(num_frames / fps * sample_rate)``, what
+      :func:`h3_pipeline_ops.trim_audio_to_video` muxes alongside the video.
+
+    ``required`` is the max of the two, because BOTH slices are taken from the
+    supplied waveform: one is encoded and pinned, the other is muxed. Padding
+    the shortfall is not offered -- a partly-silent pinned timeline is exactly
+    the mixed shape that was never measured -- so a shorter track is refused by
+    the caller with these numbers in the message.
+    """
+    from .h3_pipeline_ops import audio_latent_frames
+
+    num_audio_latents = audio_latent_frames(num_frames, fps=fps, latents_per_second=latent_rate)
+    grid = int(round(num_audio_latents * sample_rate / latent_rate))
+    clip = int(round(num_frames / fps * sample_rate))
+    return max(grid, clip), grid, clip
+
+
+def prepare_pinned_audio(
+    waveform: torch.Tensor,
+    sample_rate: int,
+    *,
+    num_frames: int,
+    fps: float = 24.0,
+    target_sample_rate: int = 32000,
+    latent_rate: float = 40.0,
+) -> torch.Tensor:
+    """One uploaded track as the ia2v condition: 32 kHz stereo, exact length.
+
+    Returns ``[2, required_samples]`` float32 at ``target_sample_rate``, head
+    aligned -- the first ``required_samples`` of the supplied track and nothing
+    else. The caller encodes ``[:grid]`` of it and muxes ``[:clip]`` of it (see
+    :func:`pinned_audio_sample_counts`); both are slices of the SOURCE, which is
+    what makes the returned soundtrack sample-exact rather than a VAE round
+    trip.
+
+    Raises ``ValueError`` naming both durations when the track is too short.
+    Longer is fine and is trimmed here; the trim is head-aligned because the
+    audio's own clock is the clip's clock and there is no offset to express.
+
+    The truncation happens at the SOURCE rate and the resample is a single
+    pass, the same order :func:`normalize_reference_audio` uses -- with two
+    seconds of margin kept before the resample so the windowed-sinc filter's
+    tail never decides the last sample of the pinned track.
+    """
+    waveform = torch.as_tensor(waveform)
+    if waveform.ndim != 2 or waveform.shape[0] not in (1, 2):
+        raise ValueError(
+            "An input audio track must be a (channels, num_samples) mono or stereo waveform, got "
+            f"{tuple(waveform.shape)}.")
+    waveform = waveform.to(torch.float32)
+    if waveform.shape[-1] == 0:
+        raise ValueError("An input audio track must carry at least one sample.")
+
+    required, _grid, _clip = pinned_audio_sample_counts(
+        num_frames, fps=fps, sample_rate=target_sample_rate, latent_rate=latent_rate)
+    required_seconds = required / float(target_sample_rate)
+    supplied_seconds = waveform.shape[-1] / float(sample_rate)
+    if supplied_seconds + 1e-9 < required_seconds:
+        raise ValueError(
+            f"the input audio track is shorter than the clip: it runs "
+            f"{supplied_seconds:.3f}s and this request needs at least "
+            f"{required_seconds:.3f}s ({num_frames} frames at {fps:g} fps, whose audio grid is "
+            f"{required} sample(s) at {target_sample_rate} Hz). The track conditions the WHOLE "
+            f"clip, so a shorter one would leave part of the timeline unconditioned; supply a "
+            f"longer track, or shorten the clip.")
+
+    if waveform.shape[0] != 2:
+        waveform = waveform.expand(2, -1).contiguous()
+    keep = int(math.ceil(required_seconds * sample_rate)) + 2 * int(sample_rate)
+    waveform = waveform[:, :keep]
+
+    if sample_rate != target_sample_rate:
+        try:
+            import torchaudio
+        except ImportError as error:  # pragma: no cover - torchaudio is a repo dependency
+            raise ImportError(
+                f"Resampling an input audio track from {sample_rate} Hz to "
+                f"{target_sample_rate} Hz needs torchaudio.") from error
+        waveform = torchaudio.transforms.Resample(sample_rate, target_sample_rate)(waveform)
+
+    if waveform.shape[-1] < required:
+        raise ValueError(
+            f"the input audio track is shorter than the clip: it resampled to "
+            f"{waveform.shape[-1]} sample(s) at {target_sample_rate} Hz where this request needs "
+            f"{required} ({required_seconds:.3f}s). Supply a longer track, or shorten the clip.")
+    return waveform[:, :required].contiguous()
+
+
 def normalize_references(
     references: Sequence[MiniMaxH3Reference],
     *,

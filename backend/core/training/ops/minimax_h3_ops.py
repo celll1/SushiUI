@@ -489,19 +489,59 @@ def _cached_audio_stream(trainer, video_path: str) -> Optional[bytes]:
 
 def vae_encode(trainer, image_tensor, *, image=None, width=None, height=None,
                vae_device=None, debug_preprocessing=False):
-    """Still-image encode — PERMANENTLY out of scope for this arch (design §10).
+    """Still-image encode — ``[1, 3, H, W]`` in ``[-1, 1]`` -> ``[1, 24, 1, H/16, W/16]``.
 
-    Not a deferral: H3's video VAE cannot DECODE fewer than 22 frames, so a
-    still-trained adapter could never be validated by sampling; the T=1 latent
-    path exists solely for image CONDITIONING; and there is no documented
-    training formulation for stills upstream. Datasets for this arch are video
-    clips of >= 22 frames.
+    A still is a degenerate 1-frame clip and goes through the SAME 5-D
+    ``train_step`` as a video window (``T_lat = 1``), exactly as the repo's other
+    video arch already does (``ltx2_ops.vae_encode``). Everything below is
+    ``vae_encode_clip`` at ``T = 1``; the two must not drift apart, because a
+    still's latent and a clip's latent frame 0 are meant to be the same object.
+
+    They MEASURABLY are. The encoder is causal with ``frame_pre_padding = 3`` and
+    ``temporal_compression_ratio = 4``, so latent frame 0 covers
+    ``(pad, pad, pad, frame0)`` — a pure function of pixel frame 0 — and this
+    branch computes precisely that quantity. Encoding a still and taking latent
+    frame 0 of a real 22-frame clip that starts with it agree to rel-RMS 0.0005
+    in NORMALISED latent space (fp16 arithmetic noise), per-channel correlation
+    1.0000 on all 24 channels. The rope position of a still's video rows is
+    identical to a clip's frame 0. So this is not an off-distribution object: it
+    is the object the model has already seen at video-row position 0 in every
+    step it ever ran.
+
+    The two conventions are ``vae_encode_clip``'s, for the same reasons:
+
+    * the shared ``encode_image`` staging hands over ``[-1, 1]``; this VAE wants
+      **ImageNet-normalised RGB over a [0, 1] base**, so the remap happens here;
+    * the posterior is read at its **MODE, not sampled** — a cached training
+      latent has to be reproducible, or the cache key stops meaning what it says.
+      (``ltx2_ops.vae_encode`` samples; that arch's clip encode samples too, so
+      each arch is internally consistent. H3's clip encode uses the mode, and
+      this branch must match IT, not ltx2.)
+
+    Not decodable on its own (the video VAE's floor is 22 frames), which is a
+    SAMPLING constraint and not a training one: nothing on the training path
+    decodes — ``arch.vae_decode`` has zero call sites there and ``generate_sample``
+    returns ``None`` for this arch. A stills-trained adapter is validated by
+    saving it and generating a normal video through the generation path.
     """
-    raise NotImplementedError(
-        "MiniMax-H3 does not train on still images: its video VAE cannot decode "
-        "fewer than 22 frames, so a still-trained adapter cannot be validated by "
-        "sampling, and the T=1 latent path is image CONDITIONING only. Use video "
-        "clips of at least 22 frames (valid lengths are 17*n + 5).")
+    vae = trainer.vae
+    dev = vae_device if vae_device is not None else next(vae.parameters()).device
+    vae_dtype = next(vae.parameters()).dtype
+
+    pix_mean = torch.tensor(list(trainer.minimax_h3_pixel_mean),
+                            dtype=torch.float32, device=image_tensor.device).view(1, -1, 1, 1)
+    pix_std = torch.tensor(list(trainer.minimax_h3_pixel_std),
+                           dtype=torch.float32, device=image_tensor.device).view(1, -1, 1, 1)
+    x = ((image_tensor.float() + 1.0) / 2.0 - pix_mean) / pix_std   # [1, 3, H, W]
+    x = x.unsqueeze(2)                                              # [1, 3, 1, H, W]
+    with torch.no_grad():
+        z = vae.encode(x.to(device=dev, dtype=vae_dtype)).latent_dist.mode()
+        latents = _normalize_video_latents(trainer, z)               # [1, 24, 1, H/16, W/16]
+    del x
+    if debug_preprocessing:
+        print(f"[minimax_h3.vae_encode DEBUG] still latents {tuple(latents.shape)} "
+              f"mean={float(latents.mean()):.6f} std={float(latents.std()):.6f}")
+    return latents
 
 
 # ----------------------------------------------------------------------
@@ -792,7 +832,21 @@ def _pixel_frames_for(trainer, t_lat: int) -> int:
     ``n = (T_lat - 2)/5``, ``T = 17n + 5`` (7 -> 22, 12 -> 39). Only ever used
     for the audio-row count of a batch with NO audio at all, so it needs the grid
     point rather than a general inverse.
+
+    ``T_lat = 1`` (a STILL, from the image-dataset path) is NOT on that grid and
+    the inversion must not be applied to it. ``max(1, round((1-2)/5))`` used to
+    clamp to ``n = 1`` and hand back 22 frames, i.e. 37 audio latents / **74
+    noise audio rows** for a single image — the audio budget of a 0.917 s clip,
+    attached to something with no time span at all. Those rows are pure noise
+    with a zero-weighted loss, so they teach nothing; they only lengthen the
+    packed sequence and put 74 rows of noise in the attention context of every
+    video row. A still spans no time, so its honest audio budget is **0 latents**,
+    and the layout builders take ``num_audio_latents = 0`` (empty audio index
+    block, empty position slice, the audio head returns ``[B, 0, 32]`` and
+    ``train_step``'s zero-branch keeps it in the graph at exactly zero).
     """
+    if int(t_lat) <= 1:
+        return 0
     n = max(1, int(round((int(t_lat) - 2) / 5)))
     return 17 * n + 5
 

@@ -44,6 +44,17 @@ subset of repo conventions for coding agents; read it before making changes.
 - **Commit style:** a concise, imperative summary line, optional body
   explaining the "why", and a `Co-Authored-By:` trailer identifying the
   agent. Follow the existing history (`git log --oneline`) for tone.
+- **Keep comments short.** A comment earns its place by saying something the
+  code cannot: a non-obvious constraint, a measured number, a trap that a
+  plausible "simplification" would walk into. It does not earn its place by
+  restating the code, narrating the investigation that produced it, or
+  reproducing an argument that belongs in the commit message or a scratchpad
+  note. Prefer one sentence to a paragraph and a paragraph to a block; link to
+  the durable note rather than inlining it. If a comment needs more than a few
+  lines to justify the code beneath it, that is a signal to name things better
+  or to put the reasoning where reasoning lives. **Before finishing, re-read
+  what you wrote and cut it down** — the cost of a comment is paid by every
+  future reader, not by the author.
 
 ## Where to look for a given task
 

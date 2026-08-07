@@ -33,6 +33,7 @@ import { wsClient, CFGMetrics } from "@/utils/websocket";
 import CFGMetricsGraph from "../common/CFGMetricsGraph";
 import VramInspector from "../common/VramInspector";
 import { saveTempImage, loadTempImage } from "@/utils/tempImageStorage";
+import { previewStorageKeys, loadVideoPreview, saveVideoPreview, saveImagePreview, clearVideoPreview, outputExists } from "@/utils/previewStorage";
 import { sendToPanel, sendImageToImg2Img, sendBase64ImageToInpaint, sendBase64ImageToUpscale, sendBase64ImageToOutpaint, sendVideoToOutpaint, sendAudioToOutpaint, sendAudioToImg2Img } from "@/utils/sendHelpers";
 import { useStartup } from "@/contexts/StartupContext";
 import { useGenerationQueue } from "@/contexts/GenerationQueueContext";
@@ -271,6 +272,10 @@ function isTxt2ImgOptionsTabActive(tabId: Txt2ImgOptionsTabId, params: Generatio
 
 const STORAGE_KEY = "txt2img_params";
 const PREVIEW_STORAGE_KEY = "txt2img_preview";
+// Image + video preview keys for this panel. The two are mutually exclusive in
+// storage (see utils/previewStorage.ts), so the newest result is the only one
+// that can be restored.
+const PREVIEW_KEYS = previewStorageKeys(PREVIEW_STORAGE_KEY);
 const LOOP_GENERATION_STORAGE_KEY = "txt2img_loop_generation";
 const REF_IMAGES_STORAGE_KEY = "txt2img_ref_images";
 
@@ -549,6 +554,16 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
       setGeneratedImage(savedPreview);
     }
 
+    // Load preview video (txt2vid / ref2vid result). Restored unconditionally:
+    // the player itself is gated on `isVideo`, which arrives asynchronously from
+    // useStartup(), so nothing renders until the loaded arch is known to be a
+    // video arch. The URL is verified once the backend is ready (below).
+    const savedVideo = loadVideoPreview(PREVIEW_KEYS);
+    if (savedVideo) {
+      setGeneratedVideo(savedVideo.url);
+      setGeneratedVideoInfo(savedVideo.info);
+    }
+
     // Load resolution step setting
     const savedResolutionStep = localStorage.getItem('resolution_step');
     if (savedResolutionStep) {
@@ -733,6 +748,21 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
       // Force reload by adding timestamp
       setGeneratedImage(`${savedPreview}?t=${Date.now()}`);
     }
+
+    // Verify the restored preview video still exists (outputs/ can be cleared,
+    // or the run deleted from the gallery). No cache-busting timestamp here --
+    // an .mp4 is large and its URL is stable.
+    const savedVideo = loadVideoPreview(PREVIEW_KEYS);
+    if (savedVideo) {
+      outputExists(savedVideo.url).then((exists) => {
+        if (!exists) {
+          console.log("[Txt2Img] Stored preview video is gone, clearing:", savedVideo.url);
+          clearVideoPreview(PREVIEW_KEYS);
+          setGeneratedVideo(null);
+          setGeneratedVideoInfo(null);
+        }
+      });
+    }
   }, [isBackendReady]);
 
   // Reset torch.compile when developer mode is disabled
@@ -771,9 +801,17 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
   // Save preview image to localStorage whenever it changes
   useEffect(() => {
     if (isMounted && generatedImage) {
-      localStorage.setItem(PREVIEW_STORAGE_KEY, generatedImage);
+      saveImagePreview(PREVIEW_KEYS, generatedImage);
     }
   }, [generatedImage, isMounted]);
+
+  // Save preview video to localStorage whenever it changes. Only the URL and
+  // the frame/fps/duration line are stored -- never the clip bytes.
+  useEffect(() => {
+    if (isMounted && generatedVideo) {
+      saveVideoPreview(PREVIEW_KEYS, { url: generatedVideo, info: generatedVideoInfo });
+    }
+  }, [generatedVideo, generatedVideoInfo, isMounted]);
 
   // Save loop generation config to localStorage whenever it changes
   useEffect(() => {
@@ -1981,6 +2019,11 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
     setTotalSteps(nextItem.params.steps || 20);
     setPreviewImage(null);
     setGeneratedImage(null);
+    // An image run supersedes any video result still on screen. The stored
+    // video preview is left alone until the image actually succeeds (see the
+    // save effect), so a failed run does not throw away the last good result.
+    setGeneratedVideo(null);
+    setGeneratedVideoInfo(null);
     setCfgMetrics([]); // Clear previous metrics
 
     try {
@@ -4167,6 +4210,14 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                     muted
                     autoPlay
                     playsInline
+                    onError={() => {
+                      // The file is gone (outputs/ cleared, run deleted) --
+                      // show an empty preview rather than a dead player.
+                      console.warn("[Txt2Img] Preview video failed to load, clearing:", generatedVideo);
+                      clearVideoPreview(PREVIEW_KEYS);
+                      setGeneratedVideo(null);
+                      setGeneratedVideoInfo(null);
+                    }}
                   />
                   {generatedVideoInfo && (
                     <div className="text-xs text-gray-400">

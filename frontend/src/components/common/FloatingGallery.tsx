@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react";
 import { Image as ImageIcon } from "lucide-react";
 import ImageViewer from "./ImageViewer";
+import { isVideoUrl, isAudioUrl, posterUrlForVideo } from "@/utils/previewStorage";
 
 interface FloatingGalleryProps {
   images: Array<{ url: string; timestamp: number }>;
@@ -14,8 +15,14 @@ export default function FloatingGallery({ images, maxImages }: FloatingGalleryPr
   const [isGalleryOpen, setIsGalleryOpen] = useState(false);
   const [isEditorOpen, setIsEditorOpen] = useState(false);
 
-  // Limit to most recent images
+  // Limit to most recent results
   const displayImages = images.slice(-maxImages);
+
+  // Video/audio results reach this strip through the same onImageGenerated
+  // callback as images, so entries are keyed by media type rather than assumed
+  // to be images. The full-size ImageViewer only understands images, so it is
+  // driven by an image-only sub-list (indices below are into that list).
+  const viewerImages = displayImages.filter((entry) => !isVideoUrl(entry.url) && !isAudioUrl(entry.url));
 
   // Monitor editor state changes
   useEffect(() => {
@@ -48,7 +55,7 @@ export default function FloatingGallery({ images, maxImages }: FloatingGalleryPr
 
     if (direction === 'prev' && viewerImageIndex > 0) {
       setViewerImageIndex(viewerImageIndex - 1);
-    } else if (direction === 'next' && viewerImageIndex < displayImages.length - 1) {
+    } else if (direction === 'next' && viewerImageIndex < viewerImages.length - 1) {
       setViewerImageIndex(viewerImageIndex + 1);
     }
   };
@@ -81,29 +88,55 @@ export default function FloatingGallery({ images, maxImages }: FloatingGalleryPr
         ${isEditorOpen ? 'lg:hidden' : ''}
       `}>
         <div className="flex items-center gap-2 overflow-x-auto scrollbar-thin scrollbar-thumb-gray-600 scrollbar-track-gray-800">
-          {displayImages.map((image, index) => (
-            <div
-              key={`${image.timestamp}-${index}`}
-              className="flex-shrink-0 cursor-pointer hover:opacity-80 transition-opacity"
-              onDoubleClick={() => setViewerImageIndex(index)}
-            >
-              <img
-                src={image.url}
-                alt={`Generated ${index + 1}`}
-                className="h-24 w-auto object-contain rounded border border-gray-700"
-              />
-            </div>
-          ))}
+          {displayImages.map((image, index) => {
+            const video = isVideoUrl(image.url);
+            const audio = !video && isAudioUrl(image.url);
+            const viewerIndex = video || audio ? -1 : viewerImages.indexOf(image);
+            return (
+              <div
+                key={`${image.timestamp}-${index}`}
+                className={`flex-shrink-0 hover:opacity-80 transition-opacity ${viewerIndex >= 0 ? "cursor-pointer" : ""}`}
+                onDoubleClick={() => {
+                  if (viewerIndex >= 0) setViewerImageIndex(viewerIndex);
+                }}
+              >
+                {video ? (
+                  // Static tile: `poster` points at the poster PNG the backend
+                  // writes next to every clip, so a thumbnail shows without
+                  // fetching video data (a missing poster degrades to the
+                  // browser's own first-frame handling). Deliberately not
+                  // autoplaying -- this strip can hold dozens of results. The
+                  // clip is playable full-size in the panel that produced it.
+                  <video
+                    src={image.url}
+                    poster={posterUrlForVideo(image.url)}
+                    className="h-24 w-auto object-contain rounded border border-gray-700"
+                    preload="metadata"
+                    muted
+                    playsInline
+                  />
+                ) : audio ? (
+                  <audio src={image.url} controls className="h-24 w-56 rounded border border-gray-700" />
+                ) : (
+                  <img
+                    src={image.url}
+                    alt={`Generated ${index + 1}`}
+                    className="h-24 w-auto object-contain rounded border border-gray-700"
+                  />
+                )}
+              </div>
+            );
+          })}
         </div>
       </div>
 
-      {viewerImageIndex !== null && (
+      {viewerImageIndex !== null && viewerImages[viewerImageIndex] && (
         <ImageViewer
-          imageUrl={displayImages[viewerImageIndex].url}
+          imageUrl={viewerImages[viewerImageIndex].url}
           onClose={() => setViewerImageIndex(null)}
           onNavigate={handleNavigate}
           hasPrev={viewerImageIndex > 0}
-          hasNext={viewerImageIndex < displayImages.length - 1}
+          hasNext={viewerImageIndex < viewerImages.length - 1}
         />
       )}
     </>

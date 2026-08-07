@@ -54,7 +54,9 @@ subset of repo conventions for coding agents; read it before making changes.
   lines to justify the code beneath it, that is a signal to name things better
   or to put the reasoning where reasoning lives. **Before finishing, re-read
   what you wrote and cut it down** — the cost of a comment is paid by every
-  future reader, not by the author.
+  future reader, not by the author. Older files carry comments written before
+  this rule: **trim them when you are editing that file anyway**, as part of
+  the change, rather than in a separate sweep.
 
 ## Where to look for a given task
 

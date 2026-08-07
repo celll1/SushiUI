@@ -48,6 +48,7 @@ import {
 } from "@/utils/api";
 import { wsClient, CFGMetrics } from "@/utils/websocket";
 import { saveTempImage, loadTempImage, deleteTempImageRef } from "@/utils/tempImageStorage";
+import { previewStorageKeys, loadVideoPreview, saveVideoPreview, saveImagePreview, clearVideoPreview, outputExists } from "@/utils/previewStorage";
 import { sendToPanel, sendImageToImg2Img, sendImageToInpaint, sendImageToUpscale, fetchUrlToFile, sendVideoToOutpaint, sendAudioToOutpaint, sendAudioToImg2Img } from "@/utils/sendHelpers";
 import { fixFloatingPointParams } from "@/utils/numberUtils";
 import { useStartup } from "@/contexts/StartupContext";
@@ -431,6 +432,10 @@ function isOutpaintOptionsTabActive(tabId: OutpaintOptionsTabId, params: Outpain
 
 const STORAGE_KEY = "outpaint_params";
 const PREVIEW_STORAGE_KEY = "outpaint_preview";
+// Image + video preview keys for this panel. The two are mutually exclusive in
+// storage (see utils/previewStorage.ts), so the newest result is the only one
+// that can be restored.
+const PREVIEW_KEYS = previewStorageKeys(PREVIEW_STORAGE_KEY);
 const INPUT_IMAGE_STORAGE_KEY = "outpaint_input_image";
 
 interface OutpaintPanelProps {
@@ -628,6 +633,17 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
         setGeneratedImage(savedPreview);
       }
 
+      // Preview video (outpaint_vid result). Restored unconditionally: the
+      // player is gated on `isVideo`, which arrives asynchronously from
+      // useStartup(), so nothing renders until the loaded arch is known to be a
+      // video arch. The URL is verified once the backend is ready (below).
+      const savedVideo = loadVideoPreview(PREVIEW_KEYS);
+      if (savedVideo) {
+        setGeneratedVideo(savedVideo.url);
+        setGeneratedVideoInfo(savedVideo.info);
+        setGeneratedVideoSeed(savedVideo.seed ?? null);
+      }
+
       const savedInputRef = localStorage.getItem(INPUT_IMAGE_STORAGE_KEY);
       if (savedInputRef) {
         try {
@@ -722,6 +738,21 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
     const savedPreview = localStorage.getItem(PREVIEW_STORAGE_KEY);
     if (savedPreview && savedPreview.startsWith('/outputs/')) {
       setGeneratedImage(`${savedPreview}?t=${Date.now()}`);
+    }
+    // Verify the restored preview video still exists (outputs/ can be cleared,
+    // or the run deleted from the gallery). No cache-busting timestamp -- an
+    // .mp4 is large and its URL is stable.
+    const savedVideo = loadVideoPreview(PREVIEW_KEYS);
+    if (savedVideo) {
+      outputExists(savedVideo.url).then((exists) => {
+        if (!exists) {
+          console.log("[Outpaint] Stored preview video is gone, clearing:", savedVideo.url);
+          clearVideoPreview(PREVIEW_KEYS);
+          setGeneratedVideo(null);
+          setGeneratedVideoInfo(null);
+          setGeneratedVideoSeed(null);
+        }
+      });
     }
     if (!inputImagePreview) {
       const savedInputRef = localStorage.getItem(INPUT_IMAGE_STORAGE_KEY);
@@ -910,9 +941,21 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
 
   useEffect(() => {
     if (isMounted && generatedImage) {
-      localStorage.setItem(PREVIEW_STORAGE_KEY, generatedImage);
+      saveImagePreview(PREVIEW_KEYS, generatedImage);
     }
   }, [generatedImage, isMounted]);
+
+  // Save preview video to localStorage whenever it changes. Only the URL, the
+  // frame/fps/duration line and the seed are stored -- never the clip bytes.
+  useEffect(() => {
+    if (isMounted && generatedVideo) {
+      saveVideoPreview(PREVIEW_KEYS, {
+        url: generatedVideo,
+        info: generatedVideoInfo,
+        seed: generatedVideoSeed,
+      });
+    }
+  }, [generatedVideo, generatedVideoInfo, generatedVideoSeed, isMounted]);
 
   // Apply backend-fetched defaults when they arrive (only if no localStorage value exists).
   // Merges the image (outpaint), video (outpaint_vid), AND audio
@@ -1659,6 +1702,12 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
     setTotalSteps(actualSteps);
     setPreviewImage(null);
     setGeneratedImage(null);
+    // An image run supersedes any video result still on screen. The stored
+    // video preview is left alone until the image actually succeeds (see the
+    // save effect), so a failed run does not throw away the last good result.
+    setGeneratedVideo(null);
+    setGeneratedVideoInfo(null);
+    setGeneratedVideoSeed(null);
 
     try {
       const itemParams = nextItem.params as ApiOutpaintParams;
@@ -1692,7 +1741,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
           onImageGenerated(imageUrl);
         }
         if (isMounted) {
-          localStorage.setItem(PREVIEW_STORAGE_KEY, imageUrl);
+          saveImagePreview(PREVIEW_KEYS, imageUrl);
         }
 
         setIsGenerating(false);
@@ -3995,6 +4044,15 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
                       muted
                       autoPlay
                       playsInline
+                      onError={() => {
+                        // The file is gone (outputs/ cleared, run deleted) --
+                        // show an empty preview rather than a dead player.
+                        console.warn("[Outpaint] Preview video failed to load, clearing:", generatedVideo);
+                        clearVideoPreview(PREVIEW_KEYS);
+                        setGeneratedVideo(null);
+                        setGeneratedVideoInfo(null);
+                        setGeneratedVideoSeed(null);
+                      }}
                     />
                     {generatedVideoInfo && (
                       <div className="text-xs text-gray-400">

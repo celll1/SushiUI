@@ -124,7 +124,7 @@ function GeneratePageContent() {
         {activeTab === "img2img" && <Img2ImgPanel onTabChange={setActiveTab} onImageGenerated={handleImageGenerated} />}
         {activeTab === "inpaint" && <InpaintPanel onTabChange={setActiveTab} onImageGenerated={handleImageGenerated} />}
         {activeTab === "outpaint" && <OutpaintPanel onTabChange={setActiveTab} onImageGenerated={handleImageGenerated} />}
-        {activeTab === "upscale" && <UpscalePanel onTabChange={setActiveTab} />}
+        {activeTab === "upscale" && <UpscalePanel onTabChange={setActiveTab} onImageGenerated={handleImageGenerated} />}
       </main>
 
       {/* Floating Gallery - shared across all tabs */}

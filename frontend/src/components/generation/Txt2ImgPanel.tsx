@@ -33,7 +33,7 @@ import { wsClient, CFGMetrics } from "@/utils/websocket";
 import CFGMetricsGraph from "../common/CFGMetricsGraph";
 import VramInspector from "../common/VramInspector";
 import { saveTempImage, loadTempImage } from "@/utils/tempImageStorage";
-import { previewStorageKeys, loadVideoPreview, saveVideoPreview, loadAudioPreview, saveAudioPreview, saveImagePreview, clearVideoPreview, clearAudioPreview, outputExists } from "@/utils/previewStorage";
+import { previewStorageKeys, loadVideoPreview, saveVideoPreview, loadAudioPreview, saveAudioPreview, saveImagePreview, clearVideoPreview, clearAudioPreview, clearImagePreview, outputExists, stripCacheBuster, withCacheBuster, imagePreviewGone } from "@/utils/previewStorage";
 import { sendToPanel, sendImageToImg2Img, sendBase64ImageToInpaint, sendBase64ImageToUpscale, sendBase64ImageToOutpaint, sendVideoToOutpaint, sendAudioToOutpaint, sendAudioToImg2Img } from "@/utils/sendHelpers";
 import { useStartup } from "@/contexts/StartupContext";
 import { useGenerationQueue } from "@/contexts/GenerationQueueContext";
@@ -751,12 +751,26 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
 
     console.log("[Txt2Img] Backend ready, reloading preview image if needed");
 
-    // Reload preview image if it's a backend URL
+    // Reload the preview image if it's a backend URL, and verify it is still
+    // there first (outputs/ can be cleared, or the run deleted from the
+    // gallery) -- exactly what the video and audio branches below do.
+    // Non-`/outputs/` values (a data: URL, a blob:, a path served from
+    // elsewhere) are left untouched: they cannot go missing server-side and
+    // must never be stamped or discarded. The stamp is applied only to a URL
+    // that verified, and it replaces any earlier stamp rather than appending.
     const savedPreview = localStorage.getItem(PREVIEW_STORAGE_KEY);
     if (savedPreview && savedPreview.startsWith('/outputs/')) {
-      console.log("[Txt2Img] Reloading preview image from backend:", savedPreview);
-      // Force reload by adding timestamp
-      setGeneratedImage(`${savedPreview}?t=${Date.now()}`);
+      const previewPath = stripCacheBuster(savedPreview);
+      outputExists(previewPath).then((exists) => {
+        if (!exists) {
+          console.log("[Txt2Img] Stored preview image is gone, clearing:", previewPath);
+          clearImagePreview(PREVIEW_KEYS);
+          setGeneratedImage(null);
+          return;
+        }
+        console.log("[Txt2Img] Reloading preview image from backend:", previewPath);
+        setGeneratedImage(withCacheBuster(previewPath));
+      });
     }
 
     // Verify the restored preview video still exists (outputs/ can be cleared,
@@ -4296,6 +4310,19 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                   alt="Generated"
                   className="max-w-full max-h-full rounded-lg"
                   style={{ filter: buildFilterString(postEdit) }}
+                  onError={() => {
+                    // The file went away while the panel was open -- show an
+                    // empty preview rather than a broken image, same as the
+                    // video/audio players above. Confirmed with a HEAD first,
+                    // so a hot reload or a backend blip cannot discard a result
+                    // that is still on disk (see helper).
+                    imagePreviewGone(effectiveGeneratedImage ?? generatedImage, generatedImage).then((gone) => {
+                      if (!gone) return;
+                      console.warn("[Txt2Img] Preview image failed to load, clearing:", generatedImage);
+                      clearImagePreview(PREVIEW_KEYS);
+                      setGeneratedImage(null);
+                    });
+                  }}
                 />
               ) : previewImage ? (
                 <img

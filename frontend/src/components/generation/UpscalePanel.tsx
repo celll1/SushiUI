@@ -19,7 +19,7 @@ import {
   UpscalerModelInfo,
 } from "@/utils/api";
 import { saveTempImage, loadTempImage, deleteTempImageRef } from "@/utils/tempImageStorage";
-import { previewStorageKeys, saveImagePreview } from "@/utils/previewStorage";
+import { previewStorageKeys, saveImagePreview, clearImagePreview, outputExists, stripCacheBuster, withCacheBuster, imagePreviewGone } from "@/utils/previewStorage";
 import { sendImageToImg2Img, sendImageToInpaint, sendImageToOutpaint } from "@/utils/sendHelpers";
 import { useStartup } from "@/contexts/StartupContext";
 import { useGenerationQueue } from "@/contexts/GenerationQueueContext";
@@ -59,10 +59,11 @@ const PREVIEW_STORAGE_KEY = "upscale_preview";
 const PREVIEW_KEYS = previewStorageKeys(PREVIEW_STORAGE_KEY);
 
 interface UpscalePanelProps {
+  onImageGenerated?: (imageUrl: string) => void;
   onTabChange?: (tab: "txt2img" | "img2img" | "inpaint" | "outpaint" | "upscale") => void;
 }
 
-export default function UpscalePanel({ onTabChange }: UpscalePanelProps = {}) {
+export default function UpscalePanel({ onTabChange, onImageGenerated }: UpscalePanelProps = {}) {
   const { isBackendReady, generationDefaults } = useStartup();
   const [params, setParams] = useState<UpscaleParams>(DEFAULT_PARAMS);
   const [isMounted, setIsMounted] = useState(false);
@@ -271,12 +272,27 @@ export default function UpscalePanel({ onTabChange }: UpscalePanelProps = {}) {
     }
   }, [generationDefaults]);
 
-  // Reload preview when backend becomes ready
+  // Reload preview when backend becomes ready, verifying it is still there
+  // first (outputs/ can be cleared, or the run deleted from the gallery) --
+  // the same rule the video/audio previews follow in the panels that have
+  // them. Non-`/outputs/` values (a data: URL, a blob:, a path served from
+  // elsewhere) are left untouched: they cannot go missing server-side and must
+  // never be stamped or discarded. The stamp is applied only to a URL that
+  // verified, and it replaces any earlier stamp rather than appending.
   useEffect(() => {
     if (!isBackendReady) return;
     const savedPreview = localStorage.getItem(PREVIEW_STORAGE_KEY);
     if (savedPreview && savedPreview.startsWith('/outputs/')) {
-      setGeneratedImage(`${savedPreview}?t=${Date.now()}`);
+      const previewPath = stripCacheBuster(savedPreview);
+      outputExists(previewPath).then((exists) => {
+        if (!exists) {
+          console.log("[Upscale] Stored preview image is gone, clearing:", previewPath);
+          clearImagePreview(PREVIEW_KEYS);
+          setGeneratedImage(null);
+          return;
+        }
+        setGeneratedImage(withCacheBuster(previewPath));
+      });
     }
   }, [isBackendReady]);
 
@@ -419,6 +435,14 @@ export default function UpscalePanel({ onTabChange }: UpscalePanelProps = {}) {
       setGeneratedImageInfo({ width: result.image.width, height: result.image.height });
       setGeneratedImageParams(nextItem.params as UpscaleParams);
 
+      // Notify the page so the result reaches the shared top-right strip, the
+      // same way every other generation panel does. An upscale result is a
+      // plain image URL under /outputs/, so the strip renders it as a tile and
+      // the full-screen viewer's prev/next walks it along with the rest.
+      if (onImageGenerated) {
+        onImageGenerated(imageUrl);
+      }
+
       setIsGenerating(false);
       setProgress(0);
       completeCurrentItem();
@@ -442,7 +466,7 @@ export default function UpscalePanel({ onTabChange }: UpscalePanelProps = {}) {
         }
       }, 100);
     }
-  }, [isGenerating, startNextInQueue, completeCurrentItem, failCurrentItem]);
+  }, [isGenerating, startNextInQueue, completeCurrentItem, failCurrentItem, onImageGenerated]);
 
   processQueueRef.current = processQueue;
 
@@ -814,7 +838,25 @@ export default function UpscalePanel({ onTabChange }: UpscalePanelProps = {}) {
 
           {generatedImage ? (
             <div className="space-y-3">
-              <img src={generatedImage} alt="Upscaled result" className="w-full rounded" />
+              <img
+                src={generatedImage}
+                alt="Upscaled result"
+                className="w-full rounded"
+                onError={() => {
+                  // The file went away while the panel was open -- show an
+                  // empty preview rather than a broken image, the same
+                  // backstop the video/audio players have elsewhere. Confirmed
+                  // with a HEAD first, so a hot reload or a backend blip cannot
+                  // discard a result that is still on disk (see helper).
+                  imagePreviewGone(generatedImage, generatedImage).then((gone) => {
+                    if (!gone) return;
+                    console.warn("[Upscale] Preview image failed to load, clearing:", generatedImage);
+                    clearImagePreview(PREVIEW_KEYS);
+                    setGeneratedImage(null);
+                    setGeneratedImageInfo(null);
+                  });
+                }}
+              />
               {generatedImageInfo && (
                 <div className="text-xs text-gray-400">
                   {generatedImageInfo.width} x {generatedImageInfo.height}

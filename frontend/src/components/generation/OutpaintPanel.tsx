@@ -45,6 +45,8 @@ import {
   transformerQuantizationLabel,
   videoOutpaintPlacements,
   outpaintVideoDefaultsForArch,
+  fitVideoCanvas,
+  videoCanvasRule,
 } from "@/utils/api";
 import { wsClient, CFGMetrics } from "@/utils/websocket";
 import { saveTempImage, loadTempImage, deleteTempImageRef } from "@/utils/tempImageStorage";
@@ -1190,6 +1192,9 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
     }
     setVideoFile(file);
     setVideoDurationSec(null);
+    // Forget the previous clip's dimensions so the metadata handler below
+    // treats this upload as a new clip and re-defaults the canvas to 1x of it.
+    setInputVideoSize(null);
     // A brand-new clip resets the placement so it doesn't inherit the
     // previous clip's stale offset/trim (mirrors processImageFile's
     // place_width=0 reset).
@@ -1202,32 +1207,28 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
     if (file) processVideoFile(file);
   };
 
-  // Round a scaled dimension onto the video grid the width/height controls
-  // advertise ("÷32"), so Scale mode can never hand the request a size the
-  // server would have to snap.
-  const VIDEO_SIZE_SNAP = 32;
-  const snapVideoSize = (value: number) =>
-    Math.max(VIDEO_SIZE_SNAP, Math.round(value / VIDEO_SIZE_SNAP) * VIDEO_SIZE_SNAP);
+  // Scale is relative to the input clip, and 1x is THE DEFAULT: temporal
+  // outpaint extends a clip at its own resolution as a rule. `fitVideoCanvas`
+  // resolves "the clip's own resolution" into a canvas the loaded architecture
+  // actually accepts (pixel_align, and the max_pixel_hw envelope where it has
+  // one) — 1x is not always literally reachable, and what the user sees when it
+  // is not is the note under the control.
+  const fitCanvas = (srcWidth: number, srcHeight: number, scaleValue: number) =>
+    fitVideoCanvas(archCapabilities, loadedArchType, srcWidth, srcHeight, scaleValue);
 
   const handleVideoScaleChange = (newScale: number) => {
     setVideoScale(newScale);
-    if (inputVideoSize && videoSizeMode === "scale") {
-      setParams(prev => ({
-        ...prev,
-        width: snapVideoSize(inputVideoSize.width * newScale),
-        height: snapVideoSize(inputVideoSize.height * newScale),
-      }));
+    if (inputVideoSize) {
+      const fitted = fitCanvas(inputVideoSize.width, inputVideoSize.height, newScale);
+      setParams(prev => ({ ...prev, width: fitted.width, height: fitted.height }));
     }
   };
 
   const handleVideoSizeModeChange = (newMode: "absolute" | "scale") => {
     setVideoSizeMode(newMode);
     if (newMode === "scale" && inputVideoSize) {
-      setParams(prev => ({
-        ...prev,
-        width: snapVideoSize(inputVideoSize.width * videoScale),
-        height: snapVideoSize(inputVideoSize.height * videoScale),
-      }));
+      const fitted = fitCanvas(inputVideoSize.width, inputVideoSize.height, videoScale);
+      setParams(prev => ({ ...prev, width: fitted.width, height: fitted.height }));
     }
   };
 
@@ -1238,15 +1239,24 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
     }
     const { videoWidth, videoHeight } = e.currentTarget;
     if (videoWidth > 0 && videoHeight > 0) {
+      // Only a NEW clip re-defaults the canvas. `loadedmetadata` fires again
+      // whenever the <video> remounts (tab switch, collapse/expand), and a
+      // canvas the user chose must survive that -- processVideoFile clears
+      // inputVideoSize, so an actual upload always counts as new.
+      const isNewClip =
+        !inputVideoSize
+        || inputVideoSize.width !== videoWidth
+        || inputVideoSize.height !== videoHeight;
       setInputVideoSize({ width: videoWidth, height: videoHeight });
-      // A clip loaded while Scale mode is on re-derives the output size from
-      // the new clip, exactly as img2img's input image does.
-      if (videoSizeMode === "scale") {
-        setParams(prev => ({
-          ...prev,
-          width: snapVideoSize(videoWidth * videoScale),
-          height: snapVideoSize(videoHeight * videoScale),
-        }));
+      if (isNewClip) {
+        // 1x ON THE CLIP THAT WAS JUST LOADED is the default canvas, whatever
+        // width/height were carried over from an earlier run or another clip:
+        // temporal outpaint extends at the source resolution as a rule, and any
+        // other canvas has to be asked for. The note under the size control
+        // states the resolved canvas either way.
+        setVideoScale(1.0);
+        const fitted = fitCanvas(videoWidth, videoHeight, 1.0);
+        setParams(prev => ({ ...prev, width: fitted.width, height: fitted.height }));
       }
     }
   };
@@ -2695,6 +2705,32 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
     ),
   };
 
+  // ── What the chosen canvas does to the input clip ────────────────────────
+  //
+  // The backend fits the upload to width x height with
+  // `center_crop_resize_frames` and the RESULT of that preprocessing -- not the
+  // raw upload -- is what the exact-preservation guarantee is about. So the
+  // panel states, factually:
+  //   * whether the canvas is the clip's own resolution (preserved frames ARE
+  //     the uploaded frames), and
+  //   * when it is not, that the clip is centre-cropped and resized to it, and
+  //     which edges that discards.
+  // `videoCanvasAt1x` is the nearest canvas this architecture accepts to the
+  // clip's own size; when that already differs from the clip, 1x is simply not
+  // reachable here and the rule that prevents it is quoted.
+  const videoCanvasAt1x = inputVideoSize
+    ? fitVideoCanvas(archCapabilities, loadedArchType, inputVideoSize.width, inputVideoSize.height, 1)
+    : null;
+  const canvasWidth = params.width ?? 768;
+  const canvasHeight = params.height ?? 512;
+  const canvasIsSourceSize = !!inputVideoSize
+    && canvasWidth === inputVideoSize.width
+    && canvasHeight === inputVideoSize.height;
+  const sourceAspect = inputVideoSize ? inputVideoSize.width / inputVideoSize.height : 0;
+  const canvasAspect = canvasHeight > 0 ? canvasWidth / canvasHeight : 0;
+  const canvasCropsSource = !!inputVideoSize && Math.abs(sourceAspect - canvasAspect) > 1e-3;
+  const croppedEdges = sourceAspect > canvasAspect ? "left and right" : "top and bottom";
+
   return (
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
       {/* Parameters Panel */}
@@ -3738,8 +3774,46 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
                 />
                 {inputVideoSize && (
                   <p className="text-xs text-gray-500 mt-1">
-                    Input clip: {inputVideoSize.width}x{inputVideoSize.height} · rounded to a
-                    multiple of 32
+                    Input clip: {inputVideoSize.width}x{inputVideoSize.height} ·{" "}
+                    {videoCanvasRule(archCapabilities, loadedArchType)}
+                  </p>
+                )}
+              </div>
+            )}
+
+            {/* WHAT THE CANVAS DOES TO THE INPUT CLIP. The backend fits the
+                upload to width x height (centre-crop to the canvas aspect
+                ratio, then resize) and the preserved span is that fitted
+                result, so a canvas that is not the clip's own size changes
+                both what "preserved" means and, at a different aspect ratio,
+                how much of the frame survives. Stated, not advised. */}
+            {inputVideoSize && (
+              <div className="mt-2 space-y-1 text-xs">
+                {canvasIsSourceSize ? (
+                  <p className="text-gray-500">
+                    The canvas is the input clip&apos;s own resolution, so the preserved
+                    frames are the uploaded frames.
+                  </p>
+                ) : (
+                  <p className="text-amber-400">
+                    The canvas is {canvasWidth}x{canvasHeight}; the input clip is{" "}
+                    {inputVideoSize.width}x{inputVideoSize.height}. The clip is fitted to
+                    the canvas once — centre-cropped to the canvas aspect ratio, then
+                    resized — and it is that fitted version, not the upload, that is
+                    preserved frame for frame.
+                    {canvasCropsSource && (
+                      <>
+                        {" "}The two aspect ratios differ, so the {croppedEdges} edges of
+                        the clip are discarded by the crop.
+                      </>
+                    )}
+                  </p>
+                )}
+                {videoCanvasAt1x && !videoCanvasAt1x.matchesSource && (
+                  <p className="text-gray-500">
+                    1x is not reachable for this clip on this model:{" "}
+                    {videoCanvasRule(archCapabilities, loadedArchType)}. The nearest
+                    canvas is {videoCanvasAt1x.width}x{videoCanvasAt1x.height}.
                   </p>
                 )}
               </div>
@@ -3976,36 +4050,48 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
           />
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-2">
-            <NumberInput
-              label="Steps"
-              value={params.inference_steps ?? 8}
-              onCommit={(v) => setParams({ ...params, inference_steps: v })}
-              min={1}
-              max={100}
-              step={1}
-              parse="int"
-            />
-            <NumberInput
-              label="Shift"
-              value={params.shift ?? 3.0}
-              onCommit={(v) => setParams({ ...params, shift: v })}
-              min={0}
-              max={20}
-              step={0.1}
-              parse="float"
-            />
+            <div>
+              <label className="block text-sm font-medium text-gray-300 mb-1">Steps</label>
+              <NumberInput
+                label="Steps"
+                value={params.inference_steps ?? 8}
+                onCommit={(v) => setParams({ ...params, inference_steps: v })}
+                min={1}
+                max={100}
+                step={1}
+                parse="int"
+                className="w-full"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-300 mb-1">Shift</label>
+              <NumberInput
+                label="Shift"
+                value={params.shift ?? 3.0}
+                onCommit={(v) => setParams({ ...params, shift: v })}
+                min={0}
+                max={20}
+                step={0.1}
+                parse="float"
+                className="w-full"
+              />
+            </div>
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-2">
-            <NumberInput
-              label="Guidance Scale"
-              value={params.guidance_scale ?? 1.0}
-              onCommit={(v) => setParams({ ...params, guidance_scale: v })}
-              min={0}
-              max={20}
-              step={0.1}
-              parse="float"
-            />
+            <div>
+              <label className="block text-sm font-medium text-gray-300 mb-1">Guidance Scale</label>
+              <NumberInput
+                label="Guidance Scale"
+                value={params.guidance_scale ?? 1.0}
+                onCommit={(v) => setParams({ ...params, guidance_scale: v })}
+                min={0}
+                max={20}
+                step={0.1}
+                parse="float"
+                className="w-full"
+              />
+            </div>
             <div>
               <label className="block text-xs text-gray-400 mb-1">Seed</label>
               <div className="flex gap-1">

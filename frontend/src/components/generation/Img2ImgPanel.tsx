@@ -28,7 +28,7 @@ import LoopGenerationPanel, { LoopGenerationConfig } from "./LoopGenerationPanel
 import QuantizedGemmSelect from "./QuantizedGemmSelect";
 import MiniMaxH3KeyframeTimeline from "../common/MiniMaxH3KeyframeTimeline";
 import { migrateLoopGenerationConfig, computeLoopDecodeDirective } from "@/utils/loopGenerationInheritance";
-import { getSamplers, getScheduleTypes, generateImg2Img, generateImg2Vid, Img2VidParams, MiniMaxH3Keyframe, generateAud2Aud, Aud2AudParams, generateImg2ImgTrainingPreview, toBase64, LoRAConfig, ControlNetConfig, generateTIPOPrompt, cancelGeneration, getCurrentModel, isLatentOnlyResult, getResultFilename, getResultSeed, getResultAncestralSeed, unetQuantizationOptions, normalizeUnetQuantization, transformerQuantizationLabel, archSupportsFeature, videoFrameOptions, videoFrameLabel, archDisplayName, normalizeVideoFrames } from "@/utils/api";
+import { getSamplers, getScheduleTypes, generateImg2Img, generateImg2Vid, Img2VidParams, MiniMaxH3Keyframe, generateAud2Aud, Aud2AudParams, generateImg2ImgTrainingPreview, toBase64, LoRAConfig, ControlNetConfig, generateTIPOPrompt, cancelGeneration, getCurrentModel, isLatentOnlyResult, getResultFilename, getResultSeed, getResultAncestralSeed, unetQuantizationOptions, normalizeUnetQuantization, transformerQuantizationLabel, archSupportsFeature, videoFrameOptions, videoFrameLabel, archDisplayName, normalizeVideoFrames, fitVideoCanvas, videoCanvasRule } from "@/utils/api";
 import { useActiveTraining } from "@/hooks/useActiveTraining";
 import { wsClient, CFGMetrics } from "@/utils/websocket";
 import CFGMetricsGraph from "../common/CFGMetricsGraph";
@@ -473,12 +473,10 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
   const [inputImageSize, setInputImageSize] = useState<{ width: number; height: number } | null>(null);
   const [sizeMode, setSizeMode] = useState<"absolute" | "scale">("absolute");
   const [scale, setScale] = useState<number>(1.0);
-  // Grid a scale-derived resolution is rounded onto. The image path has always
-  // used 64; a video model's own control is labelled "÷32", so scaling on a
-  // video model must not hand it a size off that grid (the server would snap
-  // it and warn). Multiples of 64 are multiples of 32, so this only ever
-  // loosens the rounding, never breaks the image path.
-  const sizeSnap = isVideo ? 32 : 64;
+  // Grid a scale-derived resolution is rounded onto on the IMAGE path (a video
+  // model goes through deriveScaledSize below instead, because its canvas has
+  // an architecture-specific alignment and envelope rather than one constant).
+  const sizeSnap = 64;
   const [progress, setProgress] = useState(0);
   const [totalSteps, setTotalSteps] = useState(0);
   // Streamed progress-phase label (e.g. "Step 12/28" or "PiD decode (tile 3/9)").
@@ -552,6 +550,27 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
   // single-image card it has always been rather than growing a tab strip with
   // one tab in it.
   const multiImageInput = isVideo && (supportsKeyframePlacement || supportsLastFrame);
+
+  /**
+   * Width/height for "the input image at Nx".
+   *
+   * On the image path this is the historical round-to-64. On a VIDEO model the
+   * canvas is not free: both axes align to the architecture's `pixel_align`
+   * and it may cap the envelope (MiniMax-H3: short edge 768, long edge 1344),
+   * so the size is resolved by `fitVideoCanvas` from the capability matrix.
+   * Without that, Scale 4x on a 1024x1024 image would send a 4096x4096 canvas
+   * the backend refuses.
+   */
+  const deriveScaledSize = (srcWidth: number, srcHeight: number, scaleValue: number) => {
+    if (isVideo) {
+      const fitted = fitVideoCanvas(archCapabilities, loadedArch, srcWidth, srcHeight, scaleValue);
+      return { width: fitted.width, height: fitted.height };
+    }
+    return {
+      width: Math.round(srcWidth * scaleValue / sizeSnap) * sizeSnap,
+      height: Math.round(srcHeight * scaleValue / sizeSnap) * sizeSnap,
+    };
+  };
   // The track itself, as a File and NOT in `params`: it is an upload, so it
   // rides on the queue item the way aud2aud's reference clip and outpaint_vid's
   // source clip do, and it never reaches the persisted params blob.
@@ -1339,9 +1358,8 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         setInputImageSize({ width: img.width, height: img.height });
         // If in scale mode, update width/height based on scale
         if (sizeMode === "scale") {
-          const scaledWidth = Math.round(img.width * scale / sizeSnap) * sizeSnap;
-          const scaledHeight = Math.round(img.height * scale / sizeSnap) * sizeSnap;
-          setParams({ ...params, width: scaledWidth, height: scaledHeight });
+          const scaled = deriveScaledSize(img.width, img.height, scale);
+          setParams({ ...params, width: scaled.width, height: scaled.height });
         }
       };
       img.src = preview;
@@ -1368,9 +1386,8 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
   const handleScaleChange =(newScale: number) => {
     setScale(newScale);
     if (inputImageSize && sizeMode === "scale") {
-      const scaledWidth = Math.round(inputImageSize.width * newScale / sizeSnap) * sizeSnap;
-      const scaledHeight = Math.round(inputImageSize.height * newScale / sizeSnap) * sizeSnap;
-      setParams({ ...params, width: scaledWidth, height: scaledHeight });
+      const scaled = deriveScaledSize(inputImageSize.width, inputImageSize.height, newScale);
+      setParams({ ...params, width: scaled.width, height: scaled.height });
     }
   };
 
@@ -1378,9 +1395,8 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
     setSizeMode(newMode);
     if (newMode === "scale" && inputImageSize) {
       // Switch to scale mode - update dimensions based on current scale
-      const scaledWidth = Math.round(inputImageSize.width * scale / sizeSnap) * sizeSnap;
-      const scaledHeight = Math.round(inputImageSize.height * scale / sizeSnap) * sizeSnap;
-      setParams({ ...params, width: scaledWidth, height: scaledHeight });
+      const scaled = deriveScaledSize(inputImageSize.width, inputImageSize.height, scale);
+      setParams({ ...params, width: scaled.width, height: scaled.height });
     }
   };
 
@@ -4249,8 +4265,10 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
                 labelled slider with a numeric entry beside it (common/Slider),
                 laid out in the same two-column grid, and the same
                 Absolute/Scale size mode -- scale derives width/height from the
-                uploaded image's own dimensions. Video snaps to 32 rather than
-                the image path's 64 (see sizeSnap). */}
+                uploaded image's own dimensions, fitted to a canvas this
+                architecture accepts (see deriveScaledSize / fitVideoCanvas:
+                pixel_align, plus the max_pixel_hw envelope where there is
+                one). */}
             <div className="space-y-4">
               <div>
                 <div className="flex items-center justify-between mb-2">
@@ -4308,8 +4326,9 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
                     />
                     {inputImageSize && (
                       <p className="text-xs text-gray-500 mt-1">
-                        Original: {inputImageSize.width}x{inputImageSize.height} · rounded to a
-                        multiple of 32
+                        Input image: {inputImageSize.width}x{inputImageSize.height} ·{" "}
+                        {videoCanvasRule(archCapabilities, loadedArch)}, so the scaled size
+                        is fitted to the nearest canvas the model accepts.
                       </p>
                     )}
                   </div>
@@ -4494,60 +4513,80 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
                   Only the [start, end) range of the reference audio is regenerated; the rest is kept unchanged.
                 </p>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <NumberInput
-                    label="Repaint start (s)"
-                    value={params.repaint_start ?? 0}
-                    onCommit={(v) => setParams({ ...params, repaint_start: v })}
-                    min={0}
-                    step={0.1}
-                    parse="float"
-                  />
-                  <NumberInput
-                    label="Repaint end (s)"
-                    value={params.repaint_end ?? 0}
-                    onCommit={(v) => {
-                      const start = params.repaint_start ?? 0;
-                      setParams({ ...params, repaint_end: v < start ? start : v });
-                    }}
-                    min={0}
-                    step={0.1}
-                    parse="float"
-                  />
+                  <div>
+                    <label className="block text-sm font-medium text-gray-300 mb-1">Repaint start (s)</label>
+                    <NumberInput
+                      label="Repaint start (s)"
+                      value={params.repaint_start ?? 0}
+                      onCommit={(v) => setParams({ ...params, repaint_start: v })}
+                      min={0}
+                      step={0.1}
+                      parse="float"
+                      className="w-full"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-300 mb-1">Repaint end (s)</label>
+                    <NumberInput
+                      label="Repaint end (s)"
+                      value={params.repaint_end ?? 0}
+                      onCommit={(v) => {
+                        const start = params.repaint_start ?? 0;
+                        setParams({ ...params, repaint_end: v < start ? start : v });
+                      }}
+                      min={0}
+                      step={0.1}
+                      parse="float"
+                      className="w-full"
+                    />
+                  </div>
                 </div>
               </div>
             )}
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-2">
-              <NumberInput
-                label="Steps"
-                value={params.inference_steps ?? 8}
-                onCommit={(v) => setParams({ ...params, inference_steps: v })}
-                min={1}
-                max={100}
-                step={1}
-                parse="int"
-              />
-              <NumberInput
-                label="Shift"
-                value={params.shift ?? 3.0}
-                onCommit={(v) => setParams({ ...params, shift: v })}
-                min={0}
-                max={20}
-                step={0.1}
-                parse="float"
-              />
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-1">Steps</label>
+                <NumberInput
+                  label="Steps"
+                  value={params.inference_steps ?? 8}
+                  onCommit={(v) => setParams({ ...params, inference_steps: v })}
+                  min={1}
+                  max={100}
+                  step={1}
+                  parse="int"
+                  className="w-full"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-1">Shift</label>
+                <NumberInput
+                  label="Shift"
+                  value={params.shift ?? 3.0}
+                  onCommit={(v) => setParams({ ...params, shift: v })}
+                  min={0}
+                  max={20}
+                  step={0.1}
+                  parse="float"
+                  className="w-full"
+                />
+              </div>
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-2">
-              <NumberInput
-                label="Guidance Scale"
-                value={params.guidance_scale ?? 1.0}
-                onCommit={(v) => setParams({ ...params, guidance_scale: v })}
-                min={0}
-                max={20}
-                step={0.1}
-                parse="float"
-              />
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-1">Guidance Scale</label>
+                <NumberInput
+                  label="Guidance Scale"
+                  value={params.guidance_scale ?? 1.0}
+                  onCommit={(v) => setParams({ ...params, guidance_scale: v })}
+                  min={0}
+                  max={20}
+                  step={0.1}
+                  parse="float"
+                  className="w-full"
+                />
+              </div>
               <Input
                 type="number"
                 label="Seed"

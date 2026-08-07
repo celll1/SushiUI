@@ -1144,6 +1144,99 @@ export const videoFrameLabel = (
   return `Frames (${rule}${range})`;
 };
 
+/**
+ * The NEAREST CANVAS THIS ARCHITECTURE ACCEPTS to `srcWidth x srcHeight`
+ * scaled by `scale`, plus why it differs from that when it does.
+ *
+ * Video generation does not take an arbitrary size: both axes round to
+ * `pixel_align`, and an architecture may cap the canvas envelope
+ * (`max_pixel_hw` = [short edge, long edge], orientation-agnostic). So
+ * "generate at the input clip's own resolution" is often not literally
+ * reachable — a 1920x1080 clip cannot be, on MiniMax-H3: 1080 is not a
+ * multiple of 32 and 1920 is past the 1344 long-edge policy cap.
+ *
+ * The aspect ratio is preserved as closely as the grid allows: the cap is
+ * applied as a single uniform factor to BOTH axes before rounding, so a capped
+ * canvas is a scaled-down clip rather than a squashed one. Whatever aspect
+ * mismatch the rounding leaves is resolved by the backend's
+ * `center_crop_resize_frames`, which CENTRE-CROPS to the target aspect — it
+ * does not letterbox — so callers should surface `cropped` to the user.
+ *
+ * An unknown architecture (or a capability matrix that has not loaded) gets
+ * `pixel_align` 32 and no cap: the same "assume supported" convention as
+ * archSupportsFeature, with the backend re-validating regardless.
+ */
+export const fitVideoCanvas = (
+  caps: ArchCapabilities | null | undefined,
+  arch: string | null | undefined,
+  srcWidth: number,
+  srcHeight: number,
+  scale: number = 1
+): { width: number; height: number; matchesSource: boolean; cropped: boolean } => {
+  const c = arch ? caps?.video_constraints?.[arch] : undefined;
+  const align = c?.pixel_align && c.pixel_align > 0 ? c.pixel_align : 32;
+  const cap = c?.max_pixel_hw ?? null;
+
+  let width = Math.max(1, srcWidth) * scale;
+  let height = Math.max(1, srcHeight) * scale;
+
+  // Uniform down-scale to fit the envelope (never an up-scale: the cap is a
+  // ceiling, not a target).
+  if (cap) {
+    const [capShort, capLong] = cap;
+    const shortEdge = Math.min(width, height);
+    const longEdge = Math.max(width, height);
+    const factor = Math.min(1, capShort / shortEdge, capLong / longEdge);
+    width *= factor;
+    height *= factor;
+  }
+
+  const round = (v: number) => Math.max(align, Math.round(v / align) * align);
+  width = round(width);
+  height = round(height);
+
+  // Rounding can push an edge back over the cap (e.g. 756 -> 768 against a 768
+  // short-edge cap is fine, but 1350 -> 1344 is not automatic). Step down to
+  // the largest multiple of `align` that fits, per axis, using the ORIENTATION
+  // OF THE SOURCE so the two caps are not swapped by a rounding tie. A square
+  // source is bound by the short-edge cap on both axes, which is what
+  // "short <= capShort AND long <= capLong" means for width == height.
+  if (cap) {
+    const [capShort, capLong] = cap;
+    const floorTo = (v: number, limit: number) =>
+      v <= limit ? v : Math.max(align, Math.floor(limit / align) * align);
+    const widthIsLong = srcWidth > srcHeight;
+    const heightIsLong = srcHeight > srcWidth;
+    width = floorTo(width, widthIsLong ? capLong : capShort);
+    height = floorTo(height, heightIsLong ? capLong : capShort);
+  }
+
+  const matchesSource = scale === 1 && width === srcWidth && height === srcHeight;
+  // Aspect mismatch = the preprocessing discards content from the edges.
+  const cropped =
+    srcWidth > 0 && srcHeight > 0 &&
+    Math.abs(srcWidth / srcHeight - width / height) > 1e-3;
+
+  return { width, height, matchesSource, cropped };
+};
+
+/**
+ * The canvas rule of the loaded video architecture, in words, for a UI that has
+ * to explain why a requested size was not reachable. Reads the same
+ * capability entry `fitVideoCanvas` does, so the two never disagree.
+ */
+export const videoCanvasRule = (
+  caps: ArchCapabilities | null | undefined,
+  arch: string | null | undefined
+): string => {
+  const c = arch ? caps?.video_constraints?.[arch] : undefined;
+  const align = c?.pixel_align && c.pixel_align > 0 ? c.pixel_align : 32;
+  const cap = c?.max_pixel_hw ?? null;
+  const alignRule = `both sides must be a multiple of ${align}`;
+  if (!cap) return alignRule;
+  return `${alignRule}, the short side is capped at ${cap[0]} and the long side at ${cap[1]}`;
+};
+
 // Human-readable architecture names. Used where a model's architecture is shown
 // to the user; MiniMax H3's entry also carries its required attribution.
 const ARCH_DISPLAY_NAMES: Record<string, string> = {

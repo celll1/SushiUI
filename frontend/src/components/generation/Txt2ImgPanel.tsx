@@ -300,6 +300,10 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
     EMPTY_MINIMAX_H3_REFERENCES);
   const [h3ReferenceImageSize, setH3ReferenceImageSize] = useState<"max" | "match">("max");
   const [generatedVideoInfo, setGeneratedVideoInfo] = useState<{ num_frames?: number; fps?: number; duration?: number } | null>(null);
+  // Seed the last video result actually ran with, so the video card's seed
+  // control has the same "reuse the seed from the preview" button the image
+  // path has (StoredVideoPreview carries it, as it does in OutpaintPanel).
+  const [generatedVideoSeed, setGeneratedVideoSeed] = useState<number | null>(null);
   // Audio output (produced when an audio model is loaded / txt2aud queue item).
   const [generatedAudio, setGeneratedAudio] = useState<string | null>(null);
   const [generatedAudioInfo, setGeneratedAudioInfo] = useState<{ duration?: number; sample_rate?: number } | null>(null);
@@ -562,6 +566,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
     if (savedVideo) {
       setGeneratedVideo(savedVideo.url);
       setGeneratedVideoInfo(savedVideo.info);
+      setGeneratedVideoSeed(savedVideo.seed ?? null);
     }
 
     // Load preview audio (txt2aud result). Same reasoning as the video above:
@@ -784,6 +789,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
           clearVideoPreview(PREVIEW_KEYS);
           setGeneratedVideo(null);
           setGeneratedVideoInfo(null);
+          setGeneratedVideoSeed(null);
         }
       });
     }
@@ -846,9 +852,13 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
   // the frame/fps/duration line are stored -- never the clip bytes.
   useEffect(() => {
     if (isMounted && generatedVideo) {
-      saveVideoPreview(PREVIEW_KEYS, { url: generatedVideo, info: generatedVideoInfo });
+      saveVideoPreview(PREVIEW_KEYS, {
+        url: generatedVideo,
+        info: generatedVideoInfo,
+        seed: generatedVideoSeed,
+      });
     }
-  }, [generatedVideo, generatedVideoInfo, isMounted]);
+  }, [generatedVideo, generatedVideoInfo, generatedVideoSeed, isMounted]);
 
   // Save preview audio to localStorage whenever it changes. Only the URL and
   // the duration/sample-rate line are stored -- never the audio bytes.
@@ -2026,6 +2036,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
       setGeneratedImage(null);
       setGeneratedVideo(null);
       setGeneratedVideoInfo(null);
+      setGeneratedVideoSeed(null);
       setGeneratedAudio(null);
       setGeneratedAudioInfo(null);
       try {
@@ -2041,6 +2052,9 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
           fps: result.image.fps,
           duration: result.image.duration,
         });
+        // The seed the run actually used (-1 in the request means "pick one"),
+        // so the seed control's reuse button can pin it for the next run.
+        setGeneratedVideoSeed(getResultSeed(result));
         if (onImageGenerated) onImageGenerated(videoUrl);
         setIsGenerating(false);
         setProgress(0);
@@ -3589,79 +3603,119 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
 
         {isVideo && (
           <Card title={`Video${loadedArchName ? ` (${loadedArchName})` : ""}`}>
-            <div className="grid grid-cols-2 gap-2">
-              <NumberInput
-                label="Width (÷32)"
-                value={params.width ?? 768}
-                onCommit={(v) => setParams({ ...params, width: v })}
-                min={32}
-                max={2048}
-                step={32}
-                parse="int"
-              />
-              <NumberInput
-                label="Height (÷32)"
-                value={params.height ?? 512}
-                onCommit={(v) => setParams({ ...params, height: v })}
-                min={32}
-                max={2048}
-                step={32}
-                parse="int"
-              />
-            </div>
+            {/* Resolution / steps / frame rate / seed in the image models'
+                Parameters-card shape: labelled sliders with a numeric entry
+                beside them (common/Slider) in the same two-column grid, and
+                the image path's seed control rather than a bare number box.
+                There is no Scale size mode here: txt2vid has no input image to
+                derive a size from (Img2Img/Outpaint, which do, have one). */}
+            <div className="space-y-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <Slider
+                  label="Width (÷32)"
+                  min={32}
+                  max={2048}
+                  step={32}
+                  value={params.width ?? 768}
+                  onChange={(e) => setParams({ ...params, width: parseInt(e.target.value) })}
+                />
+                <Slider
+                  label="Height (÷32)"
+                  min={32}
+                  max={2048}
+                  step={32}
+                  value={params.height ?? 512}
+                  onChange={(e) => setParams({ ...params, height: parseInt(e.target.value) })}
+                />
+              </div>
 
-            <Select
-              label={videoFrameLabel(archCapabilities, loadedArch)}
-              value={String(params.num_frames ?? 121)}
-              onChange={(e) => setParams({ ...params, num_frames: parseInt(e.target.value) })}
-              options={videoFrameOptions(archCapabilities, loadedArch, params.num_frames ?? null)}
-            />
+              <Select
+                label={videoFrameLabel(archCapabilities, loadedArch)}
+                value={String(params.num_frames ?? 121)}
+                onChange={(e) => setParams({ ...params, num_frames: parseInt(e.target.value) })}
+                options={videoFrameOptions(archCapabilities, loadedArch, params.num_frames ?? null)}
+              />
 
-            <NumberInput
-              label="Frame Rate (fps)"
-              value={params.frame_rate ?? 24.0}
-              onCommit={(v) => setParams({ ...params, frame_rate: v })}
-              min={1}
-              max={60}
-              step={1}
-              parse="float"
-            />
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <Slider
+                  label="Steps"
+                  min={1}
+                  max={100}
+                  step={1}
+                  value={params.num_inference_steps ?? 8}
+                  onChange={(e) => setParams({ ...params, num_inference_steps: parseInt(e.target.value) })}
+                />
+                <Slider
+                  label="Frame Rate (fps)"
+                  min={1}
+                  max={60}
+                  step={1}
+                  value={params.frame_rate ?? 24.0}
+                  onChange={(e) => setParams({ ...params, frame_rate: parseFloat(e.target.value) })}
+                />
+              </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mt-2">
-              <NumberInput
-                label="Steps"
-                value={params.num_inference_steps ?? 8}
-                onCommit={(v) => setParams({ ...params, num_inference_steps: v })}
-                min={1}
-                max={100}
-                step={1}
-                parse="int"
-              />
-              {/* Guidance: hidden on an architecture that declares it
-                  unsupported (MiniMax-H3 is guidance-distilled — it has no
-                  guider and no unconditional branch, so the sampler takes no
-                  scale at all). Driven by the capability matrix, not by an arch
-                  name kept here. */}
-              {supportsCfg && (
-              <NumberInput
-                label="Guidance Scale"
-                value={params.guidance_scale ?? 1.0}
-                onCommit={(v) => setParams({ ...params, guidance_scale: v })}
-                min={0}
-                max={20}
-                step={0.1}
-                parse="float"
-              />
-              )}
-              <Input
-                type="number"
-                label="Seed"
-                value={params.seed ?? -1}
-                onChange={(e) => {
-                  const parsed = parseInt(e.target.value);
-                  setParams({ ...params, seed: Number.isNaN(parsed) ? -1 : parsed });
-                }}
-              />
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                {/* Guidance: hidden on an architecture that declares it
+                    unsupported (MiniMax-H3 is guidance-distilled — it has no
+                    guider and no unconditional branch, so the sampler takes no
+                    scale at all). Driven by the capability matrix, not by an
+                    arch name kept here. */}
+                {supportsCfg && (
+                  <Slider
+                    label="Guidance Scale"
+                    min={0}
+                    max={20}
+                    step={0.1}
+                    value={params.guidance_scale ?? 1.0}
+                    onChange={(e) => setParams({ ...params, guidance_scale: parseFloat(e.target.value) })}
+                  />
+                )}
+                {/* Seed: the image path's control, verbatim -- a labelled
+                    number field plus randomise / reset-to--1 / reuse-the-
+                    preview's-seed. */}
+                <div>
+                  <label className="block text-sm font-medium text-gray-300 mb-1">
+                    Seed
+                  </label>
+                  <div className="flex gap-2">
+                    <Input
+                      type="number"
+                      value={params.seed ?? -1}
+                      onChange={(e) => {
+                        const parsed = parseInt(e.target.value);
+                        setParams({ ...params, seed: Number.isNaN(parsed) ? -1 : parsed });
+                      }}
+                      className="flex-1 min-w-0"
+                    />
+                    <Button
+                      onClick={() => setParams({ ...params, seed: Math.floor(Math.random() * 2147483647) })}
+                      variant="secondary"
+                      size="sm"
+                      title="Random seed"
+                    >
+                      🎲
+                    </Button>
+                    <Button
+                      onClick={() => setParams({ ...params, seed: -1 })}
+                      variant="secondary"
+                      size="sm"
+                      title="Reset to random (-1)"
+                    >
+                      -1
+                    </Button>
+                    <Button
+                      onClick={() => generatedVideoSeed !== null && setParams({ ...params, seed: generatedVideoSeed })}
+                      variant="secondary"
+                      size="sm"
+                      title="Use seed from the result video"
+                      disabled={generatedVideoSeed === null}
+                    >
+                      ♻️
+                    </Button>
+                  </div>
+                </div>
+              </div>
             </div>
 
             <label className="flex items-center gap-2 cursor-pointer mt-2">

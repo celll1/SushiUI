@@ -439,7 +439,7 @@ interface OutpaintPanelProps {
 }
 
 export default function OutpaintPanel({ onTabChange, onImageGenerated }: OutpaintPanelProps = {}) {
-  const { isBackendReady, generationDefaults, isVideo, isAudio, archCapabilities } = useStartup();
+  const { isBackendReady, generationDefaults, isVideo, isAudio, archCapabilities, resolveModality, modelInfoVersion } = useStartup();
   const [params, setParams] = useState<OutpaintPanelParams>(DEFAULT_PARAMS);
   const [generatedImageParams, setGeneratedImageParams] = useState<OutpaintPanelParams | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
@@ -505,6 +505,16 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
   const [isMounted, setIsMounted] = useState(false);
   const [isInitialLoad, setIsInitialLoad] = useState(true);
   const [currentModelInfo, setCurrentModelInfo] = useState<any>(null);
+  // Keep this panel's copy of GET /models/current in step with the shared one.
+  // modelInfoVersion only changes when the loaded model's identity actually
+  // changes, so this costs one request per model change -- including changes
+  // this page did not make (API, backend restart, another tab).
+  useEffect(() => {
+    if (modelInfoVersion === 0) return; // initial fetch happens on mount below
+    getCurrentModel()
+      .then(setCurrentModelInfo)
+      .catch((error) => console.warn("[Outpaint] Failed to refresh model info", error));
+  }, [modelInfoVersion]);
   // Drop a persisted unet_quantization the loaded architecture does not offer
   // (e.g. fp8_e4m3fn carried over onto a krea2 model): otherwise the <select>
   // holds a value absent from its options and renders blank, while the panel
@@ -1403,6 +1413,16 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
       return;
     }
 
+    // Which endpoint this request goes to is decided from a FRESH read of
+    // GET /models/current, not from the cached isVideo/isAudio render flags:
+    // the model can change under an open page (API call, backend restart,
+    // second tab), and routing an image request at a video model costs a 400
+    // whose message is about the wrong thing. The cached flags remain the
+    // render-time hint; only the dispatch decision is re-verified.
+    const modality = await resolveModality();
+    const videoMode = modality.isVideo;
+    const audioMode = modality.isAudio;
+
     const { replaceWildcardsInPrompt } = await import("@/utils/wildcardStorage");
     const processedPrompt = await replaceWildcardsInPrompt(params.prompt);
     const processedNegativePrompt = await replaceWildcardsInPrompt(params.negative_prompt || "");
@@ -1410,7 +1430,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
     // Video mode: a video model (LTX-2.3) is loaded -> enqueue an
     // outpaint_vid item using the uploaded clip. No loop-generation (matches
     // Upscale + the video/audio branches of the merged txt2img/img2img panels).
-    if (isVideo) {
+    if (videoMode) {
       if (!videoFile) {
         alert("Please upload an input video clip");
         return;
@@ -1473,7 +1493,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
     // outpaint_aud item using the uploaded reference clip. No loop-generation
     // (matches Upscale + the video/audio branches of the merged txt2img/img2img
     // panels). No negative_prompt (the audio route has no such field).
-    if (isAudio) {
+    if (audioMode) {
       if (!audioFile) {
         alert("Please upload a reference audio clip");
         return;

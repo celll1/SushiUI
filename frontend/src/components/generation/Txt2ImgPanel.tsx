@@ -280,7 +280,7 @@ interface Txt2ImgPanelProps {
 }
 
 export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgPanelProps = {}) {
-  const { modelLoaded, isBackendReady, generationDefaults, isVideo, isAudio, archCapabilities } = useStartup();
+  const { modelLoaded, isBackendReady, generationDefaults, isVideo, isAudio, archCapabilities, resolveModality, modelInfoVersion } = useStartup();
   const pathname = usePathname();
   const [params, setParams] = useState<GenerationParams>(DEFAULT_PARAMS);
   const [isGenerating, setIsGenerating] = useState(false);
@@ -349,6 +349,16 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
     };
   }, []);
   const [currentModelInfo, setCurrentModelInfo] = useState<any>(null);
+  // Keep this panel's copy of GET /models/current in step with the shared one.
+  // modelInfoVersion only changes when the loaded model's identity actually
+  // changes, so this costs one request per model change -- including changes
+  // this page did not make (API, backend restart, another tab).
+  useEffect(() => {
+    if (modelInfoVersion === 0) return; // initial fetch happens on mount below
+    getCurrentModel()
+      .then(setCurrentModelInfo)
+      .catch((error) => console.warn("[Txt2Img] Failed to refresh model info", error));
+  }, [modelInfoVersion]);
   // Drop a persisted unet_quantization the loaded architecture does not offer
   // (e.g. fp8_e4m3fn carried over onto a krea2 model): otherwise the <select>
   // holds a value absent from its options and renders blank, while the panel
@@ -1367,6 +1377,16 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
       return;
     }
 
+    // Which endpoint this request goes to is decided from a FRESH read of
+    // GET /models/current, not from the cached isVideo/isAudio render flags:
+    // the model can change under an open page (API call, backend restart,
+    // second tab), and routing a still-image request at a video model costs a
+    // 400 whose message is about the wrong thing. The cached flags remain the
+    // render-time hint; only the dispatch decision is re-verified.
+    const modality = await resolveModality();
+    const videoMode = modality.isVideo;
+    const audioMode = modality.isAudio;
+
     // Import wildcard replacement function dynamically
     const { replaceWildcardsInPrompt } = await import("@/utils/wildcardStorage");
 
@@ -1414,7 +1434,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
     // Audio mode: an audio model (ACE-Step) is loaded -> enqueue a txt2aud item
     // built from the shared params. Audio loop-generation is out of scope;
     // enqueue one item. Checked before the video branch (mutually exclusive).
-    if (isAudio) {
+    if (audioMode) {
       const audioParams: Txt2AudParams = {
         prompt: processedPrompt,
         lyrics: params.lyrics,
@@ -1443,7 +1463,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
 
     // Video mode: a video model is loaded -> enqueue a txt2vid item built from
     // the shared params. Video loop-generation is out of scope; enqueue one item.
-    if (isVideo) {
+    if (videoMode) {
       const videoParams: Txt2VidParams = {
         prompt: processedPrompt,
         negative_prompt: processedNegativePrompt,
@@ -1471,7 +1491,12 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
       // heterogeneous files, whose order is semantic), and it is the only thing
       // the loaded transformer partition was trained for. With no references
       // the same partition still serves a plain text-to-video request.
-      if (isRef2Va && countMiniMaxH3References(h3References) > 0) {
+      // ref2va-ness is read from the same fresh fetch as the modality, not from
+      // this panel's own copy: if the model changed under the page, the copy
+      // can still be a render behind at this point.
+      const freshIsRef2Va =
+        modality.modelInfo?.type === "minimax_h3" && modality.modelInfo?.variant === "ref2va";
+      if (freshIsRef2Va && countMiniMaxH3References(h3References) > 0) {
         addToQueue({
           type: "ref2vid",
           params: {

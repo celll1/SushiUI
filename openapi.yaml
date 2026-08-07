@@ -384,7 +384,10 @@ paths:
             Invalid parameters. Refused with a 4xx when the loaded model is not an image
             model: a video model (LTX-2.3, MiniMax-H3) or an audio model
             (ACE-Step) is rejected here by architecture, each with its own
-            reason and the endpoint to use instead.
+            reason and the endpoint to use instead. The suggested endpoint matches the
+            request shape of the route that was called (img2img -> /generate/img2vid
+            or /generate/aud2aud, outpaint -> /generate/outpaint/video or
+            /generate/outpaint/audio), not always the text-only one.
           content:
             application/json:
               schema:
@@ -953,7 +956,10 @@ paths:
             Invalid parameters. Refused with a 4xx when the loaded model is not an image
             model: a video model (LTX-2.3, MiniMax-H3) or an audio model
             (ACE-Step) is rejected here by architecture, each with its own
-            reason and the endpoint to use instead.
+            reason and the endpoint to use instead. The suggested endpoint matches the
+            request shape of the route that was called (img2img -> /generate/img2vid
+            or /generate/aud2aud, outpaint -> /generate/outpaint/video or
+            /generate/outpaint/audio), not always the text-only one.
           content:
             application/json:
               schema:
@@ -1004,7 +1010,10 @@ paths:
             Invalid parameters. Refused with a 4xx when the loaded model is not an image
             model: a video model (LTX-2.3, MiniMax-H3) or an audio model
             (ACE-Step) is rejected here by architecture, each with its own
-            reason and the endpoint to use instead.
+            reason and the endpoint to use instead. The suggested endpoint matches the
+            request shape of the route that was called (img2img -> /generate/img2vid
+            or /generate/aud2aud, outpaint -> /generate/outpaint/video or
+            /generate/outpaint/audio), not always the text-only one.
           content:
             application/json:
               schema:
@@ -1082,7 +1091,10 @@ paths:
             Invalid parameters (including degenerate placement geometry). Refused with a 4xx when the loaded model is not an image
             model: a video model (LTX-2.3, MiniMax-H3) or an audio model
             (ACE-Step) is rejected here by architecture, each with its own
-            reason and the endpoint to use instead.
+            reason and the endpoint to use instead. The suggested endpoint matches the
+            request shape of the route that was called (img2img -> /generate/img2vid
+            or /generate/aud2aud, outpaint -> /generate/outpaint/video or
+            /generate/outpaint/audio), not always the text-only one.
           content:
             application/json:
               schema:

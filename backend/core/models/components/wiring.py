@@ -234,14 +234,22 @@ class TemporalSpec:
     min_inference_steps: int = 1
     steps_are_sigma_grid_points: bool = False
     # Where `POST /generate/outpaint/video` may place the input clip on this
-    # architecture. This is a CONDITIONING property, not a policy: LTX-2.3's
-    # `LTX2VideoCondition.index` addresses an arbitrary latent frame, so the
-    # clip goes anywhere ("free"); MiniMax-H3 conditions on the first and/or
-    # last frame of what it generates and has no index-addressable conditioning
-    # and no denoising-strength v2v, so the clip must abut a boundary
-    # ("extend_forward" / "extend_backward") or sit at both ends of a generated
-    # gap ("bridge", two uploads). An offset that is neither is refused with
-    # that reason rather than approximated by a nearby placement.
+    # architecture. LTX-2.3's `LTX2VideoCondition.index` addresses an arbitrary
+    # latent frame and carries a whole clip's frames, so the input goes anywhere
+    # ("free"); MiniMax-H3's outpaint path hands the model the first and/or last
+    # frame of the span it generates and has no denoising-strength v2v, so the
+    # preserved clip must abut a boundary ("extend_forward" /
+    # "extend_backward") or sit at both ends of a generated gap ("bridge", two
+    # uploads). An offset that is neither is refused rather than approximated by
+    # a nearby placement.
+    #
+    # NOT because MiniMax-H3 lacks index-addressable conditioning -- it has it,
+    # measured, and /generate/img2vid places keyframes with it (an anchor's
+    # rotary time is `num_text_tokens + (5/3)*f` for any pixel frame f). What is
+    # unmeasured is the OUTPAINT shape: a preserved clip anchored mid-span with
+    # exact preservation around it. This list is that scope, not an
+    # architectural limit; `generation_utils.plan_video_outpaint_placement`
+    # states the same thing in the refusal a client sees.
     outpaint_placements: Tuple[str, ...] = ("free",)
     # The shortest length worth OFFERING to a client (None = the production
     # floor). Validity and suggestion are different questions: LTX-2.3's grid

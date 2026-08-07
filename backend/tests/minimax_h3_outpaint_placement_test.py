@@ -11,12 +11,17 @@ differs in kind, not in degree:
 * LTX-2.3's ``LTX2VideoCondition.index`` addresses an arbitrary latent frame, so
   the input clip goes anywhere in the output timeline and the whole timeline is
   generated (the input is pasted back afterwards).
-* MiniMax-H3 conditions on the FIRST and/or the LAST frame of the span it
-  generates, and has no index-addressable conditioning and no
-  denoising-strength video-to-video path. There is therefore no mechanism by
-  which a clip in the MIDDLE of a timeline could condition what surrounds it.
-  Only the missing span is generated, anchored on a boundary frame, and the
-  result is concatenated with the untouched input.
+* MiniMax-H3's outpaint path hands the model the FIRST and/or the LAST frame of
+  the span it generates and has no denoising-strength video-to-video path. Only
+  the missing span is generated, anchored on a boundary frame, and the result is
+  concatenated with the untouched input.
+
+  This is the ENDPOINT's scope, not an architectural limit, and the difference
+  is asserted below rather than left to a comment: MiniMax-H3 does have
+  index-addressable conditioning (``/generate/img2vid`` places keyframes at
+  arbitrary pixel frames with it). What is unmeasured is the outpaint shape --
+  a preserved clip anchored mid-span with exact preservation around it -- so
+  the refusal stays and the reason names that instead.
 
 Two things follow that are easy to get wrong and cheap to pin here:
 
@@ -145,14 +150,42 @@ def test_bridge_requires_the_head_clip_at_the_start():
 # --------------------------------------------------------------------------
 
 @pytest.mark.parametrize("offset", [1, 8, 60, 122])
-def test_mid_timeline_placement_is_refused_with_the_architectural_reason(offset):
+def test_mid_timeline_placement_is_refused_with_the_endpoints_reason(offset):
     with pytest.raises(ValidationError) as excinfo:
         plan_video_outpaint_placement(_params(247, offset), "minimax_h3", head_frames=124)
     message = f"{excinfo.value} {getattr(excinfo.value, 'detail', '')}".lower()
-    assert "boundary frames only" in message
-    assert "index-addressable" in message
+    assert "boundary frames" in message
+    assert "unmeasured" in message
     # The two offsets that WOULD work are named, so the client can fix it.
     assert "0" in message and str(247 - 124) in message
+
+
+def test_the_refusal_does_not_claim_the_architecture_cannot_address_a_frame():
+    """NEGATIVE CONTROL for the two statements C2 corrected.
+
+    The refusal used to read "mid-timeline placement requires index-addressable
+    conditioning this architecture does not have". The refusal is right and that
+    reason is not: `h3_pipeline_ops.build_packed_layout` takes an integer pixel
+    frame per anchor, and `/generate/img2vid` places keyframes with it. A future
+    edit that restores the old sentence -- in the message or in the TemporalSpec
+    comment that mirrors it -- fails here.
+    """
+    import inspect
+
+    from core.models.components import wiring
+
+    with pytest.raises(ValidationError) as excinfo:
+        plan_video_outpaint_placement(_params(247, 60), "minimax_h3", head_frames=124)
+    message = f"{excinfo.value} {getattr(excinfo.value, 'detail', '')}".lower()
+    assert "does not have" not in message
+    assert "no index-addressable" not in message
+
+    spec_source = inspect.getsource(wiring).lower()
+    assert "has no index-addressable conditioning" not in spec_source
+
+    # ... and the capability the reason must not deny is real.
+    from core.models.minimax_h3 import h3_pipeline_ops as ops
+    assert ops._anchor_rotary_time(60, 16, 37) == 16.0 + ops.ROPE_FRAME_RESCALE * 60
 
 
 def test_an_empty_input_is_refused():

@@ -732,7 +732,7 @@ a generation without style transfer.
     activations), not optimizer-excluded. Requires `blocks_to_swap == 0`;
     mutually exclusive with TREAD and with stochastic-depth (`block_skip_rate`).
 - **minimax_h3** — Joint video+audio generation (`t2va` from a prompt, `fl2va`
-  from a first and/or last keyframe, `ref2va` from an ordered list of image,
+  from keyframes placed at named frames, `ref2va` from an ordered list of image,
   video and audio references), plus temporal outpaint. Second video arch,
   loaded and routed separately from the image-model detection like ltx2. The
   denoise loop is repo-owned (`core/models/minimax_h3/h3_pipeline_ops.py`) —
@@ -752,6 +752,53 @@ a generation without style transfer.
     the loop only ever writes generated rows. Anchors are built slightly noised
     (`keyframe_noise_aug`), because the released model was trained that way and
     an exactly-clean anchor is off-distribution.
+  - **A keyframe anchor addresses an exact pixel frame, and that is measured
+    rather than documented.** The packed sequence's time axis is pixel-frame
+    time: an anchor's rotary coordinate is `num_text_tokens + (5/3)·f` for any
+    frame `f`, so `"first"` and `"last"` are two evaluations of one function and
+    `build_packed_layout` takes an integer index (`h3_pipeline_ops.
+    _anchor_rotary_time`; the two string branches are kept verbatim because
+    `"last"` is numpy's pairwise sum and differs from `(5/3)·(T−1)` in the last
+    float64 ulp). `POST /generate/img2vid` exposes it as
+    `input_image_frame_index` / `keyframe_images` + `keyframe_frame_indices`,
+    with `-1` meaning the clip's last frame after the `17n+5` snap;
+    `last_frame_image` is a live alias for an anchor at `-1`.
+    - **What was measured**, against a pre-registered criterion (argmin within
+      ±2 frames of the requested frame, anchored min RMS ≤ 25, no-anchor
+      control ≥ 60): an anchor at frame 60 of a 124-frame clip is the per-frame
+      RMS argmin exactly, at **640×384** (min 6.47, control ≥ 73) and at the
+      production canvas **1344×768** (min 4.69, control 77.19); three anchors at
+      {0, 60, 123} each land on their own frame (per-anchor interior RMS 8.50).
+      Anchors bind on the `ref2va` partition too when laid out from its
+      post-reference rotary origin (min 11.27, control 67.43), with the image
+      reference still binding (CLIP-image cosine −0.0179 against the control,
+      +0.0004 outside the anchor's ±8-frame neighbourhood). Protocols and
+      numbers: `scratchpad/minimax_h3_c0_results.md`.
+    - **The scope of that measurement**, stated because it is narrower than the
+      feature: one prompt family, seeds 12345/4242, **6 sampling steps** at both
+      canvases (the shipped default is 20 — the anchor rows are never denoised
+      at any step count, so the mechanism has no step dependence, but that is an
+      argument, not a measurement), and video only.
+    - **None of it is in MiniMax's model card**, which documents `fl2va` for
+      zero, one or two input images at the first and last frame. These are
+      properties of the released `fl2va`/`ref2va` weights, measured here;
+      nothing asserts a future release preserves them. A request that places an
+      anchor at an intermediate frame or sends more than two anchors returns one
+      `minimax_h3_undocumented_conditioning` entry in `warnings[]` naming that
+      scope, and the timeline control states the same sentence once.
+    - **Placement is refused, not approximated, where it is unmeasured.**
+      `/generate/img2vid` answers 400 on a loaded `ref2va` checkpoint (anchors
+      plus references is measured to work but no builder combines them yet), and
+      `/generate/outpaint/video` still refuses a mid-timeline clip placement —
+      its reason is that the outpaint SHAPE (a preserved clip anchored mid-span
+      with exact preservation around it) is unmeasured, not that the
+      architecture cannot address a frame.
+    - **The geometry rule follows the frame, not the list position.** The anchor
+      at frame 0 is stretched onto the canvas (it is the model's geometry
+      anchor); every other anchor is aspect-preserving centre-cover-cropped.
+      That is a change of rule from "the packed-first anchor is stretched", and
+      it leaves video outpaint's own anchors untouched because they arrive
+      already at `(width, height)` from `center_crop_resize_frames`.
   - **No CFG and no negative prompt, structurally.** Guidance is distilled into
     the weights: there is no unconditional branch and the sampler takes no
     guidance scale, so a step is one forward pass. Both keys stay in the shared

@@ -112,21 +112,40 @@ class MiniMaxH3Mixin:
         module.to(device)
 
     @staticmethod
-    def _minimax_h3_fit_keyframe(image, width: int, height: int, index: int):
+    def _minimax_h3_fit_keyframe(image, width: int, height: int, anchor):
         """Put one keyframe onto the canvas, the way the released model does.
 
-        THE TWO ANCHORS ARE NOT TREATED THE SAME, and this asymmetry is the
+        THE ANCHORS ARE NOT TREATED THE SAME, and this asymmetry is the
         reference implementation's, in both independent ports of it:
 
-        * the FIRST keyframe (``index == 0``) is the geometry anchor: MiniMax
-          derives the canvas from it when the request omits width/height, so
-          when a canvas is given the frame is simply STRETCHED onto it
-          (diffusers ``MiniMaxH3ResizeStep``: a plain PIL
-          ``resize((w, h), LANCZOS)``; ComfyUI: ``_resize(..., "disabled")``);
-        * every LATER keyframe is a FOLLOWER and is aspect-preserving
+        * the FRAME-0 keyframe is the geometry anchor: MiniMax derives the
+          canvas from it when the request omits width/height, so when a canvas
+          is given the frame is simply STRETCHED onto it (diffusers
+          ``MiniMaxH3ResizeStep``: a plain PIL ``resize((w, h), LANCZOS)``;
+          ComfyUI: ``_resize(..., "disabled")``);
+        * every OTHER keyframe is a FOLLOWER and is aspect-preserving
           centre-cover-cropped (ComfyUI: ``_resize(..., "center")``), because it
           has no say in the geometry and stretching it would hand the model a
           distorted anchor it is then pinned to for the whole loop.
+
+        ``anchor`` is the placement, not the position in the list: ``"first"``
+        or the integer ``0`` stretches, ``"last"`` and every other integer
+        cover-crops. THAT IS A DELIBERATE CHANGE from "the packed-first keyframe
+        stretches", made when placement shipped, and it is a change of rule
+        rather than of behaviour:
+
+        * with placement, a request can have no frame-0 anchor at all (a
+          mid-only or last-only one). Under the old rule its single anchor would
+          be stretched -- i.e. the model would be pinned mid-clip to a distorted
+          frame -- purely because it was first in the list;
+        * the one shipped path that feeds a lone non-zero anchor is video
+          outpaint's ``extend_backward`` (``("last", head[0])``), and it is
+          provably unaffected: ``_generate_vidoutpaint_minimax_h3`` passes
+          frames straight out of ``center_crop_resize_frames(..., width,
+          height)``, so every anchor it sends is ALREADY exactly
+          ``(width, height)`` and returns at the identity check below before
+          either branch runs. ``minimax_h3_layout_test`` asserts that, on the
+          outpaint anchor shapes, both rules produce identical pixels.
 
         The arithmetic below is MiniMax's own, kept verbatim rather than
         expressed through ``VaeImageProcessor(resize_mode="crop")``: that helper
@@ -139,7 +158,8 @@ class MiniMaxH3Mixin:
         image = image.convert("RGB")
         if image.size == (width, height):
             return image
-        if index == 0:
+        if anchor == "first" or (isinstance(anchor, int) and not isinstance(anchor, bool)
+                                 and anchor == 0):
             return image.resize((width, height), Image.LANCZOS)
         source_width, source_height = image.size
         scale = max(width / source_width, height / source_height)
@@ -333,25 +353,36 @@ class MiniMaxH3Mixin:
         last_frame_image=None,
         progress_callback: Optional[Callable] = None,
         step_callback: Optional[Callable] = None,
+        keyframes: Optional[Sequence[Tuple[Any, Any]]] = None,
     ):
         """Keyframe-conditioned generation with MiniMax-H3 (``fl2va``).
 
-        ``input_image`` is the FIRST frame and the optional ``last_frame_image``
-        is the LAST one; both are ordinary PIL images and each becomes one
-        single-frame visual condition, anchored at the rotary clock's first and
-        last frame position respectively. Those two positions are what THIS
-        route offers, not what the layout can express: an anchor's rotary time
-        is ``num_text_tokens + (5/3)*f`` for any pixel frame ``f``, and
-        ``build_packed_layout`` takes an integer index (it is the caller that
-        passes only the two strings here).
+        Each keyframe is an ordinary PIL image and becomes one single-frame
+        visual condition, anchored at its own frame's rotary position
+        (``num_text_tokens + (5/3)*f``, exact for every pixel frame).
+
+        ``keyframes`` — the RESOLVED placement plan, ``(anchor, image)`` in
+        packed order, where anchor is ``"first"``, ``"last"`` or an integer
+        pixel frame. The route builds it with
+        ``generation_utils.plan_keyframe_placements``, which is where the
+        ``-1`` sentinel is resolved against the snapped clip length and the two
+        ends are mapped onto the string anchors.
+
+        ``input_image`` / ``last_frame_image`` — the pre-placement call shape,
+        used when ``keyframes`` is None (internal callers, and any caller that
+        has not been through the route). Equivalent to
+        ``[("first", input_image)]`` plus ``("last", last_frame_image)``.
 
         Same return contract as ``_generate_txt2vid_minimax_h3``.
         """
-        if input_image is None:
-            raise RuntimeError("img2vid requires an input image for the first-frame keyframe")
-        keyframes = [("first", input_image)]
-        if last_frame_image is not None:
-            keyframes.append(("last", last_frame_image))
+        if keyframes is None:
+            if input_image is None:
+                raise RuntimeError("img2vid requires an input image for the first-frame keyframe")
+            keyframes = [("first", input_image)]
+            if last_frame_image is not None:
+                keyframes.append(("last", last_frame_image))
+        if not keyframes:
+            raise RuntimeError("img2vid requires at least one keyframe image")
         return self._generate_minimax_h3(
             params, keyframes=tuple(keyframes), label="img2vid",
             progress_callback=progress_callback, step_callback=step_callback)
@@ -734,7 +765,7 @@ class MiniMaxH3Mixin:
         self,
         params: Dict[str, Any],
         *,
-        keyframes: Sequence[Tuple[str, Any]] = (),
+        keyframes: Sequence[Tuple[Any, Any]] = (),
         references: Sequence[Any] = (),
         label: str = "txt2vid",
         progress_callback: Optional[Callable] = None,
@@ -743,8 +774,9 @@ class MiniMaxH3Mixin:
         """The one MiniMax-H3 generation path, for all three workflows.
 
         ``keyframes`` is a sequence of ``(anchor, PIL.Image)`` in PACKED ORDER,
-        where anchor is ``"first"`` or ``"last"``. Empty is ``t2va``; one or two
-        entries is ``fl2va``.
+        where anchor is ``"first"``, ``"last"`` or an integer PIXEL frame index
+        (see ``h3_pipeline_ops._anchor_rotary_time``). Empty is ``t2va``; one or
+        more entries is ``fl2va``.
 
         ``references`` is a ``ref2va`` request's reference list, also in packed
         order (see ``_generate_ref2vid_minimax_h3``). It is mutually exclusive
@@ -825,8 +857,8 @@ class MiniMaxH3Mixin:
         # NOT treated the same way -- see `_minimax_h3_fit_keyframe`.
         anchors = tuple(anchor for anchor, _image in keyframes)
         keyframe_pixels = [
-            np.asarray(self._minimax_h3_fit_keyframe(image, width, height, index), dtype=np.uint8)
-            for index, (_anchor, image) in enumerate(keyframes)
+            np.asarray(self._minimax_h3_fit_keyframe(image, width, height, anchor), dtype=np.uint8)
+            for anchor, image in keyframes
         ]
 
         # ---- ref2va: normalise the references onto the model's own rates and

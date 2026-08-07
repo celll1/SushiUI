@@ -2708,7 +2708,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         )
 
     def generate_img2vid(self, params: Dict[str, Any], input_image, progress_callback=None,
-                         step_callback=None, last_frame_image=None):
+                         step_callback=None, last_frame_image=None, keyframes=None):
         """Generate a video from still-image keyframes (LTX-2.3 or MiniMax-H3).
 
         Args:
@@ -2723,6 +2723,15 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                 image-to-video pipeline conditions on the first frame only and
                 ignores it -- the route warns via arch_capabilities rather than
                 refusing, because one endpoint serves both architectures.
+            keyframes: The RESOLVED keyframe placement plan for MiniMax-H3:
+                `(anchor, PIL.Image)` in packed order, anchor being "first",
+                "last" or an integer pixel frame. Built by the route
+                (`generation_utils.plan_keyframe_placements`), which resolves
+                the `-1` sentinel against the SNAPPED clip length -- something
+                only the route can do, since the snap happens there. None means
+                the pre-placement shape (input_image first, last_frame_image
+                last). Ignored by LTX-2.3, which pins the uploaded image as
+                frame 0 and declares `keyframe_placement` unsupported.
 
         Returns:
             tuple: (frames, audio, audio_sample_rate, actual_seed) — identical
@@ -2733,7 +2742,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         if self.is_minimax_h3_model:
             return self._generate_img2vid_minimax_h3(
                 params, input_image, last_frame_image=last_frame_image,
-                progress_callback=progress_callback, step_callback=step_callback)
+                progress_callback=progress_callback, step_callback=step_callback,
+                keyframes=keyframes)
 
         from api.error_handlers import ValidationError
         raise ValidationError(

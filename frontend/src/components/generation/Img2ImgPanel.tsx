@@ -26,8 +26,9 @@ import GenerationQueue from "../common/GenerationQueue";
 import PromptEditor from "../common/PromptEditor";
 import LoopGenerationPanel, { LoopGenerationConfig } from "./LoopGenerationPanel";
 import QuantizedGemmSelect from "./QuantizedGemmSelect";
+import MiniMaxH3KeyframeTimeline from "../common/MiniMaxH3KeyframeTimeline";
 import { migrateLoopGenerationConfig, computeLoopDecodeDirective } from "@/utils/loopGenerationInheritance";
-import { getSamplers, getScheduleTypes, generateImg2Img, generateImg2Vid, Img2VidParams, generateAud2Aud, Aud2AudParams, generateImg2ImgTrainingPreview, toBase64, LoRAConfig, ControlNetConfig, generateTIPOPrompt, cancelGeneration, getCurrentModel, isLatentOnlyResult, getResultFilename, getResultSeed, getResultAncestralSeed, unetQuantizationOptions, normalizeUnetQuantization, transformerQuantizationLabel, archSupportsFeature, videoFrameOptions, videoFrameLabel, archDisplayName, normalizeVideoFrames } from "@/utils/api";
+import { getSamplers, getScheduleTypes, generateImg2Img, generateImg2Vid, Img2VidParams, MiniMaxH3Keyframe, generateAud2Aud, Aud2AudParams, generateImg2ImgTrainingPreview, toBase64, LoRAConfig, ControlNetConfig, generateTIPOPrompt, cancelGeneration, getCurrentModel, isLatentOnlyResult, getResultFilename, getResultSeed, getResultAncestralSeed, unetQuantizationOptions, normalizeUnetQuantization, transformerQuantizationLabel, archSupportsFeature, videoFrameOptions, videoFrameLabel, archDisplayName, normalizeVideoFrames } from "@/utils/api";
 import { useActiveTraining } from "@/hooks/useActiveTraining";
 import { wsClient, CFGMetrics } from "@/utils/websocket";
 import CFGMetricsGraph from "../common/CFGMetricsGraph";
@@ -107,10 +108,16 @@ interface Img2ImgParams {
   // these into Img2VidParams for img2vid requests, with the input image as the keyframe).
   num_frames?: number;
   frame_rate?: number;
-  // OPTIONAL last-frame keyframe, as a data URL. The uploaded input image is
-  // the FIRST frame; this is the last one (MiniMax-H3 `fl2va`). null = no
-  // last-frame conditioning, which is every other architecture's only mode.
+  // OPTIONAL last-frame keyframe, as a data URL. Equivalent to a `keyframes`
+  // entry at frame index -1 (MiniMax-H3 `fl2va`); it stays a field of its own
+  // because it is the shipped alias the endpoint, the gallery send-to and this
+  // panel's own persistence already use. null = no end anchor.
   last_frame_image?: string | null;
+  // Keyframe PLACEMENT (MiniMax-H3): which frame the uploaded input image
+  // anchors, and any additional anchors with their own frames. -1 means the
+  // clip's last frame, resolved server-side after num_frames is snapped.
+  input_image_frame_index?: number;
+  keyframes?: MiniMaxH3Keyframe[];
   num_inference_steps?: number;
   guidance_scale?: number;
   num_videos_per_prompt?: number;
@@ -225,6 +232,8 @@ const DEFAULT_PARAMS: Img2ImgParams = {
   num_frames: 121,
   frame_rate: 24.0,
   last_frame_image: null,
+  input_image_frame_index: 0,
+  keyframes: [],
   num_inference_steps: 8,
   guidance_scale: 1.0,
   num_videos_per_prompt: 1,
@@ -506,6 +515,12 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
     });
   }, [archCapabilities, loadedArch]);
   const supportsLastFrame = archSupportsFeature(archCapabilities, loadedArch, "last_frame_image");
+  // Keyframe PLACEMENT is a separate capability from "there is a last-frame
+  // slot": an architecture can have the second without the first. When it is
+  // supported the timeline SUBSUMES the last-frame box (it renders that anchor
+  // as its own chip), so exactly one of the two controls is shown.
+  const supportsKeyframePlacement = archSupportsFeature(
+    archCapabilities, loadedArch, "keyframe_placement");
   const [isDragging, setIsDragging] = useState(false);
   const [isEditingImage, setIsEditingImage] = useState(false);
   const [sendImage, setSendImage] = useState(true);
@@ -1049,7 +1064,10 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
       // key (INPUT_IMAGE_STORAGE_KEY): a base64 image in the params blob eats
       // the ~5 MB localStorage quota and, once it overflows, takes every OTHER
       // persisted parameter down with it.
-      const { last_frame_image: _lastFrame, ...persistableParams } = params;
+      // `keyframes` carries data URLs too, for the same quota reason. It is
+      // dropped rather than given its own key: an arbitrary number of full
+      // images is not something to push into a 5 MB store.
+      const { last_frame_image: _lastFrame, keyframes: _keyframes, ...persistableParams } = params;
       const currentParamsStr = JSON.stringify(persistableParams);
       const savedParamsStr = savedParams ? JSON.stringify(savedParams) : null;
 
@@ -1948,10 +1966,13 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         height: params.height,
         num_frames: params.num_frames,
         frame_rate: params.frame_rate,
-        // The optional SECOND keyframe (MiniMax-H3 fl2va). Carried into the
-        // queued item's params, because the queue is what the sender is handed
-        // -- a value left in `params` alone never reaches generateImg2Vid.
+        // The optional END keyframe (MiniMax-H3 fl2va) and the placement of
+        // every anchor. Carried into the queued item's params, because the
+        // queue is what the sender is handed -- a value left in `params` alone
+        // never reaches generateImg2Vid.
         last_frame_image: params.last_frame_image ?? null,
+        input_image_frame_index: params.input_image_frame_index ?? 0,
+        keyframes: params.keyframes ?? [],
         num_inference_steps: params.num_inference_steps,
         guidance_scale: params.guidance_scale,
         seed: params.seed,
@@ -4001,12 +4022,35 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
               <span className="text-gray-300 text-sm">Audio</span>
             </label>
 
+            {/* Keyframe PLACEMENT: the timeline, on an architecture that
+                honors per-anchor frame indices (MiniMax-H3). It subsumes the
+                last-frame box below, rendering that anchor as its "last" chip,
+                so the two are mutually exclusive. */}
+            {supportsKeyframePlacement && (
+              <MiniMaxH3KeyframeTimeline
+                numFrames={params.num_frames ?? 124}
+                frameRate={params.frame_rate ?? 24}
+                inputImage={inputImagePreview}
+                inputImageFrameIndex={params.input_image_frame_index ?? 0}
+                onInputImageFrameIndexChange={(frameIndex) =>
+                  setParams({ ...params, input_image_frame_index: frameIndex })
+                }
+                keyframes={params.keyframes ?? []}
+                onKeyframesChange={(keyframes) => setParams({ ...params, keyframes })}
+                lastFrameImage={params.last_frame_image ?? null}
+                onLastFrameImageChange={(dataUrl) =>
+                  setParams({ ...params, last_frame_image: dataUrl })
+                }
+                disabled={isGenerating}
+              />
+            )}
+
             {/* Optional LAST-frame keyframe. Rendered only on an architecture
                 that conditions on both ends of the clip: LTX-2.3 declares
                 `last_frame_image` unsupported (first frame only), MiniMax-H3
-                reads it as its second `fl2va` anchor. Capability-driven, so the
-                arch list stays in the backend table. */}
-            {supportsLastFrame && (
+                reads it as one of its `fl2va` anchors. Capability-driven, so
+                the arch list stays in the backend table. */}
+            {supportsLastFrame && !supportsKeyframePlacement && (
               <div className="mt-3 space-y-2">
                 <label className="block text-sm font-medium text-gray-300">
                   Last Frame (optional)
@@ -4061,8 +4105,9 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
                   <code className="mx-1">non_diegetic_music:</code>.
                 </div>
                 <div>
-                  Keyframes are conditioning anchors at the two ends of the
-                  clip; there is no mid-timeline frame conditioning.
+                  A keyframe is a conditioning anchor pinned at one exact frame
+                  of the clip: its rows are held at the model&apos;s keyframe
+                  noise level for every step and are never denoised.
                 </div>
                 <div>
                   Steps count sigma schedule points, so N steps run N-1 model

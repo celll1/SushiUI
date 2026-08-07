@@ -67,6 +67,14 @@ FEATURE_PARAMS: Dict[str, List[str]] = {
     # Meaningful only on an architecture that conditions on both ends of the
     # clip; the value carried in `params` is the uploaded filename.
     "last_frame_image": ["last_frame_image"],
+    # POST /generate/img2vid's keyframe PLACEMENT fields: which frame the
+    # uploaded image anchors, and any additional anchors with their own frames.
+    # Separate from `last_frame_image` because they are a different claim -- one
+    # says "there is a second anchor at the end", the other says "an anchor can
+    # name any frame" -- and an architecture can honor the first without the
+    # second. The frontend gates its keyframe timeline on this key.
+    "keyframe_placement": ["input_image_frame_index", "keyframe_images",
+                           "keyframe_frame_indices"],
 }
 
 # Human-readable label used in the warning message for each feature.
@@ -90,6 +98,7 @@ FEATURE_LABELS: Dict[str, str] = {
     "cfg": "guidance_scale/cfg_scale (classifier-free guidance)",
     "negative_prompt": "negative_prompt",
     "last_frame_image": "last_frame_image (last-frame keyframe)",
+    "keyframe_placement": "input_image_frame_index/keyframe_images/keyframe_frame_indices (keyframe placement)",
 }
 
 # ---------------------------------------------------------------------------
@@ -199,6 +208,14 @@ _add("ltx2", "controlnets", "ControlNet is not supported for the LTX-2.3 video m
 # endpoint serves two architectures and only one of them reads the field).
 _add("ltx2", "last_frame_image",
      "LTX-2.3's image-to-video pipeline conditions on the first frame only, so a last-frame keyframe has nothing to attach to")
+# Keyframe PLACEMENT on the same endpoint. LTX-2.3's img2vid pipeline pins the
+# uploaded image as frame 0 and takes no frame index for it, so a placement is
+# accepted and dropped rather than refused -- one endpoint, two architectures.
+# (Its `LTX2VideoCondition.index` DOES address a latent frame, which is what
+# /generate/outpaint/video's "free" placement uses; the img2vid pipeline simply
+# does not expose it.)
+_add("ltx2", "keyframe_placement",
+     "LTX-2.3's image-to-video pipeline pins the uploaded image as frame 0 and takes no per-keyframe frame index, so a keyframe placement has nothing to apply to")
 # The video routes carry `attention_type` because MiniMax-H3 honors it; LTX-2.3
 # runs the diffusers transformer's own attention dispatch and never consults it.
 _add("ltx2", "attention_type",

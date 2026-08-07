@@ -48,7 +48,7 @@ import {
 } from "@/utils/api";
 import { wsClient, CFGMetrics } from "@/utils/websocket";
 import { saveTempImage, loadTempImage, deleteTempImageRef } from "@/utils/tempImageStorage";
-import { previewStorageKeys, loadVideoPreview, saveVideoPreview, saveImagePreview, clearVideoPreview, outputExists } from "@/utils/previewStorage";
+import { previewStorageKeys, loadVideoPreview, saveVideoPreview, loadAudioPreview, saveAudioPreview, saveImagePreview, clearVideoPreview, clearAudioPreview, outputExists } from "@/utils/previewStorage";
 import { sendToPanel, sendImageToImg2Img, sendImageToInpaint, sendImageToUpscale, fetchUrlToFile, sendVideoToOutpaint, sendAudioToOutpaint, sendAudioToImg2Img } from "@/utils/sendHelpers";
 import { fixFloatingPointParams } from "@/utils/numberUtils";
 import { useStartup } from "@/contexts/StartupContext";
@@ -432,9 +432,9 @@ function isOutpaintOptionsTabActive(tabId: OutpaintOptionsTabId, params: Outpain
 
 const STORAGE_KEY = "outpaint_params";
 const PREVIEW_STORAGE_KEY = "outpaint_preview";
-// Image + video preview keys for this panel. The two are mutually exclusive in
-// storage (see utils/previewStorage.ts), so the newest result is the only one
-// that can be restored.
+// Image + video + audio preview keys for this panel. The three are mutually
+// exclusive in storage (see utils/previewStorage.ts), so the newest result is
+// the only one that can be restored.
 const PREVIEW_KEYS = previewStorageKeys(PREVIEW_STORAGE_KEY);
 const INPUT_IMAGE_STORAGE_KEY = "outpaint_input_image";
 
@@ -485,10 +485,11 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
   const [generatedVideoInfo, setGeneratedVideoInfo] = useState<{ num_frames?: number; fps?: number; duration?: number } | null>(null);
   const [generatedVideoSeed, setGeneratedVideoSeed] = useState<number | null>(null);
 
-  // Audio temporal outpaint (outpaint_aud) input clip + result. Not persisted
-  // across reloads either -- mirrors videoFile's rationale (an uploaded File
-  // can't be cheaply round-tripped through localStorage/IndexedDB the way
-  // the image input is).
+  // Audio temporal outpaint (outpaint_aud) input clip + result. The INPUT clip
+  // is not persisted across reloads -- mirrors videoFile's rationale (an
+  // uploaded File can't be cheaply round-tripped through localStorage/IndexedDB
+  // the way the image input is). The RESULT is persisted, as a URL, under the
+  // panel's audio preview key (see utils/previewStorage.ts).
   const [audioFile, setAudioFile] = useState<File | null>(null);
   const [audioPreviewUrl, setAudioPreviewUrl] = useState<string | null>(null);
   const [audioDurationSec, setAudioDurationSec] = useState<number | null>(null);
@@ -644,6 +645,17 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
         setGeneratedVideoSeed(savedVideo.seed ?? null);
       }
 
+      // Preview audio (outpaint_aud result). Same reasoning as the video above:
+      // restored unconditionally because the <audio> render site is gated on
+      // `isAudio` from useStartup(), which arrives asynchronously, so nothing
+      // plays until the loaded arch is known to be an audio arch.
+      const savedAudio = loadAudioPreview(PREVIEW_KEYS);
+      if (savedAudio) {
+        setGeneratedAudio(savedAudio.url);
+        setGeneratedAudioInfo(savedAudio.info);
+        setGeneratedAudioSeed(savedAudio.seed ?? null);
+      }
+
       const savedInputRef = localStorage.getItem(INPUT_IMAGE_STORAGE_KEY);
       if (savedInputRef) {
         try {
@@ -751,6 +763,19 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
           setGeneratedVideo(null);
           setGeneratedVideoInfo(null);
           setGeneratedVideoSeed(null);
+        }
+      });
+    }
+    // Same verification for a restored preview audio clip.
+    const savedAudio = loadAudioPreview(PREVIEW_KEYS);
+    if (savedAudio) {
+      outputExists(savedAudio.url).then((exists) => {
+        if (!exists) {
+          console.log("[Outpaint] Stored preview audio is gone, clearing:", savedAudio.url);
+          clearAudioPreview(PREVIEW_KEYS);
+          setGeneratedAudio(null);
+          setGeneratedAudioInfo(null);
+          setGeneratedAudioSeed(null);
         }
       });
     }
@@ -956,6 +981,18 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
       });
     }
   }, [generatedVideo, generatedVideoInfo, generatedVideoSeed, isMounted]);
+
+  // Save preview audio to localStorage whenever it changes. Only the URL, the
+  // duration/sample-rate line and the seed are stored -- never the audio bytes.
+  useEffect(() => {
+    if (isMounted && generatedAudio) {
+      saveAudioPreview(PREVIEW_KEYS, {
+        url: generatedAudio,
+        info: generatedAudioInfo,
+        seed: generatedAudioSeed,
+      });
+    }
+  }, [generatedAudio, generatedAudioInfo, generatedAudioSeed, isMounted]);
 
   // Apply backend-fetched defaults when they arrive (only if no localStorage value exists).
   // Merges the image (outpaint), video (outpaint_vid), AND audio
@@ -1609,7 +1646,11 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
       setPreviewImage(null);
       setGeneratedImage(null);
       setGeneratedVideo(null);
+      setGeneratedVideoInfo(null);
       setGeneratedVideoSeed(null);
+      setGeneratedAudio(null);
+      setGeneratedAudioInfo(null);
+      setGeneratedAudioSeed(null);
       try {
         const clip = nextItem.inputVideo;
         if (!clip) {
@@ -1657,8 +1698,14 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
       setTotalSteps((nextItem.params as OutpaintAudioParams).inference_steps || 8);
       setPreviewImage(null);
       setGeneratedImage(null);
+      // An audio run supersedes any image/video result still on screen; the
+      // stored preview is only replaced once this run actually succeeds.
       setGeneratedAudio(null);
+      setGeneratedAudioInfo(null);
       setGeneratedAudioSeed(null);
+      setGeneratedVideo(null);
+      setGeneratedVideoInfo(null);
+      setGeneratedVideoSeed(null);
       try {
         const referenceAudio = nextItem.inputAudio;
         if (!referenceAudio) {
@@ -1702,12 +1749,15 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
     setTotalSteps(actualSteps);
     setPreviewImage(null);
     setGeneratedImage(null);
-    // An image run supersedes any video result still on screen. The stored
-    // video preview is left alone until the image actually succeeds (see the
-    // save effect), so a failed run does not throw away the last good result.
+    // An image run supersedes any video/audio result still on screen. The
+    // stored previews are left alone until the image actually succeeds (see the
+    // save effects), so a failed run does not throw away the last good result.
     setGeneratedVideo(null);
     setGeneratedVideoInfo(null);
     setGeneratedVideoSeed(null);
+    setGeneratedAudio(null);
+    setGeneratedAudioInfo(null);
+    setGeneratedAudioSeed(null);
 
     try {
       const itemParams = nextItem.params as ApiOutpaintParams;
@@ -4068,6 +4118,15 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
                       src={generatedAudio}
                       className="w-full"
                       controls
+                      onError={() => {
+                        // The file is gone (outputs/ cleared, run deleted) --
+                        // show an empty preview rather than a dead player.
+                        console.warn("[Outpaint] Preview audio failed to load, clearing:", generatedAudio);
+                        clearAudioPreview(PREVIEW_KEYS);
+                        setGeneratedAudio(null);
+                        setGeneratedAudioInfo(null);
+                        setGeneratedAudioSeed(null);
+                      }}
                     />
                     {generatedAudioInfo && (
                       <div className="text-xs text-gray-400">

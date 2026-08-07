@@ -3,21 +3,26 @@
  *
  * Every generation panel already persists its image result as a bare URL (or
  * data URL) under a `<panel>_preview` localStorage key, so the preview survives
- * a tab switch or a browser restart.  Video results had no equivalent and died
- * with the component state.
+ * a tab switch or a browser restart.  Video and audio results had no equivalent
+ * and died with the component state.
  *
- * This module owns both halves so the "which one is showing?" rule lives in one
- * place:
+ * This module owns all three modalities so the "which one is showing?" rule
+ * lives in one place:
  *
  * - The image preview keeps its existing key and existing plain-string format,
  *   so previews written by older builds still load.
  * - The video preview lives under `<panel>_preview_video` and is stored as JSON
  *   ({ url, info, seed }) because a video carries frame/fps/duration metadata
- *   next to its URL.  Only the URL is stored -- never the bytes -- so this is a
+ *   next to its URL.
+ * - The audio preview lives under `<panel>_preview_audio`, same JSON shape,
+ *   with a duration/sample-rate info line instead.
+ * - In every case only the URL is stored -- never the bytes -- so an entry is a
  *   few hundred bytes regardless of clip length.
- * - The two keys are **mutually exclusive**: saving one removes the other.
+ * - The three keys are **mutually exclusive**: saving any one of them removes
+ *   the other two (`saveExclusive` below is the single place that rule lives).
  *   Whichever result was produced last is the only one in storage, so a restore
- *   can never show a stale image next to a newer video (or vice versa).
+ *   can never show a stale image next to a newer clip, and there is no
+ *   precedence order for callers to get wrong.
  *
  * Nothing here validates that the referenced file still exists; `outputExists`
  * is provided for callers that want to verify a restored URL once the backend
@@ -30,22 +35,84 @@ export interface VideoPreviewInfo {
   duration?: number;
 }
 
-export interface StoredVideoPreview {
-  /** Backend URL of the clip, e.g. "/outputs/txt2vid_20260807_070228_0.mp4". */
+export interface AudioPreviewInfo {
+  duration?: number;
+  sample_rate?: number;
+}
+
+export interface StoredMediaPreview<TInfo> {
+  /** Backend URL of the result, e.g. "/outputs/txt2vid_20260807_070228_0.mp4". */
   url: string;
-  info: VideoPreviewInfo | null;
+  info: TInfo | null;
   /** Seed of the run, when the panel exposes a "reuse seed" button. */
   seed?: number | null;
 }
 
+export type StoredVideoPreview = StoredMediaPreview<VideoPreviewInfo>;
+export type StoredAudioPreview = StoredMediaPreview<AudioPreviewInfo>;
+
 export interface PreviewStorageKeys {
   image: string;
   video: string;
+  audio: string;
 }
 
-/** Derive the pair of keys for a panel from its existing image preview key. */
+/** The three modalities a panel's result preview can hold. */
+export type PreviewMediaKind = keyof PreviewStorageKeys;
+
+/** Derive the trio of keys for a panel from its existing image preview key. */
 export function previewStorageKeys(imageKey: string): PreviewStorageKeys {
-  return { image: imageKey, video: `${imageKey}_video` };
+  return {
+    image: imageKey,
+    video: `${imageKey}_video`,
+    audio: `${imageKey}_audio`,
+  };
+}
+
+/**
+ * The mutual-exclusion rule, in the one place it lives: write `value` under the
+ * key for `kind` and remove the keys for the other two modalities.  Every save
+ * helper below funnels through this, so adding a modality means extending
+ * `PreviewStorageKeys` and nothing else.
+ */
+function saveExclusive(keys: PreviewStorageKeys, kind: PreviewMediaKind, value: string): void {
+  try {
+    localStorage.setItem(keys[kind], value);
+    (Object.keys(keys) as PreviewMediaKind[])
+      .filter((other) => other !== kind)
+      .forEach((other) => localStorage.removeItem(keys[other]));
+  } catch (error) {
+    console.warn(`[previewStorage] Failed to store ${kind} preview:`, error);
+  }
+}
+
+/** Read and validate a JSON-encoded media preview ({ url, info, seed }). */
+function loadMediaPreview<TInfo>(
+  key: string,
+  label: string,
+): StoredMediaPreview<TInfo> | null {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed.url !== "string" || !parsed.url) {
+      localStorage.removeItem(key);
+      return null;
+    }
+    return {
+      url: parsed.url,
+      info: parsed.info ?? null,
+      seed: parsed.seed ?? null,
+    };
+  } catch (error) {
+    console.warn(`[previewStorage] Failed to read stored ${label} preview:`, error);
+    try {
+      localStorage.removeItem(key);
+    } catch {
+      /* storage unavailable; nothing to clean up */
+    }
+    return null;
+  }
 }
 
 const VIDEO_EXTENSIONS = [".mp4", ".webm", ".mov", ".mkv"];
@@ -70,6 +137,15 @@ export function isAudioUrl(url: string): boolean {
  * Poster frame the backend writes next to every generated clip (same base name,
  * `.png`).  Used as the `poster` attribute so a thumbnail can render without
  * decoding the video; a missing poster degrades to the browser default.
+ *
+ * Audio deliberately has no counterpart here.  The backend does write a
+ * same-base-name `.png` next to every generated `.flac`, but it is a waveform
+ * plot rather than a frame grab and, more to the point, `<audio>` has no
+ * `poster` attribute for it to feed -- the PNG exists to seed the gallery
+ * thumbnail (see `create_thumbnail` in the audio routes), not the player.  So
+ * audio tiles render as a compact `<audio controls>` with no poster lookup;
+ * this function returns "" for anything that is not a video URL, so calling it
+ * on an audio URL is harmless but pointless.
  */
 export function posterUrlForVideo(url: string): string {
   const [path, rest] = splitQuery(url);
@@ -84,56 +160,42 @@ function splitQuery(url: string): [string, string] {
 }
 
 export function loadVideoPreview(keys: PreviewStorageKeys): StoredVideoPreview | null {
-  try {
-    const raw = localStorage.getItem(keys.video);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed.url !== "string" || !parsed.url) {
-      localStorage.removeItem(keys.video);
-      return null;
-    }
-    return {
-      url: parsed.url,
-      info: parsed.info ?? null,
-      seed: parsed.seed ?? null,
-    };
-  } catch (error) {
-    console.warn("[previewStorage] Failed to read stored video preview:", error);
-    try {
-      localStorage.removeItem(keys.video);
-    } catch {
-      /* storage unavailable; nothing to clean up */
-    }
-    return null;
-  }
+  return loadMediaPreview<VideoPreviewInfo>(keys.video, "video");
 }
 
-/** Persist a video result and drop any older image preview for the panel. */
+export function loadAudioPreview(keys: PreviewStorageKeys): StoredAudioPreview | null {
+  return loadMediaPreview<AudioPreviewInfo>(keys.audio, "audio");
+}
+
+/** Persist a video result and drop any older image/audio preview for the panel. */
 export function saveVideoPreview(keys: PreviewStorageKeys, preview: StoredVideoPreview): void {
-  try {
-    localStorage.setItem(keys.video, JSON.stringify(preview));
-    localStorage.removeItem(keys.image);
-  } catch (error) {
-    console.warn("[previewStorage] Failed to store video preview:", error);
-  }
+  saveExclusive(keys, "video", JSON.stringify(preview));
 }
 
-/** Persist an image result and drop any older video preview for the panel. */
+/** Persist an audio result and drop any older image/video preview for the panel. */
+export function saveAudioPreview(keys: PreviewStorageKeys, preview: StoredAudioPreview): void {
+  saveExclusive(keys, "audio", JSON.stringify(preview));
+}
+
+/** Persist an image result and drop any older video/audio preview for the panel. */
 export function saveImagePreview(keys: PreviewStorageKeys, url: string): void {
+  saveExclusive(keys, "image", url);
+}
+
+function clearPreview(key: string, label: string): void {
   try {
-    localStorage.setItem(keys.image, url);
-    localStorage.removeItem(keys.video);
+    localStorage.removeItem(key);
   } catch (error) {
-    console.warn("[previewStorage] Failed to store image preview:", error);
+    console.warn(`[previewStorage] Failed to clear ${label} preview:`, error);
   }
 }
 
 export function clearVideoPreview(keys: PreviewStorageKeys): void {
-  try {
-    localStorage.removeItem(keys.video);
-  } catch (error) {
-    console.warn("[previewStorage] Failed to clear video preview:", error);
-  }
+  clearPreview(keys.video, "video");
+}
+
+export function clearAudioPreview(keys: PreviewStorageKeys): void {
+  clearPreview(keys.audio, "audio");
 }
 
 /**

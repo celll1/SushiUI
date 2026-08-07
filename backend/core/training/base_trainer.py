@@ -5359,6 +5359,30 @@ class BaseTrainer(ABC):
             self._activation_dispatch_end(_disp_cm, _disp_info)
 
 
+    @staticmethod
+    def _actdispatch_latent_key(mnt_latents: torch.Tensor):
+        """``(latent_h, latent_w, latent_t, batch)`` for the activation dispatcher.
+
+        Video architectures (LTX-2.3, MiniMax-H3) hand this method a 5-D latent
+        ``[B, C, T, H', W']``; the clip length ``T`` moves the transformer's packed
+        sequence length -- and therefore the activation footprint -- directly
+        (measured 2.36 GB at T_lat=7 vs 8.90 GB at T_lat=37 for MiniMax-H3 at
+        384x640), so it MUST be part of the bucket key. Image architectures hand it
+        a 4-D latent ``[B, C, H', W']`` with no temporal axis at all and get
+        ``latent_t = 1``, which leaves their key and their predicted volume exactly
+        what they were.
+
+        The 5-D guard is deliberate: ``shape[-3]`` of a 4-D latent is the CHANNEL
+        count (4 for SDXL, 16 for the flow-matching DiTs), and folding that into the
+        key would be a silent, large miskey of every image bucket.
+        """
+        shape = mnt_latents.shape
+        lh = int(shape[-2])
+        lw = int(shape[-1])
+        bs = int(shape[0])
+        lt = int(shape[-3]) if len(shape) >= 5 else 1
+        return lh, lw, max(1, lt), bs
+
     def _activation_dispatch_begin(self, mnt_latents: torch.Tensor):
         """Decide the per-bucket activation-offload mode and enter the offload
         context. Returns (entered_context_or_None, info_or_None).
@@ -5370,9 +5394,7 @@ class BaseTrainer(ABC):
         if not self.activation_dispatch_enable or not torch.cuda.is_available():
             return None, None
         try:
-            lh = int(mnt_latents.shape[-2])
-            lw = int(mnt_latents.shape[-1])
-            bs = int(mnt_latents.shape[0])
+            lh, lw, lt, bs = self._actdispatch_latent_key(mnt_latents)
         except Exception:
             return None, None
 
@@ -5416,15 +5438,19 @@ class BaseTrainer(ABC):
 
         disp = self.activation_dispatcher
         self._actdispatch_oom = False  # set by the reactive handler if this step OOMs
-        mode = disp.decide(lh, lw, bs, headroom_gb)
+        mode = disp.decide(lh, lw, bs, headroom_gb, lt=lt)
         _headroom_gb = headroom_gb
-        _act_pred_gb = disp.base_act(lh, lw, bs)
+        _act_pred_gb = disp.base_act(lh, lw, bs, lt=lt)
 
         # Block-swap activation offload (LayerOffloadConductor) already moves
         # activations; suppress the dispatcher offload to avoid double offload.
         conductor = getattr(self, "layer_offload_conductor", None)
         if conductor is not None and getattr(conductor, "enable_activation_offload", False):
             mode = "fast"
+
+        # Log label for the bucket. The temporal extent is shown only when there
+        # is one, so image-arch log lines are byte-identical to before.
+        _bkt = f"{lw}x{lh}" + (f"x{lt}t" if lt > 1 else "")
 
         # Throttle decision logging to once per (bucket, decision) so aspect
         # bucketing (hundreds of distinct shapes) doesn't flood the log.
@@ -5448,21 +5474,21 @@ class BaseTrainer(ABC):
                 # tensors to CPU is the correct lever before declaring the bucket
                 # un-fittable rather than silently spilling.
                 step_threshold = max(256 * 1024, disp.threshold_bytes // 16)
-                _log_once((lh, lw, bs, "fused"),
-                          f"{self.log_prefix} [ActDispatch] bucket {lw}x{lh} bs{bs} won't fit; "
+                _log_once((lh, lw, lt, bs, "fused"),
+                          f"{self.log_prefix} [ActDispatch] bucket {_bkt} bs{bs} won't fit; "
                           f"micro-batch split disabled under fused backward (Block Swap); "
                           f"offload with lowered threshold={step_threshold // 1024}KB")
             else:
-                planned = disp.plan_micro_bs(lh, lw, bs, headroom_gb)
+                planned = disp.plan_micro_bs(lh, lw, bs, headroom_gb, lt=lt)
                 if planned < bs:
                     micro_bs = planned
-                    _log_once((lh, lw, bs, "split", micro_bs),
-                              f"{self.log_prefix} [ActDispatch] bucket {lw}x{lh} bs{bs} -> "
+                    _log_once((lh, lw, lt, bs, "split", micro_bs),
+                              f"{self.log_prefix} [ActDispatch] bucket {_bkt} bs{bs} -> "
                               f"micro-batch={micro_bs} (act~{_act_pred_gb:.1f}GB, "
                               f"headroom~{_headroom_gb:.1f}GB, resident~{resident_gb:.1f}GB)")
                 else:
-                    _log_once((lh, lw, bs, "tight"),
-                              f"{self.log_prefix} [ActDispatch] bucket {lw}x{lh} bs{bs} tight at "
+                    _log_once((lh, lw, lt, bs, "tight"),
+                              f"{self.log_prefix} [ActDispatch] bucket {_bkt} bs{bs} tight at "
                               f"micro-batch=1 (act~{_act_pred_gb:.1f}GB, headroom~{_headroom_gb:.1f}GB, "
                               f"resident~{resident_gb:.1f}GB); offload only")
 
@@ -5480,7 +5506,9 @@ class BaseTrainer(ABC):
         cm.__enter__()
         # Mutable list so the reactive OOM ladder can swap in an offload retry
         # context (new mode/stats) and have dispatch_end record it correctly.
-        return cm, [lh, lw, bs, mode, micro_bs, resident_gb, stats, step_threshold]
+        # `lt` is appended LAST so the existing positional indices (3=mode, 6=stats,
+        # 7=threshold) that the OOM ladder mutates in place keep their meaning.
+        return cm, [lh, lw, bs, mode, micro_bs, resident_gb, stats, step_threshold, lt]
 
     def _activation_dispatch_end(self, cm, info) -> None:
         """Exit the offload context and self-calibrate from the measured peak."""
@@ -5491,13 +5519,14 @@ class BaseTrainer(ABC):
             return
         lh, lw, bs, mode, micro_bs, resident_gb = info[0], info[1], info[2], info[3], info[4], info[5]
         stats = info[6] if len(info) > 6 else None
+        lt = info[8] if len(info) > 8 else 1
         try:
             peak_gb = torch.cuda.max_memory_allocated() / (1024 ** 3)
             if getattr(self, "_actdispatch_oom", False):
                 # This step raised OOM under the cap -> its true activation exceeds
                 # the headroom (the measured peak is only the capped lower bound).
                 # Flag the bucket to escalate next time instead of re-OOMing.
-                self.activation_dispatcher.mark_overflow(lh, lw, bs)
+                self.activation_dispatcher.mark_overflow(lh, lw, bs, lt=lt)
             else:
                 # Record every executed step. For a micro-split, the peak reflects
                 # micro_bs samples; record() scales it back to the full bucket so the
@@ -5513,11 +5542,13 @@ class BaseTrainer(ABC):
                     lh, lw, bs, record_mode, peak_gb, resident_gb,
                     executed_bs=(micro_bs if micro_bs is not None else bs),
                     offloaded_gb=offloaded_gb,
-                    measured_threshold_bytes=(info[7] if len(info) > 7 else None))
+                    measured_threshold_bytes=(info[7] if len(info) > 7 else None),
+                    lt=lt)
             if self.debug_vram:
                 extra = f" micro_bs={micro_bs}" if micro_bs is not None else ""
-                cached = self.activation_dispatcher.base_act(lh, lw, bs)
-                print(f"{self.log_prefix} [ActDispatch] bucket {lw}x{lh} bs{bs} "
+                bkt = f"{lw}x{lh}" + (f"x{lt}t" if lt > 1 else "")
+                cached = self.activation_dispatcher.base_act(lh, lw, bs, lt=lt)
+                print(f"{self.log_prefix} [ActDispatch] bucket {bkt} bs{bs} "
                       f"mode={mode}{extra} peak={peak_gb:.2f}GB cached_act={cached:.2f}GB")
         except Exception:
             pass

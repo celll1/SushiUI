@@ -430,6 +430,234 @@ def test_the_first_keyframe_is_stretched_and_every_later_one_is_cover_cropped():
     assert list(fit(exact, width, height, 1).getdata()) == list(exact.getdata())
 
 
+# ---------------------------------------------------------------------------
+# Anchor placement: the string branches are a BITWISE contract
+# ---------------------------------------------------------------------------
+# `build_packed_layout` accepts `int | "first" | "last"` per anchor. The two
+# strings predate the integer path and are what the outpaint route, the Phase-3
+# img2vid route and every recorded K0.3 case feed, so their output is pinned
+# here as digests captured from the pre-generalisation function. They are NOT
+# recomputed by re-routing the strings through the integer formula: "last" is
+# numpy's PAIRWISE sum of the per-latent spans and `(5/3)*(T-1)` differs from it
+# in the last float64 ulp (measured: from 7 latent frames on, e.g. 51.00000000000001
+# vs 51.0 at 16 text tokens / 7 latent frames), so a "simplification" that maps
+# "last" to the integer `T-1` would change the float64 arithmetic even where the
+# stored float32 happens to agree -- `test_the_string_branches_are_not_the_
+# integer_path` below is the only guard against exactly that edit (VERIFIED: a
+# mutant that re-routes both strings passes all ten digest cases and fails only
+# that test).
+#
+# (label, text, T_lat, lh, lw, n_aud, anchors) -> S and eight SHA-256 prefixes:
+# position_ids, token_tags, video/audio/text indices, and `build_row_timesteps`'
+# (unique, inverse) at (video 0.4, audio 0.5).
+ANCHOR_DIGESTS = [
+    ('t2va min clip T=22 384x640', 16, 7, 24, 40, 37, (), 1770, '2d6759a107be8da7b98e8b3a66c6efa0', '53eaab75d0677d7b8b24ccf0550a4f85', 'a2bb7e5699997af8b5e06f95b2e479ec', '9acfa85b6148064d9968a1732a9398fc', 'f23d672bb9b341f9afa8498423b75deb', '1b7e586337a6c57cd1b25edd2fe52b3c', '59568e80718132b5f21ec75af726c1a0'),
+    ('t2va T=124 768x1344', 64, 37, 48, 84, 207, (), 37774, 'b56c7c8be125e1f539e8d35e922b31e8', '7c546653e5d85d573adedbd00bcf9bc7', '129f5225f45a514a35e8f10e315e6f91', 'c94061b4d7c30ba331c8285ef766e731', '7a4644928f3a08db905254fd7e5e53ef', '1b7e586337a6c57cd1b25edd2fe52b3c', '92453e1afaae4aeb3d5859d7c14b7ed9'),
+    ('fl2va 1 image (first)', 16, 7, 24, 40, 37, ("first",), 2010, '439012141d9bebe2c4ccf67bc37c559c', '0e8b9d1af8d30e4c233aef3348b96fb6', '0b06e4b6861531c433e7dde52c85e506', '411e6560037764ecf3141736126feb0c', 'f23d672bb9b341f9afa8498423b75deb', 'bc92d86cccf99960c06aaf15623f41ab', '9f14ff700df2ef163d95d06d4f5693d6'),
+    ('fl2va 2 images (first+last)', 16, 7, 24, 40, 37, ("first", "last"), 2250, '2239396a83549133f40e5abbb5be3d30', '6b3da6eb6fc708f4d6b4ccf0b7868659', '8c898ee23e803716eda3de0c12e06151', '498f21f0510418e87647a36ef4be856a', 'f23d672bb9b341f9afa8498423b75deb', 'bc92d86cccf99960c06aaf15623f41ab', '9373d807ae01cc617253e8d8908be139'),
+    ('T=39 square 512x512', 1, 12, 32, 32, 65, (), 3203, '9918a623cccb6f471462e1fb071a1a92', '44b3a72685bb6635c0dba4dc320805b4', '3eeb89b621eb4c288dcdfc62edd5e847', '494863c7ca525481a361dc5983e8519c', 'af5570f5a1810b7af78caf4bc70a660f', '1b7e586337a6c57cd1b25edd2fe52b3c', '2f09b8ac1ec752333c41ad964cdc6fb5'),
+    ('T=56 tall 256x768', 256, 17, 16, 48, 93, ("first", "last"), 4090, '98defdbce80a64ff65c597a1904f1cfa', 'f96f96d43430b6f0b1e962d30051ee07', '61e2dda910f6f7ad41104c0f9c3f0d19', '1454af3c9e56da1c446bf12dbd735ba4', 'bbd330b12e8159e117376ef24fa10641', 'bc92d86cccf99960c06aaf15623f41ab', '67411e2be95c4257a27ffb8f039334a4'),
+    # The outpaint route's own anchor shapes. `extend_backward` feeds a
+    # LAST-ONLY anchor, which none of K0.3's six cases covered.
+    ('outpaint extend_backward (last only)', 16, 7, 24, 40, 37, ("last",), 2010, '488db0f4d4d9c1c98b614b269eae4e38', '0e8b9d1af8d30e4c233aef3348b96fb6', '0b06e4b6861531c433e7dde52c85e506', '411e6560037764ecf3141736126feb0c', 'f23d672bb9b341f9afa8498423b75deb', 'bc92d86cccf99960c06aaf15623f41ab', '9f14ff700df2ef163d95d06d4f5693d6'),
+    ('outpaint bridge T=124 768x1344', 64, 37, 48, 84, 207, ("first", "last"), 39790, '6fe771ff1c70289938aa87d1125fda13', '65cedb7a5587587396ef938972d5f6ec', 'c631fce6ccdaf1edf5b9140785392256', '4b8cc5a00017032b97281a6230c276aa', '7a4644928f3a08db905254fd7e5e53ef', 'bc92d86cccf99960c06aaf15623f41ab', '00d777be4223fc70555b29c2ff1eb9eb'),
+    ('outpaint extend_backward T=124 768x1344', 64, 37, 48, 84, 207, ("last",), 38782, '05ecba51a3817f96f3fc6478ff0d3a3e', '59711b0bd96f1a859e389475ae665b72', '179d669491e34448b6aab271af9ed25e', '58316fc33242878f95c32d89c585ad77', '7a4644928f3a08db905254fd7e5e53ef', 'bc92d86cccf99960c06aaf15623f41ab', '3eb5dc63849bc28d4f71fad79f45abcd'),
+    # The p1 probe canvas (640x384, T=124), where the measured anchor results
+    # were produced.
+    ('probe canvas T=124 640x384 first+last', 37, 37, 24, 40, 207, ("first", "last"), 9811, 'f50951b52aea2fd35ccca3e3b847ab2e', '270d5dbac00469b1921e67ab4a0906de', '83ea9149175ccf28df379b38cf226400', '3fdbe9306fec8f1a1b3135134978dabc', 'fd1d0b6371bec2b0e96d185deab39ce4', 'bc92d86cccf99960c06aaf15623f41ab', 'c715734e302dc96f75338b01596f318e'),
+]
+
+
+def _digest(tensor):
+    return hashlib.sha256(
+        tensor.detach().cpu().contiguous().numpy().tobytes()).hexdigest()[:32]
+
+
+@pytest.mark.parametrize("case", ANCHOR_DIGESTS, ids=[c[0] for c in ANCHOR_DIGESTS])
+def test_string_anchor_layouts_are_bitwise_unchanged(case):
+    """Every tensor of a ``"first"``/``"last"`` layout, byte for byte.
+
+    Digests captured from the function BEFORE integer anchors existed, so any
+    change to the string paths -- including a re-derivation that agrees to
+    within a float -- fails here rather than in a generation.
+    """
+    (label, text, t_lat, lh, lw, n_aud, anchors, seq_len,
+     position_ids, token_tags, video, audio, text_idx, ts_unique, ts_index) = case
+    layout = ops.build_packed_layout(text, t_lat, lh, lw, n_aud, keyframe_anchors=anchors)
+    assert layout["sequence_length"] == seq_len
+    assert _digest(layout["position_ids"]) == position_ids
+    assert _digest(layout["token_tags"]) == token_tags
+    assert _digest(layout["video_indices"]) == video
+    assert _digest(layout["audio_indices"]) == audio
+    assert _digest(layout["text_indices"]) == text_idx
+    # `build_row_timesteps` is NOT changed by this phase; its output is pinned
+    # on the same cases so a layout change cannot move it either.
+    unique, index = ops.build_row_timesteps(layout, 0.4, 0.5)
+    assert _digest(unique) == ts_unique
+    assert _digest(index) == ts_index
+
+
+def test_the_string_branches_are_not_the_integer_path():
+    """NEGATIVE CONTROL: ``"first"``/``"last"`` must not be re-routed.
+
+    The obvious simplification -- resolve ``"first"`` as frame 0 and ``"last"``
+    as frame ``T-1`` through ``origin + (5/3)*f`` and delete the two branches --
+    is *almost* right and is what a later reader will try. It is not right:
+    ``"last"`` is numpy's PAIRWISE sum of the per-latent spans, which differs
+    from ``(5/3)*(T-1)`` in the last float64 ulp on most clip lengths. The
+    stored ``position_ids`` are float32 and the two agree after that cast on
+    every geometry measured, so the digests above would NOT catch the edit --
+    only this does.
+
+    ``"first"`` and frame 0 genuinely are the same float, and that is asserted
+    too, so the control is specific rather than blanket.
+    """
+    resolve = ops._anchor_rotary_time
+
+    # 7 latent frames == 22 pixel frames; the pairwise sum lands one ulp high.
+    assert resolve("last", 16, 7) == 51.00000000000001
+    assert resolve(21, 16, 7) == 51.0
+    assert resolve("last", 16, 7) != resolve(21, 16, 7), \
+        "the 'last' branch was re-routed through the integer formula"
+    # ... and the same at the production clip length (37 latents == 124 frames).
+    assert resolve("last", 64, 37) != resolve(123, 64, 37)
+
+    # "first" IS frame 0, exactly.
+    assert resolve("first", 16, 7) == resolve(0, 16, 7) == 16.0
+
+    # The float32 layouts DO agree, which is why the digests cannot see this.
+    by_string = ops.build_packed_layout(16, 7, 24, 40, 37, keyframe_anchors=("last",))
+    by_index = ops.build_packed_layout(16, 7, 24, 40, 37, keyframe_anchors=(21,))
+    assert torch.equal(by_string["position_ids"], by_index["position_ids"])
+
+
+def test_integer_anchor_sits_at_its_pixel_frames_rotary_time():
+    """``t(f) = num_text_tokens + (5/3)*f`` -- the measured temporal axis.
+
+    The packed sequence's time axis is literally pixel-frame time (M6), so an
+    anchor's placement is one evaluation of that function and needs no grid
+    snapping: every integer frame in the clip has an exact rotary coordinate.
+    """
+    text, t_lat, lh, lw = 16, 7, 24, 40         # 22 pixel frames
+    rows_per_frame = (lh // 2) * (lw // 2)
+    for frame in (0, 1, 7, 11, 21):
+        layout = ops.build_packed_layout(text, t_lat, lh, lw, 37, keyframe_anchors=(frame,))
+        times = layout["position_ids"][text:text + rows_per_frame, 0]
+        expected = torch.tensor(float(text) + ops.ROPE_FRAME_RESCALE * frame).to(torch.float32)
+        assert torch.equal(times, expected.expand_as(times)), frame
+        # The spatial grid is the target frame's grid, unchanged by placement.
+        reference = ops.build_packed_layout(text, t_lat, lh, lw, 37, keyframe_anchors=("first",))
+        assert torch.equal(layout["position_ids"][text:text + rows_per_frame, 1:],
+                           reference["position_ids"][text:text + rows_per_frame, 1:])
+
+
+def test_frame_zero_anchor_is_the_first_anchor_bitwise():
+    """An anchor at frame 0 is ``"first"``, in every tensor.
+
+    This is what lets the API map ``frame_index == 0`` onto the string path (and
+    what makes that mapping unobservable): the two produce the same layout.
+    """
+    for text, t_lat, lh, lw, n_aud in ((16, 7, 24, 40, 37), (64, 37, 48, 84, 207)):
+        by_string = ops.build_packed_layout(text, t_lat, lh, lw, n_aud, keyframe_anchors=("first",))
+        by_index = ops.build_packed_layout(text, t_lat, lh, lw, n_aud, keyframe_anchors=(0,))
+        for key in ("position_ids", "token_tags", "video_indices", "audio_indices", "text_indices"):
+            assert torch.equal(by_string[key], by_index[key]), key
+        assert by_string["sequence_length"] == by_index["sequence_length"]
+
+
+@pytest.mark.parametrize("anchors", [
+    (0,), (1,), (11,), (21,), (60,),
+    ("first", 11), (0, 11, 21), ("first", 11, "last"),
+], ids=lambda a: repr(a))
+def test_integer_anchors_keep_every_k03_invariant(anchors):
+    """Cover, disjointness, ascending order and tags, for placed anchors.
+
+    The same four properties K0.3 pinned for the string cases, because an
+    anchor's POSITION changes only one float per row: the layout's block
+    structure is identical wherever it sits.
+    """
+    text, t_lat, lh, lw, n_aud = 16, 37, 24, 40, 207     # 124 pixel frames
+    rows_per_frame = (lh // 2) * (lw // 2)
+    layout = ops.build_packed_layout(text, t_lat, lh, lw, n_aud, keyframe_anchors=anchors)
+
+    seq_len = layout["sequence_length"]
+    assert layout["num_condition_video_rows"] == len(anchors) * rows_per_frame
+    # An anchor costs `rows_per_frame` rows WHEREVER it sits.
+    assert seq_len == text + len(anchors) * rows_per_frame + n_aud * ops.AUDIO_CHANNELS \
+        + t_lat * rows_per_frame
+
+    blocks = [layout["text_indices"], layout["audio_indices"], layout["video_indices"]]
+    for name, block in zip(("text", "audio", "video"), blocks):
+        assert torch.equal(block, block.sort().values), f"{name} indices are not ascending"
+    assert torch.equal(torch.cat(blocks).sort().values, torch.arange(seq_len))
+
+    tags = layout["token_tags"]
+    assert (tags[layout["text_indices"]] == ops.TEXT_TAG).all()
+    assert (tags[layout["audio_indices"]] == ops.AUDIO_TAG).all()
+    assert (tags[layout["video_indices"]] == ops.VIDEO_TAG).all()
+
+    # Conditioning rows still LEAD the video index block, in packed order, one
+    # contiguous `rows_per_frame` slice per anchor at its own rotary time.
+    condition = layout["video_indices"][:layout["num_condition_video_rows"]]
+    assert torch.equal(condition, torch.arange(text, text + condition.numel()))
+    for index, anchor in enumerate(anchors):
+        rows = condition[index * rows_per_frame:(index + 1) * rows_per_frame]
+        times = layout["position_ids"][rows, 0]
+        assert torch.equal(times, times[:1].expand_as(times))
+        if isinstance(anchor, int):
+            assert float(times[0]) == pytest.approx(float(text) + ops.ROPE_FRAME_RESCALE * anchor)
+
+
+def test_an_anchor_the_builder_cannot_place_is_refused():
+    """The gate is still a refusal, not a silent approximation.
+
+    ``-1`` is the API's "resolved last frame" SENTINEL, which the caller must
+    resolve (to ``"last"``) before it reaches here: placed literally it would
+    put the anchor one frame BEFORE the clip's own origin, inside the text
+    span's clock, and nothing downstream would notice.
+    """
+    for bad in ("middle", "First", 3.5, None, True):
+        with pytest.raises(ValueError, match="keyframe anchor"):
+            ops.build_packed_layout(16, 7, 24, 40, 37, keyframe_anchors=(bad,))
+    with pytest.raises(ValueError, match="-1"):
+        ops.build_packed_layout(16, 7, 24, 40, 37, keyframe_anchors=(-1,))
+    # 7 latent frames cover 22 pixel frames: 21 is the last one, 22 is not a
+    # frame of this clip.
+    ops.build_packed_layout(16, 7, 24, 40, 37, keyframe_anchors=(21,))
+    with pytest.raises(ValueError, match="22 pixel frame"):
+        ops.build_packed_layout(16, 7, 24, 40, 37, keyframe_anchors=(22,))
+
+
+def test_placed_anchor_matches_the_probe_harness_arithmetic():
+    """The shipped layout equals the one the measured probes actually ran.
+
+    The p1/C0 harnesses monkeypatched `build_packed_layout` in their own
+    process: they built the layout with all-``"first"`` anchors and then
+    OVERWROTE each anchor block's time axis, in float32, with
+    ``num_text_tokens + (5/3)*f``. Every measured result (the frame-60 RMS dip
+    at 640x384 and at 1344x768) was produced by that layout, so reproducing it
+    bitwise is a free end-to-end check of this phase against something already
+    shown to work on the released weights.
+    """
+    def harness_layout(text, t_lat, lh, lw, n_aud, frames):
+        layout = ops.build_packed_layout(
+            text, t_lat, lh, lw, n_aud,
+            keyframe_anchors=tuple("first" for _ in frames))
+        rows_per_frame = layout["rows_per_frame"]
+        for index, frame in enumerate(frames):
+            rows = slice(text + index * rows_per_frame, text + (index + 1) * rows_per_frame)
+            layout["position_ids"][rows, 0] = float(text) + ops.ROPE_FRAME_RESCALE * float(frame)
+        return layout
+
+    # The two canvases the anchor measurements were taken at, T = 124 frames.
+    for text, t_lat, lh, lw, n_aud in ((37, 37, 24, 40, 207), (64, 37, 48, 84, 207)):
+        for frames in ((60,), (0, 60, 123), (60, 90)):
+            shipped = ops.build_packed_layout(text, t_lat, lh, lw, n_aud, keyframe_anchors=frames)
+            harness = harness_layout(text, t_lat, lh, lw, n_aud, frames)
+            for key in ("position_ids", "token_tags", "video_indices", "audio_indices"):
+                assert torch.equal(shipped[key], harness[key]), (text, lh, frames, key)
+
+
 class _StubPosteriorVae(torch.nn.Module):
     """A VAE whose encode returns a posterior with a known mean and std."""
 

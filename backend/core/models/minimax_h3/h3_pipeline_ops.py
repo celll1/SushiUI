@@ -225,6 +225,74 @@ def _fill_audio_positions(
     ])
 
 
+def _clip_pixel_frames(num_latent_frames: int) -> int:
+    """How many PIXEL frames ``num_latent_frames`` latent frames cover.
+
+    The video VAE's ``(1, 4, 4, 4, 4)`` temporal chunking, summed. MEASURED
+    against the loader's own ``minimax_h3_latent_frames`` inverse: 7 -> 22,
+    12 -> 39, 37 -> 124.
+    """
+    return sum(ROPE_FRAMES_PER_LATENT[i % len(ROPE_FRAMES_PER_LATENT)]
+               for i in range(num_latent_frames))
+
+
+def _anchor_rotary_time(anchor: "int | str", num_text_tokens: int,
+                        num_latent_frames: int) -> float:
+    """Where one keyframe anchor sits on the packed sequence's time axis.
+
+    That axis is literally PIXEL-FRAME time: ``t(f) = num_text_tokens +
+    ROPE_FRAME_RESCALE * f``, measured exact for T in {5, 22, 39, 124, 192, 345}
+    against the video latent grid, so ``"first"`` and ``"last"`` are two
+    evaluations of one frame-index function and an integer ``f`` addresses any
+    frame of the clip. There is no grid to snap an anchor to.
+
+    The two STRING branches are kept verbatim rather than expressed through the
+    integer formula, and this is load-bearing rather than conservative:
+    ``"last"`` is numpy's PAIRWISE sum of the per-latent spans, and
+    ``(5/3)*(T-1)`` differs from it in the last float64 ulp on most clip lengths
+    (51.00000000000001 vs 51.0 at 7 latent frames). The float32 ``position_ids``
+    agree after the cast on every geometry measured, so re-routing the strings
+    would be invisible in a layout digest and visible only in the float64
+    arithmetic. ``minimax_h3_layout_test`` therefore asserts that difference
+    directly, in the test whose name says so. Do not merge these branches.
+    """
+    if isinstance(anchor, str):
+        if anchor == "first":
+            return float(num_text_tokens)
+        if anchor == "last":
+            # numpy's PAIRWISE summation, because that is how the reference
+            # computes this anchor; a sequential sum differs in the last ulp
+            # from 16 latent frames onwards.
+            spans = np.ones(num_latent_frames, dtype=np.float64) * ROPE_FRAME_RESCALE
+            for offset in range(len(ROPE_FRAMES_PER_LATENT)):
+                spans[offset::len(ROPE_FRAMES_PER_LATENT)] *= ROPE_FRAMES_PER_LATENT[offset]
+            return float(num_text_tokens) + float(spans.sum()) - ROPE_FRAME_RESCALE
+        raise ValueError(
+            f"A keyframe anchor must be 'first', 'last' or an integer pixel-frame "
+            f"index, got {anchor!r}.")
+
+    # `bool` is an `int` subclass and `True` would silently mean frame 1.
+    if isinstance(anchor, bool) or not isinstance(anchor, (int, np.integer)):
+        raise ValueError(
+            f"A keyframe anchor must be 'first', 'last' or an integer pixel-frame "
+            f"index, got {anchor!r}.")
+
+    frame = int(anchor)
+    num_pixel_frames = _clip_pixel_frames(num_latent_frames)
+    if frame < 0:
+        raise ValueError(
+            f"A keyframe anchor's frame index must be >= 0, got {frame}. A request's "
+            f"-1 ('the last frame') is a SENTINEL the caller resolves -- to 'last', or "
+            f"to the clip's own last index -- before the layout is built; placed "
+            f"literally it would sit one frame before the clip's origin.")
+    if frame >= num_pixel_frames:
+        raise ValueError(
+            f"A keyframe anchor at frame {frame} is outside this clip: "
+            f"{num_latent_frames} latent frames cover {num_pixel_frames} pixel frame(s), "
+            f"so the last addressable index is {num_pixel_frames - 1}.")
+    return float(num_text_tokens) + ROPE_FRAME_RESCALE * float(frame)
+
+
 def build_packed_layout(
     num_text_tokens: int,
     num_latent_frames: int,
@@ -233,7 +301,7 @@ def build_packed_layout(
     num_audio_latents: int,
     *,
     patch_size: Tuple[int, int, int] = (1, 2, 2),
-    keyframe_anchors: Sequence[str] = (),
+    keyframe_anchors: Sequence["int | str"] = (),
     text_token_tags: Optional[torch.Tensor] = None,
     device: Optional[torch.device | str] = None,
 ) -> Dict[str, Any]:
@@ -243,6 +311,13 @@ def build_packed_layout(
     it against an independent port of ComfyUI's ``PackedLayout`` on six shape
     tuples: identical indices, identical tags, and a tiny packed forward through
     both assemblies bitwise identical.
+
+    ``keyframe_anchors`` takes ``"first"``, ``"last"`` or an integer PIXEL-frame
+    index, one per anchor, in packed order; see :func:`_anchor_rotary_time` for
+    what an index means and why the two strings are not the same code path.
+    Placement costs nothing structurally -- an anchor occupies
+    ``rows_per_frame`` rows wherever it sits, and every other tensor here is
+    independent of its time -- so the string cases stay byte-identical.
 
     Returns the tensors the transformer reads by name plus the two conditioning
     row counts, which the loop needs to know which rows it may write.
@@ -267,18 +342,7 @@ def build_packed_layout(
     frame_grid, width_grid = _frame_position_grid(latent_height, latent_width, patch_h, patch_w)
 
     for index, anchor in enumerate(keyframe_anchors):
-        if anchor == "first":
-            anchor_time = float(num_text_tokens)
-        elif anchor == "last":
-            # numpy's PAIRWISE summation, because that is how the reference
-            # computes this anchor; a sequential sum differs in the last ulp
-            # from 16 latent frames onwards.
-            spans = np.ones(num_latent_frames, dtype=np.float64) * ROPE_FRAME_RESCALE
-            for offset in range(len(ROPE_FRAMES_PER_LATENT)):
-                spans[offset::len(ROPE_FRAMES_PER_LATENT)] *= ROPE_FRAMES_PER_LATENT[offset]
-            anchor_time = float(num_text_tokens) + float(spans.sum()) - ROPE_FRAME_RESCALE
-        else:
-            raise ValueError(f"A keyframe anchor must be 'first' or 'last', got {anchor!r}.")
+        anchor_time = _anchor_rotary_time(anchor, num_text_tokens, num_latent_frames)
         rows = slice(condition_start + index * rows_per_frame,
                      condition_start + (index + 1) * rows_per_frame)
         position_ids[rows, 0] = anchor_time

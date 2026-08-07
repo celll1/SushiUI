@@ -251,6 +251,16 @@ class TemporalSpec:
     # architectural limit; `generation_utils.plan_video_outpaint_placement`
     # states the same thing in the refusal a client sees.
     outpaint_placements: Tuple[str, ...] = ("free",)
+    # How many PIXEL frames each LATENT frame covers, cycling. MiniMax-H3's
+    # video VAE chunks time as (1, 4, 4, 4, 4) repeating, so latent frame 0
+    # carries pixel frame 0 alone, latent 1 carries 1..4, and so on.
+    #
+    # This is the addressable unit of `POST /generate/inpaint/video`: a
+    # requested pixel range is expanded outward to these boundaries, because a
+    # latent frame is pinned or generated as a whole. Empty means the arch has
+    # not declared it and nothing may claim finer-than-clip temporal addressing
+    # for it -- LTX-2.3 leaves it empty because no route reads it there.
+    latent_chunk_pattern: Tuple[int, ...] = ()
     # The shortest length worth OFFERING to a client (None = the production
     # floor). Validity and suggestion are different questions: LTX-2.3's grid
     # starts at 1, and a 1-frame "video" is a valid request but not a clip
@@ -384,6 +394,9 @@ MINIMAX_H3_TEMPORAL = TemporalSpec(
     # is anchored on the preserved clip's last frame (extend-forward), its first
     # frame (extend-backward), or both ends of a two-clip bridge.
     outpaint_placements=("extend_forward", "extend_backward", "bridge"),
+    # The video VAE's temporal chunking, MEASURED and already relied on by
+    # `h3_pipeline_ops._clip_pixel_frames` / the rotary time grid.
+    latent_chunk_pattern=(1, 4, 4, 4, 4),
 )
 
 TEMPORAL_SPECS: Dict[str, TemporalSpec] = {

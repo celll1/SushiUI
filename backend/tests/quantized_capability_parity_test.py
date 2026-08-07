@@ -610,6 +610,9 @@ _QUANTIZED_GEMM_ROUTES = frozenset({
     # parameters govern modules this route really runs.
     "/generate/ref2vid",
     "/generate/outpaint/video",
+    # MiniMax-H3 temporal inpaint. Same architecture as /generate/ref2vid and
+    # the same weight-only FP8 DiT, so both parameters govern real modules.
+    "/generate/inpaint/video",
     # ACE-Step audio. These three were in the unquantized set below while
     # `acestep` was in neither tuple. It is now in BOTH: its loader swaps in
     # Int8Linear/Fp8Linear for a weight-only quantized DiT and

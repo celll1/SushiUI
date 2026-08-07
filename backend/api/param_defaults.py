@@ -1043,6 +1043,76 @@ def outpaint_video_defaults_for_arch(arch: Optional[str]) -> Dict[str, Any]:
     resolved.update(OUTPAINT_VIDEO_ARCH_OVERLAYS.get(arch or "", {}))
     return resolved
 
+
+# ---------------------------------------------------------------------------
+# Video temporal inpaint (POST /generate/inpaint/video — MiniMax-H3 fl2va)
+# ---------------------------------------------------------------------------
+# Regenerates ONE contiguous time range of an uploaded clip and preserves the
+# rest. The output is the same length as the trimmed input, which is why there
+# is no `num_frames`/`total_frames` key here and `num_frames` is removed from
+# the inherited video map: the clip decides the length, and advertising a
+# default for it would advertise a field the endpoint does not take.
+#
+# The length contract is also INVERTED relative to outpaint, which is why this
+# is a second endpoint rather than a mode of that one: outpaint's `17n + 5` grid
+# binds the GENERATED span, while here every frame of the clip has a row in the
+# packed sequence, so it is the TRIMMED INPUT that must be a valid production
+# length and the regenerated range may be any latent-group span.
+INPAINT_VIDEO_DEFAULTS: Dict[str, Any] = {
+    **{key: value for key, value in VIDEO_GEN_DEFAULTS.items() if key != "num_frames"},
+    # The range to regenerate, in PIXEL frames of the trimmed clip: start
+    # inclusive, end exclusive (Python-slice convention). Both are required --
+    # there is no defensible default range -- so the `None`s here are what the
+    # route's required Form fields document, not values it falls back to.
+    "regenerate_start_frame": None,
+    "regenerate_end_frame": None,
+    # Trim applied to the uploaded clip BEFORE anything else, in pixel frames.
+    # Same semantics as the outpaint endpoint's fields of the same name; the
+    # TRIMMED length is what has to be a valid clip length.
+    "input_trim_start_frames": 0,
+    "input_trim_end_frames": 0,
+    # "regenerate" = the audio rows are generated for the whole clip like any
+    # other request, so the preserved video span carries generated audio that
+    # need not match its visuals. "preserve_input" = the clip's own track is
+    # pinned as conditioning across the whole clip (the shipped ia2v mechanism)
+    # and muxed back verbatim.
+    #
+    # The base value is "regenerate" because this map's base is architecture-
+    # neutral; the one architecture that implements this endpoint overlays the
+    # other value below.
+    "inpaint_video_audio_mode": "regenerate",
+    # FFV1 instead of H.264, as on the outpaint endpoint. The preserved frames
+    # are exact at the frames handoff either way; this is what carries that
+    # exactness into the FILE.
+    "video_lossless": False,
+}
+
+# Per-architecture overlay for the inpaint-only keys. MiniMax-H3 generates audio
+# and video jointly for one span, so under "regenerate" the preserved frames
+# come back with a soundtrack that was drawn against a regenerated timeline --
+# the wrong thing to hand someone who expressed no preference about audio they
+# already have. Both modes stay selectable; only which one you get for free
+# changes.
+INPAINT_VIDEO_ARCH_OVERLAYS: Dict[str, Dict[str, Any]] = {
+    "minimax_h3": {
+        "inpaint_video_audio_mode": "preserve_input",
+    },
+}
+
+
+def inpaint_video_defaults_for_arch(arch: Optional[str]) -> Dict[str, Any]:
+    """`INPAINT_VIDEO_DEFAULTS` resolved for ``arch``.
+
+    Two overlays, in order: the shared video one and then the inpaint-only one.
+    ``num_frames`` is dropped again after the shared overlay -- that overlay
+    carries a clip length for the endpoints that ask for one, and this endpoint
+    takes its length from the uploaded clip.
+    """
+    resolved = video_defaults_for_arch(arch, INPAINT_VIDEO_DEFAULTS)
+    resolved.pop("num_frames", None)
+    resolved.update(INPAINT_VIDEO_ARCH_OVERLAYS.get(arch or "", {}))
+    return resolved
+
 # ---------------------------------------------------------------------------
 # Audio generation (POST /generate/txt2aud — ACE-Step 1.5 turbo)
 # ---------------------------------------------------------------------------

@@ -81,6 +81,13 @@ FEATURE_PARAMS: Dict[str, List[str]] = {
     # condition on audio at all -- and the frontend gates its audio lane on it.
     # The value carried in `params` is the uploaded filename.
     "audio_conditioning": ["input_audio"],
+    # POST /generate/inpaint/video: regenerate one time range of a clip and
+    # preserve the rest. A different claim again from `keyframe_placement` -- an
+    # anchor is one conditioning frame outside the clip, this pins frames OF the
+    # clip at their own positions -- and the frontend gates its video inpaint
+    # surface on it.
+    "temporal_inpaint": ["regenerate_start_frame", "regenerate_end_frame",
+                         "inpaint_video_audio_mode"],
 }
 
 # Human-readable label used in the warning message for each feature.
@@ -106,6 +113,7 @@ FEATURE_LABELS: Dict[str, str] = {
     "last_frame_image": "last_frame_image (last-frame keyframe)",
     "keyframe_placement": "input_image_frame_index/keyframe_images/keyframe_frame_indices (keyframe placement)",
     "audio_conditioning": "input_audio (audio-conditioned video)",
+    "temporal_inpaint": "regenerate_start_frame/regenerate_end_frame (temporal inpaint)",
 }
 
 # ---------------------------------------------------------------------------
@@ -226,6 +234,12 @@ _add("ltx2", "keyframe_placement",
 # Audio CONDITIONING on the same endpoint. LTX-2.3 generates a soundtrack
 # jointly with the video, but its pipeline exposes no way to supply one: there
 # is no audio conditioning input to pin an uploaded track to.
+# Temporal inpaint (POST /generate/inpaint/video). Not a limitation discovered
+# at the route: it is a permutation of MiniMax-H3's packed video rows, and
+# LTX-2.3's conditions carry whole clips at latent indices rather than pinning
+# frames of the target itself, so there is nothing here to implement it with.
+_add("ltx2", "temporal_inpaint",
+     "temporal inpaint is not implemented for LTX-2.3: it pins the kept frames' own latents inside one packed sequence, which is a MiniMax-H3 mechanism")
 _add("ltx2", "audio_conditioning",
      "LTX-2.3 generates its soundtrack jointly with the video and its image-to-video pipeline takes no audio conditioning input, so an uploaded track has nothing to attach to")
 # The video routes carry `attention_type` because MiniMax-H3 honors it; LTX-2.3

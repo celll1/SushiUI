@@ -2878,6 +2878,51 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                    "model to use /generate/outpaint/video.",
         )
 
+    def generate_vid_inpaint(
+        self,
+        params: Dict[str, Any],
+        video_frames,
+        fps: float,
+        input_audio,
+        progress_callback=None,
+        step_callback=None,
+    ):
+        """Video temporal inpaint: regenerate one time range of a clip in place.
+
+        ONE architecture, unlike the other video routes: the mechanism is a
+        permutation of MiniMax-H3's packed video rows that puts the kept latent
+        frames in the conditioning prefix, which LTX-2.3's pipeline has no
+        equivalent of -- its conditions carry whole clips at latent indices, not
+        a per-frame pin of the target itself. So this refuses rather than
+        dispatching, with that reason.
+
+        Args:
+            params: see `INPAINT_VIDEO_DEFAULTS`.
+            video_frames: np.uint8 [T, H, W, 3] decoded input clip.
+            fps: the input clip's own probed frame rate.
+            input_audio: WAV bytes of the clip's original audio, or None.
+            progress_callback: Called as (step, total_steps) at each denoise step.
+            step_callback: Per-step latent preview hook.
+
+        Returns:
+            tuple: (frames, audio, audio_sample_rate, actual_seed) -- identical
+            contract to generate_vid_outpaint.
+        """
+        from api.error_handlers import ValidationError
+
+        if self.is_minimax_h3_model:
+            return self._generate_vidinpaint_minimax_h3(
+                params, video_frames, fps, input_audio, progress_callback, step_callback)
+
+        raise ValidationError(
+            "Video temporal inpaint requires a MiniMax-H3 model",
+            detail="Regenerating a time range in place pins the kept frames' own latents as "
+                   "conditioning inside one packed sequence, which is a MiniMax-H3 mechanism; "
+                   "LTX-2.3 has no equivalent and no other architecture in this repo implements "
+                   "it. Load a MiniMax-H3 fl2va model, or use /generate/outpaint/video to extend "
+                   "a clip.",
+        )
+
     def generate_txt2aud(self, params: Dict[str, Any], progress_callback=None, step_callback=None):
         """Generate music/audio from text (ACE-Step 1.5 only).
 

@@ -42,7 +42,7 @@ from api.websocket import manager
 from auth import create_access_token, verify_credentials, require_auth
 from api.param_defaults import (
     GENERATION_DEFAULTS, TXT2IMG_DEFAULTS, IMG2IMG_DEFAULTS, INPAINT_DEFAULTS,
-    OUTPAINT_DEFAULTS, OUTPAINT_VIDEO_DEFAULTS,
+    OUTPAINT_DEFAULTS, OUTPAINT_VIDEO_DEFAULTS, INPAINT_VIDEO_DEFAULTS,
     UPSCALE_DEFAULTS, TXT2VID_DEFAULTS, IMG2VID_DEFAULTS, REF2VID_DEFAULTS,
     TXT2AUD_DEFAULTS, AUD2AUD_DEFAULTS,
     OUTPAINT_AUDIO_DEFAULTS,
@@ -51,6 +51,7 @@ from api.param_defaults import (
     BUNDLE_VAE_DEFAULTS_BY_ARCH,
     VIDEO_GEN_ARCH_OVERLAYS,
     OUTPAINT_VIDEO_ARCH_OVERLAYS,
+    INPAINT_VIDEO_ARCH_OVERLAYS,
     video_defaults_for_arch,
 )
 from api.generation_utils import (
@@ -387,10 +388,17 @@ async def health_check():
 _VIDEO_ROUTE_FOR_IMAGE_ROUTE = {
     "/generate/txt2img": "/generate/txt2vid",
     "/generate/img2img": "/generate/img2vid",
-    # There is no video inpainting route; /generate/outpaint/video extends an
-    # existing clip in time, and /generate/img2vid animates a still.
-    "/generate/inpaint": None,
+    # /generate/inpaint/video is the temporal counterpart: it regenerates a time
+    # range of a clip and preserves the rest, as inpaint regenerates a region of
+    # an image. It is implemented for MiniMax-H3 only, so LTX-2.3 overrides it.
+    "/generate/inpaint": "/generate/inpaint/video",
     "/generate/outpaint": "/generate/outpaint/video",
+}
+
+# Per-architecture corrections to the map above: a route that exists but does
+# not serve THIS architecture must not be suggested to it.
+_VIDEO_ROUTE_OVERRIDES_BY_ARCH = {
+    "ltx2": {"/generate/inpaint": None},
 }
 
 _AUDIO_ROUTE_FOR_IMAGE_ROUTE = {
@@ -402,9 +410,11 @@ _AUDIO_ROUTE_FOR_IMAGE_ROUTE = {
 }
 
 
-def _video_route_hint(endpoint: str) -> str:
+def _video_route_hint(endpoint: str, arch: Optional[str] = None) -> str:
     """Return the "use X instead" clause for an image route refused on video."""
-    replacement = _VIDEO_ROUTE_FOR_IMAGE_ROUTE.get(endpoint)
+    overrides = _VIDEO_ROUTE_OVERRIDES_BY_ARCH.get(arch or "", {})
+    replacement = (overrides[endpoint] if endpoint in overrides
+                   else _VIDEO_ROUTE_FOR_IMAGE_ROUTE.get(endpoint))
     if replacement:
         return f"use {replacement}"
     return "use /generate/img2vid to animate a still, or /generate/outpaint/video to extend a clip"
@@ -420,14 +430,15 @@ def _reject_if_video_model(endpoint: str = "/generate/txt2img"):
     Raised before the executor so it surfaces as a 4xx ValidationError instead of
     being re-wrapped as a 500 GenerationError by the route's broad except.
     """
-    hint = _video_route_hint(endpoint)
     if getattr(pipeline_manager, "is_ltx2_model", False):
+        hint = _video_route_hint(endpoint, "ltx2")
         raise CustomValidationError(
             f"The loaded model is a video model (LTX-2.3); {hint}",
             detail=f"LTX-2.3 produces video, not still images, so {endpoint} cannot serve it. "
                    "Load an image model for txt2img/img2img/inpaint/outpaint.",
         )
     if getattr(pipeline_manager, "is_minimax_h3_model", False):
+        hint = _video_route_hint(endpoint, "minimax_h3")
         raise CustomValidationError(
             f"The loaded model is a video model (MiniMax-H3); {hint}",
             detail=f"MiniMax-H3 produces video with a joint audio track, not still images, and its "
@@ -488,11 +499,13 @@ async def get_generation_defaults():
     video routes do server-side for every field a request omits.
     ``outpaint_video_arch_overlays`` is the same thing for the keys that exist
     only on `/generate/outpaint/video` (chiefly `total_frames`, whose base value
-    is on LTX-2.3's grid), applied on top of the video overlay.
+    is on LTX-2.3's grid), applied on top of the video overlay, and
+    ``inpaint_video_arch_overlays`` for `/generate/inpaint/video`'s own keys.
     """
     return {
         "video_arch_overlays": VIDEO_GEN_ARCH_OVERLAYS,
         "outpaint_video_arch_overlays": OUTPAINT_VIDEO_ARCH_OVERLAYS,
+        "inpaint_video_arch_overlays": INPAINT_VIDEO_ARCH_OVERLAYS,
         "txt2img": TXT2IMG_DEFAULTS,
         "img2img": IMG2IMG_DEFAULTS,
         "inpaint":  INPAINT_DEFAULTS,
@@ -502,6 +515,7 @@ async def get_generation_defaults():
         "img2vid": IMG2VID_DEFAULTS,
         "ref2vid": REF2VID_DEFAULTS,
         "outpaint_vid": OUTPAINT_VIDEO_DEFAULTS,
+        "inpaint_vid": INPAINT_VIDEO_DEFAULTS,
         "txt2aud": TXT2AUD_DEFAULTS,
         "aud2aud": AUD2AUD_DEFAULTS,
         "outpaint_aud": OUTPAINT_AUDIO_DEFAULTS,
@@ -4656,6 +4670,374 @@ async def generate_outpaint_video(
         fail_generation(str(e), generation_id=_gen_id)
         raise GenerationError(
             "Video outpaint generation failed",
+            detail=f"{str(e)}\n\n{error_detail}"
+        )
+
+
+@router.post("/generate/inpaint/video")
+async def generate_inpaint_video(
+    prompt: str = Form(...),
+    negative_prompt: Optional[str] = Form(INPAINT_VIDEO_DEFAULTS["negative_prompt"]),
+    # The five keys a per-arch overlay can change are `Form(None)` SENTINELS,
+    # exactly as on /generate/outpaint/video: a multipart route has no
+    # `model_fields_set`, so an omitted field is only distinguishable from a
+    # sent one by the sentinel. There is no clip-length key in the set (or at
+    # all): the output is as long as the trimmed input.
+    width: Optional[int] = Form(None),
+    height: Optional[int] = Form(None),
+    frame_rate: Optional[float] = Form(None),
+    num_inference_steps: Optional[int] = Form(None),
+    guidance_scale: Optional[float] = Form(None),
+    seed: int = Form(INPAINT_VIDEO_DEFAULTS["seed"]),
+    num_videos_per_prompt: int = Form(INPAINT_VIDEO_DEFAULTS["num_videos_per_prompt"]),
+    max_sequence_length: int = Form(INPAINT_VIDEO_DEFAULTS["max_sequence_length"]),
+    audio_enable: bool = Form(INPAINT_VIDEO_DEFAULTS["audio_enable"]),
+    # REQUIRED, and in PIXEL frames of the TRIMMED clip: start inclusive, end
+    # exclusive. There is no defensible default range, so neither has one.
+    regenerate_start_frame: int = Form(...),
+    regenerate_end_frame: int = Form(...),
+    input_trim_start_frames: int = Form(INPAINT_VIDEO_DEFAULTS["input_trim_start_frames"]),
+    input_trim_end_frames: int = Form(INPAINT_VIDEO_DEFAULTS["input_trim_end_frames"]),
+    # SENTINEL, for the reason the geometry fields above are: the base
+    # "regenerate" is architecture-neutral and MiniMax-H3 overlays
+    # "preserve_input", which an omitted field has to be able to reach.
+    inpaint_video_audio_mode: Optional[str] = Form(None),
+    attention_type: str = Form(INPAINT_VIDEO_DEFAULTS["attention_type"]),
+    blocks_to_swap: int = Form(INPAINT_VIDEO_DEFAULTS["blocks_to_swap"]),
+    fbcache_enable: bool = Form(INPAINT_VIDEO_DEFAULTS["fbcache_enable"]),
+    fbcache_threshold: float = Form(INPAINT_VIDEO_DEFAULTS["fbcache_threshold"]),
+    fbcache_warmup_steps: int = Form(INPAINT_VIDEO_DEFAULTS["fbcache_warmup_steps"]),
+    spectrum_enable: bool = Form(INPAINT_VIDEO_DEFAULTS["spectrum_enable"]),
+    spectrum_w: float = Form(INPAINT_VIDEO_DEFAULTS["spectrum_w"]),
+    spectrum_w_decay: float = Form(INPAINT_VIDEO_DEFAULTS["spectrum_w_decay"]),
+    spectrum_delta_cap: float = Form(INPAINT_VIDEO_DEFAULTS["spectrum_delta_cap"]),
+    spectrum_m: int = Form(INPAINT_VIDEO_DEFAULTS["spectrum_m"]),
+    spectrum_lam: float = Form(INPAINT_VIDEO_DEFAULTS["spectrum_lam"]),
+    spectrum_warmup_steps: int = Form(INPAINT_VIDEO_DEFAULTS["spectrum_warmup_steps"]),
+    spectrum_window_size: int = Form(INPAINT_VIDEO_DEFAULTS["spectrum_window_size"]),
+    spectrum_flex_window: float = Form(INPAINT_VIDEO_DEFAULTS["spectrum_flex_window"]),
+    spectrum_tail: float = Form(INPAINT_VIDEO_DEFAULTS["spectrum_tail"]),
+    spectrum_max_cache: int = Form(INPAINT_VIDEO_DEFAULTS["spectrum_max_cache"]),
+    vae_path: Optional[str] = Form(INPAINT_VIDEO_DEFAULTS["vae_path"]),
+    text_encoder_path: Optional[str] = Form(INPAINT_VIDEO_DEFAULTS["text_encoder_path"]),
+    unet_quantization: Optional[str] = Form(INPAINT_VIDEO_DEFAULTS["unet_quantization"]),
+    quantized_gemm_mode: Optional[str] = Form(INPAINT_VIDEO_DEFAULTS["quantized_gemm_mode"]),
+    video_lossless: bool = Form(INPAINT_VIDEO_DEFAULTS["video_lossless"]),
+    video: UploadFile = File(...),
+    db: Session = Depends(get_gallery_db)
+):
+    """Video temporal inpaint (MiniMax-H3 `fl2va`): regenerate the frames in
+    `[regenerate_start_frame, regenerate_end_frame)` of an uploaded clip and
+    preserve the rest. Multipart form: the `video` clip plus the parameters
+    below. The output is the same length as the TRIMMED input.
+
+    **Preserved frames are the input's own pixels, pasted back after decode**;
+    the model conditions on their re-encoded latents while generating the
+    selected range. The paste is unconditional, so the preserved region is
+    exact at the frames handoff (and through the FILE under `video_lossless`,
+    which encodes FFV1 instead of lossy H.264). Between the pasted and the
+    generated pixels there is a cut at the range edges, the same kind image
+    outpaint carries.
+
+    **Granularity.** The video VAE stores frames in groups of up to 4, and a
+    group is regenerated or preserved as a whole, so the requested range is
+    expanded OUTWARD to group boundaries -- never shrunk -- and the effective
+    span comes back in `warnings[]` when the expansion changed the request.
+
+    **Length.** Temporal inpaint samples the whole clip, so it is the TRIMMED
+    input that must be a valid clip length (`17n + 5`, 124..345 on MiniMax-H3),
+    not a generated span. It is never snapped -- that would delete frames you
+    asked to keep -- so an invalid length is a 400 naming the trims that reach
+    the nearest valid ones. This is the inverse of `/generate/outpaint/video`,
+    where the grid binds the GENERATED span, which is why the two are separate
+    endpoints.
+
+    **Audio (`inpaint_video_audio_mode`, only relevant when `audio_enable` is
+    true).** `preserve_input` (the MiniMax-H3 default) pins the clip's own track
+    as conditioning across the whole clip and muxes it back verbatim, so the
+    regenerated span carries the original soundtrack; it falls back to
+    `regenerate` with a warning when the clip has no audio stream.
+    `regenerate` generates the soundtrack for the whole clip, so the preserved
+    video span carries generated audio that need not match its visuals.
+
+    **Requirements:** a MiniMax-H3 `fl2va` model must be loaded (400
+    otherwise -- the mid-clip pin is measured on that partition and no other
+    architecture implements this endpoint), and the range must leave something
+    preserved (a whole-clip range is `/generate/txt2vid`).
+    """
+    from api.generation_status import start_generation, complete_generation, fail_generation, get_warnings
+    from utils.video_utils import save_video_with_metadata, load_video_frames, extract_audio_stream
+    from api.generation_utils import plan_video_inpaint_span
+    from api.param_defaults import inpaint_video_defaults_for_arch
+    from core.models.components.wiring import temporal_spec_for_arch
+
+    if not getattr(pipeline_manager, "is_minimax_h3_model", False):
+        raise CustomValidationError(
+            "No MiniMax-H3 model loaded",
+            detail="Temporal inpaint pins the kept frames' own latents inside one packed "
+                   "sequence, which is a MiniMax-H3 mechanism; LTX-2.3 has no equivalent. Load a "
+                   "MiniMax-H3 fl2va model, or use /generate/outpaint/video to extend a clip.",
+        )
+    # The partition gate, worded as /generate/img2vid's is: the mid-clip pin was
+    # measured on the fl2va weights, and ref2va reads reference blocks instead.
+    _h3_variant = ((pipeline_manager.current_model_info or {}).get("variant") or "").lower()
+    if _h3_variant == "ref2va":
+        raise CustomValidationError(
+            "The loaded MiniMax-H3 transformer is the ref2va variant, not fl2va",
+            detail="Temporal inpaint is offered on the `fl2va` partition, which serves "
+                   "/generate/txt2vid, /generate/img2vid and /generate/outpaint/video: the "
+                   "mid-clip pin is measured there and nowhere else, and combining it with "
+                   "reference conditioning is not implemented on any endpoint. Load "
+                   "diffusion_models/minimax_h3_fl2va_pruned_fp8_scaled.safetensors.",
+        )
+    if inpaint_video_audio_mode is not None and inpaint_video_audio_mode not in (
+            "regenerate", "preserve_input"):
+        raise CustomValidationError(
+            "Invalid inpaint_video_audio_mode",
+            detail=f"Must be 'regenerate' or 'preserve_input', got {inpaint_video_audio_mode!r}.",
+        )
+
+    _vid_arch = (pipeline_manager.current_model_info or {}).get("type")
+    _resolved = inpaint_video_defaults_for_arch(_vid_arch)
+    if width is None:
+        width = int(_resolved["width"])
+    if height is None:
+        height = int(_resolved["height"])
+    if frame_rate is None:
+        frame_rate = float(_resolved["frame_rate"])
+    if num_inference_steps is None:
+        num_inference_steps = int(_resolved["num_inference_steps"])
+    if guidance_scale is None:
+        guidance_scale = float(_resolved["guidance_scale"])
+    if inpaint_video_audio_mode is None:
+        inpaint_video_audio_mode = str(_resolved["inpaint_video_audio_mode"])
+
+    _spec = temporal_spec_for_arch(_vid_arch)
+    _align = _spec.pixel_align if _spec is not None else 32
+    if width < _align or height < _align or width % _align != 0 or height % _align != 0:
+        raise CustomValidationError(
+            f"width and height must both be >= {_align} and divisible by {_align}",
+            detail=f"Got width={width}, height={height}. Round each to a multiple of {_align}, "
+                   f"minimum {_align}.",
+        )
+    if _spec is not None and _spec.max_pixel_hw is not None:
+        _short_cap, _long_cap = min(_spec.max_pixel_hw), max(_spec.max_pixel_hw)
+        if min(width, height) > _short_cap or max(width, height) > _long_cap:
+            raise CustomValidationError(
+                f"the canvas exceeds this model's {_short_cap}x{_long_cap} envelope",
+                detail=f"Got {width}x{height}. The loaded model generates with a short edge of at "
+                       f"most {_short_cap} and a long edge of at most {_long_cap}, in either "
+                       f"orientation.",
+            )
+    if frame_rate <= 0:
+        raise CustomValidationError(
+            "frame_rate must be > 0",
+            detail=f"Got frame_rate={frame_rate}.",
+        )
+    validate_video_steps({"num_inference_steps": num_inference_steps}, _vid_arch)
+
+    # Decode the clip (+ its audio track) BEFORE the GPU slot, so a malformed
+    # upload is a 400 that reserved nothing. The bound is the arch's own longest
+    # clip: nothing past it can be part of a valid trimmed length.
+    _decode_max_frames = max(0, input_trim_start_frames) + int(
+        (_spec.max_frames if _spec is not None and _spec.max_frames else 345))
+    try:
+        video_data = await video.read()
+        video_frames, source_fps = load_video_frames(
+            video_data, max_frames=_decode_max_frames, trim_end_frames=input_trim_end_frames
+        )
+    except CustomValidationError:
+        raise
+    except Exception as e:
+        raise CustomValidationError(
+            "Failed to decode the uploaded video clip",
+            detail=str(e),
+        )
+
+    input_audio = None
+    if inpaint_video_audio_mode == "preserve_input":
+        input_audio = extract_audio_stream(video_data)
+
+    params = {
+        "prompt": prompt,
+        "negative_prompt": negative_prompt,
+        "width": width,
+        "height": height,
+        "frame_rate": frame_rate,
+        "num_inference_steps": num_inference_steps,
+        "guidance_scale": guidance_scale,
+        "seed": seed,
+        "num_videos_per_prompt": num_videos_per_prompt,
+        "max_sequence_length": max_sequence_length,
+        "audio_enable": audio_enable,
+        "regenerate_start_frame": regenerate_start_frame,
+        "regenerate_end_frame": regenerate_end_frame,
+        "input_trim_start_frames": input_trim_start_frames,
+        "input_trim_end_frames": input_trim_end_frames,
+        "inpaint_video_audio_mode": inpaint_video_audio_mode,
+        "attention_type": _validated_attention_type(
+            attention_type, INPAINT_VIDEO_DEFAULTS["attention_type"]),
+        "blocks_to_swap": blocks_to_swap,
+        "fbcache_enable": fbcache_enable,
+        "fbcache_threshold": fbcache_threshold,
+        "fbcache_warmup_steps": fbcache_warmup_steps,
+        "spectrum_enable": spectrum_enable,
+        "spectrum_w": spectrum_w,
+        "spectrum_w_decay": spectrum_w_decay,
+        "spectrum_delta_cap": spectrum_delta_cap,
+        "spectrum_m": spectrum_m,
+        "spectrum_lam": spectrum_lam,
+        "spectrum_warmup_steps": spectrum_warmup_steps,
+        "spectrum_window_size": spectrum_window_size,
+        "spectrum_flex_window": spectrum_flex_window,
+        "spectrum_tail": spectrum_tail,
+        "spectrum_max_cache": spectrum_max_cache,
+        "vae_path": vae_path,
+        "text_encoder_path": text_encoder_path,
+        "unet_quantization": unet_quantization,
+        "quantized_gemm_mode": _normalize_media_qgm(quantized_gemm_mode),
+        "video_lossless": video_lossless,
+    }
+
+    trimmed_len = video_frames.shape[0] - max(0, input_trim_start_frames) - max(0, input_trim_end_frames)
+    if trimmed_len < 1:
+        raise CustomValidationError(
+            "Video inpaint input trim leaves no frames",
+            detail=f"Uploaded clip has {video_frames.shape[0]} frames; "
+                   f"input_trim_start_frames={input_trim_start_frames}, "
+                   f"input_trim_end_frames={input_trim_end_frames}.",
+        )
+
+    # The span, against the loaded arch's own latent chunking. Called HERE
+    # (pure, no warnings, no GPU) so an invalid clip length or range is a fast
+    # 400 rather than a failure after a 40-second text encode; the backend calls
+    # the same function again and is what warns, so the arithmetic exists once.
+    plan_video_inpaint_span(params, _vid_arch, clip_frames=int(trimmed_len))
+
+    _gen_id = start_generation("inpaint_vid")
+    try:
+        pipeline_manager.reset_cancel_flag()
+
+        # `frame_key=None`: the length that has to be on the arch's grid is the
+        # trimmed CLIP's, which the span planner above owns and refuses rather
+        # than snaps. This call is the spatial and frame-rate rules.
+        validate_video_geometry(params, _vid_arch, frame_key=None)
+        validate_video_steps(params, _vid_arch)
+
+        from api.arch_capabilities import check_arch_capabilities
+        from api.generation_overrides import plan_overrides, apply_overrides
+        _override_plan = plan_overrides(pipeline_manager, params.get("vae_path"), params.get("text_encoder_path"))
+        apply_overrides(pipeline_manager, _override_plan)
+        check_arch_capabilities(params, _vid_arch,
+                                defaults=inpaint_video_defaults_for_arch(_vid_arch))
+
+        print(f"inpaint_vid generation params: {sanitize_params_for_logging(params)}")
+
+        def progress_callback(step, total_steps):
+            from api.generation_status import update_progress
+            total = max(total_steps, 1)
+            manager.send_progress_sync(step, total, f"Generating video: step {step}/{total}")
+            update_progress(step, total)
+
+        from core.gpu_coordinator import gpu_coordinator
+        from core.inference.generation_timing import generation_timer
+        loop = asyncio.get_event_loop()
+        generation_timer.reset()
+        _gen_start = time.perf_counter()
+        async with gpu_coordinator.generation_slot(estimated_peak_gb=40, timeout=120.0):
+            from api.quantized_gemm import apply_quantized_gemm_mode
+            apply_quantized_gemm_mode(params.get("quantized_gemm_mode"))
+            frames, audio, audio_sample_rate, actual_seed = await _run_generation_in_executor(
+                loop, executor,
+                lambda: pipeline_manager.generate_vid_inpaint(
+                    params, video_frames, source_fps, input_audio,
+                    progress_callback=progress_callback,
+                )
+            )
+            fp8_gemm = extract_fp8_gemm_info(pipeline_manager)
+        apply_generation_timings(params, time.perf_counter() - _gen_start)
+        _record_media_gemm_outcome(params, fp8_gemm, _vid_arch)
+        record_attention_backend(params, _gen_id)
+
+        vae_name, vae_hash = extract_vae_info(pipeline_manager)
+        if vae_name:
+            params["vae_name"] = vae_name
+        if vae_hash:
+            params["vae_hash"] = vae_hash
+
+        params["seed"] = actual_seed
+
+        metadata = calculate_generation_metadata(
+            Image.fromarray(frames[0]),
+            [],
+            extract_lora_names,
+            calculate_image_hash,
+            source_image=Image.fromarray(video_frames[0]),
+        )
+        params["source_image_hash"] = metadata.get("source_image_hash")
+
+        filename = save_video_with_metadata(
+            frames,
+            audio,
+            audio_sample_rate,
+            params,
+            "inpaint_vid",
+            model_info=pipeline_manager.current_model_info,
+            lossless=video_lossless,
+        )
+
+        base_name = os.path.splitext(filename)[0]
+        poster_path = os.path.join(settings.outputs_dir, f"{base_name}.png")
+        if os.path.exists(poster_path):
+            create_thumbnail(poster_path)
+
+        num_frames_out = int(frames.shape[0])
+        fps_out = float(params.get("frame_rate", 24.0))
+        params_for_db = {k: v for k, v in params.items() if not k.startswith("_")}
+        params_for_db["num_frames"] = num_frames_out
+        params_for_db["fps"] = fps_out
+        params_for_db["duration"] = (num_frames_out / fps_out) if fps_out else 0.0
+        params_for_db["audio_enable"] = bool(params.get("audio_enable", True) and audio is not None)
+        params_for_db["is_video"] = True
+        # See the same two lines on /generate/outpaint/video: the gallery's
+        # cfg_scale/steps COLUMNS are filled from the image routes' keys, which
+        # a video request does not carry.
+        params_for_db["cfg_scale"] = float(params.get("guidance_scale", 1.0))
+        params_for_db["steps"] = int(params.get("num_inference_steps", 0))
+        _effective_warnings = get_warnings(_gen_id)
+        if _effective_warnings:
+            params_for_db["effective_warnings"] = _effective_warnings
+
+        model_name, model_hash = extract_model_info(pipeline_manager)
+
+        db_image = create_db_image_record(
+            GeneratedImage,
+            filename=filename,
+            params=params_for_db,
+            actual_seed=actual_seed,
+            generation_type="inpaint_vid",
+            image_hash="",
+            lora_names=None,
+            model_name=model_name,
+            model_hash=model_hash,
+            source_image_hash=metadata.get("source_image_hash"),
+        )
+        db.add(db_image)
+        db.commit()
+        db.refresh(db_image)
+
+        complete_generation({"image_id": db_image.id, "filename": filename, "seed": actual_seed}, generation_id=_gen_id)
+        return {"success": True, "image": db_image.to_dict(), "actual_seed": actual_seed, "warnings": get_warnings(_gen_id)}
+
+    except (GenerationError, CustomValidationError, NotFoundError) as e:
+        fail_generation(str(e), generation_id=_gen_id)
+        raise
+    except Exception as e:
+        import traceback
+        error_detail = traceback.format_exc()
+        fail_generation(str(e), generation_id=_gen_id)
+        raise GenerationError(
+            "Video inpaint generation failed",
             detail=f"{str(e)}\n\n{error_detail}"
         )
 

@@ -10,7 +10,10 @@
  * lives in one place:
  *
  * - The image preview keeps its existing key and existing plain-string format,
- *   so previews written by older builds still load.
+ *   so previews written by older builds still load.  It is stored canonically,
+ *   without the `?t=` cache-buster panels add when they restore it
+ *   (`stripCacheBuster` / `withCacheBuster` below own that pairing, so the stamp
+ *   is replaced on each restore instead of accumulating).
  * - The video preview lives under `<panel>_preview_video` and is stored as JSON
  *   ({ url, info, seed }) because a video carries frame/fps/duration metadata
  *   next to its URL.
@@ -177,9 +180,91 @@ export function saveAudioPreview(keys: PreviewStorageKeys, preview: StoredAudioP
   saveExclusive(keys, "audio", JSON.stringify(preview));
 }
 
-/** Persist an image result and drop any older video/audio preview for the panel. */
+/**
+ * Persist an image result and drop any older video/audio preview for the panel.
+ *
+ * The URL is stored *without* its cache-busting `?t=` stamp: panels re-stamp on
+ * restore and then write the stamped value straight back through this effect, so
+ * storing the stamp verbatim made the query string grow by one `?t=` per reload
+ * ("a.png?t=1?t=2?t=3"). Storing the canonical path keeps the stored value the
+ * same shape whether it was written by a fresh generation or by a restore.
+ */
 export function saveImagePreview(keys: PreviewStorageKeys, url: string): void {
-  saveExclusive(keys, "image", url);
+  saveExclusive(keys, "image", stripCacheBuster(url));
+}
+
+/**
+ * Should a failed `<img>` load discard the panel's image preview?
+ *
+ * Only when the element was actually showing the backend result: a panel may
+ * render a derived `blob:` URL instead (the post-edit colour-flatten preview),
+ * and that failing is a client-side problem which must not throw away a result
+ * that is still on disk. Likewise a `data:` preview, which cannot 404.
+ */
+export function shouldDiscardImagePreview(
+  displayedSrc: string | null | undefined,
+  resultUrl: string | null | undefined,
+): boolean {
+  if (!resultUrl || !resultUrl.startsWith("/outputs/")) return false;
+  return !displayedSrc || displayedSrc === resultUrl;
+}
+
+/**
+ * The `<img>` `onError` backstop, for a result file that disappears while the
+ * panel is open.  Resolves true only when the preview is worth discarding
+ * (`shouldDiscardImagePreview`) *and* a HEAD confirms the file is really gone.
+ *
+ * The confirmation matters because an `<img>` error event carries no status: a
+ * hot reload or a backend blip fails the load exactly like a 404 would, and
+ * throwing the stored preview away on that would lose a result that is still on
+ * disk.  `outputExists` already treats an unreachable backend as "keep it", so
+ * routing through it applies the same rule the restore path uses instead of
+ * inventing a second one.
+ */
+export async function imagePreviewGone(
+  displayedSrc: string | null | undefined,
+  resultUrl: string | null | undefined,
+): Promise<boolean> {
+  if (!shouldDiscardImagePreview(displayedSrc, resultUrl)) return false;
+  return !(await outputExists(resultUrl as string));
+}
+
+/** Forget the panel's stored image preview (the file it pointed at is gone). */
+export function clearImagePreview(keys: PreviewStorageKeys): void {
+  clearPreview(keys.image, "image");
+}
+
+/**
+ * Remove any `t=<ms>` cache-buster from a backend path, tolerating the historical
+ * double-stamped form ("a.png?t=1?t=2") and preserving any other query parameter.
+ *
+ * Only applied to root-relative backend paths: a `data:` or `blob:` preview is
+ * returned untouched, so nothing here can corrupt a non-URL preview value.
+ */
+export function stripCacheBuster(url: string): string {
+  if (!url.startsWith("/")) return url;
+  const hashAt = url.indexOf("#");
+  const hash = hashAt === -1 ? "" : url.slice(hashAt);
+  const body = hashAt === -1 ? url : url.slice(0, hashAt);
+  const queryAt = body.indexOf("?");
+  if (queryAt === -1) return url;
+  const path = body.slice(0, queryAt);
+  const kept = body
+    .slice(queryAt + 1)
+    .split(/[?&]/)
+    .filter((part) => part && !/^t=\d+$/.test(part));
+  return kept.length ? `${path}?${kept.join("&")}${hash}` : `${path}${hash}`;
+}
+
+/**
+ * Re-stamp a backend path so a restored preview is refetched rather than served
+ * from the browser cache (the same filename can be rewritten by a later run).
+ * Any previous stamp is replaced, never appended.
+ */
+export function withCacheBuster(url: string): string {
+  const clean = stripCacheBuster(url);
+  if (!clean.startsWith("/")) return clean;
+  return `${clean}${clean.includes("?") ? "&" : "?"}t=${Date.now()}`;
 }
 
 function clearPreview(key: string, label: string): void {

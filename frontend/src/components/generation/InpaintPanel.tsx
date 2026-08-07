@@ -31,7 +31,7 @@ import { useActiveTraining } from "@/hooks/useActiveTraining";
 import { wsClient, CFGMetrics } from "@/utils/websocket";
 import CFGMetricsGraph from "../common/CFGMetricsGraph";
 import { saveTempImage, loadTempImage, deleteTempImageRef } from "@/utils/tempImageStorage";
-import { previewStorageKeys, saveImagePreview } from "@/utils/previewStorage";
+import { previewStorageKeys, saveImagePreview, clearImagePreview, outputExists, stripCacheBuster, withCacheBuster, imagePreviewGone } from "@/utils/previewStorage";
 import { sendToPanel, sendImageToImg2Img, sendImageToUpscale, sendImageToOutpaint } from "@/utils/sendHelpers";
 import { fixFloatingPointParams } from "@/utils/numberUtils";
 import { useStartup } from "@/contexts/StartupContext";
@@ -842,12 +842,26 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
       const reloadImages = async () => {
         console.log("[Inpaint] Backend ready, reloading images if needed");
 
-        // Reload preview image if it's a backend URL
+        // Reload the preview image if it's a backend URL, and verify it is
+        // still there first (outputs/ can be cleared, or the run deleted from
+        // the gallery) -- the same rule the video/audio previews follow in the
+        // panels that have them. Non-`/outputs/` values (a data: URL, a blob:,
+        // a path served from elsewhere) are left untouched: they cannot go
+        // missing server-side and must never be stamped or discarded. The
+        // stamp is applied only to a URL that verified, and it replaces any
+        // earlier stamp rather than appending.
         const savedPreview = localStorage.getItem(PREVIEW_STORAGE_KEY);
         if (savedPreview && savedPreview.startsWith('/outputs/')) {
-          console.log("[Inpaint] Reloading preview image from backend:", savedPreview);
-          // Force reload by adding timestamp
-          setGeneratedImage(`${savedPreview}?t=${Date.now()}`);
+          const previewPath = stripCacheBuster(savedPreview);
+          const previewStillThere = await outputExists(previewPath);
+          if (!previewStillThere) {
+            console.log("[Inpaint] Stored preview image is gone, clearing:", previewPath);
+            clearImagePreview(PREVIEW_KEYS);
+            setGeneratedImage(null);
+          } else {
+            console.log("[Inpaint] Reloading preview image from backend:", previewPath);
+            setGeneratedImage(withCacheBuster(previewPath));
+          }
         }
 
         // Reload input image if not loaded
@@ -4501,6 +4515,19 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
                     alt="Generated"
                     className="max-w-full max-h-full rounded-lg"
                     style={{ filter: buildFilterString(postEdit) }}
+                    onError={() => {
+                      // The file went away while the panel was open -- show an
+                      // empty preview rather than a broken image, the backstop
+                      // the video/audio players have elsewhere. Confirmed with
+                      // a HEAD first, so a hot reload or a backend blip cannot
+                      // discard a result that is still on disk (see helper).
+                      imagePreviewGone(effectiveGeneratedImage ?? generatedImage, generatedImage).then((gone) => {
+                        if (!gone) return;
+                        console.warn("[Inpaint] Preview image failed to load, clearing:", generatedImage);
+                        clearImagePreview(PREVIEW_KEYS);
+                        setGeneratedImage(null);
+                      });
+                    }}
                   />
                 ) : previewImage ? (
                   <img

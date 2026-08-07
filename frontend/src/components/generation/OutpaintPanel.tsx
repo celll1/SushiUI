@@ -48,7 +48,7 @@ import {
 } from "@/utils/api";
 import { wsClient, CFGMetrics } from "@/utils/websocket";
 import { saveTempImage, loadTempImage, deleteTempImageRef } from "@/utils/tempImageStorage";
-import { previewStorageKeys, loadVideoPreview, saveVideoPreview, loadAudioPreview, saveAudioPreview, saveImagePreview, clearVideoPreview, clearAudioPreview, outputExists } from "@/utils/previewStorage";
+import { previewStorageKeys, loadVideoPreview, saveVideoPreview, loadAudioPreview, saveAudioPreview, saveImagePreview, clearVideoPreview, clearAudioPreview, clearImagePreview, outputExists, stripCacheBuster, withCacheBuster, imagePreviewGone } from "@/utils/previewStorage";
 import { sendToPanel, sendImageToImg2Img, sendImageToInpaint, sendImageToUpscale, fetchUrlToFile, sendVideoToOutpaint, sendAudioToOutpaint, sendAudioToImg2Img } from "@/utils/sendHelpers";
 import { fixFloatingPointParams } from "@/utils/numberUtils";
 import { useStartup } from "@/contexts/StartupContext";
@@ -747,9 +747,24 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
   // Reload temp images once the backend is ready
   useEffect(() => {
     if (!isBackendReady) return;
+    // Verify the restored preview image still exists before showing it, the
+    // same way the video and audio branches below do. Non-`/outputs/` values (a
+    // data: URL, a blob:, a path served from elsewhere) are left untouched:
+    // they cannot go missing server-side and must never be stamped or
+    // discarded. The cache-busting stamp is applied only to a URL that
+    // verified, and it replaces any earlier stamp rather than appending.
     const savedPreview = localStorage.getItem(PREVIEW_STORAGE_KEY);
     if (savedPreview && savedPreview.startsWith('/outputs/')) {
-      setGeneratedImage(`${savedPreview}?t=${Date.now()}`);
+      const previewPath = stripCacheBuster(savedPreview);
+      outputExists(previewPath).then((exists) => {
+        if (!exists) {
+          console.log("[Outpaint] Stored preview image is gone, clearing:", previewPath);
+          clearImagePreview(PREVIEW_KEYS);
+          setGeneratedImage(null);
+          return;
+        }
+        setGeneratedImage(withCacheBuster(previewPath));
+      });
     }
     // Verify the restored preview video still exists (outputs/ can be cleared,
     // or the run deleted from the gallery). No cache-busting timestamp -- an
@@ -4141,6 +4156,19 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
                     alt="Generated"
                     className="max-w-full max-h-full rounded-lg"
                     style={{ filter: buildFilterString(postEdit) }}
+                    onError={() => {
+                      // The file went away while the panel was open -- show an
+                      // empty preview rather than a broken image, same as the
+                      // video/audio players above. Confirmed with a HEAD first,
+                      // so a hot reload or a backend blip cannot discard a
+                      // result that is still on disk (see helper).
+                      imagePreviewGone(effectiveGeneratedImage ?? generatedImage, generatedImage).then((gone) => {
+                        if (!gone) return;
+                        console.warn("[Outpaint] Preview image failed to load, clearing:", generatedImage);
+                        clearImagePreview(PREVIEW_KEYS);
+                        setGeneratedImage(null);
+                      });
+                    }}
                   />
                 ) : previewImage ? (
                   <img

@@ -377,23 +377,60 @@ async def health_check():
 # Schema endpoints — single source of truth for frontend DEFAULT_PARAMS
 # ---------------------------------------------------------------------------
 
-def _reject_if_video_model():
+# Modality-matched replacement endpoints, keyed by the image route the caller
+# actually hit. Suggesting /generate/txt2vid to a caller that just uploaded an
+# input image is wrong twice over: it drops the image, and it is not the route
+# that accepts one. `None` means the route has no same-shape counterpart for
+# that modality, and the caller gets the nearest workable alternative instead.
+_VIDEO_ROUTE_FOR_IMAGE_ROUTE = {
+    "/generate/txt2img": "/generate/txt2vid",
+    "/generate/img2img": "/generate/img2vid",
+    # There is no video inpainting route; /generate/outpaint/video extends an
+    # existing clip in time, and /generate/img2vid animates a still.
+    "/generate/inpaint": None,
+    "/generate/outpaint": "/generate/outpaint/video",
+}
+
+_AUDIO_ROUTE_FOR_IMAGE_ROUTE = {
+    "/generate/txt2img": "/generate/txt2aud",
+    "/generate/img2img": "/generate/aud2aud",
+    # ACE-Step's inpainting equivalent is aud2aud with mode="repaint".
+    "/generate/inpaint": "/generate/aud2aud",
+    "/generate/outpaint": "/generate/outpaint/audio",
+}
+
+
+def _video_route_hint(endpoint: str) -> str:
+    """Return the "use X instead" clause for an image route refused on video."""
+    replacement = _VIDEO_ROUTE_FOR_IMAGE_ROUTE.get(endpoint)
+    if replacement:
+        return f"use {replacement}"
+    return "use /generate/img2vid to animate a still, or /generate/outpaint/video to extend a clip"
+
+
+def _reject_if_video_model(endpoint: str = "/generate/txt2img"):
     """Reject an image-generation request when a video model is loaded.
+
+    `endpoint` is the image route the caller hit; the refusal names the video
+    route with the same request shape (img2img -> img2vid, outpaint ->
+    outpaint/video) rather than always pointing at txt2vid.
 
     Raised before the executor so it surfaces as a 4xx ValidationError instead of
     being re-wrapped as a 500 GenerationError by the route's broad except.
     """
+    hint = _video_route_hint(endpoint)
     if getattr(pipeline_manager, "is_ltx2_model", False):
         raise CustomValidationError(
-            "The loaded model is a video model (LTX-2.3); use /generate/txt2vid",
-            detail="LTX-2.3 produces video, not still images. Load an image model for txt2img/img2img/inpaint.",
+            f"The loaded model is a video model (LTX-2.3); {hint}",
+            detail=f"LTX-2.3 produces video, not still images, so {endpoint} cannot serve it. "
+                   "Load an image model for txt2img/img2img/inpaint/outpaint.",
         )
     if getattr(pipeline_manager, "is_minimax_h3_model", False):
         raise CustomValidationError(
-            "The loaded model is a video model (MiniMax-H3); use /generate/txt2vid",
-            detail="MiniMax-H3 produces video with a joint audio track, not still images, and its "
-                   "shortest decodable clip is 22 frames. Load an image model for "
-                   "txt2img/img2img/inpaint.",
+            f"The loaded model is a video model (MiniMax-H3); {hint}",
+            detail=f"MiniMax-H3 produces video with a joint audio track, not still images, and its "
+                   f"shortest decodable clip is 22 frames, so {endpoint} cannot serve it. "
+                   "Load an image model for txt2img/img2img/inpaint/outpaint.",
         )
 
 
@@ -421,16 +458,22 @@ def _reject_if_video_model_on_audio_route(endpoint: str):
 # so it had no callers left and is deleted rather than kept as a dead branch.
 
 
-def _reject_if_audio_model():
+def _reject_if_audio_model(endpoint: str = "/generate/txt2img"):
     """Reject an image-generation request when an audio model (ACE-Step) is loaded.
+
+    `endpoint` is the image route the caller hit; the refusal names the audio
+    route with the same request shape (img2img -> aud2aud, outpaint ->
+    outpaint/audio) rather than always pointing at txt2aud.
 
     Raised before the executor so it surfaces as a 4xx ValidationError instead of
     being re-wrapped as a 500 GenerationError by the route's broad except.
     """
     if getattr(pipeline_manager, "is_acestep_model", False):
+        replacement = _AUDIO_ROUTE_FOR_IMAGE_ROUTE.get(endpoint, "/generate/txt2aud")
         raise CustomValidationError(
-            "The loaded model is an audio model (ACE-Step); use /generate/txt2aud",
-            detail="ACE-Step produces audio, not still images. Load an image model for txt2img/img2img/inpaint.",
+            f"The loaded model is an audio model (ACE-Step); use {replacement}",
+            detail=f"ACE-Step produces audio, not still images, so {endpoint} cannot serve it. "
+                   "Load an image model for txt2img/img2img/inpaint/outpaint.",
         )
 
 
@@ -707,8 +750,8 @@ async def generate_txt2img(
     db: Session = Depends(get_gallery_db)
 ):
     """Generate image from text"""
-    _reject_if_video_model()
-    _reject_if_audio_model()
+    _reject_if_video_model("/generate/txt2img")
+    _reject_if_audio_model("/generate/txt2img")
     lora_configs = []
     from api.generation_status import start_generation, complete_generation, fail_generation, get_warnings
     from api.arch_capabilities import check_arch_capabilities
@@ -1704,8 +1747,8 @@ async def generate_img2img(
     db: Session = Depends(get_gallery_db)
 ):
     """Generate image from image"""
-    _reject_if_video_model()
-    _reject_if_audio_model()
+    _reject_if_video_model("/generate/img2img")
+    _reject_if_audio_model("/generate/img2img")
     lora_configs = []
     from api.generation_status import start_generation, complete_generation, fail_generation, get_warnings
     from api.arch_capabilities import check_arch_capabilities
@@ -4535,8 +4578,8 @@ async def generate_inpaint(
     db: Session = Depends(get_gallery_db)
 ):
     """Generate inpainted image"""
-    _reject_if_video_model()
-    _reject_if_audio_model()
+    _reject_if_video_model("/generate/inpaint")
+    _reject_if_audio_model("/generate/inpaint")
     lora_configs = []
     from api.generation_status import start_generation, complete_generation, fail_generation, get_warnings
     from api.arch_capabilities import check_arch_capabilities
@@ -5201,8 +5244,8 @@ async def generate_outpaint(
     exactly (byte-identical), regardless of the loaded architecture or
     denoising_strength -- see core/inference/outpaint_utils.py and
     PipelineManager.generate_outpaint."""
-    _reject_if_video_model()
-    _reject_if_audio_model()
+    _reject_if_video_model("/generate/outpaint")
+    _reject_if_audio_model("/generate/outpaint")
     lora_configs = []
     from api.generation_status import start_generation, complete_generation, fail_generation, get_warnings
     from api.arch_capabilities import check_arch_capabilities

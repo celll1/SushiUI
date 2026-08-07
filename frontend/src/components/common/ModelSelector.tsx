@@ -25,7 +25,7 @@ interface ModelSelectorProps {
 }
 
 export default function ModelSelector({ onModelLoad }: ModelSelectorProps) {
-  const { modelLoaded } = useStartup();
+  const { modelLoaded, modelInfoVersion } = useStartup();
   const [models, setModels] = useState<Model[]>([]);
   const [currentModel, setCurrentModel] = useState<any>(null);
   const [loading, setLoading] = useState(false);
@@ -39,11 +39,14 @@ export default function ModelSelector({ onModelLoad }: ModelSelectorProps) {
     loadCurrentModel();
   }, []);
 
+  // Re-read the loaded model whenever the shared source says it changed --
+  // including changes this page did not make (API call, backend restart,
+  // another tab), which previously left the header showing the wrong model.
   useEffect(() => {
     if (modelLoaded) {
       loadCurrentModel();
     }
-  }, [modelLoaded]);
+  }, [modelLoaded, modelInfoVersion]);
 
   const loadModels = async () => {
     try {

@@ -410,7 +410,7 @@ interface Img2ImgPanelProps {
 }
 
 export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgPanelProps = {}) {
-  const { modelLoaded, isBackendReady, generationDefaults, isVideo, isAudio, archCapabilities } = useStartup();
+  const { modelLoaded, isBackendReady, generationDefaults, isVideo, isAudio, archCapabilities, resolveModality, modelInfoVersion } = useStartup();
   const [params, setParams] = useState<Img2ImgParams>(DEFAULT_PARAMS);
   const [isGenerating, setIsGenerating] = useState(false);
   const [generatedImage, setGeneratedImage] = useState<string | null>(null);
@@ -456,6 +456,16 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
   const [scheduleTypes, setScheduleTypes] = useState<Array<{ id: string; name: string }>>([]);
   const [isMounted, setIsMounted] = useState(false);
   const [currentModelInfo, setCurrentModelInfo] = useState<any>(null);
+  // Keep this panel's copy of GET /models/current in step with the shared one.
+  // modelInfoVersion only changes when the loaded model's identity actually
+  // changes, so this costs one request per model change -- including changes
+  // this page did not make (API, backend restart, another tab).
+  useEffect(() => {
+    if (modelInfoVersion === 0) return; // initial fetch is done in loadInitialData
+    getCurrentModel()
+      .then(setCurrentModelInfo)
+      .catch((error) => console.warn("[Img2Img] Failed to refresh model info", error));
+  }, [modelInfoVersion]);
   // Drop a persisted unet_quantization the loaded architecture does not offer
   // (e.g. fp8_e4m3fn carried over onto a krea2 model): otherwise the <select>
   // holds a value absent from its options and renders blank, while the panel
@@ -1731,9 +1741,19 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
       return;
     }
 
+    // Which endpoint this request goes to is decided from a FRESH read of
+    // GET /models/current, not from the cached isVideo/isAudio render flags:
+    // the model can change under an open page (API call, backend restart,
+    // second tab), and routing an image request at a video model costs a 400
+    // whose message is about the wrong thing. The cached flags remain the
+    // render-time hint; only the dispatch decision is re-verified.
+    const modality = await resolveModality();
+    const videoMode = modality.isVideo;
+    const audioMode = modality.isAudio;
+
     // Audio mode (ACE-Step) uses an uploaded reference clip instead of an
     // input image; skip the image-required check and base64 conversion below.
-    if (isAudio) {
+    if (audioMode) {
       if (!referenceAudioFile) {
         alert("Please select a reference audio clip");
         return;
@@ -1745,7 +1765,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
 
     // Convert image to base64 for queue storage (img2img/img2vid only)
     let imageBase64: string = "";
-    if (!isAudio) {
+    if (!audioMode) {
       const imageSource = inputImage || inputImagePreview;
 
       if (typeof imageSource === 'string') {
@@ -1808,7 +1828,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
     // Audio mode: an audio model (ACE-Step) is loaded -> enqueue an aud2aud item
     // built from the shared params + the uploaded reference clip. Checked before
     // the video branch (mutually exclusive). Audio loop-generation is out of scope.
-    if (isAudio) {
+    if (audioMode) {
       const audioParams: Aud2AudParams = {
         prompt: processedPrompt,
         lyrics: params.lyrics,
@@ -1840,7 +1860,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
 
     // Video mode: a video model is loaded -> enqueue an img2vid item using the
     // input image as the keyframe. Video loop-generation is out of scope.
-    if (isVideo) {
+    if (videoMode) {
       const videoParams: Img2VidParams = {
         prompt: processedPrompt,
         negative_prompt: processedNegativePrompt,

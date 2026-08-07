@@ -441,7 +441,7 @@ interface InpaintPanelProps {
 }
 
 export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintPanelProps = {}) {
-  const { modelLoaded, isBackendReady, generationDefaults, archCapabilities } = useStartup();
+  const { modelLoaded, isBackendReady, generationDefaults, archCapabilities, modelInfoVersion } = useStartup();
   const [params, setParams] = useState<InpaintParams>(DEFAULT_PARAMS);
   const [generatedImageParams, setGeneratedImageParams] = useState<InpaintParams | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
@@ -472,6 +472,16 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
   const [scheduleTypes, setScheduleTypes] = useState<Array<{ id: string; name: string }>>([]);
   const [isMounted, setIsMounted] = useState(false);
   const [currentModelInfo, setCurrentModelInfo] = useState<any>(null);
+  // Keep this panel's copy of GET /models/current in step with the shared one.
+  // Inpaint has no video/audio branch (there is no video inpainting route), so
+  // this only affects the arch-dependent controls -- but those were equally
+  // frozen at whatever was loaded when the panel mounted.
+  useEffect(() => {
+    if (modelInfoVersion === 0) return; // initial fetch happens on mount below
+    getCurrentModel()
+      .then(setCurrentModelInfo)
+      .catch((error) => console.warn("[Inpaint] Failed to refresh model info", error));
+  }, [modelInfoVersion]);
   // Drop a persisted unet_quantization the loaded architecture does not offer
   // (e.g. fp8_e4m3fn carried over onto a krea2 model): otherwise the <select>
   // holds a value absent from its options and renders blank, while the panel

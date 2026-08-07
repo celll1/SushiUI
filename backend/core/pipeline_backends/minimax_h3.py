@@ -337,11 +337,13 @@ class MiniMaxH3Mixin:
         """Keyframe-conditioned generation with MiniMax-H3 (``fl2va``).
 
         ``input_image`` is the FIRST frame and the optional ``last_frame_image``
-        is the LAST one — MiniMax-H3 conditions on the two ends of the clip and
-        on nothing in between (its conditioning anchors are addressed by the
-        rotary clock's first and last frame positions, not by an arbitrary frame
-        index). Both are ordinary PIL images; each becomes one single-frame
-        visual condition.
+        is the LAST one; both are ordinary PIL images and each becomes one
+        single-frame visual condition, anchored at the rotary clock's first and
+        last frame position respectively. Those two positions are what THIS
+        route offers, not what the layout can express: an anchor's rotary time
+        is ``num_text_tokens + (5/3)*f`` for any pixel frame ``f``, and
+        ``build_packed_layout`` takes an integer index (it is the caller that
+        passes only the two strings here).
 
         Same return contract as ``_generate_txt2vid_minimax_h3``.
         """
@@ -400,17 +402,34 @@ class MiniMaxH3Mixin:
     ):
         """Temporal outpaint with MiniMax-H3: extend a clip, or bridge two.
 
-        WHAT THIS ARCHITECTURE CAN AND CANNOT DO, because the shape of this
-        function is entirely that fact: MiniMax-H3 conditions on the FIRST
-        and/or the LAST frame of the span it generates. It has no analogue of
-        ``LTX2VideoCondition.index`` (no index-addressable conditioning) and no
-        denoising-strength video-to-video path, so there is no mechanism by
-        which a clip sitting in the MIDDLE of a longer timeline could condition
-        what is generated around it. The endpoint therefore serves exactly the
-        three placements the conditioning can anchor -- extend-forward,
-        extend-backward, bridge -- and refuses everything else with that reason
+        WHAT THIS PATH CONDITIONS ON, because the shape of this function is
+        entirely that fact: it hands the model the FIRST and/or the LAST frame
+        of the span it asks for, as fl2va keyframe anchors, and concatenates
+        the preserved clip(s) around the result. It therefore serves exactly
+        the three placements those two anchors describe -- extend-forward,
+        extend-backward, bridge -- and refuses everything else
         (``generation_utils.plan_video_outpaint_placement``) rather than
         approximating it with a nearby placement.
+
+        That is a property of THIS path, not of the architecture, and the
+        distinction is worth stating because this docstring used to blur it:
+
+        * The packed sequence's temporal axis is pixel-frame time
+          (``t(f) = num_text_tokens + (5/3)*f``, measured exact), and
+          ``h3_pipeline_ops.build_packed_layout`` accepts an integer frame
+          index per anchor, so index-addressable conditioning does exist here.
+          It is measured to bind on the released fl2va weights (an anchor at
+          frame 60 is the per-frame RMS argmin, at 640x384 and at 1344x768).
+          What it does NOT yet have is a route that reaches it: nothing below
+          passes an index, and a mid-timeline placement -- anchoring a
+          preserved clip's two boundary frames at their own indices inside one
+          generated span -- is unmeasured and is not offered.
+        * The ref2va partition conditions on a whole clip rather than on a
+          boundary frame (``/generate/ref2vid`` with a reference video, which
+          MiniMax documents as video continuation). It gives the model the
+          source's motion, and it gives up the exact preservation below: a
+          reference is conditioning, not a concatenated span, so every output
+          frame is generated. Neither is a better version of the other.
 
         Consequences worth stating plainly:
 

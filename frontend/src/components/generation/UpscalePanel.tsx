@@ -660,24 +660,32 @@ export default function UpscalePanel({ onTabChange, onImageGenerated }: UpscaleP
 
           {(params.upscaler_backend === "spandrel" || params.upscaler_backend === "diffusion") && (
             <div className="grid grid-cols-2 gap-2">
-              <NumberInput
-                label="Tile Size"
-                value={params.tile_size ?? 512}
-                onCommit={(v) => setParams({ ...params, tile_size: v })}
-                min={0}
-                max={4096}
-                step={64}
-                parse="int"
-              />
-              <NumberInput
-                label="Tile Overlap"
-                value={params.tile_overlap ?? 32}
-                onCommit={(v) => setParams({ ...params, tile_overlap: v })}
-                min={0}
-                max={512}
-                step={8}
-                parse="int"
-              />
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-1">Tile Size</label>
+                <NumberInput
+                  label="Tile Size"
+                  value={params.tile_size ?? 512}
+                  onCommit={(v) => setParams({ ...params, tile_size: v })}
+                  min={0}
+                  max={4096}
+                  step={64}
+                  parse="int"
+                  className="w-full"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-1">Tile Overlap</label>
+                <NumberInput
+                  label="Tile Overlap"
+                  value={params.tile_overlap ?? 32}
+                  onCommit={(v) => setParams({ ...params, tile_overlap: v })}
+                  min={0}
+                  max={512}
+                  step={8}
+                  parse="int"
+                  className="w-full"
+                />
+              </div>
             </div>
           )}
 
@@ -737,24 +745,32 @@ export default function UpscalePanel({ onTabChange, onImageGenerated }: UpscaleP
               />
             </div>
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-              <NumberInput
-                label="Steps"
-                value={params.steps ?? 20}
-                onCommit={(v) => setParams({ ...params, steps: v })}
-                min={1}
-                max={150}
-                step={1}
-                parse="int"
-              />
-              <NumberInput
-                label="CFG Scale"
-                value={params.cfg_scale ?? 7.0}
-                onCommit={(v) => setParams({ ...params, cfg_scale: v })}
-                min={1.0}
-                max={30.0}
-                step={0.1}
-                parse="float"
-              />
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-1">Steps</label>
+                <NumberInput
+                  label="Steps"
+                  value={params.steps ?? 20}
+                  onCommit={(v) => setParams({ ...params, steps: v })}
+                  min={1}
+                  max={150}
+                  step={1}
+                  parse="int"
+                  className="w-full"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-1">CFG Scale</label>
+                <NumberInput
+                  label="CFG Scale"
+                  value={params.cfg_scale ?? 7.0}
+                  onCommit={(v) => setParams({ ...params, cfg_scale: v })}
+                  min={1.0}
+                  max={30.0}
+                  step={0.1}
+                  parse="float"
+                  className="w-full"
+                />
+              </div>
               <Input
                 type="number"
                 label="Seed"

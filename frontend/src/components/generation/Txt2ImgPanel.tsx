@@ -3516,45 +3516,61 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
             />
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-2">
-              <NumberInput
-                label="Duration (seconds)"
-                value={params.audio_duration ?? 30.0}
-                onCommit={(v) => setParams({ ...params, audio_duration: v })}
-                min={1}
-                max={600}
-                step={1}
-                parse="float"
-              />
-              <NumberInput
-                label="Steps"
-                value={params.inference_steps ?? 8}
-                onCommit={(v) => setParams({ ...params, inference_steps: v })}
-                min={1}
-                max={100}
-                step={1}
-                parse="int"
-              />
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-1">Duration (seconds)</label>
+                <NumberInput
+                  label="Duration (seconds)"
+                  value={params.audio_duration ?? 30.0}
+                  onCommit={(v) => setParams({ ...params, audio_duration: v })}
+                  min={1}
+                  max={600}
+                  step={1}
+                  parse="float"
+                  className="w-full"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-1">Steps</label>
+                <NumberInput
+                  label="Steps"
+                  value={params.inference_steps ?? 8}
+                  onCommit={(v) => setParams({ ...params, inference_steps: v })}
+                  min={1}
+                  max={100}
+                  step={1}
+                  parse="int"
+                  className="w-full"
+                />
+              </div>
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-2">
-              <NumberInput
-                label="Shift"
-                value={params.shift ?? 3.0}
-                onCommit={(v) => setParams({ ...params, shift: v })}
-                min={0}
-                max={20}
-                step={0.1}
-                parse="float"
-              />
-              <NumberInput
-                label="Guidance Scale"
-                value={params.guidance_scale ?? 1.0}
-                onCommit={(v) => setParams({ ...params, guidance_scale: v })}
-                min={0}
-                max={20}
-                step={0.1}
-                parse="float"
-              />
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-1">Shift</label>
+                <NumberInput
+                  label="Shift"
+                  value={params.shift ?? 3.0}
+                  onCommit={(v) => setParams({ ...params, shift: v })}
+                  min={0}
+                  max={20}
+                  step={0.1}
+                  parse="float"
+                  className="w-full"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-1">Guidance Scale</label>
+                <NumberInput
+                  label="Guidance Scale"
+                  value={params.guidance_scale ?? 1.0}
+                  onCommit={(v) => setParams({ ...params, guidance_scale: v })}
+                  min={0}
+                  max={20}
+                  step={0.1}
+                  parse="float"
+                  className="w-full"
+                />
+              </div>
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-2">

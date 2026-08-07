@@ -957,6 +957,29 @@ a generation without style transfer.
     `target_fps`, `resample_policy`, `start_time`, the tiling policy and an audio
     prep version; LTX-2.3's legacy seven-argument keys are byte-identical to
     before.
+  - **Image datasets train natively at `T_lat = 1`, and the transfer to video is
+    unvalidated.** A still is encoded as a 1-frame clip
+    (`ops/minimax_h3_ops.vae_encode`: `[-1,1]` → ImageNet-normalised `[0,1]`,
+    posterior **mode**, `[1, 24, 1, H/16, W/16]`) and goes through the same 5-D
+    `train_step` as a clip. `_pixel_frames_for` returns 0 pixel frames at
+    `T_lat = 1`, so a still carries **0 audio rows** rather than the 74 the
+    17n+5 grid inversion produced, and the audio term is the exactly-zero branch.
+    Measured facts: a `T = 1` encode and latent frame 0 of a real 22-frame clip
+    agree to rel-RMS 0.0005 with per-channel correlation 1.0000 (the encoder is
+    causal with `frame_pre_padding = 3` and `temporal_compression_ratio = 4`, so
+    latent frame 0 is a function of pixel frame 0 alone); `n_aud = 0` survives
+    the DiT forward, with finite loss and finite nonzero gradients in all five
+    block groups; 384×640 `T_lat = 1` costs **1.06 s/step and 23.75 GB peak**
+    against 4.36 s / 25.01 GB for `T_lat = 7` in the same process — 4.1× cheaper
+    in time and 1.25 GB lower, because the resident base and the per-forward FP8
+    dequant dominate and neither scales with sequence length. **Not measured:**
+    whether a stills-trained LoRA transfers to `t2va`/`fl2va` output, and whether
+    it reduces motion. The pre-registered experiment that would answer both
+    (`scratchpad/minimax_h3_q1_overturn.md` §8: CLIP-image transfer ≥ 0.05 and a
+    Farneback optical-flow floor of 0.80× base) has not been run. At inference the
+    video block is always `T_lat ≥ 7`, so a `T_lat = 1` block is a 304-row
+    sequence where training on clips is 1818 rows; whether attention behaves
+    comparably at that length is untested.
   - **`audio_enable=false` is H3-specific**: it skips the audio VAE decode and
     the mux. The audio rows still ride the packed sequence and still influence
     video through self-attention, and the flag does not perturb the noise draw

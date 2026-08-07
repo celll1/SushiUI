@@ -327,8 +327,11 @@ def test_clip_span_docstring_matches_clip_span():
 # ===========================================================================
 # Native T_lat = 1 image-dataset training (Q1 overturn)
 #
-# Two changes, both in ops/minimax_h3_ops.py, and each test below names the one
-# it pins together with how it FAILS IF THE FIX IS REVERTED:
+# Two changes in ops/minimax_h3_ops.py plus two in the SHARED base_trainer paths
+# a still-image dataset reaches. Every test names the change it pins. Most of
+# them fail if that change is reverted; the two marked NEGATIVE CONTROL pass
+# under both the old and the new code BY DESIGN -- they exist to pin what must
+# NOT have moved, and would only fail against an over-general "fix".
 #
 #   Q1a  `vae_encode` used to `raise NotImplementedError` on a still. It now
 #        encodes the still as a degenerate 1-frame clip -- the SAME quantity the
@@ -339,6 +342,16 @@ def test_clip_span_docstring_matches_clip_span():
 #        clamp `T_lat = 1` to n=1, handing back 22 frames -> 37 audio latents ->
 #        74 NOISE audio rows for a single image. A still spans no time; its
 #        audio budget is 0. Revert -> `test_a_still_gets_no_audio_budget` sees 22.
+#   F1   `pre_encoded_cache` validated every non-lens/ideogram4 cached latent as
+#        4D `[1, C, H/8, W/8]`, so a video arch's 5D STILL latent
+#        `[1, C, 1, H/vsf, W/vsf]` compared its TEMPORAL axis (1) against
+#        `height // 8` (48 at 384) and mismatched on the first batch -- then fell
+#        into `_regenerate_single_latent`, which read `self.unet.parameters()`
+#        for every non-zimage arch although every DiT arch leaves `unet` None.
+#        Hits MiniMax-H3 AND LTX-2.3 stills.
+#   F2   the still `BucketManager` hardcoded `divisibility=8` while the two
+#        no-bucketing fit paths already read `arch.pixel_align`. At base 640,
+#        37/42 generated buckets are not /32.
 # ===========================================================================
 
 _MINIMAX_H3_PIXEL_MEAN = (0.48145466, 0.4578275, 0.40821073)
@@ -467,8 +480,63 @@ def test_a_still_gets_no_audio_budget():
     assert n_aud * AUDIO_CHANNELS == 0
 
 
+def test_the_latent_normalisation_uses_the_per_channel_vectors():
+    """Q1a, VALUES not just shape. The drift-guard test compares `vae_encode`
+    against `vae_encode_clip`, so a normalisation bug SHARED by both would pass
+    it; this recomputes `(z - mean[c]) / std[c]` from the 24 distinct per-channel
+    vectors independently. A transposed view, a broadcast over the wrong axis or
+    a swapped mean/std all move these numbers."""
+    t = _FakeEncodeTrainer()
+    px = _still(32, 32, seed=11)
+    lat = OPS.vae_encode(t, px)
+
+    # Reproduce the fake VAE's posterior mode from what it was actually handed.
+    z = _RecordingLatentDist(t.vae.seen).mode()
+    mean = torch.tensor(t.minimax_h3_latents_mean).view(1, 24, 1, 1, 1)
+    std = torch.tensor(t.minimax_h3_latents_std).view(1, 24, 1, 1, 1)
+    assert torch.allclose(lat, (z.float() - mean) / std, atol=1e-6)
+    # Sanity that the vectors actually bite: without them the tensor differs.
+    assert not torch.allclose(lat, z.float(), atol=1e-3)
+
+
+def test_the_still_staging_matches_the_clip_staging_through_encode_image():
+    """S1. `encode_image` builds the [-1, 1] tensor in fp32 and then casts it to
+    `vae_dtype` (fp16) before dispatching, while `vae_encode_clip` receives fp32.
+    Remapping fp16-rounded pixels differs by ~5e-4 -- the same order as the
+    "a still IS latent frame 0" agreement the docstring claims -- so `vae_encode`
+    rebuilds the fp32 tensor from the PIL image `encode_image` also passes.
+
+    Revert that rebuild -> the fp16-staged encode stops matching the clip path
+    and this fails."""
+    from PIL import Image
+    import numpy as np
+
+    rng = np.random.default_rng(5)
+    arr = rng.integers(0, 256, size=(32, 48, 3), dtype=np.uint8)
+    img = Image.fromarray(arr, "RGB")
+
+    # exactly what encode_image stages: fp32 -> [-1,1] -> cast to vae_dtype
+    fp32 = torch.from_numpy((arr.astype(np.float32) / 255.0 - 0.5) * 2.0
+                            ).permute(2, 0, 1).unsqueeze(0)
+    staged_fp16 = fp32.to(torch.float16)
+
+    a = OPS.vae_encode(_FakeEncodeTrainer(), staged_fp16, image=img)
+    b = OPS.vae_encode_clip(_FakeEncodeTrainer(), fp32[0].unsqueeze(0))
+    assert torch.equal(a, b)
+
+    # Negative control: WITHOUT the rebuild (no `image` handed over) the fp16
+    # staging is measurably a different input, which is the whole point.
+    c = OPS.vae_encode(_FakeEncodeTrainer(), staged_fp16)
+    assert not torch.equal(c, b)
+
+    # And the rebuild must refuse a mismatched canvas rather than silently
+    # replacing the caller's geometry.
+    assert OPS._pixels_from_pil(img, 64, 64) is None
+
+
 def test_the_video_grid_inversion_is_untouched():
-    """Negative control for Q1b: the fix must special-case T_lat = 1 ONLY. If it
+    """NEGATIVE CONTROL for Q1b (passes under the old function too, by design):
+    the fix must special-case T_lat = 1 ONLY. If it
     had instead been written as a general inverse (or the guard swallowed the
     grid), the two measured video grid points would move and every audio-less
     VIDEO batch would get the wrong row count."""
@@ -496,3 +564,181 @@ def test_the_packed_layout_accepts_zero_audio_latents():
     uniq, idx = build_row_timesteps(lay, 0.3, 0.7)
     assert idx.shape == (lay["sequence_length"],)
     assert torch.isfinite(uniq).all()
+
+
+# ===========================================================================
+# F1 -- pre_encoded_cache must accept a video arch's 5D STILL latent
+# ===========================================================================
+
+def test_a_5d_still_latent_passes_cache_validation():
+    """F1a. The pre-fix branch validated `latent.shape[2]` against `height // 8`.
+    For an H3 still that axis is the TEMPORAL one and is always 1, so the check
+    mismatched on every image (1 != 48 at 384) and sent a perfectly good cached
+    latent into `_regenerate_single_latent` on the very first batch.
+
+    Revert -> the H3 (/16) and LTX-2.3 (/32) cases below are declared invalid."""
+    # MiniMax-H3 at 384x640: /16 spatial, one latent frame.
+    h3 = torch.zeros(1, 24, 1, 384 // 16, 640 // 16)
+    assert BaseTrainer._still_latent_5d_is_valid(h3, 640, 384)
+    # LTX-2.3 at 384x640: /32 spatial. Same defect, same fix.
+    ltx = torch.zeros(1, 128, 1, 384 // 32, 640 // 32)
+    assert BaseTrainer._still_latent_5d_is_valid(ltx, 640, 384)
+
+
+def test_a_stale_bucket_5d_latent_is_still_rejected():
+    """F1a negative control: the fix must not become a blanket "any 5D is fine".
+    A record cached at a DIFFERENT bucket has to keep failing, or the branch
+    stops doing the job the 4D one did."""
+    stale = torch.zeros(1, 24, 1, 512 // 16, 768 // 16)      # cached at 512x768
+    assert not BaseTrainer._still_latent_5d_is_valid(stale, 640, 384)
+    # A multi-frame CLIP latent is not a still and must not be waved through.
+    clip = torch.zeros(1, 24, 7, 384 // 16, 640 // 16)
+    assert not BaseTrainer._still_latent_5d_is_valid(clip, 640, 384)
+    # 4D latents are not this branch's business.
+    assert not BaseTrainer._still_latent_5d_is_valid(torch.zeros(1, 4, 48, 80), 640, 384)
+
+
+def test_latent_regeneration_does_not_assume_a_unet(tmp_path):
+    """F1b. `_regenerate_single_latent` read `next(self.unet.parameters())` for
+    every non-zimage arch, and EVERY DiT arch leaves `unet` None
+    (minimax_h3_ops.load_components sets it explicitly). So the recovery path for
+    a cache warning raised `AttributeError: 'NoneType' object has no attribute
+    'parameters'` instead of recovering.
+
+    `unet = None` is set on the fake below, so reverting to `self.unet` makes
+    this raise. Runs entirely on the CPU with stub modules -- no arch is
+    loaded."""
+    from PIL import Image
+
+    img_path = tmp_path / "x.png"
+    Image.new("RGB", (8, 8), (10, 20, 30)).save(img_path)
+
+    class _Stub(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.p = torch.nn.Parameter(torch.zeros(1))
+
+    class _Cache:
+        def __init__(self):
+            self.saved = None
+
+        def save_latent(self, **kw):
+            self.saved = kw
+
+    class _Fake:
+        log_prefix = "[test]"
+        is_minit2i = False
+        is_zimage = False
+        is_sdxl = False
+        text_encoder = None
+        text_encoder_2 = None
+        unet = None                     # exactly what every DiT arch leaves behind
+        device = torch.device("cpu")
+        vae_dtype = torch.float32
+
+        def __init__(self):
+            self.transformer_original = _Stub()
+            self.vae = _Stub()
+
+        _main_model_module = BaseTrainer._main_model_module
+        # `_main_model_module` dispatches on these flags; H3's is the live case.
+        is_anima = is_lens = is_ideogram4 = is_krea2 = is_ltx2 = is_acestep = False
+        is_minimax_h3 = True
+
+        def encode_image(self, image=None, target_width=None, target_height=None):
+            return torch.zeros(1, 24, 1, target_height // 16, target_width // 16)
+
+    fake = _Fake()
+    cache = _Cache()
+    out = BaseTrainer._regenerate_single_latent(
+        fake, str(img_path), 640, 384, cache, {})
+    assert tuple(out.shape) == (1, 24, 1, 24, 40)
+    assert cache.saved is not None and cache.saved["width"] == 640
+    # The stub main model was restored to where it started.
+    assert next(fake.transformer_original.parameters()).device.type == "cpu"
+
+
+# ===========================================================================
+# F2 -- still bucketing follows arch.pixel_align
+# ===========================================================================
+
+def test_still_buckets_follow_the_arch_pixel_align():
+    """F2. The still `BucketManager` hardcoded `divisibility=8` while the two
+    no-bucketing fit paths already read `arch.pixel_align`. MEASURED with the
+    repo's own generator: at base 640, 37 of 42 buckets are not /32 (and 29 not
+    /16); at 768, 29 are not /32. A 1120x360 image gives MiniMax-H3 latent
+    height 23 -- odd -- and `patchify_video_latents` raises mid-run.
+
+    The value the BucketManager is constructed with now comes from ONE reader,
+    `BaseTrainer._arch_pixel_align`, shared with the two no-bucketing fit paths.
+    Revert it to a hardcoded 8 -> the MiniMax-H3 and LTX-2.3 cases below fail,
+    and every bucket the manager then emits at base 640 is checked non-/32."""
+    from core.training.arch.minimax_h3 import MiniMaxH3ArchHandler
+    from core.training.arch.ltx2 import Ltx2ArchHandler
+    from core.training.arch.sdxl import SDXLArchHandler
+    from core.training.bucketing import BucketManager, get_bucket_sizes
+
+    class _Fake:
+        _arch_pixel_align = BaseTrainer._arch_pixel_align
+
+        def __init__(self, arch):
+            self.arch = arch
+
+    # The value the still BucketManager is built with, per arch.
+    assert _Fake(MiniMaxH3ArchHandler())._arch_pixel_align() == 32
+    assert _Fake(Ltx2ArchHandler())._arch_pixel_align() == 32
+    assert _Fake(SDXLArchHandler())._arch_pixel_align() == 8      # SDXL control
+    # No arch bound at all still means the historical 8.
+    assert _Fake(None)._arch_pixel_align() == 8
+
+    # And a manager built with it emits only conforming buckets at H3's two
+    # registered training resolutions.
+    for arch in (MiniMaxH3ArchHandler(), Ltx2ArchHandler()):
+        align = _Fake(arch)._arch_pixel_align()
+        bm = BucketManager(base_resolutions=[640, 768], divisibility=align)
+        for res, buckets in bm.bucket_lists.items():
+            for b in buckets:
+                assert b.width % 32 == 0 and b.height % 32 == 0, (res, b)
+
+    # The defect, stated as data: /8 buckets are NOT /32 at H3's two registered
+    # training resolutions. This is what made the hardcoded 8 reachable.
+    assert sum(1 for b in get_bucket_sizes(640, 8) if b.width % 32 or b.height % 32) == 37
+    assert sum(1 for b in get_bucket_sizes(768, 8) if b.width % 32 or b.height % 32) == 29
+
+
+def test_bucket_divisibility_source_is_the_arch_handler():
+    """F2, and the SDXL control: `pixel_align` must still be 8 for the archs that
+    always meant 8, so the fix cannot have changed their bucket lists."""
+    from core.training.arch.sd15 import SD15ArchHandler
+    from core.training.arch.sdxl import SDXLArchHandler
+    from core.training.arch.ltx2 import Ltx2ArchHandler
+    from core.training.arch.minimax_h3 import MiniMaxH3ArchHandler
+
+    assert int(getattr(SDXLArchHandler, "pixel_align", 0)) == 8
+    assert int(getattr(SD15ArchHandler, "pixel_align", 0)) == 8
+    assert int(getattr(MiniMaxH3ArchHandler, "pixel_align", 0)) == 32
+    assert int(getattr(Ltx2ArchHandler, "pixel_align", 0)) == 32
+
+
+def test_only_640_and_768_change_and_ltx2_is_affected_the_same_way():
+    """F2's blast radius, stated rather than assumed -- this IS a behaviour
+    change for the /32 archs (MiniMax-H3 AND LTX-2.3 stills) and for the /16
+    archs at base 640, so it is pinned as data instead of being left implicit.
+
+    512, 1024, 1280 and 1536 produce an IDENTICAL bucket list under 8 and 32, so
+    the overwhelmingly common configurations are untouched."""
+    from core.training.bucketing import get_bucket_sizes
+
+    def dims(res, d):
+        return [(b.width, b.height) for b in get_bucket_sizes(res, d)]
+
+    for res in (512, 1024, 1536):
+        assert dims(res, 8) == dims(res, 32) == dims(res, 16), res
+    # 640 moves for both /16 and /32 archs; 768 and 1280 only for /32.
+    assert dims(640, 8) != dims(640, 32) and dims(640, 8) != dims(640, 16)
+    assert dims(768, 8) != dims(768, 32) and dims(768, 8) == dims(768, 16)
+    assert dims(1280, 8) != dims(1280, 32) and dims(1280, 8) == dims(1280, 16)
+    # Bucket COUNT is unchanged everywhere -- only the dimensions move, so no
+    # dataset loses or gains a bucket slot.
+    for res in (512, 640, 768, 1024, 1280, 1536):
+        assert len(dims(res, 8)) == len(dims(res, 16)) == len(dims(res, 32))

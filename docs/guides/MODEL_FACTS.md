@@ -815,19 +815,23 @@ a generation without style transfer.
       transient → nearest contact ≤ 2 frames for ≥ 8 of 12): at **1344×768 ×
       124 frames, 6 steps**, image + pinned track scored **4/4** and **12/12**,
       and pinned track with **no image at all** scored **4/4** and 9/12
-      (`scratchpad/minimax_h3_c0_results.md`). Through the shipped route at
-      **640×384 × 124 frames, 4 steps**, two seeds × two synthetic transient
-      tracks: image + track **4/4** own-beats-other (own r +0.35…+0.51, other
-      −0.12…+0.01) and 11/12 transients within 2 frames; imageless **4/4** (own
-      r +0.23…+0.59, other −0.15…+0.17) with the contact metric measurable in
-      only 2 of 4 arms there (4/6 within 2 frames; the blob tracker found the
-      ball in under a quarter of the frames in the other two).
+      (`scratchpad/minimax_h3_c0_results.md`). Replicated **through the shipped
+      route** at **640×384 × 124 frames, 4 steps**, two seeds × two synthetic
+      transient tracks: image + track **4/4** own-beats-other (own r
+      +0.347…+0.508, other −0.117…+0.014) and 11/12 transients within 2 frames;
+      imageless **4/4** (own r +0.230…+0.585, other −0.148…+0.168), where the
+      contact metric is reported as PARTIAL rather than as a pass — the blob
+      tracker found the ball in under a quarter of the frames in both
+      seed-12345 imageless arms, so only 2 of 4 arms produced a number at all
+      (4 of 6 transients over those two). Protocols, raw output, scripts and
+      artefacts: `scratchpad/minimax_h3_c3_results.md`.
     - **The scope of that measurement**, stated because a user will assume more:
       the tracks were **impulsive** — sharp broadband transients over silence,
       three per track. **Speech, pitch and timbre were not measured at all**,
       and nothing here says the model follows them. Video only; one prompt
       family; seeds 4242/12345; 4 and 6 sampling steps against a shipped default
-      of 20.
+      of 20; no run at 20 steps and no peak-VRAM figure for the C3 canvas (it
+      was not captured — see the results note rather than assuming C0's).
     - **Whole clip only, and that is the row layout rather than a policy.**
       `num_condition_audio_rows` is a PREFIX count and the audio rows are
       CHANNEL-MAJOR, so pinning "half" of them pins one stereo channel's entire
@@ -845,16 +849,28 @@ a generation without style transfer.
     - **The output is the SOURCE waveform, not a decode.** The pinned rows are
       never written, so decoding them would only round-trip the upload through
       the audio VAE; `trim_audio_to_video` slices the uploaded samples instead.
-      That exactness is of the HANDOFF: the mp4's audio is AAC (as it is for a
-      generated soundtrack), so the file is a lossy encoding of them — measured
-      on a full-scale broadband transient track, RMS deviation 0.0010–0.0194
-      against 0.060 versus the other track, exact zeros preserved in the silent
-      stretches, alignment exact at lag 0.
+      That exactness is of the HANDOFF, and it is asserted by test rather than
+      measured: the mp4's audio is **AAC** (`utils/video_utils.py`, as it is for
+      a generated soundtrack), so A2's "sample-for-sample" clause is not
+      measurable in the file and was rescoped. What the file shows instead, over
+      the eight C3 runs: alignment exact at lag 0, RMS deviation 0.0010 (track
+      B) / 0.0195 (track A, whose deviation sits inside a full-scale broadband
+      impulse) against **0.060 versus the other track**, digitally silent
+      stretches preserved as exact zeros, and the decoded audio identical across
+      seeds and across the imageless/keyed cases — one hash per uploaded file,
+      which generated or decoded audio could not be
+      (`scratchpad/minimax_h3_c3_results.md` §5).
     - **The noise draw is unchanged.** All three draws happen in the recorded
       K0.6 order and the audio draw is DISCARDED after the fact, so the video
-      noise is bit-identical to a free-audio run at the same seed. Skipping the
-      draw would move the generator; `minimax_h3_ia2v_test` asserts the
-      generator's state after `draw_noise` is the same either way.
+      noise is bit-identical to a free-audio run at the same seed. This is kept
+      **by construction**, not measured live (C0 recorded the same disposition):
+      `minimax_h3_ia2v_test.test_the_draw_is_structurally_unconditional` reads
+      the shipped function's AST and fails if the draw acquires a conditional
+      ancestor, if its arguments mention the track, if anything else in the
+      function draws from the request generator, or if the substitution stops
+      following the draw. It was validated against the mutant it names (skip the
+      draw when the track is pinned, draw video/condition noise separately),
+      which fails it.
     - **`input_image` is not required with a track.** The design assumed it was
       and the assumption was wrong: the original ia2v probes had no keyframe at
       all, and pure a2v passes the same criterion. `/generate/img2vid` therefore

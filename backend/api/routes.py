@@ -3661,11 +3661,20 @@ async def generate_img2vid(
         input_audio_prepared = None
         if input_audio_waveform is not None and arch_supports_feature(_vid_arch, "audio_conditioning"):
             from core.models.minimax_h3 import h3_references as _h3refs
+            # The rates come from the LOADED components, not from this module's
+            # idea of them: the number that decides this 400 and the number that
+            # decides the encode slice in `_generate_minimax_h3` have to be the
+            # same one, or a checkpoint with different audio geometry would make
+            # the route promise a length the encoder does not want. (The
+            # function's own defaults stay for a caller that has no components.)
+            _h3_components = getattr(pipeline_manager, "minimax_h3_components", None) or {}
             try:
                 input_audio_prepared = _h3refs.prepare_pinned_audio(
                     input_audio_waveform, int(input_audio_sample_rate),
                     num_frames=int(params.get("num_frames") or 0),
-                    fps=float(params.get("frame_rate") or 24.0),
+                    fps=float(_h3_components.get("fps") or params.get("frame_rate") or 24.0),
+                    target_sample_rate=int(_h3_components.get("audio_sample_rate") or 32000),
+                    latent_rate=float(_h3_components.get("audio_latent_rate") or 40.0),
                 )
             except ValueError as e:
                 raise CustomValidationError(

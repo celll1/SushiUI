@@ -58,6 +58,12 @@ interface MiniMaxH3KeyframeTimelineProps {
    */
   inputAudio?: File | null;
   onInputAudioChange?: (file: File | null) => void;
+  /**
+   * The panel's `audio_enable`. With it off nothing is muxed at all -- the
+   * track still conditions the video and the backend says so in a warning --
+   * so the lane must not describe an output file that will have no audio.
+   */
+  audioEnabled?: boolean;
   disabled?: boolean;
 }
 
@@ -96,6 +102,7 @@ export default function MiniMaxH3KeyframeTimeline({
   onLastFrameImageChange,
   inputAudio = null,
   onInputAudioChange,
+  audioEnabled = true,
   disabled = false,
 }: MiniMaxH3KeyframeTimelineProps) {
   const fileInput = useRef<HTMLInputElement>(null);
@@ -423,7 +430,13 @@ export default function MiniMaxH3KeyframeTimeline({
                 : `Clip ${clipSeconds.toFixed(2)}s.`}{" "}
               The track conditions the entire clip; partial-timeline placement is
               not supported. A longer track is trimmed to the clip, a shorter one
-              is refused. The output carries this file&apos;s audio unchanged.
+              is refused.{" "}
+              {audioEnabled
+                ? "The video is muxed with the samples from this file rather than " +
+                  "with generated audio (the mp4's audio track is an AAC encode of " +
+                  "them, as it is for a generated soundtrack)."
+                : "Audio output is off, so nothing is muxed into the mp4 — the track " +
+                  "still conditions the video."}
             </p>
           )}
         </div>

@@ -159,11 +159,16 @@ class MiniMaxH3Mixin:
         sampled, per the diffusers block's own note), which moves the
         conditioning latents off the reference implementation.
         """
+        from core.models.minimax_h3.h3_pipeline_ops import is_frame_index_anchor
+
         image = image.convert("RGB")
         if image.size == (width, height):
             return image
-        if anchor == "first" or (isinstance(anchor, int) and not isinstance(anchor, bool)
-                                 and anchor == 0):
+        # ONE predicate for "this anchor is a frame index", shared with the
+        # layout builder: an anchor type the layout PLACES at frame 0 must be
+        # the one this stretches, or a `np.int64(0)` would silently be
+        # cover-cropped instead.
+        if anchor == "first" or (is_frame_index_anchor(anchor) and int(anchor) == 0):
             return image.resize((width, height), Image.LANCZOS)
         source_width, source_height = image.size
         scale = max(width / source_width, height / source_height)

@@ -309,6 +309,35 @@ def _anchor_rotary_time(anchor: "int | str", num_text_tokens: int,
     return float(num_text_tokens) + ROPE_FRAME_RESCALE * float(frame)
 
 
+def _validated_pinned_frames(
+    pinned_video_frames: Sequence[int],
+    num_latent_frames: int,
+    keyframe_anchors: Sequence["int | str"],
+) -> Tuple[int, ...]:
+    """The pinned LATENT frames, ascending, so the layout is a function of the set."""
+    if len(keyframe_anchors):
+        raise ValueError(
+            "MiniMax-H3 cannot combine keyframe anchors with pinned video frames: an anchor "
+            "reserves its own conditioning rows ahead of the clip, and the pin re-uses the same "
+            "prefix count for rows of the clip itself. Pass one or the other.")
+    frames: List[int] = []
+    for frame in pinned_video_frames:
+        if isinstance(frame, bool) or not isinstance(frame, (int, np.integer)):
+            raise ValueError(
+                f"A pinned video frame must be an integer LATENT-frame index, got {frame!r}. "
+                f"Pixel frames are expanded to latent-frame groups by the caller.")
+        frame = int(frame)
+        if not 0 <= frame < num_latent_frames:
+            raise ValueError(
+                f"A pinned video frame at latent frame {frame} is outside this clip: it has "
+                f"{num_latent_frames} latent frame(s), so the last addressable index is "
+                f"{num_latent_frames - 1}.")
+        frames.append(frame)
+    if len(set(frames)) != len(frames):
+        raise ValueError(f"Pinned video frames must be distinct, got {list(pinned_video_frames)!r}.")
+    return tuple(sorted(frames))
+
+
 def build_packed_layout(
     num_text_tokens: int,
     num_latent_frames: int,
@@ -318,6 +347,7 @@ def build_packed_layout(
     *,
     patch_size: Tuple[int, int, int] = (1, 2, 2),
     keyframe_anchors: Sequence["int | str"] = (),
+    pinned_video_frames: Sequence[int] = (),
     pin_target_audio: bool = False,
     text_token_tags: Optional[torch.Tensor] = None,
     device: Optional[torch.device | str] = None,
@@ -348,11 +378,26 @@ def build_packed_layout(
     Every tensor built here is identical either way, which is why this is a flag
     and not a second builder.
 
-    WHOLE TRACK ONLY, and that is a property of the row layout rather than a
-    policy: the count is a PREFIX and the audio rows are CHANNEL-MAJOR, so a
-    "half" prefix pins one stereo channel's entire timeline, not the first half
-    of the clip in both channels. Partial-timeline pinning needs the counts
-    generalised to index sets, in this dict and in ``build_row_timesteps``.
+    WHOLE TRACK ONLY -- but because the count is a prefix, not because a prefix
+    is all the mechanism can express: the audio rows are CHANNEL-MAJOR, so a
+    "half" prefix pins one stereo channel's entire timeline rather than half the
+    clip. A partial track is reachable the same way ``pinned_video_frames``
+    reaches a partial clip, by permuting ``audio_indices``; no caller asks for
+    it yet, so it is not built.
+
+    ``pinned_video_frames`` is temporal inpaint: the LATENT frames that are
+    supplied at (near) their true value and never denoised while the rest of the
+    clip is regenerated around them. Their rows are permuted to the front of
+    ``video_indices`` and counted as conditioning, which is what lets a PREFIX
+    count address an arbitrary index SET -- a permutation of the index block
+    together with the same permutation of the rows is a bitwise no-op in the
+    transformer (``index_copy`` / ``index_select``, everything else addressed by
+    sequence position), so ``build_row_timesteps``, ``denoise``'s write slice
+    and the scheduler need no change. Callers permute their rows with
+    ``video_row_permutation`` and restore frame-major order with
+    ``video_row_order``; both are ``None`` when nothing is pinned, and the only
+    invariant given up is that ``video_indices`` is ascending, which nothing
+    consumes. Measured in ``scratchpad/minimax_h3_ti_probe_results.md``.
 
     Returns the tensors the transformer reads by name plus the two conditioning
     row counts, which the loop needs to know which rows it may write.
@@ -400,6 +445,20 @@ def build_packed_layout(
     audio_indices = torch.arange(audio_start, video_start)
     text_indices = torch.arange(num_text_tokens)
 
+    num_condition_video_rows = num_condition_rows
+    video_row_permutation: Optional[torch.Tensor] = None
+    video_row_order: Optional[torch.Tensor] = None
+    if len(pinned_video_frames):
+        pinned = _validated_pinned_frames(pinned_video_frames, num_latent_frames,
+                                          keyframe_anchors)
+        free = [frame for frame in range(num_latent_frames) if frame not in set(pinned)]
+        video_row_permutation = torch.cat([
+            torch.arange(frame * rows_per_frame, (frame + 1) * rows_per_frame)
+            for frame in (*pinned, *free)])
+        video_row_order = torch.argsort(video_row_permutation)
+        video_indices = video_indices[video_row_permutation]
+        num_condition_video_rows = len(pinned) * rows_per_frame
+
     token_tags = torch.empty(sequence_length, dtype=torch.long)
     if text_token_tags is None:
         token_tags[text_indices] = TEXT_TAG
@@ -420,13 +479,18 @@ def build_packed_layout(
         "video_indices": video_indices,
         "audio_indices": audio_indices,
         "text_indices": text_indices,
-        "num_condition_video_rows": num_condition_rows,
+        "num_condition_video_rows": num_condition_video_rows,
         "num_condition_audio_rows": num_audio_rows if pin_target_audio else 0,
         "rows_per_frame": rows_per_frame,
+        # frame-major rows -> packed rows, and back.
+        "video_row_permutation": video_row_permutation,
+        "video_row_order": video_row_order,
     }
     if device is not None:
-        for key in ("position_ids", "token_tags", "video_indices", "audio_indices", "text_indices"):
-            layout[key] = layout[key].to(device)
+        for key in ("position_ids", "token_tags", "video_indices", "audio_indices", "text_indices",
+                    "video_row_permutation", "video_row_order"):
+            if layout[key] is not None:
+                layout[key] = layout[key].to(device)
     return layout
 
 
@@ -587,6 +651,9 @@ def build_ref2va_packed_layout(
         "num_condition_video_rows": num_condition_video_rows,
         "num_condition_audio_rows": num_condition_audio_rows,
         "rows_per_frame": rows_per_frame,
+        # Same dict shape as `build_packed_layout`; ref2va pins nothing.
+        "video_row_permutation": None,
+        "video_row_order": None,
     }
     if device is not None:
         for key in ("position_ids", "token_tags", "video_indices", "audio_indices", "text_indices"):
@@ -1075,6 +1142,7 @@ def denoise(
     progress_callback: Optional[Callable[[int, int], None]] = None,
     step_callback: Optional[Callable[..., None]] = None,
     preview_latent_shape: Optional[Tuple[int, int, int]] = None,
+    video_row_order: Optional[torch.Tensor] = None,
     latent_channels: int = 24,
     patch_size: Tuple[int, int, int] = (1, 2, 2),
     keyframe_noise_aug: float = VISUAL_COND_TIMESTEP,
@@ -1098,11 +1166,21 @@ def denoise(
     pass ``preview_latent_shape=(T_lat, H_lat, W_lat)`` whenever a callback is
     given (a missing shape is a ValueError rather than a silently packed
     preview).
+
+    ``video_row_order`` is the layout's own, for a temporal-inpaint request:
+    with pinned frames the conditioning prefix is clip content, so the preview
+    takes EVERY video row and restores frame-major order
+    (``frame_major = video_rows[video_row_order]``) instead of unpatchifying the
+    generated tail as if it were the whole clip. Nothing else reads it.
     """
     if step_callback is not None and preview_latent_shape is None:
         raise ValueError(
             "denoise(step_callback=...) also needs preview_latent_shape=(T_lat, H_lat, W_lat): the "
             "preview estimate is handed over as latents, not as packed rows.")
+    if video_row_order is not None and video_row_order.numel() != video_rows.shape[0]:
+        raise ValueError(
+            f"denoise(video_row_order=...) orders {video_row_order.numel()} row(s) but was given "
+            f"{video_rows.shape[0]} video row(s); it must be the layout's own permutation.")
 
     torch_device = torch.device(device)
     scheduler.set_shift(SHIFT_VIDEO)
@@ -1154,6 +1232,11 @@ def denoise(
             sigma = 1.0 - float(timestep)
             pred_x0_rows = (video_rows[n_cond_video:].float()
                             + sigma * video_velocity[0, n_cond_video:].float())
+            if video_row_order is not None:
+                # A pinned row is already (near) x0 and is never stepped, so it
+                # previews as itself; an anchor row is not clip content at all
+                # and stays out of the preview.
+                pred_x0_rows = torch.cat([video_rows[:n_cond_video].float(), pred_x0_rows])
 
         # Only the GENERATED rows are ever written, so any conditioning anchor
         # survives the whole loop by construction rather than by re-imposition.
@@ -1173,10 +1256,11 @@ def denoise(
             try:
                 latent_frames, latent_height, latent_width = preview_latent_shape
                 unpack = lambda rows: unpatchify_video_rows(  # noqa: E731
-                    rows, latent_frames, latent_height, latent_width,
+                    rows if video_row_order is None else rows[video_row_order],
+                    latent_frames, latent_height, latent_width,
                     latent_channels=latent_channels, patch_size=patch_size)
-                step_callback(i, total_steps, unpack(video_rows[n_cond_video:]), None,
-                              unpack(pred_x0_rows))
+                clip = video_rows if video_row_order is not None else video_rows[n_cond_video:]
+                step_callback(i, total_steps, unpack(clip), None, unpack(pred_x0_rows))
             except Exception as exc:
                 print(f"[{label}] step_callback raised: {exc}")
 

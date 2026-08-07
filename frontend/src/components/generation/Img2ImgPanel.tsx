@@ -28,7 +28,7 @@ import LoopGenerationPanel, { LoopGenerationConfig } from "./LoopGenerationPanel
 import QuantizedGemmSelect from "./QuantizedGemmSelect";
 import MiniMaxH3KeyframeTimeline from "../common/MiniMaxH3KeyframeTimeline";
 import { migrateLoopGenerationConfig, computeLoopDecodeDirective } from "@/utils/loopGenerationInheritance";
-import { getSamplers, getScheduleTypes, generateImg2Img, generateImg2Vid, Img2VidParams, MiniMaxH3Keyframe, generateAud2Aud, Aud2AudParams, generateImg2ImgTrainingPreview, toBase64, LoRAConfig, ControlNetConfig, generateTIPOPrompt, cancelGeneration, getCurrentModel, isLatentOnlyResult, getResultFilename, getResultSeed, getResultAncestralSeed, unetQuantizationOptions, normalizeUnetQuantization, transformerQuantizationLabel, archSupportsFeature, videoFrameOptions, videoFrameLabel, archDisplayName, normalizeVideoFrames, fitVideoCanvas, videoCanvasRule } from "@/utils/api";
+import { getSamplers, getScheduleTypes, generateImg2Img, generateImg2Vid, Img2VidParams, MiniMaxH3Keyframe, generateAud2Aud, Aud2AudParams, generateImg2ImgTrainingPreview, toBase64, LoRAConfig, ControlNetConfig, generateTIPOPrompt, cancelGeneration, getCurrentModel, isLatentOnlyResult, getResultFilename, getResultSeed, getResultAncestralSeed, unetQuantizationOptions, normalizeUnetQuantization, transformerQuantizationLabel, archSupportsFeature, videoFrameOptions, videoFrameLabel, archDisplayName, normalizeVideoFrames, fitVideoCanvas, videoCanvasRule, videoCanvasAxisBounds, videoCanvasExceedsEnvelope } from "@/utils/api";
 import { useActiveTraining } from "@/hooks/useActiveTraining";
 import { wsClient, CFGMetrics } from "@/utils/websocket";
 import CFGMetricsGraph from "../common/CFGMetricsGraph";
@@ -3838,6 +3838,25 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
     </div>
   );
 
+  // ── What the video Absolute sliders are allowed to reach ─────────────────
+  //
+  // The envelope is on the SHORT and LONG edges, not on width and height, so
+  // each slider's ceiling depends on where the other one sits (see
+  // videoCanvasAxisBounds). Passing the OTHER axis is what keeps 1344x768 and
+  // 768x1344 both reachable while 1344x1344 is not.
+  //
+  // The bounds constrain the CONTROL, never the stored value: a width/height
+  // carried over from an architecture with a wider envelope is left exactly as
+  // the user set it (a canvas is a hard 400 server-side precisely because it is
+  // not something to change under a caller), and `videoCanvasOverEnvelope`
+  // states the mismatch instead.
+  const videoCanvasWidth = params.width ?? 768;
+  const videoCanvasHeight = params.height ?? 512;
+  const videoWidthBounds = videoCanvasAxisBounds(archCapabilities, loadedArch, videoCanvasHeight);
+  const videoHeightBounds = videoCanvasAxisBounds(archCapabilities, loadedArch, videoCanvasWidth);
+  const videoCanvasOverEnvelope = videoCanvasExceedsEnvelope(
+    archCapabilities, loadedArch, videoCanvasWidth, videoCanvasHeight);
+
   return (
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
       {/* Parameters Panel */}
@@ -4296,23 +4315,44 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
                 </div>
 
                 {sizeMode === "absolute" ? (
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                    <Slider
-                      label="Width (÷32)"
-                      min={32}
-                      max={2048}
-                      step={32}
-                      value={params.width ?? 768}
-                      onChange={(e) => setParams({ ...params, width: parseInt(e.target.value) })}
-                    />
-                    <Slider
-                      label="Height (÷32)"
-                      min={32}
-                      max={2048}
-                      step={32}
-                      value={params.height ?? 512}
-                      onChange={(e) => setParams({ ...params, height: parseInt(e.target.value) })}
-                    />
+                  <div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      <Slider
+                        label={`Width (÷${videoWidthBounds.step})`}
+                        min={videoWidthBounds.min}
+                        max={videoWidthBounds.max}
+                        step={videoWidthBounds.step}
+                        value={videoCanvasWidth}
+                        onChange={(e) => setParams({ ...params, width: parseInt(e.target.value) })}
+                      />
+                      <Slider
+                        label={`Height (÷${videoHeightBounds.step})`}
+                        min={videoHeightBounds.min}
+                        max={videoHeightBounds.max}
+                        step={videoHeightBounds.step}
+                        value={videoCanvasHeight}
+                        onChange={(e) => setParams({ ...params, height: parseInt(e.target.value) })}
+                      />
+                    </div>
+                    {/* Why a slider stops where it does. Only rendered for an
+                        architecture that HAS an envelope -- LTX-2.3 declares
+                        none, so it keeps its full range and says nothing about
+                        a cap. */}
+                    {videoWidthBounds.capped && (
+                      <p className="text-xs text-gray-500 mt-1">
+                        {videoCanvasRule(archCapabilities, loadedArch)}. The cap is on the
+                        short and long edges rather than on width and height, so each
+                        slider stops at the largest edge the other axis currently allows.
+                      </p>
+                    )}
+                    {videoCanvasOverEnvelope && (
+                      <p className="text-xs text-amber-400 mt-1">
+                        The canvas is {videoCanvasWidth}x{videoCanvasHeight}, which is
+                        outside this model&apos;s envelope. The value is kept as set — it
+                        is not moved for you — and this model refuses it, so change it
+                        before generating.
+                      </p>
+                    )}
                   </div>
                 ) : (
                   <div>

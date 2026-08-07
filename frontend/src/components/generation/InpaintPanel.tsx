@@ -31,6 +31,7 @@ import { useActiveTraining } from "@/hooks/useActiveTraining";
 import { wsClient, CFGMetrics } from "@/utils/websocket";
 import CFGMetricsGraph from "../common/CFGMetricsGraph";
 import { saveTempImage, loadTempImage, deleteTempImageRef } from "@/utils/tempImageStorage";
+import { previewStorageKeys, saveImagePreview } from "@/utils/previewStorage";
 import { sendToPanel, sendImageToImg2Img, sendImageToUpscale, sendImageToOutpaint } from "@/utils/sendHelpers";
 import { fixFloatingPointParams } from "@/utils/numberUtils";
 import { useStartup } from "@/contexts/StartupContext";
@@ -430,6 +431,12 @@ function isInpaintOptionsTabActive(tabId: InpaintOptionsTabId, params: InpaintPa
 
 const STORAGE_KEY = "inpaint_params";
 const PREVIEW_STORAGE_KEY = "inpaint_preview";
+// Inpaint is image-only -- no architecture routed here produces video or audio
+// -- so this panel only ever writes the image key. It still goes through the
+// shared helper so that every result-preview write in the app obeys the same
+// mutual-exclusion rule, and so a future video/audio branch here cannot forget
+// it (see utils/previewStorage.ts).
+const PREVIEW_KEYS = previewStorageKeys(PREVIEW_STORAGE_KEY);
 const LOOP_GENERATION_STORAGE_KEY = "inpaint_loop_generation";
 const INPUT_IMAGE_STORAGE_KEY = "inpaint_input_image";
 const MASK_IMAGE_STORAGE_KEY = "inpaint_mask_image";
@@ -1025,7 +1032,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
   // Save preview image to localStorage whenever it changes
   useEffect(() => {
     if (isMounted && generatedImage) {
-      localStorage.setItem(PREVIEW_STORAGE_KEY, generatedImage);
+      saveImagePreview(PREVIEW_KEYS, generatedImage);
     }
   }, [generatedImage, isMounted]);
 
@@ -2325,7 +2332,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         }
 
         if (isMounted) {
-          localStorage.setItem(PREVIEW_STORAGE_KEY, imageUrl);
+          saveImagePreview(PREVIEW_KEYS, imageUrl);
         }
 
         // If this item has a loop group, update the next loop step's input image, prompt, and ControlNets

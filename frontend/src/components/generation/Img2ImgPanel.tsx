@@ -32,7 +32,7 @@ import { useActiveTraining } from "@/hooks/useActiveTraining";
 import { wsClient, CFGMetrics } from "@/utils/websocket";
 import CFGMetricsGraph from "../common/CFGMetricsGraph";
 import { saveTempImage, loadTempImage, deleteTempImageRef } from "@/utils/tempImageStorage";
-import { previewStorageKeys, loadVideoPreview, saveVideoPreview, saveImagePreview, clearVideoPreview, outputExists } from "@/utils/previewStorage";
+import { previewStorageKeys, loadVideoPreview, saveVideoPreview, loadAudioPreview, saveAudioPreview, saveImagePreview, clearVideoPreview, clearAudioPreview, outputExists } from "@/utils/previewStorage";
 import { sendToPanel, sendImageToImg2Img, sendImageToInpaint, sendImageToUpscale, sendImageToOutpaint, fetchUrlToFile, sendVideoToOutpaint, sendAudioToOutpaint, sendAudioToImg2Img } from "@/utils/sendHelpers";
 import { useStartup } from "@/contexts/StartupContext";
 import { useGenerationQueue } from "@/contexts/GenerationQueueContext";
@@ -396,9 +396,9 @@ function isImg2ImgOptionsTabActive(tabId: Img2ImgOptionsTabId, params: Img2ImgPa
 const STORAGE_KEY = "img2img_params";
 const LOOP_GENERATION_STORAGE_KEY = "img2img_loop_generation";
 const PREVIEW_STORAGE_KEY = "img2img_preview";
-// Image + video preview keys for this panel. The two are mutually exclusive in
-// storage (see utils/previewStorage.ts), so the newest result is the only one
-// that can be restored.
+// Image + video + audio preview keys for this panel. The three are mutually
+// exclusive in storage (see utils/previewStorage.ts), so the newest result is
+// the only one that can be restored.
 const PREVIEW_KEYS = previewStorageKeys(PREVIEW_STORAGE_KEY);
 const INPUT_IMAGE_STORAGE_KEY = "img2img_input_image";
 const REF_IMAGES_STORAGE_KEY = "img2img_ref_images";
@@ -668,6 +668,16 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         setGeneratedVideoInfo(savedVideo.info);
       }
 
+      // Load preview audio (aud2aud result). Same reasoning as the video above:
+      // restored unconditionally because the <audio> render site is gated on
+      // `isAudio` from useStartup(), which arrives asynchronously, so nothing
+      // plays until the loaded arch is known to be an audio arch.
+      const savedAudio = loadAudioPreview(PREVIEW_KEYS);
+      if (savedAudio) {
+        setGeneratedAudio(savedAudio.url);
+        setGeneratedAudioInfo(savedAudio.info);
+      }
+
       // Load input image preview
       const savedInputRef = localStorage.getItem(INPUT_IMAGE_STORAGE_KEY);
       console.log("[Img2Img] Initial load - input image ref:", savedInputRef);
@@ -829,6 +839,18 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
           clearVideoPreview(PREVIEW_KEYS);
           setGeneratedVideo(null);
           setGeneratedVideoInfo(null);
+        }
+      }
+
+      // Same verification for a restored preview audio clip.
+      const savedAudio = loadAudioPreview(PREVIEW_KEYS);
+      if (savedAudio) {
+        const exists = await outputExists(savedAudio.url);
+        if (!exists) {
+          console.log("[Img2Img] Stored preview audio is gone, clearing:", savedAudio.url);
+          clearAudioPreview(PREVIEW_KEYS);
+          setGeneratedAudio(null);
+          setGeneratedAudioInfo(null);
         }
       }
 
@@ -1129,6 +1151,14 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
       saveVideoPreview(PREVIEW_KEYS, { url: generatedVideo, info: generatedVideoInfo });
     }
   }, [generatedVideo, generatedVideoInfo, isMounted]);
+
+  // Save preview audio to localStorage whenever it changes. Only the URL and
+  // the duration/sample-rate line are stored -- never the audio bytes.
+  useEffect(() => {
+    if (isMounted && generatedAudio) {
+      saveAudioPreview(PREVIEW_KEYS, { url: generatedAudio, info: generatedAudioInfo });
+    }
+  }, [generatedAudio, generatedAudioInfo, isMounted]);
 
   // Save loop generation config to localStorage whenever it changes
   useEffect(() => {
@@ -2263,7 +2293,12 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
       setTotalSteps((nextItem.params as any).inference_steps || 8);
       setPreviewImage(null);
       setGeneratedImage(null);
+      // An audio run supersedes any image/video result still on screen; the
+      // stored preview is only replaced once this run actually succeeds.
       setGeneratedAudio(null);
+      setGeneratedAudioInfo(null);
+      setGeneratedVideo(null);
+      setGeneratedVideoInfo(null);
       try {
         const referenceAudio = nextItem.inputAudio;
         if (!referenceAudio) {
@@ -2308,6 +2343,9 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
       setPreviewImage(null);
       setGeneratedImage(null);
       setGeneratedVideo(null);
+      setGeneratedVideoInfo(null);
+      setGeneratedAudio(null);
+      setGeneratedAudioInfo(null);
       try {
         const keyframe = nextItem.inputImage;
         if (!keyframe) {
@@ -2354,11 +2392,13 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
     setTotalSteps(actualSteps);
     setPreviewImage(null);
     setGeneratedImage(null);
-    // An image run supersedes any video result still on screen. The stored
-    // video preview is left alone until the image actually succeeds (see the
-    // save effect), so a failed run does not throw away the last good result.
+    // An image run supersedes any video/audio result still on screen. The
+    // stored previews are left alone until the image actually succeeds (see the
+    // save effects), so a failed run does not throw away the last good result.
     setGeneratedVideo(null);
     setGeneratedVideoInfo(null);
+    setGeneratedAudio(null);
+    setGeneratedAudioInfo(null);
     setCfgMetrics([]); // Clear previous metrics
 
     try {
@@ -4766,6 +4806,14 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
                       src={generatedAudio}
                       className="w-full"
                       controls
+                      onError={() => {
+                        // The file is gone (outputs/ cleared, run deleted) --
+                        // show an empty preview rather than a dead player.
+                        console.warn("[Img2Img] Preview audio failed to load, clearing:", generatedAudio);
+                        clearAudioPreview(PREVIEW_KEYS);
+                        setGeneratedAudio(null);
+                        setGeneratedAudioInfo(null);
+                      }}
                     />
                     {generatedAudioInfo && (
                       <div className="text-xs text-gray-400">

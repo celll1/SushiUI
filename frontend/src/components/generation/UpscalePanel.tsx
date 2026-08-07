@@ -19,6 +19,7 @@ import {
   UpscalerModelInfo,
 } from "@/utils/api";
 import { saveTempImage, loadTempImage, deleteTempImageRef } from "@/utils/tempImageStorage";
+import { previewStorageKeys, saveImagePreview } from "@/utils/previewStorage";
 import { sendImageToImg2Img, sendImageToInpaint, sendImageToOutpaint } from "@/utils/sendHelpers";
 import { useStartup } from "@/contexts/StartupContext";
 import { useGenerationQueue } from "@/contexts/GenerationQueueContext";
@@ -51,6 +52,11 @@ const DEFAULT_PARAMS: UpscaleParams = {
 const STORAGE_KEY = "upscale_params";
 const INPUT_IMAGE_STORAGE_KEY = "upscale_input_image";
 const PREVIEW_STORAGE_KEY = "upscale_preview";
+// Upscale is image-only (it takes an image and returns an image, with no
+// video/audio route), so this panel only ever writes the image key. It still
+// goes through the shared helper so every result-preview write in the app obeys
+// the same mutual-exclusion rule (see utils/previewStorage.ts).
+const PREVIEW_KEYS = previewStorageKeys(PREVIEW_STORAGE_KEY);
 
 interface UpscalePanelProps {
   onTabChange?: (tab: "txt2img" | "img2img" | "inpaint" | "outpaint" | "upscale") => void;
@@ -252,7 +258,7 @@ export default function UpscalePanel({ onTabChange }: UpscalePanelProps = {}) {
   // Save preview to localStorage
   useEffect(() => {
     if (isMounted && generatedImage) {
-      localStorage.setItem(PREVIEW_STORAGE_KEY, generatedImage);
+      saveImagePreview(PREVIEW_KEYS, generatedImage);
     }
   }, [generatedImage, isMounted]);
 

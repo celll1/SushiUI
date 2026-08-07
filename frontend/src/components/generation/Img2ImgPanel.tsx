@@ -4068,6 +4068,10 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
                 onInputAudioChange={
                   supportsAudioConditioning ? setInputAudioTrack : undefined
                 }
+                // With the Audio toggle above off, nothing is muxed at all; the
+                // lane says so rather than describing an output file that will
+                // have no audio track.
+                audioEnabled={params.audio_enable !== false}
                 disabled={isGenerating}
               />
             )}

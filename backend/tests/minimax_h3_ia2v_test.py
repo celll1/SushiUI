@@ -263,35 +263,35 @@ def test_pinning_half_the_rows_would_pin_one_channel_not_half_the_timeline():
 # The noise draw
 # --------------------------------------------------------------------------
 
-def _draw(seed: int):
+def _rows_for_one_request(seed: int, *, pin: bool):
+    """The backend's own pre-denoise sequence, mirrored: draw, THEN substitute.
+
+    A mirror is documentation, not a defence -- it cannot fail if the backend
+    stops looking like it. What defends the property is
+    `test_the_draw_is_structurally_unconditional` below, which reads the shipped
+    function's AST. This one exists to state, numerically and readably, what the
+    property IS.
+    """
     generator = torch.Generator(device="cpu").manual_seed(seed)
-    condition_noises, video_noise, audio_noise = ops.draw_noise(
+    condition_noises, video_noise, audio_rows = ops.draw_noise(
         generator,
         video_latent_shape=(1, 24, LATENT_FRAMES, LATENT_HEIGHT, LATENT_WIDTH),
         num_audio_latents=NUM_AUDIO_LATENTS,
         condition_shapes=((1, 24, 1, LATENT_HEIGHT, LATENT_WIDTH),),
         device="cpu",
     )
+    if pin:
+        # The encoded track replaces the drawn rows AFTER the draw, which is the
+        # whole trick: the generator has already advanced past them.
+        audio_rows = torch.full_like(audio_rows, 0.25)
     trailing = torch.randn(4, generator=generator, device="cpu")
-    return condition_noises, video_noise, audio_noise, trailing
+    return condition_noises, video_noise, audio_rows, trailing
 
 
 def test_the_video_noise_is_identical_with_and_without_a_pinned_track():
-    """Same seed, same video noise -- the A2 clause, at the ops level.
-
-    The pinned run performs the SAME three draws and then substitutes the
-    encoded rows for the audio one. The trailing draw is the teeth: it is equal
-    only if the discarded audio draw actually happened, so a "skip the draw when
-    the track is pinned" optimisation fails here rather than silently changing
-    every ia2v request's video.
-    """
-    free_cond, free_video, free_audio, free_trailing = _draw(4242)
-    pin_cond, pin_video, pin_audio, pin_trailing = _draw(4242)
-
-    # The pinned run's substitution, exactly as the backend performs it.
-    pinned_rows = torch.arange(
-        pin_audio.numel(), dtype=torch.float32).reshape(pin_audio.shape) / 1000.0
-    pin_audio = pinned_rows
+    """Same seed, same video noise, and the generator ends in the same state."""
+    free_cond, free_video, free_audio, free_trailing = _rows_for_one_request(4242, pin=False)
+    pin_cond, pin_video, pin_audio, pin_trailing = _rows_for_one_request(4242, pin=True)
 
     assert _digest(free_video) == _digest(pin_video)
     assert _digest(free_cond[0]) == _digest(pin_cond[0])
@@ -300,19 +300,84 @@ def test_the_video_noise_is_identical_with_and_without_a_pinned_track():
     assert _digest(free_audio) != _digest(pin_audio)
 
 
-def test_the_backend_draws_before_it_substitutes_and_never_conditions_the_draw():
-    """The ordering the property above depends on, asserted in the shipped code."""
+def _generate_ast():
+    """The shipped `_generate_minimax_h3` as an AST, with parent links."""
+    import ast
+    import textwrap
+
     from core.pipeline_backends.minimax_h3 import MiniMaxH3Mixin
 
-    source = inspect.getsource(MiniMaxH3Mixin._generate_minimax_h3)
-    draw_at = source.index("ops.draw_noise(")
-    substitute_at = source.index("audio_rows = pinned_audio_rows.to(")
-    assert draw_at < substitute_at
-    assert source.count("ops.draw_noise(") == 1
-    # The call itself takes no ia2v argument and sits at the same indentation as
-    # the surrounding statements, i.e. it is not inside a new conditional.
-    call_line = source[:draw_at].rsplit("\n", 1)[-1]
-    assert call_line.strip().startswith("condition_noises, video_noise, audio_rows =")
+    source = textwrap.dedent(inspect.getsource(MiniMaxH3Mixin._generate_minimax_h3))
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        for child in ast.iter_child_nodes(node):
+            child.parent = node
+    return ast, tree, source
+
+
+def test_the_draw_is_structurally_unconditional():
+    """THE defence of the same-seed contract, read off the shipped function's AST.
+
+    The property "a pinned run and a free-audio run share their video noise"
+    holds because `draw_noise` is called ONCE, on a path no branch guards, with
+    arguments that do not mention the track -- and because nothing else in the
+    function draws from the request generator.
+
+    THE MUTANT THIS EXISTS FOR: wrap the `draw_noise` call in
+    `if pinned_audio_rows is None:` and draw the condition/video noise
+    separately in the `else`. That keeps the call count at one, keeps the
+    substitution after the draw, and silently changes the video of every ia2v
+    request at a fixed seed. It is caught here by the ancestor walk (the call
+    acquires an `If` parent) and by the RNG-call check (the `else` branch has to
+    call `randn` itself).
+    """
+    ast, tree, _source = _generate_ast()
+
+    draws = [node for node in ast.walk(tree)
+             if isinstance(node, ast.Call)
+             and isinstance(node.func, ast.Attribute)
+             and node.func.attr == "draw_noise"]
+    assert len(draws) == 1, "exactly one draw, or the order is no longer one thing"
+    draw = draws[0]
+
+    # 1. No conditional anywhere between the function body and the call.
+    ancestors, node = [], draw
+    while hasattr(node, "parent"):
+        node = node.parent
+        ancestors.append(node)
+    guards = [a for a in ancestors if isinstance(a, (ast.If, ast.IfExp, ast.Try, ast.While))]
+    assert not guards, (
+        "ops.draw_noise is inside a "
+        + ", ".join(type(a).__name__ for a in guards)
+        + ": the draw must happen for every request, pinned or not, or the same "
+          "seed stops meaning the same video noise")
+
+    # 2. The call's arguments do not mention the track, so it cannot be shaped
+    #    differently for an ia2v request.
+    argument_names = {n.id for n in ast.walk(draw) if isinstance(n, ast.Name)}
+    assert "input_audio" not in argument_names
+    assert "pinned_audio_rows" not in argument_names
+
+    # 3. Nothing else in the function draws from the request generator -- that
+    #    is how a mutant would replace the skipped draw.
+    other_rng = [node for node in ast.walk(tree)
+                 if isinstance(node, ast.Call)
+                 and isinstance(node.func, ast.Attribute)
+                 and node.func.attr in ("randn", "randn_like", "rand", "normal_")]
+    assert not other_rng, (
+        "the request generator is drawn from outside ops.draw_noise "
+        f"(line(s) {[n.lineno for n in other_rng]}), so the recorded draw order is "
+        "no longer the only thing that decides the noise")
+
+    # 4. The substitution follows the draw (the "discard" half of the contract).
+    substitutions = [node for node in ast.walk(tree)
+                     if isinstance(node, ast.Assign)
+                     and any(isinstance(t, ast.Name) and t.id == "audio_rows"
+                             for t in node.targets)
+                     and "pinned_audio_rows" in {n.id for n in ast.walk(node.value)
+                                                 if isinstance(n, ast.Name)}]
+    assert len(substitutions) == 1
+    assert substitutions[0].lineno > draw.lineno
 
 
 def test_the_backend_muxes_the_source_and_does_not_decode_the_pinned_rows():
@@ -483,8 +548,16 @@ def test_the_timeline_draws_the_lane_full_width_with_no_offset_handles():
                         "MiniMaxH3KeyframeTimeline.tsx")
     with open(path, encoding="utf-8") as handle:
         timeline = handle.read()
+    flat = " ".join(timeline.split())
     assert "onInputAudioChange" in timeline
-    assert "conditions the entire clip" in timeline
-    assert "partial-timeline placement is\n              not supported" in timeline
+    assert "conditions the entire clip" in flat
+    assert "partial-timeline placement is not supported" in flat
     # The measured scope is stated where the control is, not only in the docs.
     assert "Speech, pitch and timbre were not measured." in timeline
+    # ... and the mux claim matches what the file actually is. "carries this
+    # file's audio unchanged" was the shipped over-claim: the mp4's audio is
+    # AAC, and with audio_enable off there is no audio track at all.
+    assert "unchanged" not in flat
+    assert "AAC encode" in flat
+    assert "audioEnabled" in timeline
+    assert "Audio output is off" in flat

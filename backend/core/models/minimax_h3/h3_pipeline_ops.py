@@ -236,6 +236,23 @@ def _clip_pixel_frames(num_latent_frames: int) -> int:
                for i in range(num_latent_frames))
 
 
+def is_frame_index_anchor(anchor: "int | str") -> bool:
+    """True when ``anchor`` is an integer PIXEL-frame index rather than a string.
+
+    THE ONE PREDICATE, because two of them drifted: this module accepts
+    ``np.integer`` (a `-1` sentinel resolved through numpy, a frame index read
+    out of an array) while the backend's ``_minimax_h3_fit_keyframe`` tested
+    ``isinstance(anchor, int)`` alone, so a ``np.int64(0)`` would have been
+    PLACED at frame 0 and then cover-cropped instead of stretched -- a silent
+    disagreement about which anchor sets the canvas geometry. Both callers now
+    ask here.
+
+    ``bool`` is excluded explicitly: it is an ``int`` subclass, and ``True``
+    would otherwise mean frame 1.
+    """
+    return isinstance(anchor, (int, np.integer)) and not isinstance(anchor, bool)
+
+
 def _anchor_rotary_time(anchor: "int | str", num_text_tokens: int,
                         num_latent_frames: int) -> float:
     """Where one keyframe anchor sits on the packed sequence's time axis.
@@ -271,8 +288,7 @@ def _anchor_rotary_time(anchor: "int | str", num_text_tokens: int,
             f"A keyframe anchor must be 'first', 'last' or an integer pixel-frame "
             f"index, got {anchor!r}.")
 
-    # `bool` is an `int` subclass and `True` would silently mean frame 1.
-    if isinstance(anchor, bool) or not isinstance(anchor, (int, np.integer)):
+    if not is_frame_index_anchor(anchor):
         raise ValueError(
             f"A keyframe anchor must be 'first', 'last' or an integer pixel-frame "
             f"index, got {anchor!r}.")

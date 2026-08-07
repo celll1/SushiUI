@@ -72,6 +72,8 @@ from api.generation_utils import (
     resolve_video_defaults,
     validate_video_geometry,
     validate_video_steps,
+    plan_keyframe_placements,
+    MINIMAX_H3_DOCUMENTED_ANCHOR_SCOPE,
 )
 from api.error_handlers import (
     GenerationError,
@@ -3310,22 +3312,46 @@ async def generate_img2vid(
     # See Txt2VidRequest.attention_type: honored by MiniMax-H3, ignored by LTX-2.3.
     attention_type: str = Form(IMG2VID_DEFAULTS["attention_type"]),
     controlnets: str = Form("[]"),  # JSON string; only is_style_transfer entries are meaningful for LTX-2.3
+    # WHERE the uploaded `image` sits on the generated clip (MiniMax-H3). 0 is
+    # the first frame -- the placement every request made before this existed --
+    # and -1 is the clip's last frame AFTER `num_frames` is snapped below, which
+    # is the whole reason for the sentinel: the snap happens here, so a client
+    # cannot compute the last index itself.
+    input_image_frame_index: int = Form(IMG2VID_DEFAULTS["input_image_frame_index"]),
     image: UploadFile = File(...),
     # OPTIONAL second keyframe: the LAST frame. MiniMax-H3's `fl2va` workflow
     # conditions on the two ENDS of the clip (0-2 visual anchors); LTX-2.3
     # conditions on the first frame only and declares this unsupported, so it is
     # accepted-and-warned there rather than refused -- one endpoint, two archs.
+    #
+    # It stays a live field rather than being deprecated in favour of the
+    # keyframe list: it is exactly "a keyframe at -1", it costs nothing to fold
+    # in, and LTX-2.3's capability warning for it already exists.
     last_frame_image: Optional[UploadFile] = File(None),
+    # ADDITIONAL anchors and their placements, positionally paired. Upload order
+    # is NOT semantic (unlike /generate/ref2vid's reference lists): the anchors
+    # are packed in ascending frame order, so what a client sends is a set of
+    # (image, frame) pairs.
+    keyframe_images: List[UploadFile] = File([]),
+    keyframe_frame_indices: List[int] = Form([]),
     db: Session = Depends(get_gallery_db)
 ):
     """Generate a video from still-image keyframes (LTX-2.3 or MiniMax-H3).
 
     Multipart form: an uploaded keyframe image plus the txt2vid parameters, and
-    optionally a `last_frame_image`. On LTX-2.3 the keyframe is VAE-encoded and
-    pinned as frame 0; on MiniMax-H3 each uploaded frame becomes a single-frame
-    visual conditioning anchor held at the model's `keyframe_noise_aug` level.
-    Produces an H.264 mp4 (with an audio track when audio_enable is true) and a
-    gallery row.
+    optionally a `last_frame_image` and further `keyframe_images` with their
+    `keyframe_frame_indices`. On LTX-2.3 the keyframe is VAE-encoded and pinned
+    as frame 0 (placement is declared unsupported and warned); on MiniMax-H3
+    each uploaded frame becomes a single-frame visual conditioning anchor held
+    at the model's `keyframe_noise_aug` level and pinned at ITS OWN frame's
+    rotary position. Produces an H.264 mp4 (with an audio track when
+    audio_enable is true) and a gallery row.
+
+    Placement is resolved after the clip length is validated and snapped, and
+    it is resolved for the whole request at once (`plan_keyframe_placements`):
+    `-1` becomes the snapped clip's last index, the two ends become the
+    `"first"`/`"last"` anchors that reproduce the pre-placement layout byte for
+    byte, and the anchors are packed in ascending frame order.
 
     Any field the client omits is filled from the LOADED ARCHITECTURE's video
     defaults, and the geometry is then validated against that architecture's
@@ -3339,6 +3365,18 @@ async def generate_img2vid(
     # with no filename both mean "no last frame".
     _last_frame = last_frame_image if (last_frame_image is not None
                                        and last_frame_image.filename) else None
+    # Same normalisation for the keyframe list (an empty multipart part counts
+    # as absent), then the positional pairing is validated before anything is
+    # read: a mismatched request must not first pay for the file reads.
+    _keyframes = [f for f in (keyframe_images or []) if f is not None and f.filename]
+    _keyframe_indices = list(keyframe_frame_indices or [])
+    if len(_keyframes) != len(_keyframe_indices):
+        raise CustomValidationError(
+            "keyframe_images and keyframe_frame_indices must be the same length",
+            detail=f"Got {len(_keyframes)} keyframe image(s) and {len(_keyframe_indices)} "
+                   f"frame index/indices. The two lists are positional: entry n of "
+                   f"keyframe_frame_indices is the placement of entry n of keyframe_images.",
+        )
 
     params = {
         "prompt": prompt,
@@ -3387,6 +3425,13 @@ async def generate_img2vid(
         # than warning about an ignored keyframe on LTX-2.3 while conditioning
         # on nothing, or being read as a keyframe the warning never mentioned.
         "last_frame_image": _last_frame.filename if _last_frame is not None else None,
+        # The placement fields, recorded the same way: the FILENAMES and the
+        # requested indices, never the bytes. `params.copy()` carries them to
+        # the gallery row; the RESOLVED placements are added after num_frames
+        # has been snapped (a requested -1 means nothing without that).
+        "input_image_frame_index": input_image_frame_index,
+        "keyframe_images": [f.filename for f in _keyframes] or None,
+        "keyframe_frame_indices": list(_keyframe_indices) or None,
     }
 
     # Training-free reference-style transfer (video). See generate_txt2vid's
@@ -3410,6 +3455,26 @@ async def generate_img2vid(
             "No video model loaded",
             detail="Load an LTX-2.3 or MiniMax-H3 video model before calling /generate/img2vid.",
         )
+    # ---- Partition gate (the mirror of /generate/ref2vid's, in the other
+    # direction). This endpoint's whole request is keyframe conditioning, which
+    # is a trained behaviour of MiniMax-H3's `fl2va` partition; the `ref2va` one
+    # was trained to read reference blocks instead. Until this phase the
+    # direction was unguarded and such a request simply ran. ----
+    if getattr(pipeline_manager, "is_minimax_h3_model", False):
+        _h3_variant = ((pipeline_manager.current_model_info or {}).get("variant") or "").lower()
+        if _h3_variant == "ref2va":
+            raise CustomValidationError(
+                "The loaded MiniMax-H3 transformer is the ref2va variant, not fl2va",
+                detail="Keyframe conditioning through this endpoint is offered on the `fl2va` "
+                       "partition, which serves /generate/txt2vid, /generate/img2vid and "
+                       "/generate/outpaint/video. Anchors do bind on the ref2va partition when "
+                       "they are laid out from its post-reference rotary origin (measured), but "
+                       "combining them with reference conditioning is not implemented on any "
+                       "endpoint yet, so this request is refused rather than run on a shape "
+                       "nothing here builds. Load "
+                       "diffusion_models/minimax_h3_fl2va_pruned_fp8_scaled.safetensors, or use "
+                       "/generate/ref2vid with the loaded checkpoint.",
+            )
 
     # Per-architecture defaults, THEN spec-driven geometry validation -- the same
     # order, and the same two helpers, as /generate/txt2vid. `_provided` is the
@@ -3449,6 +3514,16 @@ async def generate_img2vid(
                 "Failed to read the uploaded last-frame keyframe image",
                 detail=str(e),
             )
+    extra_keyframe_images = []
+    for _position, _upload in enumerate(_keyframes):
+        try:
+            _data = await _upload.read()
+            extra_keyframe_images.append(Image.open(io.BytesIO(_data)).convert("RGB"))
+        except Exception as e:
+            raise CustomValidationError(
+                f"Failed to read keyframe_images[{_position}]",
+                detail=str(e),
+            )
 
     _gen_id = start_generation("img2vid")
     try:
@@ -3461,7 +3536,8 @@ async def generate_img2vid(
         validate_video_geometry(params, _vid_arch)
         validate_video_steps(params, _vid_arch)
 
-        from api.arch_capabilities import check_arch_capabilities
+        from api.arch_capabilities import check_arch_capabilities, arch_supports_feature
+        from api.generation_status import add_warning
         from api.generation_overrides import plan_overrides, apply_overrides
         _override_plan = plan_overrides(pipeline_manager, params.get("vae_path"), params.get("text_encoder_path"))
         apply_overrides(pipeline_manager, _override_plan)
@@ -3474,6 +3550,41 @@ async def generate_img2vid(
         # default one. `_vid_defaults` is the same map this request's omitted
         # fields were filled from.
         check_arch_capabilities(params, _vid_arch, defaults=_vid_defaults)
+
+        # ---- Keyframe placement, resolved AFTER the snap above, because a
+        # requested -1 means "the last frame of the clip that will actually be
+        # generated" and `validate_video_geometry` is what decides that length.
+        # Only for an architecture that honors placement: LTX-2.3 pins the
+        # uploaded image as frame 0, has already been warned about by
+        # `check_arch_capabilities`, and keeps the pre-placement call shape. ----
+        keyframe_plan = None
+        if arch_supports_feature(_vid_arch, "keyframe_placement"):
+            placement_requests = [("image", input_image_frame_index)]
+            placement_requests += [(f"keyframe_images[{position}]", index)
+                                   for position, index in enumerate(_keyframe_indices)]
+            if _last_frame is not None:
+                placement_requests.append(("last_frame_image", -1))
+            plan = plan_keyframe_placements(placement_requests, params.get("num_frames") or 0)
+
+            sources = {"image": input_image, "last_frame_image": last_input_image}
+            for position, pil in enumerate(extra_keyframe_images):
+                sources[f"keyframe_images[{position}]"] = pil
+            keyframe_plan = [(entry["anchor"], sources[entry["source"]])
+                             for entry in plan["anchors"]]
+            params["keyframe_resolved_frames"] = [entry["frame"] for entry in plan["anchors"]]
+
+            # ONE warning for the whole request, not one per anchor: the shapes
+            # below work on the released weights (measured) and are simply
+            # outside what MiniMax documents, so the entry states that scope and
+            # nothing else. A working feature is not buried in warnings.
+            if plan["undocumented"]:
+                add_warning(
+                    "This request places keyframes outside the documented shape ("
+                    + "; ".join(plan["undocumented"])
+                    + f"). {MINIMAX_H3_DOCUMENTED_ANCHOR_SCOPE}; the placement mechanism is the "
+                      "same one at other positions.",
+                    code="minimax_h3_undocumented_conditioning",
+                )
 
         print(f"img2vid generation params: {sanitize_params_for_logging(params)}")
 
@@ -3500,7 +3611,7 @@ async def generate_img2vid(
                 loop, executor,
                 lambda: pipeline_manager.generate_img2vid(
                     params, input_image, progress_callback=progress_callback,
-                    last_frame_image=last_input_image)
+                    last_frame_image=last_input_image, keyframes=keyframe_plan)
             )
             fp8_gemm = extract_fp8_gemm_info(pipeline_manager)
         apply_generation_timings(params, time.perf_counter() - _gen_start)

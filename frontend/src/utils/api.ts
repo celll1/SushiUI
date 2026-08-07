@@ -742,15 +742,33 @@ export interface Txt2VidParams {
   quantized_gemm_mode?: QuantizedGemmMode;
 }
 
+// One ADDITIONAL MiniMax-H3 keyframe anchor: the image and the pixel frame it
+// is pinned to. `frame_index` follows the endpoint's own convention — 0 is the
+// first frame, -1 the clip's last frame AFTER the server snaps num_frames to
+// the model's 17n+5 grid (which is why -1 exists: the client cannot compute the
+// last index), and any other value that exact frame.
+export interface MiniMaxH3Keyframe {
+  image: File | string;   // data URL or File
+  frame_index: number;
+}
+
 export interface Img2VidParams extends Txt2VidParams {
   // img2vid additionally uploads a keyframe `image` handled by generateImg2Vid()
   //
   // OPTIONAL second keyframe: the LAST frame, as a data URL (or a File).
-  // MiniMax-H3's `fl2va` workflow conditions on the two ENDS of the clip, so
+  // MiniMax-H3's `fl2va` workflow conditions on the ENDS of the clip, so
   // `image` is the first frame and this is the last one. null/undefined =
-  // first-frame conditioning only. LTX-2.3 declares it unsupported and answers
-  // with an `unsupported_param` warning if it is sent.
+  // no end anchor. LTX-2.3 declares it unsupported and answers with an
+  // `unsupported_param` warning if it is sent. It is exactly equivalent to a
+  // `keyframes` entry at frame_index -1 and stays live as that alias.
   last_frame_image?: File | string | null;
+  // Where the uploaded `image` sits on the clip (MiniMax-H3). 0 (the default)
+  // is the first frame; -1 is the resolved last frame.
+  input_image_frame_index?: number;
+  // Additional anchors. Sent as two positional lists (keyframe_images /
+  // keyframe_frame_indices); the ORDER is not semantic, since the server packs
+  // anchors in ascending frame order.
+  keyframes?: MiniMaxH3Keyframe[];
 }
 
 // ref2vid (MiniMax-H3 `ref2va`): the txt2vid parameter set plus how an image
@@ -1956,7 +1974,7 @@ export const generateImg2Vid = async (params: Img2VidParams, image: File | strin
   }
   // Optional LAST-frame keyframe (MiniMax-H3 fl2va). Same File-or-data-URL
   // handling as `image` above; omitted entirely when null/undefined, which is
-  // what makes the backend's `File(None)` sentinel mean "first frame only".
+  // what makes the backend's `File(None)` sentinel mean "no end anchor".
   if (params.last_frame_image) {
     if (typeof params.last_frame_image === "string") {
       const lastResponse = await fetch(params.last_frame_image);
@@ -1965,6 +1983,25 @@ export const generateImg2Vid = async (params: Img2VidParams, image: File | strin
     } else {
       formData.append("last_frame_image", params.last_frame_image);
     }
+  }
+  // Where the uploaded `image` sits on the clip. Always sent (0 is a real
+  // value, not "unset"), so a panel that offers the control never depends on
+  // the server default agreeing with its own.
+  formData.append("input_image_frame_index", String(params.input_image_frame_index ?? 0));
+  // Additional anchors, as two POSITIONAL lists: entry n of
+  // keyframe_frame_indices is the placement of entry n of keyframe_images. Both
+  // are appended in the same loop so the pairing cannot drift; a mismatch is a
+  // 400 server-side.
+  for (const keyframe of params.keyframes ?? []) {
+    if (!keyframe || !keyframe.image) continue;
+    if (typeof keyframe.image === "string") {
+      const keyframeResponse = await fetch(keyframe.image);
+      const keyframeBlob = await keyframeResponse.blob();
+      formData.append("keyframe_images", keyframeBlob, "keyframe.png");
+    } else {
+      formData.append("keyframe_images", keyframe.image);
+    }
+    formData.append("keyframe_frame_indices", String(keyframe.frame_index));
   }
 
   const response = await api.post("/generate/img2vid", formData, {

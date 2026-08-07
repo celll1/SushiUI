@@ -874,6 +874,25 @@ IMG2VID_DEFAULTS: Dict[str, Any] = dict(VIDEO_GEN_DEFAULTS)
 # recorded in `params` (and on the gallery row) is the uploaded FILENAME, not
 # the bytes.
 IMG2VID_DEFAULTS["last_frame_image"] = None
+# WHERE the uploaded `image` sits on the generated clip's timeline, as a PIXEL
+# frame index (MiniMax-H3 `fl2va`). 0 is the first frame -- the only placement
+# LTX-2.3 has and the one every request made before placement existed -- and
+# `-1` names the clip's last frame.
+#
+# The sentinel is not a convenience: `num_frames` is snapped server-side to the
+# arch's own grid (17n+5 on MiniMax-H3), so a client cannot know the last
+# frame's index at request time and "the last frame" has to survive the snap.
+IMG2VID_DEFAULTS["input_image_frame_index"] = 0
+# ADDITIONAL anchors, uploaded as multipart files, and their placements. The two
+# lists are positional and must be the same length. None = no extra anchors,
+# which is the whole of LTX-2.3's img2vid behaviour and was MiniMax-H3's until
+# placement shipped.
+#
+# Kept out of VIDEO_GEN_DEFAULTS for the same reason `last_frame_image` is: only
+# an endpoint that carries file uploads can have them. The value recorded in
+# `params` (and on the gallery row) is the uploaded FILENAMES, not the bytes.
+IMG2VID_DEFAULTS["keyframe_images"] = None
+IMG2VID_DEFAULTS["keyframe_frame_indices"] = None
 
 # ---------------------------------------------------------------------------
 # Omni-reference video (POST /generate/ref2vid — MiniMax-H3 `ref2va` only)

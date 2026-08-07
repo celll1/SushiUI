@@ -517,10 +517,36 @@ paths:
 
         **MiniMax-H3 constraints (the `fl2va` workflow, validated before
         generation):**
-        - `image` is the FIRST frame; the optional `last_frame_image` is the
-          LAST frame. Both are VAE-encoded as single-frame conditioning anchors,
-          held at the model's own `keyframe_noise_aug` level for every step, and
-          are never overwritten by the sampler.
+        - `image` is a conditioning anchor placed at `input_image_frame_index`
+          (0 by default, i.e. the first frame); `keyframe_images` /
+          `keyframe_frame_indices` add more anchors at their own frames, and
+          `last_frame_image` is the equivalent of a keyframe at frame index
+          `-1`. Each anchor is VAE-encoded as a single-frame conditioning row
+          block, held at the model's own `keyframe_noise_aug` level for every
+          step, and is never overwritten by the sampler. An anchor's rows are
+          pinned at its frame's rotary position
+          (`num_text_tokens + (5/3) * frame_index`).
+        - Anchors are packed in ASCENDING frame order regardless of upload
+          order, and a request whose anchors resolve to `{0}` or `{0, last}`
+          produces exactly the layout it produced before placement existed.
+        - Two resolved indices may not collide, and every index must fall in
+          `[0, num_frames - 1]` AFTER `num_frames` has been snapped to the
+          `17n + 5` grid. Because the server does that snapping, `-1` is the
+          only way to name the last frame reliably.
+        - The anchor at frame 0, if there is one, is STRETCHED onto
+          (`width`, `height`); every other anchor is aspect-preserving
+          centre-cover-cropped. This mirrors both reference implementations,
+          where the first keyframe is the geometry anchor and later ones are
+          followers.
+        - This endpoint serves the `fl2va` transformer partition. With the
+          `ref2va` partition loaded it answers 400: keyframe conditioning
+          combined with reference conditioning is not offered here (see
+          `/generate/ref2vid`).
+        - MiniMax's model card documents this workflow for first- and
+          last-frame conditioning with up to two images. A request that places
+          an anchor at an intermediate frame, or sends more than two anchors,
+          also returns a `minimax_h3_undocumented_conditioning` entry in
+          `warnings[]` naming that scope.
         - `width` and `height` must both be divisible by 32. SushiUI
           additionally restricts the canvas to a short edge <= 768 and a long
           edge <= 1344. That restriction is SushiUI policy, not a model limit.
@@ -7492,13 +7518,55 @@ components:
               nullable: true
               description: >-
                 OPTIONAL last-frame keyframe image (multipart file upload),
-                MiniMax-H3 only. When present the generated clip is conditioned
-                on both ends: `image` anchors the first frame and this file
-                anchors the last one (MiniMax-H3's `fl2va` workflow, 2 visual
-                conditions). Resized to (width, height) like `image`. Omitted
-                (the default) means first-frame conditioning only. Ignored on
+                MiniMax-H3 only. Equivalent to a `keyframe_images` entry with
+                `keyframe_frame_indices` `-1`: the file is folded into the
+                keyframe list and anchors the last frame of the clip. Sending
+                it together with another anchor that also resolves to the last
+                frame is a duplicate-index 400. Resized to (width, height) like
+                `image`. Omitted (the default) means no end anchor. Ignored on
                 LTX-2.3, which conditions on the first frame only — sending it
                 there returns an `unsupported_param` entry in `warnings[]`.
+            input_image_frame_index:
+              type: integer
+              default: 0
+              description: >-
+                Which PIXEL frame of the generated clip the uploaded `image`
+                anchors (MiniMax-H3 only). `0` (the default) is the first
+                frame; `-1` is the last frame of the clip AFTER `num_frames`
+                has been snapped to the `17n + 5` grid, which is why the
+                sentinel exists — a client cannot compute the last index
+                itself. Any other value addresses that exact frame; there is no
+                grid to snap an anchor to, since every pixel frame has an exact
+                rotary coordinate. Out of range, or colliding with another
+                anchor, is a 400 stating the resolved clip length. Ignored on
+                LTX-2.3 (`unsupported_param` warning), whose image-to-video
+                pipeline pins the uploaded image as frame 0.
+              example: 0
+            keyframe_images:
+              type: array
+              items:
+                type: string
+                format: binary
+              description: >-
+                ADDITIONAL conditioning anchors (multipart file uploads),
+                MiniMax-H3 only, each placed at the positionally matching
+                `keyframe_frame_indices` entry. The two lists must be the same
+                length (a 400 otherwise). Anchors are packed in ascending frame
+                order regardless of upload order, so the order of this list is
+                not semantic — unlike `/generate/ref2vid`'s reference lists.
+                Each anchor costs one frame's worth of conditioning rows in the
+                packed sequence. Ignored on LTX-2.3
+                (`unsupported_param` warning).
+            keyframe_frame_indices:
+              type: array
+              items:
+                type: integer
+              description: >-
+                Placement of each `keyframe_images` entry, in the same order.
+                Same semantics as `input_image_frame_index`: `0` is the first
+                frame, `-1` the resolved last frame, and any other value that
+                exact pixel frame. One integer per uploaded keyframe.
+              example: [60]
 
     Ref2VidRequest:
       allOf:

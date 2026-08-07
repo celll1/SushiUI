@@ -1365,9 +1365,21 @@ def plan_video_outpaint_placement(
 
     requested_total = int(params.get("total_frames") or 0)
     offset = int(params.get("input_offset_frames") or 0)
+    # WHAT THIS REASON SAYS, AND WHAT IT USED TO SAY. It used to claim the
+    # architecture has no index-addressable conditioning. That is false: an
+    # anchor's rotary position is `num_text_tokens + (5/3)*f` for any pixel
+    # frame f, `build_packed_layout` takes an integer index, and
+    # /generate/img2vid places anchors with it. What THIS endpoint has no
+    # measured behaviour for is the mid-timeline OUTPAINT shape -- a preserved
+    # clip's two boundary frames anchored at their own indices inside one
+    # generated span, with exact preservation around them. The refusal is
+    # unchanged; only its reason is now the true one.
     boundary_reason = (
-        "MiniMax-H3 conditions on boundary frames only; mid-timeline placement requires "
-        "index-addressable conditioning this architecture does not have."
+        "This endpoint conditions on the boundary frames of the span it generates, so the "
+        "preserved clip has to abut one. Mid-timeline placement would anchor its two boundary "
+        "frames at their own indices inside one generated span; MiniMax-H3 can address an "
+        "arbitrary frame (that is what /generate/img2vid's keyframe placement uses), but that "
+        "outpaint shape is unmeasured and is not offered here."
     )
 
     if tail_frames is not None:
@@ -1427,3 +1439,112 @@ def plan_video_outpaint_placement(
         "requested_total_frames": requested_total,
         "shared_anchor_frames": shared,
     }
+
+
+# ---------------------------------------------------------------------------
+# Keyframe placement (MiniMax-H3 `fl2va`, POST /generate/img2vid)
+# ---------------------------------------------------------------------------
+
+# The model card's scope, quoted once and reused by every message that has to
+# state it. MiniMax documents `fl2va` for zero, one or two input images at the
+# first and last frame.
+MINIMAX_H3_DOCUMENTED_ANCHOR_SCOPE = (
+    "MiniMax's model card documents this workflow for first- and last-frame "
+    "conditioning with up to two images"
+)
+
+
+def plan_keyframe_placements(requests, num_frames: int):
+    """Resolve one img2vid request's keyframe placements onto the clip.
+
+    ``requests`` is a sequence of ``(source, requested_index)`` in SUBMISSION
+    order, where ``source`` is a human-readable name used in error messages
+    (``"image"``, ``"keyframe_images[0]"``, ``"last_frame_image"``).
+
+    Returns ``{"anchors": [...], "undocumented": [...]}`` where each anchor is::
+
+        {"source": str, "requested": int, "frame": int,
+         "anchor": "first" | "last" | int}
+
+    sorted ASCENDING by resolved frame, which is the packed order.
+
+    Three decisions live here rather than at the route:
+
+    * **``-1`` is resolved against the SNAPPED clip length.** ``num_frames`` is
+      what route validation left in ``params`` after snapping to the arch's
+      grid, so the caller cannot compute the last index itself and the sentinel
+      is the only reliable way to name it. (``0`` needs no sentinel and is not
+      given one.)
+    * **The two ENDS resolve to the string anchors.** Frame 0 becomes
+      ``"first"`` and the last frame becomes ``"last"``, so a request that only
+      uses the ends produces the byte-identical layout it produced before
+      placement existed -- see ``h3_pipeline_ops._anchor_rotary_time`` for why
+      the string branches are not the integer formula.
+    * **Ascending order, not upload order.** The layout gives an anchor the same
+      rows wherever it sits, so ordering is free; sorting makes the packed order
+      a function of the placements alone, which is what keeps a legacy
+      ``image`` + ``last_frame_image`` request identical no matter which part
+      the client sent first.
+
+    ``undocumented`` lists the shapes of this request that are outside the model
+    card (an anchor at an intermediate frame, more than two anchors). Empty for
+    every request expressible before this phase. The caller emits the warning;
+    this function stays pure so it is testable without a generation context.
+
+    Raises ``ValidationError`` for an out-of-range index or two anchors that
+    resolve to the same frame, with the frame arithmetic in the detail.
+    """
+    from api.error_handlers import ValidationError
+
+    num_frames = int(num_frames)
+    if num_frames < 1:
+        raise ValidationError(
+            "the clip has no frames to place a keyframe on",
+            detail=f"Got num_frames={num_frames}.",
+        )
+    last_index = num_frames - 1
+
+    anchors = []
+    seen = {}
+    for source, requested in requests:
+        requested = int(requested)
+        frame = last_index if requested == -1 else requested
+        if frame < 0 or frame > last_index:
+            raise ValidationError(
+                f"keyframe placement {requested} is outside the clip",
+                detail=f"`{source}` asked for frame {requested}. This clip is {num_frames} "
+                       f"frames long after the server snapped num_frames to the model's own "
+                       f"grid, so its addressable frames are 0..{last_index}. Use -1 for the "
+                       f"last frame: the snap happens after the request is sent, so -1 is the "
+                       f"only index that always means the end of the clip.",
+            )
+        if frame in seen:
+            raise ValidationError(
+                f"two keyframes were placed on frame {frame}",
+                detail=f"`{seen[frame]}` and `{source}` both resolve to frame {frame} of a "
+                       f"{num_frames}-frame clip (-1 resolves to {last_index}). One frame holds "
+                       f"one anchor; give them different indices or send only one.",
+            )
+        seen[frame] = source
+        if frame == 0:
+            anchor = "first"
+        elif frame == last_index:
+            anchor = "last"
+        else:
+            anchor = frame
+        anchors.append({"source": source, "requested": requested,
+                        "frame": frame, "anchor": anchor})
+
+    anchors.sort(key=lambda entry: entry["frame"])
+
+    undocumented = []
+    intermediate = [entry["frame"] for entry in anchors if isinstance(entry["anchor"], int)]
+    if intermediate:
+        undocumented.append(
+            "an anchor at frame " + ", ".join(str(f) for f in intermediate)
+            + f", which is neither the first nor the last frame of the "
+              f"{num_frames}-frame clip")
+    if len(anchors) > 2:
+        undocumented.append(f"{len(anchors)} anchors in one request")
+
+    return {"anchors": anchors, "undocumented": undocumented}

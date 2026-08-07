@@ -1144,6 +1144,19 @@ export const videoFrameLabel = (
   return `Frames (${rule}${range})`;
 };
 
+// The alignment both spatial axes must land on for `arch`. An arch the matrix
+// does not describe (or a matrix that has not loaded) falls back to 32 — the
+// same "assume supported" convention as archSupportsFeature, with the backend
+// re-validating regardless. Single definition so the canvas fitter, the rule
+// sentence and the slider bounds can never disagree about the grid.
+const videoPixelAlign = (
+  caps: ArchCapabilities | null | undefined,
+  arch: string | null | undefined
+): number => {
+  const c = arch ? caps?.video_constraints?.[arch] : undefined;
+  return c?.pixel_align && c.pixel_align > 0 ? c.pixel_align : 32;
+};
+
 /**
  * The NEAREST CANVAS THIS ARCHITECTURE ACCEPTS to `srcWidth x srcHeight`
  * scaled by `scale`, plus why it differs from that when it does.
@@ -1174,7 +1187,7 @@ export const fitVideoCanvas = (
   scale: number = 1
 ): { width: number; height: number; matchesSource: boolean; cropped: boolean } => {
   const c = arch ? caps?.video_constraints?.[arch] : undefined;
-  const align = c?.pixel_align && c.pixel_align > 0 ? c.pixel_align : 32;
+  const align = videoPixelAlign(caps, arch);
   const cap = c?.max_pixel_hw ?? null;
 
   let width = Math.max(1, srcWidth) * scale;
@@ -1230,11 +1243,91 @@ export const videoCanvasRule = (
   arch: string | null | undefined
 ): string => {
   const c = arch ? caps?.video_constraints?.[arch] : undefined;
-  const align = c?.pixel_align && c.pixel_align > 0 ? c.pixel_align : 32;
+  const align = videoPixelAlign(caps, arch);
   const cap = c?.max_pixel_hw ?? null;
   const alignRule = `both sides must be a multiple of ${align}`;
   if (!cap) return alignRule;
   return `${alignRule}, the short side is capped at ${cap[0]} and the long side at ${cap[1]}`;
+};
+
+// The ceiling of the Absolute width/height sliders where the loaded
+// architecture declares NO envelope (LTX-2.3: `max_pixel_hw` null). It is a UI
+// range, not an architecture fact -- the backend imposes no upper spatial bound
+// there beyond `pixel_align` -- which is why it is a constant here instead of
+// something read out of the capability matrix. It is also the historical range
+// of those sliders, so an uncapped arch keeps exactly the reach it had.
+const UNCAPPED_VIDEO_EDGE = 2048;
+
+/**
+ * The bounds one Absolute canvas slider may offer, given where the OTHER axis
+ * currently sits.
+ *
+ * `max_pixel_hw` is `[short edge, long edge]` and the backend
+ * (`validate_video_geometry`) compares it ORIENTATION-AGNOSTICALLY: a canvas is
+ * legal when `min(w,h) <= short_cap` AND `max(w,h) <= long_cap`. So there is no
+ * such thing as a fixed per-axis maximum. A single cap of `long_cap` on both
+ * axes would offer the illegal 1344x1344; a single cap of `short_cap` on both
+ * would forbid the perfectly legal 1344x768. The reachable maximum for THIS
+ * axis is therefore a function of the other one:
+ *
+ *   other <= short_cap  -> this axis may be the long edge   -> long_cap
+ *   other >  short_cap  -> the other axis is already the long edge, so this one
+ *                          must be the short edge            -> short_cap
+ *
+ * which makes both 1344x768 and 768x1344 reachable and 1344x1345 not. When the
+ * other axis is itself past `long_cap` (a value carried over from an uncapped
+ * architecture) no value of this axis can make the pair legal; the tightest
+ * bound is returned and `videoCanvasExceedsEnvelope` is what tells the user the
+ * canvas is out of range.
+ *
+ * `min`/`step` are the arch's `pixel_align`, so the slider cannot land off-grid
+ * either. An unknown arch (or a matrix that has not loaded) gets align 32 and
+ * no cap: the same "assume supported" convention as archSupportsFeature.
+ */
+export const videoCanvasAxisBounds = (
+  caps: ArchCapabilities | null | undefined,
+  arch: string | null | undefined,
+  otherEdge: number | null | undefined
+): { min: number; max: number; step: number; capped: boolean } => {
+  const c = arch ? caps?.video_constraints?.[arch] : undefined;
+  const align = videoPixelAlign(caps, arch);
+  const cap = c?.max_pixel_hw ?? null;
+  // Floor the ceiling onto the alignment grid so the slider's top value is one
+  // the backend actually accepts, the same way fitVideoCanvas steps down.
+  const onGrid = (v: number) => Math.max(align, Math.floor(v / align) * align);
+  if (!cap) {
+    return { min: align, max: onGrid(UNCAPPED_VIDEO_EDGE), step: align, capped: false };
+  }
+  const capShort = Math.min(cap[0], cap[1]);
+  const capLong = Math.max(cap[0], cap[1]);
+  const other = otherEdge != null && Number.isFinite(otherEdge) ? otherEdge : 0;
+  return {
+    min: align,
+    max: onGrid(other <= capShort ? capLong : capShort),
+    step: align,
+    capped: true,
+  };
+};
+
+// True when `width x height` is outside the loaded arch's envelope — the exact
+// comparison validate_video_geometry makes, so the panel's warning and the
+// server's 400 agree. No envelope (LTX-2.3) or an unknown arch = never outside.
+// The alignment rule is deliberately NOT folded in: the sliders' `step` already
+// keeps both axes on the grid, whereas the envelope can be violated by a value
+// that was legal on the architecture the user just switched away from.
+export const videoCanvasExceedsEnvelope = (
+  caps: ArchCapabilities | null | undefined,
+  arch: string | null | undefined,
+  width: number | null | undefined,
+  height: number | null | undefined
+): boolean => {
+  const cap = (arch ? caps?.video_constraints?.[arch] : undefined)?.max_pixel_hw ?? null;
+  if (!cap || width == null || height == null) return false;
+  if (!Number.isFinite(width) || !Number.isFinite(height)) return false;
+  return (
+    Math.min(width, height) > Math.min(cap[0], cap[1]) ||
+    Math.max(width, height) > Math.max(cap[0], cap[1])
+  );
 };
 
 // Human-readable architecture names. Used where a model's architecture is shown

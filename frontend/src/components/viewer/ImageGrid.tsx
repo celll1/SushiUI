@@ -1102,18 +1102,21 @@ export default function ImageGrid() {
             />
           )}
 
-          <div className="flex flex-col lg:flex-row gap-4 h-screen lg:h-[calc(100vh-12rem)] lg:p-4">
+          <div className="flex flex-col lg:flex-row gap-3 h-screen lg:h-[calc(100vh-12rem)] lg:p-3">
             {/* Left Sidebar - Details (Desktop always visible, Mobile toggleable) */}
             <div className={`
-              fixed lg:relative top-0 left-0 h-full lg:h-auto w-80 max-w-[calc(100vw-5rem)] lg:max-w-none z-50 lg:z-auto
+              fixed lg:relative top-0 left-0 h-full w-80 max-w-[calc(100vw-5rem)] lg:max-w-none z-50 lg:z-auto
               transform transition-transform duration-200 ease-in-out
               ${isDetailOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}
               bg-gray-900 lg:bg-transparent
               p-4 lg:p-0 pt-20 lg:pt-0
               flex-shrink-0 flex flex-col
             `}>
-              {/* Scrollable content area */}
-              <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden mb-4 pb-[env(safe-area-inset-bottom)]">
+              {/* Scrollable content area. h-full (was lg:h-auto) so this
+                  column actually spans the row's height on desktop -- an
+                  auto height meant flex-1 below had nothing to grow into,
+                  collapsing "Image Details" to a ~150px scrollbox. */}
+              <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden mb-3 pb-[env(safe-area-inset-bottom)]">
               <Card title="Image Details">
                 <div className="space-y-3 text-sm min-w-0 break-words">
                   {detailLoading && (
@@ -1906,7 +1909,7 @@ export default function ImageGrid() {
                   saved file). */}
               <div className="hidden lg:block lg:flex-shrink-0">
                 <Card>
-                  <div className="space-y-3">
+                  <div className="space-y-2">
                     {/* Send to section */}
                     <div className="space-y-1.5">
                       <span className="text-xs font-medium text-gray-300">Send to</span>
@@ -1995,15 +1998,21 @@ export default function ImageGrid() {
                         </Button>
                       </div>
 
-                      {/* Video: capture the current frame and send it onward */}
+                      {/* Video: capture the current frame and send it onward.
+                          One grid row -- reference video gets 2 of 4 columns
+                          since its label is longer. Buttons need their own
+                          flex (not just Button's default block layout) or the
+                          icon (Tailwind preflight: svg { display: block })
+                          stacks above the label instead of sitting beside it. */}
                       {isSelectedVideo && (
                         <div className="border-t border-gray-700 pt-2 space-y-1.5">
                           <span className="text-xs font-medium text-gray-300">Capture frame</span>
-                          <div className="grid grid-cols-2 gap-1.5">
+                          <div className="grid grid-cols-4 gap-1.5">
                             <Button
                               onClick={captureFrameToImg2Img}
                               variant="secondary"
                               size="xs"
+                              className="flex items-center justify-center"
                               title={selectedImage?.preview_filename ? "Captures from the browser-playable H.264 proxy, not the lossless master" : undefined}
                             >
                               <Camera className="h-3.5 w-3.5 mr-1" />
@@ -2013,27 +2022,28 @@ export default function ImageGrid() {
                               onClick={captureFrameToImg2Vid}
                               variant="secondary"
                               size="xs"
+                              className="flex items-center justify-center"
                               title={selectedImage?.preview_filename ? "Captures from the browser-playable H.264 proxy, not the lossless master" : undefined}
                             >
                               <Camera className="h-3.5 w-3.5 mr-1" />
                               img2vid
                             </Button>
+                            <Button
+                              onClick={() => sendToReference(selectedImage)}
+                              variant="secondary"
+                              size="xs"
+                              className="col-span-2 flex items-center justify-center"
+                              title="Condition a new generation on this whole clip (MiniMax-H3 ref2va). Regenerates everything; does not extend the clip in place -- that is Send to Outpaint."
+                            >
+                              Use as reference video
+                            </Button>
                           </div>
-                          <Button
-                            onClick={() => sendToReference(selectedImage)}
-                            variant="secondary"
-                            size="xs"
-                            className="w-full"
-                            title="Condition a new generation on this whole clip (MiniMax-H3 ref2va). Regenerates everything; does not extend the clip in place -- that is Send to Outpaint."
-                          >
-                            Use as reference video
-                          </Button>
                         </div>
                       )}
                     </div>
 
                     {/* Post-edit section (Download bakes these edits into the file) */}
-                    <div className="border-t border-gray-700 pt-3 space-y-3">
+                    <div className="border-t border-gray-700 pt-2 space-y-2">
                       <PostEditControls
                         value={postEdit}
                         onChange={setPostEdit}
@@ -2090,14 +2100,17 @@ export default function ImageGrid() {
               >
                 {isSelectedVideo ? (
                   // Same-origin /outputs path so the canvas frame-grab is not tainted.
-                  // poster = existing thumbnail (instant paint); preload="metadata"
-                  // fetches only the moov atom instead of the whole file on open --
-                  // playback/seeking then streams incrementally via the backend's
-                  // Range-aware /outputs serving (gallery perf redesign Phase 2).
+                  // poster = the native-resolution frame save_video_with_metadata
+                  // writes to outputs_dir, not the 256px gallery thumbnail --
+                  // preload="metadata" never reaches HAVE_CURRENT_DATA before
+                  // playback, so the box sizes off the poster's own intrinsic
+                  // size until then. preload="metadata" itself only fetches the
+                  // moov atom on open; playback/seeking streams incrementally
+                  // via the backend's Range-aware /outputs serving.
                   <video
                     ref={videoRef}
                     src={`/outputs/${videoPlaybackFilename}`}
-                    poster={`/thumbnails/${selectedImage.filename.replace(/\.[^/.]+$/, "")}.png`}
+                    poster={`/outputs/${selectedImage.filename.replace(/\.[^/.]+$/, "")}.png`}
                     preload="metadata"
                     className="max-w-full max-h-full object-contain"
                     controls

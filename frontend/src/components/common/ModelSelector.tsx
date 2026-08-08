@@ -22,9 +22,10 @@ interface Model {
 
 interface ModelSelectorProps {
   onModelLoad?: (modelInfo: any) => void;
+  embedded?: boolean;
 }
 
-export default function ModelSelector({ onModelLoad }: ModelSelectorProps) {
+export default function ModelSelector({ onModelLoad, embedded = false }: ModelSelectorProps) {
   const { modelLoaded, modelInfoVersion } = useStartup();
   const [models, setModels] = useState<Model[]>([]);
   const [currentModel, setCurrentModel] = useState<any>(null);
@@ -128,27 +129,13 @@ export default function ModelSelector({ onModelLoad }: ModelSelectorProps) {
   );
   const selectedModel = models.find(m => m.path === selectedModelPath);
 
-  return (
-    <Card
-      title="Model Selection"
-      collapsible={true}
-      defaultCollapsed={false}
-      storageKey="model_selection_collapsed"
-      collapsedPreview={
-        currentModel && (
-          <div className="flex items-center justify-between text-sm py-1">
-            <span className="text-gray-400">Currently Loaded:</span>
-            <span className="text-white font-medium truncate ml-2">{currentModel.source}</span>
-          </div>
-        )
-      }
-    >
-      <div className="grid gap-3 2xl:grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)]">
+  const content = (
+    <div className="grid gap-3 lg:grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)]">
         {/* Current Model Display */}
         {currentModel && (
           <div className="h-full rounded-md border border-gray-700 bg-gray-800/70 p-3">
             <p className="app-kicker">Active model</p>
-            <p className="mt-1.5 break-all text-xs font-medium leading-relaxed text-white" title={currentModel.source}>
+            <p className="mt-1.5 truncate text-xs font-medium text-white" title={currentModel.source}>
               {currentModel.source}
             </p>
             <div className="mt-2 flex flex-wrap items-center gap-1.5">
@@ -162,7 +149,7 @@ export default function ModelSelector({ onModelLoad }: ModelSelectorProps) {
           </div>
         )}
 
-        <div className={`grid gap-2 sm:grid-cols-2 ${currentModel ? "" : "2xl:col-span-2"}`}>
+        <div className={`grid gap-2 sm:grid-cols-2 ${currentModel ? "" : "lg:col-span-2"}`}>
           {models.length === 0 ? (
             <p className="text-gray-500 text-sm">No local models found. Place models in the models/ directory.</p>
           ) : (
@@ -262,7 +249,27 @@ export default function ModelSelector({ onModelLoad }: ModelSelectorProps) {
             </>
           )}
         </div>
-      </div>
+    </div>
+  );
+
+  if (embedded) return content;
+
+  return (
+    <Card
+      title="Model Selection"
+      collapsible={true}
+      defaultCollapsed={false}
+      storageKey="model_selection_collapsed"
+      collapsedPreview={
+        currentModel && (
+          <div className="flex items-center justify-between text-sm py-1">
+            <span className="text-gray-400">Currently Loaded:</span>
+            <span className="text-white font-medium truncate ml-2">{currentModel.source}</span>
+          </div>
+        )
+      }
+    >
+      {content}
     </Card>
   );
 }

@@ -842,6 +842,12 @@ export interface Ref2VidParams extends Txt2VidParams {
   // Video references are unaffected either way: they always follow the canvas
   // rule the generated video follows.
   reference_image_size?: "max" | "match";
+  // OPTIONAL keyframe anchors (C5), laid out AFTER every reference block --
+  // same shape as Img2VidParams.keyframes. References stay content
+  // conditioning (read by the prompt); anchors stay placement conditioning
+  // (pinned to a frame). Always emits a warnings[] entry when combined with a
+  // reference, since MiniMax's model card does not describe the combination.
+  keyframes?: MiniMaxH3Keyframe[];
 }
 
 // The reference uploads of one ref2vid request, IN THE ORDER THE MODEL READS
@@ -2398,6 +2404,20 @@ export const generateRef2Vid = async (
     });
   }
   (references.audios || []).forEach((file) => formData.append("reference_audios", file));
+
+  // C5: optional keyframe anchors, laid out AFTER the reference blocks --
+  // same positional-pair sender as generateImg2Vid's.
+  for (const keyframe of params.keyframes ?? []) {
+    if (!keyframe || !keyframe.image) continue;
+    if (typeof keyframe.image === "string") {
+      const keyframeResponse = await fetch(keyframe.image);
+      const keyframeBlob = await keyframeResponse.blob();
+      formData.append("keyframe_images", keyframeBlob, "keyframe.png");
+    } else {
+      formData.append("keyframe_images", keyframe.image);
+    }
+    formData.append("keyframe_frame_indices", String(keyframe.frame_index));
+  }
 
   const response = await api.post("/generate/ref2vid", formData, {
     headers: { "Content-Type": "multipart/form-data" },

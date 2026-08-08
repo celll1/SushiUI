@@ -2765,7 +2765,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         )
 
     def generate_ref2vid(self, params: Dict[str, Any], references, progress_callback=None,
-                         step_callback=None):
+                         step_callback=None, keyframes=None):
         """Generate a video from omni-references (MiniMax-H3 `ref2va` only).
 
         Args:
@@ -2778,6 +2778,9 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             progress_callback: Called as (step, total_steps) at each denoise step.
             step_callback: Per-step latent preview hook, exactly as in
                 generate_txt2vid.
+            keyframes: Optional (C5) `(anchor, PIL.Image)` placement plan, same
+                shape as `generate_img2vid`'s -- laid out AFTER the reference
+                blocks. None/empty is a plain ref2vid request.
 
         Returns:
             tuple: (frames, audio, audio_sample_rate, actual_seed) -- identical
@@ -2792,7 +2795,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         if self.is_minimax_h3_model:
             return self._generate_ref2vid_minimax_h3(
                 params, references, progress_callback=progress_callback,
-                step_callback=step_callback)
+                step_callback=step_callback, keyframes=keyframes or ())
 
         from api.error_handlers import ValidationError
         raise ValidationError(

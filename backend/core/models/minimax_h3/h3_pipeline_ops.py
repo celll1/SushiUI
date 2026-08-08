@@ -505,9 +505,10 @@ def build_ref2va_packed_layout(
     num_audio_latents: int,
     *,
     patch_size: Tuple[int, int, int] = (1, 2, 2),
+    keyframe_anchors: Sequence["int | str"] = (),
     device: Optional[torch.device | str] = None,
 ) -> Dict[str, Any]:
-    """The ``[text | reference blocks | target audio | target video]`` layout.
+    """The ``[text | reference blocks | keyframe anchors | target audio | target video]`` layout.
 
     Port of ``MiniMaxH3Ref2VAPrepareLayoutStep.build_ref2va_packed_sequence``.
     Returns the same dict shape as :func:`build_packed_layout`, so the denoise
@@ -548,6 +549,17 @@ def build_ref2va_packed_layout(
             layout and the encoded conditioning can never disagree.
         reference_audio_row_counts: packed row count per AUDIO-BEARING
             reference, in packed order.
+        keyframe_anchors: ``"first"``, ``"last"`` or an integer pixel-frame
+            index per anchor (same vocabulary as :func:`build_packed_layout`),
+            placed AFTER every reference block and before the target audio/
+            video, at ``rows_per_frame`` (the TARGET canvas's) rows each. Each
+            anchor's rotary time is computed from the rotary clock the
+            reference loop leaves behind, not from ``num_text_tokens`` -- the
+            care ``minimax_h3_conditioning_design.md`` §1.1 names, because that
+            clock is where the target's own rows already start. Anchors do not
+            advance the clock themselves, matching :func:`build_packed_layout`,
+            where a keyframe never shifts the generated video's own origin.
+            Empty by default, which reproduces the pre-C5 layout bitwise.
     """
     _, patch_h, patch_w = patch_size
     text_tags = torch.as_tensor(list(text_token_tags), dtype=torch.long)
@@ -560,7 +572,8 @@ def build_ref2va_packed_layout(
     audio_row_counts = iter(int(count) for count in reference_audio_row_counts)
     num_condition_video_rows = sum(
         frames * (height // patch_h) * (width // patch_w)
-        for frames, height, width in (tuple(shape) for shape in condition_latent_shapes))
+        for frames, height, width in (tuple(shape) for shape in condition_latent_shapes)
+    ) + len(keyframe_anchors) * rows_per_frame
     num_condition_audio_rows = sum(int(count) for count in reference_audio_row_counts)
     sequence_length = (num_text_tokens + num_condition_video_rows + num_condition_audio_rows
                        + num_target_audio_rows + num_target_video_rows)
@@ -623,6 +636,19 @@ def build_ref2va_packed_layout(
             rotary_time += max(float(reference_audio_latents), video_span)
         else:
             raise ValueError(f"A reference must be an 'image', a 'video' or an 'audio', got {kind!r}.")
+
+    # Keyframe anchors (C5: anchors x references, merged builder), one more
+    # block kind after every reference. `rotary_time` is left where the
+    # reference loop put it -- an anchor's own time is computed FROM that
+    # origin, but placing one does not move it, so the target audio/video below
+    # still starts where it would with no anchors at all.
+    for anchor in keyframe_anchors:
+        anchor_time = _anchor_rotary_time(anchor, rotary_time, num_latent_frames)
+        rows = slice(cursor, cursor + rows_per_frame)
+        cursor = rows.stop
+        video_index_blocks.append(torch.arange(rows.start, rows.stop))
+        position_ids[rows, 0] = anchor_time
+        position_ids[rows, 1:] = target_frame_grid
 
     audio_start = cursor
     video_start = audio_start + num_target_audio_rows

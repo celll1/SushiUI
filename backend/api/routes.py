@@ -3513,11 +3513,11 @@ async def generate_img2vid(
                        "partition, which serves /generate/txt2vid, /generate/img2vid and "
                        "/generate/outpaint/video. Anchors do bind on the ref2va partition when "
                        "they are laid out from its post-reference rotary origin (measured), but "
-                       "combining them with reference conditioning is not implemented on any "
-                       "endpoint yet, so this request is refused rather than run on a shape "
-                       "nothing here builds. Load "
-                       "diffusion_models/minimax_h3_fl2va_pruned_fp8_scaled.safetensors, or use "
-                       "/generate/ref2vid with the loaded checkpoint.",
+                       "this endpoint carries no references to lay them out after -- that "
+                       "combination is /generate/ref2vid's `keyframe_images`/"
+                       "`keyframe_frame_indices` fields, not this endpoint's. Load "
+                       "diffusion_models/minimax_h3_fl2va_pruned_fp8_scaled.safetensors, or send "
+                       "the request to /generate/ref2vid with the loaded checkpoint.",
             )
 
     # ---- At least one conditioning medium, and WHICH ones this architecture
@@ -3896,6 +3896,11 @@ async def generate_ref2vid(
     reference_videos: List[UploadFile] = File([]),
     reference_video_audios: List[UploadFile] = File([]),
     reference_audios: List[UploadFile] = File([]),
+    # C5: keyframe anchors, laid out AFTER the reference blocks. Positional,
+    # like /generate/img2vid's `keyframe_images`/`keyframe_frame_indices` --
+    # there is no single "the" keyframe here, so every anchor uses this pair.
+    keyframe_images: List[UploadFile] = File([]),
+    keyframe_frame_indices: List[int] = Form([]),
     db: Session = Depends(get_gallery_db)
 ):
     """Generate a video from omni-references (MiniMax-H3 `ref2va` only).
@@ -3913,6 +3918,14 @@ async def generate_ref2vid(
     resolutions and rates, in an order that changes the request, and only one
     architecture -- one of its two transformer partitions, in fact -- implements
     it at all.
+
+    OPTIONAL keyframe anchors (C5): `keyframe_images` / `keyframe_frame_indices`
+    place additional visual anchors on the SAME generated canvas, after every
+    reference block, using `-1` for the resolved last frame exactly as
+    /generate/img2vid's do (`plan_keyframe_placements`, resolved after the clip
+    length is snapped). References remain content conditioning and anchors
+    remain placement conditioning; combining them is measured to bind on this
+    partition (`minimax_h3_conditioning_design.md` M-C0a).
     """
     from api.generation_status import start_generation, complete_generation, fail_generation, get_warnings
     from utils.video_utils import save_video_with_metadata, load_video_frames
@@ -3953,6 +3966,17 @@ async def generate_ref2vid(
     video_files = _present(reference_videos)
     video_audio_files = list(reference_video_audios or [])
     audio_files = _present(reference_audios)
+    # C5: the optional keyframe anchors, same positional-pair convention as
+    # /generate/img2vid.
+    _keyframes = _present(keyframe_images)
+    _keyframe_indices = list(keyframe_frame_indices or [])
+    if len(_keyframes) != len(_keyframe_indices):
+        raise CustomValidationError(
+            "keyframe_images and keyframe_frame_indices must be the same length",
+            detail=f"Got {len(_keyframes)} keyframe image(s) and {len(_keyframe_indices)} "
+                   f"frame index/indices. The two lists are positional: entry n of "
+                   f"keyframe_frame_indices is the placement of entry n of keyframe_images.",
+        )
 
     # Counts are validated BEFORE anything is read: these are the model's limits
     # and a request that breaks them must not first pay for 12 file reads.
@@ -4040,6 +4064,11 @@ async def generate_ref2vid(
         "reference_images": [f.filename for f in image_files] or None,
         "reference_videos": [f.filename for f in video_files] or None,
         "reference_audios": [f.filename for f in audio_files] or None,
+        # C5's keyframe fields, recorded the same way img2vid records them: the
+        # uploaded FILENAMES and the requested indices. The RESOLVED placements
+        # are added after num_frames has been snapped, below.
+        "keyframe_images": [f.filename for f in _keyframes] or None,
+        "keyframe_frame_indices": list(_keyframe_indices) or None,
     }
 
     _vid_arch = (pipeline_manager.current_model_info or {}).get("type")
@@ -4093,6 +4122,20 @@ async def generate_ref2vid(
             detail=str(e),
         )
 
+    # C5: the keyframe anchors, read the same way /generate/img2vid reads them
+    # -- before the generation context, so a malformed upload is a 400 that
+    # reserved nothing.
+    extra_keyframe_images = []
+    for _position, _upload in enumerate(_keyframes):
+        try:
+            _data = await _upload.read()
+            extra_keyframe_images.append(Image.open(io.BytesIO(_data)).convert("RGB"))
+        except Exception as e:
+            raise CustomValidationError(
+                f"Failed to read keyframe_images[{_position}]",
+                detail=str(e),
+            )
+
     _gen_id = start_generation("ref2vid")
     try:
         pipeline_manager.reset_cancel_flag()
@@ -4100,11 +4143,41 @@ async def generate_ref2vid(
         validate_video_geometry(params, _vid_arch)
         validate_video_steps(params, _vid_arch)
 
-        from api.arch_capabilities import check_arch_capabilities
+        from api.arch_capabilities import check_arch_capabilities, arch_supports_feature
+        from api.generation_status import add_warning
         from api.generation_overrides import plan_overrides, apply_overrides
+        from api.generation_utils import plan_keyframe_placements, MINIMAX_H3_DOCUMENTED_ANCHOR_SCOPE
         _override_plan = plan_overrides(pipeline_manager, params.get("vae_path"), params.get("text_encoder_path"))
         apply_overrides(pipeline_manager, _override_plan)
         check_arch_capabilities(params, _vid_arch, defaults=_vid_defaults)
+
+        # ---- Keyframe placement, resolved AFTER the snap -- same reasoning as
+        # /generate/img2vid's identical block. ----
+        keyframe_plan = None
+        if _keyframes and arch_supports_feature(_vid_arch, "keyframe_placement"):
+            placement_requests = [(f"keyframe_images[{position}]", index)
+                                  for position, index in enumerate(_keyframe_indices)]
+            plan = plan_keyframe_placements(placement_requests, params.get("num_frames") or 0)
+            sources = {f"keyframe_images[{position}]": pil
+                      for position, pil in enumerate(extra_keyframe_images)}
+            keyframe_plan = [(entry["anchor"], sources[entry["source"]])
+                             for entry in plan["anchors"]]
+            params["keyframe_resolved_frames"] = [entry["frame"] for entry in plan["anchors"]]
+            # ONE warning for the whole request. Unlike /generate/img2vid, EVERY
+            # anchor here is beyond the model card on its own terms -- MiniMax
+            # never documents anchors combined with reference conditioning at
+            # all, not even a first/last placement -- so this fires whenever any
+            # anchor is sent, and folds in the placement-specific reasons too.
+            _undocumented = list(plan["undocumented"])
+            _undocumented.append("keyframe anchors combined with reference conditioning")
+            add_warning(
+                "This request conditions MiniMax-H3 outside the documented shape ("
+                + "; ".join(_undocumented)
+                + f"). {MINIMAX_H3_DOCUMENTED_ANCHOR_SCOPE}; combining anchors with reference "
+                  "conditioning is measured to bind on this partition but is not itself part of "
+                  "MiniMax's model card.",
+                code="minimax_h3_undocumented_conditioning",
+            )
 
         print(f"ref2vid generation params: {sanitize_params_for_logging(params)}")
 
@@ -4125,7 +4198,8 @@ async def generate_ref2vid(
             frames, audio, audio_sample_rate, actual_seed = await _run_generation_in_executor(
                 loop, executor,
                 lambda: pipeline_manager.generate_ref2vid(
-                    params, references, progress_callback=progress_callback)
+                    params, references, progress_callback=progress_callback,
+                    keyframes=keyframe_plan)
             )
             fp8_gemm = extract_fp8_gemm_info(pipeline_manager)
         apply_generation_timings(params, time.perf_counter() - _gen_start)

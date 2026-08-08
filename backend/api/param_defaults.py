@@ -939,6 +939,13 @@ REF2VID_DEFAULTS["reference_image_size"] = "max"
 REF2VID_DEFAULTS["reference_images"] = None
 REF2VID_DEFAULTS["reference_videos"] = None
 REF2VID_DEFAULTS["reference_audios"] = None
+# C5: keyframe anchors, laid out AFTER the reference blocks
+# (h3_pipeline_ops.build_ref2va_packed_layout's keyframe_anchors). Same shape
+# and defaults as IMG2VID_DEFAULTS's fields; None = no anchors, the pre-C5
+# request. There is no `image`/`last_frame_image` pair here -- ref2vid has no
+# single "the" keyframe, so every anchor goes through this positional pair.
+REF2VID_DEFAULTS["keyframe_images"] = None
+REF2VID_DEFAULTS["keyframe_frame_indices"] = None
 
 # ---------------------------------------------------------------------------
 # Video temporal outpaint (POST /generate/outpaint/video — LTX-2.3)

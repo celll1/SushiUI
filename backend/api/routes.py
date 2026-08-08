@@ -6728,6 +6728,45 @@ async def delete_image(image_id: int, db: Session = Depends(get_gallery_db)):
 
     return {"success": True}
 
+
+def _expand_minimax_h3_tree(tree_path: str, name_prefix: str, source_dir: str) -> list:
+    """List the selectable DiT partitions (fl2va/ref2va) under an H3 tree.
+
+    Shared by both scan shapes in `get_models`: the tree sitting one level
+    under `models_dir` (`item_path`) and `models_dir` pointing directly at the
+    tree root, which is how every other arch's own directory is added there
+    (see `M:\\model\\{sdxl,krea2,anima}` -- one models_dir per arch root, not
+    per parent). Both must resolve to the same two entries.
+    """
+    from core.models.minimax_h3.loader import (
+        detect_minimax_h3_layout, is_minimax_h3_safetensors,
+    )
+    dit_dir = os.path.join(tree_path, "diffusion_models")
+    if not os.path.isdir(dit_dir):
+        return []
+    dits = sorted(
+        os.path.join(dit_dir, f) for f in os.listdir(dit_dir)
+        if f.endswith(".safetensors")
+        and is_minimax_h3_safetensors(os.path.join(dit_dir, f))
+    )
+    result = []
+    for dit in dits:
+        layout = detect_minimax_h3_layout(dit) or {}
+        result.append({
+            "name": f"{name_prefix}/{os.path.basename(dit)[:-len('.safetensors')]}",
+            "path": dit,
+            "type": "safetensors",
+            "source_type": "safetensors",
+            "size_gb": round(os.path.getsize(dit) / (1024 ** 3), 2),
+            "source_dir": source_dir,
+            "architecture": "minimax_h3",
+            # Which workflows this entry can serve, so the frontend does not
+            # have to parse a filename.
+            "variant": layout.get("variant"),
+        })
+    return result
+
+
 @router.get("/models")
 async def get_models(db: Session = Depends(get_gallery_db), force_rescan: bool = False):
     """
@@ -6768,6 +6807,25 @@ async def get_models(db: Session = Depends(get_gallery_db), force_rescan: bool =
             continue
 
         print(f"[Models] Scanning directory: {models_dir}")
+
+        # MiniMax-H3: the configured directory can itself BE the H3 tree
+        # root (`diffusion_models/` sits directly under it), matching how
+        # every other arch is added here -- one models_dir per arch's own
+        # root, not per parent. In that shape, os.listdir(models_dir) would
+        # otherwise enumerate the tree's own components (official/,
+        # text_encoders/, vae/, ...) as if they were separate candidate
+        # models, and `official/model_index.json` (config-only, not a
+        # loadable checkpoint) wins architecture detection before the DiT
+        # files are ever reached -- leaving only "official" selectable.
+        # Expand the two DiT partitions here and skip the per-child scan
+        # for this directory entirely.
+        _h3_dits = _expand_minimax_h3_tree(
+            models_dir, os.path.basename(os.path.normpath(models_dir)), models_dir
+        )
+        if _h3_dits:
+            models.extend(_h3_dits)
+            continue
+
         for item in os.listdir(models_dir):
             item_path = os.path.join(models_dir, item)
 
@@ -6826,30 +6884,9 @@ async def get_models(db: Session = Depends(get_gallery_db), force_rescan: bool =
                 # being listed once and silently resolving to the first file.
                 # Same shape as the MiniT2I expansion above.
                 if architecture == "minimax_h3":
-                    from core.models.minimax_h3.loader import (
-                        detect_minimax_h3_layout, is_minimax_h3_safetensors,
-                    )
-                    _dit_dir = os.path.join(item_path, "diffusion_models")
-                    _dits = sorted(
-                        os.path.join(_dit_dir, f) for f in os.listdir(_dit_dir)
-                        if f.endswith(".safetensors")
-                        and is_minimax_h3_safetensors(os.path.join(_dit_dir, f))
-                    ) if os.path.isdir(_dit_dir) else []
-                    for _dit in _dits:
-                        _layout = detect_minimax_h3_layout(_dit) or {}
-                        models.append({
-                            "name": f"{item}/{os.path.basename(_dit)[:-len('.safetensors')]}",
-                            "path": _dit,
-                            "type": "safetensors",
-                            "source_type": "safetensors",
-                            "size_gb": round(os.path.getsize(_dit) / (1024 ** 3), 2),
-                            "source_dir": models_dir,
-                            "architecture": "minimax_h3",
-                            # Which workflows this entry can serve, so the
-                            # frontend does not have to parse a filename.
-                            "variant": _layout.get("variant"),
-                        })
-                    if _dits:
+                    _h3_dits = _expand_minimax_h3_tree(item_path, item, models_dir)
+                    if _h3_dits:
+                        models.extend(_h3_dits)
                         continue
 
                 # Allow Anima split-files layouts even when there's no model_index.json

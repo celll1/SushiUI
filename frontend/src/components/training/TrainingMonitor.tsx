@@ -317,11 +317,15 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
   return (
     <div className="h-full flex flex-col">
       {/* Header */}
-      <div className="p-3 sm:p-4 border-b border-gray-700 flex items-center justify-between bg-gray-800/50 shrink-0">
-        <h2 className="text-base sm:text-lg font-semibold truncate mr-2">Training Monitor: {currentRun.run_name}</h2>
+      <div className="flex h-12 shrink-0 items-center justify-between border-b border-gray-800 bg-gray-900/50 px-3">
+        <div className="min-w-0">
+          <p className="app-kicker">Training monitor</p>
+          <h2 className="truncate text-sm font-semibold">{currentRun.run_name}</h2>
+        </div>
         <button
           onClick={onClose}
           className="p-1.5 hover:bg-gray-700 rounded transition-colors flex-shrink-0"
+          aria-label="Close training monitor"
         >
           <X className="h-5 w-5" />
         </button>
@@ -330,9 +334,11 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
       {/* Main Content - Responsive Layout */}
       <div className="flex-1 flex flex-col lg:flex-row overflow-y-auto lg:overflow-hidden">
         {/* Left Panel - Training Info (internal scroll on desktop; flows on mobile) */}
-        <div className="flex-1 lg:overflow-y-auto p-3 sm:p-4 space-y-3 sm:space-y-4">
+        <div className="flex-1 space-y-3 p-3 lg:overflow-y-auto">
+          <div className="grid items-start gap-3 2xl:grid-cols-[minmax(0,1.1fr)_minmax(340px,0.9fr)]">
+            <div className="space-y-2">
           {/* Status */}
-          <div className="bg-gray-800 rounded-lg p-2.5 sm:p-3">
+          <div className="rounded-md border border-gray-700 bg-gray-800/80 p-3">
             <div className="flex items-center justify-between mb-2 sm:mb-3">
               <span className="text-xs sm:text-sm font-medium">Status</span>
               <span
@@ -413,26 +419,22 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
             </div>
 
             {/* Metrics */}
-            <div className="grid grid-cols-2 gap-1.5 sm:gap-2 text-xs sm:text-sm mb-2">
+            <div className="grid grid-cols-2 gap-1.5 text-xs xl:grid-cols-4">
               <div>
                 <span className="text-gray-400">Loss:</span>{" "}
-                <span className="font-mono text-xs sm:text-sm">{currentRun.loss?.toFixed(6) || "N/A"}</span>
+                <span className="font-mono">{currentRun.loss?.toFixed(6) || "N/A"}</span>
               </div>
               <div>
                 <span className="text-gray-400">LR:</span>{" "}
-                <span className="font-mono text-xs sm:text-sm">{currentRun.learning_rate?.toExponential(2) || "N/A"}</span>
+                <span className="font-mono">{currentRun.learning_rate?.toExponential(2) || "N/A"}</span>
               </div>
-            </div>
-
-            {/* Time Info */}
-            <div className="grid grid-cols-2 gap-1.5 sm:gap-2 text-xs sm:text-sm">
               <div>
                 <span className="text-gray-400">Elapsed:</span>{" "}
-                <span className="font-mono text-blue-400 text-xs sm:text-sm">{timeInfo.elapsed}</span>
+                <span className="font-mono text-blue-400">{timeInfo.elapsed}</span>
               </div>
               <div>
                 <span className="text-gray-400">ETA:</span>{" "}
-                <span className="font-mono text-green-400 text-xs sm:text-sm">{timeInfo.eta}</span>
+                <span className="font-mono text-green-400">{timeInfo.eta}</span>
               </div>
             </div>
           </div>
@@ -472,9 +474,10 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
               </button>
             ) : null}
           </div>
+            </div>
 
           {/* Configuration Info */}
-          <div className="bg-gray-800 rounded-lg p-2.5 sm:p-3 space-y-2 text-xs sm:text-sm">
+          <div className="space-y-2 rounded-md border border-gray-700 bg-gray-800/80 p-3 text-xs">
             <div className="flex items-start justify-between mb-2 gap-2">
               <h3 className="font-semibold text-sm flex-shrink-0">Configuration</h3>
               <div className="flex flex-wrap gap-1.5 sm:gap-2 justify-end">
@@ -533,31 +536,32 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
               <div>
                 <span className="text-gray-400">Total Steps:</span> {currentRun.total_steps}
               </div>
-              <div className="col-span-2">
+              <div className="col-span-2 min-w-0">
                 <span className="text-gray-400">Model:</span>{" "}
-                <span className="font-mono text-xs break-all">{currentRun.base_model_path}</span>
+                <span className="block truncate font-mono text-[10px]" title={currentRun.base_model_path}>{currentRun.base_model_path}</span>
               </div>
-              <div className="col-span-2">
+              <div className="col-span-2 min-w-0">
                 <span className="text-gray-400">Output:</span>{" "}
-                <span className="font-mono text-xs break-all">{currentRun.output_dir}</span>
+                <span className="block truncate font-mono text-[10px]" title={currentRun.output_dir}>{currentRun.output_dir}</span>
               </div>
             </div>
+          </div>
           </div>
 
           {/* Loss Chart */}
           {(currentRun.status === "running" || currentRun.status === "completed" || currentRun.status === "failed" || currentRun.status === "stopped") && (
-            <>
-              <div className="bg-gray-800 rounded-lg p-2.5 sm:p-3">
+            <div className="grid grid-cols-1 gap-3 min-[1800px]:grid-cols-2 [&>*]:min-w-0">
+              <div className="rounded-md border border-gray-700 bg-gray-800/80 p-3">
                 <h3 className="font-semibold mb-2 text-xs sm:text-sm">Loss</h3>
                 <LossChart runId={currentRun.id} isRunning={currentRun.status === "running"} />
               </div>
-              <div className="bg-gray-800 rounded-lg p-2.5 sm:p-3">
+              <div className="rounded-md border border-gray-700 bg-gray-800/80 p-3">
                 <h3 className="font-semibold mb-2 text-xs sm:text-sm">Gradient Norm</h3>
                 <GradNormChart runId={currentRun.id} isRunning={currentRun.status === "running"} />
               </div>
               <ParamChangeChart runId={currentRun.id} isRunning={currentRun.status === "running"} />
               <DanbooruImageMetricsPanel runId={currentRun.id} active={currentRun.status === "running"} />
-            </>
+            </div>
           )}
 
           {/* Checkpoint List */}
@@ -567,7 +571,7 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
         </div>
 
         {/* Right Panel - Sample Images / Debug Latents - Stacked on mobile, side-by-side on desktop */}
-        <div className="w-full lg:w-80 border-t lg:border-t-0 lg:border-l border-gray-700 flex flex-col">
+        <div className="flex w-full flex-col border-t border-gray-700 lg:w-72 lg:border-l lg:border-t-0 2xl:w-80">
           {/* Tab Header */}
           <div className="flex border-b border-gray-700 bg-gray-900 sticky top-0 z-10">
             <button

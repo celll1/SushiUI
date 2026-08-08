@@ -14,19 +14,19 @@ export default function Button({
   className,
   ...props
 }: ButtonProps) {
-  const baseStyles = "rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed";
+  const baseStyles = "rounded-md border border-transparent font-medium transition-colors focus:outline-none focus:ring-1 focus:ring-violet-400 disabled:opacity-50 disabled:cursor-not-allowed";
 
   const variantStyles = {
-    primary: "bg-blue-600 hover:bg-blue-700 text-white",
-    secondary: "bg-gray-700 hover:bg-gray-600 text-gray-100",
-    danger: "bg-red-600 hover:bg-red-700 text-white",
+    primary: "border-violet-400/30 bg-violet-600 hover:bg-violet-500 text-white shadow-[0_0_12px_rgba(124,92,255,0.14)]",
+    secondary: "border-gray-700 bg-gray-800 hover:bg-gray-700 text-gray-200",
+    danger: "border-red-500/30 bg-red-600 hover:bg-red-500 text-white",
   };
 
   const sizeStyles = {
     xs: "px-2 py-1 text-xs",
     sm: "px-3 py-1.5 text-sm",
-    md: "px-4 py-2 text-base",
-    lg: "px-6 py-3 text-lg",
+    md: "px-3 py-1.5 text-sm",
+    lg: "px-4 py-2 text-base",
   };
 
   return (

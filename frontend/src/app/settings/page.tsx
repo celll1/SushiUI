@@ -379,12 +379,18 @@ export default function SettingsPage() {
 
   return (
     <ProtectedRoute>
-      <div className="flex h-screen">
+      <div className="app-shell">
         <Sidebar />
-        <main className="flex-1 overflow-auto p-6">
-          <h1 className="text-2xl font-bold mb-6">Settings</h1>
+        <main className="app-main compact-workspace flex flex-col overflow-hidden">
+          <header className="app-topbar">
+            <div>
+              <p className="app-kicker">System</p>
+              <h1 className="app-title">Settings</h1>
+            </div>
+          </header>
 
-        <div className="space-y-6">
+          <div className="app-content flex-1 overflow-auto">
+            <div className="columns-1 gap-3 xl:columns-2 [&>section]:mb-3 [&>section]:break-inside-avoid">
           <Card title="Server Control">
             <div className="space-y-4">
               <p className="text-gray-400 text-sm mb-4">
@@ -782,7 +788,7 @@ export default function SettingsPage() {
                     </label>
                   </div>
                   <p className="text-xs text-gray-500 mt-1">
-                    When set to "Scale", receiving panels will use scale mode with the default scale value below. When "Absolute", the exact pixel dimensions are used.
+                    When set to &quot;Scale&quot;, receiving panels will use scale mode with the default scale value below. When &quot;Absolute&quot;, the exact pixel dimensions are used.
                   </p>
                 </div>
 
@@ -1111,7 +1117,8 @@ export default function SettingsPage() {
               </p>
             </div>
           </Card>
-        </div>
+            </div>
+          </div>
       </main>
     </div>
     </ProtectedRoute>

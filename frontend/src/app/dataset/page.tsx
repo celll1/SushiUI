@@ -48,27 +48,30 @@ function DatasetPageContent() {
   const selectedDataset = datasets.find(d => d.id === selectedDatasetId);
 
   return (
-    <div className="flex h-screen">
+    <div className="app-shell">
       <Sidebar />
-      <main className="flex-1 flex flex-col overflow-hidden pt-16 lg:pt-0">
+      <main className="app-main compact-workspace flex flex-col overflow-hidden">
         {/* Header */}
-        <div className="flex-shrink-0 p-3 sm:p-4 border-b border-gray-700">
+        <div className="app-topbar relative flex-shrink-0 flex-col items-stretch gap-1 py-1 sm:flex-row sm:items-center sm:py-0">
           <div className="flex items-center justify-between">
-            <h1 className="text-lg sm:text-xl font-bold">Dataset Management</h1>
+            <div className="shrink-0">
+              <p className="app-kicker">Assets</p>
+              <h1 className="app-title">Dataset</h1>
+            </div>
 
             {/* Dataset Tabs (when dataset is selected) */}
             {selectedDatasetId && selectedDataset && (
               <div className="flex items-center space-x-2">
                 <button
                   onClick={() => setShowDatasetSelector(!showDatasetSelector)}
-                  className="flex items-center space-x-2 px-3 py-1.5 bg-gray-800 hover:bg-gray-700 rounded text-sm transition-colors"
+                  className="flex h-8 items-center space-x-2 rounded-md border border-gray-700 bg-gray-800 px-2.5 text-xs transition-colors hover:bg-gray-700"
                 >
                   <span className="font-medium">{selectedDataset.name}</span>
                   <ChevronDown className="h-4 w-4" />
                 </button>
                 <button
                   onClick={handleCloseDataset}
-                  className="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-sm transition-colors"
+                  className="h-8 rounded-md border border-gray-700 bg-gray-800 px-2.5 text-xs transition-colors hover:bg-gray-700"
                 >
                   Close
                 </button>
@@ -78,23 +81,23 @@ function DatasetPageContent() {
 
           {/* Main Tabs */}
           {!selectedDatasetId && (
-            <div className="flex space-x-1 sm:space-x-2 border-b border-gray-700 mt-3 overflow-x-auto">
+            <div className="app-tabs border-b-0 sm:ml-5">
               <button
                 onClick={() => setActiveTab("datasets")}
-                className={`px-3 sm:px-4 py-2 text-xs sm:text-sm font-medium transition-colors whitespace-nowrap ${
+                className={`app-tab ${
                   activeTab === "datasets"
-                    ? "border-b-2 border-blue-500 text-white"
-                    : "text-gray-400 hover:text-white"
+                    ? "app-tab-active"
+                    : ""
                 }`}
               >
                 Datasets
               </button>
               <button
                 onClick={() => setActiveTab("tags")}
-                className={`px-3 sm:px-4 py-2 text-xs sm:text-sm font-medium transition-colors whitespace-nowrap ${
+                className={`app-tab ${
                   activeTab === "tags"
-                    ? "border-b-2 border-blue-500 text-white"
-                    : "text-gray-400 hover:text-white"
+                    ? "app-tab-active"
+                    : ""
                 }`}
               >
                 Tag Dictionary
@@ -104,7 +107,7 @@ function DatasetPageContent() {
 
           {/* Dataset Selector Dropdown */}
           {showDatasetSelector && (
-            <div className="absolute right-4 mt-2 w-80 bg-gray-800 border border-gray-700 rounded-lg shadow-lg z-50 max-h-96 overflow-y-auto">
+            <div className="absolute right-4 top-11 z-50 max-h-96 w-72 overflow-y-auto rounded-md border border-gray-700 bg-gray-800 shadow-xl">
               <div className="p-2">
                 {datasets.map((dataset) => (
                   <button
@@ -112,7 +115,7 @@ function DatasetPageContent() {
                     onClick={() => handleSelectDataset(dataset.id)}
                     className={`w-full text-left p-2 rounded transition-colors mb-1 ${
                       dataset.id === selectedDatasetId
-                        ? "bg-blue-600 text-white"
+                        ? "bg-violet-600 text-white"
                         : "hover:bg-gray-700"
                     }`}
                   >
@@ -133,7 +136,7 @@ function DatasetPageContent() {
               onClose={handleCloseDataset}
             />
           ) : activeTab === "datasets" ? (
-            <div className="h-full p-3 sm:p-4 overflow-auto">
+            <div className="h-full overflow-auto p-2.5 sm:p-3">
               <DatasetList
                 selectedDatasetId={selectedDatasetId}
                 onSelectDataset={handleSelectDataset}

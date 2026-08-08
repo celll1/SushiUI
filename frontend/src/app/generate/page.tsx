@@ -60,71 +60,78 @@ function GeneratePageContent() {
   };
 
   return (
-    <div className="flex h-screen">
+    <div className="app-shell">
       <Sidebar />
-      <main className="flex-1 overflow-auto p-3 sm:p-6 pt-16 lg:pt-6 relative">
-        <h1 className="text-xl sm:text-2xl font-bold mb-4 sm:mb-6">Generate</h1>
+      <main className="app-main compact-workspace relative flex flex-col overflow-hidden">
+        <header className="app-topbar flex-wrap gap-x-5 gap-y-1 py-1 lg:flex-nowrap lg:py-0">
+          <div className="hidden shrink-0 lg:block">
+            <p className="app-kicker">Create</p>
+            <h1 className="app-title">Generate</h1>
+          </div>
 
-        {/* Tabs */}
-        <div className="flex space-x-1 sm:space-x-2 border-b border-gray-700 mb-4 sm:mb-6 overflow-x-auto">
+          {/* Tabs */}
+          <div className="app-tabs min-w-0 flex-1 border-b-0">
           <button
             onClick={() => setActiveTab("txt2img")}
-            className={`px-3 sm:px-4 py-2 text-xs sm:text-sm font-medium transition-colors whitespace-nowrap ${
+            className={`app-tab ${
               activeTab === "txt2img"
-                ? "border-b-2 border-blue-500 text-white"
-                : "text-gray-400 hover:text-white"
+                ? "app-tab-active"
+                : ""
             }`}
           >
             txt2img
           </button>
           <button
             onClick={() => setActiveTab("img2img")}
-            className={`px-3 sm:px-4 py-2 text-xs sm:text-sm font-medium transition-colors whitespace-nowrap ${
+            className={`app-tab ${
               activeTab === "img2img"
-                ? "border-b-2 border-blue-500 text-white"
-                : "text-gray-400 hover:text-white"
+                ? "app-tab-active"
+                : ""
             }`}
           >
             img2img
           </button>
           <button
             onClick={() => setActiveTab("inpaint")}
-            className={`px-3 sm:px-4 py-2 text-xs sm:text-sm font-medium transition-colors whitespace-nowrap ${
+            className={`app-tab ${
               activeTab === "inpaint"
-                ? "border-b-2 border-blue-500 text-white"
-                : "text-gray-400 hover:text-white"
+                ? "app-tab-active"
+                : ""
             }`}
           >
             inpaint
           </button>
           <button
             onClick={() => setActiveTab("outpaint")}
-            className={`px-3 sm:px-4 py-2 text-xs sm:text-sm font-medium transition-colors whitespace-nowrap ${
+            className={`app-tab ${
               activeTab === "outpaint"
-                ? "border-b-2 border-blue-500 text-white"
-                : "text-gray-400 hover:text-white"
+                ? "app-tab-active"
+                : ""
             }`}
           >
             outpaint
           </button>
           <button
             onClick={() => setActiveTab("upscale")}
-            className={`px-3 sm:px-4 py-2 text-xs sm:text-sm font-medium transition-colors whitespace-nowrap ${
+            className={`app-tab ${
               activeTab === "upscale"
-                ? "border-b-2 border-blue-500 text-white"
-                : "text-gray-400 hover:text-white"
+                ? "app-tab-active"
+                : ""
             }`}
           >
             Upscale
           </button>
-        </div>
+          </div>
+        </header>
 
         {/* Tab Content */}
-        {activeTab === "txt2img" && <Txt2ImgPanel onTabChange={setActiveTab} onImageGenerated={handleImageGenerated} />}
-        {activeTab === "img2img" && <Img2ImgPanel onTabChange={setActiveTab} onImageGenerated={handleImageGenerated} />}
-        {activeTab === "inpaint" && <InpaintPanel onTabChange={setActiveTab} onImageGenerated={handleImageGenerated} />}
-        {activeTab === "outpaint" && <OutpaintPanel onTabChange={setActiveTab} onImageGenerated={handleImageGenerated} />}
-        {activeTab === "upscale" && <UpscalePanel onTabChange={setActiveTab} onImageGenerated={handleImageGenerated} />}
+        <div className="app-content flex-1 overflow-auto">
+          {activeTab === "txt2img" && <Txt2ImgPanel onTabChange={setActiveTab} onImageGenerated={handleImageGenerated} />}
+          {activeTab === "img2img" && <Img2ImgPanel onTabChange={setActiveTab} onImageGenerated={handleImageGenerated} />}
+          {activeTab === "inpaint" && <InpaintPanel onTabChange={setActiveTab} onImageGenerated={handleImageGenerated} />}
+          {activeTab === "outpaint" && <OutpaintPanel onTabChange={setActiveTab} onImageGenerated={handleImageGenerated} />}
+          {activeTab === "upscale" && <UpscalePanel onTabChange={setActiveTab} onImageGenerated={handleImageGenerated} />}
+        </div>
       </main>
 
       {/* Floating Gallery - shared across all tabs */}

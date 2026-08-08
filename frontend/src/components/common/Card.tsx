@@ -42,13 +42,13 @@ export default function Card({
   }, [collapsed, storageKey, isMounted]);
 
   return (
-    <section className={`space-y-2 px-4 pb-4 pt-2 bg-gray-900 rounded-lg ${className}`}>
+    <section className={`space-y-2 rounded-md border border-gray-800 bg-gray-900 p-3 shadow-sm ${className}`}>
       {title && (
         <div
-          className={`flex items-center justify-between ${collapsible ? 'cursor-pointer' : ''}`}
+          className={`flex min-h-5 items-center justify-between gap-2 ${collapsible ? 'cursor-pointer select-none' : ''}`}
           onClick={() => collapsible && setCollapsed(!collapsed)}
         >
-          <h3 className="text-sm font-semibold uppercase text-gray-400">{title}</h3>
+          <h3 className="text-[11px] font-semibold uppercase tracking-[0.1em] text-gray-400">{title}</h3>
           {collapsible && (
             collapsed ? <ChevronDown className="w-4 h-4 text-gray-400" /> : <ChevronUp className="w-4 h-4 text-gray-400" />
           )}

@@ -285,11 +285,11 @@ function TrainingPageContent() {
   };
 
   return (
-    <div className="flex h-screen">
+    <div className="app-shell">
       <Sidebar />
-      <main className="flex-1 flex flex-col overflow-hidden pt-16 lg:pt-0">
+      <main className="app-main compact-workspace flex flex-col overflow-hidden">
         {/* Header */}
-        <div className="flex-shrink-0 p-3 sm:p-4 border-b border-gray-700">
+        <div className="app-topbar flex-shrink-0">
           <div className="flex items-center justify-between gap-2">
             {/* Mobile: Back button when showing detail */}
             {isMobile && showMobileDetail && (
@@ -304,13 +304,13 @@ function TrainingPageContent() {
             )}
 
             {/* Tab buttons */}
-            <div className="flex rounded-md overflow-hidden border border-gray-600 flex-shrink-0">
+            <div className="flex flex-shrink-0 overflow-hidden rounded-md border border-gray-700 bg-gray-900 p-0.5">
               <button
                 onClick={() => handleTabChange("model")}
                 className={`px-3 py-1.5 text-xs sm:text-sm transition-colors ${
                   trainingMode === "model"
-                    ? "bg-blue-600 text-white"
-                    : "bg-gray-800 text-gray-300 hover:bg-gray-700"
+                    ? "bg-violet-600 text-white"
+                    : "text-gray-400 hover:bg-gray-800 hover:text-gray-200"
                 }`}
               >
                 {isMobile ? "Model" : "Model Training"}
@@ -319,8 +319,8 @@ function TrainingPageContent() {
                 onClick={() => handleTabChange("tagger")}
                 className={`px-3 py-1.5 text-xs sm:text-sm transition-colors border-l border-gray-600 ${
                   trainingMode === "tagger"
-                    ? "bg-blue-600 text-white"
-                    : "bg-gray-800 text-gray-300 hover:bg-gray-700"
+                    ? "bg-violet-600 text-white"
+                    : "text-gray-400 hover:bg-gray-800 hover:text-gray-200"
                 }`}
               >
                 {isMobile ? "Tagger" : "Tagger Training"}
@@ -329,8 +329,8 @@ function TrainingPageContent() {
                 onClick={() => handleTabChange("vae")}
                 className={`px-3 py-1.5 text-xs sm:text-sm transition-colors border-l border-gray-600 ${
                   trainingMode === "vae"
-                    ? "bg-blue-600 text-white"
-                    : "bg-gray-800 text-gray-300 hover:bg-gray-700"
+                    ? "bg-violet-600 text-white"
+                    : "text-gray-400 hover:bg-gray-800 hover:text-gray-200"
                 }`}
               >
                 {isMobile ? "VAE" : "VAE Training"}
@@ -343,21 +343,21 @@ function TrainingPageContent() {
             {trainingMode === "model" ? (
               <button
                 onClick={handleCreateRun}
-                className="px-2 sm:px-3 py-1.5 bg-blue-600 hover:bg-blue-500 rounded text-xs sm:text-sm transition-colors whitespace-nowrap"
+                className="whitespace-nowrap rounded-md border border-violet-400/30 bg-violet-600 px-2 py-1.5 text-xs transition-colors hover:bg-violet-500 sm:px-3"
               >
                 {isMobile ? "New" : "New Training Run"}
               </button>
             ) : trainingMode === "tagger" ? (
               <button
                 onClick={handleCreateTaggerRun}
-                className="px-2 sm:px-3 py-1.5 bg-blue-600 hover:bg-blue-500 rounded text-xs sm:text-sm transition-colors whitespace-nowrap"
+                className="whitespace-nowrap rounded-md border border-violet-400/30 bg-violet-600 px-2 py-1.5 text-xs transition-colors hover:bg-violet-500 sm:px-3"
               >
                 {isMobile ? "New" : "New Tagger Run"}
               </button>
             ) : (
               <button
                 onClick={handleCreateVaeRun}
-                className="px-2 sm:px-3 py-1.5 bg-blue-600 hover:bg-blue-500 rounded text-xs sm:text-sm transition-colors whitespace-nowrap"
+                className="whitespace-nowrap rounded-md border border-violet-400/30 bg-violet-600 px-2 py-1.5 text-xs transition-colors hover:bg-violet-500 sm:px-3"
               >
                 {isMobile ? "New" : "New VAE Run"}
               </button>
@@ -370,7 +370,7 @@ function TrainingPageContent() {
           {trainingMode === "model" ? (
             <>
               {/* Model Training Runs List */}
-              <div className={`${isMobile && showMobileDetail ? 'hidden' : 'flex'} ${isMobile ? 'w-full' : 'w-64 lg:w-80'} flex-shrink-0 ${!isMobile && 'border-r border-gray-700'} overflow-y-auto`}>
+              <div className={`${isMobile && showMobileDetail ? 'hidden' : 'flex'} ${isMobile ? 'w-full' : 'w-60 lg:w-72'} flex-shrink-0 ${!isMobile && 'border-r border-gray-800'} overflow-y-auto`}>
                 <TrainingList
                   runs={modelRuns}
                   selectedRunId={selectedRunId}
@@ -418,7 +418,7 @@ function TrainingPageContent() {
           ) : trainingMode === "vae" ? (
             <>
               {/* VAE Training Runs List (same TrainingRun rows, filtered) */}
-              <div className={`${isMobile && showMobileDetail ? 'hidden' : 'flex'} ${isMobile ? 'w-full' : 'w-64 lg:w-80'} flex-shrink-0 ${!isMobile && 'border-r border-gray-700'} overflow-y-auto`}>
+              <div className={`${isMobile && showMobileDetail ? 'hidden' : 'flex'} ${isMobile ? 'w-full' : 'w-60 lg:w-72'} flex-shrink-0 ${!isMobile && 'border-r border-gray-800'} overflow-y-auto`}>
                 <TrainingList
                   runs={vaeRuns}
                   selectedRunId={selectedVaeRunId}
@@ -467,7 +467,7 @@ function TrainingPageContent() {
           ) : (
             <>
               {/* Tagger Training Runs List */}
-              <div className={`${isMobile && showMobileDetail ? 'hidden' : 'flex'} ${isMobile ? 'w-full' : 'w-64 lg:w-80'} flex-shrink-0 ${!isMobile && 'border-r border-gray-700'} overflow-y-auto flex-col`}>
+              <div className={`${isMobile && showMobileDetail ? 'hidden' : 'flex'} ${isMobile ? 'w-full' : 'w-60 lg:w-72'} flex-shrink-0 ${!isMobile && 'border-r border-gray-800'} overflow-y-auto flex-col`}>
                 {taggerLoading && taggerRuns.length === 0 ? (
                   <div className="flex items-center justify-center p-8 text-gray-400 text-sm">
                     Loading...

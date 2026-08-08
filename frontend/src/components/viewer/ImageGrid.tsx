@@ -1132,10 +1132,10 @@ export default function ImageGrid() {
             />
           )}
 
-          <div className="flex flex-col lg:flex-row gap-3 h-screen lg:h-[calc(100vh-12rem)] lg:p-3">
+          <div className="flex h-screen flex-col gap-2.5 lg:h-[calc(100vh-7.5rem)] lg:flex-row lg:p-2">
             {/* Left Sidebar - Details (Desktop always visible, Mobile toggleable) */}
             <div className={`
-              fixed lg:relative top-0 left-0 h-full w-80 max-w-[calc(100vw-5rem)] lg:max-w-none z-50 lg:z-auto
+              fixed lg:relative top-0 left-0 h-full w-80 lg:w-72 max-w-[calc(100vw-5rem)] lg:max-w-none z-50 lg:z-auto
               transform transition-transform duration-200 ease-in-out
               ${isDetailOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}
               bg-gray-900 lg:bg-transparent
@@ -2434,10 +2434,10 @@ export default function ImageGrid() {
             />
           )}
 
-          <div className="flex gap-4">
+          <div className="flex gap-2.5">
           {/* Left Sidebar - Filters */}
           <div className={`
-            fixed lg:relative top-0 left-0 h-full lg:h-auto w-80 max-w-[calc(100vw-5rem)] lg:max-w-none z-40 lg:z-auto
+            fixed lg:relative top-0 left-0 h-full lg:h-auto w-80 lg:w-64 max-w-[calc(100vw-5rem)] lg:max-w-none z-40 lg:z-auto
             transform transition-transform duration-200 ease-in-out
             ${isFilterOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}
             bg-gray-900 lg:bg-transparent

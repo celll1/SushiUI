@@ -9,13 +9,13 @@ export default function Input({ label, className, ...props }: InputProps) {
   return (
     <div className="space-y-1">
       {label && (
-        <label className="block text-sm font-medium text-gray-300">
+        <label className="block text-xs font-medium text-gray-400">
           {label}
         </label>
       )}
       <input
         className={cn(
-          "w-full rounded-lg bg-gray-800 border border-gray-700 px-3 py-2 text-gray-100 placeholder-gray-500 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500",
+          "h-8 w-full rounded-md border border-gray-700 bg-gray-800 px-2.5 text-sm text-gray-100 placeholder-gray-500 focus:border-violet-500 focus:outline-none focus:ring-1 focus:ring-violet-500",
           className
         )}
         {...props}

@@ -72,7 +72,7 @@ export default function TabbedOptions<P>({
               type="button"
               onClick={() => setOpenTabId(isTabOpen ? null : tab.id)}
               className={`px-2.5 py-1.5 text-xs sm:text-sm font-medium transition-colors whitespace-nowrap flex items-center gap-1.5 ${
-                isTabOpen ? "border-b-2 border-blue-500 text-white" : "text-gray-400 hover:text-white"
+                isTabOpen ? "border-b-2 border-violet-400 text-violet-300" : "text-gray-400 hover:text-white"
               }`}
               title={isTabActive ? "This group currently has enabled/non-neutral options" : undefined}
             >

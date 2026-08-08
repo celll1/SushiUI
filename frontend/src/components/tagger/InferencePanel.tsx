@@ -306,7 +306,7 @@ export default function InferencePanel({ modelLoaded }: InferencePanelProps) {
   // ─────────────────────────────────────────────────────────────────────────
 
   return (
-    <div className="flex flex-col gap-3 p-4 h-full">
+    <div className="flex h-full flex-col gap-2.5 p-3">
 
       {/* ── Tab bar ── */}
       {modelLoaded && (
@@ -314,7 +314,7 @@ export default function InferencePanel({ modelLoaded }: InferencePanelProps) {
           <button
             onClick={() => handleTabChange("inference")}
             className={`px-3 py-1.5 text-sm transition-colors ${
-              activeTab === "inference" ? "text-white border-b-2 border-blue-500 -mb-px" : "text-gray-400 hover:text-gray-200"
+              activeTab === "inference" ? "text-violet-300 border-b-2 border-violet-400 -mb-px" : "text-gray-400 hover:text-gray-200"
             }`}
           >
             推論
@@ -323,7 +323,7 @@ export default function InferencePanel({ modelLoaded }: InferencePanelProps) {
             <button
               onClick={() => handleTabChange("analysis")}
               className={`px-3 py-1.5 text-sm transition-colors ${
-                activeTab === "analysis" ? "text-white border-b-2 border-blue-500 -mb-px" : "text-gray-400 hover:text-gray-200"
+                activeTab === "analysis" ? "text-violet-300 border-b-2 border-violet-400 -mb-px" : "text-gray-400 hover:text-gray-200"
               }`}
             >
               分析
@@ -341,12 +341,12 @@ export default function InferencePanel({ modelLoaded }: InferencePanelProps) {
       <div className={`flex flex-col gap-3 flex-1 min-h-0 ${activeTab !== "inference" ? "hidden" : ""}`}>
 
         {/* ── Top section: image + 2-column options ── */}
-        <div className="flex gap-4 shrink-0">
+        <div className="flex gap-2.5 shrink-0">
 
           {/* Drop zone */}
           <div
-            className={`w-64 h-56 shrink-0 border-2 border-dashed rounded-lg flex items-center justify-center cursor-pointer transition-colors ${
-              dragging ? "border-blue-400 bg-blue-900/20" : "border-gray-600 hover:border-gray-500"
+            className={`flex h-48 w-56 shrink-0 cursor-pointer items-center justify-center rounded-md border border-dashed transition-colors ${
+              dragging ? "border-violet-400 bg-violet-900/20" : "border-gray-600 hover:border-gray-500"
             }`}
             onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
             onDragLeave={() => setDragging(false)}

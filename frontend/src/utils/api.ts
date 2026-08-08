@@ -3243,8 +3243,12 @@ export const getImage = async (id: number) => {
   return response.data;
 };
 
-export const deleteImage = async (id: number) => {
-  const response = await api.delete(`/images/${id}`);
+// deleteFiles=true (default) removes the DB row and every file it owns;
+// deleteFiles=false removes only the DB row and leaves files on disk.
+export const deleteImage = async (id: number, deleteFiles: boolean = true) => {
+  const response = await api.delete(`/images/${id}`, {
+    params: { delete_files: deleteFiles },
+  });
   return response.data;
 };
 

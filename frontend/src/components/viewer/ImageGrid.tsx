@@ -12,8 +12,8 @@
 
 import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { useRouter } from "next/navigation";
-import { SlidersHorizontal, X, Info, ArrowLeft, Download, Maximize, Camera } from "lucide-react";
-import { getImages, getImage, GeneratedImage, ImageFilters } from "@/utils/api";
+import { SlidersHorizontal, X, Info, ArrowLeft, Download, Maximize, Camera, Trash2 } from "lucide-react";
+import { getImages, getImage, deleteImage, GeneratedImage, ImageFilters } from "@/utils/api";
 import Card from "../common/Card";
 import Button from "../common/Button";
 import GalleryFilter from "./GalleryFilter";
@@ -130,6 +130,7 @@ export default function ImageGrid() {
   const [sendPrompt, setSendPrompt] = useState(true);
   const [sendParameters, setSendParameters] = useState(true);
   const [isFilterOpen, setIsFilterOpen] = useState(false);
+  const [deletingImage, setDeletingImage] = useState(false);
 
   // Swipe gesture detection
   const [touchStart, setTouchStart] = useState<number | null>(null);
@@ -145,6 +146,7 @@ export default function ImageGrid() {
   // Audio (ACE-Step) results: txt2aud/aud2aud/repaint. Shown by default,
   // consistent with all the other type checkboxes above.
   const [filterAudio, setFilterAudio] = useState(true);
+  const [filterUpscale, setFilterUpscale] = useState(true);
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
   const [widthRange, setWidthRange] = useState<[number, number]>([0, 2048]);
@@ -191,13 +193,17 @@ export default function ImageGrid() {
       // hidden the same way the plain "outpaint" omission was.
       if (filterOutpaint) types.push("outpaint", "outpaint_vid", "outpaint_aud");
       if (filterTxt2Vid) types.push("txt2vid");
-      if (filterImg2Vid) types.push("img2vid");
+      // "ref2vid" (start/end-frame video extension) is a distinct
+      // generation_type from "img2vid" but has no UI of its own, so it rides
+      // the img2vid checkbox the same way inpaint_vid rides "inpaint" above.
+      if (filterImg2Vid) types.push("img2vid", "ref2vid");
       // Audio (ACE-Step) generations: txt2aud/aud2aud/repaint, gated by the
       // "Audio" checkbox like every other type above. If every checkbox is
       // off, `types` stays empty and the query remains unfiltered (all types
       // show) -- same "none selected = show everything" behavior as the
       // pre-existing image/video checkboxes.
       if (filterAudio) types.push("txt2aud", "aud2aud", "repaint");
+      if (filterUpscale) types.push("upscale");
 
       const filters: ImageFilters = {
         skip: (currentPage - 1) * imagesPerPage,
@@ -219,12 +225,12 @@ export default function ImageGrid() {
     } finally {
       setLoading(false);
     }
-  }, [currentPage, filterTxt2Img, filterImg2Img, filterInpaint, filterOutpaint, filterTxt2Vid, filterImg2Vid, filterAudio, dateFrom, dateTo, committedWidthRange, committedHeightRange]);
+  }, [currentPage, filterTxt2Img, filterImg2Img, filterInpaint, filterOutpaint, filterTxt2Vid, filterImg2Vid, filterAudio, filterUpscale, dateFrom, dateTo, committedWidthRange, committedHeightRange]);
 
   // Reset to page 1 when filters change, then load images
   useEffect(() => {
     setCurrentPage(1);
-  }, [filterTxt2Img, filterImg2Img, filterInpaint, filterOutpaint, filterTxt2Vid, filterImg2Vid, filterAudio, dateFrom, dateTo, committedWidthRange, committedHeightRange]);
+  }, [filterTxt2Img, filterImg2Img, filterInpaint, filterOutpaint, filterTxt2Vid, filterImg2Vid, filterAudio, filterUpscale, dateFrom, dateTo, committedWidthRange, committedHeightRange]);
 
   // Load images when filters or page change
   useEffect(() => {
@@ -411,6 +417,30 @@ export default function ImageGrid() {
     } catch (error) {
       console.error('Download failed:', error);
       alert('Download failed. Please try again.');
+    }
+  };
+
+  // Two distinct destructive actions, each named explicitly in its own
+  // confirm() so neither can be triggered by mistake or mistaken for the
+  // other: deleteFiles=false removes only the DB row (file stays on disk);
+  // deleteFiles=true removes the row AND every file it owns.
+  const handleDeleteImage = async (image: GeneratedImage, deleteFiles: boolean) => {
+    const message = deleteFiles
+      ? `Permanently delete "${image.filename}"?\n\nThis removes the gallery record AND the file, its sidecar JSON, thumbnail, and poster/proxy from disk. This cannot be undone.`
+      : `Remove "${image.filename}" from the gallery only?\n\nThe file, its sidecar JSON, thumbnail, and poster/proxy will remain on disk untouched. The gallery entry cannot be restored.`;
+    if (!window.confirm(message)) return;
+
+    setDeletingImage(true);
+    try {
+      await deleteImage(image.id, deleteFiles);
+      setImages((prev) => prev.filter((img) => img.id !== image.id));
+      setSelectedImage(null);
+      setIsDetailOpen(false);
+    } catch (error: any) {
+      const detail = error?.response?.data?.detail || error?.message || "Unknown error";
+      alert(`Delete failed: ${detail}\n\nThe gallery record was not removed.`);
+    } finally {
+      setDeletingImage(false);
     }
   };
 
@@ -2062,6 +2092,38 @@ export default function ImageGrid() {
                         Download
                       </Button>
                     </div>
+
+                    {/* Danger zone: two distinct, separately-confirmed
+                        destructive actions -- record-only vs record+files.
+                        Never merged into one button; a mis-click on either
+                        must not silently do the other's job. */}
+                    <div className="border-t border-gray-700 pt-2 space-y-1.5">
+                      <span className="text-xs font-medium text-gray-400">Delete</span>
+                      <div className="grid grid-cols-1 gap-1.5">
+                        <Button
+                          onClick={() => handleDeleteImage(selectedImage, false)}
+                          variant="danger"
+                          size="sm"
+                          className="w-full flex items-center justify-center"
+                          disabled={deletingImage}
+                          title="Removes only the gallery database record; the file, sidecar JSON, thumbnail, and poster stay on disk"
+                        >
+                          <Trash2 className="h-4 w-4 mr-2" />
+                          Remove from gallery (keep file)
+                        </Button>
+                        <Button
+                          onClick={() => handleDeleteImage(selectedImage, true)}
+                          variant="danger"
+                          size="sm"
+                          className="w-full flex items-center justify-center"
+                          disabled={deletingImage}
+                          title="Deletes the database record AND the file, sidecar JSON, thumbnail, poster, and proxy on disk"
+                        >
+                          <Trash2 className="h-4 w-4 mr-2" />
+                          Delete permanently (file + record)
+                        </Button>
+                      </div>
+                    </div>
                   </div>
                 </Card>
               </div>
@@ -2392,6 +2454,8 @@ export default function ImageGrid() {
             setFilterImg2Vid={setFilterImg2Vid}
             filterAudio={filterAudio}
             setFilterAudio={setFilterAudio}
+            filterUpscale={filterUpscale}
+            setFilterUpscale={setFilterUpscale}
             dateFrom={dateFrom}
             setDateFrom={setDateFrom}
             dateTo={dateTo}

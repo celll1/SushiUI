@@ -19,6 +19,7 @@ import GenerationQueue from "../common/GenerationQueue";
 import OutpaintPlacementCanvas, { OutpaintPlacementParams } from "./OutpaintPlacementCanvas";
 import OutpaintTimeline from "./OutpaintTimeline";
 import QuantizedGemmSelect from "./QuantizedGemmSelect";
+import MiniMaxH3ReferenceSelector, { EMPTY_MINIMAX_H3_REFERENCES, countMiniMaxH3References } from "../common/MiniMaxH3ReferenceSelector";
 import ImageViewer from "../common/ImageViewer";
 import PostEditControls from "../common/PostEditControls";
 import { PostEditState, NEUTRAL_POST_EDIT, buildFilterString } from "@/utils/postEdit";
@@ -38,6 +39,9 @@ import {
   OutpaintParams as ApiOutpaintParams,
   OutpaintVideoParams,
   OutpaintAudioParams,
+  MiniMaxH3References,
+  Ref2VidParams,
+  generateRef2Vid,
   LoRAConfig,
   ControlNetConfig,
   unetQuantizationOptions,
@@ -544,6 +548,18 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
       return normalized === (prev.unet_quantization ?? null) ? prev : { ...prev, unet_quantization: normalized };
     });
   }, [archCapabilities, currentModelInfo?.model_info?.type]);
+
+  // MiniMax-H3 ref2va references: with at least one set, video submit routes
+  // the uploaded clip through /generate/ref2vid (as reference_videos[0], the
+  // documented "video continuation" use) instead of this panel's exact-
+  // preserving /generate/outpaint/video (fl2va-only; refuses ref2va by name).
+  // Mirrors Txt2ImgPanel/Img2ImgPanel's h3References -- see
+  // scratchpad/minimax_h3_outpaint_reference_probe.md for why this mechanism
+  // (not exact preservation) is what ships here.
+  const [h3References, setH3References] = useState<MiniMaxH3References>(
+    EMPTY_MINIMAX_H3_REFERENCES
+  );
+  const [h3ReferenceImageSize, setH3ReferenceImageSize] = useState<"max" | "match">("max");
 
   const [sendImage, setSendImage] = useState(true);
   const [sendPrompt, setSendPrompt] = useState(true);
@@ -1307,6 +1323,13 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
   const loadedArchType = currentModelInfo?.model_info?.type as string | undefined;
   const outpaintPlacements = videoOutpaintPlacements(archCapabilities, loadedArchType);
   const boundaryPlacementOnly = !outpaintPlacements.includes("free");
+  // MiniMax-H3 ref2va cannot take this panel's exact-preserving boundary-frame
+  // outpaint at all (backend refuses it by name -- ref2va was never trained to
+  // read that conditioning). Direct variant check, matching Txt2ImgPanel and
+  // Img2ImgPanel: there is no per-variant capability key.
+  const isRef2Va =
+    loadedArchType === "minimax_h3" &&
+    (currentModelInfo?.model_info?.variant as string | undefined) === "ref2va";
 
   // Backend rule (LTX-2.3): total_frames must satisfy (n-1) % 8 == 0, minimum 9.
   // On a boundary-conditioned architecture the grid binds the GENERATED span,
@@ -1646,6 +1669,54 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
         // is rendered for a loaded LTX-2.3 model and must actually be sent.
         quantized_gemm_mode: params.quantized_gemm_mode,
       };
+      // MiniMax-H3 ref2va with at least one reference: this panel's
+      // exact-preserving outpaint is fl2va-only and refuses ref2va by name.
+      // The measured ref2va mechanism is /generate/ref2vid's "video
+      // continuation" -- the uploaded clip becomes `reference_videos[0]`
+      // (<Video 1>), any additional references from the selector ride after
+      // it -- which REGENERATES the whole clip's content rather than
+      // preserving it (probe: minimax_h3_outpaint_reference_probe.md, SHIP
+      // verdict, delta 75.57 against a threshold of 10). ref2va-ness is read
+      // from the fresh fetch, matching Txt2ImgPanel/Img2ImgPanel.
+      const freshIsRef2Va =
+        modality.modelInfo?.type === "minimax_h3" && modality.modelInfo?.variant === "ref2va";
+      if (freshIsRef2Va && countMiniMaxH3References(h3References) > 0) {
+        const refParams: Ref2VidParams = {
+          prompt: processedPrompt,
+          negative_prompt: processedNegativePrompt,
+          width: params.width,
+          height: params.height,
+          num_frames: params.total_frames,
+          frame_rate: params.frame_rate,
+          num_inference_steps: params.num_inference_steps,
+          guidance_scale: params.guidance_scale,
+          seed: params.seed,
+          num_videos_per_prompt: params.num_videos_per_prompt,
+          max_sequence_length: params.max_sequence_length,
+          audio_enable: params.audio_enable,
+          vae_path: params.vae_path,
+          text_encoder_path: params.text_encoder_path,
+          unet_quantization: params.unet_quantization,
+          quantized_gemm_mode: params.quantized_gemm_mode,
+          reference_image_size: h3ReferenceImageSize,
+        };
+        const referencesWithClip: MiniMaxH3References = {
+          ...h3References,
+          videos: [videoFile, ...(h3References.videos || [])],
+          // Positional with `videos`: the continuation clip holds no
+          // soundtrack slot of its own (this mechanism does not preserve
+          // audio -- unlike outpaint_video_audio_mode, which has no
+          // equivalent here), so its entry is always null.
+          videoAudios: [null, ...(h3References.videoAudios || [])],
+        };
+        addToQueue({
+          type: "ref2vid",
+          params: refParams as any,
+          references: referencesWithClip,
+          prompt: processedPrompt,
+        });
+        return;
+      }
       addToQueue({
         type: "outpaint_vid",
         params: videoParams as any,
@@ -1722,7 +1793,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
     if (isGenerating) return;
 
     const nextItem = startNextInQueue();
-    if (!nextItem || (nextItem.type !== "outpaint" && nextItem.type !== "outpaint_vid" && nextItem.type !== "outpaint_aud")) return;
+    if (!nextItem || (nextItem.type !== "outpaint" && nextItem.type !== "outpaint_vid" && nextItem.type !== "ref2vid" && nextItem.type !== "outpaint_aud")) return;
 
     // Video branch: outpaint_vid item (LTX-2.3). The queued input clip is a
     // File (see inputVideo on QueueItem). Produces an .mp4 and renders a
@@ -1766,6 +1837,59 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
       } catch (error: any) {
         console.error("[Outpaint] Video generation failed:", error);
         alert(`Video outpaint generation failed: ${error?.response?.data?.detail || error?.message || "Unknown error"}`);
+        setIsGenerating(false);
+        setProgress(0);
+        setProgressMessage("");
+        failCurrentItem();
+        setTimeout(() => {
+          if (processQueueRef.current) processQueueRef.current();
+        }, 100);
+      }
+      return;
+    }
+
+    // Video branch: ref2vid item -- outpaint-with-references, routed to
+    // /generate/ref2vid because that is the endpoint the ref2va checkpoint
+    // was trained for (this panel's exact-preserving outpaint refuses ref2va
+    // by name). The uploaded clip and any extra references already ride on
+    // nextItem.references (built at enqueue time), same shape as Txt2ImgPanel/
+    // Img2ImgPanel's ref2vid item.
+    if (nextItem.type === "ref2vid") {
+      setIsGenerating(true);
+      setProgress(0);
+      setProgressMessage("");
+      setTotalSteps((nextItem.params as any).num_inference_steps || 20);
+      setPreviewImage(null);
+      setGeneratedImage(null);
+      setGeneratedVideo(null);
+      setGeneratedVideoInfo(null);
+      setGeneratedVideoSeed(null);
+      setGeneratedAudio(null);
+      setGeneratedAudioInfo(null);
+      setGeneratedAudioSeed(null);
+      try {
+        const result = await generateRef2Vid(
+          nextItem.params as Ref2VidParams,
+          nextItem.references ?? EMPTY_MINIMAX_H3_REFERENCES);
+        const videoUrl = `/outputs/${getResultFilename(result)}`;
+        setGeneratedVideo(videoUrl);
+        setGeneratedVideoSeed(getResultSeed(result));
+        setGeneratedVideoInfo({
+          num_frames: result.image?.num_frames,
+          fps: result.image?.fps,
+          duration: result.image?.duration,
+        });
+        if (onImageGenerated) onImageGenerated(videoUrl);
+        setIsGenerating(false);
+        setProgress(0);
+        setProgressMessage("");
+        completeCurrentItem();
+        setTimeout(() => {
+          if (processQueueRef.current) processQueueRef.current();
+        }, 100);
+      } catch (error: any) {
+        console.error("[Outpaint] ref2vid generation failed:", error);
+        alert(`ref2vid generation failed: ${error?.response?.data?.detail || error?.message || "Unknown error"}`);
         setIsGenerating(false);
         setProgress(0);
         setProgressMessage("");
@@ -1910,7 +2034,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
   processQueueRef.current = processQueue;
 
   useEffect(() => {
-    const hasPendingItems = queue.some(item => item.status === "pending" && (item.type === "outpaint" || item.type === "outpaint_vid" || item.type === "outpaint_aud"));
+    const hasPendingItems = queue.some(item => item.status === "pending" && (item.type === "outpaint" || item.type === "outpaint_vid" || item.type === "ref2vid" || item.type === "outpaint_aud"));
     const isCurrentItemNull = currentItem === null;
     if (hasPendingItems && isCurrentItemNull && !isGenerating) {
       processQueue();
@@ -2908,6 +3032,35 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
             )}
           </div>
         </Card>
+        )}
+
+        {/* MiniMax-H3 ref2va: the exact-preserving placement UI below (which
+            drives /generate/outpaint/video) refuses this checkpoint by name.
+            With at least one reference set, submit instead sends the clip
+            above as a reference video ("video continuation") on
+            /generate/ref2vid, alongside these references -- REGENERATING the
+            whole clip's content rather than preserving it. Measured to
+            compose (scratchpad/minimax_h3_outpaint_reference_probe.md,
+            delta 75.57 vs a threshold of 10). Same component as Txt2ImgPanel/
+            Img2ImgPanel; see minimax_h3_conditioning_design.md §3.3 for why
+            it is not a ControlNet-shaped UI. */}
+        {isVideo && isRef2Va && (
+          <>
+            <p className="text-xs text-gray-500 -mt-2">
+              The ref2va checkpoint cannot use the placement controls below
+              (boundary-frame conditioning is fl2va-only). Add at least one
+              reference here to extend the clip above via video continuation
+              instead -- the whole output is regenerated, not preserved
+              byte-exact.
+            </p>
+            <MiniMaxH3ReferenceSelector
+              value={h3References}
+              onChange={setH3References}
+              referenceImageSize={h3ReferenceImageSize}
+              onReferenceImageSizeChange={setH3ReferenceImageSize}
+              disabled={isGenerating}
+            />
+          </>
         )}
 
         {isAudio && (

@@ -4395,6 +4395,26 @@ async def generate_outpaint_video(
             detail="Load an LTX-2.3 or MiniMax-H3 video model before calling "
                    "/generate/outpaint/video.",
         )
+    # Partition gate, mirroring /generate/img2vid's and /generate/inpaint/video's:
+    # boundary-frame conditioning is a trained behaviour of the `fl2va` partition;
+    # `ref2va` reads reference blocks instead and was never trained to read this
+    # endpoint's anchors. Reference-composed continuation is /generate/ref2vid's
+    # `reference_videos` (documented as "video continuation"), not this endpoint.
+    if getattr(pipeline_manager, "is_minimax_h3_model", False):
+        _h3_variant = ((pipeline_manager.current_model_info or {}).get("variant") or "").lower()
+        if _h3_variant == "ref2va":
+            raise CustomValidationError(
+                "The loaded MiniMax-H3 transformer is the ref2va variant, not fl2va",
+                detail="Exact-preserving temporal outpaint (boundary-frame conditioning) is "
+                       "offered on the `fl2va` partition, which serves /generate/txt2vid, "
+                       "/generate/img2vid and this endpoint. To extend a clip with the ref2va "
+                       "checkpoint loaded, send it as `reference_videos` on /generate/ref2vid "
+                       "(measured to compose with `reference_images`; "
+                       "minimax_h3_outpaint_reference_probe.md) -- that regenerates the whole "
+                       "clip's content rather than preserving it byte-exact. Load "
+                       "diffusion_models/minimax_h3_fl2va_pruned_fp8_scaled.safetensors, or send "
+                       "the request to /generate/ref2vid with the loaded checkpoint.",
+            )
     if outpaint_video_audio_mode is not None and outpaint_video_audio_mode not in (
             "regenerate", "preserve_input"):
         raise CustomValidationError(

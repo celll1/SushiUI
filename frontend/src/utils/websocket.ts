@@ -99,6 +99,12 @@ class ProgressClient {
   private taggerMetricsCallbacks: Set<TaggerMetricsCallback> = new Set();
   private datasetScanProgressCallbacks: Set<DatasetScanProgressCallback> = new Set();
   private reconnectTimer: NodeJS.Timeout | null = null;
+  // Timestamp of the last message of ANY type (including "ping"), used as a
+  // liveness signal by long-running generation requests -- see api.ts's
+  // postGenerationRequest(). The server sends a "ping" every 30s whenever no
+  // real message went out, so this is a heartbeat even during phases (text
+  // encode, VAE decode) that emit no "progress" message of their own.
+  private lastMessageAt = 0;
 
   connect() {
     if (this.eventSource && this.eventSource.readyState === EventSource.OPEN) {
@@ -122,11 +128,16 @@ class ProgressClient {
 
     this.eventSource.onopen = () => {
       console.log("[SSE] Connected successfully");
+      // Count "just connected" as activity so a caller checking
+      // msSinceLastMessage() right after connect() doesn't see the
+      // no-message-yet Infinity and mistake it for staleness.
+      this.lastMessageAt = Date.now();
     };
 
     this.eventSource.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
+        this.lastMessageAt = Date.now();
 
         if (data.type === "progress") {
           // Log without base64 data to avoid console spam
@@ -236,6 +247,18 @@ class ProgressClient {
       this.eventSource.close();
       this.eventSource = null;
     }
+  }
+
+  /** True while the SSE channel to the backend is open (i.e. its heartbeat
+   *  is a meaningful liveness signal right now). */
+  isConnected(): boolean {
+    return !!this.eventSource && this.eventSource.readyState === EventSource.OPEN;
+  }
+
+  /** ms since any message (including a "ping") was last received. Infinity
+   *  if none has ever arrived on this connection. */
+  msSinceLastMessage(): number {
+    return this.lastMessageAt ? Date.now() - this.lastMessageAt : Infinity;
   }
 
   subscribe(callback: ProgressCallback) {

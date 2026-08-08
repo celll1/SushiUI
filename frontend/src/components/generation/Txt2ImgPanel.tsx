@@ -28,7 +28,7 @@ import PromptEditor from "../common/PromptEditor";
 import LoopGenerationPanel, { LoopGenerationConfig } from "./LoopGenerationPanel";
 import QuantizedGemmSelect from "./QuantizedGemmSelect";
 import { migrateLoopGenerationConfig, computeLoopDecodeDirective } from "@/utils/loopGenerationInheritance";
-import { generateTxt2Img, generateImg2Img, generateTxt2Vid, Txt2VidParams, generateRef2Vid, Ref2VidParams, MiniMaxH3References, MiniMaxH3Keyframe, generateTxt2Aud, Txt2AudParams, generateTxt2ImgTrainingPreview, GenerationParams, getSamplers, getScheduleTypes, tokenizePrompt, generateTIPOPrompt, cancelGeneration, getCurrentModel, isLatentOnlyResult, getResultFilename, getResultSeed, getResultAncestralSeed, unetQuantizationOptions, normalizeUnetQuantization, transformerQuantizationLabel, archSupportsFeature, videoFrameOptions, videoFrameLabel, archDisplayName, normalizeVideoFrames } from "@/utils/api";
+import { generateTxt2Img, generateImg2Img, generateTxt2Vid, Txt2VidParams, generateRef2Vid, Ref2VidParams, MiniMaxH3References, MiniMaxH3Keyframe, generateTxt2Aud, Txt2AudParams, generateTxt2ImgTrainingPreview, GenerationParams, getSamplers, getScheduleTypes, tokenizePrompt, generateTIPOPrompt, cancelGeneration, getCurrentModel, isLatentOnlyResult, getResultFilename, getResultSeed, getResultAncestralSeed, unetQuantizationOptions, normalizeUnetQuantization, transformerQuantizationLabel, archSupportsFeature, videoFrameOptions, videoFrameLabel, archDisplayName, normalizeVideoFrames, isGenerationStalledError } from "@/utils/api";
 import { useActiveTraining } from "@/hooks/useActiveTraining";
 import { wsClient, CFGMetrics } from "@/utils/websocket";
 import CFGMetricsGraph from "../common/CFGMetricsGraph";
@@ -2066,7 +2066,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         }, 100);
       } catch (error: any) {
         console.error("[Txt2Img] txt2aud generation failed:", error);
-        alert("txt2aud generation failed. Please check console for details.");
+        alert(isGenerationStalledError(error) ? error.message : "txt2aud generation failed. Please check console for details.");
         setIsGenerating(false);
         setProgress(0);
         setProgressMessage("");
@@ -2119,7 +2119,9 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         }, 100);
       } catch (error: any) {
         console.error(`[Txt2Img] ${nextItem.type} generation failed:`, error);
-        alert(`${nextItem.type} generation failed: ${error?.response?.data?.detail || error?.response?.data?.error || "see the console for details."}`);
+        alert(isGenerationStalledError(error)
+          ? error.message
+          : `${nextItem.type} generation failed: ${error?.response?.data?.detail || error?.response?.data?.error || "see the console for details."}`);
         setIsGenerating(false);
         setProgress(0);
         setProgressMessage("");
@@ -2500,6 +2502,8 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
           setGeneratedImage(previousImage);
           setPreviewImage(null);
         }
+      } else if (isGenerationStalledError(error)) {
+        alert(error.message);
       } else {
         alert("Generation failed. Please check console for details.");
       }

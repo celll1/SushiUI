@@ -29,7 +29,7 @@ import QuantizedGemmSelect from "./QuantizedGemmSelect";
 import MiniMaxH3KeyframeTimeline from "../common/MiniMaxH3KeyframeTimeline";
 import MiniMaxH3ReferenceSelector, { EMPTY_MINIMAX_H3_REFERENCES, countMiniMaxH3References, MAX_VIDEOS, MAX_TOTAL } from "../common/MiniMaxH3ReferenceSelector";
 import { migrateLoopGenerationConfig, computeLoopDecodeDirective } from "@/utils/loopGenerationInheritance";
-import { getSamplers, getScheduleTypes, generateImg2Img, generateImg2Vid, Img2VidParams, MiniMaxH3Keyframe, MiniMaxH3References, generateRef2Vid, Ref2VidParams, generateAud2Aud, Aud2AudParams, generateImg2ImgTrainingPreview, toBase64, LoRAConfig, ControlNetConfig, generateTIPOPrompt, cancelGeneration, getCurrentModel, isLatentOnlyResult, getResultFilename, getResultSeed, getResultAncestralSeed, unetQuantizationOptions, normalizeUnetQuantization, transformerQuantizationLabel, archSupportsFeature, videoFrameOptions, videoFrameLabel, archDisplayName, normalizeVideoFrames, fitVideoCanvas, videoCanvasRule, videoCanvasAxisBounds, videoCanvasExceedsEnvelope } from "@/utils/api";
+import { getSamplers, getScheduleTypes, generateImg2Img, generateImg2Vid, Img2VidParams, MiniMaxH3Keyframe, MiniMaxH3References, generateRef2Vid, Ref2VidParams, generateAud2Aud, Aud2AudParams, generateImg2ImgTrainingPreview, toBase64, LoRAConfig, ControlNetConfig, generateTIPOPrompt, cancelGeneration, getCurrentModel, isLatentOnlyResult, getResultFilename, getResultSeed, getResultAncestralSeed, unetQuantizationOptions, normalizeUnetQuantization, transformerQuantizationLabel, archSupportsFeature, videoFrameOptions, videoFrameLabel, archDisplayName, normalizeVideoFrames, fitVideoCanvas, videoCanvasRule, videoCanvasAxisBounds, videoCanvasExceedsEnvelope, isGenerationStalledError } from "@/utils/api";
 import { useActiveTraining } from "@/hooks/useActiveTraining";
 import { wsClient, CFGMetrics } from "@/utils/websocket";
 import CFGMetricsGraph from "../common/CFGMetricsGraph";
@@ -2593,7 +2593,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         }, 100);
       } catch (error: any) {
         console.error("[Img2Img] aud2aud generation failed:", error);
-        alert("aud2aud generation failed. Please check console for details.");
+        alert(isGenerationStalledError(error) ? error.message : "aud2aud generation failed. Please check console for details.");
         setIsGenerating(false);
         setProgress(0);
         setProgressMessage("");
@@ -2652,7 +2652,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         }, 100);
       } catch (error: any) {
         console.error("[Img2Img] img2vid generation failed:", error);
-        alert("img2vid generation failed. Please check console for details.");
+        alert(isGenerationStalledError(error) ? error.message : "img2vid generation failed. Please check console for details.");
         setIsGenerating(false);
         setProgress(0);
         setProgressMessage("");
@@ -2704,7 +2704,9 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         }, 100);
       } catch (error: any) {
         console.error("[Img2Img] ref2vid generation failed:", error);
-        alert(`ref2vid generation failed: ${error?.response?.data?.detail || error?.response?.data?.error || "see the console for details."}`);
+        alert(isGenerationStalledError(error)
+          ? error.message
+          : `ref2vid generation failed: ${error?.response?.data?.detail || error?.response?.data?.error || "see the console for details."}`);
         setIsGenerating(false);
         setProgress(0);
         setProgressMessage("");
@@ -3050,6 +3052,8 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
           setGeneratedImage(previousImage);
           setPreviewImage(null);
         }
+      } else if (isGenerationStalledError(error)) {
+        alert(error.message);
       } else {
         alert("Generation failed. Please check console for details.");
       }

@@ -17,6 +17,7 @@ import {
   getScheduleTypes,
   UpscaleParams,
   UpscalerModelInfo,
+  isGenerationStalledError,
 } from "@/utils/api";
 import { saveTempImage, loadTempImage, deleteTempImageRef } from "@/utils/tempImageStorage";
 import { previewStorageKeys, saveImagePreview, clearImagePreview, outputExists, stripCacheBuster, withCacheBuster, imagePreviewGone } from "@/utils/previewStorage";
@@ -454,7 +455,7 @@ export default function UpscalePanel({ onTabChange, onImageGenerated }: UpscaleP
       }, 100);
     } catch (error: any) {
       console.error("[Upscale] Generation failed:", error);
-      alert("Upscale generation failed. Please check console for details.");
+      alert(isGenerationStalledError(error) ? error.message : "Upscale generation failed. Please check console for details.");
 
       setIsGenerating(false);
       setProgress(0);

@@ -437,6 +437,15 @@ export function sendVideoToOutpaint(videoUrl: string): void {
 }
 
 /**
+ * Sends a video result/clip to the Inpaint panel's temporal inpaint clip
+ * input. Transport is the plain URL (not base64) -- see fetchUrlToFile.
+ */
+export function sendVideoToInpaint(videoUrl: string): void {
+  localStorage.setItem("inpaint_input_video", videoUrl);
+  window.dispatchEvent(new Event("inpaint_input_video_updated"));
+}
+
+/**
  * Sends an audio result to the Outpaint panel's outpaint_aud clip input.
  * Transport is the plain URL (not base64) -- see fetchUrlToFile.
  */

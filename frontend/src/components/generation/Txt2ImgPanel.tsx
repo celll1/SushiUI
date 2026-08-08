@@ -34,7 +34,7 @@ import CFGMetricsGraph from "../common/CFGMetricsGraph";
 import VramInspector from "../common/VramInspector";
 import { saveTempImage, loadTempImage } from "@/utils/tempImageStorage";
 import { previewStorageKeys, loadVideoPreview, saveVideoPreview, loadAudioPreview, saveAudioPreview, saveImagePreview, clearVideoPreview, clearAudioPreview, clearImagePreview, outputExists, stripCacheBuster, withCacheBuster, imagePreviewGone } from "@/utils/previewStorage";
-import { sendToPanel, sendImageToImg2Img, sendBase64ImageToInpaint, sendBase64ImageToUpscale, sendBase64ImageToOutpaint, sendVideoToOutpaint, sendAudioToOutpaint, sendAudioToImg2Img } from "@/utils/sendHelpers";
+import { sendToPanel, sendImageToImg2Img, sendBase64ImageToInpaint, sendBase64ImageToUpscale, sendBase64ImageToOutpaint, sendVideoToOutpaint, sendVideoToInpaint, sendAudioToOutpaint, sendAudioToImg2Img } from "@/utils/sendHelpers";
 import { useStartup } from "@/contexts/StartupContext";
 import { useGenerationQueue } from "@/contexts/GenerationQueueContext";
 
@@ -1055,6 +1055,16 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
     }
     sendVideoToOutpaint(generatedVideo);
     if (onTabChange) onTabChange("outpaint");
+  };
+
+  // generatedVideo (Txt2Vid) result -> Inpaint's temporal inpaint clip input.
+  const sendVideoResultToInpaint = () => {
+    if (!generatedVideo) {
+      alert("No video to send");
+      return;
+    }
+    sendVideoToInpaint(generatedVideo);
+    if (onTabChange) onTabChange("inpaint");
   };
 
   // generatedAudio (Txt2Aud) result -> Outpaint's outpaint_aud clip input.
@@ -4502,7 +4512,10 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
 
             {isVideo && generatedVideo && (
               <div className="space-y-3 mt-4">
-                <div className="grid grid-cols-1 gap-2">
+                <div className="grid grid-cols-2 gap-2">
+                  <Button onClick={sendVideoResultToInpaint} variant="secondary" size="sm">
+                    Send to inpaint
+                  </Button>
                   <Button onClick={sendVideoResultToOutpaint} variant="secondary" size="sm">
                     Send to outpaint
                   </Button>

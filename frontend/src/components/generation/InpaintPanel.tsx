@@ -33,7 +33,7 @@ import { wsClient, CFGMetrics } from "@/utils/websocket";
 import CFGMetricsGraph from "../common/CFGMetricsGraph";
 import { saveTempImage, loadTempImage, deleteTempImageRef } from "@/utils/tempImageStorage";
 import { previewStorageKeys, saveImagePreview, clearImagePreview, loadVideoPreview, saveVideoPreview, clearVideoPreview, outputExists, stripCacheBuster, withCacheBuster, imagePreviewGone } from "@/utils/previewStorage";
-import { sendToPanel, sendImageToImg2Img, sendImageToUpscale, sendImageToOutpaint, sendVideoToOutpaint } from "@/utils/sendHelpers";
+import { sendToPanel, sendImageToImg2Img, sendImageToUpscale, sendImageToOutpaint, sendVideoToOutpaint, sendVideoToInpaint, fetchUrlToFile } from "@/utils/sendHelpers";
 import { fixFloatingPointParams } from "@/utils/numberUtils";
 import { useStartup } from "@/contexts/StartupContext";
 import { useGenerationQueue } from "@/contexts/GenerationQueueContext";
@@ -1130,6 +1130,35 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
     };
   }, []);
 
+  // Listen for a video clip sent from a result's "Send to Inpaint" (e.g. a
+  // txt2vid/img2vid/inpaint/outpaint clip). Transport is the plain
+  // `/outputs/<filename>` URL (too large for base64/localStorage) -- fetch it
+  // into a real File so it flows through the same videoFile path an upload
+  // does (mirrors processVideoFile's reset of the trim/size fields).
+  useEffect(() => {
+    const handleVideoInputUpdate = async () => {
+      const url = localStorage.getItem("inpaint_input_video");
+      if (!url) return;
+      try {
+        const file = await fetchUrlToFile(url);
+        setVideoPreviewUrl(prev => {
+          if (prev) URL.revokeObjectURL(prev);
+          return URL.createObjectURL(file);
+        });
+        setVideoFile(file);
+        setVideoDurationSec(null);
+        setInputVideoSize(null);
+        setClipFramesOverride(null);
+      } catch (error) {
+        console.error("[Inpaint] Failed to load sent video:", error);
+      } finally {
+        localStorage.removeItem("inpaint_input_video");
+      }
+    };
+    window.addEventListener("inpaint_input_video_updated", handleVideoInputUpdate);
+    return () => window.removeEventListener("inpaint_input_video_updated", handleVideoInputUpdate);
+  }, []);
+
   // Load image dimensions when inputImagePreview changes
   useEffect(() => {
     if (inputImagePreview) {
@@ -1767,6 +1796,17 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
     }
     sendVideoToOutpaint(generatedVideo);
     if (onTabChange) onTabChange("outpaint");
+  };
+
+  // Inpaint's own inpaint_vid result -> Inpaint again (self-send = iterate a
+  // temporal inpaint further, e.g. regenerate a different range next).
+  const sendVideoResultToInpaint = () => {
+    if (!generatedVideo) {
+      alert("No video to send");
+      return;
+    }
+    sendVideoToInpaint(generatedVideo);
+    if (onTabChange) onTabChange("inpaint");
   };
 
   const sendToInpaint = async () => {
@@ -5515,7 +5555,10 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
               )}
 
               {isVideo && generatedVideo && (
-                <div className="grid grid-cols-1 gap-2 mt-4">
+                <div className="grid grid-cols-2 gap-2 mt-4">
+                  <Button onClick={sendVideoResultToInpaint} variant="secondary" size="sm">
+                    Send to inpaint
+                  </Button>
                   <Button onClick={sendVideoResultToOutpaint} variant="secondary" size="sm">
                     Send to outpaint
                   </Button>

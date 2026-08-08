@@ -1322,6 +1322,11 @@ export default function ImageGrid() {
                       </span>
                     </div>
                   )}
+                  {selectedImage.model_variant && (
+                    <div>
+                      <span className="text-gray-400">Variant:</span> {selectedImage.model_variant}
+                    </div>
+                  )}
                   {selectedImage.vision_encoder_name && (
                     <div>
                       <span className="text-gray-400">Vision Encoder:</span>{' '}

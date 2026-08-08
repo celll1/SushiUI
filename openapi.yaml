@@ -10346,6 +10346,16 @@ components:
         num_inference_steps:
           type: string
           description: Step count used by the video pipeline. Stringified integer.
+        model_variant:
+          type: string
+          description: |
+            Which MiniMax-H3 checkpoint partition (`fl2va` or `ref2va`) actually
+            ran. The two partitions share every other component and are
+            distinguished only by which file was loaded; this records the
+            resolved value from the loader rather than anything derived from
+            the request, so the row stays readable if either file is renamed.
+            Emitted only on MiniMax-H3 rows.
+          example: fl2va
 
         # --- Conditional: audio (emitted only when parameters.is_audio is truthy) ---
         is_audio:

@@ -707,6 +707,10 @@ export interface GeneratedImage {
   mask_data?: string;
   lora_names?: string;
   model_hash?: string;
+  // Which MiniMax-H3 checkpoint (fl2va/ref2va) actually ran; absent for every
+  // other architecture. The filename alone can't distinguish them once either
+  // file is renamed.
+  model_variant?: string;
   unet_quantization?: string;
   // What the request asked for on the quantized-GEMM axis; absent when the
   // generation forced nothing. The path that actually ran is `fp8_gemm`.

@@ -452,7 +452,7 @@ def test_the_route_declares_the_field_and_makes_the_image_optional():
     assert signature.parameters["image"].default.default is None
 
     source = inspect.getsource(routes.generate_img2vid)
-    assert '"input_audio": _input_audio.filename if _input_audio is not None else None' in source
+    assert '"input_audio": recover_upload_filename(_input_audio.filename) if _input_audio is not None else None' in source
     assert "img2vid needs something to condition on" in source
     # LTX-2.3 keeps the requirement, with the reason.
     assert "LTX-2.3 image-to-video needs an input image" in source

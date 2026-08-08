@@ -16,7 +16,7 @@ import {
   AudioLines,
   ChevronDown,
   ChevronRight,
-  CircleAlert,
+  AlertCircle,
   Clock3,
   Download,
   Eye,
@@ -39,14 +39,14 @@ import {
   Scissors,
   Search,
   Sparkles,
-  SquareDashedMousePointer,
+  MousePointerSquareDashed,
   Trash2,
   Undo2,
   Unlock,
   Upload,
   Volume2,
   VolumeX,
-  WandSparkles,
+  Wand2,
   ZoomIn,
   ZoomOut,
 } from "lucide-react";
@@ -972,7 +972,7 @@ export default function StudioWorkspace() {
                 <div className={styles.audioPreview}><AudioLines size={50} /><span>{previewAsset.name}</span><audio ref={audioRef} src={previewAsset.url} muted={previewTrack?.muted ?? false} onLoadedMetadata={(event) => { if (previewClip) event.currentTarget.currentTime = previewClip.sourceIn + Math.max(0, playhead - previewClip.start); if (playing) void event.currentTarget.play(); }} /></div>
               ) : (
                 <div className={styles.emptyPreview}>
-                  <WandSparkles size={34} />
+                  <Wand2 size={34} />
                   <strong>Build your sequence</strong>
                   <span>Drag media to the timeline or generate a new clip.</span>
                 </div>
@@ -997,7 +997,7 @@ export default function StudioWorkspace() {
                   ["select", MousePointer2, "Select (V)"],
                   ["blade", Scissors, "Blade (S)"],
                   ["hand", Hand, "Hand"],
-                  ["range", SquareDashedMousePointer, "Range"],
+                  ["range", MousePointerSquareDashed, "Range"],
                 ] as const).map(([name, Icon, label]) => (
                   <button key={name} className={tool === name ? styles.activeTool : ""} onClick={() => setTool(name)} title={label} aria-label={label}><Icon size={16} /></button>
                 ))}
@@ -1141,7 +1141,7 @@ export default function StudioWorkspace() {
               </details>
               {range && (
                 <section className={styles.rangeCard}>
-                  <div><SquareDashedMousePointer size={15} /><strong>Timeline output range</strong></div>
+                  <div><MousePointerSquareDashed size={15} /><strong>Timeline output range</strong></div>
                   <span>{formatTimecode(range.start, project.fps)} — {formatTimecode(range.end, project.fps)}</span>
                   <button onClick={() => setRange(null)}>Clear</button>
                 </section>
@@ -1156,7 +1156,7 @@ export default function StudioWorkspace() {
               </div>
               <label className={styles.sliderField}><span>Guidance <strong>{supportsGuidance ? form.guidance ?? "—" : `Fixed by ${loadedArch}`}</strong></span><input type="range" min="0" max="20" step="0.1" value={form.guidance ?? 0} onChange={(event) => setForm((current) => ({ ...current, guidance: Number(event.target.value) }))} disabled={!generationDefaults || !supportsGuidance} /></label>
               <label className={styles.toggleField}><span><AudioLines size={15} /> Generate audio jointly</span><input type="checkbox" checked={form.audioEnable ?? false} onChange={(event) => setForm((current) => ({ ...current, audioEnable: event.target.checked }))} disabled={!generationDefaults} /></label>
-              {(notice || (!isBackendReady ? "Generation schema is unavailable. Start the backend to enable AI generation." : null)) && <div className={styles.notice}><CircleAlert size={15} /><span>{notice || "Generation schema is unavailable. Start the backend to enable AI generation."}</span><button onClick={() => setNotice(null)}>×</button></div>}
+              {(notice || (!isBackendReady ? "Generation schema is unavailable. Start the backend to enable AI generation." : null)) && <div className={styles.notice}><AlertCircle size={15} /><span>{notice || "Generation schema is unavailable. Start the backend to enable AI generation."}</span><button onClick={() => setNotice(null)}>×</button></div>}
               <button className={styles.generateButton} onClick={generateClip} disabled={!studioModesAvailable || jobs.some((job) => job.status === "running")}><Sparkles size={17} /> Generate clip {outputDuration > 0 && <small>{outputDuration.toFixed(1)}s</small>}</button>
               <section className={styles.resultsShelf}>
                 <div className={styles.sectionTitle}><span>Generation results</span><button onClick={() => setMediaFilter("generation")}>See all</button></div>

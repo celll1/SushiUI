@@ -1,9 +1,11 @@
 """Video I/O helpers for LTX-2.3 (and future video architectures).
 
-ENCODE side (unchanged): encodes generated frames to an H.264 mp4 (yuv420p)
-using the system ffmpeg binary and, when present, muxes the generated audio
-track. Also writes a sidecar JSON with the full parameter set and a poster PNG
-(middle frame) so the existing thumbnail path can produce gallery thumbnails.
+ENCODE side: encodes generated frames to an H.264 mp4 (yuv420p) using the
+system ffmpeg binary and, when present, muxes the generated audio track (or,
+when `lossless=True`, an FFV1-in-mkv master plus a browser-playable H.264 mp4
+proxy -- see `save_video_with_metadata`'s docstring). Also writes a sidecar
+JSON with the full parameter set and a poster PNG (middle frame) so the
+existing thumbnail path can produce gallery thumbnails.
 
 DECODE side (video temporal outpaint, Phase 2): `load_video_frames` decodes an
 uploaded clip to raw RGB frames, `extract_audio_stream` pulls its original
@@ -96,8 +98,8 @@ def save_video_with_metadata(
     generation_type: str,
     model_info: Optional[Dict[str, Any]] = None,
     lossless: bool = False,
-) -> str:
-    """Encode frames (+ optional audio) to an mp4 and write a metadata sidecar.
+) -> Tuple[str, Optional[str]]:
+    """Encode frames (+ optional audio) to a video file and write a metadata sidecar.
 
     Args:
         frames: np.uint8 array [T, H, W, 3] (RGB, 0-255).
@@ -106,33 +108,34 @@ def save_video_with_metadata(
         params: generation parameters (seed already resolved by the caller).
         generation_type: e.g. "txt2vid".
         model_info: pipeline_manager.current_model_info (source/model_hash/type).
-        lossless: when True, encode video with FFV1 (`-pix_fmt rgb24`) instead
-            of libx264, and audio (when present) with FLAC instead of AAC.
+        lossless: when True, encode the MASTER file with FFV1 in an .mkv
+            container (`-pix_fmt rgb24`) instead of libx264-in-mp4, and audio
+            (when present) with FLAC instead of AAC.
 
-            Empirically verified (see the video-outpaint Phase 2 audit): with
-            this ffmpeg build, `libx264 -qp 0 -pix_fmt yuv444p/gbrp` is CLOSE
-            but NOT bit-exact after an RGB->encode->decode->RGB roundtrip
-            (observed max per-channel diff of 2/255, from swscale's RGB<->YUV
-            /RGB<->GBR rounding) -- despite being commonly described as
-            "lossless" x264 settings. FFV1 with `-pix_fmt rgb24` (no forced
-            colorspace conversion) gave an EXACT roundtrip (maxdiff 0) in the
-            same test, and IS accepted by ffmpeg's mp4 muxer. `lossless=True`
-            therefore uses FFV1, not libx264 -qp 0.
+            Empirically verified: `libx264 -qp 0 -pix_fmt yuv444p/gbrp` is
+            CLOSE but NOT bit-exact after an RGB roundtrip (max per-channel
+            diff of 2/255, from swscale's colorspace rounding); FFV1 with
+            `-pix_fmt rgb24` (no forced conversion) gave an EXACT roundtrip
+            (maxdiff 0) in the same test.
 
-            Trade-off: the resulting mp4 is NOT H.264 and will generally NOT
-            play back in a browser's native <video> element (FFV1 has no
-            mainstream browser decoder) -- this mode is for archival/
-            verification of the exact preserved frames, not casual playback.
-            File size is also much larger than H.264 (near-raw).
+            FFV1 has no browser decoder in any container, so it goes in .mkv
+            (the container it actually belongs in), and a separate H.264
+            `{base}_preview.mp4` proxy is encoded alongside it from the SAME
+            source frames (not transcoded from the master, to avoid a second
+            lossy hop) -- see the returned tuple.
 
-            Audio: FLAC does not introduce ANY additional lossy compression
-            beyond the existing float32->int16 PCM quantization this module
-            always performs in `_write_wav` -- i.e. "lossless audio" here
-            means "no further loss on top of that 16-bit quantization", not
-            that the audio is preserved beyond 16-bit precision.
+            Audio: FLAC adds no lossy compression beyond the existing
+            float32->int16 PCM quantization `_write_wav` always performs, so
+            "lossless audio" here means no further loss on top of that.
 
     Returns:
-        The mp4 filename (basename, relative to settings.outputs_dir).
+        (master_filename, preview_filename): `master_filename` is always set
+        (an .mp4 when `lossless=False`, an .mkv when `lossless=True`, relative
+        to settings.outputs_dir). `preview_filename` is a browser-playable
+        H.264 .mp4 proxy of the master, or None when `lossless=False` (no
+        proxy needed -- the master IS already browser-playable) or when the
+        proxy encode itself failed (master still written; only in-gallery
+        playback is unavailable for that row).
     """
     os.makedirs(settings.outputs_dir, exist_ok=True)
 
@@ -149,8 +152,10 @@ def save_video_with_metadata(
 
     ts = time.strftime("%Y%m%d_%H%M%S")
     base_name = f"{generation_type}_{ts}_{seed}"
-    mp4_name = f"{base_name}.mp4"
-    mp4_path = os.path.join(settings.outputs_dir, mp4_name)
+    # FFV1 belongs in mkv, not mp4 (see docstring).
+    master_ext = "mkv" if lossless else "mp4"
+    master_name = f"{base_name}.{master_ext}"
+    master_path = os.path.join(settings.outputs_dir, master_name)
 
     ffmpeg = _locate_ffmpeg()
 
@@ -201,7 +206,9 @@ def save_video_with_metadata(
         cmd += ["-c:v", "ffv1", "-pix_fmt", "rgb24"]
     else:
         cmd += ["-c:v", "libx264", "-pix_fmt", "yuv420p"]
-    cmd += ["-movflags", "+faststart"]
+        # -movflags +faststart (moov-atom-first) is mp4/mov-specific; mkv has
+        # no such concept and ffmpeg warns/no-ops it there.
+        cmd += ["-movflags", "+faststart"]
     if audio_written:
         # No -shortest: video is authoritative. The vocoder audio can be
         # slightly shorter than the video (its temporal grid differs), and
@@ -209,7 +216,7 @@ def save_video_with_metadata(
         cmd += ["-c:a", "flac" if lossless else "aac"]
     for k, v in meta_tags.items():
         cmd += ["-metadata", f"{k}={v}"]
-    cmd += [mp4_path]
+    cmd += [master_path]
 
     proc = subprocess.run(
         cmd,
@@ -226,6 +233,44 @@ def save_video_with_metadata(
             except OSError:
                 pass
         raise RuntimeError(f"ffmpeg video encode failed (code {proc.returncode}):\n{err}")
+
+    # Browser-playable H.264 proxy (see docstring). Only lossless runs pay
+    # this cost -- a non-lossless master is already browser-playable. A
+    # failed proxy encode is non-fatal: the master is intact either way.
+    preview_name: Optional[str] = None
+    if lossless:
+        preview_name = f"{base_name}_preview.mp4"
+        preview_path = os.path.join(settings.outputs_dir, preview_name)
+        preview_cmd = [
+            ffmpeg, "-y",
+            "-f", "rawvideo",
+            "-pix_fmt", "rgb24",
+            "-s", f"{width}x{height}",
+            "-r", f"{frame_rate}",
+            "-i", "-",
+        ]
+        if audio_written:
+            preview_cmd += ["-i", wav_path]
+        preview_cmd += ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-movflags", "+faststart"]
+        if audio_written:
+            preview_cmd += ["-c:a", "aac"]
+        preview_cmd += [preview_path]
+
+        preview_proc = subprocess.run(
+            preview_cmd,
+            input=frames.tobytes(),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        if preview_proc.returncode != 0:
+            err = preview_proc.stderr.decode("utf-8", errors="replace")[-2000:]
+            print(f"[VideoSave] browser-playable proxy encode failed ({err}); master file is intact")
+            if os.path.exists(preview_path):
+                try:
+                    os.remove(preview_path)
+                except OSError:
+                    pass
+            preview_name = None
 
     if audio_written and os.path.exists(wav_path):
         try:
@@ -245,7 +290,8 @@ def save_video_with_metadata(
     # Sidecar JSON with the full parameter set.
     sidecar = {
         "generation_type": generation_type,
-        "filename": mp4_name,
+        "filename": master_name,
+        "preview_filename": preview_name,
         "prompt": params.get("prompt", ""),
         "negative_prompt": params.get("negative_prompt", ""),
         "model_name": model_name,
@@ -268,7 +314,7 @@ def save_video_with_metadata(
     except Exception as e:
         print(f"[VideoSave] sidecar json write failed ({e})")
 
-    return mp4_name
+    return master_name, preview_name
 
 
 # ---------------------------------------------------------------------------

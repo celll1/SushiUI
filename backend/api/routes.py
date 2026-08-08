@@ -2631,7 +2631,7 @@ async def generate_txt2vid(
         params["seed"] = actual_seed
 
         # Encode mp4 (+ mux audio), poster PNG, and sidecar JSON.
-        filename = save_video_with_metadata(
+        filename, _preview_filename = save_video_with_metadata(
             frames,
             audio,
             audio_sample_rate,
@@ -3779,7 +3779,7 @@ async def generate_img2vid(
         params["source_image_hash"] = metadata.get("source_image_hash")
 
         # Encode mp4 (+ mux audio), poster PNG, and sidecar JSON.
-        filename = save_video_with_metadata(
+        filename, _preview_filename = save_video_with_metadata(
             frames,
             audio,
             audio_sample_rate,
@@ -4214,7 +4214,7 @@ async def generate_ref2vid(
 
         params["seed"] = actual_seed
 
-        filename = save_video_with_metadata(
+        filename, _preview_filename = save_video_with_metadata(
             frames,
             audio,
             audio_sample_rate,
@@ -4395,8 +4395,10 @@ async def generate_outpaint_video(
     shape), as is a generated span shorter than the reference video floor (22
     frames). See the partition/placement gate below.
 
-    Produces an mp4 (H.264, or FFV1 when `video_lossless` is true) and a
-    gallery row. Requires a video model to be loaded.
+    Produces an mp4 (H.264) and a gallery row, unless `video_lossless` is
+    true, in which case it produces an FFV1-in-mkv master plus a browser-
+    playable H.264 mp4 proxy (`preview_filename` on the row). Requires a
+    video model to be loaded.
     """
     from api.generation_status import start_generation, complete_generation, fail_generation, get_warnings
     from utils.video_utils import save_video_with_metadata, load_video_frames, extract_audio_stream
@@ -4759,8 +4761,11 @@ async def generate_outpaint_video(
         )
         params["source_image_hash"] = metadata.get("source_image_hash")
 
-        # Encode mp4 (+ mux audio), poster PNG, and sidecar JSON.
-        filename = save_video_with_metadata(
+        # Encode mp4 (+ mux audio), poster PNG, and sidecar JSON. When
+        # video_lossless, `filename` is an FFV1-in-mkv master (byte-exact,
+        # not browser-playable) and preview_filename is an H.264 proxy for
+        # the gallery's <video> element (see save_video_with_metadata).
+        filename, preview_filename = save_video_with_metadata(
             frames,
             audio,
             audio_sample_rate,
@@ -4770,7 +4775,7 @@ async def generate_outpaint_video(
             lossless=video_lossless,
         )
 
-        # Thumbnail from the poster PNG (same base name as the mp4).
+        # Thumbnail from the poster PNG (same base name as the master, mkv or mp4).
         base_name = os.path.splitext(filename)[0]
         poster_path = os.path.join(settings.outputs_dir, f"{base_name}.png")
         if os.path.exists(poster_path):
@@ -4785,6 +4790,8 @@ async def generate_outpaint_video(
         params_for_db["duration"] = (num_frames_out / fps_out) if fps_out else 0.0
         params_for_db["audio_enable"] = bool(params.get("audio_enable", True) and audio is not None)
         params_for_db["is_video"] = True
+        if preview_filename:
+            params_for_db["preview_filename"] = preview_filename
         # The gallery's `cfg_scale` / `steps` COLUMNS are filled by
         # `create_db_image_record` from the keys the IMAGE routes use. A video
         # request carries neither `cfg_scale` nor `steps`, so every video row so
@@ -5142,7 +5149,10 @@ async def generate_inpaint_video(
         )
         params["source_image_hash"] = metadata.get("source_image_hash")
 
-        filename = save_video_with_metadata(
+        # See save_video_with_metadata's docstring: when video_lossless,
+        # `filename` is an FFV1-in-mkv master (byte-exact, not browser-
+        # playable) and preview_filename is an H.264 proxy for the gallery.
+        filename, preview_filename = save_video_with_metadata(
             frames,
             audio,
             audio_sample_rate,
@@ -5165,6 +5175,8 @@ async def generate_inpaint_video(
         params_for_db["duration"] = (num_frames_out / fps_out) if fps_out else 0.0
         params_for_db["audio_enable"] = bool(params.get("audio_enable", True) and audio is not None)
         params_for_db["is_video"] = True
+        if preview_filename:
+            params_for_db["preview_filename"] = preview_filename
         # See the same two lines on /generate/outpaint/video: the gallery's
         # cfg_scale/steps COLUMNS are filled from the image routes' keys, which
         # a video request does not carry.
@@ -6722,6 +6734,17 @@ async def delete_image(image_id: int, db: Session = Depends(get_gallery_db)):
         os.remove(image_path)
     if os.path.exists(thumb_path):
         os.remove(thumb_path)
+
+    # A video_lossless row also owns a browser-playable H.264 proxy
+    # (preview_filename) next to its FFV1-in-mkv master -- delete it too, or
+    # it survives as an orphan (and, since dataset_scanner treats .mp4/.mkv
+    # both as video, would otherwise get ingested as a second, spurious clip
+    # by any dataset pointed at outputs/).
+    preview_filename = (image.parameters or {}).get("preview_filename")
+    if preview_filename:
+        preview_path = os.path.join(settings.outputs_dir, preview_filename)
+        if os.path.exists(preview_path):
+            os.remove(preview_path)
 
     db.delete(image)
     db.commit()
@@ -9594,6 +9617,14 @@ async def download_image(filename: str, include_metadata: bool = False):
         # Check if file exists
         if not os.path.exists(filepath):
             raise HTTPException(status_code=404, detail="Image not found")
+
+        # Video/audio rows have no PIL-decodable metadata to strip -- Image.open
+        # below raises on them. Pass those straight through as a byte-exact
+        # download instead (also the path for a video_lossless FFV1-in-mkv
+        # master; include_metadata is a no-op for non-image files).
+        _IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".tiff")
+        if not filename.lower().endswith(_IMAGE_EXTS):
+            return FileResponse(filepath, filename=filename)
 
         # Read the image
         image = Image.open(filepath)

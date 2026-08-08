@@ -26,13 +26,13 @@ import GenerationQueue from "../common/GenerationQueue";
 import LoopGenerationPanel, { LoopGenerationConfig } from "./LoopGenerationPanel";
 import QuantizedGemmSelect from "./QuantizedGemmSelect";
 import { migrateLoopGenerationConfig, computeLoopDecodeDirective } from "@/utils/loopGenerationInheritance";
-import { getSamplers, getScheduleTypes, generateInpaint, generateInpaintVideo, generateInpaintTrainingPreview, toBase64, InpaintParams as ApiInpaintParams, InpaintVideoParams, LoRAConfig, ControlNetConfig, generateTIPOPrompt, cancelGeneration, getCurrentModel, getResultFilename, getResultSeed, getResultAncestralSeed, isLatentOnlyResult, unetQuantizationOptions, normalizeUnetQuantization, transformerQuantizationLabel, archSupportsFeature, archDisplayName, inpaintVideoDefaultsForArch, fitVideoCanvas, videoCanvasRule, videoCanvasAxisBounds, videoCanvasExceedsEnvelope, largestValidVideoFrameCount, isValidVideoFrameCount, latentGroupSpans, snapRangeToLatentGroups } from "@/utils/api";
+import { getSamplers, getScheduleTypes, generateInpaint, generateInpaintVideo, generateInpaintTrainingPreview, toBase64, InpaintParams as ApiInpaintParams, InpaintVideoParams, LoRAConfig, ControlNetConfig, generateTIPOPrompt, cancelGeneration, getCurrentModel, getResultFilename, getResultPlaybackFilename, getResultSeed, getResultAncestralSeed, isLatentOnlyResult, unetQuantizationOptions, normalizeUnetQuantization, transformerQuantizationLabel, archSupportsFeature, archDisplayName, inpaintVideoDefaultsForArch, fitVideoCanvas, videoCanvasRule, videoCanvasAxisBounds, videoCanvasExceedsEnvelope, largestValidVideoFrameCount, isValidVideoFrameCount, latentGroupSpans, snapRangeToLatentGroups } from "@/utils/api";
 import VideoInpaintRangeTimeline from "./VideoInpaintRangeTimeline";
 import { useActiveTraining } from "@/hooks/useActiveTraining";
 import { wsClient, CFGMetrics } from "@/utils/websocket";
 import CFGMetricsGraph from "../common/CFGMetricsGraph";
 import { saveTempImage, loadTempImage, deleteTempImageRef } from "@/utils/tempImageStorage";
-import { previewStorageKeys, saveImagePreview, clearImagePreview, loadVideoPreview, saveVideoPreview, clearVideoPreview, outputExists, stripCacheBuster, withCacheBuster, imagePreviewGone } from "@/utils/previewStorage";
+import { previewStorageKeys, saveImagePreview, clearImagePreview, loadVideoPreview, saveVideoPreview, playbackUrlOf, clearVideoPreview, outputExists, stripCacheBuster, withCacheBuster, imagePreviewGone } from "@/utils/previewStorage";
 import { sendToPanel, sendImageToImg2Img, sendImageToUpscale, sendImageToOutpaint, sendVideoToOutpaint, sendVideoToInpaint, sendVideoToReference, fetchUrlToFile } from "@/utils/sendHelpers";
 import { fixFloatingPointParams } from "@/utils/numberUtils";
 import { useStartup } from "@/contexts/StartupContext";
@@ -560,6 +560,11 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
   // one frame out would otherwise only surface as the route's 400.
   const [clipFramesOverride, setClipFramesOverride] = useState<number | null>(null);
   const [generatedVideo, setGeneratedVideo] = useState<string | null>(null);
+  // Playback source for the <video> element, when it differs from
+  // generatedVideo (a video_lossless FFV1-in-mkv master no browser can
+  // decode): its H.264 mp4 proxy. generatedVideo itself stays the master
+  // for send-to/reference actions. Falls back to generatedVideo when null.
+  const [generatedVideoPlaybackUrl, setGeneratedVideoPlaybackUrl] = useState<string | null>(null);
   const [generatedVideoInfo, setGeneratedVideoInfo] = useState<{ num_frames?: number; fps?: number; duration?: number } | null>(null);
   const [generatedVideoSeed, setGeneratedVideoSeed] = useState<number | null>(null);
   // The run's `warnings[]`, shown under the result. The panel snaps the range to
@@ -837,6 +842,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
       const savedVideo = loadVideoPreview(PREVIEW_KEYS);
       if (savedVideo) {
         setGeneratedVideo(savedVideo.url);
+        setGeneratedVideoPlaybackUrl(playbackUrlOf(savedVideo));
         setGeneratedVideoInfo(savedVideo.info);
         setGeneratedVideoSeed(savedVideo.seed ?? null);
       }
@@ -1064,6 +1070,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
           console.log("[Inpaint] Stored preview video is gone, clearing:", savedVideo.url);
           clearVideoPreview(PREVIEW_KEYS);
           setGeneratedVideo(null);
+          setGeneratedVideoPlaybackUrl(null);
           setGeneratedVideoInfo(null);
           setGeneratedVideoSeed(null);
         }
@@ -1289,11 +1296,12 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
     if (isMounted && generatedVideo) {
       saveVideoPreview(PREVIEW_KEYS, {
         url: generatedVideo,
+        playbackUrl: generatedVideoPlaybackUrl || undefined,
         info: generatedVideoInfo,
         seed: generatedVideoSeed,
       });
     }
-  }, [generatedVideo, generatedVideoInfo, generatedVideoSeed, isMounted]);
+  }, [generatedVideo, generatedVideoPlaybackUrl, generatedVideoInfo, generatedVideoSeed, isMounted]);
 
   // Save loop generation config to localStorage whenever it changes
   useEffect(() => {
@@ -2613,6 +2621,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
       setPreviewImage(null);
       setGeneratedImage(null);
       setGeneratedVideo(null);
+      setGeneratedVideoPlaybackUrl(null);
       setGeneratedVideoInfo(null);
       setGeneratedVideoSeed(null);
       setGeneratedVideoWarnings([]);
@@ -2622,9 +2631,11 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         if (!clip) throw new Error("No input video available for video inpaint generation");
         const result = await generateInpaintVideo(videoParams, clip);
         const videoUrl = `/outputs/${getResultFilename(result)}`;
+        const videoPlaybackUrl = `/outputs/${getResultPlaybackFilename(result)}`;
         setGeneratedVideoWarnings(
           (result.warnings || []).map((w: any) => (typeof w === "string" ? w : w?.message)).filter(Boolean));
         setGeneratedVideo(videoUrl);
+        setGeneratedVideoPlaybackUrl(videoPlaybackUrl !== videoUrl ? videoPlaybackUrl : null);
         setGeneratedVideoSeed(getResultSeed(result));
         setGeneratedVideoInfo({
           num_frames: result.image?.num_frames,
@@ -5495,7 +5506,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
                 {isVideo && generatedVideo ? (
                   <div className="w-full space-y-2">
                     <video
-                      src={generatedVideo}
+                      src={generatedVideoPlaybackUrl || generatedVideo}
                       className="w-full rounded-lg"
                       controls
                       loop
@@ -5508,6 +5519,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
                         console.warn("[Inpaint] Preview video failed to load, clearing:", generatedVideo);
                         clearVideoPreview(PREVIEW_KEYS);
                         setGeneratedVideo(null);
+                        setGeneratedVideoPlaybackUrl(null);
                         setGeneratedVideoInfo(null);
                         setGeneratedVideoSeed(null);
                       }}

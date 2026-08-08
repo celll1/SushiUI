@@ -755,8 +755,14 @@ export interface GeneratedImage {
   rtx_vsr_quality?: string;
   diffusion_denoising_strength?: string;
   diffusion_pre_upscale_mode?: string;
-  // Video parameters (generation_type === 'txt2vid' / 'img2vid'; filename is an .mp4)
+  // Video parameters (generation_type === 'txt2vid' / 'img2vid'; filename is an
+  // .mp4, UNLESS this row was generated with video_lossless=true, in which case
+  // filename is an FFV1-in-mkv master (byte-exact, not browser-playable) and
+  // preview_filename -- when present -- is a browser-playable H.264 mp4 proxy
+  // of it. Playback UI should prefer preview_filename over filename; download/
+  // "send to" actions should always keep using filename (the master).
   is_video?: boolean;
+  preview_filename?: string;
   num_frames?: number;
   fps?: number;
   duration?: number;
@@ -1594,6 +1600,13 @@ export const isLatentOnlyResult = (result: any): boolean =>
 
 export const getResultFilename = (result: any): string | undefined =>
   result?.image?.filename ?? result?.filename;
+
+// Playback source for a video result: prefers preview_filename (browser-
+// playable H.264 proxy) over filename, which is an FFV1-in-mkv master when
+// video_lossless=true. Use for <video src>; getResultFilename stays correct
+// for download/"send to" (the master).
+export const getResultPlaybackFilename = (result: any): string | undefined =>
+  result?.image?.preview_filename ?? getResultFilename(result);
 
 export const getResultSeed = (result: any): number =>
   result?.image?.seed ?? result?.actual_seed ?? -1;

@@ -105,12 +105,17 @@ export default function ImageGrid() {
   // video/audio (no preview endpoint for those) or for the full-size popup/
   // Download (those keep the original above). Gallery perf redesign Phase 2.
   const selectedPreviewSrc = selectedImage ? `/api/v1/images/${selectedImage.id}/preview?w=1024` : undefined;
+  // Playback source for the <video> element: prefer preview_filename (a
+  // browser-playable H.264 proxy) when set -- selectedImage.filename is then
+  // an FFV1-in-mkv master no browser can decode (video_lossless=true rows).
+  // Download/"send to" actions keep using selectedImage.filename directly.
+  const videoPlaybackFilename = selectedImage?.preview_filename || selectedImage?.filename;
   // Ref to the <video> element in the video detail view, used for frame-grab.
   const videoRef = useRef<HTMLVideoElement | null>(null);
-  // Whether the selected item is a video (mp4/webm or is_video flag / video type).
+  // Whether the selected item is a video (mp4/webm/mkv or is_video flag / video type).
   const isSelectedVideo = !!selectedImage && (
     selectedImage.is_video === true ||
-    /\.(mp4|webm)$/i.test(selectedImage.filename) ||
+    /\.(mp4|webm|mkv)$/i.test(selectedImage.filename) ||
     selectedImage.generation_type === "txt2vid" ||
     selectedImage.generation_type === "img2vid"
   );
@@ -1894,18 +1899,18 @@ export default function ImageGrid() {
               </Card>
               </div>
 
-              {/* Fixed action panel - Desktop only. Two clearly separated
-                  groups: "Send to" (checkboxes select what to carry over, then
-                  the 4 destination buttons) and "Post-edit" (brightness /
-                  saturation / color-flatten sliders + Download, which bakes the
-                  active edits into the saved file). */}
+              {/* Fixed action panel - Desktop only. Two groups: "Send to"
+                  (checkboxes select what to carry over, then the destination
+                  buttons) and "Post-edit" (brightness/saturation/color-flatten
+                  sliders + Download, which bakes the active edits into the
+                  saved file). */}
               <div className="hidden lg:block lg:flex-shrink-0">
                 <Card>
-                  <div className="space-y-4">
+                  <div className="space-y-3">
                     {/* Send to section */}
-                    <div className="space-y-2">
+                    <div className="space-y-1.5">
                       <span className="text-xs font-medium text-gray-300">Send to</span>
-                      <div className="flex items-center gap-3 text-sm">
+                      <div className="flex items-center gap-2 text-xs">
                         <label className="flex items-center gap-1 cursor-pointer">
                           <input
                             type="checkbox"
@@ -1934,11 +1939,11 @@ export default function ImageGrid() {
                           <span className="text-gray-300">Params</span>
                         </label>
                       </div>
-                      <div className="grid grid-cols-2 gap-2">
+                      <div className="grid grid-cols-3 gap-1.5">
                         <Button
                           onClick={() => sendToTxt2Img(selectedImage)}
                           variant="secondary"
-                          size="sm"
+                          size="xs"
                           disabled={(!sendPrompt && !sendParameters) || detailLoading || detailError}
                           title={detailLoading ? "Loading full image details..." : detailError ? "Failed to load full image details" : "Send image not applicable for txt2img"}
                         >
@@ -1947,7 +1952,7 @@ export default function ImageGrid() {
                         <Button
                           onClick={() => sendToImg2Img(selectedImage)}
                           variant="secondary"
-                          size="sm"
+                          size="xs"
                           disabled={(!sendImage && !sendPrompt && !sendParameters) || isSelectedVideo || detailLoading || detailError}
                           title={isSelectedVideo ? "Use Capture frame for videos" : undefined}
                         >
@@ -1956,7 +1961,7 @@ export default function ImageGrid() {
                         <Button
                           onClick={() => sendToInpaint(selectedImage)}
                           variant="secondary"
-                          size="sm"
+                          size="xs"
                           disabled={(!sendImage && !sendPrompt && !sendParameters) || isSelectedAudio || detailLoading || detailError}
                           title={isSelectedAudio ? "Audio inpainting is repaint mode in img2img, not this panel" : undefined}
                         >
@@ -1965,7 +1970,7 @@ export default function ImageGrid() {
                         <Button
                           onClick={() => sendToOutpaint(selectedImage)}
                           variant="secondary"
-                          size="sm"
+                          size="xs"
                           disabled={(!sendImage && !sendPrompt && !sendParameters) || detailLoading || detailError}
                         >
                           outpaint
@@ -1973,7 +1978,7 @@ export default function ImageGrid() {
                         <Button
                           onClick={() => sendToUpscale(selectedImage)}
                           variant="secondary"
-                          size="sm"
+                          size="xs"
                           disabled={isSelectedAudio || isSelectedVideo || detailLoading || detailError}
                           title={isSelectedVideo ? "Upscale doesn't support video clips" : undefined}
                         >
@@ -1982,7 +1987,7 @@ export default function ImageGrid() {
                         <Button
                           onClick={() => sendToImg2Vid(selectedImage)}
                           variant="secondary"
-                          size="sm"
+                          size="xs"
                           disabled={isSelectedVideo || isSelectedAudio || detailLoading || detailError}
                           title={isSelectedVideo ? "Use Capture frame for videos" : "Send image to img2vid as a keyframe"}
                         >
@@ -1992,30 +1997,32 @@ export default function ImageGrid() {
 
                       {/* Video: capture the current frame and send it onward */}
                       {isSelectedVideo && (
-                        <div className="border-t border-gray-700 pt-3 space-y-2">
+                        <div className="border-t border-gray-700 pt-2 space-y-1.5">
                           <span className="text-xs font-medium text-gray-300">Capture frame</span>
-                          <div className="grid grid-cols-2 gap-2">
+                          <div className="grid grid-cols-2 gap-1.5">
                             <Button
                               onClick={captureFrameToImg2Img}
                               variant="secondary"
-                              size="sm"
+                              size="xs"
+                              title={selectedImage?.preview_filename ? "Captures from the browser-playable H.264 proxy, not the lossless master" : undefined}
                             >
-                              <Camera className="h-4 w-4 mr-1" />
+                              <Camera className="h-3.5 w-3.5 mr-1" />
                               img2img
                             </Button>
                             <Button
                               onClick={captureFrameToImg2Vid}
                               variant="secondary"
-                              size="sm"
+                              size="xs"
+                              title={selectedImage?.preview_filename ? "Captures from the browser-playable H.264 proxy, not the lossless master" : undefined}
                             >
-                              <Camera className="h-4 w-4 mr-1" />
+                              <Camera className="h-3.5 w-3.5 mr-1" />
                               img2vid
                             </Button>
                           </div>
                           <Button
                             onClick={() => sendToReference(selectedImage)}
                             variant="secondary"
-                            size="sm"
+                            size="xs"
                             className="w-full"
                             title="Condition a new generation on this whole clip (MiniMax-H3 ref2va). Regenerates everything; does not extend the clip in place -- that is Send to Outpaint."
                           >
@@ -2089,7 +2096,7 @@ export default function ImageGrid() {
                   // Range-aware /outputs serving (gallery perf redesign Phase 2).
                   <video
                     ref={videoRef}
-                    src={`/outputs/${selectedImage.filename}`}
+                    src={`/outputs/${videoPlaybackFilename}`}
                     poster={`/thumbnails/${selectedImage.filename.replace(/\.[^/.]+$/, "")}.png`}
                     preload="metadata"
                     className="max-w-full max-h-full object-contain"

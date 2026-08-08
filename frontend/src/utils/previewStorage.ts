@@ -46,6 +46,13 @@ export interface AudioPreviewInfo {
 export interface StoredMediaPreview<TInfo> {
   /** Backend URL of the result, e.g. "/outputs/txt2vid_20260807_070228_0.mp4". */
   url: string;
+  /**
+   * Browser-playable URL, when it differs from `url` -- e.g. `url` is a
+   * video_lossless FFV1-in-mkv master and this is its H.264 mp4 proxy.
+   * Absent (falls back to `url`) for every non-lossless result and for
+   * previews stored before this field existed.
+   */
+  playbackUrl?: string;
   info: TInfo | null;
   /** Seed of the run, when the panel exposes a "reuse seed" button. */
   seed?: number | null;
@@ -104,6 +111,7 @@ function loadMediaPreview<TInfo>(
     }
     return {
       url: parsed.url,
+      playbackUrl: typeof parsed.playbackUrl === "string" && parsed.playbackUrl ? parsed.playbackUrl : undefined,
       info: parsed.info ?? null,
       seed: parsed.seed ?? null,
     };
@@ -164,6 +172,11 @@ function splitQuery(url: string): [string, string] {
 
 export function loadVideoPreview(keys: PreviewStorageKeys): StoredVideoPreview | null {
   return loadMediaPreview<VideoPreviewInfo>(keys.video, "video");
+}
+
+/** `preview.playbackUrl` when set, else `preview.url` -- the <video src> to render. */
+export function playbackUrlOf(preview: StoredVideoPreview): string {
+  return preview.playbackUrl || preview.url;
 }
 
 export function loadAudioPreview(keys: PreviewStorageKeys): StoredAudioPreview | null {

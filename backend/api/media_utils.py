@@ -163,6 +163,7 @@ _READ_CHUNK = 256 * 1024  # 256 KiB per yielded chunk
 # decode path).
 mimetypes.add_type("audio/flac", ".flac")
 mimetypes.add_type("video/webm", ".webm")
+mimetypes.add_type("video/x-matroska", ".mkv")  # lossless (FFV1) video master
 
 
 def _guess_media_type(path: str) -> str:

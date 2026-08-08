@@ -121,21 +121,25 @@ are in `docs/guides/MODEL_FACTS.md`.
    - `keep_models_hot` is not wired for either: no video component set is worth
      leaving resident between generations.
 5. **Encode and save** — `backend/utils/video_utils.py::save_video_with_metadata`
-   writes an H.264 mp4 (AAC audio muxed in when the pipeline returned any; FFV1 +
-   FLAC when a lossless output is requested), a poster PNG sharing the mp4's base
-   name, and a sidecar JSON of the generation parameters. The poster feeds
-   `create_thumbnail`.
+   writes an H.264 mp4 (AAC audio muxed in when the pipeline returned any). A
+   lossless request instead writes an FFV1-in-mkv **master** (FLAC audio;
+   byte-exact, not browser-playable) plus a separate H.264 mp4 **proxy**
+   encoded from the same source frames for gallery playback, returned as
+   `(master_filename, preview_filename)`. Either way a poster PNG sharing the
+   master's base name and a sidecar JSON of the generation parameters are
+   written; the poster feeds `create_thumbnail`.
 6. **Database** — a `GeneratedImage` row, as for images, with
-   `parameters["is_video"] = True` plus `num_frames`, `fps` and `duration`. The
-   gallery's `steps`/`cfg_scale` **columns** are filled from the video keys
-   (`num_inference_steps`, `guidance_scale`) rather than the image ones the
-   shared record helper would otherwise default; `vae_name`/`vae_hash` record the
-   VAE that produced the frames (the video VAE, on an architecture that owns
-   two). Any `warnings[]` accumulated during the request are stored as
-   `effective_warnings`.
-7. **Response / gallery** — the response carries `warnings[]` alongside the row.
-   The gallery renders `is_video` rows through a `<video>` element with the
-   poster PNG as its thumbnail.
+   `parameters["is_video"] = True` plus `num_frames`, `fps`, `duration`, and
+   (lossless only) `preview_filename`. The gallery's `steps`/`cfg_scale`
+   **columns** are filled from the video keys (`num_inference_steps`,
+   `guidance_scale`) rather than the image ones the shared record helper would
+   otherwise default; `vae_name`/`vae_hash` record the VAE that produced the
+   frames (the video VAE, on an architecture that owns two). Any `warnings[]`
+   accumulated during the request are stored as `effective_warnings`.
+7. **Response / gallery** — the response carries `warnings[]` alongside the
+   row. The gallery renders `is_video` rows through a `<video>` element with
+   the poster PNG as its thumbnail, preferring `preview_filename` over
+   `filename` as the playback source when both are present.
 
 `POST /generate/outpaint/video` follows the same route shape for temporal
 extension: multipart (it carries the input clip), same per-arch default

@@ -3163,8 +3163,13 @@ paths:
   /download/{filename}:
     get:
       tags: [system]
-      summary: Download generated image
-      description: Download image file by filename
+      summary: Download a generated file
+      description: |
+        Download a file from `outputs/` by filename, with `include_metadata`
+        controlling whether an image's PNG metadata is stripped. Video/audio
+        filenames (anything not a PIL-decodable image extension) pass through
+        byte-exact instead -- `include_metadata` is a no-op for them, and this
+        is the path a `video_lossless` FFV1-in-mkv master is downloaded through.
       operationId: downloadFile
       parameters:
         - name: filename
@@ -3172,11 +3177,25 @@ paths:
           required: true
           schema:
             type: string
+        - name: include_metadata
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: false
       responses:
         '200':
           description: File download
           content:
             image/*:
+              schema:
+                type: string
+                format: binary
+            video/*:
+              schema:
+                type: string
+                format: binary
+            audio/*:
               schema:
                 type: string
                 format: binary
@@ -8180,21 +8199,23 @@ components:
           type: boolean
           default: false
           description: |
-            When true, encodes the output with FFV1 (`-pix_fmt rgb24`)
-            instead of H.264, so the pasted (preserved) input frames are
-            BIT-EXACT after decode -- empirically verified: plain
-            "libx264 -qp 0" is NOT actually bit-exact (observed up to 2/255
-            per-channel drift from RGB<->YUV/GBR colorspace rounding even at
-            "lossless" x264 settings), while FFV1 with no forced colorspace
-            conversion gives an exact roundtrip. Audio (when present) uses
-            FLAC instead of AAC in this mode -- FLAC adds no further lossy
-            compression beyond the existing 16-bit PCM quantization this
-            pipeline always applies, it does not exceed 16-bit precision.
-            Trade-offs: much larger file size, and the resulting mp4 will
-            generally NOT play back in a browser's native <video> element
-            (FFV1 has no mainstream browser decoder) -- intended for
-            archival/verification of the exact preserved frames, not casual
-            playback.
+            When true, writes the returned `filename` as an FFV1-in-mkv
+            MASTER (`-pix_fmt rgb24`) instead of an H.264-in-mp4, so the
+            pasted (preserved) input frames are BIT-EXACT after decode --
+            empirically verified: plain "libx264 -qp 0" is NOT actually
+            bit-exact (observed up to 2/255 per-channel drift from
+            RGB<->YUV/GBR colorspace rounding even at "lossless" x264
+            settings), while FFV1 with no forced colorspace conversion gives
+            an exact roundtrip. Audio (when present) uses FLAC instead of AAC
+            in this mode -- FLAC adds no further lossy compression beyond the
+            existing 16-bit PCM quantization this pipeline always applies, it
+            does not exceed 16-bit precision. Trade-offs: much larger file
+            size, and the master itself is NOT browser-playable (FFV1 has no
+            mainstream browser decoder) -- a second, browser-playable H.264
+            mp4 proxy is encoded alongside it and returned as
+            `preview_filename` for gallery playback; the master stays
+            downloadable, untouched, and is for archival/verification of the
+            exact preserved frames, not casual playback.
           example: false
         reference_image_size:
           type: string
@@ -8434,12 +8455,13 @@ components:
           type: boolean
           default: false
           description: |
-            When true, encodes the output with FFV1 (`-pix_fmt rgb24`) instead
-            of H.264, which is what carries the pasted preserved frames into the
-            FILE bit-exact -- "libx264 -qp 0" is NOT actually bit-exact. Audio
-            uses FLAC instead of AAC in this mode. Much larger files, and the
-            result generally will NOT play in a browser's native <video>
-            element.
+            When true, writes `filename` as an FFV1-in-mkv master (instead of
+            H.264-in-mp4), which is what carries the pasted preserved frames
+            into the FILE bit-exact -- "libx264 -qp 0" is NOT actually
+            bit-exact. Audio uses FLAC instead of AAC in this mode. Much
+            larger master file, and it will NOT play in a browser's native
+            <video> element -- `preview_filename` carries a browser-playable
+            H.264 proxy instead; the master stays downloadable untouched.
           example: false
 
     Txt2AudRequest:
@@ -10079,7 +10101,12 @@ components:
           example: 10749
         filename:
           type: string
-          description: Output file name under the outputs directory (`.png` for images, `.mp4` for video, `.flac` for audio).
+          description: |
+            Output file name under the outputs directory: `.png` for images,
+            `.flac` for audio, `.mp4` for video -- UNLESS the row was
+            generated with `video_lossless=true` (outpaint/inpaint video
+            only), in which case this is an FFV1-in-`.mkv` master and
+            `preview_filename` (see below) carries the browser-playable proxy.
           example: txt2img_20260730_222223_1689850057.png
         prompt:
           type: string
@@ -10226,7 +10253,21 @@ components:
         # --- Conditional: video (emitted only when parameters.is_video is truthy) ---
         is_video:
           type: boolean
-          description: Present and true only on video rows; the file named by `filename` is an mp4.
+          description: |
+            Present and true only on video rows. `filename` is an mp4, unless
+            this row was generated with `video_lossless=true` (only the
+            outpaint/inpaint video endpoints expose that flag), in which case
+            `filename` is an FFV1-in-mkv master and `preview_filename` (when
+            present) is a browser-playable H.264 mp4 proxy of it.
+        preview_filename:
+          type: string
+          description: |
+            Browser-playable H.264 mp4 proxy of `filename`, emitted only when
+            `filename` is a `video_lossless` FFV1-in-mkv master. The gallery's
+            <video> element should play this instead of `filename`; downloads
+            and "send to" actions should keep using `filename` (the
+            byte-exact master). Absent when the row was not lossless, or when
+            the proxy encode itself failed (master still written).
         num_frames:
           type: string
           description: Frame count of the generated video. Stringified integer.

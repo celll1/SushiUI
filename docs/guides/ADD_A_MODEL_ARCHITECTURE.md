@@ -184,7 +184,13 @@ extraction), `utils/dataset_scanner.py` (`VIDEO_EXTS` + ffprobe →
 `training/video_loader.py` and `training/bucketing.py`'s temporal section — all
 of which take an explicit `TemporalSpec` and fall back to the LTX-2.3 rule when
 it is absent. The frontend needs **no new panel**: video is a mode inside the
-existing txt2img/img2img panels, plus the temporal side of the Outpaint tab.
+existing txt2img/img2img panels, plus the temporal side of the Outpaint and
+Inpaint tabs (temporal inpaint regenerates a latent-group-aligned span and
+pastes the rest back exact; its own range control, not the keyframe timeline,
+reads its granularity off `video_constraints.latent_chunk_pattern`). Gallery
+send-to and the generation queue's item-type accounting need a matching
+branch for each new video route, or a queued or gallery-originated request for
+it silently drops.
 
 **`backend/tests/quantized_capability_parity_test.py` fails until the
 quantization registries are wired**, by design. That is the forcing function for

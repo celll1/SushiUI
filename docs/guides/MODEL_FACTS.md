@@ -798,9 +798,13 @@ a generation without style transfer.
       `minimax_h3_undocumented_conditioning` entry in `warnings[]` naming that
       scope, and the timeline control states the same sentence once.
     - **Placement is refused, not approximated, where it is unmeasured.**
-      `/generate/img2vid` answers 400 on a loaded `ref2va` checkpoint (anchors
-      plus references is measured to work but no builder combines them yet), and
-      `/generate/outpaint/video` still refuses a mid-timeline clip placement —
+      `/generate/img2vid` still answers 400 on a loaded `ref2va` checkpoint,
+      because this endpoint carries no reference fields to lay anchors out
+      after; the combination lives on `/generate/ref2vid`, whose
+      `keyframe_images`/`keyframe_frame_indices` lay anchors after every
+      reference block (measured to bind — see the anchor-and-reference
+      measurement above). And `/generate/outpaint/video` still refuses a
+      mid-timeline clip placement —
       its reason is that the outpaint SHAPE (a preserved clip anchored mid-span
       with exact preservation around it) is unmeasured, not that the
       architecture cannot address a frame.
@@ -1077,6 +1081,18 @@ a generation without style transfer.
     (inside its "not worse by 2 %" bar) while its held-out AUDIO loss was 19 %
     lower. `0.0` reproduces a video-only objective and is exposed because a
     dataset whose audio is voiceover, music or editing artefacts is a real case.
+  - **The per-modality split of that combined loss is charted, not just the
+    total.** `train_step` logs `h3_video_loss`, `h3_audio_loss` and
+    `h3_audio_present` (the batch fraction that carried a real audio track
+    rather than the zero-weighted fallback) through the extra-metrics
+    mechanism (`metric_registry.EXTRA_METRIC_DEFS`, `WS_PROTOCOL.md`), not as
+    DB columns — a flat-zero `h3_audio_present` explains a flat-zero
+    `h3_audio_loss` instead of leaving it mysterious. A standalone
+    `item_type=="audio"` dataset item has no encode path on a video arch (its
+    audio comes from a paired video item's own track) and is refused at
+    trainer setup, before any GPU work, rather than failing mid-run on a PIL
+    "cannot identify image file" error; the guard is generic over both video
+    archs.
   - **Full fine-tuning is refused**, in three live layers: the
     `TRAINING_UNSUPPORTED["minimax_h3"]["full_finetune"]` declaration served by
     `GET /schema/arch-capabilities` (which the training UI filters its method
@@ -1258,6 +1274,16 @@ a generation without style transfer.
     the fix for this: what was measured there is that reference conditioning
     reaches the model, not that it holds identity across a join, and it is a
     different feature that would have to earn that claim on its own measurement.
+  - **`POST /generate/inpaint/video` regenerates a contiguous mid-clip span and
+    pastes the rest of the input back exact after decode** — the complement of
+    temporal outpaint's boundary-only shape above. `fl2va` only (same partition
+    gate as `/generate/img2vid` and `/generate/outpaint/video`); the requested
+    `[regenerate_start_frame, regenerate_end_frame)` range is expanded OUTWARD
+    to the video VAE's latent-group boundaries, exposed declaratively as
+    `video_constraints.latent_chunk_pattern` (`[1, 4, 4, 4, 4]` on this
+    architecture) so a client-built request already matches what the server
+    runs. Full parameter surface and behavior: the route's own docstring in
+    `backend/api/routes.py` and `openapi.yaml`.
   - **Attribution**: the UI displays this architecture as "MiniMax H3", which the
     model's license requires (`archDisplayName` in `frontend/src/utils/api.ts`,
     `_ARCH_DISPLAY_NAMES` in `int8_runtime_quantize.py`).

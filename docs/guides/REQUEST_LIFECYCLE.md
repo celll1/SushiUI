@@ -59,10 +59,17 @@ are in `docs/guides/MODEL_FACTS.md`.
    negative-prompt controls when the loaded architecture declares them
    unsupported (`archSupportsFeature`). `Img2ImgPanel.tsx` is the img2vid
    equivalent. When the loaded model is MiniMax-H3's `ref2va` transformer
-   partition (`model_info.variant`), `Txt2ImgPanel.tsx` additionally renders
-   `MiniMaxH3ReferenceSelector.tsx` and routes the request to `ref2vid` as soon
-   as it carries at least one reference; with no references the same partition
-   still serves a plain txt2vid request.
+   partition (`model_info.variant`), both `Txt2ImgPanel.tsx` and
+   `Img2ImgPanel.tsx` additionally render `MiniMaxH3ReferenceSelector.tsx` and
+   route the request to `ref2vid` as soon as it carries at least one
+   reference, since `/generate/img2vid` refuses a `ref2va` checkpoint
+   outright. Either panel can add keyframe anchors to that same `ref2vid`
+   request, as its optional `keyframe_images`/`keyframe_frame_indices`:
+   `Txt2ImgPanel.tsx` renders a dedicated `MiniMaxH3Ref2VidKeyframeSelector.tsx`
+   for them, while `Img2ImgPanel.tsx` carries its own uploaded image plus any
+   img2vid last-frame/keyframe anchors along as that same list. With no
+   references the same partition still serves a plain txt2vid/img2vid
+   request.
 2. **`frontend/src/utils/api.ts`** — `generateTxt2Vid` posts a **JSON** body to
    `/generate/txt2vid` (unlike the image routes, which are all multipart).
    `generateImg2Vid` is multipart because it carries an uploaded keyframe
@@ -149,6 +156,19 @@ any upload is read, and the files are decoded before the GPU slot is taken, so
 a bad request pays for neither. `PipelineManager.generate_ref2vid` has no second
 architecture to dispatch to. See `openapi.yaml` for the request surface and
 `docs/guides/MODEL_FACTS.md` for what the references cost.
+
+`POST /generate/inpaint/video` is the temporal counterpart of image inpaint:
+multipart, takes an uploaded clip plus a `[regenerate_start_frame,
+regenerate_end_frame)` pixel-frame range, and regenerates only that span while
+pasting the rest of the input back after decode. MiniMax-H3 `fl2va` only (a
+`ref2va` load or a non-H3 video model is refused, mirroring `/generate/img2vid`'s
+and `/generate/outpaint/video`'s partition gates). The route expands the
+requested range OUTWARD to the video VAE's latent-group boundaries — the
+frontend's `VideoInpaintRangeTimeline.tsx` snaps its own handles to those same
+boundaries (read from `video_constraints.latent_chunk_pattern`) so a built
+request is already the range the server will run. See the route's own
+docstring in `backend/api/routes.py` and `openapi.yaml` for the full parameter
+surface.
 
 ## Progress reporting
 

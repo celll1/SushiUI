@@ -1420,6 +1420,14 @@ paths:
           MiniMax-H3: the GENERATED span implied by `total_frames` and the
           placed clip length must be a valid `17n + 5` length in 124..345; it
           is rounded up to that grid, with a warning, when it is not.
+        - This endpoint serves MiniMax-H3's `fl2va` transformer partition.
+          With the `ref2va` partition loaded it answers 400: boundary-frame
+          conditioning is not a trained behaviour of that partition. To
+          extend a clip with `ref2va` loaded, send it as `reference_videos`
+          on `/generate/ref2vid` (its documented "video continuation" use,
+          measured to compose with `reference_images`) -- that REGENERATES
+          the whole clip's content rather than preserving it byte-exact, so
+          it is a different guarantee from this endpoint's, not a substitute.
       operationId: generateOutpaintVideo
       requestBody:
         required: true
@@ -1446,8 +1454,10 @@ paths:
             Invalid parameters, or no video model loaded. Also returned when
             the requested `input_offset_frames` is not a placement the loaded
             architecture supports (MiniMax-H3: anything other than the start,
-            the end, or a bridge), or when `bridge_video` is sent to an
-            architecture that has no bridge placement.
+            the end, or a bridge), when `bridge_video` is sent to an
+            architecture that has no bridge placement, or when the loaded
+            MiniMax-H3 transformer is the `ref2va` variant (this endpoint
+            serves `fl2va`).
           content:
             application/json:
               schema:

@@ -27,8 +27,9 @@ import PromptEditor from "../common/PromptEditor";
 import LoopGenerationPanel, { LoopGenerationConfig } from "./LoopGenerationPanel";
 import QuantizedGemmSelect from "./QuantizedGemmSelect";
 import MiniMaxH3KeyframeTimeline from "../common/MiniMaxH3KeyframeTimeline";
+import MiniMaxH3ReferenceSelector, { EMPTY_MINIMAX_H3_REFERENCES, countMiniMaxH3References } from "../common/MiniMaxH3ReferenceSelector";
 import { migrateLoopGenerationConfig, computeLoopDecodeDirective } from "@/utils/loopGenerationInheritance";
-import { getSamplers, getScheduleTypes, generateImg2Img, generateImg2Vid, Img2VidParams, MiniMaxH3Keyframe, generateAud2Aud, Aud2AudParams, generateImg2ImgTrainingPreview, toBase64, LoRAConfig, ControlNetConfig, generateTIPOPrompt, cancelGeneration, getCurrentModel, isLatentOnlyResult, getResultFilename, getResultSeed, getResultAncestralSeed, unetQuantizationOptions, normalizeUnetQuantization, transformerQuantizationLabel, archSupportsFeature, videoFrameOptions, videoFrameLabel, archDisplayName, normalizeVideoFrames, fitVideoCanvas, videoCanvasRule, videoCanvasAxisBounds, videoCanvasExceedsEnvelope } from "@/utils/api";
+import { getSamplers, getScheduleTypes, generateImg2Img, generateImg2Vid, Img2VidParams, MiniMaxH3Keyframe, MiniMaxH3References, generateRef2Vid, Ref2VidParams, generateAud2Aud, Aud2AudParams, generateImg2ImgTrainingPreview, toBase64, LoRAConfig, ControlNetConfig, generateTIPOPrompt, cancelGeneration, getCurrentModel, isLatentOnlyResult, getResultFilename, getResultSeed, getResultAncestralSeed, unetQuantizationOptions, normalizeUnetQuantization, transformerQuantizationLabel, archSupportsFeature, videoFrameOptions, videoFrameLabel, archDisplayName, normalizeVideoFrames, fitVideoCanvas, videoCanvasRule, videoCanvasAxisBounds, videoCanvasExceedsEnvelope } from "@/utils/api";
 import { useActiveTraining } from "@/hooks/useActiveTraining";
 import { wsClient, CFGMetrics } from "@/utils/websocket";
 import CFGMetricsGraph from "../common/CFGMetricsGraph";
@@ -543,6 +544,14 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
   // without being able to read an audio track at all.
   const supportsAudioConditioning = archSupportsFeature(
     archCapabilities, loadedArch, "audio_conditioning");
+  // MiniMax-H3 ships two transformer partitions (see Txt2ImgPanel's isRef2Va):
+  // `fl2va` serves this panel's img2vid keyframe path, `ref2va` was trained to
+  // read reference rows instead. Direct variant check, matching Txt2ImgPanel --
+  // there is no per-variant capability key, since keyframe_placement/
+  // audio_conditioning are true for minimax_h3 regardless of which is loaded.
+  const isRef2Va =
+    loadedArch === "minimax_h3" &&
+    (currentModelInfo?.model_info?.variant as string | undefined) === "ref2va";
   // The input card takes MORE THAN ONE image exactly where the loaded
   // architecture has somewhere to put a second one -- keyframe placement, or
   // the last-frame slot on its own. On an image model, and on a video model
@@ -575,6 +584,13 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
   // rides on the queue item the way aud2aud's reference clip and outpaint_vid's
   // source clip do, and it never reaches the persisted params blob.
   const [inputAudioTrack, setInputAudioTrack] = useState<File | null>(null);
+  // MiniMax-H3 ref2va references, mirroring Txt2ImgPanel's h3References: file
+  // uploads, kept out of `params` and carried on the queue item (QueueItem.references)
+  // so a queued request keeps the references it was built with.
+  const [h3References, setH3References] = useState<MiniMaxH3References>(
+    EMPTY_MINIMAX_H3_REFERENCES
+  );
+  const [h3ReferenceImageSize, setH3ReferenceImageSize] = useState<"max" | "match">("max");
   const [isDragging, setIsDragging] = useState(false);
   const [isEditingImage, setIsEditingImage] = useState(false);
   // ── Multi-image (tabbed) input, for a video architecture that takes more
@@ -2094,7 +2110,52 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
 
     // Video mode: a video model is loaded -> enqueue an img2vid item using the
     // input image as the keyframe. Video loop-generation is out of scope.
+    //
+    // MiniMax-H3 ref2va with at least one reference is checked FIRST and
+    // returns early: "img2vid with references" IS "ref2vid with anchors"
+    // (/generate/img2vid refuses a ref2va checkpoint by name and points
+    // here). The input image and any extra keyframes/last-frame anchor
+    // become the ref2vid request's `keyframes` list; the timeline UI
+    // (params.keyframes/last_frame_image/input_image_frame_index) is
+    // unchanged, only where it is sent differs. ref2va-ness is read from the
+    // fresh fetch, matching Txt2ImgPanel.
     if (videoMode) {
+      const freshIsRef2Va =
+        modality.modelInfo?.type === "minimax_h3" && modality.modelInfo?.variant === "ref2va";
+      if (freshIsRef2Va && countMiniMaxH3References(h3References) > 0) {
+        const ref2vidKeyframes: MiniMaxH3Keyframe[] = [
+          { image: imageBase64, frame_index: params.input_image_frame_index ?? 0 },
+          ...(params.last_frame_image ? [{ image: params.last_frame_image, frame_index: -1 }] : []),
+          ...(params.keyframes ?? []),
+        ];
+        const refParams: Ref2VidParams = {
+          prompt: processedPrompt,
+          negative_prompt: processedNegativePrompt,
+          width: params.width,
+          height: params.height,
+          num_frames: params.num_frames,
+          frame_rate: params.frame_rate,
+          num_inference_steps: params.num_inference_steps,
+          guidance_scale: params.guidance_scale,
+          seed: params.seed,
+          num_videos_per_prompt: params.num_videos_per_prompt,
+          max_sequence_length: params.max_sequence_length,
+          audio_enable: params.audio_enable,
+          vae_path: params.vae_path,
+          text_encoder_path: params.text_encoder_path,
+          unet_quantization: params.unet_quantization,
+          quantized_gemm_mode: params.quantized_gemm_mode,
+          reference_image_size: h3ReferenceImageSize,
+          keyframes: ref2vidKeyframes,
+        };
+        addToQueue({
+          type: "ref2vid",
+          params: refParams as any,
+          references: h3References,
+          prompt: processedPrompt,
+        });
+        return;
+      }
       const videoParams: Img2VidParams = {
         prompt: processedPrompt,
         negative_prompt: processedNegativePrompt,
@@ -2453,8 +2514,8 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
 
     const nextItem = startNextInQueue();
     console.log("[Img2Img] Next item from queue:", nextItem);
-    if (!nextItem || (nextItem.type !== "img2img" && nextItem.type !== "img2vid" && nextItem.type !== "aud2aud")) {
-      console.log("[Img2Img] No img2img/img2vid/aud2aud items in queue");
+    if (!nextItem || (nextItem.type !== "img2img" && nextItem.type !== "img2vid" && nextItem.type !== "ref2vid" && nextItem.type !== "aud2aud")) {
+      console.log("[Img2Img] No img2img/img2vid/ref2vid/aud2aud items in queue");
       return;
     }
 
@@ -2556,6 +2617,58 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
       } catch (error: any) {
         console.error("[Img2Img] img2vid generation failed:", error);
         alert("img2vid generation failed. Please check console for details.");
+        setIsGenerating(false);
+        setProgress(0);
+        setProgressMessage("");
+        failCurrentItem();
+        setTimeout(() => {
+          if (processQueueRef.current) processQueueRef.current();
+        }, 100);
+      }
+      return;
+    }
+
+    // Video branch: ref2vid item -- img2vid-with-references, routed to
+    // /generate/ref2vid because that is the endpoint the ref2va checkpoint was
+    // trained for (/generate/img2vid refuses this checkpoint by name). The
+    // input image already rides in nextItem.params.keyframes (built at
+    // enqueue time); references ride on nextItem.references, same as
+    // Txt2ImgPanel's ref2vid item.
+    if (nextItem.type === "ref2vid") {
+      setIsGenerating(true);
+      setProgress(0);
+      setProgressMessage("");
+      setTotalSteps((nextItem.params as any).num_inference_steps || 20);
+      setPreviewImage(null);
+      setGeneratedImage(null);
+      setGeneratedVideo(null);
+      setGeneratedVideoInfo(null);
+      setGeneratedVideoSeed(null);
+      setGeneratedAudio(null);
+      setGeneratedAudioInfo(null);
+      try {
+        const result = await generateRef2Vid(
+          nextItem.params as Ref2VidParams,
+          nextItem.references ?? EMPTY_MINIMAX_H3_REFERENCES);
+        const videoUrl = `/outputs/${result.image.filename}`;
+        setGeneratedVideo(videoUrl);
+        setGeneratedVideoInfo({
+          num_frames: result.image.num_frames,
+          fps: result.image.fps,
+          duration: result.image.duration,
+        });
+        setGeneratedVideoSeed(getResultSeed(result));
+        if (onImageGenerated) onImageGenerated(videoUrl);
+        setIsGenerating(false);
+        setProgress(0);
+        setProgressMessage("");
+        completeCurrentItem();
+        setTimeout(() => {
+          if (processQueueRef.current) processQueueRef.current();
+        }, 100);
+      } catch (error: any) {
+        console.error("[Img2Img] ref2vid generation failed:", error);
+        alert(`ref2vid generation failed: ${error?.response?.data?.detail || error?.response?.data?.error || "see the console for details."}`);
         setIsGenerating(false);
         setProgress(0);
         setProgressMessage("");
@@ -2926,7 +3039,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
 
   // Auto-start queue processing when queue has pending items and not currently generating
   useEffect(() => {
-    const hasPendingItems = queue.some(item => item.status === "pending" && (item.type === "img2img" || item.type === "img2vid" || item.type === "aud2aud"));
+    const hasPendingItems = queue.some(item => item.status === "pending" && (item.type === "img2img" || item.type === "img2vid" || item.type === "ref2vid" || item.type === "aud2aud"));
     const isCurrentItemNull = currentItem === null;
 
     console.log("[Img2Img] Queue effect:", {
@@ -4047,6 +4160,23 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
               disabled={isGenerating}
             />
           </Card>
+        )}
+
+        {/* MiniMax-H3 ref2va references: with at least one set, submit routes
+            the input image + timeline anchors to /generate/ref2vid instead of
+            /generate/img2vid (that endpoint refuses this checkpoint by name).
+            Same component and semantics as Txt2ImgPanel's -- order-is-semantic
+            file lists, no strength/schedule knobs (see
+            scratchpad/minimax_h3_conditioning_design.md §3.3 for why this is
+            not a ControlNet-shaped UI). */}
+        {isVideo && isRef2Va && (
+          <MiniMaxH3ReferenceSelector
+            value={h3References}
+            onChange={setH3References}
+            referenceImageSize={h3ReferenceImageSize}
+            onReferenceImageSizeChange={setH3ReferenceImageSize}
+            disabled={isGenerating}
+          />
         )}
 
         {isAudio && (

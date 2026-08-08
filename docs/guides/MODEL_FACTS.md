@@ -1274,6 +1274,44 @@ a generation without style transfer.
     the fix for this: what was measured there is that reference conditioning
     reaches the model, not that it holds identity across a join, and it is a
     different feature that would have to earn that claim on its own measurement.
+  - **`/generate/outpaint/video` accepts `reference_images` on `ref2va`,
+    `extend_forward` only, after a gate that failed and a decision made past
+    the failure.** A registered acceptance gate (A-V8: boundary-anchor bind,
+    reference bind, K5's seam criterion) was run twice on this exact endpoint.
+    Attempt 1 shipped a different mechanism (routed to `/generate/ref2vid`,
+    regenerating every frame) and was reverted because two of the three
+    criteria had no preserved/generated boundary to read
+    (`scratchpad/minimax_h3_av8_results.md`). Attempt 2 ran on the actual
+    `extend_forward` surface with every criterion evaluable
+    (`scratchpad/minimax_h3_av8_run2_results.md`): boundary-anchor bind passed
+    (5.226 RMS against a bar of 25), reference bind passed (CLIP-L/14 mean
+    cosine 0.96466 vs the no-reference arm's 0.85961), paste exactness passed
+    (max\|diff\| 0), and **the seam criterion failed** — 0.526 against the
+    arm's own interior p95 of 0.428. Per the registered disposition the
+    feature did not ship on that result, and the design's prior "permanently
+    out of scope" declaration (`scratchpad/minimax_h3_design.md` §11) was
+    reinstated. **Measured context, not a mitigation**: the same seam metric
+    at the same protocol rejects the untouched no-reference extend even
+    harder on this clip (0.909 against its own p95 of 0.255) — the metric
+    does not discriminate the feature from the baseline it was added to, but
+    the registered criterion was against each arm's own interior p95, and the
+    reference arm exceeded it, so this does not reverse the fail.
+    The repo owner then reviewed three `extend_forward` clips by eye (no
+    threshold, `scratchpad/minimax_h3_ab_visual_arms.md`) and judged the
+    no-image-reference arm (source clip carried as the sole video reference)
+    good; the arm with an added image reference showed the reference acting
+    as a keyframe at the head of the extension, which was traced to the image
+    reference landing 1.0 rotary-clock unit before the boundary anchor,
+    inside its measured ~3.33-unit binding radius, and fixed by packing image
+    references away from that instant. A rerun after the fix moved the
+    boundary-anchor RMS from 28.679 to 5.0703 and removed the reference-snap
+    signature the owner had named. **The owner then accepted the shipped
+    surface on that visual review — A-V8 itself remains failed and closed;
+    the feature did not ship because a gate passed.** `reference_images` is
+    gated to `ref2va` + `extend_forward` only (`extend_backward` and `bridge`
+    with references are refused, unmeasured); no UI or doc text claims the
+    reference holds character identity across the join — only that the model
+    reads it (criterion 2's own scope).
   - **`POST /generate/inpaint/video` regenerates a contiguous mid-clip span and
     pastes the rest of the input back exact after decode** — the complement of
     temporal outpaint's boundary-only shape above. `fl2va` only (same partition

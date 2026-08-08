@@ -148,8 +148,10 @@ come back exact either way, but by different mechanisms — LTX-2.3 generates th
 whole timeline and this repo pastes the input back over its span, while
 MiniMax-H3 is asked only for the missing span and the output is a
 concatenation — and **which placements are offered is an architecture
-property**, decided by what that model's conditioning can anchor. See
-`docs/guides/MODEL_FACTS.md`.
+property**, decided by what that model's conditioning can anchor. On a
+MiniMax-H3 `ref2va` load, `extend_forward` additionally accepts optional
+`reference_images`; see `docs/guides/MODEL_FACTS.md` for the acceptance gate
+that surface shipped past.
 
 `POST /generate/ref2vid` is multipart for its reference files and follows the
 same route shape and output contract, with two gates ahead of everything else:

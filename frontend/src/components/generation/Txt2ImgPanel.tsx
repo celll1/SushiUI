@@ -3351,6 +3351,37 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
           storageKeyPrefix="txt2img"
         />
 
+        {/* Reference inputs for MiniMax-H3's ref2va partition, above the
+            prompt (same region as Img2ImgPanel's) since these are content
+            conditioning, not a generation setting. The ControlNet selector
+            further down is image-only (its video use is LTX-2.3 style
+            transfer), so the omni-reference inputs live here instead. With
+            no references the same model still serves a plain
+            text-to-video request. */}
+        {isVideo && isRef2Va && (
+          <>
+            <p className="text-xs text-gray-500 -mb-1">
+              Adding a video reference here is MiniMax&apos;s documented{" "}
+              <span className="text-gray-400">video continuation</span> task
+              type: the reference is laid out frame-contiguous with the
+              generated span, and the whole output is regenerated (not
+              preserved byte-exact — that is Outpaint&apos;s boundary-frame
+              extend on the fl2va checkpoint instead). MiniMax&apos;s guide
+              composes it with an image anchor as{" "}
+              <code>[video continuation + keyframe completion]</code> — e.g.
+              continuing from a source video while an image reference pins
+              the last frame.
+            </p>
+            <MiniMaxH3ReferenceSelector
+              value={h3References}
+              onChange={setH3References}
+              referenceImageSize={h3ReferenceImageSize}
+              onReferenceImageSizeChange={setH3ReferenceImageSize}
+              disabled={isGenerating}
+            />
+          </>
+        )}
+
         {/* FLUX.2 Image Edit / Vision Encoder: Reference Images */}
         {(currentModelInfo?.model_info?.type === "flux2" || params.vision_encoder_path) && (
           <Card
@@ -3824,36 +3855,6 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
               </div>
             )}
           </Card>
-        )}
-
-        {/* Reference inputs for MiniMax-H3's ref2va partition. This is the
-            reference/ControlNet area of a video request: the ControlNet
-            selector below is image-only (its video use is LTX-2.3 style
-            transfer), so the omni-reference inputs live here, directly under
-            the Video card. With no references the same model still serves a
-            plain text-to-video request. */}
-        {isVideo && isRef2Va && (
-          <>
-            <p className="text-xs text-gray-500 -mb-1">
-              Adding a video reference here is MiniMax&apos;s documented{" "}
-              <span className="text-gray-400">video continuation</span> task
-              type: the reference is laid out frame-contiguous with the
-              generated span, and the whole output is regenerated (not
-              preserved byte-exact — that is Outpaint&apos;s boundary-frame
-              extend on the fl2va checkpoint instead). MiniMax&apos;s guide
-              composes it with an image anchor as{" "}
-              <code>[video continuation + keyframe completion]</code> — e.g.
-              continuing from a source video while an image reference pins
-              the last frame.
-            </p>
-            <MiniMaxH3ReferenceSelector
-              value={h3References}
-              onChange={setH3References}
-              referenceImageSize={h3ReferenceImageSize}
-              onReferenceImageSizeChange={setH3ReferenceImageSize}
-              disabled={isGenerating}
-            />
-          </>
         )}
 
         {/* C5: keyframe anchors, a track separate from the references above --

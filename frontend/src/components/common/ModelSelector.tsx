@@ -126,6 +126,7 @@ export default function ModelSelector({ onModelLoad }: ModelSelectorProps) {
   const filteredModels = archFilteredModels.filter(
     m => selectedSourceDir === "all" || m.source_dir === selectedSourceDir
   );
+  const selectedModel = models.find(m => m.path === selectedModelPath);
 
   return (
     <Card
@@ -142,16 +143,18 @@ export default function ModelSelector({ onModelLoad }: ModelSelectorProps) {
         )
       }
     >
-      <div className="space-y-4">
+      <div className="grid gap-3 2xl:grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)]">
         {/* Current Model Display */}
         {currentModel && (
-          <div className="bg-gray-800 p-3 rounded-lg">
-            <p className="text-sm text-gray-400">Currently Loaded:</p>
-            <p className="text-white font-medium">{currentModel.source}</p>
-            <div className="flex items-center gap-2 mt-1">
-              <p className="text-xs text-gray-500">Type: {currentModel.type || "Unknown"}</p>
+          <div className="h-full rounded-md border border-gray-700 bg-gray-800/70 p-3">
+            <p className="app-kicker">Active model</p>
+            <p className="mt-1.5 break-all text-xs font-medium leading-relaxed text-white" title={currentModel.source}>
+              {currentModel.source}
+            </p>
+            <div className="mt-2 flex flex-wrap items-center gap-1.5">
+              <p className="rounded bg-gray-900 px-2 py-0.5 text-[10px] text-gray-400">{currentModel.type || "Unknown"}</p>
               {currentModel.is_v_prediction && (
-                <span className="text-xs bg-purple-600 text-white px-2 py-0.5 rounded">
+                <span className="rounded bg-violet-600/80 px-2 py-0.5 text-[10px] text-white">
                   v-prediction
                 </span>
               )}
@@ -159,7 +162,7 @@ export default function ModelSelector({ onModelLoad }: ModelSelectorProps) {
           </div>
         )}
 
-        <div className="space-y-3">
+        <div className={`grid gap-2 sm:grid-cols-2 ${currentModel ? "" : "2xl:col-span-2"}`}>
           {models.length === 0 ? (
             <p className="text-gray-500 text-sm">No local models found. Place models in the models/ directory.</p>
           ) : (
@@ -167,7 +170,7 @@ export default function ModelSelector({ onModelLoad }: ModelSelectorProps) {
               {/* Architecture Filter — PRIMARY (only shown when >1 architecture present) */}
               {uniqueArchitectures.length > 1 && (
                 <Select
-                  label="Filter by Architecture"
+                  label="Architecture"
                   value={selectedArchitecture}
                   onChange={(e) => {
                     setSelectedArchitecture(e.target.value);
@@ -183,37 +186,10 @@ export default function ModelSelector({ onModelLoad }: ModelSelectorProps) {
                 />
               )}
 
-              {/* Directory Filter — SECONDARY, collapsed behind a small disclosure
-                  since architecture is the filter users reach for first. */}
-              {uniqueDirs.length > 1 && (
-                <div>
-                  <button
-                    type="button"
-                    onClick={() => setShowDirectoryFilter(!showDirectoryFilter)}
-                    className="flex items-center gap-1 text-xs text-gray-400 hover:text-gray-300"
-                  >
-                    <Folder className="w-3 h-3" />
-                    More filters (directory)
-                    {showDirectoryFilter ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
-                  </button>
-                  {showDirectoryFilter && (
-                    <Select
-                      className="mt-2"
-                      label="Filter by Directory"
-                      value={selectedSourceDir}
-                      onChange={(e) => setSelectedSourceDir(e.target.value)}
-                      options={[
-                        { value: "all", label: "All Directories" },
-                        ...uniqueDirs.map(dir => ({ value: dir, label: dir }))
-                      ]}
-                    />
-                  )}
-                </div>
-              )}
-
               {/* Model Dropdown */}
               <Select
-                label="Select Model"
+                label="Model"
+                className={uniqueArchitectures.length > 1 ? "" : "sm:col-span-2"}
                 value={selectedModelPath}
                 onChange={(e) => setSelectedModelPath(e.target.value)}
                 options={[
@@ -225,50 +201,64 @@ export default function ModelSelector({ onModelLoad }: ModelSelectorProps) {
                 ]}
               />
 
+              {/* Directory Filter — secondary to architecture and model. */}
+              {uniqueDirs.length > 1 && (
+                <div className="sm:col-span-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowDirectoryFilter(!showDirectoryFilter)}
+                    className="flex items-center gap-1 text-xs text-gray-400 hover:text-gray-300"
+                    aria-expanded={showDirectoryFilter}
+                  >
+                    <Folder className="h-3 w-3" />
+                    More filters (directory)
+                    {showDirectoryFilter ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
+                  </button>
+                  {showDirectoryFilter && (
+                    <Select
+                      className="mt-2"
+                      label="Directory"
+                      value={selectedSourceDir}
+                      onChange={(e) => setSelectedSourceDir(e.target.value)}
+                      options={[
+                        { value: "all", label: "All Directories" },
+                        ...uniqueDirs.map(dir => ({ value: dir, label: dir }))
+                      ]}
+                    />
+                  )}
+                </div>
+              )}
+
               {/* Model Details */}
               {selectedModelPath && (() => {
-                const selectedModel = models.find(m => m.path === selectedModelPath);
                 if (!selectedModel) return null;
                 return (
-                  <div className="bg-gray-800 p-3 rounded-lg text-sm">
-                    <div className="grid grid-cols-2 gap-2">
+                  <div className="rounded-md border border-gray-700 bg-gray-800/70 p-2.5 text-xs sm:col-span-2">
+                    <div className="grid gap-2 sm:grid-cols-[auto_auto_minmax(0,1fr)_auto] sm:items-center">
                       <div>
-                        <span className="text-gray-400">Architecture:</span>
-                        <span className="ml-2 text-white">{archOf(selectedModel)}</span>
+                        <span className="text-gray-500">Architecture</span>
+                        <span className="ml-1.5 text-white">{archOf(selectedModel)}</span>
                       </div>
-                      {selectedModel.size_gb && (
-                        <div>
-                          <span className="text-gray-400">Size:</span>
-                          <span className="ml-2 text-white">{selectedModel.size_gb} GB</span>
-                        </div>
-                      )}
-                      <div className="col-span-2">
-                        <span className="text-gray-400">Path:</span>
-                        <div className="mt-1 text-xs text-white break-all bg-gray-900 p-2 rounded">
-                          {selectedModel.path}
-                        </div>
+                      <div>
+                        <span className="text-gray-500">Size</span>
+                        <span className="ml-1.5 text-white">{selectedModel.size_gb ? `${selectedModel.size_gb} GB` : "N/A"}</span>
                       </div>
+                      <p className="min-w-0 truncate font-mono text-[10px] text-gray-400" title={selectedModel.path}>{selectedModel.path}</p>
+                      <Button
+                        onClick={() => handleLoadModel(selectedModel.source_type, selectedModel.path)}
+                        disabled={loading}
+                        className="w-full sm:w-auto"
+                      >
+                        {loading
+                          ? "Loading..."
+                          : currentModel?.source === selectedModelPath
+                            ? "Reload Model"
+                            : "Load Model"}
+                      </Button>
                     </div>
                   </div>
                 );
               })()}
-
-              <Button
-                onClick={() => {
-                  const selectedModel = models.find(m => m.path === selectedModelPath);
-                  if (selectedModel) {
-                    handleLoadModel(selectedModel.source_type, selectedModel.path);
-                  }
-                }}
-                disabled={!selectedModelPath || loading}
-                className="w-full"
-              >
-                {loading
-                  ? "Loading..."
-                  : currentModel?.source === selectedModelPath
-                    ? "Reload Selected Model"
-                    : "Load Selected Model"}
-              </Button>
             </>
           )}
         </div>

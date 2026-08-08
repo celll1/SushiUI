@@ -1909,7 +1909,17 @@ paths:
 
     delete:
       tags: [images]
-      summary: Delete image
+      summary: Delete a gallery row, with or without its files
+      description: |
+        `delete_files=true` (default): deletes the DB row AND every artefact
+        it owns -- media file, sidecar JSON, poster/waveform PNG, both
+        thumbnail variants, and the lossless-proxy `preview_filename` when
+        present. Files are removed with the media file last, so if a later
+        file fails to delete, the DB row (left intact, see 500 response)
+        still points at a file that still exists on retry.
+
+        `delete_files=false`: deletes only the DB row; all files stay on
+        disk and become invisible to the gallery.
       operationId: deleteImage
       parameters:
         - name: image_id
@@ -1917,6 +1927,16 @@ paths:
           required: true
           schema:
             type: integer
+        - name: delete_files
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: true
+          description: |
+            true = remove the DB row and every file it owns. false = remove
+            only the DB row and leave all files on disk.
+          example: true
       responses:
         '200':
           description: Image deleted
@@ -1925,7 +1945,47 @@ paths:
               schema:
                 type: object
                 properties:
-                  message:
+                  success:
+                    type: boolean
+                  delete_files:
+                    type: boolean
+                    description: Echoes the requested mode.
+                  deleted_files:
+                    type: array
+                    items:
+                      type: string
+                    description: |
+                      Labels of the files actually removed (`sidecar`,
+                      `poster`, `thumbnail_png`, `thumbnail_webp`,
+                      `preview_proxy`, `media`); empty when
+                      `delete_files=false`. `poster` is omitted for plain
+                      image rows, where it is the same path as `media`.
+                example:
+                  success: true
+                  delete_files: true
+                  deleted_files: [sidecar, poster, thumbnail_png, thumbnail_webp, media]
+        '404':
+          description: No gallery row with this id.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  detail:
+                    type: string
+                    example: Image not found
+        '500':
+          description: |
+            `delete_files=true` and one or more files could not be removed
+            (e.g. locked/permission-denied). The DB row was NOT deleted.
+            Raised as a bare `HTTPException`, so the body is FastAPI's
+            `{"detail": "..."}` rather than an `ErrorResponse`.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  detail:
                     type: string
 
   /images/{image_id}/preview:

@@ -30,6 +30,8 @@ interface GalleryFilterProps {
   setFilterImg2Vid: (value: boolean) => void;
   filterAudio: boolean;
   setFilterAudio: (value: boolean) => void;
+  filterUpscale: boolean;
+  setFilterUpscale: (value: boolean) => void;
   dateFrom: string;
   setDateFrom: (value: string) => void;
   dateTo: string;
@@ -86,6 +88,8 @@ const GalleryFilter: React.FC<GalleryFilterProps> = memo(({
   setFilterImg2Vid,
   filterAudio,
   setFilterAudio,
+  filterUpscale,
+  setFilterUpscale,
   dateFrom,
   setDateFrom,
   dateTo,
@@ -192,6 +196,15 @@ const GalleryFilter: React.FC<GalleryFilterProps> = memo(({
                   className="rounded"
                 />
                 <span className="text-sm text-gray-300">Audio</span>
+              </label>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={filterUpscale}
+                  onChange={(e) => setFilterUpscale(e.target.checked)}
+                  className="rounded"
+                />
+                <span className="text-sm text-gray-300">upscale</span>
               </label>
             </div>
           </div>

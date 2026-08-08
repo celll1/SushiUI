@@ -6719,37 +6719,99 @@ async def get_image_preview(
         cache_control="public, max-age=604800",
     )
 
+def _is_safe_output_name(name: Optional[str]) -> bool:
+    """A DB-sourced filename must resolve inside outputs_dir/thumbnails_dir
+    once joined -- refuse anything with a separator or `..` component
+    (`os.path.basename(name) != name`) rather than let it escape via
+    `os.path.join`."""
+    return bool(name) and os.path.basename(name) == name
+
+
+def _generated_image_file_paths(image: "GeneratedImage") -> Dict[str, str]:
+    """Every on-disk artefact a gallery row can own, keyed by a short label.
+
+    Thumbnails are keyed by base name + `.png`/`.webp` regardless of the
+    original extension (see `create_thumbnail`), not `<filename>` itself.
+    `media` is inserted LAST: callers process this dict in order, so a
+    failure partway through still leaves the row pointing at a file that
+    still exists on a retry.
+    """
+    filename = image.filename
+    if not _is_safe_output_name(filename):
+        return {}
+
+    base_name = os.path.splitext(filename)[0]
+    media_path = os.path.join(settings.outputs_dir, filename)
+    poster_path = os.path.join(settings.outputs_dir, f"{base_name}.png")
+
+    paths = {
+        "sidecar": os.path.join(settings.outputs_dir, f"{base_name}.json"),
+        "thumbnail_png": os.path.join(settings.thumbnails_dir, f"{base_name}.png"),
+        "thumbnail_webp": os.path.join(settings.thumbnails_dir, f"{base_name}.webp"),
+    }
+    if poster_path != media_path:  # collapses onto media_path for plain images
+        paths["poster"] = poster_path
+
+    preview_filename = (image.parameters or {}).get("preview_filename")
+    if _is_safe_output_name(preview_filename):
+        paths["preview_proxy"] = os.path.join(settings.outputs_dir, preview_filename)
+
+    paths["media"] = media_path
+    return paths
+
+
 @router.delete("/images/{image_id}")
-async def delete_image(image_id: int, db: Session = Depends(get_gallery_db)):
-    """Delete an image"""
+async def delete_image(
+    image_id: int,
+    delete_files: bool = True,
+    db: Session = Depends(get_gallery_db),
+):
+    """Delete a gallery row.
+
+    `delete_files=true` (default): removes the DB row AND every artefact it
+    owns (media, sidecar JSON, poster/waveform PNG, both thumbnail variants,
+    and the lossless proxy when present). Files are removed in an order that
+    leaves `media` for last, so if a later file fails the row (left intact,
+    see the 500 response) still points at a file that still exists on retry.
+
+    `delete_files=false`: removes only the DB row; every file on disk is
+    left untouched (they become invisible to the gallery but stay on disk).
+    """
     image = db.query(GeneratedImage).filter(GeneratedImage.id == image_id).first()
     if not image:
         raise HTTPException(status_code=404, detail="Image not found")
 
-    # Delete files
-    image_path = os.path.join(settings.outputs_dir, image.filename)
-    thumb_path = os.path.join(settings.thumbnails_dir, image.filename)
+    if not delete_files:
+        db.delete(image)
+        db.commit()
+        return {"success": True, "delete_files": False, "deleted_files": []}
 
-    if os.path.exists(image_path):
-        os.remove(image_path)
-    if os.path.exists(thumb_path):
-        os.remove(thumb_path)
+    file_paths = _generated_image_file_paths(image)
+    deleted: list = []
+    errors: list = []
+    for label, path in file_paths.items():
+        if not os.path.exists(path):
+            continue
+        try:
+            os.remove(path)
+            deleted.append(label)
+        except OSError as e:
+            errors.append(f"{label} ({os.path.basename(path)}): {e}")
 
-    # A video_lossless row also owns a browser-playable H.264 proxy
-    # (preview_filename) next to its FFV1-in-mkv master -- delete it too, or
-    # it survives as an orphan (and, since dataset_scanner treats .mp4/.mkv
-    # both as video, would otherwise get ingested as a second, spurious clip
-    # by any dataset pointed at outputs/).
-    preview_filename = (image.parameters or {}).get("preview_filename")
-    if preview_filename:
-        preview_path = os.path.join(settings.outputs_dir, preview_filename)
-        if os.path.exists(preview_path):
-            os.remove(preview_path)
+    if errors:
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                f"Deleted {len(deleted)} file(s) but failed on {len(errors)}: "
+                f"{'; '.join(errors)}. The gallery record was NOT deleted; "
+                f"retry once the remaining files are removable."
+            ),
+        )
 
     db.delete(image)
     db.commit()
 
-    return {"success": True}
+    return {"success": True, "delete_files": True, "deleted_files": deleted}
 
 
 def _expand_minimax_h3_tree(tree_path: str, name_prefix: str, source_dir: str) -> list:

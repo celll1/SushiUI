@@ -19,7 +19,7 @@ import Button from "../common/Button";
 import GalleryFilter from "./GalleryFilter";
 import ImageList from "./ImageList";
 import { saveTempImage } from "@/utils/tempImageStorage";
-import { sendBase64ImageToImg2Img, sendBase64ImageToImg2Vid, sendImageToImg2Vid, sendVideoToOutpaint, sendAudioToOutpaint, sendAudioToImg2Img } from "@/utils/sendHelpers";
+import { sendBase64ImageToImg2Img, sendBase64ImageToImg2Vid, sendImageToImg2Vid, sendVideoToOutpaint, sendVideoToInpaint, sendAudioToOutpaint, sendAudioToImg2Img } from "@/utils/sendHelpers";
 import PostEditControls from "../common/PostEditControls";
 import { PostEditState, NEUTRAL_POST_EDIT, isNeutral, applyPostEdit, buildFilterString, editedFilename } from "@/utils/postEdit";
 import { usePostEditPreview } from "@/hooks/usePostEditPreview";
@@ -656,33 +656,39 @@ export default function ImageGrid() {
   };
 
   const sendToInpaint = async (image: GeneratedImage) => {
-    // Send image if checked
+    // Send image/video if checked. Video routes to Inpaint's temporal
+    // inpaint clip input (the panel's own receive listener fetches the URL
+    // into a File, same as Send-to-Outpaint) -- it must not be base64-encoded
+    // into inpaint_input_image, which means "a still image".
     if (sendImage) {
-      try {
-        // Load image from /outputs/ and save to tempStorage
-        const imageUrl = `/outputs/${image.filename}`;
-        const response = await fetch(imageUrl);
-        const blob = await response.blob();
-        const reader = new FileReader();
+      const imageUrl = `/outputs/${image.filename}`;
+      if (isSelectedVideo) {
+        sendVideoToInpaint(imageUrl);
+      } else {
+        try {
+          const response = await fetch(imageUrl);
+          const blob = await response.blob();
+          const reader = new FileReader();
 
-        await new Promise((resolve, reject) => {
-          reader.onloadend = async () => {
-            try {
-              const base64data = reader.result as string;
-              const tempRef = await saveTempImage(base64data);
-              localStorage.setItem("inpaint_input_image", tempRef);
-              localStorage.removeItem("inpaint_mask_image");
-              window.dispatchEvent(new Event("inpaint_input_updated"));
-              resolve(null);
-            } catch (error) {
-              reject(error);
-            }
-          };
-          reader.onerror = reject;
-          reader.readAsDataURL(blob);
-        });
-      } catch (error) {
-        console.error("[ImageGrid] Failed to send image to inpaint:", error);
+          await new Promise((resolve, reject) => {
+            reader.onloadend = async () => {
+              try {
+                const base64data = reader.result as string;
+                const tempRef = await saveTempImage(base64data);
+                localStorage.setItem("inpaint_input_image", tempRef);
+                localStorage.removeItem("inpaint_mask_image");
+                window.dispatchEvent(new Event("inpaint_input_updated"));
+                resolve(null);
+              } catch (error) {
+                reject(error);
+              }
+            };
+            reader.onerror = reject;
+            reader.readAsDataURL(blob);
+          });
+        } catch (error) {
+          console.error("[ImageGrid] Failed to send image to inpaint:", error);
+        }
       }
     }
 
@@ -1932,7 +1938,8 @@ export default function ImageGrid() {
                           onClick={() => sendToImg2Img(selectedImage)}
                           variant="secondary"
                           size="sm"
-                          disabled={(!sendImage && !sendPrompt && !sendParameters) || detailLoading || detailError}
+                          disabled={(!sendImage && !sendPrompt && !sendParameters) || isSelectedVideo || detailLoading || detailError}
+                          title={isSelectedVideo ? "Use Capture frame for videos" : undefined}
                         >
                           img2img
                         </Button>
@@ -1941,6 +1948,7 @@ export default function ImageGrid() {
                           variant="secondary"
                           size="sm"
                           disabled={(!sendImage && !sendPrompt && !sendParameters) || isSelectedAudio || detailLoading || detailError}
+                          title={isSelectedAudio ? "Audio inpainting is repaint mode in img2img, not this panel" : undefined}
                         >
                           inpaint
                         </Button>
@@ -1956,7 +1964,8 @@ export default function ImageGrid() {
                           onClick={() => sendToUpscale(selectedImage)}
                           variant="secondary"
                           size="sm"
-                          disabled={isSelectedAudio || detailLoading || detailError}
+                          disabled={isSelectedAudio || isSelectedVideo || detailLoading || detailError}
+                          title={isSelectedVideo ? "Upscale doesn't support video clips" : undefined}
                         >
                           Upscale
                         </Button>
@@ -2231,9 +2240,9 @@ export default function ImageGrid() {
               </button>
               <button
                 onClick={() => sendToImg2Img(selectedImage)}
-                disabled={!sendImage && !sendPrompt && !sendParameters}
+                disabled={(!sendImage && !sendPrompt && !sendParameters) || isSelectedVideo}
                 className="px-3 py-2 text-sm bg-gray-800 hover:bg-gray-700 text-white rounded disabled:opacity-50 disabled:cursor-not-allowed"
-                title="Send to img2img"
+                title={isSelectedVideo ? "Use Capture frame for videos" : "Send to img2img"}
               >
                 img2img
               </button>
@@ -2241,7 +2250,7 @@ export default function ImageGrid() {
                 onClick={() => sendToInpaint(selectedImage)}
                 disabled={(!sendImage && !sendPrompt && !sendParameters) || isSelectedAudio}
                 className="px-3 py-2 text-sm bg-gray-800 hover:bg-gray-700 text-white rounded disabled:opacity-50 disabled:cursor-not-allowed"
-                title="Send to inpaint"
+                title={isSelectedAudio ? "Audio inpainting is repaint mode in img2img, not this panel" : "Send to inpaint"}
               >
                 inpaint
               </button>
@@ -2255,9 +2264,9 @@ export default function ImageGrid() {
               </button>
               <button
                 onClick={() => sendToUpscale(selectedImage)}
-                disabled={isSelectedAudio}
+                disabled={isSelectedAudio || isSelectedVideo}
                 className="px-3 py-2 text-sm bg-gray-800 hover:bg-gray-700 text-white rounded disabled:opacity-50 disabled:cursor-not-allowed"
-                title="Send to upscale"
+                title={isSelectedVideo ? "Upscale doesn't support video clips" : "Send to upscale"}
               >
                 Upscale
               </button>

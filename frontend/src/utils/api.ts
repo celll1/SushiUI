@@ -587,11 +587,6 @@ export interface OutpaintVideoParams {
   // Attention backend (see Txt2VidParams.attention_type). Filled from the
   // global localStorage setting by the sender, like every other route.
   attention_type?: string;
-  // MiniMax-H3 ref2va only (extend_forward). Sizing of each reference image
-  // file appended separately by generateOutpaintVideo (not a field here --
-  // mirrors how `video`/`bridge_video` are function arguments, not params).
-  // Same semantics as Ref2VidParams.reference_image_size.
-  reference_image_size?: "max" | "match";
 }
 
 // Video TEMPORAL inpaint (POST /generate/inpaint/video, MiniMax-H3 fl2va):
@@ -2955,8 +2950,7 @@ export const generateOutpaint = async (params: OutpaintParams, image: File | str
 export const generateOutpaintVideo = async (
   params: OutpaintVideoParams,
   video: File | string,
-  bridgeVideo?: File | string | null,
-  referenceImages?: File[]
+  bridgeVideo?: File | string | null
 ) => {
   const formData = new FormData();
 
@@ -3049,15 +3043,6 @@ export const generateOutpaintVideo = async (
   }
 
   formData.append("video_lossless", String(params.video_lossless ?? false));
-
-  // MiniMax-H3 ref2va only (extend_forward): optional image references, IN
-  // UPLOAD ORDER (the order is part of the request). Always send
-  // reference_image_size -- cheap, and the backend only reads it when there
-  // is something to size.
-  formData.append("reference_image_size", params.reference_image_size || "max");
-  for (const image of referenceImages || []) {
-    formData.append("reference_images", image);
-  }
 
   const response = await api.post("/generate/outpaint/video", formData, {
     headers: { "Content-Type": "multipart/form-data" },

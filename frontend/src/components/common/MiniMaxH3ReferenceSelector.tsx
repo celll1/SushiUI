@@ -39,11 +39,6 @@ interface MiniMaxH3ReferenceSelectorProps {
   referenceImageSize: "max" | "match";
   onReferenceImageSizeChange: (size: "max" | "match") => void;
   disabled?: boolean;
-  // Video outpaint's ref2va surface (extend_forward only): the preserved
-  // clip is ALWAYS the sole video reference there, so that endpoint has no
-  // reference_videos/reference_audios field. Hides those two sections and
-  // the title/copy that would otherwise describe them.
-  imagesOnly?: boolean;
 }
 
 export const EMPTY_MINIMAX_H3_REFERENCES: MiniMaxH3References = {
@@ -67,7 +62,6 @@ export default function MiniMaxH3ReferenceSelector({
   referenceImageSize,
   onReferenceImageSizeChange,
   disabled = false,
-  imagesOnly = false,
 }: MiniMaxH3ReferenceSelectorProps) {
   const imageInput = useRef<HTMLInputElement>(null);
   const videoInput = useRef<HTMLInputElement>(null);
@@ -76,7 +70,7 @@ export default function MiniMaxH3ReferenceSelector({
   const soundtrackTarget = useRef<number>(-1);
 
   const total = countMiniMaxH3References(value);
-  const remaining = (imagesOnly ? MAX_IMAGES : MAX_TOTAL) - total;
+  const remaining = MAX_TOTAL - total;
 
   const add = (kind: "images" | "videos" | "audios", files: FileList | null) => {
     if (!files || files.length === 0) return;
@@ -166,23 +160,14 @@ export default function MiniMaxH3ReferenceSelector({
   );
 
   return (
-    <Card title={`References (MiniMax-H3 ref2va) — ${total}/${imagesOnly ? MAX_IMAGES : MAX_TOTAL}`}>
+    <Card title={`References (MiniMax-H3 ref2va) — ${total}/${MAX_TOTAL}`}>
       <div className="space-y-3">
-        {imagesOnly ? (
-          <p className="text-xs text-gray-400">
-            Up to 9 image references, read in upload order and shown to the
-            model as <code>&lt;Picture i&gt;</code>. The preserved clip is
-            always the video reference here; there is no separate video/audio
-            reference slot on this endpoint.
-          </p>
-        ) : (
-          <p className="text-xs text-gray-400">
-            Up to 9 images, 3 videos and 3 audio clips, 12 files in total. Refer to
-            them in the prompt by the labels they are given here —{" "}
-            <code>&lt;Picture i&gt;</code>, <code>&lt;Video k&gt;</code>,{" "}
-            <code>&lt;Audio j&gt;</code>. The order is part of the request.
-          </p>
-        )}
+        <p className="text-xs text-gray-400">
+          Up to 9 images, 3 videos and 3 audio clips, 12 files in total. Refer to
+          them in the prompt by the labels they are given here —{" "}
+          <code>&lt;Picture i&gt;</code>, <code>&lt;Video k&gt;</code>,{" "}
+          <code>&lt;Audio j&gt;</code>. The order is part of the request.
+        </p>
 
         {/* Images */}
         <div>
@@ -214,7 +199,6 @@ export default function MiniMaxH3ReferenceSelector({
         </div>
 
         {/* Videos + their positional soundtracks */}
-        {!imagesOnly && (
         <div>
           <div className="flex items-center justify-between">
             <span className="text-sm text-gray-300">
@@ -273,10 +257,8 @@ export default function MiniMaxH3ReferenceSelector({
             ),
           )}
         </div>
-        )}
 
         {/* Standalone audio */}
-        {!imagesOnly && (
         <div>
           <div className="flex items-center justify-between">
             <span className="text-sm text-gray-300">
@@ -311,7 +293,6 @@ export default function MiniMaxH3ReferenceSelector({
             </p>
           )}
         </div>
-        )}
 
         <Select
           label="Image reference size"
@@ -326,10 +307,8 @@ export default function MiniMaxH3ReferenceSelector({
         <p className="text-xs text-gray-500">
           A reference&apos;s rows ride through every sampling step, so a larger
           image reference lengthens the packed sequence for the whole
-          generation.{" "}
-          {imagesOnly
-            ? "The automatic source-clip video reference is unaffected: it always follows the canvas rule the generated video follows."
-            : "Video references are unaffected: they always follow the canvas rule the generated video follows."}
+          generation. Video references are unaffected: they always follow the
+          canvas rule the generated video follows.
         </p>
       </div>
     </Card>

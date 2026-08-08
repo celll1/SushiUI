@@ -82,7 +82,7 @@ export default function ModelTools({ modelLoaded, modelType }: ModelToolsProps) 
   };
 
   return (
-    <div className="space-y-4 p-3 border-t border-gray-700">
+    <div className="space-y-3 border-t border-gray-800 p-3">
       <h3 className="text-sm font-semibold text-gray-200">Model Tools</h3>
 
       {/* ── Merge LoRA ── */}

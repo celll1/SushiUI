@@ -22,8 +22,11 @@ export default function TaggerSection() {
 
   const modelPanel = (
     <div className="flex flex-col h-full overflow-y-auto">
-      <div className="p-4 border-b border-gray-700 flex items-center gap-2">
-        <h1 className="text-xl font-bold text-white flex-1">Tagger</h1>
+      <div className="flex h-12 items-center gap-2 border-b border-gray-800 px-3">
+        <div className="flex-1">
+          <p className="app-kicker">Vision</p>
+          <h1 className="app-title">Tagger</h1>
+        </div>
         {/* Close button (mobile only) */}
         <button
           onClick={() => setDrawerOpen(false)}
@@ -42,9 +45,9 @@ export default function TaggerSection() {
   );
 
   return (
-    <div className="flex h-full min-h-screen relative">
+    <div className="relative flex h-full min-h-0 bg-gray-950">
       {/* ── Desktop: fixed left sidebar ── */}
-      <div className="hidden lg:flex lg:w-80 lg:shrink-0 border-r border-gray-700 flex-col">
+      <div className="hidden flex-col border-r border-gray-800 bg-gray-900/40 lg:flex lg:w-72 lg:shrink-0">
         {modelPanel}
       </div>
 
@@ -58,7 +61,7 @@ export default function TaggerSection() {
       )}
       {/* Drawer panel */}
       <div
-        className={`fixed top-0 left-0 h-full w-80 max-w-[90vw] bg-gray-900 border-r border-gray-700 z-50 lg:hidden transition-transform duration-200 ${
+        className={`fixed left-0 top-0 z-50 h-full w-72 max-w-[90vw] border-r border-gray-700 bg-gray-900 transition-transform duration-200 lg:hidden ${
           drawerOpen ? "translate-x-0" : "-translate-x-full"
         }`}
       >
@@ -68,7 +71,7 @@ export default function TaggerSection() {
       {/* ── Right panel ── */}
       <div className="flex-1 overflow-hidden flex flex-col min-w-0">
         {/* Top bar */}
-        <div className="flex items-center border-b border-gray-700 px-2 flex-shrink-0">
+        <div className="flex h-12 flex-shrink-0 items-center border-b border-gray-800 bg-gray-950/80 px-2">
           {/* Hamburger (mobile only) */}
           <button
             onClick={() => setDrawerOpen(true)}
@@ -98,15 +101,15 @@ export default function TaggerSection() {
           </span>
 
           {/* Tab bar */}
-          <div className="flex gap-1 flex-1">
+          <div className="app-tabs flex-1 border-b-0">
             {(["inference", "browser"] as const).map((t) => (
               <button
                 key={t}
                 onClick={() => setTaggerTab(t)}
-                className={`px-3 py-2 text-sm font-medium transition-colors ${
+                className={`app-tab ${
                   taggerTab === t
-                    ? "text-white border-b-2 border-blue-500"
-                    : "text-gray-400 hover:text-gray-200"
+                    ? "app-tab-active"
+                    : ""
                 }`}
               >
                 {t === "inference" ? "推論" : "ブラウザ"}

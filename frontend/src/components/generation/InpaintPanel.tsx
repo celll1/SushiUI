@@ -4137,9 +4137,9 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
   };
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+    <div className="grid grid-cols-1 gap-2.5 lg:grid-cols-2">
       {/* Parameters Panel */}
-      <div className="space-y-4">
+      <div className="space-y-2.5">
         <ModelLoadSection
           onModelLoad={async () => {
             // Reload model info when model changes

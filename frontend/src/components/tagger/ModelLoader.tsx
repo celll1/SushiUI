@@ -183,8 +183,8 @@ export default function ModelLoader({ onStatusChange }: ModelLoaderProps) {
     }
   };
 
-  const inputCls = "w-full bg-gray-800 border border-gray-600 rounded px-2 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500";
-  const labelCls = "block text-sm text-gray-400 mb-1";
+  const inputCls = "h-8 w-full rounded-md border border-gray-700 bg-gray-800 px-2 text-xs text-white focus:border-violet-500 focus:outline-none";
+  const labelCls = "mb-1 block text-xs text-gray-400";
 
   return (
     <div className="space-y-3 p-3">
@@ -317,7 +317,7 @@ export default function ModelLoader({ onStatusChange }: ModelLoaderProps) {
         <button
           onClick={handleLoad}
           disabled={loading || !checkpointPath}
-          className="flex-1 py-1.5 rounded text-sm font-medium bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white transition-colors"
+          className="flex-1 rounded-md border border-violet-400/30 bg-violet-600 py-1.5 text-xs font-medium text-white transition-colors hover:bg-violet-500 disabled:cursor-not-allowed disabled:opacity-50"
         >
           {loading ? "Loading…" : "Load"}
         </button>

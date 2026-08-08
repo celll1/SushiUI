@@ -3,8 +3,14 @@
 @tailwind utilities;
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #080d13;
+  --foreground: #e7edf5;
+  --studio-panel: #0d141d;
+  --studio-panel-raised: #121b26;
+  --studio-border: #253140;
+  --studio-muted: #8793a3;
+  --studio-accent: #7c5cff;
+  --studio-accent-hover: #8d73ff;
   --ui-font-size: 100%; /* Default UI font size (can be adjusted in settings) */
 }
 
@@ -18,7 +24,75 @@
 body {
   color: var(--foreground);
   background: var(--background);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: Inter, "Segoe UI", Arial, Helvetica, sans-serif;
+  font-size: 14px;
+}
+
+::selection {
+  background: rgba(124, 92, 255, 0.38);
+}
+
+* {
+  scrollbar-color: #354155 #0a1018;
+  scrollbar-width: thin;
+}
+
+input[type="checkbox"],
+input[type="radio"] {
+  accent-color: var(--studio-accent);
+}
+
+@layer components {
+  .app-shell {
+    @apply flex h-screen overflow-hidden bg-gray-950 text-gray-100;
+  }
+
+  .app-main {
+    @apply min-w-0 flex-1 overflow-auto pt-14 lg:pt-0;
+  }
+
+  .app-topbar {
+    @apply flex min-h-12 items-center border-b border-gray-800 bg-gray-950/95 px-3 backdrop-blur sm:px-4;
+  }
+
+  .app-title {
+    @apply text-sm font-semibold tracking-wide text-gray-100 sm:text-base;
+  }
+
+  .app-kicker {
+    @apply text-[10px] font-semibold uppercase tracking-[0.16em] text-violet-400;
+  }
+
+  .app-content {
+    @apply p-2.5 sm:p-3;
+  }
+
+  .app-tabs {
+    @apply flex items-center gap-1 overflow-x-auto border-b border-gray-800 px-1;
+  }
+
+  .app-tab {
+    @apply relative whitespace-nowrap px-3 py-2 text-xs font-medium text-gray-500 transition-colors hover:text-gray-200;
+  }
+
+  .app-tab-active {
+    @apply text-violet-300;
+  }
+
+  .app-tab-active::after {
+    position: absolute;
+    right: 0.5rem;
+    bottom: 0;
+    left: 0.5rem;
+    height: 2px;
+    border-radius: 9999px;
+    background: #a78bfa;
+    content: "";
+  }
+
+  .compact-workspace {
+    @apply text-[13px];
+  }
 }
 
 /* Apply font size scaling on mobile devices */

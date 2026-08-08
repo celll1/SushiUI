@@ -37,14 +37,14 @@ export default function Slider({
   return (
     <div className={className}>
       {label && (
-        <div className="flex justify-between items-center mb-2">
-          <label className="block text-sm font-medium text-gray-300">
+        <div className="mb-1 flex items-center justify-between">
+          <label className="block text-xs font-medium text-gray-400">
             {label}
           </label>
-          <span className="text-sm text-gray-400 font-mono">{value}</span>
+          <span className="text-xs font-mono text-gray-400">{value}</span>
         </div>
       )}
-      <div className="flex items-center space-x-3">
+      <div className="flex items-center space-x-2">
         <input
           type="range"
           min={min}
@@ -58,15 +58,15 @@ export default function Slider({
             [&::-webkit-slider-thumb]:w-4
             [&::-webkit-slider-thumb]:h-4
             [&::-webkit-slider-thumb]:rounded-full
-            [&::-webkit-slider-thumb]:bg-blue-600
+            [&::-webkit-slider-thumb]:bg-violet-500
             [&::-webkit-slider-thumb]:cursor-pointer
-            [&::-webkit-slider-thumb]:hover:bg-blue-700
+            [&::-webkit-slider-thumb]:hover:bg-violet-400
             [&::-moz-range-thumb]:w-4
             [&::-moz-range-thumb]:h-4
             [&::-moz-range-thumb]:rounded-full
-            [&::-moz-range-thumb]:bg-blue-600
+            [&::-moz-range-thumb]:bg-violet-500
             [&::-moz-range-thumb]:cursor-pointer
-            [&::-moz-range-thumb]:hover:bg-blue-700
+            [&::-moz-range-thumb]:hover:bg-violet-400
             [&::-moz-range-thumb]:border-0"
           {...props}
         />
@@ -78,8 +78,7 @@ export default function Slider({
           value={value}
           onChange={onChange}
           onWheel={handleWheel}
-          className="w-16 sm:w-20 px-1 sm:px-2 py-1 text-sm bg-gray-800 border border-gray-700 rounded-md text-white
-            focus:outline-none focus:ring-2 focus:ring-blue-500"
+          className="h-7 w-16 rounded-md border border-gray-700 bg-gray-800 px-1 text-xs text-white focus:outline-none focus:ring-1 focus:ring-violet-500 sm:w-20 sm:px-2"
           {...props}
         />
       </div>

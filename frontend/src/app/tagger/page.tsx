@@ -7,9 +7,9 @@ import TaggerSection from "@/components/tagger/TaggerSection";
 export default function TaggerPage() {
   return (
     <ProtectedRoute>
-      <div className="flex h-screen bg-gray-900 text-white">
+      <div className="app-shell">
         <Sidebar />
-        <main className="flex-1 overflow-hidden pt-16 lg:pt-0">
+        <main className="app-main compact-workspace overflow-hidden">
           <TaggerSection />
         </main>
       </div>

@@ -7,11 +7,18 @@ import ProtectedRoute from "@/components/common/ProtectedRoute";
 export default function GalleryPage() {
   return (
     <ProtectedRoute>
-      <div className="flex h-screen">
+      <div className="app-shell">
         <Sidebar />
-        <main className="flex-1 overflow-auto p-3 sm:p-6 pt-16 lg:pt-6">
-          <h1 className="text-xl sm:text-2xl font-bold mb-4 sm:mb-6">Gallery</h1>
-          <ImageGrid />
+        <main className="app-main compact-workspace flex flex-col overflow-hidden">
+          <header className="app-topbar">
+            <div>
+              <p className="app-kicker">Library</p>
+              <h1 className="app-title">Gallery</h1>
+            </div>
+          </header>
+          <div className="app-content flex-1 overflow-auto">
+            <ImageGrid />
+          </div>
         </main>
       </div>
     </ProtectedRoute>

@@ -248,7 +248,7 @@ export default function Textarea({
   return (
     <div className="space-y-1">
       {label && (
-        <label className="block text-xs lg:text-sm font-medium text-gray-300">
+        <label className="block text-xs font-medium text-gray-400">
           {label}
           {enableWeightControl && (
             <span className="ml-2 text-xs text-gray-500 hidden lg:inline">
@@ -260,7 +260,7 @@ export default function Textarea({
       <textarea
         ref={textareaRef}
         className={cn(
-          "w-full rounded-lg bg-gray-800 border border-gray-700 px-3 py-2 text-gray-100 placeholder-gray-500 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 resize-vertical",
+          "w-full rounded-md border border-gray-700 bg-gray-800 px-2.5 py-2 text-sm text-gray-100 placeholder-gray-500 focus:border-violet-500 focus:outline-none focus:ring-1 focus:ring-violet-500 resize-vertical",
           className
         )}
         onKeyDown={handleKeyDown}

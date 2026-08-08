@@ -148,7 +148,7 @@ export default function NumberInput({
       disabled={disabled}
       aria-label={label}
       className={cn(
-        "px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs",
+        "h-7 rounded-md border border-gray-700 bg-gray-800 px-2 text-xs text-gray-100 focus:border-violet-500 focus:outline-none focus:ring-1 focus:ring-violet-500",
         className
       )}
       value={draft}

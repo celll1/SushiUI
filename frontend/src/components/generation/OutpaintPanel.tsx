@@ -52,6 +52,7 @@ import {
   videoCanvasAxisBounds,
   videoCanvasExceedsEnvelope,
   isGenerationStalledError,
+  archSupportsFeature,
 } from "@/utils/api";
 import { wsClient, CFGMetrics } from "@/utils/websocket";
 import { saveTempImage, loadTempImage, deleteTempImageRef } from "@/utils/tempImageStorage";
@@ -1322,6 +1323,12 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
   // and/or last frame of the span it generates) lists only the placements it
   // can anchor. No arch name appears here.
   const loadedArchType = currentModelInfo?.model_info?.type as string | undefined;
+  // Spectrum/FBCache: accepted-but-inert on an architecture whose sampler never
+  // reads spectrum_enable/fbcache_enable (e.g. MiniMax-H3's FBCache was measured
+  // and dropped rather than shipped). Hidden rather than shown-disabled, the
+  // same leaf-control convention the other generation panels use for this pair.
+  const supportsSpectrum = archSupportsFeature(archCapabilities, loadedArchType, "spectrum");
+  const supportsFbcache = archSupportsFeature(archCapabilities, loadedArchType, "fbcache");
   const outpaintPlacements = videoOutpaintPlacements(archCapabilities, loadedArchType);
   const boundaryPlacementOnly = !outpaintPlacements.includes("free");
   // MiniMax-H3 ref2va: direct variant check, matching Txt2ImgPanel/Img2ImgPanel
@@ -2582,6 +2589,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
 
     acceleration: () => (
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
+        {supportsSpectrum && (
         <div className="space-y-2">
         <div className="flex items-center gap-2">
           <input
@@ -2668,7 +2676,9 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
           </div>
         )}
         </div>
+        )}
 
+        {supportsFbcache && (
         <div className="space-y-2">
         <div className="flex items-center gap-2 mt-2">
           <input
@@ -2702,6 +2712,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
           </div>
         )}
         </div>
+        )}
       </div>
     ),
 
@@ -4098,6 +4109,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
             </div>
           )}
 
+          {supportsSpectrum && (
           <div className="flex items-center gap-2 mt-2">
             <input
               type="checkbox"
@@ -4111,7 +4123,8 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
             </label>
             <span className="text-xs text-gray-500">(mutually exclusive with FBCache; disabled if Block Swap is on)</span>
           </div>
-          {params.spectrum_enable && (
+          )}
+          {supportsSpectrum && params.spectrum_enable && (
             <div className="ml-6 mt-1 grid grid-cols-2 gap-2">
               <label className="text-xs text-gray-400 flex items-center gap-1">Mix w
                 <input type="number" min={0} max={1} step={0.05} value={params.spectrum_w ?? 0.5}
@@ -4126,6 +4139,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
             </div>
           )}
 
+          {supportsFbcache && (
           <div className="flex items-center gap-2 mt-2">
             <input
               type="checkbox"
@@ -4139,7 +4153,8 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
             </label>
             <span className="text-xs text-gray-500">(mutually exclusive with Spectrum)</span>
           </div>
-          {params.fbcache_enable && (
+          )}
+          {supportsFbcache && params.fbcache_enable && (
             <div className="ml-6 mt-1 grid grid-cols-2 gap-2">
               <label className="text-xs text-gray-400 flex items-center gap-1">Residual threshold
                 <NumberInput min={0} step={0.01} parse="float" value={params.fbcache_threshold ?? 0.12}

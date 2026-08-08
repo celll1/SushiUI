@@ -518,6 +518,11 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
   const loadedArchName = archDisplayName(loadedArch);
   const supportsCfg = archSupportsFeature(archCapabilities, loadedArch, "cfg");
   const supportsNegativePrompt = archSupportsFeature(archCapabilities, loadedArch, "negative_prompt");
+  // Spectrum/FBCache: accepted-but-inert on an architecture whose sampler never
+  // reads spectrum_enable/fbcache_enable. Hidden rather than shown-disabled,
+  // the same convention as supportsCfg/supportsNegativePrompt above.
+  const supportsSpectrum = archSupportsFeature(archCapabilities, loadedArch, "spectrum");
+  const supportsFbcache = archSupportsFeature(archCapabilities, loadedArch, "fbcache");
   // Snap a persisted clip length the LOADED video architecture does not accept
   // (LTX-2.3's 121 carried onto MiniMax-H3, whose grid starts at 124). Same
   // shape and same reason as the unet_quantization normaliser above: otherwise
@@ -3398,6 +3403,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
 
     acceleration: () => (
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
+        {supportsSpectrum && (
         <div className="space-y-2">
         <div className="flex items-center gap-2">
           <input
@@ -3484,7 +3490,9 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
           </div>
         )}
         </div>
+        )}
 
+        {supportsFbcache && (
         <div className="space-y-2">
         <div className="flex items-center gap-2 mt-2">
           <input
@@ -3518,6 +3526,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
           </div>
         )}
         </div>
+        )}
       </div>
     ),
 

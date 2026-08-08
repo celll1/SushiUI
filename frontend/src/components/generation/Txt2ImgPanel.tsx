@@ -15,7 +15,7 @@ import Select from "../common/Select";
 import ModelLoadSection from "../common/ModelLoadSection";
 import LoRASelector from "../common/LoRASelector";
 import ControlNetSelector from "../common/ControlNetSelector";
-import MiniMaxH3ReferenceSelector, { EMPTY_MINIMAX_H3_REFERENCES, countMiniMaxH3References } from "../common/MiniMaxH3ReferenceSelector";
+import MiniMaxH3ReferenceSelector, { EMPTY_MINIMAX_H3_REFERENCES, countMiniMaxH3References, MAX_VIDEOS, MAX_TOTAL } from "../common/MiniMaxH3ReferenceSelector";
 import MiniMaxH3Ref2VidKeyframeSelector from "../common/MiniMaxH3Ref2VidKeyframeSelector";
 import TIPODialog, { TIPOSettings } from "../common/TIPODialog";
 import { fixFloatingPointParams } from "@/utils/numberUtils";
@@ -35,7 +35,7 @@ import CFGMetricsGraph from "../common/CFGMetricsGraph";
 import VramInspector from "../common/VramInspector";
 import { saveTempImage, loadTempImage } from "@/utils/tempImageStorage";
 import { previewStorageKeys, loadVideoPreview, saveVideoPreview, loadAudioPreview, saveAudioPreview, saveImagePreview, clearVideoPreview, clearAudioPreview, clearImagePreview, outputExists, stripCacheBuster, withCacheBuster, imagePreviewGone } from "@/utils/previewStorage";
-import { sendToPanel, sendImageToImg2Img, sendBase64ImageToInpaint, sendBase64ImageToUpscale, sendBase64ImageToOutpaint, sendVideoToOutpaint, sendVideoToInpaint, sendAudioToOutpaint, sendAudioToImg2Img } from "@/utils/sendHelpers";
+import { sendToPanel, sendImageToImg2Img, sendBase64ImageToInpaint, sendBase64ImageToUpscale, sendBase64ImageToOutpaint, sendVideoToOutpaint, sendVideoToInpaint, sendVideoToReference, sendAudioToOutpaint, sendAudioToImg2Img, fetchUrlToFile } from "@/utils/sendHelpers";
 import { useStartup } from "@/contexts/StartupContext";
 import { useGenerationQueue } from "@/contexts/GenerationQueueContext";
 
@@ -733,6 +733,32 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
     };
   }, []);
 
+  // "Use as reference video" (gallery, video results): appends the clip to the
+  // ref2va reference track. Whole-clip content conditioning, not a placement
+  // anchor -- see sendVideoToReference in sendHelpers.ts.
+  useEffect(() => {
+    const handleReferenceVideoUpdate = async () => {
+      const url = localStorage.getItem("h3_reference_video");
+      if (!url) return;
+      try {
+        const file = await fetchUrlToFile(url);
+        setH3References(prev => {
+          if (prev.videos.length >= MAX_VIDEOS || countMiniMaxH3References(prev) >= MAX_TOTAL) {
+            console.warn("[Txt2Img] Reference video not added: track is full");
+            return prev;
+          }
+          return { ...prev, videos: [...prev.videos, file], videoAudios: [...prev.videoAudios, null] };
+        });
+      } catch (error) {
+        console.error("[Txt2Img] Failed to load sent reference video:", error);
+      } finally {
+        localStorage.removeItem("h3_reference_video");
+      }
+    };
+    window.addEventListener("h3_reference_video_updated", handleReferenceVideoUpdate);
+    return () => window.removeEventListener("h3_reference_video_updated", handleReferenceVideoUpdate);
+  }, []);
+
   // Reload params from localStorage when navigating to /generate (from Gallery)
   useEffect(() => {
     if (pathname === "/generate" && isMounted) {
@@ -1071,6 +1097,16 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
     }
     sendVideoToInpaint(generatedVideo);
     if (onTabChange) onTabChange("inpaint");
+  };
+
+  // generatedVideo (Txt2Vid) result -> the ref2va reference track (whole-clip
+  // conditioning, not a placement anchor -- see sendVideoToReference).
+  const sendVideoResultToReference = () => {
+    if (!generatedVideo) {
+      alert("No video to send");
+      return;
+    }
+    sendVideoToReference(generatedVideo);
   };
 
   // generatedAudio (Txt2Aud) result -> Outpaint's outpaint_aud clip input.
@@ -3797,13 +3833,27 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
             the Video card. With no references the same model still serves a
             plain text-to-video request. */}
         {isVideo && isRef2Va && (
-          <MiniMaxH3ReferenceSelector
-            value={h3References}
-            onChange={setH3References}
-            referenceImageSize={h3ReferenceImageSize}
-            onReferenceImageSizeChange={setH3ReferenceImageSize}
-            disabled={isGenerating}
-          />
+          <>
+            <p className="text-xs text-gray-500 -mb-1">
+              Adding a video reference here is MiniMax&apos;s documented{" "}
+              <span className="text-gray-400">video continuation</span> task
+              type: the reference is laid out frame-contiguous with the
+              generated span, and the whole output is regenerated (not
+              preserved byte-exact — that is Outpaint&apos;s boundary-frame
+              extend on the fl2va checkpoint instead). MiniMax&apos;s guide
+              composes it with an image anchor as{" "}
+              <code>[video continuation + keyframe completion]</code> — e.g.
+              continuing from a source video while an image reference pins
+              the last frame.
+            </p>
+            <MiniMaxH3ReferenceSelector
+              value={h3References}
+              onChange={setH3References}
+              referenceImageSize={h3ReferenceImageSize}
+              onReferenceImageSizeChange={setH3ReferenceImageSize}
+              disabled={isGenerating}
+            />
+          </>
         )}
 
         {/* C5: keyframe anchors, a track separate from the references above --
@@ -4539,6 +4589,15 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                   </Button>
                   <Button onClick={sendVideoResultToOutpaint} variant="secondary" size="sm">
                     Send to outpaint
+                  </Button>
+                  <Button
+                    onClick={sendVideoResultToReference}
+                    variant="secondary"
+                    size="sm"
+                    className="col-span-2"
+                    title="Condition a new generation on this whole clip (MiniMax-H3 ref2va). Regenerates everything; use Send to outpaint to extend the clip in place instead."
+                  >
+                    Use as reference video
                   </Button>
                 </div>
               </div>

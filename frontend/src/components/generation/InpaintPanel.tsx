@@ -33,7 +33,7 @@ import { wsClient, CFGMetrics } from "@/utils/websocket";
 import CFGMetricsGraph from "../common/CFGMetricsGraph";
 import { saveTempImage, loadTempImage, deleteTempImageRef } from "@/utils/tempImageStorage";
 import { previewStorageKeys, saveImagePreview, clearImagePreview, loadVideoPreview, saveVideoPreview, clearVideoPreview, outputExists, stripCacheBuster, withCacheBuster, imagePreviewGone } from "@/utils/previewStorage";
-import { sendToPanel, sendImageToImg2Img, sendImageToUpscale, sendImageToOutpaint, sendVideoToOutpaint, sendVideoToInpaint, fetchUrlToFile } from "@/utils/sendHelpers";
+import { sendToPanel, sendImageToImg2Img, sendImageToUpscale, sendImageToOutpaint, sendVideoToOutpaint, sendVideoToInpaint, sendVideoToReference, fetchUrlToFile } from "@/utils/sendHelpers";
 import { fixFloatingPointParams } from "@/utils/numberUtils";
 import { useStartup } from "@/contexts/StartupContext";
 import { useGenerationQueue } from "@/contexts/GenerationQueueContext";
@@ -1807,6 +1807,17 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
     }
     sendVideoToInpaint(generatedVideo);
     if (onTabChange) onTabChange("inpaint");
+  };
+
+  // generatedVideo (inpaint_vid) result -> the ref2va reference track
+  // (whole-clip conditioning, not a placement anchor -- see sendVideoToReference).
+  const sendVideoResultToReference = () => {
+    if (!generatedVideo) {
+      alert("No video to send");
+      return;
+    }
+    sendVideoToReference(generatedVideo);
+    if (onTabChange) onTabChange("txt2img");
   };
 
   const sendToInpaint = async () => {
@@ -5561,6 +5572,15 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
                   </Button>
                   <Button onClick={sendVideoResultToOutpaint} variant="secondary" size="sm">
                     Send to outpaint
+                  </Button>
+                  <Button
+                    onClick={sendVideoResultToReference}
+                    variant="secondary"
+                    size="sm"
+                    className="col-span-2"
+                    title="Condition a new generation on this whole clip (MiniMax-H3 ref2va). Regenerates everything; use Send to outpaint to extend the clip in place instead."
+                  >
+                    Use as reference video
                   </Button>
                 </div>
               )}

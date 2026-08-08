@@ -24,11 +24,12 @@ import PostEditControls from "../common/PostEditControls";
 import { PostEditState, NEUTRAL_POST_EDIT, buildFilterString } from "@/utils/postEdit";
 import { usePostEditPreview } from "@/hooks/usePostEditPreview";
 import GenerationQueue from "../common/GenerationQueue";
+import ResizableColumns from "../common/ResizableColumns";
 import PromptEditor from "../common/PromptEditor";
 import LoopGenerationPanel, { LoopGenerationConfig } from "./LoopGenerationPanel";
 import QuantizedGemmSelect from "./QuantizedGemmSelect";
 import { migrateLoopGenerationConfig, computeLoopDecodeDirective } from "@/utils/loopGenerationInheritance";
-import { generateTxt2Img, generateImg2Img, generateTxt2Vid, Txt2VidParams, generateRef2Vid, Ref2VidParams, MiniMaxH3References, MiniMaxH3Keyframe, generateTxt2Aud, Txt2AudParams, generateTxt2ImgTrainingPreview, GenerationParams, getSamplers, getScheduleTypes, tokenizePrompt, generateTIPOPrompt, cancelGeneration, getCurrentModel, isLatentOnlyResult, getResultFilename, getResultSeed, getResultAncestralSeed, unetQuantizationOptions, normalizeUnetQuantization, transformerQuantizationLabel, archSupportsFeature, videoFrameOptions, videoFrameLabel, archDisplayName, normalizeVideoFrames, isGenerationStalledError } from "@/utils/api";
+import { generateTxt2Img, generateImg2Img, generateTxt2Vid, Txt2VidParams, generateRef2Vid, Ref2VidParams, MiniMaxH3References, MiniMaxH3Keyframe, generateTxt2Aud, Txt2AudParams, generateTxt2ImgTrainingPreview, GenerationParams, getSamplers, getScheduleTypes, tokenizePrompt, generateTIPOPrompt, cancelGeneration, getCurrentModel, isLatentOnlyResult, getResultFilename, getResultSeed, getResultAncestralSeed, unetQuantizationOptions, normalizeUnetQuantization, transformerQuantizationLabel, archSupportsFeature, videoFrameOptions, videoFrameLabel, archDisplayName, normalizeVideoFrames, videoCanvasRule, videoCanvasAxisBounds, videoCanvasExceedsEnvelope, isGenerationStalledError } from "@/utils/api";
 import { useActiveTraining } from "@/hooks/useActiveTraining";
 import { wsClient, CFGMetrics } from "@/utils/websocket";
 import CFGMetricsGraph from "../common/CFGMetricsGraph";
@@ -3322,8 +3323,28 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
     ),
   };
 
+  // ── What the video Absolute sliders are allowed to reach ─────────────────
+  //
+  // Same rule as Img2Img/Inpaint/Outpaint's video Size sliders (see
+  // videoCanvasAxisBounds): the envelope is on the short/long edges, not on
+  // width/height, so each slider's ceiling depends on where the other one
+  // sits. txt2vid has no input clip, so there is no Scale mode here -- only
+  // the Absolute bounds/warning apply.
+  const videoCanvasWidth = params.width ?? 768;
+  const videoCanvasHeight = params.height ?? 512;
+  const videoWidthBounds = videoCanvasAxisBounds(archCapabilities, loadedArch, videoCanvasHeight);
+  const videoHeightBounds = videoCanvasAxisBounds(archCapabilities, loadedArch, videoCanvasWidth);
+  const videoCanvasOverEnvelope = videoCanvasExceedsEnvelope(
+    archCapabilities, loadedArch, videoCanvasWidth, videoCanvasHeight);
+
   return (
-    <div className="grid grid-cols-1 gap-2.5 lg:grid-cols-2">
+    <ResizableColumns
+      storageKey="txt2img_main_split"
+      label="Settings and preview width"
+      defaultPrimaryPercent={46}
+      minPrimaryPercent={34}
+      maxPrimaryPercent={66}
+    >
       {/* Parameters Panel */}
       <div className="space-y-2.5">
         <ModelLoadSection
@@ -3720,23 +3741,44 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                 There is no Scale size mode here: txt2vid has no input image to
                 derive a size from (Img2Img/Outpaint, which do, have one). */}
             <div className="space-y-4">
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <Slider
-                  label="Width (÷32)"
-                  min={32}
-                  max={2048}
-                  step={32}
-                  value={params.width ?? 768}
-                  onChange={(e) => setParams({ ...params, width: parseInt(e.target.value) })}
-                />
-                <Slider
-                  label="Height (÷32)"
-                  min={32}
-                  max={2048}
-                  step={32}
-                  value={params.height ?? 512}
-                  onChange={(e) => setParams({ ...params, height: parseInt(e.target.value) })}
-                />
+              <div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <Slider
+                    label={`Width (÷${videoWidthBounds.step})`}
+                    min={videoWidthBounds.min}
+                    max={videoWidthBounds.max}
+                    step={videoWidthBounds.step}
+                    value={videoCanvasWidth}
+                    onChange={(e) => setParams({ ...params, width: parseInt(e.target.value) })}
+                  />
+                  <Slider
+                    label={`Height (÷${videoHeightBounds.step})`}
+                    min={videoHeightBounds.min}
+                    max={videoHeightBounds.max}
+                    step={videoHeightBounds.step}
+                    value={videoCanvasHeight}
+                    onChange={(e) => setParams({ ...params, height: parseInt(e.target.value) })}
+                  />
+                </div>
+                {/* Why a slider stops where it does. Only rendered for an
+                    architecture that HAS an envelope -- LTX-2.3 declares
+                    none, so it keeps its full range and says nothing about
+                    a cap. */}
+                {videoWidthBounds.capped && (
+                  <p className="text-xs text-gray-500 mt-1">
+                    {videoCanvasRule(archCapabilities, loadedArch)}. The cap is on the
+                    short and long edges rather than on width and height, so each
+                    slider stops at the largest edge the other axis currently allows.
+                  </p>
+                )}
+                {videoCanvasOverEnvelope && (
+                  <p className="text-xs text-amber-400 mt-1">
+                    The canvas is {videoCanvasWidth}x{videoCanvasHeight}, which is
+                    outside this model&apos;s envelope. The value is kept as set — it
+                    is not moved for you — and this model refuses it, so change it
+                    before generating.
+                  </p>
+                )}
               </div>
 
               <Select
@@ -4156,7 +4198,14 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
       {/* Preview Panel */}
       <div className="pb-16 lg:pb-0">
         <Card title="Preview">
-          <div className="flex flex-col lg:flex-row gap-2 lg:h-[800px]">
+          <ResizableColumns
+            storageKey="txt2img_preview_queue_split"
+            label="Preview and queue width"
+            defaultPrimaryPercent={68}
+            minPrimaryPercent={55}
+            maxPrimaryPercent={82}
+            className="lg:h-[800px]"
+          >
             {/* Left: Preview and Controls */}
             <div className="flex-1 flex flex-col space-y-2 min-w-0">
               {/* Action Buttons - Desktop only (hidden on mobile) */}
@@ -4628,10 +4677,10 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
             </div>
 
             {/* Right: Generation Queue */}
-            <div className="w-full lg:w-60 lg:flex-shrink-0">
+            <div className="w-full">
               <GenerationQueue currentStep={progress} />
             </div>
-          </div>
+          </ResizableColumns>
         </Card>
       </div>
 
@@ -4662,6 +4711,6 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
           onClose={() => setIsPromptEditorOpen(false)}
         />
       )}
-    </div>
+    </ResizableColumns>
   );
 }

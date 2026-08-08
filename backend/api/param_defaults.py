@@ -1009,13 +1009,6 @@ OUTPAINT_VIDEO_DEFAULTS: Dict[str, Any] = {
     # file uploads can have it. The value recorded in `params` (and on the
     # gallery row) is the uploaded FILENAME, not the bytes.
     "bridge_video": None,
-    # MiniMax-H3 ref2va only (extend_forward): optional image references on
-    # top of the source clip, which is ALWAYS the sole video reference on
-    # this endpoint (no reference_videos/reference_audios field here -- see
-    # OUTPAINT_VIDEO_ARCH_OVERLAYS / the route's partition gate). Same sizing
-    # choice and filename-only recording as REF2VID_DEFAULTS.
-    "reference_image_size": "max",
-    "reference_images": None,
 }
 
 # Per-architecture overlay for the keys that exist ONLY on the video-outpaint

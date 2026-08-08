@@ -1420,19 +1420,14 @@ paths:
           MiniMax-H3: the GENERATED span implied by `total_frames` and the
           placed clip length must be a valid `17n + 5` length in 124..345; it
           is rounded up to that grid, with a warning, when it is not.
-        - **Partition/placement gate (MiniMax-H3):** `fl2va` serves every
-          placement and refuses `reference_images` with a 400 (that
-          partition was never trained to read reference rows). `ref2va`
-          serves ONLY `extend_forward`, where the preserved clip's own
-          trailing frames become an automatic video reference (soundtrack
-          excluded) and `reference_images` add optional image references on
-          top -- both compose through the same anchor + placement machinery,
-          and the preservation/concatenation guarantee below is unchanged.
-          `extend_backward` and `bridge` are refused on `ref2va` (400,
-          unmeasured shape), as is a generated span shorter than 22 frames
-          (the reference video floor). No configuration on this endpoint
-          regenerates the input; a refused request is never rerouted to
-          `/generate/ref2vid`.
+        - This endpoint serves MiniMax-H3's `fl2va` transformer partition.
+          With the `ref2va` partition loaded it answers 400: boundary-frame
+          conditioning is not a trained behaviour of that partition. To
+          extend a clip with `ref2va` loaded, send it as `reference_videos`
+          on `/generate/ref2vid` (its documented "video continuation" use,
+          measured to compose with `reference_images`) -- that REGENERATES
+          the whole clip's content rather than preserving it byte-exact, so
+          it is a different guarantee from this endpoint's, not a substitute.
       operationId: generateOutpaintVideo
       requestBody:
         required: true
@@ -1460,11 +1455,9 @@ paths:
             the requested `input_offset_frames` is not a placement the loaded
             architecture supports (MiniMax-H3: anything other than the start,
             the end, or a bridge), when `bridge_video` is sent to an
-            architecture that has no bridge placement, when `reference_images`
-            is sent to a non-MiniMax-H3 model or a loaded `fl2va` transformer,
-            or when a `ref2va` transformer is asked for `extend_backward`,
-            `bridge`, or a generated span shorter than 22 frames (see the
-            partition/placement gate above).
+            architecture that has no bridge placement, or when the loaded
+            MiniMax-H3 transformer is the `ref2va` variant (this endpoint
+            serves `fl2va`).
           content:
             application/json:
               schema:
@@ -8196,35 +8189,6 @@ components:
             archival/verification of the exact preserved frames, not casual
             playback.
           example: false
-        reference_image_size:
-          type: string
-          enum: [max, match]
-          default: max
-          description: |
-            MiniMax-H3 ref2va only (extend_forward). Sizing of each
-            `reference_images` file before it is encoded -- identical
-            semantics to `Ref2VidRequest.reference_image_size`: "max" puts
-            each image on a 2048px short edge of its own (the released
-            recipe), "match" scales down to the generation's pixel area.
-            Never affects the automatic source-clip video reference, which
-            always follows the generation canvas rule.
-          example: max
-        reference_images:
-          type: array
-          items:
-            type: string
-            format: binary
-          description: |
-            MiniMax-H3 ref2va only, extend_forward placement only (400 on
-            `fl2va`, on any other architecture, or on any other placement --
-            see the endpoint's partition/placement gate). Optional image
-            references, read in upload order, laid out AFTER the automatic
-            source-clip video reference and the boundary anchor's own row.
-            There is no `reference_videos`/`reference_audios` field here: the
-            preserved clip is ALWAYS the sole video reference on this
-            endpoint (its own trailing frames, soundtrack excluded,
-            tail-truncated to the generated span's length) -- that is what
-            makes this an extend rather than a `/generate/ref2vid` request.
 
     InpaintVideoRequest:
       type: object

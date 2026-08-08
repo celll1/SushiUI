@@ -26,11 +26,6 @@ export interface QueueItem {
   // and unlike inputImage's base64 string -- so a queued request keeps the
   // references it was built with even after the panel's inputs change.
   references?: MiniMaxH3References;
-  // For outpaint_vid (MiniMax-H3 ref2va, extend_forward only): optional
-  // image references on top of the automatic source-clip video reference.
-  // Images only -- this endpoint has no reference_videos/reference_audios
-  // field, so this is a plain File[] rather than MiniMaxH3References.
-  referenceImages?: File[];
   maskImage?: string; // For inpaint only
   status: "pending" | "generating" | "completed" | "failed";
   addedAt: number;

@@ -2816,7 +2816,6 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         bridge_frames=None,
         bridge_fps=None,
         bridge_audio=None,
-        reference_images=(),
     ):
         """Video temporal outpaint: place a (trimmed) input clip inside a
         LONGER output timeline and generate the frames before/after.
@@ -2852,10 +2851,6 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                 an optional SECOND clip preserved at the END of the timeline,
                 which turns the request into a bridge. Only an architecture
                 whose `TemporalSpec` lists the `bridge` placement accepts them.
-            reference_images: optional PIL images, MiniMax-H3 ref2va only
-                (extend_forward). The route's own gate refuses this on any
-                other architecture/variant/placement; this is the defensive
-                re-check for an internal caller that bypasses the route.
 
         Returns:
             tuple: (frames, audio, audio_sample_rate, actual_seed) --
@@ -2871,11 +2866,6 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                            "which is a placement only an architecture that conditions on boundary "
                            "frames needs. LTX-2.3 places one clip at an arbitrary offset instead.",
                 )
-            if reference_images:
-                raise ValidationError(
-                    "reference_images on outpaint is a MiniMax-H3 ref2va capability",
-                    detail="LTX-2.3 has no reference-conditioned outpaint path.",
-                )
             return self._generate_vidoutpaint_ltx2(
                 params, video_frames, fps, input_audio, progress_callback, step_callback
             )
@@ -2883,7 +2873,6 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             return self._generate_vidoutpaint_minimax_h3(
                 params, video_frames, fps, input_audio, progress_callback, step_callback,
                 bridge_frames=bridge_frames, bridge_fps=bridge_fps, bridge_audio=bridge_audio,
-                reference_images=reference_images,
             )
 
         raise ValidationError(

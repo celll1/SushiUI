@@ -83,6 +83,35 @@ def _is_lora_target(module) -> bool:
     return is_lora_wrappable_linear(module)
 
 
+def build_outpaint_references(
+    head: np.ndarray, generated_frames: int, frame_rate: float, reference_images: Sequence[Image.Image],
+) -> Tuple[Any, ...]:
+    """The ref2va reference tuple for a video outpaint extend_forward request.
+
+    A module-level pure function (no model components, no I/O) so the row
+    order and the tail-truncation arithmetic are unit-testable without a
+    loaded checkpoint. Row 0 is ALWAYS the source clip -- its own last
+    ``min(len(head), generated_frames)`` frames (soundtrack excluded), at
+    ``frame_rate`` rather than the source's own probed fps: outpaint's own
+    convention already treats the preserved span as running at the declared
+    output rate, so this keeps the two conventions consistent instead of
+    letting ``normalize_reference_video`` resample a clip that outpaint
+    itself never resamples. Rows 1.. are the optional image references, in
+    request order.
+    """
+    from core.models.minimax_h3 import h3_references as refs
+
+    source_ref_frames = head[-min(head.shape[0], generated_frames):]
+    return (
+        refs.MiniMaxH3Reference(
+            kind="video", frames=source_ref_frames, fps=frame_rate,
+            label="source clip (auto-referenced)"),
+    ) + tuple(
+        refs.MiniMaxH3Reference(kind="image", image=image, label=f"reference {i + 1}")
+        for i, image in enumerate(reference_images)
+    )
+
+
 class MiniMaxH3Mixin:
     """MiniMaxH3Mixin: joint video + audio generation with MiniMax-H3."""
 
@@ -183,6 +212,47 @@ class MiniMaxH3Mixin:
         if not torch.cuda.is_available():
             return 0.0
         return torch.cuda.max_memory_allocated() / 2 ** 30
+
+    @staticmethod
+    def _minimax_h3_dump_outpaint_ref_debug(placement, *, frames_gen, head, tail=None):
+        """Dump the PRE-PASTE generated boundary frame(s) alongside their
+        preserved anchor, for A-V8 criterion 1 (boundary-anchor RMS).
+
+        Env-gated (``MINIMAX_H3_OUTPAINT_REF_DEBUG_DUMP``) or sentinel-gated
+        (``outputs/debug_latents/.enable_minimax_h3_outpaint_ref``), same
+        convention as ``custom_sampling.py``'s ``OUTPAINT_DEBUG_LATENT_DUMP``.
+        Zero-cost when disabled. Runs for every placement/variant (not just
+        ref2va-with-references) so N, R and R+I share one instrument.
+
+        Writes ``<run_dir>/frame0_generated_pre_paste.png`` +
+        ``anchor_frame.png`` for extend_forward, the mirrored pair for
+        extend_backward, or both pairs for a bridge -- read directly, no
+        video decode needed, since the paste (``np.concatenate``) has not
+        run yet when this is called.
+        """
+        import os
+
+        base = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))),
+            "outputs", "debug_latents",
+        )
+        enabled = bool(os.environ.get("MINIMAX_H3_OUTPAINT_REF_DEBUG_DUMP")) or os.path.exists(
+            os.path.join(base, ".enable_minimax_h3_outpaint_ref"))
+        if not enabled:
+            return
+        import time as _time
+        run_dir = os.path.join(base, f"minimax_h3_outpaint_ref_{_time.time_ns()}_{placement}")
+        os.makedirs(run_dir, exist_ok=True)
+        pairs = []
+        if placement in ("extend_forward", "bridge"):
+            pairs.append(("frame0", frames_gen[0], head[-1]))
+        if placement in ("extend_backward", "bridge"):
+            anchor = tail[0] if placement == "bridge" else head[0]
+            pairs.append(("frame_last", frames_gen[-1], anchor))
+        for name, generated, anchor in pairs:
+            Image.fromarray(generated).save(os.path.join(run_dir, f"{name}_generated_pre_paste.png"))
+            Image.fromarray(anchor).save(os.path.join(run_dir, f"{name}_anchor.png"))
+        print(f"[MiniMax-H3] vid_outpaint: pre-paste debug dump -> {run_dir}")
 
     # ------------------------------------------------------------------
     # Attention backend
@@ -455,6 +525,7 @@ class MiniMaxH3Mixin:
         bridge_frames: Optional[np.ndarray] = None,
         bridge_fps: Optional[float] = None,
         bridge_audio: Optional[bytes] = None,
+        reference_images: Sequence[Image.Image] = (),
     ):
         """Temporal outpaint with MiniMax-H3: extend a clip, or bridge two.
 
@@ -505,6 +576,19 @@ class MiniMaxH3Mixin:
           boundary frame is. Nothing here compensates for that, and the seam is
           measured rather than hidden (design K5).
 
+        ``reference_images`` (ref2va, extend_forward only): the preserved
+        clip's own trailing frames become an automatic video reference
+        (soundtrack excluded, tail-truncated to the generated length --
+        ``h3_references.normalize_reference_video`` truncates from the HEAD,
+        so this hands it the source's LAST frames rather than its first) and
+        ``reference_images`` add optional image references after it, in
+        request order. Both ride through ``build_ref2va_packed_layout`` with
+        the boundary anchor placed AFTER every reference block (C5). Refused
+        (not silently ignored) on ``fl2va`` or on any placement other than
+        ``extend_forward`` -- see ``minimax_h3_outpaint_refs_design.md`` §3;
+        the route enforces the same table before this function is ever
+        called, so these are defensive re-checks.
+
         Args:
             params: see ``OUTPAINT_VIDEO_DEFAULTS``. ``total_frames`` is a
                 REQUESTED output length; the generated span is solved for and
@@ -518,6 +602,8 @@ class MiniMaxH3Mixin:
             bridge_frames / bridge_fps / bridge_audio: the same three things for
                 the optional TAIL clip, which turns the request into a bridge.
                 ``input_trim_*`` apply to the head clip only.
+            reference_images: optional PIL images, ref2va extend_forward only
+                (see above).
 
         Returns:
             ``(frames, audio, audio_sample_rate, actual_seed)`` -- the same
@@ -603,15 +689,35 @@ class MiniMaxH3Mixin:
               f"preserved head={plan['head_frames']} tail={plan['tail_frames']} "
               f"generated={generated_frames} -> {out_frames_total} frame(s) @ {frame_rate} fps")
 
+        # ---- ref2va: the source clip is ALWAYS the sole video reference on
+        # extend_forward (decision table, minimax_h3_outpaint_refs_design.md
+        # §3); every other row is refused. The route enforces the same table
+        # (`resolve_minimax_h3_outpaint_reference_gate`, shared here) before
+        # this function is ever reached -- this call is a defensive re-check
+        # for an internal caller that bypasses the route. Tail-truncated from
+        # the HEAD's own end (not the front `normalize_reference_video`
+        # keeps): the frames nearest the join are what matter for an anchor.
+        variant = (self.minimax_h3_components.get("variant") or "").lower()
+        from api.generation_utils import resolve_minimax_h3_outpaint_reference_gate
+        resolve_minimax_h3_outpaint_reference_gate(
+            variant, has_reference_images=bool(reference_images), placement=placement,
+            generated_frames=generated_frames)
+        references: tuple = ()
+        if variant == "ref2va":
+            references = build_outpaint_references(head, generated_frames, frame_rate, reference_images)
+
         # Only the generated span is sampled; everything else about the run is
-        # an ordinary fl2va generation, so it goes through the ONE generation
-        # path rather than a second copy of the staging/denoise/decode sequence.
+        # an ordinary fl2va (or, with references, ref2va) generation, so it
+        # goes through the ONE generation path rather than a second copy of
+        # the staging/denoise/decode sequence.
         sub_params = dict(params)
         sub_params["num_frames"] = generated_frames
         frames_gen, audio_gen, audio_sample_rate, seed = self._generate_minimax_h3(
-            sub_params, keyframes=tuple(keyframes), label="vid_outpaint",
+            sub_params, keyframes=tuple(keyframes), references=references, label="vid_outpaint",
             progress_callback=progress_callback, step_callback=step_callback,
         )
+        self._minimax_h3_dump_outpaint_ref_debug(
+            placement, frames_gen=frames_gen, head=head, tail=tail)
         if frames_gen.shape[0] != generated_frames:  # pragma: no cover - decode guarantees it
             raise RuntimeError(
                 f"MiniMax-H3 returned {frames_gen.shape[0]} generated frame(s) where the placement "

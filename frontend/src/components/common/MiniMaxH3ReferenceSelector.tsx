@@ -1,6 +1,6 @@
 "use client";
 
-import { ReactNode, useRef } from "react";
+import { ReactNode, useRef, useState } from "react";
 import Card from "./Card";
 import Button from "./Button";
 import Select from "./Select";
@@ -74,9 +74,99 @@ export default function MiniMaxH3ReferenceSelector({
   const audioInput = useRef<HTMLInputElement>(null);
   const soundtrackInput = useRef<HTMLInputElement>(null);
   const soundtrackTarget = useRef<number>(-1);
+  const [isDragging, setIsDragging] = useState(false);
+  // Reports what a drop skipped and why. Cleared on the next successful
+  // add (button or drop) rather than on a timer, so it stays visible until
+  // the user has done something that could have addressed it.
+  const [dropNotice, setDropNotice] = useState<string | null>(null);
 
   const total = countMiniMaxH3References(value);
   const remaining = (imagesOnly ? MAX_IMAGES : MAX_TOTAL) - total;
+  const kindLabel = (kind: "images" | "videos" | "audios") =>
+    kind === "images" ? "image" : kind === "videos" ? "video" : "audio";
+  const kindMax = (kind: "images" | "videos" | "audios") =>
+    kind === "images" ? MAX_IMAGES : kind === "videos" ? MAX_VIDEOS : MAX_AUDIOS;
+
+  // Routes a drop by MIME type into the matching bucket (images/videos/
+  // audios), each capped at its own max and at the shared total. A file
+  // that matches none of the three -- or a video/audio when imagesOnly --
+  // is refused rather than misfiled into the wrong list; both that refusal
+  // and any cap truncation are reported in dropNotice, since a drop that
+  // silently does less than it looks like reads as broken.
+  const addDropped = (files: FileList | null) => {
+    if (disabled || !files || files.length === 0) return;
+    const buckets: { images: File[]; videos: File[]; audios: File[] } = {
+      images: [],
+      videos: [],
+      audios: [],
+    };
+    let unsupported = 0;
+    for (const file of Array.from(files)) {
+      if (file.type.startsWith("image/")) buckets.images.push(file);
+      else if (!imagesOnly && file.type.startsWith("video/")) buckets.videos.push(file);
+      else if (!imagesOnly && file.type.startsWith("audio/")) buckets.audios.push(file);
+      else unsupported++;
+    }
+
+    let room = remaining;
+    const next: MiniMaxH3References = { ...value };
+    const overLimit: Record<"images" | "videos" | "audios", { count: number; atKindCap: boolean }> = {
+      images: { count: 0, atKindCap: false },
+      videos: { count: 0, atKindCap: false },
+      audios: { count: 0, atKindCap: false },
+    };
+    (["images", "videos", "audios"] as const).forEach((kind) => {
+      const kindFiles = buckets[kind];
+      if (kindFiles.length === 0) return;
+      const perKindMax = kindMax(kind);
+      const kindRoom = perKindMax - next[kind].length;
+      const perKindRoom = Math.min(kindRoom, room);
+      const added = kindFiles.slice(0, Math.max(0, perKindRoom));
+      const skipped = kindFiles.length - added.length;
+      if (skipped > 0) overLimit[kind] = { count: skipped, atKindCap: kindRoom <= room };
+      if (added.length === 0) return;
+      next[kind] = [...next[kind], ...added];
+      if (kind === "videos") next.videoAudios = [...next.videoAudios, ...added.map(() => null)];
+      room -= added.length;
+    });
+    onChange(next);
+
+    const notices: string[] = [];
+    if (unsupported > 0) {
+      notices.push(
+        `${unsupported} file${unsupported === 1 ? "" : "s"} skipped: ${
+          imagesOnly ? "this surface takes images only" : "unsupported file type"
+        }.`,
+      );
+    }
+    const overLimitNotices = (["images", "videos", "audios"] as const)
+      .filter((kind) => overLimit[kind].count > 0)
+      .map((kind) => {
+        const { count, atKindCap } = overLimit[kind];
+        const limit = atKindCap
+          ? `the ${kindLabel(kind)} limit of ${kindMax(kind)}`
+          : `the total limit of ${imagesOnly ? MAX_IMAGES : MAX_TOTAL}`;
+        return `${count} ${kindLabel(kind)}${count === 1 ? "" : "s"} skipped: over ${limit}.`;
+      });
+    notices.push(...overLimitNotices);
+    setDropNotice(notices.length > 0 ? notices.join(" ") : null);
+  };
+
+  const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    if (!disabled) setIsDragging(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    if (!e.currentTarget.contains(e.relatedTarget as Node)) setIsDragging(false);
+  };
+
+  const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setIsDragging(false);
+    addDropped(e.dataTransfer.files);
+  };
 
   const add = (kind: "images" | "videos" | "audios", files: FileList | null) => {
     if (!files || files.length === 0) return;
@@ -84,6 +174,7 @@ export default function MiniMaxH3ReferenceSelector({
     const room = Math.min(perKindMax - value[kind].length, remaining);
     const added = Array.from(files).slice(0, Math.max(0, room));
     if (added.length === 0) return;
+    setDropNotice(null);
     const next: MiniMaxH3References = { ...value, [kind]: [...value[kind], ...added] };
     if (kind === "videos") {
       // A video's soundtrack slot is positional, so it grows with the list.
@@ -167,7 +258,23 @@ export default function MiniMaxH3ReferenceSelector({
 
   return (
     <Card title={`References (MiniMax-H3 ref2va) — ${total}/${imagesOnly ? MAX_IMAGES : MAX_TOTAL}`}>
-      <div className="space-y-3">
+      <div
+        className={`space-y-3 rounded-lg transition-colors ${
+          isDragging ? "ring-2 ring-blue-500 bg-gray-800/50" : ""
+        }`}
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
+      >
+        {isDragging && (
+          <p className="text-xs text-blue-400 text-center border border-dashed border-blue-500 rounded py-2">
+            Drop {imagesOnly ? "images" : "images, videos or audio"} here —
+            sorted by file type, in drop order
+          </p>
+        )}
+        {!isDragging && dropNotice && (
+          <p className="text-xs text-amber-400">{dropNotice}</p>
+        )}
         {imagesOnly ? (
           <p className="text-xs text-gray-400">
             Up to 9 image references, read in upload order and shown to the

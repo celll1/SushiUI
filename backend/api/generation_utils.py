@@ -574,6 +574,33 @@ def record_attention_backend(params: Dict[str, Any],
         return None
 
 
+def record_model_variant(params: Dict[str, Any], pipeline_manager) -> Optional[str]:
+    """Record which MiniMax-H3 partition (fl2va / ref2va) is actually loaded.
+
+    Same precedent as ``record_attention_backend``: the filename is the only
+    thing that distinguishes the two checkpoints, so a row that only stores
+    ``model_name`` becomes unreadable the moment either file is renamed. The
+    loader already resolves and carries ``variant`` in
+    ``pipeline_manager.current_model_info`` (see ``minimax_h3/loader.py``), so
+    this reads that resolved value rather than inferring anything from the
+    request.
+
+    Writes ``params["model_variant"]`` only when a MiniMax-H3 model is loaded
+    and its variant is known; a no-op (and no key written) for every other
+    architecture. Never raises.
+    """
+    try:
+        if not getattr(pipeline_manager, "is_minimax_h3_model", False):
+            return None
+        variant = (pipeline_manager.current_model_info or {}).get("variant")
+        if not variant:
+            return None
+        params["model_variant"] = variant
+        return variant
+    except Exception:
+        return None
+
+
 # ====================
 # Priority 2: 中程度の重複
 # ====================

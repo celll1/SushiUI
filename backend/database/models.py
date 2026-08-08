@@ -319,6 +319,12 @@ class GeneratedImage(GalleryBase):
             if "vae_hash" in self.parameters and not legacy_override:
                 result["vae_hash"] = self.parameters["vae_hash"]
 
+            # Which MiniMax-H3 checkpoint (fl2va/ref2va) actually ran -- the
+            # filename is the only thing that distinguishes them, so this is
+            # what makes the row readable after either file is renamed.
+            if "model_variant" in self.parameters:
+                result["model_variant"] = self.parameters["model_variant"]
+
             # Quantized-Linear GEMM path. Present only on rows produced by a
             # weight-only FP8 checkpoint (Ideogram 4 / Krea 2) or a weight-only
             # INT8 checkpoint (Krea 2 only, today); surfaced

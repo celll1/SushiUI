@@ -37,6 +37,7 @@ from core.inference.schedulers import (
     get_schedule_type_display_names
 )
 from utils import save_image_with_metadata, create_thumbnail, calculate_image_hash, encode_mask_to_base64, extract_lora_names
+from utils.upload_names import recover_upload_filename
 from config.settings import settings
 from api.websocket import manager
 from auth import create_access_token, verify_credentials, require_auth
@@ -66,6 +67,7 @@ from api.generation_utils import (
     extract_vae_info,
     extract_fp8_gemm_info,
     record_attention_backend,
+    record_model_variant,
     sanitize_params_for_logging,
     set_prompt_chunking_settings,
     calculate_generation_metadata,
@@ -2615,6 +2617,10 @@ async def generate_txt2vid(
         # through it -- LTX-2.3 drives diffusers' own dispatch -- which is why
         # nothing is written rather than the request being echoed back.
         record_attention_backend(params, _gen_id)
+        # Which MiniMax-H3 checkpoint (fl2va/ref2va) actually ran; a no-op for
+        # LTX-2.3. See record_model_variant for why this can't come from the
+        # request.
+        record_model_variant(params, pipeline_manager)
 
         # VAE identity, exactly as the four image routes record it. The video
         # routes never called this, so a video gallery row carried no
@@ -3463,19 +3469,19 @@ async def generate_img2vid(
         # part present but EMPTY (`filename == ""`) is treated as absent, rather
         # than warning about an ignored keyframe on LTX-2.3 while conditioning
         # on nothing, or being read as a keyframe the warning never mentioned.
-        "last_frame_image": _last_frame.filename if _last_frame is not None else None,
+        "last_frame_image": recover_upload_filename(_last_frame.filename) if _last_frame is not None else None,
         # The placement fields, recorded the same way: the FILENAMES and the
         # requested indices, never the bytes. `params.copy()` carries them to
         # the gallery row; the RESOLVED placements are added after num_frames
         # has been snapped (a requested -1 means nothing without that).
         "input_image_frame_index": input_image_frame_index,
-        "keyframe_images": [f.filename for f in _keyframes] or None,
+        "keyframe_images": [recover_upload_filename(f.filename) for f in _keyframes] or None,
         "keyframe_frame_indices": list(_keyframe_indices) or None,
         # The ia2v track, recorded the same way: the uploaded FILENAME, never
         # the samples. Non-None is also what makes `check_arch_capabilities`
         # read the field as user-set and warn on an architecture that ignores
         # it (the default in IMG2VID_DEFAULTS is None).
-        "input_audio": _input_audio.filename if _input_audio is not None else None,
+        "input_audio": recover_upload_filename(_input_audio.filename) if _input_audio is not None else None,
     }
 
     # Training-free reference-style transfer (video). See generate_txt2vid's
@@ -3755,6 +3761,7 @@ async def generate_img2vid(
         # through it -- LTX-2.3 drives diffusers' own dispatch -- which is why
         # nothing is written rather than the request being echoed back.
         record_attention_backend(params, _gen_id)
+        record_model_variant(params, pipeline_manager)
 
         # See the note on the same call in /generate/txt2vid.
         vae_name, vae_hash = extract_vae_info(pipeline_manager)
@@ -4060,14 +4067,16 @@ async def generate_ref2vid(
             attention_type, REF2VID_DEFAULTS["attention_type"]),
         "reference_image_size": reference_image_size,
         # The uploaded FILENAMES, in packed order -- what the gallery row can
-        # carry. The bytes never reach the database.
-        "reference_images": [f.filename for f in image_files] or None,
-        "reference_videos": [f.filename for f in video_files] or None,
-        "reference_audios": [f.filename for f in audio_files] or None,
+        # carry. The bytes never reach the database. Passed through
+        # recover_upload_filename: see that module for why a latin-1/UTF-8
+        # multipart mis-decode is losslessly reversible here.
+        "reference_images": [recover_upload_filename(f.filename) for f in image_files] or None,
+        "reference_videos": [recover_upload_filename(f.filename) for f in video_files] or None,
+        "reference_audios": [recover_upload_filename(f.filename) for f in audio_files] or None,
         # C5's keyframe fields, recorded the same way img2vid records them: the
         # uploaded FILENAMES and the requested indices. The RESOLVED placements
         # are added after num_frames has been snapped, below.
-        "keyframe_images": [f.filename for f in _keyframes] or None,
+        "keyframe_images": [recover_upload_filename(f.filename) for f in _keyframes] or None,
         "keyframe_frame_indices": list(_keyframe_indices) or None,
     }
 
@@ -4205,6 +4214,7 @@ async def generate_ref2vid(
         apply_generation_timings(params, time.perf_counter() - _gen_start)
         _record_media_gemm_outcome(params, fp8_gemm, _vid_arch)
         record_attention_backend(params, _gen_id)
+        record_model_variant(params, pipeline_manager)
 
         vae_name, vae_hash = extract_vae_info(pipeline_manager)
         if vae_name:
@@ -4621,11 +4631,11 @@ async def generate_outpaint_video(
         "video_lossless": video_lossless,
         # The uploaded FILENAME (never the bytes), so the gallery row records
         # that this was a bridge and which clip closed it.
-        "bridge_video": getattr(bridge_video, "filename", None) if bridge_video is not None else None,
+        "bridge_video": recover_upload_filename(getattr(bridge_video, "filename", None)) if bridge_video is not None else None,
         # MiniMax-H3 ref2va only (extend_forward). Filenames only, same
         # convention as /generate/ref2vid's reference_images.
         "reference_image_size": reference_image_size,
-        "reference_images": [f.filename for f in _ref_image_files] or None,
+        "reference_images": [recover_upload_filename(f.filename) for f in _ref_image_files] or None,
     }
 
     # Reject a clip that cannot fit at all (trim leaves nothing) -- cheap
@@ -4741,6 +4751,7 @@ async def generate_outpaint_video(
         # used, not the one that was asked for. Nothing is written on an
         # architecture that does not route attention through the conduit.
         record_attention_backend(params, _gen_id)
+        record_model_variant(params, pipeline_manager)
 
         # See the note on the same call in /generate/txt2vid.
         vae_name, vae_hash = extract_vae_info(pipeline_manager)
@@ -5131,6 +5142,7 @@ async def generate_inpaint_video(
         apply_generation_timings(params, time.perf_counter() - _gen_start)
         _record_media_gemm_outcome(params, fp8_gemm, _vid_arch)
         record_attention_backend(params, _gen_id)
+        record_model_variant(params, pipeline_manager)
 
         vae_name, vae_hash = extract_vae_info(pipeline_manager)
         if vae_name:

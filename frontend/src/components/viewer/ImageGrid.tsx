@@ -175,7 +175,10 @@ export default function ImageGrid() {
       const types: string[] = [];
       if (filterTxt2Img) types.push("txt2img");
       if (filterImg2Img) types.push("img2img");
-      if (filterInpaint) types.push("inpaint");
+      // The one "inpaint" checkbox covers both modalities, the way the outpaint
+      // one below covers its three: video temporal inpaint saves as
+      // `inpaint_vid`, so omitting it here would hide those results entirely.
+      if (filterInpaint) types.push("inpaint", "inpaint_vid");
       // Single "outpaint" checkbox covers all outpaint modalities: image
       // (outpaint), video (outpaint_vid), and audio (outpaint_aud) results
       // all use distinct generation_type values on the backend, so all three

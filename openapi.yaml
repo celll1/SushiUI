@@ -161,9 +161,10 @@ paths:
           `fps_fixed`, `max_pixel_hw` — `[short_edge, long_edge]`, not
           `[height, width]` —, `pixel_align`, `snap_invalid_length`,
           `suggested_frames`, `min_inference_steps`,
-          `steps_are_sigma_grid_points`, `outpaint_placements`), so a client
-          can generate a valid clip-length list, a valid step count and a valid
-          temporal-outpaint placement instead of hardcoding them.
+          `steps_are_sigma_grid_points`, `outpaint_placements`,
+          `latent_chunk_pattern`), so a client can generate a valid clip-length
+          list, a valid step count, a valid temporal-outpaint placement and a
+          valid temporal-inpaint range instead of hardcoding them.
           Absent for non-video architectures.
       tags: [Schema]
       responses:
@@ -6456,6 +6457,17 @@ components:
               second `bridge_video` upload, sit at both ends with the generated
               span between them. Any other offset is refused with a 400 stating
               that reason; it is not approximated.
+            * `latent_chunk_pattern` — the video VAE's temporal chunking, in
+              pixel frames per latent frame, cycled from the start of the clip
+              (MiniMax-H3: `[1, 4, 4, 4, 4]`, i.e. latent frame 0 holds pixel
+              frame 0, latent frame 1 holds pixel frames 1-4, and so on). This
+              is the addressable unit of `POST /generate/inpaint/video`: a
+              latent frame is regenerated or preserved as a whole, so a
+              requested range is expanded OUTWARD to these boundaries. A client
+              offering a range control snaps to the same boundaries and shows
+              the effective span, rather than implying single-frame placement.
+              `[]` = the architecture declares no chunking, and temporal inpaint
+              is refused on it.
           additionalProperties:
             type: object
             additionalProperties: true
@@ -6474,6 +6486,7 @@ components:
               min_inference_steps: 2
               steps_are_sigma_grid_points: true
               outpaint_placements: [extend_forward, extend_backward, bridge]
+              latent_chunk_pattern: [1, 4, 4, 4, 4]
         runtime_int8_archs:
           type: array
           description: |

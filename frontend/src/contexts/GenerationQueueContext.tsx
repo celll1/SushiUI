@@ -2,19 +2,19 @@
 
 import { createContext, useContext, useState, useCallback, ReactNode, useEffect, useRef } from "react";
 import { usePathname } from "next/navigation";
-import { GenerationParams, Img2ImgParams, InpaintParams, OutpaintParams, OutpaintVideoParams, OutpaintAudioParams, UpscaleParams, Txt2VidParams, Img2VidParams, Ref2VidParams, MiniMaxH3References, Txt2AudParams, Aud2AudParams } from "@/utils/api";
+import { GenerationParams, Img2ImgParams, InpaintParams, InpaintVideoParams, OutpaintParams, OutpaintVideoParams, OutpaintAudioParams, UpscaleParams, Txt2VidParams, Img2VidParams, Ref2VidParams, MiniMaxH3References, Txt2AudParams, Aud2AudParams } from "@/utils/api";
 
 export interface QueueItem {
   id: string;
-  type: "txt2img" | "img2img" | "inpaint" | "outpaint" | "outpaint_vid" | "outpaint_aud" | "upscale" | "txt2vid" | "img2vid" | "ref2vid" | "txt2aud" | "aud2aud";
-  params: GenerationParams | Img2ImgParams | InpaintParams | OutpaintParams | OutpaintVideoParams | OutpaintAudioParams | UpscaleParams | Txt2VidParams | Img2VidParams | Ref2VidParams | Txt2AudParams | Aud2AudParams;
+  type: "txt2img" | "img2img" | "inpaint" | "inpaint_vid" | "outpaint" | "outpaint_vid" | "outpaint_aud" | "upscale" | "txt2vid" | "img2vid" | "ref2vid" | "txt2aud" | "aud2aud";
+  params: GenerationParams | Img2ImgParams | InpaintParams | InpaintVideoParams | OutpaintParams | OutpaintVideoParams | OutpaintAudioParams | UpscaleParams | Txt2VidParams | Img2VidParams | Ref2VidParams | Txt2AudParams | Aud2AudParams;
   inputImage?: string; // For img2img, inpaint, and outpaint
   // Server-cached latent to chain from instead of an image (loop-generation
   // decodeMode "final-only" latent passthrough; img2img only — set by the
   // previous step's response.latent_id when its loop_decode was "none").
   inputLatentId?: string;
   inputAudio?: File; // For aud2aud / outpaint_aud (reference clip; a File, unlike inputImage's base64 string)
-  inputVideo?: File; // For outpaint_vid (uploaded clip; a File, mirrors inputAudio -- avoids a giant base64 string)
+  inputVideo?: File; // For outpaint_vid / inpaint_vid (uploaded clip; a File, mirrors inputAudio -- avoids a giant base64 string)
   // For outpaint_vid BRIDGE placement only: the second clip, preserved at the
   // END of the timeline, with the generated span between the two. Only an
   // architecture whose video_constraints.outpaint_placements contains "bridge"

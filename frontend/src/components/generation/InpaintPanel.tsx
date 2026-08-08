@@ -26,13 +26,14 @@ import GenerationQueue from "../common/GenerationQueue";
 import LoopGenerationPanel, { LoopGenerationConfig } from "./LoopGenerationPanel";
 import QuantizedGemmSelect from "./QuantizedGemmSelect";
 import { migrateLoopGenerationConfig, computeLoopDecodeDirective } from "@/utils/loopGenerationInheritance";
-import { getSamplers, getScheduleTypes, generateInpaint, generateInpaintTrainingPreview, toBase64, InpaintParams as ApiInpaintParams, LoRAConfig, ControlNetConfig, generateTIPOPrompt, cancelGeneration, getCurrentModel, getResultFilename, getResultSeed, getResultAncestralSeed, isLatentOnlyResult, unetQuantizationOptions, normalizeUnetQuantization, transformerQuantizationLabel } from "@/utils/api";
+import { getSamplers, getScheduleTypes, generateInpaint, generateInpaintVideo, generateInpaintTrainingPreview, toBase64, InpaintParams as ApiInpaintParams, InpaintVideoParams, LoRAConfig, ControlNetConfig, generateTIPOPrompt, cancelGeneration, getCurrentModel, getResultFilename, getResultSeed, getResultAncestralSeed, isLatentOnlyResult, unetQuantizationOptions, normalizeUnetQuantization, transformerQuantizationLabel, archSupportsFeature, archDisplayName, inpaintVideoDefaultsForArch, fitVideoCanvas, videoCanvasRule, videoCanvasAxisBounds, videoCanvasExceedsEnvelope, largestValidVideoFrameCount, isValidVideoFrameCount, latentGroupSpans, snapRangeToLatentGroups } from "@/utils/api";
+import VideoInpaintRangeTimeline from "./VideoInpaintRangeTimeline";
 import { useActiveTraining } from "@/hooks/useActiveTraining";
 import { wsClient, CFGMetrics } from "@/utils/websocket";
 import CFGMetricsGraph from "../common/CFGMetricsGraph";
 import { saveTempImage, loadTempImage, deleteTempImageRef } from "@/utils/tempImageStorage";
-import { previewStorageKeys, saveImagePreview, clearImagePreview, outputExists, stripCacheBuster, withCacheBuster, imagePreviewGone } from "@/utils/previewStorage";
-import { sendToPanel, sendImageToImg2Img, sendImageToUpscale, sendImageToOutpaint } from "@/utils/sendHelpers";
+import { previewStorageKeys, saveImagePreview, clearImagePreview, loadVideoPreview, saveVideoPreview, clearVideoPreview, outputExists, stripCacheBuster, withCacheBuster, imagePreviewGone } from "@/utils/previewStorage";
+import { sendToPanel, sendImageToImg2Img, sendImageToUpscale, sendImageToOutpaint, sendVideoToOutpaint } from "@/utils/sendHelpers";
 import { fixFloatingPointParams } from "@/utils/numberUtils";
 import { useStartup } from "@/contexts/StartupContext";
 import { useGenerationQueue } from "@/contexts/GenerationQueueContext";
@@ -140,6 +141,63 @@ interface InpaintParams {
   // backend rejects it; intermediate loop steps fall back to "cheap"+skip_gallery.
   loop_decode?: "full" | "cheap" | "none";
   skip_gallery?: boolean;
+  // Keys DEFAULT_PARAMS and the controls below already set, declared here so the
+  // literal matches this type (they were being carried untyped).
+  vae_drift_correction?: boolean;
+  cpu_text_encoding?: boolean;
+  use_torch_compile?: boolean;
+  keep_models_hot?: boolean;
+  vae_tiling?: boolean;
+  vae_tile_threshold?: number;
+  vae_tile_mode?: string;
+  vae_tile_global_norm?: boolean;
+  color_flatten_strength?: number;
+  flatten_in_loop?: boolean;
+  flatten_in_loop_last_steps?: number;
+  flatten_in_loop_min_region?: number;
+  fbcache_enable?: boolean;
+  fbcache_threshold?: number;
+  fbcache_warmup_steps?: number;
+  spectrum_enable?: boolean;
+  spectrum_w?: number;
+  spectrum_w_decay?: number;
+  spectrum_delta_cap?: number;
+  spectrum_m?: number;
+  spectrum_lam?: number;
+  spectrum_warmup_steps?: number;
+  spectrum_window_size?: number;
+  spectrum_flex_window?: number;
+  spectrum_tail?: number;
+  spectrum_feature_mode?: string;
+  spectrum_cache_branch?: number;
+  spectrum_max_cache?: number;
+  preview_predicted_x0?: boolean;
+  preview_decoder?: string;
+  feeling_lucky?: boolean;
+  // ── Video temporal inpaint (POST /generate/inpaint/video) ────────────────
+  // Kept in the same params object (and so in the same localStorage blob) as
+  // the image fields, the way OutpaintPanel carries its three modalities.
+  // Shared with the image path: prompt/negative_prompt/seed/width/height and
+  // the spectrum/fbcache keys. Distinct where the routes differ:
+  // `num_inference_steps` vs `steps`, `guidance_scale` vs `cfg_scale`, and
+  // `video_blocks_to_swap` vs the image path's model-global `blocks_to_swap`.
+  num_inference_steps?: number;
+  guidance_scale?: number;
+  frame_rate?: number;
+  num_videos_per_prompt?: number;
+  max_sequence_length?: number;
+  audio_enable?: boolean;
+  regenerate_start_frame?: number;
+  regenerate_end_frame?: number;
+  input_trim_start_frames?: number;
+  input_trim_end_frames?: number;
+  inpaint_video_audio_mode?: "regenerate" | "preserve_input";
+  // Which architecture the audio mode above was resolved for, so a per-arch
+  // default is re-applied on a model change but a user's own choice is not
+  // (the OutpaintPanel pattern; not sent to the backend).
+  inpaint_video_audio_mode_arch?: string;
+  video_lossless?: boolean;
+  video_blocks_to_swap?: number;
 }
 
 const DEFAULT_PARAMS: InpaintParams = {
@@ -249,6 +307,24 @@ const DEFAULT_PARAMS: InpaintParams = {
   use_pinned_memory: false,
   block_swap_h2d_only: false,
   block_swap_ring_size: 2,
+  // Video temporal inpaint. These are the fallbacks for a backend that has not
+  // answered yet; the real values come from /schema/generation-defaults
+  // (`inpaint_vid` + the two overlay maps) in the effect below.
+  num_inference_steps: 8,
+  guidance_scale: 1.0,
+  frame_rate: 24.0,
+  num_videos_per_prompt: 1,
+  max_sequence_length: 1024,
+  audio_enable: true,
+  // No default range is defensible (the route requires both fields); a clip
+  // load picks the middle third and the user moves it from there.
+  regenerate_start_frame: 0,
+  regenerate_end_frame: 0,
+  input_trim_start_frames: 0,
+  input_trim_end_frames: 0,
+  inpaint_video_audio_mode: "preserve_input",
+  video_lossless: false,
+  video_blocks_to_swap: 0,
 };
 
 // Inpaint's secondary options are grouped into a single-open tabbed accordion
@@ -431,11 +507,10 @@ function isInpaintOptionsTabActive(tabId: InpaintOptionsTabId, params: InpaintPa
 
 const STORAGE_KEY = "inpaint_params";
 const PREVIEW_STORAGE_KEY = "inpaint_preview";
-// Inpaint is image-only -- no architecture routed here produces video or audio
-// -- so this panel only ever writes the image key. It still goes through the
-// shared helper so that every result-preview write in the app obeys the same
-// mutual-exclusion rule, and so a future video/audio branch here cannot forget
-// it (see utils/previewStorage.ts).
+// Image and video results are mutually exclusive in storage: the panel writes
+// whichever modality it just produced and the helper clears the other (see
+// utils/previewStorage.ts). No audio key -- no architecture routed here
+// produces audio.
 const PREVIEW_KEYS = previewStorageKeys(PREVIEW_STORAGE_KEY);
 const LOOP_GENERATION_STORAGE_KEY = "inpaint_loop_generation";
 const INPUT_IMAGE_STORAGE_KEY = "inpaint_input_image";
@@ -448,7 +523,7 @@ interface InpaintPanelProps {
 }
 
 export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintPanelProps = {}) {
-  const { modelLoaded, isBackendReady, generationDefaults, archCapabilities, modelInfoVersion } = useStartup();
+  const { modelLoaded, isBackendReady, generationDefaults, archCapabilities, modelInfoVersion, isVideo, resolveModality } = useStartup();
   const [params, setParams] = useState<InpaintParams>(DEFAULT_PARAMS);
   const [generatedImageParams, setGeneratedImageParams] = useState<InpaintParams | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
@@ -469,6 +544,29 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
   const [sizeMode, setSizeMode] = useState<"absolute" | "scale">("absolute");
   const [scale, setScale] = useState<number>(1.0);
   const [maskImage, setMaskImage] = useState<string | null>(null);
+  // ── Video temporal inpaint (inpaint_vid) input clip + result ────────────
+  // The upload is NOT persisted across reloads (a File cannot be round-tripped
+  // through localStorage/IndexedDB the way the image input is) -- the same
+  // stance OutpaintPanel's clip takes. The RESULT is persisted as a URL.
+  const [videoFile, setVideoFile] = useState<File | null>(null);
+  const [videoPreviewUrl, setVideoPreviewUrl] = useState<string | null>(null);
+  const [videoDurationSec, setVideoDurationSec] = useState<number | null>(null);
+  const [inputVideoSize, setInputVideoSize] = useState<{ width: number; height: number } | null>(null);
+  const [videoSizeMode, setVideoSizeMode] = useState<"absolute" | "scale">("absolute");
+  const [videoScale, setVideoScale] = useState<number>(1.0);
+  // The clip's frame COUNT, which the browser does not report: it is estimated
+  // from duration x frame rate and can be corrected by hand, because the
+  // trimmed length has to be exactly on the architecture's grid and an estimate
+  // one frame out would otherwise only surface as the route's 400.
+  const [clipFramesOverride, setClipFramesOverride] = useState<number | null>(null);
+  const [generatedVideo, setGeneratedVideo] = useState<string | null>(null);
+  const [generatedVideoInfo, setGeneratedVideoInfo] = useState<{ num_frames?: number; fps?: number; duration?: number } | null>(null);
+  const [generatedVideoSeed, setGeneratedVideoSeed] = useState<number | null>(null);
+  // The run's `warnings[]`, shown under the result. The panel snaps the range to
+  // latent-group boundaries itself, so the range-snap warning should not fire
+  // for a request built here -- which is exactly why it is worth showing if it
+  // does. Session-only: the gallery row keeps its own copy.
+  const [generatedVideoWarnings, setGeneratedVideoWarnings] = useState<string[]>([]);
   const [progress, setProgress] = useState(0);
   const [totalSteps, setTotalSteps] = useState(0);
   // Streamed progress-phase label (e.g. "Step 12/28" or "PiD decode (tile 3/9)").
@@ -480,9 +578,8 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
   const [isMounted, setIsMounted] = useState(false);
   const [currentModelInfo, setCurrentModelInfo] = useState<any>(null);
   // Keep this panel's copy of GET /models/current in step with the shared one.
-  // Inpaint has no video/audio branch (there is no video inpainting route), so
-  // this only affects the arch-dependent controls -- but those were equally
-  // frozen at whatever was loaded when the panel mounted.
+  // It decides the arch-dependent controls AND, with `isVideo`, which of the
+  // two surfaces (image mask / video range) is on screen.
   useEffect(() => {
     if (modelInfoVersion === 0) return; // initial fetch happens on mount below
     getCurrentModel()
@@ -501,6 +598,91 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
       return normalized === (prev.unet_quantization ?? null) ? prev : { ...prev, unet_quantization: normalized };
     });
   }, [archCapabilities, currentModelInfo?.model_info?.type]);
+
+  // ── Video temporal inpaint: the loaded architecture's own rules ──────────
+  const loadedArchType = currentModelInfo?.model_info?.type as string | undefined;
+  const loadedArchName = archDisplayName(loadedArchType);
+  // The capability the video surface is gated on. `archSupportsFeature` treats
+  // an unknown arch (or a matrix that has not loaded) as supporting it, so the
+  // surface is never hidden merely because the matrix was unavailable; the
+  // route re-validates and answers 400 regardless.
+  const supportsTemporalInpaint = archSupportsFeature(archCapabilities, loadedArchType, "temporal_inpaint");
+  const temporalInpaintReason =
+    loadedArchType ? archCapabilities?.unsupported?.[loadedArchType]?.temporal_inpaint : undefined;
+  const videoConstraints = loadedArchType ? archCapabilities?.video_constraints?.[loadedArchType] : undefined;
+  const latentChunkPattern = videoConstraints?.latent_chunk_pattern ?? [];
+  // Frames of the upload. The browser exposes duration, not a frame count, so
+  // this is duration x the architecture's own rate (or the requested one, for
+  // an arch with no fixed rate) unless the user corrected it.
+  const clipFrameRate = videoConstraints?.fps_fixed ?? params.frame_rate ?? 24.0;
+  const estimatedRawFrames = videoDurationSec != null
+    ? Math.max(1, Math.round(videoDurationSec * clipFrameRate))
+    : 0;
+  const videoRawFrames = clipFramesOverride ?? estimatedRawFrames;
+  const videoTrimmedFrames = Math.max(
+    0,
+    videoRawFrames - (params.input_trim_start_frames ?? 0) - (params.input_trim_end_frames ?? 0)
+  );
+  // The clip length itself has to be on the grid here (temporal inpaint samples
+  // the whole clip), and the route refuses an off-grid length rather than
+  // snapping it, so the panel computes the trim that reaches a valid one.
+  const videoTrimmedLengthValid = isValidVideoFrameCount(archCapabilities, loadedArchType, videoTrimmedFrames);
+  const videoTargetLength = videoRawFrames > 0
+    ? largestValidVideoFrameCount(archCapabilities, loadedArchType, videoRawFrames)
+    : null;
+  // Canvas: the envelope is on the short/long edge rather than per axis, so each
+  // slider's ceiling depends on where the other axis sits.
+  const videoWidthBounds = videoCanvasAxisBounds(archCapabilities, loadedArchType, params.height ?? 0);
+  const videoHeightBounds = videoCanvasAxisBounds(archCapabilities, loadedArchType, params.width ?? 0);
+  const videoCanvasOverEnvelope = videoCanvasExceedsEnvelope(
+    archCapabilities, loadedArchType, params.width ?? 0, params.height ?? 0);
+  const videoCanvasIsSourceSize = !!inputVideoSize
+    && params.width === inputVideoSize.width
+    && params.height === inputVideoSize.height;
+
+  useEffect(() => {
+    return () => {
+      if (videoPreviewUrl) URL.revokeObjectURL(videoPreviewUrl);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [videoPreviewUrl]);
+
+  // A range that no longer fits the trimmed clip (the trim moved, or the frame
+  // count was corrected) is re-centred rather than sent as an out-of-range
+  // request the route would refuse.
+  useEffect(() => {
+    if (!isVideo || videoTrimmedFrames <= 0) return;
+    setParams(prev => {
+      const start = prev.regenerate_start_frame ?? 0;
+      const end = prev.regenerate_end_frame ?? 0;
+      if (start < end && end <= videoTrimmedFrames) return prev;
+      const spans = latentGroupSpans(latentChunkPattern, videoTrimmedFrames);
+      const snapped = snapRangeToLatentGroups(
+        spans, Math.floor(videoTrimmedFrames / 3), Math.ceil((2 * videoTrimmedFrames) / 3));
+      return { ...prev, regenerate_start_frame: snapped.start, regenerate_end_frame: snapped.end };
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isVideo, videoTrimmedFrames]);
+
+  // The audio mode's default is per-architecture (MiniMax-H3 overlays
+  // "preserve_input"), and every value is selectable everywhere, so the trigger
+  // is the ARCHITECTURE changing rather than a value being out of range -- the
+  // OutpaintPanel pattern: re-resolve from the same overlay chain the backend
+  // resolves from and record which arch the answer belongs to, so a choice the
+  // user makes afterwards is never overwritten.
+  const archAudioMode =
+    (inpaintVideoDefaultsForArch(generationDefaults, loadedArchType)
+      .inpaint_video_audio_mode as "regenerate" | "preserve_input" | undefined)
+    ?? DEFAULT_PARAMS.inpaint_video_audio_mode!;
+  useEffect(() => {
+    if (!generationDefaults || !loadedArchType) return;
+    setParams(prev => (
+      prev.inpaint_video_audio_mode_arch === loadedArchType
+        ? prev
+        : { ...prev, inpaint_video_audio_mode: archAudioMode, inpaint_video_audio_mode_arch: loadedArchType }
+    ));
+  }, [generationDefaults, loadedArchType, archAudioMode]);
+
   const [isDragging, setIsDragging] = useState(false);
   const [showImageEditor, setShowImageEditor] = useState(false);
   const [editingImageUrl, setEditingImageUrl] = useState<string | null>(null);
@@ -646,6 +828,17 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
       const savedPreview = localStorage.getItem(PREVIEW_STORAGE_KEY);
       if (savedPreview) {
         setGeneratedImage(savedPreview);
+      }
+
+      // Preview video (inpaint_vid result). Restored unconditionally: the
+      // player is gated on `isVideo`, which arrives asynchronously from
+      // useStartup(), so nothing renders until the loaded arch is known to be a
+      // video arch. The URL is verified once the backend is ready (below).
+      const savedVideo = loadVideoPreview(PREVIEW_KEYS);
+      if (savedVideo) {
+        setGeneratedVideo(savedVideo.url);
+        setGeneratedVideoInfo(savedVideo.info);
+        setGeneratedVideoSeed(savedVideo.seed ?? null);
       }
 
       // Load input image preview
@@ -864,6 +1057,17 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
           }
         }
 
+        // Same verification for a restored preview video. No cache-busting
+        // stamp -- an .mp4 is large and its URL is stable.
+        const savedVideo = loadVideoPreview(PREVIEW_KEYS);
+        if (savedVideo && !(await outputExists(savedVideo.url))) {
+          console.log("[Inpaint] Stored preview video is gone, clearing:", savedVideo.url);
+          clearVideoPreview(PREVIEW_KEYS);
+          setGeneratedVideo(null);
+          setGeneratedVideoInfo(null);
+          setGeneratedVideoSeed(null);
+        }
+
         // Reload input image if not loaded
         if (!inputImagePreview) {
           const savedInputRef = localStorage.getItem(INPUT_IMAGE_STORAGE_KEY);
@@ -1050,6 +1254,18 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
     }
   }, [generatedImage, isMounted]);
 
+  // Save the preview video (inpaint_vid result) the same way. Only the URL, the
+  // frame/fps/duration line and the seed are stored -- never the clip bytes.
+  useEffect(() => {
+    if (isMounted && generatedVideo) {
+      saveVideoPreview(PREVIEW_KEYS, {
+        url: generatedVideo,
+        info: generatedVideoInfo,
+        seed: generatedVideoSeed,
+      });
+    }
+  }, [generatedVideo, generatedVideoInfo, generatedVideoSeed, isMounted]);
+
   // Save loop generation config to localStorage whenever it changes
   useEffect(() => {
     if (isMounted) {
@@ -1057,13 +1273,33 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
     }
   }, [loopGenerationConfig, isMounted]);
 
-  // Apply backend-fetched defaults when they arrive (only if no localStorage value exists)
+  // Apply backend-fetched defaults when they arrive (only if no localStorage
+  // value exists). Both dicts are merged: the image ones (`inpaint`) and the
+  // video-inpaint ones (`inpaint_vid`). Only the keys the VIDEO route owns are
+  // pulled from the second -- a blind spread would clobber the image mode's
+  // `blocks_to_swap` with the video route's, which is why that one is carried
+  // under `video_blocks_to_swap` (the OutpaintPanel precedent).
   useEffect(() => {
     if (!generationDefaults) return;
     const stored = localStorage.getItem(STORAGE_KEY);
-    if (!stored) {
-      setParams(prev => ({ ...DEFAULT_PARAMS, ...(generationDefaults.inpaint as Partial<typeof DEFAULT_PARAMS>) }));
-    }
+    if (stored) return;
+    const vid = (generationDefaults.inpaint_vid || {}) as Record<string, unknown>;
+    setParams(prev => ({
+      ...DEFAULT_PARAMS,
+      ...(generationDefaults.inpaint as Partial<typeof DEFAULT_PARAMS>),
+      frame_rate: (vid.frame_rate as number) ?? DEFAULT_PARAMS.frame_rate,
+      num_inference_steps: (vid.num_inference_steps as number) ?? DEFAULT_PARAMS.num_inference_steps,
+      guidance_scale: (vid.guidance_scale as number) ?? DEFAULT_PARAMS.guidance_scale,
+      num_videos_per_prompt: (vid.num_videos_per_prompt as number) ?? DEFAULT_PARAMS.num_videos_per_prompt,
+      max_sequence_length: (vid.max_sequence_length as number) ?? DEFAULT_PARAMS.max_sequence_length,
+      audio_enable: (vid.audio_enable as boolean) ?? DEFAULT_PARAMS.audio_enable,
+      input_trim_start_frames: (vid.input_trim_start_frames as number) ?? DEFAULT_PARAMS.input_trim_start_frames,
+      input_trim_end_frames: (vid.input_trim_end_frames as number) ?? DEFAULT_PARAMS.input_trim_end_frames,
+      inpaint_video_audio_mode:
+        (vid.inpaint_video_audio_mode as "regenerate" | "preserve_input") ?? DEFAULT_PARAMS.inpaint_video_audio_mode,
+      video_lossless: (vid.video_lossless as boolean) ?? DEFAULT_PARAMS.video_lossless,
+      video_blocks_to_swap: (vid.blocks_to_swap as number) ?? DEFAULT_PARAMS.video_blocks_to_swap,
+    }));
   }, [generationDefaults]);
 
   const resetToDefault = () => {
@@ -1268,6 +1504,107 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
     }
   };
 
+  // ── Video temporal inpaint: clip input, canvas and range handling ────────
+
+  const fitVideoCanvasFor = (srcWidth: number, srcHeight: number, scaleValue: number) =>
+    fitVideoCanvas(archCapabilities, loadedArchType, srcWidth, srcHeight, scaleValue);
+
+  // Trim (start + end) that brings a clip of `raw` frames to `target`, and the
+  // range that fits inside the result. Applied on load and by the "Fit" button,
+  // and it mirrors the route's rule so the panel and the route cannot disagree.
+  const applyClipLength = (raw: number, target: number | null) => {
+    const trimEnd = target != null ? Math.max(0, raw - target) : 0;
+    const trimmed = target ?? raw;
+    // A default range: the middle third, snapped to latent-group boundaries.
+    const spans = latentGroupSpans(latentChunkPattern, trimmed);
+    const snapped = snapRangeToLatentGroups(
+      spans, Math.floor(trimmed / 3), Math.ceil((2 * trimmed) / 3));
+    setParams(prev => ({
+      ...prev,
+      input_trim_start_frames: 0,
+      input_trim_end_frames: trimEnd,
+      regenerate_start_frame: snapped.start,
+      regenerate_end_frame: snapped.end,
+    }));
+  };
+
+  const processVideoFile = (file: File) => {
+    if (!file.type.startsWith('video/')) {
+      alert('Please upload a valid video file');
+      return;
+    }
+    if (videoPreviewUrl) URL.revokeObjectURL(videoPreviewUrl);
+    setVideoFile(file);
+    setVideoDurationSec(null);
+    setInputVideoSize(null);
+    setClipFramesOverride(null);
+    setVideoPreviewUrl(URL.createObjectURL(file));
+  };
+
+  const handleVideoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) processVideoFile(file);
+  };
+
+  const handleVideoLoadedMetadata = (e: React.SyntheticEvent<HTMLVideoElement>) => {
+    const duration = e.currentTarget.duration;
+    if (Number.isFinite(duration) && duration > 0) {
+      setVideoDurationSec(duration);
+      const raw = Math.max(1, Math.round(duration * clipFrameRate));
+      applyClipLength(raw, largestValidVideoFrameCount(archCapabilities, loadedArchType, raw));
+    }
+    const { videoWidth, videoHeight } = e.currentTarget;
+    if (videoWidth > 0 && videoHeight > 0) {
+      // Only a NEW clip re-defaults the canvas: `loadedmetadata` fires again
+      // whenever the <video> remounts (tab switch, collapse/expand), and a
+      // canvas the user chose must survive that. processVideoFile clears
+      // inputVideoSize, so an actual upload always counts as new.
+      const isNewClip =
+        !inputVideoSize
+        || inputVideoSize.width !== videoWidth
+        || inputVideoSize.height !== videoHeight;
+      setInputVideoSize({ width: videoWidth, height: videoHeight });
+      if (isNewClip) {
+        setVideoScale(1.0);
+        const fitted = fitVideoCanvasFor(videoWidth, videoHeight, 1.0);
+        setParams(prev => ({ ...prev, width: fitted.width, height: fitted.height }));
+      }
+    }
+  };
+
+  const handleClearVideo = () => {
+    if (videoPreviewUrl) URL.revokeObjectURL(videoPreviewUrl);
+    setVideoFile(null);
+    setVideoPreviewUrl(null);
+    setVideoDurationSec(null);
+    setInputVideoSize(null);
+    setClipFramesOverride(null);
+    setVideoSizeMode("absolute");
+    setParams(prev => ({
+      ...prev,
+      input_trim_start_frames: 0,
+      input_trim_end_frames: 0,
+      regenerate_start_frame: 0,
+      regenerate_end_frame: 0,
+    }));
+  };
+
+  const handleVideoScaleChange = (newScale: number) => {
+    setVideoScale(newScale);
+    if (inputVideoSize) {
+      const fitted = fitVideoCanvasFor(inputVideoSize.width, inputVideoSize.height, newScale);
+      setParams(prev => ({ ...prev, width: fitted.width, height: fitted.height }));
+    }
+  };
+
+  const handleVideoSizeModeChange = (newMode: "absolute" | "scale") => {
+    setVideoSizeMode(newMode);
+    if (newMode === "scale" && inputVideoSize) {
+      const fitted = fitVideoCanvasFor(inputVideoSize.width, inputVideoSize.height, videoScale);
+      setParams(prev => ({ ...prev, width: fitted.width, height: fitted.height }));
+    }
+  };
+
   const handleClearInputImage = async () => {
     setInputImage(null);
     setInputImagePreview(null);
@@ -1419,6 +1756,17 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
     if (onTabChange) {
       onTabChange("outpaint");
     }
+  };
+
+  // generatedVideo (inpaint_vid) result -> Outpaint's outpaint_vid clip input.
+  // Transport is the plain /outputs/ URL, not base64 (see sendHelpers).
+  const sendVideoResultToOutpaint = () => {
+    if (!generatedVideo) {
+      alert("No video to send");
+      return;
+    }
+    sendVideoToOutpaint(generatedVideo);
+    if (onTabChange) onTabChange("outpaint");
   };
 
   const sendToInpaint = async () => {
@@ -1725,10 +2073,85 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
     fixedResolutionPresets: true,
   });
 
-  // Add generation request to queue
+  // Add generation request to queue. Two modality branches: image (inpaint,
+  // mask-driven) and video (inpaint_vid, range-driven), mutually exclusive on
+  // the loaded model's modality.
   const handleAddToQueue = async () => {
     if (!params.prompt) {
       alert("Please enter a prompt");
+      return;
+    }
+
+    // Which endpoint this goes to is decided from a FRESH read of
+    // GET /models/current rather than the cached `isVideo` render flag: the
+    // model can change under an open page (API call, backend restart, second
+    // tab), and routing an image request at a video model costs a 400 about the
+    // wrong thing. The cached flag stays the render-time hint.
+    const modality = await resolveModality();
+    if (modality.isVideo) {
+      if (!supportsTemporalInpaint) {
+        alert(temporalInpaintReason
+          || `${loadedArchName} has no temporal inpaint; load a MiniMax-H3 fl2va model.`);
+        return;
+      }
+      if (!videoFile) {
+        alert("Please upload an input video clip");
+        return;
+      }
+      if (!videoTrimmedLengthValid) {
+        alert("The trimmed clip is not a length this model can generate — use the trim controls "
+          + "(or 'Fit to a valid length') first.");
+        return;
+      }
+      if (!((params.regenerate_start_frame ?? 0) < (params.regenerate_end_frame ?? 0))) {
+        alert("Please choose a range to regenerate");
+        return;
+      }
+      const { replaceWildcardsInPrompt } = await import("@/utils/wildcardStorage");
+      const videoParams: InpaintVideoParams = {
+        prompt: await replaceWildcardsInPrompt(params.prompt),
+        negative_prompt: await replaceWildcardsInPrompt(params.negative_prompt || ""),
+        width: params.width,
+        height: params.height,
+        frame_rate: params.frame_rate,
+        num_inference_steps: params.num_inference_steps,
+        guidance_scale: params.guidance_scale,
+        seed: params.seed,
+        num_videos_per_prompt: params.num_videos_per_prompt,
+        max_sequence_length: params.max_sequence_length,
+        audio_enable: params.audio_enable,
+        regenerate_start_frame: params.regenerate_start_frame ?? 0,
+        regenerate_end_frame: params.regenerate_end_frame ?? 0,
+        input_trim_start_frames: params.input_trim_start_frames,
+        input_trim_end_frames: params.input_trim_end_frames,
+        inpaint_video_audio_mode: params.inpaint_video_audio_mode,
+        video_lossless: params.video_lossless,
+        blocks_to_swap: params.video_blocks_to_swap,
+        fbcache_enable: params.fbcache_enable,
+        fbcache_threshold: params.fbcache_threshold,
+        fbcache_warmup_steps: params.fbcache_warmup_steps,
+        spectrum_enable: params.spectrum_enable,
+        spectrum_w: params.spectrum_w,
+        spectrum_w_decay: params.spectrum_w_decay,
+        spectrum_delta_cap: params.spectrum_delta_cap,
+        spectrum_m: params.spectrum_m,
+        spectrum_lam: params.spectrum_lam,
+        spectrum_warmup_steps: params.spectrum_warmup_steps,
+        spectrum_window_size: params.spectrum_window_size,
+        spectrum_flex_window: params.spectrum_flex_window,
+        spectrum_tail: params.spectrum_tail,
+        spectrum_max_cache: params.spectrum_max_cache,
+        vae_path: params.vae_path,
+        text_encoder_path: params.text_encoder_path,
+        unet_quantization: params.unet_quantization,
+        quantized_gemm_mode: params.quantized_gemm_mode,
+      };
+      addToQueue({
+        type: "inpaint_vid",
+        params: videoParams as any,
+        inputVideo: videoFile,
+        prompt: videoParams.prompt,
+      });
       return;
     }
 
@@ -2122,8 +2545,54 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
 
     const nextItem = startNextInQueue();
     console.log("[Inpaint] Next item from queue:", nextItem);
-    if (!nextItem || nextItem.type !== "inpaint") {
+    if (!nextItem || (nextItem.type !== "inpaint" && nextItem.type !== "inpaint_vid")) {
       console.log("[Inpaint] No inpaint items in queue");
+      return;
+    }
+
+    // Video branch: inpaint_vid item. The queued clip is a File (inputVideo on
+    // QueueItem), the result is a clip, and there is no loop-generation
+    // handling -- matching the video branches of the other panels.
+    if (nextItem.type === "inpaint_vid") {
+      const videoParams = nextItem.params as InpaintVideoParams;
+      setIsGenerating(true);
+      setProgress(0);
+      setProgressMessage("");
+      setTotalSteps(videoParams.num_inference_steps || 8);
+      setPreviewImage(null);
+      setGeneratedImage(null);
+      setGeneratedVideo(null);
+      setGeneratedVideoInfo(null);
+      setGeneratedVideoSeed(null);
+      setGeneratedVideoWarnings([]);
+      setCfgMetrics([]);
+      try {
+        const clip = nextItem.inputVideo;
+        if (!clip) throw new Error("No input video available for video inpaint generation");
+        const result = await generateInpaintVideo(videoParams, clip);
+        const videoUrl = `/outputs/${getResultFilename(result)}`;
+        setGeneratedVideoWarnings(
+          (result.warnings || []).map((w: any) => (typeof w === "string" ? w : w?.message)).filter(Boolean));
+        setGeneratedVideo(videoUrl);
+        setGeneratedVideoSeed(getResultSeed(result));
+        setGeneratedVideoInfo({
+          num_frames: result.image?.num_frames,
+          fps: result.image?.fps,
+          duration: result.image?.duration,
+        });
+        if (onImageGenerated) onImageGenerated(videoUrl);
+        completeCurrentItem();
+      } catch (error: any) {
+        console.error("[Inpaint] Video generation failed:", error);
+        alert(`Video inpaint generation failed: ${error?.response?.data?.detail || error?.message || "Unknown error"}`);
+        failCurrentItem();
+      }
+      setIsGenerating(false);
+      setProgress(0);
+      setProgressMessage("");
+      setTimeout(() => {
+        if (processQueueRef.current) processQueueRef.current();
+      }, 100);
       return;
     }
 
@@ -2558,7 +3027,8 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
 
   // Auto-start queue processing when queue has pending items and not currently generating
   useEffect(() => {
-    const hasPendingItems = queue.some(item => item.status === "pending" && item.type === "inpaint");
+    const hasPendingItems = queue.some(item =>
+      item.status === "pending" && (item.type === "inpaint" || item.type === "inpaint_vid"));
     const isCurrentItemNull = currentItem === null;
 
     console.log("[Inpaint] Queue effect:", {
@@ -2571,8 +3041,9 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
       generateForever
     });
 
-    // If generate forever is enabled and queue is empty, add new item
-    if (generateForever && !hasPendingItems && isCurrentItemNull && !isGenerating && params.prompt && inputImagePreview && maskImage) {
+    // If generate forever is enabled and queue is empty, add new item. Image
+    // mode only -- the video branch has no mask and one clip per request.
+    if (generateForever && !isVideo && !hasPendingItems && isCurrentItemNull && !isGenerating && params.prompt && inputImagePreview && maskImage) {
       console.log("[Inpaint] Generate forever: Adding new item to queue");
       handleAddToQueue();
       return;
@@ -2598,7 +3069,9 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [params, inputImage, inputImagePreview, maskImage]);
+    // `videoFile` is a dependency for the same reason the image inputs are:
+    // handleAddToQueue closes over whichever modality's input it will send.
+  }, [params, inputImage, inputImagePreview, maskImage, videoFile]);
 
   // Render functions for each Inpaint Options tab (see INPAINT_OPTIONS_TABS /
   // INPAINT_OPTIONS_TAB_KEYS / isInpaintOptionsTabActive above). Every control
@@ -3631,6 +4104,183 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
           storageKeyPrefix="inpaint"
         />
 
+        {/* ── Video temporal inpaint: the clip, the range, the video params.
+            These replace the image input + mask surface when a video model is
+            loaded; the image mode below is unchanged. ── */}
+        {isVideo && !supportsTemporalInpaint && (
+          <Card title="Video Inpaint">
+            <p className="text-sm text-amber-400">
+              {temporalInpaintReason
+                || `${loadedArchName} does not implement temporal inpaint.`}
+            </p>
+            <p className="text-xs text-gray-500 mt-2">
+              To extend a clip instead of regenerating part of it, use the Outpaint tab.
+            </p>
+          </Card>
+        )}
+
+        {isVideo && supportsTemporalInpaint && (
+        <Card
+          title="Input Video"
+          collapsible={true}
+          defaultCollapsed={false}
+          storageKey="inpaint_video_input_collapsed"
+          collapsedPreview={
+            videoPreviewUrl ? (
+              <span className="text-green-400 text-sm">✓ Clip loaded</span>
+            ) : (
+              <span className="text-gray-500 text-sm">No clip</span>
+            )
+          }
+        >
+          <div className="space-y-4">
+            <div className="flex gap-2">
+              <input
+                type="file"
+                accept="video/mp4,video/webm"
+                onChange={handleVideoUpload}
+                className="block w-full text-sm text-gray-400
+                  file:mr-4 file:py-2 file:px-4
+                  file:rounded-lg file:border-0
+                  file:text-sm file:font-medium
+                  file:bg-blue-600 file:text-white
+                  hover:file:bg-blue-700
+                  file:cursor-pointer cursor-pointer"
+              />
+              {videoPreviewUrl && (
+                <Button onClick={handleClearVideo} variant="secondary" size="sm" title="Clear input clip">
+                  Clear
+                </Button>
+              )}
+            </div>
+            <div className="aspect-video bg-gray-800 rounded-lg overflow-hidden border-2 border-dashed border-gray-600">
+              {videoPreviewUrl ? (
+                <video
+                  src={videoPreviewUrl}
+                  onLoadedMetadata={handleVideoLoadedMetadata}
+                  className="w-full h-full object-contain"
+                  controls
+                  muted
+                  playsInline
+                />
+              ) : (
+                <div className="w-full h-full flex items-center justify-center">
+                  <p className="text-gray-500 text-center px-4">Use the file picker above to select an mp4/webm clip</p>
+                </div>
+              )}
+            </div>
+
+            {videoDurationSec != null && (
+              <div className="space-y-3">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1">Clip frames</label>
+                    <NumberInput
+                      label="Clip frames"
+                      value={videoRawFrames}
+                      onCommit={(v) => setClipFramesOverride(Math.max(1, v))}
+                      min={1}
+                      step={1}
+                      parse="int"
+                      className="w-full"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1">Trim start (frames)</label>
+                    <NumberInput
+                      label="Trim start"
+                      value={params.input_trim_start_frames ?? 0}
+                      onCommit={(v) => setParams(prev => ({ ...prev, input_trim_start_frames: Math.max(0, v) }))}
+                      min={0}
+                      step={1}
+                      parse="int"
+                      className="w-full"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1">Trim end (frames)</label>
+                    <NumberInput
+                      label="Trim end"
+                      value={params.input_trim_end_frames ?? 0}
+                      onCommit={(v) => setParams(prev => ({ ...prev, input_trim_end_frames: Math.max(0, v) }))}
+                      min={0}
+                      step={1}
+                      parse="int"
+                      className="w-full"
+                    />
+                  </div>
+                </div>
+                <p className="text-xs text-gray-500">
+                  {videoDurationSec.toFixed(2)}s at {clipFrameRate} fps, so about {estimatedRawFrames} frames —
+                  the browser reports a duration, not a frame count, so correct &quot;Clip frames&quot; if the
+                  clip is not exactly that. Temporal inpaint samples the whole clip, so it is the TRIMMED
+                  length that has to be one this model can generate; it is never trimmed for you at
+                  generate time, because that would delete frames you asked to keep.
+                </p>
+                {videoTrimmedLengthValid ? (
+                  <p className="text-xs text-green-400">
+                    Trimmed clip: {videoTrimmedFrames} frames — a length this model generates. The output
+                    is the same length.
+                  </p>
+                ) : (
+                  <div className="space-y-2">
+                    <p className="text-xs text-amber-400">
+                      Trimmed clip: {videoTrimmedFrames} frames, which this model cannot generate
+                      {videoConstraints && (
+                        <> (valid lengths are {videoConstraints.frame_multiple}n
+                          {videoConstraints.frame_offset ? `+${videoConstraints.frame_offset}` : ""},
+                          {" "}{videoConstraints.min_frames}
+                          {videoConstraints.max_frames != null ? `-${videoConstraints.max_frames}` : ""})</>
+                      )}
+                      {videoTargetLength != null
+                        ? `. Trimming ${videoRawFrames - videoTargetLength} frame(s) off the upload reaches ${videoTargetLength}.`
+                        : ". No trim of this clip reaches a valid length; it is shorter than this model's shortest clip."}
+                    </p>
+                    {videoTargetLength != null && (
+                      <Button
+                        onClick={() => applyClipLength(videoRawFrames, videoTargetLength)}
+                        variant="secondary"
+                        size="sm"
+                      >
+                        Fit to a valid length ({videoTargetLength} frames)
+                      </Button>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </Card>
+        )}
+
+        {isVideo && supportsTemporalInpaint && (
+        <Card title="Regenerate Range">
+          {/* `frameRate` is the CLIP's rate, so the seconds in the readout line
+              up with the input player the range is picked against. */}
+          <VideoInpaintRangeTimeline
+            rawFrames={videoRawFrames}
+            trimStart={params.input_trim_start_frames ?? 0}
+            trimEnd={params.input_trim_end_frames ?? 0}
+            latentChunkPattern={latentChunkPattern}
+            start={params.regenerate_start_frame ?? 0}
+            end={params.regenerate_end_frame ?? 0}
+            onRangeChange={(start, end) => setParams(prev => ({
+              ...prev,
+              regenerate_start_frame: start,
+              regenerate_end_frame: end,
+            }))}
+            frameRate={clipFrameRate}
+            disabled={!videoPreviewUrl}
+          />
+          <p className="text-xs text-gray-500 mt-2">
+            MiniMax&apos;s model card documents first- and last-frame conditioning with up to two
+            images; regenerating an interior range pins frames at interior positions with the same
+            mechanism and is not covered by the card.
+          </p>
+        </Card>
+        )}
+
+        {!isVideo && (
         <Card
           title="Input Image"
           collapsible={true}
@@ -3736,10 +4386,11 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
             )}
           </div>
         </Card>
+        )}
 
 
         {/* FLUX.2 Image Edit / Vision Encoder: Reference Images */}
-        {(currentModelInfo?.model_info?.type === "flux2" || params.vision_encoder_path) && (
+        {!isVideo && (currentModelInfo?.model_info?.type === "flux2" || params.vision_encoder_path) && (
           <Card
             title={currentModelInfo?.model_info?.type === "flux2" ? "FLUX.2 Image Edit (Reference Images)" : "Vision Encoder (Reference Images)"}
             collapsible={true}
@@ -3877,7 +4528,10 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
             />
           </div>
 
-          {/* Feeling Lucky Mode */}
+          {/* Feeling Lucky Mode. Image path only -- the video branch of
+              handleAddToQueue does wildcards but not TIPO, so showing the
+              control there would be showing one that does nothing. */}
+          {!isVideo && (
           <div className="flex items-center gap-2 px-2 py-2 bg-gray-800 rounded">
             <label className="flex items-center gap-2 cursor-pointer">
               <input
@@ -3906,6 +4560,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
               ⚙️ Settings
             </button>
           </div>
+          )}
 
           <TextareaWithTagSuggestions
             label="Negative Prompt"
@@ -3923,6 +4578,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
             binding / handler / conditional reveal) -- only the container
             changed. See INPAINT_OPTIONS_TAB_KEYS / isInpaintOptionsTabActive /
             inpaintOptionsTabRender above. */}
+        {!isVideo && (
         <TabbedOptions<InpaintParams>
           cardTitle="Inpaint Options"
           params={params}
@@ -3936,7 +4592,9 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
             render: inpaintOptionsTabRender[tab.id],
           }))}
         />
+        )}
 
+        {!isVideo && (
         <Card title="Parameters">
           <div className="space-y-4">
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -4221,8 +4879,270 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
 
           </div>
         </Card>
+        )}
 
-        {visibility.lora && (
+        {isVideo && supportsTemporalInpaint && (
+        <Card title="Video">
+          {/* Canvas, in the image panels' Parameters-card shape (labelled
+              sliders, Absolute/Scale size mode). Scale derives width/height
+              from the clip's own dimensions through fitVideoCanvas, which is
+              what resolves "the clip's own resolution" into a canvas this
+              architecture accepts. */}
+          <div className="mb-4">
+            <div className="flex items-center justify-between mb-2">
+              <label className="block text-sm font-medium text-gray-300">Size Mode</label>
+              <div className="flex gap-2">
+                <Button
+                  onClick={() => handleVideoSizeModeChange("absolute")}
+                  variant={videoSizeMode === "absolute" ? "primary" : "secondary"}
+                  size="sm"
+                >
+                  Absolute
+                </Button>
+                <Button
+                  onClick={() => handleVideoSizeModeChange("scale")}
+                  variant={videoSizeMode === "scale" ? "primary" : "secondary"}
+                  size="sm"
+                  disabled={!inputVideoSize}
+                  title={!inputVideoSize ? "Load an input clip first" : ""}
+                >
+                  Scale
+                </Button>
+              </div>
+            </div>
+
+            {videoSizeMode === "absolute" ? (
+              <div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <Slider
+                    label={`Width (÷${videoWidthBounds.step})`}
+                    min={videoWidthBounds.min}
+                    max={videoWidthBounds.max}
+                    step={videoWidthBounds.step}
+                    value={params.width ?? videoWidthBounds.min}
+                    onChange={(e) => setParams({ ...params, width: parseInt(e.target.value) })}
+                  />
+                  <Slider
+                    label={`Height (÷${videoHeightBounds.step})`}
+                    min={videoHeightBounds.min}
+                    max={videoHeightBounds.max}
+                    step={videoHeightBounds.step}
+                    value={params.height ?? videoHeightBounds.min}
+                    onChange={(e) => setParams({ ...params, height: parseInt(e.target.value) })}
+                  />
+                </div>
+                {videoWidthBounds.capped && (
+                  <p className="text-xs text-gray-500 mt-1">
+                    {videoCanvasRule(archCapabilities, loadedArchType)}. The cap is on the short and
+                    long edges rather than on width and height, so each slider stops at the largest
+                    edge the other axis currently allows.
+                  </p>
+                )}
+                {videoCanvasOverEnvelope && (
+                  <p className="text-xs text-amber-400 mt-1">
+                    The canvas is {params.width}x{params.height}, which is outside this model&apos;s
+                    envelope. The value is kept as set — it is not moved for you — and this model
+                    refuses it, so change it before generating.
+                  </p>
+                )}
+              </div>
+            ) : (
+              <div>
+                <Slider
+                  label={`Scale (${params.width}x${params.height})`}
+                  min={0.25}
+                  max={4.0}
+                  step={0.25}
+                  value={videoScale}
+                  onChange={(e) => handleVideoScaleChange(parseFloat(e.target.value))}
+                />
+                {inputVideoSize && (
+                  <p className="text-xs text-gray-500 mt-1">
+                    Input clip: {inputVideoSize.width}x{inputVideoSize.height} ·{" "}
+                    {videoCanvasRule(archCapabilities, loadedArchType)}
+                  </p>
+                )}
+              </div>
+            )}
+
+            {/* WHAT THE CANVAS DOES TO THE CLIP. The backend fits the upload to
+                width x height (centre-crop, then resize) and it is that fitted
+                result which is preserved, so a canvas that is not the clip's own
+                size changes what "preserved" means. Stated, not advised. */}
+            {inputVideoSize && (
+              <p className={`text-xs mt-2 ${videoCanvasIsSourceSize ? "text-gray-500" : "text-amber-400"}`}>
+                {videoCanvasIsSourceSize ? (
+                  <>The canvas is the input clip&apos;s own resolution, so the preserved frames are the
+                    uploaded frames.</>
+                ) : (
+                  <>The canvas is {params.width}x{params.height}; the input clip is{" "}
+                    {inputVideoSize.width}x{inputVideoSize.height}. The clip is fitted to the canvas
+                    once — centre-cropped to the canvas aspect ratio, then resized — and it is that
+                    fitted version, not the upload, whose frames are preserved.</>
+                )}
+              </p>
+            )}
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-2">
+            <Slider
+              label="Steps"
+              min={videoConstraints?.min_inference_steps ?? 1}
+              max={100}
+              step={1}
+              value={params.num_inference_steps ?? 8}
+              onChange={(e) => setParams({ ...params, num_inference_steps: parseInt(e.target.value) })}
+            />
+            <Slider
+              label="Guidance Scale"
+              min={0}
+              max={20}
+              step={0.1}
+              value={params.guidance_scale ?? 1.0}
+              onChange={(e) => setParams({ ...params, guidance_scale: parseFloat(e.target.value) })}
+            />
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-2">
+            <Slider
+              label="Frame Rate (fps)"
+              min={1}
+              max={60}
+              step={1}
+              value={params.frame_rate ?? 24.0}
+              onChange={(e) => setParams({ ...params, frame_rate: parseFloat(e.target.value) })}
+            />
+            <div>
+              <label className="block text-sm font-medium text-gray-300 mb-1">Seed</label>
+              <div className="flex gap-2">
+                <NumberInput
+                  value={params.seed ?? -1}
+                  onCommit={(v) => setParams({ ...params, seed: v })}
+                  parse="int"
+                  className="flex-1 min-w-0"
+                />
+                <Button
+                  onClick={() => setParams({ ...params, seed: Math.floor(Math.random() * 2147483647) })}
+                  variant="secondary"
+                  size="sm"
+                  title="Random seed"
+                >
+                  🎲
+                </Button>
+                <Button
+                  onClick={() => setParams({ ...params, seed: -1 })}
+                  variant="secondary"
+                  size="sm"
+                  title="Reset to random (-1)"
+                >
+                  -1
+                </Button>
+                <Button
+                  onClick={() => generatedVideoSeed !== null && setParams({ ...params, seed: generatedVideoSeed })}
+                  variant="secondary"
+                  size="sm"
+                  title="Use seed from result video"
+                  disabled={generatedVideoSeed === null}
+                >
+                  ♻️
+                </Button>
+              </div>
+            </div>
+          </div>
+
+          <label className="flex items-center gap-2 cursor-pointer mt-2">
+            <input
+              type="checkbox"
+              checked={params.audio_enable ?? true}
+              onChange={(e) => setParams({ ...params, audio_enable: e.target.checked })}
+              className="rounded"
+            />
+            <span className="text-gray-300 text-sm">Audio</span>
+          </label>
+
+          <div className="ml-6 mt-1">
+            <Select
+              label="Audio mode"
+              value={params.inpaint_video_audio_mode || archAudioMode}
+              onChange={(e) => setParams({ ...params, inpaint_video_audio_mode: e.target.value as "regenerate" | "preserve_input" })}
+              options={[
+                { value: "preserve_input", label: "Preserve the clip's own track" },
+                { value: "regenerate", label: "Regenerate the whole track" },
+              ]}
+            />
+            <p className="text-xs text-gray-500 mt-1">
+              &quot;Preserve the clip&apos;s own track&quot; conditions the generation on the source
+              audio across the whole clip and muxes that track back verbatim; it falls back to
+              regenerating (with a warning) if the clip has no audio stream. &quot;Regenerate&quot;
+              generates a soundtrack for the whole clip, so the preserved video frames carry generated
+              audio that need not match them. With Audio off nothing is muxed either way, and under
+              &quot;Preserve&quot; the source track still conditions the generation.
+            </p>
+          </div>
+
+          <div className="flex items-center gap-2 mt-3">
+            <input
+              type="checkbox"
+              id="inpaint_video_lossless"
+              checked={params.video_lossless ?? false}
+              onChange={(e) => setParams({ ...params, video_lossless: e.target.checked })}
+              className="rounded"
+            />
+            <label htmlFor="inpaint_video_lossless" className="text-sm text-gray-300">Lossless (FFV1)</label>
+          </div>
+          <p className="text-xs text-gray-500 ml-6">
+            The preserved frames are the input&apos;s own pixels, exact at the frames handoff either
+            way. FFV1 carries that exactness into the FILE; the default H.264 re-encodes preserved and
+            generated frames alike. FFV1 files are much larger and generally do not play in a
+            browser&apos;s native video element.
+          </p>
+
+          <div className="text-sm font-semibold text-gray-400 mt-4 mb-1">Acceleration</div>
+
+          <div className="flex items-center gap-2">
+            <input
+              type="checkbox"
+              id="inpaint_vid_block_swap_enable"
+              checked={(params.video_blocks_to_swap ?? 0) > 0}
+              onChange={(e) => setParams({ ...params, video_blocks_to_swap: e.target.checked ? 10 : 0 })}
+              className="rounded"
+            />
+            <label htmlFor="inpaint_vid_block_swap_enable" className="text-sm text-gray-300">
+              Block Swap (Transformer offloading)
+            </label>
+          </div>
+          {(params.video_blocks_to_swap ?? 0) > 0 && (
+            <div className="ml-6 mt-1">
+              <label className="block text-xs text-gray-400 mb-1">Blocks to swap</label>
+              <NumberInput
+                label="Blocks to swap"
+                value={params.video_blocks_to_swap ?? 10}
+                onCommit={(v) => setParams({ ...params, video_blocks_to_swap: Math.max(1, v) })}
+                min={1}
+                max={48}
+                step={1}
+                parse="int"
+                className="w-24"
+              />
+            </div>
+          )}
+
+          <div className="flex items-center gap-2 mt-2">
+            <input
+              type="checkbox"
+              id="inpaint_vid_fbcache_enable"
+              checked={params.fbcache_enable || false}
+              onChange={(e) => setParams({ ...params, fbcache_enable: e.target.checked })}
+              className="rounded"
+            />
+            <label htmlFor="inpaint_vid_fbcache_enable" className="text-sm text-gray-300">
+              First Block Cache (dynamic caching)
+            </label>
+          </div>
+        </Card>
+        )}
+
+        {!isVideo && visibility.lora && (
           <LoRASelector
             value={params.loras || []}
             onChange={(loras) => setParams({ ...params, loras })}
@@ -4231,7 +5151,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
           />
         )}
 
-        {visibility.controlnet && (
+        {!isVideo && visibility.controlnet && (
           <ControlNetSelector
             value={params.controlnets || []}
             onChange={(controlnets) => setParams({ ...params, controlnets })}
@@ -4241,7 +5161,9 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
           />
         )}
 
-        {/* Loop Generation */}
+        {/* Loop Generation. Image mode only: the video branch enqueues one
+            inpaint_vid item, matching the video branches of the other panels. */}
+        {!isVideo && (
         <LoopGenerationPanel
           config={loopGenerationConfig}
           onChange={setLoopGenerationConfig}
@@ -4251,6 +5173,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
           samplers={samplers}
           scheduleTypes={scheduleTypes}
         />
+        )}
       </div>
 
       {/* Preview Panel */}
@@ -4277,6 +5200,8 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
                   }}
                   className="flex-1"
                   size="lg"
+                  disabled={isVideo && (!supportsTemporalInpaint || !videoFile)}
+                  title={isVideo && !supportsTemporalInpaint ? (temporalInpaintReason || "") : ""}
                 >
                   {isGenerating ? "Add to Queue" : generateForever ? "Generate Forever ∞" : "Generate"}
                 </Button>
@@ -4339,6 +5264,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
                         onTouchCancel={handleGenerateTouchEnd}
                         className="flex-1"
                         size="lg"
+                        disabled={isVideo && (!supportsTemporalInpaint || !videoFile)}
                       >
                         {isGenerating ? "Add Queue" : generateForever ? "Generate Forever ∞" : "Generate"}
                       </Button>
@@ -4411,6 +5337,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
               )}
 
               {/* Preview Predicted x0 toggle */}
+              {!isVideo && (
               <div className="flex items-center gap-2">
                 <input
                   type="checkbox"
@@ -4423,11 +5350,12 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
                   Preview Predicted x0
                 </label>
               </div>
+              )}
 
               {/* Live-preview decoder — only meaningful for AutoencoderKLFlux2-latent
                   models (FLUX.2 / Lens / Ideogram 4); hidden for architectures that
                   ignore preview_decoder (SD/SDXL, Z-Image, Anima, MiniT2I). */}
-              {(currentModelInfo?.model_info?.type === "flux2"
+              {!isVideo && (currentModelInfo?.model_info?.type === "flux2"
                 || currentModelInfo?.model_info?.type === "lens"
                 || currentModelInfo?.model_info?.type === "ideogram4") && (
                 <div className="flex items-center gap-2">
@@ -4447,7 +5375,10 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
                 </div>
               )}
 
-              {/* Use training model toggle (mirrors Txt2Img / Img2Img panels) */}
+              {/* Use training model toggle (mirrors Txt2Img / Img2Img panels).
+                  Image path only: the training-preview route takes an init
+                  image and a mask. */}
+              {!isVideo && (
               <div className="flex items-center gap-2"
                    title={activeTraining
                      ? `Active: ${activeTraining.run_name ?? `run #${activeTraining.run_id}`} (step ${activeTraining.current_step ?? "?"})`
@@ -4470,8 +5401,9 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
                   )}
                 </label>
               </div>
+              )}
 
-              {useTrainingModel && (
+              {!isVideo && useTrainingModel && (
                 <div className="flex items-center gap-2 ml-6"
                      title="Save preview PNG to outputs/ and the gallery (tagged as training-preview)">
                   <input
@@ -4504,12 +5436,47 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
               <div
                 className="w-full aspect-square max-h-[500px] lg:max-h-none bg-gray-800 rounded-lg flex items-center justify-center cursor-pointer"
                 onDoubleClick={() => {
-                  if (generatedImage) {
+                  if (!isVideo && generatedImage) {
                     setPreviewViewerOpen(true);
                   }
                 }}
               >
-                {generatedImage ? (
+                {isVideo && generatedVideo ? (
+                  <div className="w-full space-y-2">
+                    <video
+                      src={generatedVideo}
+                      className="w-full rounded-lg"
+                      controls
+                      loop
+                      muted
+                      autoPlay
+                      playsInline
+                      onError={() => {
+                        // The file is gone (outputs/ cleared, run deleted) --
+                        // show an empty preview rather than a dead player.
+                        console.warn("[Inpaint] Preview video failed to load, clearing:", generatedVideo);
+                        clearVideoPreview(PREVIEW_KEYS);
+                        setGeneratedVideo(null);
+                        setGeneratedVideoInfo(null);
+                        setGeneratedVideoSeed(null);
+                      }}
+                    />
+                    {generatedVideoInfo && (
+                      <div className="text-xs text-gray-400">
+                        {generatedVideoInfo.num_frames != null && <span>{generatedVideoInfo.num_frames} frames</span>}
+                        {generatedVideoInfo.fps != null && <span> · {generatedVideoInfo.fps} fps</span>}
+                        {generatedVideoInfo.duration != null && Number.isFinite(Number(generatedVideoInfo.duration)) && <span> · {Number(generatedVideoInfo.duration).toFixed(2)}s</span>}
+                      </div>
+                    )}
+                    {generatedVideoWarnings.length > 0 && (
+                      <ul className="text-xs text-amber-400 list-disc pl-4 space-y-1">
+                        {generatedVideoWarnings.map((w, i) => <li key={i}>{w}</li>)}
+                      </ul>
+                    )}
+                  </div>
+                ) : isVideo ? (
+                  <p className="text-gray-500">No video generated yet</p>
+                ) : generatedImage ? (
                   <img
                     src={effectiveGeneratedImage ?? generatedImage}
                     alt="Generated"
@@ -4541,9 +5508,17 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
               </div>
 
               {/* Post-Edit controls (client-side brightness/saturation) */}
-              {generatedImage && (
+              {!isVideo && generatedImage && (
                 <div className="mt-3">
                   <PostEditControls value={postEdit} onChange={setPostEdit} />
+                </div>
+              )}
+
+              {isVideo && generatedVideo && (
+                <div className="grid grid-cols-1 gap-2 mt-4">
+                  <Button onClick={sendVideoResultToOutpaint} variant="secondary" size="sm">
+                    Send to outpaint
+                  </Button>
                 </div>
               )}
 
@@ -4555,7 +5530,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
                 </div>
               )}
 
-            {generatedImage && (
+            {!isVideo && generatedImage && (
               <div className="space-y-3 mt-4">
                 <div className="flex flex-wrap gap-2 text-sm">
                   <label className="flex items-center gap-2 cursor-pointer">

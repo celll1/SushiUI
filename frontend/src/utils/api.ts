@@ -589,6 +589,58 @@ export interface OutpaintVideoParams {
   attention_type?: string;
 }
 
+// Video TEMPORAL inpaint (POST /generate/inpaint/video, MiniMax-H3 fl2va):
+// regenerate one contiguous frame range of an uploaded clip and preserve the
+// rest. There is deliberately NO clip-length field — the output is exactly as
+// long as the trimmed input, which is also why it is the TRIMMED INPUT that has
+// to be a length the architecture can generate.
+export interface InpaintVideoParams {
+  prompt: string;
+  negative_prompt?: string;
+  width?: number;
+  height?: number;
+  frame_rate?: number;
+  num_inference_steps?: number;
+  guidance_scale?: number;
+  seed?: number;
+  num_videos_per_prompt?: number;
+  max_sequence_length?: number;
+  audio_enable?: boolean;
+  // --- The range, in PIXEL frames of the TRIMMED clip: start inclusive, end
+  // exclusive. Required by the route (there is no defensible default range).
+  // The server expands it OUTWARD to latent-group boundaries; a UI that snaps
+  // to the same boundaries sends a range that is already effective.
+  regenerate_start_frame: number;
+  regenerate_end_frame: number;
+  input_trim_start_frames?: number;
+  input_trim_end_frames?: number;
+  // Omit to take the LOADED ARCHITECTURE's default ("preserve_input" on
+  // MiniMax-H3); resolve it client-side with `inpaintVideoDefaultsForArch`.
+  inpaint_video_audio_mode?: "regenerate" | "preserve_input";
+  video_lossless?: boolean;        // FFV1: carries the preserved frames' exactness into the FILE
+  // --- Acceleration (same knobs as the other video routes) ---
+  blocks_to_swap?: number;
+  fbcache_enable?: boolean;
+  fbcache_threshold?: number;
+  fbcache_warmup_steps?: number;
+  spectrum_enable?: boolean;
+  spectrum_w?: number;
+  spectrum_w_decay?: number;
+  spectrum_delta_cap?: number;
+  spectrum_m?: number;
+  spectrum_lam?: number;
+  spectrum_warmup_steps?: number;
+  spectrum_window_size?: number;
+  spectrum_flex_window?: number;
+  spectrum_tail?: number;
+  spectrum_max_cache?: number;
+  vae_path?: string | null;
+  text_encoder_path?: string | null;
+  unet_quantization?: string | null;
+  quantized_gemm_mode?: QuantizedGemmMode;
+  attention_type?: string;
+}
+
 export interface UpscaleParams {
   upscaler_backend?: string;
   upscaler_model?: string | null;
@@ -911,6 +963,7 @@ export interface GenerationDefaultsResponse {
   inpaint:  Partial<InpaintParams> & Record<string, unknown>;
   outpaint: Partial<OutpaintParams> & Record<string, unknown>;
   outpaint_vid: Partial<OutpaintVideoParams> & Record<string, unknown>;
+  inpaint_vid: Partial<InpaintVideoParams> & Record<string, unknown>;
   outpaint_aud: Partial<OutpaintAudioParams> & Record<string, unknown>;
   upscale: Partial<UpscaleParams> & Record<string, unknown>;
   txt2vid: Partial<Txt2VidParams> & Record<string, unknown>;
@@ -925,6 +978,9 @@ export interface GenerationDefaultsResponse {
   // older backend without the keys still type-checks.
   video_arch_overlays?: Record<string, Record<string, unknown>>;
   outpaint_video_arch_overlays?: Record<string, Record<string, unknown>>;
+  // Same thing for the keys that exist only on /generate/inpaint/video
+  // (currently `inpaint_video_audio_mode`).
+  inpaint_video_arch_overlays?: Record<string, Record<string, unknown>>;
 }
 
 // The outpaint-video defaults for one architecture, resolved from the SAME
@@ -936,6 +992,17 @@ export const outpaintVideoDefaultsForArch = (
   ...(defaults?.outpaint_vid || {}),
   ...((arch && defaults?.video_arch_overlays?.[arch]) || {}),
   ...((arch && defaults?.outpaint_video_arch_overlays?.[arch]) || {}),
+});
+
+// The inpaint-video defaults for one architecture, same three layers in the
+// same order (`inpaint_video_defaults_for_arch` server-side).
+export const inpaintVideoDefaultsForArch = (
+  defaults: GenerationDefaultsResponse | null | undefined,
+  arch: string | null | undefined
+): Record<string, unknown> => ({
+  ...(defaults?.inpaint_vid || {}),
+  ...((arch && defaults?.video_arch_overlays?.[arch]) || {}),
+  ...((arch && defaults?.inpaint_video_arch_overlays?.[arch]) || {}),
 });
 
 export const fetchGenerationDefaults = async (): Promise<GenerationDefaultsResponse> =>
@@ -1044,7 +1111,66 @@ export interface VideoConstraints {
   // timeline boundary or bridge two clips. Optional so an older backend
   // without the key still type-checks (treated as "free" by the helper below).
   outpaint_placements?: string[];
+  // The video VAE's temporal chunking, in pixel frames per latent frame,
+  // cycled from the start of the clip (MiniMax-H3: [1,4,4,4,4]). A latent frame
+  // is regenerated or preserved as a whole, so it is the addressable unit of
+  // POST /generate/inpaint/video. [] / absent = the arch declares none and
+  // temporal inpaint is refused on it.
+  latent_chunk_pattern?: number[];
 }
+
+// `[pixelStart, pixelEndExclusive]` per latent frame, for a clip of `frames`
+// pixel frames. Mirrors the backend's `latent_frame_spans`
+// (backend/api/generation_utils.py): the pattern is cycled, and on a valid clip
+// length the spans tile the clip exactly. An empty pattern yields no spans,
+// which is how "this arch declares no chunking" reaches the UI.
+export const latentGroupSpans = (
+  pattern: number[] | undefined,
+  frames: number
+): [number, number][] => {
+  const spans: [number, number][] = [];
+  if (!pattern || pattern.length === 0 || frames <= 0) return spans;
+  let cursor = 0;
+  for (let index = 0; cursor < frames; index += 1) {
+    const width = pattern[index % pattern.length];
+    spans.push([cursor, Math.min(frames, cursor + width)]);
+    cursor += width;
+  }
+  return spans;
+};
+
+// The range the server would actually regenerate for a requested `[start, end)`:
+// expanded OUTWARD to latent-group boundaries, never shrunk — the same rule
+// `plan_video_inpaint_span` applies. Returns the request unchanged when the arch
+// declares no chunking (the backend refuses that case with its own message).
+export const snapRangeToLatentGroups = (
+  spans: [number, number][],
+  start: number,
+  end: number
+): { start: number; end: number } => {
+  if (!spans.length || !(start < end)) return { start, end };
+  const touched = spans.filter(([lo, hi]) => lo < end && hi > start);
+  if (!touched.length) return { start, end };
+  return { start: touched[0][0], end: touched[touched.length - 1][1] };
+};
+
+// The longest clip length this architecture accepts that is <= `frames`, or
+// null when even its shortest clip is longer. This is what a temporal-inpaint
+// UI trims DOWN to: the clip length itself must be on the grid there, and the
+// backend refuses an off-grid length rather than snapping it (snapping would
+// delete frames the caller asked to keep).
+export const largestValidVideoFrameCount = (
+  caps: ArchCapabilities | null | undefined,
+  arch: string | null | undefined,
+  frames: number
+): number | null => {
+  const c = arch ? caps?.video_constraints?.[arch] : undefined;
+  if (!c || !Number.isFinite(frames)) return null;
+  const ceiling = c.max_frames != null ? Math.min(frames, c.max_frames) : frames;
+  const k = Math.floor((ceiling - c.frame_offset) / c.frame_multiple);
+  const length = k * c.frame_multiple + c.frame_offset;
+  return length >= c.min_frames ? length : null;
+};
 
 // The temporal-outpaint placements the loaded arch can anchor, from the
 // backend's own table. An unknown arch (or a backend that does not serve the
@@ -2899,6 +3025,89 @@ export const generateOutpaintVideo = async (
   formData.append("video_lossless", String(params.video_lossless ?? false));
 
   const response = await api.post("/generate/outpaint/video", formData, {
+    headers: { "Content-Type": "multipart/form-data" },
+  });
+  return response.data;
+};
+
+// Video temporal inpaint (MiniMax-H3 fl2va): multipart POST
+// /generate/inpaint/video with an uploaded `video` clip. Same explicit-append
+// shape as generateOutpaintVideo, matching the Form parameter names of
+// routes.py's generate_inpaint_video 1:1. No clip-length field exists: the
+// output is as long as the trimmed input.
+export const generateInpaintVideo = async (
+  params: InpaintVideoParams,
+  video: File | string
+) => {
+  const formData = new FormData();
+
+  if (typeof video === "string") {
+    const response = await fetch(video);
+    const blob = await response.blob();
+    formData.append("video", blob, "input.mp4");
+  } else {
+    formData.append("video", video);
+  }
+
+  formData.append("prompt", params.prompt);
+  formData.append("negative_prompt", params.negative_prompt || "");
+  formData.append("width", String(params.width ?? 768));
+  formData.append("height", String(params.height ?? 512));
+  formData.append("frame_rate", String(params.frame_rate ?? 24.0));
+  formData.append("num_inference_steps", String(params.num_inference_steps ?? 8));
+  formData.append("guidance_scale", String(params.guidance_scale ?? 1.0));
+  formData.append("seed", String(params.seed ?? -1));
+  formData.append("num_videos_per_prompt", String(params.num_videos_per_prompt ?? 1));
+  formData.append("max_sequence_length", String(params.max_sequence_length ?? 1024));
+  formData.append("audio_enable", String(params.audio_enable ?? true));
+
+  // The range, required by the route.
+  formData.append("regenerate_start_frame", String(params.regenerate_start_frame));
+  formData.append("regenerate_end_frame", String(params.regenerate_end_frame));
+  formData.append("input_trim_start_frames", String(params.input_trim_start_frames ?? 0));
+  formData.append("input_trim_end_frames", String(params.input_trim_end_frames ?? 0));
+  // Sent ONLY when the caller has a value: the backend field is a sentinel
+  // whose default is per-architecture, so a hardcoded fallback here would pin
+  // the base value and defeat the overlay (see generateOutpaintVideo).
+  if (params.inpaint_video_audio_mode) {
+    formData.append("inpaint_video_audio_mode", params.inpaint_video_audio_mode);
+  }
+
+  const attentionType = typeof window !== 'undefined' ? localStorage.getItem('attention_type') : null;
+  formData.append("attention_type", params.attention_type || attentionType || "normal");
+
+  formData.append("blocks_to_swap", String(params.blocks_to_swap ?? 0));
+  formData.append("fbcache_enable", String(params.fbcache_enable ?? false));
+  formData.append("fbcache_threshold", String(params.fbcache_threshold ?? 0.12));
+  formData.append("fbcache_warmup_steps", String(params.fbcache_warmup_steps ?? 1));
+  formData.append("spectrum_enable", String(params.spectrum_enable ?? false));
+  formData.append("spectrum_w", String(params.spectrum_w ?? 0.5));
+  formData.append("spectrum_w_decay", String(params.spectrum_w_decay ?? 0.0));
+  formData.append("spectrum_delta_cap", String(params.spectrum_delta_cap ?? 0.0));
+  formData.append("spectrum_m", String(params.spectrum_m ?? 4));
+  formData.append("spectrum_lam", String(params.spectrum_lam ?? 0.1));
+  formData.append("spectrum_warmup_steps", String(params.spectrum_warmup_steps ?? 3));
+  formData.append("spectrum_window_size", String(params.spectrum_window_size ?? 4));
+  formData.append("spectrum_flex_window", String(params.spectrum_flex_window ?? 0.75));
+  formData.append("spectrum_tail", String(params.spectrum_tail ?? 0.12));
+  formData.append("spectrum_max_cache", String(params.spectrum_max_cache ?? 0));
+
+  if (params.vae_path) {
+    formData.append("vae_path", params.vae_path);
+  }
+  if (params.text_encoder_path) {
+    formData.append("text_encoder_path", params.text_encoder_path);
+  }
+  if (params.unet_quantization && params.unet_quantization !== "none") {
+    formData.append("unet_quantization", params.unet_quantization);
+  }
+  if (params.quantized_gemm_mode) {
+    formData.append("quantized_gemm_mode", params.quantized_gemm_mode);
+  }
+
+  formData.append("video_lossless", String(params.video_lossless ?? false));
+
+  const response = await api.post("/generate/inpaint/video", formData, {
     headers: { "Content-Type": "multipart/form-data" },
   });
   return response.data;

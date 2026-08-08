@@ -484,6 +484,12 @@ def video_constraints_payload() -> Dict[str, Dict[str, Any]]:
             # while MiniMax-H3 lists only the boundary placements it can
             # actually anchor.
             "outpaint_placements": list(spec.outpaint_placements),
+            # The video VAE's temporal chunking: pixel frames per latent frame,
+            # cycled. It is the addressable unit of POST /generate/inpaint/video
+            # (a requested range is expanded outward to these boundaries), so a
+            # client that offers a range control needs it to show the range the
+            # server will actually run. Empty = the arch declares none.
+            "latent_chunk_pattern": list(spec.latent_chunk_pattern),
         }
     return payload
 

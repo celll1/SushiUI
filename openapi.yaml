@@ -721,6 +721,16 @@ paths:
         points, so it drives `num_inference_steps - 1` model evaluations and
         values below 2 are refused; `guidance_scale` / `negative_prompt`
         ignored, with a warning when set to a non-default value.
+
+        **Optional keyframe anchors** (`keyframe_images` /
+        `keyframe_frame_indices`, same positional-pair convention as
+        `/generate/img2vid`): additional visual anchors placed on the
+        generated clip AFTER every reference block, each pinned at its own
+        pixel frame's rotary position (`-1` = the clip's resolved last frame).
+        References remain content conditioning (read by the prompt) and
+        anchors remain placement conditioning (pinned to a frame); combining
+        them is beyond MiniMax's model card and always emits a `warnings[]`
+        entry (`minimax_h3_undocumented_conditioning`) naming the combination.
       operationId: generateRef2Vid
       requestBody:
         required: true
@@ -7872,6 +7882,30 @@ components:
                 sampling step. Video references are unaffected: they always
                 follow the canvas rule the generated video follows.
               example: max
+            keyframe_images:
+              type: array
+              items:
+                type: string
+                format: binary
+              description: >-
+                OPTIONAL keyframe anchors (multipart file uploads), placed on
+                the generated canvas AFTER every reference block. Same
+                positional-pair convention as `Img2VidRequest`'s field of the
+                same name: each entry is placed at the matching
+                `keyframe_frame_indices` entry, the two lists must be the same
+                length, and anchors are packed in ascending frame order. Always
+                beyond MiniMax's model card when combined with references
+                (`warnings[]`, code `minimax_h3_undocumented_conditioning`).
+            keyframe_frame_indices:
+              type: array
+              items:
+                type: integer
+              description: >-
+                Placement of each `keyframe_images` entry, in the same order.
+                Same semantics as `Img2VidRequest.keyframe_frame_indices`: `0`
+                is the first frame, `-1` the resolved last frame, and any other
+                value that exact pixel frame.
+              example: [60]
 
     OutpaintVideoRequest:
       type: object

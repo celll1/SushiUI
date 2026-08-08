@@ -412,6 +412,7 @@ class MiniMaxH3Mixin:
         references,
         progress_callback: Optional[Callable] = None,
         step_callback: Optional[Callable] = None,
+        keyframes: Sequence[Tuple[Any, Any]] = (),
     ):
         """Omni-reference generation with MiniMax-H3 (``ref2va``).
 
@@ -429,13 +430,18 @@ class MiniMaxH3Mixin:
         reference conditioning is a trained behaviour of ``transformer_ref``, and
         the ``fl2va`` partition was never trained to read reference rows.
 
+        ``keyframes`` (C5) is optional: the same ``(anchor, PIL.Image)`` plan
+        ``_generate_img2vid_minimax_h3`` takes, laid out AFTER the reference
+        blocks by ``h3_pipeline_ops.build_ref2va_packed_layout``. Empty by
+        default, which is the pre-C5 ref2vid request.
+
         Same return contract as ``_generate_txt2vid_minimax_h3``.
         """
         if not references:
             raise RuntimeError("ref2vid requires at least one reference")
         return self._generate_minimax_h3(
-            params, references=tuple(references), label="ref2vid",
-            progress_callback=progress_callback, step_callback=step_callback)
+            params, references=tuple(references), keyframes=tuple(keyframes or ()),
+            label="ref2vid", progress_callback=progress_callback, step_callback=step_callback)
 
     def _generate_vidoutpaint_minimax_h3(
         self,
@@ -1037,9 +1043,13 @@ class MiniMaxH3Mixin:
         more entries is ``fl2va``.
 
         ``references`` is a ``ref2va`` request's reference list, also in packed
-        order (see ``_generate_ref2vid_minimax_h3``). It is mutually exclusive
-        with ``keyframes``: the released ``ref2va`` partition has no keyframe
-        presentation, and the ``fl2va`` one has no reference rows.
+        order (see ``_generate_ref2vid_minimax_h3``). ``keyframes`` MAY be
+        combined with ``references`` (C5): an anchor's rows are then laid out
+        AFTER every reference block, from the rotary origin the reference loop
+        leaves behind (``build_ref2va_packed_layout``'s ``keyframe_anchors``).
+        With no references, ``keyframes`` alone selects ``build_packed_layout``
+        (``fl2va``) exactly as before -- the merge is additive, not a
+        replacement of the single-track path.
 
         ``input_audio`` is ia2v: a ``[2, samples]`` float32 waveform, already at
         the audio VAE's rate and at the exact length this clip needs
@@ -1082,10 +1092,6 @@ class MiniMaxH3Mixin:
         components = getattr(self, "minimax_h3_components", None)
         if not components:
             raise RuntimeError("MiniMax-H3 components are not loaded. Load a MiniMax-H3 model first.")
-        if keyframes and references:
-            raise RuntimeError(
-                "MiniMax-H3 conditions on keyframes (fl2va) or on references (ref2va), never both: "
-                "they are two different transformer partitions with two different presentations.")
         if len(pinned_video_frames) and (keyframes or references):
             raise RuntimeError(
                 "MiniMax-H3 cannot combine pinned video frames with keyframes or references: the "
@@ -1234,7 +1240,13 @@ class MiniMaxH3Mixin:
         # conditioned workflow.
         patch_size = tuple(components["transformer_config"]["patch_size"])
         latent_channels = int(components.get("latent_channels", 24))
+        # `condition_latents` is references THEN anchors, in the order
+        # `build_condition_rows`'s draw and `build_ref2va_packed_layout`'s row
+        # placement both read it in (C5). `reference_condition_latents` is the
+        # subset the ref2va layout call describes per-reference shapes from --
+        # it must not include the anchors, which that call places itself.
         condition_latents: list = []
+        reference_condition_latents: list = []
         audio_condition_rows: list = []
         # The ia2v track's rows, once encoded. `None` (not an empty list) is what
         # every other path downstream tests against: an empty list would be
@@ -1276,17 +1288,8 @@ class MiniMaxH3Mixin:
             cond_start = time.perf_counter()
             self._minimax_h3_move("vae", torch_device)
             try:
-                if keyframe_pixels:
-                    condition_latents = ops.encode_condition_images(
-                        components["vae"], keyframe_pixels,
-                        latents_mean=components["latents_mean"],
-                        latents_std=components["latents_std"],
-                        pixel_mean=components["pixel_mean"],
-                        pixel_std=components["pixel_std"],
-                        device=device,
-                    )
-                else:
-                    condition_latents = refs.encode_reference_visuals(
+                if normalized_references:
+                    reference_condition_latents = refs.encode_reference_visuals(
                         components["vae"], normalized_references,
                         latents_mean=components["latents_mean"],
                         latents_std=components["latents_std"],
@@ -1294,6 +1297,17 @@ class MiniMaxH3Mixin:
                         pixel_std=components["pixel_std"],
                         device=device,
                     )
+                anchor_condition_latents = []
+                if keyframe_pixels:
+                    anchor_condition_latents = ops.encode_condition_images(
+                        components["vae"], keyframe_pixels,
+                        latents_mean=components["latents_mean"],
+                        latents_std=components["latents_std"],
+                        pixel_mean=components["pixel_mean"],
+                        pixel_std=components["pixel_std"],
+                        device=device,
+                    )
+                condition_latents = reference_condition_latents + anchor_condition_latents
             finally:
                 self._minimax_h3_move("vae", "cpu")
                 self._minimax_h3_empty_cache()
@@ -1365,10 +1379,13 @@ class MiniMaxH3Mixin:
             layout = ops.build_ref2va_packed_layout(
                 text_token_tags,
                 [(reference.kind, reference.has_audio) for reference in normalized_references],
-                [tuple(latent.shape[2:5]) for latent in condition_latents],
+                [tuple(latent.shape[2:5]) for latent in reference_condition_latents],
                 [rows.shape[0] for rows in audio_condition_rows],
                 latent_frames, latent_height, latent_width, num_audio_latents,
                 patch_size=patch_size,
+                # C5: anchors placed after the reference blocks. Empty when
+                # `keyframes` is empty, which reproduces the pre-C5 layout.
+                keyframe_anchors=anchors,
                 device=torch_device,
             )
         else:

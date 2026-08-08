@@ -16,6 +16,7 @@ import ModelLoadSection from "../common/ModelLoadSection";
 import LoRASelector from "../common/LoRASelector";
 import ControlNetSelector from "../common/ControlNetSelector";
 import MiniMaxH3ReferenceSelector, { EMPTY_MINIMAX_H3_REFERENCES, countMiniMaxH3References } from "../common/MiniMaxH3ReferenceSelector";
+import MiniMaxH3Ref2VidKeyframeSelector from "../common/MiniMaxH3Ref2VidKeyframeSelector";
 import TIPODialog, { TIPOSettings } from "../common/TIPODialog";
 import { fixFloatingPointParams } from "@/utils/numberUtils";
 import ImageViewer from "../common/ImageViewer";
@@ -27,7 +28,7 @@ import PromptEditor from "../common/PromptEditor";
 import LoopGenerationPanel, { LoopGenerationConfig } from "./LoopGenerationPanel";
 import QuantizedGemmSelect from "./QuantizedGemmSelect";
 import { migrateLoopGenerationConfig, computeLoopDecodeDirective } from "@/utils/loopGenerationInheritance";
-import { generateTxt2Img, generateImg2Img, generateTxt2Vid, Txt2VidParams, generateRef2Vid, Ref2VidParams, MiniMaxH3References, generateTxt2Aud, Txt2AudParams, generateTxt2ImgTrainingPreview, GenerationParams, getSamplers, getScheduleTypes, tokenizePrompt, generateTIPOPrompt, cancelGeneration, getCurrentModel, isLatentOnlyResult, getResultFilename, getResultSeed, getResultAncestralSeed, unetQuantizationOptions, normalizeUnetQuantization, transformerQuantizationLabel, archSupportsFeature, videoFrameOptions, videoFrameLabel, archDisplayName, normalizeVideoFrames } from "@/utils/api";
+import { generateTxt2Img, generateImg2Img, generateTxt2Vid, Txt2VidParams, generateRef2Vid, Ref2VidParams, MiniMaxH3References, MiniMaxH3Keyframe, generateTxt2Aud, Txt2AudParams, generateTxt2ImgTrainingPreview, GenerationParams, getSamplers, getScheduleTypes, tokenizePrompt, generateTIPOPrompt, cancelGeneration, getCurrentModel, isLatentOnlyResult, getResultFilename, getResultSeed, getResultAncestralSeed, unetQuantizationOptions, normalizeUnetQuantization, transformerQuantizationLabel, archSupportsFeature, videoFrameOptions, videoFrameLabel, archDisplayName, normalizeVideoFrames } from "@/utils/api";
 import { useActiveTraining } from "@/hooks/useActiveTraining";
 import { wsClient, CFGMetrics } from "@/utils/websocket";
 import CFGMetricsGraph from "../common/CFGMetricsGraph";
@@ -299,6 +300,11 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
   const [h3References, setH3References] = useState<MiniMaxH3References>(
     EMPTY_MINIMAX_H3_REFERENCES);
   const [h3ReferenceImageSize, setH3ReferenceImageSize] = useState<"max" | "match">("max");
+  // C5: optional keyframe anchors on a ref2vid request, laid out AFTER the
+  // reference blocks. A separate track from `h3References` -- content
+  // conditioning vs placement conditioning -- kept as its own local state for
+  // the same reason (file uploads, not a generation parameter).
+  const [h3Keyframes, setH3Keyframes] = useState<MiniMaxH3Keyframe[]>([]);
   const [generatedVideoInfo, setGeneratedVideoInfo] = useState<{ num_frames?: number; fps?: number; duration?: number } | null>(null);
   // Seed the last video result actually ran with, so the video card's seed
   // control has the same "reuse the seed from the preview" button the image
@@ -1605,6 +1611,8 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
           params: {
             ...videoParams,
             reference_image_size: h3ReferenceImageSize,
+            // C5: anchors ride along on the same request when any are set.
+            keyframes: h3Keyframes.length > 0 ? h3Keyframes : undefined,
           } as any,
           references: h3References,
           prompt: processedPrompt,
@@ -3794,6 +3802,19 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
             onChange={setH3References}
             referenceImageSize={h3ReferenceImageSize}
             onReferenceImageSizeChange={setH3ReferenceImageSize}
+            disabled={isGenerating}
+          />
+        )}
+
+        {/* C5: keyframe anchors, a track separate from the references above --
+            content conditioning (references) vs placement conditioning
+            (anchors). Only where the loaded arch declares placement support;
+            ref2va's endpoint accepts it regardless of whether any reference is
+            set, but it is only useful once at least one is. */}
+        {isVideo && isRef2Va && archSupportsFeature(archCapabilities, loadedArch, "keyframe_placement") && (
+          <MiniMaxH3Ref2VidKeyframeSelector
+            value={h3Keyframes}
+            onChange={setH3Keyframes}
             disabled={isGenerating}
           />
         )}

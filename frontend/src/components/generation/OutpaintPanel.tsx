@@ -51,6 +51,7 @@ import {
   videoCanvasRule,
   videoCanvasAxisBounds,
   videoCanvasExceedsEnvelope,
+  isGenerationStalledError,
 } from "@/utils/api";
 import { wsClient, CFGMetrics } from "@/utils/websocket";
 import { saveTempImage, loadTempImage, deleteTempImageRef } from "@/utils/tempImageStorage";
@@ -1810,7 +1811,9 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
         }, 100);
       } catch (error: any) {
         console.error("[Outpaint] Video generation failed:", error);
-        alert(`Video outpaint generation failed: ${error?.response?.data?.detail || error?.message || "Unknown error"}`);
+        alert(isGenerationStalledError(error)
+          ? error.message
+          : `Video outpaint generation failed: ${error?.response?.data?.detail || error?.message || "Unknown error"}`);
         setIsGenerating(false);
         setProgress(0);
         setProgressMessage("");
@@ -1864,7 +1867,9 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
         }, 100);
       } catch (error: any) {
         console.error("[Outpaint] Audio generation failed:", error);
-        alert(`Audio outpaint generation failed: ${error?.response?.data?.detail || error?.message || "Unknown error"}`);
+        alert(isGenerationStalledError(error)
+          ? error.message
+          : `Audio outpaint generation failed: ${error?.response?.data?.detail || error?.message || "Unknown error"}`);
         setIsGenerating(false);
         setProgress(0);
         setProgressMessage("");
@@ -1942,7 +1947,9 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
       }, 100);
     } catch (error: any) {
       console.error("[Outpaint] Generation failed:", error);
-      alert(`Outpaint generation failed: ${error?.response?.data?.detail || error?.message || "Unknown error"}`);
+      alert(isGenerationStalledError(error)
+        ? error.message
+        : `Outpaint generation failed: ${error?.response?.data?.detail || error?.message || "Unknown error"}`);
 
       setIsGenerating(false);
       setProgress(0);

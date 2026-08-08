@@ -26,7 +26,7 @@ import GenerationQueue from "../common/GenerationQueue";
 import LoopGenerationPanel, { LoopGenerationConfig } from "./LoopGenerationPanel";
 import QuantizedGemmSelect from "./QuantizedGemmSelect";
 import { migrateLoopGenerationConfig, computeLoopDecodeDirective } from "@/utils/loopGenerationInheritance";
-import { getSamplers, getScheduleTypes, generateInpaint, generateInpaintVideo, generateInpaintTrainingPreview, toBase64, InpaintParams as ApiInpaintParams, InpaintVideoParams, LoRAConfig, ControlNetConfig, generateTIPOPrompt, cancelGeneration, getCurrentModel, getResultFilename, getResultPlaybackFilename, getResultSeed, getResultAncestralSeed, isLatentOnlyResult, unetQuantizationOptions, normalizeUnetQuantization, transformerQuantizationLabel, archSupportsFeature, archDisplayName, inpaintVideoDefaultsForArch, fitVideoCanvas, videoCanvasRule, videoCanvasAxisBounds, videoCanvasExceedsEnvelope, largestValidVideoFrameCount, isValidVideoFrameCount, latentGroupSpans, snapRangeToLatentGroups } from "@/utils/api";
+import { getSamplers, getScheduleTypes, generateInpaint, generateInpaintVideo, generateInpaintTrainingPreview, toBase64, InpaintParams as ApiInpaintParams, InpaintVideoParams, LoRAConfig, ControlNetConfig, generateTIPOPrompt, cancelGeneration, getCurrentModel, getResultFilename, getResultPlaybackFilename, getResultSeed, getResultAncestralSeed, isLatentOnlyResult, unetQuantizationOptions, normalizeUnetQuantization, transformerQuantizationLabel, archSupportsFeature, archDisplayName, inpaintVideoDefaultsForArch, fitVideoCanvas, videoCanvasRule, videoCanvasAxisBounds, videoCanvasExceedsEnvelope, largestValidVideoFrameCount, isValidVideoFrameCount, latentGroupSpans, snapRangeToLatentGroups, isGenerationStalledError } from "@/utils/api";
 import VideoInpaintRangeTimeline from "./VideoInpaintRangeTimeline";
 import { useActiveTraining } from "@/hooks/useActiveTraining";
 import { wsClient, CFGMetrics } from "@/utils/websocket";
@@ -2646,7 +2646,9 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         completeCurrentItem();
       } catch (error: any) {
         console.error("[Inpaint] Video generation failed:", error);
-        alert(`Video inpaint generation failed: ${error?.response?.data?.detail || error?.message || "Unknown error"}`);
+        alert(isGenerationStalledError(error)
+          ? error.message
+          : `Video inpaint generation failed: ${error?.response?.data?.detail || error?.message || "Unknown error"}`);
         failCurrentItem();
       }
       setIsGenerating(false);
@@ -3064,6 +3066,8 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
           setGeneratedImage(previousImage);
           setPreviewImage(null);
         }
+      } else if (isGenerationStalledError(error)) {
+        alert(error.message);
       } else {
         alert("Generation failed: " + (error instanceof Error ? error.message : String(error)));
       }

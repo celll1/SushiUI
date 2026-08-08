@@ -1,12 +1,14 @@
 import axios from "axios";
+import { wsClient } from "./websocket";
 
 const api = axios.create({
   baseURL: "/api/v1",
   headers: {
     "Content-Type": "application/json",
   },
-  // Set a very long timeout for generation requests (10 minutes)
-  // Set to 0 to disable timeout completely
+  // Default timeout for ordinary (non-generation) requests. Generation
+  // endpoints call postGenerationRequest() below instead, which is not
+  // bound to a fixed ceiling.
   timeout: 600000, // 10 minutes in milliseconds
 });
 
@@ -39,6 +41,74 @@ api.interceptors.response.use(
     return Promise.reject(error);
   }
 );
+
+// ---------------------------------------------------------------------------
+// Generation request dispatch: no fixed timeout ceiling
+// ---------------------------------------------------------------------------
+// A generation's wall-clock time scales with frames/steps/resolution (a
+// video run can legitimately take >10 minutes), so a fixed axios timeout
+// eventually reports a request as "failed" while the backend is still
+// working -- and by then it usually finishes and saves anyway. Instead,
+// while the SSE progress channel (websocket.ts) is open, we let the request
+// run as long as that channel keeps proving the backend process is alive
+// (its 30s "ping" heartbeat continues even through phases, like VAE decode,
+// that emit no per-step "progress" message) and only abort if the channel
+// itself goes stale or drops. If the channel was never connected in the
+// first place, there's no liveness evidence to lean on, so we fall back to
+// the previous fixed ceiling.
+const GENERATION_NO_CHANNEL_TIMEOUT_MS = 600000;
+const GENERATION_STALL_TIMEOUT_MS = 90000; // 3x the server's 30s ping cadence
+
+/** Thrown when the SSE progress channel goes stale mid-generation. Distinct
+ *  from a real backend failure (4xx/5xx REST response): the backend may
+ *  still be running and will save its result to the gallery when it
+ *  finishes -- the client just lost its ability to keep waiting for it. */
+export class GenerationStalledError extends Error {
+  code = "SUSHIUI_GENERATION_STALLED";
+  constructor() {
+    super(
+      "Lost contact with the server's progress channel mid-generation. " +
+      "The backend may still be running and will save its result to the " +
+      "gallery if it finishes -- check there before retrying."
+    );
+    this.name = "GenerationStalledError";
+  }
+}
+
+/** True for the stall abort thrown by postGenerationRequest() -- callers use
+ *  this to show "lost contact, may still finish" instead of "generation
+ *  failed" for what is not necessarily a real failure. */
+export function isGenerationStalledError(error: any): boolean {
+  return error?.code === "SUSHIUI_GENERATION_STALLED";
+}
+
+async function postGenerationRequest<T = any>(url: string, data: any, config: any = {}) {
+  if (typeof window === "undefined" || !wsClient.isConnected()) {
+    return api.post<T>(url, data, { ...config, timeout: GENERATION_NO_CHANNEL_TIMEOUT_MS });
+  }
+
+  const controller = new AbortController();
+  // Judge staleness by message age alone, not live readyState: the client
+  // auto-reconnects a dropped SSE connection after 3s (see websocket.ts), so
+  // treating a momentary reconnect as an instant stall would abort a
+  // generation over a blip the channel already recovered from.
+  const watchdog = setInterval(() => {
+    if (wsClient.msSinceLastMessage() > GENERATION_STALL_TIMEOUT_MS) {
+      controller.abort();
+    }
+  }, 5000);
+
+  try {
+    return await api.post<T>(url, data, { ...config, timeout: 0, signal: controller.signal });
+  } catch (error: any) {
+    if (controller.signal.aborted) {
+      throw new GenerationStalledError();
+    }
+    throw error;
+  } finally {
+    clearInterval(watchdog);
+  }
+}
 
 // Helper function to load ControlNet images from temp storage
 const loadControlNetImages = async (
@@ -1770,7 +1840,7 @@ export const generateTxt2Img = async (params: GenerationParams) => {
   formData.append("loop_decode", paramsWithImages.loop_decode || "full");
   formData.append("skip_gallery", String(paramsWithImages.skip_gallery ?? false));
 
-  const response = await api.post("/generate/txt2img", formData, {
+  const response = await postGenerationRequest("/generate/txt2img", formData, {
     headers: { "Content-Type": "multipart/form-data" },
   });
   return response.data;
@@ -2131,7 +2201,7 @@ export const generateImg2Img = async (
   formData.append("loop_decode", paramsWithImages.loop_decode || "full");
   formData.append("skip_gallery", String(paramsWithImages.skip_gallery ?? false));
 
-  const response = await api.post("/generate/img2img", formData, {
+  const response = await postGenerationRequest("/generate/img2img", formData, {
     headers: { "Content-Type": "multipart/form-data" },
   });
   return response.data;
@@ -2176,7 +2246,7 @@ export const generateUpscale = async (params: UpscaleParams, image: File | strin
     formData.append("diffusion_pre_upscale_mode", params.diffusion_pre_upscale_mode || "pil");
   }
 
-  const response = await api.post("/generate/upscale", formData, {
+  const response = await postGenerationRequest("/generate/upscale", formData, {
     headers: { "Content-Type": "multipart/form-data" },
   });
   return response.data;
@@ -2275,7 +2345,7 @@ export const generateTxt2Vid = async (params: Txt2VidParams) => {
     quantized_gemm_mode: params.quantized_gemm_mode ?? null,
   };
 
-  const response = await api.post("/generate/txt2vid", body);
+  const response = await postGenerationRequest("/generate/txt2vid", body);
   return response.data;
 };
 
@@ -2365,7 +2435,7 @@ export const generateImg2Vid = async (
     formData.append("input_audio", params.input_audio);
   }
 
-  const response = await api.post("/generate/img2vid", formData, {
+  const response = await postGenerationRequest("/generate/img2vid", formData, {
     headers: { "Content-Type": "multipart/form-data" },
   });
   return response.data;
@@ -2441,7 +2511,7 @@ export const generateRef2Vid = async (
     formData.append("keyframe_frame_indices", String(keyframe.frame_index));
   }
 
-  const response = await api.post("/generate/ref2vid", formData, {
+  const response = await postGenerationRequest("/generate/ref2vid", formData, {
     headers: { "Content-Type": "multipart/form-data" },
   });
   return response.data;
@@ -2476,7 +2546,7 @@ export const generateTxt2Aud = async (params: Txt2AudParams) => {
     quantized_gemm_mode: params.quantized_gemm_mode ?? null,
   };
 
-  const response = await api.post("/generate/txt2aud", body);
+  const response = await postGenerationRequest("/generate/txt2aud", body);
   return response.data;
 };
 
@@ -2516,7 +2586,7 @@ export const generateAud2Aud = async (params: Aud2AudParams, referenceAudio: Fil
     formData.append("quantized_gemm_mode", params.quantized_gemm_mode);
   }
 
-  const response = await api.post("/generate/aud2aud", formData, {
+  const response = await postGenerationRequest("/generate/aud2aud", formData, {
     headers: { "Content-Type": "multipart/form-data" },
   });
   return response.data;
@@ -2720,7 +2790,7 @@ export const generateInpaint = async (params: InpaintParams, image: File | strin
   formData.append("loop_decode", paramsWithImages.loop_decode || "full");
   formData.append("skip_gallery", String(paramsWithImages.skip_gallery ?? false));
 
-  const response = await api.post("/generate/inpaint", formData, {
+  const response = await postGenerationRequest("/generate/inpaint", formData, {
     headers: { "Content-Type": "multipart/form-data" },
   });
   return response.data;
@@ -2958,7 +3028,7 @@ export const generateOutpaint = async (params: OutpaintParams, image: File | str
   formData.append("loop_decode", paramsWithImages.loop_decode || "full");
   formData.append("skip_gallery", String(paramsWithImages.skip_gallery ?? false));
 
-  const response = await api.post("/generate/outpaint", formData, {
+  const response = await postGenerationRequest("/generate/outpaint", formData, {
     headers: { "Content-Type": "multipart/form-data" },
   });
   return response.data;
@@ -3076,7 +3146,7 @@ export const generateOutpaintVideo = async (
     formData.append("reference_images", image);
   }
 
-  const response = await api.post("/generate/outpaint/video", formData, {
+  const response = await postGenerationRequest("/generate/outpaint/video", formData, {
     headers: { "Content-Type": "multipart/form-data" },
   });
   return response.data;
@@ -3159,7 +3229,7 @@ export const generateInpaintVideo = async (
 
   formData.append("video_lossless", String(params.video_lossless ?? false));
 
-  const response = await api.post("/generate/inpaint/video", formData, {
+  const response = await postGenerationRequest("/generate/inpaint/video", formData, {
     headers: { "Content-Type": "multipart/form-data" },
   });
   return response.data;
@@ -3206,7 +3276,7 @@ export const generateOutpaintAudio = async (params: OutpaintAudioParams, referen
     formData.append("quantized_gemm_mode", params.quantized_gemm_mode);
   }
 
-  const response = await api.post("/generate/outpaint/audio", formData, {
+  const response = await postGenerationRequest("/generate/outpaint/audio", formData, {
     headers: { "Content-Type": "multipart/form-data" },
   });
   return response.data;

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useCallback, useState, useEffect, type KeyboardEvent } from "react";
 import Card from "./Card";
 import ModelSelector from "./ModelSelector";
 import VisionEncoderSelector from "./VisionEncoderSelector";
@@ -70,6 +70,8 @@ interface ModelLoadSectionProps {
   storageKeyPrefix?: string;
 }
 
+type ModelWorkspaceTab = "model" | "components" | "quantization";
+
 // Shared model-load section: model selection + component overrides.
 // Rendered by every generation panel except Upscale. modelInfo/isVideo come
 // from StartupContext (the single source of truth).
@@ -96,9 +98,14 @@ export default function ModelLoadSection({
   onPidFastLargeDecodeChange,
   storageKeyPrefix = "model_load",
 }: ModelLoadSectionProps) {
-  const { modelInfo, refreshModelInfo } = useStartup();
+  const { modelInfo, modelInfoVersion, refreshModelInfo } = useStartup();
   const modelType = modelInfo?.type;
   const [selectedVaeKind, setSelectedVaeKind] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<ModelWorkspaceTab>("model");
+  const [quantizationAvailable, setQuantizationAvailable] = useState(false);
+  const [quantizationResolved, setQuantizationResolved] = useState(false);
+  const [tabStateMounted, setTabStateMounted] = useState(false);
+  const [modelLoadRevision, setModelLoadRevision] = useState(0);
   const isPidDecoder = selectedVaeKind === "pid_decoder";
 
   // TE override is sound only for SD1.5/SDXL server-side; disable (do not
@@ -122,6 +129,22 @@ export default function ModelLoadSection({
     if (!compatibleOnlyMounted || typeof window === "undefined") return;
     localStorage.setItem(compatibleOnlyStorageKey, compatibleOnly.toString());
   }, [compatibleOnly, compatibleOnlyStorageKey, compatibleOnlyMounted]);
+  useEffect(() => {
+    const saved = localStorage.getItem(`${storageKeyPrefix}_workspace_tab`);
+    if (saved === "model" || saved === "components" || saved === "quantization") {
+      setActiveTab(saved);
+    }
+    setTabStateMounted(true);
+  }, [storageKeyPrefix]);
+  useEffect(() => {
+    if (!tabStateMounted) return;
+    localStorage.setItem(`${storageKeyPrefix}_workspace_tab`, activeTab);
+  }, [activeTab, storageKeyPrefix, tabStateMounted]);
+  useEffect(() => {
+    if (activeTab === "quantization" && quantizationResolved && !quantizationAvailable) {
+      setActiveTab("model");
+    }
+  }, [activeTab, quantizationAvailable, quantizationResolved]);
 
   const loadedArch = modelType ?? null;
   // modelInfo doesn't carry latent_channels today (see ARCH_LATENT_CHANNELS
@@ -133,6 +156,7 @@ export default function ModelLoadSection({
 
   const handleModelLoad = async (mi: any) => {
     // Keep the shared model-info source in sync on every (re)load.
+    setModelLoadRevision((revision) => revision + 1);
     await refreshModelInfo();
     onModelLoad?.(mi);
   };
@@ -165,30 +189,106 @@ export default function ModelLoadSection({
   }
   if (showVE && visionEncoderPath) overrideSummary.push(`Vision: ${_basename(visionEncoderPath)}`);
   if (textEncoderPath) overrideSummary.push(`TE: ${_basename(textEncoderPath)}`);
-  const collapsedPreview =
-    overrideSummary.length > 0 ? (
-      <p className="text-xs text-gray-400 break-words">{overrideSummary.join(" · ")}</p>
-    ) : undefined;
+  const overrideSummaryText = overrideSummary.length > 0
+    ? overrideSummary.join(" · ")
+    : "No component overrides";
+  const showQuantizationTab = quantizationAvailable
+    || (activeTab === "quantization" && !quantizationResolved);
+  const availableTabs: ModelWorkspaceTab[] = showQuantizationTab
+    ? ["model", "components", "quantization"]
+    : ["model", "components"];
+  const tabId = (tab: ModelWorkspaceTab) => `${storageKeyPrefix}_${tab}_tab`;
+  const panelId = (tab: ModelWorkspaceTab) => `${storageKeyPrefix}_${tab}_panel`;
+  const handleTabKeyDown = (
+    event: KeyboardEvent<HTMLButtonElement>,
+    currentTab: ModelWorkspaceTab,
+  ) => {
+    const currentIndex = availableTabs.indexOf(currentTab);
+    let nextIndex: number | null = null;
+    if (event.key === "ArrowRight") nextIndex = (currentIndex + 1) % availableTabs.length;
+    if (event.key === "ArrowLeft") nextIndex = (currentIndex - 1 + availableTabs.length) % availableTabs.length;
+    if (event.key === "Home") nextIndex = 0;
+    if (event.key === "End") nextIndex = availableTabs.length - 1;
+    if (nextIndex === null) return;
+
+    event.preventDefault();
+    const nextTab = availableTabs[nextIndex];
+    setActiveTab(nextTab);
+    requestAnimationFrame(() => document.getElementById(tabId(nextTab))?.focus());
+  };
+  const handleQuantizationAvailability = useCallback((available: boolean, resolved: boolean) => {
+    setQuantizationAvailable(available);
+    setQuantizationResolved(resolved);
+  }, []);
 
   return (
-    <>
-      <ModelSelector onModelLoad={handleModelLoad} />
+    <Card>
+      <div className="app-tabs" role="tablist" aria-label="Model workspace">
+        <button
+          type="button"
+          id={tabId("model")}
+          role="tab"
+          aria-selected={activeTab === "model"}
+          aria-controls={panelId("model")}
+          tabIndex={activeTab === "model" ? 0 : -1}
+          onClick={() => setActiveTab("model")}
+          onKeyDown={(event) => handleTabKeyDown(event, "model")}
+          className={`app-tab ${activeTab === "model" ? "app-tab-active" : ""}`}
+        >
+          Model
+        </button>
+        <button
+          type="button"
+          id={tabId("components")}
+          role="tab"
+          aria-selected={activeTab === "components"}
+          aria-controls={panelId("components")}
+          tabIndex={activeTab === "components" ? 0 : -1}
+          onClick={() => setActiveTab("components")}
+          onKeyDown={(event) => handleTabKeyDown(event, "components")}
+          className={`app-tab flex items-center gap-1.5 ${activeTab === "components" ? "app-tab-active" : ""}`}
+          title={overrideSummaryText}
+        >
+          Components
+          {overrideSummary.length > 0 && (
+            <span className="rounded-full bg-violet-500/20 px-1.5 text-[9px] text-violet-300">
+              {overrideSummary.length}
+            </span>
+          )}
+        </button>
+        {showQuantizationTab && (
+          <button
+            type="button"
+            id={tabId("quantization")}
+            role="tab"
+            aria-selected={activeTab === "quantization"}
+            aria-controls={panelId("quantization")}
+            tabIndex={activeTab === "quantization" ? 0 : -1}
+            onClick={() => setActiveTab("quantization")}
+            onKeyDown={(event) => handleTabKeyDown(event, "quantization")}
+            className={`app-tab ${activeTab === "quantization" ? "app-tab-active" : ""}`}
+          >
+            Quantization
+          </button>
+        )}
+      </div>
 
-      {/* Renders itself only when the loaded transformer owns quantized
-          Linear layers (checkpoint-loaded or converted in place this session). */}
-      <QuantizedExportSection
-        arch={modelType ?? null}
-        storageKeyPrefix={storageKeyPrefix}
-      />
+      <div className="h-[clamp(8rem,18vh,10rem)] overflow-y-auto overscroll-contain pr-1">
+        <div
+          id={panelId("model")}
+          role="tabpanel"
+          aria-labelledby={tabId("model")}
+          className={activeTab === "model" ? "" : "hidden"}
+        >
+          <ModelSelector embedded onModelLoad={handleModelLoad} />
+        </div>
 
-      <Card
-        title="Component overrides"
-        collapsible={true}
-        defaultCollapsed={true}
-        collapsedPreview={collapsedPreview}
-        storageKey={`${storageKeyPrefix}_overrides_collapsed`}
-      >
-        <div className="space-y-3">
+        <div
+          id={panelId("components")}
+          role="tabpanel"
+          aria-labelledby={tabId("components")}
+          className={activeTab === "components" ? "space-y-3" : "hidden"}
+        >
           {showVE && (
             <VisionEncoderSelector
               value={visionEncoderPath ?? null}
@@ -302,7 +402,26 @@ export default function ModelLoadSection({
             loadedArch={loadedArch}
           />
         </div>
-      </Card>
-    </>
+
+        <div
+          id={panelId("quantization")}
+          role="tabpanel"
+          aria-labelledby={tabId("quantization")}
+          className={activeTab === "quantization" ? "" : "hidden"}
+        >
+          {!quantizationResolved && (
+            <p className="text-xs text-gray-500">Checking quantization status…</p>
+          )}
+          <QuantizedExportSection
+            embedded
+            arch={modelType ?? null}
+            modelInfoVersion={modelInfoVersion}
+            modelLoadRevision={modelLoadRevision}
+            storageKeyPrefix={storageKeyPrefix}
+            onAvailabilityChange={handleQuantizationAvailability}
+          />
+        </div>
+      </div>
+    </Card>
   );
 }

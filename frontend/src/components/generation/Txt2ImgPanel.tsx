@@ -3366,27 +3366,21 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
           storageKeyPrefix="txt2img"
         />
 
-        {/* Reference inputs for MiniMax-H3's ref2va partition, above the
-            prompt (same region as Img2ImgPanel's) since these are content
-            conditioning, not a generation setting. The ControlNet selector
-            further down is image-only (its video use is LTX-2.3 style
-            transfer), so the omni-reference inputs live here instead. With
-            no references the same model still serves a plain
-            text-to-video request. */}
+        {/* Omni references are content conditioning, so they stay above the prompt. */}
         {isVideo && isRef2Va && (
           <>
-            <p className="text-xs text-gray-500 -mb-1">
-              Adding a video reference here is MiniMax&apos;s documented{" "}
-              <span className="text-gray-400">video continuation</span> task
-              type: the reference is laid out frame-contiguous with the
-              generated span, and the whole output is regenerated (not
-              preserved byte-exact — that is Outpaint&apos;s boundary-frame
-              extend on the fl2va checkpoint instead). MiniMax&apos;s guide
-              composes it with an image anchor as{" "}
-              <code>[video continuation + keyframe completion]</code> — e.g.
-              continuing from a source video while an image reference pins
-              the last frame.
-            </p>
+            <details className="group -mb-1 rounded-md border border-gray-800/80 bg-gray-900/35 px-3 py-1.5 text-xs text-gray-500">
+              <summary className="cursor-pointer select-none text-gray-400 marker:text-gray-600 hover:text-gray-300">
+                MiniMax reference behavior
+              </summary>
+              <p className="mt-2 leading-relaxed">
+                Adding a video reference uses MiniMax&apos;s documented video
+                continuation task. The reference and generated span are laid
+                out frame-contiguously, and the entire output is regenerated.
+                Combining it with an image anchor performs video continuation
+                plus keyframe completion.
+              </p>
+            </details>
             <MiniMaxH3ReferenceSelector
               value={h3References}
               onChange={setH3References}

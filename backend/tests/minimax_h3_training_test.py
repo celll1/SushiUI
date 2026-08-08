@@ -25,6 +25,7 @@ a future reader can tell a real regression from a cosmetic edit:
   F8  batch_size > 1 is refused at CONFIG time, not at the first train step.
 """
 
+import math
 import os
 import sys
 
@@ -742,3 +743,163 @@ def test_only_640_and_768_change_and_ltx2_is_affected_the_same_way():
     # dataset loses or gains a bucket slot.
     for res in (512, 640, 768, 1024, 1280, 1536):
         assert len(dims(res, 8)) == len(dims(res, 16)) == len(dims(res, 32))
+
+
+# ===========================================================================
+# Phase A1 -- per-modality losses surfaced via log_extra_metric
+# ===========================================================================
+
+class _EchoTransformer:
+    """Returns its own inputs as the predicted velocities, so both targets are
+    reachable without a real 50-block DiT: `video_velocity` == `hidden_states`
+    (shape-identical to `target_v`, both `patchify_video_latents` output) and
+    `audio_velocity` == `audio_hidden_states` (shape-identical to `target_a`)."""
+
+    def __call__(self, hidden_states=None, audio_hidden_states=None, **kwargs):
+        return hidden_states.clone(), audio_hidden_states.clone()
+
+
+class _FakeTrainStepTrainer:
+    """The narrow surface `train_step` reads. No model, no GPU."""
+
+    def __init__(self):
+        self.device = torch.device("cpu")
+        self.training_dtype = torch.float32
+        self.transformer = _EchoTransformer()
+        self.audio_loss_weight = 1.0
+        self.reconstruction_loss_weight = 0.0
+        self._logged = {}
+
+    def log_extra_metric(self, name, value):
+        self._logged[name] = float(value)
+
+
+def _h3_latents(t_lat=1, h=32, w=32):
+    return torch.randn(1, 24, t_lat, h, w)
+
+
+def test_train_step_logs_per_modality_losses_and_audio_presence_when_silent():
+    """A1. `h3_video_loss` / `h3_audio_loss` / `h3_audio_present` must be
+    logged every step, and `h3_audio_present` must read 0 for a batch with no
+    audio track at all -- the exact case that makes a silent-video dataset
+    diagnosable.
+
+    MUTANT: deleting the three `trainer.log_extra_metric(...)` calls in
+    `train_step` makes `t._logged` stay empty and every assertion below fails
+    (verified by temporarily removing them and re-running this test)."""
+    t = _FakeTrainStepTrainer()
+    latents = _h3_latents()
+    prompt_embeds = torch.randn(1, 5, 5120)
+    h3_aux = {"num_text_tokens": torch.tensor([5])}   # audio_latents absent -> silent
+
+    OPS.train_step(t, latents, prompt_embeds, h3_aux, timesteps=torch.tensor([0.5]))
+
+    assert set(["h3_video_loss", "h3_audio_loss", "h3_audio_present"]) <= set(t._logged)
+    assert t._logged["h3_audio_present"] == 0.0
+    assert t._logged["h3_audio_loss"] == 0.0     # zero-weighted noise branch
+    assert t._logged["h3_video_loss"] >= 0.0
+    assert math.isfinite(t._logged["h3_video_loss"])
+
+
+def test_train_step_reports_full_audio_presence_when_every_item_has_audio():
+    """A1 negative control: with every sample carrying real audio,
+    `h3_audio_present` must read 1, not 0 -- otherwise the metric would be a
+    constant and could not distinguish a silent dataset from a normal one."""
+    t = _FakeTrainStepTrainer()
+    latents = _h3_latents()
+    prompt_embeds = torch.randn(1, 5, 5120)
+    h3_aux = {
+        "num_text_tokens": torch.tensor([5]),
+        "audio_latents": torch.randn(1, 8, 32),   # 8 rows / AUDIO_CHANNELS(2) = 4
+    }
+
+    OPS.train_step(t, latents, prompt_embeds, h3_aux, timesteps=torch.tensor([0.5]))
+
+    assert t._logged["h3_audio_present"] == 1.0
+    assert t._logged["h3_audio_loss"] >= 0.0
+    assert math.isfinite(t._logged["h3_audio_loss"])
+
+
+# ===========================================================================
+# Phase A2 -- an audio-only item is refused honestly, not via the stills path
+# ===========================================================================
+
+class _AudioOnlyDataset:
+    def __init__(self, items):
+        self.items = items
+
+
+class _FakeAudioGuardTrainer:
+    """The narrow surface `_refuse_unsupported_audio_only_items` reads."""
+
+    def __init__(self, is_acestep, arch):
+        self.is_acestep = is_acestep
+        self.arch = arch
+
+    _temporal_spec = BaseTrainer._temporal_spec
+    _refuse_unsupported_audio_only_items = BaseTrainer._refuse_unsupported_audio_only_items
+
+
+class _Arch:
+    def __init__(self, name, temporal):
+        self.name = name
+        self.temporal = temporal
+
+
+def test_audio_only_item_is_refused_before_reaching_the_stills_path():
+    """A2. Before the fix, an `item_type=="audio"` item in a MiniMax-H3 dataset
+    fell through every latent-encoding mode's default branch into
+    `Image.open(item["image_path"])` -- the stills path -- and crashed with
+    PIL's `UnidentifiedImageError: cannot identify image file`, deep inside
+    training instead of at setup.
+
+    MUTANT: reverting `_refuse_unsupported_audio_only_items` to a no-op (`pass`)
+    makes this test fail (no ValueError raised)."""
+    t = _FakeAudioGuardTrainer(is_acestep=False, arch=_Arch("minimax_h3", temporal=object()))
+    datasets = [_AudioOnlyDataset([{"item_type": "audio", "image_path": "clip.wav"}])]
+
+    with pytest.raises(ValueError) as exc:
+        t._refuse_unsupported_audio_only_items(datasets)
+    msg = str(exc.value)
+    assert "item_type=='audio'" in msg
+    assert "minimax_h3" in msg
+    assert "video" in msg.lower()
+
+
+def test_a_video_item_alongside_an_audio_only_item_still_raises():
+    """A2 negative control on the `any(...)`: a mixed dataset must not slip past
+    because most items are legitimate video items."""
+    t = _FakeAudioGuardTrainer(is_acestep=False, arch=_Arch("minimax_h3", temporal=object()))
+    datasets = [_AudioOnlyDataset([
+        {"item_type": "video", "image_path": "clip1.mp4"},
+        {"item_type": "audio", "image_path": "clip2.wav"},
+    ])]
+    with pytest.raises(ValueError):
+        t._refuse_unsupported_audio_only_items(datasets)
+
+
+def test_acestep_is_exempt_from_the_audio_only_guard():
+    """A2 negative control: ACE-Step IS audio-only by design and has its own
+    encode path (`item_type=="audio"` -> `encode_and_cache_audio`); the guard
+    must not fire for it."""
+    t = _FakeAudioGuardTrainer(is_acestep=True, arch=_Arch("acestep", temporal=None))
+    datasets = [_AudioOnlyDataset([{"item_type": "audio", "image_path": "song.wav"}])]
+    t._refuse_unsupported_audio_only_items(datasets)   # must not raise
+
+
+def test_a_non_temporal_arch_is_exempt_from_the_audio_only_guard():
+    """A2 negative control: the guard is specific to VIDEO archs (declared
+    `temporal`); an arch with no `temporal` spec never reaches the still-image
+    fallback the guard is protecting against, so an `item_type=="audio"` item
+    there is somebody else's problem, not this guard's."""
+    t = _FakeAudioGuardTrainer(is_acestep=False, arch=_Arch("sdxl", temporal=None))
+    datasets = [_AudioOnlyDataset([{"item_type": "audio", "image_path": "x.wav"}])]
+    t._refuse_unsupported_audio_only_items(datasets)   # must not raise
+
+
+def test_a_dataset_with_no_audio_items_is_untouched():
+    """A2 negative control: an ordinary all-video MiniMax-H3 dataset must pass
+    through the guard silently."""
+    t = _FakeAudioGuardTrainer(is_acestep=False, arch=_Arch("minimax_h3", temporal=object()))
+    datasets = [_AudioOnlyDataset([{"item_type": "video", "image_path": "clip.mp4"}])]
+    t._refuse_unsupported_audio_only_items(datasets)   # must not raise

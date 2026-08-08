@@ -6972,6 +6972,28 @@ class BaseTrainer(ABC):
         """Token for the arch's clip-encode VAE tiling policy (cache key)."""
         return getattr(getattr(self, "arch", None), "clip_vae_tiling_policy", None)
 
+    def _refuse_unsupported_audio_only_items(self, datasets) -> None:
+        """Video archs (LTX-2.3, MiniMax-H3): a standalone ``item_type=="audio"``
+        item has no encode path anywhere in this trainer -- these archs derive
+        their audio latent from a PAIRED video item's own audio track (see e.g.
+        ``minimax_h3_ops.vae_encode_audio_window``), not a separate dataset
+        item. Left undetected, every latent-encoding mode's default branch
+        falls through to ``Image.open(item["image_path"])`` on the audio file,
+        which fails with PIL's "cannot identify image file" deep inside the
+        training loop instead of here at setup.
+        """
+        if self.is_acestep or self._temporal_spec() is None:
+            return
+        if not any(item.get("item_type") == "audio"
+                   for dataset in datasets for item in dataset.items):
+            return
+        raise ValueError(
+            f"This dataset contains item_type=='audio' items, which "
+            f"{getattr(self.arch, 'name', 'this architecture')} does not support as a "
+            f"standalone training item -- its audio comes from a paired video item's own "
+            f"audio track, not a separate dataset item. Remove the audio-only item(s) or "
+            f"attach the audio as part of a video item instead.")
+
     def _annotate_video_items(self, datasets, base_resolutions) -> int:
         """Route video items through VideoBucketManager (P5 video wiring).
 
@@ -8590,6 +8612,8 @@ class BaseTrainer(ABC):
                   f"latent_encoding_mode='pre_encoded_cache' (was '{latent_encoding_mode}') - "
                   f"swap_onthefly/onthefly_gpu have no audio-clip encode path yet")
             latent_encoding_mode = "pre_encoded_cache"
+
+        self._refuse_unsupported_audio_only_items(datasets)
 
         # Setup latent caches (mode-dependent)
         latent_caches = None

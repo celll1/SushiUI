@@ -108,4 +108,14 @@ EXTRA_METRIC_DEFS = {
     # blockiness ~1.0, orders of magnitude away from the loss scale.
     "vae_val_psnr": {"label": "Val PSNR (dB)", "color": "#34d399", "dashed": False, "axis": "right"},
     "vae_val_blockiness": {"label": "Val blockiness", "color": "#fb923c", "dashed": False, "axis": "right"},
+    # ---- MiniMax-H3 (joint video + audio) ---------------------------------
+    # Per-modality velocity MSE that sum (video + audio_loss_weight * audio)
+    # into the total loss -- see minimax_h3_ops.train_step.
+    "h3_video_loss": {"label": "H3 video loss", "color": "#60a5fa", "dashed": True},
+    "h3_audio_loss": {"label": "H3 audio loss", "color": "#f472b6", "dashed": True},
+    # Fraction of the batch whose item carried a real audio track this step (vs.
+    # the noise-filled, zero-weighted fallback rows). A flat 0 for the whole run
+    # means the audio term never actually saw data.
+    "h3_audio_present": {"label": "H3 audio present", "color": "#facc15",
+                         "dashed": False, "axis": "right"},
 }

@@ -19,6 +19,7 @@ import GenerationQueue from "../common/GenerationQueue";
 import OutpaintPlacementCanvas, { OutpaintPlacementParams } from "./OutpaintPlacementCanvas";
 import OutpaintTimeline from "./OutpaintTimeline";
 import QuantizedGemmSelect from "./QuantizedGemmSelect";
+import MiniMaxH3ReferenceSelector from "../common/MiniMaxH3ReferenceSelector";
 import ImageViewer from "../common/ImageViewer";
 import PostEditControls from "../common/PostEditControls";
 import { PostEditState, NEUTRAL_POST_EDIT, buildFilterString } from "@/utils/postEdit";
@@ -492,6 +493,12 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
   const [bridgeVideoFile, setBridgeVideoFile] = useState<File | null>(null);
   const [bridgeVideoPreviewUrl, setBridgeVideoPreviewUrl] = useState<string | null>(null);
   const [bridgeVideoDurationSec, setBridgeVideoDurationSec] = useState<number | null>(null);
+  // MiniMax-H3 ref2va, extend_forward only: optional image references on top
+  // of the automatic source-clip video reference the backend always adds.
+  // Images only -- this endpoint has no reference_videos/reference_audios
+  // field (the preserved clip IS the video reference).
+  const [h3ReferenceImages, setH3ReferenceImages] = useState<File[]>([]);
+  const [h3ReferenceImageSize, setH3ReferenceImageSize] = useState<"max" | "match">("max");
   const [generatedVideo, setGeneratedVideo] = useState<string | null>(null);
   const [generatedVideoInfo, setGeneratedVideoInfo] = useState<{ num_frames?: number; fps?: number; duration?: number } | null>(null);
   const [generatedVideoSeed, setGeneratedVideoSeed] = useState<number | null>(null);
@@ -1307,6 +1314,13 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
   const loadedArchType = currentModelInfo?.model_info?.type as string | undefined;
   const outpaintPlacements = videoOutpaintPlacements(archCapabilities, loadedArchType);
   const boundaryPlacementOnly = !outpaintPlacements.includes("free");
+  // MiniMax-H3 ref2va: direct variant check, matching Txt2ImgPanel/Img2ImgPanel
+  // (there is no per-variant capability key). Reference conditioning on this
+  // panel is offered only on extend_forward -- the ONLY row the backend's
+  // ref2va partition/placement gate allows (see the gate in routes.py).
+  const isRef2Va =
+    loadedArchType === "minimax_h3" &&
+    (currentModelInfo?.model_info?.variant as string | undefined) === "ref2va";
 
   // Backend rule (LTX-2.3): total_frames must satisfy (n-1) % 8 == 0, minimum 9.
   // On a boundary-conditioned architecture the grid binds the GENERATED span,
@@ -1656,6 +1670,10 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
         // ltx2 is in quantized_linear_archs, so the QuantizedGemmSelect control
         // is rendered for a loaded LTX-2.3 model and must actually be sent.
         quantized_gemm_mode: params.quantized_gemm_mode,
+        // MiniMax-H3 ref2va, extend_forward only. Sent unconditionally (the
+        // backend ignores it when there is nothing to size); the images
+        // themselves ride on the queue item like inputVideo/bridgeVideo.
+        reference_image_size: h3ReferenceImageSize,
       };
       addToQueue({
         type: "outpaint_vid",
@@ -1664,6 +1682,10 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
         // Bridge placement only; undefined otherwise, and the backend refuses
         // it on an architecture that has no bridge placement.
         bridgeVideo: bridgeVideoFile || undefined,
+        // MiniMax-H3 ref2va, extend_forward only; empty otherwise (the
+        // backend gate refuses reference_images on every other row, so an
+        // empty list is a no-op request there rather than a wrong one).
+        referenceImages: isRef2Va && videoPlacement === "extend_forward" ? h3ReferenceImages : undefined,
         prompt: processedPrompt,
       });
       return;
@@ -1757,7 +1779,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
           throw new Error("No input video available for video outpaint generation");
         }
         const result = await generateOutpaintVideo(
-          nextItem.params as OutpaintVideoParams, clip, nextItem.bridgeVideo);
+          nextItem.params as OutpaintVideoParams, clip, nextItem.bridgeVideo, nextItem.referenceImages);
         const videoUrl = `/outputs/${getResultFilename(result)}`;
         setGeneratedVideo(videoUrl);
         setGeneratedVideoSeed(getResultSeed(result));
@@ -3146,6 +3168,30 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
               : "Offset is snapped to the nearest valid LTX-2.3 latent frame index (0, 1, 9, 17, ...); the backend re-snaps and warns if it differs."}
           </p>
         </Card>
+        )}
+
+        {/* MiniMax-H3 ref2va, extend_forward only -- the ONLY row the backend's
+            partition/placement gate allows references on (extend_backward and
+            bridge are refused outright there). The preserved clip is ALWAYS
+            the video reference; this adds optional images on top. Does NOT
+            hold identity across the join -- that is what A-V8 measures, and
+            no claim of it is made here. */}
+        {isVideo && isRef2Va && videoPlacement === "extend_forward" && (
+          <MiniMaxH3ReferenceSelector
+            value={{ images: h3ReferenceImages, videos: [], videoAudios: [], audios: [] }}
+            onChange={(next) => setH3ReferenceImages(next.images)}
+            referenceImageSize={h3ReferenceImageSize}
+            onReferenceImageSizeChange={setH3ReferenceImageSize}
+            disabled={isGenerating}
+            imagesOnly
+          />
+        )}
+        {isVideo && isRef2Va && videoPlacement !== "extend_forward" && (
+          <p className="text-xs text-gray-500 -mt-2">
+            Reference images are offered only for the extend-forward
+            placement on this checkpoint (extend-backward and bridge are
+            refused on ref2va -- unmeasured, not a UI limitation).
+          </p>
         )}
 
         {isAudio && (

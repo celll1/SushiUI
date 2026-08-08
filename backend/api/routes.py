@@ -4342,6 +4342,12 @@ async def generate_outpaint_video(
     unet_quantization: Optional[str] = Form(OUTPAINT_VIDEO_DEFAULTS["unet_quantization"]),
     quantized_gemm_mode: Optional[str] = Form(OUTPAINT_VIDEO_DEFAULTS["quantized_gemm_mode"]),
     video_lossless: bool = Form(OUTPAINT_VIDEO_DEFAULTS["video_lossless"]),
+    # MiniMax-H3 ref2va only (extend_forward, source clip auto-referenced --
+    # see the partition/placement gate below). No reference_videos/
+    # reference_audios field: the source clip is always the sole video
+    # reference on this endpoint.
+    reference_image_size: str = Form(OUTPAINT_VIDEO_DEFAULTS["reference_image_size"]),
+    reference_images: List[UploadFile] = File([]),
     video: UploadFile = File(...),
     # OPTIONAL second clip, preserved at the END of the timeline: the BRIDGE
     # placement. Only an architecture whose TemporalSpec lists `bridge`
@@ -4379,6 +4385,16 @@ async def generate_outpaint_video(
       GENERATED span, which is solved for and rounded up, so `total_frames` is
       a request and the effective output length comes back in `warnings[]`.
 
+    **MiniMax-H3 `ref2va` + `reference_images` (extend_forward only):** with
+    the ref2va transformer loaded and an extend-forward placement, the
+    preserved clip's own trailing frames become an automatic video reference
+    (soundtrack excluded) and `reference_images` add optional image
+    references on top -- both compose through the same anchor + placement
+    machinery above; nothing about the preservation/concatenation contract
+    changes. `extend_backward` and `bridge` are refused on ref2va (unmeasured
+    shape), as is a generated span shorter than the reference video floor (22
+    frames). See the partition/placement gate below.
+
     Produces an mp4 (H.264, or FFV1 when `video_lossless` is true) and a
     gallery row. Requires a video model to be loaded.
     """
@@ -4395,26 +4411,42 @@ async def generate_outpaint_video(
             detail="Load an LTX-2.3 or MiniMax-H3 video model before calling "
                    "/generate/outpaint/video.",
         )
-    # Partition gate, mirroring /generate/img2vid's and /generate/inpaint/video's:
-    # boundary-frame conditioning is a trained behaviour of the `fl2va` partition;
-    # `ref2va` reads reference blocks instead and was never trained to read this
-    # endpoint's anchors. Reference-composed continuation is /generate/ref2vid's
-    # `reference_videos` (documented as "video continuation"), not this endpoint.
+    # ---- Partition/placement gate (the decision table in
+    # minimax_h3_outpaint_refs_design.md §3). Two parts: what can be told
+    # WITHOUT decoding the upload (here), and what needs the placement plan
+    # (after the clip is decoded, below). No row of this table ever reroutes
+    # to /generate/ref2vid -- a refusal here is a refusal.
+    _ref_image_files = [f for f in (reference_images or []) if f is not None and f.filename]
+    if _ref_image_files and not getattr(pipeline_manager, "is_minimax_h3_model", False):
+        raise CustomValidationError(
+            "reference_images on outpaint is a MiniMax-H3 ref2va capability",
+            detail="No other architecture in this repo reads reference rows on this endpoint. "
+                   "Load a MiniMax-H3 ref2va checkpoint, or omit reference_images.",
+        )
+    _h3_variant = ""
     if getattr(pipeline_manager, "is_minimax_h3_model", False):
         _h3_variant = ((pipeline_manager.current_model_info or {}).get("variant") or "").lower()
-        if _h3_variant == "ref2va":
+        if _h3_variant == "fl2va" and _ref_image_files:
             raise CustomValidationError(
-                "The loaded MiniMax-H3 transformer is the ref2va variant, not fl2va",
-                detail="Exact-preserving temporal outpaint (boundary-frame conditioning) is "
-                       "offered on the `fl2va` partition, which serves /generate/txt2vid, "
-                       "/generate/img2vid and this endpoint. To extend a clip with the ref2va "
-                       "checkpoint loaded, send it as `reference_videos` on /generate/ref2vid "
-                       "(measured to compose with `reference_images`; "
-                       "minimax_h3_outpaint_reference_probe.md) -- that regenerates the whole "
-                       "clip's content rather than preserving it byte-exact. Load "
-                       "diffusion_models/minimax_h3_fl2va_pruned_fp8_scaled.safetensors, or send "
-                       "the request to /generate/ref2vid with the loaded checkpoint.",
+                "reference_images requires the MiniMax-H3 ref2va transformer, not fl2va",
+                detail="fl2va was never trained to read reference rows (mirror of "
+                       "/generate/ref2vid's own partition gate). Load "
+                       "diffusion_models/minimax_h3_ref2va_pruned_fp8_scaled.safetensors, or omit "
+                       "reference_images to keep using fl2va's exact-preserving extend.",
             )
+        from core.models.minimax_h3.h3_references import MAX_REFERENCE_IMAGES as _max_ref_images
+        if len(_ref_image_files) > _max_ref_images:
+            raise CustomValidationError(
+                f"MiniMax-H3 accepts at most {_max_ref_images} image reference(s)",
+                detail=f"Got {len(_ref_image_files)}. The limit is the released checkpoint's, not "
+                       f"SushiUI's.",
+            )
+        # ref2va + extend_backward/bridge and ref2va + a too-short generated
+        # span are refused below, once the placement plan is known (it needs
+        # the decoded clip length). `ref2va` + `extend_forward` with no
+        # reference_images at all is still allowed -- the source clip is
+        # ALWAYS the sole video reference on this endpoint, so that row is
+        # the A-V8 no-image-reference arm, not a no-op.
     if outpaint_video_audio_mode is not None and outpaint_video_audio_mode not in (
             "regenerate", "preserve_input"):
         raise CustomValidationError(
@@ -4588,6 +4620,10 @@ async def generate_outpaint_video(
         # The uploaded FILENAME (never the bytes), so the gallery row records
         # that this was a bridge and which clip closed it.
         "bridge_video": getattr(bridge_video, "filename", None) if bridge_video is not None else None,
+        # MiniMax-H3 ref2va only (extend_forward). Filenames only, same
+        # convention as /generate/ref2vid's reference_images.
+        "reference_image_size": reference_image_size,
+        "reference_images": [f.filename for f in _ref_image_files] or None,
     }
 
     # Reject a clip that cannot fit at all (trim leaves nothing) -- cheap
@@ -4608,11 +4644,39 @@ async def generate_outpaint_video(
     # backend calls the same function again and is what warns, so the arithmetic
     # is never duplicated. A "free" arch resolves trivially and keeps today's
     # behaviour.
-    plan_video_outpaint_placement(
+    _placement_plan = plan_video_outpaint_placement(
         params, _vid_arch,
         head_frames=int(trimmed_len),
         tail_frames=int(bridge_frames.shape[0]) if bridge_frames is not None else None,
     )
+
+    # ---- ref2va placement gate (needs the plan). Shared with the backend's
+    # defensive re-check (`resolve_minimax_h3_outpaint_reference_gate`), the
+    # decision table of minimax_h3_outpaint_refs_design.md §3: fl2va+refs was
+    # already refused above (no placement/decode needed for that row);
+    # ref2va serves only extend_forward, whether or not reference_images was
+    # sent (the source clip is always auto-referenced there).
+    if _h3_variant:
+        from api.generation_utils import resolve_minimax_h3_outpaint_reference_gate
+        resolve_minimax_h3_outpaint_reference_gate(
+            _h3_variant, has_reference_images=bool(_ref_image_files),
+            placement=_placement_plan["placement"],
+            generated_frames=_placement_plan.get("generated_frames"),
+        )
+
+    # ---- Read reference_images, in upload order (packed order). Before the
+    # GPU slot, same reasoning as /generate/ref2vid's reference reads: a
+    # malformed upload is a 400 that reserved nothing.
+    reference_image_pils: List[Image.Image] = []
+    try:
+        for upload in _ref_image_files:
+            data = await upload.read()
+            reference_image_pils.append(Image.open(io.BytesIO(data)).convert("RGB"))
+    except Exception as e:
+        raise CustomValidationError(
+            "Failed to read an uploaded reference image",
+            detail=str(e),
+        )
 
     _gen_id = start_generation("outpaint_vid")
     try:
@@ -4665,6 +4729,7 @@ async def generate_outpaint_video(
                     progress_callback=progress_callback,
                     bridge_frames=bridge_frames, bridge_fps=bridge_source_fps,
                     bridge_audio=bridge_audio,
+                    reference_images=reference_image_pils,
                 )
             )
             fp8_gemm = extract_fp8_gemm_info(pipeline_manager)
@@ -4758,6 +4823,13 @@ async def generate_outpaint_video(
     except (GenerationError, CustomValidationError, NotFoundError) as e:
         fail_generation(str(e), generation_id=_gen_id)
         raise
+    except ValueError as e:
+        # Same reasoning as /generate/ref2vid's identical clause: the ref2va
+        # normalisation rules (aspect ratio, the 22-frame floor) raise
+        # ValueError from the ops layer, and they are client errors about the
+        # uploaded media, not generation failures.
+        fail_generation(str(e), generation_id=_gen_id)
+        raise CustomValidationError("Invalid MiniMax-H3 reference", detail=str(e))
     except Exception as e:
         import traceback
         error_detail = traceback.format_exc()

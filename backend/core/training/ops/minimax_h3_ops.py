@@ -849,6 +849,13 @@ def train_step(
 
     loss = video_loss + audio_weight * audio_loss
 
+    # Per-modality breakdown, so a run can be diagnosed (e.g. a silent-video
+    # dataset where the audio term never contributes) rather than only seeing
+    # the combined loss.
+    trainer.log_extra_metric("h3_video_loss", float(video_loss.detach()))
+    trainer.log_extra_metric("h3_audio_loss", float(audio_loss.detach()))
+    trainer.log_extra_metric("h3_audio_present", float(audio_mask.mean().detach()))
+
     recon_loss_value = 0.0
     if getattr(trainer, "reconstruction_loss_weight", 0.0) > 0 and not getattr(
             trainer, "_warned_h3_recon_loss", False):

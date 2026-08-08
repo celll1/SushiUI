@@ -90,25 +90,57 @@ def build_outpaint_references(
 
     A module-level pure function (no model components, no I/O) so the row
     order and the tail-truncation arithmetic are unit-testable without a
-    loaded checkpoint. Row 0 is ALWAYS the source clip -- its own last
+    loaded checkpoint. The LAST row is ALWAYS the source clip -- its own last
     ``min(len(head), generated_frames)`` frames (soundtrack excluded), at
     ``frame_rate`` rather than the source's own probed fps: outpaint's own
     convention already treats the preserved span as running at the declared
     output rate, so this keeps the two conventions consistent instead of
     letting ``normalize_reference_video`` resample a clip that outpaint
-    itself never resamples. Rows 1.. are the optional image references, in
-    request order.
+    itself never resamples. The rows BEFORE it are the optional image
+    references, in request order.
+
+    THE ROW ORDER IS THE FIX FOR THE ROTARY COLLISION BETWEEN AN IMAGE
+    REFERENCE AND THE BOUNDARY ANCHOR, and this paragraph is the arithmetic
+    for it. ``build_ref2va_packed_layout`` places an image reference at
+    exactly 1.0 rotary unit before wherever its own block ends, and the
+    boundary anchor sits at the rotary origin the *whole* reference loop
+    leaves behind (``h3_pipeline_ops._anchor_rotary_time``, C5). The video
+    reference is deliberately ``ROPE_FRAME_RESCALE``-contiguous with that
+    anchor (measured in ``minimax_h3_outpaint_refs_design.md`` §1: the source
+    clip's own last frame sits one pixel-frame step, 5/3 units, before the
+    anchor -- a documented, accepted one-step hold). An image reference is
+    NOT: it is only 1.0 unit from whatever follows it, closer than a single
+    generated frame's own 5/3-unit spacing and well inside the anchor's own
+    measured binding radius (A1: argmin within +/-2 frames, ~3.33 rotary
+    units). Packed AFTER the video reference (the order this function used to
+    return), an image reference lands 1.0 unit before the anchor -- inside
+    that radius, competing with the anchor for the same instant, which is the
+    mechanism behind the "reference is read as a keyframe of the join" defect
+    (visual A/B: pre-paste boundary-anchor RMS 5.226 with no image reference
+    vs 28.679 with one, at otherwise identical geometry). Packed BEFORE the
+    video reference instead, an image reference sits near the text origin --
+    ``video_span`` rotary units (the whole preserved-span's worth, ~207 at the
+    125-frame/640x384 A/B geometry) away from the anchor, far outside the
+    measured binding radius, while the video reference keeps its own
+    documented one-step contiguity with the anchor unperturbed. Verified in
+    ``minimax_h3_outpaint_reference_gate_test.py`` against
+    ``h3_pipeline_ops.build_ref2va_packed_layout`` directly (a rotary-distance
+    assertion, not a visual one -- the visual claim above is the recorded A/B
+    result, not re-measured here). The *visual* effect of this reordering
+    (whether the reference now reads as whole-span content conditioning
+    rather than a keyframe) has not been re-confirmed on the GPU; that A/B
+    rerun is the next step, not a claim this docstring makes.
     """
     from core.models.minimax_h3 import h3_references as refs
 
     source_ref_frames = head[-min(head.shape[0], generated_frames):]
-    return (
+    return tuple(
+        refs.MiniMaxH3Reference(kind="image", image=image, label=f"reference {i + 1}")
+        for i, image in enumerate(reference_images)
+    ) + (
         refs.MiniMaxH3Reference(
             kind="video", frames=source_ref_frames, fps=frame_rate,
             label="source clip (auto-referenced)"),
-    ) + tuple(
-        refs.MiniMaxH3Reference(kind="image", image=image, label=f"reference {i + 1}")
-        for i, image in enumerate(reference_images)
     )
 
 
@@ -581,9 +613,12 @@ class MiniMaxH3Mixin:
         (soundtrack excluded, tail-truncated to the generated length --
         ``h3_references.normalize_reference_video`` truncates from the HEAD,
         so this hands it the source's LAST frames rather than its first) and
-        ``reference_images`` add optional image references after it, in
-        request order. Both ride through ``build_ref2va_packed_layout`` with
-        the boundary anchor placed AFTER every reference block (C5). Refused
+        ``reference_images`` add optional image references BEFORE it, in
+        request order -- ``build_outpaint_references``'s docstring has the
+        rotary-collision arithmetic for why the image references are packed
+        first rather than after the video reference. Both ride through
+        ``build_ref2va_packed_layout`` with the boundary anchor placed AFTER
+        every reference block (C5). Refused
         (not silently ignored) on ``fl2va`` or on any placement other than
         ``extend_forward`` -- see ``minimax_h3_outpaint_refs_design.md`` §3;
         the route enforces the same table before this function is ever

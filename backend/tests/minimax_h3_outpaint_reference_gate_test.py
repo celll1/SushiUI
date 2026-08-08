@@ -16,10 +16,15 @@ from routes.py/pipeline_backends/minimax_h3.py by inspection:
   both call -- see the decision table below.
 * `build_outpaint_references` (core.pipeline_backends.minimax_h3) builds the
   reference tuple `_generate_vidoutpaint_minimax_h3` hands to the merged
-  builder: row 0 is always the source clip, TAIL-truncated (the frames
-  nearest the join, not the ones `normalize_reference_video`'s own
-  head-truncation would keep), and rows 1.. are the image references in
-  request order.
+  builder: the LAST row is always the source clip, TAIL-truncated (the
+  frames nearest the join, not the ones `normalize_reference_video`'s own
+  head-truncation would keep), and the rows BEFORE it are the image
+  references in request order. The video reference is packed last
+  (immediately before the boundary anchor) so it stays rotary-contiguous
+  with the anchor and an image reference cannot land inside the anchor's
+  own measured binding radius -- see `build_outpaint_references`'s
+  docstring for the arithmetic and `test_an_image_reference_lands_outside_the_anchors_binding_radius`
+  below for the layout-level regression.
 """
 
 import os
@@ -152,12 +157,12 @@ def _solid_image(value: int) -> Image.Image:
     return Image.new("RGB", (8, 8), (value, value, value))
 
 
-def test_row_zero_is_always_the_source_clip():
+def test_last_row_is_always_the_source_clip():
     head = _head(30)
     references = build_outpaint_references(head, generated_frames=10, frame_rate=24.0, reference_images=())
     assert len(references) == 1
-    assert references[0].kind == "video"
-    assert references[0].fps == 24.0
+    assert references[-1].kind == "video"
+    assert references[-1].fps == 24.0
 
 
 def test_source_reference_is_tail_truncated_not_head_truncated():
@@ -171,7 +176,7 @@ def test_source_reference_is_tail_truncated_not_head_truncated():
     """
     head = _head(30)
     references = build_outpaint_references(head, generated_frames=10, frame_rate=24.0, reference_images=())
-    kept = references[0].frames
+    kept = references[-1].frames
     assert kept.shape[0] == 10
     assert int(kept[0, 0, 0, 0]) == 20   # first kept frame is head's frame 20
     assert int(kept[-1, 0, 0, 0]) == 29  # last kept frame is head's own last frame
@@ -185,22 +190,86 @@ def test_source_reference_is_never_longer_than_the_head():
     """
     head = _head(5)
     references = build_outpaint_references(head, generated_frames=124, frame_rate=24.0, reference_images=())
-    assert references[0].frames.shape[0] == 5
+    assert references[-1].frames.shape[0] == 5
 
 
-def test_image_references_follow_the_source_in_request_order():
+def test_image_references_precede_the_source_in_request_order():
+    """Images are packed BEFORE the video reference (not after): this is the
+    fix for the rotary collision between an image reference and the boundary
+    anchor -- see `build_outpaint_references`'s docstring. The video
+    reference stays the LAST row so it remains rotary-contiguous with the
+    anchor that follows every reference block.
+    """
     head = _head(30)
     images = [_solid_image(10), _solid_image(20), _solid_image(30)]
     references = build_outpaint_references(head, generated_frames=10, frame_rate=24.0, reference_images=images)
     assert len(references) == 4
-    assert references[0].kind == "video"
+    assert references[-1].kind == "video"
     for i, image in enumerate(images):
-        assert references[i + 1].kind == "image"
-        assert references[i + 1].image is image
-        assert references[i + 1].label == f"reference {i + 1}"
+        assert references[i].kind == "image"
+        assert references[i].image is image
+        assert references[i].label == f"reference {i + 1}"
 
 
 def test_no_image_references_leaves_only_the_source_row():
     head = _head(30)
     references = build_outpaint_references(head, generated_frames=10, frame_rate=24.0, reference_images=[])
     assert len(references) == 1
+    assert references[0].kind == "video"
+
+
+def test_an_image_reference_lands_outside_the_anchors_binding_radius():
+    """The layout-level regression for the rotary-collision fix.
+
+    Runs `build_outpaint_references`'s output straight through
+    `build_ref2va_packed_layout` (the same call `_generate_minimax_h3` makes)
+    at the A/B geometry (37-latent-frame video reference, 42-latent-frame
+    target, 640x384) and asserts the image reference's rotary time is more
+    than one anchor-binding-radius (A1: +/-2 frames = 10/3 rotary units) away
+    from the boundary anchor's own time.
+
+    NEGATIVE CONTROL (named mutant): packing the image reference AFTER the
+    video reference (the pre-fix order) puts it exactly 1.0 rotary unit from
+    the anchor -- inside the radius -- and this test fails against that
+    ordering. Swap the two `+` operands in `build_outpaint_references` to
+    reproduce the mutant locally.
+    """
+    from core.models.minimax_h3 import h3_pipeline_ops as ops
+
+    head = _head(124, height=1, width=1)
+    references = build_outpaint_references(
+        head, generated_frames=124, frame_rate=24.0, reference_images=[_solid_image(10)])
+    video_lat_frames = 37   # minimax_h3_latent_frames(124)
+    target_lat_frames = 42  # minimax_h3_latent_frames(141)
+    lh, lw = 24, 40
+    num_text_tokens = 50
+
+    layout = ops.build_ref2va_packed_layout(
+        text_token_tags=[1] * num_text_tokens,
+        reference_blocks=[(reference.kind, False) for reference in references],
+        condition_latent_shapes=[
+            (1, lh, lw) if reference.kind == "image" else (video_lat_frames, lh, lw)
+            for reference in references
+        ],
+        reference_audio_row_counts=[],
+        num_latent_frames=target_lat_frames,
+        latent_height=lh, latent_width=lw,
+        num_audio_latents=0,
+        keyframe_anchors=("first",),
+    )
+    pos = layout["position_ids"]
+    rows_per_frame = layout["rows_per_frame"]
+
+    image_row = rows_per_frame * ([reference.kind for reference in references].index("image"))
+    image_time = float(pos[num_text_tokens + image_row, 0])
+    anchor_start = num_text_tokens + sum(
+        (1 if reference.kind == "image" else video_lat_frames) * rows_per_frame
+        for reference in references
+    )
+    anchor_time = float(pos[anchor_start, 0])
+
+    binding_radius = (10.0 / 3.0)  # A1: argmin within +/-2 frames == +/-(2*5/3) rotary units
+    assert abs(anchor_time - image_time) > binding_radius, (
+        f"image reference at t={image_time} is within the anchor's own binding radius "
+        f"({binding_radius}) of the anchor at t={anchor_time} -- it will compete with the "
+        f"anchor for the join instant instead of conditioning the whole generated span")

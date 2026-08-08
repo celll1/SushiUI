@@ -122,8 +122,17 @@ FEATURE_LABELS: Dict[str, str] = {
 # ---------------------------------------------------------------------------
 _DIT_ARCHS = ["zimage", "flux2", "ideogram4", "lens", "minit2i", "anima", "krea2", "ltx2", "acestep",
               "minimax_h3"]
-_SPECTRUM_UNSUPPORTED = ["zimage", "ideogram4", "lens", "minit2i", "anima", "krea2", "ltx2", "acestep",
-                         "minimax_h3"]
+# Both Spectrum and FBCache are wired for every image DiT arch through the
+# same shared pattern (spectrum_params=params -> build_output_forecaster() /
+# fbcache_active()+build_fbcache() inside each arch's *_pipeline_ops.py denoise
+# loop): zimage, flux2, ideogram4, lens, minit2i, anima all genuinely consume
+# spectrum_enable/fbcache_enable. ltx2 was wired in 444ebde5
+# (_ltx2_build_spectrum / _ltx2_build_fbcache in
+# core/pipeline_backends/ltx2.py). Only krea2 and acestep have no such
+# codepath at all, and minimax_h3 has no Spectrum codepath and a measured,
+# documented FBCache rejection below -- those three are the real unsupported
+# set for Spectrum.
+_SPECTRUM_UNSUPPORTED = ["krea2", "acestep", "minimax_h3"]
 
 ARCH_UNSUPPORTED: Dict[str, Dict[str, str]] = {}
 
@@ -181,14 +190,16 @@ for _a in ["zimage", "flux2", "minit2i"]:
     _add(_a, "advanced_cfg",
          "CFG scheduling / dynamic thresholding / CFG-rescale run only in the U-Net sampling loop, not in this DiT sampler")
 
-# Spectrum forecasting: implemented for the U-Net (and FLUX.2); not wired for
-# these architectures.
+# Spectrum forecasting: implemented for the U-Net and every image/video DiT
+# except krea2, acestep and minimax_h3 (see _SPECTRUM_UNSUPPORTED above).
 for _a in _SPECTRUM_UNSUPPORTED:
     _add(_a, "spectrum",
          "Spectral Feature Forecasting is not implemented for this architecture's sampler")
 
-# First Block Cache: same set as spectrum, minus flux2 (flux2 supports fbcache).
-for _a in [a for a in _SPECTRUM_UNSUPPORTED if a != "flux2"]:
+# First Block Cache: same set as spectrum (krea2/acestep have no fbcache
+# codepath either; minimax_h3's generic reason here is overwritten below with
+# its real, measured one).
+for _a in _SPECTRUM_UNSUPPORTED:
     _add(_a, "fbcache",
          "First Block Cache is not implemented for this architecture's sampler")
 

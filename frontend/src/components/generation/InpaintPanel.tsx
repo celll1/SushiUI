@@ -612,6 +612,12 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
   // surface is never hidden merely because the matrix was unavailable; the
   // route re-validates and answers 400 regardless.
   const supportsTemporalInpaint = archSupportsFeature(archCapabilities, loadedArchType, "temporal_inpaint");
+  // Spectrum/FBCache: accepted-but-inert on an architecture whose sampler never
+  // reads spectrum_enable/fbcache_enable (e.g. MiniMax-H3's FBCache was measured
+  // and dropped rather than shipped). Hidden rather than shown-disabled, the
+  // same leaf-control convention Txt2ImgPanel/Img2ImgPanel use for this pair.
+  const supportsSpectrum = archSupportsFeature(archCapabilities, loadedArchType, "spectrum");
+  const supportsFbcache = archSupportsFeature(archCapabilities, loadedArchType, "fbcache");
   const temporalInpaintReason =
     loadedArchType ? archCapabilities?.unsupported?.[loadedArchType]?.temporal_inpaint : undefined;
   const videoConstraints = loadedArchType ? archCapabilities?.video_constraints?.[loadedArchType] : undefined;
@@ -3643,6 +3649,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
 
     acceleration: () => (
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
+        {supportsSpectrum && (
         <div className="space-y-2">
         <div className="flex items-center gap-2">
           <input
@@ -3729,7 +3736,9 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
           </div>
         )}
         </div>
+        )}
 
+        {supportsFbcache && (
         <div className="space-y-2">
         <div className="flex items-center gap-2 mt-2">
           <input
@@ -3763,6 +3772,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
           </div>
         )}
         </div>
+        )}
       </div>
     ),
 
@@ -5193,6 +5203,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
             </div>
           )}
 
+          {supportsFbcache && (
           <div className="flex items-center gap-2 mt-2">
             <input
               type="checkbox"
@@ -5205,6 +5216,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
               First Block Cache (dynamic caching)
             </label>
           </div>
+          )}
         </Card>
         )}
 

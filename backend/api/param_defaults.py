@@ -987,16 +987,16 @@ OUTPAINT_VIDEO_DEFAULTS: Dict[str, Any] = {
     # leaves the preserved span SILENT -- see OUTPAINT_VIDEO_ARCH_OVERLAYS,
     # which is where that architecture's different default lives.
     "outpaint_video_audio_mode": "regenerate",
-    # When true, encode the output with FFV1 (`-pix_fmt rgb24`, no forced
-    # colorspace conversion) instead of libx264, so the pasted input frames
-    # are BIT-EXACT after decode (empirically verified -- see
+    # When true, write the MASTER file as FFV1-in-mkv (`-pix_fmt rgb24`, no
+    # forced colorspace conversion) instead of libx264-in-mp4, so the pasted
+    # input frames are BIT-EXACT after decode (empirically verified -- see
     # utils.video_utils.save_video_with_metadata's docstring for why plain
     # libx264 "-qp 0" is NOT actually bit-exact). Audio (when present) uses
     # FLAC instead of AAC in this mode. Trade-offs: much larger file size,
-    # and the mp4 will generally NOT play back in a browser's native
-    # <video> element (FFV1 has no mainstream browser decoder) -- intended
-    # for archival/verification of the exact preserved frames, not casual
-    # playback.
+    # and the master is not browser-playable (FFV1 has no mainstream browser
+    # decoder) -- a separate H.264 mp4 proxy is encoded alongside it for
+    # gallery playback (see `preview_filename` on the response); the master
+    # itself stays downloadable and untouched for archival/verification.
     "video_lossless": False,
     # OPTIONAL second uploaded clip, preserved at the END of the output
     # timeline, which turns the request into a BRIDGE: `video` is preserved at
@@ -1095,9 +1095,9 @@ INPAINT_VIDEO_DEFAULTS: Dict[str, Any] = {
     # neutral; the one architecture that implements this endpoint overlays the
     # other value below.
     "inpaint_video_audio_mode": "regenerate",
-    # FFV1 instead of H.264, as on the outpaint endpoint. The preserved frames
-    # are exact at the frames handoff either way; this is what carries that
-    # exactness into the FILE.
+    # FFV1-in-mkv master + H.264 mp4 proxy, as on the outpaint endpoint. The
+    # preserved frames are exact at the frames handoff either way; this is
+    # what carries that exactness into the FILE.
     "video_lossless": False,
 }
 

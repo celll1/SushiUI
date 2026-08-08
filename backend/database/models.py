@@ -189,6 +189,11 @@ class GeneratedImage(GalleryBase):
             # Video parameters (generation_type == "txt2vid" / "img2vid")
             if self.parameters.get("is_video"):
                 result["is_video"] = True
+                # Only set when the master was written with FFV1 (video_lossless):
+                # an H.264 proxy the gallery <video> element plays instead of the
+                # (browser-undecodable) master. Download/"Send to" stay on `filename`.
+                if self.parameters.get("preview_filename"):
+                    result["preview_filename"] = self.parameters["preview_filename"]
                 if "num_frames" in self.parameters:
                     result["num_frames"] = str(self.parameters["num_frames"])
                 if "fps" in self.parameters:

@@ -34,6 +34,7 @@ import {
   getCurrentModel,
   cancelGeneration,
   getResultFilename,
+  getResultPlaybackFilename,
   getResultSeed,
   getResultAncestralSeed,
   OutpaintParams as ApiOutpaintParams,
@@ -53,7 +54,7 @@ import {
 } from "@/utils/api";
 import { wsClient, CFGMetrics } from "@/utils/websocket";
 import { saveTempImage, loadTempImage, deleteTempImageRef } from "@/utils/tempImageStorage";
-import { previewStorageKeys, loadVideoPreview, saveVideoPreview, loadAudioPreview, saveAudioPreview, saveImagePreview, clearVideoPreview, clearAudioPreview, clearImagePreview, outputExists, stripCacheBuster, withCacheBuster, imagePreviewGone } from "@/utils/previewStorage";
+import { previewStorageKeys, loadVideoPreview, saveVideoPreview, playbackUrlOf, loadAudioPreview, saveAudioPreview, saveImagePreview, clearVideoPreview, clearAudioPreview, clearImagePreview, outputExists, stripCacheBuster, withCacheBuster, imagePreviewGone } from "@/utils/previewStorage";
 import { sendToPanel, sendImageToImg2Img, sendImageToInpaint, sendImageToUpscale, fetchUrlToFile, sendVideoToOutpaint, sendVideoToInpaint, sendVideoToReference, sendAudioToOutpaint, sendAudioToImg2Img } from "@/utils/sendHelpers";
 import { fixFloatingPointParams } from "@/utils/numberUtils";
 import { useStartup } from "@/contexts/StartupContext";
@@ -500,6 +501,11 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
   const [h3ReferenceImages, setH3ReferenceImages] = useState<File[]>([]);
   const [h3ReferenceImageSize, setH3ReferenceImageSize] = useState<"max" | "match">("max");
   const [generatedVideo, setGeneratedVideo] = useState<string | null>(null);
+  // Playback source for the <video> element, when it differs from
+  // generatedVideo (a video_lossless FFV1-in-mkv master no browser can
+  // decode): its H.264 mp4 proxy. generatedVideo itself stays the master
+  // for send-to/reference actions. Falls back to generatedVideo when null.
+  const [generatedVideoPlaybackUrl, setGeneratedVideoPlaybackUrl] = useState<string | null>(null);
   const [generatedVideoInfo, setGeneratedVideoInfo] = useState<{ num_frames?: number; fps?: number; duration?: number } | null>(null);
   const [generatedVideoSeed, setGeneratedVideoSeed] = useState<number | null>(null);
 
@@ -659,6 +665,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
       const savedVideo = loadVideoPreview(PREVIEW_KEYS);
       if (savedVideo) {
         setGeneratedVideo(savedVideo.url);
+        setGeneratedVideoPlaybackUrl(playbackUrlOf(savedVideo));
         setGeneratedVideoInfo(savedVideo.info);
         setGeneratedVideoSeed(savedVideo.seed ?? null);
       }
@@ -794,6 +801,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
           console.log("[Outpaint] Stored preview video is gone, clearing:", savedVideo.url);
           clearVideoPreview(PREVIEW_KEYS);
           setGeneratedVideo(null);
+          setGeneratedVideoPlaybackUrl(null);
           setGeneratedVideoInfo(null);
           setGeneratedVideoSeed(null);
         }
@@ -1009,11 +1017,12 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
     if (isMounted && generatedVideo) {
       saveVideoPreview(PREVIEW_KEYS, {
         url: generatedVideo,
+        playbackUrl: generatedVideoPlaybackUrl || undefined,
         info: generatedVideoInfo,
         seed: generatedVideoSeed,
       });
     }
-  }, [generatedVideo, generatedVideoInfo, generatedVideoSeed, isMounted]);
+  }, [generatedVideo, generatedVideoPlaybackUrl, generatedVideoInfo, generatedVideoSeed, isMounted]);
 
   // Save preview audio to localStorage whenever it changes. Only the URL, the
   // duration/sample-rate line and the seed are stored -- never the audio bytes.
@@ -1768,6 +1777,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
       setPreviewImage(null);
       setGeneratedImage(null);
       setGeneratedVideo(null);
+      setGeneratedVideoPlaybackUrl(null);
       setGeneratedVideoInfo(null);
       setGeneratedVideoSeed(null);
       setGeneratedAudio(null);
@@ -1781,7 +1791,9 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
         const result = await generateOutpaintVideo(
           nextItem.params as OutpaintVideoParams, clip, nextItem.bridgeVideo, nextItem.referenceImages);
         const videoUrl = `/outputs/${getResultFilename(result)}`;
+        const videoPlaybackUrl = `/outputs/${getResultPlaybackFilename(result)}`;
         setGeneratedVideo(videoUrl);
+        setGeneratedVideoPlaybackUrl(videoPlaybackUrl !== videoUrl ? videoPlaybackUrl : null);
         setGeneratedVideoSeed(getResultSeed(result));
         setGeneratedVideoInfo({
           num_frames: result.image?.num_frames,
@@ -1826,6 +1838,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
       setGeneratedAudioInfo(null);
       setGeneratedAudioSeed(null);
       setGeneratedVideo(null);
+      setGeneratedVideoPlaybackUrl(null);
       setGeneratedVideoInfo(null);
       setGeneratedVideoSeed(null);
       try {
@@ -1875,6 +1888,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
     // stored previews are left alone until the image actually succeeds (see the
     // save effects), so a failed run does not throw away the last good result.
     setGeneratedVideo(null);
+    setGeneratedVideoPlaybackUrl(null);
     setGeneratedVideoInfo(null);
     setGeneratedVideoSeed(null);
     setGeneratedAudio(null);
@@ -4396,7 +4410,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
                 {isVideo && generatedVideo ? (
                   <div className="w-full space-y-2">
                     <video
-                      src={generatedVideo}
+                      src={generatedVideoPlaybackUrl || generatedVideo}
                       className="w-full rounded-lg"
                       controls
                       loop
@@ -4409,6 +4423,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
                         console.warn("[Outpaint] Preview video failed to load, clearing:", generatedVideo);
                         clearVideoPreview(PREVIEW_KEYS);
                         setGeneratedVideo(null);
+                        setGeneratedVideoPlaybackUrl(null);
                         setGeneratedVideoInfo(null);
                         setGeneratedVideoSeed(null);
                       }}

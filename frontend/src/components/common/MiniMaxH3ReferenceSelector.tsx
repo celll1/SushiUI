@@ -28,10 +28,10 @@ import { MiniMaxH3References } from "@/utils/api";
  * known to be refused.
  */
 
-const MAX_IMAGES = 9;
-const MAX_VIDEOS = 3;
-const MAX_AUDIOS = 3;
-const MAX_TOTAL = 12;
+export const MAX_IMAGES = 9;
+export const MAX_VIDEOS = 3;
+export const MAX_AUDIOS = 3;
+export const MAX_TOTAL = 12;
 
 interface MiniMaxH3ReferenceSelectorProps {
   value: MiniMaxH3References;

@@ -462,3 +462,15 @@ export function sendAudioToImg2Img(audioUrl: string): void {
   localStorage.setItem("img2img_input_audio", audioUrl);
   window.dispatchEvent(new Event("img2img_input_audio_updated"));
 }
+
+/**
+ * Sends a video result into the MiniMax-H3 ref2va reference track
+ * (`h3References.videos`) -- whole-clip conditioning, not a placement anchor.
+ * Both Txt2ImgPanel and Img2ImgPanel host the reference selector and listen
+ * for this event; the clip is appended to whichever panel's list is mounted.
+ * Transport is the plain URL (not base64) -- see fetchUrlToFile.
+ */
+export function sendVideoToReference(videoUrl: string): void {
+  localStorage.setItem("h3_reference_video", videoUrl);
+  window.dispatchEvent(new Event("h3_reference_video_updated"));
+}

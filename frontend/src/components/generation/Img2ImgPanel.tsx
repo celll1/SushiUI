@@ -27,7 +27,7 @@ import PromptEditor from "../common/PromptEditor";
 import LoopGenerationPanel, { LoopGenerationConfig } from "./LoopGenerationPanel";
 import QuantizedGemmSelect from "./QuantizedGemmSelect";
 import MiniMaxH3KeyframeTimeline from "../common/MiniMaxH3KeyframeTimeline";
-import MiniMaxH3ReferenceSelector, { EMPTY_MINIMAX_H3_REFERENCES, countMiniMaxH3References } from "../common/MiniMaxH3ReferenceSelector";
+import MiniMaxH3ReferenceSelector, { EMPTY_MINIMAX_H3_REFERENCES, countMiniMaxH3References, MAX_VIDEOS, MAX_TOTAL } from "../common/MiniMaxH3ReferenceSelector";
 import { migrateLoopGenerationConfig, computeLoopDecodeDirective } from "@/utils/loopGenerationInheritance";
 import { getSamplers, getScheduleTypes, generateImg2Img, generateImg2Vid, Img2VidParams, MiniMaxH3Keyframe, MiniMaxH3References, generateRef2Vid, Ref2VidParams, generateAud2Aud, Aud2AudParams, generateImg2ImgTrainingPreview, toBase64, LoRAConfig, ControlNetConfig, generateTIPOPrompt, cancelGeneration, getCurrentModel, isLatentOnlyResult, getResultFilename, getResultSeed, getResultAncestralSeed, unetQuantizationOptions, normalizeUnetQuantization, transformerQuantizationLabel, archSupportsFeature, videoFrameOptions, videoFrameLabel, archDisplayName, normalizeVideoFrames, fitVideoCanvas, videoCanvasRule, videoCanvasAxisBounds, videoCanvasExceedsEnvelope } from "@/utils/api";
 import { useActiveTraining } from "@/hooks/useActiveTraining";
@@ -35,7 +35,7 @@ import { wsClient, CFGMetrics } from "@/utils/websocket";
 import CFGMetricsGraph from "../common/CFGMetricsGraph";
 import { saveTempImage, loadTempImage, deleteTempImageRef } from "@/utils/tempImageStorage";
 import { previewStorageKeys, loadVideoPreview, saveVideoPreview, loadAudioPreview, saveAudioPreview, saveImagePreview, clearVideoPreview, clearAudioPreview, clearImagePreview, outputExists, stripCacheBuster, withCacheBuster, imagePreviewGone } from "@/utils/previewStorage";
-import { sendToPanel, sendImageToImg2Img, sendImageToInpaint, sendImageToUpscale, sendImageToOutpaint, fetchUrlToFile, sendVideoToOutpaint, sendVideoToInpaint, sendAudioToOutpaint, sendAudioToImg2Img } from "@/utils/sendHelpers";
+import { sendToPanel, sendImageToImg2Img, sendImageToInpaint, sendImageToUpscale, sendImageToOutpaint, fetchUrlToFile, sendVideoToOutpaint, sendVideoToInpaint, sendVideoToReference, sendAudioToOutpaint, sendAudioToImg2Img } from "@/utils/sendHelpers";
 import { useStartup } from "@/contexts/StartupContext";
 import { useGenerationQueue } from "@/contexts/GenerationQueueContext";
 
@@ -1136,6 +1136,32 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
     };
   }, []);
 
+  // "Use as reference video" (gallery, video results): appends the clip to the
+  // ref2va reference track. Whole-clip content conditioning, not a placement
+  // anchor -- see sendVideoToReference in sendHelpers.ts.
+  useEffect(() => {
+    const handleReferenceVideoUpdate = async () => {
+      const url = localStorage.getItem("h3_reference_video");
+      if (!url) return;
+      try {
+        const file = await fetchUrlToFile(url);
+        setH3References(prev => {
+          if (prev.videos.length >= MAX_VIDEOS || countMiniMaxH3References(prev) >= MAX_TOTAL) {
+            console.warn("[Img2Img] Reference video not added: track is full");
+            return prev;
+          }
+          return { ...prev, videos: [...prev.videos, file], videoAudios: [...prev.videoAudios, null] };
+        });
+      } catch (error) {
+        console.error("[Img2Img] Failed to load sent reference video:", error);
+      } finally {
+        localStorage.removeItem("h3_reference_video");
+      }
+    };
+    window.addEventListener("h3_reference_video_updated", handleReferenceVideoUpdate);
+    return () => window.removeEventListener("h3_reference_video_updated", handleReferenceVideoUpdate);
+  }, []);
+
   // Save params to localStorage whenever they change (but only after mounted and initial load complete)
   useEffect(() => {
     if (isMounted && !isInitialLoad) {
@@ -1724,6 +1750,16 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
     }
     sendVideoToInpaint(generatedVideo);
     if (onTabChange) onTabChange("inpaint");
+  };
+
+  // generatedVideo (Img2Vid) result -> the ref2va reference track (whole-clip
+  // conditioning, not a placement anchor -- see sendVideoToReference).
+  const sendVideoResultToReference = () => {
+    if (!generatedVideo) {
+      alert("No video to send");
+      return;
+    }
+    sendVideoToReference(generatedVideo);
   };
 
   // generatedAudio (aud2aud) result -> Outpaint's outpaint_aud clip input.
@@ -4168,15 +4204,30 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
             Same component and semantics as Txt2ImgPanel's -- order-is-semantic
             file lists, no strength/schedule knobs (see
             scratchpad/minimax_h3_conditioning_design.md §3.3 for why this is
-            not a ControlNet-shaped UI). */}
+            not a ControlNet-shaped UI). This panel is where both continuation
+            routes are reachable, on different checkpoint variants -- the
+            keyframe timeline above (fl2va) and the reference video slot below
+            (ref2va) can look like the same feature; they are not. */}
         {isVideo && isRef2Va && (
-          <MiniMaxH3ReferenceSelector
-            value={h3References}
-            onChange={setH3References}
-            referenceImageSize={h3ReferenceImageSize}
-            onReferenceImageSizeChange={setH3ReferenceImageSize}
-            disabled={isGenerating}
-          />
+          <>
+            <p className="text-xs text-gray-500 -mb-1">
+              A video reference here (unlike the keyframe timeline above, which
+              is fl2va-only) conditions on a whole clip rather than one
+              boundary frame: the reference is laid out frame-contiguous with
+              the generated span, and the entire output is regenerated, not
+              preserved. MiniMax&apos;s documented task type is{" "}
+              <span className="text-gray-400">video continuation</span>,
+              composable with an image anchor as{" "}
+              <code>[video continuation + keyframe completion]</code>.
+            </p>
+            <MiniMaxH3ReferenceSelector
+              value={h3References}
+              onChange={setH3References}
+              referenceImageSize={h3ReferenceImageSize}
+              onReferenceImageSizeChange={setH3ReferenceImageSize}
+              disabled={isGenerating}
+            />
+          </>
         )}
 
         {isAudio && (
@@ -5563,6 +5614,15 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
                   </Button>
                   <Button onClick={sendVideoResultToOutpaint} variant="secondary" size="sm">
                     Send to outpaint
+                  </Button>
+                  <Button
+                    onClick={sendVideoResultToReference}
+                    variant="secondary"
+                    size="sm"
+                    className="col-span-2"
+                    title="Condition a new generation on this whole clip (MiniMax-H3 ref2va). Regenerates everything; use Send to outpaint to extend the clip in place instead."
+                  >
+                    Use as reference video
                   </Button>
                 </div>
               </div>

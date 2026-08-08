@@ -19,7 +19,7 @@ import Button from "../common/Button";
 import GalleryFilter from "./GalleryFilter";
 import ImageList from "./ImageList";
 import { saveTempImage } from "@/utils/tempImageStorage";
-import { sendBase64ImageToImg2Img, sendBase64ImageToImg2Vid, sendImageToImg2Vid, sendVideoToOutpaint, sendVideoToInpaint, sendAudioToOutpaint, sendAudioToImg2Img } from "@/utils/sendHelpers";
+import { sendBase64ImageToImg2Img, sendBase64ImageToImg2Vid, sendImageToImg2Vid, sendVideoToOutpaint, sendVideoToInpaint, sendVideoToReference, sendAudioToOutpaint, sendAudioToImg2Img } from "@/utils/sendHelpers";
 import PostEditControls from "../common/PostEditControls";
 import { PostEditState, NEUTRAL_POST_EDIT, isNeutral, applyPostEdit, buildFilterString, editedFilename } from "@/utils/postEdit";
 import { usePostEditPreview } from "@/hooks/usePostEditPreview";
@@ -926,6 +926,16 @@ export default function ImageGrid() {
     // img2vid was merged into the img2img panel (dual img->img/vid, driven by the
     // loaded model). The keyframe still rides img2vid_input_image / img2vid_input_updated.
     router.push("/generate?tab=img2img");
+  };
+
+  // "Use as reference video": whole-clip content conditioning for MiniMax-H3
+  // ref2va (see sendVideoToReference). Distinct from Send to Outpaint/Inpaint,
+  // which condition on one boundary frame / a placement pin -- this conditions
+  // on the entire clip and regenerates everything. Lands in Txt2ImgPanel's
+  // reference track, which both Txt2Img and Img2Img read from.
+  const sendToReference = (image: GeneratedImage) => {
+    sendVideoToReference(`/outputs/${image.filename}`);
+    router.push("/generate?tab=txt2img");
   };
 
   // Grab the current frame of the selected video via a canvas. Same-origin
@@ -2002,6 +2012,15 @@ export default function ImageGrid() {
                               img2vid
                             </Button>
                           </div>
+                          <Button
+                            onClick={() => sendToReference(selectedImage)}
+                            variant="secondary"
+                            size="sm"
+                            className="w-full"
+                            title="Condition a new generation on this whole clip (MiniMax-H3 ref2va). Regenerates everything; does not extend the clip in place -- that is Send to Outpaint."
+                          >
+                            Use as reference video
+                          </Button>
                         </div>
                       )}
                     </div>
@@ -2287,6 +2306,13 @@ export default function ImageGrid() {
                   >
                     <Camera className="h-4 w-4" />
                     img2vid
+                  </button>
+                  <button
+                    onClick={() => sendToReference(selectedImage)}
+                    className="px-3 py-2 text-sm bg-gray-800 hover:bg-gray-700 text-white rounded"
+                    title="Condition a new generation on this whole clip (MiniMax-H3 ref2va), regenerating everything"
+                  >
+                    Reference
                   </button>
                 </>
               ) : (

@@ -3,10 +3,11 @@
 import { useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Home, Image, ImagePlus, Settings, FileImage, Terminal, Menu, X, Database, Zap, Tag } from "lucide-react";
+import { Image, ImagePlus, Settings, Menu, X, Database, Zap, Tag, Clapperboard } from "lucide-react";
 
 const navigation = [
   { name: "Generate", href: "/generate", icon: ImagePlus },
+  { name: "Studio",   href: "/studio",   icon: Clapperboard },
   { name: "Gallery",  href: "/gallery",  icon: Image },
   { name: "Dataset",  href: "/dataset",  icon: Database },
   { name: "Training", href: "/training", icon: Zap },

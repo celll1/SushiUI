@@ -775,6 +775,16 @@ a generation without style transfer.
       reference still binding (CLIP-image cosine −0.0179 against the control,
       +0.0004 outside the anchor's ±8-frame neighbourhood). Protocols and
       numbers: `scratchpad/minimax_h3_c0_results.md`.
+      **Replicated through the shipped route** at 640×384 × 124 frames, 6
+      steps, one seed (12345): first/mid-60/last/3-anchor {0,60,123} all
+      reproduce the harness's argmin-exact result (min RMS 6.44–7.05) and the
+      no-anchor control stays far away (min 72.89); the `-1` sentinel and
+      `keyframe_images`/`keyframe_frame_indices` resolve to the frames the
+      design says they do (`keyframe_resolved_frames` in the response).
+      Protocols, numbers and the one substitution it required (the no-anchor
+      control has no `/generate/img2vid` request shape and used
+      `/generate/txt2vid` instead, per that route's own refusal message):
+      `scratchpad/minimax_h3_c2_results.md`.
     - **The scope of that measurement**, stated because it is narrower than the
       feature: one prompt family, seeds 12345/4242, **6 sampling steps** at both
       canvases (the shipped default is 20 — the anchor rows are never denoised

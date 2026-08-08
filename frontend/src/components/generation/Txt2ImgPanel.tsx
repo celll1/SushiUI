@@ -24,7 +24,10 @@ import PostEditControls from "../common/PostEditControls";
 import { PostEditState, NEUTRAL_POST_EDIT, buildFilterString } from "@/utils/postEdit";
 import { usePostEditPreview } from "@/hooks/usePostEditPreview";
 import GenerationQueue from "../common/GenerationQueue";
-import ResizableColumns from "../common/ResizableColumns";
+import ResizableColumns, {
+  GENERATION_PREVIEW_QUEUE_SPLIT_KEY,
+  GENERATION_WORKSPACE_SPLIT_KEY,
+} from "../common/ResizableColumns";
 import PromptEditor from "../common/PromptEditor";
 import LoopGenerationPanel, { LoopGenerationConfig } from "./LoopGenerationPanel";
 import QuantizedGemmSelect from "./QuantizedGemmSelect";
@@ -3339,11 +3342,13 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
 
   return (
     <ResizableColumns
-      storageKey="txt2img_main_split"
+      storageKey={GENERATION_WORKSPACE_SPLIT_KEY}
       label="Settings and preview width"
       defaultPrimaryPercent={46}
       minPrimaryPercent={34}
       maxPrimaryPercent={66}
+      minPrimaryPx={360}
+      minSecondaryPx={540}
     >
       {/* Parameters Panel */}
       <div className="space-y-2.5">
@@ -4199,11 +4204,13 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
       <div className="pb-16 lg:pb-0">
         <Card title="Preview">
           <ResizableColumns
-            storageKey="txt2img_preview_queue_split"
+            storageKey={GENERATION_PREVIEW_QUEUE_SPLIT_KEY}
             label="Preview and queue width"
             defaultPrimaryPercent={68}
             minPrimaryPercent={55}
             maxPrimaryPercent={82}
+            minPrimaryPx={300}
+            minSecondaryPx={200}
             className="lg:h-[800px]"
           >
             {/* Left: Preview and Controls */}

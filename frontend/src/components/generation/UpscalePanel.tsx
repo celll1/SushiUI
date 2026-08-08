@@ -9,6 +9,10 @@ import NumberInput from "../common/NumberInput";
 import Textarea from "../common/Textarea";
 import Input from "../common/Input";
 import GenerationQueue from "../common/GenerationQueue";
+import ResizableColumns, {
+  GENERATION_PREVIEW_QUEUE_SPLIT_KEY,
+  GENERATION_WORKSPACE_SPLIT_KEY,
+} from "../common/ResizableColumns";
 import { fixFloatingPointParams } from "@/utils/numberUtils";
 import {
   generateUpscale,
@@ -567,7 +571,15 @@ export default function UpscalePanel({ onTabChange, onImageGenerated }: UpscaleP
   ];
 
   return (
-    <div className="grid grid-cols-1 gap-2.5 lg:grid-cols-2">
+    <ResizableColumns
+      storageKey={GENERATION_WORKSPACE_SPLIT_KEY}
+      label="Settings and output width"
+      defaultPrimaryPercent={46}
+      minPrimaryPercent={34}
+      maxPrimaryPercent={66}
+      minPrimaryPx={360}
+      minSecondaryPx={540}
+    >
       {/* Parameters Panel */}
       <div className="space-y-2.5">
         <Card title="Input Image">
@@ -837,7 +849,16 @@ export default function UpscalePanel({ onTabChange, onImageGenerated }: UpscaleP
       </div>
 
       {/* Output Panel */}
-      <div className="space-y-4">
+      <ResizableColumns
+        storageKey={GENERATION_PREVIEW_QUEUE_SPLIT_KEY}
+        label="Output and queue width"
+        defaultPrimaryPercent={68}
+        minPrimaryPercent={55}
+        maxPrimaryPercent={82}
+        minPrimaryPx={300}
+        minSecondaryPx={200}
+        className="lg:h-[800px]"
+      >
         <Card title="Output">
           {isGenerating && (
             <div className="mb-3">
@@ -914,8 +935,10 @@ export default function UpscalePanel({ onTabChange, onImageGenerated }: UpscaleP
           )}
         </Card>
 
-        <GenerationQueue currentStep={progress} />
-      </div>
-    </div>
+        <div className="w-full">
+          <GenerationQueue currentStep={progress} />
+        </div>
+      </ResizableColumns>
+    </ResizableColumns>
   );
 }

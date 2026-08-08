@@ -58,7 +58,7 @@ export default function GenerationQueue({ currentStep = 0 }: GenerationQueueProp
   const failedItems = queue.filter((item) => item.status === "failed");
 
   return (
-    <div className="flex flex-col h-full bg-gray-800/50 border-l border-gray-700">
+    <div className="flex h-full flex-col border-t border-gray-700 bg-gray-800/50 lg:border-l lg:border-t-0">
       {/* Header */}
       <div className="p-3 border-b border-gray-700 flex items-center justify-between flex-shrink-0">
         <h3 className="text-sm font-semibold">Queue</h3>

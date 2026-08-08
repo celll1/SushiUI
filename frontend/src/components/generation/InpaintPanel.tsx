@@ -23,6 +23,10 @@ import PostEditControls from "../common/PostEditControls";
 import { PostEditState, NEUTRAL_POST_EDIT, buildFilterString } from "@/utils/postEdit";
 import { usePostEditPreview } from "@/hooks/usePostEditPreview";
 import GenerationQueue from "../common/GenerationQueue";
+import ResizableColumns, {
+  GENERATION_PREVIEW_QUEUE_SPLIT_KEY,
+  GENERATION_WORKSPACE_SPLIT_KEY,
+} from "../common/ResizableColumns";
 import LoopGenerationPanel, { LoopGenerationConfig } from "./LoopGenerationPanel";
 import QuantizedGemmSelect from "./QuantizedGemmSelect";
 import { migrateLoopGenerationConfig, computeLoopDecodeDirective } from "@/utils/loopGenerationInheritance";
@@ -4137,7 +4141,15 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
   };
 
   return (
-    <div className="grid grid-cols-1 gap-2.5 lg:grid-cols-2">
+    <ResizableColumns
+      storageKey={GENERATION_WORKSPACE_SPLIT_KEY}
+      label="Settings and preview width"
+      defaultPrimaryPercent={46}
+      minPrimaryPercent={34}
+      maxPrimaryPercent={66}
+      minPrimaryPx={360}
+      minSecondaryPx={540}
+    >
       {/* Parameters Panel */}
       <div className="space-y-2.5">
         <ModelLoadSection
@@ -5257,7 +5269,16 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
       {/* Preview Panel */}
       <div className="pb-16 lg:pb-0">
         <Card title="Preview">
-          <div className="flex flex-col lg:flex-row gap-2 lg:h-[800px]">
+          <ResizableColumns
+            storageKey={GENERATION_PREVIEW_QUEUE_SPLIT_KEY}
+            label="Preview and queue width"
+            defaultPrimaryPercent={68}
+            minPrimaryPercent={55}
+            maxPrimaryPercent={82}
+            minPrimaryPx={300}
+            minSecondaryPx={200}
+            className="lg:h-[800px]"
+          >
             {/* Left: Preview and Controls */}
             <div className="flex-1 flex flex-col space-y-2 min-w-0">
               {/* Action Buttons - Desktop only (hidden on mobile) */}
@@ -5700,10 +5721,10 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
             </div>
 
             {/* Right: Generation Queue */}
-            <div className="w-full lg:w-60 lg:flex-shrink-0">
+            <div className="w-full">
               <GenerationQueue currentStep={progress} />
             </div>
-          </div>
+          </ResizableColumns>
         </Card>
       </div>
 
@@ -5739,6 +5760,6 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         settings={tipoSettings}
         onSettingsChange={setTipoSettings}
       />
-    </div>
+    </ResizableColumns>
   );
 }

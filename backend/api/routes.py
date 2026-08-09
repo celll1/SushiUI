@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Form, Request
 from fastapi.responses import Response, StreamingResponse, FileResponse
 from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from typing import List, Optional, Dict, Any, Callable, Tuple
 from pydantic import BaseModel, Field
 from datetime import datetime
@@ -6629,9 +6629,13 @@ async def get_images(
     """Get list of generated images with filtering"""
     query = db.query(GeneratedImage)
 
-    # Text search in prompt
+    # Search the compact text fields available on the gallery row.
     if search:
-        query = query.filter(GeneratedImage.prompt.contains(search))
+        query = query.filter(or_(
+            GeneratedImage.prompt.contains(search),
+            GeneratedImage.negative_prompt.contains(search),
+            GeneratedImage.filename.contains(search),
+        ))
 
     # Filter by generation type
     if generation_types:

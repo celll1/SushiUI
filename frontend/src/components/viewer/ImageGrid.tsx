@@ -23,6 +23,7 @@ import { sendBase64ImageToImg2Img, sendBase64ImageToImg2Vid, sendImageToImg2Vid,
 import PostEditControls from "../common/PostEditControls";
 import { PostEditState, NEUTRAL_POST_EDIT, isNeutral, applyPostEdit, buildFilterString, editedFilename } from "@/utils/postEdit";
 import { usePostEditPreview } from "@/hooks/usePostEditPreview";
+import { queueStudioTransfer } from "../studio/studioTransfer";
 
 export default function ImageGrid() {
   const router = useRouter();
@@ -452,6 +453,49 @@ export default function ImageGrid() {
         console.error('Failed to enter fullscreen:', err);
         alert('Fullscreen mode is not supported on this device.');
       });
+    }
+  };
+
+  const sendToStudio = async (image: GeneratedImage) => {
+    const kind = isSelectedVideo ? "video" : isSelectedAudio ? "audio" : "image";
+    try {
+      await queueStudioTransfer({
+        source: "gallery",
+        media: sendImage ? {
+          galleryId: image.id,
+          kind,
+          name: image.filename,
+          url: `/outputs/${kind === "video" ? image.preview_filename || image.filename : image.filename}`,
+          masterUrl: `/outputs/${image.filename}`,
+          thumbnailUrl: kind === "image"
+            ? `/api/v1/images/${image.id}/preview?w=320`
+            : kind === "video"
+              ? `/thumbnails/${image.filename.replace(/\.[^/.]+$/, "")}.png`
+              : undefined,
+          width: image.width,
+          height: image.height,
+          duration: image.duration,
+          createdAt: image.created_at,
+          generationType: image.generation_type,
+          modelName: image.model_name,
+          seed: image.seed,
+        } : undefined,
+        prompt: sendPrompt ? image.prompt : undefined,
+        negativePrompt: sendPrompt ? image.negative_prompt : undefined,
+        parameters: sendParameters ? {
+          ...image.parameters,
+          width: image.width,
+          height: image.height,
+          steps: image.steps ?? image.parameters?.steps,
+          cfg_scale: image.cfg_scale ?? image.parameters?.cfg_scale,
+          sampler: image.sampler ?? image.parameters?.sampler,
+          seed: image.seed,
+        } : undefined,
+      });
+      router.push("/studio");
+    } catch (error) {
+      console.error("Failed to send Gallery item to Studio", error);
+      alert("Failed to send this Gallery item to Studio.");
     }
   };
 
@@ -2031,6 +2075,15 @@ export default function ImageGrid() {
                         >
                           img2vid
                         </Button>
+                        <Button
+                          onClick={() => sendToStudio(selectedImage)}
+                          variant="secondary"
+                          size="xs"
+                          className="col-span-3"
+                          disabled={(!sendImage && !sendPrompt && !sendParameters) || detailLoading || detailError}
+                        >
+                          Studio
+                        </Button>
                       </div>
 
                       {/* Video: capture the current frame and send it onward.
@@ -2375,6 +2428,14 @@ export default function ImageGrid() {
                 title={isSelectedVideo ? "Upscale doesn't support video clips" : "Send to upscale"}
               >
                 Upscale
+              </button>
+              <button
+                onClick={() => sendToStudio(selectedImage)}
+                disabled={(!sendImage && !sendPrompt && !sendParameters) || detailLoading || detailError}
+                className="px-3 py-2 text-sm bg-violet-700 hover:bg-violet-600 text-white rounded disabled:opacity-50 disabled:cursor-not-allowed"
+                title="Send to Studio"
+              >
+                Studio
               </button>
               {isSelectedVideo ? (
                 <>

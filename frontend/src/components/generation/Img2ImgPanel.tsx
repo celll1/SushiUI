@@ -29,6 +29,7 @@ import { usePostEditPreview } from "@/hooks/usePostEditPreview";
 import GenerationQueue from "../common/GenerationQueue";
 import GenerationLeadGrid from "../common/GenerationLeadGrid";
 import InlineHelp from "../common/InlineHelp";
+import SendToStudioButton from "../studio/SendToStudioButton";
 import ResizableColumns, {
   GENERATION_PREVIEW_QUEUE_SPLIT_KEY,
   GENERATION_WORKSPACE_SPLIT_KEY,
@@ -455,9 +456,11 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
   // control has the same "reuse the seed from the preview" button the image
   // path has (StoredVideoPreview carries it, as it does in OutpaintPanel).
   const [generatedVideoSeed, setGeneratedVideoSeed] = useState<number | null>(null);
+  const [generatedVideoParams, setGeneratedVideoParams] = useState<Img2ImgParams | null>(null);
   // Audio output (produced when an audio model is loaded / aud2aud queue item).
   const [generatedAudio, setGeneratedAudio] = useState<string | null>(null);
   const [generatedAudioInfo, setGeneratedAudioInfo] = useState<{ duration?: number; sample_rate?: number } | null>(null);
+  const [generatedAudioParams, setGeneratedAudioParams] = useState<Img2ImgParams | null>(null);
   // Reference audio clip (the aud2aud "input image" equivalent) -- kept as a
   // File (not base64) so it can carry through the queue as `inputAudio`.
   const [referenceAudioFile, setReferenceAudioFile] = useState<File | null>(null);
@@ -2601,6 +2604,10 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
           duration: result.image.duration,
           sample_rate: result.image.sample_rate,
         });
+        setGeneratedAudioParams({
+          ...(nextItem.params as Img2ImgParams),
+          seed: getResultSeed(result) ?? (nextItem.params as Img2ImgParams).seed,
+        });
         if (onImageGenerated) onImageGenerated(audioUrl);
         setIsGenerating(false);
         setProgress(0);
@@ -2660,6 +2667,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         // The seed the run actually used (-1 in the request means "pick one"),
         // so the seed control's reuse button can pin it for the next run.
         setGeneratedVideoSeed(getResultSeed(result));
+        setGeneratedVideoParams(nextItem.params as Img2ImgParams);
         if (onImageGenerated) onImageGenerated(videoUrl);
         setIsGenerating(false);
         setProgress(0);
@@ -2712,6 +2720,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
           duration: result.image.duration,
         });
         setGeneratedVideoSeed(getResultSeed(result));
+        setGeneratedVideoParams(nextItem.params as Img2ImgParams);
         if (onImageGenerated) onImageGenerated(videoUrl);
         setIsGenerating(false);
         setProgress(0);
@@ -5616,7 +5625,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
                     <span className="text-gray-300">Send parameters</span>
                   </label>
                 </div>
-                <div className="grid grid-cols-1 sm:grid-cols-5 gap-2">
+                <div className="grid grid-cols-1 sm:grid-cols-6 gap-2">
                   <Button
                     onClick={sendToTxt2Img}
                     variant="secondary"
@@ -5658,6 +5667,13 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
                   >
                     Send to Upscale
                   </Button>
+                  <SendToStudioButton
+                    media={{ kind: "image", url: generatedImage, masterUrl: stripCacheBuster(generatedImage), width: generatedImageParams?.width, height: generatedImageParams?.height }}
+                    parameters={generatedImageParams || params}
+                    sendMedia={sendImage}
+                    sendPrompt={sendPrompt}
+                    sendParameters={sendParameters}
+                  />
                 </div>
               </div>
             )}
@@ -5680,6 +5696,16 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
                   >
                     Use as reference video
                   </Button>
+                  <SendToStudioButton
+                    media={{ kind: "video", url: generatedVideo, duration: generatedVideoInfo?.duration, width: params.width, height: params.height }}
+                    parameters={{
+                      ...(generatedVideoParams || params),
+                      num_frames: generatedVideoInfo?.num_frames ?? generatedVideoParams?.num_frames ?? params.num_frames,
+                      frame_rate: generatedVideoInfo?.fps ?? generatedVideoParams?.frame_rate ?? params.frame_rate,
+                      seed: generatedVideoSeed ?? generatedVideoParams?.seed ?? params.seed,
+                    }}
+                    className="col-span-2"
+                  />
                 </div>
               </div>
             )}
@@ -5693,6 +5719,11 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
                   <Button onClick={sendAudioResultToImg2Img} variant="secondary" size="sm">
                     Send to img2img
                   </Button>
+                  <SendToStudioButton
+                    media={{ kind: "audio", url: generatedAudio, duration: generatedAudioInfo?.duration }}
+                    parameters={generatedAudioParams || params}
+                    className="col-span-2"
+                  />
                 </div>
               </div>
             )}

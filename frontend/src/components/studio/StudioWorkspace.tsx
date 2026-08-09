@@ -38,6 +38,7 @@ import {
   RotateCcw,
   Scissors,
   Search,
+  SlidersHorizontal,
   Sparkles,
   MousePointerSquareDashed,
   Trash2,
@@ -64,6 +65,7 @@ import {
 } from "@/utils/api";
 import { useStartup } from "@/contexts/StartupContext";
 import { loadStudioProject, saveImportedMedia, saveStudioProject } from "./studioStorage";
+import { resolveStudioTransferUrl, takeStudioTransfer, type StudioTransferPayload } from "./studioTransfer";
 import {
   StudioAsset,
   StudioClip,
@@ -90,13 +92,37 @@ interface VideoFormState {
   audioEnable?: boolean;
 }
 
-type MediaFilter = "all" | "image" | "video" | "audio" | "generation";
+type MediaFilter = "all" | "image" | "video" | "audio";
+type AssetScope = "all" | "gallery" | "import" | "generation";
+
+interface AssetFilters {
+  scope: AssetScope;
+  dateFrom: string;
+  dateTo: string;
+  widthMin: string;
+  widthMax: string;
+  heightMin: string;
+  heightMax: string;
+}
 
 const EMPTY_FORM: VideoFormState = { prompt: "", negativePrompt: "" };
+const EMPTY_ASSET_FILTERS: AssetFilters = {
+  scope: "all",
+  dateFrom: "",
+  dateTo: "",
+  widthMin: "",
+  widthMax: "",
+  heightMin: "",
+  heightMax: "",
+};
 const MAX_HISTORY = 60;
+const GALLERY_PAGE_SIZE = 80;
 
-const numeric = (value: unknown): number | undefined =>
-  typeof value === "number" && Number.isFinite(value) ? value : undefined;
+const numeric = (value: unknown): number | undefined => {
+  if (typeof value !== "number" && (typeof value !== "string" || !value.trim())) return undefined;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+};
 
 const booleanValue = (value: unknown): boolean | undefined =>
   typeof value === "boolean" ? value : undefined;
@@ -140,7 +166,30 @@ const galleryAsset = (image: GeneratedImage): StudioAsset => {
     height: image.height,
     source: "gallery",
     prompt: image.prompt,
+    negativePrompt: image.negative_prompt || undefined,
+    createdAt: image.created_at,
+    generationType: image.generation_type,
+    modelName: image.model_name,
+    seed: image.seed,
+    parameters: image.parameters,
   };
+};
+
+const galleryTypesFor = (filter: MediaFilter): string | undefined => {
+  if (filter === "video") return "txt2vid,img2vid,ref2vid,inpaint_vid,outpaint_vid";
+  if (filter === "audio") return "txt2aud,aud2aud,repaint,outpaint_aud";
+  if (filter === "image") return "txt2img,img2img,inpaint,outpaint,upscale";
+  return undefined;
+};
+
+const numberFilter = (value: string): number | undefined => {
+  if (!value.trim()) return undefined;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
+};
+
+const canonicalAssetKey = (asset: StudioAsset): string => {
+  return asset.blobKey || asset.masterUrl || (asset.galleryId != null ? `gallery:${asset.galleryId}` : asset.url || asset.id);
 };
 
 const readMediaMetadata = (file: File, url: string): Promise<Pick<StudioAsset, "duration" | "width" | "height">> =>
@@ -171,8 +220,14 @@ export default function StudioWorkspace() {
   const [undoStack, setUndoStack] = useState<StudioProject[]>([]);
   const [redoStack, setRedoStack] = useState<StudioProject[]>([]);
   const [galleryAssets, setGalleryAssets] = useState<StudioAsset[]>([]);
+  const [galleryTotal, setGalleryTotal] = useState(0);
   const [mediaFilter, setMediaFilter] = useState<MediaFilter>("all");
   const [mediaQuery, setMediaQuery] = useState("");
+  const [assetFilters, setAssetFilters] = useState<AssetFilters>(EMPTY_ASSET_FILTERS);
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [pendingTransfer, setPendingTransfer] = useState<StudioTransferPayload | null>(null);
+  const [defaultsIdentity, setDefaultsIdentity] = useState<string | null>(null);
   const [selectedAssetId, setSelectedAssetId] = useState<string | null>(null);
   const [selectedClipId, setSelectedClipId] = useState<string | null>(null);
   const [tool, setTool] = useState<StudioTool>("select");
@@ -194,6 +249,7 @@ export default function StudioWorkspace() {
   const playStartedRef = useRef({ at: 0, playhead: 0 });
   const initializedDefaultsForArchRef = useRef<string | null>(null);
   const galleryHydrationRef = useRef(new Map<string, Promise<StudioAsset>>());
+  const galleryRequestRef = useRef(0);
   const {
     isBackendReady,
     isVideo,
@@ -251,6 +307,107 @@ export default function StudioWorkspace() {
   }, []);
 
   useEffect(() => {
+    setPendingTransfer(takeStudioTransfer());
+  }, []);
+
+  useEffect(() => {
+    const expectedDefaultsIdentity = modelInfo?.type ? `${modelInfo.type}:${modelInfo.variant || ""}` : null;
+    if (!restored || !pendingTransfer || !isBackendReady || !generationDefaults
+      || (expectedDefaultsIdentity && defaultsIdentity !== expectedDefaultsIdentity)) return;
+    let cancelled = false;
+    const applyTransfer = async () => {
+      const parameters = pendingTransfer.parameters || {};
+      let asset: StudioAsset | null = null;
+      if (pendingTransfer.media) {
+        const media = pendingTransfer.media;
+        const url = await resolveStudioTransferUrl(media);
+        const fallbackName = (media.masterUrl || media.url).split("/").pop()?.split("?")[0];
+        const duration = Number(media.duration);
+        asset = {
+          id: media.galleryId != null ? `gallery-${media.galleryId}` : `transfer-${pendingTransfer.id}`,
+          galleryId: media.galleryId,
+          name: media.name || fallbackName || `Studio ${media.kind}`,
+          kind: media.kind,
+          url,
+          masterUrl: media.blobKey ? undefined : media.masterUrl || url,
+          thumbnailUrl: media.thumbnailUrl || (media.kind === "image"
+            ? url
+            : media.masterUrl?.startsWith("/outputs/")
+              ? `/thumbnails/${(media.masterUrl.split("/").pop() || "").replace(/\.[^/.]+$/, "")}.png`
+              : undefined),
+          duration: Number.isFinite(duration) && duration > 0 ? duration : (media.kind === "image" ? 5 : 6),
+          width: media.width,
+          height: media.height,
+          source: pendingTransfer.source === "gallery" ? "gallery" : "generation",
+          blobKey: media.blobKey,
+          prompt: pendingTransfer.prompt || (typeof parameters.prompt === "string" ? parameters.prompt : undefined),
+          negativePrompt: pendingTransfer.negativePrompt || (typeof parameters.negative_prompt === "string" ? parameters.negative_prompt : undefined),
+          createdAt: media.createdAt || pendingTransfer.createdAt,
+          generationType: media.generationType,
+          modelName: media.modelName,
+          seed: media.seed,
+          parameters,
+        };
+      }
+      if (cancelled) return;
+
+      if (asset) {
+        const incoming = asset;
+        setProject((current) => {
+          const existing = current.assets.find((item) => canonicalAssetKey(item) === canonicalAssetKey(incoming));
+          const selected = existing || incoming;
+          setSelectedAssetId(selected.id);
+          if (selected.kind === "image") setMode("i2v");
+          if (existing) {
+            return current;
+          }
+          return {
+            ...current,
+            assets: [...current.assets, incoming],
+            revision: current.revision + 1,
+            updatedAt: new Date().toISOString(),
+          };
+        });
+      }
+
+      setForm((current) => {
+        const next = { ...current };
+        if (pendingTransfer.prompt !== undefined) next.prompt = pendingTransfer.prompt;
+        if (pendingTransfer.negativePrompt !== undefined) next.negativePrompt = pendingTransfer.negativePrompt;
+        const width = numeric(parameters.width);
+        const height = numeric(parameters.height);
+        const numFrames = numeric(parameters.num_frames);
+        const frameRate = numeric(parameters.frame_rate) ?? numeric(parameters.fps);
+        const steps = numeric(parameters.num_inference_steps) ?? numeric(parameters.inference_steps) ?? numeric(parameters.steps);
+        const guidance = numeric(parameters.guidance_scale) ?? numeric(parameters.cfg_scale);
+        const seed = numeric(parameters.seed);
+        const audioEnable = booleanValue(parameters.audio_enable);
+        if (width !== undefined) next.width = width;
+        if (height !== undefined) next.height = height;
+        if (numFrames !== undefined) next.numFrames = numFrames;
+        if (frameRate !== undefined) next.frameRate = frameRate;
+        if (steps !== undefined) next.steps = steps;
+        if (guidance !== undefined) next.guidance = guidance;
+        if (seed !== undefined) next.seed = seed;
+        if (audioEnable !== undefined) next.audioEnable = audioEnable;
+        return next;
+      });
+      setSelectedClipId(null);
+      setRightPane("generate");
+      setNotice(`Received ${asset?.name || "generation settings"} from ${pendingTransfer.source}.`);
+      setPendingTransfer(null);
+    };
+    void applyTransfer().catch((error) => {
+      console.error("[Studio] Failed to receive transferred media", error);
+      if (!cancelled) {
+        setNotice("Studio could not receive the transferred media. Please send it again.");
+        setPendingTransfer(null);
+      }
+    });
+    return () => { cancelled = true; };
+  }, [defaultsIdentity, generationDefaults, isBackendReady, modelInfo?.type, modelInfo?.variant, pendingTransfer, restored]);
+
+  useEffect(() => {
     if (!restored) return;
     setProject((current) => current.jobs === jobs ? current : { ...current, jobs });
   }, [jobs, restored]);
@@ -273,6 +430,7 @@ export default function StudioWorkspace() {
     const identity = `${modelInfo.type}:${modelInfo.variant || ""}`;
     if (initializedDefaultsForArchRef.current === identity) return;
     initializedDefaultsForArchRef.current = identity;
+    setDefaultsIdentity(identity);
     const resolved = {
       ...(generationDefaults.txt2vid || {}),
       ...(generationDefaults.video_arch_overlays?.[modelInfo.type] || {}),
@@ -290,32 +448,86 @@ export default function StudioWorkspace() {
     }));
   }, [generationDefaults, modelInfo?.type, modelInfo?.variant]);
 
-  const refreshLibrary = useCallback(() => {
-    setLibraryLoading(true);
-    getImages({ limit: 80 })
-      .then((result) => setGalleryAssets((result.images || []).map(galleryAsset)))
-      .catch((error) => console.error("[Studio] Failed to load media library", error))
-      .finally(() => setLibraryLoading(false));
-  }, []);
+  const loadGalleryPage = useCallback(async (skip = 0) => {
+    const requestId = ++galleryRequestRef.current;
+    const append = skip > 0;
+    append ? setLoadingMore(true) : setLibraryLoading(true);
+    try {
+      const result = await getImages({
+        skip,
+        limit: GALLERY_PAGE_SIZE,
+        search: mediaQuery.trim() || undefined,
+        generation_types: galleryTypesFor(mediaFilter),
+        date_from: assetFilters.dateFrom ? `${assetFilters.dateFrom}T00:00:00` : undefined,
+        date_to: assetFilters.dateTo ? `${assetFilters.dateTo}T23:59:59.999` : undefined,
+        width_min: numberFilter(assetFilters.widthMin),
+        width_max: numberFilter(assetFilters.widthMax),
+        height_min: numberFilter(assetFilters.heightMin),
+        height_max: numberFilter(assetFilters.heightMax),
+      });
+      if (requestId !== galleryRequestRef.current) return;
+      const incoming = (result.images || []).map(galleryAsset);
+      setGalleryTotal(result.total || 0);
+      setGalleryAssets((current) => {
+        if (!append) return incoming;
+        const known = new Set(current.map((asset) => asset.id));
+        return [...current, ...incoming.filter((asset) => !known.has(asset.id))];
+      });
+    } catch (error) {
+      if (requestId === galleryRequestRef.current) console.error("[Studio] Failed to load media library", error);
+    } finally {
+      if (requestId === galleryRequestRef.current) {
+        setLibraryLoading(false);
+        setLoadingMore(false);
+      }
+    }
+  }, [assetFilters, mediaFilter, mediaQuery]);
 
-  useEffect(() => refreshLibrary(), [refreshLibrary]);
+  const refreshLibrary = useCallback(() => {
+    void loadGalleryPage(0);
+  }, [loadGalleryPage]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(refreshLibrary, 250);
+    return () => window.clearTimeout(timer);
+  }, [refreshLibrary]);
 
   const allAssets = useMemo(() => {
-    const projectIds = new Set(project.assets.map((asset) => asset.id));
-    return [...project.assets, ...galleryAssets.filter((asset) => !projectIds.has(asset.id))];
+    const known = new Set(project.assets.map(canonicalAssetKey));
+    return [...project.assets, ...galleryAssets.filter((asset) => !known.has(canonicalAssetKey(asset)))];
   }, [galleryAssets, project.assets]);
+
+  const galleryAssetKeys = useMemo(() => new Set(galleryAssets.map(canonicalAssetKey)), [galleryAssets]);
 
   const filteredAssets = useMemo(() => {
     const query = mediaQuery.trim().toLowerCase();
+    const widthMin = numberFilter(assetFilters.widthMin);
+    const widthMax = numberFilter(assetFilters.widthMax);
+    const heightMin = numberFilter(assetFilters.heightMin);
+    const heightMax = numberFilter(assetFilters.heightMax);
+    const from = assetFilters.dateFrom ? new Date(`${assetFilters.dateFrom}T00:00:00`).getTime() : null;
+    const to = assetFilters.dateTo ? new Date(`${assetFilters.dateTo}T23:59:59.999`).getTime() : null;
     return allAssets.filter((asset) => {
-      const matchesFilter =
-        mediaFilter === "all" ||
-        asset.kind === mediaFilter ||
-        (mediaFilter === "generation" && asset.source === "generation");
-      const matchesQuery = !query || asset.name.toLowerCase().includes(query) || asset.prompt?.toLowerCase().includes(query);
-      return matchesFilter && matchesQuery;
+      const matchesMedia = mediaFilter === "all" || asset.kind === mediaFilter;
+      const matchesScope = assetFilters.scope === "all"
+        || (assetFilters.scope === "gallery"
+          ? asset.galleryId != null || asset.source === "gallery" || galleryAssetKeys.has(canonicalAssetKey(asset))
+          : asset.source === assetFilters.scope);
+      const matchesQuery = !query || [asset.name, asset.prompt, asset.negativePrompt]
+        .some((value) => value?.toLowerCase().includes(query));
+      const created = asset.createdAt ? new Date(asset.createdAt).getTime() : null;
+      const matchesDate = (from == null || (created != null && created >= from))
+        && (to == null || (created != null && created <= to));
+      const matchesResolution = (widthMin == null || (asset.width != null && asset.width >= widthMin))
+        && (widthMax == null || (asset.width != null && asset.width <= widthMax))
+        && (heightMin == null || (asset.height != null && asset.height >= heightMin))
+        && (heightMax == null || (asset.height != null && asset.height <= heightMax));
+      return matchesMedia && matchesScope && matchesQuery && matchesDate && matchesResolution;
     });
-  }, [allAssets, mediaFilter, mediaQuery]);
+  }, [allAssets, assetFilters, galleryAssetKeys, mediaFilter, mediaQuery]);
+
+  const activeFilterCount = useMemo(() => Object.entries(assetFilters)
+    .filter(([key, value]) => key === "scope" ? value !== "all" : Boolean(value)).length, [assetFilters]);
 
   const selectedClip = project.clips.find((clip) => clip.id === selectedClipId) || null;
   const selectedAsset =
@@ -466,7 +678,7 @@ export default function StudioWorkspace() {
     }));
   }, [allAssets, commit, project.clips, project.fps, project.tracks, snapEnabled]);
 
-  const handleTrackDrop = (event: DragEvent<HTMLDivElement>, trackId: string) => {
+  const handleTrackDrop = async (event: DragEvent<HTMLDivElement>, trackId: string) => {
     event.preventDefault();
     const bounds = event.currentTarget.getBoundingClientRect();
     const start = (event.clientX - bounds.left) / zoom;
@@ -477,7 +689,7 @@ export default function StudioWorkspace() {
     }
     const assetId = event.dataTransfer.getData("application/x-studio-asset");
     const asset = allAssets.find((item) => item.id === assetId);
-    if (asset) addAssetToTimeline(asset, start, trackId);
+    if (asset) addAssetToTimeline(await hydrateGalleryAsset(asset), start, trackId);
   };
 
   const handleImport = async (event: ChangeEvent<HTMLInputElement>) => {
@@ -504,6 +716,7 @@ export default function StudioWorkspace() {
         height: metadata.height,
         source: "import",
         blobKey,
+        createdAt: new Date(file.lastModified || Date.now()).toISOString(),
       };
       commit((current) => ({ ...current, assets: [...current.assets, asset] }));
       setSelectedAssetId(asset.id);
@@ -720,11 +933,13 @@ export default function StudioWorkspace() {
       const filename = getResultPlaybackFilename(result);
       const masterFilename = getResultFilename(result);
       if (!filename || !masterFilename) throw new Error("Generation completed without an output filename.");
-      const assetId = `generation-${jobId}`;
+      const galleryId = numeric(result?.image?.id);
+      const assetId = galleryId != null ? `gallery-${galleryId}` : `generation-${jobId}`;
       const baseName = filename.replace(/\.[^/.]+$/, "");
       const duration = numeric(result?.image?.duration) ?? form.numFrames / form.frameRate;
       const asset: StudioAsset = {
         id: assetId,
+        galleryId,
         name: filename,
         kind: "video",
         url: `/outputs/${filename}`,
@@ -735,6 +950,12 @@ export default function StudioWorkspace() {
         height: form.height,
         source: "generation",
         prompt: form.prompt,
+        negativePrompt: supportsNegativePrompt ? form.negativePrompt : "",
+        createdAt: result?.image?.created_at || new Date().toISOString(),
+        generationType: result?.image?.generation_type || (mode === "t2v" ? "txt2vid" : "img2vid"),
+        modelName: resolvedModelName,
+        seed: numeric(result?.image?.seed) ?? form.seed,
+        parameters: recipe,
       };
       const targetStart = range?.start ?? playhead;
       const targetDuration = range ? Math.max(0.1, range.end - range.start) : duration;
@@ -913,21 +1134,39 @@ export default function StudioWorkspace() {
       <div className={styles.workbench}>
         <aside className={styles.mediaPane} aria-label="Media library">
           <div className={styles.mediaHeader}>
-            <div>
-              <span className={styles.eyebrow}>PROJECT MEDIA</span>
-              <strong>{allAssets.length} assets</strong>
+           <div>
+              <span className={styles.eyebrow}>ASSETS</span>
+              <strong>{filteredAssets.length} shown</strong>
             </div>
+            <button onClick={refreshLibrary} aria-label="Refresh Gallery assets" title="Refresh Gallery"><RotateCcw size={15} /></button>
             <button onClick={() => fileInputRef.current?.click()} aria-label="Import media"><Plus size={17} /></button>
             <input ref={fileInputRef} type="file" accept="image/*,video/*,audio/*" multiple hidden onChange={handleImport} />
           </div>
-          <div className={styles.searchBox}><Search size={14} /><input value={mediaQuery} onChange={(event) => setMediaQuery(event.target.value)} placeholder="Search media" /></div>
+          <div className={styles.searchRow}>
+            <div className={styles.searchBox}><Search size={14} /><input value={mediaQuery} onChange={(event) => setMediaQuery(event.target.value)} placeholder="Search prompt or name" /></div>
+            <button className={`${styles.filterButton} ${filtersOpen || activeFilterCount ? styles.activeFilterButton : ""}`} onClick={() => setFiltersOpen((open) => !open)} aria-expanded={filtersOpen}>
+              <SlidersHorizontal size={14} />{activeFilterCount > 0 && <span>{activeFilterCount}</span>}
+            </button>
+          </div>
           <div className={styles.mediaFilters}>
-            {(["all", "video", "image", "audio", "generation"] as MediaFilter[]).map((filter) => (
+            {(["all", "video", "image", "audio"] as MediaFilter[]).map((filter) => (
               <button key={filter} className={mediaFilter === filter ? styles.activeFilter : ""} onClick={() => setMediaFilter(filter)}>
-                {filter === "all" ? "All" : filter === "generation" ? "AI" : filter[0].toUpperCase() + filter.slice(1)}
+                {filter === "all" ? "All" : filter[0].toUpperCase() + filter.slice(1)}
               </button>
             ))}
           </div>
+          {filtersOpen && (
+            <div className={styles.assetFilterPanel}>
+              <label className={styles.mobileAssetSearch}>Search<input type="search" value={mediaQuery} onChange={(event) => setMediaQuery(event.target.value)} placeholder="Prompt or filename" /></label>
+              <label>Media<select value={mediaFilter} onChange={(event) => setMediaFilter(event.target.value as MediaFilter)}><option value="all">All media</option><option value="image">Images</option><option value="video">Video</option><option value="audio">Audio</option></select></label>
+              <label>Source<select value={assetFilters.scope} onChange={(event) => setAssetFilters((current) => ({ ...current, scope: event.target.value as AssetScope }))}><option value="all">All sources</option><option value="gallery">Gallery</option><option value="import">Imported</option><option value="generation">Studio takes</option></select></label>
+              <div className={styles.filterPair}><label>From<input type="date" value={assetFilters.dateFrom} onChange={(event) => setAssetFilters((current) => ({ ...current, dateFrom: event.target.value }))} /></label><label>To<input type="date" value={assetFilters.dateTo} onChange={(event) => setAssetFilters((current) => ({ ...current, dateTo: event.target.value }))} /></label></div>
+              <span className={styles.filterGroupLabel}>Resolution</span>
+              <div className={styles.filterPair}><label>Min W<input type="number" min="0" value={assetFilters.widthMin} onChange={(event) => setAssetFilters((current) => ({ ...current, widthMin: event.target.value }))} /></label><label>Max W<input type="number" min="0" value={assetFilters.widthMax} onChange={(event) => setAssetFilters((current) => ({ ...current, widthMax: event.target.value }))} /></label></div>
+              <div className={styles.filterPair}><label>Min H<input type="number" min="0" value={assetFilters.heightMin} onChange={(event) => setAssetFilters((current) => ({ ...current, heightMin: event.target.value }))} /></label><label>Max H<input type="number" min="0" value={assetFilters.heightMax} onChange={(event) => setAssetFilters((current) => ({ ...current, heightMax: event.target.value }))} /></label></div>
+              <button className={styles.resetFilters} onClick={() => setAssetFilters(EMPTY_ASSET_FILTERS)} disabled={!activeFilterCount}><RotateCcw size={13} /> Reset filters</button>
+            </div>
+          )}
           <div className={styles.assetGrid}>
             {libraryLoading && !filteredAssets.length && <div className={styles.emptyLibrary}>Loading library…</div>}
             {!libraryLoading && !filteredAssets.length && (
@@ -954,6 +1193,9 @@ export default function StudioWorkspace() {
               </button>
             ))}
           </div>
+          {(assetFilters.scope === "all" || assetFilters.scope === "gallery") && galleryAssets.length < galleryTotal && (
+            <button className={styles.loadMoreButton} onClick={() => void loadGalleryPage(galleryAssets.length)} disabled={loadingMore}>{loadingMore ? "Loading…" : `Load more · ${galleryAssets.length} of ${galleryTotal}`}</button>
+          )}
           <button className={styles.importButton} onClick={() => fileInputRef.current?.click()}><Download size={15} /> Import media</button>
         </aside>
 
@@ -1165,7 +1407,7 @@ export default function StudioWorkspace() {
                   {resultAssetIds.map((assetId) => {
                     const asset = project.assets.find((item) => item.id === assetId);
                     if (!asset) return null;
-                    return <button key={asset.id} onClick={() => selectAsset(asset)} onDoubleClick={() => addAssetToTimeline(asset)}><NextImage src={asset.thumbnailUrl || asset.url} alt="" fill sizes="105px" unoptimized /><span>{asset.duration.toFixed(1)}s</span></button>;
+                    return <button key={asset.id} onClick={() => selectAsset(asset)} onDoubleClick={() => void hydrateGalleryAsset(asset).then((hydrated) => addAssetToTimeline(hydrated))}><NextImage src={asset.thumbnailUrl || asset.url} alt="" fill sizes="105px" unoptimized /><span>{asset.duration.toFixed(1)}s</span></button>;
                   })}
                 </div>
               </section>

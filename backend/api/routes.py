@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Form, R
 from fastapi.responses import Response, StreamingResponse, FileResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import func, or_
-from typing import List, Optional, Dict, Any, Callable, Tuple
+from typing import List, Optional, Dict, Any, Callable, Tuple, Literal
 from pydantic import BaseModel, Field
 from datetime import datetime
 from pathlib import Path
@@ -53,6 +53,7 @@ from api.param_defaults import (
     VIDEO_GEN_ARCH_OVERLAYS,
     OUTPAINT_VIDEO_ARCH_OVERLAYS,
     INPAINT_VIDEO_ARCH_OVERLAYS,
+    PROMPT_ASSIST_DEFAULTS,
     video_defaults_for_arch,
 )
 from api.generation_utils import (
@@ -85,8 +86,19 @@ from api.error_handlers import (
     ValidationError as CustomValidationError
 )
 from api.media_utils import get_or_create_preview, range_file_response, PREVIEW_DEFAULT_WIDTH
+from core.extensions.minimax_h3_prompt_assistant import (
+    PromptAssistError,
+    PromptAssistOptions,
+    build_template as build_h3_prompt_template,
+    MiniMaxH3PromptAssistant,
+    validate_prompt as validate_h3_prompt,
+)
 
 router = APIRouter()
+
+minimax_h3_prompt_assistant = MiniMaxH3PromptAssistant(
+    PROMPT_ASSIST_DEFAULTS["cache_max_entries"]
+)
 
 # Single source of truth for the API version, also used by main.py when
 # constructing the FastAPI() app instance.
@@ -522,6 +534,11 @@ async def get_generation_defaults():
         "aud2aud": AUD2AUD_DEFAULTS,
         "outpaint_aud": OUTPAINT_AUDIO_DEFAULTS,
     }
+
+@router.get("/schema/prompt-assist-defaults")
+async def get_prompt_assist_defaults():
+    """Return MiniMax-H3 prompt-assistant defaults."""
+    return PROMPT_ASSIST_DEFAULTS
 
 @router.get("/schema/training-defaults")
 async def get_training_defaults():
@@ -8497,6 +8514,115 @@ async def get_available_preprocessors():
         ]
     }
 
+
+
+# ============================================================================
+# MiniMax-H3 Prompt Assist
+# ============================================================================
+
+class PromptAssistReference(BaseModel):
+    token: str
+    kind: Literal["picture", "video", "audio", "subject"]
+    role: str
+    description: str = PROMPT_ASSIST_DEFAULTS["reference_description"]
+
+
+class PromptAssistModelRequest(BaseModel):
+    provider: Literal["lm_studio", "ollama"] = PROMPT_ASSIST_DEFAULTS["provider"]
+    base_url: str = PROMPT_ASSIST_DEFAULTS["base_url"]
+    api_key: str = Field(
+        PROMPT_ASSIST_DEFAULTS["api_key"], json_schema_extra={"writeOnly": True}
+    )
+
+
+class PromptAssistTemplateRequest(BaseModel):
+    prompt: str
+    mode: Literal["t2va", "i2va", "fl2va", "l2va", "ref2va"]
+    duration_seconds: float = Field(ge=0.001, le=600)
+
+
+class PromptAssistTransformRequest(PromptAssistTemplateRequest):
+    provider: Literal["lm_studio", "ollama"] = PROMPT_ASSIST_DEFAULTS["provider"]
+    base_url: str = PROMPT_ASSIST_DEFAULTS["base_url"]
+    model: str = PROMPT_ASSIST_DEFAULTS["model"]
+    api_key: str = Field(
+        PROMPT_ASSIST_DEFAULTS["api_key"], json_schema_extra={"writeOnly": True}
+    )
+    references: List[PromptAssistReference] = Field(
+        default_factory=lambda: list(PROMPT_ASSIST_DEFAULTS["references"])
+    )
+    temperature: float = Field(PROMPT_ASSIST_DEFAULTS["temperature"], ge=0, le=1)
+    top_p: float = Field(PROMPT_ASSIST_DEFAULTS["top_p"], gt=0, le=1)
+    max_output_tokens: int = Field(PROMPT_ASSIST_DEFAULTS["max_output_tokens"], ge=128, le=8192)
+    context_length: int = Field(PROMPT_ASSIST_DEFAULTS["context_length"], ge=1024, le=262144)
+    timeout_seconds: int = Field(PROMPT_ASSIST_DEFAULTS["timeout_seconds"], ge=10, le=1800)
+    force_refresh: bool = PROMPT_ASSIST_DEFAULTS["force_refresh"]
+
+
+def _prompt_assist_base_url(provider: str, requested: str) -> str:
+    if requested.strip():
+        return requested
+    key = "lm_studio_base_url" if provider == "lm_studio" else "ollama_base_url"
+    return str(PROMPT_ASSIST_DEFAULTS[key])
+
+
+@router.post("/prompt-assist/models", tags=["prompt-assist"])
+async def list_prompt_assist_models(request: PromptAssistModelRequest):
+    try:
+        return {
+            "provider": request.provider,
+            "models": await asyncio.to_thread(
+                minimax_h3_prompt_assistant.list_models,
+                request.provider,
+                _prompt_assist_base_url(request.provider, request.base_url),
+                request.api_key,
+            ),
+        }
+    except PromptAssistError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/prompt-assist/template", tags=["prompt-assist"])
+async def create_prompt_assist_template(request: PromptAssistTemplateRequest):
+    try:
+        prompt = build_h3_prompt_template(
+            request.prompt, request.mode, request.duration_seconds
+        )
+        warnings = validate_h3_prompt(prompt, request.mode, request.duration_seconds)
+        return {"prompt": prompt, "warnings": warnings, "valid": not warnings}
+    except PromptAssistError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/prompt-assist/transform", tags=["prompt-assist"])
+async def transform_h3_prompt(request: PromptAssistTransformRequest):
+    options = PromptAssistOptions(
+        prompt=request.prompt,
+        mode=request.mode.lower(),
+        duration_seconds=request.duration_seconds,
+        references=[item.model_dump() for item in request.references],
+        provider=request.provider,
+        base_url=_prompt_assist_base_url(request.provider, request.base_url),
+        model=request.model,
+        temperature=request.temperature,
+        top_p=request.top_p,
+        max_output_tokens=request.max_output_tokens,
+        context_length=request.context_length,
+        timeout_seconds=request.timeout_seconds,
+        force_refresh=request.force_refresh,
+    )
+    try:
+        return await asyncio.to_thread(
+            minimax_h3_prompt_assistant.transform, options, request.api_key
+        )
+    except PromptAssistError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/prompt-assist/cache/clear", tags=["prompt-assist"])
+async def clear_prompt_assist_cache():
+    deleted = await asyncio.to_thread(minimax_h3_prompt_assistant.cache.clear)
+    return {"status": "success", "deleted": deleted}
 
 
 # ============================================================================

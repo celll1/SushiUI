@@ -34,7 +34,7 @@ import ResizableColumns, {
   GENERATION_PREVIEW_QUEUE_SPLIT_KEY,
   GENERATION_WORKSPACE_SPLIT_KEY,
 } from "../common/ResizableColumns";
-import PromptEditor from "../common/PromptEditor";
+import H3PromptAssist from "../common/H3PromptAssist";
 import LoopGenerationPanel, { LoopGenerationConfig } from "./LoopGenerationPanel";
 import QuantizedGemmSelect from "./QuantizedGemmSelect";
 import MiniMaxH3KeyframeTimeline from "../common/MiniMaxH3KeyframeTimeline";
@@ -49,6 +49,7 @@ import { previewStorageKeys, loadVideoPreview, saveVideoPreview, loadAudioPrevie
 import { sendToPanel, sendImageToImg2Img, sendImageToInpaint, sendImageToUpscale, sendImageToOutpaint, fetchUrlToFile, sendVideoToOutpaint, sendVideoToInpaint, sendVideoToReference, sendAudioToOutpaint, sendAudioToImg2Img } from "@/utils/sendHelpers";
 import { useStartup } from "@/contexts/StartupContext";
 import { useGenerationQueue } from "@/contexts/GenerationQueueContext";
+import { createH3ReferenceInventory, maybeTransformH3PromptForGeneration } from "@/utils/h3PromptAssist";
 
 interface Img2ImgParams {
   prompt: string;
@@ -2099,7 +2100,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
       : "";
 
     // Feeling Lucky mode: Generate prompt with TIPO before queueing
-    if (params.feeling_lucky) {
+    if (params.feeling_lucky && !videoMode) {
       try {
         // Use panel's TIPO settings (not localStorage)
         // Build category order and enabled map from settings
@@ -2129,6 +2130,27 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
       } catch (error) {
         console.error("TIPO generation failed in Feeling Lucky mode:", error);
         alert("Failed to generate prompt with TIPO. Using original prompt.");
+      }
+    }
+
+    if (videoMode && modality.modelInfo?.type === "minimax_h3") {
+      const refMode = modality.modelInfo?.variant === "ref2va" && countMiniMaxH3References(h3References) > 0;
+      const promptMode = refMode ? "ref2va" : params.last_frame_image ? "fl2va" : "i2va";
+      try {
+        const assisted = await maybeTransformH3PromptForGeneration({
+          prompt: processedPrompt,
+          mode: promptMode,
+          durationSeconds: (params.num_frames ?? 121) / (params.frame_rate ?? 24),
+          references: createH3ReferenceInventory({
+            pictures: 1 + (params.last_frame_image ? 1 : 0) + (params.keyframes?.length ?? 0) + h3References.images.length,
+            videos: h3References.videos.length,
+            audios: h3References.audios.length + h3References.videoAudios.filter(Boolean).length + (inputAudioTrack ? 1 : 0),
+          }),
+        });
+        processedPrompt = assisted.prompt;
+      } catch (error: any) {
+        alert(error?.message || "MiniMax H3 Prompt Assist failed");
+        return;
       }
     }
 
@@ -3136,7 +3158,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       // Don't handle if Image Editor is open (global check for all Image Editors)
-      if (document.body.dataset.imageEditorOpen) return;
+      if (document.body.dataset.imageEditorOpen || document.querySelector('[data-prompt-assist-open="true"]')) return;
 
       if (e.ctrlKey && e.key === 'Enter') {
         e.preventDefault();
@@ -4093,10 +4115,26 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
             setParams({ ...params, prompt: e.target.value });
             if (e.target) promptTextareaRef.current = e.target as HTMLTextAreaElement;
           }}
+          suggestionMode={loadedArch === "minimax_h3" ? "h3" : "tags"}
           enableWeightControl
         />
       </div>
-      <div className="flex flex-wrap items-center gap-1.5 rounded bg-gray-800 px-2 py-1.5">
+      {loadedArch === "minimax_h3" && (
+        <H3PromptAssist
+          prompt={params.prompt}
+          onApply={(prompt) => setParams((previous) => ({ ...previous, prompt }))}
+          suggestedMode={isRef2Va && countMiniMaxH3References(h3References) > 0
+            ? "ref2va"
+            : params.last_frame_image ? "fl2va" : "i2va"}
+          durationSeconds={(params.num_frames ?? 121) / (params.frame_rate ?? 24)}
+          references={createH3ReferenceInventory({
+            pictures: 1 + (params.last_frame_image ? 1 : 0) + (params.keyframes?.length ?? 0) + h3References.images.length,
+            videos: h3References.videos.length,
+            audios: h3References.audios.length + h3References.videoAudios.filter(Boolean).length + (inputAudioTrack ? 1 : 0),
+          })}
+        />
+      )}
+      {!isVideo && <div className="flex flex-wrap items-center gap-1.5 rounded bg-gray-800 px-2 py-1.5">
         <label className="flex cursor-pointer items-center gap-2">
           <input
             type="checkbox"
@@ -4123,7 +4161,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         >
           ⚙️ Settings
         </button>
-      </div>
+      </div>}
       <TextareaWithTagSuggestions
         label="Negative Prompt"
         placeholder={supportsNegativePrompt ? "Enter negative prompt..." : "Negative prompting is unavailable for this model"}
@@ -4131,6 +4169,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         resizeStorageKey={GENERATION_NEGATIVE_PROMPT_HEIGHT_KEY}
         value={params.negative_prompt}
         onChange={(e) => setParams({ ...params, negative_prompt: e.target.value })}
+        suggestionMode={loadedArch === "minimax_h3" ? "h3" : "tags"}
         enableWeightControl
         disabled={!supportsNegativePrompt}
         title={!supportsNegativePrompt ? "The loaded model does not accept negative-prompt conditioning." : undefined}

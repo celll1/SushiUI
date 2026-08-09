@@ -30,12 +30,12 @@ import { usePostEditPreview } from "@/hooks/usePostEditPreview";
 import GenerationQueue from "../common/GenerationQueue";
 import GenerationLeadGrid from "../common/GenerationLeadGrid";
 import InlineHelp from "../common/InlineHelp";
+import H3PromptAssist from "../common/H3PromptAssist";
 import SendToStudioButton from "../studio/SendToStudioButton";
 import ResizableColumns, {
   GENERATION_PREVIEW_QUEUE_SPLIT_KEY,
   GENERATION_WORKSPACE_SPLIT_KEY,
 } from "../common/ResizableColumns";
-import PromptEditor from "../common/PromptEditor";
 import LoopGenerationPanel, { LoopGenerationConfig } from "./LoopGenerationPanel";
 import QuantizedGemmSelect from "./QuantizedGemmSelect";
 import { migrateLoopGenerationConfig, computeLoopDecodeDirective } from "@/utils/loopGenerationInheritance";
@@ -49,6 +49,7 @@ import { previewStorageKeys, loadVideoPreview, saveVideoPreview, loadAudioPrevie
 import { sendToPanel, sendImageToImg2Img, sendBase64ImageToInpaint, sendBase64ImageToUpscale, sendBase64ImageToOutpaint, sendVideoToOutpaint, sendVideoToInpaint, sendVideoToReference, sendAudioToOutpaint, sendAudioToImg2Img, fetchUrlToFile } from "@/utils/sendHelpers";
 import { useStartup } from "@/contexts/StartupContext";
 import { useGenerationQueue } from "@/contexts/GenerationQueueContext";
+import { createH3ReferenceInventory, maybeTransformH3PromptForGeneration } from "@/utils/h3PromptAssist";
 
 const DEFAULT_PARAMS: GenerationParams = {
   prompt: "",
@@ -464,7 +465,6 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
   const [isGeneratingTIPO, setIsGeneratingTIPO] = useState(false);
   const [previewViewerOpen, setPreviewViewerOpen] = useState(false);
   const [showAdvancedCFG, setShowAdvancedCFG] = useState(false);
-  const [isPromptEditorOpen, setIsPromptEditorOpen] = useState(false);
 
   // FLUX.2 Image Edit: Reference images
   const [refImages, setRefImages] = useState<File[]>([]);
@@ -1489,11 +1489,6 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
     advancedSettings: true,
   });
 
-  // Open prompt editor
-  const handleOpenPromptEditor = () => {
-    setIsPromptEditorOpen(true);
-  };
-
   const clearLongPressTimer = () => {
     if (longPressTimerRef.current) {
       clearTimeout(longPressTimerRef.current);
@@ -1531,11 +1526,6 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
     clearLongPressTimer();
   };
 
-  // Save prompts from editor
-  const handleSavePrompts = (prompt: string, negativePrompt: string) => {
-    setParams({ ...params, prompt, negative_prompt: negativePrompt });
-  };
-
   // Add generation request to queue
   const handleAddToQueue = async () => {
     if (!params.prompt) {
@@ -1561,6 +1551,28 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
     const processedNegativePrompt = supportsNegativePrompt
       ? await replaceWildcardsInPrompt(params.negative_prompt)
       : "";
+
+    if (videoMode && modality.modelInfo?.type === "minimax_h3") {
+      const promptMode = modality.modelInfo?.variant === "ref2va" && countMiniMaxH3References(h3References) > 0
+        ? "ref2va"
+        : "t2va";
+      try {
+        const assisted = await maybeTransformH3PromptForGeneration({
+          prompt: processedPrompt,
+          mode: promptMode,
+          durationSeconds: (params.num_frames ?? 121) / (params.frame_rate ?? 24),
+          references: createH3ReferenceInventory({
+            pictures: h3References.images.length + h3Keyframes.length,
+            videos: h3References.videos.length,
+            audios: h3References.audios.length + h3References.videoAudios.filter(Boolean).length,
+          }),
+        });
+        processedPrompt = assisted.prompt;
+      } catch (error: any) {
+        alert(error?.message || "MiniMax H3 Prompt Assist failed");
+        return;
+      }
+    }
 
     // Prepare TIPO config if use_tipo is enabled
     let tipo_config = undefined;
@@ -2587,7 +2599,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       // Don't handle if Prompt Editor or Image Editor is open
-      if (isPromptEditorOpen || document.body.dataset.imageEditorOpen) return;
+      if (document.body.dataset.imageEditorOpen || document.querySelector('[data-prompt-assist-open="true"]')) return;
 
       if (e.ctrlKey && e.key === 'Enter') {
         e.preventDefault();
@@ -2597,7 +2609,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [params, isPromptEditorOpen]);
+  }, [params]);
 
   // Render functions for each Txt2Img Options tab (see TXT2IMG_OPTIONS_TABS /
   // TXT2IMG_OPTIONS_TAB_KEYS / isTxt2ImgOptionsTabActive above). Every control
@@ -3402,14 +3414,27 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
             setParams({ ...params, prompt: e.target.value });
             if (e.target) promptTextareaRef.current = e.target as HTMLTextAreaElement;
           }}
-          onDoubleClick={handleOpenPromptEditor}
+          suggestionMode={loadedArch === "minimax_h3" ? "h3" : "tags"}
           enableWeightControl
         />
         <div className="absolute -top-1 right-0 px-2 py-1 text-xs text-gray-400 pointer-events-none">
           {promptTokenCount} tokens
         </div>
       </div>
-      <div className="flex flex-wrap items-center gap-1.5 rounded bg-gray-800 px-2 py-1.5">
+      {loadedArch === "minimax_h3" && (
+        <H3PromptAssist
+          prompt={params.prompt}
+          onApply={(prompt) => setParams((previous) => ({ ...previous, prompt }))}
+          suggestedMode={isRef2Va && countMiniMaxH3References(h3References) > 0 ? "ref2va" : "t2va"}
+          durationSeconds={(params.num_frames ?? 121) / (params.frame_rate ?? 24)}
+          references={createH3ReferenceInventory({
+            pictures: h3References.images.length + h3Keyframes.length,
+            videos: h3References.videos.length,
+            audios: h3References.audios.length + h3References.videoAudios.filter(Boolean).length,
+          })}
+        />
+      )}
+      {!isVideo && <div className="flex flex-wrap items-center gap-1.5 rounded bg-gray-800 px-2 py-1.5">
         <label className="flex cursor-pointer items-center gap-2">
           <input
             type="checkbox"
@@ -3436,7 +3461,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         >
           ⚙️ Settings
         </button>
-      </div>
+      </div>}
       <div className="relative">
         <TextareaWithTagSuggestions
           label="Negative Prompt"
@@ -3445,7 +3470,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
           resizeStorageKey={GENERATION_NEGATIVE_PROMPT_HEIGHT_KEY}
           value={params.negative_prompt}
           onChange={(e) => setParams({ ...params, negative_prompt: e.target.value })}
-          onDoubleClick={handleOpenPromptEditor}
+          suggestionMode={loadedArch === "minimax_h3" ? "h3" : "tags"}
           enableWeightControl
           disabled={!supportsNegativePrompt}
           title={!supportsNegativePrompt ? "The loaded model does not accept negative-prompt conditioning." : undefined}
@@ -4763,17 +4788,6 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         onSettingsChange={setTipoSettings}
       />
 
-      {/* Prompt Editor */}
-      {isPromptEditorOpen && (
-        <PromptEditor
-          initialPrompt={params.prompt}
-          initialNegativePrompt={params.negative_prompt}
-          negativeDisabled={!supportsNegativePrompt}
-          negativeDisabledReason="The loaded model does not accept negative-prompt conditioning."
-          onSave={handleSavePrompts}
-          onClose={() => setIsPromptEditorOpen(false)}
-        />
-      )}
     </ResizableColumns>
   );
 }

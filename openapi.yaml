@@ -35,6 +35,8 @@ tags:
     description: Tag suggestions and autocomplete
   - name: tipo
     description: TIPO tag generation AI
+  - name: prompt-assist
+    description: MiniMax-H3 prompt templates and local-LLM rewriting
   - name: tagger
     description: Image tag prediction
   - name: settings
@@ -296,6 +298,19 @@ paths:
                     example:
                       minimax_h3:
                         inpaint_video_audio_mode: preserve_input
+  /schema/prompt-assist-defaults:
+    get:
+      tags: [Schema]
+      summary: Get MiniMax-H3 prompt-assistant defaults
+      operationId: getPromptAssistDefaults
+      responses:
+        '200':
+          description: Provider, inference, and cache defaults
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
   /schema/training-defaults:
     get:
       summary: Get default parameter values for LoRA / Full-FT training
@@ -2693,6 +2708,92 @@ paths:
                   meta: 1733270400000
                   model: 1733270400000
                   other_names: 1733270400000
+
+  /prompt-assist/models:
+    post:
+      tags: [prompt-assist]
+      summary: List local prompt-assistant models
+      operationId: listPromptAssistModels
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PromptAssistModelRequest'
+      responses:
+        '200':
+          description: Normalized local model list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PromptAssistModelList'
+        '400':
+          description: Provider unavailable or URL rejected
+
+  /prompt-assist/template:
+    post:
+      tags: [prompt-assist]
+      summary: Build an editable MiniMax-H3 prompt scaffold
+      operationId: createPromptAssistTemplate
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PromptAssistTemplateRequest'
+      responses:
+        '200':
+          description: Deterministic scaffold and validation warnings
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PromptAssistResponse'
+        '400':
+          description: Unsupported workflow or invalid duration
+
+  /prompt-assist/transform:
+    post:
+      tags: [prompt-assist]
+      summary: Rewrite a prompt for MiniMax-H3 with a local LLM
+      description: |
+        Checks the persistent cache before contacting the provider. Cache identity
+        excludes diffusion seed, resolution, sampler, steps, and CFG. A cache miss
+        loads the selected local model for this request and releases it in a finally
+        block. LM Studio unloads only the instance acquired by this request.
+      operationId: transformMiniMaxH3Prompt
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PromptAssistTransformRequest'
+      responses:
+        '200':
+          description: Rewritten prompt, validation warnings, and cache status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PromptAssistResponse'
+        '400':
+          description: Invalid request, provider failure, or invalid LLM response
+
+  /prompt-assist/cache/clear:
+    post:
+      tags: [prompt-assist]
+      summary: Clear the MiniMax-H3 prompt rewrite cache
+      operationId: clearPromptAssistCache
+      responses:
+        '200':
+          description: Cache cleared
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  deleted:
+                    type: integer
 
   /tipo/load-model:
     post:
@@ -6236,6 +6337,145 @@ components:
       bearerFormat: JWT
 
   schemas:
+    PromptAssistReference:
+      type: object
+      required: [token, kind, role]
+      properties:
+        token:
+          type: string
+          example: "<Picture 1>"
+        kind:
+          type: string
+          enum: [picture, video, audio, subject]
+        role:
+          type: string
+          example: first_frame
+        description:
+          type: string
+          default: ""
+    PromptAssistModelRequest:
+      type: object
+      properties:
+        provider:
+          type: string
+          enum: [lm_studio, ollama]
+          default: lm_studio
+        base_url:
+          type: string
+          default: ""
+          description: Empty selects the provider default; only loopback URLs are accepted.
+        api_key:
+          type: string
+          default: ""
+          writeOnly: true
+    PromptAssistModelList:
+      type: object
+      required: [provider, models]
+      properties:
+        provider:
+          type: string
+        models:
+          type: array
+          items:
+            type: object
+            required: [id, name, loaded]
+            properties:
+              id:
+                type: string
+              name:
+                type: string
+              loaded:
+                type: boolean
+              size_bytes:
+                type: integer
+                nullable: true
+    PromptAssistTemplateRequest:
+      type: object
+      required: [prompt, mode, duration_seconds]
+      properties:
+        prompt:
+          type: string
+        mode:
+          type: string
+          enum: [t2va, i2va, fl2va, l2va, ref2va]
+        duration_seconds:
+          type: number
+          minimum: 0.001
+          maximum: 600
+    PromptAssistTransformRequest:
+      allOf:
+        - $ref: '#/components/schemas/PromptAssistTemplateRequest'
+        - type: object
+          properties:
+            provider:
+              type: string
+              enum: [lm_studio, ollama]
+              default: lm_studio
+            base_url:
+              type: string
+              default: ""
+            model:
+              type: string
+              default: ""
+            api_key:
+              type: string
+              default: ""
+              writeOnly: true
+            references:
+              type: array
+              items:
+                $ref: '#/components/schemas/PromptAssistReference'
+              default: []
+            temperature:
+              type: number
+              minimum: 0
+              maximum: 1
+              default: 0.2
+            top_p:
+              type: number
+              exclusiveMinimum: 0
+              maximum: 1
+              default: 0.9
+            max_output_tokens:
+              type: integer
+              minimum: 128
+              maximum: 8192
+              default: 3072
+            context_length:
+              type: integer
+              minimum: 1024
+              maximum: 262144
+              default: 8192
+            timeout_seconds:
+              type: integer
+              minimum: 10
+              maximum: 1800
+              default: 300
+            force_refresh:
+              type: boolean
+              default: false
+    PromptAssistResponse:
+      type: object
+      required: [prompt, warnings, valid]
+      properties:
+        prompt:
+          type: string
+        warnings:
+          type: array
+          items:
+            type: string
+        valid:
+          type: boolean
+        cached:
+          type: boolean
+          default: false
+        cache_key:
+          type: string
+        provider:
+          type: string
+        model:
+          type: string
+
     QuantizedExportRequest:
       type: object
       required: [output_path]

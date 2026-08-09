@@ -29,6 +29,7 @@ import OutpaintPlacementCanvas, { OutpaintPlacementParams } from "./OutpaintPlac
 import OutpaintTimeline from "./OutpaintTimeline";
 import QuantizedGemmSelect from "./QuantizedGemmSelect";
 import MiniMaxH3ReferenceSelector from "../common/MiniMaxH3ReferenceSelector";
+import H3PromptAssist from "../common/H3PromptAssist";
 import ImageViewer from "../common/ImageViewer";
 import PostEditControls from "../common/PostEditControls";
 import { PostEditState, NEUTRAL_POST_EDIT, buildFilterString } from "@/utils/postEdit";
@@ -63,6 +64,7 @@ import {
   isGenerationStalledError,
   archSupportsFeature,
 } from "@/utils/api";
+import { createH3ReferenceInventory, maybeTransformH3PromptForGeneration } from "@/utils/h3PromptAssist";
 import { wsClient, CFGMetrics } from "@/utils/websocket";
 import { saveTempImage, loadTempImage, deleteTempImageRef } from "@/utils/tempImageStorage";
 import { previewStorageKeys, loadVideoPreview, saveVideoPreview, playbackUrlOf, loadAudioPreview, saveAudioPreview, saveImagePreview, clearVideoPreview, clearAudioPreview, clearImagePreview, outputExists, stripCacheBuster, withCacheBuster, imagePreviewGone } from "@/utils/previewStorage";
@@ -1649,10 +1651,28 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
     const audioMode = modality.isAudio;
 
     const { replaceWildcardsInPrompt } = await import("@/utils/wildcardStorage");
-    const processedPrompt = await replaceWildcardsInPrompt(params.prompt);
+    let processedPrompt = await replaceWildcardsInPrompt(params.prompt);
     const processedNegativePrompt = supportsNegativePrompt
       ? await replaceWildcardsInPrompt(params.negative_prompt || "")
       : "";
+
+    if (videoMode && modality.modelInfo?.type === "minimax_h3") {
+      try {
+        const assisted = await maybeTransformH3PromptForGeneration({
+          prompt: processedPrompt,
+          mode: modality.modelInfo?.variant === "ref2va" ? "ref2va" : "t2va",
+          durationSeconds: (params.total_frames ?? 121) / (params.frame_rate ?? 24),
+          references: createH3ReferenceInventory({
+            pictures: h3ReferenceImages.length,
+            videos: 1 + (bridgeVideoFile ? 1 : 0),
+          }),
+        });
+        processedPrompt = assisted.prompt;
+      } catch (error: any) {
+        alert(error?.message || "MiniMax H3 Prompt Assist failed");
+        return;
+      }
+    }
 
     // Video mode: a video model (LTX-2.3) is loaded -> enqueue an
     // outpaint_vid item using the uploaded clip. No loop-generation (matches
@@ -2884,8 +2904,21 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
           setParams({ ...params, prompt: e.target.value });
           if (e.target) promptTextareaRef.current = e.target as HTMLTextAreaElement;
         }}
+        suggestionMode={loadedArchType === "minimax_h3" ? "h3" : "tags"}
         enableWeightControl
       />
+      {loadedArchType === "minimax_h3" && (
+        <H3PromptAssist
+          prompt={params.prompt}
+          onApply={(prompt) => setParams((previous) => ({ ...previous, prompt }))}
+          suggestedMode={isRef2Va ? "ref2va" : "t2va"}
+          durationSeconds={(params.total_frames ?? 121) / (params.frame_rate ?? 24)}
+          references={createH3ReferenceInventory({
+            pictures: h3ReferenceImages.length,
+            videos: 1 + (bridgeVideoFile ? 1 : 0),
+          })}
+        />
+      )}
       <TextareaWithTagSuggestions
         label="Negative Prompt"
         placeholder={supportsNegativePrompt ? "Enter negative prompt..." : "Negative prompting is unavailable for this model"}
@@ -2893,6 +2926,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
         resizeStorageKey={GENERATION_NEGATIVE_PROMPT_HEIGHT_KEY}
         value={params.negative_prompt || ""}
         onChange={(e) => setParams({ ...params, negative_prompt: e.target.value })}
+        suggestionMode={loadedArchType === "minimax_h3" ? "h3" : "tags"}
         enableWeightControl
         disabled={!supportsNegativePrompt}
         title={!supportsNegativePrompt ? "The loaded model does not accept negative-prompt conditioning." : undefined}

@@ -8,6 +8,29 @@ Frontend fetches these via /schema/* endpoints, eliminating manual sync.
 from typing import Any, Dict, Optional
 
 # ---------------------------------------------------------------------------
+# MiniMax-H3 prompt assistant
+# ---------------------------------------------------------------------------
+
+PROMPT_ASSIST_DEFAULTS: Dict[str, Any] = {
+    "provider": "lm_studio",
+    "lm_studio_base_url": "http://127.0.0.1:1234",
+    "ollama_base_url": "http://127.0.0.1:11434",
+    "base_url": "",
+    "model": "",
+    "api_key": "",
+    "references": [],
+    "reference_description": "",
+    "temperature": 0.2,
+    "top_p": 0.9,
+    "max_output_tokens": 3072,
+    "context_length": 8192,
+    "timeout_seconds": 300,
+    "force_refresh": False,
+    "cache_max_entries": 256,
+    "auto_on_generate": False,
+}
+
+# ---------------------------------------------------------------------------
 # Generation (txt2img / img2img / inpaint)
 # ---------------------------------------------------------------------------
 # Authoritative source: Form() defaults in generate_* route handlers.

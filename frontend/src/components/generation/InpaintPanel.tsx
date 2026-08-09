@@ -27,6 +27,7 @@ import { PostEditState, NEUTRAL_POST_EDIT, buildFilterString } from "@/utils/pos
 import { usePostEditPreview } from "@/hooks/usePostEditPreview";
 import GenerationQueue from "../common/GenerationQueue";
 import GenerationLeadGrid from "../common/GenerationLeadGrid";
+import InlineHelp from "../common/InlineHelp";
 import ResizableColumns, {
   GENERATION_PREVIEW_QUEUE_SPLIT_KEY,
   GENERATION_WORKSPACE_SPLIT_KEY,
@@ -4371,13 +4372,13 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
                     />
                   </div>
                 </div>
-                <p className="text-xs text-gray-500">
-                  {videoDurationSec.toFixed(2)}s at {clipFrameRate} fps, so about {estimatedRawFrames} frames —
-                  the browser reports a duration, not a frame count, so correct &quot;Clip frames&quot; if the
-                  clip is not exactly that. Temporal inpaint samples the whole clip, so it is the TRIMMED
-                  length that has to be one this model can generate; it is never trimmed for you at
-                  generate time, because that would delete frames you asked to keep.
-                </p>
+                <div className="flex items-center gap-1 text-xs text-gray-500">
+                  <span>{videoDurationSec.toFixed(2)}s · about {estimatedRawFrames} frames at {clipFrameRate} fps</span>
+                  <InlineHelp label="Clip length and trim details">
+                    <p>The browser reports duration rather than an exact frame count. Correct Clip frames when needed.</p>
+                    <p>The trimmed length must match a length supported by the model. Generation never trims automatically because that would remove frames selected for preservation.</p>
+                  </InlineHelp>
+                </div>
                 {videoTrimmedLengthValid ? (
                   <p className="text-xs text-green-400">
                     Trimmed clip: {videoTrimmedFrames} frames — a length this model generates. The output
@@ -4433,11 +4434,14 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
             frameRate={clipFrameRate}
             disabled={!videoPreviewUrl}
           />
-          <p className="text-xs text-gray-500 mt-2">
-            MiniMax&apos;s model card documents first- and last-frame conditioning with up to two
-            images; regenerating an interior range pins frames at interior positions with the same
-            mechanism and is not covered by the card.
-          </p>
+          <div className="mt-2 flex items-center gap-1 text-xs text-gray-500">
+            <span>Interior range conditioning is experimental</span>
+            <InlineHelp label="Interior range support details">
+              <p>
+                MiniMax documents first- and last-frame conditioning with up to two images. Interior range anchors use the same mechanism but are not covered by its model card.
+              </p>
+            </InlineHelp>
+          </div>
         </Card>
         )}
 

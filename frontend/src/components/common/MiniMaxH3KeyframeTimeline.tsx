@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import Button from "./Button";
+import InlineHelp from "./InlineHelp";
 import { MiniMaxH3Keyframe, toBase64 } from "@/utils/api";
 
 /**
@@ -130,6 +131,7 @@ export default function MiniMaxH3KeyframeTimeline({
   const lastIndex = Math.max(0, numFrames - 1);
   const fps = frameRate > 0 ? frameRate : 24;
   const clipSeconds = numFrames / fps;
+  const audioTooShort = audioSeconds !== null && audioSeconds + 0.02 < clipSeconds;
 
   // Frame 0 and the last frame are drawn HALF A MARKER inside the track's box,
   // so an anchor at either end is fully visible instead of hanging outside the
@@ -293,7 +295,17 @@ export default function MiniMaxH3KeyframeTimeline({
   return (
     <div className="mt-3 space-y-2">
       <div className="flex items-center justify-between">
-        <label className="block text-sm font-medium text-gray-300">Keyframes</label>
+        <div className="flex items-center gap-1">
+          <label className="block text-sm font-medium text-gray-300">Keyframes</label>
+          <InlineHelp label="Keyframe placement details">
+            <p>
+              Anchors snap to exact frames ({fps} fps). Drag a marker, use its arrow keys, or enter a frame number. Pin to end follows the final snapped clip length.
+            </p>
+            <p>
+              MiniMax-H3 documents first/last-frame conditioning with up to two images. Intermediate anchors and audio conditioning use the same mechanism but are not covered by its model card.
+            </p>
+          </InlineHelp>
+        </div>
         <Button
           variant="secondary"
           size="sm"
@@ -476,9 +488,19 @@ export default function MiniMaxH3KeyframeTimeline({
       {onInputAudioChange && (
         <div className="mt-3 space-y-1 border-t border-gray-800 pt-2">
           <div className="flex items-center justify-between">
-            <label className="block text-sm font-medium text-gray-300">
-              Input audio (optional)
-            </label>
+            <div className="flex items-center gap-1">
+              <label className="block text-sm font-medium text-gray-300">
+                Input audio (optional)
+              </label>
+              <InlineHelp label="Input audio conditioning details">
+                <p>The track conditions the whole clip; partial placement is not supported.</p>
+                <p>A longer track is trimmed. A shorter track is refused rather than padded.</p>
+                <p>
+                  With audio output enabled, the file supplies the muxed soundtrack. With output disabled, it still conditions the video but is not muxed.
+                </p>
+                <p>Validation covered impulsive material; speech, pitch and timbre were not measured.</p>
+              </InlineHelp>
+            </div>
             <div className="flex items-center gap-2">
               <Button
                 variant="secondary"
@@ -532,25 +554,15 @@ export default function MiniMaxH3KeyframeTimeline({
             )}
           </div>
           {inputAudio && (
-            <p
-              className={`text-xs ${
-                audioSeconds !== null && audioSeconds + 0.02 < clipSeconds
-                  ? "text-amber-400"
-                  : "text-gray-400"
-              }`}
-            >
+            <p className={`text-xs ${audioTooShort ? "text-amber-400" : "text-gray-400"}`}>
               {audioSeconds !== null
-                ? `Track ${audioSeconds.toFixed(2)}s · clip ${clipSeconds.toFixed(2)}s.`
-                : `Clip ${clipSeconds.toFixed(2)}s.`}{" "}
-              The track conditions the entire clip; partial-timeline placement is
-              not supported. A longer track is trimmed to the clip, a shorter one
-              is refused.{" "}
-              {audioEnabled
-                ? "The video is muxed with the samples from this file rather than " +
-                  "with generated audio (the mp4's audio track is an AAC encode of " +
-                  "them, as it is for a generated soundtrack)."
-                : "Audio output is off, so nothing is muxed into the mp4 — the track " +
-                  "still conditions the video."}
+                ? `Track ${audioSeconds.toFixed(2)}s / clip ${clipSeconds.toFixed(2)}s. `
+                : `Clip ${clipSeconds.toFixed(2)}s. `}
+              {audioTooShort
+                ? "The track is too short; this request will be refused."
+                : audioEnabled
+                  ? "Whole-clip conditioning and soundtrack."
+                  : "Audio output is off; conditioning remains active."}
             </p>
           )}
         </div>
@@ -564,28 +576,6 @@ export default function MiniMaxH3KeyframeTimeline({
       )}
       {notice && <p className="text-xs text-amber-400">{notice}</p>}
 
-      <div className="text-xs text-gray-400 space-y-1">
-        <div>
-          Anchors are placed on exact frames ({fps} fps): drag a marker along
-          the track (or focus it and use the arrow keys) and it snaps to a whole
-          frame — there is no sub-frame placement — or type the frame directly
-          below. Clip length must be 17n+5 frames; the server snaps an invalid
-          length and warns, and &quot;pin to end&quot; follows whatever length
-          that produces.
-        </div>
-        <div>
-          The released MiniMax-H3 weights are documented for first- and
-          last-frame conditioning with up to two images. Intermediate placement,
-          additional anchors and audio conditioning use the same mechanism at
-          other positions; they are not covered by MiniMax&apos;s model card.
-        </div>
-        {onInputAudioChange && (
-          <div>
-            Audio conditioning was measured with impulsive material (sharp
-            transients). Speech, pitch and timbre were not measured.
-          </div>
-        )}
-      </div>
     </div>
   );
 }

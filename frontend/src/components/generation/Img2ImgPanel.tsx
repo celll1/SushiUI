@@ -28,6 +28,7 @@ import { PostEditState, NEUTRAL_POST_EDIT, buildFilterString } from "@/utils/pos
 import { usePostEditPreview } from "@/hooks/usePostEditPreview";
 import GenerationQueue from "../common/GenerationQueue";
 import GenerationLeadGrid from "../common/GenerationLeadGrid";
+import InlineHelp from "../common/InlineHelp";
 import ResizableColumns, {
   GENERATION_PREVIEW_QUEUE_SPLIT_KEY,
   GENERATION_WORKSPACE_SPLIT_KEY,
@@ -4184,7 +4185,6 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         />
 
         <GenerationLeadGrid
-          prompt={promptPanel}
           conditioning={(
             <>
         {!isAudio && (
@@ -4337,16 +4337,17 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
             (ref2va) can look like the same feature; they are not. */}
         {isVideo && isRef2Va && (
           <>
-            <p className="text-xs text-gray-500 -mb-1">
-              A video reference here (unlike the keyframe timeline above, which
-              is fl2va-only) conditions on a whole clip rather than one
-              boundary frame: the reference is laid out frame-contiguous with
-              the generated span, and the entire output is regenerated, not
-              preserved. MiniMax&apos;s documented task type is{" "}
-              <span className="text-gray-400">video continuation</span>,
-              composable with an image anchor as{" "}
-              <code>[video continuation + keyframe completion]</code>.
-            </p>
+            <div className="-mb-1 flex items-center gap-1 text-xs text-gray-500">
+              <span>Whole-clip reference; the output is regenerated</span>
+              <InlineHelp label="Video reference details">
+                <p>
+                  This reference conditions a whole clip rather than one boundary frame. It is laid out frame-contiguously with the generated span, so the full output is regenerated rather than preserved.
+                </p>
+                <p>
+                  MiniMax calls this video continuation. It can be combined with an image anchor as keyframe completion.
+                </p>
+              </InlineHelp>
+            </div>
             <MiniMaxH3ReferenceSelector
               value={h3References}
               onChange={setH3References}
@@ -4532,7 +4533,9 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         )}
             </>
           )}
-        />
+          prompt={promptPanel}
+          primaryDetails={(isVideo || isAudio) ? (
+            <>
 
         {isVideo && (
           <Card title={`Video${loadedArchName ? ` (${loadedArchName})` : ""}`}>
@@ -4744,24 +4747,15 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
                 quality claims: the prompt shape below is the output format of
                 MiniMax's H3-Context-IR stage, which is not open-sourced. */}
             {loadedArch === "minimax_h3" && (
-              <div className="mt-3 text-xs text-gray-400 space-y-1">
-                <div>
-                  Prompts for this model are written as a structured block:
-                  <code className="mx-1">integrated_multimodal_description:</code>
-                  (shot by shot, with timecodes), then
-                  <code className="mx-1">overall_soundscape:</code> and
-                  <code className="mx-1">non_diegetic_music:</code>.
-                </div>
-                <div>
-                  A keyframe is a conditioning anchor pinned at one exact frame
-                  of the clip: its rows are held at the model&apos;s keyframe
-                  noise level for every step and are never denoised.
-                </div>
-                <div>
-                  Steps count sigma schedule points, so N steps run N-1 model
-                  evaluations (minimum 2). MiniMax publishes no step count; 20
-                  is the community baseline.
-                </div>
+              <div className="mt-2 flex items-center gap-1 text-xs text-gray-500">
+                <span>Structured prompt recommended; steps are sigma points</span>
+                <InlineHelp label="MiniMax-H3 generation details">
+                  <p>
+                    Use a structured block with integrated multimodal description, overall soundscape, and non-diegetic music sections.
+                  </p>
+                  <p>A keyframe is an exact-frame conditioning anchor retained at keyframe noise level throughout generation.</p>
+                  <p>N steps run N-1 model evaluations (minimum 2). MiniMax does not publish a recommended step count.</p>
+                </InlineHelp>
               </div>
             )}
           </Card>
@@ -4898,6 +4892,9 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
             />
           </Card>
         )}
+            </>
+          ) : undefined}
+        />
 
         {isAudio && visibility.lora && (
           <LoRASelector

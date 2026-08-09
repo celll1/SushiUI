@@ -2,6 +2,7 @@
 
 import { useRef, useState } from "react";
 import NumberInput from "../common/NumberInput";
+import InlineHelp from "../common/InlineHelp";
 import { latentGroupSpans, snapRangeToLatentGroups } from "@/utils/api";
 
 // ---------------------------------------------------------------------------
@@ -242,15 +243,18 @@ export default function VideoInpaintRangeTimeline({
           Load a clip to choose a range.
         </p>
       )}
-      <p className="text-xs text-gray-500">
-        The video VAE stores frames in groups of up to 4 and a group is regenerated or preserved as a
-        whole, so both handles sit on group boundaries and the numbers above are the span the model
-        runs. Preserved frames are the input&apos;s own pixels, pasted back after decode; the model
-        conditions on their re-encoded latents while generating the selected range. There is a cut
-        between the pasted and the generated pixels at each edge of the range, and how visible it is
-        depends on the clip. The handles stop one group short of covering the whole clip: with
-        nothing preserved this is a plain text-to-video request instead.
-      </p>
+      <div className="flex items-center gap-1 text-xs text-gray-500">
+        <span>Handles snap to latent-group boundaries</span>
+        <InlineHelp label="Temporal inpaint range details">
+          <p>
+            The video VAE processes groups of up to four frames, so each group is regenerated or preserved as a unit.
+          </p>
+          <p>
+            Preserved pixels are pasted back after decode while their re-encoded latents condition the selected range. A boundary seam may remain visible depending on the clip.
+          </p>
+          <p>The control keeps at least one group preserved; replacing the full clip is a text-to-video request.</p>
+        </InlineHelp>
+      </div>
     </div>
   );
 }

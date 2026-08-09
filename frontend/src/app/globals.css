@@ -123,6 +123,25 @@ input[type="radio"] {
     padding: 0.375rem 0.625rem;
     font-size: 0.75rem;
   }
+
+  .generation-lead {
+    container-type: inline-size;
+  }
+}
+
+@container (min-width: 36.5rem) {
+  .generation-lead-has-conditioning {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .generation-lead-conditioning {
+    grid-column: 2;
+    grid-row: 1 / span 2;
+  }
+
+  .generation-lead-primary-details {
+    grid-column: 1;
+  }
 }
 
 /* Apply font size scaling on mobile devices */

@@ -6,7 +6,10 @@ import Button from "../common/Button";
 import Slider from "../common/Slider";
 import Select from "../common/Select";
 import NumberInput from "../common/NumberInput";
-import Textarea from "../common/Textarea";
+import Textarea, {
+  GENERATION_NEGATIVE_PROMPT_HEIGHT_KEY,
+  GENERATION_PROMPT_HEIGHT_KEY,
+} from "../common/Textarea";
 import Input from "../common/Input";
 import GenerationQueue from "../common/GenerationQueue";
 import GenerationLeadGrid from "../common/GenerationLeadGrid";
@@ -590,7 +593,7 @@ export default function UpscalePanel({ onTabChange, onImageGenerated }: UpscaleP
       >
         {inputImagePreview ? (
           <div className="space-y-2">
-            <img src={inputImagePreview} alt="Input" className="mx-auto max-h-64 rounded" />
+            <img src={inputImagePreview} alt="Input" className="mx-auto max-h-44 rounded object-contain" />
             {inputImageSize && (
               <div className="text-xs text-gray-400">
                 {inputImageSize.width} x {inputImageSize.height}
@@ -608,7 +611,7 @@ export default function UpscalePanel({ onTabChange, onImageGenerated }: UpscaleP
             </Button>
           </div>
         ) : (
-          <div className="py-8 text-gray-400">Drop image here or click to upload</div>
+          <div className="py-6 text-gray-400">Drop image here or click to upload</div>
         )}
         <input
           id="upscale-image-input"
@@ -627,7 +630,8 @@ export default function UpscalePanel({ onTabChange, onImageGenerated }: UpscaleP
         placeholder={diffusionPromptEnabled ? "Describe details to preserve or enhance..." : "Available with Diffusion Tile Upscale"}
         value={params.prompt || ""}
         onChange={(e) => setParams({ ...params, prompt: e.target.value })}
-        rows={4}
+        rows={3}
+        resizeStorageKey={GENERATION_PROMPT_HEIGHT_KEY}
         disabled={!diffusionPromptEnabled}
       />
       <Textarea
@@ -635,7 +639,8 @@ export default function UpscalePanel({ onTabChange, onImageGenerated }: UpscaleP
         placeholder={supportsNegativePrompt ? "Enter negative prompt..." : "Negative prompting is unavailable for this mode or model"}
         value={params.negative_prompt || ""}
         onChange={(e) => setParams({ ...params, negative_prompt: e.target.value })}
-        rows={3}
+        rows={2}
+        resizeStorageKey={GENERATION_NEGATIVE_PROMPT_HEIGHT_KEY}
         disabled={!supportsNegativePrompt}
       />
       {!diffusionPromptEnabled ? (
@@ -657,7 +662,7 @@ export default function UpscalePanel({ onTabChange, onImageGenerated }: UpscaleP
       minSecondaryPx={540}
     >
       {/* Parameters Panel */}
-      <div className="space-y-2.5">
+      <div className="generation-settings space-y-2">
         <GenerationLeadGrid prompt={promptPanel} conditioning={inputPanel} />
 
         <Card title="Upscaler">

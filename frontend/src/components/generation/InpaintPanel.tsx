@@ -7,7 +7,10 @@ import Card from "../common/Card";
 import TabbedOptions from "../common/TabbedOptions";
 import Input from "../common/Input";
 import NumberInput from "../common/NumberInput";
-import Textarea from "../common/Textarea";
+import Textarea, {
+  GENERATION_NEGATIVE_PROMPT_HEIGHT_KEY,
+  GENERATION_PROMPT_HEIGHT_KEY,
+} from "../common/Textarea";
 import TextareaWithTagSuggestions from "../common/TextareaWithTagSuggestions";
 import Button from "../common/Button";
 import Slider from "../common/Slider";
@@ -4149,7 +4152,8 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         <TextareaWithTagSuggestions
           label="Positive Prompt"
           placeholder="Enter your prompt here..."
-          rows={4}
+          rows={3}
+          resizeStorageKey={GENERATION_PROMPT_HEIGHT_KEY}
           value={params.prompt}
           onChange={(e) => {
             setParams({ ...params, prompt: e.target.value });
@@ -4159,7 +4163,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         />
       </div>
       {!isVideo && (
-        <div className="flex items-center gap-2 rounded bg-gray-800 px-2 py-2">
+        <div className="flex flex-wrap items-center gap-1.5 rounded bg-gray-800 px-2 py-1.5">
           <label className="flex cursor-pointer items-center gap-2">
             <input
               type="checkbox"
@@ -4169,7 +4173,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
             />
             <span className="text-sm text-gray-300">✨ Feeling Lucky (TIPO)</span>
           </label>
-          <label className="ml-4 flex cursor-pointer items-center gap-2">
+          <label className="flex cursor-pointer items-center gap-1.5">
             <input
               type="checkbox"
               checked={treatAsNL}
@@ -4191,7 +4195,8 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
       <TextareaWithTagSuggestions
         label="Negative Prompt"
         placeholder={supportsNegativePrompt ? "Enter negative prompt..." : "Negative prompting is unavailable for this model"}
-        rows={3}
+        rows={2}
+        resizeStorageKey={GENERATION_NEGATIVE_PROMPT_HEIGHT_KEY}
         value={params.negative_prompt}
         onChange={(e) => setParams({ ...params, negative_prompt: e.target.value })}
         enableWeightControl
@@ -4215,7 +4220,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
       minSecondaryPx={540}
     >
       {/* Parameters Panel */}
-      <div className="space-y-2.5">
+      <div className="generation-settings space-y-2">
         <ModelLoadSection
           onModelLoad={async () => {
             // Reload model info when model changes
@@ -4289,7 +4294,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
             )
           }
         >
-          <div className="space-y-4">
+          <div className="space-y-2">
             <div className="flex gap-2">
               <input
                 type="file"
@@ -4309,7 +4314,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
                 </Button>
               )}
             </div>
-            <div className="aspect-video bg-gray-800 rounded-lg overflow-hidden border-2 border-dashed border-gray-600">
+            <div className="h-[clamp(10rem,22vh,13rem)] bg-gray-800 rounded-lg overflow-hidden border-2 border-dashed border-gray-600">
               {videoPreviewUrl ? (
                 <video
                   src={videoPreviewUrl}
@@ -4440,8 +4445,8 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         <Card
           title="Input Image"
           collapsible={true}
-          defaultCollapsed={true}
-          storageKey="inpaint_input_collapsed"
+          defaultCollapsed={false}
+          storageKey="inpaint_input_collapsed_v2"
           collapsedPreview={
             inputImagePreview ? (
               <span className="flex items-center gap-2 text-sm">
@@ -4453,7 +4458,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
             )
           }
         >
-          <div className="space-y-4">
+          <div className="space-y-2">
             <div className="flex gap-2">
               <input
                 type="file"
@@ -4495,7 +4500,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
               onDragLeave={handleDragLeave}
               onDrop={handleDrop}
               onDoubleClick={handleInputImageDoubleClick}
-              className={`aspect-square bg-gray-800 rounded-lg overflow-hidden border-2 border-dashed transition-colors relative ${
+              className={`h-[clamp(11rem,24vh,15rem)] bg-gray-800 rounded-lg overflow-hidden border-2 border-dashed transition-colors relative ${
                 isDragging
                   ? 'border-blue-500 bg-gray-700'
                   : inputImagePreview

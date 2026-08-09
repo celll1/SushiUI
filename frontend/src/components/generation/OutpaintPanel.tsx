@@ -8,7 +8,11 @@ import TabbedOptions from "../common/TabbedOptions";
 import Input from "../common/Input";
 import NumberInput from "../common/NumberInput";
 import TextareaWithTagSuggestions from "../common/TextareaWithTagSuggestions";
-import Textarea from "../common/Textarea";
+import Textarea, {
+  GENERATION_LYRICS_HEIGHT_KEY,
+  GENERATION_NEGATIVE_PROMPT_HEIGHT_KEY,
+  GENERATION_PROMPT_HEIGHT_KEY,
+} from "../common/Textarea";
 import Button from "../common/Button";
 import Slider from "../common/Slider";
 import Select from "../common/Select";
@@ -2838,21 +2842,24 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
       <Textarea
         label="Caption"
         placeholder="Describe the music (genre, mood, instruments)..."
-        rows={4}
+        rows={3}
+        resizeStorageKey={GENERATION_PROMPT_HEIGHT_KEY}
         value={params.prompt}
         onChange={(e) => setParams({ ...params, prompt: e.target.value })}
       />
       <Textarea
         label="Lyrics"
         placeholder="Enter lyrics (optional)..."
-        rows={5}
+        rows={3}
+        resizeStorageKey={GENERATION_LYRICS_HEIGHT_KEY}
         value={params.lyrics ?? ""}
         onChange={(e) => setParams({ ...params, lyrics: e.target.value })}
       />
       <Textarea
         label="Negative Prompt"
         placeholder="Negative prompting is unavailable for this model"
-        rows={3}
+        rows={2}
+        resizeStorageKey={GENERATION_NEGATIVE_PROMPT_HEIGHT_KEY}
         value={params.negative_prompt || ""}
         onChange={(e) => setParams({ ...params, negative_prompt: e.target.value })}
         disabled
@@ -2865,7 +2872,8 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
       <TextareaWithTagSuggestions
         label="Positive Prompt"
         placeholder="Enter your prompt here..."
-        rows={4}
+        rows={3}
+        resizeStorageKey={GENERATION_PROMPT_HEIGHT_KEY}
         value={params.prompt}
         onChange={(e) => {
           setParams({ ...params, prompt: e.target.value });
@@ -2876,7 +2884,8 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
       <TextareaWithTagSuggestions
         label="Negative Prompt"
         placeholder={supportsNegativePrompt ? "Enter negative prompt..." : "Negative prompting is unavailable for this model"}
-        rows={3}
+        rows={2}
+        resizeStorageKey={GENERATION_NEGATIVE_PROMPT_HEIGHT_KEY}
         value={params.negative_prompt || ""}
         onChange={(e) => setParams({ ...params, negative_prompt: e.target.value })}
         enableWeightControl
@@ -2915,7 +2924,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
       minSecondaryPx={540}
     >
       {/* Parameters Panel */}
-      <div className="space-y-2.5">
+      <div className="generation-settings space-y-2">
         <ModelLoadSection
           onModelLoad={async () => {
             const modelInfo = await getCurrentModel();
@@ -2964,7 +2973,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
             )
           }
         >
-          <div className="space-y-4">
+          <div className="space-y-2">
             <div className="flex gap-2">
               <input
                 type="file"
@@ -2988,7 +2997,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
               onDragOver={handleDragOver}
               onDragLeave={handleDragLeave}
               onDrop={handleDrop}
-              className={`aspect-video bg-gray-800 rounded-lg overflow-hidden border-2 border-dashed transition-colors relative ${
+              className={`h-[clamp(10rem,22vh,13rem)] bg-gray-800 rounded-lg overflow-hidden border-2 border-dashed transition-colors relative ${
                 isDragging ? 'border-blue-500 bg-gray-700' : 'border-gray-600'
               }`}
             >
@@ -3020,7 +3029,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
             )
           }
         >
-          <div className="space-y-4">
+          <div className="space-y-2">
             <div className="flex gap-2">
               <input
                 type="file"
@@ -3040,7 +3049,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
                 </Button>
               )}
             </div>
-            <div className="aspect-video bg-gray-800 rounded-lg overflow-hidden border-2 border-dashed border-gray-600">
+            <div className="h-[clamp(10rem,22vh,13rem)] bg-gray-800 rounded-lg overflow-hidden border-2 border-dashed border-gray-600">
               {videoPreviewUrl ? (
                 <video
                   src={videoPreviewUrl}

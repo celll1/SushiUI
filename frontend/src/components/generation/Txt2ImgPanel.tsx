@@ -8,7 +8,11 @@ import TabbedOptions from "../common/TabbedOptions";
 import Input from "../common/Input";
 import NumberInput from "../common/NumberInput";
 import TextareaWithTagSuggestions from "../common/TextareaWithTagSuggestions";
-import Textarea from "../common/Textarea";
+import Textarea, {
+  GENERATION_LYRICS_HEIGHT_KEY,
+  GENERATION_NEGATIVE_PROMPT_HEIGHT_KEY,
+  GENERATION_PROMPT_HEIGHT_KEY,
+} from "../common/Textarea";
 import Button from "../common/Button";
 import Slider from "../common/Slider";
 import Select from "../common/Select";
@@ -3351,21 +3355,24 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
       <Textarea
         label="Caption"
         placeholder="Describe the music (genre, mood, instruments)..."
-        rows={4}
+        rows={3}
+        resizeStorageKey={GENERATION_PROMPT_HEIGHT_KEY}
         value={params.prompt}
         onChange={(e) => setParams({ ...params, prompt: e.target.value })}
       />
       <Textarea
         label="Lyrics"
         placeholder="Enter lyrics (optional)..."
-        rows={5}
+        rows={3}
+        resizeStorageKey={GENERATION_LYRICS_HEIGHT_KEY}
         value={params.lyrics ?? ""}
         onChange={(e) => setParams({ ...params, lyrics: e.target.value })}
       />
       <Textarea
         label="Negative Prompt"
         placeholder="Negative prompting is unavailable for this model"
-        rows={3}
+        rows={2}
+        resizeStorageKey={GENERATION_NEGATIVE_PROMPT_HEIGHT_KEY}
         value={params.negative_prompt}
         onChange={(e) => setParams({ ...params, negative_prompt: e.target.value })}
         disabled
@@ -3379,7 +3386,8 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         <TextareaWithTagSuggestions
           label="Positive Prompt"
           placeholder="Enter your prompt here..."
-          rows={4}
+          rows={3}
+          resizeStorageKey={GENERATION_PROMPT_HEIGHT_KEY}
           value={params.prompt}
           onChange={(e) => {
             setParams({ ...params, prompt: e.target.value });
@@ -3392,7 +3400,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
           {promptTokenCount} tokens
         </div>
       </div>
-      <div className="flex items-center gap-2 rounded bg-gray-800 px-2 py-2">
+      <div className="flex flex-wrap items-center gap-1.5 rounded bg-gray-800 px-2 py-1.5">
         <label className="flex cursor-pointer items-center gap-2">
           <input
             type="checkbox"
@@ -3402,7 +3410,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
           />
           <span className="text-sm text-gray-300">✨ Feeling Lucky (TIPO)</span>
         </label>
-        <label className="ml-4 flex cursor-pointer items-center gap-2">
+        <label className="flex cursor-pointer items-center gap-1.5">
           <input
             type="checkbox"
             checked={treatAsNL}
@@ -3424,7 +3432,8 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         <TextareaWithTagSuggestions
           label="Negative Prompt"
           placeholder={supportsNegativePrompt ? "Enter negative prompt..." : "Negative prompting is unavailable for this model"}
-          rows={3}
+          rows={2}
+          resizeStorageKey={GENERATION_NEGATIVE_PROMPT_HEIGHT_KEY}
           value={params.negative_prompt}
           onChange={(e) => setParams({ ...params, negative_prompt: e.target.value })}
           onDoubleClick={handleOpenPromptEditor}
@@ -3453,7 +3462,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
       minSecondaryPx={540}
     >
       {/* Parameters Panel */}
-      <div className="space-y-2.5">
+      <div className="generation-settings space-y-2">
         <ModelLoadSection
           onModelLoad={async () => {
             // Reload model info when model changes

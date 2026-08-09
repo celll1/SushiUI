@@ -28,6 +28,7 @@ import { usePostEditPreview } from "@/hooks/usePostEditPreview";
 import GenerationQueue from "../common/GenerationQueue";
 import GenerationLeadGrid from "../common/GenerationLeadGrid";
 import InlineHelp from "../common/InlineHelp";
+import H3PromptAssist from "../common/H3PromptAssist";
 import ResizableColumns, {
   GENERATION_PREVIEW_QUEUE_SPLIT_KEY,
   GENERATION_WORKSPACE_SPLIT_KEY,
@@ -47,6 +48,7 @@ import { fixFloatingPointParams } from "@/utils/numberUtils";
 import { useStartup } from "@/contexts/StartupContext";
 import { useGenerationQueue } from "@/contexts/GenerationQueueContext";
 import SendToStudioButton from "../studio/SendToStudioButton";
+import { createH3ReferenceInventory, maybeTransformH3PromptForGeneration } from "@/utils/h3PromptAssist";
 
 interface InpaintParams {
   prompt: string;
@@ -2185,8 +2187,25 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         return;
       }
       const { replaceWildcardsInPrompt } = await import("@/utils/wildcardStorage");
+      let videoPrompt = await replaceWildcardsInPrompt(params.prompt);
+      if (modality.modelInfo?.type === "minimax_h3") {
+        try {
+          const assisted = await maybeTransformH3PromptForGeneration({
+            prompt: videoPrompt,
+            mode: modality.modelInfo?.variant === "ref2va" ? "ref2va" : "t2va",
+            durationSeconds: videoDurationSec ?? Math.max(1, estimatedRawFrames) / clipFrameRate,
+            references: createH3ReferenceInventory({
+              videos: 1,
+            }),
+          });
+          videoPrompt = assisted.prompt;
+        } catch (error: any) {
+          alert(error?.message || "MiniMax H3 Prompt Assist failed");
+          return;
+        }
+      }
       const videoParams: InpaintVideoParams = {
-        prompt: await replaceWildcardsInPrompt(params.prompt),
+        prompt: videoPrompt,
         negative_prompt: await replaceWildcardsInPrompt(params.negative_prompt || ""),
         width: params.width,
         height: params.height,
@@ -3146,7 +3165,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       // Don't handle if Image Editor is open (global check for all Image Editors)
-      if (document.body.dataset.imageEditorOpen) return;
+      if (document.body.dataset.imageEditorOpen || document.querySelector('[data-prompt-assist-open="true"]')) return;
 
       if (e.ctrlKey && e.key === 'Enter') {
         e.preventDefault();
@@ -4163,9 +4182,19 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
             setParams({ ...params, prompt: e.target.value });
             if (e.target) promptTextareaRef.current = e.target as HTMLTextAreaElement;
           }}
+          suggestionMode={loadedArchType === "minimax_h3" ? "h3" : "tags"}
           enableWeightControl
         />
       </div>
+      {loadedArchType === "minimax_h3" && (
+        <H3PromptAssist
+          prompt={params.prompt}
+          onApply={(prompt) => setParams((previous) => ({ ...previous, prompt }))}
+          suggestedMode={currentModelInfo?.model_info?.variant === "ref2va" ? "ref2va" : "t2va"}
+          durationSeconds={videoDurationSec ?? Math.max(1, estimatedRawFrames) / clipFrameRate}
+          references={createH3ReferenceInventory({ videos: 1 })}
+        />
+      )}
       {!isVideo && (
         <div className="flex flex-wrap items-center gap-1.5 rounded bg-gray-800 px-2 py-1.5">
           <label className="flex cursor-pointer items-center gap-2">
@@ -4203,6 +4232,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         resizeStorageKey={GENERATION_NEGATIVE_PROMPT_HEIGHT_KEY}
         value={params.negative_prompt}
         onChange={(e) => setParams({ ...params, negative_prompt: e.target.value })}
+        suggestionMode={loadedArchType === "minimax_h3" ? "h3" : "tags"}
         enableWeightControl
         disabled={!supportsNegativePrompt}
         title={!supportsNegativePrompt ? "The loaded model does not accept negative-prompt conditioning." : undefined}

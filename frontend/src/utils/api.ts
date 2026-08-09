@@ -3669,6 +3669,104 @@ export const getAvailablePreprocessors = async (): Promise<{ preprocessors: Prep
   return response.data;
 };
 
+// MiniMax-H3 Prompt Assist API
+export type H3PromptMode = "t2va" | "i2va" | "fl2va" | "l2va" | "ref2va";
+export type PromptAssistProvider = "lm_studio" | "ollama";
+
+export interface PromptAssistDefaults {
+  provider: PromptAssistProvider;
+  lm_studio_base_url: string;
+  ollama_base_url: string;
+  temperature: number;
+  top_p: number;
+  max_output_tokens: number;
+  context_length: number;
+  timeout_seconds: number;
+  auto_on_generate: boolean;
+}
+
+export interface PromptAssistReference {
+  token: string;
+  kind: "picture" | "video" | "audio" | "subject";
+  role: string;
+  description?: string;
+}
+
+export interface PromptAssistSettings {
+  provider: PromptAssistProvider;
+  base_url: string;
+  model: string;
+  api_key?: string;
+  temperature: number;
+  top_p: number;
+  max_output_tokens: number;
+  context_length: number;
+  timeout_seconds: number;
+  auto_on_generate: boolean;
+}
+
+export interface PromptAssistTransformRequest extends Omit<PromptAssistSettings, "auto_on_generate"> {
+  prompt: string;
+  mode: H3PromptMode;
+  duration_seconds: number;
+  references: PromptAssistReference[];
+  force_refresh?: boolean;
+}
+
+export interface PromptAssistResponse {
+  prompt: string;
+  warnings: string[];
+  valid: boolean;
+  cached?: boolean;
+  cache_key?: string;
+  provider?: string;
+  model?: string;
+}
+
+export interface PromptAssistModel {
+  id: string;
+  name: string;
+  loaded: boolean;
+  size_bytes?: number | null;
+}
+
+export const getPromptAssistDefaults = async (): Promise<PromptAssistDefaults> => {
+  const response = await api.get("/schema/prompt-assist-defaults");
+  return response.data;
+};
+
+export const listPromptAssistModels = async (
+  provider: PromptAssistProvider,
+  base_url: string,
+  api_key = "",
+): Promise<PromptAssistModel[]> => {
+  const response = await api.post("/prompt-assist/models", { provider, base_url, api_key });
+  return response.data.models;
+};
+
+export const createH3PromptTemplate = async (
+  prompt: string,
+  mode: H3PromptMode,
+  duration_seconds: number,
+): Promise<PromptAssistResponse> => {
+  const response = await api.post("/prompt-assist/template", { prompt, mode, duration_seconds });
+  return response.data;
+};
+
+export const transformH3Prompt = async (
+  request: PromptAssistTransformRequest,
+): Promise<PromptAssistResponse> => {
+  const response = await api.post("/prompt-assist/transform", request, {
+    timeout: Math.max(1000, request.timeout_seconds * 1000 + 5000),
+  });
+  return response.data;
+};
+
+export const clearPromptAssistCache = async (): Promise<number> => {
+  const response = await api.post("/prompt-assist/cache/clear");
+  return response.data.deleted;
+};
+
 // TIPO API
 export interface TIPOGenerateRequest {
   input_prompt: string;

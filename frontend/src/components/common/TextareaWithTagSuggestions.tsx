@@ -17,6 +17,8 @@ import {
   getNextFilterMode,
   getPreviousFilterMode,
 } from "@/utils/tagSuggestions";
+import { readH3PromptEditingMode } from "@/utils/h3PromptAssist";
+import type { H3PromptEditingMode } from "@/utils/h3PromptAssist";
 
 interface TagSuggestion {
   tag: string;
@@ -32,6 +34,7 @@ interface TextareaWithTagSuggestionsProps extends Omit<TextareaHTMLAttributes<HT
   rows?: number;
   tagSeparator?: "comma" | "newline";  // Default: "comma"
   resizeStorageKey?: string;
+  suggestionMode?: "tags" | "natural-language" | "h3";
 }
 
 /**
@@ -49,6 +52,7 @@ const TextareaWithTagSuggestions = forwardRef<HTMLTextAreaElement, TextareaWithT
   enableWeightControl = false,
   rows = 4,
   tagSeparator = "comma",
+  suggestionMode = "tags",
   onKeyDown: externalOnKeyDown,
   ...props
 }, forwardedRef) => {
@@ -56,9 +60,30 @@ const TextareaWithTagSuggestions = forwardRef<HTMLTextAreaElement, TextareaWithT
   const [selectedIndex, setSelectedIndex] = useState(-1);
   const [suggestionsPosition, setSuggestionsPosition] = useState({ top: 0, left: 0 });
   const [filterMode, setFilterMode] = useState<TagFilterMode>('all');
+  const [h3EditingMode, setH3EditingMode] = useState<H3PromptEditingMode>("natural-language");
   const internalTextareaRef = useRef<HTMLTextAreaElement>(null);
   const searchTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const tagFeaturesEnabled = suggestionMode === "tags"
+    || (suggestionMode === "h3" && h3EditingMode === "tags");
+
+  useEffect(() => {
+    if (suggestionMode !== "h3") return;
+    setH3EditingMode(readH3PromptEditingMode());
+    const update = (event: Event) => {
+      setH3EditingMode((event as CustomEvent<H3PromptEditingMode>).detail);
+    };
+    window.addEventListener("h3-prompt-editing-mode", update);
+    return () => window.removeEventListener("h3-prompt-editing-mode", update);
+  }, [suggestionMode]);
+
+  useEffect(() => {
+    if (tagFeaturesEnabled) return;
+    setSuggestions([]);
+    setSelectedIndex(-1);
+    setFilterMode("all");
+    if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
+  }, [tagFeaturesEnabled]);
 
   // Undo/Redo history management (max 50 entries)
   const [history, setHistory] = useState<Array<{ text: string; cursorPos: number }>>([]);
@@ -334,6 +359,10 @@ const TextareaWithTagSuggestions = forwardRef<HTMLTextAreaElement, TextareaWithT
   // Handle text change
   const handleChange = (e: ChangeEvent<HTMLTextAreaElement>) => {
     onChange(e);
+    if (!tagFeaturesEnabled) {
+      setSuggestions([]);
+      return;
+    }
     const cursorPos = e.target.selectionStart;
 
     // Get current tag to check if it changed
@@ -412,6 +441,8 @@ const TextareaWithTagSuggestions = forwardRef<HTMLTextAreaElement, TextareaWithT
         return;
       }
     }
+
+    if (!tagFeaturesEnabled) return;
 
     // Alt+Right: Next filter (when suggestions are visible)
     if (e.altKey && e.key === "ArrowRight" && suggestions.length > 0) {
@@ -692,7 +723,7 @@ const TextareaWithTagSuggestions = forwardRef<HTMLTextAreaElement, TextareaWithT
         {...props}
       />
 
-      {suggestions.length > 0 && (
+      {tagFeaturesEnabled && suggestions.length > 0 && (
         <TagSuggestions
           suggestions={suggestions}
           selectedIndex={selectedIndex}

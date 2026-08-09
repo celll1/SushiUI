@@ -29,6 +29,7 @@ import { PostEditState, NEUTRAL_POST_EDIT, buildFilterString } from "@/utils/pos
 import { usePostEditPreview } from "@/hooks/usePostEditPreview";
 import GenerationQueue from "../common/GenerationQueue";
 import GenerationLeadGrid from "../common/GenerationLeadGrid";
+import InlineHelp from "../common/InlineHelp";
 import ResizableColumns, {
   GENERATION_PREVIEW_QUEUE_SPLIT_KEY,
   GENERATION_WORKSPACE_SPLIT_KEY,
@@ -3504,7 +3505,6 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         />
 
         <GenerationLeadGrid
-          prompt={promptPanel}
           conditioning={hasLeadConditioning ? (
             <>
         {/* Omni references are content conditioning. */}
@@ -3656,7 +3656,9 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         )}
             </>
           ) : undefined}
-        />
+          prompt={promptPanel}
+          primaryDetails={(isVideo || isAudio) ? (
+            <>
 
         {isAudio && (
           <Card title="Audio Settings">
@@ -3916,28 +3918,24 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                 quality claims: the prompt shape below is the output format of
                 MiniMax's H3-Context-IR stage, which is not open-sourced. */}
             {loadedArch === "minimax_h3" && (
-              <div className="mt-3 text-xs text-gray-400 space-y-1">
-                <div>
-                  Prompts for this model are written as a structured block:
-                  <code className="mx-1">integrated_multimodal_description:</code>
-                  (shot by shot, with timecodes), then
-                  <code className="mx-1">overall_soundscape:</code> and
-                  <code className="mx-1">non_diegetic_music:</code>.
-                </div>
-                <div>
-                  Video and audio are generated jointly in one sequence; turning
-                  Audio off skips the audio decode and the mux, and the audio
-                  still takes part in generation.
-                </div>
-                <div>
-                  Steps count sigma schedule points, so N steps run N-1 model
-                  evaluations (minimum 2). MiniMax publishes no step count; 20
-                  is the community baseline.
-                </div>
+              <div className="mt-2 flex items-center gap-1 text-xs text-gray-500">
+                <span>Structured prompt recommended; steps are sigma points</span>
+                <InlineHelp label="MiniMax-H3 generation details">
+                  <p>
+                    Use a structured block with integrated multimodal description, overall soundscape, and non-diegetic music sections.
+                  </p>
+                  <p>
+                    Video and audio are generated jointly. Turning Audio off skips decoding and muxing, while audio still participates in generation.
+                  </p>
+                  <p>N steps run N-1 model evaluations (minimum 2). MiniMax does not publish a recommended step count.</p>
+                </InlineHelp>
               </div>
             )}
           </Card>
         )}
+            </>
+          ) : undefined}
+        />
 
         {/* C5: keyframe anchors, a track separate from the references above --
             content conditioning (references) vs placement conditioning

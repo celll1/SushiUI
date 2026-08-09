@@ -465,7 +465,7 @@ interface OutpaintPanelProps {
 }
 
 export default function OutpaintPanel({ onTabChange, onImageGenerated }: OutpaintPanelProps = {}) {
-  const { isBackendReady, generationDefaults, isVideo, isAudio, archCapabilities, resolveModality, modelInfoVersion } = useStartup();
+  const { isBackendReady, modelLoaded, generationDefaults, isVideo, isAudio, archCapabilities, resolveModality, modelInfoVersion } = useStartup();
   const [params, setParams] = useState<OutpaintPanelParams>(DEFAULT_PARAMS);
   const [generatedImageParams, setGeneratedImageParams] = useState<OutpaintPanelParams | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
@@ -2017,10 +2017,15 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
   useEffect(() => {
     const hasPendingItems = queue.some(item => item.status === "pending" && (item.type === "outpaint" || item.type === "outpaint_vid" || item.type === "outpaint_aud"));
     const isCurrentItemNull = currentItem === null;
-    if (hasPendingItems && isCurrentItemNull && !isGenerating) {
+    // A queue survives a page reload and a backend restart, so on mount there
+    // can be pending items with no model loaded yet. Dispatching then earns an
+    // immediate 400 and the item is marked failed for a reason that has nothing
+    // to do with the item. Hold instead: `modelLoaded` is a dependency, so the
+    // queue starts by itself once a model is up.
+    if (hasPendingItems && isCurrentItemNull && !isGenerating && modelLoaded) {
       processQueue();
     }
-  }, [queue, currentItem, isGenerating, processQueue]);
+  }, [queue, currentItem, isGenerating, processQueue, modelLoaded]);
 
   const placementParams: OutpaintPlacementParams = {
     canvas_width: params.canvas_width ?? 1536,

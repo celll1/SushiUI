@@ -3179,11 +3179,21 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
       return;
     }
 
+    // A queue survives a page reload and a backend restart, so on mount there
+    // can be pending items with no model loaded yet. Dispatching then earns an
+    // immediate 400 and the item is marked failed for a reason that has nothing
+    // to do with the item. Hold instead: `modelLoaded` is a dependency, so the
+    // queue starts by itself once a model is up.
+    if (hasPendingItems && isCurrentItemNull && !isGenerating && !modelLoaded) {
+      console.log("[Inpaint] Queue held: no model loaded yet");
+      return;
+    }
+
     if (hasPendingItems && isCurrentItemNull && !isGenerating) {
       console.log("[Inpaint] Auto-starting queue processing");
       processQueue();
     }
-  }, [queue, currentItem, isGenerating, processQueue, generateForever, params, inputImagePreview, maskImage]);
+  }, [queue, currentItem, isGenerating, processQueue, generateForever, params, inputImagePreview, maskImage, modelLoaded]);
 
   // Handle Ctrl+Enter keyboard shortcut
   useEffect(() => {

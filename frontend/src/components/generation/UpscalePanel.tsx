@@ -9,6 +9,7 @@ import NumberInput from "../common/NumberInput";
 import Textarea from "../common/Textarea";
 import Input from "../common/Input";
 import GenerationQueue from "../common/GenerationQueue";
+import GenerationLeadGrid from "../common/GenerationLeadGrid";
 import ResizableColumns, {
   GENERATION_PREVIEW_QUEUE_SPLIT_KEY,
   GENERATION_WORKSPACE_SPLIT_KEY,
@@ -21,6 +22,7 @@ import {
   getScheduleTypes,
   UpscaleParams,
   UpscalerModelInfo,
+  archSupportsFeature,
   isGenerationStalledError,
 } from "@/utils/api";
 import { saveTempImage, loadTempImage, deleteTempImageRef } from "@/utils/tempImageStorage";
@@ -69,7 +71,7 @@ interface UpscalePanelProps {
 }
 
 export default function UpscalePanel({ onTabChange, onImageGenerated }: UpscalePanelProps = {}) {
-  const { isBackendReady, generationDefaults } = useStartup();
+  const { isBackendReady, generationDefaults, modelInfo, archCapabilities } = useStartup();
   const [params, setParams] = useState<UpscaleParams>(DEFAULT_PARAMS);
   const [isMounted, setIsMounted] = useState(false);
   const [isInitialLoad, setIsInitialLoad] = useState(true);
@@ -378,6 +380,9 @@ export default function UpscalePanel({ onTabChange, onImageGenerated }: UpscaleP
         height: Math.round(inputImageSize.height * params.scale_factor),
       }
     : null;
+  const diffusionPromptEnabled = params.upscaler_backend === "diffusion";
+  const supportsNegativePrompt = diffusionPromptEnabled
+    && archSupportsFeature(archCapabilities, modelInfo?.type, "negative_prompt");
 
   const { addToQueue, startNextInQueue, completeCurrentItem, failCurrentItem, currentItem, queue } = useGenerationQueue();
 
@@ -409,7 +414,10 @@ export default function UpscalePanel({ onTabChange, onImageGenerated }: UpscaleP
 
     addToQueue({
       type: "upscale",
-      params: { ...params },
+      params: {
+        ...params,
+        negative_prompt: supportsNegativePrompt ? params.negative_prompt : "",
+      },
       inputImage: imageBase64,
       prompt: "Upscale",
     });
@@ -569,6 +577,74 @@ export default function UpscalePanel({ onTabChange, onImageGenerated }: UpscaleP
     { value: "high", label: "High" },
     { value: "ultra", label: "Ultra" },
   ];
+  const inputPanel = (
+    <Card title="Input Image">
+      <div
+        className={`cursor-pointer rounded-lg border-2 border-dashed p-4 text-center transition-colors ${
+          isDragging ? "border-blue-500 bg-blue-500/10" : "border-gray-700"
+        }`}
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
+        onClick={() => document.getElementById("upscale-image-input")?.click()}
+      >
+        {inputImagePreview ? (
+          <div className="space-y-2">
+            <img src={inputImagePreview} alt="Input" className="mx-auto max-h-64 rounded" />
+            {inputImageSize && (
+              <div className="text-xs text-gray-400">
+                {inputImageSize.width} x {inputImageSize.height}
+              </div>
+            )}
+            <Button
+              onClick={(e) => {
+                e.stopPropagation();
+                handleClearInputImage();
+              }}
+              variant="secondary"
+              size="sm"
+            >
+              Clear
+            </Button>
+          </div>
+        ) : (
+          <div className="py-8 text-gray-400">Drop image here or click to upload</div>
+        )}
+        <input
+          id="upscale-image-input"
+          type="file"
+          accept="image/*"
+          onChange={handleImageUpload}
+          className="hidden"
+        />
+      </div>
+    </Card>
+  );
+  const promptPanel = (
+    <Card title="Prompt">
+      <Textarea
+        label="Positive Prompt"
+        placeholder={diffusionPromptEnabled ? "Describe details to preserve or enhance..." : "Available with Diffusion Tile Upscale"}
+        value={params.prompt || ""}
+        onChange={(e) => setParams({ ...params, prompt: e.target.value })}
+        rows={4}
+        disabled={!diffusionPromptEnabled}
+      />
+      <Textarea
+        label="Negative Prompt"
+        placeholder={supportsNegativePrompt ? "Enter negative prompt..." : "Negative prompting is unavailable for this mode or model"}
+        value={params.negative_prompt || ""}
+        onChange={(e) => setParams({ ...params, negative_prompt: e.target.value })}
+        rows={3}
+        disabled={!supportsNegativePrompt}
+      />
+      {!diffusionPromptEnabled ? (
+        <p className="text-xs text-gray-500">Prompt conditioning is used only by Diffusion Tile Upscale; saved values are preserved.</p>
+      ) : !supportsNegativePrompt ? (
+        <p className="text-xs text-gray-500">Negative prompting is unavailable for the loaded model; the saved value is preserved.</p>
+      ) : null}
+    </Card>
+  );
 
   return (
     <ResizableColumns
@@ -582,49 +658,7 @@ export default function UpscalePanel({ onTabChange, onImageGenerated }: UpscaleP
     >
       {/* Parameters Panel */}
       <div className="space-y-2.5">
-        <Card title="Input Image">
-          <div
-            className={`border-2 border-dashed rounded-lg p-4 text-center cursor-pointer transition-colors ${
-              isDragging ? "border-blue-500 bg-blue-500/10" : "border-gray-700"
-            }`}
-            onDragOver={handleDragOver}
-            onDragLeave={handleDragLeave}
-            onDrop={handleDrop}
-            onClick={() => document.getElementById("upscale-image-input")?.click()}
-          >
-            {inputImagePreview ? (
-              <div className="space-y-2">
-                <img src={inputImagePreview} alt="Input" className="max-h-64 mx-auto rounded" />
-                {inputImageSize && (
-                  <div className="text-xs text-gray-400">
-                    {inputImageSize.width} x {inputImageSize.height}
-                  </div>
-                )}
-                <Button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handleClearInputImage();
-                  }}
-                  variant="secondary"
-                  size="sm"
-                >
-                  Clear
-                </Button>
-              </div>
-            ) : (
-              <div className="text-gray-400 py-8">
-                Drop image here or click to upload
-              </div>
-            )}
-            <input
-              id="upscale-image-input"
-              type="file"
-              accept="image/*"
-              onChange={handleImageUpload}
-              className="hidden"
-            />
-          </div>
-        </Card>
+        <GenerationLeadGrid prompt={promptPanel} conditioning={inputPanel} />
 
         <Card title="Upscaler">
           <Select
@@ -722,18 +756,6 @@ export default function UpscalePanel({ onTabChange, onImageGenerated }: UpscaleP
               value={params.diffusion_pre_upscale_mode || "pil"}
               onChange={(e) => setParams({ ...params, diffusion_pre_upscale_mode: e.target.value })}
               options={diffusionPreUpscaleModeOptions}
-            />
-            <Textarea
-              label="Prompt"
-              value={params.prompt || ""}
-              onChange={(e) => setParams({ ...params, prompt: e.target.value })}
-              rows={3}
-            />
-            <Textarea
-              label="Negative Prompt"
-              value={params.negative_prompt || ""}
-              onChange={(e) => setParams({ ...params, negative_prompt: e.target.value })}
-              rows={2}
             />
             <Slider
               label="Denoising Strength"

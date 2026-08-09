@@ -23,6 +23,7 @@ import PostEditControls from "../common/PostEditControls";
 import { PostEditState, NEUTRAL_POST_EDIT, buildFilterString } from "@/utils/postEdit";
 import { usePostEditPreview } from "@/hooks/usePostEditPreview";
 import GenerationQueue from "../common/GenerationQueue";
+import GenerationLeadGrid from "../common/GenerationLeadGrid";
 import ResizableColumns, {
   GENERATION_PREVIEW_QUEUE_SPLIT_KEY,
   GENERATION_WORKSPACE_SPLIT_KEY,
@@ -616,6 +617,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
   // surface is never hidden merely because the matrix was unavailable; the
   // route re-validates and answers 400 regardless.
   const supportsTemporalInpaint = archSupportsFeature(archCapabilities, loadedArchType, "temporal_inpaint");
+  const supportsNegativePrompt = archSupportsFeature(archCapabilities, loadedArchType, "negative_prompt");
   // Spectrum/FBCache: accepted-but-inert on an architecture whose sampler never
   // reads spectrum_enable/fbcache_enable (e.g. MiniMax-H3's FBCache was measured
   // and dropped rather than shipped). Hidden rather than shown-disabled, the
@@ -2239,7 +2241,9 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
 
     // Replace wildcards in prompts
     let processedPrompt = await replaceWildcardsInPrompt(params.prompt);
-    const processedNegativePrompt = await replaceWildcardsInPrompt(params.negative_prompt);
+    const processedNegativePrompt = supportsNegativePrompt
+      ? await replaceWildcardsInPrompt(params.negative_prompt)
+      : "";
 
     // Feeling Lucky mode: Generate prompt with TIPO before queueing
     if (params.feeling_lucky) {
@@ -4139,6 +4143,66 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
       </div>
     ),
   };
+  const promptPanel = (
+    <Card title="Prompt">
+      <div className="relative">
+        <TextareaWithTagSuggestions
+          label="Positive Prompt"
+          placeholder="Enter your prompt here..."
+          rows={4}
+          value={params.prompt}
+          onChange={(e) => {
+            setParams({ ...params, prompt: e.target.value });
+            if (e.target) promptTextareaRef.current = e.target as HTMLTextAreaElement;
+          }}
+          enableWeightControl
+        />
+      </div>
+      {!isVideo && (
+        <div className="flex items-center gap-2 rounded bg-gray-800 px-2 py-2">
+          <label className="flex cursor-pointer items-center gap-2">
+            <input
+              type="checkbox"
+              checked={params.feeling_lucky || false}
+              onChange={(e) => setParams({ ...params, feeling_lucky: e.target.checked })}
+              className="h-4 w-4 rounded border-gray-600 bg-gray-700 text-blue-500 focus:ring-2 focus:ring-blue-500"
+            />
+            <span className="text-sm text-gray-300">✨ Feeling Lucky (TIPO)</span>
+          </label>
+          <label className="ml-4 flex cursor-pointer items-center gap-2">
+            <input
+              type="checkbox"
+              checked={treatAsNL}
+              onChange={(e) => setTreatAsNL(e.target.checked)}
+              className="h-4 w-4 rounded border-gray-600 bg-gray-700 text-green-500 focus:ring-2 focus:ring-green-500"
+              title="Treat input as natural language instead of tags"
+            />
+            <span className="text-xs text-gray-400">NL</span>
+          </label>
+          <button
+            onClick={() => setIsTIPODialogOpen(true)}
+            className="ml-auto rounded bg-gray-700 px-2 py-1 text-xs hover:bg-gray-600"
+            title="Configure TIPO settings"
+          >
+            ⚙️ Settings
+          </button>
+        </div>
+      )}
+      <TextareaWithTagSuggestions
+        label="Negative Prompt"
+        placeholder={supportsNegativePrompt ? "Enter negative prompt..." : "Negative prompting is unavailable for this model"}
+        rows={3}
+        value={params.negative_prompt}
+        onChange={(e) => setParams({ ...params, negative_prompt: e.target.value })}
+        enableWeightControl
+        disabled={!supportsNegativePrompt}
+        title={!supportsNegativePrompt ? "The loaded model does not accept negative-prompt conditioning." : undefined}
+      />
+      {!supportsNegativePrompt && (
+        <p className="text-xs text-gray-500">Unavailable for the loaded model; the saved value is preserved.</p>
+      )}
+    </Card>
+  );
 
   return (
     <ResizableColumns
@@ -4192,6 +4256,10 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
           storageKeyPrefix="inpaint"
         />
 
+        <GenerationLeadGrid
+          prompt={promptPanel}
+          conditioning={(
+            <>
         {/* ── Video temporal inpaint: the clip, the range, the video params.
             These replace the image input + mask surface when a video model is
             loaded; the image mode below is unchanged. ── */}
@@ -4598,67 +4666,9 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
             </div>
           </Card>
         )}
-
-        <Card title="Prompt">
-          <div className="relative">
-            <TextareaWithTagSuggestions
-              label="Positive Prompt"
-              placeholder="Enter your prompt here..."
-              rows={4}
-              value={params.prompt}
-              onChange={(e) => {
-                setParams({ ...params, prompt: e.target.value });
-                if (e.target) {
-                  promptTextareaRef.current = e.target as HTMLTextAreaElement;
-                }
-              }}
-              enableWeightControl={true}
-            />
-          </div>
-
-          {/* Feeling Lucky Mode. Image path only -- the video branch of
-              handleAddToQueue does wildcards but not TIPO, so showing the
-              control there would be showing one that does nothing. */}
-          {!isVideo && (
-          <div className="flex items-center gap-2 px-2 py-2 bg-gray-800 rounded">
-            <label className="flex items-center gap-2 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={params.feeling_lucky || false}
-                onChange={(e) => setParams({ ...params, feeling_lucky: e.target.checked })}
-                className="w-4 h-4 rounded border-gray-600 bg-gray-700 text-blue-500 focus:ring-2 focus:ring-blue-500"
-              />
-              <span className="text-sm text-gray-300">✨ Feeling Lucky (TIPO)</span>
-            </label>
-            <label className="flex items-center gap-2 cursor-pointer ml-4">
-              <input
-                type="checkbox"
-                checked={treatAsNL}
-                onChange={(e) => setTreatAsNL(e.target.checked)}
-                className="w-4 h-4 rounded border-gray-600 bg-gray-700 text-green-500 focus:ring-2 focus:ring-green-500"
-                title="Treat input as natural language instead of tags"
-              />
-              <span className="text-xs text-gray-400">NL</span>
-            </label>
-            <button
-              onClick={() => setIsTIPODialogOpen(true)}
-              className="ml-auto px-2 py-1 text-xs bg-gray-700 hover:bg-gray-600 rounded"
-              title="Configure TIPO settings"
-            >
-              ⚙️ Settings
-            </button>
-          </div>
+            </>
           )}
-
-          <TextareaWithTagSuggestions
-            label="Negative Prompt"
-            placeholder="Enter negative prompt..."
-            rows={3}
-            value={params.negative_prompt}
-            onChange={(e) => setParams({ ...params, negative_prompt: e.target.value })}
-            enableWeightControl={true}
-          />
-        </Card>
+        />
 
         {/* Inpaint Options: a single-open tabbed accordion (chrome shared via
             frontend/src/components/common/TabbedOptions.tsx). Every control

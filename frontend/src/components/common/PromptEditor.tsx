@@ -14,6 +14,8 @@ import { TIPOSettings } from "./TIPODialog";
 interface PromptEditorProps {
   initialPrompt: string;
   initialNegativePrompt: string;
+  negativeDisabled?: boolean;
+  negativeDisabledReason?: string;
   onSave: (prompt: string, negativePrompt: string) => void;
   onClose: () => void;
 }
@@ -23,6 +25,8 @@ type PanelType = "main" | "template" | "category" | "wildcard" | "tipo" | "tagge
 export default function PromptEditor({
   initialPrompt,
   initialNegativePrompt,
+  negativeDisabled = false,
+  negativeDisabledReason = "Negative prompting is unavailable for the loaded model.",
   onSave,
   onClose,
 }: PromptEditorProps) {
@@ -68,8 +72,14 @@ export default function PromptEditor({
     };
   }, []);
 
+  useEffect(() => {
+    if (negativeDisabled && activePromptType === "negative") {
+      setActivePromptType("positive");
+    }
+  }, [activePromptType, negativeDisabled]);
+
   const handleSave = () => {
-    onSave(prompt, negativePrompt);
+    onSave(prompt, negativeDisabled ? initialNegativePrompt : negativePrompt);
     onClose();
   };
 
@@ -410,10 +420,14 @@ export default function PromptEditor({
               </button>
               <button
                 onClick={() => setActivePromptType("negative")}
+                disabled={negativeDisabled}
+                title={negativeDisabled ? negativeDisabledReason : undefined}
                 className={`px-2 lg:px-4 py-1 lg:py-2 rounded text-sm lg:text-base ${
                   activePromptType === "negative"
                     ? "bg-red-600 text-white"
-                    : "bg-gray-700 text-gray-300"
+                    : negativeDisabled
+                      ? "cursor-not-allowed bg-gray-800 text-gray-500 opacity-70"
+                      : "bg-gray-700 text-gray-300"
                 }`}
               >
                 Negative
@@ -445,8 +459,13 @@ export default function PromptEditor({
                 onKeyUp={updateCursorPosition}
                 enableWeightControl={true}
                 rows={8}
+                disabled={negativeDisabled}
+                title={negativeDisabled ? negativeDisabledReason : undefined}
                 className="font-mono prompt-editor-textarea text-xs lg:text-sm"
               />
+            )}
+            {negativeDisabled && (
+              <p className="mt-2 text-xs text-gray-500">{negativeDisabledReason}</p>
             )}
           </div>
 

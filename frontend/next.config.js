@@ -37,6 +37,25 @@ console.error = (...args) => {
   if (args.some(isConnectionRefused)) {
     return;
   }
+  // A proxy abort is reported by Next as `console.error('Failed to proxy <url>', err)`
+  // (node_modules/next/dist/server/lib/router-utils/proxy-request.js), and it is
+  // immediately followed by a synthesized `500 Internal Server Error` to the
+  // browser even though the backend is still running the generation.  The bare
+  // message does not say WHEN it happened or WHY, which is exactly the pair of
+  // facts needed to tell one severed-socket cause from another (an idle-timeout
+  // abort surfaces as ECONNRESET/ETIMEDOUT at a fixed wall-clock offset; a peer
+  // close surfaces as ECONNRESET immediately).  Stamp both onto the line.
+  const first = args[0];
+  if (typeof first === 'string' && first.startsWith('Failed to proxy')) {
+    const err = args.find((a) => a && typeof a === 'object' && ('code' in a || 'message' in a));
+    originalConsoleError.call(
+      console,
+      `[proxy-abort ${new Date().toISOString()}] ${first}` +
+        ` code=${err?.code ?? 'n/a'} syscall=${err?.syscall ?? 'n/a'} message=${err?.message ?? 'n/a'}`,
+      ...args.slice(1)
+    );
+    return;
+  }
   originalConsoleError.apply(console, args);
 };
 

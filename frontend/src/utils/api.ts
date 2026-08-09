@@ -82,6 +82,29 @@ export function isGenerationStalledError(error: any): boolean {
   return error?.code === "SUSHIUI_GENERATION_STALLED";
 }
 
+/** True for the 500 the Next dev proxy SYNTHESIZES when it severs the upstream
+ *  socket mid-generation -- not a backend failure.
+ *
+ *  When the dev server's http-proxy aborts the connection to the backend it
+ *  answers the browser itself with `res.statusCode = 500; res.end("Internal
+ *  Server Error")` (node_modules/next/dist/server/lib/router-utils/proxy-request.js).
+ *  The backend never sees this: it keeps generating, keeps emitting progress on
+ *  the SSE channel, and saves its result on completion -- so reporting it to
+ *  the user as "generation failed" is wrong.
+ *
+ *  The signature is unambiguous because SushiUI's own 500s never look like
+ *  this: every backend error goes through generic_error_handler
+ *  (backend/api/error_handlers.py:177), which returns a JSON ErrorResponse
+ *  object.  A 500 whose body is the bare STRING "Internal Server Error" can
+ *  therefore only have been written by the proxy. */
+function isProxySynthesized500(error: any): boolean {
+  return (
+    error?.response?.status === 500 &&
+    typeof error?.response?.data === "string" &&
+    error.response.data.trim() === "Internal Server Error"
+  );
+}
+
 async function postGenerationRequest<T = any>(url: string, data: any, config: any = {}) {
   if (typeof window === "undefined" || !wsClient.isConnected()) {
     return api.post<T>(url, data, { ...config, timeout: GENERATION_NO_CHANNEL_TIMEOUT_MS });
@@ -102,6 +125,17 @@ async function postGenerationRequest<T = any>(url: string, data: any, config: an
     return await api.post<T>(url, data, { ...config, timeout: 0, signal: controller.signal });
   } catch (error: any) {
     if (controller.signal.aborted) {
+      throw new GenerationStalledError();
+    }
+    if (isProxySynthesized500(error)) {
+      // The dev proxy cut the socket; the backend is still working. Same user
+      // situation as a stale progress channel, so report it the same way
+      // instead of as a generation failure.
+      console.warn(
+        "[API] Dev proxy severed the request to " + url +
+        " and answered 500 itself; the backend generation is unaffected and " +
+        "will still save. See the dev server log for the '[proxy-abort ...]' line."
+      );
       throw new GenerationStalledError();
     }
     throw error;

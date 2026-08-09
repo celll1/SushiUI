@@ -14,6 +14,12 @@ export interface StudioAsset {
   source: "gallery" | "import" | "generation";
   blobKey?: string;
   prompt?: string;
+  negativePrompt?: string;
+  createdAt?: string;
+  generationType?: string;
+  modelName?: string;
+  seed?: number;
+  parameters?: Record<string, unknown>;
 }
 
 export type StudioTrackKind = "video" | "audio";

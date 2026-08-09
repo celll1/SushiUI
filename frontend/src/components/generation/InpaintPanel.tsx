@@ -46,6 +46,7 @@ import { sendToPanel, sendImageToImg2Img, sendImageToUpscale, sendImageToOutpain
 import { fixFloatingPointParams } from "@/utils/numberUtils";
 import { useStartup } from "@/contexts/StartupContext";
 import { useGenerationQueue } from "@/contexts/GenerationQueueContext";
+import SendToStudioButton from "../studio/SendToStudioButton";
 
 interface InpaintParams {
   prompt: string;
@@ -576,6 +577,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
   const [generatedVideoPlaybackUrl, setGeneratedVideoPlaybackUrl] = useState<string | null>(null);
   const [generatedVideoInfo, setGeneratedVideoInfo] = useState<{ num_frames?: number; fps?: number; duration?: number } | null>(null);
   const [generatedVideoSeed, setGeneratedVideoSeed] = useState<number | null>(null);
+  const [generatedVideoParams, setGeneratedVideoParams] = useState<InpaintParams | null>(null);
   // The run's `warnings[]`, shown under the result. The panel snaps the range to
   // latent-group boundaries itself, so the range-snap warning should not fire
   // for a request built here -- which is exactly why it is worth showing if it
@@ -2655,6 +2657,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         setGeneratedVideo(videoUrl);
         setGeneratedVideoPlaybackUrl(videoPlaybackUrl !== videoUrl ? videoPlaybackUrl : null);
         setGeneratedVideoSeed(getResultSeed(result));
+        setGeneratedVideoParams(nextItem.params as InpaintParams);
         setGeneratedVideoInfo({
           num_frames: result.image?.num_frames,
           fps: result.image?.fps,
@@ -5650,6 +5653,24 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
                   >
                     Use as reference video
                   </Button>
+                  <SendToStudioButton
+                    className="col-span-2"
+                    media={{
+                      kind: "video",
+                      url: generatedVideoPlaybackUrl || generatedVideo,
+                      masterUrl: generatedVideo,
+                      name: generatedVideo.split("/").pop() || "Generated video",
+                      width: params.width,
+                      height: params.height,
+                      duration: generatedVideoInfo?.duration,
+                    }}
+                    parameters={{
+                      ...(generatedVideoParams || params),
+                      num_frames: generatedVideoInfo?.num_frames,
+                      frame_rate: generatedVideoInfo?.fps ?? generatedVideoParams?.frame_rate ?? params.frame_rate,
+                      seed: generatedVideoSeed ?? generatedVideoParams?.seed ?? params.seed,
+                    }}
+                  />
                 </div>
               )}
 
@@ -5692,7 +5713,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
                     <span className="text-gray-300">Send parameters</span>
                   </label>
                 </div>
-                <div className="grid grid-cols-1 sm:grid-cols-5 gap-2">
+                <div className="grid grid-cols-1 sm:grid-cols-6 gap-2">
                   <Button
                     onClick={sendToTxt2Img}
                     variant="secondary"
@@ -5734,6 +5755,20 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
                   >
                     Send to Upscale
                   </Button>
+                  <SendToStudioButton
+                    media={{
+                      kind: "image",
+                      url: stripCacheBuster(generatedImage),
+                      masterUrl: stripCacheBuster(generatedImage),
+                      name: stripCacheBuster(generatedImage).split("/").pop() || "Generated image",
+                      width: generatedImageParams?.width,
+                      height: generatedImageParams?.height,
+                    }}
+                    parameters={generatedImageParams || params}
+                    sendMedia={sendImage}
+                    sendPrompt={sendPrompt}
+                    sendParameters={sendParameters}
+                  />
                 </div>
               </div>
             )}

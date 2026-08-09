@@ -34,6 +34,7 @@ import { sendImageToImg2Img, sendImageToInpaint, sendImageToOutpaint } from "@/u
 import { useStartup } from "@/contexts/StartupContext";
 import { useGenerationQueue } from "@/contexts/GenerationQueueContext";
 import { wsClient, CFGMetrics } from "@/utils/websocket";
+import SendToStudioButton from "../studio/SendToStudioButton";
 
 const DEFAULT_PARAMS: UpscaleParams = {
   upscaler_backend: "spandrel",
@@ -940,7 +941,7 @@ export default function UpscalePanel({ onTabChange, onImageGenerated }: UpscaleP
                 </label>
               </div>
 
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+              <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
                 <Button onClick={sendToTxt2Img} variant="secondary" size="sm">
                   Send to txt2img
                 </Button>
@@ -953,6 +954,18 @@ export default function UpscalePanel({ onTabChange, onImageGenerated }: UpscaleP
                 <Button onClick={sendToOutpaint} variant="secondary" size="sm" disabled={!sendImage}>
                   Send to outpaint
                 </Button>
+                <SendToStudioButton
+                  media={{
+                    kind: "image",
+                    url: stripCacheBuster(generatedImage),
+                    masterUrl: stripCacheBuster(generatedImage),
+                    name: stripCacheBuster(generatedImage).split("/").pop() || "Upscaled image",
+                    width: generatedImageInfo?.width,
+                    height: generatedImageInfo?.height,
+                  }}
+                  parameters={generatedImageParams || params}
+                  sendMedia={sendImage}
+                />
               </div>
             </div>
           ) : (

@@ -14,7 +14,7 @@ const openStudioDatabase = () =>
     },
   });
 
-export const saveImportedMedia = async (key: string, file: File) => {
+export const saveImportedMedia = async (key: string, file: Blob) => {
   const database = await openStudioDatabase();
   await database.put(MEDIA_STORE, file, key);
 };

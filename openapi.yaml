@@ -1823,7 +1823,7 @@ paths:
             default: 50
         - name: search
           in: query
-          description: Substring match against the prompt.
+          description: Substring match against the prompt, negative prompt, or filename.
           schema:
             type: string
         - name: generation_types

@@ -70,6 +70,7 @@ import { sendToPanel, sendImageToImg2Img, sendImageToInpaint, sendImageToUpscale
 import { fixFloatingPointParams } from "@/utils/numberUtils";
 import { useStartup } from "@/contexts/StartupContext";
 import { useGenerationQueue } from "@/contexts/GenerationQueueContext";
+import SendToStudioButton from "../studio/SendToStudioButton";
 
 // Extends the image OutpaintParams with the video (outpaint_vid, LTX-2.3)
 // AND audio (outpaint_aud, ACE-Step 1.5 extend) fields. A single unified
@@ -519,6 +520,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
   const [generatedVideoPlaybackUrl, setGeneratedVideoPlaybackUrl] = useState<string | null>(null);
   const [generatedVideoInfo, setGeneratedVideoInfo] = useState<{ num_frames?: number; fps?: number; duration?: number } | null>(null);
   const [generatedVideoSeed, setGeneratedVideoSeed] = useState<number | null>(null);
+  const [generatedVideoParams, setGeneratedVideoParams] = useState<OutpaintPanelParams | null>(null);
 
   // Audio temporal outpaint (outpaint_aud) input clip + result. The INPUT clip
   // is not persisted across reloads -- mirrors videoFile's rationale (an
@@ -531,6 +533,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
   const [generatedAudio, setGeneratedAudio] = useState<string | null>(null);
   const [generatedAudioInfo, setGeneratedAudioInfo] = useState<{ duration?: number; sample_rate?: number } | null>(null);
   const [generatedAudioSeed, setGeneratedAudioSeed] = useState<number | null>(null);
+  const [generatedAudioParams, setGeneratedAudioParams] = useState<OutpaintPanelParams | null>(null);
 
   const [progress, setProgress] = useState(0);
   const [totalSteps, setTotalSteps] = useState(0);
@@ -1816,6 +1819,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
         setGeneratedVideo(videoUrl);
         setGeneratedVideoPlaybackUrl(videoPlaybackUrl !== videoUrl ? videoPlaybackUrl : null);
         setGeneratedVideoSeed(getResultSeed(result));
+        setGeneratedVideoParams(nextItem.params as OutpaintPanelParams);
         setGeneratedVideoInfo({
           num_frames: result.image?.num_frames,
           fps: result.image?.fps,
@@ -1873,6 +1877,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
         const audioUrl = `/outputs/${result.image.filename}`;
         setGeneratedAudio(audioUrl);
         setGeneratedAudioSeed(getResultSeed(result));
+        setGeneratedAudioParams(nextItem.params as OutpaintPanelParams);
         setGeneratedAudioInfo({
           duration: result.image?.duration,
           sample_rate: result.image?.sample_rate,
@@ -4584,7 +4589,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
                       <span className="text-gray-300">Send parameters</span>
                     </label>
                   </div>
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                  <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
                     <Button onClick={sendToTxt2Img} variant="secondary" size="sm" disabled={!sendPrompt && !sendParameters}>
                       Send to txt2img
                     </Button>
@@ -4597,6 +4602,20 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
                     <Button onClick={sendToUpscale} variant="secondary" size="sm" disabled={!generatedImage}>
                       Send to Upscale
                     </Button>
+                    <SendToStudioButton
+                      media={{
+                        kind: "image",
+                        url: stripCacheBuster(generatedImage),
+                        masterUrl: stripCacheBuster(generatedImage),
+                        name: stripCacheBuster(generatedImage).split("/").pop() || "Generated image",
+                        width: generatedImageParams?.width,
+                        height: generatedImageParams?.height,
+                      }}
+                      parameters={generatedImageParams || params}
+                      sendMedia={sendImage}
+                      sendPrompt={sendPrompt}
+                      sendParameters={sendParameters}
+                    />
                   </div>
                 </div>
               )}
@@ -4619,6 +4638,24 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
                     >
                       Use as reference video
                     </Button>
+                    <SendToStudioButton
+                      className="col-span-2"
+                      media={{
+                        kind: "video",
+                        url: generatedVideoPlaybackUrl || generatedVideo,
+                        masterUrl: generatedVideo,
+                        name: generatedVideo.split("/").pop() || "Generated video",
+                        width: params.width,
+                        height: params.height,
+                        duration: generatedVideoInfo?.duration,
+                      }}
+                      parameters={{
+                        ...(generatedVideoParams || params),
+                        num_frames: generatedVideoInfo?.num_frames ?? generatedVideoParams?.total_frames ?? params.total_frames,
+                        frame_rate: generatedVideoInfo?.fps ?? generatedVideoParams?.frame_rate ?? params.frame_rate,
+                        seed: generatedVideoSeed ?? generatedVideoParams?.seed ?? params.seed,
+                      }}
+                    />
                   </div>
                 </div>
               )}
@@ -4632,6 +4669,17 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
                     <Button onClick={sendAudioResultToImg2Img} variant="secondary" size="sm">
                       Send to img2img
                     </Button>
+                    <SendToStudioButton
+                      className="col-span-2"
+                      media={{
+                        kind: "audio",
+                        url: generatedAudio,
+                        masterUrl: generatedAudio,
+                        name: generatedAudio.split("/").pop() || "Generated audio",
+                        duration: generatedAudioInfo?.duration,
+                      }}
+                      parameters={{ ...(generatedAudioParams || params), seed: generatedAudioSeed ?? generatedAudioParams?.seed ?? params.seed }}
+                    />
                   </div>
                 </div>
               )}

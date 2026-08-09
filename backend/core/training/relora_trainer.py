@@ -74,8 +74,21 @@ class ReLoRATrainer(LoRATrainer):
         self.merge_count = 0
         self._last_merge_epoch = -1  # For epoch-based merge tracking
 
+        self._refuse_unsupported_relora(kwargs.get("model_path"))
+
         # Initialize parent (LoRATrainer -> BaseTrainer)
         super().__init__(**kwargs)
+
+        from .adapters.base_adapter import count_quantized_linears
+
+        quantized_targets = sum(
+            count_quantized_linears(getattr(layer, "original_module", None))
+            for layer in self.lora_layers.values()
+        )
+        if quantized_targets:
+            raise ValueError(
+                "ReLoRA cannot merge dense LoRA deltas into a weight-only quantized base "
+                f"({quantized_targets} target layer(s)); use training_method='lora'.")
 
         # Override log prefix
         self.log_prefix = "[ReLoRA Trainer]"
@@ -86,6 +99,23 @@ class ReLoRATrainer(LoRATrainer):
         print(f"{self.log_prefix}   optimizer_reset_strategy={self.optimizer_reset_strategy}")
         if self.optimizer_reset_strategy != "full_reset":
             print(f"{self.log_prefix}   optimizer_pruning_ratio={self.optimizer_pruning_ratio}")
+
+    @staticmethod
+    def _refuse_unsupported_relora(model_path):
+        if not model_path:
+            return
+        try:
+            from core.model_loader import ModelLoader
+
+            arch = ModelLoader.detect_model_type(model_path)
+        except Exception:
+            return
+        from api.arch_capabilities import TRAINING_UNSUPPORTED
+
+        reason = (TRAINING_UNSUPPORTED.get(arch) or {}).get("relora")
+        if reason:
+            raise ValueError(
+                f"ReLoRA is not supported for architecture '{arch}': {reason}")
 
     # ============================================================
     # Optimizer & LR Scheduler Setup

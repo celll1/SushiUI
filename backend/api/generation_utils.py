@@ -935,7 +935,9 @@ def extract_fp8_gemm_info(pipeline_manager) -> str:
     order the describers are collected in below, e.g.
     ``"dequant+w8a8_int_mm(int_mm+fused)"`` for a mixed checkpoint with the FP8
     toggle off and the INT8 one on. The stems are distinct precisely so that join
-    stays unambiguous.
+    stays unambiguous. Packed MiniMax-H3 checkpoints add
+    ``w4a8_int8(comfy-kitchen)``; that fixed operator is independent of the
+    FP8/INT8 W8A8 toggle.
     """
     from core.models.common.int8_runtime_quantize import QUANTIZED_LINEAR_ARCHS
 
@@ -949,6 +951,7 @@ def extract_fp8_gemm_info(pipeline_manager) -> str:
     for module_path, attr in (
         ("core.models.ideogram4.vendor.fp8_linear", "describe_gemm_path"),
         ("core.models.ideogram4.vendor.int8_linear", "describe_gemm_path"),
+        ("core.models.common.w4a8_linear", "describe_gemm_path"),
     ):
         try:
             describers.append(getattr(__import__(module_path, fromlist=[attr]), attr))

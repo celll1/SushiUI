@@ -193,7 +193,7 @@ class QuantizedBaseWarningTest(unittest.TestCase):
     def test_message_states_the_layer_count_and_the_retained_byte_width(self):
         model = nn.Sequential(_int8_layer(torch.bfloat16), _fp8_layer(torch.bfloat16))
         msg = warn_quantized_base_without_checkpointing(model, gradient_checkpointing=False)
-        self.assertIn("2 Int8Linear/Fp8Linear layer(s)", msg)
+        self.assertIn("2 quantized Linear layer(s)", msg)
         self.assertIn("2 bytes per element retained", msg)
 
     def test_retained_byte_width_follows_the_compute_dtype(self):

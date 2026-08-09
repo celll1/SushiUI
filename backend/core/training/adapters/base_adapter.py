@@ -12,12 +12,12 @@ import torch.nn as nn
 
 
 def count_quantized_linears(module: Optional[nn.Module]) -> int:
-    """Number of ``Int8Linear`` / ``Fp8Linear`` modules under ``module``.
+    """Number of weight-only quantized Linear modules under ``module``.
 
     Called from EVERY full-parameter adapter's ``prepare_models_for_training``
     / ``setup_trainable_parameters``, not just the three architectures whose
     loaders can currently produce these classes (Anima, Ideogram 4, Krea 2).
-    ``Int8Linear`` / ``Fp8Linear`` hold ``weight`` (and ``weight_scale``) as
+    Quantized Linears hold ``weight`` and scale sidecars as
     buffers, not ``nn.Parameter``s, so they are invisible to both
     ``requires_grad_(True)`` and ``named_parameters()``. Detecting them is
     the first half of ``reject_quantized_base`` below.
@@ -34,18 +34,19 @@ def count_quantized_linears(module: Optional[nn.Module]) -> int:
     try:
         from core.models.ideogram4.vendor.int8_linear import Int8Linear
         from core.models.ideogram4.vendor.fp8_linear import Fp8Linear
+        from core.models.common.w4a8_linear import W4A8Linear
     except Exception as e:
         print(f"[quantized-base-guard] weight-only quant classes unavailable "
               f"({e}); assuming an unquantized base")
         return 0
-    return sum(1 for m in module.modules() if isinstance(m, (Int8Linear, Fp8Linear)))
+    return sum(1 for m in module.modules() if isinstance(m, (Int8Linear, Fp8Linear, W4A8Linear)))
 
 
 def is_lora_wrappable_linear(module: Optional[nn.Module]) -> bool:
     """True for a module a LoRA can wrap: ``nn.Linear`` or EITHER weight-only
-    quantized Linear (``Int8Linear`` / ``Fp8Linear``).
+    quantized Linear (``Int8Linear`` / ``Fp8Linear`` / ``W4A8Linear``).
 
-    THE reason this exists: ``Int8Linear`` and ``Fp8Linear`` are ``nn.Module``s,
+    THE reason this exists: the quantized Linear classes are ``nn.Module``s,
     NOT ``nn.Linear`` subclasses. Every ``isinstance(x, nn.Linear)`` site that
     selects LoRA targets therefore skips every quantized layer SILENTLY -- no
     error, just a smaller ``applied`` count that looks like a LoRA which happens
@@ -65,17 +66,18 @@ def is_lora_wrappable_linear(module: Optional[nn.Module]) -> bool:
     try:
         from core.models.ideogram4.vendor.int8_linear import Int8Linear
         from core.models.ideogram4.vendor.fp8_linear import Fp8Linear
+        from core.models.common.w4a8_linear import W4A8Linear
     except Exception:
         return False
-    return isinstance(module, (Int8Linear, Fp8Linear))
+    return isinstance(module, (Int8Linear, Fp8Linear, W4A8Linear))
 
 
 def lora_branch_dtype(module: nn.Module,
                       default: torch.dtype = torch.bfloat16) -> torch.dtype:
     """The dtype a LoRA branch attached to ``module`` should compute in.
 
-    The base weight's own dtype when that is a real float, else ``default``. Both
-    quantized bases take the default branch -- e4m3 by the "float8" test, int8
+    The base weight's own dtype when that is a real float, else ``default``.
+    Weight-only quantized bases take the default branch -- e4m3 by the "float8" test, int8
     because an integer dtype is not floating point at all -- which is also the
     dtype their own forward produces from a bf16 activation. Without this a
     caller that copies the LoRA weights with ``dtype=base.weight.dtype`` would
@@ -94,7 +96,7 @@ def lora_branch_dtype(module: nn.Module,
 def reject_quantized_base(transformer: Optional[nn.Module], *, model_label: str) -> None:
     """Refuse full fine-tuning on a weight-only quantized DiT base.
 
-    ``Int8Linear`` / ``Fp8Linear`` hold ``weight`` (and ``weight_scale``) as
+    Quantized Linears hold ``weight`` and their scale sidecars as
     BUFFERS, not ``nn.Parameter``s, precisely so an inference path cannot
     accidentally build an optimizer state for a non-differentiable int8/fp8
     tensor. The consequence for training is that ``requires_grad_(True)`` is
@@ -122,7 +124,7 @@ def reject_quantized_base(transformer: Optional[nn.Module], *, model_label: str)
         return
     raise NotImplementedError(
         f"{model_label} full fine-tuning requires a bf16 base transformer: this checkpoint is "
-        f"weight-only quantized ({n} Int8Linear/Fp8Linear layer(s)), and those layers "
+        f"weight-only quantized ({n} quantized Linear layer(s)), and those layers "
         f"store their weights as BUFFERS. They cannot receive gradients, so a full "
         f"fine-tune would silently train only the layers the quantization skipped "
         f"while reporting a normal, falling loss. Use LoRA on this checkpoint (that "
@@ -139,14 +141,13 @@ def warn_quantized_base_without_checkpointing(
 ) -> Optional[str]:
     """Report the memory cost of a quantized base with checkpointing disabled.
 
-    THE CONDITION. ``Int8Linear`` / ``Fp8Linear`` run ``_dequant_forward``, which
-    builds ``w = codes.to(x.dtype) * scale[:, None]`` and hands it to
-    ``F.linear``. ``F.linear`` saves its weight operand for backward because
+    THE CONDITION. Weight-only quantized Linears materialise or decode a compute
+    weight for their product. Autograd saves the operand for backward because
     ``grad_input = grad_output @ w``. For a bf16 ``nn.Linear`` that saved tensor
     is an ALIAS of the resident parameter and costs nothing; for a quantized
     Linear it is a fresh ``(out, in)`` allocation in the compute dtype, on top of
-    the 1-byte codes. Per weight per live checkpoint unit that is 1 B resident +
-    2 B retained, against 2 B + 0 for an unquantized base.
+    the packed codes. This can retain a compute-dtype weight in addition to the
+    quantized storage, unlike an unquantized parameter whose saved tensor aliases it.
 
     With gradient checkpointing ON, one unit is live at a time and the quantized
     base still uses less memory overall. With it OFF, every layer's temporary is
@@ -182,9 +183,9 @@ def warn_quantized_base_without_checkpointing(
             break
     message = (
         f"gradient_checkpointing is disabled and the base transformer is weight-only "
-        f"quantized ({n} Int8Linear/Fp8Linear layer(s)). Each quantized Linear hands its "
-        f"dequantized weight to autograd, which retains it until backward: 1 byte per "
-        f"weight element resident plus {retained_bytes} bytes per "
+        f"quantized ({n} quantized Linear layer(s)). Each quantized Linear hands its "
+        f"decoded weight to autograd, which can retain it until backward: quantized "
+        f"storage plus up to {retained_bytes} bytes per "
         f"element retained, against {retained_bytes} bytes plus 0 for an unquantized base. "
         f"With checkpointing disabled all {n} are retained at once. Measured on a 28-layer "
         f"2048x2048 int8 synthetic (the e4m3 arm's memory was not measured): peak 426.4 MiB "

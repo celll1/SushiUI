@@ -1350,7 +1350,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
 
   // Fall back to LoRA when the selected training method is not offered for the
   // selected base model: either because the backend's TRAINING_UNSUPPORTED table
-  // says so (MiniMax-H3 full fine-tune) or by the older hardcoded Ideogram 4 rule
+  // says so or by the older hardcoded Ideogram 4 rule
   // (fp8 base; VRAM-impractical). `archCapabilities` is in the deps because it
   // arrives asynchronously — a model chosen before it loads must still be
   // re-checked once it does.
@@ -1364,7 +1364,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       setTrainingMethod("lora");
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [baseModelPath, trainingMethod, archCapabilities]);
+  }, [baseModelPath, trainingMethod, archCapabilities, availableModels]);
 
 
   // Reset optimizer hyperparameters when optimizer changes
@@ -2314,18 +2314,32 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               />
               <span className={`text-sm ${fromScratchMiniT2I ? 'text-gray-500' : ''}`}>ControlNet (SD1.5/SDXL)</span>
             </label>
-            <label className="flex items-center space-x-2 cursor-pointer">
+            {(() => {
+              const reloraReason = unsupportedTrainingMethod("relora");
+              const reloraBlocked = fromScratchMiniT2I || isIdeogram4Model(baseModelPath) || !!reloraReason;
+              const title = isIdeogram4Model(baseModelPath)
+                ? "ReLoRA cannot merge into Ideogram 4's quantized base. Use LoRA."
+                : reloraReason;
+              return (
+            <label
+              className={`flex items-center space-x-2 ${reloraBlocked ? 'cursor-not-allowed' : 'cursor-pointer'}`}
+              title={title}
+            >
               <input
                 type="radio"
                 name="training_method"
                 value="relora"
                 checked={trainingMethod === "relora"}
                 onChange={() => setTrainingMethod("relora")}
-                disabled={fromScratchMiniT2I}
+                disabled={reloraBlocked}
                 className="text-blue-600 focus:ring-blue-500"
               />
-              <span className={`text-sm ${fromScratchMiniT2I ? 'text-gray-500' : ''}`}>ReLoRA (Periodic Merge + Reinit)</span>
+              <span className={`text-sm ${reloraBlocked ? 'text-gray-500' : ''}`}>
+                ReLoRA (Periodic Merge + Reinit){reloraReason ? ' (not supported for this model)' : ''}
+              </span>
             </label>
+              );
+            })()}
           </div>
         </div>
 

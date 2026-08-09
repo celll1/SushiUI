@@ -253,6 +253,12 @@ def report_quantized_gemm_outcome(
             )
         elif any(part.startswith("w8a8") for part in label.split("+")):
             return None
+        elif any(part.startswith("w4a8_int8") for part in label.split("+")):
+            message = (
+                "quantized_gemm_mode='w8a8' does not control this checkpoint's packed "
+                f"W4A8 operator (resolved path: {label}); its Comfy-Kitchen path runs "
+                "independently of the FP8/INT8 W8A8 toggle."
+            )
         else:
             message = (
                 "quantized_gemm_mode='w8a8' was requested but the dequantized "

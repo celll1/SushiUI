@@ -379,6 +379,13 @@ class DequantCauseTest(unittest.TestCase):
         self.assertIsNone(qg.report_quantized_gemm_outcome(
             "w8a8", "w8a8_scaled_mm(tensorwise)", "krea2"))
 
+    def test_packed_w4a8_is_not_reported_as_missing_quantized_linears(self):
+        message = qg.report_quantized_gemm_outcome(
+            "w8a8", "w4a8_int8(comfy-kitchen)", "minimax_h3")
+        self.assertIn("does not control", message)
+        self.assertIn("Comfy-Kitchen", message)
+        self.assertNotIn("carries no weight-only quantized", message)
+
 
 if __name__ == "__main__":
     unittest.main()

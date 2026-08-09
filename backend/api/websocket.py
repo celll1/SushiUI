@@ -36,8 +36,13 @@ class ConnectionManager:
         }
         await self.broadcast(json.dumps(data))
 
-    def send_progress_sync(self, step: int, total_steps: int, message: str = "", preview_image: str = None, cfg_metrics: dict = None):
-        """Send progress synchronously from callback thread - uses queue"""
+    def send_progress_sync(self, step: int, total_steps: int, message: str = "", preview_image: str = None, cfg_metrics: dict = None, sub_progress: float = None):
+        """Send progress synchronously from callback thread - uses queue
+
+        ``sub_progress`` (0..1) is the fraction of the step CURRENTLY running,
+        for architectures whose single step takes minutes; ``step`` still counts
+        completed steps and ``progress`` is still ``step / total_steps``.
+        """
         data = {
             "type": "progress",
             "step": step,
@@ -49,6 +54,8 @@ class ConnectionManager:
             data["preview_image"] = preview_image
         if cfg_metrics:
             data["cfg_metrics"] = cfg_metrics
+        if sub_progress is not None:
+            data["sub_progress"] = float(sub_progress)
         self.message_queue.put(data)
         self._notify_sender()
 

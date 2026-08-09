@@ -1166,6 +1166,7 @@ def denoise(
     num_inference_steps: int,
     device: torch.device | str = "cuda",
     progress_callback: Optional[Callable[[int, int], None]] = None,
+    substep_reporter: Optional[Any] = None,
     step_callback: Optional[Callable[..., None]] = None,
     preview_latent_shape: Optional[Tuple[int, int, int]] = None,
     video_row_order: Optional[torch.Tensor] = None,
@@ -1184,6 +1185,12 @@ def denoise(
     evaluations. That is the scheduler's own contract (and K0.4 confirmed the
     grid's duplicate-collapse never fires at any step count this integration
     uses, so the mapping is exactly 1:1).
+
+    ``substep_reporter`` is an optional
+    ``core.inference.substep_progress.SubStepReporter`` whose forward hooks tick
+    progress from inside a step (one step is ~150s here); this loop only tells
+    it where the step boundaries are. Its hooks are attached and removed by the
+    caller.
 
     ``step_callback`` is the latent-preview hook, called as
     ``(i, total, latents, None, pred_x0)`` with BOTH tensors unpatchified to
@@ -1235,6 +1242,8 @@ def denoise(
 
     for i, timestep in enumerate(timesteps):
         raise_if_cancelled()
+        if substep_reporter is not None:
+            substep_reporter.begin_step(i, total_steps)
         unique_timesteps, timestep_indices = build_row_timesteps(
             layout, float(timestep), float(audio_timesteps[i]),
             keyframe_noise_aug=keyframe_noise_aug,

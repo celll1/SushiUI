@@ -2686,10 +2686,20 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         completeCurrentItem();
       } catch (error: any) {
         console.error("[Inpaint] Video generation failed:", error);
+        failCurrentItem();
+        // alert() blocks the JS thread; reset state and requeue before showing
+        // it, otherwise the queue effect sees a stale isGenerating until the
+        // dialog closes.
+        setIsGenerating(false);
+        setProgress(0);
+        setProgressMessage("");
+        setTimeout(() => {
+          if (processQueueRef.current) processQueueRef.current();
+        }, 100);
         alert(isGenerationStalledError(error)
           ? error.message
           : `Video inpaint generation failed: ${error?.response?.data?.detail || error?.message || "Unknown error"}`);
-        failCurrentItem();
+        return;
       }
       setIsGenerating(false);
       setProgress(0);
@@ -3070,8 +3080,9 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
           }
         }, 100);
       } else {
-        alert("Generation failed");
-        // Reset state first, then fail item
+        // alert() blocks the JS thread; reset state and requeue before
+        // showing it, otherwise the queue effect sees a stale isGenerating
+        // until the dialog closes.
         setIsGenerating(false);
         setProgress(0);
         setProgressMessage("");
@@ -3082,6 +3093,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
             processQueueRef.current();
           }
         }, 100);
+        alert("Generation failed");
       }
     } catch (error: any) {
       console.error("Generation error:", error);
@@ -3100,6 +3112,10 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         errorDetail.toLowerCase().includes("cancel") ||
         errorStr.toLowerCase().includes("cancel");
 
+      // alert() blocks the JS thread; decide what to show but do not call it
+      // yet -- reset state and requeue first, or the queue effect sees a
+      // stale isGenerating until the dialog closes.
+      let alertMessage: string | null = null;
       if (isCancelled) {
         const shouldRestore = localStorage.getItem('restore_image_on_cancel') === 'true';
         if (shouldRestore && previousImage) {
@@ -3107,9 +3123,9 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
           setPreviewImage(null);
         }
       } else if (isGenerationStalledError(error)) {
-        alert(error.message);
+        alertMessage = error.message;
       } else {
-        alert("Generation failed: " + (error instanceof Error ? error.message : String(error)));
+        alertMessage = "Generation failed: " + (error instanceof Error ? error.message : String(error));
       }
 
       // Reset state first, then fail item
@@ -3126,6 +3142,10 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
           processQueueRef.current();
         }
       }, 100);
+
+      if (alertMessage) {
+        alert(alertMessage);
+      }
     }
   }, [isGenerating, generatedImage, onImageGenerated, isMounted, startNextInQueue, completeCurrentItem, failCurrentItem, updateQueueItem, queue]);
 

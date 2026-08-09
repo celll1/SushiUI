@@ -1916,9 +1916,16 @@ export const generateTxt2ImgTrainingPreview = async (
 export const getActiveTraining = async (): Promise<ActiveTrainingInfo | null> => {
   try {
     const res = await api.get("/training/active");
-    return res.data as ActiveTrainingInfo;
+    // Idle is a 200 whose body carries is_running=false and run_id=null (see
+    // routes.py get_active_training), so the idle case is decided on the BODY,
+    // not on the status code.
+    const data = res.data as Partial<ActiveTrainingInfo> | null;
+    if (!data || !data.is_running || data.run_id == null) {
+      return null;
+    }
+    return data as ActiveTrainingInfo;
   } catch (e: unknown) {
-    // 404 / no active run → return null silently
+    // Backend unreachable, or an older backend still signalling idle with 404.
     return null;
   }
 };

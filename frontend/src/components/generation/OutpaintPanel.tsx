@@ -1855,9 +1855,9 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
         }, 100);
       } catch (error: any) {
         console.error("[Outpaint] Video generation failed:", error);
-        alert(isGenerationStalledError(error)
-          ? error.message
-          : `Video outpaint generation failed: ${error?.response?.data?.detail || error?.message || "Unknown error"}`);
+        // alert() blocks the JS thread; reset state and requeue before showing
+        // it, otherwise the queue effect sees a stale isGenerating until the
+        // dialog closes.
         setIsGenerating(false);
         setProgress(0);
         setProgressMessage("");
@@ -1865,6 +1865,9 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
         setTimeout(() => {
           if (processQueueRef.current) processQueueRef.current();
         }, 100);
+        alert(isGenerationStalledError(error)
+          ? error.message
+          : `Video outpaint generation failed: ${error?.response?.data?.detail || error?.message || "Unknown error"}`);
       }
       return;
     }
@@ -1912,9 +1915,6 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
         }, 100);
       } catch (error: any) {
         console.error("[Outpaint] Audio generation failed:", error);
-        alert(isGenerationStalledError(error)
-          ? error.message
-          : `Audio outpaint generation failed: ${error?.response?.data?.detail || error?.message || "Unknown error"}`);
         setIsGenerating(false);
         setProgress(0);
         setProgressMessage("");
@@ -1922,6 +1922,9 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
         setTimeout(() => {
           if (processQueueRef.current) processQueueRef.current();
         }, 100);
+        alert(isGenerationStalledError(error)
+          ? error.message
+          : `Audio outpaint generation failed: ${error?.response?.data?.detail || error?.message || "Unknown error"}`);
       }
       return;
     }
@@ -1992,10 +1995,6 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
       }, 100);
     } catch (error: any) {
       console.error("[Outpaint] Generation failed:", error);
-      alert(isGenerationStalledError(error)
-        ? error.message
-        : `Outpaint generation failed: ${error?.response?.data?.detail || error?.message || "Unknown error"}`);
-
       setIsGenerating(false);
       setProgress(0);
       failCurrentItem();
@@ -2003,6 +2002,9 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
       setTimeout(() => {
         if (processQueueRef.current) processQueueRef.current();
       }, 100);
+      alert(isGenerationStalledError(error)
+        ? error.message
+        : `Outpaint generation failed: ${error?.response?.data?.detail || error?.message || "Unknown error"}`);
     }
   }, [isGenerating, startNextInQueue, completeCurrentItem, failCurrentItem, developerMode, showAdvancedCFG, isMounted, onImageGenerated]);
 

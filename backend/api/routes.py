@@ -1435,13 +1435,29 @@ async def _await_preview_result(
 @router.get("/training/active")
 async def get_active_training(training_db: Session = Depends(get_training_db)):
     """Return summary info on the currently-active LoRA / Full-FT training,
-    or 404 if none.  Used by the generate panel to enable / disable the
-    "Use training model" toggle and to display the target run."""
+    or an ``is_running: false`` body when none.  Used by the generate panel to
+    enable / disable the "Use training model" toggle and to display the target
+    run.
+
+    IDLE IS A 200, NOT A 404.  This endpoint is polled every 10 s for as long as
+    a generation panel is mounted, and "nothing is training" is the ordinary
+    case, not an error.  Signalling it with a 404 made the browser log a failed
+    request on every tick -- the frontend's ``try/catch`` cannot suppress that,
+    because the console line is emitted by the browser for any non-2xx XHR
+    regardless of what JavaScript does with it.  ``openapi.yaml`` documented the
+    200-with-null-fields contract from the start; this is the code catching up
+    to it."""
     from core.training.training_process import training_process_manager
     active = [(rid, p) for rid, p in training_process_manager.processes.items()
               if p.is_running]
     if not active:
-        raise HTTPException(status_code=404, detail="No active training run")
+        return {
+            "run_id": None,
+            "run_name": None,
+            "training_method": None,
+            "current_step": None,
+            "is_running": False,
+        }
     # If multiple, return the one with the highest run_id (typically the
     # most recently started).  Frontend can disambiguate by passing run_id
     # explicitly to the preview endpoint.

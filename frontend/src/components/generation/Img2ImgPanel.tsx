@@ -3162,11 +3162,21 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
       return;
     }
 
+    // A queue survives a page reload and a backend restart, so on mount there
+    // can be pending items with no model loaded yet. Dispatching then earns an
+    // immediate 400 ("No video model loaded") and the item is marked failed for
+    // a reason that has nothing to do with the item. Hold instead: `modelLoaded`
+    // is a dependency, so the queue starts by itself once a model is up.
+    if (hasPendingItems && isCurrentItemNull && !isGenerating && !modelLoaded) {
+      console.log("[Img2Img] Queue held: no model loaded yet");
+      return;
+    }
+
     if (hasPendingItems && isCurrentItemNull && !isGenerating) {
       console.log("[Img2Img] Auto-starting queue processing");
       processQueue();
     }
-  }, [queue, currentItem, isGenerating, processQueue, generateForever, params, inputImage, inputImagePreview]);
+  }, [queue, currentItem, isGenerating, processQueue, generateForever, params, inputImage, inputImagePreview, modelLoaded]);
 
   // Handle Ctrl+Enter keyboard shortcut
   useEffect(() => {

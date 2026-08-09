@@ -197,9 +197,7 @@ export function StartupProvider({ children }: StartupProviderProps) {
         setModelInfoVersion((v) => v + 1);
       }
 
-      if (data.loaded) {
-        void fetchStartupPayloads();
-      }
+      void fetchStartupPayloads();
       return { ok: true, modelInfo: info };
     } catch (error) {
       // Backend down / restarting: keep the last known info rather than

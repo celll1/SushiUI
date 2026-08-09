@@ -284,6 +284,20 @@ def test_training_unsupported_table_declares_it():
     from api.arch_capabilities import TRAINING_UNSUPPORTED
 
     assert "full_finetune" in TRAINING_UNSUPPORTED.get("minimax_h3", {})
+    assert "relora" in TRAINING_UNSUPPORTED.get("minimax_h3", {})
+
+
+def test_relora_refusal_reads_the_capability_table(monkeypatch):
+    from core.training.relora_trainer import ReLoRATrainer
+    import core.model_loader as ML
+
+    monkeypatch.setattr(ML.ModelLoader, "detect_model_type",
+                        staticmethod(lambda p: "minimax_h3"))
+    with pytest.raises(ValueError, match="ReLoRA is not supported"):
+        ReLoRATrainer._refuse_unsupported_relora("any/path")
+
+    monkeypatch.setattr(ML.ModelLoader, "detect_model_type", staticmethod(lambda p: "sdxl"))
+    ReLoRATrainer._refuse_unsupported_relora("any/path")
 
 
 # ===========================================================================

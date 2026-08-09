@@ -443,6 +443,9 @@ _add("minimax_h3", "vae_override",
 _add_training_unsupported(
     "minimax_h3", "full_finetune",
     "MiniMax-H3's DiT is a 33 B dense transformer; its parameters, gradients and optimizer state do not fit the single-GPU 48 GB envelope this integration targets, so only LoRA training is implemented")
+_add_training_unsupported(
+    "minimax_h3", "relora",
+    "MiniMax-H3 ReLoRA is not implemented; the supported training bases use weight-only FP8 or packed W4A8 Linears, which cannot accept dense LoRA merges without format-specific requantization. Use LoRA instead")
 
 
 def video_constraints_payload() -> Dict[str, Dict[str, Any]]:

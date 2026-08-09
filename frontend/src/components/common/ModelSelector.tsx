@@ -6,6 +6,7 @@ import Button from "./Button";
 import Select from "./Select";
 import { ChevronDown, ChevronUp, Folder } from "lucide-react";
 import { useStartup } from "@/contexts/StartupContext";
+import { getCurrentModel, getModels, loadModel } from "@/utils/api";
 
 interface Model {
   name: string;
@@ -26,7 +27,7 @@ interface ModelSelectorProps {
 }
 
 export default function ModelSelector({ onModelLoad, embedded = false }: ModelSelectorProps) {
-  const { modelLoaded, modelInfoVersion } = useStartup();
+  const { modelInfoVersion, refreshModelInfo } = useStartup();
   const [models, setModels] = useState<Model[]>([]);
   const [currentModel, setCurrentModel] = useState<any>(null);
   const [loading, setLoading] = useState(false);
@@ -34,6 +35,7 @@ export default function ModelSelector({ onModelLoad, embedded = false }: ModelSe
   const [selectedArchitecture, setSelectedArchitecture] = useState<string>("all");
   const [selectedSourceDir, setSelectedSourceDir] = useState<string>("all");
   const [showDirectoryFilter, setShowDirectoryFilter] = useState(false);
+  const [loadError, setLoadError] = useState("");
 
   useEffect(() => {
     loadModels();
@@ -44,15 +46,12 @@ export default function ModelSelector({ onModelLoad, embedded = false }: ModelSe
   // including changes this page did not make (API call, backend restart,
   // another tab), which previously left the header showing the wrong model.
   useEffect(() => {
-    if (modelLoaded) {
-      loadCurrentModel();
-    }
-  }, [modelLoaded, modelInfoVersion]);
+    loadCurrentModel();
+  }, [modelInfoVersion]);
 
   const loadModels = async () => {
     try {
-      const response = await fetch("/api/models");
-      const data = await response.json();
+      const data = await getModels();
       setModels(data.models || []);
     } catch (error) {
       console.error("Failed to load models:", error);
@@ -61,8 +60,7 @@ export default function ModelSelector({ onModelLoad, embedded = false }: ModelSe
 
   const loadCurrentModel = async () => {
     try {
-      const response = await fetch("/api/models/current");
-      const data = await response.json();
+      const data = await getCurrentModel();
       if (data.loaded) {
         setCurrentModel(data.model_info);
         if (data.model_info.source) {
@@ -70,7 +68,6 @@ export default function ModelSelector({ onModelLoad, embedded = false }: ModelSe
         }
       } else {
         setCurrentModel(null);
-        setSelectedModelPath("");
       }
     } catch (error) {
       console.error("Failed to load current model:", error);
@@ -85,31 +82,29 @@ export default function ModelSelector({ onModelLoad, embedded = false }: ModelSe
   // load the model again.
   const handleLoadModel = async (sourceType: string, source: string) => {
     setLoading(true);
+    setLoadError("");
     const isReload = currentModel?.source === source;
     try {
-      const formData = new FormData();
-      formData.append("source_type", sourceType);
-      formData.append("source", source);
-      if (isReload) {
-        formData.append("force", "true");
+      const data = await loadModel(sourceType, source, undefined, isReload);
+      if (!data.success) {
+        throw new Error(data.detail || data.message || "The model could not be loaded.");
       }
-
-      const response = await fetch("/api/models/load", {
-        method: "POST",
-        body: formData,
-      });
-
-      const data = await response.json();
-      if (data.success) {
-        await loadCurrentModel();
-        if (onModelLoad) {
-          onModelLoad(data.model_info);
-        }
-        alert(isReload ? "Model reloaded successfully!" : "Model loaded successfully!");
+      await refreshModelInfo();
+      await loadCurrentModel();
+      if (onModelLoad) {
+        await onModelLoad(data.model_info);
       }
-    } catch (error) {
+      alert(isReload ? "Model reloaded successfully!" : "Model loaded successfully!");
+    } catch (error: any) {
       console.error("Failed to load model:", error);
-      alert("Failed to load model");
+      await refreshModelInfo();
+      await loadCurrentModel();
+      const detail = error?.response?.data?.detail;
+      setLoadError(
+        (typeof detail === "string" && detail) ||
+        error?.message ||
+        "The model could not be loaded."
+      );
     } finally {
       setLoading(false);
     }
@@ -181,7 +176,10 @@ export default function ModelSelector({ onModelLoad, embedded = false }: ModelSe
                 label="Model"
                 className={uniqueArchitectures.length > 1 ? "" : "sm:col-span-2"}
                 value={selectedModelPath}
-                onChange={(e) => setSelectedModelPath(e.target.value)}
+                onChange={(e) => {
+                  setSelectedModelPath(e.target.value);
+                  setLoadError("");
+                }}
                 options={[
                   { value: "", label: "-- Select a model --" },
                   ...filteredModels.map(model => ({
@@ -249,6 +247,16 @@ export default function ModelSelector({ onModelLoad, embedded = false }: ModelSe
                   </div>
                 );
               })()}
+              {loadError && (
+                <div
+                  role="alert"
+                  aria-live="assertive"
+                  className="max-h-28 overflow-auto rounded border border-red-500/40 bg-red-950/40 px-2.5 py-2 text-[11px] leading-relaxed text-red-200 sm:col-span-2"
+                >
+                  <span className="font-semibold">Model load failed: </span>
+                  <span className="break-words">{loadError}</span>
+                </div>
+              )}
             </>
           )}
         </div>

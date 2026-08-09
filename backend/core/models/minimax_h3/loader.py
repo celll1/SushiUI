@@ -92,10 +92,10 @@ installed: the DiT through ``quantized_state_dict_report`` +
 ``scaled_quantization_report`` + ``verify_quantized_swap`` (it supports the
 scaled layout), and the TE and both VAEs through ``refuse_quantized_state_dict``
 (they have no swap path, so a quantized file must be refused rather than cast).
-That is what stops the co-distributed ``*_int8_convrot`` DiT and text encoder --
-whose codes quantize a Hadamard-rotated weight -- from loading as a silently
-wrong model. ``_assert_guard_reached`` pins the property in code rather than in
-this docstring.
+That stops unsupported ``*_int8_convrot`` components from loading as a silently
+wrong model. Packed ``asym_w4a8_int8`` DiTs are handled separately from their
+file-level metadata and executed by Comfy-Kitchen. ``_assert_guard_reached``
+pins the remaining guard property in code rather than in this docstring.
 """
 
 from __future__ import annotations
@@ -121,6 +121,8 @@ import torch.nn as nn
 MINIMAX_H3_DIT_PATTERNS: List[str] = [
     "minimax_h3_fl2va_pruned_fp8_scaled.safetensors",
     "minimax_h3_ref2va_pruned_fp8_scaled.safetensors",
+    "minimax_h3_fl2va_pruned_w4a8_mixed.safetensors",
+    "minimax_h3_ref2va_pruned_w4a8_mixed.safetensors",
     "minimax_h3_fl2va_pruned_bf16.safetensors",
     "minimax_h3_ref2va_pruned_bf16.safetensors",
 ]
@@ -419,10 +421,10 @@ for _name, _attr in (("F8_E4M3", "float8_e4m3fn"), ("F8_E5M2", "float8_e5m2")):
     if _dt is not None:
         _HEADER_DTYPES[_name] = _dt
 
-# Sidecars of the Comfy quantized distribution. ``.comfy_quant`` is carried into
-# the mapped state dict on purpose (the semantics guard reads it); the other two
-# are handled explicitly -- see ``_map_dit_state_dict``.
-_QUANT_SIDECAR_SUFFIXES = (".weight_scale", ".input_scale", ".comfy_quant")
+_W4A8_SUFFIXES = (
+    ".weight", ".weight_s_rel", ".weight_s_channel", ".weight_codebook",
+    ".weight_correction",
+)
 
 # Bitwise equal to ``1 / theta ** (arange(0, 2d, 2) / 2d)`` (MEASURED), and a
 # non-persistent buffer in the vendored class, so it is dropped rather than
@@ -617,7 +619,8 @@ def _dit_target_dtype(mapped_key: str, compute_dtype: torch.dtype,
     ``None`` means "do not touch": the fp8 codes and their float32 scales, which
     ``Fp8Linear`` owns.
     """
-    if mapped_key.endswith(".weight_scale"):
+    if mapped_key.endswith((".weight_scale", ".weight_s_rel", ".weight_s_channel",
+                            ".weight_codebook", ".weight_correction")):
         return None
     if mapped_key == "adaln_t_table":
         return torch.float32
@@ -630,6 +633,7 @@ def _dit_target_dtype(mapped_key: str, compute_dtype: torch.dtype,
 
 def _map_dit_state_dict(
     handle, header: Dict[str, Any], config: Dict[str, Any], compute_dtype: torch.dtype,
+    w4a8_layers: Optional[Dict[str, Dict[str, Any]]] = None,
 ) -> Tuple[Dict[str, torch.Tensor], Dict[str, int]]:
     """Read the Comfy single file into the vendored model's key space.
 
@@ -663,6 +667,7 @@ def _map_dit_state_dict(
     inner = int(config["num_attention_heads"]) * int(config["attention_head_dim"])
     curve = config.get("adaln_curve_grid") is not None
     mapped: Dict[str, torch.Tensor] = {}
+    w4a8_layers = w4a8_layers or {}
     stats = {"dropped": 0, "input_scale_dropped": 0, "qkv_split": 0, "swiglu_swapped": 0,
              "markers": 0, "scales_broadcast": 0, "swiglu_scale_swapped": 0}
 
@@ -682,6 +687,51 @@ def _map_dit_state_dict(
             # dict the guard inspects.
             mapped[_rename_dit_key(key)] = handle.get_tensor(key)
             stats["markers"] += 1
+            continue
+
+        w4_suffix = next((suffix for suffix in _W4A8_SUFFIXES if key.endswith(suffix)), None)
+        w4_module = key[:-len(w4_suffix)] if w4_suffix else None
+        if w4_module in w4a8_layers:
+            tensor = handle.get_tensor(key)
+            if ".attn.qkv_proj" in w4_module:
+                stem = _rename_dit_key(w4_module + ".weight").split(".attn.qkv_proj.")[0] + ".attn."
+                names = [stem + "to_q", stem + "to_k", stem + "to_v"]
+                if w4_suffix == ".weight_codebook":
+                    if tuple(tensor.shape) != (16,):
+                        raise ValueError(f"{key}: W4A8 codebook must have shape (16,)")
+                    for name in names:
+                        mapped[name + w4_suffix] = tensor
+                elif w4_suffix == ".weight_correction":
+                    if tensor.ndim != 2 or tensor.shape[1] != 3 * inner:
+                        raise ValueError(
+                            f"{key}: W4A8 qkv correction has shape {tuple(tensor.shape)}, "
+                            f"expected (*, {3 * inner})")
+                    for i, name in enumerate(names):
+                        mapped[name + w4_suffix] = tensor[:, i * inner:(i + 1) * inner].contiguous()
+                else:
+                    if tensor.shape[0] != 3 * inner:
+                        raise ValueError(
+                            f"{key}: fused W4A8 qkv has {tensor.shape[0]} rows, "
+                            f"expected {3 * inner}")
+                    for i, name in enumerate(names):
+                        mapped[name + w4_suffix] = tensor[i * inner:(i + 1) * inner]
+                if w4_suffix == ".weight":
+                    stats["qkv_split"] += 1
+                continue
+
+            target = _rename_dit_key(key)
+            if target.endswith(".ff.net.0.proj" + w4_suffix):
+                if w4_suffix == ".weight_codebook":
+                    pass
+                elif w4_suffix == ".weight_correction":
+                    gate, up = tensor.chunk(2, dim=1)
+                    tensor = torch.cat([up, gate], dim=1).contiguous()
+                else:
+                    gate, up = tensor.chunk(2, dim=0)
+                    tensor = torch.cat([up, gate], dim=0).contiguous()
+                if w4_suffix == ".weight":
+                    stats["swiglu_swapped"] += 1
+            mapped[target] = tensor
             continue
 
         target = _rename_dit_key(key)
@@ -853,6 +903,126 @@ def _guard_component_file(path: str, *, label: str) -> Tuple[Dict[str, Any], Dic
     return header, metadata
 
 
+def _w4a8_layers_from_metadata(
+    metadata: Dict[str, Any], header: Dict[str, Any], *, path: str,
+) -> Dict[str, Dict[str, Any]]:
+    """Validate Comfy's file-level quantization metadata without reading weights."""
+    raw = metadata.get("_quantization_metadata")
+    if raw is None:
+        return {}
+    try:
+        payload = json.loads(raw)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"{path}: malformed _quantization_metadata JSON") from exc
+    layers = payload.get("layers") if isinstance(payload, dict) else None
+    if not isinstance(layers, dict):
+        raise ValueError(f"{path}: _quantization_metadata must contain a 'layers' object")
+
+    supported_passthrough = {"float8_e4m3fn", "float8_e5m2", "int8_tensorwise"}
+    from core.models.common.quantized_checkpoint_guard import KNOWN_COMFY_QUANT_FIELDS
+
+    w4a8: Dict[str, Dict[str, Any]] = {}
+    for layer, value in layers.items():
+        if not isinstance(layer, str) or not isinstance(value, dict):
+            raise ValueError(f"{path}: every quantized layer entry must be an object")
+        quant_format = value.get("format")
+        if quant_format != "asym_w4a8_int8":
+            unknown = sorted(set(value) - KNOWN_COMFY_QUANT_FIELDS)
+            if unknown:
+                raise ValueError(
+                    f"{path}: layer '{layer}' has unknown quantization field(s): {unknown}")
+            if value.get("convrot"):
+                raise ValueError(
+                    f"{path}: layer '{layer}' declares unsupported {quant_format!r} ConvRot "
+                    "semantics; only asym_w4a8_int8 is supported by the MiniMax-H3 loader")
+            if quant_format not in supported_passthrough:
+                raise ValueError(f"{path}: layer '{layer}' has unknown quantization format {quant_format!r}")
+            continue
+
+        allowed = {"format", "convrot", "convrot_groupsize", "group_size"}
+        unknown = sorted(set(value) - allowed)
+        if unknown:
+            raise ValueError(f"{path}: W4A8 layer '{layer}' has unknown field(s): {unknown}")
+        group_size = int(value.get("group_size", 16))
+        convrot_groupsize = int(value.get("convrot_groupsize", 256))
+        if value.get("convrot") is not True:
+            raise ValueError(f"{path}: W4A8 layer '{layer}' must declare convrot=true")
+
+        weight = header.get(layer + ".weight")
+        s_rel = header.get(layer + ".weight_s_rel")
+        s_channel = header.get(layer + ".weight_s_channel")
+        if not all(isinstance(item, dict) for item in (weight, s_rel, s_channel)):
+            raise ValueError(f"{path}: W4A8 layer '{layer}' is missing weight/s_rel/s_channel")
+        if weight.get("dtype") != "I8" or len(weight.get("shape", [])) != 2:
+            raise ValueError(f"{path}: W4A8 layer '{layer}' weight must be packed 2-D I8")
+        out_features, packed_k = (int(x) for x in weight["shape"])
+        logical_k = packed_k * 2
+        if (
+            group_size < 4
+            or convrot_groupsize <= 0
+            or logical_k % 16
+            or logical_k % group_size
+            or logical_k % convrot_groupsize
+            or (16 % group_size != 0 and group_size % 16 != 0)
+        ):
+            raise ValueError(
+                f"{path}: W4A8 layer '{layer}' logical K={logical_k} is incompatible with "
+                f"group_size={group_size}, convrot_groupsize={convrot_groupsize}")
+        if list(s_rel.get("shape", [])) != [out_features, logical_k // group_size]:
+            raise ValueError(f"{path}: W4A8 layer '{layer}' has an invalid weight_s_rel shape")
+        if s_rel.get("dtype") not in {"F8_E4M3", "F32"}:
+            raise ValueError(
+                f"{path}: W4A8 layer '{layer}' weight_s_rel must be F8_E4M3 or F32")
+        if list(s_channel.get("shape", [])) != [out_features]:
+            raise ValueError(f"{path}: W4A8 layer '{layer}' has an invalid weight_s_channel shape")
+        if s_channel.get("dtype") != "F32":
+            raise ValueError(f"{path}: W4A8 layer '{layer}' weight_s_channel must be F32")
+        codebook = header.get(layer + ".weight_codebook")
+        if codebook is not None and list(codebook.get("shape", [])) != [16]:
+            raise ValueError(f"{path}: W4A8 layer '{layer}' codebook must have shape [16]")
+        if codebook is not None and codebook.get("dtype") != "F32":
+            raise ValueError(f"{path}: W4A8 layer '{layer}' codebook must be F32")
+        correction = header.get(layer + ".weight_correction")
+        if correction is not None and list(correction.get("shape", [])) != [
+            logical_k // group_size, out_features
+        ]:
+            raise ValueError(f"{path}: W4A8 layer '{layer}' has an invalid correction shape")
+        if correction is not None and correction.get("dtype") not in {"F16", "BF16", "F32"}:
+            raise ValueError(
+                f"{path}: W4A8 layer '{layer}' correction must be F16, BF16 or F32")
+        w4a8[layer] = {
+            "group_size": group_size,
+            "convrot_groupsize": convrot_groupsize,
+        }
+
+    sidecar_modules = {
+        key[: -len(suffix)]
+        for key in header
+        for suffix in _W4A8_SUFFIXES[1:]
+        if key.endswith(suffix)
+    }
+    undeclared = sorted(sidecar_modules - set(w4a8))
+    if undeclared:
+        raise ValueError(
+            f"{path}: W4A8 sidecars exist without matching metadata (first 5: {undeclared[:5]})")
+    return w4a8
+
+
+def _mapped_w4a8_layer_configs(
+    source_layers: Dict[str, Dict[str, Any]],
+) -> Dict[str, Dict[str, Any]]:
+    mapped: Dict[str, Dict[str, Any]] = {}
+    for source, config in source_layers.items():
+        if source.endswith(".attn.qkv_proj"):
+            target = _rename_dit_key(source + ".weight")
+            stem = target.split(".attn.qkv_proj.")[0] + ".attn."
+            for suffix in ("to_q", "to_k", "to_v"):
+                mapped[stem + suffix] = dict(config)
+        else:
+            mapped[_rename_dit_key(source + ".weight")[:-len(".weight")]] = dict(config)
+    return mapped
+
+
 def _dit_quantization_policy(model: nn.Module) -> int:
     """Pin every ``Fp8Linear`` of the DiT to the DEQUANT path. Returns the count.
 
@@ -927,7 +1097,13 @@ def _build_transformer(dit_path: str, torch_dtype: torch.dtype,
 
     # THE GUARD, first of all -- ahead of the geometry synthesis, which can raise
     # on its own and would then mask the real reason a convrot file is refused.
-    header, _metadata = _guard_component_file(dit_path, label="transformer")
+    header, metadata = _guard_component_file(dit_path, label="transformer")
+    w4a8_source_layers = _w4a8_layers_from_metadata(metadata, header, path=dit_path)
+    w4a8_layer_configs = _mapped_w4a8_layer_configs(w4a8_source_layers)
+    if w4a8_layer_configs:
+        from core.models.common.w4a8_linear import require_w4a8_runtime
+
+        require_w4a8_runtime()
 
     config = _synthesize_transformer_config(header, official_dir)
     curve = config.get("adaln_curve_grid") is not None
@@ -938,15 +1114,21 @@ def _build_transformer(dit_path: str, torch_dtype: torch.dtype,
           + (f", grid {config['adaln_curve_grid']} x {config['time_embed_dim']}" if curve else ""))
 
     with safe_open(dit_path, framework="pt", device="cpu") as handle:
-        state_dict, stats = _map_dit_state_dict(handle, header, config, torch_dtype)
+        state_dict, stats = _map_dit_state_dict(
+            handle, header, config, torch_dtype, w4a8_layers=w4a8_source_layers)
 
         # THE GUARD, before a single tensor is installed. The ``.comfy_quant``
         # markers carried through above are what make this able to see an
         # ``int8_convrot`` file at all.
         _assert_guard_reached(state_dict, label="transformer", path=dit_path)
 
+        w4a8_prefixes = tuple(name + "." for name in w4a8_layer_configs)
+        scaled_state_dict = {
+            key: value for key, value in state_dict.items()
+            if not w4a8_prefixes or not key.startswith(w4a8_prefixes)
+        }
         census = quantized_state_dict_report(
-            state_dict, arch="MiniMax-H3", path=dit_path, label="transformer")
+            scaled_state_dict, arch="MiniMax-H3", path=dit_path, label="transformer")
         report = scaled_quantization_report(
             census, arch="MiniMax-H3", path=dit_path, label="transformer")
 
@@ -957,10 +1139,21 @@ def _build_transformer(dit_path: str, torch_dtype: torch.dtype,
             model = MiniMaxH3Transformer3DModel(**config)
 
         swapped = 0
+        if w4a8_layer_configs:
+            from core.models.common.w4a8_linear import swap_linears_to_w4a8
+
+            w4a8_swapped = swap_linears_to_w4a8(
+                model, state_dict, w4a8_layer_configs, torch_dtype)
+            if w4a8_swapped != len(w4a8_layer_configs):
+                raise RuntimeError(
+                    f"MiniMax-H3 W4A8 metadata mapped {len(w4a8_layer_configs)} Linear(s), "
+                    f"but only {w4a8_swapped} module(s) were replaced")
+            swapped += w4a8_swapped
         if report is not None:
-            swapped = _swap_minimax_h3_quantized_linears(model, state_dict, torch_dtype)
-            verify_quantized_swap(report, swapped, arch="MiniMax-H3", path=dit_path,
+            scaled_swapped = _swap_minimax_h3_quantized_linears(model, state_dict, torch_dtype)
+            verify_quantized_swap(report, scaled_swapped, arch="MiniMax-H3", path=dit_path,
                                   label="transformer")
+            swapped += scaled_swapped
 
         missing, unexpected = model.load_state_dict(state_dict, strict=False, assign=True)
 
@@ -995,7 +1188,7 @@ def _build_transformer(dit_path: str, torch_dtype: torch.dtype,
     if swapped:
         pinned = _dit_quantization_policy(model)
         print(f"[MiniMaxH3Loader] {swapped} weight-only quantized Linear(s) kept quantized; "
-              f"{pinned} pinned to the dequant path")
+              f"{pinned} FP8 Linear(s) pinned to the dequant path")
 
     model.eval().requires_grad_(False)
     return model, config

@@ -242,6 +242,12 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         self._override_te_path = None
         self._original_te = []
 
+        # Everything below destroys the previously loaded model before the new
+        # one is built.  Do not keep advertising that old model if cleanup or
+        # the replacement load fails partway through.
+        self.current_model = None
+        self.current_model_info = None
+
         try:
             # === Step 1: Complete cleanup of existing pipelines ===
             print("[Pipeline] Cleaning up existing pipelines and releasing resources...")

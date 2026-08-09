@@ -34,6 +34,7 @@ import { sendImageToImg2Img, sendImageToInpaint, sendImageToOutpaint } from "@/u
 import { useStartup } from "@/contexts/StartupContext";
 import { useGenerationQueue } from "@/contexts/GenerationQueueContext";
 import { wsClient, CFGMetrics } from "@/utils/websocket";
+import { useSmoothProgress } from "@/hooks/useSmoothProgress";
 import SendToStudioButton from "../studio/SendToStudioButton";
 
 const DEFAULT_PARAMS: UpscaleParams = {
@@ -88,6 +89,8 @@ export default function UpscalePanel({ onTabChange, onImageGenerated }: UpscaleP
   const [isGenerating, setIsGenerating] = useState(false);
   const [progress, setProgress] = useState(0);
   const [totalSteps, setTotalSteps] = useState(0);
+  // Sub-step smoothing for the bar only; the "Tile n / total" text stays integer.
+  const { percent: progressPercent, reportSubProgress } = useSmoothProgress(progress, totalSteps, isGenerating);
 
   const [generatedImage, setGeneratedImage] = useState<string | null>(null);
   const [generatedImageInfo, setGeneratedImageInfo] = useState<{ width: number; height: number } | null>(null);
@@ -104,12 +107,13 @@ export default function UpscalePanel({ onTabChange, onImageGenerated }: UpscaleP
     isGeneratingRef.current = isGenerating;
   }, [isGenerating]);
 
-  const handleProgress = useCallback((step: number, total: number, message: string, preview?: string, metrics?: CFGMetrics) => {
+  const handleProgress = useCallback((step: number, total: number, message: string, preview?: string, metrics?: CFGMetrics, subProgress?: number) => {
     if (isGeneratingRef.current) {
       setProgress(step);
       setTotalSteps(total);
+      reportSubProgress(step, subProgress);
     }
-  }, []);
+  }, [reportSubProgress]);
 
   useEffect(() => {
     wsClient.connect();
@@ -898,7 +902,7 @@ export default function UpscalePanel({ onTabChange, onImageGenerated }: UpscaleP
               <div className="w-full bg-gray-800 rounded-full h-2">
                 <div
                   className="bg-blue-600 h-2 rounded-full transition-all"
-                  style={{ width: totalSteps > 0 ? `${(progress / totalSteps) * 100}%` : "0%" }}
+                  style={{ width: `${progressPercent}%` }}
                 />
               </div>
             </div>

@@ -42,6 +42,7 @@ import MiniMaxH3ReferenceSelector, { EMPTY_MINIMAX_H3_REFERENCES, countMiniMaxH3
 import { migrateLoopGenerationConfig, computeLoopDecodeDirective } from "@/utils/loopGenerationInheritance";
 import { getSamplers, getScheduleTypes, generateImg2Img, generateImg2Vid, Img2VidParams, MiniMaxH3Keyframe, MiniMaxH3References, generateRef2Vid, Ref2VidParams, generateAud2Aud, Aud2AudParams, generateImg2ImgTrainingPreview, toBase64, LoRAConfig, ControlNetConfig, generateTIPOPrompt, cancelGeneration, getCurrentModel, isLatentOnlyResult, getResultFilename, getResultSeed, getResultAncestralSeed, unetQuantizationOptions, normalizeUnetQuantization, transformerQuantizationLabel, archSupportsFeature, videoFrameOptions, videoFrameLabel, archDisplayName, normalizeVideoFrames, fitVideoCanvas, videoCanvasRule, videoCanvasAxisBounds, videoCanvasExceedsEnvelope, isGenerationStalledError } from "@/utils/api";
 import { useActiveTraining } from "@/hooks/useActiveTraining";
+import { useSmoothProgress } from "@/hooks/useSmoothProgress";
 import { wsClient, CFGMetrics } from "@/utils/websocket";
 import CFGMetricsGraph from "../common/CFGMetricsGraph";
 import { saveTempImage, loadTempImage, deleteTempImageRef } from "@/utils/tempImageStorage";
@@ -498,6 +499,8 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
   // Rendered in place of the hardcoded "Generating..." text so decode-phase
   // status is visible; reset alongside every setProgress(0) site.
   const [progressMessage, setProgressMessage] = useState("");
+  // Sub-step smoothing for the bar only; the "n/total steps" text stays integer.
+  const { percent: progressPercent, reportSubProgress } = useSmoothProgress(progress, totalSteps, isGenerating);
   const [samplers, setSamplers] = useState<Array<{ id: string; name: string }>>([]);
   const [scheduleTypes, setScheduleTypes] = useState<Array<{ id: string; name: string }>>([]);
   const [isMounted, setIsMounted] = useState(false);
@@ -707,11 +710,12 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
   }, [developerMode]);
 
   // WebSocket progress callback - stable reference
-  const handleProgress = useCallback((step: number, totalSteps: number, message: string, preview?: string, metrics?: CFGMetrics) => {
+  const handleProgress = useCallback((step: number, totalSteps: number, message: string, preview?: string, metrics?: CFGMetrics, subProgress?: number) => {
     if (isGeneratingRef.current) {
       setProgress(step);
       setTotalSteps(totalSteps);
       setProgressMessage(message || "");
+      reportSubProgress(step, subProgress);
       if (preview) {
         setPreviewImage(preview);
       }
@@ -719,7 +723,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         setCfgMetrics(prev => [...prev, metrics]);
       }
     }
-  }, []); // Empty deps - stable callback
+  }, [reportSubProgress]); // reportSubProgress is stable
 
   // Setup WebSocket connection - runs once
   useEffect(() => {
@@ -5535,7 +5539,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
                   <div className="w-full bg-gray-700 rounded-full h-2">
                     <div
                       className="bg-blue-600 h-2 rounded-full transition-all duration-200"
-                      style={{ width: `${(progress / totalSteps) * 100}%` }}
+                      style={{ width: `${progressPercent}%` }}
                     />
                   </div>
                 </div>

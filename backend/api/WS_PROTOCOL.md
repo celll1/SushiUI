@@ -138,6 +138,7 @@ synchronous `send_progress_sync` path is actually exercised.
 | `message` | string | human-readable status text, e.g. `"Step 3/28"` |
 | `preview_image` | string (optional) | base64-encoded JPEG (quality 75) of a TAESD-decoded latent preview; only present when a preview was generated for this step |
 | `cfg_metrics` | object (optional) | passthrough of whatever `cfg_metrics` dict the sampling loop supplied for this step (shape defined by the caller, e.g. `custom_sampling.py`, not fixed by the WS layer); only present alongside a preview |
+| `sub_progress` | float (optional) | 0..1, the fraction completed of the step *currently running* (`step` still counts completed steps, `progress` is still `step / total_steps`). Emitted from block-level forward hooks (`backend/core/inference/substep_progress.py`) on architectures whose single denoise step takes minutes — MiniMax-H3 only today — and throttled to at most ~8 ticks per step. Absent on every other path |
 
 ```json
 {

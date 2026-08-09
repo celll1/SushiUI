@@ -2380,11 +2380,13 @@ async def generate_upscale(
 
         # Progress callback: tiles reported as step/total_steps.
         # send_progress_sync is thread-safe (called from the executor thread).
-        def progress_callback(step, total_steps):
+        def progress_callback(step, total_steps, sub_progress=None):
             from api.generation_status import update_progress
             total = max(total_steps, 1)
-            manager.send_progress_sync(step, total, f"Upscaling tile {step}/{total}")
-            update_progress(step, total)
+            manager.send_progress_sync(
+                step, total, f"Upscaling tile {step}/{total}", sub_progress=sub_progress)
+            if sub_progress is None:
+                update_progress(step, total)
 
         from core.gpu_coordinator import gpu_coordinator
         loop = asyncio.get_event_loop()
@@ -2619,11 +2621,17 @@ async def generate_txt2vid(
         print(f"txt2vid generation params: {sanitize_params_for_logging(params)}")
 
         # Progress via the shared WebSocket step broadcast (mirrors the upscale route).
-        def progress_callback(step, total_steps):
+        def progress_callback(step, total_steps, sub_progress=None):
             from api.generation_status import update_progress
             total = max(total_steps, 1)
-            manager.send_progress_sync(step, total, f"Generating video: step {step}/{total}")
-            update_progress(step, total)
+            # A mid-step tick names the step still RUNNING; `step` itself keeps
+            # counting COMPLETED steps, and the integer-only generation status is
+            # left at the last boundary.
+            shown = step + 1 if sub_progress is not None else step
+            manager.send_progress_sync(
+                step, total, f"Generating video: step {shown}/{total}", sub_progress=sub_progress)
+            if sub_progress is None:
+                update_progress(step, total)
 
         from core.gpu_coordinator import gpu_coordinator
         from core.inference.generation_timing import generation_timer
@@ -2781,11 +2789,13 @@ async def generate_txt2aud(
         print(f"txt2aud generation params: {sanitize_params_for_logging(params)}")
 
         # Progress via the shared WebSocket step broadcast (mirrors txt2vid).
-        def progress_callback(step, total_steps):
+        def progress_callback(step, total_steps, sub_progress=None):
             from api.generation_status import update_progress
             total = max(total_steps, 1)
-            manager.send_progress_sync(step, total, f"Generating audio: step {step}/{total}")
-            update_progress(step, total)
+            manager.send_progress_sync(
+                step, total, f"Generating audio: step {step}/{total}", sub_progress=sub_progress)
+            if sub_progress is None:
+                update_progress(step, total)
 
         from core.gpu_coordinator import gpu_coordinator
         loop = asyncio.get_event_loop()
@@ -2979,12 +2989,14 @@ async def generate_aud2aud(
         _generation_type = "repaint" if mode == "repaint" else "aud2aud"
 
         # Progress via the shared WebSocket step broadcast (mirrors txt2aud).
-        def progress_callback(step, total_steps):
+        def progress_callback(step, total_steps, sub_progress=None):
             from api.generation_status import update_progress
             total = max(total_steps, 1)
             label = "repaint" if mode == "repaint" else "cover"
-            manager.send_progress_sync(step, total, f"Generating {label}: step {step}/{total}")
-            update_progress(step, total)
+            manager.send_progress_sync(
+                step, total, f"Generating {label}: step {step}/{total}", sub_progress=sub_progress)
+            if sub_progress is None:
+                update_progress(step, total)
 
         from core.gpu_coordinator import gpu_coordinator
         loop = asyncio.get_event_loop()
@@ -3231,11 +3243,13 @@ async def generate_outpaint_audio(
 
         print(f"outpaint_aud generation params: {sanitize_params_for_logging(params)}")
 
-        def progress_callback(step, total_steps):
+        def progress_callback(step, total_steps, sub_progress=None):
             from api.generation_status import update_progress
             total = max(total_steps, 1)
-            manager.send_progress_sync(step, total, f"Generating outpaint: step {step}/{total}")
-            update_progress(step, total)
+            manager.send_progress_sync(
+                step, total, f"Generating outpaint: step {step}/{total}", sub_progress=sub_progress)
+            if sub_progress is None:
+                update_progress(step, total)
 
         from core.gpu_coordinator import gpu_coordinator
         loop = asyncio.get_event_loop()
@@ -3760,11 +3774,17 @@ async def generate_img2vid(
 
         print(f"img2vid generation params: {sanitize_params_for_logging(params)}")
 
-        def progress_callback(step, total_steps):
+        def progress_callback(step, total_steps, sub_progress=None):
             from api.generation_status import update_progress
             total = max(total_steps, 1)
-            manager.send_progress_sync(step, total, f"Generating video: step {step}/{total}")
-            update_progress(step, total)
+            # A mid-step tick names the step still RUNNING; `step` itself keeps
+            # counting COMPLETED steps, and the integer-only generation status is
+            # left at the last boundary.
+            shown = step + 1 if sub_progress is not None else step
+            manager.send_progress_sync(
+                step, total, f"Generating video: step {shown}/{total}", sub_progress=sub_progress)
+            if sub_progress is None:
+                update_progress(step, total)
 
         from core.gpu_coordinator import gpu_coordinator
         from core.inference.generation_timing import generation_timer
@@ -4223,11 +4243,17 @@ async def generate_ref2vid(
 
         print(f"ref2vid generation params: {sanitize_params_for_logging(params)}")
 
-        def progress_callback(step, total_steps):
+        def progress_callback(step, total_steps, sub_progress=None):
             from api.generation_status import update_progress
             total = max(total_steps, 1)
-            manager.send_progress_sync(step, total, f"Generating video: step {step}/{total}")
-            update_progress(step, total)
+            # A mid-step tick names the step still RUNNING; `step` itself keeps
+            # counting COMPLETED steps, and the integer-only generation status is
+            # left at the last boundary.
+            shown = step + 1 if sub_progress is not None else step
+            manager.send_progress_sync(
+                step, total, f"Generating video: step {shown}/{total}", sub_progress=sub_progress)
+            if sub_progress is None:
+                update_progress(step, total)
 
         from core.gpu_coordinator import gpu_coordinator
         from core.inference.generation_timing import generation_timer
@@ -4750,11 +4776,17 @@ async def generate_outpaint_video(
 
         print(f"outpaint_vid generation params: {sanitize_params_for_logging(params)}")
 
-        def progress_callback(step, total_steps):
+        def progress_callback(step, total_steps, sub_progress=None):
             from api.generation_status import update_progress
             total = max(total_steps, 1)
-            manager.send_progress_sync(step, total, f"Generating video: step {step}/{total}")
-            update_progress(step, total)
+            # A mid-step tick names the step still RUNNING; `step` itself keeps
+            # counting COMPLETED steps, and the integer-only generation status is
+            # left at the last boundary.
+            shown = step + 1 if sub_progress is not None else step
+            manager.send_progress_sync(
+                step, total, f"Generating video: step {shown}/{total}", sub_progress=sub_progress)
+            if sub_progress is None:
+                update_progress(step, total)
 
         from core.gpu_coordinator import gpu_coordinator
         from core.inference.generation_timing import generation_timer
@@ -5150,11 +5182,17 @@ async def generate_inpaint_video(
 
         print(f"inpaint_vid generation params: {sanitize_params_for_logging(params)}")
 
-        def progress_callback(step, total_steps):
+        def progress_callback(step, total_steps, sub_progress=None):
             from api.generation_status import update_progress
             total = max(total_steps, 1)
-            manager.send_progress_sync(step, total, f"Generating video: step {step}/{total}")
-            update_progress(step, total)
+            # A mid-step tick names the step still RUNNING; `step` itself keeps
+            # counting COMPLETED steps, and the integer-only generation status is
+            # left at the last boundary.
+            shown = step + 1 if sub_progress is not None else step
+            manager.send_progress_sync(
+                step, total, f"Generating video: step {shown}/{total}", sub_progress=sub_progress)
+            if sub_progress is None:
+                update_progress(step, total)
 
         from core.gpu_coordinator import gpu_coordinator
         from core.inference.generation_timing import generation_timer

@@ -56,6 +56,7 @@ from PIL import Image
 
 from config.settings import settings
 from core.inference.generation_timing import generation_timer
+from core.inference.substep_progress import attach_block_substep_hooks
 
 
 def _is_lora_target(module) -> bool:
@@ -1633,6 +1634,12 @@ class MiniMaxH3Mixin:
         # itself rather than moving all 21 GB on and some of it back off.
         transformer, offloader = self._ensure_minimax_h3_swap_and_offload(params, torch_device)
         self._minimax_h3_apply_attention_backend(transformer, params)
+        # ~150s per step means the per-step callback alone looks like a hang, so
+        # block-level forward hooks tick progress from inside the step. Removed
+        # in the `finally` below: a surviving hook would fire on the next
+        # generation against this generation's callback.
+        substep_reporter = attach_block_substep_hooks(
+            transformer, progress_callback, label="MiniMax-H3")
         try:
             with generation_timer.phase("denoise"):
                 video_rows, audio_rows = ops.denoise(
@@ -1646,6 +1653,7 @@ class MiniMaxH3Mixin:
                     num_inference_steps=num_inference_steps,
                     device=device,
                     progress_callback=progress_callback,
+                    substep_reporter=substep_reporter,
                     step_callback=step_callback,
                     # Preview geometry: the loop hands the callback LATENTS, not
                     # packed rows, so it needs the shape to unpatchify into.
@@ -1658,6 +1666,7 @@ class MiniMaxH3Mixin:
                     patch_size=tuple(components["transformer_config"]["patch_size"]),
                 )
         finally:
+            substep_reporter.close()
             # Back to the CPU before ANY decode: the video VAE's ViT decoder is
             # the second-largest allocation of the generation and the two do not
             # fit together. This also unwraps the block-loop wrapper and cleans

@@ -130,15 +130,18 @@ export default function ModelSelector({ onModelLoad, embedded = false }: ModelSe
   const selectedModel = models.find(m => m.path === selectedModelPath);
 
   const content = (
-    <div className="grid gap-3 lg:grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)]">
+    <div
+      className="grid gap-2"
+      style={{ gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 17rem), 1fr))" }}
+    >
         {/* Current Model Display */}
         {currentModel && (
-          <div className="h-full rounded-md border border-gray-700 bg-gray-800/70 p-3">
+          <div className="h-full rounded-md border border-gray-700 bg-gray-800/70 p-2.5">
             <p className="app-kicker">Active model</p>
-            <p className="mt-1.5 truncate text-xs font-medium text-white" title={currentModel.source}>
+            <p className="mt-1 truncate text-xs font-medium text-white" title={currentModel.source}>
               {currentModel.source}
             </p>
-            <div className="mt-2 flex flex-wrap items-center gap-1.5">
+            <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
               <p className="rounded bg-gray-900 px-2 py-0.5 text-[10px] text-gray-400">{currentModel.type || "Unknown"}</p>
               {currentModel.is_v_prediction && (
                 <span className="rounded bg-violet-600/80 px-2 py-0.5 text-[10px] text-white">
@@ -220,7 +223,7 @@ export default function ModelSelector({ onModelLoad, embedded = false }: ModelSe
               {selectedModelPath && (() => {
                 if (!selectedModel) return null;
                 return (
-                  <div className="rounded-md border border-gray-700 bg-gray-800/70 p-2.5 text-xs sm:col-span-2">
+                  <div className="rounded-md border border-gray-700 bg-gray-800/70 p-2 text-xs sm:col-span-2">
                     <div className="grid gap-2 sm:grid-cols-[auto_auto_minmax(0,1fr)_auto] sm:items-center">
                       <div>
                         <span className="text-gray-500">Architecture</span>

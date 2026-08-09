@@ -222,7 +222,7 @@ export default function MiniMaxH3ReferenceSelector({
     file: File,
     extra?: ReactNode,
   ) => (
-    <div key={`${kind}-${index}`} className="flex items-center gap-2 text-xs text-gray-300 py-1">
+    <div key={`${kind}-${index}`} className="flex items-center gap-2 py-0.5 text-xs text-gray-300">
       <span className="text-gray-500 w-20 shrink-0">{label}</span>
       <span className="truncate flex-1" title={file.name}>{file.name}</span>
       {extra}
@@ -259,7 +259,7 @@ export default function MiniMaxH3ReferenceSelector({
   return (
     <Card title={`References (MiniMax-H3 ref2va) — ${total}/${imagesOnly ? MAX_IMAGES : MAX_TOTAL}`}>
       <div
-        className={`space-y-3 rounded-lg transition-colors ${
+        className={`space-y-2 rounded-lg transition-colors ${
           isDragging ? "ring-2 ring-blue-500 bg-gray-800/50" : ""
         }`}
         onDragOver={handleDragOver}
@@ -275,6 +275,8 @@ export default function MiniMaxH3ReferenceSelector({
         {!isDragging && dropNotice && (
           <p className="text-xs text-amber-400">{dropNotice}</p>
         )}
+        <details className="rounded border border-gray-800 bg-gray-950/40 px-2 py-1 text-xs text-gray-500">
+          <summary className="cursor-pointer select-none text-gray-400">Reference labels and limits</summary>
         {imagesOnly ? (
           <p className="text-xs text-gray-400">
             Up to 9 image references, read in upload order and shown to the
@@ -290,16 +292,17 @@ export default function MiniMaxH3ReferenceSelector({
             <code>&lt;Audio j&gt;</code>. The order is part of the request.
           </p>
         )}
+        </details>
 
         {/* Images */}
         <div>
           <div className="flex items-center justify-between">
-            <span className="text-sm text-gray-300">
+            <span className="text-xs text-gray-300">
               Images ({value.images.length}/{MAX_IMAGES}) — &lt;Picture i&gt;
             </span>
             <Button
               variant="secondary"
-              size="sm"
+              size="xs"
               onClick={() => imageInput.current?.click()}
               disabled={disabled || value.images.length >= MAX_IMAGES || remaining <= 0}
             >
@@ -324,12 +327,12 @@ export default function MiniMaxH3ReferenceSelector({
         {!imagesOnly && (
         <div>
           <div className="flex items-center justify-between">
-            <span className="text-sm text-gray-300">
+            <span className="text-xs text-gray-300">
               Videos ({value.videos.length}/{MAX_VIDEOS}) — &lt;Video k&gt;
             </span>
             <Button
               variant="secondary"
-              size="sm"
+              size="xs"
               onClick={() => videoInput.current?.click()}
               disabled={disabled || value.videos.length >= MAX_VIDEOS || remaining <= 0}
             >
@@ -386,12 +389,12 @@ export default function MiniMaxH3ReferenceSelector({
         {!imagesOnly && (
         <div>
           <div className="flex items-center justify-between">
-            <span className="text-sm text-gray-300">
+            <span className="text-xs text-gray-300">
               Audio ({value.audios.length}/{MAX_AUDIOS}) — &lt;Audio j&gt;
             </span>
             <Button
               variant="secondary"
-              size="sm"
+              size="xs"
               onClick={() => audioInput.current?.click()}
               disabled={disabled || value.audios.length >= MAX_AUDIOS || remaining <= 0}
             >
@@ -430,7 +433,9 @@ export default function MiniMaxH3ReferenceSelector({
           ]}
           disabled={disabled}
         />
-        <p className="text-xs text-gray-500">
+        <details className="text-xs text-gray-500">
+          <summary className="cursor-pointer select-none text-gray-400">Reference performance note</summary>
+        <p className="mt-1">
           A reference&apos;s rows ride through every sampling step, so a larger
           image reference lengthens the packed sequence for the whole
           generation.{" "}
@@ -438,6 +443,7 @@ export default function MiniMaxH3ReferenceSelector({
             ? "The automatic source-clip video reference is unaffected: it always follows the canvas rule the generated video follows."
             : "Video references are unaffected: they always follow the canvas rule the generated video follows."}
         </p>
+        </details>
       </div>
     </Card>
   );

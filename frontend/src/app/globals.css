@@ -93,6 +93,36 @@ input[type="radio"] {
   .compact-workspace {
     @apply text-[13px];
   }
+
+  .generation-settings section {
+    padding: 0.625rem;
+  }
+
+  .generation-settings section > :not([hidden]) ~ :not([hidden]) {
+    margin-top: 0.375rem;
+  }
+
+  .generation-settings .app-tab {
+    padding: 0.375rem 0.5rem;
+  }
+
+  .generation-settings .space-y-4 > :not([hidden]) ~ :not([hidden]) {
+    margin-top: 0.625rem;
+  }
+
+  .generation-settings .space-y-3 > :not([hidden]) ~ :not([hidden]) {
+    margin-top: 0.5rem;
+  }
+
+  .generation-settings input[type="file"] {
+    font-size: 0.75rem;
+  }
+
+  .generation-settings input[type="file"]::file-selector-button {
+    margin-right: 0.5rem;
+    padding: 0.375rem 0.625rem;
+    font-size: 0.75rem;
+  }
 }
 
 /* Apply font size scaling on mobile devices */

@@ -1,10 +1,15 @@
-import { TextareaHTMLAttributes, useRef, KeyboardEvent } from "react";
+import { TextareaHTMLAttributes, useEffect, useRef, KeyboardEvent } from "react";
 import { cn } from "@/lib/utils";
 
 interface TextareaProps extends TextareaHTMLAttributes<HTMLTextAreaElement> {
   label?: string;
   enableWeightControl?: boolean;
+  resizeStorageKey?: string;
 }
+
+export const GENERATION_PROMPT_HEIGHT_KEY = "generation_prompt_height";
+export const GENERATION_NEGATIVE_PROMPT_HEIGHT_KEY = "generation_negative_prompt_height";
+export const GENERATION_LYRICS_HEIGHT_KEY = "generation_lyrics_height";
 
 /**
  * Find the extent of an existing emphasis syntax at cursor position
@@ -171,12 +176,39 @@ export default function Textarea({
   label,
   className,
   enableWeightControl = false,
+  resizeStorageKey,
   onKeyDown,
   onChange,
   value,
   ...props
 }: TextareaProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    const textarea = textareaRef.current;
+    if (!textarea || !resizeStorageKey) return;
+
+    const savedHeight = Number(localStorage.getItem(resizeStorageKey));
+    if (Number.isFinite(savedHeight) && savedHeight >= 48 && savedHeight <= 640) {
+      textarea.style.height = `${savedHeight}px`;
+    }
+
+    let observer: ResizeObserver | null = null;
+    const frame = requestAnimationFrame(() => {
+      observer = new ResizeObserver(() => {
+        const height = Math.round(textarea.getBoundingClientRect().height);
+        if (height >= 48 && height <= 640) {
+          localStorage.setItem(resizeStorageKey, String(height));
+        }
+      });
+      observer.observe(textarea);
+    });
+
+    return () => {
+      cancelAnimationFrame(frame);
+      observer?.disconnect();
+    };
+  }, [resizeStorageKey]);
 
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     // Call original onKeyDown if provided

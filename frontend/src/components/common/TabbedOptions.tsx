@@ -62,7 +62,7 @@ export default function TabbedOptions<P>({
 
   return (
     <Card title={cardTitle}>
-      <div className="flex flex-wrap gap-1 border-b border-gray-700 -mb-px">
+      <div className="-mb-px flex flex-wrap gap-1 border-b border-gray-700">
         {tabs.map((tab) => {
           const isTabActive = tab.isActive(params);
           const isTabOpen = openTabId === tab.id;
@@ -71,7 +71,7 @@ export default function TabbedOptions<P>({
               key={tab.id}
               type="button"
               onClick={() => setOpenTabId(isTabOpen ? null : tab.id)}
-              className={`px-2.5 py-1.5 text-xs sm:text-sm font-medium transition-colors whitespace-nowrap flex items-center gap-1.5 ${
+              className={`flex items-center gap-1.5 whitespace-nowrap px-2 py-1 text-xs font-medium transition-colors ${
                 isTabOpen ? "border-b-2 border-violet-400 text-violet-300" : "text-gray-400 hover:text-white"
               }`}
               title={isTabActive ? "This group currently has enabled/non-neutral options" : undefined}
@@ -86,7 +86,7 @@ export default function TabbedOptions<P>({
       </div>
 
       {openTab && (
-        <div className="mt-3 space-y-3">
+        <div className="mt-2 space-y-2">
           <div className="flex justify-end">
             <Button
               onClick={() => {
@@ -97,7 +97,7 @@ export default function TabbedOptions<P>({
                 setParams((prev) => ({ ...prev, ...patch }));
               }}
               variant="secondary"
-              size="sm"
+              size="xs"
             >
               デフォルトに戻す
             </Button>

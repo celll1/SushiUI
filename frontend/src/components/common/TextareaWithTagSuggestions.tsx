@@ -31,6 +31,7 @@ interface TextareaWithTagSuggestionsProps extends Omit<TextareaHTMLAttributes<HT
   enableWeightControl?: boolean;
   rows?: number;
   tagSeparator?: "comma" | "newline";  // Default: "comma"
+  resizeStorageKey?: string;
 }
 
 /**

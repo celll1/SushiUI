@@ -273,7 +273,7 @@ export default function ModelLoadSection({
         )}
       </div>
 
-      <div className="h-[clamp(8rem,18vh,10rem)] overflow-y-auto overscroll-contain pr-1">
+      <div className="h-[clamp(7rem,15vh,8.5rem)] overflow-y-auto overscroll-contain pr-1">
         <div
           id={panelId("model")}
           role="tabpanel"
@@ -287,7 +287,7 @@ export default function ModelLoadSection({
           id={panelId("components")}
           role="tabpanel"
           aria-labelledby={tabId("components")}
-          className={activeTab === "components" ? "space-y-3" : "hidden"}
+          className={activeTab === "components" ? "space-y-2" : "hidden"}
         >
           {showVE && (
             <VisionEncoderSelector

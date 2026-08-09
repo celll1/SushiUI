@@ -16,6 +16,7 @@ import ModelLoadSection from "../common/ModelLoadSection";
 import LoRASelector from "../common/LoRASelector";
 import ControlNetSelector from "../common/ControlNetSelector";
 import GenerationQueue from "../common/GenerationQueue";
+import GenerationLeadGrid from "../common/GenerationLeadGrid";
 import ResizableColumns, {
   GENERATION_PREVIEW_QUEUE_SPLIT_KEY,
   GENERATION_WORKSPACE_SPLIT_KEY,
@@ -1333,6 +1334,8 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
   // same leaf-control convention the other generation panels use for this pair.
   const supportsSpectrum = archSupportsFeature(archCapabilities, loadedArchType, "spectrum");
   const supportsFbcache = archSupportsFeature(archCapabilities, loadedArchType, "fbcache");
+  const supportsNegativePrompt = !isAudio
+    && archSupportsFeature(archCapabilities, loadedArchType, "negative_prompt");
   const outpaintPlacements = videoOutpaintPlacements(archCapabilities, loadedArchType);
   const boundaryPlacementOnly = !outpaintPlacements.includes("free");
   // MiniMax-H3 ref2va: direct variant check, matching Txt2ImgPanel/Img2ImgPanel
@@ -1640,7 +1643,9 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
 
     const { replaceWildcardsInPrompt } = await import("@/utils/wildcardStorage");
     const processedPrompt = await replaceWildcardsInPrompt(params.prompt);
-    const processedNegativePrompt = await replaceWildcardsInPrompt(params.negative_prompt || "");
+    const processedNegativePrompt = supportsNegativePrompt
+      ? await replaceWildcardsInPrompt(params.negative_prompt || "")
+      : "";
 
     // Video mode: a video model (LTX-2.3) is loaded -> enqueue an
     // outpaint_vid item using the uploaded clip. No loop-generation (matches
@@ -2828,6 +2833,76 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
   const videoHeightBounds = videoCanvasAxisBounds(archCapabilities, loadedArchType, canvasWidth);
   const videoCanvasOverEnvelope = videoCanvasExceedsEnvelope(
     archCapabilities, loadedArchType, canvasWidth, canvasHeight);
+  const promptPanel = isAudio ? (
+    <Card title="Prompt">
+      <Textarea
+        label="Caption"
+        placeholder="Describe the music (genre, mood, instruments)..."
+        rows={4}
+        value={params.prompt}
+        onChange={(e) => setParams({ ...params, prompt: e.target.value })}
+      />
+      <Textarea
+        label="Lyrics"
+        placeholder="Enter lyrics (optional)..."
+        rows={5}
+        value={params.lyrics ?? ""}
+        onChange={(e) => setParams({ ...params, lyrics: e.target.value })}
+      />
+      <Textarea
+        label="Negative Prompt"
+        placeholder="Negative prompting is unavailable for this model"
+        rows={3}
+        value={params.negative_prompt || ""}
+        onChange={(e) => setParams({ ...params, negative_prompt: e.target.value })}
+        disabled
+        title="Audio generation does not accept negative-prompt conditioning."
+      />
+      <p className="text-xs text-gray-500">Unavailable for audio generation; the saved value is preserved.</p>
+    </Card>
+  ) : (
+    <Card title="Prompt">
+      <TextareaWithTagSuggestions
+        label="Positive Prompt"
+        placeholder="Enter your prompt here..."
+        rows={4}
+        value={params.prompt}
+        onChange={(e) => {
+          setParams({ ...params, prompt: e.target.value });
+          if (e.target) promptTextareaRef.current = e.target as HTMLTextAreaElement;
+        }}
+        enableWeightControl
+      />
+      <TextareaWithTagSuggestions
+        label="Negative Prompt"
+        placeholder={supportsNegativePrompt ? "Enter negative prompt..." : "Negative prompting is unavailable for this model"}
+        rows={3}
+        value={params.negative_prompt || ""}
+        onChange={(e) => setParams({ ...params, negative_prompt: e.target.value })}
+        enableWeightControl
+        disabled={!supportsNegativePrompt}
+        title={!supportsNegativePrompt ? "The loaded model does not accept negative-prompt conditioning." : undefined}
+      />
+      {!supportsNegativePrompt && (
+        <p className="text-xs text-gray-500">Unavailable for the loaded model; the saved value is preserved.</p>
+      )}
+      {!isVideo && developerMode && (
+        <div className="mt-3 flex items-center space-x-2">
+          <input
+            type="checkbox"
+            id="outpaint_preview_unpinned_x0"
+            checked={params.outpaint_preview_unpinned_x0 ?? false}
+            onChange={(e) => setParams({ ...params, outpaint_preview_unpinned_x0: e.target.checked })}
+            disabled={isGenerating}
+            className="h-4 w-4"
+          />
+          <label htmlFor="outpaint_preview_unpinned_x0" className="text-sm text-gray-300">
+            Preview: show unpinned prediction
+          </label>
+        </div>
+      )}
+    </Card>
+  );
 
   return (
     <ResizableColumns
@@ -2871,6 +2946,10 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
           storageKeyPrefix="outpaint"
         />
 
+        <GenerationLeadGrid
+          prompt={promptPanel}
+          conditioning={(
+            <>
         {!isVideo && !isAudio && (
         <Card
           title="Input Image"
@@ -3044,53 +3123,9 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
           </div>
         </Card>
         )}
-
-        {!isAudio && (
-        <Card title="Prompt">
-          <TextareaWithTagSuggestions
-            label="Positive Prompt"
-            placeholder="Enter your prompt here..."
-            rows={4}
-            value={params.prompt}
-            onChange={(e) => {
-              setParams({ ...params, prompt: e.target.value });
-              if (e.target) promptTextareaRef.current = e.target as HTMLTextAreaElement;
-            }}
-            enableWeightControl={true}
-          />
-          <TextareaWithTagSuggestions
-            label="Negative Prompt"
-            placeholder="Enter negative prompt..."
-            rows={3}
-            value={params.negative_prompt || ""}
-            onChange={(e) => setParams({ ...params, negative_prompt: e.target.value })}
-            enableWeightControl={true}
-          />
-
-          {/* Honest outpaint preview (display-only): sends the unpinned
-              model x0 prediction to the mid-sampling preview decoder instead
-              of the pinned known/generated composite. Does not affect the
-              sampler's own stepping math or the final saved image. See
-              backend/core/inference/custom_sampling.py's
-              outpaint_preview_unpinned_x0 kwarg + backend/api/routes.py
-              generate_outpaint outpaint_preview_unpinned_x0 Form param. */}
-          {!isVideo && !isAudio && developerMode && (
-          <div className="flex items-center space-x-2 mt-3">
-            <input
-              type="checkbox"
-              id="outpaint_preview_unpinned_x0"
-              checked={params.outpaint_preview_unpinned_x0 ?? false}
-              onChange={(e) => setParams({ ...params, outpaint_preview_unpinned_x0: e.target.checked })}
-              disabled={isGenerating}
-              className="w-4 h-4"
-            />
-            <label htmlFor="outpaint_preview_unpinned_x0" className="text-sm text-gray-300">
-              Preview: show unpinned prediction (display only, final image unaffected)
-            </label>
-          </div>
+            </>
           )}
-        </Card>
-        )}
+        />
 
         {/* Outpaint Options: a single-open tabbed accordion (chrome shared
             via frontend/src/components/common/TabbedOptions.tsx). Every
@@ -4186,21 +4221,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
         )}
 
         {isAudio && (
-        <Card title="Audio">
-          <Textarea
-            label="Caption"
-            placeholder="Describe the music (genre, mood, instruments)..."
-            rows={4}
-            value={params.prompt}
-            onChange={(e) => setParams({ ...params, prompt: e.target.value })}
-          />
-          <Textarea
-            label="Lyrics"
-            placeholder="Enter lyrics (optional)..."
-            rows={6}
-            value={params.lyrics ?? ""}
-            onChange={(e) => setParams({ ...params, lyrics: e.target.value })}
-          />
+        <Card title="Audio Settings">
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-2">
             <div>

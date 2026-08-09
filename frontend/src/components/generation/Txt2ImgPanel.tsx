@@ -24,6 +24,7 @@ import PostEditControls from "../common/PostEditControls";
 import { PostEditState, NEUTRAL_POST_EDIT, buildFilterString } from "@/utils/postEdit";
 import { usePostEditPreview } from "@/hooks/usePostEditPreview";
 import GenerationQueue from "../common/GenerationQueue";
+import GenerationLeadGrid from "../common/GenerationLeadGrid";
 import ResizableColumns, {
   GENERATION_PREVIEW_QUEUE_SPLIT_KEY,
   GENERATION_WORKSPACE_SPLIT_KEY,
@@ -405,7 +406,8 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
     loadedArch === "minimax_h3" &&
     (currentModelInfo?.model_info?.variant as string | undefined) === "ref2va";
   const supportsCfg = archSupportsFeature(archCapabilities, loadedArch, "cfg");
-  const supportsNegativePrompt = archSupportsFeature(archCapabilities, loadedArch, "negative_prompt");
+  const supportsNegativePrompt = !isAudio
+    && archSupportsFeature(archCapabilities, loadedArch, "negative_prompt");
   // Spectrum/FBCache: accepted-but-inert on an architecture whose sampler never
   // reads spectrum_enable/fbcache_enable (e.g. MiniMax-H3's FBCache was measured
   // and dropped rather than shipped, per arch_capabilities.py). Hidden rather
@@ -1548,7 +1550,9 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
 
     // Replace wildcards in prompts
     let processedPrompt = await replaceWildcardsInPrompt(params.prompt);
-    const processedNegativePrompt = await replaceWildcardsInPrompt(params.negative_prompt);
+    const processedNegativePrompt = supportsNegativePrompt
+      ? await replaceWildcardsInPrompt(params.negative_prompt)
+      : "";
 
     // Prepare TIPO config if use_tipo is enabled
     let tipo_config = undefined;
@@ -3339,6 +3343,104 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
   const videoHeightBounds = videoCanvasAxisBounds(archCapabilities, loadedArch, videoCanvasWidth);
   const videoCanvasOverEnvelope = videoCanvasExceedsEnvelope(
     archCapabilities, loadedArch, videoCanvasWidth, videoCanvasHeight);
+  const hasLeadConditioning = (isVideo && isRef2Va)
+    || currentModelInfo?.model_info?.type === "flux2"
+    || !!params.vision_encoder_path;
+  const promptPanel = isAudio ? (
+    <Card title="Prompt">
+      <Textarea
+        label="Caption"
+        placeholder="Describe the music (genre, mood, instruments)..."
+        rows={4}
+        value={params.prompt}
+        onChange={(e) => setParams({ ...params, prompt: e.target.value })}
+      />
+      <Textarea
+        label="Lyrics"
+        placeholder="Enter lyrics (optional)..."
+        rows={5}
+        value={params.lyrics ?? ""}
+        onChange={(e) => setParams({ ...params, lyrics: e.target.value })}
+      />
+      <Textarea
+        label="Negative Prompt"
+        placeholder="Negative prompting is unavailable for this model"
+        rows={3}
+        value={params.negative_prompt}
+        onChange={(e) => setParams({ ...params, negative_prompt: e.target.value })}
+        disabled
+        title="Audio generation does not accept negative-prompt conditioning."
+      />
+      <p className="text-xs text-gray-500">Unavailable for audio generation; the saved value is preserved.</p>
+    </Card>
+  ) : (
+    <Card title="Prompt">
+      <div className="relative">
+        <TextareaWithTagSuggestions
+          label="Positive Prompt"
+          placeholder="Enter your prompt here..."
+          rows={4}
+          value={params.prompt}
+          onChange={(e) => {
+            setParams({ ...params, prompt: e.target.value });
+            if (e.target) promptTextareaRef.current = e.target as HTMLTextAreaElement;
+          }}
+          onDoubleClick={handleOpenPromptEditor}
+          enableWeightControl
+        />
+        <div className="absolute -top-1 right-0 px-2 py-1 text-xs text-gray-400 pointer-events-none">
+          {promptTokenCount} tokens
+        </div>
+      </div>
+      <div className="flex items-center gap-2 rounded bg-gray-800 px-2 py-2">
+        <label className="flex cursor-pointer items-center gap-2">
+          <input
+            type="checkbox"
+            checked={params.use_tipo || false}
+            onChange={(e) => setParams({ ...params, use_tipo: e.target.checked })}
+            className="h-4 w-4 rounded border-gray-600 bg-gray-700 text-blue-500 focus:ring-2 focus:ring-blue-500"
+          />
+          <span className="text-sm text-gray-300">✨ Feeling Lucky (TIPO)</span>
+        </label>
+        <label className="ml-4 flex cursor-pointer items-center gap-2">
+          <input
+            type="checkbox"
+            checked={treatAsNL}
+            onChange={(e) => setTreatAsNL(e.target.checked)}
+            className="h-4 w-4 rounded border-gray-600 bg-gray-700 text-green-500 focus:ring-2 focus:ring-green-500"
+            title="Treat input as natural language instead of tags"
+          />
+          <span className="text-xs text-gray-400">NL</span>
+        </label>
+        <button
+          onClick={() => setIsTIPODialogOpen(true)}
+          className="ml-auto rounded bg-gray-700 px-2 py-1 text-xs hover:bg-gray-600"
+          title="Configure TIPO settings"
+        >
+          ⚙️ Settings
+        </button>
+      </div>
+      <div className="relative">
+        <TextareaWithTagSuggestions
+          label="Negative Prompt"
+          placeholder={supportsNegativePrompt ? "Enter negative prompt..." : "Negative prompting is unavailable for this model"}
+          rows={3}
+          value={params.negative_prompt}
+          onChange={(e) => setParams({ ...params, negative_prompt: e.target.value })}
+          onDoubleClick={handleOpenPromptEditor}
+          enableWeightControl
+          disabled={!supportsNegativePrompt}
+          title={!supportsNegativePrompt ? "The loaded model does not accept negative-prompt conditioning." : undefined}
+        />
+        <div className="absolute top-0 right-0 px-2 py-1 text-xs text-gray-400 pointer-events-none">
+          {negativePromptTokenCount} tokens
+        </div>
+        {!supportsNegativePrompt && (
+          <p className="mt-1 text-xs text-gray-500">Unavailable for the loaded model; the saved value is preserved.</p>
+        )}
+      </div>
+    </Card>
+  );
 
   return (
     <ResizableColumns
@@ -3392,7 +3494,11 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
           storageKeyPrefix="txt2img"
         />
 
-        {/* Omni references are content conditioning, so they stay above the prompt. */}
+        <GenerationLeadGrid
+          prompt={promptPanel}
+          conditioning={hasLeadConditioning ? (
+            <>
+        {/* Omni references are content conditioning. */}
         {isVideo && isRef2Va && (
           <>
             <details className="group -mb-1 rounded-md border border-gray-800/80 bg-gray-900/35 px-3 py-1.5 text-xs text-gray-500">
@@ -3539,101 +3645,12 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
             </div>
           </Card>
         )}
-
-        {!isAudio && (
-        <Card title="Prompt">
-          <div className="relative">
-            <TextareaWithTagSuggestions
-              label="Positive Prompt"
-              placeholder="Enter your prompt here..."
-              rows={4}
-              value={params.prompt}
-              onChange={(e) => {
-                setParams({ ...params, prompt: e.target.value });
-                // Capture textarea ref from the event
-                if (e.target) {
-                  promptTextareaRef.current = e.target as HTMLTextAreaElement;
-                }
-              }}
-              onDoubleClick={handleOpenPromptEditor}
-              enableWeightControl={true}
-            />
-            <div className="absolute -top-1 right-0 flex items-center gap-1 px-2 py-1">
-              <span className="text-xs text-gray-400 pointer-events-none">
-                {promptTokenCount} tokens
-              </span>
-            </div>
-          </div>
-
-          {/* Feeling Lucky Mode */}
-          <div className="flex items-center gap-2 px-2 py-2 bg-gray-800 rounded">
-            <label className="flex items-center gap-2 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={params.use_tipo || false}
-                onChange={(e) => setParams({ ...params, use_tipo: e.target.checked })}
-                className="w-4 h-4 rounded border-gray-600 bg-gray-700 text-blue-500 focus:ring-2 focus:ring-blue-500"
-              />
-              <span className="text-sm text-gray-300">✨ Feeling Lucky (TIPO)</span>
-            </label>
-            <label className="flex items-center gap-2 cursor-pointer ml-4">
-              <input
-                type="checkbox"
-                checked={treatAsNL}
-                onChange={(e) => setTreatAsNL(e.target.checked)}
-                className="w-4 h-4 rounded border-gray-600 bg-gray-700 text-green-500 focus:ring-2 focus:ring-green-500"
-                title="Treat input as natural language instead of tags"
-              />
-              <span className="text-xs text-gray-400">NL</span>
-            </label>
-            <button
-              onClick={() => setIsTIPODialogOpen(true)}
-              className="ml-auto px-2 py-1 text-xs bg-gray-700 hover:bg-gray-600 rounded"
-              title="Configure TIPO settings"
-            >
-              ⚙️ Settings
-            </button>
-          </div>
-
-          {/* Hidden on an architecture that declares negative prompting
-              unsupported: MiniMax-H3 is guidance-distilled and has no
-              unconditional branch, so there is nothing for a negative prompt to
-              steer away from. Capability-driven (see supportsNegativePrompt). */}
-          {supportsNegativePrompt && (
-          <div className="relative">
-            <TextareaWithTagSuggestions
-              label="Negative Prompt"
-              placeholder="Enter negative prompt..."
-              rows={3}
-              value={params.negative_prompt}
-              onChange={(e) => setParams({ ...params, negative_prompt: e.target.value })}
-              onDoubleClick={handleOpenPromptEditor}
-              enableWeightControl={true}
-            />
-            <div className="absolute top-0 right-0 text-xs text-gray-400 px-2 py-1 pointer-events-none">
-              {negativePromptTokenCount} tokens
-            </div>
-          </div>
-          )}
-        </Card>
-        )}
+            </>
+          ) : undefined}
+        />
 
         {isAudio && (
-          <Card title="Audio">
-            <Textarea
-              label="Caption"
-              placeholder="Describe the music (genre, mood, instruments)..."
-              rows={4}
-              value={params.prompt}
-              onChange={(e) => setParams({ ...params, prompt: e.target.value })}
-            />
-            <Textarea
-              label="Lyrics"
-              placeholder="Enter lyrics (optional)..."
-              rows={6}
-              value={params.lyrics ?? ""}
-              onChange={(e) => setParams({ ...params, lyrics: e.target.value })}
-            />
+          <Card title="Audio Settings">
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-2">
               <div>
@@ -4714,6 +4731,8 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         <PromptEditor
           initialPrompt={params.prompt}
           initialNegativePrompt={params.negative_prompt}
+          negativeDisabled={!supportsNegativePrompt}
+          negativeDisabledReason="The loaded model does not accept negative-prompt conditioning."
           onSave={handleSavePrompts}
           onClose={() => setIsPromptEditorOpen(false)}
         />

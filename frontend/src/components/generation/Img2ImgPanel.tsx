@@ -23,6 +23,7 @@ import PostEditControls from "../common/PostEditControls";
 import { PostEditState, NEUTRAL_POST_EDIT, buildFilterString } from "@/utils/postEdit";
 import { usePostEditPreview } from "@/hooks/usePostEditPreview";
 import GenerationQueue from "../common/GenerationQueue";
+import GenerationLeadGrid from "../common/GenerationLeadGrid";
 import ResizableColumns, {
   GENERATION_PREVIEW_QUEUE_SPLIT_KEY,
   GENERATION_WORKSPACE_SPLIT_KEY,
@@ -521,7 +522,8 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
   const loadedArch = currentModelInfo?.model_info?.type as string | undefined;
   const loadedArchName = archDisplayName(loadedArch);
   const supportsCfg = archSupportsFeature(archCapabilities, loadedArch, "cfg");
-  const supportsNegativePrompt = archSupportsFeature(archCapabilities, loadedArch, "negative_prompt");
+  const supportsNegativePrompt = !isAudio
+    && archSupportsFeature(archCapabilities, loadedArch, "negative_prompt");
   // Spectrum/FBCache: accepted-but-inert on an architecture whose sampler never
   // reads spectrum_enable/fbcache_enable. Hidden rather than shown-disabled,
   // the same convention as supportsCfg/supportsNegativePrompt above.
@@ -2084,7 +2086,9 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
 
     // Replace wildcards in prompts
     let processedPrompt = await replaceWildcardsInPrompt(params.prompt);
-    const processedNegativePrompt = await replaceWildcardsInPrompt(params.negative_prompt);
+    const processedNegativePrompt = supportsNegativePrompt
+      ? await replaceWildcardsInPrompt(params.negative_prompt)
+      : "";
 
     // Feeling Lucky mode: Generate prompt with TIPO before queueing
     if (params.feeling_lucky) {
@@ -4032,6 +4036,91 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
   const videoHeightBounds = videoCanvasAxisBounds(archCapabilities, loadedArch, videoCanvasWidth);
   const videoCanvasOverEnvelope = videoCanvasExceedsEnvelope(
     archCapabilities, loadedArch, videoCanvasWidth, videoCanvasHeight);
+  const promptPanel = isAudio ? (
+    <Card title="Prompt">
+      <Textarea
+        label="Caption"
+        placeholder="Describe the music (genre, mood, instruments)..."
+        rows={4}
+        value={params.prompt}
+        onChange={(e) => setParams({ ...params, prompt: e.target.value })}
+      />
+      <Textarea
+        label="Lyrics"
+        placeholder="Enter lyrics (optional)..."
+        rows={5}
+        value={params.lyrics ?? ""}
+        onChange={(e) => setParams({ ...params, lyrics: e.target.value })}
+      />
+      <Textarea
+        label="Negative Prompt"
+        placeholder="Negative prompting is unavailable for this model"
+        rows={3}
+        value={params.negative_prompt}
+        onChange={(e) => setParams({ ...params, negative_prompt: e.target.value })}
+        disabled
+        title="Audio generation does not accept negative-prompt conditioning."
+      />
+      <p className="text-xs text-gray-500">Unavailable for audio generation; the saved value is preserved.</p>
+    </Card>
+  ) : (
+    <Card title="Prompt">
+      <div className="relative">
+        <TextareaWithTagSuggestions
+          label="Positive Prompt"
+          placeholder="Enter your prompt here..."
+          rows={4}
+          value={params.prompt}
+          onChange={(e) => {
+            setParams({ ...params, prompt: e.target.value });
+            if (e.target) promptTextareaRef.current = e.target as HTMLTextAreaElement;
+          }}
+          enableWeightControl
+        />
+      </div>
+      <div className="flex items-center gap-2 rounded bg-gray-800 px-2 py-2">
+        <label className="flex cursor-pointer items-center gap-2">
+          <input
+            type="checkbox"
+            checked={params.feeling_lucky || false}
+            onChange={(e) => setParams({ ...params, feeling_lucky: e.target.checked })}
+            className="h-4 w-4 rounded border-gray-600 bg-gray-700 text-blue-500 focus:ring-2 focus:ring-blue-500"
+          />
+          <span className="text-sm text-gray-300">✨ Feeling Lucky (TIPO)</span>
+        </label>
+        <label className="ml-4 flex cursor-pointer items-center gap-2">
+          <input
+            type="checkbox"
+            checked={treatAsNL}
+            onChange={(e) => setTreatAsNL(e.target.checked)}
+            className="h-4 w-4 rounded border-gray-600 bg-gray-700 text-green-500 focus:ring-2 focus:ring-green-500"
+            title="Treat input as natural language instead of tags"
+          />
+          <span className="text-xs text-gray-400">NL</span>
+        </label>
+        <button
+          onClick={() => setIsTIPODialogOpen(true)}
+          className="ml-auto rounded bg-gray-700 px-2 py-1 text-xs hover:bg-gray-600"
+          title="Configure TIPO settings"
+        >
+          ⚙️ Settings
+        </button>
+      </div>
+      <TextareaWithTagSuggestions
+        label="Negative Prompt"
+        placeholder={supportsNegativePrompt ? "Enter negative prompt..." : "Negative prompting is unavailable for this model"}
+        rows={3}
+        value={params.negative_prompt}
+        onChange={(e) => setParams({ ...params, negative_prompt: e.target.value })}
+        enableWeightControl
+        disabled={!supportsNegativePrompt}
+        title={!supportsNegativePrompt ? "The loaded model does not accept negative-prompt conditioning." : undefined}
+      />
+      {!supportsNegativePrompt && (
+        <p className="text-xs text-gray-500">Unavailable for the loaded model; the saved value is preserved.</p>
+      )}
+    </Card>
+  );
 
   return (
     <ResizableColumns
@@ -4085,6 +4174,10 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
           storageKeyPrefix="img2img"
         />
 
+        <GenerationLeadGrid
+          prompt={promptPanel}
+          conditioning={(
+            <>
         {!isAudio && (
         <Card
           title={multiImageInput ? "Input Images" : "Input Image"}
@@ -4428,71 +4521,9 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
             </div>
           </Card>
         )}
-
-        {!isAudio && (
-        <Card title="Prompt">
-          <div className="relative">
-            <TextareaWithTagSuggestions
-              label="Positive Prompt"
-              placeholder="Enter your prompt here..."
-              rows={4}
-              value={params.prompt}
-              onChange={(e) => {
-                setParams({ ...params, prompt: e.target.value });
-                if (e.target) {
-                  promptTextareaRef.current = e.target as HTMLTextAreaElement;
-                }
-              }}
-              enableWeightControl={true}
-            />
-          </div>
-
-          {/* Feeling Lucky Mode */}
-          <div className="flex items-center gap-2 px-2 py-2 bg-gray-800 rounded">
-            <label className="flex items-center gap-2 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={params.feeling_lucky || false}
-                onChange={(e) => setParams({ ...params, feeling_lucky: e.target.checked })}
-                className="w-4 h-4 rounded border-gray-600 bg-gray-700 text-blue-500 focus:ring-2 focus:ring-blue-500"
-              />
-              <span className="text-sm text-gray-300">✨ Feeling Lucky (TIPO)</span>
-            </label>
-            <label className="flex items-center gap-2 cursor-pointer ml-4">
-              <input
-                type="checkbox"
-                checked={treatAsNL}
-                onChange={(e) => setTreatAsNL(e.target.checked)}
-                className="w-4 h-4 rounded border-gray-600 bg-gray-700 text-green-500 focus:ring-2 focus:ring-green-500"
-                title="Treat input as natural language instead of tags"
-              />
-              <span className="text-xs text-gray-400">NL</span>
-            </label>
-            <button
-              onClick={() => setIsTIPODialogOpen(true)}
-              className="ml-auto px-2 py-1 text-xs bg-gray-700 hover:bg-gray-600 rounded"
-              title="Configure TIPO settings"
-            >
-              ⚙️ Settings
-            </button>
-          </div>
-
-          {/* Hidden on an architecture that declares negative prompting
-              unsupported: MiniMax-H3 is guidance-distilled and has no
-              unconditional branch, so there is nothing for a negative prompt to
-              steer away from. Capability-driven (see supportsNegativePrompt). */}
-          {supportsNegativePrompt && (
-          <TextareaWithTagSuggestions
-            label="Negative Prompt"
-            placeholder="Enter negative prompt..."
-            rows={3}
-            value={params.negative_prompt}
-            onChange={(e) => setParams({ ...params, negative_prompt: e.target.value })}
-            enableWeightControl={true}
-          />
+            </>
           )}
-        </Card>
-        )}
+        />
 
         {isVideo && (
           <Card title={`Video${loadedArchName ? ` (${loadedArchName})` : ""}`}>
@@ -4728,7 +4759,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         )}
 
         {isAudio && (
-          <Card title="Audio">
+          <Card title="Audio Settings">
             <Select
               label="Mode"
               value={params.mode ?? "cover"}
@@ -4737,21 +4768,6 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
                 { value: "cover", label: "Cover" },
                 { value: "repaint", label: "Repaint" },
               ]}
-            />
-
-            <Textarea
-              label="Caption"
-              placeholder="Describe the music (genre, mood, instruments)..."
-              rows={4}
-              value={params.prompt}
-              onChange={(e) => setParams({ ...params, prompt: e.target.value })}
-            />
-            <Textarea
-              label="Lyrics"
-              placeholder="Enter lyrics (optional)..."
-              rows={6}
-              value={params.lyrics ?? ""}
-              onChange={(e) => setParams({ ...params, lyrics: e.target.value })}
             />
 
             {(params.mode ?? "cover") === "cover" ? (

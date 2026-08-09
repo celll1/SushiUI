@@ -260,7 +260,7 @@ export default function Textarea({
       <textarea
         ref={textareaRef}
         className={cn(
-          "w-full rounded-md border border-gray-700 bg-gray-800 px-2.5 py-2 text-sm text-gray-100 placeholder-gray-500 focus:border-violet-500 focus:outline-none focus:ring-1 focus:ring-violet-500 resize-vertical",
+          "w-full rounded-md border border-gray-700 bg-gray-800 px-2.5 py-2 text-sm text-gray-100 placeholder-gray-500 focus:border-violet-500 focus:outline-none focus:ring-1 focus:ring-violet-500 resize-vertical disabled:cursor-not-allowed disabled:bg-gray-900 disabled:text-gray-500 disabled:opacity-70",
           className
         )}
         onKeyDown={handleKeyDown}

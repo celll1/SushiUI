@@ -22,7 +22,10 @@ export interface CFGMetrics {
   sigma?: number;
 }
 
-type ProgressCallback = (step: number, totalSteps: number, message: string, previewImage?: string, cfgMetrics?: CFGMetrics) => void;
+/** `subProgress` (0..1) is the fraction of the *in-progress* step that is done.
+ *  Optional: only architectures whose steps are long enough to sub-report it
+ *  (currently minimax_h3 video) send it. */
+type ProgressCallback = (step: number, totalSteps: number, message: string, previewImage?: string, cfgMetrics?: CFGMetrics, subProgress?: number) => void;
 
 interface TrainingMetrics {
   run_id: number;
@@ -140,12 +143,16 @@ class ProgressClient {
         this.lastMessageAt = Date.now();
 
         if (data.type === "progress") {
-          // Log without base64 data to avoid console spam
-          const preview_length = data.preview_image ? data.preview_image.length : 0;
-          console.log(`[SSE] Progress: ${data.step}/${data.total_steps}, preview: ${preview_length > 0 ? `${preview_length} chars` : 'none'}, CFG metrics: ${!!data.cfg_metrics}`);
+          // Log without base64 data to avoid console spam. Sub-step ticks are
+          // not logged at all: there are up to 8 of them per step and they carry
+          // nothing the step line does not already say.
+          if (data.sub_progress === undefined) {
+            const preview_length = data.preview_image ? data.preview_image.length : 0;
+            console.log(`[SSE] Progress: ${data.step}/${data.total_steps}, preview: ${preview_length > 0 ? `${preview_length} chars` : 'none'}, CFG metrics: ${!!data.cfg_metrics}`);
+          }
 
           this.callbacks.forEach((callback) => {
-            callback(data.step, data.total_steps, data.message, data.preview_image, data.cfg_metrics);
+            callback(data.step, data.total_steps, data.message, data.preview_image, data.cfg_metrics, data.sub_progress);
           });
         } else if (data.type === "training_metrics") {
           // Training metrics: loss, recon_loss, learning_rate

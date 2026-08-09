@@ -34,6 +34,7 @@ import ImageViewer from "../common/ImageViewer";
 import PostEditControls from "../common/PostEditControls";
 import { PostEditState, NEUTRAL_POST_EDIT, buildFilterString } from "@/utils/postEdit";
 import { usePostEditPreview } from "@/hooks/usePostEditPreview";
+import { useSmoothProgress } from "@/hooks/useSmoothProgress";
 import {
   getSamplers,
   getScheduleTypes,
@@ -540,6 +541,8 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
   const [progress, setProgress] = useState(0);
   const [totalSteps, setTotalSteps] = useState(0);
   const [progressMessage, setProgressMessage] = useState("");
+  // Sub-step smoothing for the bar only; the "n/total steps" text stays integer.
+  const { percent: progressPercent, reportSubProgress } = useSmoothProgress(progress, totalSteps, isGenerating);
   const [previewImage, setPreviewImage] = useState<string | null>(null);
 
   const [samplers, setSamplers] = useState<Array<{ id: string; name: string }>>([]);
@@ -627,16 +630,17 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [audioPreviewUrl]);
 
-  const handleProgress = useCallback((step: number, total: number, message: string, preview?: string, _metrics?: CFGMetrics) => {
+  const handleProgress = useCallback((step: number, total: number, message: string, preview?: string, _metrics?: CFGMetrics, subProgress?: number) => {
     if (isGeneratingRef.current) {
       setProgress(step);
       setTotalSteps(total);
       setProgressMessage(message || "");
+      reportSubProgress(step, subProgress);
       if (preview) {
         setPreviewImage(preview);
       }
     }
-  }, []);
+  }, [reportSubProgress]);
 
   useEffect(() => {
     wsClient.connect();
@@ -4507,7 +4511,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
                   <div className="w-full bg-gray-700 rounded-full h-2">
                     <div
                       className="bg-blue-600 h-2 rounded-full transition-all duration-200"
-                      style={{ width: `${Math.min(100, Math.max(0, totalSteps > 0 ? (progress / totalSteps) * 100 : 0))}%` }}
+                      style={{ width: `${progressPercent}%` }}
                     />
                   </div>
                 </div>

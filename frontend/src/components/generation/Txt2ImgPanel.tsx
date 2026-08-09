@@ -2105,7 +2105,8 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         }, 100);
       } catch (error: any) {
         console.error("[Txt2Img] txt2aud generation failed:", error);
-        alert(isGenerationStalledError(error) ? error.message : "txt2aud generation failed. Please check console for details.");
+        // alert() blocks the JS thread; reset state and requeue before showing it,
+        // otherwise the queue effect sees a stale isGenerating until the dialog closes.
         setIsGenerating(false);
         setProgress(0);
         setProgressMessage("");
@@ -2113,6 +2114,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         setTimeout(() => {
           if (processQueueRef.current) processQueueRef.current();
         }, 100);
+        alert(isGenerationStalledError(error) ? error.message : "txt2aud generation failed. Please check console for details.");
       }
       return;
     }
@@ -2159,9 +2161,6 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         }, 100);
       } catch (error: any) {
         console.error(`[Txt2Img] ${nextItem.type} generation failed:`, error);
-        alert(isGenerationStalledError(error)
-          ? error.message
-          : `${nextItem.type} generation failed: ${error?.response?.data?.detail || error?.response?.data?.error || "see the console for details."}`);
         setIsGenerating(false);
         setProgress(0);
         setProgressMessage("");
@@ -2169,6 +2168,9 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         setTimeout(() => {
           if (processQueueRef.current) processQueueRef.current();
         }, 100);
+        alert(isGenerationStalledError(error)
+          ? error.message
+          : `${nextItem.type} generation failed: ${error?.response?.data?.detail || error?.response?.data?.error || "see the console for details."}`);
       }
       return;
     }
@@ -2536,6 +2538,10 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         errorDetail.toLowerCase().includes("cancel") ||
         errorStr.toLowerCase().includes("cancel");
 
+      // alert() blocks the JS thread; decide what to show but do not call it
+      // yet -- reset state and requeue first, or the queue effect sees a
+      // stale isGenerating until the dialog closes.
+      let alertMessage: string | null = null;
       if (isCancelled) {
         const shouldRestore = localStorage.getItem('restore_image_on_cancel') === 'true';
         if (shouldRestore && previousImage) {
@@ -2543,9 +2549,9 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
           setPreviewImage(null);
         }
       } else if (isGenerationStalledError(error)) {
-        alert(error.message);
+        alertMessage = error.message;
       } else {
-        alert("Generation failed. Please check console for details.");
+        alertMessage = "Generation failed. Please check console for details.";
       }
 
       // Reset state first, then fail item
@@ -2562,6 +2568,10 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
           processQueueRef.current();
         }
       }, 100);
+
+      if (alertMessage) {
+        alert(alertMessage);
+      }
     }
   }, [isGenerating, generatedImage, onImageGenerated, startNextInQueue, completeCurrentItem, failCurrentItem, updateQueueItem, queue]);
 

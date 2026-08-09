@@ -2640,7 +2640,8 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         }, 100);
       } catch (error: any) {
         console.error("[Img2Img] aud2aud generation failed:", error);
-        alert(isGenerationStalledError(error) ? error.message : "aud2aud generation failed. Please check console for details.");
+        // alert() blocks the JS thread; reset state and requeue before showing it,
+        // otherwise the queue effect sees a stale isGenerating until the dialog closes.
         setIsGenerating(false);
         setProgress(0);
         setProgressMessage("");
@@ -2648,6 +2649,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         setTimeout(() => {
           if (processQueueRef.current) processQueueRef.current();
         }, 100);
+        alert(isGenerationStalledError(error) ? error.message : "aud2aud generation failed. Please check console for details.");
       }
       return;
     }
@@ -2700,7 +2702,6 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         }, 100);
       } catch (error: any) {
         console.error("[Img2Img] img2vid generation failed:", error);
-        alert(isGenerationStalledError(error) ? error.message : "img2vid generation failed. Please check console for details.");
         setIsGenerating(false);
         setProgress(0);
         setProgressMessage("");
@@ -2708,6 +2709,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         setTimeout(() => {
           if (processQueueRef.current) processQueueRef.current();
         }, 100);
+        alert(isGenerationStalledError(error) ? error.message : "img2vid generation failed. Please check console for details.");
       }
       return;
     }
@@ -2753,9 +2755,6 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         }, 100);
       } catch (error: any) {
         console.error("[Img2Img] ref2vid generation failed:", error);
-        alert(isGenerationStalledError(error)
-          ? error.message
-          : `ref2vid generation failed: ${error?.response?.data?.detail || error?.response?.data?.error || "see the console for details."}`);
         setIsGenerating(false);
         setProgress(0);
         setProgressMessage("");
@@ -2763,6 +2762,9 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         setTimeout(() => {
           if (processQueueRef.current) processQueueRef.current();
         }, 100);
+        alert(isGenerationStalledError(error)
+          ? error.message
+          : `ref2vid generation failed: ${error?.response?.data?.detail || error?.response?.data?.error || "see the console for details."}`);
       }
       return;
     }
@@ -3095,6 +3097,10 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         errorDetail.toLowerCase().includes("cancel") ||
         errorStr.toLowerCase().includes("cancel");
 
+      // alert() blocks the JS thread; decide what to show but do not call it
+      // yet -- reset state and requeue first, or the queue effect sees a
+      // stale isGenerating until the dialog closes.
+      let alertMessage: string | null = null;
       if (isCancelled) {
         const shouldRestore = localStorage.getItem('restore_image_on_cancel') === 'true';
         if (shouldRestore && previousImage) {
@@ -3102,9 +3108,9 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
           setPreviewImage(null);
         }
       } else if (isGenerationStalledError(error)) {
-        alert(error.message);
+        alertMessage = error.message;
       } else {
-        alert("Generation failed. Please check console for details.");
+        alertMessage = "Generation failed. Please check console for details.";
       }
 
       // Reset state first, then fail item
@@ -3121,6 +3127,10 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
           processQueueRef.current();
         }
       }, 100);
+
+      if (alertMessage) {
+        alert(alertMessage);
+      }
     }
   }, [isGenerating, generatedImage, onImageGenerated, startNextInQueue, completeCurrentItem, failCurrentItem, updateQueueItem, queue]);
 

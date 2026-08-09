@@ -471,8 +471,9 @@ export default function UpscalePanel({ onTabChange, onImageGenerated }: UpscaleP
       }, 100);
     } catch (error: any) {
       console.error("[Upscale] Generation failed:", error);
-      alert(isGenerationStalledError(error) ? error.message : "Upscale generation failed. Please check console for details.");
-
+      // alert() blocks the JS thread; reset state and requeue before showing
+      // it, otherwise the queue effect sees a stale isGenerating until the
+      // dialog closes.
       setIsGenerating(false);
       setProgress(0);
       failCurrentItem();
@@ -482,6 +483,7 @@ export default function UpscalePanel({ onTabChange, onImageGenerated }: UpscaleP
           processQueueRef.current();
         }
       }, 100);
+      alert(isGenerationStalledError(error) ? error.message : "Upscale generation failed. Please check console for details.");
     }
   }, [isGenerating, startNextInQueue, completeCurrentItem, failCurrentItem, onImageGenerated]);
 

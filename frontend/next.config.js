@@ -24,13 +24,17 @@ function getBackendPort() {
 const backendPort = getBackendPort();
 const backendUrl = `http://localhost:${backendPort}`;
 
-// Suppress proxy error logs during development
+// Suppress the ECONNREFUSED noise the proxy emits while the backend is still
+// starting up.  ONLY that: the previous version dropped every line starting
+// with 'Failed to proxy', which is also how Next reports a proxy ABORT -- and
+// an abort is exactly what turns a still-running generation into a synthetic
+// "500 Internal Server Error" in the browser with no trace on either side.
+// That silence cost a full debugging session; keep real proxy failures visible.
 const originalConsoleError = console.error;
+const isConnectionRefused = (arg) =>
+  arg?.code === 'ECONNREFUSED' || arg?.toString?.()?.includes?.('ECONNREFUSED');
 console.error = (...args) => {
-  // Suppress ECONNREFUSED errors from proxy attempts
-  if (args[0]?.includes?.('Failed to proxy') ||
-      args[0]?.code === 'ECONNREFUSED' ||
-      args[0]?.toString?.()?.includes?.('ECONNREFUSED')) {
+  if (args.some(isConnectionRefused)) {
     return;
   }
   originalConsoleError.apply(console, args);
@@ -61,13 +65,26 @@ const nextConfig = {
       },
     ]
   },
-  // Increase timeout for proxied requests (experimental)
+  // Inactivity timeout on the proxied socket, NOT a total request budget.
+  //
+  // Every generation endpoint answers on the POST that started it, and the
+  // backend sends nothing at all until the image/video is finished -- so this
+  // value is really "the longest single generation the UI can survive".  At the
+  // old 10 minutes a 7-step MiniMax-H3 video (~150 s/step) blew past it mid-run:
+  // http-proxy called socket.abort(), Next answered the browser with a
+  // synthesized 500, and the backend -- which never saw an error -- ran to
+  // completion and saved the video.  The UI reported a failure for a generation
+  // that had succeeded.
+  //
+  // Unlimited would be `null`, but Next 14's config schema types this as
+  // `z.number().gte(0)`, so a day is the practical stand-in.  Do not lower it
+  // below the slowest supported model's wall-clock generation time.
   experimental: {
-    proxyTimeout: 600000, // 10 minutes in milliseconds
+    proxyTimeout: 86400000, // 24 hours in milliseconds
   },
   // Increase server response timeout
   serverRuntimeConfig: {
-    timeout: 600000, // 10 minutes
+    timeout: 86400000, // 24 hours
   },
 }
 

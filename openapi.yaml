@@ -3401,15 +3401,38 @@ paths:
     get:
       tags: [training]
       summary: Get currently active training run
-      description: Returns the training run currently in progress, or null when none is running.
+      description: |
+        Returns the LoRA / Full-FT training run currently in progress.
+
+        **Idle is a 200, not a 404.** The generate panels poll this endpoint
+        every 10 s while they are mounted, so "nothing is training" is the
+        ordinary answer, not an error: it is reported as a 200 whose body has
+        `is_running: false` and `run_id: null`. Clients must decide on the
+        body, never on the status code.
       responses:
         '200':
-          description: Active training run info (or null fields when idle)
+          description: Active training run info, or the idle body when nothing is running
           content:
             application/json:
               schema:
-                type: object
-                additionalProperties: true
+                $ref: '#/components/schemas/ActiveTrainingResponse'
+              examples:
+                running:
+                  summary: A run is in progress
+                  value:
+                    run_id: 112
+                    run_name: "anima_lora_v3"
+                    training_method: "lora"
+                    current_step: 4820
+                    is_running: true
+                idle:
+                  summary: Nothing is training
+                  value:
+                    run_id: null
+                    run_name: null
+                    training_method: null
+                    current_step: null
+                    is_running: false
   /training/runs:
     post:
       tags: [training]

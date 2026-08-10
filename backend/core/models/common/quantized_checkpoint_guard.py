@@ -61,15 +61,11 @@ refused rather than ignored. The same trap exists for NVFP4/AWQ files, whose
 ``.pre_quant_scale`` ``[in_features]`` vectors ComfyUI applies to the INPUT at
 runtime; ignoring those is equally wrong, so they are refused here too.
 
-SUPPORT IS DELIBERATELY NOT IMPLEMENTED HERE. The un-rotation is understood --
-the normalized regular Hadamard Comfy builds from ``convrot_groupsize`` is
-symmetric AND involutory (``H @ H == I``), so applying the same block rotation
-a second time recovers the original basis, which is exactly what
-comfy-kitchen's own ``dequantize_int8_convrot_weight`` does. An implementation
-would live in ``Int8Linear``'s dequant forward (carry ``convrot_groupsize``,
-rotate ``codes * scale`` by a cached ``[gs, gs]`` constant) and cost
-``out*in*gs`` FLOPs per forward. It is NOT written, and until it is, this guard
-is the whole of this repo's convrot handling. Evidence and the derivation:
+This generic guard deliberately does not waive ConvRot declarations. The
+MiniMax-H3 loader recognizes one exact contract (``int8_tensorwise``, groupsize
+256), validates it before removing it from this guard's input, and installs a
+dedicated Comfy-Kitchen-backed module. Other loaders and other declarations
+still fail here. Evidence and the derivation:
 ``scratchpad/minimax_h3_weight_formats.md``.
 """
 

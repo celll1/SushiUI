@@ -4544,8 +4544,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
                 </div>
                 {videoTrimmedLengthValid ? (
                   <p className="text-xs text-green-400">
-                    Trimmed clip: {videoTrimmedFrames} frames — a length this model generates. The output
-                    is the same length.
+                    Trimmed clip: {videoTrimmedFrames} frames — a length this model generates.
                   </p>
                 ) : (
                   <div className="space-y-2">
@@ -4597,6 +4596,20 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
             frameRate={clipFrameRate}
             disabled={!videoPreviewUrl}
           />
+          {videoPreviewUrl && (
+            <p className={`mt-2 text-xs ${
+              (params.regenerate_end_frame ?? 0) >= videoTrimmedFrames && videoTrimmedFrames > 0
+                ? "text-amber-400"
+                : "text-gray-500"
+            }`}>
+              This replaces frames {params.regenerate_start_frame ?? 0} to{" "}
+              {Math.max((params.regenerate_end_frame ?? 0) - 1, params.regenerate_start_frame ?? 0)}
+              {" "}of the trimmed clip ({videoTrimmedFrames} frames). Output length equals input length
+              ({videoTrimmedFrames} frames); no frames are added.
+              {(params.regenerate_end_frame ?? 0) >= videoTrimmedFrames && videoTrimmedFrames > 0
+                && " The selected range reaches the end of the clip, so this overwrites its current tail rather than extending it."}
+            </p>
+          )}
           <div className="mt-2 flex items-center gap-1 text-xs text-gray-500">
             <span>Interior range conditioning is experimental</span>
             <InlineHelp label="Interior range support details">
@@ -4605,6 +4618,9 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
               </p>
             </InlineHelp>
           </div>
+          <p className="mt-2 text-xs text-gray-500">
+            To add frames and increase the clip's length, use the Outpaint tab instead.
+          </p>
         </Card>
         )}
 

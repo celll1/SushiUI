@@ -1407,6 +1407,16 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
     1,
     videoRawFrames - (params.input_trim_start_frames ?? 0) - (params.input_trim_end_frames ?? 0)
   );
+  // On a boundary-conditioned architecture the preserved clip is PASTED, not
+  // resampled, so a `total_frames` shorter than the clip itself plus the
+  // model's shortest generated span is not a request the backend can fill.
+  // This floor keeps that combination off the control rather than only
+  // catching it after Generate is pressed.
+  const videoConstraints = loadedArchType ? archCapabilities?.video_constraints?.[loadedArchType] : undefined;
+  const boundaryTotalFramesFloor =
+    boundaryPlacementOnly && videoConstraints && videoDurationSec != null
+      ? videoPlacedFrames + videoConstraints.min_frames - 1
+      : undefined;
   // The only two offsets a boundary-conditioned architecture accepts: flush
   // with the start of the timeline, or flush with its end.
   const boundaryEndOffset = Math.max(0, (params.total_frames ?? 0) - videoPlacedFrames);
@@ -1445,6 +1455,32 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
         : prev
     ));
   }, [archCapabilities, generationDefaults, loadedArchType]);
+
+  // On a boundary-conditioned architecture, once a clip is loaded a
+  // `total_frames` below `videoPlacedFrames + min_frames - 1` cannot be
+  // filled (the clip alone already exceeds it, or leaves less than the
+  // shortest generated span the model can produce). Raised rather than
+  // clamped silently in the request path, so the control itself always
+  // shows the value that will actually be sent.
+  // When the current placement is `extend_backward` (offset = total -
+  // placed, so the clip stays flush with the END of the timeline),
+  // `input_offset_frames` must move together with `total_frames` in the
+  // same update -- otherwise the backend's `offset + placed === total`
+  // check for that placement fails against the stale offset.
+  useEffect(() => {
+    if (boundaryTotalFramesFloor == null) return;
+    setParams(prev => {
+      if ((prev.total_frames ?? 0) >= boundaryTotalFramesFloor) return prev;
+      const wasExtendBackward = !bridgeVideoFile && (prev.input_offset_frames ?? 0) !== 0;
+      return {
+        ...prev,
+        total_frames: boundaryTotalFramesFloor,
+        input_offset_frames: wasExtendBackward
+          ? Math.max(0, boundaryTotalFramesFloor - videoPlacedFrames)
+          : prev.input_offset_frames,
+      };
+    });
+  }, [boundaryTotalFramesFloor, videoPlacedFrames, bridgeVideoFile]);
 
   // The audio mode's DEFAULT is per-architecture too, and unlike total_frames
   // there is no invalid value to detect: "regenerate" is selectable
@@ -3379,7 +3415,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
             totalUnits={params.total_frames ?? 121}
             onTotalUnitsChange={(v) => setParams(prev => ({ ...prev, total_frames: v }))}
             totalUnitsSnapFn={snapTotalFrames}
-            totalUnitsMin={9}
+            totalUnitsMin={boundaryPlacementOnly ? (boundaryTotalFramesFloor ?? 9) : 9}
             totalUnitsStep={8}
             rawSegmentLength={videoRawFrames}
             trimStart={params.input_trim_start_frames ?? 0}
@@ -3400,6 +3436,14 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
               ? "Dragging the clip snaps it to the start or the end of the timeline -- the only two offsets this model can anchor. A mid-timeline offset is refused by the backend rather than approximated."
               : "Offset is snapped to the nearest valid LTX-2.3 latent frame index (0, 1, 9, 17, ...); the backend re-snaps and warns if it differs."}
           </p>
+          {boundaryPlacementOnly && boundaryTotalFramesFloor != null && (
+            <p className="text-xs text-gray-500 mt-1">
+              Total frames cannot go below {boundaryTotalFramesFloor}: the loaded clip is placed, not
+              resampled, so this is its {videoPlacedFrames}-frame length plus this model's{" "}
+              {videoConstraints?.min_frames}-frame shortest generated span, minus the 1 frame shared
+              between them as the anchor.
+            </p>
+          )}
         </Card>
         )}
 

@@ -971,6 +971,24 @@ REF2VID_DEFAULTS["reference_audios"] = None
 REF2VID_DEFAULTS["keyframe_images"] = None
 REF2VID_DEFAULTS["keyframe_frame_indices"] = None
 
+# A raw-decoded uint8 RGB clip costs `width * height * 3` bytes PER FRAME
+# (see `utils.video_utils.load_video_frames`), with no relationship to the
+# compressed upload's size on disk -- a modest H.264 file can decode to tens
+# of gigabytes. `/generate/outpaint/video`'s preserved clip(s) (`video`,
+# `bridge_video`) are not bounded by any request field on a boundary-
+# conditioned architecture (the preserved frames are pasted, not sampled, so
+# `total_frames` does not apply to them -- see the route's `_decode_max_frames`
+# comment), so nothing else stops an oversized upload from being decoded
+# whole. This is a single system-wide RAM ceiling on that decode, in BYTES
+# rather than frames, so it scales down automatically for a smaller canvas
+# and does not need a second constant per resolution. 8 GiB budgets for one
+# in-flight decode alongside the rest of the process's working set (model
+# weights, other requests' buffers) without being so tight that an ordinary
+# clip at a model's own max canvas (MiniMax-H3: 768x1344) gets refused --
+# that works out to roughly 2100 frames (~87s at 24fps) at that canvas, far
+# past any architecture's own production length.
+MAX_VIDEO_UPLOAD_DECODE_BYTES: int = 8 * 1024 * 1024 * 1024
+
 # ---------------------------------------------------------------------------
 # Video temporal outpaint (POST /generate/outpaint/video — LTX-2.3)
 # ---------------------------------------------------------------------------

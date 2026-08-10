@@ -813,9 +813,9 @@ VIDEO_GEN_DEFAULTS: Dict[str, Any] = {
     # Honored today by MiniMax-H3, whose vendored transformer routes attention
     # through the unified conduit. LTX-2.3 drives diffusers' own attention
     # dispatch and does not read it (accepted-and-ignored, like every other
-    # per-arch parameter on these routes). A request that omits the field
-    # resolves to the process setting (`settings.attention_type`), so the
-    # existing .env / global selector keeps working unchanged.
+    # per-arch parameter on these routes). Browser senders resolve the global
+    # selector and transmit it explicitly; a direct API request that omits the
+    # field uses this documented "normal" default.
     "attention_type": GENERATION_DEFAULTS["attention_type"],
 }
 

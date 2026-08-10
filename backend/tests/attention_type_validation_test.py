@@ -192,6 +192,33 @@ class OpenApiEnumTest(unittest.TestCase):
         self.assertGreaterEqual(found, 2, "image + video request schemas")
 
 
+class FrontendVideoSenderTest(unittest.TestCase):
+    def test_every_video_sender_transmits_the_global_attention_backend(self):
+        api_path = os.path.join(_REPO, "frontend", "src", "utils", "api.ts")
+        with open(api_path, encoding="utf-8") as handle:
+            source = handle.read()
+
+        for name in (
+            "generateTxt2Vid",
+            "generateImg2Vid",
+            "generateRef2Vid",
+            "generateOutpaintVideo",
+            "generateInpaintVideo",
+        ):
+            start = source.index(f"export const {name}")
+            end = source.find("\nexport const ", start + 1)
+            function_source = source[start:end if end >= 0 else None]
+            with self.subTest(sender=name):
+                self.assertRegex(
+                    function_source,
+                    r"localStorage\.getItem\(['\"]attention_type['\"]\)",
+                )
+                self.assertRegex(
+                    function_source,
+                    r'attention_type:|formData\.append\("attention_type"',
+                )
+
+
 # ---------------------------------------------------------------------------
 # F1b -- the row records what RAN, not what was asked for
 # ---------------------------------------------------------------------------

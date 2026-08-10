@@ -265,6 +265,20 @@ class MiniMaxH3Mixin:
             return 0.0
         return torch.cuda.max_memory_allocated() / 2 ** 30
 
+    def _minimax_h3_vram_stats(self) -> Tuple[float, float, float]:
+        if not torch.cuda.is_available():
+            return 0.0, 0.0, 0.0
+        scale = float(2 ** 30)
+        return (
+            torch.cuda.memory_allocated() / scale,
+            torch.cuda.memory_reserved() / scale,
+            torch.cuda.max_memory_allocated() / scale,
+        )
+
+    def _minimax_h3_reset_peak_vram(self) -> None:
+        if torch.cuda.is_available():
+            torch.cuda.reset_peak_memory_stats()
+
     @staticmethod
     def _minimax_h3_dump_outpaint_ref_debug(placement, *, frames_gen, head, tail=None):
         """Dump the PRE-PASTE generated boundary frame(s) alongside their
@@ -1354,8 +1368,8 @@ class MiniMaxH3Mixin:
               + (f" input_audio={int(input_audio.shape[-1])} sample(s) pinned"
                  if input_audio is not None else ""))
 
-        if torch.cuda.is_available():
-            torch.cuda.reset_peak_memory_stats()
+        phase_peaks: Dict[str, float] = {}
+        self._minimax_h3_reset_peak_vram()
         wall_start = time.perf_counter()
 
         # ---- Phase 1: text encode (layer-streamed; nothing else on the GPU) ----
@@ -1390,9 +1404,13 @@ class MiniMaxH3Mixin:
                     dtype=torch.bfloat16, layer=ops.TEXT_ENCODER_LAYER,
                 )
         self._minimax_h3_empty_cache()
+        text_allocated, text_reserved, text_peak = self._minimax_h3_vram_stats()
+        phase_peaks["text_encode"] = text_peak
         print(f"[MiniMax-H3] prompt encoded: {num_text_tokens} token(s) in "
               f"{time.perf_counter() - encode_start:.1f}s "
-              f"(peak VRAM {self._minimax_h3_peak_vram():.2f} GB)")
+              f"(VRAM allocated {text_allocated:.2f} GB, reserved {text_reserved:.2f} GB, "
+              f"phase peak {text_peak:.2f} GB)")
+        self._minimax_h3_reset_peak_vram()
 
         # ---- Visual (and, for ref2va, audio) conditioning: VAE-encode it ----
         # On the VAEs, BEFORE the DiT is staged: the two do not fit together.
@@ -1535,6 +1553,12 @@ class MiniMaxH3Mixin:
                   f"{grid_samples} sample(s) -> {pinned_audio_rows.shape[0]} pinned row(s) "
                   f"(peak VRAM {self._minimax_h3_peak_vram():.2f} GB)")
 
+        condition_allocated, condition_reserved, condition_peak = self._minimax_h3_vram_stats()
+        phase_peaks["condition_encode"] = condition_peak
+        print(f"[MiniMax-H3] condition phase VRAM: allocated {condition_allocated:.2f} GB, "
+              f"reserved {condition_reserved:.2f} GB, phase peak {condition_peak:.2f} GB")
+        self._minimax_h3_reset_peak_vram()
+
         # ---- Layout + noise (drawn on the generation device, before staging) ----
         if normalized_references:
             layout = ops.build_ref2va_packed_layout(
@@ -1649,6 +1673,11 @@ class MiniMaxH3Mixin:
 
         # ---- Phase 2: denoise (DiT resident) ----
         self._minimax_h3_assert_components_off_cuda("text_encoder", "vae", "audio_vae")
+        prepare_allocated, prepare_reserved, prepare_peak = self._minimax_h3_vram_stats()
+        phase_peaks["prepare"] = prepare_peak
+        print(f"[MiniMax-H3] packed preparation VRAM: allocated {prepare_allocated:.2f} GB, "
+              f"reserved {prepare_reserved:.2f} GB, phase peak {prepare_peak:.2f} GB")
+        self._minimax_h3_reset_peak_vram()
         prompt_embeds = prompt_embeds_cpu.to(torch_device)
         denoise_start = time.perf_counter()
         # Staging owns the device move: with block swap it places the block stack
@@ -1697,10 +1726,12 @@ class MiniMaxH3Mixin:
             del prompt_embeds
             self._minimax_h3_empty_cache()
         denoise_seconds = time.perf_counter() - denoise_start
-        peak_after_denoise = self._minimax_h3_peak_vram()
+        denoise_allocated, denoise_reserved, peak_after_denoise = self._minimax_h3_vram_stats()
+        phase_peaks["denoise"] = peak_after_denoise
         print(f"[MiniMax-H3] denoise: {num_inference_steps} step(s) in {denoise_seconds:.1f}s "
               f"({denoise_seconds / max(num_inference_steps, 1):.2f}s/step, "
-              f"peak VRAM {peak_after_denoise:.2f} GB)")
+              f"VRAM allocated {denoise_allocated:.2f} GB, reserved {denoise_reserved:.2f} GB, "
+              f"phase peak {peak_after_denoise:.2f} GB)")
 
         self._minimax_h3_assert_components_off_cuda("transformer")
 
@@ -1727,6 +1758,7 @@ class MiniMaxH3Mixin:
         del video_rows
 
         decode_start = time.perf_counter()
+        self._minimax_h3_reset_peak_vram()
         self._minimax_h3_move("vae", torch_device)
         try:
             with generation_timer.phase("vae_decode"):
@@ -1742,9 +1774,12 @@ class MiniMaxH3Mixin:
             self._minimax_h3_move("vae", "cpu")
             del latents
             self._minimax_h3_empty_cache()
+        video_decode_allocated, video_decode_reserved, video_decode_peak = self._minimax_h3_vram_stats()
+        phase_peaks["video_decode"] = video_decode_peak
         print(f"[MiniMax-H3] video decode: {frames.shape[0]} frame(s) in "
               f"{time.perf_counter() - decode_start:.1f}s "
-              f"(peak VRAM {self._minimax_h3_peak_vram():.2f} GB)")
+              f"(VRAM allocated {video_decode_allocated:.2f} GB, "
+              f"reserved {video_decode_reserved:.2f} GB, phase peak {video_decode_peak:.2f} GB)")
 
         # `audio_enable=False` skips the DECODE and the mux -- the audio rows
         # still rode the packed sequence and still influenced the video through
@@ -1776,6 +1811,7 @@ class MiniMaxH3Mixin:
                   f"nothing to decode)")
         elif audio_enable:
             audio_latents = ops.unpack_audio_rows(audio_rows[n_cond_audio:], num_audio_latents)
+            self._minimax_h3_reset_peak_vram()
             self._minimax_h3_move("audio_vae", torch_device)
             try:
                 with generation_timer.phase("vae_decode"):
@@ -1793,6 +1829,8 @@ class MiniMaxH3Mixin:
             audio_out = ops.trim_audio_to_video(
                 waveform, num_frames, fps=float(components.get("fps", 24.0)),
                 sample_rate=audio_sample_rate)
+            _audio_allocated, _audio_reserved, audio_decode_peak = self._minimax_h3_vram_stats()
+            phase_peaks["audio_decode"] = audio_decode_peak
             # The waveform is handed over AS THE DECODER PRODUCED IT. An earlier
             # revision divided by the peak whenever it exceeded full scale, on
             # the premise that the 16-bit mux would wrap; it does not --
@@ -1807,8 +1845,11 @@ class MiniMaxH3Mixin:
                   "(the audio rows still took part in generation)")
         del audio_rows
 
+        overall_peak = max(phase_peaks.values(), default=0.0)
+        peak_phase = max(phase_peaks, key=phase_peaks.get) if phase_peaks else "none"
         print(f"[MiniMax-H3] total {time.perf_counter() - wall_start:.1f}s, "
-              f"peak VRAM {self._minimax_h3_peak_vram():.2f} GB")
+              f"peak VRAM {overall_peak:.2f} GB in {peak_phase}; phase peaks "
+              + ", ".join(f"{name}={value:.2f}" for name, value in phase_peaks.items()))
         self._minimax_h3_empty_cache()
 
         if frames.dtype != np.uint8:  # pragma: no cover - decode_video guarantees it

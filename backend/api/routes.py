@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Form, Request
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Depends, UploadFile, File, Form, Request
 from fastapi.responses import Response, StreamingResponse, FileResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import func, or_
@@ -7929,46 +7929,46 @@ async def save_generation_settings(
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/system/restart-backend")
-async def restart_backend():
+async def restart_backend(background_tasks: BackgroundTasks):
     """Restart the backend server"""
     try:
-        import threading
-        import time
-        import signal
+        python_exe = sys.executable
+        backend_dir = os.path.dirname(os.path.dirname(__file__))
+        main_path = os.path.join(backend_dir, "main.py")
 
-        def do_restart():
-            try:
-                time.sleep(1)  # Wait for response to be sent
+        if sys.platform == "win32":
+            from api.restart_backend_helper import (
+                build_helper_command,
+                helper_creation_flags,
+            )
 
-                # On Windows, we need to use a different approach
-                if sys.platform == "win32":
-                    # Get the path to Python executable and main.py
-                    python_exe = sys.executable
-                    backend_dir = os.path.dirname(os.path.dirname(__file__))
-                    main_path = os.path.join(backend_dir, "main.py")
+            helper_path = os.path.join(
+                os.path.dirname(__file__), "restart_backend_helper.py"
+            )
+            helper_command = build_helper_command(
+                python_executable=python_exe,
+                helper_path=helper_path,
+                parent_pid=os.getpid(),
+                main_path=main_path,
+                backend_dir=backend_dir,
+            )
 
-                    print(f"Restarting backend: {python_exe} {main_path}")
-                    print(f"Working directory: {backend_dir}")
-
-                    # Start a new process
-                    subprocess.Popen([python_exe, main_path],
-                                   cwd=backend_dir,
-                                   creationflags=subprocess.CREATE_NEW_CONSOLE)
-
-                    # Exit current process
-                    time.sleep(0.5)
-                    os._exit(0)
-                else:
-                    # Unix-like systems
-                    python_exe = sys.executable
-                    main_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "main.py")
-                    os.execv(python_exe, [python_exe, main_path])
-            except Exception as e:
-                import traceback
-                print(f"Error in do_restart: {str(e)}")
-                print(traceback.format_exc())
-
-        threading.Thread(target=do_restart, daemon=True).start()
+            print(f"Scheduling backend restart: {python_exe} {main_path}")
+            print(f"Working directory: {backend_dir}")
+            subprocess.Popen(
+                helper_command,
+                cwd=backend_dir,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=helper_creation_flags(),
+                close_fds=True,
+            )
+            background_tasks.add_task(os._exit, 0)
+        else:
+            background_tasks.add_task(
+                os.execv, python_exe, [python_exe, main_path]
+            )
 
         return {"success": True, "message": "Backend restart scheduled"}
     except Exception as e:

@@ -2148,7 +2148,43 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
     }
   };
 
-  const { addToQueue, updateQueueItem, updateQueueItemByLoop, cancelLoopGroup, startNextInQueue, completeCurrentItem, failCurrentItem, currentItem, queue, generateForever, setGenerateForever } = useGenerationQueue();
+  const { addToQueue, updateQueueItem, updateQueueItemByLoop, cancelLoopGroup, startNextInQueue, completeCurrentItem, failCurrentItem, currentItem, queue, generateForever, setGenerateForever, progressSnapshot, completedResults, publishCompletedResult } = useGenerationQueue();
+
+  useEffect(() => {
+    if (!currentItem || !["inpaint", "inpaint_vid"].includes(currentItem.type)) {
+      isGeneratingRef.current = false;
+      setIsGenerating(false);
+      return;
+    }
+    isGeneratingRef.current = true;
+    setIsGenerating(true);
+    if (progressSnapshot?.itemId !== currentItem.id) return;
+    setProgress(progressSnapshot.step);
+    setTotalSteps(progressSnapshot.totalSteps);
+    setProgressMessage(progressSnapshot.message);
+    reportSubProgress(progressSnapshot.step, progressSnapshot.subProgress);
+    if (progressSnapshot.previewImage) setPreviewImage(progressSnapshot.previewImage);
+  }, [currentItem, progressSnapshot, reportSubProgress]);
+
+  useEffect(() => {
+    const result = completedResults.inpaint;
+    if (!result || (currentItem && ["inpaint", "inpaint_vid"].includes(currentItem.type))) return;
+    setPreviewImage(null);
+    if (result.kind === "video") {
+      setGeneratedVideo(result.url);
+      setGeneratedVideoPlaybackUrl(result.playbackUrl || null);
+      setGeneratedVideoInfo(result.info as typeof generatedVideoInfo);
+      setGeneratedVideoSeed(result.seed ?? null);
+      setGeneratedVideoParams(result.params as InpaintParams);
+      setGeneratedImage(null);
+    } else if (result.kind === "image") {
+      setGeneratedImage(result.url);
+      setGeneratedImageSeed(result.seed ?? null);
+      setGeneratedImageAncestralSeed(result.ancestralSeed ?? null);
+      setGeneratedImageParams(result.params as InpaintParams);
+      setGeneratedVideo(null);
+    }
+  }, [completedResults.inpaint, currentItem]);
   const [showForeverMenu, setShowForeverMenu] = useState(false);
   const [menuPosition, setMenuPosition] = useState({ x: 0, y: 0 });
   const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -2677,13 +2713,13 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
   const processQueueRef = useRef<() => Promise<void>>();
 
   const processQueue = useCallback(async () => {
-    console.log("[Inpaint] processQueue called, isGenerating:", isGenerating);
-    if (isGenerating) {
+    console.log("[Inpaint] processQueue called, isGenerating:", isGeneratingRef.current);
+    if (isGeneratingRef.current) {
       console.log("[Inpaint] Already generating, skipping");
       return;
     }
 
-    const nextItem = startNextInQueue();
+    const nextItem = startNextInQueue(["inpaint", "inpaint_vid"]);
     console.log("[Inpaint] Next item from queue:", nextItem);
     if (!nextItem || (nextItem.type !== "inpaint" && nextItem.type !== "inpaint_vid")) {
       console.log("[Inpaint] No inpaint items in queue");
@@ -2695,6 +2731,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
     // handling -- matching the video branches of the other panels.
     if (nextItem.type === "inpaint_vid") {
       const videoParams = nextItem.params as InpaintVideoParams;
+      isGeneratingRef.current = true;
       setIsGenerating(true);
       setProgress(0);
       setProgressMessage("");
@@ -2713,17 +2750,21 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         const result = await generateInpaintVideo(videoParams, clip);
         const videoUrl = `/outputs/${getResultFilename(result)}`;
         const videoPlaybackUrl = `/outputs/${getResultPlaybackFilename(result)}`;
-        setGeneratedVideoWarnings(
-          (result.warnings || []).map((w: any) => (typeof w === "string" ? w : w?.message)).filter(Boolean));
-        setGeneratedVideo(videoUrl);
-        setGeneratedVideoPlaybackUrl(videoPlaybackUrl !== videoUrl ? videoPlaybackUrl : null);
-        setGeneratedVideoSeed(getResultSeed(result));
-        setGeneratedVideoParams(nextItem.params as InpaintParams);
-        setGeneratedVideoInfo({
+        const playbackUrl = videoPlaybackUrl !== videoUrl ? videoPlaybackUrl : undefined;
+        const videoSeed = getResultSeed(result);
+        const videoInfo = {
           num_frames: result.image?.num_frames,
           fps: result.image?.fps,
           duration: result.image?.duration,
-        });
+        };
+        setGeneratedVideoWarnings(
+          (result.warnings || []).map((w: any) => (typeof w === "string" ? w : w?.message)).filter(Boolean));
+        setGeneratedVideo(videoUrl);
+        setGeneratedVideoPlaybackUrl(playbackUrl || null);
+        setGeneratedVideoSeed(videoSeed);
+        setGeneratedVideoParams(nextItem.params as InpaintParams);
+        setGeneratedVideoInfo(videoInfo);
+        publishCompletedResult({ panel: "inpaint", kind: "video", url: videoUrl, playbackUrl, info: videoInfo, seed: videoSeed, params: nextItem.params });
         if (onImageGenerated) onImageGenerated(videoUrl);
         completeCurrentItem();
       } catch (error: any) {
@@ -2732,6 +2773,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         // alert() blocks the JS thread; reset state and requeue before showing
         // it, otherwise the queue effect sees a stale isGenerating until the
         // dialog closes.
+        isGeneratingRef.current = false;
         setIsGenerating(false);
         setProgress(0);
         setProgressMessage("");
@@ -2743,6 +2785,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
           : `Video inpaint generation failed: ${error?.response?.data?.detail || error?.message || "Unknown error"}`);
         return;
       }
+      isGeneratingRef.current = false;
       setIsGenerating(false);
       setProgress(0);
       setProgressMessage("");
@@ -2755,6 +2798,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
     // Save current image before starting new generation
     const previousImage = generatedImage;
 
+    isGeneratingRef.current = true;
     setIsGenerating(true);
     setProgress(0);
     setProgressMessage("");
@@ -2946,13 +2990,24 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         setPreviewImage(null);
 
         // Save the params used for this generation (with actual result values)
-        setGeneratedImageParams({
+        const completedParams: InpaintParams = {
           ...nextItem.params,
           seed: resultSeed,
           ancestral_seed: resultAncestralSeed ?? -1,
           width: result.image?.width ?? nextItem.params.width,
           height: result.image?.height ?? nextItem.params.height,
-        });
+        };
+        setGeneratedImageParams(completedParams);
+        if (imageUrl) {
+          publishCompletedResult({
+            panel: "inpaint",
+            kind: "image",
+            url: imageUrl,
+            seed: resultSeed,
+            ancestralSeed: resultAncestralSeed,
+            params: completedParams,
+          });
+        }
 
         // Add to the client-side session gallery — but NOT for latent-only or
         // skip_gallery intermediate loop steps (decodeMode "final-only"
@@ -3109,6 +3164,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
 
         // Reset state first, then complete item
         console.log("[Inpaint] Generation complete, resetting state and completing item");
+        isGeneratingRef.current = false;
         setIsGenerating(false);
         setProgress(0);
         setProgressMessage("");
@@ -3125,6 +3181,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         // alert() blocks the JS thread; reset state and requeue before
         // showing it, otherwise the queue effect sees a stale isGenerating
         // until the dialog closes.
+        isGeneratingRef.current = false;
         setIsGenerating(false);
         setProgress(0);
         setProgressMessage("");
@@ -3172,6 +3229,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
 
       // Reset state first, then fail item
       console.log("[Inpaint] Generation failed, resetting state and failing item");
+      isGeneratingRef.current = false;
       setIsGenerating(false);
       setProgress(0);
       setProgressMessage("");
@@ -3189,7 +3247,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         alert(alertMessage);
       }
     }
-  }, [isGenerating, generatedImage, onImageGenerated, isMounted, startNextInQueue, completeCurrentItem, failCurrentItem, updateQueueItem, queue]);
+  }, [isGenerating, generatedImage, onImageGenerated, isMounted, startNextInQueue, completeCurrentItem, failCurrentItem, updateQueueItem, queue, publishCompletedResult]);
 
   processQueueRef.current = processQueue;
 

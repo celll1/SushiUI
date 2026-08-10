@@ -2011,7 +2011,50 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
     }
   };
 
-  const { addToQueue, updateQueueItem, updateQueueItemByLoop, cancelLoopGroup, startNextInQueue, completeCurrentItem, failCurrentItem, currentItem, queue, generateForever, setGenerateForever } = useGenerationQueue();
+  const { addToQueue, updateQueueItem, updateQueueItemByLoop, cancelLoopGroup, startNextInQueue, completeCurrentItem, failCurrentItem, currentItem, queue, generateForever, setGenerateForever, progressSnapshot, completedResults, publishCompletedResult } = useGenerationQueue();
+
+  useEffect(() => {
+    if (!currentItem || !["img2img", "img2vid", "ref2vid", "aud2aud"].includes(currentItem.type)) {
+      isGeneratingRef.current = false;
+      setIsGenerating(false);
+      return;
+    }
+    isGeneratingRef.current = true;
+    setIsGenerating(true);
+    if (progressSnapshot?.itemId !== currentItem.id) return;
+    setProgress(progressSnapshot.step);
+    setTotalSteps(progressSnapshot.totalSteps);
+    setProgressMessage(progressSnapshot.message);
+    reportSubProgress(progressSnapshot.step, progressSnapshot.subProgress);
+    if (progressSnapshot.previewImage) setPreviewImage(progressSnapshot.previewImage);
+  }, [currentItem, progressSnapshot, reportSubProgress]);
+
+  useEffect(() => {
+    const result = completedResults.img2img;
+    if (!result || (currentItem && ["img2img", "img2vid", "ref2vid", "aud2aud"].includes(currentItem.type))) return;
+    setPreviewImage(null);
+    if (result.kind === "image") {
+      setGeneratedImage(result.url);
+      setGeneratedImageSeed(result.seed ?? null);
+      setGeneratedImageAncestralSeed(result.ancestralSeed ?? null);
+      setGeneratedImageParams(result.params as Img2ImgParams);
+      setGeneratedVideo(null);
+      setGeneratedAudio(null);
+    } else if (result.kind === "video") {
+      setGeneratedVideo(result.url);
+      setGeneratedVideoInfo(result.info as typeof generatedVideoInfo);
+      setGeneratedVideoSeed(result.seed ?? null);
+      setGeneratedVideoParams(result.params as Img2ImgParams);
+      setGeneratedImage(null);
+      setGeneratedAudio(null);
+    } else {
+      setGeneratedAudio(result.url);
+      setGeneratedAudioInfo(result.info as typeof generatedAudioInfo);
+      setGeneratedAudioParams(result.params as Img2ImgParams);
+      setGeneratedImage(null);
+      setGeneratedVideo(null);
+    }
+  }, [completedResults.img2img, currentItem]);
   const [showForeverMenu, setShowForeverMenu] = useState(false);
   const [menuPosition, setMenuPosition] = useState({ x: 0, y: 0 });
   const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -2602,13 +2645,13 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
   const processQueueRef = useRef<() => Promise<void>>();
 
   const processQueue = useCallback(async () => {
-    console.log("[Img2Img] processQueue called, isGenerating:", isGenerating);
-    if (isGenerating) {
+    console.log("[Img2Img] processQueue called, isGenerating:", isGeneratingRef.current);
+    if (isGeneratingRef.current) {
       console.log("[Img2Img] Already generating, skipping");
       return;
     }
 
-    const nextItem = startNextInQueue();
+    const nextItem = startNextInQueue(["img2img", "img2vid", "ref2vid", "aud2aud"]);
     console.log("[Img2Img] Next item from queue:", nextItem);
     if (!nextItem || (nextItem.type !== "img2img" && nextItem.type !== "img2vid" && nextItem.type !== "ref2vid" && nextItem.type !== "aud2aud")) {
       console.log("[Img2Img] No img2img/img2vid/ref2vid/aud2aud items in queue");
@@ -2619,6 +2662,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
     // reference clip (a File) is the cover source. Produces a .flac and
     // renders an <audio> instead of an <img>. No loop-generation handling.
     if (nextItem.type === "aud2aud") {
+      isGeneratingRef.current = true;
       setIsGenerating(true);
       setProgress(0);
       setProgressMessage("");
@@ -2638,16 +2682,17 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         }
         const result = await generateAud2Aud(nextItem.params as Aud2AudParams, referenceAudio);
         const audioUrl = `/outputs/${result.image.filename}`;
-        setGeneratedAudio(audioUrl);
-        setGeneratedAudioInfo({
-          duration: result.image.duration,
-          sample_rate: result.image.sample_rate,
-        });
-        setGeneratedAudioParams({
+        const audioInfo = { duration: result.image.duration, sample_rate: result.image.sample_rate };
+        const audioParams = {
           ...(nextItem.params as Img2ImgParams),
           seed: getResultSeed(result) ?? (nextItem.params as Img2ImgParams).seed,
-        });
+        };
+        setGeneratedAudio(audioUrl);
+        setGeneratedAudioInfo(audioInfo);
+        setGeneratedAudioParams(audioParams);
+        publishCompletedResult({ panel: "img2img", kind: "audio", url: audioUrl, info: audioInfo, params: audioParams });
         if (onImageGenerated) onImageGenerated(audioUrl);
+        isGeneratingRef.current = false;
         setIsGenerating(false);
         setProgress(0);
         setProgressMessage("");
@@ -2659,6 +2704,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         console.error("[Img2Img] aud2aud generation failed:", error);
         // alert() blocks the JS thread; reset state and requeue before showing it,
         // otherwise the queue effect sees a stale isGenerating until the dialog closes.
+        isGeneratingRef.current = false;
         setIsGenerating(false);
         setProgress(0);
         setProgressMessage("");
@@ -2674,6 +2720,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
     // Video branch: img2vid item (a video model is loaded). The queued input
     // image is the keyframe. Produces an .mp4 and renders a <video>.
     if (nextItem.type === "img2vid") {
+      isGeneratingRef.current = true;
       setIsGenerating(true);
       setProgress(0);
       setProgressMessage("");
@@ -2699,17 +2746,17 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         };
         const result = await generateImg2Vid(apiParams, keyframe);
         const videoUrl = `/outputs/${result.image.filename}`;
+        const videoInfo = { num_frames: result.image.num_frames, fps: result.image.fps, duration: result.image.duration };
+        const videoSeed = getResultSeed(result);
         setGeneratedVideo(videoUrl);
-        setGeneratedVideoInfo({
-          num_frames: result.image.num_frames,
-          fps: result.image.fps,
-          duration: result.image.duration,
-        });
+        setGeneratedVideoInfo(videoInfo);
         // The seed the run actually used (-1 in the request means "pick one"),
         // so the seed control's reuse button can pin it for the next run.
-        setGeneratedVideoSeed(getResultSeed(result));
+        setGeneratedVideoSeed(videoSeed);
         setGeneratedVideoParams(nextItem.params as Img2ImgParams);
+        publishCompletedResult({ panel: "img2img", kind: "video", url: videoUrl, info: videoInfo, seed: videoSeed, params: nextItem.params });
         if (onImageGenerated) onImageGenerated(videoUrl);
+        isGeneratingRef.current = false;
         setIsGenerating(false);
         setProgress(0);
         setProgressMessage("");
@@ -2719,6 +2766,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         }, 100);
       } catch (error: any) {
         console.error("[Img2Img] img2vid generation failed:", error);
+        isGeneratingRef.current = false;
         setIsGenerating(false);
         setProgress(0);
         setProgressMessage("");
@@ -2738,6 +2786,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
     // enqueue time); references ride on nextItem.references, same as
     // Txt2ImgPanel's ref2vid item.
     if (nextItem.type === "ref2vid") {
+      isGeneratingRef.current = true;
       setIsGenerating(true);
       setProgress(0);
       setProgressMessage("");
@@ -2754,15 +2803,15 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
           nextItem.params as Ref2VidParams,
           nextItem.references ?? EMPTY_MINIMAX_H3_REFERENCES);
         const videoUrl = `/outputs/${result.image.filename}`;
+        const videoInfo = { num_frames: result.image.num_frames, fps: result.image.fps, duration: result.image.duration };
+        const videoSeed = getResultSeed(result);
         setGeneratedVideo(videoUrl);
-        setGeneratedVideoInfo({
-          num_frames: result.image.num_frames,
-          fps: result.image.fps,
-          duration: result.image.duration,
-        });
-        setGeneratedVideoSeed(getResultSeed(result));
+        setGeneratedVideoInfo(videoInfo);
+        setGeneratedVideoSeed(videoSeed);
         setGeneratedVideoParams(nextItem.params as Img2ImgParams);
+        publishCompletedResult({ panel: "img2img", kind: "video", url: videoUrl, info: videoInfo, seed: videoSeed, params: nextItem.params });
         if (onImageGenerated) onImageGenerated(videoUrl);
+        isGeneratingRef.current = false;
         setIsGenerating(false);
         setProgress(0);
         setProgressMessage("");
@@ -2772,6 +2821,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         }, 100);
       } catch (error: any) {
         console.error("[Img2Img] ref2vid generation failed:", error);
+        isGeneratingRef.current = false;
         setIsGenerating(false);
         setProgress(0);
         setProgressMessage("");
@@ -2789,6 +2839,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
     // Save current image before starting new generation
     const previousImage = generatedImage;
 
+    isGeneratingRef.current = true;
     setIsGenerating(true);
     setProgress(0);
     setProgressMessage("");
@@ -2899,13 +2950,24 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
       setGeneratedImageSeed(resultSeed);
       setGeneratedImageAncestralSeed(resultAncestralSeed);
       // Save the params used for this generation (with actual result values)
-      setGeneratedImageParams({
+      const completedParams: Img2ImgParams = {
         ...nextItem.params,
         seed: resultSeed,
         ancestral_seed: resultAncestralSeed ?? -1,
         width: result.image?.width ?? nextItem.params.width,
         height: result.image?.height ?? nextItem.params.height,
-      });
+      };
+      setGeneratedImageParams(completedParams);
+      if (imageUrl) {
+        publishCompletedResult({
+          panel: "img2img",
+          kind: "image",
+          url: imageUrl,
+          seed: resultSeed,
+          ancestralSeed: resultAncestralSeed,
+          params: completedParams,
+        });
+      }
       setPreviewImage(null);
 
       // Notify parent component (skip for latent-only steps — nothing to show)
@@ -3085,6 +3147,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
 
       // Reset state first, then complete item
       console.log("[Img2Img] Generation complete, resetting state and completing item");
+      isGeneratingRef.current = false;
       setIsGenerating(false);
       setProgress(0);
       setProgressMessage("");
@@ -3132,6 +3195,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
 
       // Reset state first, then fail item
       console.log("[Img2Img] Generation failed, resetting state and failing item");
+      isGeneratingRef.current = false;
       setIsGenerating(false);
       setProgress(0);
       setProgressMessage("");
@@ -3149,7 +3213,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         alert(alertMessage);
       }
     }
-  }, [isGenerating, generatedImage, onImageGenerated, startNextInQueue, completeCurrentItem, failCurrentItem, updateQueueItem, queue]);
+  }, [isGenerating, generatedImage, onImageGenerated, startNextInQueue, completeCurrentItem, failCurrentItem, updateQueueItem, queue, publishCompletedResult]);
 
   processQueueRef.current = processQueue;
 

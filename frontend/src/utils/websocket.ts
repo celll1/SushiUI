@@ -110,8 +110,8 @@ class ProgressClient {
   private lastMessageAt = 0;
 
   connect() {
-    if (this.eventSource && this.eventSource.readyState === EventSource.OPEN) {
-      console.log('[SSE] Already connected, skipping');
+    if (this.eventSource && this.eventSource.readyState !== EventSource.CLOSED) {
+      console.log('[SSE] Already connected or connecting, skipping');
       return;
     }
 

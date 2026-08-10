@@ -287,3 +287,32 @@ def test_an_image_reference_lands_outside_the_anchors_binding_radius():
         f"image reference at t={image_time} is within the anchor's own binding radius "
         f"({binding_radius}) of the anchor at t={anchor_time} -- it will compete with the "
         f"anchor for the join instant instead of conditioning the whole generated span")
+
+
+def test_outpaint_returns_minimax_measurements_to_the_gallery_params():
+    from core.pipeline_backends.minimax_h3 import MiniMaxH3Mixin
+
+    class Runner(MiniMaxH3Mixin):
+        minimax_h3_components = {"variant": "ref2va", "audio_sample_rate": 32000}
+        current_model_info = {"type": "minimax_h3", "variant": "ref2va"}
+
+        def _generate_minimax_h3(self, params, **kwargs):
+            params["minimax_h3_packed_rows"] = 123
+            params["minimax_h3_vram_peak_gb"] = 4.5
+            frames = np.zeros((int(params["num_frames"]), 32, 64, 3), dtype=np.uint8)
+            return frames, None, None, 7
+
+    params = {
+        "width": 64,
+        "height": 32,
+        "total_frames": 247,
+        "frame_rate": 24.0,
+        "input_offset_frames": 0,
+        "outpaint_video_audio_mode": "preserve_input",
+    }
+    source = np.zeros((124, 32, 64, 3), dtype=np.uint8)
+
+    Runner()._generate_vidoutpaint_minimax_h3(params, source, 24.0, None)
+
+    assert params["minimax_h3_packed_rows"] == 123
+    assert params["minimax_h3_vram_peak_gb"] == 4.5

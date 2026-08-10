@@ -785,6 +785,10 @@ class MiniMaxH3Mixin:
             sub_params, keyframes=tuple(keyframes), references=references, label="vid_outpaint",
             progress_callback=progress_callback, step_callback=step_callback,
         )
+        params.update({
+            key: value for key, value in sub_params.items()
+            if key.startswith("minimax_h3_")
+        })
         self._minimax_h3_dump_outpaint_ref_debug(
             placement, frames_gen=frames_gen, head=head, tail=tail)
         if frames_gen.shape[0] != generated_frames:  # pragma: no cover - decode guarantees it

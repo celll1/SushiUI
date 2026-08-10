@@ -193,6 +193,20 @@ def test_source_reference_is_never_longer_than_the_head():
     assert references[-1].frames.shape[0] == 5
 
 
+def test_source_reference_keeps_the_generation_canvas():
+    """Outpaint must not upscale its already-normalized source as a generic reference."""
+    from core.models.minimax_h3.h3_references import normalize_references
+
+    head = _head(22, height=64, width=96)
+    references = build_outpaint_references(
+        head, generated_frames=22, frame_rate=24.0, reference_images=())
+
+    normalized = normalize_references(references, num_frames=22, fps=24.0)
+
+    assert references[-1].video_canvas == (64, 96)
+    assert normalized[-1].frames.shape == (22, 64, 96, 3)
+
+
 def test_image_references_precede_the_source_in_request_order():
     """Images are packed BEFORE the video reference (not after): this is the
     fix for the rotary collision between an image reference and the boundary

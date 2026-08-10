@@ -2003,6 +2003,73 @@ paths:
                   detail:
                     type: string
 
+  /images/by-hash/{hash}:
+    get:
+      tags: [images]
+      summary: Find a gallery row by its image_hash
+      description: |
+        Looks up a gallery row whose `image_hash` column equals `hash` and
+        returns the same full record shape as `GET /images/{image_id}`
+        (`GeneratedImage.to_dict()`), plus a `match_count` field.
+
+        This is the resolver behind the gallery's clickable
+        `source_image_hash` link: a still image's `source_image_hash` is a
+        pixel-PNG hash (`calculate_image_hash`) and a video/audio row's is a
+        raw-file-bytes hash (`calculate_bytes_hash`) -- either way, the value
+        a client is resolving was copied from some OTHER row's `image_hash`
+        at generation time, so this is a straight equality lookup, never a
+        fuzzy/nearest match.
+
+        `image_hash` is **not unique**: the same seed can be re-run (an
+        identical PNG hashes identically), or the same uploaded file can be
+        hashed twice across two different requests. When more than one row
+        matches, this returns the **oldest** (`created_at` ascending) as the
+        most plausible original source, and reports how many rows matched in
+        `match_count` so a client can decide whether to disambiguate further
+        (e.g. by also showing `match_count` in the UI).
+
+        Video/audio rows saved before this endpoint existed (`hash_kind`
+        absent from `parameters`) always carried `image_hash=""` and can
+        never be resolved TO; a `source_image_hash` pointing at one of them
+        will keep 404ing here until that row's `image_hash` is populated,
+        which does not happen automatically for a pre-existing row.
+      operationId: getImageByHash
+      parameters:
+        - name: hash
+          in: path
+          required: true
+          schema:
+            type: string
+          description: |
+            The `image_hash` (or, when following a `source_image_hash` /
+            `source_audio_hash` / ControlNet reference hash link, that value)
+            to resolve to a gallery row.
+          example: "b031b5d473385505b42bfc1715592e1769f9fd7eea86c08cb3d988e761e7aaed"
+      responses:
+        '200':
+          description: The oldest gallery row whose image_hash matches, plus match_count.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/GeneratedImage'
+                  - type: object
+                    required: [match_count]
+                    properties:
+                      match_count:
+                        type: integer
+                        description: |
+                          Total number of gallery rows whose image_hash equals
+                          `hash`. The returned row is the oldest of these
+                          (`created_at` ascending); the rest are not returned.
+                        example: 1
+        '404':
+          description: No gallery row has this image_hash.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /images/{image_id}/preview:
     get:
       tags: [images]

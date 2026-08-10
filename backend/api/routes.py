@@ -36,7 +36,7 @@ from core.inference.schedulers import (
     get_available_schedule_types,
     get_schedule_type_display_names
 )
-from utils import save_image_with_metadata, create_thumbnail, calculate_image_hash, encode_mask_to_base64, extract_lora_names
+from utils import save_image_with_metadata, create_thumbnail, calculate_image_hash, encode_mask_to_base64, extract_lora_names, calculate_file_hash, calculate_bytes_hash
 from utils.upload_names import recover_upload_filename
 from config.settings import settings
 from api.websocket import manager
@@ -684,6 +684,21 @@ async def _run_generation_in_executor(loop, executor, fn):
     """
     ctx = contextvars.copy_context()
     return await loop.run_in_executor(executor, lambda: ctx.run(fn))
+
+
+async def _hash_saved_media(file_path: str) -> str:
+    """``calculate_file_hash`` off the event loop, in the shared executor.
+
+    The saved MASTER file this hashes can be a multi-gigabyte FFV1 mkv
+    (``video_lossless=True``) or a long WAV/FLAC; reading and SHA-256'ing
+    that synchronously inside an ``async def`` route stalls every other
+    client's progress WebSocket for however long that read+digest takes.
+    Every media-save route in this module calls THIS one wrapper (instead of
+    each inlining its own ``run_in_executor`` dispatch) so there is one
+    off-loop implementation, not eight in-loop ones.
+    """
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(executor, calculate_file_hash, file_path)
 
 
 def _estimate_gen_peak_gb(width: int, height: int, batch_size: int, pipeline_kind: str) -> float:
@@ -2700,6 +2715,12 @@ async def generate_txt2vid(
         if os.path.exists(poster_path):
             create_thumbnail(poster_path)
 
+        # Hash the saved MASTER file's bytes (see calculate_bytes_hash's
+        # docstring for why video/audio identity is byte-, not pixel-, hashed).
+        # This is what lets a later request's source_image_hash resolve back
+        # to this row via GET /images/by-hash/{hash}.
+        _media_hash = await _hash_saved_media(os.path.join(settings.outputs_dir, filename))
+
         # Record video-specific fields into parameters JSON for the gallery.
         num_frames_out = int(frames.shape[0])
         fps_out = float(params.get("frame_rate", 24.0))
@@ -2709,6 +2730,10 @@ async def generate_txt2vid(
         params_for_db["duration"] = (num_frames_out / fps_out) if fps_out else 0.0
         params_for_db["audio_enable"] = bool(params.get("audio_enable", True) and audio is not None)
         params_for_db["is_video"] = True
+        # See calculate_bytes_hash's docstring: file-bytes hashing, not the
+        # still-image pixel-PNG hash. Recorded so a later audit can tell this
+        # row apart from a pre-backfill legacy one without guessing.
+        params_for_db["hash_kind"] = "file_bytes"
         # The gallery's `cfg_scale` / `steps` COLUMNS are filled by
         # `create_db_image_record` from the keys the IMAGE routes use. A video
         # request carries neither `cfg_scale` nor `steps`, so every video row so
@@ -2731,7 +2756,7 @@ async def generate_txt2vid(
             params=params_for_db,
             actual_seed=actual_seed,
             generation_type="txt2vid",
-            image_hash="",
+            image_hash=_media_hash,
             lora_names=None,
             model_name=model_name,
             model_hash=model_hash,
@@ -2836,6 +2861,9 @@ async def generate_txt2aud(
         if os.path.exists(waveform_png_path):
             create_thumbnail(waveform_png_path)
 
+        # Hash the saved FLAC file's bytes (see calculate_bytes_hash's docstring).
+        _media_hash = await _hash_saved_media(os.path.join(settings.outputs_dir, filename))
+
         # Record audio-specific fields into parameters JSON for the gallery.
         num_samples = int(waveform.shape[-1])
         duration_s = (num_samples / sample_rate) if sample_rate else 0.0
@@ -2847,6 +2875,7 @@ async def generate_txt2aud(
         params_for_db["duration"] = duration_s
         params_for_db["sample_rate"] = sample_rate
         params_for_db["is_audio"] = True
+        params_for_db["hash_kind"] = "file_bytes"
         _effective_warnings = get_warnings(_gen_id)
         if _effective_warnings:
             params_for_db["effective_warnings"] = _effective_warnings
@@ -2859,7 +2888,7 @@ async def generate_txt2aud(
             params=params_for_db,
             actual_seed=actual_seed,
             generation_type="txt2aud",
-            image_hash="",
+            image_hash=_media_hash,
             lora_names=extract_lora_names(params.get("loras") or []),
             model_name=model_name,
             model_hash=model_hash,
@@ -3023,7 +3052,7 @@ async def generate_aud2aud(
         params["seed"] = actual_seed
 
         # Hash the reference clip (mirrors img2img/img2vid's source_image_hash).
-        params["source_audio_hash"] = hashlib.sha256(reference_audio_bytes).hexdigest()
+        params["source_audio_hash"] = calculate_bytes_hash(reference_audio_bytes)
 
         # Encode FLAC, waveform PNG (thumbnail seed), and sidecar JSON.
         filename = save_audio_with_metadata(
@@ -3040,6 +3069,9 @@ async def generate_aud2aud(
         if os.path.exists(waveform_png_path):
             create_thumbnail(waveform_png_path)
 
+        # Hash the saved FLAC file's bytes (see calculate_bytes_hash's docstring).
+        _media_hash = await _hash_saved_media(os.path.join(settings.outputs_dir, filename))
+
         # Record audio-specific fields into parameters JSON for the gallery.
         num_samples = int(waveform.shape[-1])
         duration_s = (num_samples / sample_rate) if sample_rate else 0.0
@@ -3051,6 +3083,7 @@ async def generate_aud2aud(
         params_for_db["duration"] = duration_s
         params_for_db["sample_rate"] = sample_rate
         params_for_db["is_audio"] = True
+        params_for_db["hash_kind"] = "file_bytes"
         _effective_warnings = get_warnings(_gen_id)
         if _effective_warnings:
             params_for_db["effective_warnings"] = _effective_warnings
@@ -3063,7 +3096,7 @@ async def generate_aud2aud(
             params=params_for_db,
             actual_seed=actual_seed,
             generation_type=_generation_type,
-            image_hash="",
+            image_hash=_media_hash,
             lora_names=extract_lora_names(params.get("loras") or []),
             model_name=model_name,
             model_hash=model_hash,
@@ -3276,7 +3309,7 @@ async def generate_outpaint_audio(
         params["seed"] = actual_seed
 
         # Hash the input clip (mirrors aud2aud's source_audio_hash).
-        params["source_audio_hash"] = hashlib.sha256(reference_audio_bytes).hexdigest()
+        params["source_audio_hash"] = calculate_bytes_hash(reference_audio_bytes)
 
         # Encode FLAC, waveform PNG (thumbnail seed), and sidecar JSON.
         filename = save_audio_with_metadata(
@@ -3293,6 +3326,9 @@ async def generate_outpaint_audio(
         if os.path.exists(waveform_png_path):
             create_thumbnail(waveform_png_path)
 
+        # Hash the saved FLAC file's bytes (see calculate_bytes_hash's docstring).
+        _media_hash = await _hash_saved_media(os.path.join(settings.outputs_dir, filename))
+
         # Record audio-specific fields into parameters JSON for the gallery.
         num_samples = int(waveform.shape[-1])
         duration_s = (num_samples / sample_rate) if sample_rate else 0.0
@@ -3304,6 +3340,7 @@ async def generate_outpaint_audio(
         params_for_db["duration"] = duration_s
         params_for_db["sample_rate"] = sample_rate
         params_for_db["is_audio"] = True
+        params_for_db["hash_kind"] = "file_bytes"
         _effective_warnings = get_warnings(_gen_id)
         if _effective_warnings:
             params_for_db["effective_warnings"] = _effective_warnings
@@ -3316,7 +3353,7 @@ async def generate_outpaint_audio(
             params=params_for_db,
             actual_seed=actual_seed,
             generation_type="outpaint_aud",
-            image_hash="",
+            image_hash=_media_hash,
             lora_names=extract_lora_names(params.get("loras") or []),
             model_name=model_name,
             model_hash=model_hash,
@@ -3861,6 +3898,9 @@ async def generate_img2vid(
         if os.path.exists(poster_path):
             create_thumbnail(poster_path)
 
+        # Hash the saved MASTER file's bytes (see calculate_bytes_hash's docstring).
+        _media_hash = await _hash_saved_media(os.path.join(settings.outputs_dir, filename))
+
         # Record video-specific fields into parameters JSON for the gallery.
         num_frames_out = int(frames.shape[0])
         fps_out = float(params.get("frame_rate", 24.0))
@@ -3870,6 +3910,7 @@ async def generate_img2vid(
         params_for_db["duration"] = (num_frames_out / fps_out) if fps_out else 0.0
         params_for_db["audio_enable"] = bool(params.get("audio_enable", True) and audio is not None)
         params_for_db["is_video"] = True
+        params_for_db["hash_kind"] = "file_bytes"
         # The gallery's `cfg_scale` / `steps` COLUMNS are filled by
         # `create_db_image_record` from the keys the IMAGE routes use. A video
         # request carries neither `cfg_scale` nor `steps`, so every video row so
@@ -3892,7 +3933,7 @@ async def generate_img2vid(
             params=params_for_db,
             actual_seed=actual_seed,
             generation_type="img2vid",
-            image_hash="",
+            image_hash=_media_hash,
             lora_names=None,
             model_name=model_name,
             model_hash=model_hash,
@@ -4304,6 +4345,9 @@ async def generate_ref2vid(
         if os.path.exists(poster_path):
             create_thumbnail(poster_path)
 
+        # Hash the saved MASTER file's bytes (see calculate_bytes_hash's docstring).
+        _media_hash = await _hash_saved_media(os.path.join(settings.outputs_dir, filename))
+
         num_frames_out = int(frames.shape[0])
         fps_out = float(params.get("frame_rate", 24.0))
         params_for_db = {k: v for k, v in params.items() if not k.startswith("_")}
@@ -4312,6 +4356,7 @@ async def generate_ref2vid(
         params_for_db["duration"] = (num_frames_out / fps_out) if fps_out else 0.0
         params_for_db["audio_enable"] = bool(params.get("audio_enable", True) and audio is not None)
         params_for_db["is_video"] = True
+        params_for_db["hash_kind"] = "file_bytes"
         # See /generate/img2vid: the gallery's cfg_scale / steps COLUMNS are
         # filled from the image routes' key names, which a video request does
         # not carry.
@@ -4329,7 +4374,7 @@ async def generate_ref2vid(
             params=params_for_db,
             actual_seed=actual_seed,
             generation_type="ref2vid",
-            image_hash="",
+            image_hash=_media_hash,
             lora_names=None,
             model_name=model_name,
             model_hash=model_hash,
@@ -4834,15 +4879,17 @@ async def generate_outpaint_video(
 
         params["seed"] = actual_seed
 
-        # Hash the (first frame of the) uploaded clip (reuses the img2img/img2vid metadata helper).
-        metadata = calculate_generation_metadata(
-            Image.fromarray(frames[0]),
-            [],
-            extract_lora_names,
-            calculate_image_hash,
-            source_image=Image.fromarray(video_frames[0]),
-        )
-        params["source_image_hash"] = metadata.get("source_image_hash")
+        # Hash the uploaded clip's raw bytes (see calculate_bytes_hash's
+        # docstring: video source/target hashing is defined over FILE BYTES,
+        # not decoded pixels -- a frame-0 pixel hash of `video_data` could
+        # never match any row's byte-hashed image_hash, since ffmpeg's decode
+        # is lossy and non-deterministic across encodes). This SUPERSEDES the
+        # previous `calculate_generation_metadata(Image.fromarray(frames[0]), ...)`
+        # call, which additionally computed a pixel `image_hash` of the
+        # GENERATED frame that was never read (create_db_image_record always
+        # received the empty-string sentinel for image_hash below) -- that
+        # dead computation is dropped along with it.
+        params["source_image_hash"] = calculate_bytes_hash(video_data)
 
         # Encode mp4 (+ mux audio), poster PNG, and sidecar JSON. When
         # video_lossless, `filename` is an FFV1-in-mkv master (byte-exact,
@@ -4864,6 +4911,9 @@ async def generate_outpaint_video(
         if os.path.exists(poster_path):
             create_thumbnail(poster_path)
 
+        # Hash the saved MASTER file's bytes (see calculate_bytes_hash's docstring).
+        _media_hash = await _hash_saved_media(os.path.join(settings.outputs_dir, filename))
+
         # Record video-specific fields into parameters JSON for the gallery.
         num_frames_out = int(frames.shape[0])
         fps_out = float(params.get("frame_rate", 24.0))
@@ -4873,6 +4923,7 @@ async def generate_outpaint_video(
         params_for_db["duration"] = (num_frames_out / fps_out) if fps_out else 0.0
         params_for_db["audio_enable"] = bool(params.get("audio_enable", True) and audio is not None)
         params_for_db["is_video"] = True
+        params_for_db["hash_kind"] = "file_bytes"
         if preview_filename:
             params_for_db["preview_filename"] = preview_filename
         # The gallery's `cfg_scale` / `steps` COLUMNS are filled by
@@ -4897,11 +4948,11 @@ async def generate_outpaint_video(
             params=params_for_db,
             actual_seed=actual_seed,
             generation_type="outpaint_vid",
-            image_hash="",
+            image_hash=_media_hash,
             lora_names=None,
             model_name=model_name,
             model_hash=model_hash,
-            source_image_hash=metadata.get("source_image_hash"),
+            source_image_hash=params["source_image_hash"],
         )
         db.add(db_image)
         db.commit()
@@ -5230,14 +5281,11 @@ async def generate_inpaint_video(
 
         params["seed"] = actual_seed
 
-        metadata = calculate_generation_metadata(
-            Image.fromarray(frames[0]),
-            [],
-            extract_lora_names,
-            calculate_image_hash,
-            source_image=Image.fromarray(video_frames[0]),
-        )
-        params["source_image_hash"] = metadata.get("source_image_hash")
+        # Hash the uploaded clip's raw bytes -- see the equivalent block in
+        # /generate/outpaint/video for why this supersedes a frame-0 pixel hash
+        # of `video_data` and drops the dead generated-frame `image_hash`
+        # computation that call used to make alongside it.
+        params["source_image_hash"] = calculate_bytes_hash(video_data)
 
         # See save_video_with_metadata's docstring: when video_lossless,
         # `filename` is an FFV1-in-mkv master (byte-exact, not browser-
@@ -5257,6 +5305,9 @@ async def generate_inpaint_video(
         if os.path.exists(poster_path):
             create_thumbnail(poster_path)
 
+        # Hash the saved MASTER file's bytes (see calculate_bytes_hash's docstring).
+        _media_hash = await _hash_saved_media(os.path.join(settings.outputs_dir, filename))
+
         num_frames_out = int(frames.shape[0])
         fps_out = float(params.get("frame_rate", 24.0))
         params_for_db = {k: v for k, v in params.items() if not k.startswith("_")}
@@ -5265,6 +5316,7 @@ async def generate_inpaint_video(
         params_for_db["duration"] = (num_frames_out / fps_out) if fps_out else 0.0
         params_for_db["audio_enable"] = bool(params.get("audio_enable", True) and audio is not None)
         params_for_db["is_video"] = True
+        params_for_db["hash_kind"] = "file_bytes"
         if preview_filename:
             params_for_db["preview_filename"] = preview_filename
         # See the same two lines on /generate/outpaint/video: the gallery's
@@ -5284,11 +5336,11 @@ async def generate_inpaint_video(
             params=params_for_db,
             actual_seed=actual_seed,
             generation_type="inpaint_vid",
-            image_hash="",
+            image_hash=_media_hash,
             lora_names=None,
             model_name=model_name,
             model_hash=model_hash,
-            source_image_hash=metadata.get("source_image_hash"),
+            source_image_hash=params["source_image_hash"],
         )
         db.add(db_image)
         db.commit()
@@ -6768,6 +6820,34 @@ async def get_image(image_id: int, db: Session = Depends(get_gallery_db)):
     if not image:
         raise HTTPException(status_code=404, detail="Image not found")
     return image.to_dict()
+
+@router.get("/images/by-hash/{hash}")
+async def get_image_by_hash(hash: str, db: Session = Depends(get_gallery_db)):
+    """Resolve a gallery row by its `image_hash` (the click target behind a
+    `source_image_hash` / `source_audio_hash` / ControlNet reference-hash
+    link in the gallery UI).
+
+    `image_hash` is NOT unique -- the same seed can be re-run, or the same
+    uploaded file hashed across two different requests -- so this returns
+    the OLDEST matching row (`created_at` ascending, the most plausible
+    original source) plus `match_count`, the total number of rows that
+    matched. Never returns a list.
+    """
+    # Two narrow queries rather than one `.all()`: `parameters` (and, for an
+    # inpaint row, `mask_data`) can be several MB per row (embedded base64
+    # references), so fetching every matching row just to report a count and
+    # discard the rest does not scale with how many times a hash repeats.
+    query = db.query(GeneratedImage).filter(GeneratedImage.image_hash == hash)
+    match_count = query.count()
+    if match_count == 0:
+        raise NotFoundError(
+            "No gallery row matches this image_hash",
+            detail=f"hash: {hash}",
+        )
+    oldest = query.order_by(GeneratedImage.created_at.asc()).first()
+    result = oldest.to_dict()
+    result["match_count"] = match_count
+    return result
 
 @router.get("/images/{image_id}/preview")
 async def get_image_preview(

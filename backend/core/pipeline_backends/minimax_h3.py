@@ -141,6 +141,7 @@ def build_outpaint_references(
     ) + (
         refs.MiniMaxH3Reference(
             kind="video", frames=source_ref_frames, fps=frame_rate,
+            video_canvas=(int(head.shape[1]), int(head.shape[2])),
             label="source clip (auto-referenced)"),
     )
 

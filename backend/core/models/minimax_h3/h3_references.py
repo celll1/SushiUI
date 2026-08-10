@@ -109,6 +109,9 @@ class MiniMaxH3Reference:
     fps: Optional[float] = None
     audio: Optional[torch.Tensor] = None
     sample_rate: Optional[int] = None
+    # Internal callers may preserve a pre-normalized video canvas instead of
+    # applying the released reference-video upscale rule again.
+    video_canvas: Optional[Tuple[int, int]] = None
     # Carried through for messages and for the gallery row; never read by the
     # model.
     label: Optional[str] = None
@@ -273,6 +276,7 @@ def normalize_reference_video(
     multiple: int = CANVAS_MULTIPLE,
     short_edge: int = CANVAS_SHORT_EDGE,
     max_pixels: int = CANVAS_MAX_PIXELS,
+    canvas: Optional[Tuple[int, int]] = None,
 ) -> np.ndarray:
     """One video reference onto 24 fps, its own canvas and the generated length.
 
@@ -304,9 +308,16 @@ def normalize_reference_video(
             f"A MiniMax-H3 reference video must run at least {MIN_REFERENCE_VIDEO_FRAMES} frames "
             f"once resampled to {target_fps:g} fps and truncated to the generated length, got "
             f"{frames.shape[0]}.")
-    height, width = resolve_canvas_size(
-        frames.shape[2], frames.shape[1], multiple=multiple, short_edge=short_edge,
-        max_pixels=max_pixels)
+    if canvas is None:
+        height, width = resolve_canvas_size(
+            frames.shape[2], frames.shape[1], multiple=multiple, short_edge=short_edge,
+            max_pixels=max_pixels)
+    else:
+        height, width = (int(value) for value in canvas)
+        if height <= 0 or width <= 0 or height % multiple or width % multiple:
+            raise ValueError(
+                f"A reference video canvas must contain positive multiples of {multiple}, got "
+                f"{width}x{height}.")
     if frames.shape[1:3] == (height, width):
         return frames
     return np.stack([
@@ -494,10 +505,11 @@ def normalize_references(
         elif reference.kind == "video":
             frames = normalize_reference_video(
                 reference.frames, float(reference.fps or fps), num_frames,
-                target_fps=fps, multiple=multiple)
+                target_fps=fps, multiple=multiple, canvas=reference.video_canvas)
             normalized.append(MiniMaxH3Reference(
                 kind="video", frames=frames, fps=fps, audio=waveform,
-                sample_rate=None if waveform is None else audio_sample_rate, label=label))
+                sample_rate=None if waveform is None else audio_sample_rate,
+                video_canvas=(frames.shape[1], frames.shape[2]), label=label))
         elif reference.kind == "audio":
             normalized.append(MiniMaxH3Reference(
                 kind="audio", audio=waveform, sample_rate=audio_sample_rate, label=label))

@@ -213,6 +213,17 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         if self.current_model == model_id and not force_reload:
             return
 
+        # MiniMax-H3's selectable files differ only in the DiT. Rebuilding its
+        # shared 48 GiB memory-mapped text encoder on every partition/format
+        # switch can terminate a Windows process inside torch_cpu.dll before
+        # Python can report an allocation error. Build the new DiT first and
+        # retain the current model if that build fails; only then swap it in.
+        if self.is_minimax_h3_model and source_type in ("safetensors", "diffusers"):
+            current_source = (self.current_model_info or {}).get("source")
+            if current_source and self._reload_minimax_h3_dit_only(
+                    source_type, source, current_source, pipeline_type, model_id):
+                return
+
         # A model (re)load invalidates any keep-models-hot resident set from the
         # previous model — the components about to be freed/replaced are exactly
         # what the resident set refers to.
@@ -1103,6 +1114,71 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
 
         except Exception as e:
             raise RuntimeError(f"Failed to load model: {str(e)}")
+
+    def _reload_minimax_h3_dit_only(
+        self,
+        source_type: str,
+        source: str,
+        current_source: str,
+        pipeline_type: str,
+        model_id: str,
+    ) -> bool:
+        """Atomically replace only the DiT for two checkpoints in one H3 tree."""
+        from core.models.minimax_h3.reload import build_dit_only_reload
+
+        replacement = build_dit_only_reload(
+            self.minimax_h3_components, current_source, source)
+        if replacement is None:
+            return False
+
+        model_hash = ""
+        if os.path.exists(source):
+            try:
+                from utils.hash_cache import get_cached_file_hash
+                model_hash = get_cached_file_hash(source)
+            except Exception as exc:
+                print(f"[Pipeline] Hash compute skipped: {exc}")
+
+        from core.keep_hot import clear_resident
+        clear_resident(self)
+        self._runtime_int8_converted = False
+        self._runtime_int8_from_checkpoint = False
+        self._runtime_int8_partial = False
+        self._runtime_int8_partial_rows = []
+        self._runtime_int8_partial_done = 0
+        self._runtime_int8_audit = None
+        self._override_vae_path = None
+        self._original_vae = None
+        self._override_vae_targets = []
+        self._override_te_path = None
+        self._original_te = []
+
+        self.minimax_h3_components = replacement
+        self.current_model = model_id
+        self.current_attention_type = "normal"
+        self.current_model_info = {
+            "source_type": source_type,
+            "source": source,
+            "type": "minimax_h3",
+            "is_v_prediction": False,
+            "model_hash": model_hash,
+            "is_video": True,
+            "variant": replacement.get("variant"),
+            "latent_channels": replacement.get("latent_channels", 24),
+            "vae_scale_factor_spatial": replacement.get("vae_scale_factor_spatial", 16),
+            "vae_scale_factor_temporal": replacement.get("vae_scale_factor_temporal", 4),
+        }
+        self._save_last_model(source_type, source, pipeline_type)
+
+        # The replacement dict shares every ancillary object but not the old
+        # transformer. Collect after the attribute swap so its large CPU storage
+        # is released without ever dropping/remapping the text encoder.
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        print("[Pipeline] MiniMax-H3 DiT reloaded; shared text encoder, VAEs, "
+              "tokenizer/processor and schedulers retained")
+        return True
 
     def _setup_img2img_steps(self, requested_steps: int, denoising_strength: float, fix_steps: bool = None) -> tuple[int, int, int]:
         """Calculate proper steps for img2img/inpaint to ensure full denoising

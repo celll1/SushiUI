@@ -321,6 +321,37 @@ def save_video_with_metadata(
 # DECODE side (video temporal outpaint, Phase 2)
 # ---------------------------------------------------------------------------
 
+
+def probe_upload_clip(video_bytes: bytes) -> Optional[Dict[str, Any]]:
+    """ffprobe-only metadata for an uploaded clip's bytes -- no frame decode.
+
+    Callers use this to reject an over-long/over-large upload BEFORE
+    `load_video_frames` commits to decoding it (a raw uint8 RGB array costs
+    `width * height * 3` bytes per frame, unrelated to the compressed
+    upload's size on disk). Writing the bytes to a temp file is unavoidable
+    (ffprobe has no stdin-container-probe mode that reports `nb_frames`
+    reliably across containers), but this does no per-frame work, so it stays
+    cheap even for a multi-gigabyte upload.
+
+    Returns the same dict as `dataset_scanner.probe_video_metadata` (keys
+    "num_frames", "width", "height", "fps", "duration", "codec"), or None
+    when the clip cannot be probed -- the caller should let the real decode
+    (which probes again and raises a descriptive error) report the failure
+    rather than double-reporting it here.
+    """
+    from utils.dataset_scanner import probe_video_metadata
+
+    tmp_fd, tmp_path = tempfile.mkstemp(suffix=".input_video_probe")
+    try:
+        with os.fdopen(tmp_fd, "wb") as f:
+            f.write(video_bytes)
+        return probe_video_metadata(tmp_path)
+    finally:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+
 def load_video_frames(
     video_bytes: bytes,
     max_frames: Optional[int] = None,

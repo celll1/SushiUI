@@ -4522,9 +4522,9 @@ async def generate_outpaint_video(
     video model to be loaded.
     """
     from api.generation_status import start_generation, complete_generation, fail_generation, get_warnings
-    from utils.video_utils import save_video_with_metadata, load_video_frames, extract_audio_stream
+    from utils.video_utils import save_video_with_metadata, load_video_frames, extract_audio_stream, probe_upload_clip
     from api.generation_utils import plan_video_outpaint_placement
-    from api.param_defaults import outpaint_video_defaults_for_arch
+    from api.param_defaults import outpaint_video_defaults_for_arch, MAX_VIDEO_UPLOAD_DECODE_BYTES
     from core.models.components.wiring import temporal_spec_for_arch
 
     if not (getattr(pipeline_manager, "is_ltx2_model", False)
@@ -4659,9 +4659,62 @@ async def generate_outpaint_video(
     # input_trim_start_frames + total_frames frames can ever be used when
     # there is no tail trim (load_video_frames widens this bound itself,
     # using a cheap ffprobe-only estimate, when input_trim_end_frames > 0).
-    _decode_max_frames = max(0, input_trim_start_frames) + total_frames
+    #
+    # That bound only holds on the "free" placement, where total_frames IS
+    # the timeline and the clip is sampled into it. On a boundary placement
+    # the preserved clip is PASTED at a timeline edge, so its own length is
+    # independent of total_frames: bounding the decode by total_frames would
+    # silently discard the tail of the upload whenever the request asks for a
+    # total below the clip's length (the per-architecture total_frames default
+    # is smaller than a long upload, so that is reachable without the user
+    # touching the length control). The whole clip is needed there, so no
+    # smaller bound exists; a too-small total_frames is handled downstream by
+    # plan_video_outpaint_placement, which snaps the GENERATED span up to the
+    # architecture floor and reports outpaint_video_total_frames_adjusted. The
+    # bridge clip (below) is a second preserved clip on the SAME boundary
+    # placement, so it gets the identical `None` treatment for the identical
+    # reason -- bounding its decode by `total_frames` would silently drop its
+    # tail whenever the request's total is smaller than the clip, exactly the
+    # bug this comment used to describe only for the head clip.
+    _decode_max_frames = (
+        None if "free" not in _placements
+        else max(0, input_trim_start_frames) + total_frames
+    )
+    # A boundary placement's "no smaller bound exists" above is true of
+    # VALIDITY, not of RAM: a raw decoded uint8 RGB clip costs
+    # `width * height * 3` bytes PER FRAME, so `max_frames=None` on a
+    # multi-minute high-res upload can OOM the whole process rather than just
+    # fail the request. ffprobe the clip(s) first (no per-frame decode) and
+    # refuse an upload whose decode would exceed a fixed RAM budget before
+    # `load_video_frames` is ever called; a clip that passes this is bounded
+    # regardless of which `_decode_max_frames` branch above applies to it.
+    def _refuse_if_decode_too_large(data: bytes, *, label: str) -> None:
+        probed = probe_upload_clip(data)
+        if not probed:
+            # Unprobeable here; load_video_frames probes again immediately
+            # below and raises a descriptive error for the same clip, so
+            # nothing is silently skipped.
+            return
+        w, h = int(probed.get("width") or 0), int(probed.get("height") or 0)
+        n = int(probed.get("num_frames") or 0)
+        if w <= 0 or h <= 0 or n <= 0:
+            return
+        per_frame_bytes = w * h * 3
+        frame_budget = MAX_VIDEO_UPLOAD_DECODE_BYTES // max(1, per_frame_bytes)
+        if n > frame_budget:
+            raise CustomValidationError(
+                f"the {label} is too long/high-resolution to decode",
+                detail=f"Uploaded {label} has {n} frames at {w}x{h}, which would need "
+                       f"{n * per_frame_bytes / (1024 ** 3):.1f} GiB of raw RGB frame data to "
+                       f"decode; this endpoint's per-clip decode budget is "
+                       f"{MAX_VIDEO_UPLOAD_DECODE_BYTES / (1024 ** 3):.0f} GiB, i.e. at most "
+                       f"{frame_budget} frames at this resolution. Trim the clip or lower its "
+                       f"resolution before uploading.",
+            )
+
     try:
         video_data = await video.read()
+        _refuse_if_decode_too_large(video_data, label="input clip")
         video_frames, source_fps = load_video_frames(
             video_data, max_frames=_decode_max_frames, trim_end_frames=input_trim_end_frames
         )
@@ -4679,8 +4732,9 @@ async def generate_outpaint_video(
     if bridge_video is not None:
         try:
             bridge_data = await bridge_video.read()
+            _refuse_if_decode_too_large(bridge_data, label="bridge clip")
             bridge_frames, bridge_source_fps = load_video_frames(
-                bridge_data, max_frames=total_frames
+                bridge_data, max_frames=_decode_max_frames
             )
         except CustomValidationError:
             raise
@@ -5073,7 +5127,7 @@ async def generate_inpaint_video(
     preserved (a whole-clip range is `/generate/txt2vid`).
     """
     from api.generation_status import start_generation, complete_generation, fail_generation, get_warnings
-    from utils.video_utils import save_video_with_metadata, load_video_frames, extract_audio_stream
+    from utils.video_utils import save_video_with_metadata, load_video_frames, extract_audio_stream, probe_upload_clip
     from api.generation_utils import plan_video_inpaint_span
     from api.param_defaults import inpaint_video_defaults_for_arch
     from core.models.components.wiring import temporal_spec_for_arch
@@ -5146,10 +5200,46 @@ async def generate_inpaint_video(
     # Decode the clip (+ its audio track) BEFORE the GPU slot, so a malformed
     # upload is a 400 that reserved nothing. The bound is the arch's own longest
     # clip: nothing past it can be part of a valid trimmed length.
-    _decode_max_frames = max(0, input_trim_start_frames) + int(
-        (_spec.max_frames if _spec is not None and _spec.max_frames else 345))
+    _arch_max_frames = int(_spec.max_frames if _spec is not None and _spec.max_frames else 345)
+    _decode_max_frames = max(0, input_trim_start_frames) + _arch_max_frames
+
+    # Since this endpoint's OUTPUT length equals the TRIMMED INPUT length (no
+    # `total_frames` to snap to -- see INPAINT_VIDEO_DEFAULTS's docstring), a
+    # clip whose trimmed length exceeds the arch's own longest producible clip
+    # cannot be served AT ALL, at any setting. Without this check that case was
+    # reaching `plan_video_inpaint_span` silently truncated to exactly
+    # `_decode_max_frames` frames by the ffmpeg `-frames:v` bound above: a
+    # trimmed length that lands back on the arch's grid (as `_arch_max_frames`
+    # itself always does) passes every downstream check, so the user's tail
+    # frames past the cap were dropped with no error and no warning. Refuse
+    # this with a 400 naming both numbers instead, using an ffprobe-only
+    # (no decode) frame count so the refusal is cheap even for a clip far
+    # past the cap. Judged on frames "before trimming" (the probed count) vs.
+    # "after trimming" (what plan_video_inpaint_span actually receives): a
+    # clip that is only too long BEFORE the user's own
+    # input_trim_start_frames/input_trim_end_frames trims it down must still
+    # be accepted, so the comparison below applies the requested trim to the
+    # probed count first.
     try:
         video_data = await video.read()
+        _probed = probe_upload_clip(video_data)
+        if _probed:
+            _probed_n = int(_probed.get("num_frames") or 0)
+            if _probed_n > 0:
+                _probed_trimmed_len = _probed_n - max(0, input_trim_start_frames) - max(0, input_trim_end_frames)
+                if _probed_trimmed_len > _arch_max_frames:
+                    raise CustomValidationError(
+                        "the trimmed clip is longer than this model can produce",
+                        detail=f"This model's longest clip is {_arch_max_frames} frames; the "
+                               f"upload has {_probed_n} frames, which after "
+                               f"input_trim_start_frames={input_trim_start_frames} and "
+                               f"input_trim_end_frames={input_trim_end_frames} is still "
+                               f"{_probed_trimmed_len} frames. Since this endpoint's output "
+                               f"length equals the trimmed input length, trim the clip down to "
+                               f"{_arch_max_frames} frames or fewer before uploading, or trim "
+                               f"more of it off with input_trim_start_frames/"
+                               f"input_trim_end_frames.",
+                    )
         video_frames, source_fps = load_video_frames(
             video_data, max_frames=_decode_max_frames, trim_end_frames=input_trim_end_frames
         )

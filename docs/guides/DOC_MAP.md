@@ -36,6 +36,7 @@ Local-only files that may be absent in a fresh clone are listed separately.
 | `docs/DATABASE_MIGRATION_GUIDE.md` | SQLite schema migration procedure. |
 | `docs/DATASET_REQUIREMENTS.md` | Dataset format/requirements for training. |
 | `docs/EPOCH_DYNAMIC_CROP_BUCKETING_DESIGN.md` | Dynamic crop/bucketing design for training. |
+| `docs/FBCACHE_DESIGN.md` | FBCache quality acceptance and MiniMax-H3 temporal/consecutive-hit safeguards. |
 | `docs/FLUX2_NAG_BLOCKSWAP_UNIFY_DESIGN.md` | Unifying NAG + block-swap for Flux2. |
 | `docs/H2D_ONLY_TRAINING_DESIGN.md` | Host-to-device-only training memory design. |
 | `docs/NAG_DIT_PLAN.md` | NAG (negative-prompt attention guidance) plan for DiT models. |

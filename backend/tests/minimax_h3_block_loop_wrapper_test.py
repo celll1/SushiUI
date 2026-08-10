@@ -165,6 +165,52 @@ class WrapperReproducesTheStockForwardTest(unittest.TestCase):
             wrapper(**self.inputs)
         self.assertEqual(offloader.calls, [])
 
+    def test_guarded_fbcache_reuses_one_packed_residual_for_both_outputs(self):
+        from core.inference.fbcache import FirstBlockCache
+
+        wrapper = MiniMaxH3BlockLoopWrapper(self.model)
+        cache = FirstBlockCache(
+            threshold=1.0,
+            warmup_steps=0,
+            max_consecutive_hits=2,
+            total_steps=4,
+            tail_steps=1,
+        )
+        wrapper.attach_fbcache(cache, rows_per_frame=2, condition_video_rows=0)
+        block_calls = [0] * len(self.model.transformer_blocks)
+        handles = [
+            block.register_forward_hook(
+                lambda _module, _args, _out, index=index: block_calls.__setitem__(
+                    index, block_calls[index] + 1
+                )
+            )
+            for index, block in enumerate(self.model.transformer_blocks)
+        ]
+        try:
+            with torch.no_grad():
+                first = wrapper(**self.inputs)
+                wrapper._fbcache_step = 1
+                second = wrapper(**self.inputs)
+        finally:
+            for handle in handles:
+                handle.remove()
+
+        self.assertEqual(cache.n_hits, 1)
+        self.assertEqual(block_calls, [2, 1, 1, 1])
+        for a, b in zip(first, second):
+            self.assertTrue(torch.allclose(a, b, rtol=1e-5, atol=1e-6))
+
+    def test_fbcache_refuses_block_swap(self):
+        from core.inference.fbcache import FirstBlockCache
+
+        wrapper = MiniMaxH3BlockLoopWrapper(
+            self.model, block_offloader=_StubOffloader(blocks_to_swap=1)
+        )
+        with self.assertRaisesRegex(ValueError, "cannot run with Block Swap"):
+            wrapper.attach_fbcache(
+                FirstBlockCache(threshold=0.08), rows_per_frame=2
+            )
+
     def test_the_test_can_fail(self):
         """Premise: this comparison really does detect a mis-replicated stage.
 

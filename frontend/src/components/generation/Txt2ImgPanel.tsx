@@ -420,11 +420,8 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
   const supportsCfg = archSupportsFeature(archCapabilities, loadedArch, "cfg");
   const supportsNegativePrompt = !isAudio
     && archSupportsFeature(archCapabilities, loadedArch, "negative_prompt");
-  // Spectrum/FBCache: accepted-but-inert on an architecture whose sampler never
-  // reads spectrum_enable/fbcache_enable (e.g. MiniMax-H3's FBCache was measured
-  // and dropped rather than shipped, per arch_capabilities.py). Hidden rather
-  // than shown-disabled, the same convention as supportsCfg/supportsNegativePrompt
-  // above and the text_encoder_quantization control below.
+  // Hide Spectrum/FBCache when the loaded sampler does not consume them; H3 now
+  // supports both. This matches the other capability-gated leaf controls.
   const supportsSpectrum = archSupportsFeature(archCapabilities, loadedArch, "spectrum");
   const supportsFbcache = archSupportsFeature(archCapabilities, loadedArch, "fbcache");
   // Snap a persisted clip length the LOADED video architecture does not accept

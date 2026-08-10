@@ -1,4 +1,11 @@
 import { saveTempImage, deleteTempImageRef } from "./tempImageStorage";
+import {
+  INPAINT_VIDEO_INPUT_KEY,
+  INPAINT_VIDEO_PENDING_KEY,
+  OUTPAINT_VIDEO_INPUT_KEY,
+  OUTPAINT_VIDEO_PENDING_KEY,
+  saveMediaInput,
+} from "./mediaInputStorage";
 import { roundFloat } from "./numberUtils";
 
 /**
@@ -422,6 +429,9 @@ export async function sendBase64ImageToImg2Vid(
  */
 export async function fetchUrlToFile(url: string, filename?: string): Promise<File> {
   const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`Failed to fetch media (${response.status} ${response.statusText})`);
+  }
   const blob = await response.blob();
   const name = filename || url.split("/").pop()?.split("?")[0] || "file";
   return new File([blob], name, { type: blob.type });
@@ -429,19 +439,26 @@ export async function fetchUrlToFile(url: string, filename?: string): Promise<Fi
 
 /**
  * Sends a video result to the Outpaint panel's outpaint_vid clip input.
- * Transport is the plain URL (not base64) -- see fetchUrlToFile.
+ * The File is materialized before navigation so a missed same-tab event is
+ * recovered from IndexedDB when the destination panel mounts.
  */
-export function sendVideoToOutpaint(videoUrl: string): void {
-  localStorage.setItem("outpaint_input_video", videoUrl);
+export async function sendVideoToOutpaint(videoUrl: string): Promise<void> {
+  const file = await fetchUrlToFile(videoUrl);
+  await saveMediaInput(OUTPAINT_VIDEO_INPUT_KEY, file);
+  localStorage.removeItem("outpaint_input_video");
+  localStorage.setItem(OUTPAINT_VIDEO_PENDING_KEY, "1");
   window.dispatchEvent(new Event("outpaint_input_video_updated"));
 }
 
 /**
  * Sends a video result/clip to the Inpaint panel's temporal inpaint clip
- * input. Transport is the plain URL (not base64) -- see fetchUrlToFile.
+ * input. The File is persisted before the destination panel is notified.
  */
-export function sendVideoToInpaint(videoUrl: string): void {
-  localStorage.setItem("inpaint_input_video", videoUrl);
+export async function sendVideoToInpaint(videoUrl: string): Promise<void> {
+  const file = await fetchUrlToFile(videoUrl);
+  await saveMediaInput(INPAINT_VIDEO_INPUT_KEY, file);
+  localStorage.removeItem("inpaint_input_video");
+  localStorage.setItem(INPAINT_VIDEO_PENDING_KEY, "1");
   window.dispatchEvent(new Event("inpaint_input_video_updated"));
 }
 

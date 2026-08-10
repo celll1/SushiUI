@@ -68,6 +68,13 @@ import {
 import { createH3ReferenceInventory, maybeTransformH3PromptForGeneration } from "@/utils/h3PromptAssist";
 import { wsClient, CFGMetrics } from "@/utils/websocket";
 import { saveTempImage, loadTempImage, deleteTempImageRef } from "@/utils/tempImageStorage";
+import {
+  deleteMediaInput,
+  loadMediaInput,
+  OUTPAINT_VIDEO_INPUT_KEY,
+  OUTPAINT_VIDEO_PENDING_KEY,
+  saveMediaInput,
+} from "@/utils/mediaInputStorage";
 import { previewStorageKeys, loadVideoPreview, saveVideoPreview, playbackUrlOf, loadAudioPreview, saveAudioPreview, saveImagePreview, clearVideoPreview, clearAudioPreview, clearImagePreview, outputExists, stripCacheBuster, withCacheBuster, imagePreviewGone } from "@/utils/previewStorage";
 import { sendToPanel, sendImageToImg2Img, sendImageToInpaint, sendImageToUpscale, fetchUrlToFile, sendVideoToOutpaint, sendVideoToInpaint, sendVideoToReference, sendAudioToOutpaint, sendAudioToImg2Img } from "@/utils/sendHelpers";
 import { fixFloatingPointParams } from "@/utils/numberUtils";
@@ -488,11 +495,8 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
   const [inputImageSize, setInputImageSize] = useState<{ width: number; height: number } | null>(null);
   const [isDragging, setIsDragging] = useState(false);
 
-  // Video temporal outpaint (outpaint_vid) input clip + result. Not persisted
-  // across reloads (unlike the image input, which round-trips through
-  // IndexedDB via tempImageStorage.ts) -- an uploaded video File cannot be
-  // cheaply stored the same way, and no existing modality (aud2aud's
-  // reference clip either) persists its upload across a refresh.
+  // Video temporal outpaint input. The File is persisted in IndexedDB so the
+  // clip survives panel navigation and browser reloads.
   const [videoFile, setVideoFile] = useState<File | null>(null);
   const [videoPreviewUrl, setVideoPreviewUrl] = useState<string | null>(null);
   const [videoDurationSec, setVideoDurationSec] = useState<number | null>(null);
@@ -525,11 +529,8 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
   const [generatedVideoSeed, setGeneratedVideoSeed] = useState<number | null>(null);
   const [generatedVideoParams, setGeneratedVideoParams] = useState<OutpaintPanelParams | null>(null);
 
-  // Audio temporal outpaint (outpaint_aud) input clip + result. The INPUT clip
-  // is not persisted across reloads -- mirrors videoFile's rationale (an
-  // uploaded File can't be cheaply round-tripped through localStorage/IndexedDB
-  // the way the image input is). The RESULT is persisted, as a URL, under the
-  // panel's audio preview key (see utils/previewStorage.ts).
+  // Audio temporal outpaint input remains session-only; its result URL is
+  // persisted under the panel's audio preview key.
   const [audioFile, setAudioFile] = useState<File | null>(null);
   const [audioPreviewUrl, setAudioPreviewUrl] = useState<string | null>(null);
   const [audioDurationSec, setAudioDurationSec] = useState<number | null>(null);
@@ -607,6 +608,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
   // initializePlacementForImage once it actually re-initializes placement
   // for the new image (i.e. once the reset has "landed").
   const placementInitPendingRef = useRef(false);
+  const preserveVideoSettingsRef = useRef(false);
 
   const isGeneratingRef = useRef(isGenerating);
   useEffect(() => {
@@ -898,32 +900,43 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
     return () => window.removeEventListener("outpaint_input_updated", handleInputUpdate);
   }, []);
 
-  // Listen for a video clip sent from a result's "Send to Outpaint" (e.g.
-  // Txt2Img/Img2Img/Outpaint's own outpaint_vid result). Transport is the
-  // plain `/outputs/<filename>` URL (too large for base64/localStorage) --
-  // fetch it into a real File so it flows through the same videoFile path an
-  // upload does (mirrors processVideoFile's reset of the trim/offset fields).
+  // Restore the persisted clip on mount and reload it when a sender replaces
+  // the IndexedDB record. The legacy URL path is retained for older tabs.
   useEffect(() => {
+    let cancelled = false;
     const handleVideoInputUpdate = async () => {
       const url = localStorage.getItem("outpaint_input_video");
-      if (!url) return;
+      const isReplacement = url !== null || localStorage.getItem(OUTPAINT_VIDEO_PENDING_KEY) === "1";
       try {
-        const file = await fetchUrlToFile(url);
+        const file = url
+          ? await fetchUrlToFile(url)
+          : await loadMediaInput(OUTPAINT_VIDEO_INPUT_KEY);
+        if (!file || cancelled) return;
+        if (url) await saveMediaInput(OUTPAINT_VIDEO_INPUT_KEY, file);
+        preserveVideoSettingsRef.current = !isReplacement;
         setVideoPreviewUrl(prev => {
           if (prev) URL.revokeObjectURL(prev);
           return URL.createObjectURL(file);
         });
         setVideoFile(file);
         setVideoDurationSec(null);
-        setParams(prev => ({ ...prev, input_offset_frames: 0, input_trim_start_frames: 0, input_trim_end_frames: 0 }));
+        setInputVideoSize(null);
+        if (isReplacement) {
+          setParams(prev => ({ ...prev, input_offset_frames: 0, input_trim_start_frames: 0, input_trim_end_frames: 0 }));
+        }
       } catch (error) {
-        console.error("[Outpaint] Failed to load sent video:", error);
+        console.error("[Outpaint] Failed to restore input video:", error);
       } finally {
-        localStorage.removeItem("outpaint_input_video");
+        if (url) localStorage.removeItem("outpaint_input_video");
+        localStorage.removeItem(OUTPAINT_VIDEO_PENDING_KEY);
       }
     };
     window.addEventListener("outpaint_input_video_updated", handleVideoInputUpdate);
-    return () => window.removeEventListener("outpaint_input_video_updated", handleVideoInputUpdate);
+    void handleVideoInputUpdate();
+    return () => {
+      cancelled = true;
+      window.removeEventListener("outpaint_input_video_updated", handleVideoInputUpdate);
+    };
   }, []);
 
   // Listen for an audio clip sent from a result's "Send to Outpaint" (e.g.
@@ -1225,9 +1238,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
       alert('Please upload a valid video file');
       return;
     }
-    if (videoPreviewUrl) {
-      URL.revokeObjectURL(videoPreviewUrl);
-    }
+    preserveVideoSettingsRef.current = false;
     setVideoFile(file);
     setVideoDurationSec(null);
     // Forget the previous clip's dimensions so the metadata handler below
@@ -1237,7 +1248,13 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
     // previous clip's stale offset/trim (mirrors processImageFile's
     // place_width=0 reset).
     setParams(prev => ({ ...prev, input_offset_frames: 0, input_trim_start_frames: 0, input_trim_end_frames: 0 }));
-    setVideoPreviewUrl(URL.createObjectURL(file));
+    setVideoPreviewUrl(prev => {
+      if (prev) URL.revokeObjectURL(prev);
+      return URL.createObjectURL(file);
+    });
+    void saveMediaInput(OUTPAINT_VIDEO_INPUT_KEY, file).catch((error) => {
+      console.error("[Outpaint] Failed to persist input video:", error);
+    });
   };
 
   const handleVideoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -1286,7 +1303,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
         || inputVideoSize.width !== videoWidth
         || inputVideoSize.height !== videoHeight;
       setInputVideoSize({ width: videoWidth, height: videoHeight });
-      if (isNewClip) {
+      if (isNewClip && !preserveVideoSettingsRef.current) {
         // 1x ON THE CLIP THAT WAS JUST LOADED is the default canvas, whatever
         // width/height were carried over from an earlier run or another clip:
         // temporal outpaint extends at the source resolution as a rule, and any
@@ -1296,6 +1313,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
         const fitted = fitCanvas(videoWidth, videoHeight, 1.0);
         setParams(prev => ({ ...prev, width: fitted.width, height: fitted.height }));
       }
+      preserveVideoSettingsRef.current = false;
     }
   };
 
@@ -1310,6 +1328,9 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
     // Scale mode has nothing to scale from once the clip is gone.
     setVideoSizeMode("absolute");
     setParams(prev => ({ ...prev, input_offset_frames: 0, input_trim_start_frames: 0, input_trim_end_frames: 0 }));
+    void deleteMediaInput(OUTPAINT_VIDEO_INPUT_KEY).catch((error) => {
+      console.error("[Outpaint] Failed to clear persisted input video:", error);
+    });
   };
 
   const handleBridgeVideoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -1577,22 +1598,34 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
 
   // Outpaint's own outpaint_vid result -> Outpaint again (self-send = iterate
   // an extend, e.g. keep pushing the clip further out).
-  const sendVideoResultToOutpaint = () => {
+  const sendVideoResultToOutpaint = async () => {
     if (!generatedVideo) {
       alert("No video to send");
       return;
     }
-    sendVideoToOutpaint(generatedVideo);
+    try {
+      await sendVideoToOutpaint(generatedVideo);
+    } catch (error) {
+      console.error("[Outpaint] Failed to reuse video as outpaint input:", error);
+      alert("Failed to send the video to outpaint");
+      return;
+    }
     if (onTabChange) onTabChange("outpaint");
   };
 
   // Outpaint's own outpaint_vid result -> Inpaint's temporal inpaint clip input.
-  const sendVideoResultToInpaint = () => {
+  const sendVideoResultToInpaint = async () => {
     if (!generatedVideo) {
       alert("No video to send");
       return;
     }
-    sendVideoToInpaint(generatedVideo);
+    try {
+      await sendVideoToInpaint(generatedVideo);
+    } catch (error) {
+      console.error("[Outpaint] Failed to send video to inpaint:", error);
+      alert("Failed to send the video to inpaint");
+      return;
+    }
     if (onTabChange) onTabChange("inpaint");
   };
 

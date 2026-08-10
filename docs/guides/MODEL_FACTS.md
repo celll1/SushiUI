@@ -957,9 +957,10 @@ a generation without style transfer.
     `Qwen3VLForConditionalGeneration` with exactly two missing keys
     (`lm_head.weight`, `model.language_model.norm.weight`), neither of which the
     layer-50 read uses. All four component loads pass through
-    `models/common/quantized_checkpoint_guard` before any tensor is installed, so
-    the co-distributed `*_int8_convrot` files are refused rather than silently
-    mis-loaded.
+    `models/common/quantized_checkpoint_guard` before any tensor is installed.
+    The DiT loader accepts only the released `int8_tensorwise` ConvRot contract
+    (groupsize 256); unsupported declarations and quantized TE/VAE files remain
+    refused rather than silently mis-loaded.
   - **W8A8 is off for the whole architecture, permanently for this file.** The
     fp8 sidecars are per-tensor SCALARS (broadcast at load, not the
     `(out_features,)` vector `Fp8Linear` expects); 50 of the 200 quantized
@@ -986,6 +987,13 @@ a generation without style transfer.
     uses its packed operator; LoRA backprop dequantizes only the live layer for
     an autograd-visible `F.linear`. ReLoRA is refused because merging a dense
     delta into packed W4A8/FP8 storage requires format-specific requantization.
+  - **INT8 ConvRot checkpoints retain rotated weights.** Their 200 source
+    Linears carry per-output-row FP32 scales and exact `.comfy_quant` markers;
+    QKV expansion produces 300 live `ConvRotInt8Linear` modules. Inference uses
+    Comfy-Kitchen's online input rotation without reconstructing a dense BF16
+    weight. The autograd path un-rotates only the live layer so LoRA input
+    gradients remain correct. The marker stays in module state so the rotation
+    contract cannot be silently lost.
   - **Generation, measured** (seed 0, the official t2va prompt, `num_frames=124`,
     20 steps = 19 evaluations, fp8 DiT resident, no block swap, one discarded
     warm-up then the median of 3 runs, driven through

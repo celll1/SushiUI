@@ -92,10 +92,11 @@ installed: the DiT through ``quantized_state_dict_report`` +
 ``scaled_quantization_report`` + ``verify_quantized_swap`` (it supports the
 scaled layout), and the TE and both VAEs through ``refuse_quantized_state_dict``
 (they have no swap path, so a quantized file must be refused rather than cast).
-That stops unsupported ``*_int8_convrot`` components from loading as a silently
-wrong model. Packed ``asym_w4a8_int8`` DiTs are handled separately from their
-file-level metadata and executed by Comfy-Kitchen. ``_assert_guard_reached``
-pins the remaining guard property in code rather than in this docstring.
+The DiT additionally accepts the exact released ``int8_tensorwise`` ConvRot
+contract (groupsize 256) and executes its online activation rotation through
+Comfy-Kitchen; other ConvRot declarations remain refused. Packed
+``asym_w4a8_int8`` DiTs are handled separately from file-level metadata.
+``_assert_guard_reached`` pins the remaining guard property in code.
 """
 
 from __future__ import annotations
@@ -123,6 +124,8 @@ MINIMAX_H3_DIT_PATTERNS: List[str] = [
     "minimax_h3_ref2va_pruned_fp8_scaled.safetensors",
     "minimax_h3_fl2va_pruned_w4a8_mixed.safetensors",
     "minimax_h3_ref2va_pruned_w4a8_mixed.safetensors",
+    "minimax_h3_fl2va_pruned_int8_convrot.safetensors",
+    "minimax_h3_ref2va_pruned_int8_convrot.safetensors",
     "minimax_h3_fl2va_pruned_bf16.safetensors",
     "minimax_h3_ref2va_pruned_bf16.safetensors",
 ]
@@ -634,6 +637,7 @@ def _dit_target_dtype(mapped_key: str, compute_dtype: torch.dtype,
 def _map_dit_state_dict(
     handle, header: Dict[str, Any], config: Dict[str, Any], compute_dtype: torch.dtype,
     w4a8_layers: Optional[Dict[str, Dict[str, Any]]] = None,
+    int8_convrot_layers: Optional[Dict[str, Dict[str, int]]] = None,
 ) -> Tuple[Dict[str, torch.Tensor], Dict[str, int]]:
     """Read the Comfy single file into the vendored model's key space.
 
@@ -653,9 +657,9 @@ def _map_dit_state_dict(
     each of the three parts -- exact, because the scale is per TENSOR. K0.1
     verified this adapter against an ``F.linear(x, codes.float() * scalar, bias)``
     oracle on all 200 quantized Linears (fp32 bitwise; bf16 rel-RMS 4.7e-3).
-    A PER-ROW scale (which no released H3 file carries, but a re-quantization by
-    this repo's own tooling would) is indexed by output row, so it goes through
-    the SAME row permutation as its weight -- see ``_broadcast_scale``.
+    A PER-ROW scale is indexed by output row, so it goes through the SAME row
+    permutation as its weight. This is live for the released INT8 ConvRot files:
+    fused QKV scales split three ways and the SwiGLU scale halves swap.
 
     ``input_scale`` is DROPPED, and that is safe only because the W8A8 path is
     switched off for every layer of this arch (``_dit_quantization_policy``):
@@ -668,6 +672,7 @@ def _map_dit_state_dict(
     curve = config.get("adaln_curve_grid") is not None
     mapped: Dict[str, torch.Tensor] = {}
     w4a8_layers = w4a8_layers or {}
+    int8_convrot_layers = int8_convrot_layers or {}
     stats = {"dropped": 0, "input_scale_dropped": 0, "qkv_split": 0, "swiglu_swapped": 0,
              "markers": 0, "scales_broadcast": 0, "swiglu_scale_swapped": 0}
 
@@ -682,10 +687,19 @@ def _map_dit_state_dict(
             continue
 
         if key.endswith(".comfy_quant"):
-            # Tens of bytes, and the ONLY thing that tells a supported e4m3 file
-            # from an ``int8_convrot`` one. Read for real and carried into the
-            # dict the guard inspects.
-            mapped[_rename_dit_key(key)] = handle.get_tensor(key)
+            source = key[: -len(".comfy_quant")]
+            marker = handle.get_tensor(key)
+            if source in int8_convrot_layers:
+                if source.endswith(".attn.qkv_proj"):
+                    target = _rename_dit_key(source + ".weight")
+                    stem = target.split(".attn.qkv_proj.")[0] + ".attn."
+                    for name in ("to_q", "to_k", "to_v"):
+                        mapped[stem + name + ".comfy_quant"] = marker
+                else:
+                    target = _rename_dit_key(source + ".weight")[:-len(".weight")]
+                    mapped[target + ".comfy_quant"] = marker
+            else:
+                mapped[_rename_dit_key(key)] = marker
             stats["markers"] += 1
             continue
 
@@ -744,8 +758,16 @@ def _map_dit_state_dict(
             stem = target.split(".attn.qkv_proj.")[0] + ".attn."
             names = [stem + "to_q", stem + "to_k", stem + "to_v"]
             if is_scale:
-                for name in names:
-                    mapped[name + ".weight_scale"] = _broadcast_scale(tensor, inner)
+                flat_scale = tensor.to(torch.float32).reshape(-1)
+                if flat_scale.numel() == 3 * inner:
+                    scales = [
+                        flat_scale[i * inner:(i + 1) * inner].contiguous()
+                        for i in range(3)
+                    ]
+                else:
+                    scales = [_broadcast_scale(tensor, inner)] * 3
+                for name, scale in zip(names, scales):
+                    mapped[name + ".weight_scale"] = scale
                     stats["scales_broadcast"] += 1
             else:
                 suffix = key.rsplit(".", 1)[1]  # "weight" (qkv is bias-free here)
@@ -858,7 +880,51 @@ def _assert_guard_reached(state_dict: Dict[str, torch.Tensor], *, label: str, pa
         state_dict, arch="MiniMax-H3", path=path, label=label)
 
 
-def _guard_component_file(path: str, *, label: str) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+def _supported_int8_convrot_marker(
+    key: str,
+    marker: torch.Tensor,
+    header: Dict[str, Any],
+    *,
+    path: str,
+) -> Optional[Dict[str, int]]:
+    """Validate the one ConvRot contract implemented by the H3 DiT loader."""
+    from core.models.common.quantized_checkpoint_guard import decode_comfy_quant_marker
+
+    parsed = decode_comfy_quant_marker(marker)
+    if parsed != {
+        "format": "int8_tensorwise",
+        "convrot": True,
+        "convrot_groupsize": 256,
+    }:
+        return None
+    layer = key[: -len(".comfy_quant")]
+    weight = header.get(layer + ".weight")
+    scale = header.get(layer + ".weight_scale")
+    if not isinstance(weight, dict) or not isinstance(scale, dict):
+        raise ValueError(f"{path}: ConvRot INT8 layer '{layer}' is missing weight or weight_scale")
+    shape = weight.get("shape", [])
+    if weight.get("dtype") != "I8" or not isinstance(shape, list) or len(shape) != 2:
+        raise ValueError(f"{path}: ConvRot INT8 layer '{layer}' weight must be 2-D I8")
+    out_features, in_features = (int(x) for x in shape)
+    if in_features % 256:
+        raise ValueError(
+            f"{path}: ConvRot INT8 layer '{layer}' K={in_features} is not divisible by 256"
+        )
+    scale_shape = list(scale.get("shape", []))
+    if scale.get("dtype") != "F32" or scale_shape not in ([out_features], [out_features, 1]):
+        raise ValueError(
+            f"{path}: ConvRot INT8 layer '{layer}' weight_scale must be F32 "
+            f"[{out_features}] or [{out_features}, 1], got {scale.get('dtype')} {scale_shape}"
+        )
+    return {"convrot_groupsize": 256, "marker_numel": int(marker.numel())}
+
+
+def _guard_component_file(
+    path: str,
+    *,
+    label: str,
+    allow_h3_int8_convrot: bool = False,
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """THE FIRST STATEMENT of every component builder.
 
     Returns ``(header without __metadata__, __metadata__)``.
@@ -897,10 +963,37 @@ def _guard_component_file(path: str, *, label: str) -> Tuple[Dict[str, Any], Dic
 
         with safe_open(path, framework="pt", device="cpu") as handle:
             for key in marker_keys:
-                probe[key] = handle.get_tensor(key)
+                marker = handle.get_tensor(key)
+                if (
+                    allow_h3_int8_convrot
+                    and _supported_int8_convrot_marker(
+                        key, marker, header, path=path
+                    ) is not None
+                ):
+                    continue
+                probe[key] = marker
     if probe:
         _assert_guard_reached(probe, label=label, path=path)
     return header, metadata
+
+
+def _int8_convrot_layers_from_markers(
+    handle,
+    header: Dict[str, Any],
+    *,
+    path: str,
+) -> Dict[str, Dict[str, int]]:
+    """Return source-layer configs for validated H3 ConvRot marker tensors."""
+    layers: Dict[str, Dict[str, int]] = {}
+    for key in header:
+        if not key.endswith(".comfy_quant"):
+            continue
+        config = _supported_int8_convrot_marker(
+            key, handle.get_tensor(key), header, path=path
+        )
+        if config is not None:
+            layers[key[: -len(".comfy_quant")]] = config
+    return layers
 
 
 def _w4a8_layers_from_metadata(
@@ -1023,6 +1116,22 @@ def _mapped_w4a8_layer_configs(
     return mapped
 
 
+def _mapped_int8_convrot_layer_configs(
+    source_layers: Dict[str, Dict[str, int]],
+) -> Dict[str, Dict[str, int]]:
+    """Expand fused source QKV declarations to the three live projections."""
+    mapped: Dict[str, Dict[str, int]] = {}
+    for source, config in source_layers.items():
+        if source.endswith(".attn.qkv_proj"):
+            target = _rename_dit_key(source + ".weight")
+            stem = target.split(".attn.qkv_proj.")[0] + ".attn."
+            for suffix in ("to_q", "to_k", "to_v"):
+                mapped[stem + suffix] = dict(config)
+        else:
+            mapped[_rename_dit_key(source + ".weight")[:-len(".weight")]] = dict(config)
+    return mapped
+
+
 def _dit_quantization_policy(model: nn.Module) -> int:
     """Pin every ``Fp8Linear`` of the DiT to the DEQUANT path. Returns the count.
 
@@ -1095,9 +1204,11 @@ def _build_transformer(dit_path: str, torch_dtype: torch.dtype,
     )
     from .vendor import MiniMaxH3Transformer3DModel
 
-    # THE GUARD, first of all -- ahead of the geometry synthesis, which can raise
-    # on its own and would then mask the real reason a convrot file is refused.
-    header, metadata = _guard_component_file(dit_path, label="transformer")
+    # The guard must precede geometry synthesis so an unsupported quantized
+    # contract reports its actual incompatibility.
+    header, metadata = _guard_component_file(
+        dit_path, label="transformer", allow_h3_int8_convrot=True
+    )
     w4a8_source_layers = _w4a8_layers_from_metadata(metadata, header, path=dit_path)
     w4a8_layer_configs = _mapped_w4a8_layer_configs(w4a8_source_layers)
     if w4a8_layer_configs:
@@ -1114,31 +1225,74 @@ def _build_transformer(dit_path: str, torch_dtype: torch.dtype,
           + (f", grid {config['adaln_curve_grid']} x {config['time_embed_dim']}" if curve else ""))
 
     with safe_open(dit_path, framework="pt", device="cpu") as handle:
-        state_dict, stats = _map_dit_state_dict(
-            handle, header, config, torch_dtype, w4a8_layers=w4a8_source_layers)
+        int8_convrot_source_layers = _int8_convrot_layers_from_markers(
+            handle, header, path=dit_path
+        )
+        int8_convrot_layer_configs = _mapped_int8_convrot_layer_configs(
+            int8_convrot_source_layers
+        )
+        if int8_convrot_layer_configs:
+            from core.models.common.convrot_int8_linear import require_convrot_int8_runtime
 
-        # THE GUARD, before a single tensor is installed. The ``.comfy_quant``
-        # markers carried through above are what make this able to see an
-        # ``int8_convrot`` file at all.
-        _assert_guard_reached(state_dict, label="transformer", path=dit_path)
+            require_convrot_int8_runtime()
+        state_dict, stats = _map_dit_state_dict(
+            handle,
+            header,
+            config,
+            torch_dtype,
+            w4a8_layers=w4a8_source_layers,
+            int8_convrot_layers=int8_convrot_source_layers,
+        )
+
+        # The early header guard validated every supported ConvRot marker. Keep
+        # those markers as live module state, while every other declaration
+        # still passes through the generic refusal before any tensor is installed.
+        guard_state_dict = {
+            key: value for key, value in state_dict.items()
+            if not (
+                key.endswith(".comfy_quant")
+                and key[: -len(".comfy_quant")] in int8_convrot_layer_configs
+            )
+        }
+        _assert_guard_reached(guard_state_dict, label="transformer", path=dit_path)
 
         w4a8_prefixes = tuple(name + "." for name in w4a8_layer_configs)
+        int8_convrot_prefixes = tuple(name + "." for name in int8_convrot_layer_configs)
         scaled_state_dict = {
             key: value for key, value in state_dict.items()
-            if not w4a8_prefixes or not key.startswith(w4a8_prefixes)
+            if (not w4a8_prefixes or not key.startswith(w4a8_prefixes))
+            and (not int8_convrot_prefixes or not key.startswith(int8_convrot_prefixes))
         }
         census = quantized_state_dict_report(
             scaled_state_dict, arch="MiniMax-H3", path=dit_path, label="transformer")
         report = scaled_quantization_report(
             census, arch="MiniMax-H3", path=dit_path, label="transformer")
 
-        # Markers have served their purpose; they are not module state.
-        state_dict = {k: v for k, v in state_dict.items() if not k.endswith(".comfy_quant")}
+        # Plain provenance markers have served their purpose. ConvRot modules
+        # retain theirs so a state_dict/export cannot lose the rotation contract.
+        state_dict = {
+            key: value for key, value in state_dict.items()
+            if not key.endswith(".comfy_quant")
+            or key[: -len(".comfy_quant")] in int8_convrot_layer_configs
+        }
 
         with init_empty_weights():
             model = MiniMaxH3Transformer3DModel(**config)
 
         swapped = 0
+        if int8_convrot_layer_configs:
+            from core.models.common.convrot_int8_linear import swap_linears_to_convrot_int8
+
+            convrot_swapped = swap_linears_to_convrot_int8(
+                model, state_dict, int8_convrot_layer_configs, torch_dtype
+            )
+            if convrot_swapped != len(int8_convrot_layer_configs):
+                raise RuntimeError(
+                    f"MiniMax-H3 ConvRot metadata mapped "
+                    f"{len(int8_convrot_layer_configs)} Linear(s), but only "
+                    f"{convrot_swapped} module(s) were replaced"
+                )
+            swapped += convrot_swapped
         if w4a8_layer_configs:
             from core.models.common.w4a8_linear import swap_linears_to_w4a8
 
@@ -1182,7 +1336,8 @@ def _build_transformer(dit_path: str, torch_dtype: torch.dtype,
           f"de-interleaved), {stats['swiglu_swapped']} SwiGLU half-swap(s), "
           f"{stats['scales_broadcast']} weight_scale(s) broadcast "
           f"({stats['swiglu_scale_swapped']} per-row scale(s) half-swapped with their weight), "
-          f"{stats['markers']} quant marker(s) inspected then dropped, "
+          f"{stats['markers']} quant marker(s) validated "
+          f"(ConvRot declarations retained as module state), "
           f"{stats['input_scale_dropped']} input_scale(s) dropped (W8A8 is off for this arch), "
           f"{stats['dropped']} recomputable buffer(s) dropped")
     if swapped:

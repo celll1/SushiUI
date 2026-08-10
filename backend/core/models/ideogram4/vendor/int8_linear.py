@@ -401,7 +401,11 @@ def describe_gemm_path(module: nn.Module | None = None) -> str | None:
     allocation failure) that happen WITHIN a generation.
     """
     if module is not None:
-        layers = [m for m in module.modules() if isinstance(m, Int8Linear)]
+        layers = [
+            m for m in module.modules()
+            if isinstance(m, Int8Linear)
+            and not getattr(m, "_fixed_quantized_gemm_path", None)
+        ]
         if not layers:
             return None
         if not any(m._allow_int8_mm for m in layers):
@@ -669,6 +673,8 @@ class Int8Linear(nn.Module):
         out_features: int,
         bias: bool,
         compute_dtype: torch.dtype,
+        *,
+        device: torch.device | str | None = None,
     ) -> None:
         super().__init__()
         self.in_features = in_features
@@ -676,11 +682,15 @@ class Int8Linear(nn.Module):
         self.compute_dtype = compute_dtype
         self.register_buffer(
             "weight",
-            torch.empty(out_features, in_features, dtype=INT8_WEIGHT_DTYPE),
+            torch.empty(out_features, in_features, dtype=INT8_WEIGHT_DTYPE, device=device),
         )
-        self.register_buffer("weight_scale", torch.empty(out_features, dtype=torch.float32))
+        self.register_buffer(
+            "weight_scale", torch.empty(out_features, dtype=torch.float32, device=device)
+        )
         if bias:
-            self.register_buffer("bias", torch.empty(out_features, dtype=compute_dtype))
+            self.register_buffer(
+                "bias", torch.empty(out_features, dtype=compute_dtype, device=device)
+            )
         else:
             self.bias = None
 

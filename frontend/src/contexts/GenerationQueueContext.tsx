@@ -1,8 +1,32 @@
 "use client";
 
 import { createContext, useContext, useState, useCallback, ReactNode, useEffect, useRef } from "react";
-import { usePathname } from "next/navigation";
 import { GenerationParams, Img2ImgParams, InpaintParams, InpaintVideoParams, OutpaintParams, OutpaintVideoParams, OutpaintAudioParams, UpscaleParams, Txt2VidParams, Img2VidParams, Ref2VidParams, MiniMaxH3References, Txt2AudParams, Aud2AudParams } from "@/utils/api";
+import { CFGMetrics, wsClient } from "@/utils/websocket";
+
+export type GenerationPanelId = "txt2img" | "img2img" | "inpaint" | "outpaint" | "upscale";
+
+export interface GenerationProgressSnapshot {
+  itemId: string;
+  step: number;
+  totalSteps: number;
+  message: string;
+  previewImage?: string;
+  cfgMetrics?: CFGMetrics;
+  subProgress?: number;
+}
+
+export interface GenerationResultSnapshot {
+  panel: GenerationPanelId;
+  kind: "image" | "video" | "audio";
+  url: string;
+  playbackUrl?: string;
+  info?: Record<string, number | string | undefined> | null;
+  seed?: number | null;
+  ancestralSeed?: number | null;
+  params?: unknown;
+  revision: number;
+}
 
 export interface QueueItem {
   id: string;
@@ -56,12 +80,15 @@ interface GenerationQueueContextType {
   updateQueueItemByLoop: (loopGroupId: string, loopStepIndex: number, updates: Partial<QueueItem> | ((item: QueueItem) => Partial<QueueItem>)) => void;
   cancelLoopGroup: (loopGroupId: string) => void;
   cancelRelatedItems: (itemId: string) => void;
-  startNextInQueue: () => QueueItem | null;
+  startNextInQueue: (allowedTypes?: readonly QueueItem["type"][]) => QueueItem | null;
   completeCurrentItem: () => void;
   failCurrentItem: () => void;
   clearQueue: () => void;
   generateForever: boolean;
   setGenerateForever: (enabled: boolean) => void;
+  progressSnapshot: GenerationProgressSnapshot | null;
+  completedResults: Partial<Record<GenerationPanelId, GenerationResultSnapshot>>;
+  publishCompletedResult: (result: Omit<GenerationResultSnapshot, "revision">) => void;
 }
 
 const GenerationQueueContext = createContext<GenerationQueueContextType | undefined>(undefined);
@@ -70,6 +97,8 @@ export function GenerationQueueProvider({ children }: { children: ReactNode }) {
   const [queue, setQueue] = useState<QueueItem[]>([]);
   const [currentItem, setCurrentItem] = useState<QueueItem | null>(null);
   const [generateForever, setGenerateForever] = useState<boolean>(false);
+  const [progressSnapshot, setProgressSnapshot] = useState<GenerationProgressSnapshot | null>(null);
+  const [completedResults, setCompletedResults] = useState<Partial<Record<GenerationPanelId, GenerationResultSnapshot>>>({});
 
   // Use refs that are synchronously updated alongside state
   const queueRef = useRef<QueueItem[]>(queue);
@@ -78,6 +107,40 @@ export function GenerationQueueProvider({ children }: { children: ReactNode }) {
   // Synchronously update refs whenever state changes
   queueRef.current = queue;
   currentItemRef.current = currentItem;
+
+  useEffect(() => {
+    const handleProgress = (
+      step: number,
+      totalSteps: number,
+      message: string,
+      previewImage?: string,
+      cfgMetrics?: CFGMetrics,
+      subProgress?: number,
+    ) => {
+      const item = currentItemRef.current;
+      if (!item) return;
+      setProgressSnapshot((previous) => ({
+        itemId: item.id,
+        step,
+        totalSteps,
+        message: message || "",
+        previewImage: previewImage || (previous?.itemId === item.id ? previous.previewImage : undefined),
+        cfgMetrics,
+        subProgress,
+      }));
+    };
+
+    wsClient.connect();
+    wsClient.subscribe(handleProgress);
+    return () => wsClient.unsubscribe(handleProgress);
+  }, []);
+
+  const publishCompletedResult = useCallback((result: Omit<GenerationResultSnapshot, "revision">) => {
+    setCompletedResults((previous) => ({
+      ...previous,
+      [result.panel]: { ...result, revision: (previous[result.panel]?.revision ?? 0) + 1 },
+    }));
+  }, []);
 
   const addToQueue = useCallback((item: Omit<QueueItem, "id" | "status" | "addedAt">) => {
     const newItem: QueueItem = {
@@ -205,13 +268,18 @@ export function GenerationQueueProvider({ children }: { children: ReactNode }) {
     removeFromQueue(itemId);
   }, [removeFromQueue]);
 
-  const startNextInQueue = useCallback(() => {
+  const startNextInQueue = useCallback((allowedTypes?: readonly QueueItem["type"][]) => {
     // Access latest values from refs (synchronously updated)
     const currentQueue = queueRef.current;
     const currentItemValue = currentItemRef.current;
 
     console.log("[QueueContext] startNextInQueue - current queue:", currentQueue);
     console.log("[QueueContext] currentItem:", currentItemValue);
+
+    if (currentItemValue?.status === "generating") {
+      console.log("[QueueContext] A generation is already active, not starting another item");
+      return null;
+    }
 
     let nextItem: QueueItem | undefined;
 
@@ -223,6 +291,7 @@ export function GenerationQueueProvider({ children }: { children: ReactNode }) {
       // Find next step in the same loop group
       nextItem = currentQueue.find((item) =>
         item.status === "pending" &&
+        (!allowedTypes || allowedTypes.includes(item.type)) &&
         item.loopGroupId === currentLoopGroupId &&
         (item.loopStepIndex ?? 0) === currentLoopStepIndex + 1
       );
@@ -233,7 +302,8 @@ export function GenerationQueueProvider({ children }: { children: ReactNode }) {
 
     // If no loop step found, get next pending item in queue order
     if (!nextItem) {
-      nextItem = currentQueue.find((item) => item.status === "pending");
+      nextItem = currentQueue.find((item) =>
+        item.status === "pending" && (!allowedTypes || allowedTypes.includes(item.type)));
       console.log("[QueueContext] Found next pending item:", nextItem);
     }
 
@@ -259,7 +329,9 @@ export function GenerationQueueProvider({ children }: { children: ReactNode }) {
           ? { ...nextItem.params, keep_models_hot: hasNext }
           : nextItem.params,
       };
+      currentItemRef.current = updatedItem;
       setCurrentItem(updatedItem);
+      setProgressSnapshot(null);
 
       // Update the item in queue to generating status
       setQueue((prev) =>
@@ -289,7 +361,9 @@ export function GenerationQueueProvider({ children }: { children: ReactNode }) {
 
     // Remove completed item from queue
     setQueue((prev) => prev.filter((item) => item.id !== currentItemValue.id));
+    currentItemRef.current = null;
     setCurrentItem(null);
+    setProgressSnapshot(null);
   }, []); // Empty deps - uses refs
 
   const failCurrentItem = useCallback(() => {
@@ -303,33 +377,18 @@ export function GenerationQueueProvider({ children }: { children: ReactNode }) {
         item.id === currentItemValue.id ? { ...item, status: "failed" as const } : item
       )
     );
+    currentItemRef.current = null;
     setCurrentItem(null);
+    setProgressSnapshot(null);
   }, []); // Empty deps - uses refs
 
   const clearQueue = useCallback(() => {
     setQueue([]);
+    queueRef.current = [];
+    currentItemRef.current = null;
     setCurrentItem(null);
+    setProgressSnapshot(null);
   }, []);
-
-  // Track pathname to detect page navigation
-  const pathname = usePathname();
-  const [prevPathname, setPrevPathname] = useState(pathname);
-
-  useEffect(() => {
-    // If pathname changed and there's a current item generating
-    if (pathname !== prevPathname) {
-      const currentItemValue = currentItemRef.current;
-      if (currentItemValue) {
-        console.log("[QueueContext] Page navigation detected while generating, marking current item as completed");
-        console.log(`[QueueContext] Navigated from ${prevPathname} to ${pathname}`);
-
-        // Remove current item from queue (generation continues in background)
-        setQueue((prev) => prev.filter((item) => item.id === currentItemValue.id));
-        setCurrentItem(null);
-      }
-      setPrevPathname(pathname);
-    }
-  }, [pathname, prevPathname]); // Use refs for currentItem
 
   return (
     <GenerationQueueContext.Provider
@@ -348,6 +407,9 @@ export function GenerationQueueProvider({ children }: { children: ReactNode }) {
         clearQueue,
         generateForever,
         setGenerateForever,
+        progressSnapshot,
+        completedResults,
+        publishCompletedResult,
       }}
     >
       {children}

@@ -392,7 +392,29 @@ export default function UpscalePanel({ onTabChange, onImageGenerated }: UpscaleP
   const supportsNegativePrompt = diffusionPromptEnabled
     && archSupportsFeature(archCapabilities, modelInfo?.type, "negative_prompt");
 
-  const { addToQueue, startNextInQueue, completeCurrentItem, failCurrentItem, currentItem, queue } = useGenerationQueue();
+  const { addToQueue, startNextInQueue, completeCurrentItem, failCurrentItem, currentItem, queue, progressSnapshot, completedResults, publishCompletedResult } = useGenerationQueue();
+
+  useEffect(() => {
+    if (!currentItem || currentItem.type !== "upscale") {
+      isGeneratingRef.current = false;
+      setIsGenerating(false);
+      return;
+    }
+    isGeneratingRef.current = true;
+    setIsGenerating(true);
+    if (progressSnapshot?.itemId !== currentItem.id) return;
+    setProgress(progressSnapshot.step);
+    setTotalSteps(progressSnapshot.totalSteps);
+    reportSubProgress(progressSnapshot.step, progressSnapshot.subProgress);
+  }, [currentItem, progressSnapshot, reportSubProgress]);
+
+  useEffect(() => {
+    const result = completedResults.upscale;
+    if (!result || result.kind !== "image" || currentItem?.type === "upscale") return;
+    setGeneratedImage(result.url);
+    setGeneratedImageInfo(result.info as typeof generatedImageInfo);
+    setGeneratedImageParams(result.params as UpscaleParams);
+  }, [completedResults.upscale, currentItem]);
 
   const handleAddToQueue = async () => {
     if (!inputImage && !inputImagePreview) {
@@ -434,11 +456,12 @@ export default function UpscalePanel({ onTabChange, onImageGenerated }: UpscaleP
   const processQueueRef = useRef<() => Promise<void>>();
 
   const processQueue = useCallback(async () => {
-    if (isGenerating) return;
+    if (isGeneratingRef.current) return;
 
-    const nextItem = startNextInQueue();
+    const nextItem = startNextInQueue(["upscale"]);
     if (!nextItem || nextItem.type !== "upscale") return;
 
+    isGeneratingRef.current = true;
     setIsGenerating(true);
     setProgress(0);
     setTotalSteps(0);
@@ -452,9 +475,11 @@ export default function UpscalePanel({ onTabChange, onImageGenerated }: UpscaleP
 
       const result = await generateUpscale(nextItem.params as UpscaleParams, inputImageToUse);
       const imageUrl = `/outputs/${result.image.filename}`;
+      const imageInfo = { width: result.image.width, height: result.image.height };
       setGeneratedImage(imageUrl);
-      setGeneratedImageInfo({ width: result.image.width, height: result.image.height });
+      setGeneratedImageInfo(imageInfo);
       setGeneratedImageParams(nextItem.params as UpscaleParams);
+      publishCompletedResult({ panel: "upscale", kind: "image", url: imageUrl, info: imageInfo, params: nextItem.params });
 
       // Notify the page so the result reaches the shared top-right strip, the
       // same way every other generation panel does. An upscale result is a
@@ -464,6 +489,7 @@ export default function UpscalePanel({ onTabChange, onImageGenerated }: UpscaleP
         onImageGenerated(imageUrl);
       }
 
+      isGeneratingRef.current = false;
       setIsGenerating(false);
       setProgress(0);
       completeCurrentItem();
@@ -478,6 +504,7 @@ export default function UpscalePanel({ onTabChange, onImageGenerated }: UpscaleP
       // alert() blocks the JS thread; reset state and requeue before showing
       // it, otherwise the queue effect sees a stale isGenerating until the
       // dialog closes.
+      isGeneratingRef.current = false;
       setIsGenerating(false);
       setProgress(0);
       failCurrentItem();
@@ -489,7 +516,7 @@ export default function UpscalePanel({ onTabChange, onImageGenerated }: UpscaleP
       }, 100);
       alert(isGenerationStalledError(error) ? error.message : "Upscale generation failed. Please check console for details.");
     }
-  }, [isGenerating, startNextInQueue, completeCurrentItem, failCurrentItem, onImageGenerated]);
+  }, [isGenerating, startNextInQueue, completeCurrentItem, failCurrentItem, onImageGenerated, publishCompletedResult]);
 
   processQueueRef.current = processQueue;
 

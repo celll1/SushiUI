@@ -1417,7 +1417,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
     }
   };
 
-  const { addToQueue, updateQueueItem, updateQueueItemByLoop, cancelLoopGroup, startNextInQueue, completeCurrentItem, failCurrentItem, currentItem, queue, generateForever, setGenerateForever } = useGenerationQueue();
+  const { addToQueue, updateQueueItem, updateQueueItemByLoop, cancelLoopGroup, startNextInQueue, completeCurrentItem, failCurrentItem, currentItem, queue, generateForever, setGenerateForever, progressSnapshot, completedResults, publishCompletedResult } = useGenerationQueue();
 
   // Use refs for WebSocket callback to prevent recreations
   const isGeneratingRef = useRef(isGenerating);
@@ -1430,6 +1430,49 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
   useEffect(() => {
     developerModeRef.current = developerMode;
   }, [developerMode]);
+
+  useEffect(() => {
+    if (!currentItem || !["txt2img", "img2img", "txt2vid", "ref2vid", "txt2aud"].includes(currentItem.type)) {
+      isGeneratingRef.current = false;
+      setIsGenerating(false);
+      return;
+    }
+    isGeneratingRef.current = true;
+    setIsGenerating(true);
+    if (progressSnapshot?.itemId !== currentItem.id) return;
+    setProgress(progressSnapshot.step);
+    setTotalSteps(progressSnapshot.totalSteps);
+    setProgressMessage(progressSnapshot.message);
+    reportSubProgress(progressSnapshot.step, progressSnapshot.subProgress);
+    if (progressSnapshot.previewImage) setPreviewImage(progressSnapshot.previewImage);
+  }, [currentItem, progressSnapshot, reportSubProgress]);
+
+  useEffect(() => {
+    const result = completedResults.txt2img;
+    if (!result || (currentItem && ["txt2img", "img2img", "txt2vid", "ref2vid", "txt2aud"].includes(currentItem.type))) return;
+    setPreviewImage(null);
+    if (result.kind === "image") {
+      setGeneratedImage(result.url);
+      setGeneratedImageSeed(result.seed ?? null);
+      setGeneratedImageAncestralSeed(result.ancestralSeed ?? null);
+      setGeneratedImageParams(result.params as GenerationParams);
+      setGeneratedVideo(null);
+      setGeneratedAudio(null);
+    } else if (result.kind === "video") {
+      setGeneratedVideo(result.url);
+      setGeneratedVideoInfo(result.info as typeof generatedVideoInfo);
+      setGeneratedVideoSeed(result.seed ?? null);
+      setGeneratedVideoParams(result.params as GenerationParams);
+      setGeneratedImage(null);
+      setGeneratedAudio(null);
+    } else {
+      setGeneratedAudio(result.url);
+      setGeneratedAudioInfo(result.info as typeof generatedAudioInfo);
+      setGeneratedAudioParams(result.params as GenerationParams);
+      setGeneratedImage(null);
+      setGeneratedVideo(null);
+    }
+  }, [completedResults.txt2img, currentItem]);
 
   // WebSocket progress callback - stable reference
   const handleProgress = useCallback((step: number, totalSteps: number, message: string, preview?: string, metrics?: CFGMetrics, subProgress?: number) => {
@@ -2069,13 +2112,13 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
   const processQueueRef = useRef<() => Promise<void>>();
 
   const processQueue = useCallback(async () => {
-    console.log("[Txt2Img] processQueue called, isGenerating:", isGenerating);
-    if (isGenerating) {
+    console.log("[Txt2Img] processQueue called, isGenerating:", isGeneratingRef.current);
+    if (isGeneratingRef.current) {
       console.log("[Txt2Img] Already generating, skipping");
       return;
     }
 
-    const nextItem = startNextInQueue();
+    const nextItem = startNextInQueue(["txt2img", "img2img", "txt2vid", "ref2vid", "txt2aud"]);
     console.log("[Txt2Img] Next item from queue:", nextItem);
     if (!nextItem) {
       console.log("[Txt2Img] No items in queue");
@@ -2085,6 +2128,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
     // Audio branch: txt2aud item (an audio model is loaded). Produces a .flac
     // and renders an <audio> instead of an <img>. No loop-generation handling.
     if (nextItem.type === "txt2aud") {
+      isGeneratingRef.current = true;
       setIsGenerating(true);
       setProgress(0);
       setProgressMessage("");
@@ -2100,16 +2144,20 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
       try {
         const result = await generateTxt2Aud(nextItem.params as Txt2AudParams);
         const audioUrl = `/outputs/${result.image.filename}`;
-        setGeneratedAudio(audioUrl);
-        setGeneratedAudioInfo({
+        const audioInfo = {
           duration: result.image.duration,
           sample_rate: result.image.sample_rate,
-        });
-        setGeneratedAudioParams({
+        };
+        const audioParams = {
           ...(nextItem.params as GenerationParams),
           seed: getResultSeed(result) ?? (nextItem.params as GenerationParams).seed,
-        });
+        };
+        setGeneratedAudio(audioUrl);
+        setGeneratedAudioInfo(audioInfo);
+        setGeneratedAudioParams(audioParams);
+        publishCompletedResult({ panel: "txt2img", kind: "audio", url: audioUrl, info: audioInfo, params: audioParams });
         if (onImageGenerated) onImageGenerated(audioUrl);
+        isGeneratingRef.current = false;
         setIsGenerating(false);
         setProgress(0);
         setProgressMessage("");
@@ -2121,6 +2169,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         console.error("[Txt2Img] txt2aud generation failed:", error);
         // alert() blocks the JS thread; reset state and requeue before showing it,
         // otherwise the queue effect sees a stale isGenerating until the dialog closes.
+        isGeneratingRef.current = false;
         setIsGenerating(false);
         setProgress(0);
         setProgressMessage("");
@@ -2137,6 +2186,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
     // ref2va and the request carries references. Both produce an .mp4 and
     // render a <video> instead of an <img>; no loop-generation handling.
     if (nextItem.type === "txt2vid" || nextItem.type === "ref2vid") {
+      isGeneratingRef.current = true;
       setIsGenerating(true);
       setProgress(0);
       setProgressMessage("");
@@ -2155,17 +2205,21 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
               nextItem.references ?? EMPTY_MINIMAX_H3_REFERENCES)
           : await generateTxt2Vid(nextItem.params as Txt2VidParams);
         const videoUrl = `/outputs/${result.image.filename}`;
-        setGeneratedVideo(videoUrl);
-        setGeneratedVideoInfo({
+        const videoInfo = {
           num_frames: result.image.num_frames,
           fps: result.image.fps,
           duration: result.image.duration,
-        });
+        };
+        const videoSeed = getResultSeed(result);
+        setGeneratedVideo(videoUrl);
+        setGeneratedVideoInfo(videoInfo);
         // The seed the run actually used (-1 in the request means "pick one"),
         // so the seed control's reuse button can pin it for the next run.
-        setGeneratedVideoSeed(getResultSeed(result));
+        setGeneratedVideoSeed(videoSeed);
         setGeneratedVideoParams(nextItem.params as GenerationParams);
+        publishCompletedResult({ panel: "txt2img", kind: "video", url: videoUrl, info: videoInfo, seed: videoSeed, params: nextItem.params });
         if (onImageGenerated) onImageGenerated(videoUrl);
+        isGeneratingRef.current = false;
         setIsGenerating(false);
         setProgress(0);
         setProgressMessage("");
@@ -2175,6 +2229,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         }, 100);
       } catch (error: any) {
         console.error(`[Txt2Img] ${nextItem.type} generation failed:`, error);
+        isGeneratingRef.current = false;
         setIsGenerating(false);
         setProgress(0);
         setProgressMessage("");
@@ -2192,6 +2247,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
     // Save current image before starting new generation
     const previousImage = generatedImage;
 
+    isGeneratingRef.current = true;
     setIsGenerating(true);
     setProgress(0);
     setProgressMessage("");
@@ -2323,13 +2379,24 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
       setGeneratedImageSeed(resultSeed);
       setGeneratedImageAncestralSeed(resultAncestralSeed);
       // Save the params used for this generation (with actual result values)
-      setGeneratedImageParams({
+      const completedParams: GenerationParams = {
         ...nextItem.params,
         seed: resultSeed,
         ancestral_seed: resultAncestralSeed ?? -1,
         width: result.image?.width ?? nextItem.params.width,
         height: result.image?.height ?? nextItem.params.height,
-      });
+      };
+      setGeneratedImageParams(completedParams);
+      if (imageUrl) {
+        publishCompletedResult({
+          panel: "txt2img",
+          kind: "image",
+          url: imageUrl,
+          seed: resultSeed,
+          ancestralSeed: resultAncestralSeed,
+          params: completedParams,
+        });
+      }
       setPreviewImage(null);
 
       // Notify parent component (skip for latent-only steps — nothing to show)
@@ -2523,6 +2590,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
 
       // Reset state first, then complete item
       console.log("[Txt2Img] Generation complete, resetting state and completing item");
+      isGeneratingRef.current = false;
       setIsGenerating(false);
       setProgress(0);
       setProgressMessage("");
@@ -2570,6 +2638,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
 
       // Reset state first, then fail item
       console.log("[Txt2Img] Generation failed, resetting state and failing item");
+      isGeneratingRef.current = false;
       setIsGenerating(false);
       setProgress(0);
       setProgressMessage("");
@@ -2587,13 +2656,14 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         alert(alertMessage);
       }
     }
-  }, [isGenerating, generatedImage, onImageGenerated, startNextInQueue, completeCurrentItem, failCurrentItem, updateQueueItem, queue]);
+  }, [isGenerating, generatedImage, onImageGenerated, startNextInQueue, completeCurrentItem, failCurrentItem, updateQueueItem, queue, publishCompletedResult]);
 
   processQueueRef.current = processQueue;
 
   // Auto-start queue processing when queue has pending items and not currently generating
   useEffect(() => {
-    const hasPendingItems = queue.some(item => item.status === "pending");
+    const hasPendingItems = queue.some(item =>
+      item.status === "pending" && ["txt2img", "img2img", "txt2vid", "ref2vid", "txt2aud"].includes(item.type));
     const isCurrentItemNull = currentItem === null;
 
     console.log("[Txt2Img] Queue effect:", {

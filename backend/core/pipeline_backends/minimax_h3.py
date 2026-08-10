@@ -1585,6 +1585,19 @@ class MiniMaxH3Mixin:
                 pin_target_audio=pinned_audio_rows is not None,
                 device=torch_device,
             )
+        row_counts = ops.packed_row_counts(layout)
+        params["minimax_h3_packed_rows"] = row_counts["total"]
+        params["minimax_h3_conditioning_rows"] = (
+            row_counts["condition_video"] + row_counts["condition_audio"])
+        target_rows = row_counts["target_video"] + row_counts["target_audio"]
+        expansion = row_counts["total"] / max(1, row_counts["text"] + target_rows)
+        print(
+            "[MiniMax-H3] packed rows: "
+            f"text={row_counts['text']}, "
+            f"video={row_counts['target_video']} target + {row_counts['condition_video']} condition, "
+            f"audio={row_counts['target_audio']} target + {row_counts['condition_audio']} condition, "
+            f"total={row_counts['total']} ({expansion:.2f}x target-only sequence)"
+        )
         generator = torch.Generator(device=device).manual_seed(seed)
         # ONE draw per visual condition FIRST, at that condition's own latent
         # shape (they do NOT share one on ref2va), then the video noise, then

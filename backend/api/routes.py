@@ -2312,6 +2312,8 @@ async def generate_upscale(
     cfg_scale: float = Form(UPSCALE_DEFAULTS["cfg_scale"]),
     sampler: str = Form(UPSCALE_DEFAULTS["sampler"]),
     schedule_type: str = Form(UPSCALE_DEFAULTS["schedule_type"]),
+    attention_type: str = Form(UPSCALE_DEFAULTS["attention_type"]),
+    attention_impl: str = Form(UPSCALE_DEFAULTS["attention_impl"]),
     seed: int = Form(UPSCALE_DEFAULTS["seed"]),
     diffusion_pre_upscale_mode: str = Form(UPSCALE_DEFAULTS["diffusion_pre_upscale_mode"]),
     image: UploadFile = File(...),
@@ -2352,6 +2354,9 @@ async def generate_upscale(
                 "cfg_scale": cfg_scale,
                 "sampler": sampler,
                 "schedule_type": schedule_type,
+                "attention_type": _validated_attention_type(
+                    attention_type, UPSCALE_DEFAULTS["attention_type"]),
+                "attention_impl": attention_impl,
                 "seed": seed,
                 "diffusion_pre_upscale_mode": diffusion_pre_upscale_mode,
             })
@@ -2405,6 +2410,8 @@ async def generate_upscale(
                 lambda: run_upscale(params, input_image, progress_callback=progress_callback, pipeline_manager=pipeline_manager)
             )
         apply_generation_timings(params, time.perf_counter() - _gen_start)
+        if upscaler_backend == "diffusion":
+            record_attention_backend(params, _gen_id)
 
         for w in upscale_warnings:
             print(f"[Upscale] Warning: {w}")

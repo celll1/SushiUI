@@ -447,6 +447,8 @@ def run_diffusion_upscale(
             "cfg_scale": params.get("cfg_scale"),
             "sampler": params.get("sampler"),
             "schedule_type": params.get("schedule_type"),
+            "attention_type": params.get("attention_type"),
+            "attention_impl": params.get("attention_impl"),
             "seed": seed + idx,
             "denoising_strength": denoising_strength,
             "width": tile_crop.width,

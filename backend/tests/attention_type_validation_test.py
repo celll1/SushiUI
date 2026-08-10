@@ -210,6 +210,7 @@ class FrontendAttentionSenderTest(unittest.TestCase):
             "generateImg2ImgTrainingPreview",
             "generateInpaintTrainingPreview",
             "generateImg2Img",
+            "generateUpscale",
             "generateTxt2Vid",
             "generateImg2Vid",
             "generateRef2Vid",
@@ -237,6 +238,7 @@ class FrontendAttentionSenderTest(unittest.TestCase):
             "generateImg2ImgTrainingPreview",
             "generateInpaintTrainingPreview",
             "generateImg2Img",
+            "generateUpscale",
             "generateInpaint",
             "generateOutpaint",
         ):
@@ -269,6 +271,41 @@ class FrontendAttentionSenderTest(unittest.TestCase):
             with self.subTest(panel=name):
                 self.assertIn("readGlobalAttentionType()", source)
                 self.assertNotIn("savedAttentionType === 'flash'", source)
+
+
+class DiffusionUpscaleAttentionTest(unittest.TestCase):
+    def test_attention_settings_reach_each_img2img_tile(self):
+        from PIL import Image
+        from core.upscaler import run_diffusion_upscale
+
+        class PipelineManager:
+            current_model_info = object()
+
+            def __init__(self):
+                self.calls = []
+
+            def generate_img2img(self, params, image, **_kwargs):
+                self.calls.append(dict(params))
+                return image, params["seed"], None
+
+        manager = PipelineManager()
+        params = {
+            "scale_factor": 1.0,
+            "pil_resample": "lanczos",
+            "tile_size": 0,
+            "tile_overlap": 0,
+            "diffusion_denoising_strength": 0.3,
+            "seed": 7,
+            "attention_type": "flash",
+            "attention_impl": "conduit",
+        }
+
+        run_diffusion_upscale(
+            params, Image.new("RGB", (8, 8)), manager)
+
+        self.assertEqual(len(manager.calls), 1)
+        self.assertEqual(manager.calls[0]["attention_type"], "flash")
+        self.assertEqual(manager.calls[0]["attention_impl"], "conduit")
 
 
 # ---------------------------------------------------------------------------

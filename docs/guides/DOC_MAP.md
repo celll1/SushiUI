@@ -74,12 +74,11 @@ Local-only files that may be absent in a fresh clone are listed separately.
 |---|---|
 | `examples/api/README.md` | How to run the frontend-less API example scripts; FP8 scaled-GEMM gate (G1) decision rule. |
 | `frontend/src/components/training/SINGLE_STATE_MIGRATION_PLAN.md` | Frontend training-state migration plan. |
-| `scripts/README.md` | Utility scripts overview. |
+| `local/README.md` | The machine-local working area (gitignored contents), and where the tracked equivalents live. |
 | `subapps/aesthetic_scorer/README.md` | Aesthetic scorer subapp overview. |
 | `subapps/fp8_quantize/README.md` | Weight-only FP8 checkpoint quantization tool (format, layer selection, sibling links). |
 | `subapps/aesthetic_scorer/USAGE.md` | Aesthetic scorer usage. |
 | `subapps/layer_pruning/README.md` | Layer-pruning subapp overview. |
-| `tests/README.md` | Test suite overview. |
 
 ## Local-only (gitignored, may be absent in a clone)
 

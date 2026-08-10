@@ -7,7 +7,12 @@ Validates:
   4. shape mismatch detection only triggers on vocab size change
 """
 import sys, os
-sys.path.insert(0, "backend")
+
+# Resolved from this file rather than the process CWD: the test used to live in
+# the repo root's scratch `tests/` directory and relied on being run from there.
+_BACKEND = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if _BACKEND not in sys.path:
+    sys.path.insert(0, _BACKEND)
 
 import torch
 import torch.nn as nn

@@ -196,6 +196,12 @@ for _a in _SPECTRUM_UNSUPPORTED:
     _add(_a, "spectrum",
          "Spectral Feature Forecasting is not implemented for this architecture's sampler")
 
+_add("minimax_h3", "spectrum",
+     "Spectrum output forecasting was measured on MiniMax-H3 and is not offered: "
+     "the default 8-forecast arm reduced denoise time by 41% but produced LPIPS 0.33 "
+     "and SSIM 0.67, while even a single forecast produced LPIPS 0.26 and SSIM 0.77 "
+     "against the registered LPIPS <= 0.05 and SSIM >= 0.95 quality bars")
+
 # First Block Cache: same set as spectrum (krea2/acestep have no fbcache
 # codepath either; minimax_h3's generic reason here is overwritten below with
 # its real, measured one).

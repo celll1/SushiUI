@@ -1,5 +1,6 @@
 import axios from "axios";
 import { wsClient } from "./websocket";
+import { resolveGlobalAttentionImpl, resolveGlobalAttentionType } from "./attentionSettings";
 
 const api = axios.create({
   baseURL: "/api/v1",
@@ -306,6 +307,8 @@ export interface GenerationParams {
   nag_alpha?: number;
   nag_sigma_end?: number;
   nag_negative_prompt?: string;
+  attention_type?: string;
+  attention_impl?: string;
   // SDXL micro-conditioning override (inference): original_size for time_ids.
   // Explicit w/h (0/undefined = auto), else output size * scale. crop stays (0,0).
   original_size_w?: number;
@@ -1724,10 +1727,6 @@ export const getResultAncestralSeed = (result: any): number | null =>
   result?.image?.ancestral_seed ?? result?.actual_ancestral_seed ?? null;
 
 export const generateTxt2Img = async (params: GenerationParams) => {
-  // Get attention_type from localStorage
-  const attentionType = typeof window !== 'undefined' ? localStorage.getItem('attention_type') : null;
-  const attentionImpl = typeof window !== 'undefined' ? localStorage.getItem('attention_impl') : null;
-
   // Only load ControlNet images if they exist (avoid unnecessary localStorage access)
   const controlnets = (params.controlnets && params.controlnets.length > 0)
     ? await loadControlNetImages(params.controlnets, "txt2img_controlnet_collapsed")
@@ -1735,8 +1734,8 @@ export const generateTxt2Img = async (params: GenerationParams) => {
 
   const paramsWithImages = {
     ...params,
-    attention_type: attentionType || 'normal',
-    attention_impl: attentionImpl || 'conduit',
+    attention_type: resolveGlobalAttentionType(params.attention_type),
+    attention_impl: resolveGlobalAttentionImpl(params.attention_impl),
     controlnets: controlnets,
   };
 
@@ -1913,19 +1912,14 @@ export interface TrainingPreviewParams extends GenerationParams {
 export const generateTxt2ImgTrainingPreview = async (
   params: TrainingPreviewParams,
 ): Promise<{ blob: Blob; seed?: string; runId?: string; requestId?: string; filename?: string }> => {
-  // Attention type honours the local toggle, same as regular generate
-  const attentionType = typeof window !== 'undefined'
-    ? localStorage.getItem('attention_type') : null;
-  const attentionImpl = typeof window !== 'undefined'
-    ? localStorage.getItem('attention_impl') : null;
   const controlnets = (params.controlnets && params.controlnets.length > 0)
     ? await loadControlNetImages(params.controlnets, "txt2img_controlnet_collapsed")
     : params.controlnets;
 
   const body = {
     ...params,
-    attention_type: attentionType || 'normal',
-    attention_impl: attentionImpl || 'conduit',
+    attention_type: resolveGlobalAttentionType(params.attention_type),
+    attention_impl: resolveGlobalAttentionImpl(params.attention_impl),
     controlnets: controlnets || [],
     loras: params.loras || [],
   };
@@ -1999,17 +1993,13 @@ export const toBase64 = async (src: File | Blob | string): Promise<string> => {
 export const generateImg2ImgTrainingPreview = async (
   params: Img2ImgTrainingPreviewParams,
 ): Promise<{ blob: Blob; seed?: string; runId?: string; requestId?: string; filename?: string }> => {
-  const attentionType = typeof window !== 'undefined'
-    ? localStorage.getItem('attention_type') : null;
-  const attentionImpl = typeof window !== 'undefined'
-    ? localStorage.getItem('attention_impl') : null;
   const controlnets = (params.controlnets && params.controlnets.length > 0)
     ? await loadControlNetImages(params.controlnets, "img2img_controlnet_collapsed")
     : params.controlnets;
   const body = {
     ...params,
-    attention_type: attentionType || 'normal',
-    attention_impl: attentionImpl || 'conduit',
+    attention_type: resolveGlobalAttentionType(params.attention_type),
+    attention_impl: resolveGlobalAttentionImpl(params.attention_impl),
     controlnets: controlnets || [],
     loras: params.loras || [],
   };
@@ -2031,17 +2021,13 @@ export const generateImg2ImgTrainingPreview = async (
 export const generateInpaintTrainingPreview = async (
   params: InpaintTrainingPreviewParams,
 ): Promise<{ blob: Blob; seed?: string; runId?: string; requestId?: string; filename?: string }> => {
-  const attentionType = typeof window !== 'undefined'
-    ? localStorage.getItem('attention_type') : null;
-  const attentionImpl = typeof window !== 'undefined'
-    ? localStorage.getItem('attention_impl') : null;
   const controlnets = (params.controlnets && params.controlnets.length > 0)
     ? await loadControlNetImages(params.controlnets, "inpaint_controlnet_collapsed")
     : params.controlnets;
   const body = {
     ...params,
-    attention_type: attentionType || 'normal',
-    attention_impl: attentionImpl || 'conduit',
+    attention_type: resolveGlobalAttentionType(params.attention_type),
+    attention_impl: resolveGlobalAttentionImpl(params.attention_impl),
     controlnets: controlnets || [],
     loras: params.loras || [],
   };
@@ -2070,10 +2056,6 @@ export const generateImg2Img = async (
   image?: File | string | null,
   latentId?: string | null,
 ) => {
-  // Get attention_type from localStorage
-  const attentionType = typeof window !== 'undefined' ? localStorage.getItem('attention_type') : null;
-  const attentionImpl = typeof window !== 'undefined' ? localStorage.getItem('attention_impl') : null;
-
   // Only load ControlNet images if they exist (avoid unnecessary localStorage access)
   const controlnets = (params.controlnets && params.controlnets.length > 0)
     ? await loadControlNetImages(params.controlnets, "img2img_controlnet_collapsed")
@@ -2081,8 +2063,8 @@ export const generateImg2Img = async (
 
   const paramsWithImages = {
     ...params,
-    attention_type: attentionType || 'normal',
-    attention_impl: attentionImpl || 'conduit',
+    attention_type: resolveGlobalAttentionType(params.attention_type),
+    attention_impl: resolveGlobalAttentionImpl(params.attention_impl),
     controlnets: controlnets,
   };
 
@@ -2361,7 +2343,6 @@ export const fetchTextEncoders = async (): Promise<{ text_encoders: TextEncoderE
 // GenerationResponse ({ success, image, actual_seed, warnings }); image.filename
 // is an .mp4 file under /outputs/.
 export const generateTxt2Vid = async (params: Txt2VidParams) => {
-  const attentionType = typeof window !== "undefined" ? localStorage.getItem("attention_type") : null;
   const body = {
     prompt: params.prompt,
     negative_prompt: params.negative_prompt || "",
@@ -2386,7 +2367,7 @@ export const generateTxt2Vid = async (params: Txt2VidParams) => {
         ? params.unet_quantization
         : null,
     quantized_gemm_mode: params.quantized_gemm_mode ?? null,
-    attention_type: params.attention_type || attentionType || "normal",
+    attention_type: resolveGlobalAttentionType(params.attention_type),
   };
 
   const response = await postGenerationRequest("/generate/txt2vid", body);
@@ -2403,7 +2384,6 @@ export const generateImg2Vid = async (
   image: File | string | null,
 ) => {
   const formData = new FormData();
-  const attentionType = typeof window !== "undefined" ? localStorage.getItem("attention_type") : null;
 
   // Handle both File objects and data URLs
   if (typeof image === "string") {
@@ -2440,7 +2420,7 @@ export const generateImg2Vid = async (
   if (params.quantized_gemm_mode) {
     formData.append("quantized_gemm_mode", params.quantized_gemm_mode);
   }
-  formData.append("attention_type", params.attention_type || attentionType || "normal");
+  formData.append("attention_type", resolveGlobalAttentionType(params.attention_type));
   // Optional LAST-frame keyframe (MiniMax-H3 fl2va). Same File-or-data-URL
   // handling as `image` above; omitted entirely when null/undefined, which is
   // what makes the backend's `File(None)` sentinel mean "no end anchor".
@@ -2500,7 +2480,6 @@ export const generateRef2Vid = async (
   references: MiniMaxH3References,
 ) => {
   const formData = new FormData();
-  const attentionType = typeof window !== "undefined" ? localStorage.getItem("attention_type") : null;
 
   formData.append("prompt", params.prompt);
   formData.append("negative_prompt", params.negative_prompt || "");
@@ -2527,7 +2506,7 @@ export const generateRef2Vid = async (
   if (params.quantized_gemm_mode) {
     formData.append("quantized_gemm_mode", params.quantized_gemm_mode);
   }
-  formData.append("attention_type", params.attention_type || attentionType || "normal");
+  formData.append("attention_type", resolveGlobalAttentionType(params.attention_type));
 
   // The reference files. Each list keeps its order; a video's soundtrack is
   // positional, so a video with no sound sends an EMPTY part to hold its slot
@@ -2641,10 +2620,6 @@ export const generateAud2Aud = async (params: Aud2AudParams, referenceAudio: Fil
 };
 
 export const generateInpaint = async (params: InpaintParams, image: File | string, mask: File | string) => {
-  // Get attention_type from localStorage
-  const attentionType = typeof window !== 'undefined' ? localStorage.getItem('attention_type') : null;
-  const attentionImpl = typeof window !== 'undefined' ? localStorage.getItem('attention_impl') : null;
-
   // Only load ControlNet images if they exist (avoid unnecessary localStorage access)
   const controlnets = (params.controlnets && params.controlnets.length > 0)
     ? await loadControlNetImages(params.controlnets, "inpaint_controlnet_collapsed")
@@ -2652,8 +2627,8 @@ export const generateInpaint = async (params: InpaintParams, image: File | strin
 
   const paramsWithImages = {
     ...params,
-    attention_type: attentionType || 'normal',
-    attention_impl: attentionImpl || 'conduit',
+    attention_type: resolveGlobalAttentionType(params.attention_type),
+    attention_impl: resolveGlobalAttentionImpl(params.attention_impl),
     controlnets: controlnets,
   };
 
@@ -2849,10 +2824,6 @@ export const generateInpaint = async (params: InpaintParams, image: File | strin
 // placement fields), plus the placement fields themselves. See
 // core/inference/outpaint_utils.py + PipelineManager.generate_outpaint.
 export const generateOutpaint = async (params: OutpaintParams, image: File | string) => {
-  // Get attention_type from localStorage
-  const attentionType = typeof window !== 'undefined' ? localStorage.getItem('attention_type') : null;
-  const attentionImpl = typeof window !== 'undefined' ? localStorage.getItem('attention_impl') : null;
-
   // Only load ControlNet images if they exist (avoid unnecessary localStorage access)
   const controlnets = (params.controlnets && params.controlnets.length > 0)
     ? await loadControlNetImages(params.controlnets, "outpaint_controlnet_collapsed")
@@ -2860,8 +2831,8 @@ export const generateOutpaint = async (params: OutpaintParams, image: File | str
 
   const paramsWithImages = {
     ...params,
-    attention_type: attentionType || 'normal',
-    attention_impl: attentionImpl || 'conduit',
+    attention_type: resolveGlobalAttentionType(params.attention_type),
+    attention_impl: resolveGlobalAttentionImpl(params.attention_impl),
     controlnets: controlnets,
   };
 
@@ -3148,8 +3119,7 @@ export const generateOutpaintVideo = async (
   // Attention backend: the global setting, exactly as every other sender reads
   // it. Honored by MiniMax-H3 (its transformer runs on SushiUI's conduit),
   // accepted-and-warned by LTX-2.3.
-  const attentionType = typeof window !== 'undefined' ? localStorage.getItem('attention_type') : null;
-  formData.append("attention_type", params.attention_type || attentionType || "normal");
+  formData.append("attention_type", resolveGlobalAttentionType(params.attention_type));
 
   // Acceleration (block swap / FBCache / Spectrum)
   formData.append("blocks_to_swap", String(params.blocks_to_swap ?? 0));
@@ -3243,8 +3213,7 @@ export const generateInpaintVideo = async (
     formData.append("inpaint_video_audio_mode", params.inpaint_video_audio_mode);
   }
 
-  const attentionType = typeof window !== 'undefined' ? localStorage.getItem('attention_type') : null;
-  formData.append("attention_type", params.attention_type || attentionType || "normal");
+  formData.append("attention_type", resolveGlobalAttentionType(params.attention_type));
 
   formData.append("blocks_to_swap", String(params.blocks_to_swap ?? 0));
   formData.append("fbcache_enable", String(params.fbcache_enable ?? false));

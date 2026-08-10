@@ -192,31 +192,83 @@ class OpenApiEnumTest(unittest.TestCase):
         self.assertGreaterEqual(found, 2, "image + video request schemas")
 
 
-class FrontendVideoSenderTest(unittest.TestCase):
-    def test_every_video_sender_transmits_the_global_attention_backend(self):
+class FrontendAttentionSenderTest(unittest.TestCase):
+    @staticmethod
+    def _function_source(source: str, name: str) -> str:
+        start = source.index(f"export const {name} =")
+        end = source.find("\nexport const ", start + 1)
+        return source[start:end if end >= 0 else None]
+
+    def test_every_generation_sender_resolves_the_global_backend_first(self):
         api_path = os.path.join(_REPO, "frontend", "src", "utils", "api.ts")
         with open(api_path, encoding="utf-8") as handle:
             source = handle.read()
 
         for name in (
+            "generateTxt2Img",
+            "generateTxt2ImgTrainingPreview",
+            "generateImg2ImgTrainingPreview",
+            "generateInpaintTrainingPreview",
+            "generateImg2Img",
             "generateTxt2Vid",
             "generateImg2Vid",
             "generateRef2Vid",
+            "generateInpaint",
+            "generateOutpaint",
             "generateOutpaintVideo",
             "generateInpaintVideo",
         ):
-            start = source.index(f"export const {name}")
-            end = source.find("\nexport const ", start + 1)
-            function_source = source[start:end if end >= 0 else None]
+            function_source = self._function_source(source, name)
             with self.subTest(sender=name):
-                self.assertRegex(
+                self.assertIn(
+                    "resolveGlobalAttentionType(params.attention_type)",
                     function_source,
-                    r"localStorage\.getItem\(['\"]attention_type['\"]\)",
                 )
-                self.assertRegex(
-                    function_source,
-                    r'attention_type:|formData\.append\("attention_type"',
+                self.assertNotRegex(function_source, r"params\.attention_type\s*\|\|")
+
+    def test_image_senders_resolve_the_global_flux_implementation_first(self):
+        api_path = os.path.join(_REPO, "frontend", "src", "utils", "api.ts")
+        with open(api_path, encoding="utf-8") as handle:
+            source = handle.read()
+
+        for name in (
+            "generateTxt2Img",
+            "generateTxt2ImgTrainingPreview",
+            "generateImg2ImgTrainingPreview",
+            "generateInpaintTrainingPreview",
+            "generateImg2Img",
+            "generateInpaint",
+            "generateOutpaint",
+        ):
+            with self.subTest(sender=name):
+                self.assertIn(
+                    "resolveGlobalAttentionImpl(params.attention_impl)",
+                    self._function_source(source, name),
                 )
+
+    def test_global_setting_reader_accepts_every_ui_option_including_tq(self):
+        helper_path = os.path.join(
+            _REPO, "frontend", "src", "utils", "attentionSettings.ts")
+        with open(helper_path, encoding="utf-8") as handle:
+            source = handle.read()
+
+        self.assertIn('["normal", "sage", "flash", "tq"]', source)
+        self.assertIn("readGlobalAttentionType() ?? fallback ?? \"normal\"", source)
+
+    def test_every_generation_panel_uses_the_shared_setting_reader(self):
+        for name in (
+            "Txt2ImgPanel.tsx",
+            "Img2ImgPanel.tsx",
+            "InpaintPanel.tsx",
+            "OutpaintPanel.tsx",
+        ):
+            path = os.path.join(
+                _REPO, "frontend", "src", "components", "generation", name)
+            with open(path, encoding="utf-8") as handle:
+                source = handle.read()
+            with self.subTest(panel=name):
+                self.assertIn("readGlobalAttentionType()", source)
+                self.assertNotIn("savedAttentionType === 'flash'", source)
 
 
 # ---------------------------------------------------------------------------

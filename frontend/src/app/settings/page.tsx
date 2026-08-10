@@ -10,6 +10,12 @@ import QuantizedGemmSettings from "@/components/settings/QuantizedGemmSettings";
 import ProtectedRoute from "@/components/common/ProtectedRoute";
 import { restartBackend, restartFrontend, restartBoth } from "@/utils/api";
 import NumberInput from "@/components/common/NumberInput";
+import {
+  readGlobalAttentionImpl,
+  readGlobalAttentionType,
+  type AttentionImplementation,
+  type InferenceAttentionType,
+} from "@/utils/attentionSettings";
 
 // Default presets
 const DEFAULT_ASPECT_RATIO_PRESETS = [
@@ -68,8 +74,8 @@ export default function SettingsPage() {
   const [showAdvancedCFG, setShowAdvancedCFG] = useState(false);
 
   // Attention type
-  const [attentionType, setAttentionType] = useState<"normal" | "sage" | "flash" | "tq">("normal");
-  const [attentionImpl, setAttentionImpl] = useState<"conduit" | "diffusers">("conduit");
+  const [attentionType, setAttentionType] = useState<InferenceAttentionType>("normal");
+  const [attentionImpl, setAttentionImpl] = useState<AttentionImplementation>("conduit");
 
   // Font size (mobile UI scaling)
   const [fontSize, setFontSize] = useState(100); // 100 = 100% (default)
@@ -199,12 +205,12 @@ export default function SettingsPage() {
         setFloatingGalleryMaxImages(parseInt(savedGalleryMaxImages));
       }
 
-      const savedAttentionType = localStorage.getItem('attention_type') as "normal" | "sage" | "flash" | "tq" | null;
+      const savedAttentionType = readGlobalAttentionType();
       if (savedAttentionType) {
         setAttentionType(savedAttentionType);
       }
 
-      const savedAttentionImpl = localStorage.getItem('attention_impl') as "conduit" | "diffusers" | null;
+      const savedAttentionImpl = readGlobalAttentionImpl();
       if (savedAttentionImpl) {
         setAttentionImpl(savedAttentionImpl);
       }
@@ -704,7 +710,7 @@ export default function SettingsPage() {
                     id="attention_type"
                     value={attentionType}
                     onChange={(e) => {
-                      const newValue = e.target.value as "normal" | "sage" | "flash" | "tq";
+                      const newValue = e.target.value as InferenceAttentionType;
                       setAttentionType(newValue);
                       localStorage.setItem('attention_type', newValue);
                     }}
@@ -728,7 +734,7 @@ export default function SettingsPage() {
                     id="attention_impl"
                     value={attentionImpl}
                     onChange={(e) => {
-                      const newValue = e.target.value as "conduit" | "diffusers";
+                      const newValue = e.target.value as AttentionImplementation;
                       setAttentionImpl(newValue);
                       localStorage.setItem('attention_impl', newValue);
                     }}

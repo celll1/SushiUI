@@ -51,6 +51,7 @@ import { sendToPanel, sendImageToImg2Img, sendBase64ImageToInpaint, sendBase64Im
 import { useStartup } from "@/contexts/StartupContext";
 import { useGenerationQueue } from "@/contexts/GenerationQueueContext";
 import { createH3ReferenceInventory, maybeTransformH3PromptForGeneration } from "@/utils/h3PromptAssist";
+import { readGlobalAttentionType } from "@/utils/attentionSettings";
 
 const DEFAULT_PARAMS: GenerationParams = {
   prompt: "",
@@ -625,8 +626,8 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
     }
 
     // Load attention type from global settings
-    const savedAttentionType = localStorage.getItem('attention_type');
-    if (savedAttentionType && (savedAttentionType === 'normal' || savedAttentionType === 'sage' || savedAttentionType === 'flash')) {
+    const savedAttentionType = readGlobalAttentionType();
+    if (savedAttentionType) {
       setParams(prev => ({ ...prev, attention_type: savedAttentionType }));
     }
 

@@ -911,6 +911,7 @@ export interface Txt2VidParams {
   // for a weight-only quantized transformer component, and unet_quantization
   // "int8" produces the same classes at runtime.
   quantized_gemm_mode?: QuantizedGemmMode;
+  attention_type?: string;
 }
 
 // One ADDITIONAL MiniMax-H3 keyframe anchor: the image and the pixel frame it
@@ -2360,6 +2361,7 @@ export const fetchTextEncoders = async (): Promise<{ text_encoders: TextEncoderE
 // GenerationResponse ({ success, image, actual_seed, warnings }); image.filename
 // is an .mp4 file under /outputs/.
 export const generateTxt2Vid = async (params: Txt2VidParams) => {
+  const attentionType = typeof window !== "undefined" ? localStorage.getItem("attention_type") : null;
   const body = {
     prompt: params.prompt,
     negative_prompt: params.negative_prompt || "",
@@ -2384,6 +2386,7 @@ export const generateTxt2Vid = async (params: Txt2VidParams) => {
         ? params.unet_quantization
         : null,
     quantized_gemm_mode: params.quantized_gemm_mode ?? null,
+    attention_type: params.attention_type || attentionType || "normal",
   };
 
   const response = await postGenerationRequest("/generate/txt2vid", body);
@@ -2400,6 +2403,7 @@ export const generateImg2Vid = async (
   image: File | string | null,
 ) => {
   const formData = new FormData();
+  const attentionType = typeof window !== "undefined" ? localStorage.getItem("attention_type") : null;
 
   // Handle both File objects and data URLs
   if (typeof image === "string") {
@@ -2436,6 +2440,7 @@ export const generateImg2Vid = async (
   if (params.quantized_gemm_mode) {
     formData.append("quantized_gemm_mode", params.quantized_gemm_mode);
   }
+  formData.append("attention_type", params.attention_type || attentionType || "normal");
   // Optional LAST-frame keyframe (MiniMax-H3 fl2va). Same File-or-data-URL
   // handling as `image` above; omitted entirely when null/undefined, which is
   // what makes the backend's `File(None)` sentinel mean "no end anchor".
@@ -2495,6 +2500,7 @@ export const generateRef2Vid = async (
   references: MiniMaxH3References,
 ) => {
   const formData = new FormData();
+  const attentionType = typeof window !== "undefined" ? localStorage.getItem("attention_type") : null;
 
   formData.append("prompt", params.prompt);
   formData.append("negative_prompt", params.negative_prompt || "");
@@ -2521,6 +2527,7 @@ export const generateRef2Vid = async (
   if (params.quantized_gemm_mode) {
     formData.append("quantized_gemm_mode", params.quantized_gemm_mode);
   }
+  formData.append("attention_type", params.attention_type || attentionType || "normal");
 
   // The reference files. Each list keeps its order; a video's soundtrack is
   // positional, so a video with no sound sends an EMPTY part to hold its slot

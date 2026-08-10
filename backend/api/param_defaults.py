@@ -706,9 +706,8 @@ OUTPAINT_DEFAULTS: Dict[str, Any] = {
 # ---------------------------------------------------------------------------
 # Upscale (POST /generate/upscale)
 # ---------------------------------------------------------------------------
-# Authoritative source: Form() defaults in generate_upscale route handler.
-# Upscale-only keys — not part of GENERATION_DEFAULTS (no shared txt2img/
-# img2img/inpaint overlap).
+# Shared diffusion keys derive from GENERATION_DEFAULTS; the remaining keys
+# are owned by the upscale route.
 
 UPSCALE_DEFAULTS: Dict[str, Any] = {
     "upscaler_backend": "spandrel",       # "pil" | "spandrel" | "rtx_vsr"
@@ -730,6 +729,8 @@ UPSCALE_DEFAULTS: Dict[str, Any] = {
     "cfg_scale": GENERATION_DEFAULTS["cfg_scale"],
     "sampler": GENERATION_DEFAULTS["sampler"],
     "schedule_type": GENERATION_DEFAULTS["schedule_type"],
+    "attention_type": GENERATION_DEFAULTS["attention_type"],
+    "attention_impl": GENERATION_DEFAULTS["attention_impl"],
     "seed": -1,                            # -1 = random
     "diffusion_pre_upscale_mode": "pil",   # "pil" | "model"
 }

@@ -773,6 +773,8 @@ export interface UpscaleParams {
   cfg_scale?: number;
   sampler?: string;
   schedule_type?: string;
+  attention_type?: string;
+  attention_impl?: string;
   seed?: number;
   diffusion_pre_upscale_mode?: string;
 }
@@ -2266,6 +2268,8 @@ export const generateUpscale = async (params: UpscaleParams, image: File | strin
     formData.append("cfg_scale", String(params.cfg_scale ?? 7.0));
     formData.append("sampler", params.sampler || "euler");
     formData.append("schedule_type", params.schedule_type || "uniform");
+    formData.append("attention_type", resolveGlobalAttentionType(params.attention_type));
+    formData.append("attention_impl", resolveGlobalAttentionImpl(params.attention_impl));
     formData.append("seed", String(params.seed ?? -1));
     formData.append("diffusion_pre_upscale_mode", params.diffusion_pre_upscale_mode || "pil");
   }

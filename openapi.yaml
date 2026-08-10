@@ -10219,6 +10219,18 @@ components:
           default: uniform
           description: "Noise schedule type used for each tile's img2img pass (diffusion backend only)."
           example: uniform
+        attention_type:
+          type: string
+          enum: [normal, native, sdpa, none, sage, flash, tq, sla]
+          default: normal
+          description: "Attention backend used for each tile's img2img pass when upscaler_backend=diffusion. Unknown values are rejected with HTTP 400; unsupported model/backend combinations report a downgrade warning."
+          example: flash
+        attention_impl:
+          type: string
+          enum: [conduit, diffusers]
+          default: conduit
+          description: "Attention implementation used for each diffusion tile. Currently consumed by FLUX.2; other architectures are conduit-only or ignore it."
+          example: conduit
         seed:
           type: integer
           default: -1

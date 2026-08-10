@@ -357,19 +357,16 @@ class MiniMaxH3Mixin:
         """Stage the DiT onto ``device`` for the denoise loop. Returns the callable.
 
         Returns ``(module, offloader)``: the object the sampler calls (the raw
-        transformer, or a ``MiniMaxH3BlockLoopWrapper`` when block swap needs the
+        transformer, or a ``MiniMaxH3BlockLoopWrapper`` when block swap/FBCache needs the
         re-owned block loop) and the block offloader to tear down afterwards
         (``None`` when there is none).
 
         TWO STATES:
 
         * ``blocks_to_swap == 0`` (the default): the transformer is moved to the
-          device whole and the sampler calls it directly -- byte-identical to
-          the pre-Phase-4 path, with no wrapper in the call chain at all. Block
-          swap is the ONLY thing that wraps: FBCache was measured against the K3
-          protocol and dropped for this architecture (see the block-loop
-          wrapper's module docstring for the numbers), and Spectrum is declared
-          unsupported, so there is no second reason to wrap.
+          device whole. The sampler calls it directly unless opt-in FBCache needs
+          the wrapper's first-block decision point; the disabled default remains
+          byte-identical to the raw path.
         * ``blocks_to_swap > 0``: the NON-block modules (the three input
           projections, the token refiner, the RoPE buffer, the output norm and
           the two heads) are moved to the device, then
@@ -408,6 +405,8 @@ class MiniMaxH3Mixin:
             components["transformer"] = transformer
 
         blocks_to_swap = int(params.get("blocks_to_swap", 0) or 0)
+        from core.inference.fbcache import fbcache_active
+        fbcache_on = fbcache_active(params) and not params.get("spectrum_enable", False)
         num_blocks = len(transformer.transformer_blocks)
         if blocks_to_swap >= num_blocks:
             print(f"[MiniMax-H3] blocks_to_swap={blocks_to_swap} >= {num_blocks} blocks; "
@@ -416,6 +415,11 @@ class MiniMaxH3Mixin:
 
         if blocks_to_swap <= 0:
             self._minimax_h3_move("transformer", device)
+            if fbcache_on:
+                wrapper = MiniMaxH3BlockLoopWrapper(transformer)
+                components["transformer"] = wrapper
+                print("[FBCache] MiniMax-H3 wrapper armed (cache is opt-in)")
+                return wrapper, None
             return transformer, None
 
         from core.memory_management import TransformerBlockOffloader

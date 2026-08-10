@@ -1270,6 +1270,28 @@ def denoise(
                     print(f"[Spectrum] MiniMax-H3: {len(spectrum_video.anchors)}/{total_steps} "
                           f"actual passes (paired video/audio final-output forecasting)")
 
+    fbcache = None
+    if spectrum_params:
+        from core.inference.fbcache import build_fbcache, fbcache_active
+
+        if fbcache_active(spectrum_params):
+            if spectrum_params.get("spectrum_enable", False):
+                print("[FBCache] MiniMax-H3 disabled: Spectrum is enabled "
+                      "(same trajectory-redundancy target)")
+            elif block_swap_on:
+                print("[FBCache] MiniMax-H3 disabled: Block Swap is enabled "
+                      "(cache hits desync swap rotation)")
+            elif not hasattr(transformer, "attach_fbcache"):
+                print("[FBCache] MiniMax-H3 disabled: transformer wrapper is unavailable")
+            else:
+                fbcache = build_fbcache(
+                    spectrum_params,
+                    label="MiniMax-H3 guarded video/audio",
+                    max_consecutive_hits=2,
+                    total_steps=total_steps,
+                    tail_steps=1,
+                )
+
     n_cond_video = layout["num_condition_video_rows"]
     n_cond_audio = layout["num_condition_audio_rows"]
     layout_kwargs = dict(
@@ -1279,6 +1301,29 @@ def denoise(
         audio_indices=layout["audio_indices"],
         text_indices=layout["text_indices"],
     )
+
+    def call_transformer(step_idx, unique_timesteps, timestep_indices):
+        kwargs = dict(
+            hidden_states=video_rows[None],
+            audio_hidden_states=audio_rows[None],
+            encoder_hidden_states=prompt_embeds,
+            timestep=unique_timesteps.to(torch_device),
+            timestep_indices=timestep_indices.to(torch_device),
+            return_dict=False,
+            **layout_kwargs,
+        )
+        if fbcache is None:
+            return transformer(**kwargs)
+        transformer.attach_fbcache(
+            fbcache,
+            rows_per_frame=int(layout["rows_per_frame"]),
+            condition_video_rows=int(layout["num_condition_video_rows"]),
+        )
+        transformer._fbcache_step = step_idx
+        try:
+            return transformer(**kwargs)
+        finally:
+            transformer.attach_fbcache(None)
 
     for i, timestep in enumerate(timesteps):
         raise_if_cancelled()
@@ -1294,15 +1339,8 @@ def denoise(
             video_velocity = spectrum_video.forecast(i)
             audio_velocity = spectrum_audio.forecast(i)
         else:
-            video_velocity, audio_velocity = transformer(
-                hidden_states=video_rows[None],
-                audio_hidden_states=audio_rows[None],
-                encoder_hidden_states=prompt_embeds,
-                timestep=unique_timesteps.to(torch_device),
-                timestep_indices=timestep_indices.to(torch_device),
-                return_dict=False,
-                **layout_kwargs,
-            )
+            video_velocity, audio_velocity = call_transformer(
+                i, unique_timesteps, timestep_indices)
             if spectrum_video is not None:
                 spectrum_video.record(i, video_velocity)
                 spectrum_audio.record(i, audio_velocity)
@@ -1356,6 +1394,10 @@ def denoise(
                 f"video={video_stats}, audio={audio_stats}")
         print(f"[Spectrum] MiniMax-H3 summary: {video_stats['anchors']} anchor(s), "
               f"{video_stats['forecasts']} forecast(s) of {video_stats['total']} step(s)")
+
+    if fbcache is not None:
+        print(f"[FBCache] MiniMax-H3 summary: {fbcache.n_hits} hit(s), "
+              f"{fbcache.n_miss} miss(es); temporal guard on")
 
     return video_rows, audio_rows
 

@@ -8,8 +8,8 @@ Two defect instances motivated this file, found in the same investigation:
    Img2ImgPanel, InpaintPanel and OutpaintPanel all render the Spectrum and
    FBCache checkboxes unconditionally. On MiniMax-H3 both are accepted by the
    route and stored in the generation record, and neither did anything at the
-   time. FBCache remains unsupported; MiniMax-H3 now has an opt-in paired
-   video/audio Spectrum path. `cfg`/`negative_prompt`/
+   time. MiniMax-H3 now has opt-in paired video/audio Spectrum and guarded
+   FBCache paths. `cfg`/`negative_prompt`/
    `text_encoder_quantization` in the same files already gated on
    `archSupportsFeature`; Spectrum/FBCache did not.
 
@@ -54,8 +54,7 @@ def _read(relpath: str) -> str:
 # Direction 2: falsely unsupported (table says inert, code proves it is not).
 # ---------------------------------------------------------------------------
 
-# Arch -> implementation file. MiniMax-H3 deliberately appears only in the
-# Spectrum set: its FBCache verdict remains separate and unsupported.
+# Arch -> implementation file.
 _COMMON_SPECTRUM_FBCACHE_IMPL_FILES = {
     "sd15": "backend/core/pipeline.py",
     "sdxl": "backend/core/pipeline.py",
@@ -71,7 +70,10 @@ _SPECTRUM_IMPL_FILES = {
     **_COMMON_SPECTRUM_FBCACHE_IMPL_FILES,
     "minimax_h3": "backend/core/models/minimax_h3/h3_pipeline_ops.py",
 }
-_FBCACHE_IMPL_FILES = dict(_COMMON_SPECTRUM_FBCACHE_IMPL_FILES)
+_FBCACHE_IMPL_FILES = {
+    **_COMMON_SPECTRUM_FBCACHE_IMPL_FILES,
+    "minimax_h3": "backend/core/models/minimax_h3/h3_pipeline_ops.py",
+}
 
 
 def _archs_implementing(needles, impl_files: dict) -> set:
@@ -203,8 +205,7 @@ def test_every_panel_offering_the_fbcache_checkbox_derives_the_capability_gate()
     assert not offenders, (
         f"{offenders} render a fbcache_enable checkbox with no "
         f"archSupportsFeature(..., \"fbcache\") gate anywhere in the file -- the "
-        f"control is offered even on MiniMax-H3, where FBCache was measured "
-        f"against a pre-registered protocol and dropped rather than shipped.")
+        f"control is offered even on an architecture whose sampler ignores it.")
 
 
 def test_checker_catches_the_pre_fix_panel_regression():

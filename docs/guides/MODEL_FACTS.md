@@ -1049,20 +1049,25 @@ a generation without style transfer.
     mixed dtype anyway. The offloader is built and torn down **per generation**,
     because the DiT leaves the GPU at the end of every generation (the video
     VAE's 36-layer ViT decoder and the DiT do not fit together).
-  - **FBCache is implemented, measured, and DROPPED** — not disabled, removed.
-    The K3 protocol was registered before any result (seeds {0,1,2}, 960×544×124
-    at 20 steps, thresholds {0.08, 0.12, 0.20}, `warmup_steps=1`, flash on every
-    arm including the baselines) and required hit rate ≥ 0.15 **and** LPIPS
-    (AlexNet) ≤ 0.05 **and** SSIM ≥ 0.95. Measured: hit rate clears its bar by
-    **2.8–5.6×** (0.421 / 0.632 / 0.842, identical across all three seeds) while
-    **every one of the nine cells misses the quality bars** — best case LPIPS
-    **0.263** against 0.05 and SSIM **0.656** against 0.95. Why, since the shape
-    is the reusable part: FBCache decides on the relative L1 change of the FIRST
-    block's residual, and the shift-12 video schedule packs the steps into the
-    low-sigma tail where consecutive residuals are close in NORM while the video
-    content is still moving, so the proxy reads "nothing changed" on steps that
-    change a great deal. That is a property of the schedule, not a tuning
-    failure.
+  - **FBCache is opt-in approximate acceleration with H3-specific guards.** The
+    first implementation used one global mean over every generated video row,
+    allowed unlimited hit chains and protected no tail step. At thresholds
+    0.08/0.12/0.20 it skipped 42%/63%/84% of evaluations and changed the
+    same-seed trajectory substantially (best LPIPS 0.263 / SSIM 0.656), although
+    blind re-review of the 0.08 clips found no subject loss, freeze, black frame
+    or structural collapse. The restored path keeps the public threshold and
+    warmup controls but adds three fixed safety rules: max-per-latent-frame
+    relative-L1 must also pass, at most two consecutive hits are allowed, and
+    the final evaluation always runs. The indicator excludes reference/keyframe
+    rows; a hit reuses the entire packed-state residual so video and audio share
+    one decision. It is disabled with Block Swap and Spectrum. `0.08` is the
+    recommended safe starting threshold; the shared UI default `0.12` is more
+    aggressive on H3. LPIPS/SSIM are trajectory-distance diagnostics for this
+    explicitly approximate option; release evaluation first rejects integrity
+    failures, then uses blind prompt/motion/consistency review against speed. A
+    640x384x124, 20-step W4A8 + Flash smoke at threshold `0.08` reduced denoise
+    from 62.689 s to 46.631 s (25.6%) while retaining SSIM 0.9912, PSNR 39.33 dB
+    and LPIPS-Alex 0.0175 mean / 0.0240 max across all 124 decoded frames.
   - **Spectrum/SFF is opt-in approximate acceleration.** The H3-owned denoise
     loop forecasts final video and audio velocities with two forecasters on one
     shared anchor schedule; a forecast skips the whole transformer call while
@@ -1405,8 +1410,7 @@ a generation without style transfer.
   reference videos, and the labelled `<Picture i>` / `<Audio j>` / `<Video k>`
   presentation the conditioner reads.
 - `backend/core/models/minimax_h3_block_loop_wrapper.py` — block-loop
-  re-ownership for block swap and gradient checkpointing; its docstring holds
-  the FBCache measurement and why the feature was removed rather than disabled.
+  re-ownership for block swap, guarded FBCache and gradient checkpointing.
 - `backend/core/models/components/wiring.py` — `TemporalSpec` /
   `TEMPORAL_SPECS`: the per-video-arch clip-length, frame-rate and canvas
   contract read by route validation, bucketing, the video loader, the clip-cache

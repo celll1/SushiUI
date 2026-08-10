@@ -9,7 +9,7 @@ input projections, the token refiner, the AdaLN-curve lookup, the output norm
 and the two modality heads) by calling the inner model's OWN submodules — so the
 custom path reproduces the stock forward tensor for tensor.
 
-Fast path: with no feature attached (no block offloader) the wrapper delegates
+Fast path: with no feature attached (no block offloader or FBCache) the wrapper delegates
 verbatim to ``self.transformer(...)``, so the default MiniMax-H3 path is
 byte-identical to the unwrapped model.
 
@@ -28,30 +28,9 @@ Extension slot (None by default -> fast path):
     ``core.memory_management.TransformerBlockOffloader`` over
     ``transformer.transformer_blocks``. Built and attached by
     ``pipeline_backends/minimax_h3.py::_ensure_minimax_h3_swap_and_offload``.
-
-Two trajectory-redundancy features are absent after measurement:
-
-* **Spectrum** (Adaptive Spectral Feature Forecasting) — declared in
-  the packed loop. A paired video/audio output-forecaster trial reduced denoise
-  time 41%, but missed the quality gate even with only one forecast; it was removed.
-* **First-Block-Cache** — IMPLEMENTED, MEASURED, AND DROPPED. The K3 protocol
-  (pre-registered before any result: seeds {0,1,2}, 960x544x124 at 20 steps,
-  thresholds {0.08, 0.12, 0.20}, ``warmup_steps=1``) required hit rate >= 0.15
-  AND decoded-frame LPIPS(AlexNet) <= 0.05 AND SSIM >= 0.95. Measured: the hit
-  rates are enormous (0.42 / 0.63 / 0.84, identical across all three seeds) and
-  the quality is nowhere near the bar -- best case, threshold 0.08:
-  LPIPS 0.263-0.313 (5-6x the bar) and SSIM 0.619-0.656 (against 0.95), on 9 of
-  9 cells. Numbers in ``scratchpad/minimax_h3_phase4_results.md``.
-
-  WHY IT FAILS SO BADLY, because the shape of the failure is the reusable part:
-  FBCache decides on the relative L1 change of the FIRST block's residual
-  between consecutive steps, and MiniMax-H3's video sigma schedule uses
-  shift 12.0, which packs the steps into the low-sigma tail where consecutive
-  residuals are very close in NORM while the video content is still moving. The
-  proxy therefore reads "nothing changed" on steps that change a lot, and no
-  threshold separates the two -- lowering it further trades away the speed
-  without recovering the quality. This is a property of the schedule, not a
-  tuning failure, so the feature is gone rather than disabled.
+  * ``_fbcache`` — inference-only cache of the whole packed-state residual.
+    Its decision uses generated-video rows only, with a max-per-frame guard;
+    one decision therefore keeps the video and audio paths in lock-step.
 
 Gradient checkpointing is honored on the custom path exactly as the stock loop
 honors it (``torch.is_grad_enabled() and transformer.gradient_checkpointing``),
@@ -91,6 +70,10 @@ class MiniMaxH3BlockLoopWrapper(nn.Module):
 
         # === Extension slot (None -> fast path; byte-identical default) ===
         self._block_offloader = block_offloader
+        self._fbcache = None
+        self._fbcache_step = 0
+        self._fbcache_rows_per_frame = None
+        self._fbcache_condition_video_rows = 0
 
         # Compatibility attributes (sampler + LoRA/export introspection).
         self.config = transformer.config
@@ -103,10 +86,35 @@ class MiniMaxH3BlockLoopWrapper(nn.Module):
         """Attach (or clear with None) the generation block offloader."""
         self._block_offloader = block_offloader
 
+    def attach_fbcache(
+        self,
+        fbcache: Optional[Any],
+        *,
+        rows_per_frame: Optional[int] = None,
+        condition_video_rows: int = 0,
+    ) -> None:
+        """Attach one-generation FBCache geometry, or clear it with ``None``."""
+        if fbcache is not None:
+            if self._block_offloader is not None and getattr(
+                self._block_offloader, "blocks_to_swap", 0
+            ) > 0:
+                raise ValueError("MiniMax-H3 FBCache cannot run with Block Swap.")
+            if not rows_per_frame or rows_per_frame <= 0:
+                raise ValueError("MiniMax-H3 FBCache needs a positive rows_per_frame.")
+            if condition_video_rows < 0:
+                raise ValueError("condition_video_rows must be non-negative.")
+        self._fbcache = fbcache
+        self._fbcache_step = 0
+        self._fbcache_rows_per_frame = rows_per_frame
+        self._fbcache_condition_video_rows = int(condition_video_rows)
+
     def _any_feature_active(self) -> bool:
         return bool(
-            self._block_offloader is not None
-            and getattr(self._block_offloader, "blocks_to_swap", 0) > 0
+            self._fbcache is not None
+            or (
+                self._block_offloader is not None
+                and getattr(self._block_offloader, "blocks_to_swap", 0) > 0
+            )
         )
 
     # ------------------------------------------------------------------
@@ -178,6 +186,9 @@ class MiniMaxH3BlockLoopWrapper(nn.Module):
         t = self.transformer
         offloader = self._block_offloader
         swap_on = offloader is not None and getattr(offloader, "blocks_to_swap", 0) > 0
+        fbcache = self._fbcache
+        if fbcache is not None and torch.is_grad_enabled():
+            raise RuntimeError("MiniMax-H3 FBCache is inference-only.")
 
         # === Replicated stock stages (transformer_minimax_h3.forward) ===
         # The attention-backend stamp is one of them: the stock forward calls
@@ -230,6 +241,8 @@ class MiniMaxH3BlockLoopWrapper(nn.Module):
 
         # === 4. The block loop (RE-OWNED) ===
         grad_ckpt = torch.is_grad_enabled() and t.gradient_checkpointing
+        original_hidden_states = hidden_states
+        fbcache_hit = False
 
         for block_idx, block in enumerate(t.transformer_blocks):
             if swap_on:
@@ -243,6 +256,32 @@ class MiniMaxH3BlockLoopWrapper(nn.Module):
 
             if swap_on:
                 offloader.submit_move_blocks_forward(block_idx)
+
+            if fbcache is not None and block_idx == 0:
+                first_residual = hidden_states - original_hidden_states
+                video_residual = first_residual.index_select(1, video_indices)
+                video_residual = video_residual[:, self._fbcache_condition_video_rows:]
+                rows_per_frame = int(self._fbcache_rows_per_frame)
+                if not video_residual.shape[1] or video_residual.shape[1] % rows_per_frame:
+                    raise RuntimeError(
+                        "MiniMax-H3 FBCache target video rows do not divide into latent "
+                        f"frames: {video_residual.shape[1]} rows / {rows_per_frame}."
+                    )
+                frames = video_residual.shape[1] // rows_per_frame
+                frame_groups = video_residual.reshape(
+                    video_residual.shape[0], frames, rows_per_frame, video_residual.shape[-1]
+                ).flatten(0, 1)
+                if fbcache.use_cache(
+                    video_residual,
+                    int(self._fbcache_step),
+                    guard_indicator=frame_groups,
+                ):
+                    hidden_states = original_hidden_states + fbcache.get()
+                    fbcache_hit = True
+                    break
+
+        if fbcache is not None and not fbcache_hit:
+            fbcache.store(hidden_states - original_hidden_states)
 
         # === 5. Output norm + the two modality heads ===
         hidden_states = t.norm_out(hidden_states, temb, timestep_indices).to(t.proj_out.weight.dtype)

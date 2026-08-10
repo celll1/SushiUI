@@ -629,10 +629,8 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
   // route re-validates and answers 400 regardless.
   const supportsTemporalInpaint = archSupportsFeature(archCapabilities, loadedArchType, "temporal_inpaint");
   const supportsNegativePrompt = archSupportsFeature(archCapabilities, loadedArchType, "negative_prompt");
-  // Spectrum/FBCache: accepted-but-inert on an architecture whose sampler never
-  // reads spectrum_enable/fbcache_enable (e.g. MiniMax-H3's FBCache was measured
-  // and dropped rather than shipped). Hidden rather than shown-disabled, the
-  // same leaf-control convention Txt2ImgPanel/Img2ImgPanel use for this pair.
+  // Hide Spectrum/FBCache when the loaded sampler does not consume them; H3 now
+  // supports both. This matches the other panels' leaf-control convention.
   const supportsSpectrum = archSupportsFeature(archCapabilities, loadedArchType, "spectrum");
   const supportsFbcache = archSupportsFeature(archCapabilities, loadedArchType, "fbcache");
   const temporalInpaintReason =

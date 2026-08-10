@@ -130,9 +130,9 @@ _DIT_ARCHS = ["zimage", "flux2", "ideogram4", "lens", "minit2i", "anima", "krea2
 # (_ltx2_build_spectrum / _ltx2_build_fbcache in
 # core/pipeline_backends/ltx2.py). Only krea2 and acestep have no such
 # codepath at all. MiniMax-H3 implements paired video/audio final-output
-# forecasting but retains its separately measured FBCache rejection below.
+# forecasting and guarded whole-state FBCache.
 _SPECTRUM_UNSUPPORTED = ["krea2", "acestep"]
-_FBCACHE_UNSUPPORTED = ["krea2", "acestep", "minimax_h3"]
+_FBCACHE_UNSUPPORTED = ["krea2", "acestep"]
 
 ARCH_UNSUPPORTED: Dict[str, Dict[str, str]] = {}
 
@@ -196,25 +196,10 @@ for _a in _SPECTRUM_UNSUPPORTED:
     _add(_a, "spectrum",
          "Spectral Feature Forecasting is not implemented for this architecture's sampler")
 
-# First Block Cache remains unavailable on krea2/acestep and MiniMax-H3.
+# First Block Cache remains unavailable on krea2/acestep.
 for _a in _FBCACHE_UNSUPPORTED:
     _add(_a, "fbcache",
          "First Block Cache is not implemented for this architecture's sampler")
-
-# ...except that on MiniMax-H3 it WAS implemented, measured against a
-# pre-registered protocol, and dropped -- so the generic reason above would be
-# false and is overwritten with the real one. The protocol (registered before any
-# result): seeds {0,1,2}, 960x544x124 at 20 steps, thresholds {0.08, 0.12, 0.20},
-# warmup 1; ship only if some threshold reaches hit rate >= 0.15 AND decoded-frame
-# LPIPS(AlexNet) <= 0.05 AND SSIM >= 0.95. The hit rates were huge (0.42 / 0.63 /
-# 0.84) and the quality was not close at any of the nine cells: best case LPIPS
-# 0.263 (bar 0.05) and SSIM 0.656 (bar 0.95). MiniMax-H3's video schedule uses
-# shift 12.0, which packs the steps into the low-sigma tail where consecutive
-# first-block residuals are close in norm while the video is still moving, so the
-# cache's similarity proxy misreads the trajectory and no threshold separates the
-# two. Numbers: scratchpad/minimax_h3_phase4_results.md.
-_add("minimax_h3", "fbcache",
-     "First Block Cache was measured on MiniMax-H3 and is not offered: its similarity test misreads this architecture's shift-12 schedule, so the cache skipped 42-84% of the model evaluations and the decoded video diverged far outside the quality bar registered for it (best case LPIPS 0.26 against a 0.05 bar, SSIM 0.66 against 0.95)")
 
 # NAG, ControlNet: not supported by Krea 2.
 _add("krea2", "nag", "Normalized Attention Guidance is not implemented for Krea 2")

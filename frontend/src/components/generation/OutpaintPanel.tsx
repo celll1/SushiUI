@@ -1341,10 +1341,8 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
   // and/or last frame of the span it generates) lists only the placements it
   // can anchor. No arch name appears here.
   const loadedArchType = currentModelInfo?.model_info?.type as string | undefined;
-  // Spectrum/FBCache: accepted-but-inert on an architecture whose sampler never
-  // reads spectrum_enable/fbcache_enable (e.g. MiniMax-H3's FBCache was measured
-  // and dropped rather than shipped). Hidden rather than shown-disabled, the
-  // same leaf-control convention the other generation panels use for this pair.
+  // Hide Spectrum/FBCache when the loaded sampler does not consume them; H3 now
+  // supports both. This matches the other panels' leaf-control convention.
   const supportsSpectrum = archSupportsFeature(archCapabilities, loadedArchType, "spectrum");
   const supportsFbcache = archSupportsFeature(archCapabilities, loadedArchType, "fbcache");
   const supportsNegativePrompt = !isAudio

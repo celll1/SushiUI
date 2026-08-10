@@ -1044,3 +1044,25 @@ def test_ref2va_layout_matches_the_t2va_builder_with_no_references():
     assert empty["sequence_length"] == plain["sequence_length"]
     for key in ("video_indices", "audio_indices", "text_indices", "token_tags", "position_ids"):
         assert torch.equal(empty[key], plain[key]), key
+
+
+def test_packed_row_counts_separate_target_and_conditioning_rows():
+    layout = ops.build_ref2va_packed_layout(
+        [ops.TEXT_TAG] * 10,
+        [("video", True)],
+        [(7, 24, 40)],
+        [74],
+        7, 24, 40, 37,
+        keyframe_anchors=("first",),
+    )
+
+    counts = ops.packed_row_counts(layout)
+
+    assert counts == {
+        "text": 10,
+        "condition_video": 7 * 24 * 40 // 4 + 24 * 40 // 4,
+        "target_video": 7 * 24 * 40 // 4,
+        "condition_audio": 74,
+        "target_audio": 74,
+        "total": layout["sequence_length"],
+    }

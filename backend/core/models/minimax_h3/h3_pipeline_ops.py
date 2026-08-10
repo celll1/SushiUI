@@ -687,6 +687,23 @@ def build_ref2va_packed_layout(
     return layout
 
 
+def packed_row_counts(layout: Dict[str, Any]) -> Dict[str, int]:
+    """Count generated and conditioning rows in a completed packed layout."""
+    condition_video = int(layout["num_condition_video_rows"])
+    condition_audio = int(layout["num_condition_audio_rows"])
+    video = int(layout["video_indices"].numel())
+    audio = int(layout["audio_indices"].numel())
+    text = int(layout["text_indices"].numel())
+    return {
+        "text": text,
+        "condition_video": condition_video,
+        "target_video": video - condition_video,
+        "condition_audio": condition_audio,
+        "target_audio": audio - condition_audio,
+        "total": text + video + audio,
+    }
+
+
 def build_row_timesteps(
     layout: Dict[str, Any],
     video_timestep: float,

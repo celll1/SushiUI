@@ -3338,6 +3338,22 @@ export const getImage = async (id: number) => {
   return response.data;
 };
 
+// Full gallery row response, plus the total number of rows that shared
+// `hash` (the returned row is the oldest of those, not the only one).
+export interface GeneratedImageByHash extends GeneratedImage {
+  match_count: number;
+}
+
+// Resolves a hash (image_hash / source_image_hash / source_audio_hash /
+// ControlNet reference hash) to the gallery row that produced it, when that
+// row is not present in the currently loaded gallery page. Throws (axios
+// 404) when no row matches -- callers should catch this and fall back to
+// their own "not found" messaging.
+export const getImageByHash = async (hash: string): Promise<GeneratedImageByHash> => {
+  const response = await api.get(`/images/by-hash/${encodeURIComponent(hash)}`);
+  return response.data;
+};
+
 // deleteFiles=true (default) removes the DB row and every file it owns;
 // deleteFiles=false removes only the DB row and leaves files on disk.
 export const deleteImage = async (id: number, deleteFiles: boolean = true) => {

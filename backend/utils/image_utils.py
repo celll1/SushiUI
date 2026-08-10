@@ -578,3 +578,21 @@ def calculate_file_hash(file_path: str, algorithm: str = "sha256") -> str:
             hash_obj.update(chunk)
 
     return hash_obj.hexdigest()
+
+def calculate_bytes_hash(data: bytes, algorithm: str = "sha256") -> str:
+    """Hash of an in-memory byte string (video/audio gallery hashing).
+
+    Sibling of `calculate_file_hash` for callers that already hold the bytes
+    (an uploaded clip read into memory before it is decoded) and would
+    otherwise write-then-reread just to reuse that function. Both are the
+    single generic hash implementation media routes should call; unlike
+    `calculate_image_hash` (which hashes the PIXEL content re-encoded as PNG,
+    used for still images), this hashes the FILE BYTES AS-IS. Video/audio
+    round-trip through a lossy container re-encode, so a video's "what was
+    this made from" hash and "what is this" hash must both be defined as raw
+    file bytes -- pixel hashing a decoded frame would never match a pixel hash
+    of a re-encoded one, even for an identical clip.
+    """
+    hash_obj = hashlib.new(algorithm)
+    hash_obj.update(data)
+    return hash_obj.hexdigest()

@@ -13,7 +13,7 @@
 import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { SlidersHorizontal, X, Info, ArrowLeft, Download, Maximize, Camera, Trash2 } from "lucide-react";
-import { getImages, getImage, deleteImage, GeneratedImage, ImageFilters } from "@/utils/api";
+import { getImages, getImage, getImageByHash, deleteImage, GeneratedImage, ImageFilters } from "@/utils/api";
 import Card from "../common/Card";
 import Button from "../common/Button";
 import GalleryFilter from "./GalleryFilter";
@@ -238,17 +238,54 @@ export default function ImageGrid() {
     loadImages();
   }, [loadImages]);
 
+  // GET /images/by-hash/{hash} resolves to the OLDEST row sharing that hash
+  // when several do. Mirror that here: among the matches on the currently
+  // loaded page, prefer the one with the earliest `created_at` rather than
+  // just the first one `images` happens to list, so this fast path agrees
+  // with the fallback endpoint whenever all matches are on the loaded page.
+  // (If matches are split across pages, only the loaded page's rows are
+  // visible to this function -- the "oldest of everything" answer still
+  // requires the endpoint, which the caller falls back to below.)
   const findImageByHash = (hash: string): GeneratedImage | undefined => {
-    return images.find((img) => img.image_hash === hash);
+    return images
+      .filter((img) => img.image_hash === hash)
+      .reduce<GeneratedImage | undefined>((oldest, candidate) => (
+        !oldest || candidate.created_at < oldest.created_at ? candidate : oldest
+      ), undefined);
   };
 
+  // Same handler for a gallery row's `source_image_hash` link, a ControlNet
+  // reference-image hash, and a `ref_images` hash -- all are "find the row
+  // whose image_hash equals this value". Fast path: the currently loaded
+  // gallery page (no request). Fallback: GET /images/by-hash/{hash}, which
+  // searches every row, not just the loaded page. Only alerts when THAT also
+  // 404s.
+  //
+  // A miss here is expected, not exceptional: ControlNet/reference hashes
+  // usually belong to uploaded inputs that were never a gallery row at all,
+  // so this alert must not claim the row "was deleted" -- that is only one
+  // of two possible, indistinguishable causes from the frontend's side.
   const handleSourceImageClick = (sourceHash: string) => {
     const sourceImage = findImageByHash(sourceHash);
     if (sourceImage) {
       openImageDetail(sourceImage);
-    } else {
-      alert("Source image not found in current gallery view. Try adjusting filters.");
+      return;
     }
+    getImageByHash(sourceHash)
+      .then((match) => {
+        openImageDetail(match);
+      })
+      .catch((error: any) => {
+        const isNotFound = error?.response?.status === 404;
+        if (!isNotFound) {
+          console.error("[ImageGrid] getImageByHash failed:", error);
+        }
+        alert(
+          isNotFound
+            ? "No gallery row matches this hash. It may be an uploaded input that was never saved to the gallery, or a gallery row that no longer exists."
+            : "Could not look up this hash right now. Check the connection and try again."
+        );
+      });
   };
 
   // Extract unique tags from all prompts for autocomplete - memoized

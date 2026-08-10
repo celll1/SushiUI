@@ -42,7 +42,7 @@ from the two most recent anchors (stabilizer). w=1.0 → pure spectral. Recommen
 | param | default | note |
 |---|---|---|
 | spectrum_enable | False | master toggle |
-| spectrum_w | 1.0 | spectral/linear mix (1.0 = spectral only) |
+| spectrum_w | 0.5 | spectral/linear mix (1.0 = spectral only) |
 | spectrum_m | 4 | number of Chebyshev basis (M+1) |
 | spectrum_lam | 0.1 | ridge λ |
 | spectrum_warmup_steps | 3 | leading full-eval steps |
@@ -52,7 +52,9 @@ from the two most recent anchors (stabilizer). w=1.0 → pure spectral. Recommen
 ## Scope
 - v1: SDXL `custom_sampling_loop` (txt2img), standard CFG/NAG path. Little benefit on
   low-step/distilled (warmup dominates) — auto-disable when N < warmup + a few.
-- v2: img2img/inpaint, then DiT loops (Z-Image/FLUX.2/...).
+- v2: img2img/inpaint and DiT loops. MiniMax-H3 forecasts paired final
+  video/audio outputs on one anchor schedule and disables Spectrum when block
+  swap is active.
 
 ## Integration point
 `custom_sampling.py` "Predict noise residual" block (~937): wrap so anchor steps run

@@ -1731,6 +1731,8 @@ class MiniMaxH3Mixin:
                     video_row_order=layout["video_row_order"],
                     latent_channels=int(components.get("latent_channels", 24)),
                     patch_size=tuple(components["transformer_config"]["patch_size"]),
+                    spectrum_params=params,
+                    block_swap_on=int(params.get("blocks_to_swap", 0) or 0) > 0,
                 )
         finally:
             substep_reporter.close()

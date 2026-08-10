@@ -1062,16 +1062,24 @@ a generation without style transfer.
     low-sigma tail where consecutive residuals are close in NORM while the video
     content is still moving, so the proxy reads "nothing changed" on steps that
     change a great deal. That is a property of the schedule, not a tuning
-    failure. Spectrum/SFF was also implemented as paired video/audio output
-    forecasting and removed after its quality gate failed. At 640x384x124,
-    20 steps, W4A8 + Flash Attention, 11 actual forwards plus 8 forecasts cut
-    denoise from 62.481 s to 36.884 s, but produced LPIPS 0.325 and RGB SSIM
-    0.671 against the same-seed baseline. A conservative 18-forward/1-forecast
-    arm still produced LPIPS 0.259 and SSIM 0.770 while saving only 2.468 s of
-    denoise. The registered bars were LPIPS <= 0.05 and SSIM >= 0.95, so neither
-    trajectory-redundancy feature is offered. Block swap is the only wrapper
-    feature: with `blocks_to_swap == 0` the sampler calls the transformer
-    directly and no wrapper is in the call chain at all.
+    failure.
+  - **Spectrum/SFF is opt-in approximate acceleration.** The H3-owned denoise
+    loop forecasts final video and audio velocities with two forecasters on one
+    shared anchor schedule; a forecast skips the whole transformer call while
+    both schedulers still advance. At 640x384x124, 20 steps, W4A8 + Flash
+    Attention, 11 actual forwards plus 8 forecasts cut denoise from 62.481 s to
+    36.884 s (41%). Same-seed LPIPS 0.325 and RGB SSIM 0.671 record substantial
+    trajectory divergence, but a visual re-review found the requested red cube,
+    dark background and continuous slow rotation intact, with no black frame,
+    freeze, subject loss or geometry collapse. The 18-forward/1-forecast arm
+    measured LPIPS 0.259 / SSIM 0.770 and saved only 2.468 s, so it is coherent
+    but not a useful Pareto point. LPIPS/SSIM remain diagnostics for same-seed
+    reproducibility, not a quality veto for an explicitly approximate mode.
+    Release evaluation uses hard integrity failures first, then blind prompt
+    adherence, subject consistency, temporal coherence and usability
+    non-inferiority against the speedup. Spectrum defaults off and is mutually
+    exclusive with block swap: a skipped forward cannot service the offloader's
+    per-block prefetch rotation.
   - **The video VAE's tiling policy is load-bearing, not a memory knob.** With
     the same weights and the same input, flipping only the shipped tiling flags
     moved the **latents by rel-RMS 0.355** (384×384) / **0.0952** (640×384) and

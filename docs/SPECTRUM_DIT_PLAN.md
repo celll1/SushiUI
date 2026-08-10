@@ -38,6 +38,8 @@ else:
 4. **Lens** — `lens_pipeline_ops.denoise_loop*`.
 5. **Ideogram4** — `ideogram4_pipeline_ops._run_loop` (dual-branch velocity).
 6. **MiniT2I** — `minit2i_pipeline_ops._euler_run` (interval CFG).
+7. **MiniMax-H3** — `h3_pipeline_ops.denoise`; two forecasters share one
+   anchor decision and forecast paired final video/audio velocities.
 
 ## Per-backend wiring
 - The `_generate_*_<arch>` method reads `params` (already carries `spectrum_*` from SSoT) and
@@ -51,6 +53,18 @@ else:
 - MiniT2I interval CFG: forecast the final per-step velocity; the interval only changes how
   the recorded output was produced (baked in) — the local window adapts across the boundary.
 - CFG-truncation / guidance-vector transitions: local windowed fit adapts.
+- MiniMax-H3 block swap: disabled for that request because a forecast skips the
+  block offloader's wait/submit rotation.
+
+## Approximate-quality gate
+Same-seed LPIPS/SSIM measure trajectory distance and remain useful diagnostics,
+but do not alone decide whether an approximate generation is usable. A release
+arm must first have no black/non-finite frames, subject loss, unexpected
+duplication, topology collapse, unrequested cut/freeze, conditioning violation
+or audio discontinuity. Surviving clips are reviewed blind for prompt adherence,
+subject consistency, temporal coherence and practical usability, and accepted
+only when that non-inferiority result forms a useful Pareto point with the
+measured denoise speedup. Exact/reproducible generation keeps Spectrum off.
 
 ## Verification (per commit)
 - py_compile + real import of core.pipeline.

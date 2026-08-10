@@ -7,11 +7,11 @@ Two defect instances motivated this file, found in the same investigation:
 1. **Offered but inert** (the defect this file was written for). Txt2ImgPanel,
    Img2ImgPanel, InpaintPanel and OutpaintPanel all render the Spectrum and
    FBCache checkboxes unconditionally. On MiniMax-H3 both are accepted by the
-   route and stored in the generation record, and neither does anything:
-   FBCache was measured against a pre-registered protocol and dropped rather
-   than shipped (see arch_capabilities.py), and Spectrum has no codepath there
-   at all. `cfg`/`negative_prompt`/`text_encoder_quantization` in the same
-   files already gate on `archSupportsFeature`; Spectrum/FBCache did not.
+   route and stored in the generation record, and neither did anything at the
+   time. FBCache remains unsupported; MiniMax-H3 now has an opt-in paired
+   video/audio Spectrum path. `cfg`/`negative_prompt`/
+   `text_encoder_quantization` in the same files already gated on
+   `archSupportsFeature`; Spectrum/FBCache did not.
 
 2. **Falsely unsupported** (the mirror bug, found while fixing #1).
    `arch_capabilities.py`'s `_SPECTRUM_UNSUPPORTED` listed zimage, ideogram4,
@@ -54,13 +54,9 @@ def _read(relpath: str) -> str:
 # Direction 2: falsely unsupported (table says inert, code proves it is not).
 # ---------------------------------------------------------------------------
 
-# arch -> the file whose denoise loop genuinely reads spectrum_enable /
-# fbcache_enable for that architecture (both features are wired the same way
-# in every one of these files: spectrum_params=params is threaded down to
-# build_output_forecaster()/fbcache_active()+build_fbcache()). krea2, acestep
-# and minimax_h3 have no such file -- they are the real unsupported set, and
-# deliberately absent here so they cannot be flagged as falsely unsupported.
-_SPECTRUM_FBCACHE_IMPL_FILES = {
+# Arch -> implementation file. MiniMax-H3 deliberately appears only in the
+# Spectrum set: its FBCache verdict remains separate and unsupported.
+_COMMON_SPECTRUM_FBCACHE_IMPL_FILES = {
     "sd15": "backend/core/pipeline.py",
     "sdxl": "backend/core/pipeline.py",
     "zimage": "backend/core/pipeline_backends/zimage.py",
@@ -71,6 +67,11 @@ _SPECTRUM_FBCACHE_IMPL_FILES = {
     "minit2i": "backend/core/models/minit2i/minit2i_pipeline_ops.py",
     "ltx2": "backend/core/pipeline_backends/ltx2.py",
 }
+_SPECTRUM_IMPL_FILES = {
+    **_COMMON_SPECTRUM_FBCACHE_IMPL_FILES,
+    "minimax_h3": "backend/core/models/minimax_h3/h3_pipeline_ops.py",
+}
+_FBCACHE_IMPL_FILES = dict(_COMMON_SPECTRUM_FBCACHE_IMPL_FILES)
 
 
 def _archs_implementing(needles, impl_files: dict) -> set:
@@ -104,7 +105,7 @@ def test_no_arch_that_implements_spectrum_is_declared_unsupported():
     from api.arch_capabilities import ARCH_UNSUPPORTED
 
     implementing = _archs_implementing(
-        ('"spectrum_enable"', "build_output_forecaster("), _SPECTRUM_FBCACHE_IMPL_FILES)
+        ('"spectrum_enable"', "build_output_forecaster("), _SPECTRUM_IMPL_FILES)
     bad = _falsely_unsupported(ARCH_UNSUPPORTED, implementing, "spectrum")
     assert not bad, (
         f"{sorted(bad)} genuinely read spectrum_enable (build_output_forecaster is "
@@ -118,7 +119,7 @@ def test_no_arch_that_implements_fbcache_is_declared_unsupported():
     from api.arch_capabilities import ARCH_UNSUPPORTED
 
     implementing = _archs_implementing(
-        ('"fbcache_enable"', "fbcache_active("), _SPECTRUM_FBCACHE_IMPL_FILES)
+        ('"fbcache_enable"', "fbcache_active("), _FBCACHE_IMPL_FILES)
     bad = _falsely_unsupported(ARCH_UNSUPPORTED, implementing, "fbcache")
     assert not bad, (
         f"{sorted(bad)} genuinely read fbcache_enable (fbcache_active/build_fbcache "
@@ -131,8 +132,9 @@ def test_no_arch_that_implements_fbcache_is_declared_unsupported():
 def test_the_implementing_set_is_not_trivially_empty():
     """Sanity check: the extractor really finds the archs known to implement it."""
     implementing = _archs_implementing(
-        ('"spectrum_enable"', "build_output_forecaster("), _SPECTRUM_FBCACHE_IMPL_FILES)
-    for arch in ("zimage", "ideogram4", "lens", "anima", "minit2i", "ltx2", "flux2"):
+        ('"spectrum_enable"', "build_output_forecaster("), _SPECTRUM_IMPL_FILES)
+    for arch in ("zimage", "ideogram4", "lens", "anima", "minit2i", "ltx2", "flux2",
+                 "minimax_h3"):
         assert arch in implementing, f"extractor missed known implementer {arch!r}"
 
 

@@ -1860,6 +1860,11 @@ class MiniMaxH3Mixin:
 
         overall_peak = max(phase_peaks.values(), default=0.0)
         peak_phase = max(phase_peaks, key=phase_peaks.get) if phase_peaks else "none"
+        params["minimax_h3_vram_phase_peaks_gb"] = {
+            name: round(value, 3) for name, value in phase_peaks.items()
+        }
+        params["minimax_h3_vram_peak_gb"] = round(overall_peak, 3)
+        params["minimax_h3_vram_peak_phase"] = peak_phase
         print(f"[MiniMax-H3] total {time.perf_counter() - wall_start:.1f}s, "
               f"peak VRAM {overall_peak:.2f} GB in {peak_phase}; phase peaks "
               + ", ".join(f"{name}={value:.2f}" for name, value in phase_peaks.items()))

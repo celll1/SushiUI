@@ -129,10 +129,10 @@ _DIT_ARCHS = ["zimage", "flux2", "ideogram4", "lens", "minit2i", "anima", "krea2
 # spectrum_enable/fbcache_enable. ltx2 was wired in 444ebde5
 # (_ltx2_build_spectrum / _ltx2_build_fbcache in
 # core/pipeline_backends/ltx2.py). Only krea2 and acestep have no such
-# codepath at all, and minimax_h3 has no Spectrum codepath and a measured,
-# documented FBCache rejection below -- those three are the real unsupported
-# set for Spectrum.
-_SPECTRUM_UNSUPPORTED = ["krea2", "acestep", "minimax_h3"]
+# codepath at all. MiniMax-H3 implements paired video/audio final-output
+# forecasting but retains its separately measured FBCache rejection below.
+_SPECTRUM_UNSUPPORTED = ["krea2", "acestep"]
+_FBCACHE_UNSUPPORTED = ["krea2", "acestep", "minimax_h3"]
 
 ARCH_UNSUPPORTED: Dict[str, Dict[str, str]] = {}
 
@@ -191,21 +191,13 @@ for _a in ["zimage", "flux2", "minit2i"]:
          "CFG scheduling / dynamic thresholding / CFG-rescale run only in the U-Net sampling loop, not in this DiT sampler")
 
 # Spectrum forecasting: implemented for the U-Net and every image/video DiT
-# except krea2, acestep and minimax_h3 (see _SPECTRUM_UNSUPPORTED above).
+# except krea2 and acestep (see _SPECTRUM_UNSUPPORTED above).
 for _a in _SPECTRUM_UNSUPPORTED:
     _add(_a, "spectrum",
          "Spectral Feature Forecasting is not implemented for this architecture's sampler")
 
-_add("minimax_h3", "spectrum",
-     "Spectrum output forecasting was measured on MiniMax-H3 and is not offered: "
-     "the default 8-forecast arm reduced denoise time by 41% but produced LPIPS 0.33 "
-     "and SSIM 0.67, while even a single forecast produced LPIPS 0.26 and SSIM 0.77 "
-     "against the registered LPIPS <= 0.05 and SSIM >= 0.95 quality bars")
-
-# First Block Cache: same set as spectrum (krea2/acestep have no fbcache
-# codepath either; minimax_h3's generic reason here is overwritten below with
-# its real, measured one).
-for _a in _SPECTRUM_UNSUPPORTED:
+# First Block Cache remains unavailable on krea2/acestep and MiniMax-H3.
+for _a in _FBCACHE_UNSUPPORTED:
     _add(_a, "fbcache",
          "First Block Cache is not implemented for this architecture's sampler")
 

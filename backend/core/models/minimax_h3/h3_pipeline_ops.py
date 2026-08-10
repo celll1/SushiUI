@@ -1190,6 +1190,8 @@ def denoise(
     latent_channels: int = 24,
     patch_size: Tuple[int, int, int] = (1, 2, 2),
     keyframe_noise_aug: float = VISUAL_COND_TIMESTEP,
+    spectrum_params: Optional[Dict[str, Any]] = None,
+    block_swap_on: bool = False,
     label: str = "MiniMax-H3",
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """Run the packed denoise loop. Returns the final ``(video, audio)`` rows.
@@ -1247,6 +1249,27 @@ def denoise(
     audio_timesteps = audio_scheduler.timesteps
     total_steps = len(timesteps)
 
+    spectrum_video = spectrum_audio = None
+    if spectrum_params and spectrum_params.get("spectrum_enable", False):
+        if block_swap_on:
+            print("[Spectrum] MiniMax-H3 disabled: Block Swap is enabled "
+                  "(forecast skips desync swap rotation)")
+        else:
+            from core.inference.spectrum_forecaster import build_output_forecaster
+
+            spectrum_video = build_output_forecaster(
+                spectrum_params, total_steps, label="MiniMax-H3 video")
+            if spectrum_video is not None:
+                spectrum_audio = build_output_forecaster(
+                    spectrum_params, total_steps, label="MiniMax-H3 audio")
+                if spectrum_audio is None:
+                    print("[Spectrum] MiniMax-H3: audio forecaster failed to build; "
+                          "disabling Spectrum entirely")
+                    spectrum_video = None
+                else:
+                    print(f"[Spectrum] MiniMax-H3: {len(spectrum_video.anchors)}/{total_steps} "
+                          f"actual passes (paired video/audio final-output forecasting)")
+
     n_cond_video = layout["num_condition_video_rows"]
     n_cond_audio = layout["num_condition_audio_rows"]
     layout_kwargs = dict(
@@ -1266,15 +1289,23 @@ def denoise(
             keyframe_noise_aug=keyframe_noise_aug,
         )
 
-        video_velocity, audio_velocity = transformer(
-            hidden_states=video_rows[None],
-            audio_hidden_states=audio_rows[None],
-            encoder_hidden_states=prompt_embeds,
-            timestep=unique_timesteps.to(torch_device),
-            timestep_indices=timestep_indices.to(torch_device),
-            return_dict=False,
-            **layout_kwargs,
-        )
+        spectrum_skip = spectrum_video is not None and not spectrum_video.is_anchor(i)
+        if spectrum_skip:
+            video_velocity = spectrum_video.forecast(i)
+            audio_velocity = spectrum_audio.forecast(i)
+        else:
+            video_velocity, audio_velocity = transformer(
+                hidden_states=video_rows[None],
+                audio_hidden_states=audio_rows[None],
+                encoder_hidden_states=prompt_embeds,
+                timestep=unique_timesteps.to(torch_device),
+                timestep_indices=timestep_indices.to(torch_device),
+                return_dict=False,
+                **layout_kwargs,
+            )
+            if spectrum_video is not None:
+                spectrum_video.record(i, video_velocity)
+                spectrum_audio.record(i, audio_velocity)
 
         # x0 = x_t + sigma_t * v_t -- the H3 convention, `+` not `-`. It reads
         # x_t, the latent this step's velocity was predicted FROM, so it is
@@ -1315,6 +1346,16 @@ def denoise(
                 step_callback(i, total_steps, unpack(clip), None, unpack(pred_x0_rows))
             except Exception as exc:
                 print(f"[{label}] step_callback raised: {exc}")
+
+    if spectrum_video is not None:
+        video_stats = spectrum_video.stats()
+        audio_stats = spectrum_audio.stats()
+        if video_stats != audio_stats:
+            raise RuntimeError(
+                "MiniMax-H3 Spectrum video/audio forecasters left lock-step: "
+                f"video={video_stats}, audio={audio_stats}")
+        print(f"[Spectrum] MiniMax-H3 summary: {video_stats['anchors']} anchor(s), "
+              f"{video_stats['forecasts']} forecast(s) of {video_stats['total']} step(s)")
 
     return video_rows, audio_rows
 

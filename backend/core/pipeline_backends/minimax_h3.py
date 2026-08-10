@@ -177,6 +177,24 @@ class MiniMaxH3Mixin:
             return
         module.to(device)
 
+    def _minimax_h3_assert_components_off_cuda(self, *names: str) -> None:
+        """Refuse a phase transition while an inactive component is still on CUDA."""
+        components = getattr(self, "minimax_h3_components", None) or {}
+        offenders = []
+        for name in names:
+            module = components.get(name)
+            if module is None:
+                continue
+            tensors = list(module.named_parameters()) + list(module.named_buffers())
+            cuda_names = [tensor_name for tensor_name, tensor in tensors if tensor.device.type == "cuda"]
+            if cuda_names:
+                offenders.append(f"{name} ({', '.join(cuda_names[:3])})")
+        if offenders:
+            raise RuntimeError(
+                "MiniMax-H3 phase transition found inactive CUDA component(s): "
+                + "; ".join(offenders)
+            )
+
     @staticmethod
     def _minimax_h3_fit_keyframe(image, width: int, height: int, anchor):
         """Put one keyframe onto the canvas, the way the released model does.
@@ -1389,6 +1407,7 @@ class MiniMaxH3Mixin:
         # it must not include the anchors, which that call places itself.
         condition_latents: list = []
         reference_condition_latents: list = []
+        anchor_condition_latents: list = []
         audio_condition_rows: list = []
         # The ia2v track's rows, once encoded. `None` (not an empty list) is what
         # every other path downstream tests against: an empty list would be
@@ -1439,7 +1458,6 @@ class MiniMaxH3Mixin:
                         pixel_std=components["pixel_std"],
                         device=device,
                     )
-                anchor_condition_latents = []
                 if keyframe_pixels:
                     anchor_condition_latents = ops.encode_condition_images(
                         components["vae"], keyframe_pixels,
@@ -1625,9 +1643,11 @@ class MiniMaxH3Mixin:
             # loop never writes them, so a soundtrack rides through at t = 1.0.
             audio_rows = torch.cat([reference_audio_rows, audio_rows], dim=0)
             del reference_audio_rows
-        del condition_latents, audio_condition_rows, condition_noises
+        del condition_latents, reference_condition_latents, anchor_condition_latents
+        del audio_condition_rows, condition_noises
 
         # ---- Phase 2: denoise (DiT resident) ----
+        self._minimax_h3_assert_components_off_cuda("text_encoder", "vae", "audio_vae")
         prompt_embeds = prompt_embeds_cpu.to(torch_device)
         denoise_start = time.perf_counter()
         # Staging owns the device move: with block swap it places the block stack
@@ -1680,6 +1700,8 @@ class MiniMaxH3Mixin:
         print(f"[MiniMax-H3] denoise: {num_inference_steps} step(s) in {denoise_seconds:.1f}s "
               f"({denoise_seconds / max(num_inference_steps, 1):.2f}s/step, "
               f"peak VRAM {peak_after_denoise:.2f} GB)")
+
+        self._minimax_h3_assert_components_off_cuda("transformer")
 
         if not torch.isfinite(video_rows).all():
             raise RuntimeError("MiniMax-H3 produced non-finite video latents.")

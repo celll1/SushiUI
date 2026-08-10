@@ -1861,6 +1861,12 @@ def load_minimax_h3_from_path(
     print(f"[MiniMaxH3Loader] text encoder: {layout['text_encoder']}")
     print(f"[MiniMaxH3Loader] configs:      {official}")
 
+    # Map the 48 GiB encoder before the smaller component files.  On Windows,
+    # doing this last can access-violate inside safetensors/torch storage.
+    text_encoder = text_encoder_config = None
+    if load_text_encoder:
+        text_encoder, text_encoder_config = _build_text_encoder(layout["text_encoder"], official)
+
     transformer, transformer_config = _build_transformer(layout["dit"], torch_dtype, official)
     # fp16 for the video VAE (see MINIMAX_H3_VIDEO_VAE_DTYPE), float32 for the
     # small audio one -- 0.6 GB, decoded once per generation, nothing to buy.
@@ -1868,9 +1874,6 @@ def load_minimax_h3_from_path(
     vae, vae_config = _build_video_vae(layout["vae"], official, vae_dtype)
     audio_vae, audio_vae_config = _build_audio_vae(layout["audio_vae"], official, torch.float32)
 
-    text_encoder = text_encoder_config = None
-    if load_text_encoder:
-        text_encoder, text_encoder_config = _build_text_encoder(layout["text_encoder"], official)
     tokenizer, processor = _load_tokenizer_and_processor(official)
     scheduler, audio_scheduler = _load_schedulers(official)
 

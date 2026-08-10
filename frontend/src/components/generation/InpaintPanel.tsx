@@ -43,6 +43,13 @@ import { useSmoothProgress } from "@/hooks/useSmoothProgress";
 import { wsClient, CFGMetrics } from "@/utils/websocket";
 import CFGMetricsGraph from "../common/CFGMetricsGraph";
 import { saveTempImage, loadTempImage, deleteTempImageRef } from "@/utils/tempImageStorage";
+import {
+  deleteMediaInput,
+  INPAINT_VIDEO_INPUT_KEY,
+  INPAINT_VIDEO_PENDING_KEY,
+  loadMediaInput,
+  saveMediaInput,
+} from "@/utils/mediaInputStorage";
 import { previewStorageKeys, saveImagePreview, clearImagePreview, loadVideoPreview, saveVideoPreview, playbackUrlOf, clearVideoPreview, outputExists, stripCacheBuster, withCacheBuster, imagePreviewGone } from "@/utils/previewStorage";
 import { sendToPanel, sendImageToImg2Img, sendImageToUpscale, sendImageToOutpaint, sendVideoToOutpaint, sendVideoToInpaint, sendVideoToReference, fetchUrlToFile } from "@/utils/sendHelpers";
 import { fixFloatingPointParams } from "@/utils/numberUtils";
@@ -558,9 +565,8 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
   const [scale, setScale] = useState<number>(1.0);
   const [maskImage, setMaskImage] = useState<string | null>(null);
   // ── Video temporal inpaint (inpaint_vid) input clip + result ────────────
-  // The upload is NOT persisted across reloads (a File cannot be round-tripped
-  // through localStorage/IndexedDB the way the image input is) -- the same
-  // stance OutpaintPanel's clip takes. The RESULT is persisted as a URL.
+  // The input File is persisted in IndexedDB so it survives panel navigation
+  // and browser reloads. The result remains a URL in preview storage.
   const [videoFile, setVideoFile] = useState<File | null>(null);
   const [videoPreviewUrl, setVideoPreviewUrl] = useState<string | null>(null);
   const [videoDurationSec, setVideoDurationSec] = useState<number | null>(null);
@@ -779,6 +785,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
   const searchParams = useSearchParams();
 
   const promptTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const preserveVideoSettingsRef = useRef(false);
 
   // TIPO: Treat as Natural Language (local state, not persisted)
   const [treatAsNL, setTreatAsNL] = useState(false);
@@ -1159,17 +1166,20 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
     };
   }, []);
 
-  // Listen for a video clip sent from a result's "Send to Inpaint" (e.g. a
-  // txt2vid/img2vid/inpaint/outpaint clip). Transport is the plain
-  // `/outputs/<filename>` URL (too large for base64/localStorage) -- fetch it
-  // into a real File so it flows through the same videoFile path an upload
-  // does (mirrors processVideoFile's reset of the trim/size fields).
+  // Restore the persisted clip on mount and reload it when a sender replaces
+  // the IndexedDB record. The legacy URL path is retained for older tabs.
   useEffect(() => {
+    let cancelled = false;
     const handleVideoInputUpdate = async () => {
       const url = localStorage.getItem("inpaint_input_video");
-      if (!url) return;
+      const isReplacement = url !== null || localStorage.getItem(INPAINT_VIDEO_PENDING_KEY) === "1";
       try {
-        const file = await fetchUrlToFile(url);
+        const file = url
+          ? await fetchUrlToFile(url)
+          : await loadMediaInput(INPAINT_VIDEO_INPUT_KEY);
+        if (!file || cancelled) return;
+        if (url) await saveMediaInput(INPAINT_VIDEO_INPUT_KEY, file);
+        preserveVideoSettingsRef.current = !isReplacement;
         setVideoPreviewUrl(prev => {
           if (prev) URL.revokeObjectURL(prev);
           return URL.createObjectURL(file);
@@ -1177,15 +1187,20 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         setVideoFile(file);
         setVideoDurationSec(null);
         setInputVideoSize(null);
-        setClipFramesOverride(null);
+        if (isReplacement) setClipFramesOverride(null);
       } catch (error) {
-        console.error("[Inpaint] Failed to load sent video:", error);
+        console.error("[Inpaint] Failed to restore input video:", error);
       } finally {
-        localStorage.removeItem("inpaint_input_video");
+        if (url) localStorage.removeItem("inpaint_input_video");
+        localStorage.removeItem(INPAINT_VIDEO_PENDING_KEY);
       }
     };
     window.addEventListener("inpaint_input_video_updated", handleVideoInputUpdate);
-    return () => window.removeEventListener("inpaint_input_video_updated", handleVideoInputUpdate);
+    void handleVideoInputUpdate();
+    return () => {
+      cancelled = true;
+      window.removeEventListener("inpaint_input_video_updated", handleVideoInputUpdate);
+    };
   }, []);
 
   // Load image dimensions when inputImagePreview changes
@@ -1592,12 +1607,18 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
       alert('Please upload a valid video file');
       return;
     }
-    if (videoPreviewUrl) URL.revokeObjectURL(videoPreviewUrl);
+    preserveVideoSettingsRef.current = false;
     setVideoFile(file);
     setVideoDurationSec(null);
     setInputVideoSize(null);
     setClipFramesOverride(null);
-    setVideoPreviewUrl(URL.createObjectURL(file));
+    setVideoPreviewUrl(prev => {
+      if (prev) URL.revokeObjectURL(prev);
+      return URL.createObjectURL(file);
+    });
+    void saveMediaInput(INPAINT_VIDEO_INPUT_KEY, file).catch((error) => {
+      console.error("[Inpaint] Failed to persist input video:", error);
+    });
   };
 
   const handleVideoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -1606,11 +1627,14 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
   };
 
   const handleVideoLoadedMetadata = (e: React.SyntheticEvent<HTMLVideoElement>) => {
+    const preserveSettings = preserveVideoSettingsRef.current;
     const duration = e.currentTarget.duration;
     if (Number.isFinite(duration) && duration > 0) {
       setVideoDurationSec(duration);
       const raw = Math.max(1, Math.round(duration * clipFrameRate));
-      applyClipLength(raw, largestValidVideoFrameCount(archCapabilities, loadedArchType, raw));
+      if (!preserveSettings) {
+        applyClipLength(raw, largestValidVideoFrameCount(archCapabilities, loadedArchType, raw));
+      }
     }
     const { videoWidth, videoHeight } = e.currentTarget;
     if (videoWidth > 0 && videoHeight > 0) {
@@ -1623,12 +1647,13 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         || inputVideoSize.width !== videoWidth
         || inputVideoSize.height !== videoHeight;
       setInputVideoSize({ width: videoWidth, height: videoHeight });
-      if (isNewClip) {
+      if (isNewClip && !preserveSettings) {
         setVideoScale(1.0);
         const fitted = fitVideoCanvasFor(videoWidth, videoHeight, 1.0);
         setParams(prev => ({ ...prev, width: fitted.width, height: fitted.height }));
       }
     }
+    preserveVideoSettingsRef.current = false;
   };
 
   const handleClearVideo = () => {
@@ -1646,6 +1671,9 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
       regenerate_start_frame: 0,
       regenerate_end_frame: 0,
     }));
+    void deleteMediaInput(INPAINT_VIDEO_INPUT_KEY).catch((error) => {
+      console.error("[Inpaint] Failed to clear persisted input video:", error);
+    });
   };
 
   const handleVideoScaleChange = (newScale: number) => {
@@ -1818,24 +1846,35 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
   };
 
   // generatedVideo (inpaint_vid) result -> Outpaint's outpaint_vid clip input.
-  // Transport is the plain /outputs/ URL, not base64 (see sendHelpers).
-  const sendVideoResultToOutpaint = () => {
+  const sendVideoResultToOutpaint = async () => {
     if (!generatedVideo) {
       alert("No video to send");
       return;
     }
-    sendVideoToOutpaint(generatedVideo);
+    try {
+      await sendVideoToOutpaint(generatedVideo);
+    } catch (error) {
+      console.error("[Inpaint] Failed to send video to outpaint:", error);
+      alert("Failed to send the video to outpaint");
+      return;
+    }
     if (onTabChange) onTabChange("outpaint");
   };
 
   // Inpaint's own inpaint_vid result -> Inpaint again (self-send = iterate a
   // temporal inpaint further, e.g. regenerate a different range next).
-  const sendVideoResultToInpaint = () => {
+  const sendVideoResultToInpaint = async () => {
     if (!generatedVideo) {
       alert("No video to send");
       return;
     }
-    sendVideoToInpaint(generatedVideo);
+    try {
+      await sendVideoToInpaint(generatedVideo);
+    } catch (error) {
+      console.error("[Inpaint] Failed to reuse video as inpaint input:", error);
+      alert("Failed to send the video to inpaint");
+      return;
+    }
     if (onTabChange) onTabChange("inpaint");
   };
 

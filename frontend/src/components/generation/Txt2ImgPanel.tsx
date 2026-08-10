@@ -1101,22 +1101,34 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
   };
 
   // generatedVideo (Txt2Vid) result -> Outpaint's outpaint_vid clip input.
-  const sendVideoResultToOutpaint = () => {
+  const sendVideoResultToOutpaint = async () => {
     if (!generatedVideo) {
       alert("No video to send");
       return;
     }
-    sendVideoToOutpaint(generatedVideo);
+    try {
+      await sendVideoToOutpaint(generatedVideo);
+    } catch (error) {
+      console.error("[Txt2Img] Failed to send video to outpaint:", error);
+      alert("Failed to send the video to outpaint");
+      return;
+    }
     if (onTabChange) onTabChange("outpaint");
   };
 
   // generatedVideo (Txt2Vid) result -> Inpaint's temporal inpaint clip input.
-  const sendVideoResultToInpaint = () => {
+  const sendVideoResultToInpaint = async () => {
     if (!generatedVideo) {
       alert("No video to send");
       return;
     }
-    sendVideoToInpaint(generatedVideo);
+    try {
+      await sendVideoToInpaint(generatedVideo);
+    } catch (error) {
+      console.error("[Txt2Img] Failed to send video to inpaint:", error);
+      alert("Failed to send the video to inpaint");
+      return;
+    }
     if (onTabChange) onTabChange("inpaint");
   };
 

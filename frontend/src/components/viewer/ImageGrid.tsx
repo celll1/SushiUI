@@ -742,7 +742,13 @@ export default function ImageGrid() {
     if (sendImage) {
       const imageUrl = `/outputs/${image.filename}`;
       if (isSelectedVideo) {
-        sendVideoToInpaint(imageUrl);
+        try {
+          await sendVideoToInpaint(imageUrl);
+        } catch (error) {
+          console.error("[ImageGrid] Failed to send video to inpaint:", error);
+          alert("Failed to send the video to inpaint");
+          return;
+        }
       } else {
         try {
           const response = await fetch(imageUrl);
@@ -847,7 +853,13 @@ export default function ImageGrid() {
     // mask concept at all).
     if (sendImage) {
       if (isSelectedVideo) {
-        sendVideoToOutpaint(imageUrl);
+        try {
+          await sendVideoToOutpaint(imageUrl);
+        } catch (error) {
+          console.error("[ImageGrid] Failed to send video to outpaint:", error);
+          alert("Failed to send the video to outpaint");
+          return;
+        }
       } else if (isSelectedAudio) {
         sendAudioToOutpaint(imageUrl);
       } else {

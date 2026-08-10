@@ -994,6 +994,27 @@ a generation without style transfer.
     weight. The autograd path un-rotates only the live layer so LoRA input
     gradients remain correct. The marker stays in module state so the rotation
     contract cannot be silently lost.
+  - **Quantized inference, API-verified** (640x384x124, two schedule points =
+    one model evaluation, seed 12345, Flash Attention, audio decode off):
+
+    | checkpoint | denoise | denoise peak | recorded operator |
+    |---|---:|---:|---|
+    | FP8 scaled | 6.901 s | 21.265 GB | `dequant` |
+    | W4A8 mixed | 3.923 s | 13.394 GB | `w4a8_int8(comfy-kitchen)` |
+    | INT8 ConvRot | 2.351 s | 21.266 GB | `convrot_int8(comfy-kitchen)` |
+
+    W4A8 saves 7.871 GB because it stores 4-bit weights. ConvRot and FP8 both
+    store 8-bit weights, so their equal resident footprint is expected; the
+    ConvRot win is its fixed online-rotation GEMM rather than lower weight bits.
+    All three gallery rows recorded `attention_backend=flash`, proving the
+    global/per-request backend reaches the H3 attention conduit.
+  - **Quantized ref2va outpaint stays proportional to packed rows.** Extending
+    a 124-frame 640x384 clip by a 124-frame generated span produced 19,920
+    packed rows, including 9,120 conditioning rows. W4A8 peaked at 15.176 GB,
+    only 1.782 GB above its target-only run; FP8 peaked at 23.048 GB, 1.783 GB
+    above target-only. The former ~60 GB behaviour is not reproducible after
+    keeping the source reference on the requested canvas instead of upscaling
+    it to the reference model's maximum canvas.
   - **Generation, measured** (seed 0, the official t2va prompt, `num_frames=124`,
     20 steps = 19 evaluations, fp8 DiT resident, no block swap, one discarded
     warm-up then the median of 3 runs, driven through
@@ -1041,10 +1062,16 @@ a generation without style transfer.
     low-sigma tail where consecutive residuals are close in NORM while the video
     content is still moving, so the proxy reads "nothing changed" on steps that
     change a great deal. That is a property of the schedule, not a tuning
-    failure. Spectrum/SFF is separately declared unsupported (it ships only on a
-    real visual-quality pass, and none is planned here), so block swap is the
-    only thing that wraps: with `blocks_to_swap == 0` the sampler calls the
-    transformer directly and no wrapper is in the call chain at all.
+    failure. Spectrum/SFF was also implemented as paired video/audio output
+    forecasting and removed after its quality gate failed. At 640x384x124,
+    20 steps, W4A8 + Flash Attention, 11 actual forwards plus 8 forecasts cut
+    denoise from 62.481 s to 36.884 s, but produced LPIPS 0.325 and RGB SSIM
+    0.671 against the same-seed baseline. A conservative 18-forward/1-forecast
+    arm still produced LPIPS 0.259 and SSIM 0.770 while saving only 2.468 s of
+    denoise. The registered bars were LPIPS <= 0.05 and SSIM >= 0.95, so neither
+    trajectory-redundancy feature is offered. Block swap is the only wrapper
+    feature: with `blocks_to_swap == 0` the sampler calls the transformer
+    directly and no wrapper is in the call chain at all.
   - **The video VAE's tiling policy is load-bearing, not a memory knob.** With
     the same weights and the same input, flipping only the shipped tiling flags
     moved the **latents by rel-RMS 0.355** (384×384) / **0.0952** (640×384) and

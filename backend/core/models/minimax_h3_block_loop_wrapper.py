@@ -29,12 +29,11 @@ Extension slot (None by default -> fast path):
     ``transformer.transformer_blocks``. Built and attached by
     ``pipeline_backends/minimax_h3.py::_ensure_minimax_h3_swap_and_offload``.
 
-TWO TRAJECTORY-REDUNDANCY FEATURES ARE ABSENT ON PURPOSE, and neither is a slot
-left open for later:
+Two trajectory-redundancy features are absent after measurement:
 
 * **Spectrum** (Adaptive Spectral Feature Forecasting) — declared in
-  ``arch_capabilities._SPECTRUM_UNSUPPORTED``. It ships only on a real
-  visual-quality pass and no such pass is planned for this architecture.
+  the packed loop. A paired video/audio output-forecaster trial reduced denoise
+  time 41%, but missed the quality gate even with only one forecast; it was removed.
 * **First-Block-Cache** — IMPLEMENTED, MEASURED, AND DROPPED. The K3 protocol
   (pre-registered before any result: seeds {0,1,2}, 960x544x124 at 20 steps,
   thresholds {0.08, 0.12, 0.20}, ``warmup_steps=1``) required hit rate >= 0.15

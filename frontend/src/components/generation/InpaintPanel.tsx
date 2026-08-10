@@ -53,6 +53,7 @@ import {
 import { previewStorageKeys, saveImagePreview, clearImagePreview, loadVideoPreview, saveVideoPreview, playbackUrlOf, clearVideoPreview, outputExists, stripCacheBuster, withCacheBuster, imagePreviewGone } from "@/utils/previewStorage";
 import { sendToPanel, sendImageToImg2Img, sendImageToUpscale, sendImageToOutpaint, sendVideoToOutpaint, sendVideoToInpaint, sendVideoToReference, fetchUrlToFile } from "@/utils/sendHelpers";
 import { fixFloatingPointParams } from "@/utils/numberUtils";
+import { readGlobalAttentionType } from "@/utils/attentionSettings";
 import { useStartup } from "@/contexts/StartupContext";
 import { useGenerationQueue } from "@/contexts/GenerationQueueContext";
 import SendToStudioButton from "../studio/SendToStudioButton";
@@ -966,8 +967,8 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
       }
 
       // Load attention type from global settings
-      const savedAttentionType = localStorage.getItem('attention_type');
-      if (savedAttentionType && (savedAttentionType === 'normal' || savedAttentionType === 'sage' || savedAttentionType === 'flash')) {
+      const savedAttentionType = readGlobalAttentionType();
+      if (savedAttentionType) {
         setParams(prev => ({ ...prev, attention_type: savedAttentionType }));
       }
 

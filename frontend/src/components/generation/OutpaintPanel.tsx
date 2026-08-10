@@ -66,6 +66,7 @@ import {
   archSupportsFeature,
 } from "@/utils/api";
 import { createH3ReferenceInventory, maybeTransformH3PromptForGeneration } from "@/utils/h3PromptAssist";
+import { readGlobalAttentionType } from "@/utils/attentionSettings";
 import { wsClient, CFGMetrics } from "@/utils/websocket";
 import { saveTempImage, loadTempImage, deleteTempImageRef } from "@/utils/tempImageStorage";
 import {
@@ -730,8 +731,8 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
         setShowAdvancedCFG(true);
       }
 
-      const savedAttentionType = localStorage.getItem('attention_type');
-      if (savedAttentionType && (savedAttentionType === 'normal' || savedAttentionType === 'sage' || savedAttentionType === 'flash')) {
+      const savedAttentionType = readGlobalAttentionType();
+      if (savedAttentionType) {
         setParams(prev => ({ ...prev, attention_type: savedAttentionType }));
       }
 

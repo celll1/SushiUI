@@ -27,6 +27,7 @@ torchaudio>=2.1.0  # aud2aud reference-audio load/resample fallback (ACE-Step); 
 loguru>=0.7.0  # logging dep of the vendored ACE-Step turbo DiT (DCW correction module, imported unconditionally)
 
 # Image Processing
+numpy>=1.24.0
 Pillow>=10.2.0
 opencv-python>=4.9.0
 imageio>=2.33.0

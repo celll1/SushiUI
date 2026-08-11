@@ -45,7 +45,16 @@ def test_generation_panels_restore_progress_and_completed_preview() -> None:
         assert f'panel: "{panel}"' in source, panel
         assert "isGeneratingRef.current" in source, panel
 
-    assert '["txt2img", "img2img", "txt2vid", "ref2vid", "txt2aud"]' in _source(PANELS["txt2img"])
+    # The txt2img panel must CLAIM every queue type it can produce, in both the
+    # startNextInQueue allow-list and the remount/restore type list -- claiming
+    # fewer strands an item of that type as soon as the panel is the only one
+    # mounted. Asserted per type rather than against the array literal: the list
+    # grows (chain_vid was added for video-length chaining), and a test that
+    # pins the whole literal breaks on every addition without saying anything
+    # about the property that matters.
+    txt2img_source = _source(PANELS["txt2img"])
+    for queue_type in ("txt2img", "img2img", "txt2vid", "ref2vid", "txt2aud", "chain_vid"):
+        assert f'"{queue_type}"' in txt2img_source, queue_type
 
 
 def test_all_generation_modalities_publish_their_result() -> None:

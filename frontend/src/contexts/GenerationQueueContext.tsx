@@ -30,7 +30,7 @@ export interface GenerationResultSnapshot {
 
 export interface QueueItem {
   id: string;
-  type: "txt2img" | "img2img" | "inpaint" | "inpaint_vid" | "outpaint" | "outpaint_vid" | "outpaint_aud" | "upscale" | "txt2vid" | "img2vid" | "ref2vid" | "txt2aud" | "aud2aud";
+  type: "txt2img" | "img2img" | "inpaint" | "inpaint_vid" | "outpaint" | "outpaint_vid" | "outpaint_aud" | "upscale" | "txt2vid" | "img2vid" | "ref2vid" | "txt2aud" | "aud2aud" | "chain_vid";
   params: GenerationParams | Img2ImgParams | InpaintParams | InpaintVideoParams | OutpaintParams | OutpaintVideoParams | OutpaintAudioParams | UpscaleParams | Txt2VidParams | Img2VidParams | Ref2VidParams | Txt2AudParams | Aud2AudParams;
   inputImage?: string; // For img2img, inpaint, and outpaint
   // Server-cached latent to chain from instead of an image (loop-generation
@@ -56,6 +56,16 @@ export interface QueueItem {
   // field, so this is a plain File[] rather than MiniMaxH3References.
   referenceImages?: File[];
   maskImage?: string; // For inpaint only
+  // Opt-in video-length chaining (Txt2Img/Img2Img "chain_vid" loop steps,
+  // videoChain.ts): the overall clip length this chain is working toward, and
+  // the accumulated frame count the PREVIOUS segment in the chain actually
+  // reported (not the planned value -- this is what a "did this segment make
+  // forward progress" check compares the segment's own reported frame count
+  // against). Present on every item of a chain (main segment + chain_vid
+  // steps) once video-length chaining has claimed the loop group; absent on
+  // every other queue item.
+  chainTargetFrames?: number;
+  chainPreviousFrames?: number;
   status: "pending" | "generating" | "completed" | "failed";
   addedAt: number;
   prompt: string; // For display purposes

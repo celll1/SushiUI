@@ -93,6 +93,9 @@ FEATURE_PARAMS: Dict[str, List[str]] = {
     # LoRA loader and is never listed here; this key exists for the video archs,
     # where only MiniMax-H3 has one.
     "lora": ["loras"],
+    # Output-tail head fusion (AP3). MiniMax-H3 only -- see
+    # `core.models.minimax_h3.adaln_chunking`'s "Head fusion" note.
+    "fuse_output_proj": ["fuse_output_proj"],
 }
 
 # Human-readable label used in the warning message for each feature.
@@ -120,6 +123,7 @@ FEATURE_LABELS: Dict[str, str] = {
     "audio_conditioning": "input_audio (audio-conditioned video)",
     "temporal_inpaint": "regenerate_start_frame/regenerate_end_frame (temporal inpaint)",
     "lora": "loras (LoRA)",
+    "fuse_output_proj": "fuse_output_proj (output-tail head fusion)",
 }
 
 # ---------------------------------------------------------------------------
@@ -250,6 +254,8 @@ _add("ltx2", "attention_type",
 # LTX-2.3's video path has none at all.
 _add("ltx2", "lora",
      "LoRA loading is not implemented for the LTX-2.3 video model's generation path")
+_add("ltx2", "fuse_output_proj",
+     "output-tail head fusion is a MiniMax-H3-specific chunking optimization (core.models.minimax_h3.adaln_chunking); LTX-2.3 has no equivalent output-head structure")
 
 # ACE-Step 1.5 is an audio model (own DiT + flow-matching turbo sampler, driven
 # through /generate/txt2aud); none of the image-oriented guidance/conditioning

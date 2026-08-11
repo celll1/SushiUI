@@ -285,6 +285,7 @@ const DEFAULT_PARAMS: Img2ImgParams = {
   audio_enable: true,
   max_sequence_length: 1024,
   video_blocks_to_swap: 0,
+  fuse_output_proj: false,
   // Music cover fields (used when an audio model (ACE-Step) is loaded; the panel
   // maps these into Aud2AudParams for aud2aud requests, with the uploaded
   // reference clip as the cover source). inference_steps/guidance_scale are
@@ -626,6 +627,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
   // the same convention as supportsCfg/supportsNegativePrompt above.
   const supportsSpectrum = archSupportsFeature(archCapabilities, loadedArch, "spectrum");
   const supportsFbcache = archSupportsFeature(archCapabilities, loadedArch, "fbcache");
+  const supportsFuseOutputProj = archSupportsFeature(archCapabilities, loadedArch, "fuse_output_proj");
   // The value the video Block Swap checkbox writes when turned ON (backend
   // SSOT: param_defaults.VIDEO_GEN_DEFAULTS["blocks_to_swap_enabled_default"],
   // identical across img2vid/ref2vid since there is no per-arch overlay for
@@ -2388,6 +2390,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
           // Distinct from the image mode's model-global `params.blocks_to_swap`
           // (see Img2ImgParams.video_blocks_to_swap's own comment).
           blocks_to_swap: params.video_blocks_to_swap,
+          fuse_output_proj: params.fuse_output_proj,
           // Acceleration: FBCache/Spectrum share the same params fields as
           // image mode (see VideoAccelerationControls' mutual-exclusion note).
           fbcache_enable: params.fbcache_enable,
@@ -2465,6 +2468,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         // Distinct from the image mode's model-global `params.blocks_to_swap`
         // (see Img2ImgParams.video_blocks_to_swap's own comment).
         blocks_to_swap: params.video_blocks_to_swap,
+        fuse_output_proj: params.fuse_output_proj,
         // Acceleration: FBCache/Spectrum share the same params fields as
         // image mode (see VideoAccelerationControls' mutual-exclusion note).
         fbcache_enable: params.fbcache_enable,
@@ -5381,6 +5385,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
               onChange={(patch) => setParams({ ...params, ...patch })}
               supportsSpectrum={supportsSpectrum}
               supportsFbcache={supportsFbcache}
+              supportsFuseOutputProj={supportsFuseOutputProj}
               blocksToSwapEnabledDefault={videoBlocksToSwapEnabledDefault}
               blockSwapMax={VIDEO_BLOCK_SWAP_MAX}
             />

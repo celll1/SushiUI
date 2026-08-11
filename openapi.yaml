@@ -8034,6 +8034,22 @@ components:
           default: 0
           description: "Number of LTX-2.3 transformer blocks kept CPU-resident and streamed to GPU during the denoise loop. 0 disables block swap (transformer stays fully GPU-resident via the stock model-offload path)."
           example: 0
+        fuse_output_proj:
+          type: boolean
+          default: false
+          description: |
+            MiniMax-H3 only. Fuses the output-tail projection heads (proj_out,
+            audio_proj_out) into the sequence-chunked output-norm loop instead of
+            materializing the full (1, S, hidden_size) intermediate first. Not
+            bit-exact with the default path: fusing changes the output-projection
+            GEMM's row count per call, and cuBLAS's tiling/reduction order depends
+            on it. Measured against the unfused path on the production checkpoint
+            (same loaded weights, same in-process hidden_states): max abs
+            deviation 1.5e-4 (video head) / 6.2e-5 (audio head) against output
+            magnitudes with mean ~1.1; scale-relative (max abs / max magnitude)
+            4.6e-6 / 3.7e-6, roughly 30-40x fp32 machine epsilon. Off by default
+            for that reason. Accepted and ignored (with a warning) on LTX-2.3.
+          example: false
         fbcache_enable:
           type: boolean
           default: false
@@ -8615,6 +8631,11 @@ components:
           default: 0
           description: "Number of transformer blocks kept CPU-resident and streamed to GPU during the denoise loop. 0 disables block swap."
           example: 0
+        fuse_output_proj:
+          type: boolean
+          default: false
+          description: "MiniMax-H3 only. Fuses proj_out/audio_proj_out into the chunked output-norm loop; not bit-exact (see Txt2VidRequest.fuse_output_proj). Off by default."
+          example: false
         fbcache_enable:
           type: boolean
           default: false
@@ -8914,6 +8935,11 @@ components:
           default: 0
           description: "Number of transformer blocks kept CPU-resident and streamed to GPU during the denoise loop. 0 disables block swap."
           example: 0
+        fuse_output_proj:
+          type: boolean
+          default: false
+          description: "MiniMax-H3 only. Fuses proj_out/audio_proj_out into the chunked output-norm loop; not bit-exact (see Txt2VidRequest.fuse_output_proj). Off by default."
+          example: false
         fbcache_enable:
           type: boolean
           default: false

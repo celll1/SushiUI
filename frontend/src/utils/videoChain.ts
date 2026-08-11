@@ -84,6 +84,11 @@ export interface ChainContinuationBase {
   // dropping it on segments 2..N is a real OOM on the exact machine that
   // needed the setting, not just a slowdown.
   blocks_to_swap?: number;
+  // Output-tail head fusion (MiniMax-H3 only, not bit-exact -- see
+  // Txt2VidParams.fuse_output_proj). Carried for the same reason
+  // `blocks_to_swap` is: a VRAM setting the user picked for segment 1 has to
+  // hold for every continuation segment.
+  fuse_output_proj?: boolean;
   // FBCache/Spectrum acceleration (see VideoAccelerationControls, shared by
   // every video-capable panel). Carried to every continuation segment for the
   // same reason `blocks_to_swap` is: a user who enabled one because their
@@ -174,6 +179,7 @@ export function buildChainContinuationParams(
     reference_image_size: referenceImageSize,
     loras: base.loras,
     blocks_to_swap: base.blocks_to_swap,
+    fuse_output_proj: base.fuse_output_proj,
     fbcache_enable: base.fbcache_enable,
     fbcache_threshold: base.fbcache_threshold,
     fbcache_warmup_steps: base.fbcache_warmup_steps,

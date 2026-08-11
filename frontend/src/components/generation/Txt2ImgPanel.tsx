@@ -149,6 +149,7 @@ const DEFAULT_PARAMS: GenerationParams = {
   // Video route's block swap (see GenerationParams.video_blocks_to_swap).
   // 0 = disabled, this endpoint's own default (opt-in).
   video_blocks_to_swap: 0,
+  fuse_output_proj: false,
   // Music generation fields (used when an audio model (ACE-Step) is loaded;
   // the panel maps these into Txt2AudParams for txt2aud requests).
   lyrics: "",
@@ -482,6 +483,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
   // supports both. This matches the other capability-gated leaf controls.
   const supportsSpectrum = archSupportsFeature(archCapabilities, loadedArch, "spectrum");
   const supportsFbcache = archSupportsFeature(archCapabilities, loadedArch, "fbcache");
+  const supportsFuseOutputProj = archSupportsFeature(archCapabilities, loadedArch, "fuse_output_proj");
   // The value the video Block Swap checkbox writes when turned ON (backend
   // SSOT: param_defaults.VIDEO_GEN_DEFAULTS["blocks_to_swap_enabled_default"],
   // identical across txt2vid/img2vid/ref2vid since there is no per-arch
@@ -1799,6 +1801,8 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         // Distinct from the image mode's model-global `params.blocks_to_swap`
         // (see GenerationParams.video_blocks_to_swap's own comment).
         blocks_to_swap: params.video_blocks_to_swap,
+        // MiniMax-H3 only, not bit-exact -- see Txt2VidParams.fuse_output_proj.
+        fuse_output_proj: params.fuse_output_proj,
         // Acceleration: FBCache/Spectrum share the same params fields as image
         // mode (see VideoAccelerationControls' mutual-exclusion note above).
         fbcache_enable: params.fbcache_enable,
@@ -4410,6 +4414,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
               onChange={(patch) => setParams({ ...params, ...patch })}
               supportsSpectrum={supportsSpectrum}
               supportsFbcache={supportsFbcache}
+              supportsFuseOutputProj={supportsFuseOutputProj}
               blocksToSwapEnabledDefault={videoBlocksToSwapEnabledDefault}
               blockSwapMax={VIDEO_BLOCK_SWAP_MAX}
             />

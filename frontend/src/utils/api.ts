@@ -437,6 +437,10 @@ export interface GenerationParams {
   // is this endpoint's own default (opt-in; a machine that already fits the
   // model should not pay a swap cost it does not need).
   video_blocks_to_swap?: number;
+  // MiniMax-H3 only, not bit-exact -- see Txt2VidParams.fuse_output_proj. No
+  // image-mode equivalent, so unlike video_blocks_to_swap this needs no
+  // separate key: it maps straight onto the video request's own field.
+  fuse_output_proj?: boolean;
   // Music generation fields (used when an audio model (ACE-Step) is loaded;
   // the panel maps these into Txt2AudParams for txt2aud requests). `prompt`
   // above doubles as the caption text.
@@ -700,6 +704,8 @@ export interface OutpaintVideoParams {
   video_lossless?: boolean;        // FFV1 bit-exact encode (not browser-playable)
   // --- Acceleration (same knobs as the image/video GenerationParams schema) ---
   blocks_to_swap?: number;
+  // MiniMax-H3 only, not bit-exact -- see Txt2VidParams.fuse_output_proj.
+  fuse_output_proj?: boolean;
   fbcache_enable?: boolean;
   fbcache_threshold?: number;
   fbcache_warmup_steps?: number;
@@ -767,6 +773,8 @@ export interface InpaintVideoParams {
   video_lossless?: boolean;        // FFV1: carries the preserved frames' exactness into the FILE
   // --- Acceleration (same knobs as the other video routes) ---
   blocks_to_swap?: number;
+  // MiniMax-H3 only, not bit-exact -- see Txt2VidParams.fuse_output_proj.
+  fuse_output_proj?: boolean;
   fbcache_enable?: boolean;
   fbcache_threshold?: number;
   fbcache_warmup_steps?: number;
@@ -962,6 +970,14 @@ export interface Txt2VidParams {
   // the denoise loop. 0 (the default) disables block swap; the field is
   // opt-in on every video route the same way it is on the image ones.
   blocks_to_swap?: number;
+  // MiniMax-H3 only: fuses the output-tail projection heads (proj_out,
+  // audio_proj_out) into the sequence-chunked output-norm loop instead of
+  // materializing the full (1, S, hidden_size) intermediate first. NOT
+  // bit-exact (fusing changes the output-projection GEMM's row count per
+  // call, and cuBLAS's tiling/reduction order depends on it) -- see
+  // core.models.minimax_h3.adaln_chunking's "Head fusion" note. Off by
+  // default for that reason; accepted and ignored on LTX-2.3.
+  fuse_output_proj?: boolean;
   // --- Acceleration (same knobs as /generate/outpaint/video and
   // /generate/inpaint/video; see InpaintVideoParams' own comment). Mutually
   // exclusive with Block Swap (each disabled server-side, with a logged
@@ -2658,6 +2674,7 @@ export const generateTxt2Vid = async (params: Txt2VidParams) => {
     // Acceleration (block swap / FBCache / Spectrum) -- same fields/defaults
     // as /generate/outpaint/video and /generate/inpaint/video.
     blocks_to_swap: params.blocks_to_swap ?? 0,
+    fuse_output_proj: params.fuse_output_proj ?? false,
     fbcache_enable: params.fbcache_enable ?? false,
     fbcache_threshold: params.fbcache_threshold ?? 0.12,
     fbcache_warmup_steps: params.fbcache_warmup_steps ?? 1,
@@ -2768,6 +2785,7 @@ export const generateImg2Vid = async (
   // Acceleration (block swap / FBCache / Spectrum) -- same fields/defaults as
   // /generate/outpaint/video and /generate/inpaint/video.
   formData.append("blocks_to_swap", String(params.blocks_to_swap ?? 0));
+  formData.append("fuse_output_proj", String(params.fuse_output_proj ?? false));
   formData.append("fbcache_enable", String(params.fbcache_enable ?? false));
   formData.append("fbcache_threshold", String(params.fbcache_threshold ?? 0.12));
   formData.append("fbcache_warmup_steps", String(params.fbcache_warmup_steps ?? 1));
@@ -2863,6 +2881,7 @@ export const generateRef2Vid = async (
   // Acceleration (block swap / FBCache / Spectrum) -- same fields/defaults as
   // /generate/outpaint/video and /generate/inpaint/video.
   formData.append("blocks_to_swap", String(params.blocks_to_swap ?? 0));
+  formData.append("fuse_output_proj", String(params.fuse_output_proj ?? false));
   formData.append("fbcache_enable", String(params.fbcache_enable ?? false));
   formData.append("fbcache_threshold", String(params.fbcache_threshold ?? 0.12));
   formData.append("fbcache_warmup_steps", String(params.fbcache_warmup_steps ?? 1));
@@ -3463,6 +3482,7 @@ export const generateOutpaintVideo = async (
 
   // Acceleration (block swap / FBCache / Spectrum)
   formData.append("blocks_to_swap", String(params.blocks_to_swap ?? 0));
+  formData.append("fuse_output_proj", String(params.fuse_output_proj ?? false));
   formData.append("fbcache_enable", String(params.fbcache_enable ?? false));
   formData.append("fbcache_threshold", String(params.fbcache_threshold ?? 0.12));
   formData.append("fbcache_warmup_steps", String(params.fbcache_warmup_steps ?? 1));
@@ -3594,6 +3614,7 @@ export const generateInpaintVideo = async (
   formData.append("attention_type", resolveGlobalAttentionType(params.attention_type));
 
   formData.append("blocks_to_swap", String(params.blocks_to_swap ?? 0));
+  formData.append("fuse_output_proj", String(params.fuse_output_proj ?? false));
   formData.append("fbcache_enable", String(params.fbcache_enable ?? false));
   formData.append("fbcache_threshold", String(params.fbcache_threshold ?? 0.12));
   formData.append("fbcache_warmup_steps", String(params.fbcache_warmup_steps ?? 1));

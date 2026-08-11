@@ -142,7 +142,12 @@ from diffusers.models.embeddings import TimestepEmbedding, Timesteps
 from diffusers.models.modeling_utils import ModelMixin
 
 from core.attention import AttentionMode, dispatch_attention
-from core.models.minimax_h3.adaln_chunking import chunked_ada_modulate, chunked_norm_out, gated_residual_add
+from core.models.minimax_h3.adaln_chunking import (
+    chunked_ada_modulate,
+    chunked_norm_out,
+    chunked_norm_out_proj_fused,
+    gated_residual_add,
+)
 from core.models.minimax_h3.ff_chunking import chunked_feed_forward
 from core.models.minimax_h3.rope_inplace import apply_rotary_emb as _apply_rotary_emb
 
@@ -714,6 +719,10 @@ class MiniMaxH3Transformer3DModel(ModelMixin, ConfigMixin, AttentionMixin, PeftA
         self.audio_proj_out = nn.Linear(hidden_size, audio_in_channels, bias=True)
 
         self.gradient_checkpointing = False
+        # SushiUI addition: opt-in, NOT bit-exact -- see
+        # `core.models.minimax_h3.adaln_chunking`'s "Head fusion" note. Set from
+        # `params["fuse_output_proj"]` by `MiniMaxH3Mixin._ensure_minimax_h3_swap_and_offload`.
+        self.fuse_output_proj = False
 
     # SushiUI addition: attention-backend selection for the unified conduit.
     def _stamp_attention_backend(self) -> None:
@@ -850,9 +859,18 @@ class MiniMaxH3Transformer3DModel(ModelMixin, ConfigMixin, AttentionMixin, PeftA
         # SushiUI modification: `out_dtype` is now passed into `norm_out` rather than cast afterwards --
         # see `MiniMaxH3AdaLayerNormOut.forward` / `adaln_chunking.chunked_norm_out`. The
         # `MiniMaxH3BlockLoopWrapper._custom_forward` call site must be kept in sync with this one.
-        hidden_states = self.norm_out(hidden_states, temb, timestep_indices, out_dtype=self.proj_out.weight.dtype)
-        video_output = self.proj_out(hidden_states).index_select(1, video_indices)
-        audio_output = self.audio_proj_out(hidden_states).index_select(1, audio_indices)
+        # SushiUI addition: `fuse_output_proj` (opt-in, not bit-exact) folds `proj_out` /
+        # `audio_proj_out` into the same chunk loop -- see `adaln_chunking.py`'s "Head fusion" note.
+        if self.fuse_output_proj:
+            video_output, audio_output = chunked_norm_out_proj_fused(
+                self.norm_out, hidden_states, temb, timestep_indices, self.proj_out, self.audio_proj_out
+            )
+            video_output = video_output.index_select(1, video_indices)
+            audio_output = audio_output.index_select(1, audio_indices)
+        else:
+            hidden_states = self.norm_out(hidden_states, temb, timestep_indices, out_dtype=self.proj_out.weight.dtype)
+            video_output = self.proj_out(hidden_states).index_select(1, video_indices)
+            audio_output = self.audio_proj_out(hidden_states).index_select(1, audio_indices)
 
         if not return_dict:
             return (video_output, audio_output)

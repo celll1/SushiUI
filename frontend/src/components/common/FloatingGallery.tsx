@@ -5,8 +5,22 @@ import { Image as ImageIcon } from "lucide-react";
 import ImageViewer from "./ImageViewer";
 import { isVideoUrl, isAudioUrl, posterUrlForVideo } from "@/utils/previewStorage";
 
+/** One entry in the shared top-right recent-results strip. */
+export interface GalleryEntry {
+  url: string;
+  timestamp: number;
+  // When the producing panel knows the kind up front it is passed through
+  // directly; when absent (e.g. an older caller) it is inferred from `url`'s
+  // extension, same as before.
+  kind?: "image" | "video" | "audio";
+  // Browser-playable URL, when it differs from `url` (e.g. `url` is a
+  // video_lossless FFV1-in-mkv master no browser can decode, and this is its
+  // H.264 mp4 proxy). Falls back to `url` when absent.
+  playbackUrl?: string;
+}
+
 interface FloatingGalleryProps {
-  images: Array<{ url: string; timestamp: number }>;
+  images: GalleryEntry[];
   maxImages: number;
 }
 
@@ -17,12 +31,6 @@ export default function FloatingGallery({ images, maxImages }: FloatingGalleryPr
 
   // Limit to most recent results
   const displayImages = images.slice(-maxImages);
-
-  // Video/audio results reach this strip through the same onImageGenerated
-  // callback as images, so entries are keyed by media type rather than assumed
-  // to be images. The full-size ImageViewer only understands images, so it is
-  // driven by an image-only sub-list (indices below are into that list).
-  const viewerImages = displayImages.filter((entry) => !isVideoUrl(entry.url) && !isAudioUrl(entry.url));
 
   // Monitor editor state changes
   useEffect(() => {
@@ -50,12 +58,17 @@ export default function FloatingGallery({ images, maxImages }: FloatingGalleryPr
     return null;
   }
 
+  const kindOf = (entry: GalleryEntry): "image" | "video" | "audio" =>
+    entry.kind ?? (isVideoUrl(entry.url) ? "video" : isAudioUrl(entry.url) ? "audio" : "image");
+
+  const playbackUrlOf = (entry: GalleryEntry): string => entry.playbackUrl || entry.url;
+
   const handleNavigate = (direction: 'prev' | 'next') => {
     if (viewerImageIndex === null) return;
 
     if (direction === 'prev' && viewerImageIndex > 0) {
       setViewerImageIndex(viewerImageIndex - 1);
-    } else if (direction === 'next' && viewerImageIndex < viewerImages.length - 1) {
+    } else if (direction === 'next' && viewerImageIndex < displayImages.length - 1) {
       setViewerImageIndex(viewerImageIndex + 1);
     }
   };
@@ -89,34 +102,33 @@ export default function FloatingGallery({ images, maxImages }: FloatingGalleryPr
       `}>
         <div className="flex items-center gap-2 overflow-x-auto scrollbar-thin scrollbar-thumb-gray-600 scrollbar-track-gray-800">
           {displayImages.map((image, index) => {
-            const video = isVideoUrl(image.url);
-            const audio = !video && isAudioUrl(image.url);
-            const viewerIndex = video || audio ? -1 : viewerImages.indexOf(image);
+            const kind = kindOf(image);
+            const playbackUrl = playbackUrlOf(image);
             return (
               <div
                 key={`${image.timestamp}-${index}`}
-                className={`flex-shrink-0 hover:opacity-80 transition-opacity ${viewerIndex >= 0 ? "cursor-pointer" : ""}`}
-                onDoubleClick={() => {
-                  if (viewerIndex >= 0) setViewerImageIndex(viewerIndex);
-                }}
+                className="flex-shrink-0 hover:opacity-80 transition-opacity cursor-pointer"
+                onDoubleClick={() => setViewerImageIndex(index)}
               >
-                {video ? (
+                {kind === "video" ? (
                   // Static tile: `poster` points at the poster PNG the backend
-                  // writes next to every clip, so a thumbnail shows without
-                  // fetching video data (a missing poster degrades to the
-                  // browser's own first-frame handling). Deliberately not
-                  // autoplaying -- this strip can hold dozens of results. The
-                  // clip is playable full-size in the panel that produced it.
+                  // writes next to every clip (keyed off the master `url`, not
+                  // the playback proxy), so a thumbnail shows without fetching
+                  // video data (a missing poster degrades to the browser's own
+                  // first-frame handling). `src` is the playback URL, since a
+                  // video_lossless master (FFV1-in-mkv) is not browser-playable.
+                  // Deliberately not autoplaying -- this strip can hold dozens
+                  // of results.
                   <video
-                    src={image.url}
+                    src={playbackUrl}
                     poster={posterUrlForVideo(image.url)}
                     className="h-24 w-auto object-contain rounded border border-gray-700"
                     preload="metadata"
                     muted
                     playsInline
                   />
-                ) : audio ? (
-                  <audio src={image.url} controls className="h-24 w-56 rounded border border-gray-700" />
+                ) : kind === "audio" ? (
+                  <audio src={playbackUrl} controls className="h-24 w-56 rounded border border-gray-700" />
                 ) : (
                   <img
                     src={image.url}
@@ -130,13 +142,19 @@ export default function FloatingGallery({ images, maxImages }: FloatingGalleryPr
         </div>
       </div>
 
-      {viewerImageIndex !== null && viewerImages[viewerImageIndex] && (
+      {viewerImageIndex !== null && displayImages[viewerImageIndex] && (
         <ImageViewer
-          imageUrl={viewerImages[viewerImageIndex].url}
+          imageUrl={playbackUrlOf(displayImages[viewerImageIndex])}
+          kind={kindOf(displayImages[viewerImageIndex])}
+          posterUrl={
+            kindOf(displayImages[viewerImageIndex]) === "video"
+              ? posterUrlForVideo(displayImages[viewerImageIndex].url)
+              : undefined
+          }
           onClose={() => setViewerImageIndex(null)}
           onNavigate={handleNavigate}
           hasPrev={viewerImageIndex > 0}
-          hasNext={viewerImageIndex < viewerImages.length - 1}
+          hasNext={viewerImageIndex < displayImages.length - 1}
         />
       )}
     </>

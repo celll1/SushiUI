@@ -466,7 +466,10 @@ const LAST_FRAME_STORAGE_KEY = "img2img_last_frame_image";
 type ExtraAnchor = { kind: "keyframe"; index: number } | { kind: "last" };
 
 interface Img2ImgPanelProps {
-  onImageGenerated?: (imageUrl: string) => void;
+  // opts.kind/playbackUrl let the shared top-right strip (FloatingGallery)
+  // render video/audio results correctly instead of guessing from the URL
+  // extension and falling back to a non-playable master URL.
+  onImageGenerated?: (imageUrl: string, opts?: { kind?: "image" | "video" | "audio"; playbackUrl?: string }) => void;
   onTabChange?: (tab: "txt2img" | "img2img" | "inpaint" | "outpaint" | "upscale") => void;
 }
 
@@ -2895,7 +2898,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         setGeneratedAudioInfo(audioInfo);
         setGeneratedAudioParams(audioParams);
         publishCompletedResult({ panel: "img2img", kind: "audio", url: audioUrl, info: audioInfo, params: audioParams });
-        if (onImageGenerated) onImageGenerated(audioUrl);
+        if (onImageGenerated) onImageGenerated(audioUrl, { kind: "audio" });
         isGeneratingRef.current = false;
         setIsGenerating(false);
         setProgress(0);
@@ -2968,7 +2971,12 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
           playbackUrl: videoPlaybackUrl !== videoUrl ? videoPlaybackUrl : undefined,
           info: videoInfo, seed: videoSeed, params: nextItem.params,
         });
-        if (onImageGenerated) onImageGenerated(videoUrl);
+        if (onImageGenerated) {
+          onImageGenerated(videoUrl, {
+            kind: "video",
+            playbackUrl: videoPlaybackUrl !== videoUrl ? videoPlaybackUrl : undefined,
+          });
+        }
 
         // Video-length chain (this segment may be segment 1 of one): advance
         // to the next queued step, or stop the chain with a reason. A no-op
@@ -3056,7 +3064,12 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
           playbackUrl: videoPlaybackUrl !== videoUrl ? videoPlaybackUrl : undefined,
           info: videoInfo, seed: videoSeed, params: nextItem.params,
         });
-        if (onImageGenerated) onImageGenerated(videoUrl);
+        if (onImageGenerated) {
+          onImageGenerated(videoUrl, {
+            kind: "video",
+            playbackUrl: videoPlaybackUrl !== videoUrl ? videoPlaybackUrl : undefined,
+          });
+        }
 
         const chainOutcome = await advanceVideoChain({
           caps: archCapabilities,
@@ -3145,7 +3158,12 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
           playbackUrl: videoPlaybackUrl !== videoUrl ? videoPlaybackUrl : undefined,
           info: videoInfo, seed: videoSeed, params: nextItem.params,
         });
-        if (onImageGenerated) onImageGenerated(videoUrl);
+        if (onImageGenerated) {
+          onImageGenerated(videoUrl, {
+            kind: "video",
+            playbackUrl: videoPlaybackUrl !== videoUrl ? videoPlaybackUrl : undefined,
+          });
+        }
 
         const chainOutcome = await advanceVideoChain({
           caps: archCapabilities,
@@ -3326,7 +3344,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
 
       // Notify parent component (skip for latent-only steps — nothing to show)
       if (onImageGenerated && imageUrl) {
-        onImageGenerated(imageUrl);
+        onImageGenerated(imageUrl, { kind: "image" });
       }
 
       // If this item has a loop group, update the next loop step's input image, prompt, and ControlNets

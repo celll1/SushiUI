@@ -752,7 +752,7 @@ def test_temporal_spec_matches_the_measured_grid():
     assert spec.snap_length(130) == 141
     assert spec.snap_length(125) == 141
     assert spec.snap_length(141) == 141
-    assert spec.snap_length(400) == 345
+    assert spec.snap_length(400) == 362
     assert spec.snap_length(30) == 124
     # The smoke gate lowers the floor to the VAE's, and rounding is still up.
     assert spec.snap_length(30, smoke=True) == 39

@@ -273,6 +273,16 @@ class TemporalSpec:
     # reachable through ordinary API validation. Set the variable in a shell that
     # is deliberately running a short clip; the request still warns.
     smoke_override_env: str = "SUSHI_TEMPORAL_SMOKE"
+    # Environment gate that RAISES the PRODUCTION ceiling past `max_frames`,
+    # the mirror image of `smoke_override_env` on the other end of the range.
+    # `max_frames` is a DOCUMENTED bound (see `MINIMAX_H3_TEMPORAL`'s comment),
+    # not a hard decoder limit the way `min_decodable_frames` is, so a caller
+    # who deliberately wants to probe past it may -- but every request that
+    # lands past `max_frames` while this is set is warned as untested, because
+    # nothing here has measured that quality holds beyond the documented top.
+    # None means the arch has not opted in (only MiniMax-H3 sets it; LTX-2.3's
+    # `max_frames` is already None, i.e. already uncapped).
+    max_override_env: Optional[str] = None
 
     @property
     def resample_policy(self) -> str:
@@ -303,6 +313,14 @@ class TemporalSpec:
         """The effective minimum clip length -- production, or the VAE floor."""
         return self.min_decodable_frames if smoke else max(self.min_frames, self.min_decodable_frames)
 
+    def ceiling(self, uncapped: bool = False) -> Optional[int]:
+        """The effective maximum clip length -- production, or lifted by
+        `max_override_env`. ``uncapped=True`` removes the grid's TOP bound
+        only; `is_valid_length` and the grid arithmetic are unaffected, so an
+        uncapped request still has to land on ``k * frame_multiple +
+        frame_offset``, it is just no longer clamped to `max_frames`."""
+        return None if uncapped else self.max_frames
+
     def is_valid_length(self, num_frames: int) -> bool:
         """True when ``num_frames`` is on the grid and decodable."""
         return (
@@ -311,17 +329,24 @@ class TemporalSpec:
             and num_frames >= self.frame_offset
         )
 
-    def snap_length(self, num_frames: int, smoke: bool = False) -> int:
+    def snap_length(self, num_frames: int, smoke: bool = False, uncapped: bool = False) -> int:
         """The next valid length AT OR ABOVE ``num_frames``, inside the bounds.
 
         Rounds UP, which is what MiniMax-H3's own reference implementation does
         (`align_num_frames` rounds a requested length up to the next encodable
         one): a snap therefore never drops content the caller asked for. It is
-        clamped into ``[floor, max_frames]`` on the grid, so an over-long
-        request still lands on the largest length the model can generate.
+        clamped into ``[floor, ceiling(uncapped)]`` on the grid, so an
+        over-long request still lands on the largest length the model can
+        generate -- unless ``uncapped`` lifts that top, in which case the
+        request only rounds up onto the grid and is not clamped at all. Pass
+        ``uncapped`` from the SAME environment check the caller used to decide
+        whether to accept the request in the first place: this method has no
+        access to `max_override_env` on its own, so a caller that decides
+        "uncapped" but calls this with the default `False` silently re-imposes
+        the cap it meant to lift.
         """
         lo = self.floor(smoke)
-        hi = self.max_frames
+        hi = self.ceiling(uncapped)
         # Ceiling division onto the grid, then clamp into [lo, hi] on the grid.
         k = -(-(num_frames - self.frame_offset) // self.frame_multiple)
         k_lo = -(-(lo - self.frame_offset) // self.frame_multiple)
@@ -368,20 +393,30 @@ LTX2_TEMPORAL = TemporalSpec(
     # model evaluation. N steps = N evaluations, minimum 1.
 )
 
-# MiniMax-H3. Everything here is MEASURED (Phase 0):
+# MiniMax-H3. Everything here is MEASURED (Phase 0), except the top of the
+# production range, which is DOCUMENTED (not independently measured here):
 #   * valid T = 17n + 5 for n >= 1 -- T = 5 is on the grid but its 2 latent
 #     frames cannot be decoded (`num_chunks` = 0), so 22 frames / 0.917 s is the
 #     hard decodable floor;
 #   * latent_frames(T) = ceil(T/17)*5 - 3 (ComfyUI's own formula agrees only ON
 #     the grid and disagrees off it, so this form is the one to use);
-#   * production bounds 124-345: ComfyUI's node pins the trained range at
-#     ~124-362 and the official README states 4-15 s output, and 345 = 17*20+5
-#     = 14.375 s is the largest grid point <= 15 s. The README's 4 s figure
-#     (107 frames) describes the hosted product; the API floor follows the
-#     trained-range floor instead, and the discrepancy is recorded here rather
-#     than left to look like an oversight.
+#   * production bounds 124-362: ComfyUI's node states the trained range as
+#     "~124-362, longer is untested", and 362 = 17*21+5 = 15.083 s is the grid
+#     point AT that stated top. An earlier version of this spec used 345 =
+#     17*20+5 = 14.375 s instead -- the largest grid point BELOW 15 s -- read
+#     off the official README's "output 4-15 s" prose as a strict ceiling. That
+#     reading was a rounding mistake, not a second, more conservative source:
+#     345 undersold ComfyUI's own stated top of the trained range by one grid
+#     step, so this is a correction, not a relaxation. The 17n+5 grid itself is
+#     structural (VAE clip_length=17, temporal_compression=4, token_drop=3, all
+#     measured), so 362 is a valid length by construction; nothing above has
+#     been generated and inspected to confirm quality holds all the way to it,
+#     which is exactly what ComfyUI's "untested" qualifier is flagging. The
+#     README's 4 s figure (107 frames) describes the hosted product; the API
+#     floor follows the trained-range floor (124) instead, and that
+#     floor-side discrepancy is unaffected by this correction.
 MINIMAX_H3_TEMPORAL = TemporalSpec(
-    frame_multiple=17, frame_offset=5, min_frames=124, max_frames=345,
+    frame_multiple=17, frame_offset=5, min_frames=124, max_frames=362,
     min_decodable_frames=22,
     latent_frames=lambda t: 1 if t <= 1 else -(-t // 17) * 5 - 3,
     fps_fixed=24.0, default_clip_lengths=(22, 39),
@@ -397,6 +432,12 @@ MINIMAX_H3_TEMPORAL = TemporalSpec(
     # The video VAE's temporal chunking, MEASURED and already relied on by
     # `h3_pipeline_ops._clip_pixel_frames` / the rotary time grid.
     latent_chunk_pattern=(1, 4, 4, 4, 4),
+    # The ceiling-side analogue of `smoke_override_env`: lifts `max_frames`
+    # (362, DOCUMENTED, not a decoder limit) for a deliberate probe past the
+    # trained range. Every request this actually raises above 362 is warned as
+    # untested (`generation_utils.validate_video_geometry`) -- there is
+    # no silent path past the documented top.
+    max_override_env="SUSHI_TEMPORAL_UNCAPPED",
 )
 
 TEMPORAL_SPECS: Dict[str, TemporalSpec] = {

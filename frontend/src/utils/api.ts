@@ -1386,7 +1386,7 @@ export const normalizeVideoFrames = (
     Math.abs(n - frames) < Math.abs(best - frames) ? n : best, offered[0]);
 };
 
-// Label for that control, stating the arch's own rule ("17n+5, 124-345") rather
+// Label for that control, stating the arch's own rule ("17n+5, 124-362") rather
 // than a hardcoded "8k+1".
 export const videoFrameLabel = (
   caps: ArchCapabilities | null | undefined,

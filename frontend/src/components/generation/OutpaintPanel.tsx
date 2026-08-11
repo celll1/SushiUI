@@ -32,6 +32,7 @@ import MiniMaxH3ReferenceSelector from "../common/MiniMaxH3ReferenceSelector";
 import H3PromptAssist from "../common/H3PromptAssist";
 import ImageViewer from "../common/ImageViewer";
 import PostEditControls from "../common/PostEditControls";
+import VideoAccelerationControls from "../common/VideoAccelerationControls";
 import { PostEditState, NEUTRAL_POST_EDIT, buildFilterString } from "@/utils/postEdit";
 import { usePostEditPreview } from "@/hooks/usePostEditPreview";
 import { useSmoothProgress } from "@/hooks/useSmoothProgress";
@@ -67,6 +68,7 @@ import {
   isGenerationStalledError,
   archSupportsFeature,
   snapUpValidVideoFrameCount,
+  VIDEO_BLOCK_SWAP_MAX,
 } from "@/utils/api";
 import { createH3ReferenceInventory, maybeTransformH3PromptForGeneration } from "@/utils/h3PromptAssist";
 import { readGlobalAttentionType } from "@/utils/attentionSettings";
@@ -1442,6 +1444,12 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
   // supports both. This matches the other panels' leaf-control convention.
   const supportsSpectrum = archSupportsFeature(archCapabilities, loadedArchType, "spectrum");
   const supportsFbcache = archSupportsFeature(archCapabilities, loadedArchType, "fbcache");
+  // The value the Block Swap checkbox writes when turned ON (backend SSOT:
+  // param_defaults.VIDEO_GEN_DEFAULTS["blocks_to_swap_enabled_default"]). The
+  // `?? 40` fallback only matters before /schema/generation-defaults answers.
+  const videoBlocksToSwapEnabledDefault =
+    (generationDefaults?.outpaint_vid as Record<string, unknown> | undefined)
+      ?.blocks_to_swap_enabled_default as number ?? 40;
   const supportsNegativePrompt = !isAudio
     && archSupportsFeature(archCapabilities, loadedArchType, "negative_prompt");
   const outpaintPlacements = videoOutpaintPlacements(archCapabilities, loadedArchType);
@@ -4553,100 +4561,15 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
             </p>
           )}
 
-          <div className="text-sm font-semibold text-gray-400 mt-4 mb-1">Acceleration</div>
-
-          <div className="flex items-center gap-2">
-            <input
-              type="checkbox"
-              id="outpaint_vid_block_swap_enable"
-              checked={(params.video_blocks_to_swap ?? 0) > 0}
-              onChange={(e) => setParams({ ...params, video_blocks_to_swap: e.target.checked ? 10 : 0 })}
-              className="rounded"
-            />
-            <label htmlFor="outpaint_vid_block_swap_enable" className="text-sm text-gray-300">
-              Block Swap (Transformer offloading)
-            </label>
-          </div>
-          {(params.video_blocks_to_swap ?? 0) > 0 && (
-            <div className="ml-6 mt-1">
-              {/* NumberInput puts `label` on aria-label only and renders no
-                  visible text, so the caption is drawn here (the same way the
-                  image panels' number fields are wrapped). */}
-              <label className="block text-xs text-gray-400 mb-1">Blocks to swap</label>
-              <NumberInput
-                label="Blocks to swap"
-                value={params.video_blocks_to_swap ?? 10}
-                onCommit={(v) => setParams({ ...params, video_blocks_to_swap: Math.max(1, v) })}
-                min={1}
-                max={48}
-                step={1}
-                parse="int"
-                className="w-24"
-              />
-            </div>
-          )}
-
-          {supportsSpectrum && (
-          <div className="flex items-center gap-2 mt-2">
-            <input
-              type="checkbox"
-              id="outpaint_vid_spectrum_enable"
-              checked={params.spectrum_enable || false}
-              onChange={(e) => setParams({ ...params, spectrum_enable: e.target.checked })}
-              className="rounded"
-            />
-            <label htmlFor="outpaint_vid_spectrum_enable" className="text-sm text-gray-300">
-              Spectrum (Spectral Feature Forecasting)
-            </label>
-            <span className="text-xs text-gray-500">(mutually exclusive with FBCache; disabled if Block Swap is on)</span>
-          </div>
-          )}
-          {supportsSpectrum && params.spectrum_enable && (
-            <div className="ml-6 mt-1 grid grid-cols-2 gap-2">
-              <label className="text-xs text-gray-400 flex items-center gap-1">Mix w
-                <input type="number" min={0} max={1} step={0.05} value={params.spectrum_w ?? 0.5}
-                  onChange={(e) => setParams({ ...params, spectrum_w: parseFloat(e.target.value) })}
-                  className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs" />
-              </label>
-              <label className="text-xs text-gray-400 flex items-center gap-1">Warmup
-                <input type="number" min={1} step={1} value={params.spectrum_warmup_steps ?? 3}
-                  onChange={(e) => setParams({ ...params, spectrum_warmup_steps: parseInt(e.target.value) || 3 })}
-                  className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs" />
-              </label>
-            </div>
-          )}
-
-          {supportsFbcache && (
-          <div className="flex items-center gap-2 mt-2">
-            <input
-              type="checkbox"
-              id="outpaint_vid_fbcache_enable"
-              checked={params.fbcache_enable || false}
-              onChange={(e) => setParams({ ...params, fbcache_enable: e.target.checked })}
-              className="rounded"
-            />
-            <label htmlFor="outpaint_vid_fbcache_enable" className="text-sm text-gray-300">
-              First Block Cache (dynamic caching)
-            </label>
-            <span className="text-xs text-gray-500">(mutually exclusive with Spectrum)</span>
-          </div>
-          )}
-          {supportsFbcache && params.fbcache_enable && (
-            <div className="ml-6 mt-1 grid grid-cols-2 gap-2">
-              <label className="text-xs text-gray-400 flex items-center gap-1">Residual threshold
-                <NumberInput min={0} step={0.01} parse="float" value={params.fbcache_threshold ?? 0.12}
-                  defaultValue={0.12}
-                  onCommit={(v) => setParams({ ...params, fbcache_threshold: v })}
-                  className="w-20" />
-              </label>
-              <label className="text-xs text-gray-400 flex items-center gap-1">Warmup steps
-                <NumberInput min={0} step={1} value={params.fbcache_warmup_steps ?? 1}
-                  defaultValue={1}
-                  onCommit={(v) => setParams({ ...params, fbcache_warmup_steps: v })}
-                  className="w-20" />
-              </label>
-            </div>
-          )}
+          <VideoAccelerationControls
+            idPrefix="outpaint_vid"
+            values={params}
+            onChange={(patch) => setParams({ ...params, ...patch })}
+            supportsSpectrum={supportsSpectrum}
+            supportsFbcache={supportsFbcache}
+            blocksToSwapEnabledDefault={videoBlocksToSwapEnabledDefault}
+            blockSwapMax={VIDEO_BLOCK_SWAP_MAX}
+          />
         </Card>
         )}
 

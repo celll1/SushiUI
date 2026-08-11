@@ -76,13 +76,63 @@ export interface ChainContinuationBase {
   // to every continuation segment so a LoRA applied to segment 1 stays applied
   // for the whole chain, not just the capped first request.
   loras?: LoRAConfig[];
+  // Block-swap CPU offload (Txt2VidParams/Img2VidParams/Ref2VidParams'
+  // `blocks_to_swap`, itself sourced from the panel's video-specific
+  // `video_blocks_to_swap` state). Carried to every continuation segment: a
+  // user who enabled it because their card cannot hold the model resident
+  // needs EVERY segment to run with it, not just the capped first request --
+  // dropping it on segments 2..N is a real OOM on the exact machine that
+  // needed the setting, not just a slowdown.
+  blocks_to_swap?: number;
+  // FBCache/Spectrum acceleration (see VideoAccelerationControls, shared by
+  // every video-capable panel). Carried to every continuation segment for the
+  // same reason `blocks_to_swap` is: a user who enabled one because their
+  // card cannot hold the model resident at full speed needs EVERY segment to
+  // run with it, not just the capped first request.
+  fbcache_enable?: boolean;
+  fbcache_threshold?: number;
+  fbcache_warmup_steps?: number;
+  spectrum_enable?: boolean;
+  spectrum_w?: number;
+  spectrum_w_decay?: number;
+  spectrum_delta_cap?: number;
+  spectrum_m?: number;
+  spectrum_lam?: number;
+  spectrum_warmup_steps?: number;
+  spectrum_window_size?: number;
+  spectrum_flex_window?: number;
+  spectrum_tail?: number;
+  spectrum_max_cache?: number;
 }
 
 // The Txt2VidParams/Img2VidParams/Ref2VidParams -> OutpaintVideoParams
 // mapping a continuation segment sends, in ONE place (previously duplicated,
 // near-verbatim, in both Txt2ImgPanel and Img2ImgPanel). `total_frames` is
-// the only field that changes segment to segment; everything else replays the
-// request that started the chain unchanged.
+// the only field that changes segment to segment; everything else -- content
+// (prompt/geometry/steps/guidance/seed) AND execution/acceleration
+// (blocks_to_swap, quantization, LoRAs) -- replays the request that started
+// the chain unchanged. Segments 2..N are one clip to the user, not N
+// independent requests, so an execution setting the user picked for a real
+// reason (most concretely: block swap because the card cannot hold the model
+// resident) has to hold for every segment or a later one can OOM on the exact
+// machine that needed it.
+//
+// `attention_type` is NOT part of `ChainContinuationBase` even though the
+// endpoint accepts it: `generateOutpaintVideo` (api.ts) resolves it itself at
+// SEND time via `resolveGlobalAttentionType`, the same as every other video
+// route, from the current global localStorage setting -- not from whatever
+// value happened to be on the object passed in. Every segment of a chain already
+// reads that same global at its own send time, so it is already consistent
+// across the whole chain with no field needed here; adding one would just be
+// a second, stale source fighting the resolver.
+//
+// `fbcache_enable`/`spectrum_*` ARE part of `ChainContinuationBase`: both
+// Txt2ImgPanel and Img2ImgPanel's video-mode Acceleration section
+// (`VideoAccelerationControls`) now sets them on the SAME `params` fields the
+// still-image Acceleration tab uses, and `Txt2VidParams`/`generateTxt2Vid`
+// (and the img2vid/ref2vid equivalents) read and send them on segment 1 --
+// so segment 1 has a real setting to replay, and every continuation replays
+// it exactly like `blocks_to_swap`.
 //
 // Deliberately NOT carried over (each is a real, disclosed limitation of
 // what a continuation segment can condition on -- see the chain-choice
@@ -123,6 +173,21 @@ export function buildChainContinuationParams(
     quantized_gemm_mode: base.quantized_gemm_mode,
     reference_image_size: referenceImageSize,
     loras: base.loras,
+    blocks_to_swap: base.blocks_to_swap,
+    fbcache_enable: base.fbcache_enable,
+    fbcache_threshold: base.fbcache_threshold,
+    fbcache_warmup_steps: base.fbcache_warmup_steps,
+    spectrum_enable: base.spectrum_enable,
+    spectrum_w: base.spectrum_w,
+    spectrum_w_decay: base.spectrum_w_decay,
+    spectrum_delta_cap: base.spectrum_delta_cap,
+    spectrum_m: base.spectrum_m,
+    spectrum_lam: base.spectrum_lam,
+    spectrum_warmup_steps: base.spectrum_warmup_steps,
+    spectrum_window_size: base.spectrum_window_size,
+    spectrum_flex_window: base.spectrum_flex_window,
+    spectrum_tail: base.spectrum_tail,
+    spectrum_max_cache: base.spectrum_max_cache,
   };
 }
 

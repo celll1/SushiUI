@@ -758,8 +758,28 @@ VIDEO_GEN_DEFAULTS: Dict[str, Any] = {
     "audio_enable": True,            # mux the generated audio track into the mp4
     # AP1: block-swap generation. Number of transformer_blocks kept CPU-resident
     # (weights streamed to GPU during the denoise loop). 0 = disabled (stock
-    # enable_model_cpu_offload path, transformer fully GPU-resident).
+    # enable_model_cpu_offload path, transformer fully GPU-resident) and stays
+    # the request default -- opt-in, not forced on -- since a machine that
+    # already fits the model should not pay a swap cost it does not need.
     "blocks_to_swap": 0,
+    # UI-ONLY (not a request field; not read by any /generate/* route): the
+    # value the four video panels' Block Swap checkbox writes when a user
+    # turns it ON, so that value lives in one place instead of a literal
+    # repeated in Txt2Img/Img2Img/Inpaint/Outpaint panels.
+    #
+    # Measured on MiniMax-H3 (50 transformer blocks) at 768x1248x345 frames on
+    # an RTX 6000 Ada, peak reserved VRAM and step time per `blocks_to_swap`:
+    #   0  -> 36.139 GiB, 203.0 s/forward (swap off)
+    #   20 -> 32.346 GiB (-10.5%), 203.1 s
+    #   40 -> 28.518 GiB (-21%),   203.0 s
+    #   49 (max; engages FF chunking) -> 24.510 GiB
+    # Step time was flat across all of these (+1.4% end to end, at or inside
+    # run-to-run noise): going through the block-loop wrapper is a fixed cost,
+    # not a per-block transfer cost, so a small swap count pays the same fixed
+    # cost as a large one while saving much less VRAM. 40 gets most of the
+    # measured savings (-21%, vs -10.5% at 20) without also engaging the
+    # max-value FF-chunking path (49), which is a distinct behaviour change.
+    "blocks_to_swap_enabled_default": 40,
     # AP2: First-Block-Cache (dynamic per-step trajectory-redundancy skip). Only
     # available when the transformer runs through Ltx2BlockLoopWrapper (either
     # because blocks_to_swap > 0, or the wrapper is force-attached for FBCache

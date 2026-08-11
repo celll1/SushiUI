@@ -23,6 +23,7 @@ import TIPODialog, { TIPOSettings } from "../common/TIPODialog";
 import FloatingGallery from "../common/FloatingGallery";
 import ImageViewer from "../common/ImageViewer";
 import PostEditControls from "../common/PostEditControls";
+import VideoAccelerationControls from "../common/VideoAccelerationControls";
 import { PostEditState, NEUTRAL_POST_EDIT, buildFilterString } from "@/utils/postEdit";
 import { usePostEditPreview } from "@/hooks/usePostEditPreview";
 import GenerationQueue from "../common/GenerationQueue";
@@ -36,7 +37,7 @@ import ResizableColumns, {
 import LoopGenerationPanel, { LoopGenerationConfig } from "./LoopGenerationPanel";
 import QuantizedGemmSelect from "./QuantizedGemmSelect";
 import { migrateLoopGenerationConfig, computeLoopDecodeDirective } from "@/utils/loopGenerationInheritance";
-import { getSamplers, getScheduleTypes, generateInpaint, generateInpaintVideo, generateInpaintTrainingPreview, toBase64, InpaintParams as ApiInpaintParams, InpaintVideoParams, LoRAConfig, ControlNetConfig, generateTIPOPrompt, cancelGeneration, getCurrentModel, getResultFilename, getResultPlaybackFilename, getResultSeed, getResultAncestralSeed, isLatentOnlyResult, unetQuantizationOptions, normalizeUnetQuantization, transformerQuantizationLabel, archSupportsFeature, archDisplayName, inpaintVideoDefaultsForArch, fitVideoCanvas, videoCanvasRule, videoCanvasAxisBounds, videoCanvasExceedsEnvelope, largestValidVideoFrameCount, isValidVideoFrameCount, latentGroupSpans, snapRangeToLatentGroups, isGenerationStalledError } from "@/utils/api";
+import { getSamplers, getScheduleTypes, generateInpaint, generateInpaintVideo, generateInpaintTrainingPreview, toBase64, InpaintParams as ApiInpaintParams, InpaintVideoParams, LoRAConfig, ControlNetConfig, generateTIPOPrompt, cancelGeneration, getCurrentModel, getResultFilename, getResultPlaybackFilename, getResultSeed, getResultAncestralSeed, isLatentOnlyResult, unetQuantizationOptions, normalizeUnetQuantization, transformerQuantizationLabel, archSupportsFeature, archDisplayName, inpaintVideoDefaultsForArch, fitVideoCanvas, videoCanvasRule, videoCanvasAxisBounds, videoCanvasExceedsEnvelope, largestValidVideoFrameCount, isValidVideoFrameCount, latentGroupSpans, snapRangeToLatentGroups, isGenerationStalledError, VIDEO_BLOCK_SWAP_MAX } from "@/utils/api";
 import VideoInpaintRangeTimeline from "./VideoInpaintRangeTimeline";
 import { useActiveTraining } from "@/hooks/useActiveTraining";
 import { useSmoothProgress } from "@/hooks/useSmoothProgress";
@@ -669,6 +670,12 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
   // supports both. This matches the other panels' leaf-control convention.
   const supportsSpectrum = archSupportsFeature(archCapabilities, loadedArchType, "spectrum");
   const supportsFbcache = archSupportsFeature(archCapabilities, loadedArchType, "fbcache");
+  // The value the Block Swap checkbox writes when turned ON (backend SSOT:
+  // param_defaults.VIDEO_GEN_DEFAULTS["blocks_to_swap_enabled_default"]). The
+  // `?? 40` fallback only matters before /schema/generation-defaults answers.
+  const videoBlocksToSwapEnabledDefault =
+    (generationDefaults?.inpaint_vid as Record<string, unknown> | undefined)
+      ?.blocks_to_swap_enabled_default as number ?? 40;
   const temporalInpaintReason =
     loadedArchType ? archCapabilities?.unsupported?.[loadedArchType]?.temporal_inpaint : undefined;
   const videoConstraints = loadedArchType ? archCapabilities?.video_constraints?.[loadedArchType] : undefined;
@@ -5449,50 +5456,15 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
             browser&apos;s native video element.
           </p>
 
-          <div className="text-sm font-semibold text-gray-400 mt-4 mb-1">Acceleration</div>
-
-          <div className="flex items-center gap-2">
-            <input
-              type="checkbox"
-              id="inpaint_vid_block_swap_enable"
-              checked={(params.video_blocks_to_swap ?? 0) > 0}
-              onChange={(e) => setParams({ ...params, video_blocks_to_swap: e.target.checked ? 10 : 0 })}
-              className="rounded"
-            />
-            <label htmlFor="inpaint_vid_block_swap_enable" className="text-sm text-gray-300">
-              Block Swap (Transformer offloading)
-            </label>
-          </div>
-          {(params.video_blocks_to_swap ?? 0) > 0 && (
-            <div className="ml-6 mt-1">
-              <label className="block text-xs text-gray-400 mb-1">Blocks to swap</label>
-              <NumberInput
-                label="Blocks to swap"
-                value={params.video_blocks_to_swap ?? 10}
-                onCommit={(v) => setParams({ ...params, video_blocks_to_swap: Math.max(1, v) })}
-                min={1}
-                max={48}
-                step={1}
-                parse="int"
-                className="w-24"
-              />
-            </div>
-          )}
-
-          {supportsFbcache && (
-          <div className="flex items-center gap-2 mt-2">
-            <input
-              type="checkbox"
-              id="inpaint_vid_fbcache_enable"
-              checked={params.fbcache_enable || false}
-              onChange={(e) => setParams({ ...params, fbcache_enable: e.target.checked })}
-              className="rounded"
-            />
-            <label htmlFor="inpaint_vid_fbcache_enable" className="text-sm text-gray-300">
-              First Block Cache (dynamic caching)
-            </label>
-          </div>
-          )}
+          <VideoAccelerationControls
+            idPrefix="inpaint_vid"
+            values={params}
+            onChange={(patch) => setParams({ ...params, ...patch })}
+            supportsSpectrum={supportsSpectrum}
+            supportsFbcache={supportsFbcache}
+            blocksToSwapEnabledDefault={videoBlocksToSwapEnabledDefault}
+            blockSwapMax={VIDEO_BLOCK_SWAP_MAX}
+          />
         </Card>
         )}
 

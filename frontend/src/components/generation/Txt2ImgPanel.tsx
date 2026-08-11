@@ -25,6 +25,7 @@ import TIPODialog, { TIPOSettings } from "../common/TIPODialog";
 import { fixFloatingPointParams } from "@/utils/numberUtils";
 import ImageViewer from "../common/ImageViewer";
 import PostEditControls from "../common/PostEditControls";
+import VideoAccelerationControls from "../common/VideoAccelerationControls";
 import { PostEditState, NEUTRAL_POST_EDIT, buildFilterString } from "@/utils/postEdit";
 import { usePostEditPreview } from "@/hooks/usePostEditPreview";
 import GenerationQueue from "../common/GenerationQueue";
@@ -42,7 +43,7 @@ import VideoFrameCountSlider from "../common/VideoFrameCountSlider";
 import VideoChainConfirmDialog from "../common/VideoChainConfirmDialog";
 import { buildChainContinuationQueueItems, advanceVideoChain } from "@/utils/videoChain";
 import { migrateLoopGenerationConfig, computeLoopDecodeDirective } from "@/utils/loopGenerationInheritance";
-import { generateTxt2Img, generateImg2Img, generateTxt2Vid, Txt2VidParams, generateRef2Vid, Ref2VidParams, generateOutpaintVideo, OutpaintVideoParams, MiniMaxH3References, MiniMaxH3Keyframe, generateTxt2Aud, Txt2AudParams, generateTxt2ImgTrainingPreview, GenerationParams, getSamplers, getScheduleTypes, tokenizePrompt, generateTIPOPrompt, cancelGeneration, getCurrentModel, isLatentOnlyResult, getResultFilename, getResultPlaybackFilename, getResultSeed, getResultAncestralSeed, unetQuantizationOptions, normalizeUnetQuantization, transformerQuantizationLabel, archSupportsFeature, archDisplayName, normalizeVideoFrames, videoCanvasRule, videoCanvasAxisBounds, videoCanvasExceedsEnvelope, isGenerationStalledError, planVideoChain, effectiveSegmentFrames } from "@/utils/api";
+import { generateTxt2Img, generateImg2Img, generateTxt2Vid, Txt2VidParams, generateRef2Vid, Ref2VidParams, generateOutpaintVideo, OutpaintVideoParams, MiniMaxH3References, MiniMaxH3Keyframe, generateTxt2Aud, Txt2AudParams, generateTxt2ImgTrainingPreview, GenerationParams, getSamplers, getScheduleTypes, tokenizePrompt, generateTIPOPrompt, cancelGeneration, getCurrentModel, isLatentOnlyResult, getResultFilename, getResultPlaybackFilename, getResultSeed, getResultAncestralSeed, unetQuantizationOptions, normalizeUnetQuantization, transformerQuantizationLabel, archSupportsFeature, archDisplayName, normalizeVideoFrames, videoCanvasRule, videoCanvasAxisBounds, videoCanvasExceedsEnvelope, isGenerationStalledError, planVideoChain, effectiveSegmentFrames, VIDEO_BLOCK_SWAP_MAX } from "@/utils/api";
 import { useActiveTraining } from "@/hooks/useActiveTraining";
 import { useSmoothProgress } from "@/hooks/useSmoothProgress";
 import { wsClient, CFGMetrics } from "@/utils/websocket";
@@ -145,6 +146,9 @@ const DEFAULT_PARAMS: GenerationParams = {
   num_videos_per_prompt: 1,
   audio_enable: true,
   max_sequence_length: 1024,
+  // Video route's block swap (see GenerationParams.video_blocks_to_swap).
+  // 0 = disabled, this endpoint's own default (opt-in).
+  video_blocks_to_swap: 0,
   // Music generation fields (used when an audio model (ACE-Step) is loaded;
   // the panel maps these into Txt2AudParams for txt2aud requests).
   lyrics: "",
@@ -478,6 +482,14 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
   // supports both. This matches the other capability-gated leaf controls.
   const supportsSpectrum = archSupportsFeature(archCapabilities, loadedArch, "spectrum");
   const supportsFbcache = archSupportsFeature(archCapabilities, loadedArch, "fbcache");
+  // The value the video Block Swap checkbox writes when turned ON (backend
+  // SSOT: param_defaults.VIDEO_GEN_DEFAULTS["blocks_to_swap_enabled_default"],
+  // identical across txt2vid/img2vid/ref2vid since there is no per-arch
+  // overlay for it). The `?? 40` fallback only matters before
+  // /schema/generation-defaults answers.
+  const videoBlocksToSwapEnabledDefault =
+    (generationDefaults?.txt2vid as Record<string, unknown> | undefined)
+      ?.blocks_to_swap_enabled_default as number ?? 40;
   // Snap a persisted clip length the LOADED video architecture does not accept
   // (LTX-2.3's 121 carried onto MiniMax-H3, whose grid starts at 124). Same
   // shape and same reason as the unet_quantization normaliser above: otherwise
@@ -1784,6 +1796,25 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         // Applied by MiniMax-H3; accepted-and-warned by LTX-2.3 (no video LoRA
         // loader). Same selector/list as image generation's `params.loras`.
         loras: params.loras,
+        // Distinct from the image mode's model-global `params.blocks_to_swap`
+        // (see GenerationParams.video_blocks_to_swap's own comment).
+        blocks_to_swap: params.video_blocks_to_swap,
+        // Acceleration: FBCache/Spectrum share the same params fields as image
+        // mode (see VideoAccelerationControls' mutual-exclusion note above).
+        fbcache_enable: params.fbcache_enable,
+        fbcache_threshold: params.fbcache_threshold,
+        fbcache_warmup_steps: params.fbcache_warmup_steps,
+        spectrum_enable: params.spectrum_enable,
+        spectrum_w: params.spectrum_w,
+        spectrum_w_decay: params.spectrum_w_decay,
+        spectrum_delta_cap: params.spectrum_delta_cap,
+        spectrum_m: params.spectrum_m,
+        spectrum_lam: params.spectrum_lam,
+        spectrum_warmup_steps: params.spectrum_warmup_steps,
+        spectrum_window_size: params.spectrum_window_size,
+        spectrum_flex_window: params.spectrum_flex_window,
+        spectrum_tail: params.spectrum_tail,
+        spectrum_max_cache: params.spectrum_max_cache,
       };
       // MiniMax-H3 ref2va with at least one reference goes to the dedicated
       // omni-reference endpoint instead: it is a different request (12
@@ -4372,6 +4403,16 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
               />
               <span className="text-gray-300 text-sm">Audio</span>
             </label>
+
+            <VideoAccelerationControls
+              idPrefix="txt2vid"
+              values={params}
+              onChange={(patch) => setParams({ ...params, ...patch })}
+              supportsSpectrum={supportsSpectrum}
+              supportsFbcache={supportsFbcache}
+              blocksToSwapEnabledDefault={videoBlocksToSwapEnabledDefault}
+              blockSwapMax={VIDEO_BLOCK_SWAP_MAX}
+            />
 
             {/* Factual notes from MiniMax's own release documentation (README +
                 prompt-writing guide + the reproducible request scripts). No

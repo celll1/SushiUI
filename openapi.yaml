@@ -1164,6 +1164,17 @@ paths:
         them. This is the inverse of `/generate/outpaint/video`, where the grid
         binds the GENERATED span, and is why the two are separate endpoints.
 
+        A trimmed length ABOVE the model's longest producible clip (362 frames
+        on MiniMax-H3) cannot be served at any setting, so it is refused
+        rather than silently head-cropped: an upfront, cheap ffprobe-only
+        check refuses it before the (bounded) decode when the estimated
+        length already exceeds the cap, and -- because that estimate can
+        UNDER-count a clip whose container/codec does not report an exact
+        frame count (e.g. VFR webm/matroska) -- the ACTUALLY DECODED length
+        is checked again afterwards with the same 400, so an over-length clip
+        is never served truncated with no error just because the fast
+        estimate happened to miss it.
+
         **Range shape.** One contiguous range per request. The measured shape is
         one span with two boundaries; a multi-range request is a different
         object and is not expressed by this API.
@@ -1228,8 +1239,11 @@ paths:
           description: >-
             Invalid parameters, or no MiniMax-H3 fl2va model loaded. Also
             returned when the TRIMMED clip is not a valid clip length (it is
-            never snapped), when the range is empty or outside the clip, or
-            when the range leaves nothing preserved.
+            never snapped) -- including when it is LONGER than the model's
+            longest producible clip (362 frames on MiniMax-H3), refused with
+            "the trimmed clip is longer than this model can produce" naming
+            the cap and the decoded length -- when the range is empty or
+            outside the clip, or when the range leaves nothing preserved.
           content:
             application/json:
               schema:
@@ -1382,6 +1396,17 @@ paths:
         FFV1 encode (`video_lossless`) keeps them exact through the FILE as
         well, since H.264 is lossy.
 
+        On LTX-2.3, when the (trimmed) clip has more frames than fit between
+        `input_offset_frames` and `total_frames` (after rounding down to the
+        8k+1 conditioning grid), the excess tail frames are dropped from the
+        preserved span rather than silently discarded from the upload: a
+        `warnings[]` entry with code `outpaint_video_tail_frames_dropped`
+        names the dropped count and the effective preserved frame range. The
+        whole (trimmed) clip is always decoded first -- this endpoint never
+        bounds the decode by `total_frames` -- so the drop reflects the
+        clip's true length, not a length already truncated before this
+        warning could see it.
+
         **÷32 preprocessing:** every frame in one output video shares one
         resolution (`width`x`height`, both required ÷32 like
         `/generate/txt2vid`). A clip whose native resolution or aspect ratio
@@ -1394,8 +1419,9 @@ paths:
         into the output timeline. On LTX-2.3, because
         `LTX2VideoCondition.index` addresses a LATENT frame (temporal
         compression 8x), it is snapped server-side to the nearest valid pixel
-        start ({0, 1, 9, 17, ..., 8m+1}) -- a warning is returned in the
-        response when snapping changes the requested offset. On MiniMax-H3 it
+        start ({0, 1, 9, 17, ..., 8m+1}) -- a `warnings[]` entry with code
+        `outpaint_video_offset_snapped` is returned when snapping changes the
+        requested offset. On MiniMax-H3 it
         selects the placement (see above) and is not snapped: a value that is
         neither boundary is a 400. `input_trim_start_frames` /
         `input_trim_end_frames` trim the UPLOADED clip itself (in the clip's
@@ -1434,7 +1460,16 @@ paths:
         - LTX-2.3: `total_frames` must satisfy `(total_frames - 1) % 8 == 0`.
           MiniMax-H3: the GENERATED span implied by `total_frames` and the
           placed clip length must be a valid `17n + 5` length in 124..362; it
-          is rounded up to that grid, with a warning, when it is not.
+          is rounded up to that grid, with a `warnings[]` entry (code
+          `outpaint_video_total_frames_adjusted`) naming the effective output
+          length, when it is not.
+        - The uploaded clip(s) are decoded in full (not bounded by
+          `total_frames`) so a too-long upload is never silently cropped
+          before this endpoint's own fit/drop logic runs (see the strict
+          preservation guarantee above); a pre-decode size check still
+          refuses (400) a clip whose raw RGB frame data would exceed this
+          endpoint's per-clip decode budget, naming the frame count,
+          resolution, and the budget in GiB.
         - **Partition/placement gate (MiniMax-H3):** `fl2va` serves every
           placement and refuses `reference_images` with a 400 (that
           partition was never trained to read reference rows). `ref2va`
@@ -1479,7 +1514,13 @@ paths:
             is sent to a non-MiniMax-H3 model or a loaded `fl2va` transformer,
             or when a `ref2va` transformer is asked for `extend_backward`,
             `bridge`, or a generated span shorter than 22 frames (see the
-            partition/placement gate above).
+            partition/placement gate above). Also returned, before either
+            upload is decoded, when `video` or `bridge_video` would need more
+            than this endpoint's per-clip decode budget of raw RGB frame data
+            to decode ("the input clip is too long/high-resolution to
+            decode" / "the bridge clip is too long/high-resolution to
+            decode"), naming the clip's probed frame count/resolution and the
+            budget.
           content:
             application/json:
               schema:

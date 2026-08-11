@@ -235,12 +235,35 @@ export interface LoRAConfig {
   step_range: [number, number];
 }
 
+// Architecture detected from a LoRA file's own key names at scan time
+// (NOT the currently loaded model). "unknown" is a first-class value.
+export type LoRAArch = "sd15" | "sdxl" | "zimage" | "flux2" | "minimax_h3" | "unknown";
+
+export interface LoRAListEntry {
+  name: string;
+  path: string;
+  arch: LoRAArch;
+}
+
+// Sampling settings a step-distillation LoRA declares itself distilled for,
+// parsed only from fields the LoRA file's own safetensors metadata declares.
+export interface LoRARecommendedSettings {
+  num_inference_steps: number;
+  fbcache_enable: boolean;
+  spectrum_enable: boolean;
+  source: "student_steps";
+}
+
 export interface LoRAInfo {
   name: string;
   path: string;
+  arch?: LoRAArch;
   size: number;
   exists: boolean;
   layers: string[];
+  // Only present on GET /loras/{lora_name}; null when the file's metadata
+  // declares nothing recognized -- never a guessed/invented recommendation.
+  recommended?: LoRARecommendedSettings | null;
 }
 
 export interface ControlNetConfig {
@@ -3646,12 +3669,12 @@ export const getScheduleTypes = async () => {
   return response.data;
 };
 
-export const getLoras = async (): Promise<{ loras: Array<{ path: string; name: string }> }> => {
+export const getLoras = async (): Promise<{ loras: Array<LoRAListEntry> }> => {
   const response = await api.get("/loras");
   return response.data;
 };
 
-export const getLoraInfo = async (loraName: string) => {
+export const getLoraInfo = async (loraName: string): Promise<LoRAInfo> => {
   const response = await api.get(`/loras/${loraName}`);
   return response.data;
 };

@@ -630,6 +630,26 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
   // ── Video temporal inpaint: the loaded architecture's own rules ──────────
   const loadedArchType = currentModelInfo?.model_info?.type as string | undefined;
   const loadedArchName = archDisplayName(loadedArchType);
+  // Applies a LoRA's own declared recommended settings (from its file
+  // metadata) to params, like any ordinary user edit -- see Txt2ImgPanel's
+  // twin of this function for the full rationale. Inpaint has no audio
+  // modality, so the only mapping is image steps vs video steps.
+  const applyLoraRecommended = (settings: Record<string, unknown>): string[] => {
+    const skipped: string[] = [];
+    const updates: Partial<InpaintParams> = {};
+    if (typeof settings.num_inference_steps === "number") {
+      if (isVideo) updates.num_inference_steps = settings.num_inference_steps;
+      else updates.steps = settings.num_inference_steps;
+    }
+    if (typeof settings.fbcache_enable === "boolean") {
+      updates.fbcache_enable = settings.fbcache_enable;
+    }
+    if (typeof settings.spectrum_enable === "boolean") {
+      updates.spectrum_enable = settings.spectrum_enable;
+    }
+    setParams({ ...params, ...updates });
+    return skipped;
+  };
   // The capability the video surface is gated on. `archSupportsFeature` treats
   // an unknown arch (or a matrix that has not loaded) as supporting it, so the
   // surface is never hidden merely because the matrix was unavailable; the
@@ -5454,12 +5474,25 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         </Card>
         )}
 
+        {isVideo && supportsTemporalInpaint && visibility.lora && (
+          <LoRASelector
+            value={params.loras || []}
+            onChange={(loras) => setParams({ ...params, loras })}
+            disabled={isGenerating}
+            storageKey="inpaint_video_lora_collapsed"
+            loadedArch={loadedArchType}
+            onApplyRecommended={applyLoraRecommended}
+          />
+        )}
+
         {!isVideo && visibility.lora && (
           <LoRASelector
             value={params.loras || []}
             onChange={(loras) => setParams({ ...params, loras })}
             disabled={isGenerating}
             storageKey="inpaint_lora_collapsed"
+            loadedArch={loadedArchType}
+            onApplyRecommended={applyLoraRecommended}
           />
         )}
 

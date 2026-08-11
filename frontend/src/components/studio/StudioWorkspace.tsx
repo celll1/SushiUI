@@ -64,6 +64,7 @@ import {
   videoFrameOptions,
 } from "@/utils/api";
 import { useStartup } from "@/contexts/StartupContext";
+import { formatTimecode } from "@/utils/timecode";
 import { loadStudioProject, saveImportedMedia, saveStudioProject } from "./studioStorage";
 import { resolveStudioTransferUrl, takeStudioTransfer, type StudioTransferPayload } from "./studioTransfer";
 import {
@@ -130,17 +131,6 @@ const booleanValue = (value: unknown): boolean | undefined =>
 const safeModelLabel = (value: unknown): string => {
   const raw = String(value || "No model loaded");
   return raw.split(/[\\/]/).filter(Boolean).at(-1) || "No model loaded";
-};
-
-const formatTimecode = (seconds: number, fps = 24) => {
-  const safe = Math.max(0, seconds);
-  const hours = Math.floor(safe / 3600);
-  const minutes = Math.floor((safe % 3600) / 60);
-  const wholeSeconds = Math.floor(safe % 60);
-  const frames = Math.floor((safe - Math.floor(safe)) * fps);
-  return [hours, minutes, wholeSeconds, frames]
-    .map((part) => String(part).padStart(2, "0"))
-    .join(":");
 };
 
 const assetKind = (image: GeneratedImage): StudioAsset["kind"] => {

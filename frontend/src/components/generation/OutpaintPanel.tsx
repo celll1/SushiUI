@@ -35,6 +35,8 @@ import PostEditControls from "../common/PostEditControls";
 import { PostEditState, NEUTRAL_POST_EDIT, buildFilterString } from "@/utils/postEdit";
 import { usePostEditPreview } from "@/hooks/usePostEditPreview";
 import { useSmoothProgress } from "@/hooks/useSmoothProgress";
+import { useVideoPlayhead } from "@/hooks/useVideoPlayhead";
+import { releaseVideoFrameGrabber } from "@/utils/videoFrameGrabber";
 import {
   getSamplers,
   getScheduleTypes,
@@ -525,6 +527,10 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
   const [videoFile, setVideoFile] = useState<File | null>(null);
   const [videoPreviewUrl, setVideoPreviewUrl] = useState<string | null>(null);
   const [videoDurationSec, setVideoDurationSec] = useState<number | null>(null);
+  // The input clip's own <video>, ref'd so the Temporal Placement timeline
+  // can read/drive its live playhead (useVideoPlayhead below) -- the same
+  // element the panel already renders for preview, not a second one.
+  const inputVideoRef = useRef<HTMLVideoElement | null>(null);
   // The uploaded clip's own pixel size, read off the <video> element's
   // metadata. Only used by the video card's Scale size mode -- the same
   // "derive the output size from the input's dimensions" the image panels'
@@ -660,7 +666,10 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
   // leaking blob URLs (createObjectURL persists until explicitly revoked).
   useEffect(() => {
     return () => {
-      if (videoPreviewUrl) URL.revokeObjectURL(videoPreviewUrl);
+      if (videoPreviewUrl) {
+        releaseVideoFrameGrabber(videoPreviewUrl);
+        URL.revokeObjectURL(videoPreviewUrl);
+      }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [videoPreviewUrl]);
@@ -1362,6 +1371,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
 
   const handleClearVideo = () => {
     if (videoPreviewUrl) {
+      releaseVideoFrameGrabber(videoPreviewUrl);
       URL.revokeObjectURL(videoPreviewUrl);
     }
     setVideoFile(null);
@@ -1476,6 +1486,10 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
     ? Math.max(1, Math.round(videoDurationSec * (params.frame_rate ?? 24.0)))
     : 0;
   const videoRawFrames = clipFramesOverride ?? estimatedVideoRawFrames;
+  // The Temporal Placement timeline's synced playhead/seek/loop, against the
+  // SAME <video> rendered below -- attachKey is the preview URL so the hook
+  // re-attaches whenever a new clip is loaded into that element.
+  const inputVideoPlayer = useVideoPlayhead(inputVideoRef, params.frame_rate ?? 24.0, videoPreviewUrl);
   const videoPlacedFrames = Math.max(
     1,
     videoRawFrames - (params.input_trim_start_frames ?? 0) - (params.input_trim_end_frames ?? 0)
@@ -3404,6 +3418,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
             <div className="h-[clamp(10rem,22vh,13rem)] bg-gray-800 rounded-lg overflow-hidden border-2 border-dashed border-gray-600">
               {videoPreviewUrl ? (
                 <video
+                  ref={inputVideoRef}
                   src={videoPreviewUrl}
                   onLoadedMetadata={handleVideoLoadedMetadata}
                   className="w-full h-full object-contain"
@@ -3636,6 +3651,8 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
             unitRate={params.frame_rate ?? 24.0}
             unitLabel="frames"
             disabled={!videoPreviewUrl}
+            videoSrc={videoPreviewUrl}
+            player={inputVideoPlayer}
           />
           <p className="text-xs text-gray-500 mt-2">
             {boundaryPlacementOnly

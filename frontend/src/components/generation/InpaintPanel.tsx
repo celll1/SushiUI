@@ -40,6 +40,8 @@ import { getSamplers, getScheduleTypes, generateInpaint, generateInpaintVideo, g
 import VideoInpaintRangeTimeline from "./VideoInpaintRangeTimeline";
 import { useActiveTraining } from "@/hooks/useActiveTraining";
 import { useSmoothProgress } from "@/hooks/useSmoothProgress";
+import { useVideoPlayhead } from "@/hooks/useVideoPlayhead";
+import { releaseVideoFrameGrabber } from "@/utils/videoFrameGrabber";
 import { wsClient, CFGMetrics } from "@/utils/websocket";
 import CFGMetricsGraph from "../common/CFGMetricsGraph";
 import { saveTempImage, loadTempImage, deleteTempImageRef } from "@/utils/tempImageStorage";
@@ -575,6 +577,10 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
   const [videoPreviewUrl, setVideoPreviewUrl] = useState<string | null>(null);
   const [videoDurationSec, setVideoDurationSec] = useState<number | null>(null);
   const [inputVideoSize, setInputVideoSize] = useState<{ width: number; height: number } | null>(null);
+  // The input clip's own <video>, ref'd so the Regenerate Range timeline can
+  // read/drive its live playhead (useVideoPlayhead below) -- this is the same
+  // element the panel already renders for preview, not a second one.
+  const inputVideoRef = useRef<HTMLVideoElement | null>(null);
   const [videoSizeMode, setVideoSizeMode] = useState<"absolute" | "scale">("absolute");
   const [videoScale, setVideoScale] = useState<number>(1.0);
   // The clip's frame COUNT, which the browser does not report: it is estimated
@@ -675,6 +681,10 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
     ? Math.max(1, Math.round(videoDurationSec * clipFrameRate))
     : 0;
   const videoRawFrames = clipFramesOverride ?? estimatedRawFrames;
+  // The Regenerate Range timeline's synced playhead/seek/loop, against the
+  // SAME <video> rendered above -- attachKey is the preview URL so the hook
+  // re-attaches whenever a new clip is loaded into that element.
+  const inputVideoPlayer = useVideoPlayhead(inputVideoRef, clipFrameRate, videoPreviewUrl);
   const videoTrimmedFrames = Math.max(
     0,
     videoRawFrames - (params.input_trim_start_frames ?? 0) - (params.input_trim_end_frames ?? 0)
@@ -698,7 +708,10 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
 
   useEffect(() => {
     return () => {
-      if (videoPreviewUrl) URL.revokeObjectURL(videoPreviewUrl);
+      if (videoPreviewUrl) {
+        releaseVideoFrameGrabber(videoPreviewUrl);
+        URL.revokeObjectURL(videoPreviewUrl);
+      }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [videoPreviewUrl]);
@@ -1695,7 +1708,10 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
   };
 
   const handleClearVideo = () => {
-    if (videoPreviewUrl) URL.revokeObjectURL(videoPreviewUrl);
+    if (videoPreviewUrl) {
+      releaseVideoFrameGrabber(videoPreviewUrl);
+      URL.revokeObjectURL(videoPreviewUrl);
+    }
     setVideoFile(null);
     setVideoPreviewUrl(null);
     setVideoDurationSec(null);
@@ -4521,6 +4537,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
             <div className="h-[clamp(10rem,22vh,13rem)] bg-gray-800 rounded-lg overflow-hidden border-2 border-dashed border-gray-600">
               {videoPreviewUrl ? (
                 <video
+                  ref={inputVideoRef}
                   src={videoPreviewUrl}
                   onLoadedMetadata={handleVideoLoadedMetadata}
                   className="w-full h-full object-contain"
@@ -4639,6 +4656,8 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
             }}
             frameRate={clipFrameRate}
             disabled={!videoPreviewUrl}
+            videoSrc={videoPreviewUrl}
+            player={inputVideoPlayer}
           />
           {regenerateRangeReplacedNotice && (
             <p className="mt-2 text-xs text-amber-400">{regenerateRangeReplacedNotice}</p>

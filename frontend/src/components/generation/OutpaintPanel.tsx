@@ -1949,6 +1949,9 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
         // backend ignores it when there is nothing to size); the images
         // themselves ride on the queue item like inputVideo/bridgeVideo.
         reference_image_size: h3ReferenceImageSize,
+        // Applied by MiniMax-H3; accepted-and-warned by LTX-2.3 (no video LoRA
+        // loader). Same selector/list as image outpaint's `params.loras`.
+        loras: params.loras,
       };
       addToQueue({
         type: "outpaint_vid",

@@ -41,6 +41,7 @@
 // use to inherit the previous step's output image.
 import {
   ArchCapabilities,
+  LoRAConfig,
   OutpaintVideoParams,
   QuantizedGemmMode,
   nextVideoChainTotalFrames,
@@ -71,6 +72,10 @@ export interface ChainContinuationBase {
   text_encoder_path?: string | null;
   unet_quantization?: string | null;
   quantized_gemm_mode?: QuantizedGemmMode;
+  // Generation-time LoRA (MiniMax-H3 only; see Txt2VidParams.loras). Carried
+  // to every continuation segment so a LoRA applied to segment 1 stays applied
+  // for the whole chain, not just the capped first request.
+  loras?: LoRAConfig[];
 }
 
 // The Txt2VidParams/Img2VidParams/Ref2VidParams -> OutpaintVideoParams
@@ -117,6 +122,7 @@ export function buildChainContinuationParams(
     unet_quantization: base.unet_quantization,
     quantized_gemm_mode: base.quantized_gemm_mode,
     reference_image_size: referenceImageSize,
+    loras: base.loras,
   };
 }
 

@@ -2497,6 +2497,21 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/LoRAInfo'
+        '404':
+          description: LoRA not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: |
+            Ambiguous identifier: it resolves to different files across more
+            than one registered directory. Re-fetch `GET /loras` and use the
+            disambiguated `"{dir_tag}::{relative_path}"` identifier instead.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /samplers:
     get:
@@ -8709,6 +8724,15 @@ components:
             endpoint (its own trailing frames, soundtrack excluded,
             tail-truncated to the generated span's length) -- that is what
             makes this an extend rather than a `/generate/ref2vid` request.
+        loras:
+          type: string
+          default: "[]"
+          description: |
+            JSON-encoded string (sent via multipart Form) containing an array
+            of LoRA config objects (e.g. path/strength). Same apply/restore
+            contract and same MiniMax-H3-only capability as `Txt2VidRequest.loras`
+            -- see there for details.
+          example: '[{"path": "minimax_h3_lora.safetensors", "strength": 1.0}]'
 
     InpaintVideoRequest:
       type: object
@@ -8926,6 +8950,15 @@ components:
             <video> element -- `preview_filename` carries a browser-playable
             H.264 proxy instead; the master stays downloadable untouched.
           example: false
+        loras:
+          type: string
+          default: "[]"
+          description: |
+            JSON-encoded string (sent via multipart Form) containing an array
+            of LoRA config objects (e.g. path/strength). Same apply/restore
+            contract and same MiniMax-H3-only capability as `Txt2VidRequest.loras`
+            -- see there for details.
+          example: '[{"path": "minimax_h3_lora.safetensors", "strength": 1.0}]'
 
     Txt2AudRequest:
       type: object

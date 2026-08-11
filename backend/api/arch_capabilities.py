@@ -88,6 +88,11 @@ FEATURE_PARAMS: Dict[str, List[str]] = {
     # surface on it.
     "temporal_inpaint": ["regenerate_start_frame", "regenerate_end_frame",
                          "inpaint_video_audio_mode"],
+    # Generation-time LoRA on the video routes (txt2vid/img2vid/ref2vid/
+    # outpaint/video/inpaint/video). Every image/audio architecture has its own
+    # LoRA loader and is never listed here; this key exists for the video archs,
+    # where only MiniMax-H3 has one.
+    "lora": ["loras"],
 }
 
 # Human-readable label used in the warning message for each feature.
@@ -114,6 +119,7 @@ FEATURE_LABELS: Dict[str, str] = {
     "keyframe_placement": "input_image_frame_index/keyframe_images/keyframe_frame_indices (keyframe placement)",
     "audio_conditioning": "input_audio (audio-conditioned video)",
     "temporal_inpaint": "regenerate_start_frame/regenerate_end_frame (temporal inpaint)",
+    "lora": "loras (LoRA)",
 }
 
 # ---------------------------------------------------------------------------
@@ -240,6 +246,10 @@ _add("ltx2", "audio_conditioning",
 # runs the diffusers transformer's own attention dispatch and never consults it.
 _add("ltx2", "attention_type",
      "LTX-2.3 runs diffusers' own attention dispatch rather than SushiUI's attention conduit, so the attention backend is not selectable per generation for this architecture")
+# Generation-time LoRA: MiniMax-H3 has a loader (core.models.minimax_h3.minimax_h3_lora);
+# LTX-2.3's video path has none at all.
+_add("ltx2", "lora",
+     "LoRA loading is not implemented for the LTX-2.3 video model's generation path")
 
 # ACE-Step 1.5 is an audio model (own DiT + flow-matching turbo sampler, driven
 # through /generate/txt2aud); none of the image-oriented guidance/conditioning

@@ -2333,6 +2333,9 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         text_encoder_path: params.text_encoder_path,
         unet_quantization: params.unet_quantization,
         quantized_gemm_mode: params.quantized_gemm_mode,
+        // Applied by MiniMax-H3 (the only architecture this endpoint serves).
+        // Same selector/list as image generation's `params.loras`.
+        loras: params.loras,
       };
       addToQueue({
         type: "inpaint_vid",

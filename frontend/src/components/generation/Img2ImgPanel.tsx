@@ -2321,6 +2321,9 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
           quantized_gemm_mode: params.quantized_gemm_mode,
           reference_image_size: h3ReferenceImageSize,
           keyframes: ref2vidKeyframes,
+          // Applied by MiniMax-H3; same selector/list as image generation's
+          // `params.loras`.
+          loras: params.loras,
         };
 
         // Opt-in video-length chaining (CLAUDE.md "opt-in long-clip
@@ -2376,6 +2379,9 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         // ltx2 is in quantized_linear_archs, so the QuantizedGemmSelect control
         // is rendered for a loaded LTX-2.3 model and must actually be sent.
         quantized_gemm_mode: params.quantized_gemm_mode,
+        // Applied by MiniMax-H3; accepted-and-warned by LTX-2.3 (no video LoRA
+        // loader). Same selector/list as image generation's `params.loras`.
+        loras: params.loras,
       };
 
       // Opt-in video-length chaining -- see the identical check in the

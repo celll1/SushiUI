@@ -338,6 +338,180 @@ def test_sdf_field_cache_is_reused_across_frames_between_the_same_keyframes():
     assert calls["count"] == 2, f"expected 2 signed-distance computations, got {calls['count']}"
 
 
+def test_sdf_thin_frame_warning_fires_for_multicomponent_collapse():
+    """Audit regression: a keyframe with two disconnected 100x100 squares
+    morphing into a single 100x100 square must warn about the intermediate
+    frames whose generate area collapses well below either keyframe's own
+    area, even on frames that keep `max() >= 0.5` and therefore never trip
+    `_sdf_blend`'s empty-frame fallback (and its separate warning)."""
+    height, width = 1200, 1200
+    left = np.zeros((height, width), dtype=np.float32)
+    left[50:150, 50:150] = 1.0
+    left[50:150, 450:550] = 1.0
+    right = np.zeros((height, width), dtype=np.float32)
+    right[250:350, 1000:1100] = 1.0
+    timeline = parse_mask_timeline_manifest(
+        _manifest(
+            [
+                {"frame": 0, "mask_id": "left", "interpolation_to_next": "sdf"},
+                {"frame": 10, "mask_id": "right", "interpolation_to_next": "hold"},
+            ],
+            width=width,
+            height=height,
+        )
+    )
+    warnings: list = []
+    frames = rasterize_mask_timeline(
+        timeline, {"left": left, "right": right}, 0, 11, sdf_fallback_warnings=warnings,
+    )
+    assert np.array_equal(frames[0], left)
+    assert np.array_equal(frames[10], right)
+
+    thin_warnings = [w for w in warnings if "generate region" in w]
+    assert len(thin_warnings) == 1, f"expected exactly one aggregated warning, got {warnings}"
+    message = thin_warnings[0]
+    assert "keyframes at frames 0 and 10" in message
+    assert "20000px and 10000px" in message
+    # There must be a frame between the two collapse regions (the fallback
+    # zone) that does NOT get folded into the same aggregate frame span,
+    # since it is a hold, not a thin frame.
+    assert "frame 3" in message or "frame 2" in message or "frame 8" in message
+
+
+def test_sdf_thin_frame_warning_is_absent_for_single_component_translation():
+    """A single connected shape translating across the canvas (identical
+    area on both ends) must never warn: this is the parity case the fix
+    must not regress."""
+    height, width = 300, 900
+    left = np.zeros((height, width), dtype=np.float32)
+    right = np.zeros((height, width), dtype=np.float32)
+    left[100:200, 100:200] = 1.0
+    right[100:200, 700:800] = 1.0
+    timeline = parse_mask_timeline_manifest(
+        _manifest(
+            [
+                {"frame": 0, "mask_id": "left", "interpolation_to_next": "sdf"},
+                {"frame": 10, "mask_id": "right", "interpolation_to_next": "hold"},
+            ],
+            width=width,
+            height=height,
+        )
+    )
+    warnings: list = []
+    rasterize_mask_timeline(
+        timeline, {"left": left, "right": right}, 0, 11, sdf_fallback_warnings=warnings,
+    )
+    assert warnings == []
+
+
+def test_sdf_thin_frame_warning_is_absent_for_same_area_different_shapes():
+    """Morphing a square into a similarly-sized circle at the same centroid
+    must never warn: area varies only slightly during the shape change."""
+    height, width = 300, 300
+    yy, xx = np.mgrid[0:height, 0:width]
+    left = np.zeros((height, width), dtype=np.float32)
+    left[100:200, 100:200] = 1.0
+    right = np.zeros((height, width), dtype=np.float32)
+    right[((yy - 150) ** 2 + (xx - 150) ** 2) <= 56.4 ** 2] = 1.0
+    timeline = parse_mask_timeline_manifest(
+        _manifest(
+            [
+                {"frame": 0, "mask_id": "left", "interpolation_to_next": "sdf"},
+                {"frame": 10, "mask_id": "right", "interpolation_to_next": "hold"},
+            ],
+            width=width,
+            height=height,
+        )
+    )
+    warnings: list = []
+    rasterize_mask_timeline(
+        timeline, {"left": left, "right": right}, 0, 11, sdf_fallback_warnings=warnings,
+    )
+    assert warnings == []
+
+
+def test_sdf_thin_frame_warning_is_absent_for_rects_500px_apart():
+    """Two same-size 300x300 rectangles (one connected component per
+    keyframe) 500px apart must never warn: this is the existing disjoint-
+    shape regression case, re-checked against the new thin-frame warning."""
+    height, width = 900, 1600
+    left = np.zeros((height, width), dtype=np.float32)
+    right = np.zeros((height, width), dtype=np.float32)
+    left[100:400, 100:400] = 1.0
+    right[100:400, 900:1200] = 1.0
+    timeline = parse_mask_timeline_manifest(
+        _manifest(
+            [
+                {"frame": 0, "mask_id": "left", "interpolation_to_next": "sdf"},
+                {"frame": 10, "mask_id": "right", "interpolation_to_next": "hold"},
+            ],
+            width=width,
+            height=height,
+        )
+    )
+    warnings: list = []
+    rasterize_mask_timeline(
+        timeline, {"left": left, "right": right}, 0, 11, sdf_fallback_warnings=warnings,
+    )
+    assert warnings == []
+
+
+def test_sdf_thin_frame_warning_is_absent_for_thin_stroke_translation():
+    """The existing 8px-wide-stroke translation regression case must not
+    trip the new thin-frame warning either."""
+    height, width = 64, 256
+    left = np.zeros((height, width), dtype=np.float32)
+    right = np.zeros((height, width), dtype=np.float32)
+    left[28:36, 10:18] = 1.0
+    right[28:36, 42:50] = 1.0
+    timeline = parse_mask_timeline_manifest(
+        _manifest(
+            [
+                {"frame": 0, "mask_id": "left", "interpolation_to_next": "sdf"},
+                {"frame": 6, "mask_id": "right", "interpolation_to_next": "hold"},
+            ],
+            width=width,
+            height=height,
+        )
+    )
+    warnings: list = []
+    rasterize_mask_timeline(
+        timeline, {"left": left, "right": right}, 0, 7, sdf_fallback_warnings=warnings,
+    )
+    assert warnings == []
+
+
+def test_sdf_thin_frame_warning_is_absent_for_large_monotonic_shrink():
+    """A single connected shape shrinking by three orders of magnitude at a
+    fixed centroid legitimately drives its area far below what a naive
+    linear interpolation between the two keyframes' areas would predict, at
+    every intermediate frame. This must not warn: the thin-frame check
+    compares against the SMALLER keyframe's own area, not a linear area
+    interpolation, specifically so this case (measured to reproduce for
+    single-component shrinks of any severity that keep their centroid fixed)
+    stays silent while the multi-component collapse above still warns."""
+    height, width = 1200, 1200
+    left = np.zeros((height, width), dtype=np.float32)
+    right = np.zeros((height, width), dtype=np.float32)
+    left[50:1050, 50:1050] = 1.0  # 1000x1000
+    right[598:602, 598:602] = 1.0  # 4x4, same centroid
+    timeline = parse_mask_timeline_manifest(
+        _manifest(
+            [
+                {"frame": 0, "mask_id": "left", "interpolation_to_next": "sdf"},
+                {"frame": 20, "mask_id": "right", "interpolation_to_next": "hold"},
+            ],
+            width=width,
+            height=height,
+        )
+    )
+    warnings: list = []
+    rasterize_mask_timeline(
+        timeline, {"left": left, "right": right}, 0, 21, sdf_fallback_warnings=warnings,
+    )
+    assert warnings == []
+
+
 def test_max_pool_mask_to_latent_uses_generate_max_semantics_and_ceil_edges():
     masks = np.zeros((2, 5, 6), dtype=np.float32)
     masks[0, 1, 4] = 0.4

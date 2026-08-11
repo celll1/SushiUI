@@ -48,6 +48,7 @@ import { useActiveTraining } from "@/hooks/useActiveTraining";
 import { useSmoothProgress } from "@/hooks/useSmoothProgress";
 import { useVideoPlayhead } from "@/hooks/useVideoPlayhead";
 import { grabVideoFrame, releaseVideoFrameGrabber } from "@/utils/videoFrameGrabber";
+import { centerCropToCanvas } from "@/utils/canvasFit";
 import VideoInpaintMaskTimeline from "./VideoInpaintMaskTimeline";
 import {
   createDefaultMaskTransform,
@@ -381,44 +382,6 @@ function createDefaultVideoMaskManifest(width?: number, height?: number): VideoM
     keyframes: [],
     compositeFeatherPx: 0,
   };
-}
-
-function renderDataUrlToCanvas(
-  dataUrl: string,
-  width: number,
-  height: number,
-  objectCover: boolean,
-): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const image = new Image();
-    image.onload = () => {
-      if (!image.naturalWidth || !image.naturalHeight) {
-        reject(new Error("The captured frame has no usable dimensions."));
-        return;
-      }
-      const canvas = document.createElement("canvas");
-      canvas.width = width;
-      canvas.height = height;
-      const context = canvas.getContext("2d");
-      if (!context) {
-        reject(new Error("The browser could not create a mask canvas."));
-        return;
-      }
-      context.imageSmoothingEnabled = true;
-      context.imageSmoothingQuality = "high";
-      if (objectCover) {
-        const scale = Math.max(width / image.naturalWidth, height / image.naturalHeight);
-        const drawWidth = image.naturalWidth * scale;
-        const drawHeight = image.naturalHeight * scale;
-        context.drawImage(image, (width - drawWidth) / 2, (height - drawHeight) / 2, drawWidth, drawHeight);
-      } else {
-        context.drawImage(image, 0, 0, width, height);
-      }
-      resolve(canvas.toDataURL("image/png"));
-    };
-    image.onerror = () => reject(new Error("The captured frame could not be decoded."));
-    image.src = dataUrl;
-  });
 }
 
 /** True if any pixel is past mid-grey. Mask polarity is white_generate, and
@@ -1819,11 +1782,10 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         );
         return;
       }
-      const imageUrl = await renderDataUrlToCanvas(
+      const imageUrl = await centerCropToCanvas(
         frameResult.dataUrl,
         videoMaskCanvasWidth,
         videoMaskCanvasHeight,
-        true,
       );
       // Frame-independent ids: a keyframeId/maskId derived from `frame`
       // collides once a keyframe is deleted and a new one is added at the
@@ -1897,11 +1859,17 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
     const editor = videoMaskEditor;
     if (!editor) return;
     try {
-      const normalizedMaskUrl = await renderDataUrlToCanvas(
+      // The mask canvas ImageEditor hands back is already sized to
+      // videoMaskCanvasWidth x videoMaskCanvasHeight (its base layer was
+      // initialized from `editor.imageUrl` above, which centerCropToCanvas
+      // already rendered at that exact size), so this call is normally an
+      // identity copy -- it exists to apply the SAME mapping rule as the
+      // frame above rather than to actually resize anything, so the two
+      // stay provably consistent instead of merely coincidentally equal.
+      const normalizedMaskUrl = await centerCropToCanvas(
         maskUrl,
         videoMaskCanvasWidth,
         videoMaskCanvasHeight,
-        false,
       );
       // The backend rejects an all-black (nothing to regenerate) mask at
       // generation time; catching it here, at save, surfaces the mistake
@@ -1949,7 +1917,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         const nextAsset = {
           id: maskId,
           dataUrl: normalizedMaskUrl,
-          // Recorded per-asset, not just on the manifest: `renderDataUrlToCanvas`
+          // Recorded per-asset, not just on the manifest: `centerCropToCanvas`
           // above rendered THIS PNG at the current output size, but sibling
           // assets saved before a since-changed width/height slider still hold
           // pixels sized for whatever canvas was live when THEY were saved. The

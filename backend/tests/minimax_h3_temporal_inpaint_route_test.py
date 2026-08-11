@@ -115,7 +115,11 @@ def test_an_invalid_clip_length_is_refused_rather_than_snapped():
     # because no trim reaches the floor from below.
     with pytest.raises(ValidationError) as error:
         _plan(10, 20, clip_frames=400)
-    assert "Trim 55 more frame(s)" in str(error.value.detail), error.value.detail
+    # Derived from the spec, not hardcoded: this assertion was written against
+    # the old 345 cap and silently became a statement about a number the model
+    # no longer has when the cap was corrected to 362.
+    _trim_to_cap = 400 - SPEC.max_frames
+    assert f"Trim {_trim_to_cap} more frame(s)" in str(error.value.detail), error.value.detail
     with pytest.raises(ValidationError) as error:
         _plan(10, 20, clip_frames=121)
     assert "shorter" in str(error.value), str(error.value)

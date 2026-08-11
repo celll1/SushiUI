@@ -496,7 +496,7 @@ export default function MiniMaxH3KeyframeTimeline({
                 <p>The track conditions the whole clip; partial placement is not supported.</p>
                 <p>A longer track is trimmed. A shorter track is refused rather than padded.</p>
                 <p>
-                  With audio output enabled, the file supplies the muxed soundtrack. With output disabled, it still conditions the video but is not muxed.
+                  With audio output enabled, the file supplies the muxed soundtrack — as an AAC encode of it, not the uploaded bytes (an FFV1 master muxes FLAC instead). With output disabled, it still conditions the video but is not muxed.
                 </p>
                 <p>Validation covered impulsive material; speech, pitch and timbre were not measured.</p>
               </InlineHelp>

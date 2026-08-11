@@ -539,7 +539,10 @@ const MASK_IMAGE_STORAGE_KEY = "inpaint_mask_image";
 const REF_IMAGES_STORAGE_KEY = "inpaint_ref_images";
 
 interface InpaintPanelProps {
-  onImageGenerated?: (imageUrl: string) => void;
+  // opts.kind/playbackUrl let the shared top-right strip (FloatingGallery)
+  // render video/audio results correctly instead of guessing from the URL
+  // extension and falling back to a non-playable master URL.
+  onImageGenerated?: (imageUrl: string, opts?: { kind?: "image" | "video" | "audio"; playbackUrl?: string }) => void;
   onTabChange?: (tab: "txt2img" | "img2img" | "inpaint" | "outpaint" | "upscale") => void;
 }
 
@@ -2802,7 +2805,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         setGeneratedVideoParams(nextItem.params as InpaintParams);
         setGeneratedVideoInfo(videoInfo);
         publishCompletedResult({ panel: "inpaint", kind: "video", url: videoUrl, playbackUrl, info: videoInfo, seed: videoSeed, params: nextItem.params });
-        if (onImageGenerated) onImageGenerated(videoUrl);
+        if (onImageGenerated) onImageGenerated(videoUrl, { kind: "video", playbackUrl });
         completeCurrentItem();
       } catch (error: any) {
         console.error("[Inpaint] Video generation failed:", error);
@@ -3059,7 +3062,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
 
         // Notify parent component
         if (onImageGenerated) {
-          onImageGenerated(imageUrl);
+          onImageGenerated(imageUrl, { kind: "image" });
         }
 
         if (isMounted) {

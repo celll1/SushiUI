@@ -8,7 +8,7 @@ import Img2ImgPanel from "@/components/generation/Img2ImgPanel";
 import InpaintPanel from "@/components/generation/InpaintPanel";
 import OutpaintPanel from "@/components/generation/OutpaintPanel";
 import UpscalePanel from "@/components/generation/UpscalePanel";
-import FloatingGallery from "@/components/common/FloatingGallery";
+import FloatingGallery, { GalleryEntry } from "@/components/common/FloatingGallery";
 import GenerationQueue from "@/components/common/GenerationQueue";
 import GPUMonitor from "@/components/common/GPUMonitor";
 import ProtectedRoute from "@/components/common/ProtectedRoute";
@@ -26,7 +26,7 @@ function GeneratePageContent() {
   const searchParams = useSearchParams();
   const tabParam = searchParams.get("tab");
   const [activeTab, setActiveTab] = useState<"txt2img" | "img2img" | "inpaint" | "outpaint" | "upscale">("txt2img");
-  const [galleryImages, setGalleryImages] = useState<Array<{ url: string; timestamp: number }>>([]);
+  const [galleryImages, setGalleryImages] = useState<GalleryEntry[]>([]);
   const [maxGalleryImages, setMaxGalleryImages] = useState(30);
   const { setGenerateForever } = useGenerationQueue();
 
@@ -55,8 +55,14 @@ function GeneratePageContent() {
     setGenerateForever(false);
   }, [activeTab, setGenerateForever]);
 
-  const handleImageGenerated = (imageUrl: string) => {
-    setGalleryImages(prev => [...prev, { url: imageUrl, timestamp: Date.now() }]);
+  const handleImageGenerated = (
+    imageUrl: string,
+    opts?: { kind?: "image" | "video" | "audio"; playbackUrl?: string }
+  ) => {
+    setGalleryImages(prev => [
+      ...prev,
+      { url: imageUrl, timestamp: Date.now(), kind: opts?.kind, playbackUrl: opts?.playbackUrl },
+    ]);
   };
 
   return (

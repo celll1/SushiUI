@@ -489,7 +489,10 @@ const PREVIEW_KEYS = previewStorageKeys(PREVIEW_STORAGE_KEY);
 const INPUT_IMAGE_STORAGE_KEY = "outpaint_input_image";
 
 interface OutpaintPanelProps {
-  onImageGenerated?: (imageUrl: string) => void;
+  // opts.kind/playbackUrl let the shared top-right strip (FloatingGallery)
+  // render video/audio results correctly instead of guessing from the URL
+  // extension and falling back to a non-playable master URL.
+  onImageGenerated?: (imageUrl: string, opts?: { kind?: "image" | "video" | "audio"; playbackUrl?: string }) => void;
   onTabChange?: (tab: "txt2img" | "img2img" | "inpaint" | "outpaint" | "upscale") => void;
 }
 
@@ -2118,7 +2121,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
         setGeneratedVideoInfo(videoInfo);
         setGeneratedVideoWarnings(videoWarnings);
         publishCompletedResult({ panel: "outpaint", kind: "video", url: videoUrl, playbackUrl, info: videoInfo, seed: videoSeed, params: nextItem.params });
-        if (onImageGenerated) onImageGenerated(videoUrl);
+        if (onImageGenerated) onImageGenerated(videoUrl, { kind: "video", playbackUrl });
         isGeneratingRef.current = false;
         setIsGenerating(false);
         setProgress(0);
@@ -2186,7 +2189,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
         setGeneratedAudioInfo(audioInfo);
         setGeneratedAudioWarnings(audioWarnings);
         publishCompletedResult({ panel: "outpaint", kind: "audio", url: audioUrl, info: audioInfo, seed: audioSeed, params: nextItem.params });
-        if (onImageGenerated) onImageGenerated(audioUrl);
+        if (onImageGenerated) onImageGenerated(audioUrl, { kind: "audio" });
         isGeneratingRef.current = false;
         setIsGenerating(false);
         setProgress(0);
@@ -2273,7 +2276,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
         });
 
         if (onImageGenerated) {
-          onImageGenerated(imageUrl);
+          onImageGenerated(imageUrl, { kind: "image" });
         }
         if (isMounted) {
           saveImagePreview(PREVIEW_KEYS, imageUrl);

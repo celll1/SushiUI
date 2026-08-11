@@ -7,7 +7,14 @@ import PostEditControls from "./PostEditControls";
 import { usePostEditPreview } from "@/hooks/usePostEditPreview";
 
 interface ImageViewerProps {
+  // For kind="video"/"audio" this is the browser-playable URL to render (the
+  // caller resolves playbackUrl vs. url before passing it in).
   imageUrl: string;
+  // Defaults to "image" so every existing caller (which omits this prop) keeps
+  // today's <img>-only behavior unchanged.
+  kind?: "image" | "video" | "audio";
+  // Video-only poster frame; ignored for "image"/"audio".
+  posterUrl?: string;
   onClose: () => void;
   onNavigate?: (direction: 'prev' | 'next') => void;
   hasPrev?: boolean;
@@ -16,11 +23,15 @@ interface ImageViewerProps {
   // provided, controls render in the toolbar, the CSS filter is applied to the
   // preview, and downloads bake the adjustments. When absent, ImageViewer
   // behaves exactly as before (e.g. FloatingGallery consumer).
+  // Image-only: post-edit is a pixel operation on decoded image data and the
+  // download button re-encodes a PNG, so neither applies to video/audio and
+  // both are hidden whenever kind !== "image" (see render below), regardless
+  // of whether these props are supplied.
   postEdit?: PostEditState;
   onPostEditChange?: (value: PostEditState) => void;
 }
 
-export default function ImageViewer({ imageUrl, onClose, onNavigate, hasPrev, hasNext, postEdit, onPostEditChange }: ImageViewerProps) {
+export default function ImageViewer({ imageUrl, kind = "image", posterUrl, onClose, onNavigate, hasPrev, hasNext, postEdit, onPostEditChange }: ImageViewerProps) {
   // Post-edit strip is collapsed by default so it never obscures the image;
   // this is purely internal UI state (not one of the optional postEdit props).
   const [postEditExpanded, setPostEditExpanded] = useState(false);
@@ -28,7 +39,10 @@ export default function ImageViewer({ imageUrl, onClose, onNavigate, hasPrev, ha
 
   // Color-flatten preview: swaps in a processed object URL when flatten>0.
   // brightness/saturation stay as a CSS filter layered on top (below).
-  const effectiveImageUrl = usePostEditPreview(imageUrl, postEdit?.flatten ?? 0);
+  // Only meaningful for images; passing null for video/audio skips the fetch
+  // path in usePostEditPreview entirely (flatten<=0 there is already a no-op,
+  // this just avoids treating a video/audio URL as decodable image data).
+  const effectiveImageUrl = usePostEditPreview(kind === "image" ? imageUrl : null, postEdit?.flatten ?? 0);
 
   const handleDownload = async (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -107,18 +121,39 @@ export default function ImageViewer({ imageUrl, onClose, onNavigate, hasPrev, ha
           </button>
         )}
 
-        <img
-          src={effectiveImageUrl ?? imageUrl}
-          alt="Full size preview"
-          className="max-w-full max-h-[95vh] object-contain"
-          style={postEdit ? { filter: buildFilterString(postEdit) } : undefined}
-          onClick={(e) => e.stopPropagation()}
-        />
+        {kind === "video" ? (
+          <video
+            src={imageUrl}
+            poster={posterUrl}
+            className="max-w-full max-h-[95vh] object-contain"
+            controls
+            autoPlay
+            playsInline
+            onClick={(e) => e.stopPropagation()}
+          />
+        ) : kind === "audio" ? (
+          <audio
+            src={imageUrl}
+            className="w-[80vw] max-w-xl"
+            controls
+            autoPlay
+            onClick={(e) => e.stopPropagation()}
+          />
+        ) : (
+          <img
+            src={effectiveImageUrl ?? imageUrl}
+            alt="Full size preview"
+            className="max-w-full max-h-[95vh] object-contain"
+            style={postEdit ? { filter: buildFilterString(postEdit) } : undefined}
+            onClick={(e) => e.stopPropagation()}
+          />
+        )}
 
         {/* Post-edit strip: collapsed by default (just the toggle button below)
             so the image is never obscured. Expanding shows one compact row
-            flush to the bottom edge, which the user can collapse again. */}
-        {postEdit && onPostEditChange && postEditExpanded && (
+            flush to the bottom edge, which the user can collapse again.
+            Image-only (see ImageViewerProps.postEdit doc). */}
+        {kind === "image" && postEdit && onPostEditChange && postEditExpanded && (
           <div
             className="absolute bottom-0 left-0 right-0 bg-black bg-opacity-70 px-3 py-2"
             onClick={(e) => e.stopPropagation()}
@@ -142,8 +177,9 @@ export default function ImageViewer({ imageUrl, onClose, onNavigate, hasPrev, ha
         )}
 
         {/* Post-edit toggle: small, unobtrusive, docked in the toolbar with
-            download/close. A dot indicates a non-neutral edit while collapsed. */}
-        {postEdit && onPostEditChange && (
+            download/close. A dot indicates a non-neutral edit while collapsed.
+            Image-only. */}
+        {kind === "image" && postEdit && onPostEditChange && (
           <button
             onClick={(e) => {
               e.stopPropagation();
@@ -161,14 +197,17 @@ export default function ImageViewer({ imageUrl, onClose, onNavigate, hasPrev, ha
           </button>
         )}
 
-        {/* Download button */}
-        <button
-          onClick={handleDownload}
-          className="absolute top-4 right-20 text-white bg-black bg-opacity-50 hover:bg-opacity-70 rounded-full w-12 h-12 flex items-center justify-center"
-          title="Download"
-        >
-          <Download className="h-6 w-6" />
-        </button>
+        {/* Download button: image-only (re-encodes a PNG via the metadata-aware
+            download endpoint, which is not meaningful for video/audio). */}
+        {kind === "image" && (
+          <button
+            onClick={handleDownload}
+            className="absolute top-4 right-20 text-white bg-black bg-opacity-50 hover:bg-opacity-70 rounded-full w-12 h-12 flex items-center justify-center"
+            title="Download"
+          >
+            <Download className="h-6 w-6" />
+          </button>
+        )}
 
         {/* Close button */}
         <button

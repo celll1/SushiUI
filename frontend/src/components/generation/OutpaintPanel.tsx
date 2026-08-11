@@ -64,6 +64,7 @@ import {
   videoCanvasExceedsEnvelope,
   isGenerationStalledError,
   archSupportsFeature,
+  snapUpValidVideoFrameCount,
 } from "@/utils/api";
 import { createH3ReferenceInventory, maybeTransformH3PromptForGeneration } from "@/utils/h3PromptAssist";
 import { readGlobalAttentionType } from "@/utils/attentionSettings";
@@ -508,6 +509,13 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
   const [inputVideoSize, setInputVideoSize] = useState<{ width: number; height: number } | null>(null);
   const [videoSizeMode, setVideoSizeMode] = useState<"absolute" | "scale">("absolute");
   const [videoScale, setVideoScale] = useState<number>(1.0);
+  // The clip's frame COUNT, which the browser does not report: it is estimated
+  // from duration x frame rate (see videoRawFrames below) and can be corrected
+  // by hand, because the trimmed length has to match exactly what the backend
+  // decodes -- an estimate one frame out silently shifts the floor, the trim
+  // handles and the effective-length display (mirrors InpaintPanel's
+  // clipFramesOverride).
+  const [clipFramesOverride, setClipFramesOverride] = useState<number | null>(null);
   // BRIDGE placement only (an architecture whose video_constraints
   // .outpaint_placements contains "bridge"): the second clip, preserved at the
   // END of the timeline, with the generated span between the two.
@@ -529,6 +537,13 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
   const [generatedVideoInfo, setGeneratedVideoInfo] = useState<{ num_frames?: number; fps?: number; duration?: number } | null>(null);
   const [generatedVideoSeed, setGeneratedVideoSeed] = useState<number | null>(null);
   const [generatedVideoParams, setGeneratedVideoParams] = useState<OutpaintPanelParams | null>(null);
+  // The run's `warnings[]`, shown under the result (mirrors InpaintPanel's
+  // generatedVideoWarnings). This is where a boundary-conditioned
+  // architecture's `outpaint_video_total_frames_adjusted` warning (the
+  // requested total_frames could not be reached exactly) becomes visible --
+  // previously this panel discarded `result.warnings` entirely. Session-only:
+  // the gallery row keeps its own copy.
+  const [generatedVideoWarnings, setGeneratedVideoWarnings] = useState<string[]>([]);
 
   // Audio temporal outpaint input remains session-only; its result URL is
   // persisted under the panel's audio preview key.
@@ -539,6 +554,8 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
   const [generatedAudioInfo, setGeneratedAudioInfo] = useState<{ duration?: number; sample_rate?: number } | null>(null);
   const [generatedAudioSeed, setGeneratedAudioSeed] = useState<number | null>(null);
   const [generatedAudioParams, setGeneratedAudioParams] = useState<OutpaintPanelParams | null>(null);
+  const [generatedAudioWarnings, setGeneratedAudioWarnings] = useState<string[]>([]);
+  const [generatedImageWarnings, setGeneratedImageWarnings] = useState<string[]>([]);
 
   const [progress, setProgress] = useState(0);
   const [totalSteps, setTotalSteps] = useState(0);
@@ -923,6 +940,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
         setVideoDurationSec(null);
         setInputVideoSize(null);
         if (isReplacement) {
+          setClipFramesOverride(null);
           setParams(prev => ({ ...prev, input_offset_frames: 0, input_trim_start_frames: 0, input_trim_end_frames: 0 }));
         }
       } catch (error) {
@@ -1242,6 +1260,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
     preserveVideoSettingsRef.current = false;
     setVideoFile(file);
     setVideoDurationSec(null);
+    setClipFramesOverride(null);
     // Forget the previous clip's dimensions so the metadata handler below
     // treats this upload as a new clip and re-defaults the canvas to 1x of it.
     setInputVideoSize(null);
@@ -1325,6 +1344,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
     setVideoFile(null);
     setVideoPreviewUrl(null);
     setVideoDurationSec(null);
+    setClipFramesOverride(null);
     setInputVideoSize(null);
     // Scale mode has nothing to scale from once the clip is gone.
     setVideoSizeMode("absolute");
@@ -1398,24 +1418,59 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
     return candidates.reduce((best, c) => (Math.abs(r - c) < Math.abs(r - best) ? c : best), candidates[0]);
   };
 
-  // Full length (frames) of the uploaded clip at the current frame_rate,
-  // before trim -- the timeline's rawSegmentLength.
-  const videoRawFrames = videoDurationSec != null
+  // Full length (frames) of the uploaded clip, before trim -- the timeline's
+  // rawSegmentLength. The browser reports duration, not an exact frame count,
+  // and there is no temporal resample in the H3/LTX-2.3 outpaint path (the
+  // backend keeps every decoded frame at the clip's own probed fps -- see
+  // backend/utils/video_utils.py), so a fixed-fps estimate can be off by
+  // however many frames the clip's real fps differs from `frame_rate`.
+  // `clipFramesOverride` lets that be corrected by hand (mirrors
+  // InpaintPanel's clipFramesOverride), and the floor/trim bounds/effective
+  // length below all derive from `videoRawFrames`, not the raw estimate.
+  const estimatedVideoRawFrames = videoDurationSec != null
     ? Math.max(1, Math.round(videoDurationSec * (params.frame_rate ?? 24.0)))
     : 0;
+  const videoRawFrames = clipFramesOverride ?? estimatedVideoRawFrames;
   const videoPlacedFrames = Math.max(
     1,
     videoRawFrames - (params.input_trim_start_frames ?? 0) - (params.input_trim_end_frames ?? 0)
   );
-  // On a boundary-conditioned architecture the preserved clip is PASTED, not
-  // resampled, so a `total_frames` shorter than the clip itself plus the
-  // model's shortest generated span is not a request the backend can fill.
-  // This floor keeps that combination off the control rather than only
-  // catching it after Generate is pressed.
+  // The bridge clip (BRIDGE placement only) has no trim control -- its full
+  // probed length is what the backend preserves at the end of the timeline
+  // (see `tail_frames` in generation_utils.plan_video_outpaint_placement).
+  const bridgeFrames = bridgeVideoFile && bridgeVideoDurationSec != null
+    ? Math.max(1, Math.round(bridgeVideoDurationSec * (params.frame_rate ?? 24.0)))
+    : 0;
   const videoConstraints = loadedArchType ? archCapabilities?.video_constraints?.[loadedArchType] : undefined;
+  // `shared` mirrors plan_video_outpaint_placement: the generated span's
+  // first (and, for a bridge, last) frame is the SAME instant as the
+  // preserved boundary frame it anchors to, so it is emitted once rather than
+  // twice -- 1 shared frame for an extend, 2 for a bridge (one at each end).
+  // `bridgeVideoFile` (rather than `videoPlacement`, declared below from it)
+  // is the placement test here: it is the same underlying fact and using it
+  // directly avoids a temporal-dead-zone reference to a later `const`.
+  const sharedAnchorFrames = bridgeVideoFile ? 2 : 1;
+  const preservedFrames = videoPlacedFrames + (bridgeVideoFile ? bridgeFrames : 0);
+  // On a boundary-conditioned architecture the preserved clip(s) are PASTED,
+  // not resampled, so a `total_frames` shorter than the preserved span itself
+  // plus the model's shortest generated span is not a request the backend can
+  // fill. This floor keeps that combination off the control rather than only
+  // catching it after Generate is pressed.
   const boundaryTotalFramesFloor =
     boundaryPlacementOnly && videoConstraints && videoDurationSec != null
-      ? videoPlacedFrames + videoConstraints.min_frames - 1
+      && (!bridgeVideoFile || bridgeVideoDurationSec != null)
+      ? preservedFrames + videoConstraints.min_frames - sharedAnchorFrames
+      : undefined;
+  // The largest `total_frames` for which the generated span still needs the
+  // full amount this model can produce -- past this point extra requested
+  // total is not reachable (the generated span is already at `max_frames`,
+  // see snapUpValidVideoFrameCount), so the control's ceiling is set here
+  // rather than leaving an unbounded value representable in the first place.
+  // `undefined` when the arch declares no `max_frames` (unbounded).
+  const boundaryTotalFramesCeiling =
+    boundaryPlacementOnly && videoConstraints && videoConstraints.max_frames != null && videoDurationSec != null
+      && (!bridgeVideoFile || bridgeVideoDurationSec != null)
+      ? preservedFrames + videoConstraints.max_frames - sharedAnchorFrames
       : undefined;
   // The only two offsets a boundary-conditioned architecture accepts: flush
   // with the start of the timeline, or flush with its end.
@@ -1457,11 +1512,11 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
   }, [archCapabilities, generationDefaults, loadedArchType]);
 
   // On a boundary-conditioned architecture, once a clip is loaded a
-  // `total_frames` below `videoPlacedFrames + min_frames - 1` cannot be
-  // filled (the clip alone already exceeds it, or leaves less than the
-  // shortest generated span the model can produce). Raised rather than
-  // clamped silently in the request path, so the control itself always
-  // shows the value that will actually be sent.
+  // `total_frames` below `preservedFrames + min_frames - sharedAnchorFrames`
+  // cannot be filled (the preserved span alone already exceeds it, or leaves
+  // less than the shortest generated span the model can produce). Raised
+  // rather than clamped silently in the request path, so the control itself
+  // always shows the value that will actually be sent.
   // When the current placement is `extend_backward` (offset = total -
   // placed, so the clip stays flush with the END of the timeline),
   // `input_offset_frames` must move together with `total_frames` in the
@@ -1481,6 +1536,45 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
       };
     });
   }, [boundaryTotalFramesFloor, videoPlacedFrames, bridgeVideoFile]);
+
+  // `extend_backward` requires `offset + head_frames === total_frames`
+  // EXACTLY (generation_utils.plan_video_outpaint_placement's `elif offset +
+  // head_frames == requested_total` branch); any other offset is refused
+  // with a 400. The timeline lets `total_frames`, `input_trim_start_frames`
+  // and `input_trim_end_frames` change independently of `offset` -- most
+  // notably OutpaintTimeline's right-trim-handle drag, which changes
+  // `trimEnd` (and therefore `videoPlacedFrames`) without touching `offset`
+  // (its left-trim-handle drag already compensates `offset` by the same
+  // delta it applies to `trimStart`, which is what keeps ITS invariant
+  // intact) -- so whenever the head length or the total changes while
+  // `extend_backward` is selected, `offset` is re-derived here rather than
+  // left to go stale until the backend refuses the request.
+  useEffect(() => {
+    if (videoPlacement !== "extend_backward") return;
+    const correctOffset = Math.max(0, (params.total_frames ?? 0) - videoPlacedFrames);
+    setParams(prev => (
+      (prev.input_offset_frames ?? 0) === correctOffset ? prev : { ...prev, input_offset_frames: correctOffset }
+    ));
+  }, [videoPlacement, videoPlacedFrames, params.total_frames]);
+
+  // Pre-generate feedback for a boundary-conditioned architecture (see G1):
+  // the GENERATED span -- not the requested total -- is what has to land on
+  // this model's own valid-length grid (plan_video_outpaint_placement /
+  // TemporalSpec.snap_length), so `total_frames` can silently resolve to a
+  // much shorter effective output than requested. Computed here with the
+  // SAME arithmetic the backend applies (snapUpValidVideoFrameCount mirrors
+  // TemporalSpec.snap_length),
+  // so the effective length is known before Generate is pressed rather than
+  // only surfacing in a warning after the run.
+  const requestedGeneratedFrames = boundaryPlacementOnly
+    ? Math.max(1, (params.total_frames ?? 0) - preservedFrames + sharedAnchorFrames)
+    : 0;
+  const effectiveGeneratedFrames = boundaryPlacementOnly && videoConstraints
+    ? (snapUpValidVideoFrameCount(archCapabilities, loadedArchType, requestedGeneratedFrames) ?? requestedGeneratedFrames)
+    : 0;
+  const effectiveTotalFrames = boundaryPlacementOnly && videoConstraints
+    ? preservedFrames + effectiveGeneratedFrames - sharedAnchorFrames
+    : (params.total_frames ?? 0);
 
   // The audio mode's DEFAULT is per-architecture too, and unlike total_frames
   // there is no invalid value to detect: "regenerate" is selectable
@@ -1778,7 +1872,18 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
         const assisted = await maybeTransformH3PromptForGeneration({
           prompt: processedPrompt,
           mode: modality.modelInfo?.variant === "ref2va" ? "ref2va" : "t2va",
-          durationSeconds: (params.total_frames ?? 121) / (params.frame_rate ?? 24),
+          // duration_seconds tells Prompt Assist how long a timeline to write
+          // shots against (see backend/core/extensions/
+          // minimax_h3_prompt_assistant.py's shot-timestamp validation: "A
+          // shot timestamp is outside the target duration"). The model only
+          // GENERATES the new span -- the preserved clip is pasted, not
+          // sampled -- so that is the timeline Prompt Assist's shots have to
+          // fit inside, not the requested total (which includes the
+          // preserved frames and, on a boundary-conditioned architecture, may
+          // not even be the length actually generated -- see G1).
+          durationSeconds: (boundaryPlacementOnly && videoDurationSec != null
+            ? effectiveGeneratedFrames
+            : (params.total_frames ?? 121)) / (params.frame_rate ?? 24),
           references: createH3ReferenceInventory({
             pictures: h3ReferenceImages.length,
             videos: 1 + (bridgeVideoFile ? 1 : 0),
@@ -1942,6 +2047,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
       setGeneratedVideoPlaybackUrl(null);
       setGeneratedVideoInfo(null);
       setGeneratedVideoSeed(null);
+      setGeneratedVideoWarnings([]);
       setGeneratedAudio(null);
       setGeneratedAudioInfo(null);
       setGeneratedAudioSeed(null);
@@ -1957,11 +2063,15 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
         const playbackUrl = videoPlaybackUrl !== videoUrl ? videoPlaybackUrl : undefined;
         const videoSeed = getResultSeed(result);
         const videoInfo = { num_frames: result.image?.num_frames, fps: result.image?.fps, duration: result.image?.duration };
+        const videoWarnings = (result.warnings || [])
+          .map((w: any) => (typeof w === "string" ? w : w?.message))
+          .filter(Boolean);
         setGeneratedVideo(videoUrl);
         setGeneratedVideoPlaybackUrl(playbackUrl || null);
         setGeneratedVideoSeed(videoSeed);
         setGeneratedVideoParams(nextItem.params as OutpaintPanelParams);
         setGeneratedVideoInfo(videoInfo);
+        setGeneratedVideoWarnings(videoWarnings);
         publishCompletedResult({ panel: "outpaint", kind: "video", url: videoUrl, playbackUrl, info: videoInfo, seed: videoSeed, params: nextItem.params });
         if (onImageGenerated) onImageGenerated(videoUrl);
         isGeneratingRef.current = false;
@@ -2008,6 +2118,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
       setGeneratedAudio(null);
       setGeneratedAudioInfo(null);
       setGeneratedAudioSeed(null);
+      setGeneratedAudioWarnings([]);
       setGeneratedVideo(null);
       setGeneratedVideoPlaybackUrl(null);
       setGeneratedVideoInfo(null);
@@ -2021,10 +2132,14 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
         const audioUrl = `/outputs/${result.image.filename}`;
         const audioSeed = getResultSeed(result);
         const audioInfo = { duration: result.image?.duration, sample_rate: result.image?.sample_rate };
+        const audioWarnings = (result.warnings || [])
+          .map((w: any) => (typeof w === "string" ? w : w?.message))
+          .filter(Boolean);
         setGeneratedAudio(audioUrl);
         setGeneratedAudioSeed(audioSeed);
         setGeneratedAudioParams(nextItem.params as OutpaintPanelParams);
         setGeneratedAudioInfo(audioInfo);
+        setGeneratedAudioWarnings(audioWarnings);
         publishCompletedResult({ panel: "outpaint", kind: "audio", url: audioUrl, info: audioInfo, seed: audioSeed, params: nextItem.params });
         if (onImageGenerated) onImageGenerated(audioUrl);
         isGeneratingRef.current = false;
@@ -2071,6 +2186,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
     setGeneratedAudio(null);
     setGeneratedAudioInfo(null);
     setGeneratedAudioSeed(null);
+    setGeneratedImageWarnings([]);
 
     try {
       const itemParams = nextItem.params as ApiOutpaintParams;
@@ -2093,6 +2209,8 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
         setGeneratedImage(imageUrl);
         setGeneratedImageSeed(resultSeed);
         setGeneratedImageAncestralSeed(resultAncestralSeed);
+        setGeneratedImageWarnings(
+          (result.warnings || []).map((w: any) => (typeof w === "string" ? w : w?.message)).filter(Boolean));
         setPreviewImage(null);
         const completedParams: OutpaintPanelParams = {
           ...itemParams,
@@ -3054,7 +3172,12 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
           prompt={params.prompt}
           onApply={(prompt) => setParams((previous) => ({ ...previous, prompt }))}
           suggestedMode={isRef2Va ? "ref2va" : "t2va"}
-          durationSeconds={(params.total_frames ?? 121) / (params.frame_rate ?? 24)}
+          // Same reasoning as the Generate-time call above: Prompt Assist's
+          // shots have to fit inside the span this model actually
+          // GENERATES, not the requested total (see G1/G6).
+          durationSeconds={(boundaryPlacementOnly && videoDurationSec != null
+            ? effectiveGeneratedFrames
+            : (params.total_frames ?? 121)) / (params.frame_rate ?? 24)}
           references={createH3ReferenceInventory({
             pictures: h3ReferenceImages.length,
             videos: 1 + (bridgeVideoFile ? 1 : 0),
@@ -3247,10 +3370,27 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
               )}
             </div>
             {videoDurationSec != null && (
-              <p className="text-xs text-gray-500">
-                Clip length: {videoDurationSec.toFixed(2)}s (~{videoRawFrames} frames at {params.frame_rate ?? 24.0} fps).
-                Non-÷32 resolutions are center-cropped/resized once to width×height; the resized frames become the exact-preserved content.
-              </p>
+              <div className="space-y-2">
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1">Clip frames</label>
+                  <NumberInput
+                    label="Clip frames"
+                    value={videoRawFrames}
+                    onCommit={(v) => setClipFramesOverride(Math.max(1, v))}
+                    min={1}
+                    step={1}
+                    parse="int"
+                    className="w-32"
+                  />
+                </div>
+                <p className="text-xs text-gray-500">
+                  {videoDurationSec.toFixed(2)}s · about {estimatedVideoRawFrames} frames at {params.frame_rate ?? 24.0} fps.
+                  The browser reports duration rather than an exact frame count, and this endpoint keeps
+                  every decoded frame at the clip's own rate (no resample); correct Clip frames when it
+                  differs from the clip's real frame count.
+                  Non-÷32 resolutions are center-cropped/resized once to width×height; the resized frames become the exact-preserved content.
+                </p>
+              </div>
             )}
           </div>
         </Card>
@@ -3372,10 +3512,27 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
               <p className="text-xs text-gray-500">
                 This model conditions on the first and/or last frame of the span it generates, so the
                 input clip must sit at the start or the end of the timeline, or at both ends of a
-                bridge. Interior source motion is not provided to the model. The generated span is
-                what has to be a length the model can produce, so the effective output length is
-                reported with the result.
+                bridge. Interior source motion is not provided to the model. The generated span, not
+                the requested total, is what has to be a length the model can produce; the effective
+                output length is shown below before Generate and reported again with the result.
               </p>
+              {videoConstraints && (params.total_frames ?? 0) > 0 && (
+                <p className="text-xs text-gray-500">
+                  Requested total: {params.total_frames} frames. Preserved
+                  {videoPlacement === "bridge" ? ` (${videoPlacedFrames} head + ${bridgeFrames} bridge)` : ""}:{" "}
+                  {preservedFrames} frames. Generated span: {effectiveGeneratedFrames} frames (this model
+                  generates {videoConstraints.min_frames}
+                  {videoConstraints.max_frames != null ? `-${videoConstraints.max_frames}` : "+"} frames per
+                  request). Effective output length: {effectiveTotalFrames} frames (
+                  {(effectiveTotalFrames / (params.frame_rate ?? 24.0)).toFixed(2)}s).
+                  {effectiveTotalFrames !== (params.total_frames ?? 0) && (
+                    <span className="text-yellow-400">
+                      {" "}This does not match the requested {params.total_frames} frames; the effective
+                      output will be {effectiveTotalFrames} frames.
+                    </span>
+                  )}
+                </p>
+              )}
               {videoPlacement === "bridge" && (
                 <div className="space-y-2">
                   <label className="block text-xs text-gray-400">Second clip (preserved at the end)</label>
@@ -3416,6 +3573,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
             onTotalUnitsChange={(v) => setParams(prev => ({ ...prev, total_frames: v }))}
             totalUnitsSnapFn={snapTotalFrames}
             totalUnitsMin={boundaryPlacementOnly ? (boundaryTotalFramesFloor ?? 9) : 9}
+            totalUnitsMax={boundaryPlacementOnly ? boundaryTotalFramesCeiling : undefined}
             totalUnitsStep={8}
             rawSegmentLength={videoRawFrames}
             trimStart={params.input_trim_start_frames ?? 0}
@@ -3438,10 +3596,19 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
           </p>
           {boundaryPlacementOnly && boundaryTotalFramesFloor != null && (
             <p className="text-xs text-gray-500 mt-1">
-              Total frames cannot go below {boundaryTotalFramesFloor}: the loaded clip is placed, not
-              resampled, so this is its {videoPlacedFrames}-frame length plus this model's{" "}
-              {videoConstraints?.min_frames}-frame shortest generated span, minus the 1 frame shared
-              between them as the anchor.
+              Total frames cannot go below {boundaryTotalFramesFloor}: the preserved clip{videoPlacement === "bridge" ? "s are" : " is"} placed, not
+              resampled, so this is the {preservedFrames}-frame preserved length
+              {videoPlacement === "bridge" ? ` (${videoPlacedFrames} head + ${bridgeFrames} bridge)` : ""} plus this
+              model's {videoConstraints?.min_frames}-frame shortest generated span, minus the{" "}
+              {sharedAnchorFrames} frame{sharedAnchorFrames > 1 ? "s" : ""} shared between them as anchor
+              {sharedAnchorFrames > 1 ? "s" : ""}.
+            </p>
+          )}
+          {boundaryPlacementOnly && boundaryTotalFramesCeiling != null && (
+            <p className="text-xs text-gray-500 mt-1">
+              Total frames cannot go above {boundaryTotalFramesCeiling}: past that point the generated
+              span is already at this model's {videoConstraints?.max_frames}-frame longest generated
+              span, so a larger requested total does not reach a longer effective output.
             </p>
           )}
         </Card>
@@ -4697,6 +4864,11 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
                         {generatedVideoInfo.duration != null && Number.isFinite(Number(generatedVideoInfo.duration)) && <span> · {Number(generatedVideoInfo.duration).toFixed(2)}s</span>}
                       </div>
                     )}
+                    {generatedVideoWarnings.length > 0 && (
+                      <ul className="text-xs text-amber-400 list-disc pl-4 space-y-1">
+                        {generatedVideoWarnings.map((w, i) => <li key={i}>{w}</li>)}
+                      </ul>
+                    )}
                   </div>
                 ) : isAudio && generatedAudio ? (
                   <div className="w-full space-y-2">
@@ -4720,27 +4892,39 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
                         {generatedAudioInfo.sample_rate != null && <span> · {generatedAudioInfo.sample_rate} Hz</span>}
                       </div>
                     )}
+                    {generatedAudioWarnings.length > 0 && (
+                      <ul className="text-xs text-amber-400 list-disc pl-4 space-y-1">
+                        {generatedAudioWarnings.map((w, i) => <li key={i}>{w}</li>)}
+                      </ul>
+                    )}
                   </div>
                 ) : generatedImage ? (
-                  <img
-                    src={effectiveGeneratedImage ?? generatedImage}
-                    alt="Generated"
-                    className="max-w-full max-h-full rounded-lg"
-                    style={{ filter: buildFilterString(postEdit) }}
-                    onError={() => {
-                      // The file went away while the panel was open -- show an
-                      // empty preview rather than a broken image, same as the
-                      // video/audio players above. Confirmed with a HEAD first,
-                      // so a hot reload or a backend blip cannot discard a
-                      // result that is still on disk (see helper).
-                      imagePreviewGone(effectiveGeneratedImage ?? generatedImage, generatedImage).then((gone) => {
-                        if (!gone) return;
-                        console.warn("[Outpaint] Preview image failed to load, clearing:", generatedImage);
-                        clearImagePreview(PREVIEW_KEYS);
-                        setGeneratedImage(null);
-                      });
-                    }}
-                  />
+                  <div className="max-w-full max-h-full flex flex-col items-center gap-2">
+                    <img
+                      src={effectiveGeneratedImage ?? generatedImage}
+                      alt="Generated"
+                      className="max-w-full max-h-full rounded-lg"
+                      style={{ filter: buildFilterString(postEdit) }}
+                      onError={() => {
+                        // The file went away while the panel was open -- show an
+                        // empty preview rather than a broken image, same as the
+                        // video/audio players above. Confirmed with a HEAD first,
+                        // so a hot reload or a backend blip cannot discard a
+                        // result that is still on disk (see helper).
+                        imagePreviewGone(effectiveGeneratedImage ?? generatedImage, generatedImage).then((gone) => {
+                          if (!gone) return;
+                          console.warn("[Outpaint] Preview image failed to load, clearing:", generatedImage);
+                          clearImagePreview(PREVIEW_KEYS);
+                          setGeneratedImage(null);
+                        });
+                      }}
+                    />
+                    {generatedImageWarnings.length > 0 && (
+                      <ul className="text-xs text-amber-400 list-disc pl-4 space-y-1 w-full">
+                        {generatedImageWarnings.map((w, i) => <li key={i}>{w}</li>)}
+                      </ul>
+                    )}
+                  </div>
                 ) : previewImage ? (
                   <img
                     src={`data:image/jpeg;base64,${previewImage}`}

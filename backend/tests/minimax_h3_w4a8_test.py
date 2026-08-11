@@ -162,7 +162,15 @@ def test_w4a8_gemm_path_is_recorded_in_generation_metadata():
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA block-swap lifecycle")
-def test_w4a8_block_swap_keeps_sidecars_on_cuda():
+def test_w4a8_block_swap_moves_sidecars_with_weight():
+    """A swapped-out W4A8Linear block must leave nothing of itself on the GPU.
+
+    Before this was fixed, ``weighs_to_device``/``_build_weight_swap_jobs`` moved
+    only ``.weight``: the quantization sidecar buffers (``weight_s_rel`` --
+    22.97 MiB/block on the real MiniMax-H3 checkpoint --, ``weight_s_channel``,
+    ``weight_codebook``) stayed GPU-resident for every block regardless of
+    ``blocks_to_swap``, a fixed ~1.1 GiB VRAM cost block swap could not reclaim.
+    """
     ck = pytest.importorskip("comfy_kitchen.tensor")
 
     class _Block(torch.nn.Module):
@@ -192,17 +200,63 @@ def test_w4a8_block_swap_keeps_sidecars_on_cuda():
     try:
         offloader.prepare_block_devices_before_forward()
         assert blocks[0].proj.weight.device.type == "cuda"
+        assert all(getattr(blocks[0].proj, name).device.type == "cuda" for name in sidecars)
         assert blocks[1].proj.weight.device.type == "cpu"
-        assert all(getattr(blocks[1].proj, name).device.type == "cuda" for name in sidecars)
+        assert all(getattr(blocks[1].proj, name).device.type == "cpu" for name in sidecars), (
+            "a swapped-out block's sidecar buffers were left GPU-resident")
+
+        offloader.wait_for_block(1)
+        offloader.submit_move_blocks_forward(1)
+        offloader.wait_for_block(2)
+        assert blocks[1].proj.weight.device.type == "cpu"
+        assert all(getattr(blocks[1].proj, name).device.type == "cpu" for name in sidecars)
+        assert blocks[2].proj.weight.device.type == "cuda"
+        assert all(getattr(blocks[2].proj, name).device.type == "cuda" for name in sidecars)
+
+        output = blocks[2](torch.randn(1, 256, device=device, dtype=torch.bfloat16))
+        assert output.device.type == "cuda"
+        assert torch.isfinite(output).all()
+    finally:
+        offloader.thread_pool.shutdown(wait=True)
+        blocks.to("cpu")
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA block-swap lifecycle")
+def test_plain_linear_block_swap_moves_only_its_own_tensors():
+    """A block with no quantization sidecars must move exactly the bytes it
+    moved before this change (no behaviour change for the common case)."""
+    from core.memory_management.block_offloading import weight_sidecar_names
+
+    class _Block(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.proj = torch.nn.Linear(64, 64, bias=True, dtype=torch.bfloat16)
+
+        def forward(self, x):
+            return self.proj(x)
+
+    device = torch.device("cuda")
+    blocks = torch.nn.ModuleList([_Block(), _Block(), _Block()])
+    assert weight_sidecar_names(blocks[0].proj) == []
+
+    offloader = TransformerBlockOffloader(
+        blocks=blocks,
+        blocks_to_swap=2,
+        device=device,
+        target_dtype=torch.bfloat16,
+    )
+    try:
+        offloader.prepare_block_devices_before_forward()
+        assert blocks[0].proj.weight.device.type == "cuda"
+        assert blocks[1].proj.weight.device.type == "cpu"
 
         offloader.wait_for_block(1)
         offloader.submit_move_blocks_forward(1)
         offloader.wait_for_block(2)
         assert blocks[1].proj.weight.device.type == "cpu"
         assert blocks[2].proj.weight.device.type == "cuda"
-        assert all(getattr(blocks[2].proj, name).device.type == "cuda" for name in sidecars)
 
-        output = blocks[2](torch.randn(1, 256, device=device, dtype=torch.bfloat16))
+        output = blocks[2](torch.randn(1, 64, device=device, dtype=torch.bfloat16))
         assert output.device.type == "cuda"
         assert torch.isfinite(output).all()
     finally:

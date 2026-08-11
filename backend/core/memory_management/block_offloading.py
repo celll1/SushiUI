@@ -20,12 +20,43 @@ def _synchronize_device(device: torch.device):
         torch.cuda.synchronize()
 
 
+def weight_sidecar_names(*modules: nn.Module):
+    """Buffer names on Linear-like ``modules`` that are a quantization sidecar of
+    ``.weight`` and must move device-for-device with it.
+
+    Repo convention: a sidecar is a registered buffer whose name starts with
+    ``"weight_"`` (``W4A8Linear.weight_s_rel`` / ``weight_s_channel`` /
+    ``weight_codebook`` / ``weight_correction``, ``Int8Linear`` /
+    ``Fp8Linear.weight_scale``). ``modules`` may be more than one (e.g. the CPU
+    and CUDA side of a swap pair) so a sidecar registered on either side is
+    found even if the two modules are not identically structured; ``None``
+    entries are skipped so callers can pass an absent counterpart directly.
+    Order is stable (first-seen across ``modules`` in argument order, buffer
+    registration order within a module).
+    """
+    names = []
+    seen = set()
+    for module in modules:
+        if module is None:
+            continue
+        for buf_name, buf in module.named_buffers(recurse=False):
+            if buf is not None and buf_name != "weight" and buf_name.startswith("weight_") and buf_name not in seen:
+                names.append(buf_name)
+                seen.add(buf_name)
+    return names
+
+
 def weighs_to_device(layer: nn.Module, device: torch.device):
-    """Move Linear layer weights to device (non-blocking)"""
+    """Move Linear layer weights (and their quantization sidecar buffers, if
+    any -- see ``weight_sidecar_names``) to device (non-blocking)"""
     for module in layer.modules():
         if hasattr(module, "weight") and module.weight is not None:
             if module.__class__.__name__.endswith("Linear"):
                 module.weight.data = module.weight.data.to(device, non_blocking=device.type != "cpu")
+                for sidecar_name in weight_sidecar_names(module):
+                    sidecar = getattr(module, sidecar_name, None)
+                    if sidecar is not None:
+                        sidecar.data = sidecar.data.to(device, non_blocking=device.type != "cpu")
 
 
 # ----------------------------------------------------------------------------
@@ -192,14 +223,26 @@ class DtypeSplitGuardMixin:
         return split.get(block.__class__.__name__, {})
 
     def _move_deferred_pairs(self, deferred_pairs) -> None:
-        """Move an excluded pair's two weights to their targets, dtype unchanged.
+        """Move an excluded pair's tensors to their targets, dtype unchanged.
 
-        Same net effect as the paired swap (outgoing block's weight on CPU,
-        incoming block's weight on the device) without the shared staging buffer
+        Same net effect as the paired swap (outgoing block's tensors on CPU,
+        incoming block's tensors on the device) without the shared staging buffer
         that would force both through one dtype.
+
+        Entries are ``(module_to_cpu, module_to_cuda)`` (legacy: ``.weight``
+        only -- what ``FluxBlockOffloader`` still builds) or
+        ``(module_to_cpu, module_to_cuda, attr_names)`` where ``attr_names`` is
+        every attribute to move for that module pair (``"weight"`` plus any
+        quantization sidecar buffers excluded alongside it -- see
+        ``TransformerBlockOffloader._build_weight_swap_jobs``).
         """
         cpu = torch.device("cpu")
-        for module_to_cpu, module_to_cuda in deferred_pairs:
+        for entry in deferred_pairs:
+            if len(entry) == 3:
+                module_to_cpu, module_to_cuda, attr_names = entry
+            else:
+                module_to_cpu, module_to_cuda = entry
+                attr_names = ("weight",)
             if module_to_cpu is module_to_cuda:
                 # Degenerate self-swap: with blocks_to_swap == 1 the forward-only
                 # rotation collapses (block_idx_to_gpu == block_idx_to_cpu), so the
@@ -208,9 +251,14 @@ class DtypeSplitGuardMixin:
                 # the device and then straight back to CPU would leave the block
                 # split across devices and the next forward would raise.
                 continue
-            module_to_cuda.weight.data = module_to_cuda.weight.data.to(
-                self.device, non_blocking=self.device.type != "cpu")
-            module_to_cpu.weight.data = module_to_cpu.weight.data.to(cpu)
+            for attr_name in attr_names:
+                cuda_tensor = getattr(module_to_cuda, attr_name, None)
+                if cuda_tensor is not None:
+                    cuda_tensor.data = cuda_tensor.data.to(
+                        self.device, non_blocking=self.device.type != "cpu")
+                cpu_tensor = getattr(module_to_cpu, attr_name, None)
+                if cpu_tensor is not None:
+                    cpu_tensor.data = cpu_tensor.data.to(cpu)
 
 
 class TransformerBlockOffloader(DtypeSplitGuardMixin):
@@ -563,6 +611,29 @@ class TransformerBlockOffloader(DtypeSplitGuardMixin):
             return
         self.ring_size = max(1, min(self.ring_size, num_swappable))
 
+        # H2D-only coalesces every swappable block's `.weight` into ONE flat
+        # single-dtype master and only ever repoints `.weight.data`; it has no
+        # notion of a Linear's quantization sidecar buffers (weight_s_rel,
+        # weight_scale, ...; see weight_sidecar_names), so a block it manages
+        # would leave those stranded on whatever device they were on before
+        # this setup ran (CPU, per prepare_block_devices_before_forward -- a
+        # forward would then read a CPU weight_s_rel against a GPU weight and
+        # raise, or read a stale copy if a caller partially patched around it).
+        # Rather than silently corrode that state, fall back to the standard
+        # (per-tensor, sidecar-aware) swap whenever a swappable block actually
+        # has one -- the same fallback pattern as the mixed-`.weight`-dtype
+        # case just below. Architectures with no sidecar buffers (e.g.
+        # LTX-2.3) are unaffected and keep the coalesced H2D-only path.
+        for bidx in self.h2d_swappable:
+            for m in self._linear_weight_modules(self.blocks[bidx]):
+                sidecars = weight_sidecar_names(m)
+                if sidecars:
+                    print(f"[BlockOffloader] H2D-only disabled: block {bidx} has quantization "
+                          f"sidecar buffers ({', '.join(sidecars)}) that the coalesced H2D-only "
+                          f"path does not manage; using standard block swap (sidecar-aware).")
+                    self.h2d_only = False
+                    return
+
         # Coalescing into one flat buffer requires a single dtype across all swappable Linear
         # weights. Fall back to standard block swap if mixed (keeps correctness).
         dtypes = set()
@@ -701,13 +772,29 @@ class TransformerBlockOffloader(DtypeSplitGuardMixin):
             self.num_blocks, self.blocks_to_swap, self.forward_only)]
 
     def _build_weight_swap_jobs(self, block_to_cpu: nn.Module, block_to_cuda: nn.Module):
-        """Pair the two blocks' Linear weights.
+        """Pair the two blocks' Linear weights, and each weight's quantization
+        sidecar buffers (see ``weight_sidecar_names``) alongside it -- a swapped
+        block must leave nothing of a quantized Linear behind.
 
-        Returns ``(weight_swap_jobs, deferred_pairs)``. A pair is a swap job only
-        when the two weights share a name, a shape AND a dtype; a path listed by
-        the dtype-split guard is returned in ``deferred_pairs`` instead, to be
-        moved individually by the caller (a paired staging swap across differing
-        dtypes converts one into the other silently -- see the guard's comment).
+        Returns ``(weight_swap_jobs, deferred_pairs)``, ONE entry per Linear
+        module in either list (never both), so callers keying off the module
+        (e.g. path bookkeeping, or the cached per-swap staging buffers) see the
+        same shape as before this method carried sidecars.
+
+        A module's ``.weight`` is a swap job only when the two blocks' weights
+        share a name, a shape AND a dtype; a path listed by the dtype-split
+        guard is deferred instead, to be moved individually by the caller (a
+        paired staging swap across differing dtypes converts one into the other
+        silently -- see the guard's comment). Once a module's weight is
+        accepted for the paired swap, its sidecar buffers are added to the SAME
+        job when they are themselves pairable (present on both sides, same
+        shape, same dtype -- true whenever the two blocks' quantization state
+        genuinely matches, which is what non-excluded means); a sidecar that
+        is not itself pairable (missing counterpart, shape or dtype mismatch --
+        not expected in practice, since sidecar presence/shape is a function of
+        the weight's own dtype, but not proven impossible) is deferred
+        individually rather than folded into the guard's raise, which exists
+        for ``.weight`` only.
         """
         excluded = self._dtype_split_paths_for(block_to_cuda)
 
@@ -728,7 +815,12 @@ class TransformerBlockOffloader(DtypeSplitGuardMixin):
                     and module_to_cpu.weight.shape == module_to_cuda.weight.shape
                 )
                 if pairable and module_to_cuda_name in excluded:
-                    deferred_pairs.append((module_to_cpu, module_to_cuda))
+                    # The weight itself diverges (that is what "excluded" means):
+                    # any sidecar buffers diverge or are absent right along with
+                    # it, so the whole module -- weight plus every sidecar found
+                    # on either side -- is deferred as one unit.
+                    attr_names = ["weight"] + weight_sidecar_names(module_to_cpu, module_to_cuda)
+                    deferred_pairs.append((module_to_cpu, module_to_cuda, attr_names))
                 elif pairable:
                     if module_to_cpu.weight.dtype != module_to_cuda.weight.dtype:
                         # Unreachable via the guard, which excludes every path
@@ -745,12 +837,49 @@ class TransformerBlockOffloader(DtypeSplitGuardMixin):
                             f"the other during the staging copy with no error. Reload the "
                             f"model (Load with force) so every block holds the same weight "
                             f"format.")
-                    weight_swap_jobs.append(
-                        (module_to_cpu, module_to_cuda, module_to_cpu.weight.data, module_to_cuda.weight.data)
-                    )
+                    # Each tensor_jobs entry is (attr_name, data_currently_on_cuda,
+                    # data_currently_on_cpu), matching swap_weight_devices's
+                    # convention: module_to_cpu is the block CURRENTLY resident on
+                    # the device (about to be evicted), so module_to_cpu's tensor
+                    # is the one currently on cuda; module_to_cuda is the block
+                    # CURRENTLY on the host (about to be loaded), so module_to_cuda's
+                    # tensor is the one currently on cpu.
+                    tensor_jobs = [("weight", module_to_cpu.weight.data, module_to_cuda.weight.data)]
+                    deferred_sidecar_names = []
+                    for sidecar_name in weight_sidecar_names(module_to_cpu, module_to_cuda):
+                        sidecar_currently_on_cuda = getattr(module_to_cpu, sidecar_name, None)
+                        sidecar_currently_on_cpu = getattr(module_to_cuda, sidecar_name, None)
+                        sidecar_pairable = (
+                            sidecar_currently_on_cuda is not None
+                            and sidecar_currently_on_cpu is not None
+                            and sidecar_currently_on_cuda.shape == sidecar_currently_on_cpu.shape
+                            and sidecar_currently_on_cuda.dtype == sidecar_currently_on_cpu.dtype
+                        )
+                        if sidecar_pairable:
+                            tensor_jobs.append(
+                                (sidecar_name, sidecar_currently_on_cuda.data, sidecar_currently_on_cpu.data))
+                        else:
+                            # Never leave a sidecar GPU-resident-only (the
+                            # weight's fallback below, for the case where it has
+                            # no counterpart at all): move each side to its own
+                            # target device independently instead.
+                            deferred_sidecar_names.append(sidecar_name)
+                    weight_swap_jobs.append((module_to_cpu, module_to_cuda, tensor_jobs))
+                    if deferred_sidecar_names:
+                        deferred_pairs.append((module_to_cpu, module_to_cuda, deferred_sidecar_names))
                 else:
+                    # Pre-existing behaviour, unchanged: an unpairable `.weight`
+                    # (no CPU counterpart / shape mismatch) is moved to the
+                    # device only -- a known one-directional gap (see the module
+                    # docstring at :30-59). Sidecars do not extend that gap: any
+                    # sidecar buffer found on either side is deferred instead,
+                    # which moves each side to its own target device rather than
+                    # leaving it stranded resident.
                     if module_to_cuda.weight.data.device.type != self.device.type:
                         module_to_cuda.weight.data = module_to_cuda.weight.data.to(self.device)
+                    sidecar_names = weight_sidecar_names(module_to_cpu, module_to_cuda)
+                    if sidecar_names:
+                        deferred_pairs.append((module_to_cpu, module_to_cuda, sidecar_names))
 
         return weight_swap_jobs, deferred_pairs
 
@@ -768,6 +897,26 @@ class TransformerBlockOffloader(DtypeSplitGuardMixin):
         assert block_to_cpu.__class__ == block_to_cuda.__class__
 
         weight_swap_jobs, deferred_pairs = self._build_weight_swap_jobs(block_to_cpu, block_to_cuda)
+
+        # Flatten the per-module job list (weight + its sidecars bundled together,
+        # see _build_weight_swap_jobs) into one entry per TENSOR: the staging
+        # copy below moves one tensor at a time (a weight and its weight_s_rel
+        # sidecar have different shapes/dtypes and cannot share a staging
+        # buffer), while the module-level bundling above is what keeps the
+        # dtype-split guard's per-module bookkeeping (and the tests pinning it)
+        # unaffected by sidecars.
+        #
+        # Each tensor_jobs entry is (attr_name, data_currently_on_cuda,
+        # data_currently_on_cpu) -- see the comment in _build_weight_swap_jobs.
+        # Flattened here to (module_to_cpu, module_to_cuda, attr_name,
+        # cuda_data_view, cpu_data_view), matching this method's pre-existing
+        # 4-tuple convention (cuda_data_view/cpu_data_view name WHERE the data
+        # IS right now, not where it is going).
+        flat_jobs = [
+            (module_to_cpu, module_to_cuda, attr_name, cuda_data_view, cpu_data_view)
+            for module_to_cpu, module_to_cuda, tensor_jobs in weight_swap_jobs
+            for attr_name, cuda_data_view, cpu_data_view in tensor_jobs
+        ]
 
         # Order the swap AFTER the compute that just used these weights, but do it on the
         # transfer stream via a CUDA event instead of draining the whole compute stream on
@@ -796,16 +945,16 @@ class TransformerBlockOffloader(DtypeSplitGuardMixin):
                 if self.staging_buffer_a is None:
                     self.staging_buffer_a = [
                         torch.empty_like(cuda_data_view, device="cpu").pin_memory(device=self.device)
-                        for _, _, cuda_data_view, _ in weight_swap_jobs
+                        for _, _, _, cuda_data_view, _ in flat_jobs
                     ]
                     self.staging_buffer_b = [
                         torch.empty_like(cuda_data_view, device="cpu").pin_memory(device=self.device)
-                        for _, _, cuda_data_view, _ in weight_swap_jobs
+                        for _, _, _, cuda_data_view, _ in flat_jobs
                     ]
 
                 event_b = None
-                for sbuf_a, sbuf_b, (module_to_cpu, module_to_cuda, cuda_data_view, cpu_data_view) in zip(
-                    self.staging_buffer_a, self.staging_buffer_b, weight_swap_jobs
+                for sbuf_a, sbuf_b, (module_to_cpu, module_to_cuda, attr_name, cuda_data_view, cpu_data_view) in zip(
+                    self.staging_buffer_a, self.staging_buffer_b, flat_jobs
                 ):
                     # CUDA to staging buffer A
                     event_a = torch.cuda.Event()
@@ -817,7 +966,7 @@ class TransformerBlockOffloader(DtypeSplitGuardMixin):
                         event_b.synchronize()
 
                     # CPU to staging buffer B
-                    sbuf_b.copy_(module_to_cuda.weight.data)
+                    sbuf_b.copy_(getattr(module_to_cuda, attr_name).data)
 
                     # Wait for staging buffer A
                     event_a.synchronize()
@@ -831,11 +980,11 @@ class TransformerBlockOffloader(DtypeSplitGuardMixin):
                     cpu_data_view.copy_(sbuf_a)
 
             # Update references
-            for sbuf_a, sbuf_b, (module_to_cpu, module_to_cuda, cuda_data_view, cpu_data_view) in zip(
-                self.staging_buffer_a, self.staging_buffer_b, weight_swap_jobs
+            for sbuf_a, sbuf_b, (module_to_cpu, module_to_cuda, attr_name, cuda_data_view, cpu_data_view) in zip(
+                self.staging_buffer_a, self.staging_buffer_b, flat_jobs
             ):
-                module_to_cuda.weight.data = cuda_data_view
-                module_to_cpu.weight.data = cpu_data_view
+                getattr(module_to_cuda, attr_name).data = cuda_data_view
+                getattr(module_to_cpu, attr_name).data = cpu_data_view
 
             sync_event = event_b
 
@@ -845,33 +994,33 @@ class TransformerBlockOffloader(DtypeSplitGuardMixin):
                 with torch.cuda.stream(self.stream):
                     self.pinned_buffer = [
                         torch.empty_like(cuda_data_view, device="cpu").pin_memory(device=self.device)
-                        for _, _, cuda_data_view, _ in weight_swap_jobs
+                        for _, _, _, cuda_data_view, _ in flat_jobs
                     ]
                 self.stream.synchronize()
             released_pinned_buffer = []
 
-            events = [torch.cuda.Event() for _ in weight_swap_jobs]
+            events = [torch.cuda.Event() for _ in flat_jobs]
 
             # Copy weights to CPU
-            for event, module_pin_buf, (module_to_cpu, module_to_cuda, cuda_data_view, cpu_data_view) in zip(
-                events, self.pinned_buffer, weight_swap_jobs
+            for event, module_pin_buf, (module_to_cpu, module_to_cuda, attr_name, cuda_data_view, cpu_data_view) in zip(
+                events, self.pinned_buffer, flat_jobs
             ):
                 with torch.cuda.stream(self.stream):
                     module_pin_buf.copy_(cuda_data_view, non_blocking=True)
                     event.record(self.stream)
 
             # CPU to CUDA
-            for event, (module_to_cpu, module_to_cuda, cuda_data_view, cpu_data_view) in zip(events, weight_swap_jobs):
+            for event, (module_to_cpu, module_to_cuda, attr_name, cuda_data_view, cpu_data_view) in zip(events, flat_jobs):
                 with torch.cuda.stream(self.stream):
                     self.stream.wait_event(event)
                     cuda_data_view.copy_(cpu_data_view, non_blocking=True)
 
             # Update references
-            for module_pin_buf, (module_to_cpu, module_to_cuda, cuda_data_view, cpu_data_view) in zip(
-                self.pinned_buffer, weight_swap_jobs
+            for module_pin_buf, (module_to_cpu, module_to_cuda, attr_name, cuda_data_view, cpu_data_view) in zip(
+                self.pinned_buffer, flat_jobs
             ):
-                module_to_cuda.weight.data = cuda_data_view
-                module_to_cpu.weight.data = module_pin_buf
+                getattr(module_to_cuda, attr_name).data = cuda_data_view
+                getattr(module_to_cpu, attr_name).data = module_pin_buf
                 released_pinned_buffer.append(cpu_data_view)
 
             # Reuse released pinned buffers
@@ -879,7 +1028,7 @@ class TransformerBlockOffloader(DtypeSplitGuardMixin):
                 with torch.cuda.stream(self.stream):
                     released_pinned_buffer = [
                         torch.empty_like(cuda_data_view, device="cpu").pin_memory(device=self.device)
-                        for _, _, cuda_data_view, _ in weight_swap_jobs
+                        for _, _, _, cuda_data_view, _ in flat_jobs
                     ]
             self.pinned_buffer = released_pinned_buffer
 

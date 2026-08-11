@@ -60,9 +60,10 @@
 #     projection's own numerics are untouched, so K0.2's measurements -- which
 #     compared the modulation VECTOR, upstream of this cast -- still hold.
 #
-#     `MiniMaxH3AdaLayerNormOut` is deliberately NOT changed: its output feeds
-#     the float32 output heads, and ComfyUI's `FinalLayer.forward` (L287-294)
-#     promotes there too (`.to(torch.float32)`).
+#     `MiniMaxH3AdaLayerNormOut`'s modulation NUMERICS are unaffected by this
+#     cast (its own `linear` stays wherever `_keep_in_fp32_modules` puts it);
+#     see the separate activation-memory bullet below for what DOES change
+#     about this class.
 #
 #     NOT YET EXECUTED. No forward has run the shipped combination: Phase 0's
 #     smoke ran `adaln_proj` in bfloat16, and the Phase-1 loader installs it in
@@ -75,6 +76,38 @@
 #     stamped once per forward by `_stamp_attention_backend`; see
 #     `MiniMaxH3AttnProcessor.__call__`. Same shape as the Krea 2 and MiniT2I
 #     vendored transformers.
+#   * ACTIVATION-MEMORY REDUCTIONS (three, measured on the real `w4a8_mixed`
+#     checkpoint at production shape, S = 97,159, RTX 6000 Ada -- each guarded
+#     to fall back to the exact stock expression under autograd or short
+#     sequences; see the named module's docstring for the measurement table):
+#       - `_apply_rotary_emb` is now `core.models.minimax_h3.rope_inplace.apply_rotary_emb`,
+#         which rotates the leading `rotary_dim` channels of q/k in place instead
+#         of building a fresh `cat(...).contiguous()` tensor. -0.946 GiB peak
+#         allocated (the only mover of peak ALLOCATED in the whole forward).
+#         Relies on a safety invariant: `attn.norm_q` / `attn.norm_k` always hand
+#         it a freshly materialized tensor, never a view into a fused qkv buffer.
+#       - `MiniMaxH3TransformerBlock.forward`'s per-block AdaLN modulation and
+#         gated residual add now go through
+#         `core.models.minimax_h3.adaln_chunking.chunked_ada_modulate` /
+#         `.gated_residual_add`, which chunk the `index_select` expansion over
+#         the sequence axis and perform the residual add in place at inference.
+#         -1.949 / -2.274 GiB peak reserved, -0.972 GiB peak allocated at
+#         `blocks_to_swap=40`. The in-place add creates an aliasing hazard for
+#         MiniMax-H3 FBCache, handled in
+#         `core.models.minimax_h3_block_loop_wrapper.MiniMaxH3BlockLoopWrapper._custom_forward`
+#         (clones `original_hidden_states` once, only when FBCache is attached)
+#         -- see `adaln_chunking.py`'s docstring for the full hazard.
+#       - `MiniMaxH3AdaLayerNormOut.forward` now takes an `out_dtype` argument
+#         and its body is `core.models.minimax_h3.adaln_chunking.chunked_norm_out`,
+#         which chunks the final norm + modulation over the sequence axis and
+#         writes each chunk straight into `out_dtype`, absorbing the
+#         `.to(self.proj_out.weight.dtype)` cast BOTH call sites
+#         (`MiniMaxH3Transformer3DModel.forward` here and
+#         `MiniMaxH3BlockLoopWrapper._custom_forward`) used to apply afterwards.
+#         -3.895 GiB peak reserved at both `blocks_to_swap=0` and `=40`; this is
+#         the single largest of the three reductions and, being a tail stage
+#         that runs after every block has finished, sets the WHOLE forward's
+#         peak reserved on its own.
 #
 # Why vendored: the `minimax-h3` branch is versioned 0.36.0.dev0 and is not on
 # diffusers `main`; this repo runs diffusers 0.38.0 for ten other
@@ -109,7 +142,9 @@ from diffusers.models.embeddings import TimestepEmbedding, Timesteps
 from diffusers.models.modeling_utils import ModelMixin
 
 from core.attention import AttentionMode, dispatch_attention
+from core.models.minimax_h3.adaln_chunking import chunked_ada_modulate, chunked_norm_out, gated_residual_add
 from core.models.minimax_h3.ff_chunking import chunked_feed_forward
+from core.models.minimax_h3.rope_inplace import apply_rotary_emb as _apply_rotary_emb
 
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
@@ -137,21 +172,10 @@ class MiniMaxH3TransformerOutput(BaseOutput):
     audio_sample: torch.Tensor
 
 
-def _apply_rotary_emb(hidden_states: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
-    r"""
-    Rotate the leading `rotary_dim` channels of every head and pass the remaining channels through unchanged.
-    `hidden_states` is `(batch_size, seq_len, num_heads, head_dim)` and `cos`/`sin` are `(seq_len, rotary_dim)`.
-    """
-    rotary_dim = cos.shape[-1]
-    hidden_states_rotary = hidden_states[..., :rotary_dim]
-    hidden_states_pass = hidden_states[..., rotary_dim:]
-
-    cos = cos.to(hidden_states.dtype)[None, :, None, :]
-    sin = sin.to(hidden_states.dtype)[None, :, None, :]
-    x1, x2 = hidden_states_rotary.chunk(2, dim=-1)
-    hidden_states_rotated = torch.cat((-x2, x1), dim=-1)
-    hidden_states_rotary = hidden_states_rotary * cos + hidden_states_rotated * sin
-    return torch.cat((hidden_states_rotary, hidden_states_pass), dim=-1).contiguous()
+# SushiUI modification: `_apply_rotary_emb` is now `core.models.minimax_h3.rope_inplace.apply_rotary_emb`,
+# imported above under this name to keep both call sites in `MiniMaxH3AttnProcessor.__call__` unchanged. See
+# that module's docstring for the in-place rewrite, its guard, and the safety invariant it depends on
+# (qk-norm always handing it a freshly materialized tensor, never a view into a fused qkv buffer).
 
 
 class MiniMaxH3RotaryPosEmbed(nn.Module):
@@ -237,17 +261,26 @@ class MiniMaxH3AdaLayerNormOut(nn.Module):
         self.norm = nn.RMSNorm(hidden_size, eps=eps)
         self.linear = nn.Linear(time_embed_dim, 2 * hidden_size, bias=True)
 
-    def forward(self, hidden_states: torch.Tensor, temb: torch.Tensor, timestep_indices: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        temb: torch.Tensor,
+        timestep_indices: torch.Tensor,
+        out_dtype: torch.dtype | None = None,
+    ) -> torch.Tensor:
         # As in `MiniMaxH3AdaLayerNormModulation`: activate at `temb`'s precision, cast to the projection's dtype after.
         # SushiUI modification: `apply_silu=False` for the "pruned" / AdaLN-curve checkpoints.
-        if self.apply_silu:
-            temb = nn.functional.silu(temb)
-        shift, scale = self.linear(temb.to(self.linear.weight.dtype)).chunk(2, dim=-1)
-        # The modulation itself stays at the block stack's precision; `forward` casts to the output heads' dtype.
-        hidden_states = self.norm(hidden_states)
-        return hidden_states * (1.0 + scale.index_select(0, timestep_indices)) + shift.index_select(
-            0, timestep_indices
-        )
+        #
+        # SushiUI modification: the body now lives in `core.models.minimax_h3.adaln_chunking.chunked_norm_out`,
+        # which chunks the norm + modulation over the packed-sequence axis and writes each chunk straight into
+        # `out_dtype` -- both call sites (`MiniMaxH3Transformer3DModel.forward` and
+        # `MiniMaxH3BlockLoopWrapper._custom_forward`) now pass `out_dtype=self.proj_out.weight.dtype` /
+        # `t.proj_out.weight.dtype` here instead of casting the result afterwards. `out_dtype=None` (any other
+        # caller, e.g. a standalone unit test) preserves the original behaviour of returning at `hidden_states`'s
+        # own dtype, uncast. See that module's docstring for the measurement and the exactness argument.
+        if out_dtype is None:
+            out_dtype = hidden_states.dtype
+        return chunked_norm_out(self, hidden_states, temb, timestep_indices, out_dtype)
 
 
 class MiniMaxH3AttnProcessor:
@@ -475,21 +508,21 @@ class MiniMaxH3TransformerBlock(nn.Module):
             for t in (shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp)
         )
 
+        # SushiUI modification: the modulate-then-index_select expansion and the gated residual add
+        # now go through `core.models.minimax_h3.adaln_chunking` (`chunked_ada_modulate` /
+        # `gated_residual_add`), which chunk both over the packed-sequence axis and perform the
+        # gated add in place when it is safe to (inference, long sequence). See that module's
+        # docstring for the measurement, the exactness argument, and the FBCache-aliasing hazard
+        # this in-place add creates -- handled at `MiniMaxH3BlockLoopWrapper._custom_forward`, not here.
         residual = hidden_states
-        norm_hidden_states = self.norm1(hidden_states)
-        norm_hidden_states = norm_hidden_states * (
-            1.0 + scale_msa.index_select(0, adaln_indices)
-        ) + shift_msa.index_select(0, adaln_indices)
+        norm_hidden_states = chunked_ada_modulate(self.norm1, hidden_states, scale_msa, shift_msa, adaln_indices)
         attn_output = self.attn(norm_hidden_states, rotary_emb, attention_mask)
-        hidden_states = residual + gate_msa.index_select(0, adaln_indices) * attn_output
+        hidden_states = gated_residual_add(residual, gate_msa, adaln_indices, attn_output)
 
         residual = hidden_states
-        norm_hidden_states = self.norm2(hidden_states)
-        norm_hidden_states = norm_hidden_states * (
-            1.0 + scale_mlp.index_select(0, adaln_indices)
-        ) + shift_mlp.index_select(0, adaln_indices)
+        norm_hidden_states = chunked_ada_modulate(self.norm2, hidden_states, scale_mlp, shift_mlp, adaln_indices)
         ff_output = chunked_feed_forward(self.ff, norm_hidden_states)
-        hidden_states = residual + gate_mlp.index_select(0, adaln_indices) * ff_output
+        hidden_states = gated_residual_add(residual, gate_mlp, adaln_indices, ff_output)
 
         return hidden_states
 
@@ -814,7 +847,10 @@ class MiniMaxH3Transformer3DModel(ModelMixin, ConfigMixin, AttentionMixin, PeftA
         # 5. Both heads run over every row, then the rows of each modality are selected. The heads are listed in
         # `_keep_in_fp32_modules`, so they stay float32 while the block stack runs in the requested `torch_dtype`;
         # align the activation with their parameter dtype.
-        hidden_states = self.norm_out(hidden_states, temb, timestep_indices).to(self.proj_out.weight.dtype)
+        # SushiUI modification: `out_dtype` is now passed into `norm_out` rather than cast afterwards --
+        # see `MiniMaxH3AdaLayerNormOut.forward` / `adaln_chunking.chunked_norm_out`. The
+        # `MiniMaxH3BlockLoopWrapper._custom_forward` call site must be kept in sync with this one.
+        hidden_states = self.norm_out(hidden_states, temb, timestep_indices, out_dtype=self.proj_out.weight.dtype)
         video_output = self.proj_out(hidden_states).index_select(1, video_indices)
         audio_output = self.audio_proj_out(hidden_states).index_select(1, audio_indices)
 

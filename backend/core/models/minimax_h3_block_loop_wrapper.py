@@ -271,7 +271,15 @@ class MiniMaxH3BlockLoopWrapper(nn.Module):
 
         # === 4. The block loop (RE-OWNED) ===
         grad_ckpt = torch.is_grad_enabled() and t.gradient_checkpointing
-        original_hidden_states = hidden_states
+        # SushiUI: `MiniMaxH3TransformerBlock.forward`'s gated residual add
+        # (`core.models.minimax_h3.adaln_chunking.gated_residual_add`) mutates its
+        # `residual` argument IN PLACE at inference -- and for block 0, that argument is
+        # this exact `hidden_states` object. Clone it into `original_hidden_states` before
+        # the loop so block 0's in-place add cannot zero out `first_residual` below via
+        # aliasing. Gated only on `fbcache is not None`: it is the only reader of
+        # `original_hidden_states`, and this path is already mutually exclusive with block
+        # swap (`attach_fbcache` above), so the extra clone never lands on the block-swap path.
+        original_hidden_states = hidden_states.clone() if fbcache is not None else hidden_states
         fbcache_hit = False
 
         for block_idx, block in enumerate(t.transformer_blocks):
@@ -314,7 +322,9 @@ class MiniMaxH3BlockLoopWrapper(nn.Module):
             fbcache.store(hidden_states - original_hidden_states)
 
         # === 5. Output norm + the two modality heads ===
-        hidden_states = t.norm_out(hidden_states, temb, timestep_indices).to(t.proj_out.weight.dtype)
+        # SushiUI: `out_dtype` passed in rather than cast afterwards -- must be kept in sync
+        # with the stock call site in `transformer_minimax_h3.py`'s `MiniMaxH3Transformer3DModel.forward`.
+        hidden_states = t.norm_out(hidden_states, temb, timestep_indices, out_dtype=t.proj_out.weight.dtype)
         video_output = t.proj_out(hidden_states).index_select(1, video_indices)
         audio_output = t.audio_proj_out(hidden_states).index_select(1, audio_indices)
 

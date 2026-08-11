@@ -7,6 +7,7 @@ import InlineHelp from "../common/InlineHelp";
 import FramePreviewTooltip from "../common/FramePreviewTooltip";
 import { latentGroupSpans, snapRangeToLatentGroups } from "@/utils/api";
 import { formatFrameLabel, formatTimecode } from "@/utils/timecode";
+import { percentForValue, roundedValueAtClientX } from "@/utils/timelineScale";
 import type { VideoPlayheadState } from "@/hooks/useVideoPlayhead";
 
 // ---------------------------------------------------------------------------
@@ -118,15 +119,13 @@ export default function VideoInpaintRangeTimeline({
   const frameAtPointer = (clientX: number): number => {
     const rect = containerRef.current?.getBoundingClientRect();
     if (!rect || rect.width <= 0) return 0;
-    const fraction = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
     // Pointer space is the WHOLE upload; the range is in trimmed-clip frames.
-    return Math.round(fraction * safeRaw) - trimStart;
+    return roundedValueAtClientX(clientX, rect, { min: 0, max: safeRaw }) - trimStart;
   };
   const rawFrameAtPointer = (clientX: number): number => {
     const rect = containerRef.current?.getBoundingClientRect();
     if (!rect || rect.width <= 0) return 0;
-    const fraction = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
-    return Math.round(fraction * safeRaw);
+    return roundedValueAtClientX(clientX, rect, { min: 0, max: safeRaw });
   };
 
   const startDrag = (mode: DragMode) => (e: React.PointerEvent<HTMLDivElement>) => {
@@ -198,8 +197,8 @@ export default function VideoInpaintRangeTimeline({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [player?.isLooping, player?.setLoopRange, trimStart, effective.start, effective.end, frameRate]);
 
-  const pct = (frame: number) => ((trimStart + frame) / safeRaw) * 100;
-  const rawPct = (rawFrame: number) => (rawFrame / safeRaw) * 100;
+  const pct = (frame: number) => percentForValue(trimStart + frame, { min: 0, max: safeRaw });
+  const rawPct = (rawFrame: number) => percentForValue(rawFrame, { min: 0, max: safeRaw });
   const seconds = (frame: number) => (frameRate > 0 ? frame / frameRate : 0);
   const fmt = (frame: number) => `${frame} (${formatTimecode(seconds(frame), frameRate)})`;
 

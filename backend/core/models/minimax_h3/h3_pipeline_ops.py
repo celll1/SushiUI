@@ -1454,10 +1454,32 @@ def decode_video(
 
     pix_mean = torch.tensor(list(pixel_mean), device=frames.device).view(1, -1, 1, 1, 1)
     pix_std = torch.tensor(list(pixel_std), device=frames.device).view(1, -1, 1, 1, 1)
-    frames = (frames.float() * pix_std + pix_mean).clamp(0, 1)
-    # [1, 3, T, H, W] -> [T, H, W, 3] uint8
-    frames = frames[0].permute(1, 2, 3, 0).contiguous().cpu().numpy()
-    return (frames * 255.0).round().astype(np.uint8)
+
+    # The pixel-side denormalization (mean/std/clamp/permute/round) is purely elementwise and
+    # per-frame -- there is no cross-frame reduction here -- so it is safe to walk the temporal
+    # axis in the VAE's own natural chunk unit instead of promoting the whole clip to fp32 on GPU
+    # and taking a second full-size contiguous copy for the permute. This keeps only one chunk's
+    # worth of fp32 pixels resident at a time; the numerical result is byte-identical to doing it
+    # in one shot because every op below is elementwise/layout-only.
+    tokens_chunk_size = getattr(vae, "tokens_chunk_size", None)
+    temporal_compression_ratio = getattr(vae, "temporal_compression_ratio", None)
+    if tokens_chunk_size and temporal_compression_ratio:
+        chunk_frames = tokens_chunk_size * temporal_compression_ratio
+    else:
+        chunk_frames = 17
+
+    total_frames = frames.shape[2]
+    out_chunks: list[np.ndarray] = []
+    for start in range(0, total_frames, chunk_frames):
+        end = min(start + chunk_frames, total_frames)
+        chunk = frames[:, :, start:end]
+        chunk = (chunk.float() * pix_std + pix_mean).clamp(0, 1)
+        # [1, 3, t, H, W] -> [t, H, W, 3] uint8
+        chunk = chunk[0].permute(1, 2, 3, 0).contiguous().cpu().numpy()
+        out_chunks.append((chunk * 255.0).round().astype(np.uint8))
+        del chunk
+
+    return out_chunks[0] if len(out_chunks) == 1 else np.concatenate(out_chunks, axis=0)
 
 
 @torch.no_grad()

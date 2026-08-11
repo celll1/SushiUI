@@ -452,24 +452,3 @@ export function validateKeyframes(keyframes: VideoMaskKeyframe[]): string[] {
   });
   return errors;
 }
-
-/** UI helper: drop malformed, out-of-range, duplicate-id, and duplicate-frame entries. */
-export function pruneKeyframesToFrameRange(
-  keyframes: VideoMaskKeyframe[],
-  minFrame: number,
-  maxFrame: number,
-): VideoMaskKeyframe[] {
-  const min = Math.min(Math.round(minFrame), Math.round(maxFrame));
-  const max = Math.max(Math.round(minFrame), Math.round(maxFrame));
-  const seenIds = new Set<string>();
-  const seenFrames = new Set<number>();
-  return sortKeyframes(
-    keyframes.filter((keyframe) => {
-      if (!Number.isInteger(keyframe.frame) || keyframe.frame < min || keyframe.frame > max) return false;
-      if (seenIds.has(keyframe.id) || seenFrames.has(keyframe.frame)) return false;
-      seenIds.add(keyframe.id);
-      seenFrames.add(keyframe.frame);
-      return true;
-    }),
-  );
-}

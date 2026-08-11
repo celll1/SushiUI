@@ -43,13 +43,13 @@ import {
 } from "@/utils/maskConventions";
 import { migrateLoopGenerationConfig, computeLoopDecodeDirective } from "@/utils/loopGenerationInheritance";
 import { getSamplers, getScheduleTypes, generateInpaint, generateInpaintVideo, generateInpaintTrainingPreview, toBase64, InpaintParams as ApiInpaintParams, InpaintVideoParams, LoRAConfig, ControlNetConfig, generateTIPOPrompt, cancelGeneration, getCurrentModel, getResultFilename, getResultPlaybackFilename, getResultSeed, getResultAncestralSeed, isLatentOnlyResult, unetQuantizationOptions, normalizeUnetQuantization, transformerQuantizationLabel, archSupportsFeature, archDisplayName, inpaintVideoDefaultsForArch, fitVideoCanvas, videoCanvasRule, videoCanvasAxisBounds, videoCanvasExceedsEnvelope, largestValidVideoFrameCount, isValidVideoFrameCount, latentGroupSpans, snapRangeToLatentGroups, isGenerationStalledError, VIDEO_BLOCK_SWAP_MAX } from "@/utils/api";
-import VideoInpaintRangeTimeline from "./VideoInpaintRangeTimeline";
+import VideoInpaintTimeline from "./VideoInpaintTimeline";
 import { useActiveTraining } from "@/hooks/useActiveTraining";
+import { useSnapshotHistory } from "@/hooks/useSnapshotHistory";
 import { useSmoothProgress } from "@/hooks/useSmoothProgress";
 import { useVideoPlayhead } from "@/hooks/useVideoPlayhead";
 import { grabVideoFrame, releaseVideoFrameGrabber } from "@/utils/videoFrameGrabber";
 import { centerCropToCanvas } from "@/utils/canvasFit";
-import VideoInpaintMaskTimeline from "./VideoInpaintMaskTimeline";
 import {
   createDefaultMaskTransform,
   MAX_MASK_ASSETS,
@@ -382,6 +382,17 @@ function createDefaultVideoMaskManifest(width?: number, height?: number): VideoM
     keyframes: [],
     compositeFeatherPx: 0,
   };
+}
+
+/** Undo/redo snapshot for the video-mask manifest (see `videoMaskHistory`
+ * below, where this is owned) -- `keyframes`/`compositeFeatherPx`/`assets`
+ * together, so undo/redo restores all three atomically and can never leave
+ * a keyframe pointing at an asset that got garbage-collected (or vice
+ * versa). */
+interface MaskHistorySnapshot {
+  keyframes: VideoMaskKeyframe[];
+  compositeFeatherPx: number;
+  assets: VideoMaskAsset[];
 }
 
 /** True if any pixel is past mid-grey. Mask polarity is white_generate, and
@@ -828,12 +839,12 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
   }, [isVideo, videoTrimmedFrames]);
 
   // Mask keyframes outside the regenerate range are deliberately NOT pruned
-  // here: this effect (and VideoInpaintRangeTimeline's onRangeChange, which
-  // fires continuously while a handle is dragged) used to delete them, which
+  // here: this effect (and VideoInpaintTimeline's onRangeChange, which fires
+  // continuously while a handle is dragged) used to delete them, which
   // meant dragging a handle across a keyframe and back discarded it and its
   // PNG asset before the pointer was ever released. Out-of-range keyframes
-  // are kept and surfaced via a read-only count computed inline where the
-  // mask timeline renders (below); generation already refuses to submit
+  // are kept and surfaced (still editable) inside VideoInpaintTimeline
+  // itself; generation already refuses to submit
   // while any exist (see the `outOfRangeKeyframe` check near the submit
   // handler).
 
@@ -1843,16 +1854,71 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
     return { keyframes: next, changed };
   };
 
+  // ---------------------------------------------------------------------
+  // Undo/redo for the video-mask manifest, owned HERE (not inside
+  // VideoInpaintTimeline) because this panel is the only place that sees
+  // EVERY way the keyframe/asset list changes: VideoInpaintTimeline's own
+  // controls (duplicate/delete/transform/interpolation/frame-move/composite
+  // feather, via `handleVideoMaskKeyframesChange`/`handleVideoMaskFeatherChange`
+  // below) AND drawing a brand-new mask (`handleVideoMaskEditorSaveMask`,
+  // which VideoInpaintTimeline never sees -- this panel opens ImageEditor
+  // and commits that save directly). A history stack that only covered the
+  // first group -- as a prior version of this undo/redo did -- lets undo
+  // replace the keyframe list wholesale with a snapshot that predates a
+  // mask added by drawing, silently deleting that keyframe AND its saved
+  // PNG asset. Keeping `assets` inside every snapshot (not just
+  // keyframes/compositeFeatherPx) closes the other half of that gap: the
+  // asset garbage-collection below is computed ONCE per edit, folded into
+  // the snapshot that gets pushed, and restored verbatim by undo/redo --
+  // there is no separate GC pass on the restored value that could diverge
+  // from what was actually saved.
+  const restoreVideoMaskSnapshot = (snapshot: MaskHistorySnapshot) => {
+    setVideoMaskManifest((previous) => ({
+      ...previous,
+      keyframes: snapshot.keyframes,
+      compositeFeatherPx: snapshot.compositeFeatherPx,
+    }));
+    setVideoMaskAssets(snapshot.assets);
+  };
+  const videoMaskHistory = useSnapshotHistory<MaskHistorySnapshot>(restoreVideoMaskSnapshot, {
+    // A different clip's keyframes are not undo-continuous with the
+    // previous one's; `videoPreviewUrl` changes on every upload/replace/
+    // clear (see processVideoFile/handleClearVideo/the video-input-updated
+    // handler above), so it doubles as the reset signal here too.
+    resetKey: videoPreviewUrl,
+    limit: 100,
+  });
+  const currentVideoMaskSnapshot = (): MaskHistorySnapshot => ({
+    keyframes: videoMaskManifest.keyframes,
+    compositeFeatherPx: videoMaskManifest.compositeFeatherPx,
+    assets: videoMaskAssets,
+  });
+
   const handleVideoMaskKeyframesChange = (keyframes: VideoMaskKeyframe[]) => {
     const { keyframes: normalized, changed: normalizedAffine } = demoteMismatchedAffineLinks(keyframes);
-    setVideoMaskManifest((previous) => ({ ...previous, keyframes: normalized }));
+    const referencedMaskIds = new Set(normalized.map((keyframe) => keyframe.maskId));
+    const nextAssets = videoMaskAssets.filter((asset) => referencedMaskIds.has(asset.id));
+    videoMaskHistory.push(currentVideoMaskSnapshot(), {
+      keyframes: normalized,
+      compositeFeatherPx: videoMaskManifest.compositeFeatherPx,
+      assets: nextAssets,
+    });
     setVideoMaskError(
       normalizedAffine
         ? "Affine interpolation needs the same mask asset on both keyframes; changed to Hold."
         : null,
     );
-    const referencedMaskIds = new Set(normalized.map((keyframe) => keyframe.maskId));
-    setVideoMaskAssets((previous) => previous.filter((asset) => referencedMaskIds.has(asset.id)));
+  };
+
+  // Wired to VideoInpaintTimeline's composite-feather control. Already part
+  // of the manifest's wire format (`composite_feather_px`); only the UI to
+  // change it was missing.
+  const handleVideoMaskFeatherChange = (value: number) => {
+    videoMaskHistory.push(currentVideoMaskSnapshot(), {
+      keyframes: videoMaskManifest.keyframes,
+      compositeFeatherPx: value,
+      assets: videoMaskAssets,
+    });
   };
 
   const handleVideoMaskEditorSaveMask = async (maskUrl: string) => {
@@ -1878,7 +1944,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
       const existingKeyframe = videoMaskManifest.keyframes.find(
         (keyframe) => keyframe.id === editor.keyframeId,
       );
-      // Duplicate (in VideoInpaintMaskTimeline) intentionally shares a
+      // Duplicate (in VideoInpaintTimeline) intentionally shares a
       // maskId across keyframes so affine interpolation has identical
       // source pixels on both ends. Repainting that asset in place would
       // silently change every keyframe still referencing it; fork onto a
@@ -1913,24 +1979,29 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
           ? { ...existingKeyframe.transform }
           : createDefaultMaskTransform(),
       };
-      setVideoMaskAssets((previous) => {
-        const nextAsset = {
-          id: maskId,
-          dataUrl: normalizedMaskUrl,
-          // Recorded per-asset, not just on the manifest: `centerCropToCanvas`
-          // above rendered THIS PNG at the current output size, but sibling
-          // assets saved before a since-changed width/height slider still hold
-          // pixels sized for whatever canvas was live when THEY were saved. The
-          // submit-time check below (and the mismatch banner) need per-asset
-          // truth, not "the size of whichever asset was saved most recently".
-          width: videoMaskCanvasWidth,
-          height: videoMaskCanvasHeight,
-        };
-        const replaced = previous.some((asset) => asset.id === maskId);
-        return replaced
-          ? previous.map((asset) => (asset.id === maskId ? nextAsset : asset))
-          : [...previous, nextAsset];
-      });
+      // Computed synchronously off the CURRENT `videoMaskAssets`/
+      // `videoMaskManifest` (the same reads that decided `isFork`/`maskId`
+      // above), not inside a `setVideoMaskAssets` updater: this needs to
+      // become one atomic history entry alongside the keyframe change
+      // below, pushed together via `videoMaskHistory.push`, rather than two
+      // independent state writes that undo/redo could otherwise see torn
+      // apart from each other.
+      const nextAsset: VideoMaskAsset = {
+        id: maskId,
+        dataUrl: normalizedMaskUrl,
+        // Recorded per-asset, not just on the manifest: `centerCropToCanvas`
+        // above rendered THIS PNG at the current output size, but sibling
+        // assets saved before a since-changed width/height slider still hold
+        // pixels sized for whatever canvas was live when THEY were saved. The
+        // submit-time check below (and the mismatch banner) need per-asset
+        // truth, not "the size of whichever asset was saved most recently".
+        width: videoMaskCanvasWidth,
+        height: videoMaskCanvasHeight,
+      };
+      const assetReplaced = videoMaskAssets.some((asset) => asset.id === maskId);
+      const nextAssets = assetReplaced
+        ? videoMaskAssets.map((asset) => (asset.id === maskId ? nextAsset : asset))
+        : [...videoMaskAssets, nextAsset];
       // Merged against the same `videoMaskManifest` read that decided the fork
       // above, so the warning below reflects what is actually stored. Deriving
       // it inside the updater would not work: the updater runs during a later
@@ -1939,11 +2010,21 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         upsertKeyframe(videoMaskManifest.keyframes, keyframe),
       );
       const normalizedAffine = merged.changed;
+      // `canvas` is NOT part of the undo/redo snapshot (it tracks the
+      // current output width/height, not a manual edit -- see the
+      // `videoMaskManifest.canvas` comment elsewhere in this file), so it
+      // is written directly. It touches a disjoint field from the
+      // `keyframes`/`compositeFeatherPx` `restoreVideoMaskSnapshot` below
+      // writes, so the two updates compose regardless of call order.
       setVideoMaskManifest((previous) => ({
         ...previous,
         canvas: { width: videoMaskCanvasWidth, height: videoMaskCanvasHeight },
-        keyframes: merged.keyframes,
       }));
+      videoMaskHistory.push(currentVideoMaskSnapshot(), {
+        keyframes: merged.keyframes,
+        compositeFeatherPx: videoMaskManifest.compositeFeatherPx,
+        assets: nextAssets,
+      });
       const warnings = [
         isEmptyMask
           ? "This mask has no white (generate) area. It was saved, but generation will refuse an empty mask."
@@ -5079,10 +5160,12 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         )}
 
         {isVideo && supportsTemporalInpaint && (
-        <Card title="Regenerate Range">
+        <Card title="Regenerate Range & Mask Keyframes">
           {/* `frameRate` is the CLIP's rate, so the seconds in the readout line
-              up with the input player the range is picked against. */}
-          <VideoInpaintRangeTimeline
+              up with the input player the range is picked against. One
+              timeline now hosts both the regenerate-range track and the
+              mask-keyframe track on a single shared ruler/playhead. */}
+          <VideoInpaintTimeline
             rawFrames={videoRawFrames}
             trimStart={params.input_trim_start_frames ?? 0}
             trimEnd={params.input_trim_end_frames ?? 0}
@@ -5096,8 +5179,8 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
               // keyframe the handle passed over -- and its PNG asset -- even if
               // the drag ended back on a range that still contained it.
               // Out-of-range keyframes are kept and surfaced via a read-only
-              // count computed where the mask timeline renders (below);
-              // submission already refuses to proceed while any exist.
+              // count computed inside VideoInpaintTimeline; submission already
+              // refuses to proceed while any exist.
               lastValidRegenerateRangeRef.current = { start, end };
               setRegenerateRangeReplacedNotice(null);
               setParams(prev => ({
@@ -5110,6 +5193,18 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
             disabled={!videoPreviewUrl}
             videoSrc={videoPreviewUrl}
             player={inputVideoPlayer}
+            keyframes={videoMaskManifest.keyframes}
+            onChange={handleVideoMaskKeyframesChange}
+            onAddKeyframe={handleAddVideoMaskKeyframe}
+            onEditKeyframe={handleEditVideoMaskKeyframe}
+            compositeFeatherPx={videoMaskManifest.compositeFeatherPx}
+            onCompositeFeatherPxChange={handleVideoMaskFeatherChange}
+            assets={videoMaskAssets}
+            maskDisabled={isGenerating || !videoTrimmedLengthValid || videoTrimmedFrames <= 0}
+            canUndo={videoMaskHistory.canUndo}
+            canRedo={videoMaskHistory.canRedo}
+            onUndo={() => videoMaskHistory.undo(currentVideoMaskSnapshot())}
+            onRedo={() => videoMaskHistory.redo(currentVideoMaskSnapshot())}
           />
           {regenerateRangeReplacedNotice && (
             <p className="mt-2 text-xs text-amber-400">{regenerateRangeReplacedNotice}</p>
@@ -5128,52 +5223,21 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
                 && " The selected range reaches the end of the clip, so this overwrites its current tail rather than extending it."}
             </p>
           )}
-          <div className="mt-4 border-t border-gray-700 pt-4">
-            <VideoInpaintMaskTimeline
-              keyframes={videoMaskManifest.keyframes}
-              currentFrame={Math.max(
-                0,
-                Math.round(
-                  (inputVideoPlayer?.currentFrame ?? 0) - (params.input_trim_start_frames ?? 0),
-                ),
+          {(videoMaskError || videoMaskCanvasMismatch) && (
+            <div className="mt-4 border-t border-gray-700 pt-4">
+              {videoMaskError && (
+                <p className="mt-2 text-xs text-amber-400" role="alert">{videoMaskError}</p>
               )}
-              rangeStart={params.regenerate_start_frame ?? 0}
-              rangeEnd={params.regenerate_end_frame ?? 0}
-              totalFrames={videoTrimmedFrames}
-              onChange={handleVideoMaskKeyframesChange}
-              onAddKeyframe={handleAddVideoMaskKeyframe}
-              onEditKeyframe={handleEditVideoMaskKeyframe}
-              disabled={isGenerating || !videoPreviewUrl || !videoTrimmedLengthValid || videoTrimmedFrames <= 0}
-            />
-            {videoMaskError && (
-              <p className="mt-2 text-xs text-amber-400" role="alert">{videoMaskError}</p>
-            )}
-            {(() => {
-              const rangeStart = params.regenerate_start_frame ?? 0;
-              const rangeEnd = params.regenerate_end_frame ?? 0;
-              const outOfRangeCount = videoMaskManifest.keyframes.filter(
-                (keyframe) => keyframe.frame < rangeStart || keyframe.frame >= rangeEnd,
-              ).length;
-              if (outOfRangeCount === 0) return null;
-              return (
+              {videoMaskCanvasMismatch && (
                 <p className="mt-2 text-xs text-amber-400" role="alert">
-                  {outOfRangeCount} mask keyframe{outOfRangeCount === 1 ? "" : "s"} outside the current
-                  regenerate range [{rangeStart}, {rangeEnd}). They were not deleted, but this timeline
-                  only displays keyframes inside the current range, so they cannot be edited or removed
-                  individually here. Widen the regenerate range to include them, or use &quot;Clear input
-                  clip&quot; to remove the whole mask timeline along with the video.
+                  {staleVideoMaskAssets.length} mask asset{staleVideoMaskAssets.length === 1 ? "" : "s"}{" "}
+                  {staleVideoMaskAssets.length === 1 ? "was" : "were"} drawn for an output canvas other than the
+                  current {videoMaskCanvasWidth}x{videoMaskCanvasHeight}. Recreate the affected keyframes before
+                  generating.
                 </p>
-              );
-            })()}
-            {videoMaskCanvasMismatch && (
-              <p className="mt-2 text-xs text-amber-400" role="alert">
-                {staleVideoMaskAssets.length} mask asset{staleVideoMaskAssets.length === 1 ? "" : "s"}{" "}
-                {staleVideoMaskAssets.length === 1 ? "was" : "were"} drawn for an output canvas other than the
-                current {videoMaskCanvasWidth}x{videoMaskCanvasHeight}. Recreate the affected keyframes before
-                generating.
-              </p>
-            )}
-          </div>
+              )}
+            </div>
+          )}
           <div className="mt-2 flex items-center gap-1 text-xs text-gray-500">
             <span>Interior range conditioning is experimental</span>
             <InlineHelp label="Interior range support details">

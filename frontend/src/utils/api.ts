@@ -3531,6 +3531,16 @@ export const generateOutpaintVideo = async (
   return response.data;
 };
 
+// The filename passed to formData.append() below is what actually reaches
+// the backend as the multipart part's filename (it overrides whatever name
+// the File object itself carries), so this is the one place that needs to
+// sanitize `part.id` -- it is presently a crypto.randomUUID() value from
+// InpaintPanel, but nothing here should assume that stays true forever.
+function sanitizeMaskAssetFilename(id: string): string {
+  const safe = id.replace(/[^a-zA-Z0-9_-]/g, "_").replace(/^\.+/, "");
+  return `${safe || "mask"}.png`;
+}
+
 // Video temporal inpaint (MiniMax-H3 fl2va): multipart POST
 // /generate/inpaint/video with an uploaded `video` clip. Same explicit-append
 // shape as generateOutpaintVideo, matching the Form parameter names of
@@ -3573,7 +3583,7 @@ export const generateInpaintVideo = async (
     formData.append("spatial_mask_manifest", manifest);
     for (const part of spatialMaskParts) {
       formData.append("spatial_mask_ids", part.id);
-      formData.append("spatial_mask_files", part.file, `${part.id}.png`);
+      formData.append("spatial_mask_files", part.file, sanitizeMaskAssetFilename(part.id));
     }
   } else if (spatialMaskParts !== undefined && spatialMaskParts.length > 0) {
     throw new Error("Spatial mask assets cannot be uploaded without a manifest.");

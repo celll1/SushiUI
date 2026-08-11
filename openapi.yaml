@@ -1197,14 +1197,24 @@ paths:
         with repeated `spatial_mask_ids` and `spatial_mask_files` to generate
         only selected image regions inside the temporal range. IDs are paired
         by position with the uploaded PNGs; upload filenames are ignored. The
-        route validates and decodes the manifest and PNGs before acquiring a
-        GPU slot. The current pipeline consumes the validated timeline and
-        decoded arrays through explicit keyword arguments.
+        route decodes the manifest and PNGs and runs a cheap, keyframe-only
+        pre-check before acquiring a GPU slot; the full, per-frame-exact check
+        (rasterizing and max-pooling every frame of the regenerate range) runs
+        once more, in the backend pipeline, before any GPU compute happens but
+        after the slot is already reserved. A manifest that passes the route's
+        pre-check can still be refused at that later point. The current
+        pipeline consumes the validated timeline and decoded arrays through
+        explicit keyword arguments.
         The manifest's `composite_feather_px` may be 0..128 pixels; feathering
-        is applied only inside the selected temporal span. A full-clip temporal
-        range is allowed when the spatial mask both generates and preserves at
-        least one latent video token. A manifest accepts at most 128 keyframes
-        and 64 unique PNG assets.
+        is applied only inside the selected temporal span. A full-clip
+        temporal range is allowed when the spatial mask both generates and
+        preserves at least one latent video token, evaluated over the
+        aggregate of the whole regenerate range rather than any single
+        keyframe. A manifest accepts at most 128 keyframes and 64 unique PNG
+        assets. `composite_feather_px` at the edge of a preserved region is
+        not bit-exact with the corresponding source pixels even inside the
+        nominally preserved area, because feathering blends preserved and
+        generated content across that band by design.
 
         **Outside the model card.** MiniMax documents `fl2va` for first- and
         last-frame conditioning with up to two images; pinning frames at
@@ -8816,7 +8826,10 @@ components:
             in `spatial_mask_files` and the corresponding ID in
             `spatial_mask_ids` for each unique `mask_id` referenced by the
             manifest. Upload filenames are ignored; IDs define the mapping.
-            At most 128 keyframes and 64 unique PNG assets are allowed.
+            At most 128 keyframes and 64 unique PNG assets are allowed. A
+            keyframe's `transform.scale_x`/`transform.scale_y` must be between
+            0.01 and 100. Rejected with a 400 when combined with
+            `fbcache_enable=true` (see that field).
           example: '{"version":1,"coordinate_space":"output_canvas","polarity":"white_generate","canvas":{"width":640,"height":384},"keyframes":[{"frame":40,"mask_id":"subject","interpolation_to_next":"hold"}]}'
         spatial_mask_files:
           type: array
@@ -8943,6 +8956,12 @@ components:
         fbcache_enable:
           type: boolean
           default: false
+          description: |
+            First-Block-Cache, with the same semantics as `Txt2VidRequest.fbcache_enable`.
+            Rejected with a 400 (`spatial_mask_manifest is incompatible with fbcache_enable`)
+            when `spatial_mask_manifest` is also supplied: FBCache's per-frame guard
+            indicator assumes the free (non-pinned) video rows tile into whole latent
+            frames, which a row-level spatial mask pin does not guarantee.
           example: false
         fbcache_threshold:
           type: number

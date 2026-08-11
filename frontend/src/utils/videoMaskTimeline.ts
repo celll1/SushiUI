@@ -4,20 +4,31 @@ export type MaskInterpolation = "hold" | "affine" | "sdf";
 export type MaskCoordinateSpace = "output_canvas";
 export type MaskPolarity = "white_generate";
 
-/** Prevent accidental near-zero or runaway affine transforms in the API. */
+/**
+ * Prevent accidental near-zero or runaway affine transforms in the API.
+ * Must match `MIN_MASK_TRANSFORM_SCALE`/`MAX_MASK_TRANSFORM_SCALE` in
+ * `backend/core/inference/video_mask_timeline.py` -- the frontend validates
+ * this bound only so a bad manual entry fails locally instead of round-
+ * tripping to the backend for the same 400.
+ */
+export const MIN_MASK_SCALE = 0.01;
 export const MAX_MASK_SCALE = 100;
 export const MAX_MASK_KEYFRAMES = 128;
 export const MAX_MASK_ASSETS = 64;
 export const MAX_COMPOSITE_FEATHER_PX = 128;
 
 export interface MaskTransform {
-  /** Pixel translation in output_canvas coordinates; rotation uses the mask center as pivot. */
+  // Pivot note: the backend applies scale/rotation around the CANVAS
+  // center (`source_center_xy` in video_mask_timeline.py is the output
+  // canvas's own width/height midpoint), not the mask's own centroid. A
+  // shape drawn off-center swings/scales around a point outside itself.
+  /** Pixel translation in output_canvas coordinates; rotation uses the canvas center as pivot. */
   x: number;
   y: number;
-  /** Positive, bounded scale factors applied around the mask center. */
+  /** Positive, bounded scale factors applied around the canvas center. */
   scaleX: number;
   scaleY: number;
-  /** Clockwise rotation in degrees around the mask center. */
+  /** Clockwise rotation in degrees around the canvas center. */
   rotation: number;
 }
 
@@ -50,6 +61,19 @@ export interface VideoMaskAsset {
   /** Send this value as the multipart part's `mask_id`; do not rely on array order. */
   id: string;
   dataUrl: string;
+  /**
+   * The output-canvas size (in pixels) this asset's PNG was actually
+   * rendered at when it was saved. Optional because assets loaded from an
+   * older manifest (or a "send to inpaint" round-trip predating this field)
+   * may not carry it; callers that need a strict per-asset size check
+   * should treat a missing value as "unknown, do not assume it matches".
+   * Not part of the wire DTO -- assets travel as separate multipart PNG
+   * parts, and the backend reads their real dimensions from the PNG itself
+   * (see `_decode_png` in `video_mask_timeline.py`), so this field never
+   * needs to be serialized.
+   */
+  width?: number;
+  height?: number;
 }
 
 export interface VideoMaskValidationResult {
@@ -120,10 +144,12 @@ export function validateMaskTransform(transform: unknown, path = "transform"): s
   for (const field of ["scaleX", "scaleY"] as const) {
     if (
       !isFiniteNumber(transform[field]) ||
-      transform[field] <= 0 ||
+      transform[field] < MIN_MASK_SCALE ||
       transform[field] > MAX_MASK_SCALE
     ) {
-      errors.push(`${path}.${field} must be finite, positive, and at most ${MAX_MASK_SCALE}.`);
+      errors.push(
+        `${path}.${field} must be finite and between ${MIN_MASK_SCALE} and ${MAX_MASK_SCALE}.`,
+      );
     }
   }
   return errors;

@@ -46,7 +46,7 @@ import { grabVideoFrame, releaseVideoFrameGrabber } from "@/utils/videoFrameGrab
 import VideoInpaintMaskTimeline from "./VideoInpaintMaskTimeline";
 import {
   createDefaultMaskTransform,
-  pruneKeyframesToFrameRange,
+  MAX_MASK_ASSETS,
   serializeVideoMaskManifestForApi,
   sortKeyframes,
   upsertKeyframe,
@@ -416,9 +416,38 @@ function renderDataUrlToCanvas(
   });
 }
 
-function safeMaskFilename(id: string): string {
-  const safe = id.replace(/[^a-zA-Z0-9_-]/g, "_").replace(/^\.+/, "");
-  return `${safe || "mask"}.png`;
+/** True if any pixel is past mid-grey. Mask polarity is white_generate, and
+ * brush edges are anti-aliased, so this is checked against luminance rather
+ * than requiring pure 0/255. */
+function dataUrlHasWhitePixel(dataUrl: string): Promise<boolean> {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => {
+      if (!image.naturalWidth || !image.naturalHeight) {
+        resolve(false);
+        return;
+      }
+      const canvas = document.createElement("canvas");
+      canvas.width = image.naturalWidth;
+      canvas.height = image.naturalHeight;
+      const context = canvas.getContext("2d");
+      if (!context) {
+        resolve(false);
+        return;
+      }
+      context.drawImage(image, 0, 0);
+      const { data } = context.getImageData(0, 0, canvas.width, canvas.height);
+      for (let i = 0; i < data.length; i += 4) {
+        if (data[i] > 127) {
+          resolve(true);
+          return;
+        }
+      }
+      resolve(false);
+    };
+    image.onerror = () => reject(new Error("The mask image could not be decoded."));
+    image.src = dataUrl;
+  });
 }
 
 // Inpaint's secondary options are grouped into a single-open tabbed accordion
@@ -830,27 +859,15 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isVideo, videoTrimmedFrames]);
 
-  useEffect(() => {
-    if (!isVideo || videoTrimmedFrames <= 0) return;
-    const start = params.regenerate_start_frame ?? 0;
-    const end = params.regenerate_end_frame ?? 0;
-    if (!(start < end && end <= videoTrimmedFrames)) return;
-    const kept = pruneKeyframesToFrameRange(videoMaskManifest.keyframes, start, end - 1);
-    if (kept.length === videoMaskManifest.keyframes.length) return;
-    setVideoMaskManifest((previous) => ({
-      ...previous,
-      keyframes: pruneKeyframesToFrameRange(previous.keyframes, start, end - 1),
-    }));
-    const keptMaskIds = new Set(kept.map((keyframe) => keyframe.maskId));
-    setVideoMaskAssets((previous) => previous.filter((asset) => keptMaskIds.has(asset.id)));
-    setVideoMaskError("Mask keyframes outside the new range were removed.");
-  }, [
-    isVideo,
-    params.regenerate_end_frame,
-    params.regenerate_start_frame,
-    videoMaskManifest.keyframes,
-    videoTrimmedFrames,
-  ]);
+  // Mask keyframes outside the regenerate range are deliberately NOT pruned
+  // here: this effect (and VideoInpaintRangeTimeline's onRangeChange, which
+  // fires continuously while a handle is dragged) used to delete them, which
+  // meant dragging a handle across a keyframe and back discarded it and its
+  // PNG asset before the pointer was ever released. Out-of-range keyframes
+  // are kept and surfaced via a read-only count computed inline where the
+  // mask timeline renders (below); generation already refuses to submit
+  // while any exist (see the `outOfRangeKeyframe` check near the submit
+  // handler).
 
   // The audio mode's default is per-architecture (MiniMax-H3 overlays
   // "preserve_input"), and every value is selectable everywhere, so the trigger
@@ -880,30 +897,37 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
     imageUrl: string;
     initialMaskUrl?: string;
   } | null>(null);
+  const videoMaskEditorOpeningRef = useRef(false);
   const videoMaskCanvasWidth = Math.max(1, Math.round(params.width ?? 768));
   const videoMaskCanvasHeight = Math.max(1, Math.round(params.height ?? 512));
-  useEffect(() => {
-    if (
-      videoMaskManifest.canvas.width === videoMaskCanvasWidth
-      && videoMaskManifest.canvas.height === videoMaskCanvasHeight
-    ) return;
-    const hadKeyframes = videoMaskManifest.keyframes.length > 0;
-    setVideoMaskManifest((previous) => ({
-      ...previous,
-      canvas: { width: videoMaskCanvasWidth, height: videoMaskCanvasHeight },
-      keyframes: [],
-    }));
-    setVideoMaskAssets([]);
-    setVideoMaskEditor(null);
-    setShowImageEditor(false);
-    setVideoMaskError(hadKeyframes ? "Output canvas changed; video mask keyframes were cleared." : null);
-  }, [
-    videoMaskCanvasHeight,
-    videoMaskCanvasWidth,
-    videoMaskManifest.canvas.height,
-    videoMaskManifest.canvas.width,
-    videoMaskManifest.keyframes.length,
-  ]);
+  // `videoMaskManifest.canvas` is intentionally NOT kept in sync with the
+  // live output size here. It records the canvas size the existing
+  // keyframes/assets were actually drawn for (set in
+  // handleVideoMaskEditorSaveMask whenever a mask is saved); comparing that
+  // stored value against the current output canvas is what lets
+  // `videoMaskCanvasMismatch` (below) and the submit-time check flag a stale
+  // mask instead of either silently reusing pixels drawn for a different
+  // resolution or discarding every keyframe and its PNG the instant a size
+  // slider is touched.
+  // Per-asset, not per-manifest: `videoMaskManifest.canvas` only ever records
+  // the size at the LAST save (handleVideoMaskEditorSaveMask overwrites it
+  // every time), so after a resize a fresh save on one keyframe makes the
+  // manifest-level canvas match again even though older sibling keyframes'
+  // PNGs are still sized for the pre-resize canvas. Each asset carries its
+  // own width/height (set at save time) precisely so this check can catch
+  // that case; an asset missing those fields (nothing in this session
+  // predates them) falls back to the manifest-level comparison.
+  const referencedVideoMaskAssetIds = new Set(videoMaskManifest.keyframes.map((keyframe) => keyframe.maskId));
+  const staleVideoMaskAssets = videoMaskAssets.filter((asset) => {
+    if (!referencedVideoMaskAssetIds.has(asset.id)) return false;
+    if (asset.width !== undefined && asset.height !== undefined) {
+      return asset.width !== videoMaskCanvasWidth || asset.height !== videoMaskCanvasHeight;
+    }
+    return videoMaskManifest.canvas.width !== videoMaskCanvasWidth
+      || videoMaskManifest.canvas.height !== videoMaskCanvasHeight;
+  });
+  const videoMaskCanvasMismatch = videoMaskManifest.keyframes.length > 0
+    && staleVideoMaskAssets.length > 0;
   const [sendImage, setSendImage] = useState(true);
   const [sendPrompt, setSendPrompt] = useState(true);
   const [sendParameters, setSendParameters] = useState(true);
@@ -1757,27 +1781,52 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
 
   const openVideoMaskEditor = async (frame: number, existingKeyframe?: VideoMaskKeyframe) => {
     if (!videoPreviewUrl || videoTrimmedFrames <= 0) return;
-    const requestedFrame = Math.max(0, Math.round(frame));
-    const sourceUrl = videoPreviewUrl;
-    const trimStart = params.input_trim_start_frames ?? 0;
-    const frameResult = await grabVideoFrame(
-      sourceUrl,
-      (trimStart + requestedFrame) / clipFrameRate,
-      { maxWidth: 1024 },
-    );
-    if (!frameResult?.dataUrl) {
-      setVideoMaskError("Could not capture that video frame for mask editing.");
-      return;
-    }
+    // In-flight guard: repeated clicks (e.g. double-clicking "Add at
+    // playhead") would otherwise fire overlapping grabVideoFrame calls that
+    // each try to open the editor once they resolve.
+    if (videoMaskEditorOpeningRef.current) return;
+    videoMaskEditorOpeningRef.current = true;
     try {
+      const requestedFrame = Math.max(0, Math.round(frame));
+      const sourceUrl = videoPreviewUrl;
+      const trimStart = params.input_trim_start_frames ?? 0;
+      const targetTimeSec = (trimStart + requestedFrame) / clipFrameRate;
+      // grabVideoFrame reports exact:false when this request was superseded
+      // by a newer one before its turn and it substituted a nearby cached
+      // frame instead. Retry once against the same (still current) time
+      // before giving up, so the editor does not silently open showing a
+      // different frame than the keyframe number it was opened for.
+      let frameResult = await grabVideoFrame(sourceUrl, targetTimeSec, {
+        maxWidth: Math.max(videoMaskCanvasWidth, 1024),
+      });
+      if (frameResult && !frameResult.exact) {
+        frameResult = await grabVideoFrame(sourceUrl, targetTimeSec, {
+          maxWidth: Math.max(videoMaskCanvasWidth, 1024),
+        });
+      }
+      if (!frameResult?.dataUrl) {
+        setVideoMaskError("Could not capture that video frame for mask editing.");
+        return;
+      }
+      if (!frameResult.exact) {
+        setVideoMaskError(
+          `Could not capture the exact frame ${requestedFrame} for mask editing (the video was still seeking). Try again.`,
+        );
+        return;
+      }
       const imageUrl = await renderDataUrlToCanvas(
         frameResult.dataUrl,
         videoMaskCanvasWidth,
         videoMaskCanvasHeight,
         true,
       );
-      const keyframeId = existingKeyframe?.id ?? `video-mask-${requestedFrame}`;
-      const maskId = existingKeyframe?.maskId ?? `mask-${keyframeId}`;
+      // Frame-independent ids: a keyframeId/maskId derived from `frame`
+      // collides once a keyframe is deleted and a new one is added at the
+      // same frame number, silently inheriting a stale asset that happened
+      // to still be keyed by that frame (see the InpaintPanel spatial-mask
+      // audit, C2/H3).
+      const keyframeId = existingKeyframe?.id ?? crypto.randomUUID();
+      const maskId = existingKeyframe?.maskId ?? crypto.randomUUID();
       const existingAsset = videoMaskAssets.find((asset) => asset.id === maskId);
       setVideoMaskEditor({
         keyframeId,
@@ -1790,6 +1839,8 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
     } catch (error) {
       console.error("[Inpaint] Failed to prepare video mask editor frame:", error);
       setVideoMaskError("Could not prepare that video frame for mask editing.");
+    } finally {
+      videoMaskEditorOpeningRef.current = false;
     }
   };
 
@@ -1801,21 +1852,32 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
     void openVideoMaskEditor(keyframe.frame, keyframe);
   };
 
-  const handleVideoMaskKeyframesChange = (keyframes: VideoMaskKeyframe[]) => {
+  // Shared by handleVideoMaskKeyframesChange and handleVideoMaskEditorSaveMask
+  // so both paths enforce the same affine invariant (an "affine" link
+  // requires identical maskId on both ends) instead of only one of them
+  // catching a mismatch it itself introduced.
+  const demoteMismatchedAffineLinks = (
+    keyframes: VideoMaskKeyframe[],
+  ): { keyframes: VideoMaskKeyframe[]; changed: boolean } => {
     const ordered = sortKeyframes(keyframes);
-    let normalizedAffine = false;
-    const normalized = ordered.map((keyframe, index) => {
-      const next = ordered[index + 1];
+    let changed = false;
+    const next = ordered.map((keyframe, index) => {
+      const nextKeyframe = ordered[index + 1];
       if (
-        next
+        nextKeyframe
         && keyframe.interpolationToNext === "affine"
-        && keyframe.maskId !== next.maskId
+        && keyframe.maskId !== nextKeyframe.maskId
       ) {
-        normalizedAffine = true;
+        changed = true;
         return { ...keyframe, interpolationToNext: "hold" as const };
       }
       return keyframe;
     });
+    return { keyframes: next, changed };
+  };
+
+  const handleVideoMaskKeyframesChange = (keyframes: VideoMaskKeyframe[]) => {
+    const { keyframes: normalized, changed: normalizedAffine } = demoteMismatchedAffineLinks(keyframes);
     setVideoMaskManifest((previous) => ({ ...previous, keyframes: normalized }));
     setVideoMaskError(
       normalizedAffine
@@ -1836,10 +1898,39 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         videoMaskCanvasHeight,
         false,
       );
+      // The backend rejects an all-black (nothing to regenerate) mask at
+      // generation time; catching it here, at save, surfaces the mistake
+      // immediately instead of after the rest of the queue has run.
+      const isEmptyMask = !(await dataUrlHasWhitePixel(normalizedMaskUrl).catch(() => true));
       const existingKeyframe = videoMaskManifest.keyframes.find(
-        (keyframe) => keyframe.id === editor.keyframeId || keyframe.frame === editor.frame,
+        (keyframe) => keyframe.id === editor.keyframeId,
       );
-      const maskId = existingKeyframe?.maskId ?? `mask-${editor.keyframeId}`;
+      // Duplicate (in VideoInpaintMaskTimeline) intentionally shares a
+      // maskId across keyframes so affine interpolation has identical
+      // source pixels on both ends. Repainting that asset in place would
+      // silently change every keyframe still referencing it; fork onto a
+      // fresh, keyframe-private maskId unless this keyframe is the only
+      // one left referencing it.
+      const priorMaskId = existingKeyframe?.maskId;
+      const sharerCount = priorMaskId
+        ? videoMaskManifest.keyframes.filter((keyframe) => keyframe.maskId === priorMaskId).length
+        : 0;
+      const isFork = !!priorMaskId && sharerCount > 1;
+      const maskId = isFork ? crypto.randomUUID() : (priorMaskId ?? crypto.randomUUID());
+      const isNewAsset = !videoMaskAssets.some((asset) => asset.id === maskId);
+      if (isNewAsset && videoMaskAssets.length >= MAX_MASK_ASSETS) {
+        // Medium-4 (final audit): this return happens while the mask editor
+        // overlay is still open (unlike every other branch below, which
+        // closes it before returning), so `setVideoMaskError` alone renders
+        // its text behind that overlay -- the user sees the Save button do
+        // nothing. `alert()` matches this panel's existing convention for
+        // errors that must interrupt an open modal (see the submit-time
+        // mask checks above).
+        const message = `This clip already has the maximum of ${MAX_MASK_ASSETS} saved mask images. Delete a keyframe (or reuse Duplicate instead of drawing a new mask) before adding another.`;
+        setVideoMaskError(message);
+        alert(message);
+        return;
+      }
       const keyframe: VideoMaskKeyframe = {
         id: editor.keyframeId,
         frame: editor.frame,
@@ -1850,18 +1941,48 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
           : createDefaultMaskTransform(),
       };
       setVideoMaskAssets((previous) => {
-        const nextAsset = { id: maskId, dataUrl: normalizedMaskUrl };
+        const nextAsset = {
+          id: maskId,
+          dataUrl: normalizedMaskUrl,
+          // Recorded per-asset, not just on the manifest: `renderDataUrlToCanvas`
+          // above rendered THIS PNG at the current output size, but sibling
+          // assets saved before a since-changed width/height slider still hold
+          // pixels sized for whatever canvas was live when THEY were saved. The
+          // submit-time check below (and the mismatch banner) need per-asset
+          // truth, not "the size of whichever asset was saved most recently".
+          width: videoMaskCanvasWidth,
+          height: videoMaskCanvasHeight,
+        };
         const replaced = previous.some((asset) => asset.id === maskId);
         return replaced
           ? previous.map((asset) => (asset.id === maskId ? nextAsset : asset))
           : [...previous, nextAsset];
       });
+      // Merged against the same `videoMaskManifest` read that decided the fork
+      // above, so the warning below reflects what is actually stored. Deriving
+      // it inside the updater would not work: the updater runs during a later
+      // render, after the warnings have already been assembled.
+      const merged = demoteMismatchedAffineLinks(
+        upsertKeyframe(videoMaskManifest.keyframes, keyframe),
+      );
+      const normalizedAffine = merged.changed;
       setVideoMaskManifest((previous) => ({
         ...previous,
         canvas: { width: videoMaskCanvasWidth, height: videoMaskCanvasHeight },
-        keyframes: upsertKeyframe(previous.keyframes, keyframe),
+        keyframes: merged.keyframes,
       }));
-      setVideoMaskError(null);
+      const warnings = [
+        isEmptyMask
+          ? "This mask has no white (generate) area. It was saved, but generation will refuse an empty mask."
+          : null,
+        isFork
+          ? "This mask was shared with another duplicated keyframe; the edit was saved as a separate copy so the other keyframe is unaffected."
+          : null,
+        normalizedAffine
+          ? "Affine interpolation needs the same mask asset on both keyframes; changed to Hold."
+          : null,
+      ].filter((message): message is string => message !== null);
+      setVideoMaskError(warnings.length > 0 ? warnings.join(" ") : null);
       setShowImageEditor(false);
       setVideoMaskEditor(null);
     } catch (error) {
@@ -2608,6 +2729,17 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
       let spatialMaskManifest: string | undefined;
       let spatialMaskFiles: Array<{ id: string; file: File }> | undefined;
       if (videoMaskManifest.keyframes.length > 0) {
+        // A spatial mask pins individual latent rows, so the free rows no
+        // longer divide into whole latent frames and First Block Cache's
+        // per-frame reuse indicator cannot be computed. The backend rejects
+        // the pair; stopping here keeps that from surfacing only after the
+        // clip has been encoded.
+        if (params.fbcache_enable) {
+          const message = "First Block Cache cannot be used with a spatial mask timeline. Turn off First Block Cache or delete the mask keyframes.";
+          setVideoMaskError(message);
+          alert(message);
+          return;
+        }
         const maskRangeStart = params.regenerate_start_frame ?? 0;
         const maskRangeEnd = params.regenerate_end_frame ?? 0;
         const outOfRangeKeyframe = videoMaskManifest.keyframes.find(
@@ -2629,11 +2761,8 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
           alert(message);
           return;
         }
-        if (
-          videoMaskManifest.canvas.width !== videoMaskCanvasWidth
-          || videoMaskManifest.canvas.height !== videoMaskCanvasHeight
-        ) {
-          const message = "Video mask canvas does not match the current output canvas. Recreate the masks.";
+        if (videoMaskCanvasMismatch) {
+          const message = "One or more video mask assets do not match the current output canvas. Recreate the affected masks.";
           setVideoMaskError(message);
           alert(message);
           return;
@@ -2653,8 +2782,12 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
               if (!response.ok) throw new Error(`Could not read mask asset ${asset.id}.`);
               const blob = await response.blob();
               return {
+                // This File's own name is never sent to the backend --
+                // generateInpaintVideo (api.ts) passes an explicit filename
+                // to formData.append that overrides it. Kept simple/human-
+                // readable for local debugging only.
                 id: asset.id,
-                file: new File([blob], safeMaskFilename(asset.id), { type: "image/png" }),
+                file: new File([blob], `${asset.id}.png`, { type: "image/png" }),
               };
             }),
           );
@@ -4307,7 +4440,9 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
           <label htmlFor="fbcache_enable_inpaint" className="text-sm text-gray-300">
             First Block Cache (dynamic caching)
           </label>
-          <span className="text-xs text-gray-500">(mutually exclusive with Spectrum)</span>
+          <span className="text-xs text-gray-500">
+            (mutually exclusive with Spectrum)
+          </span>
         </div>
         {params.fbcache_enable && (
           <div className="ml-6 mt-1 grid grid-cols-2 gap-2">
@@ -4982,22 +5117,16 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
             start={params.regenerate_start_frame ?? 0}
             end={params.regenerate_end_frame ?? 0}
             onRangeChange={(start, end) => {
+              // Does NOT touch videoMaskManifest/videoMaskAssets. This fires on
+              // every pointer-move while a handle is dragged (not just on
+              // release), so pruning mask keyframes here used to delete any
+              // keyframe the handle passed over -- and its PNG asset -- even if
+              // the drag ended back on a range that still contained it.
+              // Out-of-range keyframes are kept and surfaced via a read-only
+              // count computed where the mask timeline renders (below);
+              // submission already refuses to proceed while any exist.
               lastValidRegenerateRangeRef.current = { start, end };
               setRegenerateRangeReplacedNotice(null);
-              const keptMaskKeyframes = pruneKeyframesToFrameRange(
-                videoMaskManifest.keyframes,
-                start,
-                end - 1,
-              );
-              if (keptMaskKeyframes.length !== videoMaskManifest.keyframes.length) {
-                setVideoMaskError("Mask keyframes outside the new range were removed.");
-              }
-              const keptMaskIds = new Set(keptMaskKeyframes.map((keyframe) => keyframe.maskId));
-              setVideoMaskAssets((previous) => previous.filter((asset) => keptMaskIds.has(asset.id)));
-              setVideoMaskManifest((previous) => ({
-                ...previous,
-                keyframes: pruneKeyframesToFrameRange(previous.keyframes, start, end - 1),
-              }));
               setParams(prev => ({
                 ...prev,
                 regenerate_start_frame: start,
@@ -5045,6 +5174,31 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
             />
             {videoMaskError && (
               <p className="mt-2 text-xs text-amber-400" role="alert">{videoMaskError}</p>
+            )}
+            {(() => {
+              const rangeStart = params.regenerate_start_frame ?? 0;
+              const rangeEnd = params.regenerate_end_frame ?? 0;
+              const outOfRangeCount = videoMaskManifest.keyframes.filter(
+                (keyframe) => keyframe.frame < rangeStart || keyframe.frame >= rangeEnd,
+              ).length;
+              if (outOfRangeCount === 0) return null;
+              return (
+                <p className="mt-2 text-xs text-amber-400" role="alert">
+                  {outOfRangeCount} mask keyframe{outOfRangeCount === 1 ? "" : "s"} outside the current
+                  regenerate range [{rangeStart}, {rangeEnd}). They were not deleted, but this timeline
+                  only displays keyframes inside the current range, so they cannot be edited or removed
+                  individually here. Widen the regenerate range to include them, or use &quot;Clear input
+                  clip&quot; to remove the whole mask timeline along with the video.
+                </p>
+              );
+            })()}
+            {videoMaskCanvasMismatch && (
+              <p className="mt-2 text-xs text-amber-400" role="alert">
+                {staleVideoMaskAssets.length} mask asset{staleVideoMaskAssets.length === 1 ? "" : "s"}{" "}
+                {staleVideoMaskAssets.length === 1 ? "was" : "were"} drawn for an output canvas other than the
+                current {videoMaskCanvasWidth}x{videoMaskCanvasHeight}. Recreate the affected keyframes before
+                generating.
+              </p>
             )}
           </div>
           <div className="mt-2 flex items-center gap-1 text-xs text-gray-500">
@@ -5829,6 +5983,11 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
             supportsFuseOutputProj={supportsFuseOutputProj}
             blocksToSwapEnabledDefault={videoBlocksToSwapEnabledDefault}
             blockSwapMax={VIDEO_BLOCK_SWAP_MAX}
+            fbcacheLockedReason={
+              videoMaskManifest.keyframes.length > 0
+                ? "unavailable while the mask timeline has keyframes"
+                : undefined
+            }
           />
         </Card>
         )}
@@ -6382,7 +6541,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
           onClose={handleEditorClose}
           onSaveMask={videoMaskEditor ? handleVideoMaskEditorSaveMask : handleEditorSaveMask}
           mode="inpaint"
-          initialMaskUrl={videoMaskEditor?.initialMaskUrl ?? maskImage ?? undefined}
+          initialMaskUrl={videoMaskEditor ? videoMaskEditor.initialMaskUrl : (maskImage ?? undefined)}
         />
       )}
 

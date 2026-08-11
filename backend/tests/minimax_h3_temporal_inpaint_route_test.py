@@ -71,6 +71,23 @@ def test_the_latent_spans_tile_the_clip_exactly():
     assert spans[-1][1] == ops._clip_pixel_frames(LATENTS)
 
 
+@pytest.mark.parametrize("clip_frames", [22, 39, 362])
+def test_the_latent_chunk_pattern_tiles_every_audited_clip_length_exactly(clip_frames):
+    """``(1,4,4,4,4)`` (``ROPE_FRAMES_PER_LATENT``) must tile 22, 39 and 362 --
+    the three lengths H-4's brief names as independently audited -- so that
+    ``spans[-1][1] == clip_frames`` (nothing left over) and ``spans[0][0] == 0``
+    (nothing skipped) hold at each, not just at the production floor (124)."""
+    from core.models.minimax_h3.loader import minimax_h3_latent_frames
+
+    latent_frames = minimax_h3_latent_frames(clip_frames)
+    assert ops._clip_pixel_frames(latent_frames) == clip_frames
+    spans = latent_frame_spans(SPEC, latent_frames)
+    assert len(spans) == latent_frames
+    assert spans[0][0] == 0
+    assert spans[-1][1] == clip_frames
+    assert all(spans[i][1] == spans[i + 1][0] for i in range(len(spans) - 1))
+
+
 def test_a_requested_range_is_expanded_outward_and_never_shrunk():
     """At a group boundary "regenerate this" wins over "keep that"."""
     plan = _plan(40, 85)
@@ -389,6 +406,55 @@ def test_an_inpaint_request_on_a_video_model_names_the_counterpart_route():
     # NEGATIVE CONTROL: the route exists but does not serve LTX-2.3, so that
     # architecture must not be pointed at it.
     assert "/generate/inpaint/video" not in _video_route_hint("/generate/inpaint", "ltx2")
+
+
+def test_the_route_refuses_spatial_mask_with_fbcache_before_parsing_the_manifest():
+    """H-2, structurally: the fbcache_enable/spatial_mask_manifest exclusivity
+    check must run BEFORE the manifest is parsed and BEFORE any mask upload is
+    read, so the 400 is cheap -- matching this route's own stated design
+    (fail fast, before a GPU generation slot is reserved)."""
+    from api.routes import generate_inpaint_video
+
+    source = inspect.getsource(generate_inpaint_video)
+    exclusivity_pos = source.index("is incompatible with fbcache_enable")
+    parse_pos = source.index("spatial_mask_timeline = parse_mask_timeline_manifest(")
+    assert exclusivity_pos < parse_pos, (
+        "the FBCache exclusivity check must run before the manifest is parsed"
+    )
+
+
+def test_an_empty_manifest_string_is_treated_as_not_supplied():
+    """L-2: `spatial_mask_manifest=""` must behave exactly like an omitted
+    field, structurally -- the normalization must run before the branch that
+    tries to json.loads() it."""
+    from api.routes import generate_inpaint_video
+
+    source = inspect.getsource(generate_inpaint_video)
+    normalize_pos = source.index("spatial_mask_manifest = None")
+    branch_pos = source.index("if spatial_mask_manifest is not None:")
+    assert normalize_pos < branch_pos
+
+
+def test_the_route_caps_unique_mask_assets_before_reading_any_upload():
+    """M-2: the MAX_MASK_ASSETS check must run before the byte-read loop, not
+    only inside `decode_mask_pngs` after every upload is already in memory."""
+    from api.routes import generate_inpaint_video
+
+    source = inspect.getsource(generate_inpaint_video)
+    cap_pos = source.index("Too many unique spatial mask assets")
+    read_pos = source.index("await mask_file.read(")
+    assert cap_pos < read_pos
+
+
+def test_the_route_bounds_each_mask_upload_read_by_the_manifest_canvas():
+    """M-2: the per-mask byte cap must be derived from the manifest's own
+    canvas (known before any byte is read), and the read call itself must be
+    bounded by it -- not an unbounded `.read()`."""
+    from api.routes import generate_inpaint_video
+
+    source = inspect.getsource(generate_inpaint_video)
+    assert "await mask_file.read(_max_mask_bytes + 1)" in source
+    assert "await mask_file.read()" not in source
 
 
 def test_ltx2_declares_temporal_inpaint_unsupported():

@@ -23,7 +23,14 @@ MAX_MASK_PIXELS = 16_777_216
 MAX_MASK_KEYFRAMES = 128
 MAX_MASK_ASSETS = 64
 MAX_TOTAL_MASK_PIXELS = 67_108_864
-SDF_ZERO_THRESHOLD = 1.0 / 255.0
+# The frontend timeline editor (frontend/src/utils/videoMaskTimeline.ts) caps a
+# keyframe transform's scale at 100x and never lets it reach 0; this backend
+# is the only place that actually enforces it, since a direct API caller
+# bypasses the editor entirely. MIN guards against a positive-but-denormal
+# value (e.g. 1e-320) blowing up `apply_mask_transform`'s matrix inverse into
+# `inf`/`nan`, which used to surface as an opaque 400 far from its cause.
+MAX_MASK_TRANSFORM_SCALE = 100.0
+MIN_MASK_TRANSFORM_SCALE = 0.01
 _INTERPOLATION_MODES = frozenset({"hold", "affine", "sdf"})
 _ROOT_FIELDS = frozenset(
     {"version", "coordinate_space", "polarity", "canvas", "keyframes", "composite_feather_px"}
@@ -149,8 +156,14 @@ def _parse_transform(value: Any, path: str) -> MaskTransform:
             raise ManifestValidationError(f"{path}.{field_name} must be finite")
         values[field_name] = numeric_value
 
-    if values["scale_x"] <= 0 or values["scale_y"] <= 0:
-        raise ManifestValidationError(f"{path}.scale_x and scale_y must be positive")
+    if (
+        values["scale_x"] < MIN_MASK_TRANSFORM_SCALE or values["scale_x"] > MAX_MASK_TRANSFORM_SCALE
+        or values["scale_y"] < MIN_MASK_TRANSFORM_SCALE or values["scale_y"] > MAX_MASK_TRANSFORM_SCALE
+    ):
+        raise ManifestValidationError(
+            f"{path}.scale_x and scale_y must be between {MIN_MASK_TRANSFORM_SCALE} and "
+            f"{MAX_MASK_TRANSFORM_SCALE}"
+        )
     return MaskTransform(**values)
 
 
@@ -504,20 +517,93 @@ def _signed_distance(mask: np.ndarray) -> np.ndarray:
     return (distance_inside - distance_outside).astype(np.float32)
 
 
-def _sdf_interpolate(left: np.ndarray, right: np.ndarray, amount: float) -> np.ndarray:
+def _mask_centroid(mask: np.ndarray) -> tuple[float, float] | None:
+    """The (row, col) centroid of a mask's ``>= 0.5`` region, or None if empty."""
+    ys, xs = np.nonzero(mask >= 0.5)
+    if ys.size == 0:
+        return None
+    return float(ys.mean()), float(xs.mean())
+
+
+def _shift_field(field: np.ndarray, shift: tuple[float, float]) -> np.ndarray:
+    if shift[0] == 0.0 and shift[1] == 0.0:
+        return field
+    return ndimage.shift(field, shift, order=1, mode="nearest").astype(np.float32)
+
+
+def _sdf_fields(mask: np.ndarray) -> tuple[np.ndarray, tuple[float, float] | None]:
+    """The signed-distance field and centroid a keyframe pair's SDF blend reuses.
+
+    Computed once per (left, right) keyframe pair by ``rasterize_mask_timeline``
+    and reused for every intermediate frame between them, rather than recomputed
+    per frame: the distance transform is the expensive part of an SDF blend and
+    does not depend on ``amount``.
+    """
+    return _signed_distance(mask), _mask_centroid(mask)
+
+
+def _sdf_blend(
+    left: np.ndarray,
+    right: np.ndarray,
+    signed_distance_left: np.ndarray,
+    signed_distance_right: np.ndarray,
+    centroid_left: tuple[float, float] | None,
+    centroid_right: tuple[float, float] | None,
+    amount: float,
+) -> tuple[np.ndarray, bool]:
+    """Centroid-aligned signed-distance morph between two masks.
+
+    Blending two shapes' signed-distance fields directly (the naive approach)
+    only has a positive (mask >= 0.5) region at a blend fraction where the two
+    shapes' intermediate level sets actually overlap. Two shapes on opposite
+    sides of the canvas -- or even two disjoint shapes a modest distance apart
+    -- can blend to a field that is negative EVERYWHERE, i.e. an interpolated
+    frame with no generate pixels at all, even though both endpoints are
+    non-empty. A signed logistic keeps the field soft but does not change
+    where it is negative, so it does not fix this.
+
+    Aligning each field's centroid to the amount-weighted target centroid
+    before blending keeps the two shapes registered on top of each other for
+    the blend, which is what makes a morph between disjoint shapes produce a
+    non-empty in-between frame. There is no "shift back": the target IS the
+    common position both fields are shifted toward, not either source's own
+    position.
+
+    Returns ``(result, fell_back)``. ``fell_back`` is True when the blend
+    still produced no generate pixels despite both endpoints being non-empty
+    (this can still happen for shapes whose alignment does not make them
+    overlap, e.g. very different sizes or elongated shapes at right angles);
+    the caller then holds the nearer endpoint's mask instead of returning an
+    empty frame.
+    """
     if amount <= 0.0:
-        return left.copy()
+        return left.copy(), False
     if amount >= 1.0:
-        return right.copy()
-    signed_distance = (1.0 - amount) * _signed_distance(left) + amount * _signed_distance(right)
-    # A hard sign threshold can erase a translated region when the two
-    # intermediate level sets do not overlap.  A unit-width logistic keeps the
-    # interpolated field soft while retaining the signed-distance boundary.
+        return right.copy(), False
+
+    sd_left = signed_distance_left
+    sd_right = signed_distance_right
+    if centroid_left is not None and centroid_right is not None:
+        target = (
+            centroid_left[0] + (centroid_right[0] - centroid_left[0]) * amount,
+            centroid_left[1] + (centroid_right[1] - centroid_left[1]) * amount,
+        )
+        sd_left = _shift_field(
+            sd_left, (target[0] - centroid_left[0], target[1] - centroid_left[1])
+        )
+        sd_right = _shift_field(
+            sd_right, (target[0] - centroid_right[0], target[1] - centroid_right[1])
+        )
+
+    signed_distance = (1.0 - amount) * sd_left + amount * sd_right
     signed_distance = np.clip(signed_distance, -60.0, 60.0)
     result = (1.0 / (1.0 + np.exp(-signed_distance))).astype(np.float32)
-    result[result < SDF_ZERO_THRESHOLD] = 0.0
-    result[result > 1.0 - SDF_ZERO_THRESHOLD] = 1.0
-    return result
+
+    left_nonempty = centroid_left is not None
+    right_nonempty = centroid_right is not None
+    if left_nonempty and right_nonempty and not bool((result >= 0.5).any()):
+        return (left.copy() if amount < 0.5 else right.copy()), True
+    return result, False
 
 
 def rasterize_mask_timeline(
@@ -525,12 +611,24 @@ def rasterize_mask_timeline(
     mask_by_id: Mapping[str, Any],
     start_frame: int,
     end_frame: int,
+    *,
+    sdf_fallback_warnings: list[str] | None = None,
 ) -> list[np.ndarray]:
     """Rasterize ``[start_frame, end_frame)`` into one mask per frame.
 
     Every manifest keyframe must lie inside the requested range.  Frames before
     the first keyframe and after the last one use that nearest keyframe's
     transformed mask, which provides the requested terminal hold behavior.
+
+    ``sdf_fallback_warnings``, if supplied, has at most one human-readable
+    message appended PER KEYFRAME PAIR summarizing every frame in that pair's
+    span where the ``sdf`` blend fell back to holding an endpoint's mask
+    instead of returning an empty frame (see ``_sdf_blend``), rather than one
+    message per individual frame (Medium-2 final-audit fix: an ``sdf``
+    segment spanning a 100-frame clip could otherwise append up to 99
+    near-identical messages into a response's ``warnings[]`` and the log).
+    Left ``None`` this function does no I/O of its own, matching the module's
+    no-server-dependency contract.
     """
 
     if not isinstance(timeline, MaskTimelineManifest):
@@ -557,6 +655,15 @@ def rasterize_mask_timeline(
     ]
     frame_numbers = [keyframe.frame for keyframe in keyframes]
     rasterized: list[np.ndarray] = []
+    # Keyed by (left_index, right_index): the signed-distance field and
+    # centroid of each mask do not depend on `amount`, so they are computed
+    # once per keyframe pair and reused for every intermediate frame between
+    # them rather than recomputed per frame.
+    sdf_field_cache: dict[tuple[int, int], tuple] = {}
+    # Medium-2 (final audit): collect fallback frames per keyframe PAIR
+    # instead of formatting a message per frame, so a long `sdf` segment
+    # produces one summary instead of up to one message per frame.
+    sdf_fallback_frames_by_pair: dict[tuple[int, int], list[int]] = {}
 
     for frame in range(start_frame, end_frame):
         right_index = 0
@@ -581,27 +688,57 @@ def rasterize_mask_timeline(
         if mode == "hold":
             rasterized.append(left_mask.copy())
         elif mode == "affine":
-            if left_keyframe.mask_id == right_keyframe.mask_id:
-                interpolated = _interpolate_transform(
-                    left_keyframe.transform,
-                    right_keyframe.transform,
-                    amount,
+            # L-3: `parse_mask_timeline_manifest` already rejects an `affine`
+            # keyframe pair whose mask_id differs (same error message below),
+            # so this branch is unreachable through the parser -- but this
+            # function also accepts a hand-built `MaskTimelineManifest` that
+            # bypasses the parser (a test, or a future caller), and "affine"
+            # names TRANSFORM interpolation of one mask, not a cross-fade
+            # between two different mask assets (that would be a different,
+            # not-yet-named mode), so a mismatched pair is refused here rather
+            # than silently blended.
+            if left_keyframe.mask_id != right_keyframe.mask_id:
+                raise MaskRasterizationError(
+                    "affine interpolation requires the same mask_id on both keyframes"
                 )
-                rasterized.append(
-                    apply_mask_transform(
-                        masks[left_keyframe.mask_id],
-                        interpolated,
-                        output_shape=timeline.canvas.shape,
-                    )
+            interpolated = _interpolate_transform(
+                left_keyframe.transform,
+                right_keyframe.transform,
+                amount,
+            )
+            rasterized.append(
+                apply_mask_transform(
+                    masks[left_keyframe.mask_id],
+                    interpolated,
+                    output_shape=timeline.canvas.shape,
                 )
-            else:
-                rasterized.append(
-                    ((1.0 - amount) * left_mask + amount * right_mask).astype(np.float32)
-                )
+            )
         elif mode == "sdf":
-            rasterized.append(_sdf_interpolate(left_mask, right_mask, amount))
+            cache_key = (left_index, right_index)
+            cached = sdf_field_cache.get(cache_key)
+            if cached is None:
+                cached = (_sdf_fields(left_mask), _sdf_fields(right_mask))
+                sdf_field_cache[cache_key] = cached
+            (sd_left, centroid_left), (sd_right, centroid_right) = cached
+            blended, fell_back = _sdf_blend(
+                left_mask, right_mask, sd_left, sd_right, centroid_left, centroid_right, amount,
+            )
+            if fell_back and sdf_fallback_warnings is not None:
+                sdf_fallback_frames_by_pair.setdefault(
+                    (left_keyframe.frame, right_keyframe.frame), []
+                ).append(frame)
+            rasterized.append(blended)
         else:
             raise MaskRasterizationError(f"unsupported interpolation mode: {mode!r}")
+
+    if sdf_fallback_warnings is not None:
+        for (left_frame, right_frame), frames in sdf_fallback_frames_by_pair.items():
+            sdf_fallback_warnings.append(
+                f"frames {frames[0]}-{frames[-1]} ({len(frames)} of "
+                f"{right_frame - left_frame} frames) between keyframes at frames "
+                f"{left_frame} and {right_frame}: sdf morph produced no generate pixels after "
+                f"centroid alignment on those frames; held the nearer keyframe's mask instead."
+            )
 
     return rasterized
 
@@ -685,6 +822,102 @@ def feather_mask_edges(pixel_masks: Any, feather_px: float) -> np.ndarray:
     return np.clip(softened, 0.0, 1.0).astype(np.float32, copy=False)
 
 
+def validate_spatial_mask_plan_cheap(
+    timeline: MaskTimelineManifest,
+    mask_by_id: Mapping[str, Any],
+    *,
+    spatial_scale: int,
+    patch_h: int,
+    patch_w: int,
+) -> None:
+    """A cheap, keyframe-only pre-check of a SUBSET of the invariants
+    ``build_spatial_mask_plan`` enforces, for a caller that wants to fail fast
+    BEFORE reserving a GPU generation slot without paying for a full-clip
+    rasterization.
+
+    ``build_spatial_mask_plan`` rasterizes and max-pools EVERY frame in the
+    regenerate range (``O(clip_frames * canvas_pixels)``); at the largest
+    nominal MiniMax-H3 clip and canvas that call alone measured at 6.6-19.8s
+    of CPU time (longer with ``sdf``, which recomputes distance transforms).
+    Calling it twice per request -- once from the route to validate, once from
+    the backend to actually use the result -- pays that cost twice for a
+    result the route immediately discards (H-4). This function instead pools
+    each keyframe's OWN transformed mask once (``O(unique keyframes)``, at
+    most 128, typically far fewer, and with no distance transform), which
+    catches the "generates at least one token" half of the invariant for
+    every keyframe individually. ``timeline.composite_feather_px``, if
+    nonzero, is applied to each keyframe's own transformed mask before
+    pooling (Medium-2): feathering only softens edges independently per
+    frame, so this is exactly the operation the full rasterization performs,
+    just once per keyframe instead of once per output frame.
+
+    ONLY the "generates a token" side is checked here, not "preserves a
+    token": the preserve-side invariant in ``build_spatial_mask_plan`` is
+    defined over the max-pool of the ENTIRE regenerate range, not any single
+    keyframe (see ``generated_count >= total_count`` there) -- a keyframe
+    whose own mask pools to fully white is a normal, legal way to say "fully
+    regenerate this instant", as long as some OTHER frame in the range still
+    preserves a token. Rejecting it per-keyframe would refuse manifests
+    ``build_spatial_mask_plan`` accepts (e.g. a fully-white keyframe morphing
+    into a partial-white keyframe later in the same range).
+
+    NOT EXHAUSTIVE beyond that: it has no notion of interpolation between
+    keyframes, so it cannot see a case where an ``affine`` cross-fade between
+    two DIFFERENT mask assets thins an intermediate frame below the pooling
+    threshold while every keyframe's OWN mask still pools fine on its own (two
+    masks whose union covers a token but whose weighted average at some blend
+    fraction does not). After the ``sdf`` centroid-alignment fix (H-1), an
+    ``sdf`` segment cannot go empty when both its endpoints do not, since the
+    fallback holds an endpoint's mask rather than returning an empty frame, so
+    ``sdf`` segments ARE exhaustively covered by the "generates a token" check
+    here. The full, per-frame-exact check (both the generate- and
+    preserve-side invariants, evaluated over the whole range) still runs once
+    in the backend (``pipeline_backends/minimax_h3.py``) before any GPU
+    compute happens, so a manifest that slips past this cheap check is still
+    refused before a single denoise step -- just after the generation slot is
+    already reserved, rather than before.
+    """
+    masks = _validated_mask_mapping(mask_by_id, timeline)
+    if not _is_int(spatial_scale) or spatial_scale <= 0:
+        raise MaskRasterizationError("spatial_scale must be a positive integer")
+    if not _is_int(patch_h) or not _is_int(patch_w) or patch_h <= 0 or patch_w <= 0:
+        raise MaskRasterizationError("patch_h and patch_w must be positive integers")
+    if timeline.canvas.height % spatial_scale or timeline.canvas.width % spatial_scale:
+        raise MaskRasterizationError("mask canvas is not aligned to the latent token grid")
+    latent_height = timeline.canvas.height // spatial_scale
+    latent_width = timeline.canvas.width // spatial_scale
+    if latent_height % patch_h or latent_width % patch_w:
+        raise MaskRasterizationError("mask canvas is not aligned to the latent token grid")
+
+    token_pixels = f"{spatial_scale * patch_h}x{spatial_scale * patch_w}"
+    for keyframe in timeline.keyframes:
+        transformed = apply_mask_transform(
+            masks[keyframe.mask_id], keyframe.transform, output_shape=timeline.canvas.shape,
+        )
+        # Mirror `build_spatial_mask_plan`'s feathering (Medium-2): feathering
+        # only softens edges, it never creates or destroys white area outside
+        # an existing edge, so applying it to this single transformed frame
+        # is exactly the per-frame operation the full rasterization performs
+        # (`feather_mask_edges` uses sigma=0 on the time axis, i.e. every
+        # frame is softened independently). Skipping this let a mask whose
+        # generate region survives at full opacity but thins below the 0.5
+        # pooling threshold once feathered pass the cheap check while the
+        # full check correctly rejected it.
+        if timeline.composite_feather_px:
+            transformed = feather_mask_edges(transformed[None], timeline.composite_feather_px)[0]
+        pooled = max_pool_mask_to_latent(
+            transformed[None],
+            spatial_scale * patch_h,
+            spatial_scale * patch_w,
+            generate_threshold=0.5,
+        )
+        if not pooled.any():
+            raise MaskRasterizationError(
+                f"keyframe at frame {keyframe.frame} generates no video token after max-pooling "
+                f"its mask onto the {token_pixels}px latent token grid"
+            )
+
+
 def build_spatial_mask_plan(
     timeline: MaskTimelineManifest,
     mask_by_id: Mapping[str, Any],
@@ -696,8 +929,21 @@ def build_spatial_mask_plan(
     spatial_scale: int,
     patch_h: int,
     patch_w: int,
+    sdf_fallback_warnings: list[str] | None = None,
+    warnings: list[str] | None = None,
 ) -> tuple[np.ndarray, tuple[int, ...]]:
-    """Build full pixel masks and frame-major pinned token rows on the CPU."""
+    """Build full pixel masks and frame-major pinned token rows on the CPU.
+
+    ``sdf_fallback_warnings``: see ``rasterize_mask_timeline``.
+
+    ``warnings``, if supplied, also collects a single aggregate message
+    reporting how many latent tokens had a max source-pixel value that was
+    non-zero (some white was painted) but fell below the 0.5 max-pool
+    generate threshold -- i.e. tokens that were partially requested but pin
+    to source anyway because the effective mask granularity is one latent
+    token (``spatial_scale * patch_h`` by ``spatial_scale * patch_w`` output
+    pixels).
+    """
 
     if not isinstance(timeline, MaskTimelineManifest):
         raise MaskRasterizationError("timeline must be a MaskTimelineManifest")
@@ -719,7 +965,13 @@ def build_spatial_mask_plan(
     ):
         raise MaskRasterizationError("latent frame spans must cover the clip exactly")
 
-    range_masks = rasterize_mask_timeline(timeline, mask_by_id, start_frame, end_frame)
+    sdf_target = sdf_fallback_warnings if sdf_fallback_warnings is not None else warnings
+    range_masks = rasterize_mask_timeline(
+        timeline, mask_by_id, start_frame, end_frame,
+        sdf_fallback_warnings=sdf_target,
+    )
+    if warnings is not None and sdf_target is not None and sdf_target is not warnings:
+        warnings.extend(sdf_target)
     range_array = np.asarray(range_masks, dtype=np.float32)
     expected_range_shape = (end_frame - start_frame, timeline.canvas.height, timeline.canvas.width)
     if range_array.shape != expected_range_shape:
@@ -742,23 +994,46 @@ def build_spatial_mask_plan(
         or latent_width % patch_w
     ):
         raise MaskRasterizationError("mask canvas is not aligned to the latent token grid")
-    pooled = max_pool_mask_to_latent(
+    pooled_raw = max_pool_mask_to_latent(
         full_masks,
         spatial_scale * patch_h,
         spatial_scale * patch_w,
-        generate_threshold=0.5,
+        generate_threshold=None,
     )
     expected_shape = (clip_frames, latent_height // patch_h, latent_width // patch_w)
-    if pooled.shape != expected_shape:
-        raise MaskRasterizationError(f"pooled mask has shape {pooled.shape}, expected {expected_shape}")
-    latent_generate = np.stack([pooled[lo:hi].max(axis=0) for lo, hi in spans], axis=0)
+    if pooled_raw.shape != expected_shape:
+        raise MaskRasterizationError(
+            f"pooled mask has shape {pooled_raw.shape}, expected {expected_shape}"
+        )
+    token_pixels = f"{spatial_scale * patch_h}x{spatial_scale * patch_w}"
+    latent_generate_raw = np.stack([pooled_raw[lo:hi].max(axis=0) for lo, hi in spans], axis=0)
+    latent_generate = (latent_generate_raw >= 0.5).astype(np.float32)
     generated_count = int(np.count_nonzero(latent_generate >= 0.5))
     total_count = int(latent_generate.size)
     if generated_count <= 0:
-        raise MaskRasterizationError("spatial mask must generate at least one video token")
+        raise MaskRasterizationError(
+            "spatial mask must generate at least one video token: after max-pooling onto the "
+            f"{token_pixels}px latent token grid, no token reached the 0.5 generate threshold. "
+            "A generate region narrower than this grid, or a transform that scales a region's "
+            "peak value below 0.5, pools to nothing even though some pixels were marked white."
+        )
     if generated_count >= total_count:
-        raise MaskRasterizationError("spatial mask must preserve at least one video token")
+        raise MaskRasterizationError(
+            "spatial mask must preserve at least one video token: after max-pooling onto the "
+            f"{token_pixels}px latent token grid, every token reached the 0.5 generate threshold."
+        )
     pinned_rows = tuple(int(index) for index in np.flatnonzero(latent_generate.reshape(-1) < 0.5))
+    if warnings is not None:
+        partial_loss_count = int(
+            np.count_nonzero((latent_generate_raw > 0.0) & (latent_generate_raw < 0.5))
+        )
+        if partial_loss_count:
+            warnings.append(
+                f"{partial_loss_count} of {total_count} latent token(s) had some non-zero "
+                f"generate-mask coverage but stayed below the 0.5 max-pool threshold on the "
+                f"{token_pixels}px latent token grid, so they were pinned to source instead of "
+                "generated."
+            )
     return full_masks, pinned_rows
 
 
@@ -767,7 +1042,28 @@ def composite_masked_frames(
     generated_frames: Any,
     soft_masks: Any,
 ) -> np.ndarray:
-    """Composite source and generated RGB frames with a soft generate mask."""
+    """Composite source and generated RGB frames with a soft generate mask.
+
+    M-3: pixel-exact only where a mask value IS EXACTLY 0.0 (the returned
+    pixel is then bit-identical to ``source_frames``, asserted by
+    ``video_mask_timeline_test.py``). A latent token whose pooled mask value
+    is below the 0.5 generate threshold is PINNED (its content is never
+    denoised -- see ``build_spatial_mask_plan``'s ``pinned_rows``), but a
+    feathered mask can still carry a non-zero, sub-0.5 value over that same
+    pixel span, and this function blends by that continuous value, not by the
+    token-level pin decision: the two operate at different granularities on
+    purpose. The pin decides what the MODEL recomputes (one decision per
+    latent token); this composite decides what the OUTPUT PIXELS show, and
+    follows the manifest's own white=generate polarity continuously, which is
+    the point of feathering -- a feathered edge that also became a hard
+    pixel-level cut at the token boundary would produce the same double-edge
+    artifact feathering exists to avoid. So a pixel inside a feather band can
+    show partial (or even majority) generated content even though its own
+    token was pinned; what it shows there is a coherent model output at that
+    location's OWN pinned-content-adjacent context, not garbage -- it is
+    exact "the model was never asked to change that token"'s effect on
+    conditioning, not exact "that pixel is unmixed with generated content".
+    """
 
     source = np.asarray(source_frames)
     generated = np.asarray(generated_frames)
@@ -785,13 +1081,32 @@ def composite_masked_frames(
     if not np.isfinite(masks).all() or np.any((masks < 0.0) | (masks > 1.0)):
         raise MaskRasterizationError("soft_masks values must be finite and in [0, 1]")
 
-    amount = masks[..., None]
-    if np.all(masks == 0.0):
-        return source.copy()
-    if np.all(masks == 1.0):
-        return generated.copy()
-    blended = (1.0 - amount) * source.astype(np.float32) + amount * generated.astype(np.float32)
-    return np.clip(np.rint(blended), 0.0, 255.0).astype(np.uint8)
+    # Composited FRAME BY FRAME rather than as one float32 blend over the whole
+    # clip: at the largest nominal MiniMax-H3 clip (362x768x1344) the whole-clip
+    # float32 blend allocates 4-5 temporaries at ~4.5 GB each (~16 GB peak,
+    # measured) on top of whatever the caller still has resident, which is
+    # enough to OOM a host that just finished staging a 21 GB DiT. The
+    # all-0/all-1 shortcut below used to be checked over the WHOLE clip, which
+    # only ever fires for a uniform mask; checked per frame it also fires for
+    # any frame entirely inside or entirely outside the regenerated range --
+    # the common case for a spatial mask that only touches a fraction of the
+    # clip's frames.
+    output = np.empty_like(source)
+    for frame_index in range(source.shape[0]):
+        frame_mask = masks[frame_index]
+        if not frame_mask.any():
+            output[frame_index] = source[frame_index]
+            continue
+        if np.all(frame_mask == 1.0):
+            output[frame_index] = generated[frame_index]
+            continue
+        amount = frame_mask[..., None]
+        blended = (
+            (1.0 - amount) * source[frame_index].astype(np.float32)
+            + amount * generated[frame_index].astype(np.float32)
+        )
+        output[frame_index] = np.clip(np.rint(blended), 0.0, 255.0).astype(np.uint8)
+    return output
 
 
 __all__ = [
@@ -812,4 +1127,5 @@ __all__ = [
     "max_pool_mask_to_latent",
     "parse_mask_timeline_manifest",
     "rasterize_mask_timeline",
+    "validate_spatial_mask_plan_cheap",
 ]

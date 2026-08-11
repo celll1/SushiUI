@@ -682,18 +682,32 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
 
   // A range that no longer fits the trimmed clip (the trim moved, or the frame
   // count was corrected) is re-centred rather than sent as an out-of-range
-  // request the route would refuse.
+  // request the route would refuse. `lastValidRegenerateRangeRef` remembers the
+  // last range that DID fit, purely so the replacement can be reported: without
+  // it, the very first run of this effect (against the 0/0 default, before the
+  // user has picked anything) would be reported the same way as a real
+  // discard of a range the user actually selected.
+  const lastValidRegenerateRangeRef = useRef<{ start: number; end: number } | null>(null);
+  const [regenerateRangeReplacedNotice, setRegenerateRangeReplacedNotice] = useState<string | null>(null);
   useEffect(() => {
     if (!isVideo || videoTrimmedFrames <= 0) return;
-    setParams(prev => {
-      const start = prev.regenerate_start_frame ?? 0;
-      const end = prev.regenerate_end_frame ?? 0;
-      if (start < end && end <= videoTrimmedFrames) return prev;
-      const spans = latentGroupSpans(latentChunkPattern, videoTrimmedFrames);
-      const snapped = snapRangeToLatentGroups(
-        spans, Math.floor(videoTrimmedFrames / 3), Math.ceil((2 * videoTrimmedFrames) / 3));
-      return { ...prev, regenerate_start_frame: snapped.start, regenerate_end_frame: snapped.end };
-    });
+    const start = params.regenerate_start_frame ?? 0;
+    const end = params.regenerate_end_frame ?? 0;
+    if (start < end && end <= videoTrimmedFrames) {
+      lastValidRegenerateRangeRef.current = { start, end };
+      return;
+    }
+    const spans = latentGroupSpans(latentChunkPattern, videoTrimmedFrames);
+    const snapped = snapRangeToLatentGroups(
+      spans, Math.floor(videoTrimmedFrames / 3), Math.ceil((2 * videoTrimmedFrames) / 3));
+    const previous = lastValidRegenerateRangeRef.current;
+    lastValidRegenerateRangeRef.current = { start: snapped.start, end: snapped.end };
+    setParams(prev => ({ ...prev, regenerate_start_frame: snapped.start, regenerate_end_frame: snapped.end }));
+    setRegenerateRangeReplacedNotice(
+      previous
+        ? `The previously selected regenerate range (${previous.start} to ${previous.end}) no longer fits the trimmed clip (${videoTrimmedFrames} frames) and was replaced with ${snapped.start} to ${snapped.end}.`
+        : null
+    );
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isVideo, videoTrimmedFrames]);
 
@@ -4588,14 +4602,21 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
             latentChunkPattern={latentChunkPattern}
             start={params.regenerate_start_frame ?? 0}
             end={params.regenerate_end_frame ?? 0}
-            onRangeChange={(start, end) => setParams(prev => ({
-              ...prev,
-              regenerate_start_frame: start,
-              regenerate_end_frame: end,
-            }))}
+            onRangeChange={(start, end) => {
+              lastValidRegenerateRangeRef.current = { start, end };
+              setRegenerateRangeReplacedNotice(null);
+              setParams(prev => ({
+                ...prev,
+                regenerate_start_frame: start,
+                regenerate_end_frame: end,
+              }));
+            }}
             frameRate={clipFrameRate}
             disabled={!videoPreviewUrl}
           />
+          {regenerateRangeReplacedNotice && (
+            <p className="mt-2 text-xs text-amber-400">{regenerateRangeReplacedNotice}</p>
+          )}
           {videoPreviewUrl && (
             <p className={`mt-2 text-xs ${
               (params.regenerate_end_frame ?? 0) >= videoTrimmedFrames && videoTrimmedFrames > 0

@@ -49,6 +49,13 @@ export interface OutpaintTimelineProps {
   /** Optional hard constraint applied to totalUnits on commit (e.g. LTX-2.3's (n-1)%8==0). */
   totalUnitsSnapFn?: (v: number) => number;
   totalUnitsMin?: number;
+  /**
+   * Optional hard ceiling on totalUnits, applied AFTER totalUnitsSnapFn so a
+   * snap-up rule cannot push the committed value back past it. Absent = no
+   * ceiling (the historical behavior). Also passed to the NumberInput's own
+   * `max`, so a wildly unservable value is not even typeable.
+   */
+  totalUnitsMax?: number;
   totalUnitsStep?: number;
 
   /** Full length of the uploaded input clip, in units, before trim. */
@@ -100,6 +107,7 @@ export default function OutpaintTimeline({
   onTotalUnitsChange,
   totalUnitsSnapFn,
   totalUnitsMin = 1,
+  totalUnitsMax,
   totalUnitsStep = 1,
   rawSegmentLength,
   trimStart,
@@ -209,8 +217,15 @@ export default function OutpaintTimeline({
           <label className="block text-xs text-gray-400 mb-1">Total ({unitLabel})</label>
           <NumberInput
             value={totalUnits}
-            onCommit={(v) => onTotalUnitsChange(totalUnitsSnapFn ? totalUnitsSnapFn(v) : Math.max(totalUnitsMin, v))}
+            onCommit={(v) => {
+              const snapped = totalUnitsSnapFn ? totalUnitsSnapFn(v) : Math.max(totalUnitsMin, v);
+              // Re-clamp AFTER the snap: a snap-up rule (e.g. rounding to the
+              // next 8n+1) can otherwise push the committed value back past
+              // the ceiling that was just enforced by NumberInput's own `max`.
+              onTotalUnitsChange(totalUnitsMax != null ? Math.min(snapped, totalUnitsMax) : snapped);
+            }}
             min={totalUnitsMin}
+            max={totalUnitsMax}
             step={totalUnitsStep}
             parse={unitParse}
             className="w-full"

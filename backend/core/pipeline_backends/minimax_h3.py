@@ -368,13 +368,29 @@ class MiniMaxH3Mixin:
           the wrapper's first-block decision point; the disabled default remains
           byte-identical to the raw path.
         * ``blocks_to_swap > 0``: the NON-block modules (the three input
-          projections, the token refiner, the RoPE buffer, the output norm and
-          the two heads) are moved to the device, then
-          ``TransformerBlockOffloader`` places the block stack -- the first
-          ``50 - blocks_to_swap`` blocks resident and the rest weight-on-CPU.
-          The whole-model ``.to(device)`` is deliberately NOT used here: it would
-          put all 21 GB on the card and only then take some of it back off,
-          which is the opposite of what the request asked for.
+          projections, the RoPE buffer, the output norm and the two heads) are
+          moved to the device, then ``TransformerBlockOffloader`` places the
+          block stack -- the first ``50 - blocks_to_swap`` blocks resident and
+          the rest weight-on-CPU. The whole-model ``.to(device)`` is
+          deliberately NOT used here: it would put all 21 GB on the card and
+          only then take some of it back off, which is the opposite of what
+          the request asked for.
+
+          THE TOKEN REFINER IS THE ONE EXCEPTION and is deliberately left off
+          this loop (measured 1.4356 GiB, the only bf16 -- i.e. unquantized --
+          module left in the w4a8 checkpoint, 12.2% of the file). It is left
+          CPU-resident here and staged onto ``device`` for the length of its
+          own call by ``MiniMaxH3BlockLoopWrapper._custom_forward`` instead,
+          under the SAME ``blocks_to_swap > 0`` condition that gates block
+          swap itself (the wrapper's local ``swap_on``), because it has
+          exactly one call site, runs once per forward on ~500 text rows
+          (negligible compute), and is otherwise unconditionally resident at
+          every ``blocks_to_swap`` setting even though the block stack -- 9.12
+          of the 11.82 GiB the DiT holds outside the block loop -- IS
+          swappable. Not fed to ``TransformerBlockOffloader`` itself: that
+          offloader is scoped to ``transformer.transformer_blocks`` and staged
+          against wait-ahead prefetch depth, machinery this module does not
+          need for a single call per forward.
 
         WHY THE OFFLOADER IS PER-GENERATION rather than persistent wrapper state
         (LTX-2.3's shape, and the source of the stale-offloader defect the
@@ -425,7 +441,7 @@ class MiniMaxH3Mixin:
         from core.memory_management import TransformerBlockOffloader
 
         for name, child in transformer.named_children():
-            if name == "transformer_blocks":
+            if name in ("transformer_blocks", "token_refiner"):
                 continue
             child.to(device)
         # Buffers registered directly on the model (the AdaLN curve table) are

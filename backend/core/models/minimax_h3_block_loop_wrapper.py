@@ -9,6 +9,21 @@ input projections, the token refiner, the AdaLN-curve lookup, the output norm
 and the two modality heads) by calling the inner model's OWN submodules — so the
 custom path reproduces the stock forward tensor for tensor.
 
+THE TOKEN REFINER GETS ITS OWN STAGE, under the same ``swap_on`` condition as
+the block loop: ``pipeline_backends/minimax_h3.py::_ensure_minimax_h3_swap_and_offload``
+deliberately leaves it off the device when block swap is on (it is the only
+bf16 -- i.e. unquantized -- module in the w4a8 checkpoint, 1.4356 GiB, 12.2%
+of the file), so this is the one place it is moved onto ``device`` -- right
+before its single call -- and back to the CPU right after. Cheap to do this
+way: it runs once per forward, before the block loop, on the packed
+sequence's ~500 text rows, so its own compute is negligible next to a
+50-block denoise step, and the PCIe round trip (~1.4 GiB each way) is a small
+fraction of a generation's per-step wall time. When ``swap_on`` is false the
+caller already put the whole model on the device (the ``blocks_to_swap <= 0``
+branch's ``.to(device)``), so this stage is a no-op skip there, keeping the
+default and ``blocks_to_swap=0`` paths byte-identical to before this stage
+existed.
+
 Fast path: with no feature attached (no block offloader or FBCache) the wrapper delegates
 verbatim to ``self.transformer(...)``, so the default MiniMax-H3 path is
 byte-identical to the unwrapped model.
@@ -214,7 +229,22 @@ class MiniMaxH3BlockLoopWrapper(nn.Module):
         video_embeds = t.proj_in(hidden_states.to(t.proj_in.weight.dtype))
         audio_embeds = t.audio_proj_in(audio_hidden_states.to(t.audio_proj_in.weight.dtype))
         text_embeds = t.context_embedder(encoder_hidden_states.to(t.context_embedder.weight.dtype))
+        # The token refiner is left off `device` by the caller when block swap
+        # is on (see this module's docstring) -- stage it on for the length of
+        # this one call, then immediately back off. The target device is read
+        # off the input tensor rather than the offloader (the offloader's
+        # contract, per its own test double, is `wait_for_block` /
+        # `submit_move_blocks_forward` only -- not a `.device` attribute).
+        # `non_blocking` only on the H2D leg: neither the module's own storage
+        # nor the offloader backing it (`use_pinned_memory=False`) is pinned,
+        # so an async D2H here would race the very same-stream compute it
+        # feeds without a pinned buffer.
+        if swap_on:
+            refiner_device = hidden_states.device
+            t.token_refiner.to(refiner_device, non_blocking=refiner_device.type != "cpu")
         text_embeds = t.token_refiner(text_embeds)
+        if swap_on:
+            t.token_refiner.to("cpu")
 
         hidden_states = text_embeds.new_zeros(
             (text_embeds.shape[0], sequence_length, text_embeds.shape[-1]))

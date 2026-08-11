@@ -1193,6 +1193,18 @@ paths:
           preserved video span carries generated audio that need not match its
           visuals.
 
+        **Spatial mask (optional).** Supply `spatial_mask_manifest` together
+        with repeated `spatial_mask_ids` and `spatial_mask_files` to generate
+        only selected image regions inside the temporal range. IDs are paired
+        by position with the uploaded PNGs; upload filenames are ignored. The
+        route validates and decodes the manifest and PNGs before acquiring a
+        GPU slot. The current pipeline consumes the validated timeline and
+        decoded arrays through explicit keyword arguments.
+        The manifest's `composite_feather_px` may be 0..128 pixels; feathering
+        is applied only inside the selected temporal span. A full-clip temporal
+        range is allowed when the spatial mask both generates and preserves at
+        least one latent video token.
+
         **Outside the model card.** MiniMax documents `fl2va` for first- and
         last-frame conditioning with up to two images; pinning frames at
         interior positions uses the same mechanism and is not covered by the
@@ -1206,8 +1218,9 @@ paths:
           indices rather than pinning frames of the target itself.
         - `width`/`height` divisible by 32 and inside the model's envelope
           (short edge ≤ 768, long edge ≤ 1344).
-        - The range must leave something preserved; a whole-clip range is
-          `/generate/txt2vid`.
+        - Without a spatial mask, the range must leave something preserved. A
+          full-clip range is allowed with a spatial mask only when it both
+          generates and preserves at least one latent video token.
       operationId: generateInpaintVideo
       requestBody:
         required: true
@@ -1215,6 +1228,13 @@ paths:
           multipart/form-data:
             schema:
               $ref: '#/components/schemas/InpaintVideoRequest'
+            encoding:
+              spatial_mask_files:
+                style: form
+                explode: true
+              spatial_mask_ids:
+                style: form
+                explode: true
       responses:
         '200':
           description: Generation successful
@@ -1243,7 +1263,12 @@ paths:
             longest producible clip (362 frames on MiniMax-H3), refused with
             "the trimmed clip is longer than this model can produce" naming
             the cap and the decoded length -- when the range is empty or
-            outside the clip, or when the range leaves nothing preserved.
+            outside the clip, or when the range leaves nothing preserved (unless
+            a spatial mask leaves at least one token preserved). It
+            also covers an invalid spatial mask manifest, a manifest canvas
+            that does not match the resolved output canvas, a malformed or
+            empty mask PNG, and any mismatch or duplicate in the repeated
+            `spatial_mask_ids`/`spatial_mask_files` mapping.
           content:
             application/json:
               schema:
@@ -8760,6 +8785,33 @@ components:
           type: string
           format: binary
           description: "The clip to inpaint (any ffmpeg-demuxable container). Its TRIMMED length is the output length and must be a valid clip length for the loaded model."
+        spatial_mask_manifest:
+          type: string
+          description: |
+            Optional JSON manifest for a spatial mask timeline inside the
+            temporal regenerate range. The manifest canvas must equal the
+            resolved output width and height. When supplied, provide one PNG
+            in `spatial_mask_files` and the corresponding ID in
+            `spatial_mask_ids` for each unique `mask_id` referenced by the
+            manifest. Upload filenames are ignored; IDs define the mapping.
+          example: '{"version":1,"coordinate_space":"output_canvas","polarity":"white_generate","canvas":{"width":640,"height":384},"keyframes":[{"frame":40,"mask_id":"subject","interpolation_to_next":"hold"}]}'
+        spatial_mask_files:
+          type: array
+          description: |
+            Optional repeated PNG uploads for `spatial_mask_manifest`. The
+            array position is paired with the same-position
+            `spatial_mask_ids` entry. Each PNG must match the manifest canvas.
+          items:
+            type: string
+            format: binary
+        spatial_mask_ids:
+          type: array
+          description: |
+            Optional repeated form IDs paired positionally with
+            `spatial_mask_files`. The set must exactly match the unique
+            `mask_id` values in the manifest; duplicate IDs are rejected.
+          items:
+            type: string
         regenerate_start_frame:
           type: integer
           description: |

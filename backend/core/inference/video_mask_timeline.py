@@ -462,9 +462,18 @@ def apply_mask_transform(
         raise MaskRasterizationError("transform is not invertible") from exc
     swap_xy_rc = np.array([[0.0, 1.0], [1.0, 0.0]], dtype=np.float64)
     matrix_rc = swap_xy_rc @ inverse_xy @ swap_xy_rc
-    offset_rc = -swap_xy_rc @ inverse_xy @ np.array(
-        [transform.x, transform.y], dtype=np.float64
+    source_center_xy = np.array(
+        [(source.shape[1] - 1) / 2.0, (source.shape[0] - 1) / 2.0],
+        dtype=np.float64,
     )
+    target_center_xy = np.array(
+        [(target_shape[1] - 1) / 2.0, (target_shape[0] - 1) / 2.0],
+        dtype=np.float64,
+    )
+    offset_xy = source_center_xy - inverse_xy @ (
+        target_center_xy + np.array([transform.x, transform.y], dtype=np.float64)
+    )
+    offset_rc = swap_xy_rc @ offset_xy
     transformed = ndimage.affine_transform(
         source,
         matrix=matrix_rc,
@@ -648,6 +657,111 @@ def max_pool_mask_to_latent(
     return pooled
 
 
+def feather_mask_edges(pixel_masks: Any, feather_px: float) -> np.ndarray:
+    """Soften spatial mask edges without mixing neighboring video frames."""
+
+    try:
+        masks = np.asarray(pixel_masks, dtype=np.float32)
+    except (TypeError, ValueError) as exc:
+        raise MaskRasterizationError("pixel_masks must be a numeric array") from exc
+    if masks.ndim != 3:
+        raise MaskRasterizationError("pixel_masks must have shape [T, H, W]")
+    if not _is_number(feather_px) or not math.isfinite(float(feather_px)):
+        raise MaskRasterizationError("feather_px must be a finite number")
+    feather_px = float(feather_px)
+    if feather_px < 0.0 or feather_px > 128.0:
+        raise MaskRasterizationError("feather_px must be between 0 and 128")
+    if not np.isfinite(masks).all() or np.any((masks < 0.0) | (masks > 1.0)):
+        raise MaskRasterizationError("pixel_masks values must be finite and in [0, 1]")
+    if feather_px == 0.0:
+        return masks.copy()
+    sigma = max(feather_px / 2.0, 0.5)
+    softened = ndimage.gaussian_filter(
+        masks,
+        sigma=(0.0, sigma, sigma),
+        mode="nearest",
+        truncate=3.0,
+    )
+    return np.clip(softened, 0.0, 1.0).astype(np.float32, copy=False)
+
+
+def build_spatial_mask_plan(
+    timeline: MaskTimelineManifest,
+    mask_by_id: Mapping[str, Any],
+    *,
+    clip_frames: int,
+    start_frame: int,
+    end_frame: int,
+    latent_frame_spans: Any,
+    spatial_scale: int,
+    patch_h: int,
+    patch_w: int,
+) -> tuple[np.ndarray, tuple[int, ...]]:
+    """Build full pixel masks and frame-major pinned token rows on the CPU."""
+
+    if not isinstance(timeline, MaskTimelineManifest):
+        raise MaskRasterizationError("timeline must be a MaskTimelineManifest")
+    if not all(_is_int(value) for value in (clip_frames, start_frame, end_frame)):
+        raise MaskRasterizationError("clip and mask ranges must contain integers")
+    if clip_frames <= 0 or not 0 <= start_frame < end_frame <= clip_frames:
+        raise MaskRasterizationError("mask range must be inside the clip")
+    if not _is_int(spatial_scale) or spatial_scale <= 0:
+        raise MaskRasterizationError("spatial_scale must be a positive integer")
+    if not _is_int(patch_h) or not _is_int(patch_w) or patch_h <= 0 or patch_w <= 0:
+        raise MaskRasterizationError("patch_h and patch_w must be positive integers")
+
+    spans = tuple((int(lo), int(hi)) for lo, hi in latent_frame_spans)
+    if (
+        not spans
+        or spans[0][0] != 0
+        or spans[-1][1] != clip_frames
+        or any(lo < 0 or lo >= hi or hi > clip_frames for lo, hi in spans)
+    ):
+        raise MaskRasterizationError("latent frame spans must cover the clip exactly")
+
+    range_masks = rasterize_mask_timeline(timeline, mask_by_id, start_frame, end_frame)
+    range_array = np.asarray(range_masks, dtype=np.float32)
+    expected_range_shape = (end_frame - start_frame, timeline.canvas.height, timeline.canvas.width)
+    if range_array.shape != expected_range_shape:
+        raise MaskRasterizationError(
+            f"rasterized mask has shape {range_array.shape}, expected {expected_range_shape}"
+        )
+    if not np.isfinite(range_array).all() or np.any((range_array < 0.0) | (range_array > 1.0)):
+        raise MaskRasterizationError("rasterized mask values must be finite and in [0, 1]")
+    if timeline.composite_feather_px:
+        range_array = feather_mask_edges(range_array, timeline.composite_feather_px)
+
+    full_masks = np.zeros((clip_frames, timeline.canvas.height, timeline.canvas.width), dtype=np.float32)
+    full_masks[start_frame:end_frame] = range_array
+    latent_height = timeline.canvas.height // spatial_scale
+    latent_width = timeline.canvas.width // spatial_scale
+    if (
+        timeline.canvas.height % spatial_scale
+        or timeline.canvas.width % spatial_scale
+        or latent_height % patch_h
+        or latent_width % patch_w
+    ):
+        raise MaskRasterizationError("mask canvas is not aligned to the latent token grid")
+    pooled = max_pool_mask_to_latent(
+        full_masks,
+        spatial_scale * patch_h,
+        spatial_scale * patch_w,
+        generate_threshold=0.5,
+    )
+    expected_shape = (clip_frames, latent_height // patch_h, latent_width // patch_w)
+    if pooled.shape != expected_shape:
+        raise MaskRasterizationError(f"pooled mask has shape {pooled.shape}, expected {expected_shape}")
+    latent_generate = np.stack([pooled[lo:hi].max(axis=0) for lo, hi in spans], axis=0)
+    generated_count = int(np.count_nonzero(latent_generate >= 0.5))
+    total_count = int(latent_generate.size)
+    if generated_count <= 0:
+        raise MaskRasterizationError("spatial mask must generate at least one video token")
+    if generated_count >= total_count:
+        raise MaskRasterizationError("spatial mask must preserve at least one video token")
+    pinned_rows = tuple(int(index) for index in np.flatnonzero(latent_generate.reshape(-1) < 0.5))
+    return full_masks, pinned_rows
+
+
 def composite_masked_frames(
     source_frames: Any,
     generated_frames: Any,
@@ -691,8 +805,10 @@ __all__ = [
     "MaskTransform",
     "VideoMaskTimelineError",
     "apply_mask_transform",
+    "build_spatial_mask_plan",
     "composite_masked_frames",
     "decode_mask_pngs",
+    "feather_mask_edges",
     "max_pool_mask_to_latent",
     "parse_mask_timeline_manifest",
     "rasterize_mask_timeline",

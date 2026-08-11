@@ -2997,6 +2997,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         input_audio,
         progress_callback=None,
         step_callback=None,
+        spatial_mask_timeline=None,
+        spatial_mask_arrays=None,
     ):
         """Video temporal inpaint: regenerate one time range of a clip in place.
 
@@ -3014,6 +3016,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             input_audio: WAV bytes of the clip's original audio, or None.
             progress_callback: Called as (step, total_steps) at each denoise step.
             step_callback: Per-step latent preview hook.
+            spatial_mask_timeline: Optional spatial mask timeline for H3 inpaint.
+            spatial_mask_arrays: Optional decoded spatial mask arrays for H3 inpaint.
 
         Returns:
             tuple: (frames, audio, audio_sample_rate, actual_seed) -- identical
@@ -3022,8 +3026,14 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         from api.error_handlers import ValidationError
 
         if self.is_minimax_h3_model:
+            if spatial_mask_timeline is None and spatial_mask_arrays is None:
+                return self._generate_vidinpaint_minimax_h3(
+                    params, video_frames, fps, input_audio, progress_callback, step_callback)
             return self._generate_vidinpaint_minimax_h3(
-                params, video_frames, fps, input_audio, progress_callback, step_callback)
+                params, video_frames, fps, input_audio, progress_callback, step_callback,
+                spatial_mask_timeline=spatial_mask_timeline,
+                spatial_mask_arrays=spatial_mask_arrays,
+            )
 
         raise ValidationError(
             "Video temporal inpaint requires a MiniMax-H3 model",

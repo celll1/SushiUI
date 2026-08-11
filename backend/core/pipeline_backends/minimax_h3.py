@@ -1155,6 +1155,8 @@ class MiniMaxH3Mixin:
         input_audio: Optional[bytes],
         progress_callback: Optional[Callable] = None,
         step_callback: Optional[Callable] = None,
+        spatial_mask_timeline=None,
+        spatial_mask_arrays=None,
     ):
         """Temporal inpaint with MiniMax-H3: regenerate one time range in place.
 
@@ -1197,7 +1199,11 @@ class MiniMaxH3Mixin:
             tuple contract as every other video generate path.
         """
         from api.error_handlers import ValidationError
-        from api.generation_utils import plan_video_inpaint_span, MINIMAX_H3_DOCUMENTED_ANCHOR_SCOPE
+        from api.generation_utils import (
+            MINIMAX_H3_DOCUMENTED_ANCHOR_SCOPE,
+            latent_frame_spans,
+            plan_video_inpaint_span,
+        )
         from core.inference.outpaint_utils import center_crop_resize_frames
 
         if not getattr(self, "minimax_h3_components", None):
@@ -1222,9 +1228,18 @@ class MiniMaxH3Mixin:
         # convention the image and video outpaint paths state.
         clip = center_crop_resize_frames(trimmed, width, height)
 
+        spatial_mask_mode = (spatial_mask_timeline is not None or
+                             spatial_mask_arrays is not None)
+        full_soft_masks = None
+        pinned_video_row_indices: Tuple[int, ...] = ()
+
         arch = (getattr(self, "current_model_info", None) or {}).get("type")
-        plan = plan_video_inpaint_span(params, arch or "minimax_h3",
-                                       clip_frames=int(clip.shape[0]))
+        plan = plan_video_inpaint_span(
+            params,
+            arch or "minimax_h3",
+            clip_frames=int(clip.shape[0]),
+            allow_full_range=spatial_mask_mode,
+        )
         start_frame = int(plan["start_frame"])
         end_frame = int(plan["end_frame"])
         clip_frames = int(plan["clip_frames"])
@@ -1242,6 +1257,75 @@ class MiniMaxH3Mixin:
                     add_warning(message, code=code)
                 except Exception:
                     pass
+
+        if spatial_mask_mode:
+            from core.inference.video_mask_timeline import (
+                MaskTimelineManifest,
+                build_spatial_mask_plan,
+                composite_masked_frames,
+            )
+            from core.models.components.wiring import temporal_spec_for_arch
+
+            if spatial_mask_timeline is None or spatial_mask_arrays is None:
+                raise ValidationError(
+                    "spatial mask timeline and arrays must be supplied together",
+                    detail="Pass both spatial_mask_timeline and spatial_mask_arrays, or neither.",
+                )
+            if not isinstance(spatial_mask_timeline, MaskTimelineManifest):
+                raise ValidationError(
+                    "invalid spatial mask timeline",
+                    detail="spatial_mask_timeline must be a MaskTimelineManifest.",
+                )
+            if clip.ndim != 4 or clip.shape[0] != clip_frames or clip.shape[1:3] != (height, width):
+                raise ValidationError(
+                    "invalid inpaint source clip geometry",
+                    detail=f"Expected [{clip_frames}, {height}, {width}, 3], got {clip.shape}.",
+                )
+            if clip.shape[-1] != 3 or clip.dtype != np.uint8:
+                raise ValidationError(
+                    "invalid inpaint source clip format",
+                    detail=f"Expected uint8 RGB frames, got dtype={clip.dtype}, shape={clip.shape}.",
+                )
+            if (spatial_mask_timeline.canvas.width != width or
+                    spatial_mask_timeline.canvas.height != height):
+                raise ValidationError(
+                    "spatial mask canvas does not match the output canvas",
+                    detail=(
+                        f"Mask canvas is {spatial_mask_timeline.canvas.width}x"
+                        f"{spatial_mask_timeline.canvas.height}; output is {width}x{height}."
+                    ),
+                )
+
+            components = self.minimax_h3_components
+            spatial_scale = int(components.get("vae_scale_factor_spatial", 0) or 0)
+            transformer_config = components.get("transformer_config") or {}
+            patch_size = tuple(transformer_config.get("patch_size") or ())
+            if spatial_scale <= 0 or len(patch_size) != 3:
+                raise ValidationError(
+                    "MiniMax-H3 spatial mask geometry is unavailable",
+                    detail="The loaded components do not expose VAE scale and transformer patch size.",
+                )
+            patch_h = int(patch_size[1])
+            patch_w = int(patch_size[2])
+            spec = temporal_spec_for_arch(arch or "minimax_h3")
+            spans = latent_frame_spans(spec, int(plan["latent_frames"])) if spec else []
+            try:
+                full_soft_masks, pinned_video_row_indices = build_spatial_mask_plan(
+                    spatial_mask_timeline,
+                    spatial_mask_arrays,
+                    clip_frames=clip_frames,
+                    start_frame=start_frame,
+                    end_frame=end_frame,
+                    latent_frame_spans=spans,
+                    spatial_scale=spatial_scale,
+                    patch_h=patch_h,
+                    patch_w=patch_w,
+                )
+            except Exception as exc:
+                raise ValidationError(
+                    "invalid spatial mask timeline",
+                    detail=str(exc),
+                ) from exc
 
         if plan["snapped"]:
             warn(
@@ -1282,25 +1366,47 @@ class MiniMaxH3Mixin:
         print(f"[MiniMax-H3] vid_inpaint: {width}x{height} clip={clip_frames} frame(s) "
               f"regenerate {start_frame}..{end_frame} "
               f"({len(plan['regenerate_latent_frames'])} of {plan['latent_frames']} latent "
-              f"frames) audio={audio_mode} @ {frame_rate} fps")
+              f"frames) audio={audio_mode} @ {frame_rate} fps"
+              + (f" spatial_pinned_rows={len(pinned_video_row_indices)}"
+                 if spatial_mask_mode else ""))
 
         sub_params = dict(params)
         sub_params["num_frames"] = clip_frames
-        frames_gen, audio_out, audio_sample_rate, seed = self._generate_minimax_h3(
-            sub_params, pinned_video_frames=plan["pinned_latent_frames"],
-            pinned_video_source=clip, input_audio=pinned_audio, label="vid_inpaint",
-            progress_callback=progress_callback, step_callback=step_callback,
-        )
+        if spatial_mask_mode:
+            frames_gen, audio_out, audio_sample_rate, seed = self._generate_minimax_h3(
+                sub_params,
+                pinned_video_frames=(),
+                pinned_video_row_indices=pinned_video_row_indices,
+                pinned_video_source=clip, input_audio=pinned_audio, label="vid_inpaint",
+                progress_callback=progress_callback, step_callback=step_callback,
+            )
+        else:
+            frames_gen, audio_out, audio_sample_rate, seed = self._generate_minimax_h3(
+                sub_params,
+                pinned_video_frames=plan["pinned_latent_frames"],
+                pinned_video_source=clip, input_audio=pinned_audio, label="vid_inpaint",
+                progress_callback=progress_callback, step_callback=step_callback,
+            )
         if frames_gen.shape[0] != clip_frames:  # pragma: no cover - decode guarantees it
             raise RuntimeError(
                 f"MiniMax-H3 returned {frames_gen.shape[0]} frame(s) where this clip is "
                 f"{clip_frames}.")
 
-        # ---- The paste. Everything outside the regenerated range is the input's
-        # own pixels; the range itself is untouched.
-        frames_out = np.array(frames_gen, dtype=np.uint8, copy=True)
-        frames_out[:start_frame] = clip[:start_frame]
-        frames_out[end_frame:] = clip[end_frame:]
+        if spatial_mask_mode:
+            try:
+                frames_out = composite_masked_frames(clip, frames_gen, full_soft_masks)
+            except Exception as exc:
+                raise ValidationError(
+                    "invalid MiniMax-H3 spatial mask composite",
+                    detail=str(exc),
+                ) from exc
+            params["inpaint_video_spatial_mask"] = True
+        else:
+            # ---- The paste. Everything outside the regenerated range is the
+            # input's own pixels; the range itself is untouched.
+            frames_out = np.array(frames_gen, dtype=np.uint8, copy=True)
+            frames_out[:start_frame] = clip[:start_frame]
+            frames_out[end_frame:] = clip[end_frame:]
 
         params["num_frames"] = clip_frames
         params["inpaint_video_effective_start_frame"] = start_frame
@@ -1391,6 +1497,7 @@ class MiniMaxH3Mixin:
         references: Sequence[Any] = (),
         input_audio=None,
         pinned_video_frames: Sequence[int] = (),
+        pinned_video_row_indices: Sequence[int] = (),
         pinned_video_source: Optional[np.ndarray] = None,
         label: str = "txt2vid",
         progress_callback: Optional[Callable] = None,
@@ -1424,7 +1531,8 @@ class MiniMaxH3Mixin:
         ref2va reaches an audio track through its own reference block, at a
         different rotary offset.
 
-        ``pinned_video_frames`` / ``pinned_video_source`` are temporal inpaint:
+        ``pinned_video_frames`` / ``pinned_video_row_indices`` /
+        ``pinned_video_source`` are temporal inpaint:
         the LATENT frames of the clip that are supplied at (near) their true
         value and never denoised, and the trimmed source clip
         (``uint8 [T, H, W, 3]``) they are taken from. Their rows are permuted to
@@ -1453,16 +1561,26 @@ class MiniMaxH3Mixin:
         components = getattr(self, "minimax_h3_components", None)
         if not components:
             raise RuntimeError("MiniMax-H3 components are not loaded. Load a MiniMax-H3 model first.")
-        if len(pinned_video_frames) and (keyframes or references):
+        if pinned_video_frames is None:
+            pinned_video_frames = ()
+        if pinned_video_row_indices is None:
+            pinned_video_row_indices = ()
+        pinned_video_frames = tuple(pinned_video_frames)
+        pinned_video_row_indices = tuple(pinned_video_row_indices)
+        if pinned_video_frames and pinned_video_row_indices:
             raise RuntimeError(
-                "MiniMax-H3 cannot combine pinned video frames with keyframes or references: the "
+                "MiniMax-H3 cannot combine pinned video frames with pinned video row indices: "
+                "pass one video pinning scheme only.")
+        if (pinned_video_frames or pinned_video_row_indices) and (keyframes or references):
+            raise RuntimeError(
+                "MiniMax-H3 cannot combine pinned video pins with keyframes or references: the "
                 "pin re-uses the video block's conditioning prefix for rows of the clip itself, "
                 "and an anchor or a reference reserves that same prefix for rows of its own.")
-        if len(pinned_video_frames) != 0 and pinned_video_source is None:
+        if (pinned_video_frames or pinned_video_row_indices) and pinned_video_source is None:
             raise RuntimeError(
-                "MiniMax-H3 temporal inpaint needs the source clip the pinned frames are taken "
-                "from: pinned_video_frames names latent frames, pinned_video_source supplies the "
-                "pixels they are encoded from.")
+                "MiniMax-H3 temporal inpaint needs the source clip the pinned content is taken "
+                "from: pinned video frames/rows name conditioning content, and "
+                "pinned_video_source supplies the pixels they are encoded from.")
         if input_audio is not None and references:
             raise RuntimeError(
                 "MiniMax-H3 cannot pin an input audio track on a ref2va request: a reference "
@@ -1760,16 +1878,21 @@ class MiniMaxH3Mixin:
                 device=torch_device,
             )
         else:
-            layout = ops.build_packed_layout(
-                num_text_tokens, latent_frames, latent_height, latent_width, num_audio_latents,
-                patch_size=patch_size,
-                keyframe_anchors=anchors,
-                pinned_video_frames=tuple(pinned_video_frames),
+            layout_kwargs = {
+                "patch_size": patch_size,
+                "keyframe_anchors": anchors,
+                "pinned_video_frames": tuple(pinned_video_frames),
                 # ia2v needs no rows of its own: the target audio rows are
                 # already on the target's clock, and this flag only moves them
                 # from "generated" to "conditioning" in the row-timestep plan.
-                pin_target_audio=pinned_audio_rows is not None,
-                device=torch_device,
+                "pin_target_audio": pinned_audio_rows is not None,
+                "device": torch_device,
+            }
+            if pinned_video_row_indices:
+                layout_kwargs["pinned_video_row_indices"] = tuple(pinned_video_row_indices)
+            layout = ops.build_packed_layout(
+                num_text_tokens, latent_frames, latent_height, latent_width, num_audio_latents,
+                **layout_kwargs,
             )
         row_counts = ops.packed_row_counts(layout)
         params["minimax_h3_packed_rows"] = row_counts["total"]
@@ -1801,29 +1924,46 @@ class MiniMaxH3Mixin:
         video_rows = ops.patchify_video_latents(video_noise, patch_size)[0]
         del video_noise
 
-        if pinned_video_rows is not None:
+        if pinned_video_rows is not None and (pinned_video_frames or pinned_video_row_indices):
             # Substitute AFTER the draw, for the reason the audio substitution
             # below states: the draw order is what makes the generated frames'
             # noise the same at one seed whether or not anything is pinned. Each
             # pinned row is noised to VISUAL_COND_TIMESTEP with ITS OWN row of
             # that draw, through the scheduler's own forward process -- the
             # recipe `build_condition_rows` uses for a keyframe anchor.
-            rows_per_frame = int(layout["rows_per_frame"])
-            pin_rows = torch.cat([
-                torch.arange(frame * rows_per_frame, (frame + 1) * rows_per_frame)
-                for frame in sorted(int(f) for f in pinned_video_frames)]).to(video_rows.device)
-            source = pinned_video_rows.to(video_rows.device, video_rows.dtype)
-            video_rows[pin_rows] = components["scheduler"].scale_noise(
-                source[pin_rows], ops.VISUAL_COND_TIMESTEP, video_rows[pin_rows])
-            del source, pinned_video_rows
+            if pinned_video_row_indices:
+                pin_rows = torch.tensor(
+                    pinned_video_row_indices,
+                    dtype=torch.long,
+                    device=video_rows.device,
+                )
+            else:
+                rows_per_frame = int(layout["rows_per_frame"])
+                pin_rows = torch.cat([
+                    torch.arange(frame * rows_per_frame, (frame + 1) * rows_per_frame)
+                    for frame in sorted(int(f) for f in pinned_video_frames)
+                ]).to(video_rows.device)
+            video_rows = ops.pin_video_rows(
+                video_rows,
+                pinned_video_rows,
+                tuple(int(row) for row in pin_rows.tolist()),
+                components["scheduler"],
+                ops.VISUAL_COND_TIMESTEP,
+            )
+            del pinned_video_rows
             # Frame-major -> packed. The layout permuted `video_indices` the same
             # way, and the transformer addresses rows by that index list, so the
             # two permutations cancel inside the forward.
             video_rows = video_rows[layout["video_row_permutation"].to(video_rows.device)]
+            if pinned_video_row_indices:
+                pin_description = "spatial mask rows"
+            else:
+                pin_description = (
+                    f"latent frames {list(pinned_video_frames)[:4]}"
+                    f"{'...' if len(pinned_video_frames) > 4 else ''}"
+                )
             print(f"[MiniMax-H3] temporal inpaint: {pin_rows.numel()} of {video_rows.shape[0]} "
-                  f"video row(s) pinned at t={ops.VISUAL_COND_TIMESTEP} "
-                  f"(latent frames {list(pinned_video_frames)[:4]}"
-                  f"{'...' if len(pinned_video_frames) > 4 else ''})")
+                  f"video row(s) pinned at t={ops.VISUAL_COND_TIMESTEP} ({pin_description})")
 
         if pinned_audio_rows is not None:
             # THE AUDIO DRAW ABOVE HAPPENED AND IS DISCARDED HERE, deliberately.

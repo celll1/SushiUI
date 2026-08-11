@@ -42,7 +42,18 @@ import VideoInpaintRangeTimeline from "./VideoInpaintRangeTimeline";
 import { useActiveTraining } from "@/hooks/useActiveTraining";
 import { useSmoothProgress } from "@/hooks/useSmoothProgress";
 import { useVideoPlayhead } from "@/hooks/useVideoPlayhead";
-import { releaseVideoFrameGrabber } from "@/utils/videoFrameGrabber";
+import { grabVideoFrame, releaseVideoFrameGrabber } from "@/utils/videoFrameGrabber";
+import VideoInpaintMaskTimeline from "./VideoInpaintMaskTimeline";
+import {
+  createDefaultMaskTransform,
+  serializeVideoMaskManifestForApi,
+  sortKeyframes,
+  upsertKeyframe,
+  validateVideoMaskManifest,
+  type VideoMaskAsset,
+  type VideoMaskKeyframe,
+  type VideoMaskManifest,
+} from "@/utils/videoMaskTimeline";
 import { wsClient, CFGMetrics } from "@/utils/websocket";
 import CFGMetricsGraph from "../common/CFGMetricsGraph";
 import { saveTempImage, loadTempImage, deleteTempImageRef } from "@/utils/tempImageStorage";
@@ -351,6 +362,63 @@ const DEFAULT_PARAMS: InpaintParams = {
   video_blocks_to_swap: 0,
 };
 
+function createDefaultVideoMaskManifest(width?: number, height?: number): VideoMaskManifest {
+  return {
+    version: 1,
+    coordinateSpace: "output_canvas",
+    polarity: "white_generate",
+    canvas: {
+      width: Math.max(1, Math.round(width ?? 768)),
+      height: Math.max(1, Math.round(height ?? 512)),
+    },
+    keyframes: [],
+    compositeFeatherPx: 0,
+  };
+}
+
+function renderDataUrlToCanvas(
+  dataUrl: string,
+  width: number,
+  height: number,
+  objectCover: boolean,
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => {
+      if (!image.naturalWidth || !image.naturalHeight) {
+        reject(new Error("The captured frame has no usable dimensions."));
+        return;
+      }
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+      const context = canvas.getContext("2d");
+      if (!context) {
+        reject(new Error("The browser could not create a mask canvas."));
+        return;
+      }
+      context.imageSmoothingEnabled = true;
+      context.imageSmoothingQuality = "high";
+      if (objectCover) {
+        const scale = Math.max(width / image.naturalWidth, height / image.naturalHeight);
+        const drawWidth = image.naturalWidth * scale;
+        const drawHeight = image.naturalHeight * scale;
+        context.drawImage(image, (width - drawWidth) / 2, (height - drawHeight) / 2, drawWidth, drawHeight);
+      } else {
+        context.drawImage(image, 0, 0, width, height);
+      }
+      resolve(canvas.toDataURL("image/png"));
+    };
+    image.onerror = () => reject(new Error("The captured frame could not be decoded."));
+    image.src = dataUrl;
+  });
+}
+
+function safeMaskFilename(id: string): string {
+  const safe = id.replace(/[^a-zA-Z0-9_-]/g, "_").replace(/^\.+/, "");
+  return `${safe || "mask"}.png`;
+}
+
 // Inpaint's secondary options are grouped into a single-open tabbed accordion
 // (see the "Inpaint Options" Card below, shared chrome via
 // frontend/src/components/common/TabbedOptions.tsx — ported from
@@ -578,6 +646,11 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
   const [videoPreviewUrl, setVideoPreviewUrl] = useState<string | null>(null);
   const [videoDurationSec, setVideoDurationSec] = useState<number | null>(null);
   const [inputVideoSize, setInputVideoSize] = useState<{ width: number; height: number } | null>(null);
+  const [videoMaskManifest, setVideoMaskManifest] = useState<VideoMaskManifest>(() =>
+    createDefaultVideoMaskManifest(DEFAULT_PARAMS.width, DEFAULT_PARAMS.height),
+  );
+  const [videoMaskAssets, setVideoMaskAssets] = useState<VideoMaskAsset[]>([]);
+  const [videoMaskError, setVideoMaskError] = useState<string | null>(null);
   // The input clip's own <video>, ref'd so the Regenerate Range timeline can
   // read/drive its live playhead (useVideoPlayhead below) -- this is the same
   // element the panel already renders for preview, not a second one.
@@ -776,6 +849,36 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
   const [isDragging, setIsDragging] = useState(false);
   const [showImageEditor, setShowImageEditor] = useState(false);
   const [editingImageUrl, setEditingImageUrl] = useState<string | null>(null);
+  const [videoMaskEditor, setVideoMaskEditor] = useState<{
+    keyframeId: string;
+    frame: number;
+    imageUrl: string;
+    initialMaskUrl?: string;
+  } | null>(null);
+  const videoMaskCanvasWidth = Math.max(1, Math.round(params.width ?? 768));
+  const videoMaskCanvasHeight = Math.max(1, Math.round(params.height ?? 512));
+  useEffect(() => {
+    if (
+      videoMaskManifest.canvas.width === videoMaskCanvasWidth
+      && videoMaskManifest.canvas.height === videoMaskCanvasHeight
+    ) return;
+    const hadKeyframes = videoMaskManifest.keyframes.length > 0;
+    setVideoMaskManifest((previous) => ({
+      ...previous,
+      canvas: { width: videoMaskCanvasWidth, height: videoMaskCanvasHeight },
+      keyframes: [],
+    }));
+    setVideoMaskAssets([]);
+    setVideoMaskEditor(null);
+    setShowImageEditor(false);
+    setVideoMaskError(hadKeyframes ? "Output canvas changed; video mask keyframes were cleared." : null);
+  }, [
+    videoMaskCanvasHeight,
+    videoMaskCanvasWidth,
+    videoMaskManifest.canvas.height,
+    videoMaskManifest.canvas.width,
+    videoMaskManifest.keyframes.length,
+  ]);
   const [sendImage, setSendImage] = useState(true);
   const [sendPrompt, setSendPrompt] = useState(true);
   const [sendParameters, setSendParameters] = useState(true);
@@ -1243,6 +1346,14 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
           return URL.createObjectURL(file);
         });
         setVideoFile(file);
+        if (isReplacement) {
+          setVideoMaskManifest((previous) =>
+            createDefaultVideoMaskManifest(previous.canvas.width, previous.canvas.height),
+          );
+          setVideoMaskAssets([]);
+          setVideoMaskEditor(null);
+          setVideoMaskError(null);
+        }
         setVideoDurationSec(null);
         setInputVideoSize(null);
         if (isReplacement) setClipFramesOverride(null);
@@ -1615,6 +1726,120 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
 
   const handleEditorClose = () => {
     setShowImageEditor(false);
+    setVideoMaskEditor(null);
+  };
+
+  const openVideoMaskEditor = async (frame: number, existingKeyframe?: VideoMaskKeyframe) => {
+    if (!videoPreviewUrl || videoTrimmedFrames <= 0) return;
+    const requestedFrame = Math.max(0, Math.round(frame));
+    const sourceUrl = videoPreviewUrl;
+    const trimStart = params.input_trim_start_frames ?? 0;
+    const frameResult = await grabVideoFrame(
+      sourceUrl,
+      (trimStart + requestedFrame) / clipFrameRate,
+      { maxWidth: 1024 },
+    );
+    if (!frameResult?.dataUrl) {
+      setVideoMaskError("Could not capture that video frame for mask editing.");
+      return;
+    }
+    try {
+      const imageUrl = await renderDataUrlToCanvas(
+        frameResult.dataUrl,
+        videoMaskCanvasWidth,
+        videoMaskCanvasHeight,
+        true,
+      );
+      const keyframeId = existingKeyframe?.id ?? `video-mask-${requestedFrame}`;
+      const maskId = existingKeyframe?.maskId ?? `mask-${keyframeId}`;
+      const existingAsset = videoMaskAssets.find((asset) => asset.id === maskId);
+      setVideoMaskEditor({
+        keyframeId,
+        frame: requestedFrame,
+        imageUrl,
+        initialMaskUrl: existingAsset?.dataUrl,
+      });
+      setVideoMaskError(null);
+      setShowImageEditor(true);
+    } catch (error) {
+      console.error("[Inpaint] Failed to prepare video mask editor frame:", error);
+      setVideoMaskError("Could not prepare that video frame for mask editing.");
+    }
+  };
+
+  const handleAddVideoMaskKeyframe = (frame: number) => {
+    void openVideoMaskEditor(frame);
+  };
+
+  const handleEditVideoMaskKeyframe = (keyframe: VideoMaskKeyframe) => {
+    void openVideoMaskEditor(keyframe.frame, keyframe);
+  };
+
+  const handleVideoMaskKeyframesChange = (keyframes: VideoMaskKeyframe[]) => {
+    const ordered = sortKeyframes(keyframes);
+    let normalizedAffine = false;
+    const normalized = ordered.map((keyframe, index) => {
+      const next = ordered[index + 1];
+      if (
+        next
+        && keyframe.interpolationToNext === "affine"
+        && keyframe.maskId !== next.maskId
+      ) {
+        normalizedAffine = true;
+        return { ...keyframe, interpolationToNext: "hold" as const };
+      }
+      return keyframe;
+    });
+    setVideoMaskManifest((previous) => ({ ...previous, keyframes: normalized }));
+    setVideoMaskError(
+      normalizedAffine
+        ? "Affine interpolation needs the same mask asset on both keyframes; changed to Hold."
+        : null,
+    );
+  };
+
+  const handleVideoMaskEditorSaveMask = async (maskUrl: string) => {
+    const editor = videoMaskEditor;
+    if (!editor) return;
+    try {
+      const normalizedMaskUrl = await renderDataUrlToCanvas(
+        maskUrl,
+        videoMaskCanvasWidth,
+        videoMaskCanvasHeight,
+        false,
+      );
+      const existingKeyframe = videoMaskManifest.keyframes.find(
+        (keyframe) => keyframe.id === editor.keyframeId || keyframe.frame === editor.frame,
+      );
+      const maskId = existingKeyframe?.maskId ?? `mask-${editor.keyframeId}`;
+      const keyframe: VideoMaskKeyframe = {
+        id: editor.keyframeId,
+        frame: editor.frame,
+        maskId,
+        interpolationToNext: existingKeyframe?.interpolationToNext ?? "hold",
+        transform: existingKeyframe?.transform
+          ? { ...existingKeyframe.transform }
+          : createDefaultMaskTransform(),
+      };
+      setVideoMaskAssets((previous) => {
+        const nextAsset = { id: maskId, dataUrl: normalizedMaskUrl };
+        const replaced = previous.some((asset) => asset.id === maskId);
+        return replaced
+          ? previous.map((asset) => (asset.id === maskId ? nextAsset : asset))
+          : [...previous, nextAsset];
+      });
+      setVideoMaskManifest((previous) => ({
+        ...previous,
+        canvas: { width: videoMaskCanvasWidth, height: videoMaskCanvasHeight },
+        keyframes: upsertKeyframe(previous.keyframes, keyframe),
+      }));
+      setVideoMaskError(null);
+      setShowImageEditor(false);
+      setVideoMaskEditor(null);
+    } catch (error) {
+      console.error("[Inpaint] Failed to save video mask:", error);
+      setVideoMaskError("Could not save the video mask. Please try again.");
+    }
   };
 
   const handleScaleChange = (newScale: number) => {
@@ -1660,12 +1885,21 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
     }));
   };
 
+  const resetVideoMaskTimeline = () => {
+    setVideoMaskManifest(createDefaultVideoMaskManifest(params.width, params.height));
+    setVideoMaskAssets([]);
+    setVideoMaskEditor(null);
+    setVideoMaskError(null);
+    setShowImageEditor(false);
+  };
+
   const processVideoFile = (file: File) => {
     if (!file.type.startsWith('video/')) {
       alert('Please upload a valid video file');
       return;
     }
     preserveVideoSettingsRef.current = false;
+    resetVideoMaskTimeline();
     setVideoFile(file);
     setVideoDurationSec(null);
     setInputVideoSize(null);
@@ -1724,6 +1958,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
     setVideoDurationSec(null);
     setInputVideoSize(null);
     setClipFramesOverride(null);
+    resetVideoMaskTimeline();
     setVideoSizeMode("absolute");
     setParams(prev => ({
       ...prev,
@@ -2342,6 +2577,69 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
           return;
         }
       }
+      let spatialMaskManifest: string | undefined;
+      let spatialMaskFiles: Array<{ id: string; file: File }> | undefined;
+      if (videoMaskManifest.keyframes.length > 0) {
+        const maskRangeStart = params.regenerate_start_frame ?? 0;
+        const maskRangeEnd = params.regenerate_end_frame ?? 0;
+        const outOfRangeKeyframe = videoMaskManifest.keyframes.find(
+          (keyframe) => keyframe.frame < maskRangeStart || keyframe.frame >= maskRangeEnd,
+        );
+        if (outOfRangeKeyframe) {
+          const message = `Mask keyframe frame ${outOfRangeKeyframe.frame} must be inside the regenerate range [${maskRangeStart}, ${maskRangeEnd}).`;
+          setVideoMaskError(message);
+          alert(message);
+          return;
+        }
+        const validation = validateVideoMaskManifest({
+          ...videoMaskManifest,
+          assets: videoMaskAssets,
+        });
+        if (!validation.valid) {
+          const message = `Video mask timeline is invalid: ${validation.errors.join(" ")}`;
+          setVideoMaskError(message);
+          alert(message);
+          return;
+        }
+        if (
+          videoMaskManifest.canvas.width !== videoMaskCanvasWidth
+          || videoMaskManifest.canvas.height !== videoMaskCanvasHeight
+        ) {
+          const message = "Video mask canvas does not match the current output canvas. Recreate the masks.";
+          setVideoMaskError(message);
+          alert(message);
+          return;
+        }
+        try {
+          spatialMaskManifest = serializeVideoMaskManifestForApi(videoMaskManifest, videoMaskAssets);
+          const referencedIds = [...new Set(videoMaskManifest.keyframes.map((keyframe) => keyframe.maskId))];
+          const assetsById = new Map(videoMaskAssets.map((asset) => [asset.id, asset]));
+          const referencedAssets = referencedIds.map((id) => assetsById.get(id));
+          if (referencedAssets.some((asset) => !asset) || referencedAssets.length !== referencedIds.length) {
+            throw new Error("Every video mask keyframe must have a saved PNG asset.");
+          }
+          spatialMaskFiles = await Promise.all(
+            referencedAssets.map(async (asset) => {
+              if (!asset) throw new Error("A referenced video mask asset is missing.");
+              const response = await fetch(asset.dataUrl);
+              if (!response.ok) throw new Error(`Could not read mask asset ${asset.id}.`);
+              const blob = await response.blob();
+              return {
+                id: asset.id,
+                file: new File([blob], safeMaskFilename(asset.id), { type: "image/png" }),
+              };
+            }),
+          );
+          if (spatialMaskFiles.length !== referencedIds.length) {
+            throw new Error("Video mask asset pairing is incomplete.");
+          }
+        } catch (error: any) {
+          const message = error?.message || "Could not prepare the video mask files.";
+          setVideoMaskError(message);
+          alert(message);
+          return;
+        }
+      }
       const videoParams: InpaintVideoParams = {
         prompt: videoPrompt,
         negative_prompt: await replaceWildcardsInPrompt(params.negative_prompt || ""),
@@ -2359,6 +2657,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         input_trim_start_frames: params.input_trim_start_frames,
         input_trim_end_frames: params.input_trim_end_frames,
         inpaint_video_audio_mode: params.inpaint_video_audio_mode,
+        spatial_mask_manifest: spatialMaskManifest,
         video_lossless: params.video_lossless,
         blocks_to_swap: params.video_blocks_to_swap,
         fbcache_enable: params.fbcache_enable,
@@ -2387,6 +2686,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         type: "inpaint_vid",
         params: videoParams as any,
         inputVideo: videoFile,
+        ...(spatialMaskFiles ? { spatialMaskFiles } : {}),
         prompt: videoParams.prompt,
       });
       return;
@@ -2810,7 +3110,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
       try {
         const clip = nextItem.inputVideo;
         if (!clip) throw new Error("No input video available for video inpaint generation");
-        const result = await generateInpaintVideo(videoParams, clip);
+        const result = await generateInpaintVideo(videoParams, clip, nextItem.spatialMaskFiles);
         const videoUrl = `/outputs/${getResultFilename(result)}`;
         const videoPlaybackUrl = `/outputs/${getResultPlaybackFilename(result)}`;
         const playbackUrl = videoPlaybackUrl !== videoUrl ? videoPlaybackUrl : undefined;
@@ -4683,6 +4983,22 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
                 && " The selected range reaches the end of the clip, so this overwrites its current tail rather than extending it."}
             </p>
           )}
+          <div className="mt-4 border-t border-gray-700 pt-4">
+            <VideoInpaintMaskTimeline
+              keyframes={videoMaskManifest.keyframes}
+              currentFrame={inputVideoPlayer?.currentFrame ?? 0}
+              rangeStart={params.regenerate_start_frame ?? 0}
+              rangeEnd={params.regenerate_end_frame ?? 0}
+              totalFrames={videoTrimmedFrames}
+              onChange={handleVideoMaskKeyframesChange}
+              onAddKeyframe={handleAddVideoMaskKeyframe}
+              onEditKeyframe={handleEditVideoMaskKeyframe}
+              disabled={isGenerating || !videoPreviewUrl || !videoTrimmedLengthValid || videoTrimmedFrames <= 0}
+            />
+            {videoMaskError && (
+              <p className="mt-2 text-xs text-amber-400" role="alert">{videoMaskError}</p>
+            )}
+          </div>
           <div className="mt-2 flex items-center gap-1 text-xs text-gray-500">
             <span>Interior range conditioning is experimental</span>
             <InlineHelp label="Interior range support details">
@@ -6010,14 +6326,14 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
       </div>
 
       {/* Image Editor Modal */}
-      {showImageEditor && editingImageUrl && (
+      {showImageEditor && (videoMaskEditor?.imageUrl || editingImageUrl) && (
         <ImageEditor
-          imageUrl={editingImageUrl}
-          onSave={handleEditorSave}
+          imageUrl={videoMaskEditor?.imageUrl ?? editingImageUrl ?? ""}
+          onSave={videoMaskEditor ? () => undefined : handleEditorSave}
           onClose={handleEditorClose}
-          onSaveMask={handleEditorSaveMask}
+          onSaveMask={videoMaskEditor ? handleVideoMaskEditorSaveMask : handleEditorSaveMask}
           mode="inpaint"
-          initialMaskUrl={maskImage || undefined}
+          initialMaskUrl={videoMaskEditor?.initialMaskUrl ?? maskImage ?? undefined}
         />
       )}
 

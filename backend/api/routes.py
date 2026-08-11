@@ -5095,6 +5095,9 @@ async def generate_inpaint_video(
     # "regenerate" is architecture-neutral and MiniMax-H3 overlays
     # "preserve_input", which an omitted field has to be able to reach.
     inpaint_video_audio_mode: Optional[str] = Form(None),
+    spatial_mask_manifest: Optional[str] = Form(None),
+    spatial_mask_files: List[UploadFile] = File([]),
+    spatial_mask_ids: List[str] = Form([]),
     attention_type: str = Form(INPAINT_VIDEO_DEFAULTS["attention_type"]),
     blocks_to_swap: int = Form(INPAINT_VIDEO_DEFAULTS["blocks_to_swap"]),
     fbcache_enable: bool = Form(INPAINT_VIDEO_DEFAULTS["fbcache_enable"]),
@@ -5155,16 +5158,33 @@ async def generate_inpaint_video(
     `regenerate` generates the soundtrack for the whole clip, so the preserved
     video span carries generated audio that need not match its visuals.
 
+    **Spatial mask (optional).** When `spatial_mask_manifest` is supplied,
+    `spatial_mask_ids` and `spatial_mask_files` must have the same length and
+    provide exactly one PNG for each unique `mask_id` referenced by the
+    manifest. IDs, not upload filenames, define the mapping. The manifest and
+    PNGs are parsed and decoded before any GPU slot is acquired; the validated
+    timeline and decoded arrays are passed to the pipeline as explicit keyword
+    arguments.
+
     **Requirements:** a MiniMax-H3 `fl2va` model must be loaded (400
     otherwise -- the mid-clip pin is measured on that partition and no other
-    architecture implements this endpoint), and the range must leave something
-    preserved (a whole-clip range is `/generate/txt2vid`).
+    architecture implements this endpoint). Without a spatial mask, the range
+    must leave something preserved; with a spatial mask, a full-clip range is
+    allowed only when the mask both generates and preserves at least one video
+    token.
     """
     from api.generation_status import start_generation, complete_generation, fail_generation, get_warnings
     from utils.video_utils import save_video_with_metadata, load_video_frames, extract_audio_stream, probe_upload_clip
-    from api.generation_utils import plan_video_inpaint_span
+    from api.generation_utils import latent_frame_spans, plan_video_inpaint_span
     from api.param_defaults import inpaint_video_defaults_for_arch
     from core.models.components.wiring import temporal_spec_for_arch
+    from core.inference.video_mask_timeline import (
+        MaskDecodeError,
+        ManifestValidationError,
+        build_spatial_mask_plan,
+        decode_mask_pngs,
+        parse_mask_timeline_manifest,
+    )
 
     if not getattr(pipeline_manager, "is_minimax_h3_model", False):
         raise CustomValidationError(
@@ -5224,6 +5244,106 @@ async def generate_inpaint_video(
                        f"most {_short_cap} and a long edge of at most {_long_cap}, in either "
                        f"orientation.",
             )
+
+    spatial_mask_timeline = None
+    spatial_mask_arrays = None
+    if spatial_mask_manifest is not None:
+        try:
+            spatial_mask_timeline = parse_mask_timeline_manifest(spatial_mask_manifest)
+        except ManifestValidationError as exc:
+            raise CustomValidationError(
+                "Invalid spatial_mask_manifest",
+                detail=str(exc),
+            ) from exc
+
+        if (spatial_mask_timeline.canvas.width != width or
+                spatial_mask_timeline.canvas.height != height):
+            raise CustomValidationError(
+                "Spatial mask canvas does not match the resolved output canvas",
+                detail=(
+                    f"Manifest canvas is {spatial_mask_timeline.canvas.width}x"
+                    f"{spatial_mask_timeline.canvas.height}; resolved output is "
+                    f"{width}x{height}."
+                ),
+            )
+        if any(
+            keyframe.frame < regenerate_start_frame
+            or keyframe.frame >= regenerate_end_frame
+            for keyframe in spatial_mask_timeline.keyframes
+        ):
+            raise CustomValidationError(
+                "Spatial mask keyframes must be inside the regenerate range",
+                detail=(
+                    f"Expected frames in [{regenerate_start_frame}, {regenerate_end_frame}); "
+                    "the range is measured in trimmed input frames."
+                ),
+            )
+
+        mask_files = spatial_mask_files or []
+        mask_ids = spatial_mask_ids or []
+        if len(mask_files) != len(mask_ids):
+            raise CustomValidationError(
+                "spatial_mask_files and spatial_mask_ids must have the same number of entries",
+                detail=f"Got {len(mask_files)} files and {len(mask_ids)} IDs.",
+            )
+
+        seen_mask_ids = set()
+        duplicate_ids = set()
+        for mask_id in mask_ids:
+            if mask_id in seen_mask_ids:
+                duplicate_ids.add(mask_id)
+            seen_mask_ids.add(mask_id)
+        duplicate_ids = sorted(duplicate_ids)
+        if duplicate_ids:
+            raise CustomValidationError(
+                "spatial_mask_ids must not contain duplicate IDs",
+                detail=f"Duplicate IDs: {duplicate_ids}",
+            )
+
+        expected_mask_ids = {keyframe.mask_id for keyframe in spatial_mask_timeline.keyframes}
+        actual_mask_ids = set(mask_ids)
+        missing_mask_ids = sorted(expected_mask_ids - actual_mask_ids)
+        unknown_mask_ids = sorted(actual_mask_ids - expected_mask_ids)
+        if missing_mask_ids or unknown_mask_ids:
+            raise CustomValidationError(
+                "spatial_mask_ids must exactly match the manifest keyframe mask IDs",
+                detail=(
+                    f"Missing IDs: {missing_mask_ids}; unknown IDs: {unknown_mask_ids}."
+                ),
+            )
+
+        mask_bytes_by_id = {}
+        for mask_id, mask_file in zip(mask_ids, mask_files):
+            try:
+                mask_bytes = await mask_file.read()
+            except Exception as exc:
+                raise CustomValidationError(
+                    "Failed to read a spatial mask upload",
+                    detail=f"Mask ID {mask_id!r}: {exc}",
+                ) from exc
+            if not mask_bytes:
+                raise CustomValidationError(
+                    "Spatial mask uploads must not be empty",
+                    detail=f"Mask ID {mask_id!r} has an empty upload.",
+                )
+            mask_bytes_by_id[mask_id] = mask_bytes
+
+        try:
+            spatial_mask_arrays = decode_mask_pngs(
+                mask_bytes_by_id,
+                spatial_mask_timeline,
+            )
+        except MaskDecodeError as exc:
+            raise CustomValidationError(
+                "Invalid spatial mask PNG upload",
+                detail=str(exc),
+            ) from exc
+    elif spatial_mask_files or spatial_mask_ids:
+        raise CustomValidationError(
+            "spatial_mask_manifest is required when spatial mask uploads are supplied",
+            detail="Send the manifest together with spatial_mask_ids and spatial_mask_files.",
+        )
+
     if frame_rate <= 0:
         raise CustomValidationError(
             "frame_rate must be > 0",
@@ -5385,7 +5505,46 @@ async def generate_inpaint_video(
     # (pure, no warnings, no GPU) so an invalid clip length or range is a fast
     # 400 rather than a failure after a 40-second text encode; the backend calls
     # the same function again and is what warns, so the arithmetic exists once.
-    plan_video_inpaint_span(params, _vid_arch, clip_frames=int(trimmed_len))
+    _inpaint_plan = plan_video_inpaint_span(
+        params,
+        _vid_arch,
+        clip_frames=int(trimmed_len),
+        allow_full_range=spatial_mask_manifest is not None,
+    )
+    if spatial_mask_timeline is not None:
+        components = getattr(pipeline_manager, "minimax_h3_components", None) or {}
+        transformer_config = components.get("transformer_config") or {}
+        try:
+            spatial_scale = int(components["vae_scale_factor_spatial"])
+            patch_size = tuple(transformer_config["patch_size"])
+            if spatial_scale <= 0 or len(patch_size) != 3:
+                raise ValueError("invalid VAE scale or transformer patch size")
+        except (KeyError, TypeError, ValueError, IndexError) as exc:
+            raise CustomValidationError(
+                "MiniMax-H3 spatial mask geometry is unavailable",
+                detail=str(exc),
+            ) from exc
+        try:
+            spans = latent_frame_spans(
+                _spec,
+                int(_inpaint_plan["latent_frames"]),
+            )
+            build_spatial_mask_plan(
+                spatial_mask_timeline,
+                spatial_mask_arrays,
+                clip_frames=int(trimmed_len),
+                start_frame=int(_inpaint_plan["start_frame"]),
+                end_frame=int(_inpaint_plan["end_frame"]),
+                latent_frame_spans=spans,
+                spatial_scale=spatial_scale,
+                patch_h=int(patch_size[1]),
+                patch_w=int(patch_size[2]),
+            )
+        except Exception as exc:
+            raise CustomValidationError(
+                "Invalid spatial mask timeline",
+                detail=str(exc),
+            ) from exc
 
     _gen_id = start_generation("inpaint_vid")
     try:
@@ -5428,9 +5587,18 @@ async def generate_inpaint_video(
             apply_quantized_gemm_mode(params.get("quantized_gemm_mode"))
             frames, audio, audio_sample_rate, actual_seed = await _run_generation_in_executor(
                 loop, executor,
-                lambda: pipeline_manager.generate_vid_inpaint(
-                    params, video_frames, source_fps, input_audio,
-                    progress_callback=progress_callback,
+                lambda: (
+                    pipeline_manager.generate_vid_inpaint(
+                        params, video_frames, source_fps, input_audio,
+                        progress_callback=progress_callback,
+                        spatial_mask_timeline=spatial_mask_timeline,
+                        spatial_mask_arrays=spatial_mask_arrays,
+                    )
+                    if spatial_mask_timeline is not None
+                    else pipeline_manager.generate_vid_inpaint(
+                        params, video_frames, source_fps, input_audio,
+                        progress_callback=progress_callback,
+                    )
                 )
             )
             fp8_gemm = extract_fp8_gemm_info(pipeline_manager)

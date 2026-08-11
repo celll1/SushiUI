@@ -223,6 +223,87 @@ def test_the_layout_is_a_function_of_the_pinned_SET():
         assert torch.equal(ascending[key], shuffled[key]), key
 
 
+def test_arbitrary_video_rows_are_pinned_in_canonical_order():
+    """Spatial pins move exactly the requested frame-major rows to the prefix."""
+    kwargs = dict(num_text_tokens=3, num_latent_frames=2, latent_height=4,
+                  latent_width=6, num_audio_latents=5)
+    plain = ops.build_packed_layout(**kwargs)
+    rows_per_frame = plain["rows_per_frame"]
+    pinned = (rows_per_frame + 3, 0, rows_per_frame * 2 - 1)
+    layout = ops.build_packed_layout(**kwargs, pinned_video_row_indices=pinned)
+
+    expected = torch.tensor(sorted(pinned), dtype=torch.long)
+    free = torch.tensor(
+        [row for row in range(2 * rows_per_frame) if row not in set(pinned)],
+        dtype=torch.long,
+    )
+    permutation = torch.cat((expected, free))
+    assert layout["num_condition_video_rows"] == len(pinned)
+    assert torch.equal(layout["video_row_permutation"], permutation)
+    assert torch.equal(layout["video_row_order"], torch.argsort(permutation))
+    assert torch.equal(layout["video_indices"], plain["video_indices"][permutation])
+    assert torch.equal(layout["video_indices"][:len(pinned)],
+                       plain["video_indices"][expected])
+
+
+def test_arbitrary_video_row_pin_all_rows_and_empty_are_supported():
+    kwargs = dict(num_text_tokens=3, num_latent_frames=2, latent_height=4,
+                  latent_width=6, num_audio_latents=5)
+    plain = ops.build_packed_layout(**kwargs)
+    num_video_rows = plain["video_indices"].numel()
+
+    all_rows = ops.build_packed_layout(
+        **kwargs, pinned_video_row_indices=tuple(range(num_video_rows)))
+    identity = torch.arange(num_video_rows)
+    assert all_rows["num_condition_video_rows"] == num_video_rows
+    assert torch.equal(all_rows["video_row_permutation"], identity)
+    assert torch.equal(all_rows["video_row_order"], identity)
+    assert torch.equal(all_rows["video_indices"], plain["video_indices"])
+
+    empty = ops.build_packed_layout(**kwargs, pinned_video_row_indices=())
+    for key in _TENSORS:
+        assert torch.equal(empty[key], plain[key]), key
+    assert empty["num_condition_video_rows"] == plain["num_condition_video_rows"]
+    assert empty["video_row_permutation"] is None
+    assert empty["video_row_order"] is None
+
+
+def test_arbitrary_video_row_pin_conflicts_and_invalid_values_are_refused():
+    kwargs = dict(num_text_tokens=3, num_latent_frames=2, latent_height=4,
+                  latent_width=6, num_audio_latents=5)
+    for bad, match in [
+        ((-1,), "outside this clip"),
+        ((12,), "outside this clip"),
+        ((0.0,), "integer frame-major row index"),
+        ((True,), "integer frame-major row index"),
+        ((0, 0), "distinct"),
+    ]:
+        with pytest.raises(ValueError, match=match):
+            ops.build_packed_layout(**kwargs, pinned_video_row_indices=bad)
+
+    with pytest.raises(ValueError, match="pinned video row indices with pinned video frames"):
+        ops.build_packed_layout(**kwargs, pinned_video_row_indices=(0,),
+                                pinned_video_frames=(0,))
+    with pytest.raises(ValueError, match="pinned video row indices with pinned video frames"):
+        ops.build_packed_layout(**kwargs, pinned_video_row_indices=(0,),
+                                keyframe_anchors=("first",))
+
+
+def test_sparse_video_rows_are_conditioned_from_source_without_touching_free_rows():
+    class Scheduler:
+        @staticmethod
+        def scale_noise(source, timestep, noise):
+            assert timestep == 0.9
+            return source + 10
+
+    video_rows = torch.zeros((6, 2), dtype=torch.float32)
+    source_rows = torch.arange(12, dtype=torch.float32).reshape(6, 2)
+    result = ops.pin_video_rows(video_rows, source_rows, (1, 4), Scheduler(), 0.9)
+    assert torch.equal(result[1], source_rows[1] + 10)
+    assert torch.equal(result[4], source_rows[4] + 10)
+    assert torch.equal(result[[0, 2, 3, 5]], torch.zeros((4, 2)))
+
+
 @pytest.mark.parametrize("frames,match", [
     ((7,), "outside this clip"),
     ((-1,), "outside this clip"),

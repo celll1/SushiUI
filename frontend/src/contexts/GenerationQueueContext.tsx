@@ -39,6 +39,9 @@ export interface QueueItem {
   inputLatentId?: string;
   inputAudio?: File; // For aud2aud / outpaint_aud (reference clip; a File, unlike inputImage's base64 string)
   inputVideo?: File; // For outpaint_vid / inpaint_vid (uploaded clip; a File, mirrors inputAudio -- avoids a giant base64 string)
+  // For inpaint_vid spatial mask timelines: the manifest stays in params and
+  // the referenced PNG files ride on the queued item by stable id.
+  spatialMaskFiles?: Array<{ id: string; file: File }>;
   // For outpaint_vid BRIDGE placement only: the second clip, preserved at the
   // END of the timeline, with the generated span between the two. Only an
   // architecture whose video_constraints.outpaint_placements contains "bridge"

@@ -140,6 +140,17 @@ def test_a_whole_clip_range_is_refused_because_nothing_is_preserved():
     assert _plan(spans[1][0], CLIP)["pinned_latent_frames"] == (0,)
 
 
+def test_a_whole_clip_range_can_be_planned_for_spatial_token_preservation():
+    plan = plan_video_inpaint_span(
+        {"regenerate_start_frame": 0, "regenerate_end_frame": CLIP},
+        "minimax_h3",
+        clip_frames=CLIP,
+        allow_full_range=True,
+    )
+    assert plan["regenerate_latent_frames"] == tuple(range(LATENTS))
+    assert plan["pinned_latent_frames"] == ()
+
+
 @pytest.mark.parametrize("start,end", [(0, 0), (50, 50), (85, 40), (-1, 40), (10, CLIP + 1)])
 def test_an_empty_or_out_of_range_request_is_refused(start, end):
     from api.error_handlers import ValidationError
@@ -317,9 +328,9 @@ def test_the_pin_substitution_follows_the_draw():
     # The substitution reads the drawn rows and is guarded by the pin, i.e. it
     # happens after the draw rather than replacing it.
     substitutions = [node for node in ast.walk(tree)
-                     if isinstance(node, ast.Assign)
-                     and "scale_noise" in {n.attr for n in ast.walk(node)
-                                           if isinstance(n, ast.Attribute)}]
+                     if isinstance(node, ast.Call)
+                     and isinstance(node.func, ast.Attribute)
+                     and node.func.attr == "pin_video_rows"]
     assert substitutions and all(s.lineno > draw.lineno for s in substitutions)
 
 

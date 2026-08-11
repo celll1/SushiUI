@@ -128,15 +128,18 @@ def test_an_invalid_clip_length_is_refused_rather_than_snapped():
     detail = str(error.value.detail)
     # The trim named must REACH a valid length: 130 - 6 = 124.
     assert "Trim 6 more frame(s)" in detail and "124" in detail, detail
-    # Too long is the same rule from the other side; too short says so instead,
-    # because no trim reaches the floor from below.
+    # 400 is off-grid (not because it exceeds any cap -- `SPEC.max_frames` is
+    # None, there is no enforced top -- but because (400 - 5) % 17 != 0), so
+    # it is still refused, just for the grid rule alone. Derived from the spec
+    # rather than hardcoded, since there is no longer a cap-side number to
+    # pin this against.
     with pytest.raises(ValidationError) as error:
         _plan(10, 20, clip_frames=400)
-    # Derived from the spec, not hardcoded: this assertion was written against
-    # the old 345 cap and silently became a statement about a number the model
-    # no longer has when the cap was corrected to 362.
-    _trim_to_cap = 400 - SPEC.max_frames
-    assert f"Trim {_trim_to_cap} more frame(s)" in str(error.value.detail), error.value.detail
+    assert SPEC.max_frames is None
+    _below = SPEC.snap_length(400)
+    if _below > 400:
+        _below -= SPEC.frame_multiple
+    assert f"Trim {400 - _below} more frame(s)" in str(error.value.detail), error.value.detail
     with pytest.raises(ValidationError) as error:
         _plan(10, 20, clip_frames=121)
     assert "shorter" in str(error.value), str(error.value)

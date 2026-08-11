@@ -785,12 +785,13 @@ def test_temporal_spec_matches_the_measured_grid():
     assert not spec.is_valid_length(5)
     assert not spec.is_valid_length(21)
     # Snapping rounds UP to the next encodable length, matching MiniMax-H3's own
-    # `align_num_frames`; an over-long request clamps to the largest length in
-    # the production range, and a too-short one to the floor.
+    # `align_num_frames`; a too-short request clamps to the floor. There is no
+    # longer a top clamp -- `max_frames` is None (362 is `trained_max_frames`,
+    # advisory only), so an over-long request just rounds up onto the grid.
     assert spec.snap_length(130) == 141
     assert spec.snap_length(125) == 141
     assert spec.snap_length(141) == 141
-    assert spec.snap_length(400) == 362
+    assert spec.snap_length(400) == 413
     assert spec.snap_length(30) == 124
     # The smoke gate lowers the floor to the VAE's, and rounding is still up.
     assert spec.snap_length(30, smoke=True) == 39

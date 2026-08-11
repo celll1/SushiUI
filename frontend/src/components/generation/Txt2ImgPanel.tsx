@@ -352,12 +352,27 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
     references: MiniMaxH3References;
     targetFrames: number;
     capFrames: number;
+    segmentFrames: number | null;
   } | null>(null);
   // Any-segment-of-a-chain reason the chain stopped short of its target
   // (no forward progress / architecture could not continue further) --
   // set by advanceVideoChain via processQueue, shown next to the frame
   // slider until the user starts a new chain or dismisses it.
   const [videoChainStoppedMessage, setVideoChainStoppedMessage] = useState<string | null>(null);
+  // User-settable chain segment length (`chain_segment_frames`, client-side
+  // orchestration only -- NEVER sent to the backend). `null` = unset = never
+  // split: raising the total frame count alone splits nothing, regardless of
+  // whether the loaded architecture still has a hard `max_frames` wall
+  // (`planVideoChain`'s `chainSegmentCap` falls back to that wall on its own
+  // when this is unset, so a still-capped architecture keeps chaining
+  // automatically with no action needed here). Setting this is what turns
+  // chaining into a deliberate choice, including on an architecture with no
+  // hard wall at all (MiniMax-H3), e.g. to keep every segment within the
+  // documented trained range even though the backend would accept one huge
+  // request. A chain already enqueued is frozen at enqueue time (the value
+  // is copied onto each queue item's own `chainSegmentFrames` field) and is
+  // never retargeted by a later change here.
+  const [chainSegmentFrames, setChainSegmentFrames] = useState<number | null>(null);
   // Audio output (produced when an audio model is loaded / txt2aud queue item).
   const [generatedAudio, setGeneratedAudio] = useState<string | null>(null);
   const [generatedAudioInfo, setGeneratedAudioInfo] = useState<{ duration?: number; sample_rate?: number } | null>(null);
@@ -504,6 +519,18 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
       return normalized == null || normalized === prev.num_frames
         ? prev
         : { ...prev, num_frames: normalized };
+    });
+  }, [archCapabilities, loadedArch]);
+  // Same snap for a held `chainSegmentFrames`: a non-null value carried over
+  // from another architecture's grid is moved to the nearest length THIS
+  // architecture accepts, the same as `num_frames` above. A null value (the
+  // default -- "never split") is left alone; there is nothing to snap.
+  useEffect(() => {
+    if (!archCapabilities || !loadedArch) return;
+    setChainSegmentFrames((prev) => {
+      if (prev == null) return prev;
+      const normalized = normalizeVideoFrames(archCapabilities, loadedArch, prev);
+      return normalized == null || normalized === prev ? prev : normalized;
     });
   }, [archCapabilities, loadedArch]);
   const [promptTokenCount, setPromptTokenCount] = useState<number>(0);
@@ -1690,7 +1717,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
           // told that duration, never a held value above the cap, or the
           // resulting prompt (reused verbatim by every segment when chaining)
           // describes an arc far longer than any one segment actually spans.
-          durationSeconds: effectiveSegmentFrames(archCapabilities, loadedArch, params.num_frames ?? 121) / (params.frame_rate ?? 24),
+          durationSeconds: effectiveSegmentFrames(archCapabilities, loadedArch, params.num_frames ?? 121, chainSegmentFrames) / (params.frame_rate ?? 24),
           references: createH3ReferenceInventory({
             pictures: h3References.images.length + h3Keyframes.length,
             videos: h3References.videos.length,
@@ -1844,7 +1871,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
       // a held length above the loaded architecture's single-inference cap
       // is never enqueued (chained or clamped) without the user picking one
       // of the two choices explicitly -- see VideoChainConfirmDialog.
-      const chainPlan = planVideoChain(archCapabilities, loadedArch, params.num_frames ?? 0);
+      const chainPlan = planVideoChain(archCapabilities, loadedArch, params.num_frames ?? 0, chainSegmentFrames);
       if (chainPlan != null) {
         setVideoChainPrompt({
           videoParams: fullVideoParams,
@@ -1852,6 +1879,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
           references: h3References,
           targetFrames: params.num_frames ?? 0,
           capFrames: chainPlan.capFrames,
+          segmentFrames: chainSegmentFrames,
         });
         return;
       }
@@ -1942,7 +1970,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
   // the queue at all).
   const handleVideoChainStart = () => {
     if (!videoChainPrompt) return;
-    const { videoParams, isRef2Va, references, targetFrames, capFrames } = videoChainPrompt;
+    const { videoParams, isRef2Va, references, targetFrames, capFrames, segmentFrames } = videoChainPrompt;
     setVideoChainPrompt(null);
 
     const loopGroupId = `chain_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
@@ -1958,6 +1986,9 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
       loopStepIndex: -1,
       isLoopStep: false,
       chainTargetFrames: targetFrames,
+      // Frozen at enqueue time -- see `chainSegmentFrames` state's own
+      // comment. A later change to that control never retargets this chain.
+      chainSegmentFrames: segmentFrames,
     });
 
     const continuationItems = buildChainContinuationQueueItems({
@@ -1965,6 +1996,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
       arch: loadedArch,
       targetFrames,
       capFrames,
+      segmentFrames,
       loopGroupId,
       continuationBase: videoParams,
       referenceImageSize: isRef2Va ? (videoParams as Ref2VidParams).reference_image_size : undefined,
@@ -3847,7 +3879,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
           prompt={params.prompt}
           onApply={(prompt) => setParams((previous) => ({ ...previous, prompt }))}
           suggestedMode={isRef2Va && countMiniMaxH3References(h3References) > 0 ? "ref2va" : "t2va"}
-          durationSeconds={effectiveSegmentFrames(archCapabilities, loadedArch, params.num_frames ?? 121) / (params.frame_rate ?? 24)}
+          durationSeconds={effectiveSegmentFrames(archCapabilities, loadedArch, params.num_frames ?? 121, chainSegmentFrames) / (params.frame_rate ?? 24)}
           references={createH3ReferenceInventory({
             pictures: h3References.images.length + h3Keyframes.length,
             videos: h3References.videos.length,
@@ -3910,7 +3942,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
   // + the length the chain actually reaches) and any conditioning-drop
   // disclosures specific to what THIS request would carry into a chain.
   const videoChainPlan = videoChainPrompt
-    ? planVideoChain(archCapabilities, loadedArch, videoChainPrompt.targetFrames)
+    ? planVideoChain(archCapabilities, loadedArch, videoChainPrompt.targetFrames, videoChainPrompt.segmentFrames)
     : null;
   const videoChainFinalSeconds = videoChainPlan && videoChainPrompt
     ? (videoChainPlan.finalFrames / (videoChainPrompt.videoParams.frame_rate ?? 24)).toFixed(2)
@@ -4306,6 +4338,51 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                 onChange={(frames) => setParams({ ...params, num_frames: frames })}
                 fallbackFps={params.frame_rate ?? 24.0}
               />
+              {/* Opt-in video-length chaining, segment length: unset (default)
+                  means "never split" -- raising the frame count above does not
+                  by itself trigger a chain unless the architecture still has a
+                  hard `max_frames` wall (chainSegmentCap in api.ts falls back
+                  to that automatically). Setting this lets the user split
+                  DELIBERATELY, even on an architecture with no hard wall, e.g.
+                  to keep each segment within the documented trained range. */}
+              <div className="flex items-center gap-2">
+                <label className="flex items-center gap-1.5 text-xs text-gray-400">
+                  <input
+                    type="checkbox"
+                    checked={chainSegmentFrames != null}
+                    onChange={(e) => {
+                      if (!e.target.checked) {
+                        setChainSegmentFrames(null);
+                        return;
+                      }
+                      const c = loadedArch ? archCapabilities?.video_constraints?.[loadedArch] : undefined;
+                      const seed = c?.max_frames ?? c?.trained_max_frames ?? params.num_frames ?? 121;
+                      setChainSegmentFrames(normalizeVideoFrames(archCapabilities, loadedArch, seed) ?? seed);
+                    }}
+                  />
+                  Chain segment length
+                </label>
+                {chainSegmentFrames != null && (
+                  <NumberInput
+                    label="Chain segment length"
+                    value={chainSegmentFrames}
+                    onCommit={(v) => setChainSegmentFrames(v)}
+                    min={(loadedArch ? archCapabilities?.video_constraints?.[loadedArch]?.min_frames : undefined) ?? 1}
+                    step={(loadedArch ? archCapabilities?.video_constraints?.[loadedArch]?.frame_multiple : undefined) ?? 1}
+                    parse="int"
+                    className="w-20"
+                  />
+                )}
+              </div>
+              {chainSegmentFrames == null ? (
+                <p className="text-xs text-gray-500">
+                  A chained generation is never split by default; check the box to split into requests of a fixed length.
+                </p>
+              ) : (
+                <p className="text-xs text-gray-500">
+                  A chained generation splits into requests of at most {chainSegmentFrames} frames each.
+                </p>
+              )}
               {currentItem?.loopGroupId && currentItem.chainTargetFrames != null && (
                 <p className="text-xs text-amber-400">
                   Video chain: segment {(currentItem.loopStepIndex ?? -1) + 2}

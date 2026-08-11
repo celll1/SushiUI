@@ -5153,12 +5153,14 @@ async def generate_inpaint_video(
     span comes back in `warnings[]` when the expansion changed the request.
 
     **Length.** Temporal inpaint samples the whole clip, so it is the TRIMMED
-    input that must be a valid clip length (`17n + 5`, 124..362 on MiniMax-H3),
-    not a generated span. It is never snapped -- that would delete frames you
-    asked to keep -- so an invalid length is a 400 naming the trims that reach
-    the nearest valid ones. This is the inverse of `/generate/outpaint/video`,
-    where the grid binds the GENERATED span, which is why the two are separate
-    endpoints.
+    input that must be a valid clip length (`17n + 5`, minimum 124 frames on
+    MiniMax-H3; there is no enforced maximum -- 362 is the documented trained
+    range's top and is accepted past, with an untested-range warning, not
+    refused), not a generated span. It is never snapped -- that would delete
+    frames you asked to keep -- so an off-grid or too-short length is a 400
+    naming the trims that reach the nearest valid one. This is the inverse of
+    `/generate/outpaint/video`, where the grid binds the GENERATED span, which
+    is why the two are separate endpoints.
 
     **Audio (`inpaint_video_audio_mode`, only relevant when `audio_enable` is
     true).** `preserve_input` (the MiniMax-H3 default) pins the clip's own track
@@ -5187,7 +5189,7 @@ async def generate_inpaint_video(
     from api.generation_status import start_generation, complete_generation, fail_generation, get_warnings
     from utils.video_utils import save_video_with_metadata, load_video_frames, extract_audio_stream, probe_upload_clip
     from api.generation_utils import plan_video_inpaint_span
-    from api.param_defaults import inpaint_video_defaults_for_arch
+    from api.param_defaults import inpaint_video_defaults_for_arch, MAX_VIDEO_UPLOAD_DECODE_BYTES
     from core.models.components.wiring import temporal_spec_for_arch
     from core.inference.video_mask_timeline import (
         MAX_MASK_ASSETS,
@@ -5433,62 +5435,54 @@ async def generate_inpaint_video(
     validate_video_steps({"num_inference_steps": num_inference_steps}, _vid_arch)
 
     # Decode the clip (+ its audio track) BEFORE the GPU slot, so a malformed
-    # upload is a 400 that reserved nothing. The bound is the arch's own longest
-    # clip: nothing past it can be part of a valid trimmed length. `+ 1`: see
-    # the post-decode check below -- this decode bound must never itself equal
-    # a valid trimmed length, or a clip that is actually LONGER than the cap
-    # decodes down to exactly the cap and looks indistinguishable from a clip
-    # that really was that long.
-    _arch_max_frames = int(_spec.max_frames if _spec is not None and _spec.max_frames else 362)
-    _decode_max_frames = max(0, input_trim_start_frames) + _arch_max_frames + 1
-
-    # Since this endpoint's OUTPUT length equals the TRIMMED INPUT length (no
-    # `total_frames` to snap to -- see INPAINT_VIDEO_DEFAULTS's docstring), a
-    # clip whose trimmed length exceeds the arch's own longest producible clip
-    # cannot be served AT ALL, at any setting. Refuse this with a 400 naming
-    # both numbers, using an ffprobe-only (no decode) frame count so the
-    # refusal is cheap even for a clip far past the cap. Judged on frames
-    # "before trimming" (the probed count) vs. "after trimming" (what
-    # plan_video_inpaint_span actually receives): a clip that is only too
-    # long BEFORE the user's own input_trim_start_frames/input_trim_end_frames
-    # trims it down must still be accepted, so the comparison below applies
-    # the requested trim to the probed count first.
+    # upload is a 400 that reserved nothing.
     #
-    # This is the CHEAP path, not the only one: `dataset_scanner`'s frame-count
-    # probe falls back to `round(fps * duration)` on a container/codec that
-    # does not report `nb_frames` (e.g. VFR webm/matroska) -- an ESTIMATE that
-    # can UNDER-count the true length. An under-counting estimate that still
-    # lands at/below `_arch_max_frames` would let a genuinely over-length clip
-    # sail past this refusal; the old code then trusted `_decode_max_frames`
-    # (== `_arch_max_frames` exactly, no headroom) to silently crop it to the
-    # cap, which is always ON the arch's grid and so passed every downstream
-    # check with the excess gone and no warning -- exactly the class of bug
-    # 94b952d5 fixed elsewhere. The `+ 1` above and the post-decode check below
-    # close that: they judge the clip on what ffmpeg ACTUALLY decoded, which is
-    # authoritative (not an estimate), so an over-length clip is still refused
-    # even when the fast probe above under-counted it.
+    # This used to be bounded by the arch's `max_frames` (a length question:
+    # "nothing past the cap can be part of a valid trimmed length"). MiniMax-H3's
+    # `max_frames` is now None -- 362 (`_spec.trained_max_frames`) is a
+    # DOCUMENTED trained-range top, not a decoder limit (see wiring.py), so a
+    # longer on-grid trimmed clip is a VALID request here, warned as untested
+    # by `plan_video_inpaint_span`/`validate_video_geometry` rather than
+    # refused. Since this endpoint's OUTPUT length equals the TRIMMED INPUT
+    # length, "too long to produce" is therefore no longer a length question at
+    # all -- it is a RESOURCE question: a raw decoded uint8 RGB clip costs
+    # `width * height * 3` bytes PER FRAME, so an unbounded upload can still OOM
+    # the process. `_refuse_if_decode_too_large` ffprobes the clip first (no
+    # per-frame decode) and refuses anything whose decode would exceed a fixed
+    # RAM budget -- the identical check `/generate/outpaint/video` already
+    # applies to its own uploads; duplicated here rather than shared because
+    # the two routes' decode sections are otherwise unrelated. The decode
+    # itself is therefore unbounded (`max_frames=None`): nothing here silently
+    # head-crops a clip that passed the RAM guard.
+    def _refuse_if_decode_too_large(data: bytes, *, label: str) -> None:
+        probed = probe_upload_clip(data)
+        if not probed:
+            # Unprobeable here; load_video_frames probes again immediately
+            # below and raises a descriptive error for the same clip, so
+            # nothing is silently skipped.
+            return
+        w, h = int(probed.get("width") or 0), int(probed.get("height") or 0)
+        n = int(probed.get("num_frames") or 0)
+        if w <= 0 or h <= 0 or n <= 0:
+            return
+        per_frame_bytes = w * h * 3
+        frame_budget = MAX_VIDEO_UPLOAD_DECODE_BYTES // max(1, per_frame_bytes)
+        if n > frame_budget:
+            raise CustomValidationError(
+                f"the {label} is too long/high-resolution to decode",
+                detail=f"Uploaded {label} has {n} frames at {w}x{h}, which would need "
+                       f"{n * per_frame_bytes / (1024 ** 3):.1f} GiB of raw RGB frame data to "
+                       f"decode; this endpoint's per-clip decode budget is "
+                       f"{MAX_VIDEO_UPLOAD_DECODE_BYTES / (1024 ** 3):.0f} GiB, i.e. at most "
+                       f"{frame_budget} frames at this resolution. Trim the clip or lower its "
+                       f"resolution before uploading.",
+            )
+
     try:
         video_data = await video.read()
-        _probed = probe_upload_clip(video_data)
-        if _probed:
-            _probed_n = int(_probed.get("num_frames") or 0)
-            if _probed_n > 0:
-                _probed_trimmed_len = _probed_n - max(0, input_trim_start_frames) - max(0, input_trim_end_frames)
-                if _probed_trimmed_len > _arch_max_frames:
-                    raise CustomValidationError(
-                        "the trimmed clip is longer than this model can produce",
-                        detail=f"This model's longest clip is {_arch_max_frames} frames; the "
-                               f"upload has {_probed_n} frames, which after "
-                               f"input_trim_start_frames={input_trim_start_frames} and "
-                               f"input_trim_end_frames={input_trim_end_frames} is still "
-                               f"{_probed_trimmed_len} frames. Since this endpoint's output "
-                               f"length equals the trimmed input length, trim the clip down to "
-                               f"{_arch_max_frames} frames or fewer before uploading, or trim "
-                               f"more of it off with input_trim_start_frames/"
-                               f"input_trim_end_frames.",
-                    )
+        _refuse_if_decode_too_large(video_data, label="input clip")
         video_frames, source_fps = load_video_frames(
-            video_data, max_frames=_decode_max_frames, trim_end_frames=input_trim_end_frames
+            video_data, max_frames=None, trim_end_frames=input_trim_end_frames
         )
     except CustomValidationError:
         raise
@@ -5557,31 +5551,14 @@ async def generate_inpaint_video(
                    f"input_trim_end_frames={input_trim_end_frames}.",
         )
 
-    # Post-decode truth, not just the pre-decode ffprobe estimate (see the
-    # comment above `_decode_max_frames`): `plan_video_inpaint_span` below
-    # also refuses `clip_frames > spec.max_frames`, but against the OLD
-    # (un-bumped) `_decode_max_frames` that check was structurally a no-op --
-    # `video_frames.shape[0]` could never itself exceed `_arch_max_frames`
-    # (relative to the trims), since the ffmpeg `-frames:v` bound made the
-    # violation unobservable by construction. The `+ 1` decode headroom fixes
-    # that: a clip that decoded to (or past) the bumped cap really did have
-    # at least that many frames on offer, so refuse it here, using the number
-    # ffmpeg actually produced rather than the (possibly under-counting, see
-    # above) probe estimate.
-    if trimmed_len > _arch_max_frames:
-        _hit_decode_cap = video_frames.shape[0] >= _decode_max_frames
-        raise CustomValidationError(
-            "the trimmed clip is longer than this model can produce",
-            detail=(
-                f"This model's longest clip is {_arch_max_frames} frames; the decoded upload "
-                f"has {'at least ' if _hit_decode_cap else ''}{trimmed_len} frames after "
-                f"input_trim_start_frames={input_trim_start_frames} and "
-                f"input_trim_end_frames={input_trim_end_frames}. Since this endpoint's output "
-                f"length equals the trimmed input length, trim the clip down to "
-                f"{_arch_max_frames} frames or fewer before uploading, or trim more of it off "
-                f"with input_trim_start_frames/input_trim_end_frames."
-            ),
-        )
+    # No post-decode "too long" refusal here anymore: the decode above is
+    # unbounded (`max_frames=None`) and RAM-guarded by
+    # `_refuse_if_decode_too_large` before it ever runs, so `video_frames`
+    # already holds the clip's true, un-cropped length. Whether `trimmed_len`
+    # is a length this model can actually GENERATE is `plan_video_inpaint_span`'s
+    # question below (off-grid or below `floor` is still a 400; on-grid past
+    # `trained_max_frames` is accepted and warned as untested, never refused
+    # for being long).
 
     # The span, against the loaded arch's own latent chunking. Called HERE
     # (pure, no warnings, no GPU) so an invalid clip length or range is a fast
@@ -5785,6 +5762,155 @@ async def generate_inpaint_video(
             "Video inpaint generation failed",
             detail=f"{str(e)}\n\n{error_detail}"
         )
+
+
+@router.post("/video-mask/preview")
+async def preview_video_mask(
+    spatial_mask_manifest: str = Form(...),
+    spatial_mask_files: List[UploadFile] = File([]),
+    spatial_mask_ids: List[str] = Form([]),
+    frames: List[int] = Form(...),
+    max_size: int = Form(256),
+):
+    """Rasterize a spatial mask timeline into a downscaled preview sprite.
+
+    No model is loaded and no GPU slot is touched: this calls the exact same
+    pure functions `/generate/inpaint/video` calls to decode and rasterize a
+    spatial mask (`core/inference/video_mask_timeline.py`, unmodified), so a
+    UI can preview `hold`/`affine`/`sdf` interpolation without reimplementing
+    `sdf`'s distance-transform morph in the browser -- see
+    `core/inference/video_mask_preview.py` for the preview-only bookkeeping
+    (frame selection, downscale, sprite packing) layered on top of it.
+
+    This route's validation is INTENTIONALLY a near-duplicate of
+    `generate_inpaint_video`'s spatial-mask block rather than a shared helper:
+    several tests in `minimax_h3_temporal_inpaint_route_test.py` assert the
+    ORDER of specific checks by finding substrings inside
+    `inspect.getsource(generate_inpaint_video)` itself (e.g. the asset-count
+    cap running before any upload is read). Extracting shared logic into a
+    helper would move those substrings out of that function's own source and
+    silently break those tests without changing what they are meant to catch.
+    Keeping this route's copy independent means a change here can never touch
+    the generation route's behavior, and vice versa.
+    """
+    from core.inference.video_mask_timeline import (
+        MAX_MASK_ASSETS,
+        MaskDecodeError,
+        ManifestValidationError,
+        VideoMaskTimelineError,
+        decode_mask_pngs,
+        parse_mask_timeline_manifest,
+    )
+    from core.inference.video_mask_preview import (
+        MaskPreviewError,
+        build_mask_preview_strip,
+    )
+    import base64
+
+    try:
+        timeline = parse_mask_timeline_manifest(spatial_mask_manifest)
+    except ManifestValidationError as exc:
+        raise CustomValidationError(
+            "Invalid spatial_mask_manifest",
+            detail=str(exc),
+        ) from exc
+
+    mask_files = spatial_mask_files or []
+    mask_ids = spatial_mask_ids or []
+    if len(mask_files) != len(mask_ids):
+        raise CustomValidationError(
+            "spatial_mask_files and spatial_mask_ids must have the same number of entries",
+            detail=f"Got {len(mask_files)} files and {len(mask_ids)} IDs.",
+        )
+    # Same defense-in-depth as generate_inpaint_video: this cap is checked
+    # BEFORE any upload is read, not only inside decode_mask_pngs after every
+    # upload is already in memory.
+    if len(mask_ids) > MAX_MASK_ASSETS:
+        raise CustomValidationError(
+            "Too many unique spatial mask assets",
+            detail=f"Got {len(mask_ids)} mask ID(s); at most {MAX_MASK_ASSETS} are allowed.",
+        )
+
+    seen_mask_ids = set()
+    duplicate_ids = set()
+    for mask_id in mask_ids:
+        if mask_id in seen_mask_ids:
+            duplicate_ids.add(mask_id)
+        seen_mask_ids.add(mask_id)
+    duplicate_ids = sorted(duplicate_ids)
+    if duplicate_ids:
+        raise CustomValidationError(
+            "spatial_mask_ids must not contain duplicate IDs",
+            detail=f"Duplicate IDs: {duplicate_ids}",
+        )
+
+    expected_mask_ids = {keyframe.mask_id for keyframe in timeline.keyframes}
+    actual_mask_ids = set(mask_ids)
+    missing_mask_ids = sorted(expected_mask_ids - actual_mask_ids)
+    unknown_mask_ids = sorted(actual_mask_ids - expected_mask_ids)
+    if missing_mask_ids or unknown_mask_ids:
+        raise CustomValidationError(
+            "spatial_mask_ids must exactly match the manifest keyframe mask IDs",
+            detail=f"Missing IDs: {missing_mask_ids}; unknown IDs: {unknown_mask_ids}.",
+        )
+
+    # Read-time byte cap derived from the manifest's own canvas, exactly as
+    # generate_inpaint_video bounds its own mask uploads.
+    _max_mask_bytes = timeline.canvas.width * timeline.canvas.height * 4 + 65536
+    mask_bytes_by_id = {}
+    for mask_id, mask_file in zip(mask_ids, mask_files):
+        try:
+            mask_bytes = await mask_file.read(_max_mask_bytes + 1)
+        except Exception as exc:
+            raise CustomValidationError(
+                "Failed to read a spatial mask upload",
+                detail=f"Mask ID {mask_id!r}: {exc}",
+            ) from exc
+        if len(mask_bytes) > _max_mask_bytes:
+            raise CustomValidationError(
+                "Spatial mask upload is too large for its manifest canvas",
+                detail=(
+                    f"Mask ID {mask_id!r} exceeds {_max_mask_bytes} bytes, the largest an "
+                    f"uncompressed RGBA raster of the manifest's "
+                    f"{timeline.canvas.width}x{timeline.canvas.height} canvas (plus PNG "
+                    "overhead) can legitimately be."
+                ),
+            )
+        if not mask_bytes:
+            raise CustomValidationError(
+                "Spatial mask uploads must not be empty",
+                detail=f"Mask ID {mask_id!r} has an empty upload.",
+            )
+        mask_bytes_by_id[mask_id] = mask_bytes
+
+    try:
+        mask_arrays = decode_mask_pngs(mask_bytes_by_id, timeline)
+    except MaskDecodeError as exc:
+        raise CustomValidationError(
+            "Invalid spatial mask PNG upload",
+            detail=str(exc),
+        ) from exc
+
+    warnings: List[str] = []
+    try:
+        png_bytes, metadata = build_mask_preview_strip(
+            timeline, mask_arrays, frames, max_size,
+            sdf_fallback_warnings=warnings,
+        )
+    except MaskPreviewError as exc:
+        raise CustomValidationError(
+            "Invalid video mask preview request",
+            detail=str(exc),
+        ) from exc
+    except VideoMaskTimelineError as exc:
+        raise CustomValidationError(
+            "Invalid spatial mask timeline",
+            detail=str(exc),
+        ) from exc
+
+    metadata["warnings"] = warnings
+    metadata["strip_png"] = f"data:image/png;base64,{base64.b64encode(png_bytes).decode('ascii')}"
+    return metadata
 
 
 @router.get("/models/upscalers")

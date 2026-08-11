@@ -517,12 +517,19 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
     references?: MiniMaxH3References;
     targetFrames: number;
     capFrames: number;
+    segmentFrames: number | null;
   } | null>(null);
   // Any-segment-of-a-chain reason the chain stopped short of its target
   // (no forward progress / architecture could not continue further) --
   // set by advanceVideoChain via processQueue, shown next to the frame
   // slider until the user starts a new chain or dismisses it.
   const [videoChainStoppedMessage, setVideoChainStoppedMessage] = useState<string | null>(null);
+  // User-settable chain segment length (`chain_segment_frames`, client-side
+  // orchestration only -- NEVER sent to the backend). See Txt2ImgPanel's own
+  // `chainSegmentFrames` state for the full rationale; the two panels share
+  // this exact contract because `chain_vid` loop steps started from either
+  // one continue via the same `advanceVideoChain` (videoChain.ts).
+  const [chainSegmentFrames, setChainSegmentFrames] = useState<number | null>(null);
   // Audio output (produced when an audio model is loaded / aud2aud queue item).
   const [generatedAudio, setGeneratedAudio] = useState<string | null>(null);
   const [generatedAudioInfo, setGeneratedAudioInfo] = useState<{ duration?: number; sample_rate?: number } | null>(null);
@@ -648,6 +655,16 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
       return normalized == null || normalized === prev.num_frames
         ? prev
         : { ...prev, num_frames: normalized };
+    });
+  }, [archCapabilities, loadedArch]);
+  // Same snap for a held `chainSegmentFrames` -- see Txt2ImgPanel's mirrored
+  // effect. A null value (the default -- "never split") is left alone.
+  useEffect(() => {
+    if (!archCapabilities || !loadedArch) return;
+    setChainSegmentFrames((prev) => {
+      if (prev == null) return prev;
+      const normalized = normalizeVideoFrames(archCapabilities, loadedArch, prev);
+      return normalized == null || normalized === prev ? prev : normalized;
     });
   }, [archCapabilities, loadedArch]);
   const supportsLastFrame = archSupportsFeature(archCapabilities, loadedArch, "last_frame_image");
@@ -2298,7 +2315,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
           // than the architecture's single-inference cap (a chain's segment 1
           // is capped, same as an unchained request) -- Prompt Assist must be
           // told that duration, never a held value above the cap.
-          durationSeconds: effectiveSegmentFrames(archCapabilities, loadedArch, params.num_frames ?? 121) / (params.frame_rate ?? 24),
+          durationSeconds: effectiveSegmentFrames(archCapabilities, loadedArch, params.num_frames ?? 121, chainSegmentFrames) / (params.frame_rate ?? 24),
           references: createH3ReferenceInventory({
             pictures: 1 + (params.last_frame_image ? 1 : 0) + (params.keyframes?.length ?? 0) + h3References.images.length,
             videos: h3References.videos.length,
@@ -2414,7 +2431,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         // single-inference cap is never enqueued (chained or clamped)
         // without the user picking one of the two choices explicitly -- see
         // VideoChainConfirmDialog.
-        const ref2vidChainPlan = planVideoChain(archCapabilities, loadedArch, params.num_frames ?? 0);
+        const ref2vidChainPlan = planVideoChain(archCapabilities, loadedArch, params.num_frames ?? 0, chainSegmentFrames);
         if (ref2vidChainPlan != null) {
           setVideoChainPrompt({
             isRef2Va: true,
@@ -2422,6 +2439,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
             references: h3References,
             targetFrames: params.num_frames ?? 0,
             capFrames: ref2vidChainPlan.capFrames,
+            segmentFrames: chainSegmentFrames,
           });
           return;
         }
@@ -2489,7 +2507,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
 
       // Opt-in video-length chaining -- see the identical check in the
       // ref2vid branch above.
-      const img2vidChainPlan = planVideoChain(archCapabilities, loadedArch, params.num_frames ?? 0);
+      const img2vidChainPlan = planVideoChain(archCapabilities, loadedArch, params.num_frames ?? 0, chainSegmentFrames);
       if (img2vidChainPlan != null) {
         setVideoChainPrompt({
           isRef2Va: false,
@@ -2497,6 +2515,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
           keyframeImage: imageBase64,
           targetFrames: params.num_frames ?? 0,
           capFrames: img2vidChainPlan.capFrames,
+          segmentFrames: chainSegmentFrames,
         });
         return;
       }
@@ -2596,7 +2615,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
   // (disclosed in the chain-choice dialog).
   const handleVideoChainStart = () => {
     if (!videoChainPrompt) return;
-    const { isRef2Va, img2vidParams, keyframeImage, refParams, references, targetFrames, capFrames } = videoChainPrompt;
+    const { isRef2Va, img2vidParams, keyframeImage, refParams, references, targetFrames, capFrames, segmentFrames } = videoChainPrompt;
     setVideoChainPrompt(null);
     const base: Txt2VidParams | undefined = isRef2Va ? refParams : img2vidParams;
     if (!base) return;
@@ -2614,6 +2633,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         loopStepIndex: -1,
         isLoopStep: false,
         chainTargetFrames: targetFrames,
+        chainSegmentFrames: segmentFrames,
       });
     } else if (img2vidParams) {
       addToQueue({
@@ -2630,6 +2650,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         loopStepIndex: -1,
         isLoopStep: false,
         chainTargetFrames: targetFrames,
+        chainSegmentFrames: segmentFrames,
       });
     }
 
@@ -2638,6 +2659,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
       arch: loadedArch,
       targetFrames,
       capFrames,
+      segmentFrames,
       loopGroupId,
       continuationBase: base,
       referenceImageSize: isRef2Va ? refParams?.reference_image_size : undefined,
@@ -4657,7 +4679,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
           suggestedMode={isRef2Va && countMiniMaxH3References(h3References) > 0
             ? "ref2va"
             : params.last_frame_image ? "fl2va" : "i2va"}
-          durationSeconds={effectiveSegmentFrames(archCapabilities, loadedArch, params.num_frames ?? 121) / (params.frame_rate ?? 24)}
+          durationSeconds={effectiveSegmentFrames(archCapabilities, loadedArch, params.num_frames ?? 121, chainSegmentFrames) / (params.frame_rate ?? 24)}
           references={createH3ReferenceInventory({
             pictures: 1 + (params.last_frame_image ? 1 : 0) + (params.keyframes?.length ?? 0) + h3References.images.length,
             videos: h3References.videos.length,
@@ -4718,7 +4740,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
     ? (videoChainPrompt.isRef2Va ? videoChainPrompt.refParams : videoChainPrompt.img2vidParams)
     : undefined;
   const videoChainPlan = videoChainPrompt
-    ? planVideoChain(archCapabilities, loadedArch, videoChainPrompt.targetFrames)
+    ? planVideoChain(archCapabilities, loadedArch, videoChainPrompt.targetFrames, videoChainPrompt.segmentFrames)
     : null;
   const videoChainFinalSeconds = videoChainPlan && videoChainBase
     ? (videoChainPlan.finalFrames / (videoChainBase.frame_rate ?? 24)).toFixed(2)
@@ -4919,14 +4941,14 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
           // an anchor placed past the cap is moved onto the segment and the
           // move is disclosed there, exactly as it is for a plain, unchained
           // request whose length control drops below where an anchor sits.
-          const keyframeSegmentFrames = effectiveSegmentFrames(archCapabilities, loadedArch, params.num_frames ?? 124);
-          const keyframeChainPlan = planVideoChain(archCapabilities, loadedArch, params.num_frames ?? 0);
+          const keyframeSegmentFrames = effectiveSegmentFrames(archCapabilities, loadedArch, params.num_frames ?? 124, chainSegmentFrames);
+          const keyframeChainPlan = planVideoChain(archCapabilities, loadedArch, params.num_frames ?? 0, chainSegmentFrames);
           return (
           <Card title="Keyframes">
             {keyframeChainPlan && (
               <p className="text-xs text-amber-400 mb-2">
-                The length control above is set to {params.num_frames} frames, above this
-                architecture's single-inference limit of {keyframeChainPlan.capFrames} frames.
+                The length control above is set to {params.num_frames} frames, above the current
+                segment length of {keyframeChainPlan.capFrames} frames.
                 Anchors below apply to segment 1 only, which is {keyframeChainPlan.capFrames} frames;
                 continuation segments carry no keyframes.
               </p>
@@ -5277,6 +5299,47 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
                 onChange={(frames) => setParams({ ...params, num_frames: frames })}
                 fallbackFps={params.frame_rate ?? 24.0}
               />
+              {/* Opt-in video-length chaining, segment length -- see the
+                  identical control in Txt2ImgPanel for the full rationale.
+                  Unset (default) means "never split". */}
+              <div className="flex items-center gap-2">
+                <label className="flex items-center gap-1.5 text-xs text-gray-400">
+                  <input
+                    type="checkbox"
+                    checked={chainSegmentFrames != null}
+                    onChange={(e) => {
+                      if (!e.target.checked) {
+                        setChainSegmentFrames(null);
+                        return;
+                      }
+                      const c = loadedArch ? archCapabilities?.video_constraints?.[loadedArch] : undefined;
+                      const seed = c?.max_frames ?? c?.trained_max_frames ?? params.num_frames ?? 121;
+                      setChainSegmentFrames(normalizeVideoFrames(archCapabilities, loadedArch, seed) ?? seed);
+                    }}
+                  />
+                  Chain segment length
+                </label>
+                {chainSegmentFrames != null && (
+                  <NumberInput
+                    label="Chain segment length"
+                    value={chainSegmentFrames}
+                    onCommit={(v) => setChainSegmentFrames(v)}
+                    min={(loadedArch ? archCapabilities?.video_constraints?.[loadedArch]?.min_frames : undefined) ?? 1}
+                    step={(loadedArch ? archCapabilities?.video_constraints?.[loadedArch]?.frame_multiple : undefined) ?? 1}
+                    parse="int"
+                    className="w-20"
+                  />
+                )}
+              </div>
+              {chainSegmentFrames == null ? (
+                <p className="text-xs text-gray-500">
+                  A chained generation is never split by default; check the box to split into requests of a fixed length.
+                </p>
+              ) : (
+                <p className="text-xs text-gray-500">
+                  A chained generation splits into requests of at most {chainSegmentFrames} frames each.
+                </p>
+              )}
               {currentItem?.loopGroupId && currentItem.chainTargetFrames != null && (
                 <p className="text-xs text-amber-400">
                   Video chain: segment {(currentItem.loopStepIndex ?? -1) + 2}

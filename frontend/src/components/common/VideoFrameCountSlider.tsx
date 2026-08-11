@@ -29,13 +29,22 @@ interface VideoFrameCountSliderProps {
 }
 
 // How far the SLIDER TRACK reaches on an architecture that declares no
-// `max_frames` (LTX-2.3). A range input has to end somewhere; that is a
-// drawing constraint, not an architecture fact -- the backend imposes no
-// upper bound there beyond the frame grid. So this bounds the track only:
-// the number box stays unbounded on such an architecture, and typing past
-// the track extends it (see `rawCeiling`). Same convention as api.ts's
-// `UNCAPPED_VIDEO_EDGE` for the canvas sliders.
+// `max_frames` AND no `trained_max_frames` either. A range input has to end
+// somewhere; that is a drawing constraint, not an architecture fact -- the
+// backend imposes no upper bound there beyond the frame grid. So this bounds
+// the track only: the number box stays unbounded on such an architecture,
+// and typing past the track extends it (see `rawCeiling`). Same convention
+// as api.ts's `UNCAPPED_VIDEO_EDGE` for the canvas sliders.
+//
+// When `trained_max_frames` IS known (MiniMax-H3: 362), the track derives
+// its reach from that instead -- 241 is below MiniMax-H3's own 124-frame
+// FLOOR, which would render a slider whose entire track sits in territory
+// the architecture cannot even produce.
 const UNCAPPED_FRAME_SLIDER_CEILING = 241;
+// Headroom multiplier applied above `trained_max_frames` so the track still
+// reaches usefully past the documented range (the amber note below is what
+// tells the user that territory is untested, not the track's own bound).
+const TRAINED_RANGE_SLIDER_HEADROOM = 1.5;
 
 /**
  * Any valid clip length on the loaded architecture's frame grid, not just the
@@ -80,7 +89,11 @@ export default function VideoFrameCountSlider({
 
   const fps = c.fps_fixed ?? fallbackFps;
   const min = c.min_frames;
-  const rawCeiling = c.max_frames ?? Math.max(UNCAPPED_FRAME_SLIDER_CEILING, value);
+  const rawCeiling = c.max_frames ?? (
+    c.trained_max_frames != null
+      ? Math.max(Math.round(c.trained_max_frames * TRAINED_RANGE_SLIDER_HEADROOM), value)
+      : Math.max(UNCAPPED_FRAME_SLIDER_CEILING, value)
+  );
   const max = largestValidVideoFrameCount(caps, arch, rawCeiling) ?? rawCeiling;
   const step = c.frame_multiple;
   // Clamp only what the native <input type="range"> needs to stay in
@@ -118,14 +131,20 @@ export default function VideoFrameCountSlider({
   };
 
   const isOnGrid = isValidVideoFrameCount(caps, arch, value);
+  // The threshold the "over cap" warning keys off: the architecture's real
+  // single-inference wall (`max_frames`) when it still has one (LTX-2.3), or
+  // its documented-trained advisory ceiling (`trained_max_frames`) when it
+  // does not (MiniMax-H3) -- the latter is no longer enforced by the backend,
+  // so a value past it is untested rather than rejected/auto-chained.
+  const overCapThreshold = c.max_frames ?? c.trained_max_frames;
   // isValidVideoFrameCount is also false for any value past max_frames, so an
   // over-cap value falls into the same "off-grid" bucket by that check alone
   // — this splits it out so the two get separate, non-contradictory messages
   // (the off-grid one says the value "will be snapped", which is not true of
   // an over-cap value: it is deliberately left alone for the chain feature).
-  const overCap = c.max_frames != null && value > c.max_frames;
+  const overCap = overCapThreshold != null && value > overCapThreshold;
   const chainPlan = overCap ? planVideoChain(caps, arch, value) : null;
-  const capSeconds = c.max_frames != null && fps > 0 ? (c.max_frames / fps).toFixed(2) : null;
+  const thresholdSeconds = overCapThreshold != null && fps > 0 ? (overCapThreshold / fps).toFixed(2) : null;
 
   return (
     <div className={className}>
@@ -181,14 +200,29 @@ export default function VideoFrameCountSlider({
       </div>
       {overCap ? (
         <p className="text-xs text-amber-400 mt-1">
-          {value} frames exceeds the single-inference limit of {c.max_frames} frames
-          {capSeconds != null ? ` (${capSeconds}s at ${fps} fps)` : ""}.
-          {chainPlan != null
-            ? ` Reaching it takes ${chainPlan.segments} generation requests (actually reaches ${chainPlan.finalFrames} frames` +
-              `${chainPlan.finalFrames !== value ? `, ${chainPlan.finalFrames - value} more than this` : ""}); segments after` +
-              ` the first are conditioned only on the boundary frame of the previous segment, not the rest of its content or the` +
-              ` original prompt context. Generate will ask you to choose between a single inference at the cap and the chain.`
-            : ""}
+          {c.max_frames != null ? (
+            <>
+              {value} frames exceeds the single-inference limit of {c.max_frames} frames
+              {thresholdSeconds != null ? ` (${thresholdSeconds}s at ${fps} fps)` : ""}.
+              {chainPlan != null
+                ? ` Reaching it takes ${chainPlan.segments} generation requests (actually reaches ${chainPlan.finalFrames} frames` +
+                  `${chainPlan.finalFrames !== value ? `, ${chainPlan.finalFrames - value} more than this` : ""}); segments after` +
+                  ` the first are conditioned only on the boundary frame of the previous segment, not the rest of its content or the` +
+                  ` original prompt context. Generate will ask you to choose between a single inference at the cap and the chain.`
+                : ""}
+            </>
+          ) : (
+            <>
+              {value} frames is beyond the model's documented trained range ({c.trained_max_frames} frames
+              {thresholdSeconds != null ? ` / ${thresholdSeconds}s` : ""}); longer is untested.
+              {chainPlan != null
+                ? ` A chain segment length is set, so reaching it takes ${chainPlan.segments} generation requests (actually reaches` +
+                  ` ${chainPlan.finalFrames} frames${chainPlan.finalFrames !== value ? `, ${chainPlan.finalFrames - value} more than this` : ""});` +
+                  ` segments after the first are conditioned only on the boundary frame of the previous segment, not the rest of its` +
+                  ` content or the original prompt context.`
+                : ""}
+            </>
+          )}
         </p>
       ) : !isOnGrid && (
         <p className="text-xs text-amber-400 mt-1">

@@ -464,6 +464,14 @@ def video_constraints_payload() -> Dict[str, Dict[str, Any]]:
             "frame_offset": spec.frame_offset,
             "min_frames": spec.min_frames,
             "max_frames": spec.max_frames,
+            # ADVISORY top of the arch's DOCUMENTED trained range, distinct
+            # from `max_frames` (the ENFORCED ceiling, which may be None --
+            # no enforced top at all). MiniMax-H3: 362, `max_frames` is None
+            # (RoPE is computed on the fly, so nothing structural stops a
+            # longer clip); a request past this is accepted and warned as
+            # untested, never refused or clamped. None when the arch has
+            # nothing narrower than `max_frames` to document (LTX-2.3).
+            "trained_max_frames": spec.trained_max_frames,
             "min_decodable_frames": spec.min_decodable_frames,
             "fps_fixed": spec.fps_fixed,
             # ORIENTATION-AGNOSTIC `[short_edge, long_edge]`, NOT `[height,
@@ -481,8 +489,10 @@ def video_constraints_payload() -> Dict[str, Dict[str, Any]]:
             # from this list, and 8 entries stopped LTX-2.3's list at 65 --
             # dropping 81/97/121, all valid `8k+1` lengths that were offered
             # before this payload existed (121 is LTX-2.3's own default). 16
-            # covers that and is the whole of MiniMax-H3's range (124..362 is
-            # 15 lengths), so neither arch's list is truncated.
+            # covers that and is the whole of MiniMax-H3's DOCUMENTED range
+            # (124..362, stopping at `trained_max_frames` even though
+            # `max_frames` no longer bounds it, is 15 lengths), so neither
+            # arch's list is truncated.
             "suggested_frames": spec.suggested_lengths(16),
             # Step-count contract, for a client building a step-count control.
             # Neither value is derivable from the fields above and the two

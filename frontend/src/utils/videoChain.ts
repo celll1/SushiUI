@@ -209,6 +209,14 @@ export function buildChainContinuationQueueItems(args: {
   arch: string | null | undefined;
   targetFrames: number;
   capFrames: number;
+  // The user's `chain_segment_frames` at enqueue time (null = unset, falls
+  // back to the architecture's own `max_frames` -- see api.ts's
+  // `chainSegmentCap`). Copied onto every continuation item's own
+  // `chainSegmentFrames` field so `advanceVideoChain` re-derives each
+  // segment's `total_frames` with the SAME segment length the plan was built
+  // with, frozen at enqueue time regardless of any later change to the
+  // panel's control.
+  segmentFrames?: number | null;
   loopGroupId: string;
   continuationBase: ChainContinuationBase;
   referenceImageSize?: "max" | "match";
@@ -217,7 +225,8 @@ export function buildChainContinuationQueueItems(args: {
   // on top of the boundary-frame anchor the placed clip itself provides.
   referenceImages?: File[];
 }): Array<Omit<QueueItem, "id" | "status" | "addedAt">> {
-  const plannedTotals = planVideoChainSegments(args.caps, args.arch, args.targetFrames) ?? [];
+  const plannedTotals =
+    planVideoChainSegments(args.caps, args.arch, args.targetFrames, args.segmentFrames) ?? [];
   const items: Array<Omit<QueueItem, "id" | "status" | "addedAt">> = [];
   let previous = args.capFrames;
   plannedTotals.forEach((total, index) => {
@@ -231,6 +240,7 @@ export function buildChainContinuationQueueItems(args: {
       isLoopStep: true,
       chainTargetFrames: args.targetFrames,
       chainPreviousFrames: previous,
+      chainSegmentFrames: args.segmentFrames ?? null,
     });
     previous = total;
   });
@@ -308,7 +318,14 @@ export async function advanceVideoChain(args: {
   );
   if (!nextChainItem || args.resultFrames == null) return {};
 
-  const nextTotal = nextVideoChainTotalFrames(args.caps, args.arch, args.resultFrames, target);
+  // `item.chainSegmentFrames` is the segment length the chain was BUILT with
+  // (frozen onto every item at enqueue time by `buildChainContinuationQueueItems`
+  // / the panel's main-segment `addToQueue` call), not whatever the panel's
+  // live control holds now -- a chain already running must not be retargeted
+  // by a later change to that control.
+  const nextTotal = nextVideoChainTotalFrames(
+    args.caps, args.arch, args.resultFrames, target, item.chainSegmentFrames
+  );
   if (nextTotal == null) {
     // Reached target (normal) or the architecture cannot produce a further
     // continuation (stuck) -- either way nothing more should run; drop any

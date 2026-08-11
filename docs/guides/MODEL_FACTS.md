@@ -909,9 +909,16 @@ a generation without style transfer.
     lengths are `17n + 5`; `latent_frames(T) = ceil(T/17)*5 − 3` for `T ≥ 2`
     (`1` at `T = 1`, the spatial-only image-conditioning path). `T = 5` is on the
     grid but **cannot be decoded** — the VAE floor is **22 frames / 0.917 s** and
-    nothing overrides it. Production generation bounds are **124–345**
-    (ComfyUI's node pins the trained range at ~124–362; the README states 4–15 s
-    output; 345 = 17·20+5 = 14.375 s is the largest grid point ≤ 15 s). An
+    nothing overrides it. Production generation bounds are **124–362**
+    (ComfyUI's node states the trained range as "~124–362, longer is
+    untested"; 362 = 17·21+5 = 15.083 s is the grid point at that stated top).
+    An earlier version of this bound used 345 = 17·20+5 = 14.375 s — the
+    largest grid point *below* 15 s, read off the README's "output 4–15 s"
+    prose as a strict ceiling — which undersold ComfyUI's own stated top by
+    one grid step; 362 is the correction, not a relaxation, and lengths past
+    it remain unreachable through ordinary API validation (`SUSHI_TEMPORAL_UNCAPPED`
+    is the deliberate-probe escape hatch, env-only, and every request it
+    actually raises past 362 is warned as untested). An
     invalid `num_frames` is snapped UP to the next valid length inside the
     bounds with a `warnings[]` entry naming the rule — which is what the model's
     own `align_num_frames` does, so a snap never drops requested content.
@@ -1162,7 +1169,7 @@ a generation without style transfer.
     fit the single-GPU 48 GB envelope this integration targets.
   - **Training clips use the grid, not the production bounds.** Default clip
     lengths are `(22, 39)`; bucketing validates against the grid plus the 22-frame
-    decodable floor, so a short training bucket is not a violation of the 124–345
+    decodable floor, so a short training bucket is not a violation of the 124–362
     generation range. Clip sampling on this arch is **timestamp-based** because
     `fps_fixed` is set — target frame *i* is the source frame nearest
     `start_time + i/24`, and the audio window is cut by the same timestamps, so

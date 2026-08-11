@@ -1293,13 +1293,19 @@ def validate_video_geometry(params: Dict[str, Any], arch: Optional[str],
     # without that length being reachable by an ordinary API caller. It never
     # lowers `min_decodable_frames`, which the decoder cannot go below at all.
     smoke = bool(os.environ.get(spec.smoke_override_env))
+    # The ceiling-side mirror: raises the PRODUCTION ceiling past `max_frames`
+    # (a DOCUMENTED bound, not a decoder limit) for a deliberate probe. Only
+    # takes effect when the arch has opted in (`max_override_env` set) AND the
+    # env var is set -- neither alone.
+    uncapped = bool(spec.max_override_env and os.environ.get(spec.max_override_env))
     floor = spec.floor(smoke)
+    ceiling = spec.ceiling(uncapped)
     if frame_key is None:
         num_frames = None
     else:
         num_frames = int(params.get(frame_key, 0))
     in_range = num_frames is not None and floor <= num_frames and (
-        spec.max_frames is None or num_frames <= spec.max_frames)
+        ceiling is None or num_frames <= ceiling)
     if num_frames is None:
         pass
     elif not (spec.is_valid_length(num_frames) and in_range):
@@ -1310,15 +1316,25 @@ def validate_video_geometry(params: Dict[str, Any], arch: Optional[str],
                 detail=f"Got {frame_key}={num_frames}. Valid values are "
                        f"{spec.suggested_lengths(6)}, ...",
             )
-        snapped = spec.snap_length(num_frames, smoke)
+        snapped = spec.snap_length(num_frames, smoke, uncapped)
         params[frame_key] = snapped
         warn(f"{frame_key}={num_frames} is not a length this model can generate; using {snapped}. "
              f"Valid lengths are {spec.frame_multiple} * n + {spec.frame_offset} "
-             f"(n >= 1), between {floor} and {spec.max_frames}.")
-    elif smoke and num_frames < spec.min_frames:
-        warn(f"{frame_key}={num_frames} is below this model's trained range "
-             f"({spec.min_frames}-{spec.max_frames}) and was accepted only because "
-             f"{spec.smoke_override_env} is set.")
+             f"(n >= 1), between {floor} and "
+             f"{ceiling if ceiling is not None else 'no fixed ceiling'}.")
+        if uncapped and spec.max_frames is not None and snapped > spec.max_frames:
+            warn(f"{frame_key}={snapped} exceeds this model's documented trained range "
+                 f"(up to {spec.max_frames}) and was accepted only because "
+                 f"{spec.max_override_env} is set. Lengths beyond the trained range are untested.")
+    else:
+        if smoke and num_frames < spec.min_frames:
+            warn(f"{frame_key}={num_frames} is below this model's trained range "
+                 f"({spec.min_frames}-{spec.max_frames}) and was accepted only because "
+                 f"{spec.smoke_override_env} is set.")
+        if uncapped and spec.max_frames is not None and num_frames > spec.max_frames:
+            warn(f"{frame_key}={num_frames} exceeds this model's documented trained range "
+                 f"(up to {spec.max_frames}) and was accepted only because "
+                 f"{spec.max_override_env} is set. Lengths beyond the trained range are untested.")
 
     if spec.fps_fixed is not None:
         frame_rate = float(params.get("frame_rate", spec.fps_fixed))

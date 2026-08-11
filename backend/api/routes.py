@@ -5106,7 +5106,7 @@ async def generate_inpaint_video(
     span comes back in `warnings[]` when the expansion changed the request.
 
     **Length.** Temporal inpaint samples the whole clip, so it is the TRIMMED
-    input that must be a valid clip length (`17n + 5`, 124..345 on MiniMax-H3),
+    input that must be a valid clip length (`17n + 5`, 124..362 on MiniMax-H3),
     not a generated span. It is never snapped -- that would delete frames you
     asked to keep -- so an invalid length is a 400 naming the trims that reach
     the nearest valid ones. This is the inverse of `/generate/outpaint/video`,
@@ -5200,7 +5200,7 @@ async def generate_inpaint_video(
     # Decode the clip (+ its audio track) BEFORE the GPU slot, so a malformed
     # upload is a 400 that reserved nothing. The bound is the arch's own longest
     # clip: nothing past it can be part of a valid trimmed length.
-    _arch_max_frames = int(_spec.max_frames if _spec is not None and _spec.max_frames else 345)
+    _arch_max_frames = int(_spec.max_frames if _spec is not None and _spec.max_frames else 362)
     _decode_max_frames = max(0, input_trim_start_frames) + _arch_max_frames
 
     # Since this endpoint's OUTPUT length equals the TRIMMED INPUT length (no

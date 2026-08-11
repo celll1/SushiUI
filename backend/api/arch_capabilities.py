@@ -465,8 +465,8 @@ def video_constraints_payload() -> Dict[str, Dict[str, Any]]:
             # from this list, and 8 entries stopped LTX-2.3's list at 65 --
             # dropping 81/97/121, all valid `8k+1` lengths that were offered
             # before this payload existed (121 is LTX-2.3's own default). 16
-            # covers that and is the whole of MiniMax-H3's range (124..345 is
-            # 14 lengths), so neither arch's list is truncated.
+            # covers that and is the whole of MiniMax-H3's range (124..362 is
+            # 15 lengths), so neither arch's list is truncated.
             "suggested_frames": spec.suggested_lengths(16),
             # Step-count contract, for a client building a step-count control.
             # Neither value is derivable from the fields above and the two

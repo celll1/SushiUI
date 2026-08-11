@@ -135,6 +135,26 @@ interface OutpaintPanelParams extends ApiOutpaintParams {
   input_offset_sec?: number;
   input_trim_start_sec?: number;
   input_trim_end_sec?: number;
+  // FBCache / Spectrum forecasting. Declared here because the panel reads and
+  // writes them; they were used without being declared, which the LoRA
+  // "apply recommended settings" path (which assigns fbcache_enable /
+  // spectrum_enable) would otherwise have turned into a type error.
+  fbcache_enable?: boolean;
+  fbcache_threshold?: number;
+  fbcache_warmup_steps?: number;
+  spectrum_enable?: boolean;
+  spectrum_w?: number;
+  spectrum_w_decay?: number;
+  spectrum_delta_cap?: number;
+  spectrum_m?: number;
+  spectrum_lam?: number;
+  spectrum_warmup_steps?: number;
+  spectrum_window_size?: number;
+  spectrum_flex_window?: number;
+  spectrum_tail?: number;
+  spectrum_feature_mode?: string;
+  spectrum_cache_branch?: number;
+  spectrum_max_cache?: number;
 }
 
 // Mirrors backend OUTPAINT_DEFAULTS (backend/api/param_defaults.py) --
@@ -1383,6 +1403,28 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
   // and/or last frame of the span it generates) lists only the placements it
   // can anchor. No arch name appears here.
   const loadedArchType = currentModelInfo?.model_info?.type as string | undefined;
+  // Applies a LoRA's own declared recommended settings (from its file
+  // metadata) to params, like any ordinary user edit -- see Txt2ImgPanel's
+  // twin of this function for the full rationale.
+  const applyLoraRecommended = (settings: Record<string, unknown>): string[] => {
+    const skipped: string[] = [];
+    const updates: Partial<OutpaintPanelParams> = {};
+    if (typeof settings.num_inference_steps === "number") {
+      if (isVideo) updates.num_inference_steps = settings.num_inference_steps;
+      else if (isAudio) updates.inference_steps = settings.num_inference_steps;
+      else updates.steps = settings.num_inference_steps;
+    }
+    if (typeof settings.fbcache_enable === "boolean") {
+      if (isAudio) skipped.push("fbcache_enable");
+      else updates.fbcache_enable = settings.fbcache_enable;
+    }
+    if (typeof settings.spectrum_enable === "boolean") {
+      if (isAudio) skipped.push("spectrum_enable");
+      else updates.spectrum_enable = settings.spectrum_enable;
+    }
+    setParams({ ...params, ...updates });
+    return skipped;
+  };
   // Hide Spectrum/FBCache when the loaded sampler does not consume them; H3 now
   // supports both. This matches the other panels' leaf-control convention.
   const supportsSpectrum = archSupportsFeature(archCapabilities, loadedArchType, "spectrum");
@@ -4588,6 +4630,17 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
         </Card>
         )}
 
+        {isVideo && visibility.lora && (
+          <LoRASelector
+            value={params.loras || []}
+            onChange={(loras: LoRAConfig[]) => setParams({ ...params, loras })}
+            disabled={isGenerating}
+            storageKey="outpaint_video_lora_collapsed"
+            loadedArch={loadedArchType}
+            onApplyRecommended={applyLoraRecommended}
+          />
+        )}
+
         {isAudio && (
         <Card title="Audio Settings">
 
@@ -4698,6 +4751,8 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
             onChange={(loras: LoRAConfig[]) => setParams({ ...params, loras })}
             disabled={isGenerating}
             storageKey="outpaint_lora_collapsed"
+            loadedArch={loadedArchType}
+            onApplyRecommended={applyLoraRecommended}
           />
         )}
 

@@ -435,6 +435,31 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
   // hidden merely because the matrix was unavailable.
   const loadedArch = currentModelInfo?.model_info?.type as string | undefined;
   const loadedArchName = archDisplayName(loadedArch);
+  // Applies a LoRA's own declared recommended settings (from its file
+  // metadata) to params, like any ordinary user edit -- writes through the
+  // normal params state so it flows through the same request/DB/metadata
+  // path. num_inference_steps maps to whichever step field this modality
+  // actually has; audio has no fbcache/spectrum concept, so those are
+  // reported back as skipped rather than silently applied.
+  const applyLoraRecommended = (settings: Record<string, unknown>): string[] => {
+    const skipped: string[] = [];
+    const updates: Partial<GenerationParams> = {};
+    if (typeof settings.num_inference_steps === "number") {
+      if (isVideo) updates.num_inference_steps = settings.num_inference_steps;
+      else if (isAudio) updates.inference_steps = settings.num_inference_steps;
+      else updates.steps = settings.num_inference_steps;
+    }
+    if (typeof settings.fbcache_enable === "boolean") {
+      if (isAudio) skipped.push("fbcache_enable");
+      else updates.fbcache_enable = settings.fbcache_enable;
+    }
+    if (typeof settings.spectrum_enable === "boolean") {
+      if (isAudio) skipped.push("spectrum_enable");
+      else updates.spectrum_enable = settings.spectrum_enable;
+    }
+    setParams({ ...params, ...updates });
+    return skipped;
+  };
   // MiniMax-H3 ships TWO transformer partitions that share every other
   // component: `fl2va` (txt2vid / img2vid / video outpaint) and `ref2va`
   // (omni-reference). Which one is loaded IS the workflow, so the reference
@@ -4063,6 +4088,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
             </div>
           </Card>
         )}
+
             </>
           ) : undefined}
           prompt={promptPanel}
@@ -4171,6 +4197,8 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
             disabled={isGenerating}
             storageKey="txt2img_audio_lora_collapsed"
             simpleMode
+            loadedArch={loadedArch}
+            onApplyRecommended={applyLoraRecommended}
           />
         )}
 
@@ -4351,6 +4379,20 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
               </div>
             )}
           </Card>
+        )}
+
+        {isVideo && visibility.lora && (
+          <LoRASelector
+            value={params.loras || []}
+            onChange={(loras) => {
+              console.log("[Txt2Img] Video LoRA onChange called with:", loras);
+              setParams({ ...params, loras });
+            }}
+            disabled={isGenerating}
+            storageKey="txt2img_video_lora_collapsed"
+            loadedArch={loadedArch}
+            onApplyRecommended={applyLoraRecommended}
+          />
         )}
             </>
           ) : undefined}
@@ -4615,6 +4657,8 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
             }}
             disabled={isGenerating}
             storageKey="txt2img_lora_collapsed"
+            loadedArch={loadedArch}
+            onApplyRecommended={applyLoraRecommended}
           />
         )}
 

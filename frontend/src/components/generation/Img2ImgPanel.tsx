@@ -158,6 +158,26 @@ interface Img2ImgParams {
   // Start from a server-cached latent instead of an uploaded image (loop
   // passthrough chaining; mutually exclusive with the uploaded image).
   input_latent_id?: string | null;
+  // FBCache / Spectrum forecasting. Declared here because the panel reads and
+  // writes them; they were used without being declared, which the LoRA
+  // "apply recommended settings" path (which assigns fbcache_enable /
+  // spectrum_enable) would otherwise have turned into a type error.
+  fbcache_enable?: boolean;
+  fbcache_threshold?: number;
+  fbcache_warmup_steps?: number;
+  spectrum_enable?: boolean;
+  spectrum_w?: number;
+  spectrum_w_decay?: number;
+  spectrum_delta_cap?: number;
+  spectrum_m?: number;
+  spectrum_lam?: number;
+  spectrum_warmup_steps?: number;
+  spectrum_window_size?: number;
+  spectrum_flex_window?: number;
+  spectrum_tail?: number;
+  spectrum_feature_mode?: string;
+  spectrum_cache_branch?: number;
+  spectrum_max_cache?: number;
 }
 
 const DEFAULT_PARAMS: Img2ImgParams = {
@@ -565,6 +585,28 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
   // merely because the matrix was unavailable.
   const loadedArch = currentModelInfo?.model_info?.type as string | undefined;
   const loadedArchName = archDisplayName(loadedArch);
+  // Applies a LoRA's own declared recommended settings (from its file
+  // metadata) to params, like any ordinary user edit -- see Txt2ImgPanel's
+  // twin of this function for the full rationale.
+  const applyLoraRecommended = (settings: Record<string, unknown>): string[] => {
+    const skipped: string[] = [];
+    const updates: Partial<Img2ImgParams> = {};
+    if (typeof settings.num_inference_steps === "number") {
+      if (isVideo) updates.num_inference_steps = settings.num_inference_steps;
+      else if (isAudio) updates.inference_steps = settings.num_inference_steps;
+      else updates.steps = settings.num_inference_steps;
+    }
+    if (typeof settings.fbcache_enable === "boolean") {
+      if (isAudio) skipped.push("fbcache_enable");
+      else updates.fbcache_enable = settings.fbcache_enable;
+    }
+    if (typeof settings.spectrum_enable === "boolean") {
+      if (isAudio) skipped.push("spectrum_enable");
+      else updates.spectrum_enable = settings.spectrum_enable;
+    }
+    setParams({ ...params, ...updates });
+    return skipped;
+  };
   const supportsCfg = archSupportsFeature(archCapabilities, loadedArch, "cfg");
   const supportsNegativePrompt = !isAudio
     && archSupportsFeature(archCapabilities, loadedArch, "negative_prompt");
@@ -5289,6 +5331,20 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
           </Card>
         )}
 
+        {isVideo && visibility.lora && (
+          <LoRASelector
+            value={params.loras || []}
+            onChange={(loras) => {
+              console.log("[Img2Img] Video LoRA onChange called with:", loras);
+              setParams({ ...params, loras });
+            }}
+            disabled={isGenerating}
+            storageKey="img2img_video_lora_collapsed"
+            loadedArch={loadedArch}
+            onApplyRecommended={applyLoraRecommended}
+          />
+        )}
+
         {isAudio && (
           <Card title="Audio Settings">
             <Select
@@ -5434,6 +5490,8 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
             disabled={isGenerating}
             storageKey="img2img_audio_lora_collapsed"
             simpleMode
+            loadedArch={loadedArch}
+            onApplyRecommended={applyLoraRecommended}
           />
         )}
 
@@ -5724,6 +5782,8 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
             }}
             disabled={isGenerating}
             storageKey="img2img_lora_collapsed"
+            loadedArch={loadedArch}
+            onApplyRecommended={applyLoraRecommended}
           />
         )}
 

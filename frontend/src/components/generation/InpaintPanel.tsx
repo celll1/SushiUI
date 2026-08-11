@@ -36,6 +36,11 @@ import ResizableColumns, {
 } from "../common/ResizableColumns";
 import LoopGenerationPanel, { LoopGenerationConfig } from "./LoopGenerationPanel";
 import QuantizedGemmSelect from "./QuantizedGemmSelect";
+import {
+  MASK_OVERLAY_ALPHA,
+  MASK_OVERLAY_CSS_MIX_BLEND_MODE,
+  MASK_POLARITY,
+} from "@/utils/maskConventions";
 import { migrateLoopGenerationConfig, computeLoopDecodeDirective } from "@/utils/loopGenerationInheritance";
 import { getSamplers, getScheduleTypes, generateInpaint, generateInpaintVideo, generateInpaintTrainingPreview, toBase64, InpaintParams as ApiInpaintParams, InpaintVideoParams, LoRAConfig, ControlNetConfig, generateTIPOPrompt, cancelGeneration, getCurrentModel, getResultFilename, getResultPlaybackFilename, getResultSeed, getResultAncestralSeed, isLatentOnlyResult, unetQuantizationOptions, normalizeUnetQuantization, transformerQuantizationLabel, archSupportsFeature, archDisplayName, inpaintVideoDefaultsForArch, fitVideoCanvas, videoCanvasRule, videoCanvasAxisBounds, videoCanvasExceedsEnvelope, largestValidVideoFrameCount, isValidVideoFrameCount, latentGroupSpans, snapRangeToLatentGroups, isGenerationStalledError, VIDEO_BLOCK_SWAP_MAX } from "@/utils/api";
 import VideoInpaintRangeTimeline from "./VideoInpaintRangeTimeline";
@@ -368,7 +373,7 @@ function createDefaultVideoMaskManifest(width?: number, height?: number): VideoM
   return {
     version: 1,
     coordinateSpace: "output_canvas",
-    polarity: "white_generate",
+    polarity: MASK_POLARITY,
     canvas: {
       width: Math.max(1, Math.round(width ?? 768)),
       height: Math.max(1, Math.round(height ?? 512)),
@@ -5297,8 +5302,8 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
                       className="absolute inset-0 w-full h-full object-contain"
                       style={{
                         pointerEvents: 'none',
-                        mixBlendMode: 'screen',
-                        opacity: 0.5
+                        mixBlendMode: MASK_OVERLAY_CSS_MIX_BLEND_MODE,
+                        opacity: MASK_OVERLAY_ALPHA
                       }}
                       title="Mask overlay - highlighted areas will be inpainted"
                     />

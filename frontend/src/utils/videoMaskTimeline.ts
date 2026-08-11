@@ -1,8 +1,15 @@
+import { MASK_POLARITY, type MaskPolarity } from "./maskConventions";
+
 export type MaskInterpolation = "hold" | "affine" | "sdf";
 
 /** All mask coordinates are pixels in the generated output canvas. */
 export type MaskCoordinateSpace = "output_canvas";
-export type MaskPolarity = "white_generate";
+/**
+ * Re-exported so existing imports of `MaskPolarity` from this module keep
+ * working unchanged; the canonical definition now lives in
+ * maskConventions.ts (single source of truth, see MASK_POLARITY there).
+ */
+export type { MaskPolarity };
 
 /**
  * Prevent accidental near-zero or runaway affine transforms in the API.
@@ -131,7 +138,7 @@ function isCoordinateSpace(value: unknown): value is MaskCoordinateSpace {
 }
 
 function isMaskPolarity(value: unknown): value is MaskPolarity {
-  return value === "white_generate";
+  return value === MASK_POLARITY;
 }
 
 export function validateMaskTransform(transform: unknown, path = "transform"): string[] {

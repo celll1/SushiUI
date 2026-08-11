@@ -61,12 +61,15 @@ because reverting to the unchunked call would only trade a measured 7+ GiB
 reduction for eliminating a deviation that is already smaller than other
 unavoidable bf16 rounding in the same forward pass, not for eliminating a
 sequence-length-dependent VRAM/quality tradeoff. Measured against the same
-checkpoint's per-module instrumentation of the FULL 50-block forward: chunking
-x4 took 36.139 -> 31.250 GiB reserved (28.134 -> 23.629 GiB allocated) with
-block swap off, and x8 took 28.518 -> 26.227 GiB reserved (21.956 -> 17.450 GiB
-allocated) with block swap at 40; in both cases the per-forward wall time
-(~202 s) did not move outside the ~200.2-203.0 s spread of repeated unchunked
-forwards -- i.e. this is a measured-free win on VRAM and time, so it runs
+checkpoint, running the FULL 50-block forward end to end at 97,159 rows: with
+block swap off, 36.139 -> 31.600 GiB reserved and 28.134 -> 23.629 GiB
+allocated at the shipped budget. (An earlier single-module isolate predicted
+31.250 reserved for the same configuration; the integrated forward does not
+reach that, for the address-reuse reason recorded at the budget constant
+below. The allocated figure transfers exactly; the reserved one does not.) The
+per-forward wall time did not move outside the ~200.2-204.7 s spread of
+repeated forwards at any chunk count -- i.e. this is a measured-free win on
+VRAM and time, so it runs
 unconditionally rather than behind a user-facing toggle (see below on why there
 is no ``param_defaults.py`` entry).
 
@@ -120,11 +123,19 @@ import torch
 # checkpoint (`transformer_minimax_h3.py`'s `ffn_dim` default; the single-file loader reads it from the
 # checkpoint but every real checkpoint agrees), so `2 * ffn_dim == 28,672` channels regardless of the
 # quantization mode (chunking only ever splits activations, never weights -- see the module docstring).
-# 24,576 rows reproduces the MEASURED "block swap off" configuration above almost exactly (97,159 rows /
-# 24,576 -> 4 chunks, i.e. the reported 36.139 -> 31.250 GiB reduction) rather than extrapolating to an
-# unmeasured finer grain; the block-swap-on x8 result shows more is available for the taking, but 4 is the
-# one point on this curve that was actually measured end to end.
-FF_CHUNK_ROW_BUDGET = 24_576
+# The value comes from a measured sweep of the whole 50-block forward at 97,159 rows, block swap off
+# (peak reserved, GiB): unchunked 36.139, 2 chunks 32.248, 4 chunks 32.912, 8 chunks 31.600, 16 chunks
+# 31.600. Peak ALLOCATED is 23.629 at every chunked point -- it is set inside block 0's attention, not by
+# this budget -- so the whole curve is about reserved, and every point costs the same time (203.4-204.7 s
+# per forward, inside the run-to-run spread). 12,288 rows puts 97,159 at 8 chunks, the efficient point:
+# it recovers 1.312 GiB more than a 4-chunk budget for nothing, and 16 chunks recovers nothing further.
+#
+# Reserved does not fall by the full amount the allocated peak does, and that is not a leak: diffing the
+# allocator pool by ADDRESS RANGE between a chunked and an unchunked forward accounts for the difference
+# exactly (3.2266 GiB vs. a 3.227 GiB measured delta, with zero bytes going the other way). The part that
+# does not come back is address space the giant unchunked allocation had already forced the pool to carve
+# out, which later blocks reuse either way. ~0.35 GiB of that is a structural floor no finer grain closes.
+FF_CHUNK_ROW_BUDGET = 12_288
 
 
 def chunked_feed_forward(

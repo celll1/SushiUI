@@ -1,9 +1,9 @@
 /**
  * Pure value<->pixel conversion for the project's horizontal timeline tracks
- * (VideoInpaintRangeTimeline, OutpaintTimeline, MiniMaxH3KeyframeTimeline, and
- * whatever unifies "Regenerate range" + "Mask keyframes" next). Extracted so
- * the same clientX->value and value->CSS-left arithmetic isn't re-derived
- * (and re-drifted) independently in each track's own component file.
+ * (VideoInpaintTimeline -- via components/timeline/Timeline.tsx --,
+ * OutpaintTimeline, MiniMaxH3KeyframeTimeline). Extracted so the same
+ * clientX->value and value->CSS-left arithmetic isn't re-derived (and
+ * re-drifted) independently in each track's own component file.
  *
  * Deliberately NOT a generic "track" abstraction: each track's VALUE DOMAIN
  * differs (pixel frames, latent groups, output-timeline units, seconds) and
@@ -69,8 +69,8 @@ export function valueAtClientX(clientX: number, rect: TimelineRect, scale: Timel
 }
 
 /**
- * Same as `valueAtClientX`, rounded to the nearest integer -- for the two
- * callers (VideoInpaintRangeTimeline, MiniMaxH3KeyframeTimeline) whose value
+ * Same as `valueAtClientX`, rounded to the nearest integer -- for callers
+ * (components/timeline/Timeline.tsx, MiniMaxH3KeyframeTimeline) whose value
  * domain is a whole frame/group index. Re-clamped to `[min, max]` after
  * rounding as a defensive measure (rounding a value already inside
  * `[min, max]` cannot actually leave that range when `min`/`max` are

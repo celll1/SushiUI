@@ -139,7 +139,8 @@ const CLICK_THRESHOLD_PX = 4;
 // on the trim handles, so the unmodified step is always the fine (grid)
 // step and Shift is always the coarser one -- regardless of whether the
 // grid itself is coarser or finer than 1 unit (it is finer for the audio
-// mount's 1/25s grid). Matches VideoInpaintRangeTimeline's own dir*4 step.
+// mount's 1/25s grid). Matches VideoInpaintTimeline's Regenerate-range
+// track's own dir*4 step.
 const SHIFT_STEP_MULTIPLIER = 4;
 
 export default function OutpaintTimeline({
@@ -346,7 +347,7 @@ export default function OutpaintTimeline({
   // seconds-only ruler made the two halves of the same control speak different
   // units; a frame-only ruler is no better next to a video the user is
   // scrubbing in seconds. Video ticks therefore carry both, matching
-  // VideoInpaintRangeTimeline's "frame · timecode". The audio mount has no
+  // VideoInpaintTimeline's shared ruler "frame · timecode". The audio mount has no
   // frames to name (unitRate is 1 and its grid is 1/25 s), so it keeps the
   // plain seconds label rather than a timecode whose frames field is always 00.
   const isFrameRuler = !!videoSrc && !!unitRate && unitRate > 0;

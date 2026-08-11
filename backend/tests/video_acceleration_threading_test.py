@@ -259,8 +259,17 @@ class SharedComponentMutualExclusionTest(unittest.TestCase):
         self.assertIn("disabled={spectrumDisabled}", self.source)
 
     def test_fbcache_is_disabled_while_block_swap_or_spectrum_is_on(self):
-        self.assertIn(
-            "const fbcacheDisabled = blockSwapOn || spectrumOn;", self.source)
+        # Assert the two disjuncts, not the whole line. Pinning the line meant a
+        # caller adding a THIRD reason to disable FBCache (a spatial mask
+        # timeline, which the backend also refuses to combine with it) broke a
+        # test whose subject -- that block swap and Spectrum each disable it --
+        # was still true. A line-shaped assertion fails on every addition and
+        # teaches whoever hits it to update the string without reading it.
+        line = next(
+            (ln for ln in self.source.splitlines() if "const fbcacheDisabled" in ln), None)
+        self.assertIsNotNone(line, "fbcacheDisabled is no longer computed")
+        for disjunct in ("blockSwapOn", "spectrumOn"):
+            self.assertIn(disjunct, line, line)
         self.assertIn("disabled={fbcacheDisabled}", self.source)
 
     def test_turning_block_swap_on_clears_fbcache_and_spectrum(self):

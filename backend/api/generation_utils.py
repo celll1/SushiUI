@@ -1293,13 +1293,14 @@ def validate_video_geometry(params: Dict[str, Any], arch: Optional[str],
     # without that length being reachable by an ordinary API caller. It never
     # lowers `min_decodable_frames`, which the decoder cannot go below at all.
     smoke = bool(os.environ.get(spec.smoke_override_env))
-    # The ceiling-side mirror: raises the PRODUCTION ceiling past `max_frames`
-    # (a DOCUMENTED bound, not a decoder limit) for a deliberate probe. Only
-    # takes effect when the arch has opted in (`max_override_env` set) AND the
-    # env var is set -- neither alone.
-    uncapped = bool(spec.max_override_env and os.environ.get(spec.max_override_env))
     floor = spec.floor(smoke)
-    ceiling = spec.ceiling(uncapped)
+    # `ceiling()` is `max_frames` verbatim -- the ENFORCED production top, and
+    # None means there is no enforced top at all (MiniMax-H3 as of the 362
+    # decision: 362 is `trained_max_frames`, DOCUMENTED not enforced; see
+    # wiring.py). There is no env gate left to lift this: a length past
+    # `trained_max_frames` is simply accepted and warned below, unconditionally
+    # -- "stated, not silent" no longer needs an opt-in on the caller's side.
+    ceiling = spec.ceiling()
     if frame_key is None:
         num_frames = None
     else:
@@ -1316,25 +1317,25 @@ def validate_video_geometry(params: Dict[str, Any], arch: Optional[str],
                 detail=f"Got {frame_key}={num_frames}. Valid values are "
                        f"{spec.suggested_lengths(6)}, ...",
             )
-        snapped = spec.snap_length(num_frames, smoke, uncapped)
+        snapped = spec.snap_length(num_frames, smoke)
         params[frame_key] = snapped
         warn(f"{frame_key}={num_frames} is not a length this model can generate; using {snapped}. "
              f"Valid lengths are {spec.frame_multiple} * n + {spec.frame_offset} "
              f"(n >= 1), between {floor} and "
              f"{ceiling if ceiling is not None else 'no fixed ceiling'}.")
-        if uncapped and spec.max_frames is not None and snapped > spec.max_frames:
+        if spec.trained_max_frames is not None and snapped > spec.trained_max_frames:
             warn(f"{frame_key}={snapped} exceeds this model's documented trained range "
-                 f"(up to {spec.max_frames}) and was accepted only because "
-                 f"{spec.max_override_env} is set. Lengths beyond the trained range are untested.")
+                 f"(up to {spec.trained_max_frames}). Lengths beyond the trained range are "
+                 f"untested.")
     else:
         if smoke and num_frames < spec.min_frames:
             warn(f"{frame_key}={num_frames} is below this model's trained range "
-                 f"({spec.min_frames}-{spec.max_frames}) and was accepted only because "
+                 f"({spec.min_frames}-{spec.trained_max_frames}) and was accepted only because "
                  f"{spec.smoke_override_env} is set.")
-        if uncapped and spec.max_frames is not None and num_frames > spec.max_frames:
+        if spec.trained_max_frames is not None and num_frames > spec.trained_max_frames:
             warn(f"{frame_key}={num_frames} exceeds this model's documented trained range "
-                 f"(up to {spec.max_frames}) and was accepted only because "
-                 f"{spec.max_override_env} is set. Lengths beyond the trained range are untested.")
+                 f"(up to {spec.trained_max_frames}). Lengths beyond the trained range are "
+                 f"untested.")
 
     if spec.fps_fixed is not None:
         frame_rate = float(params.get("frame_rate", spec.fps_fixed))
@@ -1476,6 +1477,14 @@ def plan_video_outpaint_placement(
     preserved = head_frames + tail
     smoke = bool(os.environ.get(spec.smoke_override_env))
     requested_generated = max(1, requested_total - preserved + shared)
+    # `snap_length` only rounds UP onto the grid here; it does not also clamp
+    # to a top, because `spec.ceiling()` (== `max_frames`) is None on every
+    # video arch that reaches this function (MiniMax-H3 included, since the
+    # 362 decision -- see wiring.py's `TemporalSpec.trained_max_frames`). Do
+    # not reintroduce a ceiling by passing one here: a generated span past the
+    # DOCUMENTED trained range is a valid request, not a violation, and the
+    # caller's own `validate_video_geometry`/route-level checks are where an
+    # untested-range warning belongs, not this pure placement arithmetic.
     generated = spec.snap_length(requested_generated, smoke)
     return {
         "placement": placement,
@@ -1636,12 +1645,21 @@ def plan_video_inpaint_span(
     clip_frames = int(clip_frames)
     smoke = bool(os.environ.get(spec.smoke_override_env))
     floor = spec.floor(smoke)
-    in_range = floor <= clip_frames and (spec.max_frames is None or clip_frames <= spec.max_frames)
+    # `ceiling()` is the ENFORCED top (`max_frames`), which is None on
+    # MiniMax-H3 as of the 362 decision -- a trimmed clip is never refused here
+    # for being long, only for being off-grid or shorter than `floor`. This
+    # does not skip the "too long" case silently: a clip whose trimmed length
+    # is on-grid but past `trained_max_frames` is a valid request that reaches
+    # `validate_video_geometry`'s unconditional untested-range warning instead
+    # of a 400 here.
+    ceiling = spec.ceiling()
+    in_range = floor <= clip_frames and (ceiling is None or clip_frames <= ceiling)
     if not (spec.is_valid_length(clip_frames) and in_range):
+        ceiling_desc = ceiling if ceiling is not None else "no fixed ceiling"
         why = (f"The trimmed clip is {clip_frames} frame(s). Temporal inpaint samples the WHOLE "
                f"clip -- every frame has a row in the packed sequence -- so the clip itself must "
                f"be a valid length: {spec.frame_multiple} * n + {spec.frame_offset}, between "
-               f"{floor} and {spec.max_frames}. The length is not snapped here, because snapping "
+               f"{floor} and {ceiling_desc}. The length is not snapped here, because snapping "
                f"it would silently delete frames you asked to keep. ")
         if clip_frames < floor:
             raise ValidationError(
@@ -1651,9 +1669,9 @@ def plan_video_inpaint_span(
             )
         # The valid length at or below the clip: reachable by trimming.
         below = spec.snap_length(clip_frames, smoke)
-        if below > clip_frames or (spec.max_frames is not None and below > spec.max_frames):
+        if below > clip_frames or (ceiling is not None and below > ceiling):
             below -= spec.frame_multiple
-        below = min(below, spec.max_frames) if spec.max_frames is not None else below
+        below = min(below, ceiling) if ceiling is not None else below
         raise ValidationError(
             "the trimmed clip is not a length this model can generate",
             detail=why + f"Trim {clip_frames - below} more frame(s) (input_trim_start_frames + "

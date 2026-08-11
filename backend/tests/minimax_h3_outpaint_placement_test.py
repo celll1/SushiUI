@@ -203,6 +203,11 @@ def test_the_generated_span_is_always_a_length_the_model_can_generate(head, tota
     plan = plan_video_outpaint_placement(_params(total, 0), "minimax_h3", head_frames=head)
     generated = plan["generated_frames"]
     assert MINIMAX_H3_TEMPORAL.is_valid_length(generated)
-    assert MINIMAX_H3_TEMPORAL.min_frames <= generated <= MINIMAX_H3_TEMPORAL.max_frames
+    # No upper bound anymore: `max_frames` is None (362 is
+    # `trained_max_frames`, advisory only -- see wiring.py), so a large
+    # `total` legitimately produces a `generated` span past it. Only the
+    # floor is still enforced here.
+    assert MINIMAX_H3_TEMPORAL.min_frames <= generated
+    assert MINIMAX_H3_TEMPORAL.max_frames is None
     # And the output length is exactly what the concatenation will produce.
     assert plan["total_frames"] == head + generated - 1

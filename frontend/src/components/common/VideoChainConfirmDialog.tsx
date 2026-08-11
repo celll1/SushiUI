@@ -6,7 +6,13 @@ export interface VideoChainConfirmDialogProps {
   isOpen: boolean;
   /** The length actually held in the frame control, in frames. */
   requestedFrames: number;
-  /** The loaded architecture's single-inference cap, in frames. */
+  /**
+   * The length of clip ONE request in the plan produces, in frames -- the
+   * user's `chain_segment_frames` when they set one, otherwise the loaded
+   * architecture's own single-inference cap (see api.ts's `chainSegmentCap`).
+   * Not necessarily a hard technical wall: on an architecture with no
+   * `max_frames` at all, this is purely the user's own chosen segment size.
+   */
   capFrames: number;
   /** Pre-formatted (e.g. `.toFixed(2)`) seconds readout, or null if unknown. */
   capSeconds: string | null;
@@ -60,12 +66,12 @@ export default function VideoChainConfirmDialog({
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
       <div className="bg-gray-800 rounded-lg shadow-xl max-w-md w-full mx-4 border border-gray-700">
         <div className="flex items-center justify-between p-4 border-b border-gray-700">
-          <h3 className="text-lg font-semibold text-white">Length exceeds the single-inference limit</h3>
+          <h3 className="text-lg font-semibold text-white">Length exceeds the current segment length</h3>
         </div>
 
         <div className="p-4 space-y-2">
           <p className="text-sm text-gray-300">
-            {requestedFrames} frames exceeds the single-inference limit of {capFrames} frames
+            {requestedFrames} frames exceeds the current segment length of {capFrames} frames
             {capSeconds != null ? ` (${capSeconds}s)` : ""}.
           </p>
           {plan != null && (
@@ -88,7 +94,7 @@ export default function VideoChainConfirmDialog({
             onClick={onGenerateAtCap}
             className="px-4 py-2 rounded text-sm font-medium transition-colors bg-blue-600 hover:bg-blue-500 text-white"
           >
-            Generate at {capFrames} frames (single inference)
+            Generate at {capFrames} frames (single request)
           </button>
           <button
             onClick={onStartChain}

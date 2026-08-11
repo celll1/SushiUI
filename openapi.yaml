@@ -159,7 +159,11 @@ paths:
           from the same table the backend refuses on.
         * `video_constraints` — architecture name -> the temporal/spatial
           generation constraints of a VIDEO architecture (`frame_multiple`,
-          `frame_offset`, `min_frames`, `max_frames`, `min_decodable_frames`,
+          `frame_offset`, `min_frames`, `max_frames` (the ENFORCED production
+          top; null = unbounded), `trained_max_frames` (an ADVISORY
+          documented-range top past which a request is accepted and warned as
+          untested rather than refused or clamped; null when the arch has
+          none narrower than `max_frames`), `min_decodable_frames`,
           `fps_fixed`, `max_pixel_hw` — `[short_edge, long_edge]`, not
           `[height, width]` —, `pixel_align`, `snap_invalid_length`,
           `suggested_frames`, `min_inference_steps`,
@@ -473,11 +477,14 @@ paths:
           area budget only when both are omitted.
         - `num_frames` must be of the form `17 * n + 5` with `n >= 1` (the
           video VAE's chunking; its shortest decodable clip is 22 frames), and
-          must fall in `[124, 362]`. A value that is off the grid or outside
-          the range is SNAPPED — rounded UP to the next valid length, as
-          MiniMax-H3's own reference implementation does, then clamped into
-          `[124, 362]` — and a `warnings[]` entry states the rule, including
-          when the value came from the client.
+          must be at least 124. There is no enforced maximum: 362 is the
+          model's DOCUMENTED trained-range top (`trained_max_frames`), not a
+          decoder limit, so a longer on-grid value is accepted with an
+          untested-range warning rather than refused or clamped. An off-grid
+          or below-124 value is SNAPPED — rounded UP to the next valid length,
+          as MiniMax-H3's own reference implementation does — and a
+          `warnings[]` entry states the rule, including when the value came
+          from the client.
         - `frame_rate` is fixed at 24.0; any other value is forced to 24.0 with
           a warning.
         - `guidance_scale` and `negative_prompt` are ignored: guidance is
@@ -596,8 +603,11 @@ paths:
           additionally restricts the canvas to a short edge <= 768 and a long
           edge <= 1344. That restriction is SushiUI policy, not a model limit.
         - `num_frames` must be of the form `17 * n + 5` with `n >= 1` and must
-          fall in `[124, 362]`; an off-grid or out-of-range value is SNAPPED
-          (rounded up, then clamped) with a `warnings[]` entry stating the rule.
+          be at least 124; there is no enforced maximum (362 is a DOCUMENTED
+          trained-range top, not a decoder limit — a longer on-grid value is
+          accepted with an untested-range warning instead). An off-grid or
+          below-124 value is SNAPPED (rounded up) with a `warnings[]` entry
+          stating the rule.
         - `frame_rate` is fixed at 24.0; any other value is forced with a warning.
         - `num_inference_steps` counts sigma schedule grid points with the
           terminal 0 included, so it drives `num_inference_steps - 1` model
@@ -731,8 +741,10 @@ paths:
         **The same MiniMax-H3 constraints as `/generate/txt2vid` apply**:
         `width`/`height` divisible by 32 with SushiUI's short edge <= 768 /
         long edge <= 1344 policy restriction; `num_frames` of the form
-        `17 * n + 5` in `[124, 362]`, snapped with a `warnings[]` entry;
-        `frame_rate` fixed at 24.0; `num_inference_steps` counting sigma grid
+        `17 * n + 5`, at least 124 with no enforced maximum (362 is
+        `trained_max_frames`, DOCUMENTED not enforced), snapped with a
+        `warnings[]` entry; `frame_rate` fixed at 24.0; `num_inference_steps`
+        counting sigma grid
         points, so it drives `num_inference_steps - 1` model evaluations and
         values below 2 are refused; `guidance_scale` / `negative_prompt`
         ignored, with a warning when set to a non-default value.
@@ -1157,23 +1169,23 @@ paths:
         the expansion changed the request.
 
         **Length.** Temporal inpaint samples the WHOLE clip, so the TRIMMED
-        input must itself be a valid clip length (`17n + 5` in 124..362 on
-        MiniMax-H3). It is never snapped -- snapping a clip length means
-        silently deleting frames the caller said to keep -- so an invalid length
-        is a 400 naming the nearest valid lengths and the trim that reaches
-        them. This is the inverse of `/generate/outpaint/video`, where the grid
-        binds the GENERATED span, and is why the two are separate endpoints.
+        input must itself be a valid clip length (`17n + 5`, at least 124
+        frames on MiniMax-H3). There is no enforced maximum: 362 frames is the
+        model's DOCUMENTED trained-range top, not a decoder limit, so a longer
+        on-grid trimmed clip is accepted with an untested-range `warnings[]`
+        entry rather than refused. It is never snapped -- snapping a clip
+        length means silently deleting frames the caller said to keep -- so an
+        off-grid or too-short length is a 400 naming the nearest valid lengths
+        and the trim that reaches them. This is the inverse of
+        `/generate/outpaint/video`, where the grid binds the GENERATED span,
+        and is why the two are separate endpoints.
 
-        A trimmed length ABOVE the model's longest producible clip (362 frames
-        on MiniMax-H3) cannot be served at any setting, so it is refused
-        rather than silently head-cropped: an upfront, cheap ffprobe-only
-        check refuses it before the (bounded) decode when the estimated
-        length already exceeds the cap, and -- because that estimate can
-        UNDER-count a clip whose container/codec does not report an exact
-        frame count (e.g. VFR webm/matroska) -- the ACTUALLY DECODED length
-        is checked again afterwards with the same 400, so an over-length clip
-        is never served truncated with no error just because the fast
-        estimate happened to miss it.
+        Since the trimmed clip is decoded and sampled in full, an upload whose
+        RAW DECODE would exceed a fixed RAM budget (`width * height * 3` bytes
+        per frame) is refused BEFORE decoding, with a cheap ffprobe-only check
+        naming the resolution, frame count and budget -- this is a resource
+        limit, not a length limit, and is unrelated to the 362-frame
+        documented range above.
 
         **Range shape.** One contiguous range per request. The measured shape is
         one span with two boundaries; a multi-range request is a different
@@ -1495,10 +1507,12 @@ paths:
           where it has one (MiniMax-H3: short edge ≤ 768, long edge ≤ 1344).
         - LTX-2.3: `total_frames` must satisfy `(total_frames - 1) % 8 == 0`.
           MiniMax-H3: the GENERATED span implied by `total_frames` and the
-          placed clip length must be a valid `17n + 5` length in 124..362; it
-          is rounded up to that grid, with a `warnings[]` entry (code
-          `outpaint_video_total_frames_adjusted`) naming the effective output
-          length, when it is not.
+          placed clip length must be a valid `17n + 5` length, at least 124
+          (there is no enforced maximum -- a span past the documented 362
+          trained-range top is accepted with an untested-range warning, not
+          clamped); it is rounded up to the grid, with a `warnings[]` entry
+          (code `outpaint_video_total_frames_adjusted`) naming the effective
+          output length, when it is not already on it.
         - The uploaded clip(s) are decoded in full (not bounded by
           `total_frames`) so a too-long upload is never silently cropped
           before this endpoint's own fit/drop logic runs (see the strict
@@ -6947,8 +6961,19 @@ components:
 
             * `frame_multiple` / `frame_offset` — valid clip lengths are
               `k * frame_multiple + frame_offset`.
-            * `min_frames` / `max_frames` — the production generation bounds
-              (`max_frames` null = unbounded).
+            * `min_frames` / `max_frames` — the ENFORCED production generation
+              bounds (`max_frames` null = unbounded; MiniMax-H3 is null as of
+              the 362 decision below).
+            * `trained_max_frames` — an ADVISORY top of the architecture's
+              DOCUMENTED trained range, distinct from `max_frames`: a length
+              past it is still accepted and generated, only warned as
+              untested (never refused or clamped). null when the architecture
+              has nothing narrower to document than `max_frames` already
+              enforces (LTX-2.3). MiniMax-H3: 362 — ComfyUI's reference node
+              states the trained range as "~124-362, longer is untested";
+              nothing stops a longer clip structurally (RoPE is computed on
+              the fly), so this field carries the caveat forward instead of
+              enforcing it.
             * `min_decodable_frames` — a hard VAE floor that nothing overrides.
             * `fps_fixed` — the architecture's fixed frame rate, or null when
               the source rate is preserved.
@@ -7013,7 +7038,8 @@ components:
               frame_multiple: 17
               frame_offset: 5
               min_frames: 124
-              max_frames: 362
+              max_frames: null
+              trained_max_frames: 362
               min_decodable_frames: 22
               fps_fixed: 24.0
               max_pixel_hw: [768, 1344]
@@ -7962,9 +7988,11 @@ components:
           default: 121
           description: >-
             Number of frames. LTX-2.3: must satisfy (num_frames - 1) % 8 == 0.
-            MiniMax-H3: must be of the form 17 * n + 5 with n >= 1, within
-            [124, 362]; an invalid value is snapped to the nearest valid length
-            and reported in warnings[].
+            MiniMax-H3: must be of the form 17 * n + 5 with n >= 1, at least
+            124 with no enforced maximum (362 is the documented trained-range
+            top, not a decoder limit -- a longer on-grid value is accepted
+            with an untested-range warning); an off-grid or too-short value is
+            snapped to the nearest valid length and reported in warnings[].
           example: 121
         frame_rate:
           type: number
@@ -8533,8 +8561,10 @@ components:
             LTX-2.3: must satisfy (total_frames - 1) % 8 == 0; the value is
             exact. MiniMax-H3: a REQUESTED length. The generated span (this
             value minus the preserved clip length(s), plus the shared anchor
-            frame(s)) is what has to land on that architecture's 17n+5 grid
-            inside 124..362, so it is rounded UP to the grid and the effective
+            frame(s)) is what has to land on that architecture's 17n+5 grid,
+            at least 124 with no enforced maximum (a span past the documented
+            362 trained-range top is accepted with an untested-range
+            warning), so it is rounded UP to the grid and the effective
             output length is reported in `warnings[]`. The MiniMax-H3 default
             resolves to 248 through
             `outpaint_video_arch_overlays` of GET /schema/generation-defaults.

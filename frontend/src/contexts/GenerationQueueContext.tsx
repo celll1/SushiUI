@@ -69,6 +69,13 @@ export interface QueueItem {
   // every other queue item.
   chainTargetFrames?: number;
   chainPreviousFrames?: number;
+  // The per-segment length the chain was built with (chain_segment_frames at
+  // enqueue time; see api.ts's chainSegmentCap). Persisted on the item, not
+  // re-read from panel state, because `advanceVideoChain` (videoChain.ts)
+  // computes each continuation's `total_frames` well after enqueue -- a chain
+  // already enqueued is frozen at enqueue time and must not be retargeted by
+  // a later change to the panel's segment-length control.
+  chainSegmentFrames?: number | null;
   status: "pending" | "generating" | "completed" | "failed";
   addedAt: number;
   prompt: string; // For display purposes

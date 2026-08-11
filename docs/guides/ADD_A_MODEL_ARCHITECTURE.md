@@ -130,12 +130,21 @@ transformer additionally patchifies, that belongs in `pixel_align`, not here.
 `frame_offset`, the production `min_frames`/`max_frames`, the hard
 `min_decodable_frames` VAE floor, the closed-form `latent_frames`, `fps_fixed`,
 `default_clip_lengths`, `max_pixel_hw` and whether an invalid length snaps or
-400s. Keeping the two floors separate matters: a training clip shorter than the
-production generation floor is not a violation, but nothing may go below the
-decodable floor. One table is then read by route validation, bucketing, the
-video loader, the clip-cache key, and the `video_constraints` block of
-`GET /schema/arch-capabilities` — so the frontend builds its clip-length list
-from the backend's own rule and no shared file grows an `if arch ==`.
+400s. `max_frames` is the ENFORCED ceiling and may be `None` (no enforced
+top at all — MiniMax-H3, as of the 362 decision: RoPE is computed on the fly,
+so nothing structural stops a longer clip, only the `frame_multiple`/
+`frame_offset` grid is structural); a separate `trained_max_frames` field
+carries an ADVISORY documented-range top instead, past which a request is
+accepted and warned as untested rather than refused or clamped. Do not
+conflate the two: a real per-arch production ceiling belongs in `max_frames`,
+a merely-documented-not-measured one belongs in `trained_max_frames`. Keeping
+the two floors (`min_frames` vs. `min_decodable_frames`) separate matters too:
+a training clip shorter than the production generation floor is not a
+violation, but nothing may go below the decodable floor. One table is then
+read by route validation, bucketing, the video loader, the clip-cache key, and
+the `video_constraints` block of `GET /schema/arch-capabilities` — so the
+frontend builds its clip-length list from the backend's own rule and no shared
+file grows an `if arch ==`.
 
 **Per-arch generation defaults, not route special cases.** Add a
 `VIDEO_GEN_ARCH_OVERLAYS[arch]` entry in `backend/api/param_defaults.py`; the

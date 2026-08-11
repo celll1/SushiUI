@@ -1304,6 +1304,13 @@ export interface VideoConstraints {
   frame_offset: number;
   min_frames: number;              // production floor
   max_frames: number | null;
+  // Advisory-only: the longest length the architecture was actually trained
+  // on (MiniMax-H3: 362), served ONLY when `max_frames` is null for the same
+  // arch -- i.e. the backend no longer enforces this as a hard single-
+  // inference ceiling, but a length past it is documented-untested rather
+  // than a fact the backend can vouch for. Optional so an older backend
+  // without the key still type-checks (treated as "no advisory range" then).
+  trained_max_frames?: number | null;
   min_decodable_frames: number;    // hard VAE floor, below the production one
   fps_fixed: number | null;        // non-null = the arch generates at this fps only
   // ORIENTATION-AGNOSTIC [short_edge, long_edge], NOT [height, width].
@@ -1457,35 +1464,85 @@ export const snapUpValidVideoFrameCount = (
 // bridge clip (the placement this feature always uses).
 const VIDEO_CHAIN_ANCHOR_FRAMES = 1;
 
+// The per-segment length chaining arithmetic should use: the caller-supplied
+// `segmentFrames` (`chain_segment_frames`, user-settable, null/undefined =
+// unset) when it is a positive finite number, otherwise the architecture's
+// own single-inference cap (`max_frames`) when it still has one, otherwise
+// no cap at all (`Infinity`, meaning "nothing to chain unless the user opts
+// in").
+//
+// `chain_segment_frames` is independent client-side orchestration state, NOT
+// a backend parameter -- the backend only ever sees the resulting
+// `total_frames` on each independent request (see videoChain.ts's header).
+// Its default (unset) intentionally falls back to `max_frames` rather than
+// straight to `Infinity`: that keeps every architecture that still has a
+// real single-inference wall (LTX-2.3) chaining automatically exactly as it
+// did before this control existed, while fixing the regression this control
+// was added to fix -- an architecture whose `max_frames` went null
+// (MiniMax-H3; see `trained_max_frames`) no longer has ANY server-enforced
+// wall, so with no explicit segment length from the user there is nothing to
+// split on, and "raise the total, nothing splits" is correct there by
+// default. Setting `chain_segment_frames` is what turns chaining into a
+// voluntary choice on an uncapped architecture too (e.g. to keep every
+// segment within the documented trained range for quality, even though the
+// backend would accept one huge request).
+const chainSegmentCap = (
+  c: VideoConstraints | undefined,
+  segmentFrames: number | null | undefined
+): number => {
+  if (segmentFrames != null && Number.isFinite(segmentFrames) && segmentFrames > 0) {
+    return segmentFrames;
+  }
+  return c?.max_frames ?? Number.POSITIVE_INFINITY;
+};
+
 // The `total_frames` value to send to POST /generate/outpaint/video to
 // continue a chain that has produced `accumulatedFrames` so far, aiming for
 // `targetFrames` overall. Also, on success, the new accumulated frame count
 // (the extend_forward output is exactly this many frames — preserved prefix
 // plus the newly generated span, minus the one shared anchor frame). Returns
-// null when the architecture has no single-inference cap (nothing to chain)
-// or the segment would make no forward progress (guards against a
-// pathological arch table looping forever).
+// null when there is no effective per-segment cap to chain against (see
+// `chainSegmentCap`) or the segment would make no forward progress (guards
+// against a pathological arch table looping forever).
 export const nextVideoChainTotalFrames = (
   caps: ArchCapabilities | null | undefined,
   arch: string | null | undefined,
   accumulatedFrames: number,
-  targetFrames: number
+  targetFrames: number,
+  segmentFrames?: number | null
 ): number | null => {
   const c = arch ? caps?.video_constraints?.[arch] : undefined;
-  if (!c || c.max_frames == null) return null;
+  if (!c) return null;
+  const cap = chainSegmentCap(c, segmentFrames);
+  if (!Number.isFinite(cap)) return null;
   const remaining = targetFrames - accumulatedFrames;
   if (remaining <= 0) return null;
-  const requestedGenerated = Math.min(remaining, c.max_frames);
+  const requestedGenerated = Math.min(remaining, cap);
   const generatedSpan = snapUpValidVideoFrameCount(caps, arch, requestedGenerated);
   if (generatedSpan == null || generatedSpan <= VIDEO_CHAIN_ANCHOR_FRAMES) return null;
   return accumulatedFrames + generatedSpan - VIDEO_CHAIN_ANCHOR_FRAMES;
 };
 
-// The client-side plan for reaching `targetFrames` on an architecture whose
-// single-inference cap (`max_frames`) is below it, using the same
-// segment-by-segment arithmetic `nextVideoChainTotalFrames` applies at
-// execution time. Returns null when the architecture is uncapped (nothing to
-// chain) or `targetFrames` already fits in one request.
+// The client-side plan for reaching `targetFrames` when the effective
+// per-segment cap (`chainSegmentCap`: `segmentFrames` if the user set one,
+// else the architecture's `max_frames`, else uncapped) is below it, using the
+// same segment-by-segment arithmetic `nextVideoChainTotalFrames` applies at
+// execution time.
+//
+// Returns null for three DIFFERENT reasons that all mean "nothing to plan",
+// kept as separate early-returns (not folded into one condition) so each
+// stays independently readable/greppable even though the caller only ever
+// sees "no plan":
+//   1. the arch/matrix is unknown or `targetFrames` is not a real number;
+//   2. there is no effective segment cap at all (uncapped arch, no
+//      `segmentFrames` set) -- nothing CAN be chained, by design;
+//   3. `targetFrames` already fits inside one segment -- chaining is not
+//      NEEDED.
+// A caller that must tell these apart (e.g. to phrase "nothing to chain
+// automatically -- set a segment length" vs "already fits") calls
+// `chainSegmentCap`-derived logic itself; the Generate-time gate
+// (`if (chainPlan != null)`) only ever needed the null/non-null distinction,
+// which this preserves.
 export interface VideoChainPlan {
   capFrames: number;
   segments: number;    // total requests, INCLUDING segment 1
@@ -1495,47 +1552,54 @@ export interface VideoChainPlan {
 export const planVideoChain = (
   caps: ArchCapabilities | null | undefined,
   arch: string | null | undefined,
-  targetFrames: number
+  targetFrames: number,
+  segmentFrames?: number | null
 ): VideoChainPlan | null => {
   const c = arch ? caps?.video_constraints?.[arch] : undefined;
-  if (!c || c.max_frames == null || !Number.isFinite(targetFrames)) return null;
-  if (targetFrames <= c.max_frames) return null;
+  if (!c || !Number.isFinite(targetFrames)) return null;
+  const cap = chainSegmentCap(c, segmentFrames);
+  if (!Number.isFinite(cap)) return null;
+  if (targetFrames <= cap) return null;
 
-  let accumulated = c.max_frames; // segment 1: a normal request, at the cap
+  let accumulated = cap; // segment 1: a normal request, at the segment cap
   let segments = 1;
   // Bounded so a pathological arch table can never loop forever; 500
   // segments is far beyond anything this feature would reasonably run.
   for (let guard = 0; guard < 500 && accumulated < targetFrames; guard++) {
-    const next = nextVideoChainTotalFrames(caps, arch, accumulated, targetFrames);
+    const next = nextVideoChainTotalFrames(caps, arch, accumulated, targetFrames, segmentFrames);
     if (next == null) break;
     accumulated = next;
     segments += 1;
   }
-  return { capFrames: c.max_frames, segments, finalFrames: accumulated };
+  return { capFrames: cap, segments, finalFrames: accumulated };
 };
 
 // Per-CONTINUATION-segment `total_frames` values for reaching `targetFrames`,
 // i.e. everything `planVideoChain` above computes except segment 1 itself
-// (which is always a plain request at `capFrames`). Used to give the queue
-// items for segments 2..N a real initial `total_frames` at enqueue time, so
-// the whole plan is visible in the queue immediately -- each item's value is
-// still re-derived from the ACTUAL previous segment's reported frame count
-// right before that item runs (see videoChain.ts), because a real generation
-// can snap slightly differently than this pre-flight estimate. Returns null
-// under the same "nothing to chain" condition as `planVideoChain`.
+// (which is always a plain request at the effective segment cap). Used to
+// give the queue items for segments 2..N a real initial `total_frames` at
+// enqueue time, so the whole plan is visible in the queue immediately -- each
+// item's value is still re-derived from the ACTUAL previous segment's
+// reported frame count right before that item runs (see videoChain.ts),
+// because a real generation can snap slightly differently than this
+// pre-flight estimate. Returns null under the same "nothing to chain"
+// conditions as `planVideoChain`.
 export const planVideoChainSegments = (
   caps: ArchCapabilities | null | undefined,
   arch: string | null | undefined,
-  targetFrames: number
+  targetFrames: number,
+  segmentFrames?: number | null
 ): number[] | null => {
   const c = arch ? caps?.video_constraints?.[arch] : undefined;
-  if (!c || c.max_frames == null || !Number.isFinite(targetFrames)) return null;
-  if (targetFrames <= c.max_frames) return null;
+  if (!c || !Number.isFinite(targetFrames)) return null;
+  const cap = chainSegmentCap(c, segmentFrames);
+  if (!Number.isFinite(cap)) return null;
+  if (targetFrames <= cap) return null;
 
   const segments: number[] = [];
-  let accumulated = c.max_frames;
+  let accumulated = cap;
   for (let guard = 0; guard < 500 && accumulated < targetFrames; guard++) {
-    const next = nextVideoChainTotalFrames(caps, arch, accumulated, targetFrames);
+    const next = nextVideoChainTotalFrames(caps, arch, accumulated, targetFrames, segmentFrames);
     if (next == null) break;
     segments.push(next);
     accumulated = next;
@@ -1545,21 +1609,26 @@ export const planVideoChainSegments = (
 
 // The length of clip ANY SINGLE generation request in a chain (or a plain,
 // unchained request) can actually produce: `requestedFrames` itself when it
-// already fits in one inference, otherwise the architecture's single-inference
-// cap. Nothing this feature ever sends to a generation endpoint -- segment 1
-// of a chain, a `Generate at cap` single inference, or an unchained request --
-// is longer than this, so it is what a per-segment duration (H3 Prompt Assist)
-// must be computed from, never `requestedFrames` itself. Falls back to
-// `requestedFrames` when the arch/matrix is unknown, the same "assume
-// supported" convention `archSupportsFeature` uses.
+// already fits in one segment, otherwise the effective per-segment cap
+// (`chainSegmentCap`: the user's `chain_segment_frames` if set, else the
+// architecture's single-inference cap, else uncapped). Nothing this feature
+// ever sends to a generation endpoint -- segment 1 of a chain, a `Generate at
+// cap` single inference, or an unchained request -- is longer than this, so
+// it is what a per-segment duration (H3 Prompt Assist) must be computed
+// from, never `requestedFrames` itself. Falls back to `requestedFrames` when
+// the arch/matrix is unknown, the same "assume supported" convention
+// `archSupportsFeature` uses.
 export const effectiveSegmentFrames = (
   caps: ArchCapabilities | null | undefined,
   arch: string | null | undefined,
-  requestedFrames: number
+  requestedFrames: number,
+  segmentFrames?: number | null
 ): number => {
   const c = arch ? caps?.video_constraints?.[arch] : undefined;
-  if (!c || c.max_frames == null) return requestedFrames;
-  return Math.min(requestedFrames, c.max_frames);
+  if (!c) return requestedFrames;
+  const cap = chainSegmentCap(c, segmentFrames);
+  if (!Number.isFinite(cap)) return requestedFrames;
+  return Math.min(requestedFrames, cap);
 };
 
 // The temporal-outpaint placements the loaded arch can anchor, from the
@@ -1670,8 +1739,13 @@ export const normalizeVideoFrames = (
     Math.abs(n - frames) < Math.abs(best - frames) ? n : best, offered[0]);
 };
 
-// Label for that control, stating the arch's own rule ("17n+5, 124-362") rather
-// than a hardcoded "8k+1".
+// Label for that control, stating the arch's own rule ("17n+5, 124-362")
+// rather than a hardcoded "8k+1". Always states the floor, even when there is
+// no hard ceiling: `max_frames == null` used to drop the whole range clause,
+// losing the floor hint too. When the arch declares no hard ceiling but does
+// have a `trained_max_frames` (advisory-only, e.g. MiniMax-H3's 362), that is
+// shown as a "+" open range rather than a bound, since going past it is
+// documented-untested, not invalid.
 export const videoFrameLabel = (
   caps: ArchCapabilities | null | undefined,
   arch: string | null | undefined
@@ -1681,7 +1755,14 @@ export const videoFrameLabel = (
   const rule = c.frame_offset === 0
     ? `${c.frame_multiple}n`
     : `${c.frame_multiple}n+${c.frame_offset}`;
-  const range = c.max_frames != null ? `, ${c.min_frames}-${c.max_frames}` : "";
+  let range: string;
+  if (c.max_frames != null) {
+    range = `, ${c.min_frames}-${c.max_frames}`;
+  } else if (c.trained_max_frames != null) {
+    range = `, ${c.min_frames}+ (trained to ${c.trained_max_frames})`;
+  } else {
+    range = `, ${c.min_frames}+`;
+  }
   return `Frames (${rule}${range})`;
 };
 

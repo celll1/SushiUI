@@ -5,6 +5,7 @@ import NumberInput from "../common/NumberInput";
 import Button from "../common/Button";
 import FramePreviewTooltip from "../common/FramePreviewTooltip";
 import { formatTimecode } from "@/utils/timecode";
+import { percentForValue, valueAtClientX } from "@/utils/timelineScale";
 import type { VideoPlayheadState } from "@/hooks/useVideoPlayhead";
 
 // ---------------------------------------------------------------------------
@@ -209,8 +210,7 @@ export default function OutpaintTimeline({
   const outputUnitAtClientX = (clientX: number): number => {
     const rect = containerRef.current?.getBoundingClientRect();
     if (!rect || rect.width <= 0) return 0;
-    const fraction = clamp((clientX - rect.left) / rect.width, 0, 1);
-    return fraction * safeTotalUnits;
+    return valueAtClientX(clientX, rect, { min: 0, max: safeTotalUnits });
   };
 
   const onPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
@@ -334,8 +334,8 @@ export default function OutpaintTimeline({
     player.setLoopRange({ startSec: trimStart / unitRate, endSec: (trimStart + segmentLength) / unitRate });
   }, [loopEnabled, trimStart, segmentLength, unitRate, player?.setLoopRange]);
 
-  const leftPct = (offset / safeTotalUnits) * 100;
-  const widthPct = (segmentLength / safeTotalUnits) * 100;
+  const leftPct = percentForValue(offset, { min: 0, max: safeTotalUnits });
+  const widthPct = percentForValue(segmentLength, { min: 0, max: safeTotalUnits });
 
   const formatUnit = (u: number): string => {
     if (unitRate && unitRate > 0) return `${(u / unitRate).toFixed(2)}s`;
@@ -491,7 +491,7 @@ export default function OutpaintTimeline({
             {ticks.map((t, i) => {
               const isLast = i === ticks.length - 1;
               return (
-                <div key={i} className="absolute top-0 bottom-0 border-l border-gray-700/60" style={{ left: `${(t / safeTotalUnits) * 100}%` }}>
+                <div key={i} className="absolute top-0 bottom-0 border-l border-gray-700/60" style={{ left: `${percentForValue(t, { min: 0, max: safeTotalUnits })}%` }}>
                   <span
                     className={`absolute bottom-0 text-[10px] text-gray-500 whitespace-nowrap ${isLast ? "right-0.5" : "left-0.5"}`}
                   >

@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import Button from "./Button";
 import InlineHelp from "./InlineHelp";
 import { MiniMaxH3Keyframe, toBase64 } from "@/utils/api";
+import { cssLeftForValue, roundedValueAtClientX } from "@/utils/timelineScale";
 
 /**
  * Keyframe placement for MiniMax-H3's `fl2va` workflow (POST /generate/img2vid).
@@ -137,18 +138,14 @@ export default function MiniMaxH3KeyframeTimeline({
   // so an anchor at either end is fully visible instead of hanging outside the
   // card. The drag mapping below uses the same inset, so the frame the pointer
   // resolves to is the frame the marker is drawn on.
-  const markerLeft = (percent: number) =>
-    `calc(${MARKER_HALF_PX}px + (100% - ${MARKER_HALF_PX * 2}px) * ${percent / 100})`;
+  const markerLeft = (frame: number) => cssLeftForValue(frame, { min: 0, max: lastIndex, insetPx: MARKER_HALF_PX });
 
   /** Pointer x -> the WHOLE frame it is nearest. Never returns a fraction. */
   const frameFromClientX = (clientX: number): number => {
     const el = trackRef.current;
     if (!el || lastIndex <= 0) return 0;
     const rect = el.getBoundingClientRect();
-    const usable = rect.width - MARKER_HALF_PX * 2;
-    if (usable <= 0) return 0;
-    const ratio = (clientX - rect.left - MARKER_HALF_PX) / usable;
-    return Math.max(0, Math.min(lastIndex, Math.round(ratio * lastIndex)));
+    return roundedValueAtClientX(clientX, rect, { min: 0, max: lastIndex, insetPx: MARKER_HALF_PX });
   };
 
   useEffect(() => {
@@ -345,13 +342,12 @@ export default function MiniMaxH3KeyframeTimeline({
           frame 0
         </span>
         {chips.map((chip) => {
-          const percent = lastIndex > 0 ? (chip.frame / lastIndex) * 100 : 0;
           const draggable = !disabled && chip.editable && chip.requested !== -1;
           return (
             <div
               key={chip.key}
               className="absolute bottom-6 -translate-x-1/2 flex flex-col items-center"
-              style={{ left: markerLeft(percent) }}
+              style={{ left: markerLeft(chip.frame) }}
             >
               <div
                 role={draggable ? "slider" : undefined}

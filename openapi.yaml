@@ -53,6 +53,8 @@ tags:
     description: Tagger (vision encoder) training run management
   - name: logs
     description: Backend console log retrieval
+  - name: video-mask
+    description: Spatial mask timeline rasterization for UI preview (no model load, no generation)
   - name: debug
     description: Developer-mode diagnostics (VRAM inspection)
 
@@ -1281,23 +1283,130 @@ paths:
         '400':
           description: >-
             Invalid parameters, or no MiniMax-H3 fl2va model loaded. Also
-            returned when the TRIMMED clip is not a valid clip length (it is
-            never snapped) -- including when it is LONGER than the model's
-            longest producible clip (362 frames on MiniMax-H3), refused with
-            "the trimmed clip is longer than this model can produce" naming
-            the cap and the decoded length -- when the range is empty or
-            outside the clip, or when the range leaves nothing preserved (unless
-            a spatial mask leaves at least one token preserved). It
-            also covers an invalid spatial mask manifest, a manifest canvas
-            that does not match the resolved output canvas, a malformed or
-            empty mask PNG, and any mismatch or duplicate in the repeated
-            `spatial_mask_ids`/`spatial_mask_files` mapping.
+            returned when the TRIMMED clip is off-grid or shorter than the
+            model's floor (it is never snapped -- there is no enforced
+            maximum length to be too long against) -- when the upload's raw
+            decode would exceed the RAM budget for its resolution and frame
+            count, refused before decoding with a message naming both --
+            when the range is empty or outside the clip, or when the range
+            leaves nothing preserved (unless a spatial mask leaves at least
+            one token preserved). It also covers an invalid spatial mask
+            manifest, a manifest canvas that does not match the resolved
+            output canvas, a malformed or empty mask PNG, and any mismatch or
+            duplicate in the repeated `spatial_mask_ids`/`spatial_mask_files`
+            mapping.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: Generation failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /video-mask/preview:
+    post:
+      tags: [video-mask]
+      summary: Rasterize a spatial mask timeline into a downscaled preview sprite
+      description: |
+        Rasterizes the SAME spatial-mask-timeline manifest `/generate/inpaint/video`
+        accepts, for an explicit list of frame numbers, and returns one
+        downscaled grayscale PNG strip holding every requested frame side by
+        side plus the metadata to slice it back apart. Exists so a UI can
+        preview `hold`/`affine`/`sdf` interpolation without reimplementing
+        `sdf`'s distance-transform morph in the browser -- this endpoint does
+        no generation and loads no model.
+
+        **Wire format**, identical to `/generate/inpaint/video`'s spatial mask
+        fields: `spatial_mask_manifest` (required here; a preview has nothing
+        to rasterize without one), plus one PNG in `spatial_mask_files` and its
+        ID in `spatial_mask_ids` for every unique `mask_id` the manifest
+        references. The manifest's own `canvas.width`/`canvas.height` define
+        the mask's coordinate space; there is no separate width/height field.
+
+        **`frames`**: the exact frame numbers (repeated form field) to
+        rasterize, at most 64 per request and with no duplicates. A frame
+        outside every keyframe's span still resolves through the manifest's
+        own hold-past-the-last-keyframe behavior, but the total span the
+        request implies (every keyframe's frame number union every requested
+        frame) is capped at 4096 frames independent of how many frames are
+        requested, since the rasterizer must process the whole implied span
+        contiguously -- a manifest with two widely separated keyframes cannot
+        be used to force a huge rasterization by requesting one frame near
+        each end.
+
+        **`max_size`**: the longest edge, in pixels, of the returned per-frame
+        tile (16..1024, default 256); the manifest canvas is downscaled to it
+        with a Lanczos filter, preserving its aspect ratio. This is smaller
+        than the canvas the actual generation rasterizes at, so an edge that
+        looks sharp in this preview is not a claim about the exact per-pixel
+        boundary a generation call with the same manifest produces.
+
+        **Response**: a single JSON object; the PNG strip is embedded as a
+        `data:image/png;base64,...` URI (the same convention
+        `/controlnet/preprocess-image` uses), not a multipart response, so a
+        plain `fetch`/`axios` JSON call is enough on the frontend. All
+        returned frames share one `frame_width`/`frame_height` (every frame in
+        a timeline shares one canvas), and `frames[]` lists each requested
+        frame's `x_offset` into the strip in ascending, de-duplicated frame
+        order (not necessarily the order they were requested in).
+
+        Applies the exact same upload-size and asset-count validation as
+        `/generate/inpaint/video`'s spatial mask handling (at most 64 unique
+        PNG assets, each bounded by the manifest canvas's own uncompressed
+        byte count) -- being a read-only preview does not relax it.
+      operationId: previewVideoMask
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/VideoMaskPreviewRequest'
+            encoding:
+              spatial_mask_files:
+                style: form
+                explode: true
+              spatial_mask_ids:
+                style: form
+                explode: true
+              frames:
+                style: form
+                explode: true
+      responses:
+        '200':
+          description: Preview rasterized successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VideoMaskPreviewResponse'
+              example:
+                canvas_width: 640
+                canvas_height: 384
+                frame_width: 256
+                frame_height: 154
+                frames:
+                  - frame: 40
+                    x_offset: 0
+                  - frame: 62
+                    x_offset: 256
+                warnings: []
+                strip_png: "data:image/png;base64,iVBORw0KGgo..."
+        '400':
+          description: >-
+            Invalid spatial_mask_manifest, a malformed or empty mask PNG, a
+            mismatch or duplicate in the repeated spatial_mask_ids/
+            spatial_mask_files mapping, too many unique mask assets, an empty
+            or oversized frames list, a duplicate frame number, max_size
+            outside 16..1024, or a keyframe+requested-frame span over the
+            4096-frame preview limit.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Preview rasterization failed unexpectedly
           content:
             application/json:
               schema:
@@ -9088,6 +9197,100 @@ components:
             contract and same MiniMax-H3-only capability as `Txt2VidRequest.loras`
             -- see there for details.
           example: '[{"path": "minimax_h3_lora.safetensors", "strength": 1.0}]'
+
+    VideoMaskPreviewRequest:
+      type: object
+      required:
+        - spatial_mask_manifest
+        - frames
+      description: |
+        Multipart request for `/video-mask/preview`. Carries the same
+        spatial-mask-timeline fields as `InpaintVideoRequest` (manifest +
+        repeated PNG uploads/IDs), plus the frame list and preview size that
+        are specific to this read-only endpoint.
+      properties:
+        spatial_mask_manifest:
+          type: string
+          description: |
+            The version-1 spatial mask timeline manifest, identical schema to
+            `InpaintVideoRequest.spatial_mask_manifest`. Required here (unlike
+            the generation endpoint, where it is optional) since a preview
+            with no manifest has nothing to rasterize.
+          example: '{"version":1,"coordinate_space":"output_canvas","polarity":"white_generate","canvas":{"width":640,"height":384},"keyframes":[{"frame":40,"mask_id":"subject","interpolation_to_next":"sdf"},{"frame":85,"mask_id":"subject","interpolation_to_next":"hold"}]}'
+        spatial_mask_files:
+          type: array
+          description: "Repeated PNG uploads, paired positionally with spatial_mask_ids, exactly as InpaintVideoRequest.spatial_mask_files."
+          items:
+            type: string
+            format: binary
+        spatial_mask_ids:
+          type: array
+          description: "Repeated form IDs paired positionally with spatial_mask_files, exactly as InpaintVideoRequest.spatial_mask_ids."
+          items:
+            type: string
+        frames:
+          type: array
+          description: |
+            Frame numbers to rasterize and return, as a repeated form field.
+            At most 64 entries, no duplicates, each >= 0.
+          items:
+            type: integer
+          example: [40, 50, 62, 85]
+        max_size:
+          type: integer
+          default: 256
+          minimum: 16
+          maximum: 1024
+          description: "Longest edge, in pixels, of each returned tile in the strip. The manifest canvas is downscaled to this with a Lanczos filter."
+          example: 256
+
+    VideoMaskPreviewResponse:
+      type: object
+      required:
+        - canvas_width
+        - canvas_height
+        - frame_width
+        - frame_height
+        - frames
+        - strip_png
+      properties:
+        canvas_width:
+          type: integer
+          description: "The manifest's own (full-resolution) canvas width, for computing the downscale ratio back to output-canvas pixel coordinates."
+          example: 640
+        canvas_height:
+          type: integer
+          example: 384
+        frame_width:
+          type: integer
+          description: "Width, in pixels, of one tile in strip_png. Shared by every returned frame."
+          example: 256
+        frame_height:
+          type: integer
+          example: 154
+        frames:
+          type: array
+          description: "One entry per requested frame, ascending and de-duplicated by frame number, each naming its tile's left edge inside strip_png."
+          items:
+            type: object
+            required: [frame, x_offset]
+            properties:
+              frame:
+                type: integer
+                example: 40
+              x_offset:
+                type: integer
+                description: "Left edge, in strip_png pixels, of this frame's tile. Its width is frame_width and its height is frame_height."
+                example: 0
+        warnings:
+          type: array
+          description: "Human-readable notices, e.g. an sdf interpolation segment that fell back to holding an endpoint's mask on some of the returned frames. Same wording as the generation endpoint's own sdf warnings."
+          items:
+            type: string
+          example: []
+        strip_png:
+          type: string
+          description: "The sprite strip as a data:image/png;base64,... URI: one 8-bit grayscale PNG, frame_width * len(frames) wide by frame_height tall, tiles left-to-right in the same order as frames[]."
 
     Txt2AudRequest:
       type: object

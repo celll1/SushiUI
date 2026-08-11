@@ -4193,6 +4193,49 @@ export const getAvailablePreprocessors = async (): Promise<{ preprocessors: Prep
   return response.data;
 };
 
+// Video mask timeline preview: rasterizes a spatial mask manifest (the exact
+// wire format /generate/inpaint/video's spatial_mask_manifest/_ids/_files use)
+// for an explicit list of frames, without loading a model or generating
+// anything. See openapi.yaml's /video-mask/preview and
+// backend/core/inference/video_mask_preview.py for what this actually does.
+export interface VideoMaskPreviewFrame {
+  frame: number;
+  x_offset: number;
+}
+
+export interface VideoMaskPreviewResult {
+  canvas_width: number;
+  canvas_height: number;
+  frame_width: number;
+  frame_height: number;
+  frames: VideoMaskPreviewFrame[];
+  warnings: string[];
+  strip_png: string;
+}
+
+export const previewVideoMask = async (
+  manifestJson: string,
+  maskParts: Array<{ id: string; file: File }>,
+  frames: number[],
+  maxSize = 256,
+): Promise<VideoMaskPreviewResult> => {
+  const formData = new FormData();
+  formData.append("spatial_mask_manifest", manifestJson);
+  for (const part of maskParts) {
+    formData.append("spatial_mask_ids", part.id);
+    formData.append("spatial_mask_files", part.file, sanitizeMaskAssetFilename(part.id));
+  }
+  for (const frame of frames) {
+    formData.append("frames", String(frame));
+  }
+  formData.append("max_size", String(maxSize));
+
+  const response = await api.post("/video-mask/preview", formData, {
+    headers: { "Content-Type": "multipart/form-data" },
+  });
+  return response.data;
+};
+
 // MiniMax-H3 Prompt Assist API
 export type H3PromptMode = "t2va" | "i2va" | "fl2va" | "l2va" | "ref2va";
 export type PromptAssistProvider = "lm_studio" | "ollama";

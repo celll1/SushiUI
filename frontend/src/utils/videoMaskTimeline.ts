@@ -434,6 +434,53 @@ export function clampKeyframe(
   };
 }
 
+/**
+ * Must match `MAX_MASK_PREVIEW_FRAMES` in
+ * `backend/core/inference/video_mask_preview.py` -- kept here (rather than
+ * only in `computeMaskPreviewSampleFrames`'s default) so any other caller of
+ * `/video-mask/preview` can size its own request against the same number
+ * instead of hardcoding a second copy of it.
+ */
+export const MAX_MASK_PREVIEW_FRAMES = 64;
+
+/**
+ * Chooses which frames to fetch from `/video-mask/preview` for a manifest:
+ * every keyframe's own frame (so a scrub landing exactly on one shows the
+ * keyframe's own mask, not a nearby sample), plus evenly spaced samples
+ * across `[rangeStart, rangeEnd)` to fill the rest of the budget, so
+ * scrubbing BETWEEN keyframes still has a nearby exact backend rasterization
+ * to fall back to instead of only ever the keyframes themselves.
+ *
+ * This is a SAMPLING decision, not a rasterization one: the returned frames
+ * are exactly what gets sent to the backend, which rasterizes each one
+ * exactly (including a full `sdf` distance-transform morph where relevant).
+ * Nothing here interpolates a mask -- see the design note this function's
+ * call site links to for why that must stay true.
+ */
+export function computeMaskPreviewSampleFrames(
+  keyframeFrames: number[],
+  rangeStart: number,
+  rangeEnd: number,
+  maxFrames: number = MAX_MASK_PREVIEW_FRAMES,
+): number[] {
+  const frames = new Set<number>();
+  for (const frame of keyframeFrames) {
+    if (Number.isInteger(frame) && frame >= 0) frames.add(frame);
+  }
+  const clampedStart = Math.max(0, Math.round(Math.min(rangeStart, rangeEnd)));
+  const clampedEnd = Math.max(clampedStart + 1, Math.round(Math.max(rangeStart, rangeEnd)));
+  const span = clampedEnd - clampedStart;
+  const remaining = Math.max(0, maxFrames - frames.size);
+  if (remaining > 0 && span > 0) {
+    const step = span / (remaining + 1);
+    for (let i = 1; i <= remaining && frames.size < maxFrames; i++) {
+      const frame = clampedStart + Math.round(step * i);
+      if (frame >= 0) frames.add(frame);
+    }
+  }
+  return [...frames].sort((a, b) => a - b).slice(0, maxFrames);
+}
+
 export function validateKeyframes(keyframes: VideoMaskKeyframe[]): string[] {
   const errors: string[] = [];
   const seenFrames = new Set<number>();

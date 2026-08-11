@@ -69,3 +69,79 @@ export function centerCropToCanvas(
     image.src = dataUrl;
   });
 }
+
+export interface DisplayRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/**
+ * The on-screen rectangle, in CSS pixels relative to an `object-contain`
+ * `<video>` element's OWN box (`containerWidth` x `containerHeight`), that
+ * corresponds EXACTLY to the `outputWidth` x `outputHeight` canvas the
+ * backend's center-crop-cover mapping (`centerCropToCanvas` above;
+ * `center_crop_resize_frames` server-side) produces from the
+ * `nativeWidth` x `nativeHeight` source.
+ *
+ * `object-contain` shows the FULL native frame, letterboxed. The backend
+ * instead COVERS the output canvas and crops off whatever hangs outside, so
+ * a spatial mask timeline (drawn in output-canvas pixel coordinates) must be
+ * overlaid onto a sub-rectangle of the on-screen video that is usually
+ * SMALLER than the full letterboxed frame -- the cropped-away edges of
+ * `object-contain`'s display have no output-canvas counterpart at all, and
+ * drawing the mask over them would misalign it relative to what the mask
+ * actually affects once generated.
+ *
+ * Derivation: invert `centerCropToCanvas`'s own forward mapping (native ->
+ * output canvas) to find which native pixel range survives the crop, then
+ * map that native range through the video element's own `object-contain`
+ * (native -> on-screen) mapping. Returns null for any non-positive input
+ * dimension (nothing sensible to compute).
+ */
+export function computeCoverCropDisplayRect(
+  containerWidth: number,
+  containerHeight: number,
+  nativeWidth: number,
+  nativeHeight: number,
+  outputWidth: number,
+  outputHeight: number,
+): DisplayRect | null {
+  if (
+    !(containerWidth > 0) || !(containerHeight > 0) ||
+    !(nativeWidth > 0) || !(nativeHeight > 0) ||
+    !(outputWidth > 0) || !(outputHeight > 0)
+  ) {
+    return null;
+  }
+
+  // Forward mapping (matches centerCropToCanvas's own math exactly): cover-
+  // scale the native frame onto the output canvas, centered.
+  const coverScale = Math.max(outputWidth / nativeWidth, outputHeight / nativeHeight);
+  const drawWidth = nativeWidth * coverScale;
+  const drawHeight = nativeHeight * coverScale;
+  const canvasOffsetX = (outputWidth - drawWidth) / 2;
+  const canvasOffsetY = (outputHeight - drawHeight) / 2;
+
+  // Invert it: which native pixel range maps into [0, outputWidth] x
+  // [0, outputHeight] (i.e. survives the crop) rather than being cut off.
+  const nativeVisibleX0 = -canvasOffsetX / coverScale;
+  const nativeVisibleX1 = (outputWidth - canvasOffsetX) / coverScale;
+  const nativeVisibleY0 = -canvasOffsetY / coverScale;
+  const nativeVisibleY1 = (outputHeight - canvasOffsetY) / coverScale;
+
+  // The <video>'s own object-contain display: the full native frame,
+  // letterboxed inside its container.
+  const containScale = Math.min(containerWidth / nativeWidth, containerHeight / nativeHeight);
+  const videoOffsetX = (containerWidth - nativeWidth * containScale) / 2;
+  const videoOffsetY = (containerHeight - nativeHeight * containScale) / 2;
+
+  // Map the visible-native rectangle into on-screen coordinates.
+  return {
+    x: videoOffsetX + nativeVisibleX0 * containScale,
+    y: videoOffsetY + nativeVisibleY0 * containScale,
+    width: (nativeVisibleX1 - nativeVisibleX0) * containScale,
+    height: (nativeVisibleY1 - nativeVisibleY0) * containScale,
+  };
+}

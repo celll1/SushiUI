@@ -44,6 +44,7 @@ import {
 import { migrateLoopGenerationConfig, computeLoopDecodeDirective } from "@/utils/loopGenerationInheritance";
 import { getSamplers, getScheduleTypes, generateInpaint, generateInpaintVideo, generateInpaintTrainingPreview, toBase64, InpaintParams as ApiInpaintParams, InpaintVideoParams, LoRAConfig, ControlNetConfig, generateTIPOPrompt, cancelGeneration, getCurrentModel, getResultFilename, getResultPlaybackFilename, getResultSeed, getResultAncestralSeed, isLatentOnlyResult, unetQuantizationOptions, normalizeUnetQuantization, transformerQuantizationLabel, archSupportsFeature, archDisplayName, inpaintVideoDefaultsForArch, fitVideoCanvas, videoCanvasRule, videoCanvasAxisBounds, videoCanvasExceedsEnvelope, largestValidVideoFrameCount, isValidVideoFrameCount, latentGroupSpans, snapRangeToLatentGroups, isGenerationStalledError, VIDEO_BLOCK_SWAP_MAX } from "@/utils/api";
 import VideoInpaintTimeline from "./VideoInpaintTimeline";
+import VideoMaskPreviewOverlay from "./VideoMaskPreviewOverlay";
 import { useActiveTraining } from "@/hooks/useActiveTraining";
 import { useSnapshotHistory } from "@/hooks/useSnapshotHistory";
 import { useSmoothProgress } from "@/hooks/useSmoothProgress";
@@ -661,6 +662,12 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
   );
   const [videoMaskAssets, setVideoMaskAssets] = useState<VideoMaskAsset[]>([]);
   const [videoMaskError, setVideoMaskError] = useState<string | null>(null);
+  // Local UI state (not a generation param): whether the rasterized mask
+  // preview overlay is drawn on top of the input clip, and its opacity.
+  // Defaults on -- the whole point of the overlay is to be visible by
+  // default while editing keyframes.
+  const [videoMaskPreviewEnabled, setVideoMaskPreviewEnabled] = useState(true);
+  const [videoMaskPreviewOpacity, setVideoMaskPreviewOpacity] = useState(0.6);
   // The input clip's own <video>, ref'd so the Regenerate Range timeline can
   // read/drive its live playhead (useVideoPlayhead below) -- this is the same
   // element the panel already renders for preview, not a second one.
@@ -5059,23 +5066,72 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
                 </Button>
               )}
             </div>
-            <div className="h-[clamp(10rem,22vh,13rem)] bg-gray-800 rounded-lg overflow-hidden border-2 border-dashed border-gray-600">
+            <div className="relative h-[clamp(10rem,22vh,13rem)] bg-gray-800 rounded-lg overflow-hidden border-2 border-dashed border-gray-600">
               {videoPreviewUrl ? (
-                <video
-                  ref={inputVideoRef}
-                  src={videoPreviewUrl}
-                  onLoadedMetadata={handleVideoLoadedMetadata}
-                  className="w-full h-full object-contain"
-                  controls
-                  muted
-                  playsInline
-                />
+                <>
+                  <video
+                    ref={inputVideoRef}
+                    src={videoPreviewUrl}
+                    onLoadedMetadata={handleVideoLoadedMetadata}
+                    className="w-full h-full object-contain"
+                    controls
+                    muted
+                    playsInline
+                  />
+                  <VideoMaskPreviewOverlay
+                    videoRef={inputVideoRef}
+                    nativeSize={inputVideoSize}
+                    outputWidth={videoMaskManifest.canvas.width}
+                    outputHeight={videoMaskManifest.canvas.height}
+                    manifest={videoMaskManifest}
+                    assets={videoMaskAssets}
+                    rangeStart={params.regenerate_start_frame ?? 0}
+                    rangeEnd={params.regenerate_end_frame ?? 0}
+                    currentFrame={inputVideoPlayer.currentFrame}
+                    enabled={videoMaskPreviewEnabled}
+                    opacity={videoMaskPreviewOpacity}
+                  />
+                </>
               ) : (
                 <div className="w-full h-full flex items-center justify-center">
                   <p className="text-gray-500 text-center px-4">Use the file picker above to select an mp4/webm clip</p>
                 </div>
               )}
             </div>
+            {videoPreviewUrl && videoMaskManifest.keyframes.length > 0 && (
+              <div className="flex items-center gap-3 text-xs text-gray-400">
+                <label className="flex items-center gap-1.5 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={videoMaskPreviewEnabled}
+                    onChange={(e) => setVideoMaskPreviewEnabled(e.target.checked)}
+                    className="w-3.5 h-3.5 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500 focus:ring-2"
+                  />
+                  Mask preview overlay
+                </label>
+                {videoMaskPreviewEnabled && (
+                  <input
+                    type="range"
+                    min={0}
+                    max={1}
+                    step={0.05}
+                    value={videoMaskPreviewOpacity}
+                    onChange={(e) => setVideoMaskPreviewOpacity(parseFloat(e.target.value))}
+                    className="w-24"
+                    aria-label="Mask preview overlay opacity"
+                  />
+                )}
+                <InlineHelp label="Mask preview overlay details">
+                  <p>
+                    Rasterized on the backend from the exact keyframe timeline (the same
+                    hold/affine/sdf mechanism generation uses), downscaled for preview and shown at
+                    the nearest sampled frame to the playhead. It is not a live per-frame render, and
+                    a sharp edge here is not a claim about the exact per-pixel boundary generation
+                    produces.
+                  </p>
+                </InlineHelp>
+              </div>
+            )}
 
             {videoDurationSec != null && (
               <div className="space-y-3">

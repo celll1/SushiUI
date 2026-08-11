@@ -32,6 +32,15 @@ interface VideoAccelerationControlsProps {
   /** param_defaults.VIDEO_GEN_DEFAULTS["blocks_to_swap_enabled_default"] (per-arch resolved). */
   blocksToSwapEnabledDefault: number;
   blockSwapMax: number;
+  /**
+   * Optional caller-supplied reason to force FBCache disabled beyond the
+   * Block Swap / Spectrum mutual exclusion below (e.g. a spatial mask
+   * timeline with keyframes, which the backend refuses to combine with an
+   * active FBCache -- see `fbcache_active()` in
+   * `core/inference/fbcache.py`). Omit this prop to leave FBCache gated
+   * purely by Block Swap/Spectrum, unchanged from before this prop existed.
+   */
+  fbcacheLockedReason?: string;
 }
 
 /**
@@ -68,11 +77,13 @@ export default function VideoAccelerationControls({
   supportsFuseOutputProj,
   blocksToSwapEnabledDefault,
   blockSwapMax,
+  fbcacheLockedReason,
 }: VideoAccelerationControlsProps) {
   const blockSwapOn = (values.video_blocks_to_swap ?? 0) > 0;
   const spectrumOn = !!values.spectrum_enable;
   const spectrumDisabled = blockSwapOn;
-  const fbcacheDisabled = blockSwapOn || spectrumOn;
+  const fbcacheLocked = !!fbcacheLockedReason;
+  const fbcacheDisabled = blockSwapOn || spectrumOn || fbcacheLocked;
 
   return (
     <>
@@ -218,7 +229,9 @@ export default function VideoAccelerationControls({
             First Block Cache (dynamic caching)
           </label>
           <span className="text-xs text-gray-500">
-            (mutually exclusive with Spectrum; disabled if Block Swap is on)
+            {fbcacheLocked
+              ? `(${fbcacheLockedReason})`
+              : "(mutually exclusive with Spectrum; disabled if Block Swap is on)"}
           </span>
         </div>
       )}

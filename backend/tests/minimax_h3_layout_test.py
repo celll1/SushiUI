@@ -186,6 +186,44 @@ def test_patchify_roundtrip_is_the_identity():
     assert torch.equal(back, latents)
 
 
+def test_patchify_is_frame_major_row_order():
+    """Row ``r`` of ``patchify_video_latents`` decodes to
+    ``(t, h_block, w_block) = (r // rows_per_frame, (r % rows_per_frame) // w_blocks,
+    (r % rows_per_frame) % w_blocks)`` -- the FRAME-MAJOR order every spatial-mask
+    row index (``build_packed_layout``'s ``pinned_video_row_indices``) and every
+    ``latent_frame_spans`` grouping assumes, and which was audited independently
+    (H-4's brief) rather than only asserted against this module's own math.
+
+    Tags each patch's ORIGIN pixel with a unique code so the coordinate can be
+    read back off the patchified row without going through any of the
+    patchify/unpatchify machinery itself.
+    """
+    patch_size = (1, 2, 2)
+    t, h, w = 3, 4, 6
+    h_blocks, w_blocks = h // patch_size[1], w // patch_size[2]
+    rows_per_frame = h_blocks * w_blocks
+    latents = torch.zeros(1, 1, t, h, w)
+    for tt in range(t):
+        for hb in range(h_blocks):
+            for wb in range(w_blocks):
+                code = tt * rows_per_frame + hb * w_blocks + wb
+                latents[0, 0, tt, hb * patch_size[1], wb * patch_size[2]] = code
+
+    rows = ops.patchify_video_latents(latents, patch_size)[0]
+    assert rows.shape[0] == t * rows_per_frame
+    for row in range(rows.shape[0]):
+        expected_t = row // rows_per_frame
+        expected_hb = (row % rows_per_frame) // w_blocks
+        expected_wb = (row % rows_per_frame) % w_blocks
+        expected_code = expected_t * rows_per_frame + expected_hb * w_blocks + expected_wb
+        # Channel-major flatten of (C, pt, ph, pw): the origin pixel (offset
+        # (0, 0) inside the patch, channel 0) sits at column 0 of the row.
+        assert rows[row, 0].item() == pytest.approx(expected_code), (
+            f"row {row}: expected (t={expected_t}, hb={expected_hb}, wb={expected_wb}) "
+            f"-> code {expected_code}, got {rows[row, 0].item()}"
+        )
+
+
 def test_unpack_audio_rows_is_channel_major():
     """Row ``ch * T + t`` of the sequence is channel ``ch``, latent ``t``."""
     num_latents, channels, dim = 5, ops.AUDIO_CHANNELS, 32

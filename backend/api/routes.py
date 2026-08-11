@@ -5186,15 +5186,17 @@ async def generate_inpaint_video(
     """
     from api.generation_status import start_generation, complete_generation, fail_generation, get_warnings
     from utils.video_utils import save_video_with_metadata, load_video_frames, extract_audio_stream, probe_upload_clip
-    from api.generation_utils import latent_frame_spans, plan_video_inpaint_span
+    from api.generation_utils import plan_video_inpaint_span
     from api.param_defaults import inpaint_video_defaults_for_arch
     from core.models.components.wiring import temporal_spec_for_arch
     from core.inference.video_mask_timeline import (
+        MAX_MASK_ASSETS,
         MaskDecodeError,
         ManifestValidationError,
-        build_spatial_mask_plan,
+        VideoMaskTimelineError,
         decode_mask_pngs,
         parse_mask_timeline_manifest,
+        validate_spatial_mask_plan_cheap,
     )
 
     if not getattr(pipeline_manager, "is_minimax_h3_model", False):
@@ -5256,9 +5258,48 @@ async def generate_inpaint_video(
                        f"orientation.",
             )
 
+    # An empty/whitespace-only manifest string is "not supplied", the same
+    # convention every other optional string Form field in this route uses --
+    # a client that sends `spatial_mask_manifest: ""` alongside no mask
+    # uploads must not be routed into the spatial-mask branch below only to
+    # fail on "keyframes must be a non-empty array".
+    if spatial_mask_manifest is not None and not spatial_mask_manifest.strip():
+        spatial_mask_manifest = None
+
     spatial_mask_timeline = None
     spatial_mask_arrays = None
     if spatial_mask_manifest is not None:
+        # H-2: FBCache's per-frame guard indicator (`MiniMaxH3BlockLoopWrapper.
+        # _custom_forward`) reshapes the free (non-pinned) video rows into
+        # whole latent frames of `rows_per_frame` rows each. A row-level
+        # spatial mask pin can pin part of a frame while leaving the rest
+        # free, so the free-row count need not divide by `rows_per_frame` --
+        # it raises a RuntimeError deep in the denoise loop, after the text
+        # encode, source clip VAE encode and DiT staging have already run.
+        # Adapting the guard indicator to non-frame-aligned row blocks would
+        # need a differently-scoped redundancy signal (frames are not a
+        # meaningful unit once a frame can be partially pinned), so this is
+        # refused here instead, before any of that work starts.
+        # Low-2 (final audit): deliberately checks the raw `fbcache_enable`
+        # flag, NOT `fbcache_active(params)` (core/inference/fbcache.py),
+        # which additionally requires `fbcache_threshold > 0`. A request with
+        # `fbcache_enable=True, fbcache_threshold=0` never actually runs
+        # FBCache (see `fbcache_active`), so refusing it here is stricter
+        # than the invariant the backend enforces -- intentionally: the point
+        # is to refuse a checkbox state the frontend UI can produce (the
+        # checkbox does not force a non-zero threshold), not just an active
+        # cache. `minimax_h3_spatial_mask_fbcache_test.py::
+        # test_spatial_mask_with_fbcache_threshold_zero_is_not_refused` pins
+        # this as intended behavior at the backend layer (which DOES use
+        # `fbcache_active`), so do not "fix" this route check to match that
+        # layer without re-reading that test first.
+        if fbcache_enable:
+            raise CustomValidationError(
+                "spatial_mask_manifest is incompatible with fbcache_enable",
+                detail="FBCache's per-frame guard indicator assumes the free video rows tile "
+                       "into whole latent frames, which a spatial mask's row-level pin does not "
+                       "guarantee. Disable fbcache_enable, or drop the spatial mask.",
+            )
         try:
             spatial_mask_timeline = parse_mask_timeline_manifest(spatial_mask_manifest)
         except ManifestValidationError as exc:
@@ -5297,6 +5338,16 @@ async def generate_inpaint_video(
                 "spatial_mask_files and spatial_mask_ids must have the same number of entries",
                 detail=f"Got {len(mask_files)} files and {len(mask_ids)} IDs.",
             )
+        # Parse-time, before any upload is read: `decode_mask_pngs` enforces
+        # this same MAX_MASK_ASSETS cap, but only after every file below has
+        # already been read into memory in full. `mask_ids` has no duplicates
+        # once the check below passes, so its length is exactly the number of
+        # unique assets this request is asking to upload.
+        if len(mask_ids) > MAX_MASK_ASSETS:
+            raise CustomValidationError(
+                "Too many unique spatial mask assets",
+                detail=f"Got {len(mask_ids)} mask ID(s); at most {MAX_MASK_ASSETS} are allowed.",
+            )
 
         seen_mask_ids = set()
         duplicate_ids = set()
@@ -5323,15 +5374,34 @@ async def generate_inpaint_video(
                 ),
             )
 
+        # Read-time byte cap, before any of it lands in `mask_bytes_by_id`: a
+        # mask PNG must match the manifest's own canvas exactly (checked inside
+        # `decode_mask_pngs`), so an uncompressed RGBA raster of that canvas
+        # (4 bytes/pixel) is the largest legitimate payload, and this reads at
+        # most one byte past that -- a real PNG's compressed size is always
+        # well under it, and it is the CANVAS'S own byte count, not the
+        # multipart body's declared size, that a truncated/garbage upload
+        # cannot spoof past. `+ 65536` covers PNG chunk/header overhead.
+        _max_mask_bytes = spatial_mask_timeline.canvas.width * spatial_mask_timeline.canvas.height * 4 + 65536
         mask_bytes_by_id = {}
         for mask_id, mask_file in zip(mask_ids, mask_files):
             try:
-                mask_bytes = await mask_file.read()
+                mask_bytes = await mask_file.read(_max_mask_bytes + 1)
             except Exception as exc:
                 raise CustomValidationError(
                     "Failed to read a spatial mask upload",
                     detail=f"Mask ID {mask_id!r}: {exc}",
                 ) from exc
+            if len(mask_bytes) > _max_mask_bytes:
+                raise CustomValidationError(
+                    "Spatial mask upload is too large for its manifest canvas",
+                    detail=(
+                        f"Mask ID {mask_id!r} exceeds {_max_mask_bytes} bytes, the largest an "
+                        f"uncompressed RGBA raster of the manifest's "
+                        f"{spatial_mask_timeline.canvas.width}x{spatial_mask_timeline.canvas.height} "
+                        "canvas (plus PNG overhead) can legitimately be."
+                    ),
+                )
             if not mask_bytes:
                 raise CustomValidationError(
                     "Spatial mask uploads must not be empty",
@@ -5536,23 +5606,32 @@ async def generate_inpaint_video(
                 "MiniMax-H3 spatial mask geometry is unavailable",
                 detail=str(exc),
             ) from exc
+        # H-4: NOT `build_spatial_mask_plan` -- that rasterizes and max-pools
+        # every frame of the regenerate range (measured 6.6-19.8s of CPU time
+        # at the largest nominal clip/canvas) purely to validate, then
+        # discards the result; the backend
+        # (`MiniMaxH3Mixin._generate_vidinpaint_minimax_h3`) calls it again,
+        # for real, before any GPU compute. `validate_spatial_mask_plan_cheap`
+        # is the keyframe-only pre-check that catches the "generates at least
+        # one token" half of that invariant without the per-frame cost. It
+        # deliberately does NOT reject a keyframe whose own mask pools to
+        # fully white -- that invariant is defined over the aggregate of the
+        # whole regenerate range, not any single keyframe (see its own
+        # docstring for what it does and does not catch). The full,
+        # per-frame-exact check (both halves, evaluated over the aggregate)
+        # still runs once, in the backend, before this request's GPU
+        # generation slot does any GPU work -- so a manifest that slips past
+        # this cheap check is still refused before a single denoise step,
+        # just after the slot below is already reserved rather than before.
         try:
-            spans = latent_frame_spans(
-                _spec,
-                int(_inpaint_plan["latent_frames"]),
-            )
-            build_spatial_mask_plan(
+            validate_spatial_mask_plan_cheap(
                 spatial_mask_timeline,
                 spatial_mask_arrays,
-                clip_frames=int(trimmed_len),
-                start_frame=int(_inpaint_plan["start_frame"]),
-                end_frame=int(_inpaint_plan["end_frame"]),
-                latent_frame_spans=spans,
                 spatial_scale=spatial_scale,
                 patch_h=int(patch_size[1]),
                 patch_w=int(patch_size[2]),
             )
-        except Exception as exc:
+        except VideoMaskTimelineError as exc:
             raise CustomValidationError(
                 "Invalid spatial mask timeline",
                 detail=str(exc),

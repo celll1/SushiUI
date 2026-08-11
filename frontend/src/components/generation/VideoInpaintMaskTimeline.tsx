@@ -6,6 +6,9 @@ import Select from "../common/Select";
 import {
   clampFrame,
   DEFAULT_MASK_INTERPOLATION,
+  MAX_MASK_KEYFRAMES,
+  MAX_MASK_SCALE,
+  MIN_MASK_SCALE,
   pruneKeyframesToFrameRange,
   removeKeyframe,
   upsertKeyframe,
@@ -45,9 +48,9 @@ const transformFields: Array<{
 }> = [
   { key: "x", label: "X", step: "1" },
   { key: "y", label: "Y", step: "1" },
-  { key: "scaleX", label: "Scale X", step: "0.05", min: "0.01", max: "100" },
-  { key: "scaleY", label: "Scale Y", step: "0.05", min: "0.01", max: "100" },
-  { key: "rotation", label: "Rotation", step: "1" },
+  { key: "scaleX", label: "Scale X", step: "0.05", min: String(MIN_MASK_SCALE), max: String(MAX_MASK_SCALE) },
+  { key: "scaleY", label: "Scale Y", step: "0.05", min: String(MIN_MASK_SCALE), max: String(MAX_MASK_SCALE) },
+  { key: "rotation", label: "Rotation (degrees)", step: "1" },
 ];
 
 function frameDescription(frame: number): string {
@@ -141,6 +144,13 @@ export default function VideoInpaintMaskTimeline({
 
   const addFrame = clampFrame(safeCurrentFrame, safeRangeStart, lastFrameInRange);
   const existingAtAddFrame = orderedKeyframes.find((keyframe) => keyframe.frame === addFrame);
+  // Checked against the raw `keyframes` prop (the whole manifest), not
+  // `orderedKeyframes` (only the ones currently inside the regenerate
+  // range): the cap validateVideoMaskManifest enforces at generate time is
+  // on the whole manifest, so a proactive warning here has to use the same
+  // count or it would let the user draw well past the limit before ever
+  // being told, which is the failure mode this is meant to avoid.
+  const atKeyframeCap = !existingAtAddFrame && keyframes.length >= MAX_MASK_KEYFRAMES;
 
   const framePercent = (frame: number): number => {
     const safeFrame = clampFrame(safeInteger(frame, 0), 0, lastFrame);
@@ -149,15 +159,29 @@ export default function VideoInpaintMaskTimeline({
 
   const addAtPlayhead = () => {
     if (disabled || !hasRange) return;
-    setNotice(null);
     if (existingAtAddFrame) {
+      setNotice(null);
       setSelectedId(existingAtAddFrame.id);
       onEditKeyframe(existingAtAddFrame);
       return;
     }
+    if (atKeyframeCap) {
+      setNotice(`This clip already has the maximum of ${MAX_MASK_KEYFRAMES} mask keyframes. Delete one before adding another.`);
+      return;
+    }
+    setNotice(null);
     onAddKeyframe(addFrame);
   };
 
+  // These four handlers upsert/remove against the raw `keyframes` prop, NOT
+  // `orderedKeyframes` (the range-pruned view used only for what this
+  // component renders). Building the next value from `orderedKeyframes`
+  // would silently drop every keyframe currently outside the regenerate
+  // range as a side effect of editing an unrelated in-range one -- that
+  // range is transient (it moves as the user drags the range timeline) and
+  // out-of-range keyframes are kept on purpose (InpaintPanel surfaces a
+  // read-only count of them instead), so this component must not be the
+  // place that discards them.
   const changeInterpolation = (
     keyframe: VideoMaskKeyframe,
     event: ChangeEvent<HTMLSelectElement>,
@@ -166,7 +190,7 @@ export default function VideoInpaintMaskTimeline({
     if (disabled || isFinalKeyframe) return;
     const interpolation = event.target.value as MaskInterpolation;
     onChange(
-      upsertKeyframe(orderedKeyframes, {
+      upsertKeyframe(keyframes, {
         ...keyframe,
         interpolationToNext: interpolation || DEFAULT_MASK_INTERPOLATION,
       }),
@@ -182,7 +206,7 @@ export default function VideoInpaintMaskTimeline({
     const numericValue = Number(value);
     if (!Number.isFinite(numericValue)) return;
     onChange(
-      upsertKeyframe(orderedKeyframes, {
+      upsertKeyframe(keyframes, {
         ...keyframe,
         transform: { ...keyframe.transform, [field]: numericValue },
       }),
@@ -191,6 +215,12 @@ export default function VideoInpaintMaskTimeline({
 
   const duplicateKeyframe = (source: VideoMaskKeyframe) => {
     if (disabled) return;
+    if (keyframes.length >= MAX_MASK_KEYFRAMES) {
+      setNotice(`This clip already has the maximum of ${MAX_MASK_KEYFRAMES} mask keyframes. Delete one before duplicating another.`);
+      return;
+    }
+    // Placement still only considers in-range, in-view keyframes: the
+    // duplicate is meant to land somewhere the user can see and edit it.
     const frame = findFreeFrame(source, orderedKeyframes, safeRangeStart, lastFrameInRange);
     if (frame === null) {
       setNotice("There is no free frame in the inpaint range for a duplicate.");
@@ -198,19 +228,19 @@ export default function VideoInpaintMaskTimeline({
     }
     const duplicate: VideoMaskKeyframe = {
       ...source,
-      id: uniqueCopyId(source, orderedKeyframes),
+      id: uniqueCopyId(source, keyframes),
       frame,
       transform: { ...source.transform },
     };
     setNotice(null);
     setSelectedId(duplicate.id);
-    onChange(upsertKeyframe(orderedKeyframes, duplicate));
+    onChange(upsertKeyframe(keyframes, duplicate));
   };
 
   const deleteKeyframe = (keyframe: VideoMaskKeyframe) => {
     if (disabled) return;
     setSelectedId((selected) => (selected === keyframe.id ? null : selected));
-    onChange(removeKeyframe(orderedKeyframes, keyframe.id));
+    onChange(removeKeyframe(keyframes, keyframe.id));
   };
 
   return (
@@ -226,9 +256,10 @@ export default function VideoInpaintMaskTimeline({
           type="button"
           variant="secondary"
           size="sm"
-          disabled={disabled || !hasRange}
+          disabled={disabled || !hasRange || atKeyframeCap}
           onClick={addAtPlayhead}
           aria-label={`Add or edit mask keyframe at frame ${addFrame}`}
+          title={atKeyframeCap ? `This clip already has the maximum of ${MAX_MASK_KEYFRAMES} mask keyframes.` : undefined}
         >
           {existingAtAddFrame ? "Edit at playhead" : "Add at playhead"} ({addFrame})
         </Button>
@@ -339,7 +370,7 @@ export default function VideoInpaintMaskTimeline({
                 />
                 <details className="w-full rounded border border-gray-800 bg-gray-950/40 px-2 py-1">
                   <summary className="cursor-pointer text-[10px] text-gray-500">
-                    Transform (center pivot)
+                    Transform (canvas center pivot)
                   </summary>
                   <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-5">
                     {transformFields.map((field) => (
@@ -379,9 +410,10 @@ export default function VideoInpaintMaskTimeline({
                     type="button"
                     variant="secondary"
                     size="xs"
-                    disabled={disabled}
+                    disabled={disabled || keyframes.length >= MAX_MASK_KEYFRAMES}
                     onClick={() => duplicateKeyframe(keyframe)}
                     aria-label={`Duplicate mask keyframe at frame ${keyframe.frame}`}
+                    title={keyframes.length >= MAX_MASK_KEYFRAMES ? `This clip already has the maximum of ${MAX_MASK_KEYFRAMES} mask keyframes.` : undefined}
                   >
                     Duplicate
                   </Button>

@@ -1267,6 +1267,7 @@ class MiniMaxH3Mixin:
         if spatial_mask_mode:
             from core.inference.video_mask_timeline import (
                 MaskTimelineManifest,
+                VideoMaskTimelineError,
                 build_spatial_mask_plan,
                 composite_masked_frames,
             )
@@ -1276,6 +1277,34 @@ class MiniMaxH3Mixin:
                 raise ValidationError(
                     "spatial mask timeline and arrays must be supplied together",
                     detail="Pass both spatial_mask_timeline and spatial_mask_arrays, or neither.",
+                )
+            # H-2: enforced at the route (a 400 before this call is even
+            # reached), restated here so a caller that bypasses the route
+            # (an internal script, a future second caller) cannot hit the
+            # RuntimeError this combination raises deep in the denoise loop
+            # (`MiniMaxH3BlockLoopWrapper._custom_forward`'s FBCache guard
+            # indicator) after the text encode, VAE encode and DiT staging
+            # have already run.
+            #
+            # Low-2 (final audit): this uses `fbcache_active(params)`
+            # (threshold-aware -- FBCache never actually runs at
+            # `fbcache_threshold=0`), which is a DIFFERENT, looser basis than
+            # the route's raw `fbcache_enable` check (`api/routes.py`). That
+            # is intentional layering, not drift: the route refuses a
+            # checkbox state the UI can produce regardless of whether it
+            # would matter, while this restatement only needs to protect the
+            # actual invariant this layer cares about --
+            # `minimax_h3_spatial_mask_fbcache_test.py::
+            # test_spatial_mask_with_fbcache_threshold_zero_is_not_refused`
+            # pins the difference. Do not "align" the two without re-reading
+            # that test.
+            from core.inference.fbcache import fbcache_active
+            if fbcache_active(params):
+                raise ValidationError(
+                    "spatial mask is incompatible with FBCache",
+                    detail="FBCache's per-frame guard indicator assumes the free video rows "
+                           "tile into whole latent frames, which a spatial mask's row-level pin "
+                           "does not guarantee. Disable fbcache_enable, or drop the spatial mask.",
                 )
             if not isinstance(spatial_mask_timeline, MaskTimelineManifest):
                 raise ValidationError(
@@ -1315,6 +1344,7 @@ class MiniMaxH3Mixin:
             patch_w = int(patch_size[2])
             spec = temporal_spec_for_arch(arch or "minimax_h3")
             spans = latent_frame_spans(spec, int(plan["latent_frames"])) if spec else []
+            _mask_plan_warnings: list = []
             try:
                 full_soft_masks, pinned_video_row_indices = build_spatial_mask_plan(
                     spatial_mask_timeline,
@@ -1326,12 +1356,22 @@ class MiniMaxH3Mixin:
                     spatial_scale=spatial_scale,
                     patch_h=patch_h,
                     patch_w=patch_w,
+                    warnings=_mask_plan_warnings,
                 )
-            except Exception as exc:
+            except VideoMaskTimelineError as exc:
+                # M-1: a MEMORY error or an internal numpy bug from this call
+                # (e.g. H-3's `composite_masked_frames`, called later, or a
+                # bug in the pooling/rasterization arithmetic itself) is not
+                # the caller's input being wrong, and must not be reported to
+                # them as if it were. Only the timeline module's OWN input-
+                # validation exceptions are treated as a 400 here; anything
+                # else propagates as a 500.
                 raise ValidationError(
                     "invalid spatial mask timeline",
                     detail=str(exc),
                 ) from exc
+            for _mask_warning in _mask_plan_warnings:
+                warn(_mask_warning, code="minimax_h3_spatial_mask_warning")
 
         if plan["snapped"]:
             warn(
@@ -1401,12 +1441,19 @@ class MiniMaxH3Mixin:
         if spatial_mask_mode:
             try:
                 frames_out = composite_masked_frames(clip, frames_gen, full_soft_masks)
-            except Exception as exc:
+            except VideoMaskTimelineError as exc:
+                # M-1: only this module's OWN input-validation exceptions are
+                # a 400; a MemoryError (H-3 is a mitigation, not a guarantee
+                # on every host) or an internal bug must propagate as a 500.
                 raise ValidationError(
                     "invalid MiniMax-H3 spatial mask composite",
                     detail=str(exc),
                 ) from exc
+            _preserved_fraction = float(np.count_nonzero(full_soft_masks < 0.5)) / float(full_soft_masks.size)
             params["inpaint_video_spatial_mask"] = True
+            params["inpaint_video_spatial_mask_preserved_fraction"] = round(_preserved_fraction, 4)
+            params["inpaint_video_spatial_mask_keyframe_count"] = len(spatial_mask_timeline.keyframes)
+            params["inpaint_video_spatial_mask_feather_px"] = spatial_mask_timeline.composite_feather_px
         else:
             # ---- The paste. Everything outside the regenerated range is the
             # input's own pixels; the range itself is untouched.

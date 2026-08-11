@@ -818,6 +818,15 @@ VIDEO_GEN_DEFAULTS: Dict[str, Any] = {
     # selector and transmit it explicitly; a direct API request that omits the
     # field uses this documented "normal" default.
     "attention_type": GENERATION_DEFAULTS["attention_type"],
+    # Generation-time LoRA (same shape as every other arch's params["loras"]:
+    # list of {"path": str, "strength": float, ...}). Applied today by
+    # MiniMax-H3 (core.models.minimax_h3.minimax_h3_lora, hooked into
+    # MiniMaxH3Mixin._generate_minimax_h3, which every one of this arch's video
+    # entry points -- txt2vid/img2vid/ref2vid/outpaint/inpaint -- routes
+    # through). LTX-2.3 has no LoRA loader on its video path at all: the key is
+    # accepted and ignored there, with a warning when non-empty (see
+    # api.arch_capabilities's "lora" feature).
+    "loras": [],
 }
 
 # ---------------------------------------------------------------------------

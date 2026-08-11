@@ -258,6 +258,13 @@ class Txt2VidRequest(BaseModel):
     # ControlNet). No image-conditioning ControlNets exist for LTX-2.3 today --
     # this field exists ONLY to carry the style-transfer entry.
     controlnets: Optional[List[ControlNetConfig]] = []
+    # Generation-time LoRA. Applied by MiniMax-H3 (see
+    # core.models.minimax_h3.minimax_h3_lora / MiniMaxH3Mixin._load_lora_minimax_h3,
+    # hooked into every one of this arch's video entry points via
+    # _generate_minimax_h3). LTX-2.3 has no LoRA loader on its video path at
+    # all -- accepted and ignored, with a warning when non-empty (see
+    # api.arch_capabilities's "lora" feature).
+    loras: Optional[List[LoRAConfig]] = TXT2VID_DEFAULTS["loras"]
 
 
 class Txt2AudRequest(BaseModel):
@@ -2757,7 +2764,7 @@ async def generate_txt2vid(
             actual_seed=actual_seed,
             generation_type="txt2vid",
             image_hash=_media_hash,
-            lora_names=None,
+            lora_names=extract_lora_names(params.get("loras") or []),
             model_name=model_name,
             model_hash=model_hash,
         )
@@ -3423,6 +3430,8 @@ async def generate_img2vid(
     # See Txt2VidRequest.attention_type: honored by MiniMax-H3, ignored by LTX-2.3.
     attention_type: str = Form(IMG2VID_DEFAULTS["attention_type"]),
     controlnets: str = Form("[]"),  # JSON string; only is_style_transfer entries are meaningful for LTX-2.3
+    # Generation-time LoRA. See Txt2VidRequest.loras.
+    loras: str = Form("[]"),
     # WHERE the uploaded `image` sits on the generated clip (MiniMax-H3). 0 is
     # the first frame -- the placement every request made before this existed --
     # and -1 is the clip's last frame AFTER `num_frames` is snapped below, which
@@ -3575,13 +3584,17 @@ async def generate_img2vid(
         "input_audio": recover_upload_filename(_input_audio.filename) if _input_audio is not None else None,
     }
 
+    # Generation-time LoRA (JSON string, same convention as the image routes'
+    # multipart `loras` field). See Txt2VidRequest.loras.
+    import json
+    params["loras"] = json.loads(loras) if loras else []
+
     # Training-free reference-style transfer (video). See generate_txt2vid's
     # identical wiring / core.inference.style_ltx2 for the mechanism.
     # style_transfers (plural, 0+ entries) + style_combine_mode are threaded
     # through so multi-reference (N>1) style transfer reaches the LTX-2.3
     # backend (pipeline_backends/ltx2.py._ltx2_style_configs); style_transfer
     # (singular) stays for the untouched single-ref path.
-    import json
     _controlnet_configs = json.loads(controlnets) if controlnets else []
     _, style_transfer, style_transfers, style_combine_mode = process_controlnet_configs(
         _controlnet_configs, generation_type="img2vid"
@@ -3934,7 +3947,7 @@ async def generate_img2vid(
             actual_seed=actual_seed,
             generation_type="img2vid",
             image_hash=_media_hash,
-            lora_names=None,
+            lora_names=extract_lora_names(params.get("loras") or []),
             model_name=model_name,
             model_hash=model_hash,
             source_image_hash=metadata.get("source_image_hash"),
@@ -4009,6 +4022,8 @@ async def generate_ref2vid(
     # there is no single "the" keyframe here, so every anchor uses this pair.
     keyframe_images: List[UploadFile] = File([]),
     keyframe_frame_indices: List[int] = Form([]),
+    # Generation-time LoRA. See Txt2VidRequest.loras.
+    loras: str = Form("[]"),
     db: Session = Depends(get_gallery_db)
 ):
     """Generate a video from omni-references (MiniMax-H3 `ref2va` only).
@@ -4180,6 +4195,10 @@ async def generate_ref2vid(
         "keyframe_images": [recover_upload_filename(f.filename) for f in _keyframes] or None,
         "keyframe_frame_indices": list(_keyframe_indices) or None,
     }
+
+    # Generation-time LoRA (JSON string). See Txt2VidRequest.loras.
+    import json
+    params["loras"] = json.loads(loras) if loras else []
 
     _vid_arch = (pipeline_manager.current_model_info or {}).get("type")
     _omitted = {key for key, value in (
@@ -4375,7 +4394,7 @@ async def generate_ref2vid(
             actual_seed=actual_seed,
             generation_type="ref2vid",
             image_hash=_media_hash,
-            lora_names=None,
+            lora_names=extract_lora_names(params.get("loras") or []),
             model_name=model_name,
             model_hash=model_hash,
         )
@@ -4477,6 +4496,8 @@ async def generate_outpaint_video(
     # reason rather than ignoring it, because ignoring a second uploaded clip
     # would silently produce a one-clip result.
     bridge_video: Optional[UploadFile] = File(None),
+    # Generation-time LoRA. See Txt2VidRequest.loras.
+    loras: str = Form("[]"),
     db: Session = Depends(get_gallery_db)
 ):
     """Video temporal outpaint (LTX-2.3 or MiniMax-H3): place a (trimmed) input
@@ -4810,6 +4831,10 @@ async def generate_outpaint_video(
         "reference_images": [recover_upload_filename(f.filename) for f in _ref_image_files] or None,
     }
 
+    # Generation-time LoRA (JSON string). See Txt2VidRequest.loras.
+    import json
+    params["loras"] = json.loads(loras) if loras else []
+
     # Reject a clip that cannot fit at all (trim leaves nothing) -- cheap
     # up-front check; the backend re-validates against the SNAPPED offset
     # (which may differ) and the resolution-adjusted frame count.
@@ -5010,7 +5035,7 @@ async def generate_outpaint_video(
             actual_seed=actual_seed,
             generation_type="outpaint_vid",
             image_hash=_media_hash,
-            lora_names=None,
+            lora_names=extract_lora_names(params.get("loras") or []),
             model_name=model_name,
             model_hash=model_hash,
             source_image_hash=params["source_image_hash"],
@@ -5092,6 +5117,8 @@ async def generate_inpaint_video(
     quantized_gemm_mode: Optional[str] = Form(INPAINT_VIDEO_DEFAULTS["quantized_gemm_mode"]),
     video_lossless: bool = Form(INPAINT_VIDEO_DEFAULTS["video_lossless"]),
     video: UploadFile = File(...),
+    # Generation-time LoRA. See Txt2VidRequest.loras.
+    loras: str = Form("[]"),
     db: Session = Depends(get_gallery_db)
 ):
     """Video temporal inpaint (MiniMax-H3 `fl2va`): regenerate the frames in
@@ -5315,6 +5342,10 @@ async def generate_inpaint_video(
         "video_lossless": video_lossless,
     }
 
+    # Generation-time LoRA (JSON string). See Txt2VidRequest.loras.
+    import json
+    params["loras"] = json.loads(loras) if loras else []
+
     trimmed_len = video_frames.shape[0] - max(0, input_trim_start_frames) - max(0, input_trim_end_frames)
     if trimmed_len < 1:
         raise CustomValidationError(
@@ -5472,7 +5503,7 @@ async def generate_inpaint_video(
             actual_seed=actual_seed,
             generation_type="inpaint_vid",
             image_hash=_media_hash,
-            lora_names=None,
+            lora_names=extract_lora_names(params.get("loras") or []),
             model_name=model_name,
             model_hash=model_hash,
             source_image_hash=params["source_image_hash"],

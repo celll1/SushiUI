@@ -1753,6 +1753,9 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         // ltx2 is in quantized_linear_archs, so the QuantizedGemmSelect control
         // is rendered for a loaded LTX-2.3 model and must actually be sent.
         quantized_gemm_mode: params.quantized_gemm_mode,
+        // Applied by MiniMax-H3; accepted-and-warned by LTX-2.3 (no video LoRA
+        // loader). Same selector/list as image generation's `params.loras`.
+        loras: params.loras,
       };
       // MiniMax-H3 ref2va with at least one reference goes to the dedicated
       // omni-reference endpoint instead: it is a different request (12

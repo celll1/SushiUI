@@ -699,6 +699,8 @@ export interface OutpaintVideoParams {
   // mirrors how `video`/`bridge_video` are function arguments, not params).
   // Same semantics as Ref2VidParams.reference_image_size.
   reference_image_size?: "max" | "match";
+  // Generation-time LoRA (see Txt2VidParams.loras).
+  loras?: LoRAConfig[];
 }
 
 // Video TEMPORAL inpaint (POST /generate/inpaint/video, MiniMax-H3 fl2va):
@@ -751,6 +753,8 @@ export interface InpaintVideoParams {
   unet_quantization?: string | null;
   quantized_gemm_mode?: QuantizedGemmMode;
   attention_type?: string;
+  // Generation-time LoRA (see Txt2VidParams.loras).
+  loras?: LoRAConfig[];
 }
 
 export interface UpscaleParams {
@@ -917,6 +921,10 @@ export interface Txt2VidParams {
   // "int8" produces the same classes at runtime.
   quantized_gemm_mode?: QuantizedGemmMode;
   attention_type?: string;
+  // Generation-time LoRA. Applied by MiniMax-H3 (core.models.minimax_h3.minimax_h3_lora);
+  // LTX-2.3 has no LoRA loader on its video path at all -- accepted and
+  // ignored, with an unsupported_param warning when non-empty.
+  loras?: LoRAConfig[];
 }
 
 // One ADDITIONAL MiniMax-H3 keyframe anchor: the image and the pixel frame it
@@ -2574,6 +2582,7 @@ export const generateTxt2Vid = async (params: Txt2VidParams) => {
         : null,
     quantized_gemm_mode: params.quantized_gemm_mode ?? null,
     attention_type: resolveGlobalAttentionType(params.attention_type),
+    loras: params.loras || [],
   };
 
   const response = await postGenerationRequest("/generate/txt2vid", body);
@@ -2666,6 +2675,7 @@ export const generateImg2Vid = async (
   if (params.input_audio) {
     formData.append("input_audio", params.input_audio);
   }
+  formData.append("loras", JSON.stringify(params.loras || []));
 
   const response = await postGenerationRequest("/generate/img2vid", formData, {
     headers: { "Content-Type": "multipart/form-data" },
@@ -2743,6 +2753,7 @@ export const generateRef2Vid = async (
     }
     formData.append("keyframe_frame_indices", String(keyframe.frame_index));
   }
+  formData.append("loras", JSON.stringify(params.loras || []));
 
   const response = await postGenerationRequest("/generate/ref2vid", formData, {
     headers: { "Content-Type": "multipart/form-data" },
@@ -3369,6 +3380,7 @@ export const generateOutpaintVideo = async (
   for (const image of referenceImages || []) {
     formData.append("reference_images", image);
   }
+  formData.append("loras", JSON.stringify(params.loras || []));
 
   const response = await postGenerationRequest("/generate/outpaint/video", formData, {
     headers: { "Content-Type": "multipart/form-data" },
@@ -3451,6 +3463,7 @@ export const generateInpaintVideo = async (
   }
 
   formData.append("video_lossless", String(params.video_lossless ?? false));
+  formData.append("loras", JSON.stringify(params.loras || []));
 
   const response = await postGenerationRequest("/generate/inpaint/video", formData, {
     headers: { "Content-Type": "multipart/form-data" },

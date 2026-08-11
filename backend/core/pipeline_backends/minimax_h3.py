@@ -420,6 +420,12 @@ class MiniMaxH3Mixin:
             transformer = transformer.transformer
             components["transformer"] = transformer
 
+        # SushiUI addition: opt-in, not bit-exact -- see `adaln_chunking.py`'s "Head fusion" note.
+        # Set on the INNER transformer (not the wrapper) so both call sites -- the stock forward's
+        # (fast path, wrapper delegates to it) and `MiniMaxH3BlockLoopWrapper._custom_forward`'s
+        # (block swap / FBCache) -- read the same flag off the same object.
+        transformer.fuse_output_proj = bool(params.get("fuse_output_proj", False))
+
         blocks_to_swap = int(params.get("blocks_to_swap", 0) or 0)
         from core.inference.fbcache import fbcache_active
         fbcache_on = fbcache_active(params) and not params.get("spectrum_enable", False)

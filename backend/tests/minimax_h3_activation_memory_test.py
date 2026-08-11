@@ -45,6 +45,7 @@ from core.models.minimax_h3.adaln_chunking import (  # noqa: E402
     _norm_out_apply,
     chunked_ada_modulate,
     chunked_norm_out,
+    chunked_norm_out_proj_fused,
     gated_residual_add,
 )
 from core.models.minimax_h3.rope_inplace import (  # noqa: E402
@@ -351,6 +352,138 @@ def test_norm_out_short_sequence_takes_zero_overhead_path():
         norm_out.norm.forward = real_forward
 
     assert calls["n"] == 1
+
+
+# ---------------------------------------------------------------------------
+# AP3: chunked_norm_out_proj_fused (opt-in output-tail head fusion). Unlike
+# chunked_norm_out, this is NOT bit-exact with the unfused path (folding
+# proj_out/audio_proj_out into the chunk loop changes each GEMM's row count
+# per call), so the value-matching test below uses torch.allclose, not
+# torch.equal -- see adaln_chunking.py's "Head fusion" note for the measured
+# production-shape deviation this tolerance is set well above.
+# ---------------------------------------------------------------------------
+
+def _unfused_heads(norm_out, hidden_states, temb, timestep_indices, proj_out, audio_proj_out):
+    normed = chunked_norm_out(norm_out, hidden_states, temb, timestep_indices, proj_out.weight.dtype)
+    return proj_out(normed), audio_proj_out(normed)
+
+
+@pytest.mark.parametrize("dtype", _DTYPES)
+@pytest.mark.parametrize("seq_len,row_budget", _SHAPES)
+def test_fused_output_heads_close_to_unfused(dtype, seq_len, row_budget):
+    hidden, time_embed_dim, num_timesteps = 12, 6, 9
+    video_dim, audio_dim = 4, 3
+    norm_out = _FakeNormOut(hidden, time_embed_dim, dtype)
+    proj_out = nn.Linear(hidden, video_dim).to(dtype)
+    audio_proj_out = nn.Linear(hidden, audio_dim).to(dtype)
+    torch.manual_seed(20)
+    hidden_states = torch.randn(2, seq_len, hidden, dtype=dtype)
+    temb = torch.randn(num_timesteps, time_embed_dim, dtype=dtype)
+    timestep_indices = torch.randint(0, num_timesteps, (seq_len,))
+
+    with torch.no_grad():
+        video_stock, audio_stock = _unfused_heads(
+            norm_out, hidden_states, temb, timestep_indices, proj_out, audio_proj_out)
+        video_fused, audio_fused = chunked_norm_out_proj_fused(
+            norm_out, hidden_states, temb, timestep_indices, proj_out, audio_proj_out, row_budget=row_budget)
+
+    assert video_fused.shape == video_stock.shape
+    assert audio_fused.shape == audio_stock.shape
+    assert video_fused.dtype == proj_out.weight.dtype
+    assert torch.allclose(video_fused, video_stock, atol=1e-3, rtol=1e-3)
+    assert torch.allclose(audio_fused, audio_stock, atol=1e-3, rtol=1e-3)
+
+
+def test_fuse_output_proj_is_skipped_under_autograd():
+    hidden, time_embed_dim = 12, 6
+    norm_out = _FakeNormOut(hidden, time_embed_dim, torch.float32)
+    proj_out = nn.Linear(hidden, 4)
+    audio_proj_out = nn.Linear(hidden, 3)
+    torch.manual_seed(21)
+    hidden_states = torch.randn(1, 40, hidden, dtype=torch.float32, requires_grad=True)
+    temb = torch.randn(9, time_embed_dim)
+    timestep_indices = torch.randint(0, 9, (40,))
+
+    calls = {"n": 0}
+    real_forward = norm_out.norm.forward
+
+    def counting_forward(x):
+        calls["n"] += 1
+        return real_forward(x)
+
+    norm_out.norm.forward = counting_forward
+    try:
+        chunked_norm_out_proj_fused(
+            norm_out, hidden_states, temb, timestep_indices, proj_out, audio_proj_out, row_budget=8)
+    finally:
+        norm_out.norm.forward = real_forward
+
+    # Grad-enabled: 1 call (the unfused `_norm_out_apply` fallback), not 5 (40 / 8).
+    assert calls["n"] == 1
+
+
+def test_fuse_output_proj_chunks_under_no_grad_for_long_sequences():
+    hidden, time_embed_dim = 12, 6
+    norm_out = _FakeNormOut(hidden, time_embed_dim, torch.float32)
+    proj_out = nn.Linear(hidden, 4)
+    audio_proj_out = nn.Linear(hidden, 3)
+    torch.manual_seed(22)
+    hidden_states = torch.randn(1, 40, hidden, dtype=torch.float32)
+    temb = torch.randn(9, time_embed_dim)
+    timestep_indices = torch.randint(0, 9, (40,))
+
+    calls = {"n": 0}
+    real_forward = norm_out.norm.forward
+
+    def counting_forward(x):
+        calls["n"] += 1
+        return real_forward(x)
+
+    norm_out.norm.forward = counting_forward
+    try:
+        with torch.no_grad():
+            chunked_norm_out_proj_fused(
+                norm_out, hidden_states, temb, timestep_indices, proj_out, audio_proj_out, row_budget=8)
+    finally:
+        norm_out.norm.forward = real_forward
+
+    assert calls["n"] == 5
+
+
+def test_fuse_output_proj_short_sequence_takes_zero_overhead_path():
+    hidden, time_embed_dim = 12, 6
+    norm_out = _FakeNormOut(hidden, time_embed_dim, torch.float32)
+    proj_out = nn.Linear(hidden, 4)
+    audio_proj_out = nn.Linear(hidden, 3)
+    torch.manual_seed(23)
+    hidden_states = torch.randn(1, 10, hidden, dtype=torch.float32)
+    temb = torch.randn(9, time_embed_dim)
+    timestep_indices = torch.randint(0, 9, (10,))
+
+    calls = {"n": 0}
+    real_forward = norm_out.norm.forward
+
+    def counting_forward(x):
+        calls["n"] += 1
+        return real_forward(x)
+
+    norm_out.norm.forward = counting_forward
+    try:
+        with torch.no_grad():
+            chunked_norm_out_proj_fused(
+                norm_out, hidden_states, temb, timestep_indices, proj_out, audio_proj_out, row_budget=8192)
+    finally:
+        norm_out.norm.forward = real_forward
+
+    assert calls["n"] == 1
+
+
+def test_fuse_output_proj_flag_defaults_off_on_the_real_model():
+    """The opt-in flag itself: `MiniMaxH3Transformer3DModel.fuse_output_proj`
+    must default False, so a model built with no explicit setting takes the
+    unfused (bit-exact-with-history) path."""
+    model = _build_tiny_minimax_h3_model()
+    assert model.fuse_output_proj is False
 
 
 # ---------------------------------------------------------------------------

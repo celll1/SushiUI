@@ -217,6 +217,9 @@ class Txt2VidRequest(BaseModel):
     audio_enable: bool = TXT2VID_DEFAULTS["audio_enable"]
     # AP1: block-swap generation (number of transformer_blocks kept CPU-resident).
     blocks_to_swap: int = TXT2VID_DEFAULTS["blocks_to_swap"]
+    # AP3: fuses the output-tail heads into the chunked output-norm loop
+    # (MiniMax-H3 only; not bit-exact -- see adaln_chunking.py's "Head fusion" note).
+    fuse_output_proj: bool = TXT2VID_DEFAULTS["fuse_output_proj"]
     # AP2: First-Block-Cache (dynamic per-step trajectory-redundancy skip).
     # Mutually exclusive with Block Swap (see fbcache.py / ltx2.py).
     fbcache_enable: bool = TXT2VID_DEFAULTS["fbcache_enable"]
@@ -3409,6 +3412,7 @@ async def generate_img2vid(
     max_sequence_length: int = Form(IMG2VID_DEFAULTS["max_sequence_length"]),
     audio_enable: bool = Form(IMG2VID_DEFAULTS["audio_enable"]),
     blocks_to_swap: int = Form(IMG2VID_DEFAULTS["blocks_to_swap"]),
+    fuse_output_proj: bool = Form(IMG2VID_DEFAULTS["fuse_output_proj"]),
     fbcache_enable: bool = Form(IMG2VID_DEFAULTS["fbcache_enable"]),
     fbcache_threshold: float = Form(IMG2VID_DEFAULTS["fbcache_threshold"]),
     fbcache_warmup_steps: int = Form(IMG2VID_DEFAULTS["fbcache_warmup_steps"]),
@@ -3537,6 +3541,7 @@ async def generate_img2vid(
         "max_sequence_length": max_sequence_length,
         "audio_enable": audio_enable,
         "blocks_to_swap": blocks_to_swap,
+        "fuse_output_proj": fuse_output_proj,
         "fbcache_enable": fbcache_enable,
         "fbcache_threshold": fbcache_threshold,
         "fbcache_warmup_steps": fbcache_warmup_steps,
@@ -3990,6 +3995,7 @@ async def generate_ref2vid(
     max_sequence_length: int = Form(REF2VID_DEFAULTS["max_sequence_length"]),
     audio_enable: bool = Form(REF2VID_DEFAULTS["audio_enable"]),
     blocks_to_swap: int = Form(REF2VID_DEFAULTS["blocks_to_swap"]),
+    fuse_output_proj: bool = Form(REF2VID_DEFAULTS["fuse_output_proj"]),
     fbcache_enable: bool = Form(REF2VID_DEFAULTS["fbcache_enable"]),
     fbcache_threshold: float = Form(REF2VID_DEFAULTS["fbcache_threshold"]),
     fbcache_warmup_steps: int = Form(REF2VID_DEFAULTS["fbcache_warmup_steps"]),
@@ -4161,6 +4167,7 @@ async def generate_ref2vid(
         "max_sequence_length": max_sequence_length,
         "audio_enable": audio_enable,
         "blocks_to_swap": blocks_to_swap,
+        "fuse_output_proj": fuse_output_proj,
         "fbcache_enable": fbcache_enable,
         "fbcache_threshold": fbcache_threshold,
         "fbcache_warmup_steps": fbcache_warmup_steps,
@@ -4463,6 +4470,7 @@ async def generate_outpaint_video(
     # that honors it could not be given it here.
     attention_type: str = Form(OUTPAINT_VIDEO_DEFAULTS["attention_type"]),
     blocks_to_swap: int = Form(OUTPAINT_VIDEO_DEFAULTS["blocks_to_swap"]),
+    fuse_output_proj: bool = Form(OUTPAINT_VIDEO_DEFAULTS["fuse_output_proj"]),
     fbcache_enable: bool = Form(OUTPAINT_VIDEO_DEFAULTS["fbcache_enable"]),
     fbcache_threshold: float = Form(OUTPAINT_VIDEO_DEFAULTS["fbcache_threshold"]),
     fbcache_warmup_steps: int = Form(OUTPAINT_VIDEO_DEFAULTS["fbcache_warmup_steps"]),
@@ -4802,6 +4810,7 @@ async def generate_outpaint_video(
         "attention_type": _validated_attention_type(
             attention_type, OUTPAINT_VIDEO_DEFAULTS["attention_type"]),
         "blocks_to_swap": blocks_to_swap,
+        "fuse_output_proj": fuse_output_proj,
         "fbcache_enable": fbcache_enable,
         "fbcache_threshold": fbcache_threshold,
         "fbcache_warmup_steps": fbcache_warmup_steps,
@@ -5100,6 +5109,7 @@ async def generate_inpaint_video(
     spatial_mask_ids: List[str] = Form([]),
     attention_type: str = Form(INPAINT_VIDEO_DEFAULTS["attention_type"]),
     blocks_to_swap: int = Form(INPAINT_VIDEO_DEFAULTS["blocks_to_swap"]),
+    fuse_output_proj: bool = Form(INPAINT_VIDEO_DEFAULTS["fuse_output_proj"]),
     fbcache_enable: bool = Form(INPAINT_VIDEO_DEFAULTS["fbcache_enable"]),
     fbcache_threshold: float = Form(INPAINT_VIDEO_DEFAULTS["fbcache_threshold"]),
     fbcache_warmup_steps: int = Form(INPAINT_VIDEO_DEFAULTS["fbcache_warmup_steps"]),
@@ -5442,6 +5452,7 @@ async def generate_inpaint_video(
         "attention_type": _validated_attention_type(
             attention_type, INPAINT_VIDEO_DEFAULTS["attention_type"]),
         "blocks_to_swap": blocks_to_swap,
+        "fuse_output_proj": fuse_output_proj,
         "fbcache_enable": fbcache_enable,
         "fbcache_threshold": fbcache_threshold,
         "fbcache_warmup_steps": fbcache_warmup_steps,

@@ -361,6 +361,7 @@ const DEFAULT_PARAMS: InpaintParams = {
   inpaint_video_audio_mode: "preserve_input",
   video_lossless: false,
   video_blocks_to_swap: 0,
+  fuse_output_proj: false,
 };
 
 function createDefaultVideoMaskManifest(width?: number, height?: number): VideoMaskManifest {
@@ -744,6 +745,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
   // supports both. This matches the other panels' leaf-control convention.
   const supportsSpectrum = archSupportsFeature(archCapabilities, loadedArchType, "spectrum");
   const supportsFbcache = archSupportsFeature(archCapabilities, loadedArchType, "fbcache");
+  const supportsFuseOutputProj = archSupportsFeature(archCapabilities, loadedArchType, "fuse_output_proj");
   // The value the Block Swap checkbox writes when turned ON (backend SSOT:
   // param_defaults.VIDEO_GEN_DEFAULTS["blocks_to_swap_enabled_default"]). The
   // `?? 40` fallback only matters before /schema/generation-defaults answers.
@@ -1565,6 +1567,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         (vid.inpaint_video_audio_mode as "regenerate" | "preserve_input") ?? DEFAULT_PARAMS.inpaint_video_audio_mode,
       video_lossless: (vid.video_lossless as boolean) ?? DEFAULT_PARAMS.video_lossless,
       video_blocks_to_swap: (vid.blocks_to_swap as number) ?? DEFAULT_PARAMS.video_blocks_to_swap,
+      fuse_output_proj: (vid.fuse_output_proj as boolean) ?? DEFAULT_PARAMS.fuse_output_proj,
     }));
   }, [generationDefaults]);
 
@@ -2685,6 +2688,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         spatial_mask_manifest: spatialMaskManifest,
         video_lossless: params.video_lossless,
         blocks_to_swap: params.video_blocks_to_swap,
+        fuse_output_proj: params.fuse_output_proj,
         fbcache_enable: params.fbcache_enable,
         fbcache_threshold: params.fbcache_threshold,
         fbcache_warmup_steps: params.fbcache_warmup_steps,
@@ -5822,6 +5826,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
             onChange={(patch) => setParams({ ...params, ...patch })}
             supportsSpectrum={supportsSpectrum}
             supportsFbcache={supportsFbcache}
+            supportsFuseOutputProj={supportsFuseOutputProj}
             blocksToSwapEnabledDefault={videoBlocksToSwapEnabledDefault}
             blockSwapMax={VIDEO_BLOCK_SWAP_MAX}
           />

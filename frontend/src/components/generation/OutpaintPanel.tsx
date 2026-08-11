@@ -332,6 +332,7 @@ const DEFAULT_PARAMS: OutpaintPanelParams = {
   outpaint_video_audio_mode_arch: null,
   video_lossless: false,
   video_blocks_to_swap: 0,
+  fuse_output_proj: false,
   // --- Audio temporal outpaint (outpaint_aud, ACE-Step 1.5 extend) ---
   lyrics: "",
   inference_steps: 8,
@@ -1159,6 +1160,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
         outpaint_video_audio_mode: (vidDefaults.outpaint_video_audio_mode as "regenerate" | "preserve_input") ?? DEFAULT_PARAMS.outpaint_video_audio_mode,
         video_lossless: (vidDefaults.video_lossless as boolean) ?? DEFAULT_PARAMS.video_lossless,
         video_blocks_to_swap: vidDefaults.blocks_to_swap as number ?? DEFAULT_PARAMS.video_blocks_to_swap,
+        fuse_output_proj: (vidDefaults.fuse_output_proj as boolean) ?? DEFAULT_PARAMS.fuse_output_proj,
         // --- Audio temporal outpaint (outpaint_aud) ---
         lyrics: (audDefaults.lyrics as string) ?? DEFAULT_PARAMS.lyrics,
         inference_steps: audDefaults.inference_steps as number ?? DEFAULT_PARAMS.inference_steps,
@@ -1444,6 +1446,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
   // supports both. This matches the other panels' leaf-control convention.
   const supportsSpectrum = archSupportsFeature(archCapabilities, loadedArchType, "spectrum");
   const supportsFbcache = archSupportsFeature(archCapabilities, loadedArchType, "fbcache");
+  const supportsFuseOutputProj = archSupportsFeature(archCapabilities, loadedArchType, "fuse_output_proj");
   // The value the Block Swap checkbox writes when turned ON (backend SSOT:
   // param_defaults.VIDEO_GEN_DEFAULTS["blocks_to_swap_enabled_default"]). The
   // `?? 40` fallback only matters before /schema/generation-defaults answers.
@@ -1990,6 +1993,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
         outpaint_video_audio_mode: params.outpaint_video_audio_mode,
         video_lossless: params.video_lossless,
         blocks_to_swap: params.video_blocks_to_swap,
+        fuse_output_proj: params.fuse_output_proj,
         fbcache_enable: params.fbcache_enable,
         fbcache_threshold: params.fbcache_threshold,
         fbcache_warmup_steps: params.fbcache_warmup_steps,
@@ -4567,6 +4571,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
             onChange={(patch) => setParams({ ...params, ...patch })}
             supportsSpectrum={supportsSpectrum}
             supportsFbcache={supportsFbcache}
+            supportsFuseOutputProj={supportsFuseOutputProj}
             blocksToSwapEnabledDefault={videoBlocksToSwapEnabledDefault}
             blockSwapMax={VIDEO_BLOCK_SWAP_MAX}
           />

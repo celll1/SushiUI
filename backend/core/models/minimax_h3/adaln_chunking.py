@@ -34,6 +34,23 @@ MEASURED (real ``w4a8_mixed`` checkpoint, ``S=97,159``, RTX 6000 Ada,
     0.090s -> 0.048s, gated add 0.049s -> 0.016s per call --
     `scratchpad/iso_probe.py`).
 
+HEAD FUSION (opt-in, ``chunked_norm_out_proj_fused``). Folds ``proj_out`` / ``audio_proj_out``
+into the same chunk loop as ``chunked_norm_out``, so the loop's per-chunk write goes straight
+into a ``(1, S, 96)`` / ``(1, S, 32)`` output buffer instead of the ``(1, S, 5376)`` intermediate
+``chunked_norm_out`` returns -- the two heads project down from ``hidden_size`` to
+``video_patch_dim`` / ``audio_in_channels``, both far smaller than 5376. NOT bit-exact: fusing
+changes each GEMM's ``M`` (row count per call) from the whole sequence to one ``row_budget``
+chunk, and cuBLAS picks tiling/reduction order by ``M``. MEASURED on the production checkpoint
+(``w4a8_mixed``, ``S=97,159``, RTX 6000 Ada, real loaded weights, ``scratchpad/fusion_deviation
+_probe.py`` -- a real forward's own captured ``norm_out`` inputs, not the isolate's random-init
+figure, which undercounts by ~17x): max abs deviation 1.46e-4 (video head) / 6.2e-5 (audio head)
+against output magnitudes with mean ~1.1 and max ~16-31; scale-relative (max abs / max
+magnitude) 4.6e-6 (video) / 3.7e-6 (audio) -- roughly 30-40x fp32 machine epsilon, not the 1-2
+ULP a smaller isolate probe would suggest. Peak reserved at ``blocks_to_swap=40``: see
+``VIDEO_GEN_DEFAULTS["fuse_output_proj"]`` in ``backend/api/param_defaults.py`` for the measured
+saving. Callers must gate this behind an explicit flag rather than call it the way
+``chunked_norm_out`` is called unconditionally; see ``MiniMaxH3Transformer3DModel.fuse_output_proj``.
+
 ROW BUDGET. Reuses ``core.models.minimax_h3.ff_chunking.FF_CHUNK_ROW_BUDGET``
 (12,288) rather than a second constant: all three ops here chunk the exact
 same packed-sequence axis, at the exact same production length
@@ -175,6 +192,52 @@ def _norm_out_apply(
     return hidden_states * (1.0 + scale.index_select(0, timestep_indices)) + shift.index_select(
         0, timestep_indices
     )
+
+
+def chunked_norm_out_proj_fused(
+    norm_out: nn.Module,
+    hidden_states: torch.Tensor,
+    temb: torch.Tensor,
+    timestep_indices: torch.Tensor,
+    proj_out: nn.Linear,
+    audio_proj_out: nn.Linear,
+    row_budget: int = FF_CHUNK_ROW_BUDGET,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Opt-in variant of ``chunked_norm_out`` that also folds ``proj_out`` / ``audio_proj_out`` into
+    the chunk loop, returning ``(video_output, audio_output)`` (full packed-sequence length; the
+    caller still does the modality ``index_select``) instead of the ``(hidden_size,)``-wide
+    intermediate. NOT bit-exact with the unfused path -- see the module docstring's "Head fusion"
+    section -- so callers must gate this behind an explicit opt-in flag (``fuse_output_proj``),
+    never call it unconditionally the way ``chunked_norm_out`` itself is called."""
+    out_dtype = proj_out.weight.dtype
+    if torch.is_grad_enabled() or hidden_states.requires_grad or temb.requires_grad:
+        normed = _norm_out_apply(norm_out, hidden_states, temb, timestep_indices).to(out_dtype)
+        return proj_out(normed), audio_proj_out(normed)
+
+    seq_len = hidden_states.shape[1]
+    if seq_len <= row_budget:
+        normed = _norm_out_apply(norm_out, hidden_states, temb, timestep_indices).to(out_dtype)
+        return proj_out(normed), audio_proj_out(normed)
+
+    if norm_out.apply_silu:
+        temb = nn.functional.silu(temb)
+    shift, scale = norm_out.linear(temb.to(norm_out.linear.weight.dtype)).chunk(2, dim=-1)
+    batch = hidden_states.shape[0]
+    video_out = torch.empty(
+        (batch, seq_len, proj_out.out_features), device=hidden_states.device, dtype=out_dtype
+    )
+    audio_out = torch.empty(
+        (batch, seq_len, audio_proj_out.out_features), device=hidden_states.device, dtype=out_dtype
+    )
+    for s in range(0, seq_len, row_budget):
+        e = min(s + row_budget, seq_len)
+        idx = timestep_indices[s:e]
+        chunk = norm_out.norm(hidden_states[:, s:e])
+        chunk = chunk * (1.0 + scale.index_select(0, idx)) + shift.index_select(0, idx)
+        chunk = chunk.to(out_dtype)
+        video_out[:, s:e] = proj_out(chunk)
+        audio_out[:, s:e] = audio_proj_out(chunk)
+    return video_out, audio_out
 
 
 def chunked_norm_out(

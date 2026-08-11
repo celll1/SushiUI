@@ -806,6 +806,25 @@ VIDEO_GEN_DEFAULTS: Dict[str, Any] = {
     "spectrum_flex_window": 0.75,
     "spectrum_tail": 0.12,
     "spectrum_max_cache": 0,
+    # AP3: fuses the output-tail Linear heads (`proj_out` / `audio_proj_out`) into the
+    # sequence-chunked output-norm loop already used by every MiniMax-H3 forward
+    # (`core.models.minimax_h3.adaln_chunking.chunked_norm_out`), so the loop writes
+    # straight into the (much smaller) per-modality head outputs instead of
+    # materializing the full `(1, S, hidden_size)` intermediate first. MiniMax-H3
+    # only -- accepted-and-ignored elsewhere. NOT bit-exact (fusing changes the
+    # output-projection GEMM's row count per call, and cuBLAS's tiling/reduction
+    # order depends on it): measured against the unfused path on the real
+    # w4a8 checkpoint, driving norm_out with hidden_states captured from an actual
+    # forward -- max abs 1.46e-4 / 4.6e-6 relative to the output's own magnitude
+    # (video head), roughly 30-40x fp32 machine epsilon. A synthetic isolate puts
+    # it ~17x lower; the figure here is the one a generation actually sees. See
+    # `adaln_chunking.py`'s "Head fusion" note.
+    # Worth, measured at 768x1248x345 (97,159 packed rows) with 40 blocks
+    # swapped: peak reserved 16.881 -> 14.934 GiB, peak allocated unchanged at
+    # 13.173, and 216.4 s vs 219.0 s per forward -- inside the run-to-run spread.
+    # Off by default because it is not bit-exact, not because it costs anything.
+    # No effect below the chunking row budget, i.e. on short clips.
+    "fuse_output_proj": False,
     # Per-generation component overrides (RP2b). Both unsupported on the LTX-2.3
     # video arch (accepted-but-ignored with a warning); kept here so the video
     # request schema carries the same keys as the image routes.

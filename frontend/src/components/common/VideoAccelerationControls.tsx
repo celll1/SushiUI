@@ -11,6 +11,7 @@ import NumberInput from "./NumberInput";
  */
 export interface VideoAccelerationValues {
   video_blocks_to_swap?: number;
+  fuse_output_proj?: boolean;
   fbcache_enable?: boolean;
   fbcache_threshold?: number;
   fbcache_warmup_steps?: number;
@@ -26,6 +27,8 @@ interface VideoAccelerationControlsProps {
   onChange: (patch: Partial<VideoAccelerationValues>) => void;
   supportsSpectrum: boolean;
   supportsFbcache: boolean;
+  /** archSupportsFeature(caps, arch, "fuse_output_proj") -- MiniMax-H3 only. */
+  supportsFuseOutputProj: boolean;
   /** param_defaults.VIDEO_GEN_DEFAULTS["blocks_to_swap_enabled_default"] (per-arch resolved). */
   blocksToSwapEnabledDefault: number;
   blockSwapMax: number;
@@ -62,6 +65,7 @@ export default function VideoAccelerationControls({
   onChange,
   supportsSpectrum,
   supportsFbcache,
+  supportsFuseOutputProj,
   blocksToSwapEnabledDefault,
   blockSwapMax,
 }: VideoAccelerationControlsProps) {
@@ -119,6 +123,31 @@ export default function VideoAccelerationControls({
             className="w-24"
           />
         </div>
+      )}
+
+      {supportsFuseOutputProj && (
+        <div className="flex items-center gap-2 mt-2">
+          <input
+            type="checkbox"
+            id={`${idPrefix}_fuse_output_proj`}
+            checked={!!values.fuse_output_proj}
+            onChange={(e) => onChange({ fuse_output_proj: e.target.checked })}
+            className="rounded"
+          />
+          <label htmlFor={`${idPrefix}_fuse_output_proj`} className="text-sm text-gray-300">
+            Fuse output projection
+          </label>
+        </div>
+      )}
+      {supportsFuseOutputProj && (
+        <p className="text-xs text-gray-500 ml-6">
+          Folds the output-tail projection heads into the chunked output-norm loop instead of
+          materializing the full intermediate first. Measured on MiniMax-H3 at 768x1248, 345
+          frames, 40 blocks swapped: peak reserved 16.881 to 14.934 GiB, with the per-forward
+          time inside its run-to-run spread. Not bit-exact: max deviation measured against the
+          default path at 4.6e-6 relative (video head), roughly 30-40x fp32 machine epsilon.
+          Off by default for that reason, not for cost.
+        </p>
       )}
 
       {supportsSpectrum && (

@@ -58,6 +58,7 @@ from typing import Any, Optional
 import torch
 import torch.nn as nn
 
+from core.models.minimax_h3.adaln_chunking import chunked_norm_out_proj_fused
 from core.models.minimax_h3.vendor.transformer_minimax_h3 import (
     MINIMAX_H3_MODALITY_NUM,
     MiniMaxH3TransformerOutput,
@@ -324,9 +325,19 @@ class MiniMaxH3BlockLoopWrapper(nn.Module):
         # === 5. Output norm + the two modality heads ===
         # SushiUI: `out_dtype` passed in rather than cast afterwards -- must be kept in sync
         # with the stock call site in `transformer_minimax_h3.py`'s `MiniMaxH3Transformer3DModel.forward`.
-        hidden_states = t.norm_out(hidden_states, temb, timestep_indices, out_dtype=t.proj_out.weight.dtype)
-        video_output = t.proj_out(hidden_states).index_select(1, video_indices)
-        audio_output = t.audio_proj_out(hidden_states).index_select(1, audio_indices)
+        # `fuse_output_proj` (opt-in, not bit-exact) must also be kept in sync with that call site --
+        # see `adaln_chunking.py`'s "Head fusion" note. This is the wrapper's own call site, i.e. the
+        # one that runs whenever block swap or FBCache is active.
+        if getattr(t, "fuse_output_proj", False):
+            video_output, audio_output = chunked_norm_out_proj_fused(
+                t.norm_out, hidden_states, temb, timestep_indices, t.proj_out, t.audio_proj_out
+            )
+            video_output = video_output.index_select(1, video_indices)
+            audio_output = audio_output.index_select(1, audio_indices)
+        else:
+            hidden_states = t.norm_out(hidden_states, temb, timestep_indices, out_dtype=t.proj_out.weight.dtype)
+            video_output = t.proj_out(hidden_states).index_select(1, video_indices)
+            audio_output = t.audio_proj_out(hidden_states).index_select(1, audio_indices)
 
         if not return_dict:
             return (video_output, audio_output)

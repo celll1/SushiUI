@@ -2461,6 +2461,15 @@ paths:
     get:
       tags: [models]
       summary: List available LoRAs
+      description: |
+        Scans the default LoRA directory plus every registered seeded (e.g.
+        the `training/` directory, and any auto-discovered per-model
+        `<model_root>/loras` sibling directory) and user-configured
+        additional directory. Each entry reports the detected `arch` (from
+        the file's own key names, `"unknown"` included as a normal value) and
+        an identifier suitable for use in `loras[].path` on generation
+        requests -- see `LoRAInfo.path` for the identifier format and its
+        disambiguation rule.
       operationId: listLoras
       responses:
         '200':
@@ -8155,6 +8164,29 @@ components:
             `attention_backend` (observed per attention call by the conduit);
             it is absent for `ltx2`, which never reaches the conduit.
           example: sage
+        loras:
+          type: array
+          default: []
+          description: |
+            Optional LoRA(s) to apply for this generation. Applied by
+            `minimax_h3` (`core.models.minimax_h3.minimax_h3_lora`, forward-time
+            addition layers, never merged into weights, restored after
+            generation unless the next request reuses them). `ltx2` has no
+            LoRA loader on its video generation path at all: the field is
+            accepted-but-ignored with an `unsupported_param` warning when
+            non-empty, same contract as every other per-architecture video
+            parameter on these routes.
+          items:
+            type: object
+            properties:
+              path:
+                type: string
+                description: "LoRA .safetensors filename (relative to the LoRA directory or an additional configured directory)."
+              strength:
+                type: number
+                default: 1.0
+                description: "LoRA strength multiplier."
+          example: []
 
     Img2VidRequest:
       allOf:
@@ -10988,8 +11020,32 @@ components:
           example: "my_style_lora"
         path:
           type: string
-          description: Relative path to LoRA file
+          description: |
+            LoRA identifier, used as `loras[].path` in generation requests and
+            as the `{lora_name}` path parameter of `GET /loras/{lora_name}`.
+
+            Usually a path relative to the directory it was found in (default
+            LoRA directory, the `training/` directory, or a user-configured /
+            auto-discovered additional directory) -- this is the historical
+            format and remains stable for identifiers already stored in
+            presets, gallery rows, or loop-generation configs.
+
+            When the SAME relative path exists under more than one registered
+            directory (a real collision), every occurrence except the
+            highest-priority one is instead returned as a disambiguated
+            `"{dir_tag}::{relative_path}"` identifier, where `dir_tag` is an
+            opaque per-directory tag. Both forms are valid inputs everywhere a
+            LoRA identifier is accepted.
           example: "lora/my_style_lora.safetensors"
+        arch:
+          type: string
+          description: |
+            Model architecture detected from the LoRA file's own key names at
+            scan time (NOT the currently loaded model). `"unknown"` is a
+            first-class value for LoRA files whose key structure doesn't match
+            any recognized signature -- it is not an error.
+          enum: [sd15, sdxl, zimage, flux2, minimax_h3, unknown]
+          example: "sdxl"
         size:
           type: integer
           description: File size in bytes
@@ -10998,6 +11054,65 @@ components:
           type: string
           description: Model hash (SHA256)
           example: "f1e2d3c4b5a6..."
+        exists:
+          type: boolean
+          description: Whether the resolved file still exists on disk (GET /loras/{lora_name} only)
+          example: true
+        layers:
+          type: array
+          description: |
+            Block/layer labels detected in the LoRA file (GET /loras/{lora_name}
+            only). Format depends on `arch`: BASE/IN00-.../MID/OUT00-... for
+            sd15/sdxl, NRef.../CRef.../FDiT... for zimage, DUAL.../SING... for
+            flux2, MMB.../TREF.../FINAL for minimax_h3.
+          items:
+            type: string
+          example: ["IN00", "IN01", "MID", "OUT00"]
+        recommended:
+          allOf:
+            - $ref: '#/components/schemas/LoRARecommendedSettings'
+          nullable: true
+          description: |
+            Sampling settings this LoRA declares itself distilled for, parsed
+            from the file's own safetensors `__metadata__` (GET
+            /loras/{lora_name} only). `null` when the file's metadata declares
+            nothing recognized -- never a guessed/invented recommendation.
+
+    LoRARecommendedSettings:
+      type: object
+      description: |
+        Recommendation for a step-distillation LoRA, derived only from fields
+        the LoRA file's own metadata declares (currently `student_steps`).
+      required:
+        - num_inference_steps
+        - fbcache_enable
+        - spectrum_enable
+        - source
+      properties:
+        num_inference_steps:
+          type: integer
+          description: |
+            `student_steps + 1` from the file's metadata. `num_inference_steps`
+            in this API counts sigma grid points INCLUDING the terminal 0, one
+            more than the number of model evaluations the LoRA declares it was
+            distilled for.
+          example: 5
+        fbcache_enable:
+          type: boolean
+          description: |
+            Recommended off -- First Block Cache assumes dozens of evaluations
+            to amortize its own bookkeeping, meaningless at a handful of
+            distilled steps.
+          example: false
+        spectrum_enable:
+          type: boolean
+          description: Recommended off, for the same reason as fbcache_enable.
+          example: false
+        source:
+          type: string
+          description: Which metadata field this recommendation was derived from.
+          enum: [student_steps]
+          example: "student_steps"
 
     LoRAListResponse:
       type: object

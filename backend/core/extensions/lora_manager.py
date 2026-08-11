@@ -2,10 +2,194 @@
 LoRA (Low-Rank Adaptation) Manager
 Handles loading and applying multiple LoRAs with fine-grained control
 """
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Tuple
+import hashlib
 import os
+import re
 from pathlib import Path
 from config.settings import settings
+
+
+class LoRAAmbiguousIdentifierError(Exception):
+    """Raised by ``_resolve_lora_path`` when a bare (untagged) LoRA identifier
+    matches files in more than one registered directory. Previously this
+    silently returned the first match, which is a real mis-application hazard
+    once multiple per-model ``loras/`` directories are auto-registered
+    alongside the user's configured directories -- two different files could
+    share the same relative path across roots."""
+
+    def __init__(self, identifier: str, matches: List[Path]):
+        self.identifier = identifier
+        self.matches = matches
+        super().__init__(
+            f"LoRA identifier '{identifier}' is ambiguous: it resolves to "
+            f"{len(matches)} different files across registered directories: "
+            f"{[str(m) for m in matches]}. Refusing to guess -- use the "
+            f"disambiguated 'tag::relative_path' identifier returned by "
+            f"GET /loras instead."
+        )
+
+
+# Subdirectory names that hold a single model component rather than the model
+# root itself. Used by the sibling-`loras/` probe below: when the loaded
+# model's path lands inside one of these, the probe also tries the PARENT
+# directory (the actual model root) so `<model_root>/loras` is found even
+# when the caller only ever sees `<model_root>/diffusion_models/foo.safetensors`.
+_MODEL_COMPONENT_DIR_NAMES = {
+    "diffusion_models", "diffusion_model", "text_encoders", "text_encoder",
+    "text_encoder_2", "transformer", "unet", "vae", "tokenizer", "tokenizer_2",
+    "scheduler", "official",
+}
+
+
+def classify_lora_keys(keys) -> Dict[str, Any]:
+    """Single source of truth for LoRA architecture + block-structure detection
+    from a safetensors key list. Reused by both ``LoRAManager._is_valid_lora_file``
+    (arch tag at scan time) and ``LoRAManager.get_lora_layers`` (block list for
+    the UI) -- do not add a second signature table elsewhere; extend HERE.
+
+    Returns ``{"arch": str, "blocks": List[str]}``. ``arch`` is one of
+    "sd15", "sdxl", "zimage", "flux2", "minimax_h3", "unknown" ("unknown" is a
+    first-class value, not an error).
+    """
+    keys = list(keys)
+    blocks = set()
+    arch = "unknown"
+
+    # --- MiniMax-H3 (ComfyUI-exported LoRA) ---------------------------------
+    # Keys: diffusion_model.blocks.{N}.<attn.qkv_proj|attn.out_proj|mlp.fc1|
+    # mlp.fc2|adaln_proj.linear>.<lora_A|lora_B|alpha>, plus
+    # diffusion_model.final_layer.* and diffusion_model.token_refiner.blocks.*.
+    # Checked before every other signature: it never contains "transformer_blocks_"
+    # (the FLUX.2 signature below) or any of the SD/SDXL/Z-Image substrings, but
+    # is checked first regardless so a future overlapping format can't silently
+    # steal these keys.
+    is_minimax_h3 = any(
+        key.startswith('diffusion_model.blocks.')
+        or key.startswith('diffusion_model.final_layer.')
+        or key.startswith('diffusion_model.token_refiner.')
+        for key in keys
+    )
+    if is_minimax_h3:
+        arch = "minimax_h3"
+        for key in keys:
+            match = re.search(r'diffusion_model\.blocks\.(\d+)\.', key)
+            if match:
+                blocks.add(f"MMB{int(match.group(1)):02d}")
+            match = re.search(r'diffusion_model\.token_refiner\.blocks\.(\d+)\.', key)
+            if match:
+                blocks.add(f"TREF{int(match.group(1)):02d}")
+            if key.startswith('diffusion_model.final_layer.'):
+                blocks.add("FINAL")
+        if not blocks:
+            blocks.add("BASE")
+        return {"arch": arch, "blocks": _sort_lora_blocks(blocks)}
+
+    # --- SD1.5 / SDXL (kohya-ss "lora_unet_*"/"lora_te*_*" or diffusers dot format) ---
+    has_te2 = any(key.startswith('lora_te2_') or key.startswith('text_encoder_2.') for key in keys)
+    for key in keys:
+        if 'input_blocks' in key:
+            match = re.search(r'input_blocks[_.](\d+)', key)
+            if match:
+                blocks.add(f"IN{int(match.group(1)):02d}")
+        elif 'middle_block' in key:
+            blocks.add("MID")
+        elif 'output_blocks' in key:
+            match = re.search(r'output_blocks[_.](\d+)', key)
+            if match:
+                blocks.add(f"OUT{int(match.group(1)):02d}")
+        elif 'down_blocks' in key:
+            match = re.search(r'down_blocks[_.](\d+)[._]attentions[_.](\d+)', key)
+            if match:
+                i, j = int(match.group(1)), int(match.group(2))
+                blocks.add(f"IN{3 * i + j + 1:02d}")
+        elif 'mid_block' in key:
+            blocks.add("MID")
+        elif 'up_blocks' in key:
+            match = re.search(r'up_blocks[_.](\d+)[._]attentions[_.](\d+)', key)
+            if match:
+                i, j = int(match.group(1)), int(match.group(2))
+                blocks.add(f"OUT{3 * i + j:02d}")
+
+    if blocks or any(k.startswith('lora_unet_') or k.startswith('lora_te') for k in keys):
+        arch = "sdxl" if has_te2 else "sd15"
+        if not blocks:
+            blocks.add("BASE")
+        return {"arch": arch, "blocks": _sort_lora_blocks(blocks)}
+
+    # --- Z-Image (transformer-based) ---------------------------------------
+    for key in keys:
+        if 'noise_refiner' in key:
+            match = re.search(r'noise_refiner[_.](\d+)', key)
+            if match:
+                blocks.add(f"NRef{int(match.group(1))}")
+        elif 'context_refiner' in key:
+            match = re.search(r'context_refiner[_.](\d+)', key)
+            if match:
+                blocks.add(f"CRef{int(match.group(1))}")
+        elif 'transformer.layers.' in key:
+            match = re.search(r'layers[_.](\d+)', key)
+            if match:
+                blocks.add(f"FDiT{int(match.group(1)):02d}")
+
+    if blocks or any('noise_refiner' in k or 'context_refiner' in k or 'transformer.layers.' in k for k in keys):
+        arch = "zimage"
+        if not blocks:
+            blocks.add("BASE")
+        return {"arch": arch, "blocks": _sort_lora_blocks(blocks)}
+
+    # --- FLUX.2 (dual + single stream transformer blocks) ------------------
+    for key in keys:
+        if 'transformer_blocks_' in key or 'single_transformer_blocks_' in key:
+            match_dual = re.search(r'transformer_blocks_(\d+)', key)
+            if match_dual and 'single_transformer_blocks' not in key:
+                blocks.add(f"DUAL{int(match_dual.group(1)):02d}")
+            match_single = re.search(r'single_transformer_blocks_(\d+)', key)
+            if match_single:
+                blocks.add(f"SING{int(match_single.group(1)):02d}")
+
+    if blocks:
+        arch = "flux2"
+        return {"arch": arch, "blocks": _sort_lora_blocks(blocks)}
+
+    # --- Unknown / unrecognized structure ------------------------------------
+    blocks.add("BASE")
+    return {"arch": "unknown", "blocks": _sort_lora_blocks(blocks)}
+
+
+def _sort_lora_blocks(blocks) -> List[str]:
+    """Sort block labels: BASE, IN00-IN.., MID, OUT00-.., NRef/CRef/FDiT
+    (Z-Image), DUAL/SING (FLUX.2), MMB/TREF/FINAL (MiniMax-H3)."""
+    def sort_key(block):
+        if block == "BASE":
+            return (0, 0)
+        elif block == "MID":
+            return (2, 0)
+        elif block.startswith("MID"):
+            return (2, int(block[3:]) if len(block) > 3 else 0)
+        elif block.startswith("IN"):
+            return (1, int(block[2:]))
+        elif block.startswith("OUT"):
+            return (3, int(block[3:]))
+        elif block.startswith("NRef"):
+            return (1, int(block[4:]))
+        elif block.startswith("CRef"):
+            return (2, int(block[4:]))
+        elif block.startswith("FDiT"):
+            return (3, int(block[4:]))
+        elif block.startswith("DUAL"):
+            return (1, int(block[4:]))
+        elif block.startswith("SING"):
+            return (2, int(block[4:]))
+        elif block.startswith("TREF"):
+            return (1, int(block[4:]))
+        elif block == "FINAL":
+            return (3, 0)
+        elif block.startswith("MMB"):
+            return (2, int(block[3:]))
+        return (9, 0)
+
+    return sorted(list(blocks), key=sort_key)
 
 
 class LoRAConfig:
@@ -64,46 +248,199 @@ class LoRAManager:
         if lora_dir is None:
             lora_dir = settings.lora_dir
         self.lora_dir = Path(lora_dir)
-        self.additional_dirs: List[Path] = []  # User-configured additional directories
+        # User-configured additional directories (settings textarea). Set via
+        # set_additional_dirs(), which REPLACES this list only -- it must never
+        # touch seeded_dirs below (that was the bug: set_additional_dirs used to
+        # replace the single additional_dirs list wholesale, silently dropping
+        # the training/ dir seeded at startup on every settings save).
+        self.additional_dirs: List[Path] = []
+        # System-discovered directories: the training/ dir seeded here, plus any
+        # per-model `<model_root>/loras` sibling directories registered later via
+        # register_model_sibling_loras(). Composed with additional_dirs, never
+        # replaced by it.
+        self.seeded_dirs: List[Path] = []
         self.loaded_loras: List[LoRAConfig] = []
 
         # Cache for validated LoRA files (to avoid re-validation on every API call)
-        self._lora_cache: Optional[List[str]] = None
+        # Each entry: {"path": identifier, "name": str, "arch": str}
+        self._lora_cache: Optional[List[Dict[str, Any]]] = None
         self._cache_timestamp: float = 0.0
 
         # Add training directory to search paths (for trained LoRAs)
         training_dir = Path(settings.root_dir) / "training"
         if training_dir.exists():
-            self.additional_dirs.append(training_dir)
+            self.seeded_dirs.append(training_dir)
             print(f"[LoRAManager] Added training directory to search paths: {training_dir}")
 
         print(f"[LoRAManager] LoRA directory: {self.lora_dir}")
 
     def set_additional_dirs(self, dirs: List[str]):
-        """Set additional directories to scan for LoRAs"""
+        """Set the USER-configured additional directories to scan for LoRAs.
+        Composes with (never replaces) seeded_dirs -- see __init__ / register_
+        seeded_lora_dir for why that distinction matters."""
         self.additional_dirs = [Path(d) for d in dirs if d.strip()]
         print(f"[LoRAManager] Additional directories set: {self.additional_dirs}")
         # Invalidate cache when directories change
         self._lora_cache = None
 
+    def register_seeded_lora_dir(self, directory) -> bool:
+        """Register a system-discovered (non-user-configured) LoRA directory,
+        e.g. a per-model `<model_root>/loras` sibling. Composes with both the
+        training/ dir seeded at __init__ and any user-configured
+        additional_dirs (set_additional_dirs no longer wipes this list).
+
+        Returns True if newly added (False if it doesn't exist, isn't a
+        directory, or is already registered)."""
+        d = Path(directory)
+        if not d.is_dir():
+            return False
+        resolved = d.resolve()
+        if any(existing.resolve() == resolved for existing in self.seeded_dirs):
+            return False
+        self.seeded_dirs.append(d)
+        print(f"[LoRAManager] Registered seeded LoRA directory: {d}")
+        self._lora_cache = None
+        return True
+
+    def register_model_sibling_loras(self, source_path: str) -> bool:
+        """Auto-discover a per-model `loras/` directory next to the currently
+        loaded model and register it as a seeded search directory.
+
+        Follows the sibling-probe pattern used by the Krea 2 / Lens component
+        loaders (`core/models/krea2/krea2_loader.py::_probe_sibling`,
+        `core/models/lens/lens_loader.py`): given a model source that may be a
+        single file (`<root>/diffusion_models/foo.safetensors`) or a component
+        directory (`<root>/transformer/`), walk up through known component
+        subdirectory names to the model root and probe `<root>/loras`.
+
+        Never touches additional_dirs (the user's manual override) -- only
+        composes via register_seeded_lora_dir().
+        """
+        if not source_path:
+            return False
+        try:
+            p = Path(source_path)
+        except Exception:
+            return False
+        if not p.exists():
+            return False
+
+        start = p.parent if p.is_file() else p
+
+        candidates: List[Path] = []
+        seen: set = set()
+
+        def _add_candidate(d: Path):
+            try:
+                rd = d.resolve()
+            except Exception:
+                rd = d
+            if rd not in seen:
+                seen.add(rd)
+                candidates.append(d)
+
+        _add_candidate(start)
+        cur = start
+        for _ in range(4):
+            if cur.name.lower() in _MODEL_COMPONENT_DIR_NAMES and cur.parent != cur:
+                cur = cur.parent
+                _add_candidate(cur)
+            else:
+                break
+
+        registered = False
+        for cand in candidates:
+            loras_dir = cand / "loras"
+            if loras_dir.is_dir():
+                if self.register_seeded_lora_dir(loras_dir):
+                    registered = True
+        return registered
+
+    def _effective_extra_dirs(self) -> List[Path]:
+        """seeded_dirs followed by user-configured additional_dirs, deduped by
+        resolved path, stable order. This is the priority order used both when
+        scanning (get_available_loras) and when resolving a bare identifier
+        (_resolve_lora_path) -- seeded (system-curated) directories are checked
+        before the user's manual override list."""
+        result: List[Path] = []
+        seen: set = set()
+        for d in list(self.seeded_dirs) + list(self.additional_dirs):
+            try:
+                rd = d.resolve()
+            except Exception:
+                rd = d
+            if rd not in seen:
+                seen.add(rd)
+                result.append(d)
+        return result
+
+    def _dir_tag(self, directory: Path) -> str:
+        """Short, stable, order-independent identifier for a search directory
+        (used to disambiguate LoRA identifiers that collide across roots)."""
+        try:
+            resolved = str(Path(directory).resolve())
+        except Exception:
+            resolved = str(directory)
+        return hashlib.sha1(resolved.encode('utf-8')).hexdigest()[:8]
+
+    def _tag_to_dir(self, tag: str) -> Optional[Path]:
+        for d in [self.lora_dir] + self._effective_extra_dirs():
+            if self._dir_tag(d) == tag:
+                return d
+        return None
+
     def _resolve_lora_path(self, lora_path: str) -> Optional[Path]:
-        """Resolve LoRA path, checking default and additional directories"""
-        # Try default directory first
+        """Resolve a LoRA identifier to an absolute Path.
+
+        Two identifier shapes are accepted:
+          - "tag::relative/path.safetensors" -- the disambiguated form served
+            by get_available_loras() when a relative path collides across
+            more than one registered directory. Resolves directly against the
+            tagged directory; never ambiguous.
+          - "relative/path.safetensors" (legacy / common case) -- checked
+            against self.lora_dir first (unchanged priority, so every
+            identifier saved before this change and every non-colliding
+            identifier since still resolves exactly as before), then against
+            every seeded/additional directory. If it matches in MORE THAN ONE
+            of those directories, that is a genuine ambiguity and this raises
+            LoRAAmbiguousIdentifierError instead of silently returning the
+            first match.
+        """
+        tag, sep, rel = lora_path.partition("::")
+        if sep:
+            tagged_dir = self._tag_to_dir(tag)
+            if tagged_dir is not None:
+                full_path = tagged_dir / rel
+                return full_path if full_path.exists() else None
+            # Unrecognized tag: fall through and try the whole string as a
+            # literal (bare) relative path -- keeps odd-but-real filenames
+            # containing "::" resolvable instead of erroring outright.
+
+        # Try default directory first (unchanged legacy priority).
         full_path = self.lora_dir / lora_path
         if full_path.exists():
             return full_path
 
-        # Try additional directories
-        for additional_dir in self.additional_dirs:
-            full_path = additional_dir / lora_path
-            if full_path.exists():
-                return full_path
+        # Try every other registered directory; collect ALL matches so a
+        # genuine cross-directory collision can be detected instead of
+        # silently taking the first one.
+        matches: List[Path] = []
+        for extra_dir in self._effective_extra_dirs():
+            candidate = extra_dir / lora_path
+            if candidate.exists():
+                matches.append(candidate)
 
-        return None
+        if not matches:
+            return None
+        if len(matches) > 1:
+            raise LoRAAmbiguousIdentifierError(lora_path, matches)
+        return matches[0]
 
-    def _is_valid_lora_file(self, file_path: Path) -> bool:
+    def _is_valid_lora_file(self, file_path: Path) -> Optional[str]:
         """
-        Validate if a file is a valid LoRA model file.
+        Validate if a file is a valid LoRA model file and, if so, detect its
+        architecture via classify_lora_keys() (the single signature table
+        shared with get_lora_layers()).
 
         Checks:
         1. File extension (.safetensors only - .pt/.bin excluded to avoid debug latents)
@@ -111,7 +448,8 @@ class LoRAManager:
         3. Excludes training artifacts (optimizer states, debug latents, etc.)
 
         Returns:
-            True if valid LoRA model, False otherwise
+            The detected arch string ("sd15" | "sdxl" | "zimage" | "flux2" |
+            "minimax_h3" | "unknown") if this is a valid LoRA file, else None.
         """
         # Exclude known training artifacts by filename patterns
         filename = file_path.name.lower()
@@ -125,11 +463,11 @@ class LoRAManager:
         for pattern in exclude_patterns:
             if pattern in filename:
                 print(f"[LoRAManager] Excluding training artifact: {file_path.name}")
-                return False
+                return None
 
         # Check file extension (only .safetensors - exclude .pt to avoid debug latents)
         if file_path.suffix not in ['.safetensors']:
-            return False
+            return None
 
         # Verify .safetensors files contain LoRA keys
         try:
@@ -166,18 +504,21 @@ class LoRAManager:
                     if len(keys) > 0:
                         print(f"[LoRAManager]   Sample keys: {keys[:5]}")
                         print(f"[LoRAManager]   has_lora_down={has_lora_down}, has_lora_up={has_lora_up}")
-                    return False
+                    return None
+
+                arch = classify_lora_keys(keys).get("arch", "unknown")
 
         except Exception as e:
             print(f"[LoRAManager] Could not validate {file_path.name}: {e}")
             # If we can't read it, exclude it to be safe
-            return False
+            return None
 
-        return True
+        return arch
 
-    def get_available_loras(self, force_rescan: bool = False) -> List[str]:
+    def get_available_loras(self, force_rescan: bool = False) -> List[Dict[str, Any]]:
         """
-        Get list of available LoRA files from default and additional directories.
+        Get list of available LoRA files from default and additional/seeded
+        directories.
 
         Uses cache to avoid expensive validation on every API call.
 
@@ -185,7 +526,12 @@ class LoRAManager:
             force_rescan: Force re-scanning and validation (ignores cache)
 
         Returns:
-            List of valid LoRA file paths
+            List of {"path": identifier, "name": str, "arch": str} dicts.
+            "path" is a bare relative path for the common (non-colliding)
+            case -- unchanged from before, so existing stored identifiers
+            keep working -- or a disambiguated "tag::relative/path" identifier
+            when the same relative path exists under more than one registered
+            directory (see _resolve_lora_path's docstring).
         """
         import time
 
@@ -196,10 +542,13 @@ class LoRAManager:
         print(f"[LoRAManager] Scanning and validating LoRA files...")
         scan_start = time.time()
 
-        lora_files = []
+        # Combine default directory with seeded + user-configured directories,
+        # in priority order (default dir wins any collision, matching the
+        # pre-existing _resolve_lora_path priority).
+        all_dirs = [self.lora_dir] + self._effective_extra_dirs()
 
-        # Combine default directory with additional directories
-        all_dirs = [self.lora_dir] + self.additional_dirs
+        # rel_path -> list of (dir, abs_path, arch), in scan (= priority) order
+        records_by_rel: Dict[str, List[Tuple[Path, Path, str]]] = {}
 
         for lora_dir in all_dirs:
             print(f"[LoRAManager] Checking directory: {lora_dir}")
@@ -218,12 +567,29 @@ class LoRAManager:
                 found = list(lora_dir.rglob(f"*{ext}"))
                 print(f"[LoRAManager] Found {len(found)} files with extension {ext} in {lora_dir}")
 
-                # Validate each file before adding
                 for f in found:
-                    if self._is_valid_lora_file(f):
-                        lora_files.append(str(f.relative_to(lora_dir)))
+                    arch = self._is_valid_lora_file(f)
+                    if arch is not None:
+                        rel = str(f.relative_to(lora_dir))
+                        records_by_rel.setdefault(rel, []).append((lora_dir, f, arch))
 
-        result = sorted(list(set(lora_files)))  # Remove duplicates
+        result: List[Dict[str, Any]] = []
+        for rel, recs in records_by_rel.items():
+            for idx, (lora_dir, abs_path, arch) in enumerate(recs):
+                if len(recs) > 1 and idx > 0:
+                    # Real collision: this root's copy is NOT the highest-
+                    # priority owner of the bare identifier -- disambiguate
+                    # instead of letting it silently shadow/collide.
+                    identifier = f"{self._dir_tag(lora_dir)}::{rel}"
+                else:
+                    identifier = rel
+                result.append({
+                    "path": identifier,
+                    "name": os.path.basename(rel),
+                    "arch": arch,
+                })
+
+        result.sort(key=lambda e: e["path"].lower())
         scan_duration = time.time() - scan_start
 
         print(f"[LoRAManager] Total valid LoRA files found: {len(result)}")
@@ -563,26 +929,32 @@ class LoRAManager:
     def get_lora_info(self, lora_name: str) -> Optional[Dict[str, Any]]:
         """Get information about a specific LoRA file"""
         # Use _resolve_lora_path to check both lora/ and training/ directories
+        # (may raise LoRAAmbiguousIdentifierError -- callers should let that
+        # propagate rather than treating it as "not found").
         lora_path = self._resolve_lora_path(lora_name)
 
         if lora_path is None:
             return None
 
-        # Get layer information
-        layers = self.get_lora_layers(lora_name)
+        # Get layer + arch information (single read of the file's keys)
+        arch, layers = self._read_lora_keys_info(lora_path)
+        recommended = self._parse_recommended_metadata(lora_path)
 
         return {
             "name": lora_name,
             "path": str(lora_path),
             "size": lora_path.stat().st_size,
             "exists": True,
-            "layers": layers
+            "arch": arch,
+            "layers": layers,
+            "recommended": recommended,
         }
 
     def get_lora_layers(self, lora_name: str) -> List[str]:
         """
-        Extract U-Net block structure from LoRA file
-        Returns blocks in format: BASE, IN00-IN11, MID, OUT00-OUT11
+        Extract U-Net/transformer block structure from a LoRA file.
+        Returns blocks in format: BASE, IN00-IN11, MID, OUT00-OUT11 (SD/SDXL),
+        NRef/CRef/FDiT (Z-Image), DUAL/SING (FLUX.2), MMB/TREF/FINAL (MiniMax-H3).
         """
         # Use _resolve_lora_path to check both lora/ and training/ directories
         lora_path = self._resolve_lora_path(lora_name)
@@ -590,143 +962,69 @@ class LoRAManager:
         if lora_path is None:
             return []
 
+        _, blocks = self._read_lora_keys_info(lora_path)
+        return blocks
+
+    def _read_lora_keys_info(self, lora_path: Path) -> Tuple[str, List[str]]:
+        """Read a LoRA file's keys once and classify arch + blocks via the
+        shared classify_lora_keys() signature table."""
         try:
             from safetensors import safe_open
-            import re
-
-            blocks = set()
 
             with safe_open(lora_path, framework="pt", device="cpu") as f:
-                keys = f.keys()
+                keys = list(f.keys())
 
-                for key in keys:
-                    # Check for input_blocks / middle_block / output_blocks (SD1.5 format)
-                    if 'input_blocks' in key:
-                        match = re.search(r'input_blocks[_.](\d+)', key)
-                        if match:
-                            block_num = int(match.group(1))
-                            blocks.add(f"IN{block_num:02d}")
-
-                    elif 'middle_block' in key:
-                        blocks.add("MID")
-
-                    elif 'output_blocks' in key:
-                        match = re.search(r'output_blocks[_.](\d+)', key)
-                        if match:
-                            block_num = int(match.group(1))
-                            blocks.add(f"OUT{block_num:02d}")
-
-                    # Check for down_blocks / mid_block / up_blocks (SDXL/diffusers format)
-                    # Conversion follows sd-scripts mapping (library/sdxl_model_util.py:make_unet_conversion_map)
-                    # down_blocks.i.attentions.j → input_blocks[3*i + j + 1]
-                    # up_blocks.i.attentions.j → output_blocks[3*i + j]
-                    elif 'down_blocks' in key:
-                        # Match: down_blocks.{i}.attentions.{j} or down_blocks_{i}_attentions_{j}
-                        match = re.search(r'down_blocks[_.](\d+)[._]attentions[_.](\d+)', key)
-                        if match:
-                            i = int(match.group(1))
-                            j = int(match.group(2))
-                            # down_blocks.i.attentions.j → input_blocks[3*i + j + 1]
-                            kohya_block_num = 3 * i + j + 1
-                            blocks.add(f"IN{kohya_block_num:02d}")
-
-                    elif 'mid_block' in key:
-                        blocks.add("MID")
-
-                    elif 'up_blocks' in key:
-                        # Match: up_blocks.{i}.attentions.{j} or up_blocks_{i}_attentions_{j}
-                        match = re.search(r'up_blocks[_.](\d+)[._]attentions[_.](\d+)', key)
-                        if match:
-                            i = int(match.group(1))
-                            j = int(match.group(2))
-                            # up_blocks.i.attentions.j → output_blocks[3*i + j]
-                            kohya_block_num = 3 * i + j
-                            blocks.add(f"OUT{kohya_block_num:02d}")
-
-                    # Check for Z-Image transformer structure
-                    elif 'noise_refiner' in key:
-                        # noise_refiner.0, noise_refiner.1 → NRef0, NRef1
-                        match = re.search(r'noise_refiner[_.](\d+)', key)
-                        if match:
-                            block_num = int(match.group(1))
-                            blocks.add(f"NRef{block_num}")
-
-                    elif 'context_refiner' in key:
-                        # context_refiner.0, context_refiner.1 → CRef0, CRef1
-                        match = re.search(r'context_refiner[_.](\d+)', key)
-                        if match:
-                            block_num = int(match.group(1))
-                            blocks.add(f"CRef{block_num}")
-
-                    elif 'transformer.layers.' in key:
-                        # transformer.layers.0 ~ layers.29 → FDiT00-FDiT29
-                        match = re.search(r'layers[_.](\d+)', key)
-                        if match:
-                            block_num = int(match.group(1))
-                            blocks.add(f"FDiT{block_num:02d}")
-
-                    # Check for FLUX.2 transformer structure
-                    # Key format: lora_transformer_transformer_blocks_X_... (dual stream)
-                    #             lora_transformer_single_transformer_blocks_X_... (single stream)
-                    elif 'transformer_blocks_' in key or 'single_transformer_blocks_' in key:
-                        # Dual stream blocks: transformer_blocks_0 ~ transformer_blocks_4
-                        match_dual = re.search(r'transformer_blocks_(\d+)', key)
-                        if match_dual and 'single_transformer_blocks' not in key:
-                            block_num = int(match_dual.group(1))
-                            blocks.add(f"DUAL{block_num:02d}")
-
-                        # Single stream blocks: single_transformer_blocks_0 ~ single_transformer_blocks_19
-                        match_single = re.search(r'single_transformer_blocks_(\d+)', key)
-                        if match_single:
-                            block_num = int(match_single.group(1))
-                            blocks.add(f"SING{block_num:02d}")
-
-                # If no blocks found, add BASE
-                if not blocks:
-                    blocks.add("BASE")
-
-            # Sort blocks: BASE, IN00-IN11, MID/MID00-MID01, OUT00-OUT29 (SD/SDXL), NRef0-1, CRef0-1, FDiT00-29 (Z-Image), DUAL00-04, SING00-19 (FLUX.2)
-            def sort_key(block):
-                if block == "BASE":
-                    return (0, 0)
-                elif block == "MID":
-                    return (2, 0)
-                elif block.startswith("MID"):
-                    # MID00, MID01, etc.
-                    return (2, int(block[3:]) if len(block) > 3 else 0)
-                elif block.startswith("IN"):
-                    return (1, int(block[2:]))
-                elif block.startswith("OUT"):
-                    return (3, int(block[3:]))
-                # Z-Image specific blocks
-                elif block.startswith("NRef"):
-                    # NRef0, NRef1
-                    return (1, int(block[4:]))
-                elif block.startswith("CRef"):
-                    # CRef0, CRef1
-                    return (2, int(block[4:]))
-                elif block.startswith("FDiT"):
-                    # FDiT00-FDiT29
-                    return (3, int(block[4:]))
-                # FLUX.2 specific blocks
-                elif block.startswith("DUAL"):
-                    # DUAL00-DUAL04 (dual stream blocks)
-                    return (1, int(block[4:]))
-                elif block.startswith("SING"):
-                    # SING00-SING19 (single stream blocks)
-                    return (2, int(block[4:]))
-                return (9, 0)
-
-            sorted_blocks = sorted(list(blocks), key=sort_key)
-            print(f"[LoRAManager] Found {len(sorted_blocks)} blocks in {lora_name}: {sorted_blocks}")
-
-            return sorted_blocks
+            classification = classify_lora_keys(keys)
+            arch = classification["arch"]
+            blocks = classification["blocks"]
+            print(f"[LoRAManager] {lora_path.name}: arch={arch}, {len(blocks)} blocks: {blocks}")
+            return arch, blocks
 
         except Exception as e:
-            print(f"[LoRAManager] Error reading LoRA layers: {e}")
+            print(f"[LoRAManager] Error reading LoRA keys: {e}")
             import traceback
             traceback.print_exc()
-            return []
+            return "unknown", []
+
+    def _parse_recommended_metadata(self, lora_path: Path) -> Optional[Dict[str, Any]]:
+        """Parse a step-distillation recommendation from the LoRA's safetensors
+        `__metadata__`, when present. Only recognizes fields the file itself
+        declares -- never invents a recommendation.
+
+        Currently recognized: `student_steps` (a step-distillation LoRA's
+        student evaluation count). The repo's `num_inference_steps` counts
+        sigma grid points INCLUDING the terminal 0 (one more than the number
+        of model evaluations -- see
+        core/models/minimax_h3/h3_pipeline_ops.py:1202-1203), so
+        num_inference_steps = student_steps + 1. Cache-across-steps features
+        (FBCache/Spectrum forecasting) are recommended off: they assume dozens
+        of evaluations to amortize their own bookkeeping, meaningless at ~4-8.
+        """
+        try:
+            from safetensors import safe_open
+
+            with safe_open(lora_path, framework="pt", device="cpu") as f:
+                metadata = f.metadata() or {}
+        except Exception as e:
+            print(f"[LoRAManager] Could not read metadata from {lora_path.name}: {e}")
+            return None
+
+        student_steps_raw = metadata.get("student_steps")
+        if student_steps_raw is None:
+            return None
+
+        try:
+            student_steps = int(float(student_steps_raw))
+        except (TypeError, ValueError):
+            print(f"[LoRAManager] {lora_path.name}: unparseable student_steps={student_steps_raw!r}")
+            return None
+
+        return {
+            "num_inference_steps": student_steps + 1,
+            "fbcache_enable": False,
+            "spectrum_enable": False,
+            "source": "student_steps",
+        }
 
 
 # Global instance

@@ -196,8 +196,23 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         or any other per-session mutation of the loaded components -- a silent
         no-op when the user re-selected the SAME checkpoint."""
         with self._load_model_lock:
-            return self._load_model_locked(
+            result = self._load_model_locked(
                 source_type, source, pipeline_type, force_reload=force_reload, **kwargs)
+
+        # Auto-discover a per-model `loras/` sibling directory (e.g.
+        # M:/model/minimax_h3/loras next to diffusion_models/text_encoders/vae)
+        # and register it as a seeded LoRA search dir. Only runs after a
+        # confirmed-successful load of THIS source (current_model_info can be
+        # left stale/None on failure, or reflect a different model when the
+        # same-model early return fired above).
+        try:
+            if self.current_model_info and self.current_model_info.get("source") == source:
+                from core.extensions.lora_manager import lora_manager
+                lora_manager.register_model_sibling_loras(source)
+        except Exception as exc:
+            print(f"[Pipeline] LoRA sibling directory auto-discovery skipped: {exc}")
+
+        return result
 
     def _load_model_locked(
         self,

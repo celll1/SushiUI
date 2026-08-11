@@ -22,7 +22,7 @@ from database import get_gallery_db, get_datasets_db, get_training_db, get_db  #
 from database.models import GeneratedImage, UserSettings, Dataset, DatasetItem, DatasetCaption, TagDictionary, TrainingRun, TrainingCheckpoint, TrainingSample, TrainingPreset, TaggerTrainingRun, TaggerTrainingMetrics
 from core.pipeline import pipeline_manager
 from core.utils.taesd import taesd_manager
-from core.extensions.lora_manager import lora_manager
+from core.extensions.lora_manager import lora_manager, LoRAAmbiguousIdentifierError
 from core.extensions.controlnet_manager import controlnet_manager
 from core.extensions.controlnet_preprocessor import controlnet_preprocessor
 from core.extensions.tipo_manager import tipo_manager
@@ -7921,12 +7921,8 @@ async def get_loras():
         print(f"[DEBUG] get_loras: Found {len(loras)} LoRA files")
         if len(loras) > 0:
             print(f"[DEBUG] First LoRA: {loras[0]}")
-        result = {
-            "loras": [
-                {"path": lora, "name": os.path.basename(lora)}
-                for lora in loras
-            ]
-        }
+        # get_available_loras() already returns {"path", "name", "arch"} dicts
+        result = {"loras": loras}
         print(f"[DEBUG] Returning {len(result['loras'])} LoRAs")
         return result
     except Exception as e:
@@ -7938,7 +7934,13 @@ async def get_loras():
 @router.get("/loras/{lora_name:path}")
 async def get_lora_info(lora_name: str):
     """Get information about a specific LoRA"""
-    info = lora_manager.get_lora_info(lora_name)
+    try:
+        info = lora_manager.get_lora_info(lora_name)
+    except LoRAAmbiguousIdentifierError as e:
+        # The identifier resolves to different files across more than one
+        # registered directory -- refuse to guess which one the caller means
+        # instead of silently applying the wrong LoRA.
+        raise HTTPException(status_code=409, detail=str(e))
     if not info:
         raise HTTPException(status_code=404, detail="LoRA not found")
     return info

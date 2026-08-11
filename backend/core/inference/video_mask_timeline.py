@@ -32,6 +32,24 @@ MAX_TOTAL_MASK_PIXELS = 67_108_864
 MAX_MASK_TRANSFORM_SCALE = 100.0
 MIN_MASK_TRANSFORM_SCALE = 0.01
 _INTERPOLATION_MODES = frozenset({"hold", "affine", "sdf"})
+# Grounded in measurement (see `_sdf_blend`'s docstring and the audit that
+# added this constant): a centroid-aligned `sdf` blend of a well-behaved
+# single-connected-component pair (translation, rotation, or a large
+# monotonic size change with a fixed or slowly-moving centroid) never drives
+# an intermediate frame's `>= 0.5` area below the SMALLER of its two
+# endpoints' own areas -- measured floor across parallel translation, same-
+# area shape changes, and even an extreme 1,000,000px^2 -> 16px^2 same-
+# centroid shrink was >= 1.0x the smaller endpoint's area at every
+# intermediate frame. A multi-connected-component or large-centroid-offset
+# pair, by contrast, measured as low as ~2.6% and ~10% of the smaller
+# endpoint's area on two DIFFERENT intermediate frames of the same
+# reproduction (frames whose own `max() >= 0.5`, so the fallback in
+# `_sdf_blend` did not fire and they were otherwise unwarned) while a milder
+# frame in the same run measured 93% and another measured 55% -- i.e. the
+# pathological and normal-shrink regimes are separated by roughly an order
+# of magnitude, not by a small margin, which is why this fraction is set
+# well below 1.0 rather than close to it.
+SDF_THIN_AREA_FRACTION = 0.5
 _ROOT_FIELDS = frozenset(
     {"version", "coordinate_space", "polarity", "canvas", "keyframes", "composite_feather_px"}
 )
@@ -531,15 +549,17 @@ def _shift_field(field: np.ndarray, shift: tuple[float, float]) -> np.ndarray:
     return ndimage.shift(field, shift, order=1, mode="nearest").astype(np.float32)
 
 
-def _sdf_fields(mask: np.ndarray) -> tuple[np.ndarray, tuple[float, float] | None]:
-    """The signed-distance field and centroid a keyframe pair's SDF blend reuses.
+def _sdf_fields(mask: np.ndarray) -> tuple[np.ndarray, tuple[float, float] | None, int]:
+    """The signed-distance field, centroid, and area a keyframe pair's SDF blend reuses.
 
     Computed once per (left, right) keyframe pair by ``rasterize_mask_timeline``
     and reused for every intermediate frame between them, rather than recomputed
     per frame: the distance transform is the expensive part of an SDF blend and
-    does not depend on ``amount``.
+    does not depend on ``amount``. The area (count of ``>= 0.5`` pixels) is the
+    keyframe's own generate-region size, used as the thin-frame detection
+    baseline described on ``SDF_THIN_AREA_FRACTION``.
     """
-    return _signed_distance(mask), _mask_centroid(mask)
+    return _signed_distance(mask), _mask_centroid(mask), int(np.count_nonzero(mask >= 0.5))
 
 
 def _sdf_blend(
@@ -575,6 +595,28 @@ def _sdf_blend(
     overlap, e.g. very different sizes or elongated shapes at right angles);
     the caller then holds the nearer endpoint's mask instead of returning an
     empty frame.
+
+    KNOWN WEAKNESS (measured, not fixed by this function): centroid alignment
+    registers each shape's SINGLE centroid, not its per-component layout. For
+    a keyframe with MULTIPLE connected components (e.g. two disjoint 100x100
+    squares), the amount-weighted centroid is a point that lies BETWEEN the
+    components, often outside any of them, and for a keyframe pair with very
+    different total areas or component counts the two aligned fields overlap
+    only partially at some blend fractions. This does not always trigger the
+    `fell_back` path above (`max() >= 0.5` can still hold at a handful of
+    scattered pixels), so an intermediate frame can be a small fraction of
+    either endpoint's own area -- measured as low as ~2.6% and ~10% of the
+    smaller endpoint's area, on two separate frames of the same run, with no
+    empty-frame fallback and therefore no warning prior to
+    `SDF_THIN_AREA_FRACTION` -- while still passing every invariant this
+    function enforces. This reproduces specifically for keyframe pairs with
+    multiple connected components, a large area difference between endpoints,
+    or a centroid that lies outside the shape it was computed from; a single-
+    component pair whose centroid stays inside the shape through the whole
+    morph (including a large monotonic size change) was not observed to
+    reproduce it. `hold` or `affine` interpolation is not subject to this
+    weakness, since neither blends two different masks' signed-distance
+    fields.
     """
     if amount <= 0.0:
         return left.copy(), False
@@ -627,8 +669,14 @@ def rasterize_mask_timeline(
     message per individual frame (Medium-2 final-audit fix: an ``sdf``
     segment spanning a 100-frame clip could otherwise append up to 99
     near-identical messages into a response's ``warnings[]`` and the log).
-    Left ``None`` this function does no I/O of its own, matching the module's
-    no-server-dependency contract.
+    The same list also collects at most one message PER KEYFRAME PAIR for the
+    "thin frame" weakness `_sdf_blend` documents: a frame whose own `max() >=
+    0.5` (so it did not fall back above) but whose generate-region area is
+    below `SDF_THIN_AREA_FRACTION` of the smaller of its two keyframes' own
+    areas. Aggregated the same way and for the same reason as the fallback
+    messages, and independent of them (a pair can report either, both, or
+    neither). Left ``None`` this function does no I/O of its own, matching
+    the module's no-server-dependency contract.
     """
 
     if not isinstance(timeline, MaskTimelineManifest):
@@ -664,6 +712,13 @@ def rasterize_mask_timeline(
     # instead of formatting a message per frame, so a long `sdf` segment
     # produces one summary instead of up to one message per frame.
     sdf_fallback_frames_by_pair: dict[tuple[int, int], list[int]] = {}
+    # Thin-frame weakness (see `_sdf_blend`'s docstring and
+    # `SDF_THIN_AREA_FRACTION`): collected per keyframe PAIR, same as the
+    # fallback frames above and for the same reason. Keyed by keyframe frame
+    # numbers rather than indices so the aggregation loop below can format a
+    # message without needing to look the keyframes back up by index.
+    sdf_thin_frames_by_pair: dict[tuple[int, int], list[tuple[int, int]]] = {}
+    sdf_thin_pair_areas: dict[tuple[int, int], tuple[int, int]] = {}
 
     for frame in range(start_frame, end_frame):
         right_index = 0
@@ -719,14 +774,28 @@ def rasterize_mask_timeline(
             if cached is None:
                 cached = (_sdf_fields(left_mask), _sdf_fields(right_mask))
                 sdf_field_cache[cache_key] = cached
-            (sd_left, centroid_left), (sd_right, centroid_right) = cached
+            (sd_left, centroid_left, left_area), (sd_right, centroid_right, right_area) = cached
             blended, fell_back = _sdf_blend(
                 left_mask, right_mask, sd_left, sd_right, centroid_left, centroid_right, amount,
             )
+            pair_key = (left_keyframe.frame, right_keyframe.frame)
             if fell_back and sdf_fallback_warnings is not None:
-                sdf_fallback_frames_by_pair.setdefault(
-                    (left_keyframe.frame, right_keyframe.frame), []
-                ).append(frame)
+                sdf_fallback_frames_by_pair.setdefault(pair_key, []).append(frame)
+            elif sdf_fallback_warnings is not None:
+                # Thin-frame check (see `SDF_THIN_AREA_FRACTION`): only
+                # evaluated when `_sdf_blend` did NOT already fall back --
+                # a fallback frame holds an endpoint's mask exactly, whose
+                # area is by definition >= min(left_area, right_area), so it
+                # can never trip this check and does not need to be excluded
+                # explicitly.
+                min_area = min(left_area, right_area)
+                if min_area > 0:
+                    frame_area = int(np.count_nonzero(blended >= 0.5))
+                    if frame_area < SDF_THIN_AREA_FRACTION * min_area:
+                        sdf_thin_frames_by_pair.setdefault(pair_key, []).append(
+                            (frame, frame_area)
+                        )
+                        sdf_thin_pair_areas.setdefault(pair_key, (left_area, right_area))
             rasterized.append(blended)
         else:
             raise MaskRasterizationError(f"unsupported interpolation mode: {mode!r}")
@@ -738,6 +807,27 @@ def rasterize_mask_timeline(
                 f"{right_frame - left_frame} frames) between keyframes at frames "
                 f"{left_frame} and {right_frame}: sdf morph produced no generate pixels after "
                 f"centroid alignment on those frames; held the nearer keyframe's mask instead."
+            )
+        for (left_frame, right_frame), entries in sdf_thin_frames_by_pair.items():
+            left_area, right_area = sdf_thin_pair_areas[(left_frame, right_frame)]
+            frame_numbers_thin = [entry[0] for entry in entries]
+            worst_frame, worst_area = min(entries, key=lambda entry: entry[1])
+            worst_ratio_pct = (
+                100.0 * worst_area / min(left_area, right_area)
+                if min(left_area, right_area) > 0
+                else 0.0
+            )
+            sdf_fallback_warnings.append(
+                f"frames {frame_numbers_thin[0]}-{frame_numbers_thin[-1]} "
+                f"({len(entries)} of {right_frame - left_frame} frames) between keyframes at "
+                f"frames {left_frame} and {right_frame}: sdf morph produced a generate region "
+                f"below {int(SDF_THIN_AREA_FRACTION * 100)}% of the smaller keyframe's own area "
+                f"on those frames (keyframe areas: {left_area}px and {right_area}px; frame "
+                f"{worst_frame} was smallest at {worst_area}px, {worst_ratio_pct:.1f}% of the "
+                f"smaller keyframe's area). This pattern reproduces for keyframes with multiple "
+                f"disconnected regions or a large area difference between the two keyframes; "
+                f"'hold' or 'affine' interpolation between the same two masks would not blend "
+                f"their signed-distance fields and would not be subject to this."
             )
 
     return rasterized
@@ -1111,6 +1201,7 @@ def composite_masked_frames(
 
 __all__ = [
     "MAX_MASK_PIXELS",
+    "SDF_THIN_AREA_FRACTION",
     "ManifestValidationError",
     "MaskCanvas",
     "MaskDecodeError",

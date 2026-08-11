@@ -1303,6 +1303,57 @@ export const largestValidVideoFrameCount = (
   return length >= c.min_frames ? length : null;
 };
 
+// The valid clip length ON THE GRID (`multiple*n + offset`) closest to
+// `frames`, clamped into `[min_frames, max_frames]` first. Unlike
+// `largestValidVideoFrameCount` (which only ever snaps DOWN, because a
+// temporal-inpaint clip length must not silently grow past what the caller
+// trimmed to), this is for a control that lets the user ask for ANY length —
+// a slider/number box, not a trim target — so the nearest grid point in
+// EITHER direction is the right answer, the same as how a drag handle lands
+// on the nearest tick. Returns null on the same "arch unknown / matrix not
+// loaded" condition its neighbours do.
+export const nearestValidVideoFrameCount = (
+  caps: ArchCapabilities | null | undefined,
+  arch: string | null | undefined,
+  frames: number
+): number | null => {
+  const c = arch ? caps?.video_constraints?.[arch] : undefined;
+  if (!c || !Number.isFinite(frames)) return null;
+  const kMin = Math.ceil((c.min_frames - c.frame_offset) / c.frame_multiple);
+  const kMax = c.max_frames != null
+    ? Math.floor((c.max_frames - c.frame_offset) / c.frame_multiple)
+    : Infinity;
+  if (kMax < kMin) return null;
+  const kRaw = (frames - c.frame_offset) / c.frame_multiple;
+  const k = Math.min(kMax, Math.max(kMin, Math.round(kRaw)));
+  return k * c.frame_multiple + c.frame_offset;
+};
+
+// The valid clip length the BACKEND would produce for a requested one: the
+// grid point at or above `frames`, clamped into the arch's producible range.
+// This mirrors `TemporalSpec.snap_length` (backend/core/models/components/
+// wiring.py) exactly, including its floor of `max(min_frames,
+// min_decodable_frames)` and its silent clamp at `max_frames` -- so a panel
+// can show the length a request will ACTUALLY come back as, before spending
+// the generation to find out. It rounds UP where `nearestValidVideoFrameCount`
+// rounds to whichever side is closer, because that is what the backend does;
+// do not swap one for the other to save a helper.
+export const snapUpValidVideoFrameCount = (
+  caps: ArchCapabilities | null | undefined,
+  arch: string | null | undefined,
+  frames: number
+): number | null => {
+  const c = arch ? caps?.video_constraints?.[arch] : undefined;
+  if (!c || !Number.isFinite(frames)) return null;
+  const lo = Math.max(c.min_frames, c.min_decodable_frames);
+  const kLo = Math.ceil((lo - c.frame_offset) / c.frame_multiple);
+  let k = Math.max(Math.ceil((frames - c.frame_offset) / c.frame_multiple), kLo);
+  if (c.max_frames != null) {
+    k = Math.min(k, Math.floor((c.max_frames - c.frame_offset) / c.frame_multiple));
+  }
+  return k * c.frame_multiple + c.frame_offset;
+};
+
 // The temporal-outpaint placements the loaded arch can anchor, from the
 // backend's own table. An unknown arch (or a backend that does not serve the
 // key) is treated as unconstrained, the same "assume supported" convention as

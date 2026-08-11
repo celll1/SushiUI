@@ -529,8 +529,12 @@ def test_the_panel_carries_the_track_onto_the_item_and_back_out_at_dequeue():
     with open(path, encoding="utf-8") as handle:
         panel = handle.read()
 
+    # Window it on the enqueue call itself, not on the first `return;` after
+    # the params object: an early return was added between the two (the
+    # over-cap chain choice), which silently shrank the window to a region
+    # that never contained the assertion's subject.
     enqueue = panel[panel.index("const videoParams: Img2VidParams = {"):]
-    enqueue = enqueue[:enqueue.index("return;")]
+    enqueue = enqueue[:enqueue.index('addToQueue({\n        type: "img2vid"') + 2000]
     assert "inputAudio:" in enqueue
     assert "inputAudioTrack" in enqueue
 
@@ -551,9 +555,9 @@ def test_the_timeline_draws_the_lane_full_width_with_no_offset_handles():
     flat = " ".join(timeline.split())
     assert "onInputAudioChange" in timeline
     assert "conditions the entire clip" in flat
-    assert "partial-timeline placement is not supported" in flat
+    assert "partial placement is not supported" in flat
     # The measured scope is stated where the control is, not only in the docs.
-    assert "Speech, pitch and timbre were not measured." in timeline
+    assert "speech, pitch and timbre were not measured." in timeline
     # ... and the mux claim matches what the file actually is. "carries this
     # file's audio unchanged" was the shipped over-claim: the mp4's audio is
     # AAC, and with audio_enable off there is no audio track at all.

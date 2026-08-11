@@ -3,6 +3,11 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import Button from "./Button";
 import { Menu, X, Undo2, Redo2, Maximize2, Maximize, Layers, Check } from "lucide-react";
+import {
+  MASK_OVERLAY_ALPHA,
+  MASK_OVERLAY_CANVAS_COMPOSITE_OPERATION,
+  encodeMaskLayerToPng,
+} from "@/utils/maskConventions";
 
 interface ImageEditorProps {
   imageUrl: string;
@@ -230,8 +235,8 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
 
       // Special handling for mask layer - use screen blend mode for semi-transparent white overlay
       if (layer.id === "mask" && mode === "inpaint") {
-        ctx.globalAlpha = 0.5;
-        ctx.globalCompositeOperation = "screen";
+        ctx.globalAlpha = MASK_OVERLAY_ALPHA;
+        ctx.globalCompositeOperation = MASK_OVERLAY_CANVAS_COMPOSITE_OPERATION;
         ctx.drawImage(layerCanvas, 0, 0);
         ctx.globalCompositeOperation = "source-over";
         ctx.globalAlpha = 1;
@@ -1338,80 +1343,12 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
       if (maskCanvas) {
         console.log(`Saving mask canvas: ${maskCanvas.width}x${maskCanvas.height}`);
 
-        // Get mask canvas context
-        const maskCtx = maskCanvas.getContext('2d');
-        if (!maskCtx) return;
-
-        // Get the mask image data directly from mask canvas
-        const maskImageData = maskCtx.getImageData(0, 0, maskCanvas.width, maskCanvas.height);
-        const maskData = maskImageData.data;
-
-        // Debug: Check what's in the mask canvas
-        let drawnPixelCount = 0;
-        let whitePixelCount = 0;
-        let blackPixelCount = 0;
-        const samplePixels: Array<{r: number, g: number, b: number, a: number}> = [];
-
-        for (let i = 0; i < maskData.length; i += 4) {
-          if (i < 20) {
-            samplePixels.push({
-              r: maskData[i],
-              g: maskData[i+1],
-              b: maskData[i+2],
-              a: maskData[i+3]
-            });
-          }
-
-          const a = maskData[i + 3];
-          if (a > 0) {
-            drawnPixelCount++;
-            const r = maskData[i];
-            if (r > 128) whitePixelCount++;
-            else blackPixelCount++;
-          }
-        }
-
-        console.log(`Mask canvas stats:`, {
-          total: maskData.length / 4,
-          drawnPixels: drawnPixelCount,
-          whitePixels: whitePixelCount,
-          blackPixels: blackPixelCount,
-          samplePixels: samplePixels.slice(0, 5)
-        });
-
-        // Create a new canvas for the grayscale mask
-        const tempCanvas = document.createElement('canvas');
-        tempCanvas.width = maskCanvas.width;
-        tempCanvas.height = maskCanvas.height;
-        const tempCtx = tempCanvas.getContext('2d');
-        if (!tempCtx) return;
-
-        const tempImageData = tempCtx.createImageData(tempCanvas.width, tempCanvas.height);
-        const tempData = tempImageData.data;
-
-        // Convert: alpha channel -> grayscale, where white = area to inpaint
-        for (let i = 0; i < maskData.length; i += 4) {
-          const a = maskData[i + 3];
-          if (a > 0) {
-            // Drawn pixel: use RGB value as grayscale (should be white 255)
-            const gray = maskData[i]; // R channel
-            tempData[i] = gray;
-            tempData[i + 1] = gray;
-            tempData[i + 2] = gray;
-            tempData[i + 3] = 255;
-          } else {
-            // Transparent pixel: black in mask (area NOT to inpaint)
-            tempData[i] = 0;
-            tempData[i + 1] = 0;
-            tempData[i + 2] = 0;
-            tempData[i + 3] = 255;
-          }
-        }
-
-        tempCtx.putImageData(tempImageData, 0, 0);
-
         // Convert to data URL instead of blob URL for persistence
-        const maskDataUrl = tempCanvas.toDataURL("image/png");
+        const maskDataUrl = encodeMaskLayerToPng(maskCanvas);
+        // Mirror the original inline early-return: if a 2D context could
+        // not be obtained, bail out of the whole save (composite included).
+        if (!maskDataUrl) return;
+
         console.log(`Mask data URL created, length: ${maskDataUrl.length} bytes`);
         onSaveMask(maskDataUrl);
       } else {

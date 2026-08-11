@@ -5164,7 +5164,8 @@ async def generate_inpaint_video(
     manifest. IDs, not upload filenames, define the mapping. The manifest and
     PNGs are parsed and decoded before any GPU slot is acquired; the validated
     timeline and decoded arrays are passed to the pipeline as explicit keyword
-    arguments.
+    arguments. A manifest may contain at most 128 keyframes and 64 unique PNG
+    assets.
 
     **Requirements:** a MiniMax-H3 `fl2va` model must be loaded (400
     otherwise -- the mid-clip pin is measured on that partition and no other

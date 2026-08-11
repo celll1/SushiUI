@@ -134,5 +134,143 @@ class InpaintVideoOverlongClipTest(unittest.TestCase):
         self.assertIn("{_probed_trimmed_len}", section)
 
 
+# ---------------------------------------------------------------------------
+# 3. Video outpaint's "free" placement (LTX-2.3) is not silently truncated
+#    either -- G3: the "total_frames genuinely is the timeline" reasoning
+#    only holds when the upload is SHORTER than total_frames, and nothing
+#    enforced that.
+# ---------------------------------------------------------------------------
+class OutpaintVideoFreePlacementDecodeTest(unittest.TestCase):
+    """`load_video_frames(video_data, max_frames=...)` in the outpaint/video
+    route must not bound the "free" placement's decode by
+    `input_trim_start_frames + total_frames` -- an upload longer than that
+    sum would silently lose its tail before `_generate_vidoutpaint_ltx2`'s
+    own `outpaint_video_tail_frames_dropped` warning ever gets a chance to
+    see (and report) the true clip length. Reverting the fix (restoring the
+    placement-conditional `total_frames`-based cap) must fail this test."""
+
+    def _outpaint_decode_section(self, source: str) -> str:
+        anchor = source.index("_decode_max_frames = None")
+        # Back up to the start of the explanatory comment block so the
+        # assertions below can see the surrounding reasoning too.
+        start = source.rindex("# Decode the uploaded clip", 0, anchor)
+        return source[start:anchor + 200]
+
+    def test_free_placement_decode_is_not_bounded_by_total_frames(self):
+        source = _routes_source()
+        section = self._outpaint_decode_section(source)
+        # The pre-fix defect, verbatim: a placement-conditional cap that
+        # bounds the "free" arm by input_trim_start_frames + total_frames.
+        self.assertNotIn(
+            'None if "free" not in _placements',
+            section,
+            "the outpaint/video route reintroduced a placement-conditional "
+            "decode bound -- on the \"free\" placement this silently drops "
+            "the tail of any upload longer than input_trim_start_frames + "
+            "total_frames, with no warning, because "
+            "outpaint_video_tail_frames_dropped only ever sees the "
+            "already-truncated decoded frame count",
+        )
+        self.assertNotIn(
+            "else max(0, input_trim_start_frames) + total_frames", section,
+        )
+
+    def test_decode_max_frames_is_unconditionally_none(self):
+        source = _routes_source()
+        section = self._outpaint_decode_section(source)
+        self.assertIn(
+            "_decode_max_frames = None", section,
+            "the outpaint/video route's decode bound must be unconditionally "
+            "None (every placement decodes the whole trimmed clip; RAM is "
+            "bounded separately by _refuse_if_decode_too_large, and an "
+            "over-long clip is reported downstream instead of silently "
+            "cropped)",
+        )
+
+    def test_ram_guard_still_applies_regardless_of_placement(self):
+        """Removing the placement-conditional decode cap must not remove the
+        pre-decode RAM/size guard -- an unbounded decode of an arbitrarily
+        long/high-resolution upload can OOM the process."""
+        source = _routes_source()
+        anchor = source.index("def _refuse_if_decode_too_large(")
+        section = source[anchor:anchor + 1500]
+        self.assertIn("MAX_VIDEO_UPLOAD_DECODE_BYTES", section)
+        # Called unconditionally for both the head and bridge clips.
+        self.assertIn(
+            '_refuse_if_decode_too_large(video_data, label="input clip")',
+            source,
+        )
+        self.assertIn(
+            '_refuse_if_decode_too_large(bridge_data, label="bridge clip")',
+            source,
+        )
+
+
+# ---------------------------------------------------------------------------
+# 4. Video inpaint's over-length refusal is judged on the DECODED frame
+#    count too, not only on an estimate that can under-count -- G5.
+# ---------------------------------------------------------------------------
+class InpaintVideoPostDecodeOverlongClipTest(unittest.TestCase):
+    """`dataset_scanner.probe_video_metadata`'s frame count is an ESTIMATE on
+    a container/codec without `nb_frames` (VFR webm/matroska): it falls back
+    to `round(fps * duration)`, which can UNDER-count the true length. An
+    estimate that under-counts below `_arch_max_frames` used to sail straight
+    past the pre-decode refusal, after which the (un-bumped) ffmpeg
+    `-frames:v` bound silently cropped the clip to exactly the cap -- always
+    a valid, in-range trimmed length, so nothing downstream ever caught it.
+    Reverting either half of the fix (the `+ 1` decode headroom, or the
+    post-decode refusal) must fail this test."""
+
+    def _inpaint_decode_section(self, source: str) -> str:
+        anchor = source.index("_arch_max_frames = int(")
+        return source[anchor:anchor + 4000]
+
+    def test_decode_bound_has_one_frame_of_headroom_past_the_cap(self):
+        source = _routes_source()
+        section = self._inpaint_decode_section(source)
+        # The pre-fix defect, verbatim: no "+ 1", so a truly over-length clip
+        # decodes down to EXACTLY _arch_max_frames -- indistinguishable from
+        # a clip that really was that long.
+        self.assertNotIn(
+            "_decode_max_frames = max(0, input_trim_start_frames) + _arch_max_frames\n",
+            section,
+            "the inpaint/video decode bound lost its +1 headroom past "
+            "_arch_max_frames -- without it, an over-length clip decodes to "
+            "exactly the cap and is indistinguishable from a clip that "
+            "really was that long, so the post-decode refusal can never fire",
+        )
+        self.assertIn(
+            "_decode_max_frames = max(0, input_trim_start_frames) + _arch_max_frames + 1",
+            section,
+        )
+
+    def test_post_decode_refusal_exists_and_is_judged_on_true_decoded_length(self):
+        source = _routes_source()
+        # `_arch_max_frames = int(` anchors the inpaint route's decode
+        # section; the outpaint route's own (unrelated) "trimmed_len ="
+        # assignment appears earlier in the file and must not be matched.
+        inpaint_anchor = source.index("_arch_max_frames = int(")
+        anchor = source.index("trimmed_len = video_frames.shape[0]", inpaint_anchor)
+        section = source[anchor:anchor + 2600]
+        # Must check the DECODED trimmed length against the arch cap, not
+        # only rely on the pre-decode (possibly under-counting) estimate.
+        self.assertIn("if trimmed_len > _arch_max_frames:", section)
+        self.assertIn(
+            "the trimmed clip is longer than this model can produce", section,
+            "no post-decode CustomValidationError refusing an over-long "
+            "trimmed clip was found after the ffmpeg decode -- the "
+            "pre-decode ffprobe estimate is not a substitute, since it can "
+            "under-count a VFR/matroska clip's true frame count",
+        )
+        # And this refusal must come BEFORE plan_video_inpaint_span is
+        # called, not rely solely on that function's own max_frames check
+        # (which is fed the same, now-corrected, trimmed_len anyway, but the
+        # explicit route-level check gives an accurate, non-generic message).
+        self.assertLess(
+            section.index("if trimmed_len > _arch_max_frames:"),
+            section.index("plan_video_inpaint_span(params, _vid_arch"),
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -4654,32 +4654,39 @@ async def generate_outpaint_video(
 
     # Decode the uploaded clip + (best-effort) extract its original audio
     # track BEFORE acquiring the GPU slot, so a malformed upload surfaces as
-    # a 400/500 without reserving GPU resources. `max_frames` bounds the
-    # RAM cost of decoding an arbitrarily long upload: at most
-    # input_trim_start_frames + total_frames frames can ever be used when
-    # there is no tail trim (load_video_frames widens this bound itself,
-    # using a cheap ffprobe-only estimate, when input_trim_end_frames > 0).
+    # a 400/500 without reserving GPU resources.
     #
-    # That bound only holds on the "free" placement, where total_frames IS
-    # the timeline and the clip is sampled into it. On a boundary placement
-    # the preserved clip is PASTED at a timeline edge, so its own length is
-    # independent of total_frames: bounding the decode by total_frames would
-    # silently discard the tail of the upload whenever the request asks for a
-    # total below the clip's length (the per-architecture total_frames default
-    # is smaller than a long upload, so that is reachable without the user
-    # touching the length control). The whole clip is needed there, so no
-    # smaller bound exists; a too-small total_frames is handled downstream by
-    # plan_video_outpaint_placement, which snaps the GENERATED span up to the
-    # architecture floor and reports outpaint_video_total_frames_adjusted. The
-    # bridge clip (below) is a second preserved clip on the SAME boundary
-    # placement, so it gets the identical `None` treatment for the identical
-    # reason -- bounding its decode by `total_frames` would silently drop its
-    # tail whenever the request's total is smaller than the clip, exactly the
-    # bug this comment used to describe only for the head clip.
-    _decode_max_frames = (
-        None if "free" not in _placements
-        else max(0, input_trim_start_frames) + total_frames
-    )
+    # `max_frames` USED TO bound the "free" placement's decode to
+    # `input_trim_start_frames + total_frames`, on the reasoning that
+    # total_frames IS the output timeline there and nothing past it can ever
+    # be placed. That reasoning only holds when the upload is SHORTER than
+    # (or equal to) the timeline -- nothing enforces that, and when it is
+    # not, capping the DECODE at that bound hid the excess from the one
+    # thing that would otherwise report it: `_generate_vidoutpaint_ltx2`
+    # (ltx2.py) already warns (`outpaint_video_tail_frames_dropped`)
+    # whenever the trimmed clip has more frames than the placement has room
+    # for, but it only ever sees the DECODED frame count, so a real excess
+    # BEYOND the old cap was truncated before that warning could ever fire
+    # -- silently dropping uploaded footage with no error and no warning,
+    # exactly the class of bug 94b952d5 fixed for boundary placements,
+    # reachable here too under the "free" placement.
+    #
+    # There is therefore no placement-specific decode bound left: every
+    # placement now decodes the whole (trimmed) clip and leaves the
+    # trim/fit/drop arithmetic to `plan_video_outpaint_placement` and the
+    # backend's own tail-drop warning, both of which already handle "clip
+    # longer than what the request can place" correctly once they are
+    # actually shown the true frame count -- a "free" arch reports the drop
+    # via `outpaint_video_tail_frames_dropped` (same as the 8k+1 grid
+    # rounding it already covered) rather than refusing outright, since the
+    # placement is well-defined either way (the clip is simply used from
+    # `pixel_start` for as many frames as fit). The RAM cost of decoding an
+    # arbitrarily long upload is bounded below by `_refuse_if_decode_too_large`
+    # (a pre-decode, ffprobe-only check), not by this variable. The bridge
+    # clip (below) is a second preserved clip on a boundary-only placement
+    # (a "free" arch refuses `bridge_video` above), so it gets the identical
+    # `None` treatment for the identical reason.
+    _decode_max_frames = None
     # A boundary placement's "no smaller bound exists" above is true of
     # VALIDITY, not of RAM: a raw decoded uint8 RGB clip costs
     # `width * height * 3` bytes PER FRAME, so `max_frames=None` on a
@@ -5199,27 +5206,39 @@ async def generate_inpaint_video(
 
     # Decode the clip (+ its audio track) BEFORE the GPU slot, so a malformed
     # upload is a 400 that reserved nothing. The bound is the arch's own longest
-    # clip: nothing past it can be part of a valid trimmed length.
+    # clip: nothing past it can be part of a valid trimmed length. `+ 1`: see
+    # the post-decode check below -- this decode bound must never itself equal
+    # a valid trimmed length, or a clip that is actually LONGER than the cap
+    # decodes down to exactly the cap and looks indistinguishable from a clip
+    # that really was that long.
     _arch_max_frames = int(_spec.max_frames if _spec is not None and _spec.max_frames else 362)
-    _decode_max_frames = max(0, input_trim_start_frames) + _arch_max_frames
+    _decode_max_frames = max(0, input_trim_start_frames) + _arch_max_frames + 1
 
     # Since this endpoint's OUTPUT length equals the TRIMMED INPUT length (no
     # `total_frames` to snap to -- see INPAINT_VIDEO_DEFAULTS's docstring), a
     # clip whose trimmed length exceeds the arch's own longest producible clip
-    # cannot be served AT ALL, at any setting. Without this check that case was
-    # reaching `plan_video_inpaint_span` silently truncated to exactly
-    # `_decode_max_frames` frames by the ffmpeg `-frames:v` bound above: a
-    # trimmed length that lands back on the arch's grid (as `_arch_max_frames`
-    # itself always does) passes every downstream check, so the user's tail
-    # frames past the cap were dropped with no error and no warning. Refuse
-    # this with a 400 naming both numbers instead, using an ffprobe-only
-    # (no decode) frame count so the refusal is cheap even for a clip far
-    # past the cap. Judged on frames "before trimming" (the probed count) vs.
-    # "after trimming" (what plan_video_inpaint_span actually receives): a
-    # clip that is only too long BEFORE the user's own
-    # input_trim_start_frames/input_trim_end_frames trims it down must still
-    # be accepted, so the comparison below applies the requested trim to the
-    # probed count first.
+    # cannot be served AT ALL, at any setting. Refuse this with a 400 naming
+    # both numbers, using an ffprobe-only (no decode) frame count so the
+    # refusal is cheap even for a clip far past the cap. Judged on frames
+    # "before trimming" (the probed count) vs. "after trimming" (what
+    # plan_video_inpaint_span actually receives): a clip that is only too
+    # long BEFORE the user's own input_trim_start_frames/input_trim_end_frames
+    # trims it down must still be accepted, so the comparison below applies
+    # the requested trim to the probed count first.
+    #
+    # This is the CHEAP path, not the only one: `dataset_scanner`'s frame-count
+    # probe falls back to `round(fps * duration)` on a container/codec that
+    # does not report `nb_frames` (e.g. VFR webm/matroska) -- an ESTIMATE that
+    # can UNDER-count the true length. An under-counting estimate that still
+    # lands at/below `_arch_max_frames` would let a genuinely over-length clip
+    # sail past this refusal; the old code then trusted `_decode_max_frames`
+    # (== `_arch_max_frames` exactly, no headroom) to silently crop it to the
+    # cap, which is always ON the arch's grid and so passed every downstream
+    # check with the excess gone and no warning -- exactly the class of bug
+    # 94b952d5 fixed elsewhere. The `+ 1` above and the post-decode check below
+    # close that: they judge the clip on what ffmpeg ACTUALLY decoded, which is
+    # authoritative (not an estimate), so an over-length clip is still refused
+    # even when the fast probe above under-counted it.
     try:
         video_data = await video.read()
         _probed = probe_upload_clip(video_data)
@@ -5303,6 +5322,32 @@ async def generate_inpaint_video(
             detail=f"Uploaded clip has {video_frames.shape[0]} frames; "
                    f"input_trim_start_frames={input_trim_start_frames}, "
                    f"input_trim_end_frames={input_trim_end_frames}.",
+        )
+
+    # Post-decode truth, not just the pre-decode ffprobe estimate (see the
+    # comment above `_decode_max_frames`): `plan_video_inpaint_span` below
+    # also refuses `clip_frames > spec.max_frames`, but against the OLD
+    # (un-bumped) `_decode_max_frames` that check was structurally a no-op --
+    # `video_frames.shape[0]` could never itself exceed `_arch_max_frames`
+    # (relative to the trims), since the ffmpeg `-frames:v` bound made the
+    # violation unobservable by construction. The `+ 1` decode headroom fixes
+    # that: a clip that decoded to (or past) the bumped cap really did have
+    # at least that many frames on offer, so refuse it here, using the number
+    # ffmpeg actually produced rather than the (possibly under-counting, see
+    # above) probe estimate.
+    if trimmed_len > _arch_max_frames:
+        _hit_decode_cap = video_frames.shape[0] >= _decode_max_frames
+        raise CustomValidationError(
+            "the trimmed clip is longer than this model can produce",
+            detail=(
+                f"This model's longest clip is {_arch_max_frames} frames; the decoded upload "
+                f"has {'at least ' if _hit_decode_cap else ''}{trimmed_len} frames after "
+                f"input_trim_start_frames={input_trim_start_frames} and "
+                f"input_trim_end_frames={input_trim_end_frames}. Since this endpoint's output "
+                f"length equals the trimmed input length, trim the clip down to "
+                f"{_arch_max_frames} frames or fewer before uploading, or trim more of it off "
+                f"with input_trim_start_frames/input_trim_end_frames."
+            ),
         )
 
     # The span, against the loaded arch's own latent chunking. Called HERE

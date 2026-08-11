@@ -39,8 +39,10 @@ import ResizableColumns, {
 import LoopGenerationPanel, { LoopGenerationConfig } from "./LoopGenerationPanel";
 import QuantizedGemmSelect from "./QuantizedGemmSelect";
 import VideoFrameCountSlider from "../common/VideoFrameCountSlider";
+import VideoChainConfirmDialog from "../common/VideoChainConfirmDialog";
+import { buildChainContinuationQueueItems, advanceVideoChain } from "@/utils/videoChain";
 import { migrateLoopGenerationConfig, computeLoopDecodeDirective } from "@/utils/loopGenerationInheritance";
-import { generateTxt2Img, generateImg2Img, generateTxt2Vid, Txt2VidParams, generateRef2Vid, Ref2VidParams, MiniMaxH3References, MiniMaxH3Keyframe, generateTxt2Aud, Txt2AudParams, generateTxt2ImgTrainingPreview, GenerationParams, getSamplers, getScheduleTypes, tokenizePrompt, generateTIPOPrompt, cancelGeneration, getCurrentModel, isLatentOnlyResult, getResultFilename, getResultSeed, getResultAncestralSeed, unetQuantizationOptions, normalizeUnetQuantization, transformerQuantizationLabel, archSupportsFeature, archDisplayName, normalizeVideoFrames, videoCanvasRule, videoCanvasAxisBounds, videoCanvasExceedsEnvelope, isGenerationStalledError } from "@/utils/api";
+import { generateTxt2Img, generateImg2Img, generateTxt2Vid, Txt2VidParams, generateRef2Vid, Ref2VidParams, generateOutpaintVideo, OutpaintVideoParams, MiniMaxH3References, MiniMaxH3Keyframe, generateTxt2Aud, Txt2AudParams, generateTxt2ImgTrainingPreview, GenerationParams, getSamplers, getScheduleTypes, tokenizePrompt, generateTIPOPrompt, cancelGeneration, getCurrentModel, isLatentOnlyResult, getResultFilename, getResultPlaybackFilename, getResultSeed, getResultAncestralSeed, unetQuantizationOptions, normalizeUnetQuantization, transformerQuantizationLabel, archSupportsFeature, archDisplayName, normalizeVideoFrames, videoCanvasRule, videoCanvasAxisBounds, videoCanvasExceedsEnvelope, isGenerationStalledError, planVideoChain, effectiveSegmentFrames } from "@/utils/api";
 import { useActiveTraining } from "@/hooks/useActiveTraining";
 import { useSmoothProgress } from "@/hooks/useSmoothProgress";
 import { wsClient, CFGMetrics } from "@/utils/websocket";
@@ -321,11 +323,33 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
   // the same reason (file uploads, not a generation parameter).
   const [h3Keyframes, setH3Keyframes] = useState<MiniMaxH3Keyframe[]>([]);
   const [generatedVideoInfo, setGeneratedVideoInfo] = useState<{ num_frames?: number; fps?: number; duration?: number } | null>(null);
+  // A video result's `warnings[]`, rendered under the player. This panel
+  // discarded them for every video item; `outpaint_video_total_frames_adjusted`
+  // in particular carries a chain segment's EFFECTIVE output length, which is
+  // the one number the user cannot infer from anything else on screen.
+  const [generatedVideoWarnings, setGeneratedVideoWarnings] = useState<string[]>([]);
   // Seed the last video result actually ran with, so the video card's seed
   // control has the same "reuse the seed from the preview" button the image
   // path has (StoredVideoPreview carries it, as it does in OutpaintPanel).
   const [generatedVideoSeed, setGeneratedVideoSeed] = useState<number | null>(null);
   const [generatedVideoParams, setGeneratedVideoParams] = useState<GenerationParams | null>(null);
+  // Opt-in video-length chaining (CLAUDE.md "opt-in long-clip feature"): set
+  // when Generate is pressed with a video length above the loaded
+  // architecture's single-inference cap, holding what the dialog needs to
+  // offer BOTH choices (single inference at the cap, or the chain) --
+  // cleared as soon as either choice is made. `null` = dialog closed.
+  const [videoChainPrompt, setVideoChainPrompt] = useState<{
+    videoParams: Txt2VidParams;
+    isRef2Va: boolean;
+    references: MiniMaxH3References;
+    targetFrames: number;
+    capFrames: number;
+  } | null>(null);
+  // Any-segment-of-a-chain reason the chain stopped short of its target
+  // (no forward progress / architecture could not continue further) --
+  // set by advanceVideoChain via processQueue, shown next to the frame
+  // slider until the user starts a new chain or dismisses it.
+  const [videoChainStoppedMessage, setVideoChainStoppedMessage] = useState<string | null>(null);
   // Audio output (produced when an audio model is loaded / txt2aud queue item).
   const [generatedAudio, setGeneratedAudio] = useState<string | null>(null);
   const [generatedAudioInfo, setGeneratedAudioInfo] = useState<{ duration?: number; sample_rate?: number } | null>(null);
@@ -1433,7 +1457,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
   }, [developerMode]);
 
   useEffect(() => {
-    if (!currentItem || !["txt2img", "img2img", "txt2vid", "ref2vid", "txt2aud"].includes(currentItem.type)) {
+    if (!currentItem || !["txt2img", "img2img", "txt2vid", "ref2vid", "txt2aud", "chain_vid"].includes(currentItem.type)) {
       isGeneratingRef.current = false;
       setIsGenerating(false);
       return;
@@ -1450,7 +1474,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
 
   useEffect(() => {
     const result = completedResults.txt2img;
-    if (!result || (currentItem && ["txt2img", "img2img", "txt2vid", "ref2vid", "txt2aud"].includes(currentItem.type))) return;
+    if (!result || (currentItem && ["txt2img", "img2img", "txt2vid", "ref2vid", "txt2aud", "chain_vid"].includes(currentItem.type))) return;
     setPreviewImage(null);
     if (result.kind === "image") {
       setGeneratedImage(result.url);
@@ -1618,7 +1642,13 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         const assisted = await maybeTransformH3PromptForGeneration({
           prompt: processedPrompt,
           mode: promptMode,
-          durationSeconds: (params.num_frames ?? 121) / (params.frame_rate ?? 24),
+          // S9: no single generation request this app ever sends is longer
+          // than the architecture's single-inference cap (a chain's segment 1
+          // is capped, same as an unchained request) -- Prompt Assist must be
+          // told that duration, never a held value above the cap, or the
+          // resulting prompt (reused verbatim by every segment when chaining)
+          // describes an arc far longer than any one segment actually spans.
+          durationSeconds: effectiveSegmentFrames(archCapabilities, loadedArch, params.num_frames ?? 121) / (params.frame_rate ?? 24),
           references: createH3ReferenceInventory({
             pictures: h3References.images.length + h3Keyframes.length,
             videos: h3References.videos.length,
@@ -1734,15 +1764,36 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
       // can still be a render behind at this point.
       const freshIsRef2Va =
         modality.modelInfo?.type === "minimax_h3" && modality.modelInfo?.variant === "ref2va";
-      if (freshIsRef2Va && countMiniMaxH3References(h3References) > 0) {
-        addToQueue({
-          type: "ref2vid",
-          params: {
+      const isRef2VaRequest = freshIsRef2Va && countMiniMaxH3References(h3References) > 0;
+      const fullVideoParams: Txt2VidParams = isRef2VaRequest
+        ? ({
             ...videoParams,
             reference_image_size: h3ReferenceImageSize,
             // C5: anchors ride along on the same request when any are set.
             keyframes: h3Keyframes.length > 0 ? h3Keyframes : undefined,
-          } as any,
+          } as Ref2VidParams)
+        : videoParams;
+
+      // Opt-in video-length chaining (CLAUDE.md "opt-in long-clip feature"):
+      // a held length above the loaded architecture's single-inference cap
+      // is never enqueued (chained or clamped) without the user picking one
+      // of the two choices explicitly -- see VideoChainConfirmDialog.
+      const chainPlan = planVideoChain(archCapabilities, loadedArch, params.num_frames ?? 0);
+      if (chainPlan != null) {
+        setVideoChainPrompt({
+          videoParams: fullVideoParams,
+          isRef2Va: isRef2VaRequest,
+          references: h3References,
+          targetFrames: params.num_frames ?? 0,
+          capFrames: chainPlan.capFrames,
+        });
+        return;
+      }
+
+      if (isRef2VaRequest) {
+        addToQueue({
+          type: "ref2vid",
+          params: fullVideoParams as any,
           references: h3References,
           prompt: processedPrompt,
         });
@@ -1789,6 +1840,71 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         negative_prompt: processedNegativePrompt,
       } as GenerationParams, loopGroupId);
     }
+  };
+
+  // Opt-in video-length chain, Choice 1 (DEFAULT): a single inference at the
+  // architecture's cap, snapped -- exactly the pre-chain-feature enqueue
+  // path, just with num_frames clamped down to what one request can produce.
+  const handleVideoChainGenerateAtCap = () => {
+    if (!videoChainPrompt) return;
+    const { videoParams, isRef2Va, references, capFrames } = videoChainPrompt;
+    const cappedParams: Txt2VidParams = { ...videoParams, num_frames: capFrames };
+    if (isRef2Va) {
+      addToQueue({
+        type: "ref2vid",
+        params: cappedParams as any,
+        references,
+        prompt: cappedParams.prompt,
+      });
+    } else {
+      addToQueue({
+        type: "txt2vid",
+        params: cappedParams as any,
+        prompt: cappedParams.prompt,
+      });
+    }
+    setVideoChainPrompt(null);
+  };
+
+  // Opt-in video-length chain, Choice 2 (explicit, never the default):
+  // enqueue the whole chain as a loop group -- a main segment at the cap
+  // (loopStepIndex -1) plus one `chain_vid` loop step per continuation
+  // (loopStepIndex 0..N-2). No isGenerating gate: this only enqueues, exactly
+  // like `handleVideoChainGenerateAtCap` and every other Add-to-Queue path,
+  // so the two buttons in the dialog behave identically regardless of whether
+  // a generation is already running (see videoChain.ts for why this runs on
+  // the queue at all).
+  const handleVideoChainStart = () => {
+    if (!videoChainPrompt) return;
+    const { videoParams, isRef2Va, references, targetFrames, capFrames } = videoChainPrompt;
+    setVideoChainPrompt(null);
+
+    const loopGroupId = `chain_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    const cappedParams: Txt2VidParams = { ...videoParams, num_frames: capFrames };
+    const referenceImages = references.images && references.images.length > 0 ? references.images : undefined;
+
+    addToQueue({
+      type: isRef2Va ? "ref2vid" : "txt2vid",
+      params: cappedParams as any,
+      references: isRef2Va ? references : undefined,
+      prompt: cappedParams.prompt,
+      loopGroupId,
+      loopStepIndex: -1,
+      isLoopStep: false,
+      chainTargetFrames: targetFrames,
+    });
+
+    const continuationItems = buildChainContinuationQueueItems({
+      caps: archCapabilities,
+      arch: loadedArch,
+      targetFrames,
+      capFrames,
+      loopGroupId,
+      continuationBase: videoParams,
+      referenceImageSize: isRef2Va ? (videoParams as Ref2VidParams).reference_image_size : undefined,
+      referenceImages: isRef2Va ? referenceImages : undefined,
+    });
+    continuationItems.forEach((item) => addToQueue(item));
   };
 
   // Add loop generation steps to queue immediately (without base image URL)
@@ -2119,7 +2235,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
       return;
     }
 
-    const nextItem = startNextInQueue(["txt2img", "img2img", "txt2vid", "ref2vid", "txt2aud"]);
+    const nextItem = startNextInQueue(["txt2img", "img2img", "txt2vid", "ref2vid", "txt2aud", "chain_vid"]);
     console.log("[Txt2Img] Next item from queue:", nextItem);
     if (!nextItem) {
       console.log("[Txt2Img] No items in queue");
@@ -2197,6 +2313,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
       setGeneratedVideo(null);
       setGeneratedVideoInfo(null);
       setGeneratedVideoSeed(null);
+      setGeneratedVideoWarnings([]);
       setGeneratedAudio(null);
       setGeneratedAudioInfo(null);
       try {
@@ -2205,7 +2322,9 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
               nextItem.params as Ref2VidParams,
               nextItem.references ?? EMPTY_MINIMAX_H3_REFERENCES)
           : await generateTxt2Vid(nextItem.params as Txt2VidParams);
-        const videoUrl = `/outputs/${result.image.filename}`;
+        const videoUrl = `/outputs/${getResultFilename(result)}`;
+        const videoPlaybackFilename = getResultPlaybackFilename(result);
+        const videoPlaybackUrl = videoPlaybackFilename ? `/outputs/${videoPlaybackFilename}` : videoUrl;
         const videoInfo = {
           num_frames: result.image.num_frames,
           fps: result.image.fps,
@@ -2218,8 +2337,30 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         // so the seed control's reuse button can pin it for the next run.
         setGeneratedVideoSeed(videoSeed);
         setGeneratedVideoParams(nextItem.params as GenerationParams);
-        publishCompletedResult({ panel: "txt2img", kind: "video", url: videoUrl, info: videoInfo, seed: videoSeed, params: nextItem.params });
+        setGeneratedVideoWarnings(
+          (result.warnings || []).map((w: any) => (typeof w === "string" ? w : w?.message)).filter(Boolean));
+        publishCompletedResult({
+          panel: "txt2img", kind: "video", url: videoUrl,
+          playbackUrl: videoPlaybackUrl !== videoUrl ? videoPlaybackUrl : undefined,
+          info: videoInfo, seed: videoSeed, params: nextItem.params,
+        });
         if (onImageGenerated) onImageGenerated(videoUrl);
+
+        // Video-length chain (this segment may be segment 1 of one): advance
+        // to the next queued step, or stop the chain with a reason. A no-op
+        // for a plain, unchained txt2vid/ref2vid item.
+        const chainOutcome = await advanceVideoChain({
+          caps: archCapabilities,
+          arch: loadedArch,
+          queue,
+          completedItem: nextItem,
+          resultFrames: result.image?.num_frames,
+          resultVideoUrl: videoUrl,
+          updateQueueItemByLoop,
+          cancelLoopGroup,
+        });
+        setVideoChainStoppedMessage(chainOutcome.message ?? null);
+
         isGeneratingRef.current = false;
         setIsGenerating(false);
         setProgress(0);
@@ -2234,13 +2375,112 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         setIsGenerating(false);
         setProgress(0);
         setProgressMessage("");
+        // A deliberate cancel (cancelGeneration()) surfaces here as the
+        // backend's RuntimeError, not as a distinct error type -- read it as
+        // a cancel, not a generic failure, and say how many chain segments
+        // (if any) already completed and are in the gallery.
+        const isCancelled = String(error?.message || error?.response?.data?.detail || "").toLowerCase().includes("cancel");
         failCurrentItem();
         setTimeout(() => {
           if (processQueueRef.current) processQueueRef.current();
         }, 100);
-        alert(isGenerationStalledError(error)
-          ? error.message
-          : `${nextItem.type} generation failed: ${error?.response?.data?.detail || error?.response?.data?.error || "see the console for details."}`);
+        if (!isCancelled) {
+          alert(isGenerationStalledError(error)
+            ? error.message
+            : `${nextItem.type} generation failed: ${error?.response?.data?.detail || error?.response?.data?.error || "see the console for details."}`);
+        } else if (nextItem.loopGroupId && nextItem.chainTargetFrames != null) {
+          const completedSegments = (nextItem.loopStepIndex ?? -1) + 1;
+          alert(completedSegments > 0
+            ? `Video chain cancelled. ${completedSegments} segment(s) completed before the cancel are saved to the gallery.`
+            : "Video chain cancelled before any segment completed.");
+        }
+      }
+      return;
+    }
+
+    // Video branch: chain_vid item (a video-length chain continuation
+    // segment, from either panel's "Start chain" -- see videoChain.ts).
+    // Structurally identical to OutpaintPanel's own outpaint_vid dispatch
+    // (same endpoint, same request shape); the only addition is
+    // advanceVideoChain, which feeds this chain's NEXT step or stops it.
+    if (nextItem.type === "chain_vid") {
+      isGeneratingRef.current = true;
+      setIsGenerating(true);
+      setProgress(0);
+      setProgressMessage("");
+      setTotalSteps((nextItem.params as OutpaintVideoParams).num_inference_steps || 8);
+      setPreviewImage(null);
+      setGeneratedImage(null);
+      setGeneratedVideo(null);
+      setGeneratedVideoInfo(null);
+      setGeneratedVideoSeed(null);
+      setGeneratedVideoWarnings([]);
+      setGeneratedAudio(null);
+      setGeneratedAudioInfo(null);
+      try {
+        const clip = nextItem.inputVideo;
+        if (!clip) {
+          throw new Error("No input video available for this chain segment (the previous segment has not finished yet)");
+        }
+        const result = await generateOutpaintVideo(
+          nextItem.params as OutpaintVideoParams, clip, undefined, nextItem.referenceImages);
+        const videoUrl = `/outputs/${getResultFilename(result)}`;
+        const videoPlaybackFilename = getResultPlaybackFilename(result);
+        const videoPlaybackUrl = videoPlaybackFilename ? `/outputs/${videoPlaybackFilename}` : videoUrl;
+        const videoInfo = { num_frames: result.image?.num_frames, fps: result.image?.fps, duration: result.image?.duration };
+        const videoSeed = getResultSeed(result);
+        setGeneratedVideo(videoUrl);
+        setGeneratedVideoInfo(videoInfo);
+        setGeneratedVideoSeed(videoSeed);
+        setGeneratedVideoParams(nextItem.params as unknown as GenerationParams);
+        setGeneratedVideoWarnings(
+          (result.warnings || []).map((w: any) => (typeof w === "string" ? w : w?.message)).filter(Boolean));
+        publishCompletedResult({
+          panel: "txt2img", kind: "video", url: videoUrl,
+          playbackUrl: videoPlaybackUrl !== videoUrl ? videoPlaybackUrl : undefined,
+          info: videoInfo, seed: videoSeed, params: nextItem.params,
+        });
+        if (onImageGenerated) onImageGenerated(videoUrl);
+
+        const chainOutcome = await advanceVideoChain({
+          caps: archCapabilities,
+          arch: loadedArch,
+          queue,
+          completedItem: nextItem,
+          resultFrames: result.image?.num_frames,
+          resultVideoUrl: videoUrl,
+          updateQueueItemByLoop,
+          cancelLoopGroup,
+        });
+        setVideoChainStoppedMessage(chainOutcome.message ?? null);
+
+        isGeneratingRef.current = false;
+        setIsGenerating(false);
+        setProgress(0);
+        setProgressMessage("");
+        completeCurrentItem();
+        setTimeout(() => {
+          if (processQueueRef.current) processQueueRef.current();
+        }, 100);
+      } catch (error: any) {
+        console.error("[Txt2Img] chain_vid generation failed:", error);
+        isGeneratingRef.current = false;
+        setIsGenerating(false);
+        setProgress(0);
+        setProgressMessage("");
+        const isCancelled = String(error?.message || error?.response?.data?.detail || "").toLowerCase().includes("cancel");
+        failCurrentItem();
+        setTimeout(() => {
+          if (processQueueRef.current) processQueueRef.current();
+        }, 100);
+        if (!isCancelled) {
+          alert(isGenerationStalledError(error)
+            ? error.message
+            : `Video chain segment failed: ${error?.response?.data?.detail || error?.message || "see the console for details."}`);
+        } else {
+          const completedSegments = (nextItem.loopStepIndex ?? -1) + 1;
+          alert(`Video chain cancelled. ${completedSegments} segment(s) completed before the cancel are saved to the gallery.`);
+        }
       }
       return;
     }
@@ -2657,14 +2897,14 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         alert(alertMessage);
       }
     }
-  }, [isGenerating, generatedImage, onImageGenerated, startNextInQueue, completeCurrentItem, failCurrentItem, updateQueueItem, queue, publishCompletedResult]);
+  }, [isGenerating, generatedImage, onImageGenerated, startNextInQueue, completeCurrentItem, failCurrentItem, updateQueueItem, updateQueueItemByLoop, cancelLoopGroup, queue, publishCompletedResult, archCapabilities, loadedArch]);
 
   processQueueRef.current = processQueue;
 
   // Auto-start queue processing when queue has pending items and not currently generating
   useEffect(() => {
     const hasPendingItems = queue.some(item =>
-      item.status === "pending" && ["txt2img", "img2img", "txt2vid", "ref2vid", "txt2aud"].includes(item.type));
+      item.status === "pending" && ["txt2img", "img2img", "txt2vid", "ref2vid", "txt2aud", "chain_vid"].includes(item.type));
     const isCurrentItemNull = currentItem === null;
 
     console.log("[Txt2Img] Queue effect:", {
@@ -3531,7 +3771,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
           prompt={params.prompt}
           onApply={(prompt) => setParams((previous) => ({ ...previous, prompt }))}
           suggestedMode={isRef2Va && countMiniMaxH3References(h3References) > 0 ? "ref2va" : "t2va"}
-          durationSeconds={(params.num_frames ?? 121) / (params.frame_rate ?? 24)}
+          durationSeconds={effectiveSegmentFrames(archCapabilities, loadedArch, params.num_frames ?? 121) / (params.frame_rate ?? 24)}
           references={createH3ReferenceInventory({
             pictures: h3References.images.length + h3Keyframes.length,
             videos: h3References.videos.length,
@@ -3589,6 +3829,34 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
       </div>
     </Card>
   );
+
+  // Derived, once per render, for VideoChainConfirmDialog: the plan (segments
+  // + the length the chain actually reaches) and any conditioning-drop
+  // disclosures specific to what THIS request would carry into a chain.
+  const videoChainPlan = videoChainPrompt
+    ? planVideoChain(archCapabilities, loadedArch, videoChainPrompt.targetFrames)
+    : null;
+  const videoChainFinalSeconds = videoChainPlan && videoChainPrompt
+    ? (videoChainPlan.finalFrames / (videoChainPrompt.videoParams.frame_rate ?? 24)).toFixed(2)
+    : null;
+  const videoChainNotes: string[] = [];
+  if (videoChainPrompt) {
+    const refs = videoChainPrompt.references;
+    const hasNonImageRefs =
+      (refs?.videos?.length ?? 0) > 0 ||
+      (refs?.audios?.length ?? 0) > 0 ||
+      (refs?.videoAudios?.filter(Boolean).length ?? 0) > 0;
+    if (videoChainPrompt.isRef2Va && hasNonImageRefs) {
+      videoChainNotes.push(
+        "Video/audio references condition segment 1 only: the temporal-outpaint continuation request accepts image references only."
+      );
+    }
+    if (((videoChainPrompt.videoParams as Ref2VidParams).keyframes?.length ?? 0) > 0) {
+      videoChainNotes.push(
+        "Keyframe anchors (including a frame_index of -1, which pins to the end of segment 1, not the end of the finished chain) apply to segment 1 only; continuation segments carry no keyframes."
+      );
+    }
+  }
 
   return (
     <ResizableColumns
@@ -3959,6 +4227,15 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                 onChange={(frames) => setParams({ ...params, num_frames: frames })}
                 fallbackFps={params.frame_rate ?? 24.0}
               />
+              {currentItem?.loopGroupId && currentItem.chainTargetFrames != null && (
+                <p className="text-xs text-amber-400">
+                  Video chain: segment {(currentItem.loopStepIndex ?? -1) + 2}
+                  {" "}running (target {currentItem.chainTargetFrames} frames).
+                </p>
+              )}
+              {videoChainStoppedMessage && (
+                <p className="text-xs text-amber-400">{videoChainStoppedMessage}</p>
+              )}
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <Slider
@@ -4661,6 +4938,11 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                       {generatedVideoInfo.duration != null && Number.isFinite(Number(generatedVideoInfo.duration)) && <span> · {Number(generatedVideoInfo.duration).toFixed(2)}s</span>}
                     </div>
                   )}
+                  {generatedVideoWarnings.length > 0 && (
+                    <ul className="text-xs text-amber-400 list-disc pl-4 space-y-1">
+                      {generatedVideoWarnings.map((w, i) => <li key={i}>{w}</li>)}
+                    </ul>
+                  )}
                 </div>
               ) : isAudio && generatedAudio ? (
                 <div className="w-full space-y-2">
@@ -4892,6 +5174,24 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         onClose={() => setIsTIPODialogOpen(false)}
         settings={tipoSettings}
         onSettingsChange={setTipoSettings}
+      />
+
+      {/* Opt-in video-length chain choice: never auto-chain, see CLAUDE.md */}
+      <VideoChainConfirmDialog
+        isOpen={videoChainPrompt != null}
+        requestedFrames={videoChainPrompt?.targetFrames ?? 0}
+        capFrames={videoChainPrompt?.capFrames ?? 0}
+        capSeconds={
+          videoChainPrompt
+            ? (videoChainPrompt.capFrames / (videoChainPrompt.videoParams.frame_rate ?? 24)).toFixed(2)
+            : null
+        }
+        finalSeconds={videoChainFinalSeconds}
+        plan={videoChainPlan}
+        notes={videoChainNotes}
+        onCancel={() => setVideoChainPrompt(null)}
+        onGenerateAtCap={handleVideoChainGenerateAtCap}
+        onStartChain={handleVideoChainStart}
       />
 
     </ResizableColumns>

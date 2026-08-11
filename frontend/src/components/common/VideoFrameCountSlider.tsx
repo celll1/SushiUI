@@ -8,6 +8,7 @@ import {
   isValidVideoFrameCount,
   largestValidVideoFrameCount,
   nearestValidVideoFrameCount,
+  planVideoChain,
   videoFrameLabel,
   videoFrameOptions,
 } from "@/utils/api";
@@ -89,6 +90,19 @@ export default function VideoFrameCountSlider({
 
   const snap = (frames: number): number => nearestValidVideoFrameCount(caps, arch, frames) ?? frames;
 
+  // The number box only (never the slider, whose native `max` already stops
+  // it at the cap): a value ABOVE the single-inference cap is an opt-in
+  // request for a length only the chain feature can reach, so it is rounded
+  // onto the frame grid but NOT clamped back down to `max_frames` the way
+  // `snap` clamps every other value. See `planVideoChain` (api.ts).
+  const snapAllowingOverCap = (frames: number): number => {
+    if (c.max_frames != null && frames > c.max_frames) {
+      const k = Math.max(0, Math.round((frames - c.frame_offset) / c.frame_multiple));
+      return k * c.frame_multiple + c.frame_offset;
+    }
+    return snap(frames);
+  };
+
   const handleRangeChange = (e: ChangeEvent<HTMLInputElement>) => {
     const raw = parseInt(e.target.value, 10);
     if (!Number.isFinite(raw)) return;
@@ -104,6 +118,14 @@ export default function VideoFrameCountSlider({
   };
 
   const isOnGrid = isValidVideoFrameCount(caps, arch, value);
+  // isValidVideoFrameCount is also false for any value past max_frames, so an
+  // over-cap value falls into the same "off-grid" bucket by that check alone
+  // — this splits it out so the two get separate, non-contradictory messages
+  // (the off-grid one says the value "will be snapped", which is not true of
+  // an over-cap value: it is deliberately left alone for the chain feature).
+  const overCap = c.max_frames != null && value > c.max_frames;
+  const chainPlan = overCap ? planVideoChain(caps, arch, value) : null;
+  const capSeconds = c.max_frames != null && fps > 0 ? (c.max_frames / fps).toFixed(2) : null;
 
   return (
     <div className={className}>
@@ -144,19 +166,31 @@ export default function VideoFrameCountSlider({
         <NumberInput
           label={videoFrameLabel(caps, arch)}
           value={value}
-          onCommit={(v) => onChange(snap(v))}
+          onCommit={(v) => onChange(snapAllowingOverCap(v))}
           min={min}
-          // The architecture's own cap, NOT the slider track's end: on an
-          // uncapped architecture the box must not inherit a ceiling the UI
-          // invented for drawing purposes.
-          max={c.max_frames ?? undefined}
+          // No `max`: the number box (unlike the slider track, whose native
+          // `max` stays at the cap below) must accept a value ABOVE the
+          // single-inference cap -- that is the opt-in entry point for the
+          // chain feature. `snapAllowingOverCap` is what still keeps a
+          // within-cap value on the frame grid.
           step={step}
           parse="int"
           disabled={disabled}
           className="w-20"
         />
       </div>
-      {!isOnGrid && (
+      {overCap ? (
+        <p className="text-xs text-amber-400 mt-1">
+          {value} frames exceeds the single-inference limit of {c.max_frames} frames
+          {capSeconds != null ? ` (${capSeconds}s at ${fps} fps)` : ""}.
+          {chainPlan != null
+            ? ` Reaching it takes ${chainPlan.segments} generation requests (actually reaches ${chainPlan.finalFrames} frames` +
+              `${chainPlan.finalFrames !== value ? `, ${chainPlan.finalFrames - value} more than this` : ""}); segments after` +
+              ` the first are conditioned only on the boundary frame of the previous segment, not the rest of its content or the` +
+              ` original prompt context. Generate will ask you to choose between a single inference at the cap and the chain.`
+            : ""}
+        </p>
+      ) : !isOnGrid && (
         <p className="text-xs text-amber-400 mt-1">
           {value} is not a length this model generates; it is kept as set and
           will be snapped when the slider or number box is next used.

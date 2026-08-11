@@ -430,6 +430,13 @@ export interface GenerationParams {
   guidance_scale?: number;          // video/audio guidance (default 1.0)
   num_videos_per_prompt?: number;   // default 1
   audio_enable?: boolean;           // default true
+  // Video route's block swap (Txt2VidParams/Img2VidParams/Ref2VidParams'
+  // `blocks_to_swap`). Kept under its own key rather than reusing the field
+  // above, which is the model-global IMAGE block-swap setting -- a blind
+  // spread would clobber one with the other. undefined/0 = disabled, which
+  // is this endpoint's own default (opt-in; a machine that already fits the
+  // model should not pay a swap cost it does not need).
+  video_blocks_to_swap?: number;
   // Music generation fields (used when an audio model (ACE-Step) is loaded;
   // the panel maps these into Txt2AudParams for txt2aud requests). `prompt`
   // above doubles as the caption text.
@@ -948,6 +955,31 @@ export interface Txt2VidParams {
   // LTX-2.3 has no LoRA loader on its video path at all -- accepted and
   // ignored, with an unsupported_param warning when non-empty.
   loras?: LoRAConfig[];
+  // Number of transformer blocks kept CPU-resident and streamed to GPU during
+  // the denoise loop. 0 (the default) disables block swap; the field is
+  // opt-in on every video route the same way it is on the image ones.
+  blocks_to_swap?: number;
+  // --- Acceleration (same knobs as /generate/outpaint/video and
+  // /generate/inpaint/video; see InpaintVideoParams' own comment). Mutually
+  // exclusive with Block Swap (each disabled server-side, with a logged
+  // reason, whenever blocks_to_swap > 0 -- see
+  // core.pipeline_backends.ltx2._ltx2_build_fbcache/_ltx2_build_spectrum and
+  // core.models.minimax_h3_block_loop_wrapper.attach_fbcache) and with each
+  // other (Spectrum takes precedence over FBCache). ---
+  fbcache_enable?: boolean;
+  fbcache_threshold?: number;
+  fbcache_warmup_steps?: number;
+  spectrum_enable?: boolean;
+  spectrum_w?: number;
+  spectrum_w_decay?: number;
+  spectrum_delta_cap?: number;
+  spectrum_m?: number;
+  spectrum_lam?: number;
+  spectrum_warmup_steps?: number;
+  spectrum_window_size?: number;
+  spectrum_flex_window?: number;
+  spectrum_tail?: number;
+  spectrum_max_cache?: number;
 }
 
 // One ADDITIONAL MiniMax-H3 keyframe anchor: the image and the pixel frame it
@@ -1747,6 +1779,20 @@ export const videoCanvasRule = (
 // something read out of the capability matrix. It is also the historical range
 // of those sliders, so an uncapped arch keeps exactly the reach it had.
 const UNCAPPED_VIDEO_EDGE = 2048;
+
+// Upper bound offered by the video routes' Block Swap number field
+// (Txt2Img/Img2Img/Inpaint/Outpaint panels' video modes). The backend clamps
+// `blocks_to_swap` to `num_blocks - 1` for whatever architecture is actually
+// loaded (`core.memory_management.transformer_registry`), and there is no
+// schema/capability endpoint that reports a loaded architecture's block
+// count, so the frontend cannot derive this bound -- it is a defensible
+// constant rather than a computed one. MiniMax-H3, the deepest video
+// architecture wired today, has 50 transformer blocks (49 swappable, since
+// at least one block must stay resident), so 49 is used here: LTX-2.3 has
+// fewer blocks and the backend clamp still applies if a value above its own
+// count is sent, so this constant only needs to not undershoot the largest
+// loaded architecture.
+export const VIDEO_BLOCK_SWAP_MAX = 49;
 
 /**
  * The bounds one Absolute canvas slider may offer, given where the OTHER axis
@@ -2606,6 +2652,23 @@ export const generateTxt2Vid = async (params: Txt2VidParams) => {
     quantized_gemm_mode: params.quantized_gemm_mode ?? null,
     attention_type: resolveGlobalAttentionType(params.attention_type),
     loras: params.loras || [],
+    // Acceleration (block swap / FBCache / Spectrum) -- same fields/defaults
+    // as /generate/outpaint/video and /generate/inpaint/video.
+    blocks_to_swap: params.blocks_to_swap ?? 0,
+    fbcache_enable: params.fbcache_enable ?? false,
+    fbcache_threshold: params.fbcache_threshold ?? 0.12,
+    fbcache_warmup_steps: params.fbcache_warmup_steps ?? 1,
+    spectrum_enable: params.spectrum_enable ?? false,
+    spectrum_w: params.spectrum_w ?? 0.5,
+    spectrum_w_decay: params.spectrum_w_decay ?? 0.0,
+    spectrum_delta_cap: params.spectrum_delta_cap ?? 0.0,
+    spectrum_m: params.spectrum_m ?? 4,
+    spectrum_lam: params.spectrum_lam ?? 0.1,
+    spectrum_warmup_steps: params.spectrum_warmup_steps ?? 3,
+    spectrum_window_size: params.spectrum_window_size ?? 4,
+    spectrum_flex_window: params.spectrum_flex_window ?? 0.75,
+    spectrum_tail: params.spectrum_tail ?? 0.12,
+    spectrum_max_cache: params.spectrum_max_cache ?? 0,
   };
 
   const response = await postGenerationRequest("/generate/txt2vid", body);
@@ -2699,6 +2762,23 @@ export const generateImg2Vid = async (
     formData.append("input_audio", params.input_audio);
   }
   formData.append("loras", JSON.stringify(params.loras || []));
+  // Acceleration (block swap / FBCache / Spectrum) -- same fields/defaults as
+  // /generate/outpaint/video and /generate/inpaint/video.
+  formData.append("blocks_to_swap", String(params.blocks_to_swap ?? 0));
+  formData.append("fbcache_enable", String(params.fbcache_enable ?? false));
+  formData.append("fbcache_threshold", String(params.fbcache_threshold ?? 0.12));
+  formData.append("fbcache_warmup_steps", String(params.fbcache_warmup_steps ?? 1));
+  formData.append("spectrum_enable", String(params.spectrum_enable ?? false));
+  formData.append("spectrum_w", String(params.spectrum_w ?? 0.5));
+  formData.append("spectrum_w_decay", String(params.spectrum_w_decay ?? 0.0));
+  formData.append("spectrum_delta_cap", String(params.spectrum_delta_cap ?? 0.0));
+  formData.append("spectrum_m", String(params.spectrum_m ?? 4));
+  formData.append("spectrum_lam", String(params.spectrum_lam ?? 0.1));
+  formData.append("spectrum_warmup_steps", String(params.spectrum_warmup_steps ?? 3));
+  formData.append("spectrum_window_size", String(params.spectrum_window_size ?? 4));
+  formData.append("spectrum_flex_window", String(params.spectrum_flex_window ?? 0.75));
+  formData.append("spectrum_tail", String(params.spectrum_tail ?? 0.12));
+  formData.append("spectrum_max_cache", String(params.spectrum_max_cache ?? 0));
 
   const response = await postGenerationRequest("/generate/img2vid", formData, {
     headers: { "Content-Type": "multipart/form-data" },
@@ -2777,6 +2857,23 @@ export const generateRef2Vid = async (
     formData.append("keyframe_frame_indices", String(keyframe.frame_index));
   }
   formData.append("loras", JSON.stringify(params.loras || []));
+  // Acceleration (block swap / FBCache / Spectrum) -- same fields/defaults as
+  // /generate/outpaint/video and /generate/inpaint/video.
+  formData.append("blocks_to_swap", String(params.blocks_to_swap ?? 0));
+  formData.append("fbcache_enable", String(params.fbcache_enable ?? false));
+  formData.append("fbcache_threshold", String(params.fbcache_threshold ?? 0.12));
+  formData.append("fbcache_warmup_steps", String(params.fbcache_warmup_steps ?? 1));
+  formData.append("spectrum_enable", String(params.spectrum_enable ?? false));
+  formData.append("spectrum_w", String(params.spectrum_w ?? 0.5));
+  formData.append("spectrum_w_decay", String(params.spectrum_w_decay ?? 0.0));
+  formData.append("spectrum_delta_cap", String(params.spectrum_delta_cap ?? 0.0));
+  formData.append("spectrum_m", String(params.spectrum_m ?? 4));
+  formData.append("spectrum_lam", String(params.spectrum_lam ?? 0.1));
+  formData.append("spectrum_warmup_steps", String(params.spectrum_warmup_steps ?? 3));
+  formData.append("spectrum_window_size", String(params.spectrum_window_size ?? 4));
+  formData.append("spectrum_flex_window", String(params.spectrum_flex_window ?? 0.75));
+  formData.append("spectrum_tail", String(params.spectrum_tail ?? 0.12));
+  formData.append("spectrum_max_cache", String(params.spectrum_max_cache ?? 0));
 
   const response = await postGenerationRequest("/generate/ref2vid", formData, {
     headers: { "Content-Type": "multipart/form-data" },

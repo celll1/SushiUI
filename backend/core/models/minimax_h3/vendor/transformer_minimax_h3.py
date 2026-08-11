@@ -21,6 +21,12 @@
 #     `*_pruned_*` single-file checkpoints do not contain.
 #   * `MiniMaxH3TransformerBlock.forward` now casts the six modulation tensors
 #     down to the residual stream's dtype before applying them.
+#   * `MiniMaxH3TransformerBlock.forward` calls the feed-forward through
+#     `core.models.minimax_h3.ff_chunking.chunked_feed_forward` instead of
+#     `self.ff(norm_hidden_states)` directly. Inference-only (falls back to the
+#     plain call under autograd or for short sequences); see that module's
+#     docstring for the measurement this is based on and why it is
+#     unconditional rather than a knob.
 #
 #     WHY. Upstream's block was written for a bfloat16 `adaln_proj`. In the
 #     AdaLN-curve ("pruned") variant ComfyUI computes that projection in float32
@@ -103,6 +109,7 @@ from diffusers.models.embeddings import TimestepEmbedding, Timesteps
 from diffusers.models.modeling_utils import ModelMixin
 
 from core.attention import AttentionMode, dispatch_attention
+from core.models.minimax_h3.ff_chunking import chunked_feed_forward
 
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
@@ -481,7 +488,7 @@ class MiniMaxH3TransformerBlock(nn.Module):
         norm_hidden_states = norm_hidden_states * (
             1.0 + scale_mlp.index_select(0, adaln_indices)
         ) + shift_mlp.index_select(0, adaln_indices)
-        ff_output = self.ff(norm_hidden_states)
+        ff_output = chunked_feed_forward(self.ff, norm_hidden_states)
         hidden_states = residual + gate_mlp.index_select(0, adaln_indices) * ff_output
 
         return hidden_states

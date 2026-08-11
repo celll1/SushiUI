@@ -338,6 +338,68 @@ def _validated_pinned_frames(
     return tuple(sorted(frames))
 
 
+def _validated_pinned_video_row_indices(
+    pinned_video_row_indices: Sequence[int],
+    num_video_rows: int,
+    *,
+    pinned_video_frames: Sequence[int],
+    keyframe_anchors: Sequence["int | str"],
+) -> Tuple[int, ...]:
+    """Validate and canonicalize arbitrary frame-major video row pins."""
+    if len(pinned_video_frames) or len(keyframe_anchors):
+        raise ValueError(
+            "MiniMax-H3 cannot combine pinned video row indices with pinned video frames "
+            "or keyframe anchors: pass one pinning scheme only.")
+
+    rows: List[int] = []
+    for row in pinned_video_row_indices:
+        if isinstance(row, bool) or not isinstance(row, (int, np.integer)):
+            raise ValueError(
+                f"A pinned video row must be an integer frame-major row index, got {row!r}.")
+        row = int(row)
+        if not 0 <= row < num_video_rows:
+            raise ValueError(
+                f"A pinned video row at index {row} is outside this clip: it has "
+                f"{num_video_rows} video row(s), so the last addressable index is "
+                f"{num_video_rows - 1}.")
+        rows.append(row)
+    if len(set(rows)) != len(rows):
+        raise ValueError(
+            f"Pinned video row indices must be distinct, got "
+            f"{list(pinned_video_row_indices)!r}.")
+    return tuple(sorted(rows))
+
+
+def pin_video_rows(
+    video_rows: torch.Tensor,
+    source_rows: torch.Tensor,
+    pinned_row_indices: Sequence[int],
+    scheduler: Any,
+    timestep: float,
+) -> torch.Tensor:
+    """Replace selected frame-major rows with scheduler-conditioned source rows."""
+
+    if video_rows.ndim != 2 or source_rows.shape != video_rows.shape:
+        raise ValueError(
+            f"video and source rows must have the same [rows, channels] shape, got "
+            f"{tuple(video_rows.shape)} and {tuple(source_rows.shape)}."
+        )
+    pinned = _validated_pinned_video_row_indices(
+        pinned_row_indices,
+        video_rows.shape[0],
+        pinned_video_frames=(),
+        keyframe_anchors=(),
+    )
+    if not pinned:
+        return video_rows
+    indices = torch.tensor(pinned, dtype=torch.long, device=video_rows.device)
+    source = source_rows.to(video_rows.device, video_rows.dtype)
+    video_rows[indices] = scheduler.scale_noise(
+        source[indices], timestep, video_rows[indices]
+    )
+    return video_rows
+
+
 def build_packed_layout(
     num_text_tokens: int,
     num_latent_frames: int,
@@ -348,6 +410,7 @@ def build_packed_layout(
     patch_size: Tuple[int, int, int] = (1, 2, 2),
     keyframe_anchors: Sequence["int | str"] = (),
     pinned_video_frames: Sequence[int] = (),
+    pinned_video_row_indices: Sequence[int] = (),
     pin_target_audio: bool = False,
     text_token_tags: Optional[torch.Tensor] = None,
     device: Optional[torch.device | str] = None,
@@ -399,6 +462,12 @@ def build_packed_layout(
     invariant given up is that ``video_indices`` is ascending, which nothing
     consumes. Measured in ``scratchpad/minimax_h3_ti_probe_results.md``.
 
+    ``pinned_video_row_indices`` is spatial inpaint: zero-based indices into
+    the frame-major flattened video-row block. The selected rows are moved to
+    the conditioning prefix, with the remaining rows following them. It is
+    mutually exclusive with ``pinned_video_frames`` and ``keyframe_anchors``;
+    unlike a frame pin, its conditioning count is the exact number of rows.
+
     Returns the tensors the transformer reads by name plus the two conditioning
     row counts, which the loop needs to know which rows it may write.
     """
@@ -448,7 +517,21 @@ def build_packed_layout(
     num_condition_video_rows = num_condition_rows
     video_row_permutation: Optional[torch.Tensor] = None
     video_row_order: Optional[torch.Tensor] = None
-    if len(pinned_video_frames):
+    if len(pinned_video_row_indices):
+        pinned_rows = _validated_pinned_video_row_indices(
+            pinned_video_row_indices,
+            num_video_rows,
+            pinned_video_frames=pinned_video_frames,
+            keyframe_anchors=keyframe_anchors,
+        )
+        pinned_set = set(pinned_rows)
+        free_rows = tuple(row for row in range(num_video_rows) if row not in pinned_set)
+        video_row_permutation = torch.tensor(
+            (*pinned_rows, *free_rows), dtype=torch.long)
+        video_row_order = torch.argsort(video_row_permutation)
+        video_indices = video_indices[video_row_permutation]
+        num_condition_video_rows = len(pinned_rows)
+    elif len(pinned_video_frames):
         pinned = _validated_pinned_frames(pinned_video_frames, num_latent_frames,
                                           keyframe_anchors)
         free = [frame for frame in range(num_latent_frames) if frame not in set(pinned)]

@@ -1584,6 +1584,7 @@ def plan_video_inpaint_span(
     arch: Optional[str],
     *,
     clip_frames: int,
+    allow_full_range: bool = False,
 ) -> Dict[str, Any]:
     """Resolve a temporal-inpaint request against the arch's latent chunking.
 
@@ -1615,7 +1616,9 @@ def plan_video_inpaint_span(
 
     Raises ``ValidationError`` for an architecture with no declared chunking, an
     invalid clip length, an empty/out-of-range range, or a range that leaves
-    nothing preserved.
+    nothing preserved. ``allow_full_range`` is reserved for spatial-mask
+    inpaint, where token-level preservation can still exist inside every time
+    group even when the temporal range covers the whole clip.
     """
     from api.error_handlers import ValidationError
     from core.models.components.wiring import temporal_spec_for_arch
@@ -1675,7 +1678,7 @@ def plan_video_inpaint_span(
     start_frame = spans[regenerate[0]][0]
     end_frame = spans[regenerate[-1]][1]
     pinned = tuple(index for index in range(num_latent_frames) if index not in set(regenerate))
-    if not pinned:
+    if not pinned and not allow_full_range:
         raise ValidationError(
             "nothing is preserved",
             detail=f"Frames {start_frame}..{end_frame} cover the whole {clip_frames}-frame clip "

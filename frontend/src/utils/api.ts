@@ -761,6 +761,9 @@ export interface InpaintVideoParams {
   // Omit to take the LOADED ARCHITECTURE's default ("preserve_input" on
   // MiniMax-H3); resolve it client-side with `inpaintVideoDefaultsForArch`.
   inpaint_video_audio_mode?: "regenerate" | "preserve_input";
+  // Optional spatial mask timeline. Referenced PNG assets are uploaded
+  // separately by generateInpaintVideo.
+  spatial_mask_manifest?: string;
   video_lossless?: boolean;        // FFV1: carries the preserved frames' exactness into the FILE
   // --- Acceleration (same knobs as the other video routes) ---
   blocks_to_swap?: number;
@@ -3515,9 +3518,46 @@ export const generateOutpaintVideo = async (
 // output is as long as the trimmed input.
 export const generateInpaintVideo = async (
   params: InpaintVideoParams,
-  video: File | string
+  video: File | string,
+  spatialMaskParts?: Array<{ id: string; file: File }>,
 ) => {
   const formData = new FormData();
+
+  const manifest = params.spatial_mask_manifest?.trim();
+  if (manifest) {
+    if (!Array.isArray(spatialMaskParts) || spatialMaskParts.length === 0) {
+      throw new Error("A spatial mask manifest requires at least one PNG mask asset.");
+    }
+    try {
+      const parsed = JSON.parse(manifest) as unknown;
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        throw new Error("Spatial mask manifest must be a JSON object.");
+      }
+    } catch (error) {
+      throw new Error(`Spatial mask manifest is invalid: ${error instanceof Error ? error.message : "invalid JSON"}`);
+    }
+    const ids = new Set<string>();
+    for (const part of spatialMaskParts) {
+      if (!part || typeof part.id !== "string" || part.id.trim() === "") {
+        throw new Error("Every spatial mask asset needs a non-empty id.");
+      }
+      if (ids.has(part.id)) throw new Error(`Duplicate spatial mask asset id: ${part.id}`);
+      ids.add(part.id);
+      if (typeof File === "undefined" || !(part.file instanceof File) || part.file.size <= 0) {
+        throw new Error(`Spatial mask asset ${part.id} is not a valid file.`);
+      }
+      if (part.file.type && part.file.type !== "image/png") {
+        throw new Error(`Spatial mask asset ${part.id} must be a PNG file.`);
+      }
+    }
+    formData.append("spatial_mask_manifest", manifest);
+    for (const part of spatialMaskParts) {
+      formData.append("spatial_mask_ids", part.id);
+      formData.append("spatial_mask_files", part.file, `${part.id}.png`);
+    }
+  } else if (spatialMaskParts !== undefined && spatialMaskParts.length > 0) {
+    throw new Error("Spatial mask assets cannot be uploaded without a manifest.");
+  }
 
   if (typeof video === "string") {
     const response = await fetch(video);

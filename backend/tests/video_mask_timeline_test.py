@@ -17,11 +17,15 @@ for _path in (_REPO_ROOT, _BACKEND_ROOT):
         sys.path.insert(0, _path)
 
 from core.inference.video_mask_timeline import (  # noqa: E402
+    MaskTransform,
     ManifestValidationError,
     MaskDecodeError,
     MaskRasterizationError,
+    build_spatial_mask_plan,
+    apply_mask_transform,
     composite_masked_frames,
     decode_mask_pngs,
+    feather_mask_edges,
     max_pool_mask_to_latent,
     parse_mask_timeline_manifest,
     rasterize_mask_timeline,
@@ -211,6 +215,18 @@ def test_affine_rasterization_interpolates_a_mask_transform():
     assert frames[2][1, 2] == pytest.approx(1.0)
 
 
+def test_affine_transform_scales_around_the_canvas_center():
+    mask = np.zeros((5, 5), dtype=np.float32)
+    mask[2, 2] = 1.0
+    transformed = apply_mask_transform(
+        mask,
+        MaskTransform(scale_x=2.0, scale_y=2.0),
+        output_shape=(5, 5),
+    )
+    assert transformed[2, 2] == pytest.approx(1.0)
+    assert transformed[0, 0] == pytest.approx(0.0)
+
+
 def test_sdf_rasterization_preserves_endpoints_and_interpolates_boundaries():
     left = np.zeros((3, 5), dtype=np.float32)
     right = np.zeros((3, 5), dtype=np.float32)
@@ -246,6 +262,60 @@ def test_max_pool_can_apply_explicit_generate_threshold_for_latent_pinning():
     masks = np.array([[[0.01, 0.6], [0.4, 0.0]]], dtype=np.float32)
     pooled = max_pool_mask_to_latent(masks, patch_h=1, patch_w=1)
     np.testing.assert_array_equal(pooled, [[[0.0, 1.0], [0.0, 0.0]]])
+
+
+def test_feather_softens_only_spatial_edges_and_preserves_time_shape():
+    masks = np.zeros((2, 5, 5), dtype=np.float32)
+    masks[:, 1:4, 1:4] = 1.0
+    softened = feather_mask_edges(masks, 2.0)
+    assert softened.shape == masks.shape
+    assert np.array_equal(softened[0], softened[1])
+    assert 0.0 < softened[0, 1, 2] < softened[0, 2, 2] < 1.0
+
+
+def test_spatial_mask_plan_returns_full_masks_and_frame_major_pinned_rows():
+    timeline = parse_mask_timeline_manifest(
+        _manifest([{"frame": 0, "mask_id": "subject", "interpolation_to_next": "hold"}],
+                  width=4, height=2)
+    )
+    mask = np.array([[1, 1, 0, 0], [1, 1, 0, 0]], dtype=np.float32)
+    full_masks, pinned_rows = build_spatial_mask_plan(
+        timeline,
+        {"subject": mask},
+        clip_frames=5,
+        start_frame=0,
+        end_frame=5,
+        latent_frame_spans=((0, 2), (2, 5)),
+        spatial_scale=1,
+        patch_h=1,
+        patch_w=1,
+    )
+    assert full_masks.shape == (5, 2, 4)
+    assert len(pinned_rows) == 8
+    assert pinned_rows[:4] == (2, 3, 6, 7)
+
+
+@pytest.mark.parametrize("mask, expected", [
+    (np.zeros((2, 4), dtype=np.float32), "generate"),
+    (np.ones((2, 4), dtype=np.float32), "preserve"),
+])
+def test_spatial_mask_plan_rejects_empty_generation_or_preservation(mask, expected):
+    timeline = parse_mask_timeline_manifest(
+        _manifest([{"frame": 0, "mask_id": "subject", "interpolation_to_next": "hold"}],
+                  width=4, height=2)
+    )
+    with pytest.raises(MaskRasterizationError, match=expected):
+        build_spatial_mask_plan(
+            timeline,
+            {"subject": mask},
+            clip_frames=5,
+            start_frame=0,
+            end_frame=5,
+            latent_frame_spans=((0, 2), (2, 5)),
+            spatial_scale=1,
+            patch_h=1,
+            patch_w=1,
+        )
 
 
 def test_composite_masked_frames_preserves_source_and_generated_pixels_exactly():

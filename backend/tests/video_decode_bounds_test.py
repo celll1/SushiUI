@@ -268,7 +268,7 @@ class InpaintVideoPostDecodeOverlongClipTest(unittest.TestCase):
         # explicit route-level check gives an accurate, non-generic message).
         self.assertLess(
             section.index("if trimmed_len > _arch_max_frames:"),
-            section.index("plan_video_inpaint_span(params, _vid_arch"),
+            section.index("plan_video_inpaint_span("),
         )
 
 

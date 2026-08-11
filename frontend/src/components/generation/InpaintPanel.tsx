@@ -46,6 +46,7 @@ import { grabVideoFrame, releaseVideoFrameGrabber } from "@/utils/videoFrameGrab
 import VideoInpaintMaskTimeline from "./VideoInpaintMaskTimeline";
 import {
   createDefaultMaskTransform,
+  pruneKeyframesToFrameRange,
   serializeVideoMaskManifestForApi,
   sortKeyframes,
   upsertKeyframe,
@@ -826,6 +827,28 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isVideo, videoTrimmedFrames]);
+
+  useEffect(() => {
+    if (!isVideo || videoTrimmedFrames <= 0) return;
+    const start = params.regenerate_start_frame ?? 0;
+    const end = params.regenerate_end_frame ?? 0;
+    if (!(start < end && end <= videoTrimmedFrames)) return;
+    const kept = pruneKeyframesToFrameRange(videoMaskManifest.keyframes, start, end - 1);
+    if (kept.length === videoMaskManifest.keyframes.length) return;
+    setVideoMaskManifest((previous) => ({
+      ...previous,
+      keyframes: pruneKeyframesToFrameRange(previous.keyframes, start, end - 1),
+    }));
+    const keptMaskIds = new Set(kept.map((keyframe) => keyframe.maskId));
+    setVideoMaskAssets((previous) => previous.filter((asset) => keptMaskIds.has(asset.id)));
+    setVideoMaskError("Mask keyframes outside the new range were removed.");
+  }, [
+    isVideo,
+    params.regenerate_end_frame,
+    params.regenerate_start_frame,
+    videoMaskManifest.keyframes,
+    videoTrimmedFrames,
+  ]);
 
   // The audio mode's default is per-architecture (MiniMax-H3 overlays
   // "preserve_input"), and every value is selectable everywhere, so the trigger
@@ -1796,6 +1819,8 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         ? "Affine interpolation needs the same mask asset on both keyframes; changed to Hold."
         : null,
     );
+    const referencedMaskIds = new Set(normalized.map((keyframe) => keyframe.maskId));
+    setVideoMaskAssets((previous) => previous.filter((asset) => referencedMaskIds.has(asset.id)));
   };
 
   const handleVideoMaskEditorSaveMask = async (maskUrl: string) => {
@@ -4955,6 +4980,20 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
             onRangeChange={(start, end) => {
               lastValidRegenerateRangeRef.current = { start, end };
               setRegenerateRangeReplacedNotice(null);
+              const keptMaskKeyframes = pruneKeyframesToFrameRange(
+                videoMaskManifest.keyframes,
+                start,
+                end - 1,
+              );
+              if (keptMaskKeyframes.length !== videoMaskManifest.keyframes.length) {
+                setVideoMaskError("Mask keyframes outside the new range were removed.");
+              }
+              const keptMaskIds = new Set(keptMaskKeyframes.map((keyframe) => keyframe.maskId));
+              setVideoMaskAssets((previous) => previous.filter((asset) => keptMaskIds.has(asset.id)));
+              setVideoMaskManifest((previous) => ({
+                ...previous,
+                keyframes: pruneKeyframesToFrameRange(previous.keyframes, start, end - 1),
+              }));
               setParams(prev => ({
                 ...prev,
                 regenerate_start_frame: start,
@@ -4986,7 +5025,12 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
           <div className="mt-4 border-t border-gray-700 pt-4">
             <VideoInpaintMaskTimeline
               keyframes={videoMaskManifest.keyframes}
-              currentFrame={inputVideoPlayer?.currentFrame ?? 0}
+              currentFrame={Math.max(
+                0,
+                Math.round(
+                  (inputVideoPlayer?.currentFrame ?? 0) - (params.input_trim_start_frames ?? 0),
+                ),
+              )}
               rangeStart={params.regenerate_start_frame ?? 0}
               rangeEnd={params.regenerate_end_frame ?? 0}
               totalFrames={videoTrimmedFrames}

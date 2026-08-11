@@ -6,6 +6,8 @@ export type MaskPolarity = "white_generate";
 
 /** Prevent accidental near-zero or runaway affine transforms in the API. */
 export const MAX_MASK_SCALE = 100;
+export const MAX_MASK_KEYFRAMES = 128;
+export const MAX_MASK_ASSETS = 64;
 export const MAX_COMPOSITE_FEATHER_PX = 128;
 
 export interface MaskTransform {
@@ -179,6 +181,9 @@ export function validateVideoMaskManifest(value: unknown): VideoMaskValidationRe
   if (!Array.isArray(value.keyframes)) {
     errors.push("keyframes must be an array.");
   } else {
+    if (value.keyframes.length > MAX_MASK_KEYFRAMES) {
+      errors.push(`keyframes may contain at most ${MAX_MASK_KEYFRAMES} entries.`);
+    }
     const seenFrames = new Set<number>();
     const seenIds = new Set<string>();
     let previousFrame: number | null = null;
@@ -232,6 +237,9 @@ export function validateVideoMaskManifest(value: unknown): VideoMaskValidationRe
 export function validateVideoMaskAssets(assets: unknown): string[] {
   if (!Array.isArray(assets)) return ["assets must be an array."];
   const errors: string[] = [];
+  if (assets.length > MAX_MASK_ASSETS) {
+    errors.push(`assets may contain at most ${MAX_MASK_ASSETS} entries.`);
+  }
   const seenIds = new Set<string>();
   assets.forEach((asset, index) => {
     if (!isRecord(asset)) {

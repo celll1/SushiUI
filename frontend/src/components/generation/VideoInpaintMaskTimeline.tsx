@@ -10,6 +10,7 @@ import {
   removeKeyframe,
   upsertKeyframe,
   type MaskInterpolation,
+  type MaskTransform,
   type VideoMaskKeyframe,
 } from "@/utils/videoMaskTimeline";
 
@@ -33,6 +34,20 @@ const interpolationOptions: Array<{ value: MaskInterpolation; label: string }> =
   { value: "hold", label: "Hold" },
   { value: "affine", label: "Affine" },
   { value: "sdf", label: "SDF morph" },
+];
+
+const transformFields: Array<{
+  key: keyof MaskTransform;
+  label: string;
+  step: string;
+  min?: string;
+  max?: string;
+}> = [
+  { key: "x", label: "X", step: "1" },
+  { key: "y", label: "Y", step: "1" },
+  { key: "scaleX", label: "Scale X", step: "0.05", min: "0.01", max: "100" },
+  { key: "scaleY", label: "Scale Y", step: "0.05", min: "0.01", max: "100" },
+  { key: "rotation", label: "Rotation", step: "1" },
 ];
 
 function frameDescription(frame: number): string {
@@ -154,6 +169,22 @@ export default function VideoInpaintMaskTimeline({
       upsertKeyframe(orderedKeyframes, {
         ...keyframe,
         interpolationToNext: interpolation || DEFAULT_MASK_INTERPOLATION,
+      }),
+    );
+  };
+
+  const changeTransform = (
+    keyframe: VideoMaskKeyframe,
+    field: keyof MaskTransform,
+    value: string,
+  ) => {
+    if (disabled) return;
+    const numericValue = Number(value);
+    if (!Number.isFinite(numericValue)) return;
+    onChange(
+      upsertKeyframe(orderedKeyframes, {
+        ...keyframe,
+        transform: { ...keyframe.transform, [field]: numericValue },
       }),
     );
   };
@@ -306,6 +337,29 @@ export default function VideoInpaintMaskTimeline({
                   disabled={disabled || index === orderedKeyframes.length - 1}
                   aria-label={`Interpolation after frame ${keyframe.frame}`}
                 />
+                <details className="w-full rounded border border-gray-800 bg-gray-950/40 px-2 py-1">
+                  <summary className="cursor-pointer text-[10px] text-gray-500">
+                    Transform (center pivot)
+                  </summary>
+                  <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-5">
+                    {transformFields.map((field) => (
+                      <label key={field.key} className="text-[10px] text-gray-500">
+                        {field.label}
+                        <input
+                          type="number"
+                          step={field.step}
+                          min={field.min}
+                          max={field.max}
+                          value={keyframe.transform[field.key]}
+                          disabled={disabled}
+                          onChange={(event) => changeTransform(keyframe, field.key, event.target.value)}
+                          className="mt-1 h-7 w-full rounded border border-gray-700 bg-gray-800 px-1.5 text-xs text-white"
+                          aria-label={`${field.label} for frame ${keyframe.frame}`}
+                        />
+                      </label>
+                    ))}
+                  </div>
+                </details>
                 <div className="ml-auto flex items-center gap-1">
                   <Button
                     type="button"

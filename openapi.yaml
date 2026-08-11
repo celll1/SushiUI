@@ -1203,7 +1203,8 @@ paths:
         The manifest's `composite_feather_px` may be 0..128 pixels; feathering
         is applied only inside the selected temporal span. A full-clip temporal
         range is allowed when the spatial mask both generates and preserves at
-        least one latent video token.
+        least one latent video token. A manifest accepts at most 128 keyframes
+        and 64 unique PNG assets.
 
         **Outside the model card.** MiniMax documents `fl2va` for first- and
         last-frame conditioning with up to two images; pinning frames at
@@ -8794,6 +8795,7 @@ components:
             in `spatial_mask_files` and the corresponding ID in
             `spatial_mask_ids` for each unique `mask_id` referenced by the
             manifest. Upload filenames are ignored; IDs define the mapping.
+            At most 128 keyframes and 64 unique PNG assets are allowed.
           example: '{"version":1,"coordinate_space":"output_canvas","polarity":"white_generate","canvas":{"width":640,"height":384},"keyframes":[{"frame":40,"mask_id":"subject","interpolation_to_next":"hold"}]}'
         spatial_mask_files:
           type: array

@@ -1,8 +1,8 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { usePathname, useSearchParams } from "next/navigation";
-import { ChevronLeft, ChevronRight, X, RotateCcw } from "lucide-react";
+import { ChevronLeft, ChevronRight, X, RotateCcw, Maximize2, Minimize2 } from "lucide-react";
 import Card from "../common/Card";
 import TabbedOptions from "../common/TabbedOptions";
 import Input from "../common/Input";
@@ -755,6 +755,64 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
   // read/drive its live playhead (useVideoPlayhead below) -- this is the same
   // element the panel already renders for preview, not a second one.
   const inputVideoRef = useRef<HTMLVideoElement | null>(null);
+  // The wrapper the <video> and its mask overlay canvas are siblings inside.
+  // Fullscreen is requested on THIS element, not the <video> itself: the
+  // native video fullscreen path promotes only the <video> into the top
+  // layer, leaving the overlay canvas behind (and unsized, since it would
+  // still be reading its small non-fullscreen CSS box) -- see
+  // ImageEditor.tsx's own container-fullscreen pattern.
+  const videoContainerRef = useRef<HTMLDivElement | null>(null);
+  const [isVideoFullscreen, setIsVideoFullscreen] = useState(false);
+  // Feature-detected once, not just "does `requestFullscreen` exist": iOS
+  // Safari has no element-level fullscreen for an arbitrary <div> at all
+  // (only `HTMLVideoElement.webkitEnterFullscreen`, which promotes the
+  // native player and would leave this component's own mask-overlay canvas
+  // behind exactly like the bug the container-fullscreen pattern above
+  // exists to avoid) -- there is nothing this button can correctly do there,
+  // so it does not render rather than being clickable and silently failing.
+  const canFullscreenContainer = useMemo(() => {
+    if (typeof document === "undefined") return false;
+    const doc = document as Document & { webkitFullscreenEnabled?: boolean };
+    const docEl = document.documentElement as HTMLElement & { webkitRequestFullscreen?: () => void };
+    const enabled = doc.fullscreenEnabled ?? doc.webkitFullscreenEnabled ?? false;
+    const hasRequest = typeof docEl.requestFullscreen === "function" || typeof docEl.webkitRequestFullscreen === "function";
+    return !!enabled && hasRequest;
+  }, []);
+  const toggleVideoFullscreen = useCallback(async () => {
+    const container = videoContainerRef.current as (HTMLDivElement & { webkitRequestFullscreen?: () => Promise<void> | void }) | null;
+    if (!container) return;
+    const doc = document as Document & { webkitFullscreenElement?: Element | null; webkitExitFullscreen?: () => Promise<void> | void };
+    try {
+      const fullscreenElement = doc.fullscreenElement ?? doc.webkitFullscreenElement ?? null;
+      if (fullscreenElement === container) {
+        if (document.exitFullscreen) await document.exitFullscreen();
+        else if (doc.webkitExitFullscreen) await doc.webkitExitFullscreen();
+      } else if (container.requestFullscreen) {
+        await container.requestFullscreen();
+      } else if (container.webkitRequestFullscreen) {
+        await container.webkitRequestFullscreen();
+      }
+    } catch (error) {
+      console.error("[Inpaint] Failed to toggle input clip fullscreen", error);
+    }
+  }, []);
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      const doc = document as Document & { webkitFullscreenElement?: Element | null };
+      const fullscreenElement = doc.fullscreenElement ?? doc.webkitFullscreenElement ?? null;
+      setIsVideoFullscreen(fullscreenElement === videoContainerRef.current);
+    };
+    // Chromium/Firefox fire `fullscreenchange`; older WebKit (Safari) fires
+    // the prefixed `webkitfullscreenchange` instead -- both are registered
+    // so `isVideoFullscreen` (and therefore the Exit-fullscreen affordance
+    // in `handleClearVideo` below) stays correct on either.
+    document.addEventListener("fullscreenchange", handleFullscreenChange);
+    document.addEventListener("webkitfullscreenchange", handleFullscreenChange);
+    return () => {
+      document.removeEventListener("fullscreenchange", handleFullscreenChange);
+      document.removeEventListener("webkitfullscreenchange", handleFullscreenChange);
+    };
+  }, []);
   const [videoSizeMode, setVideoSizeMode] = useState<"absolute" | "scale">("absolute");
   const [videoScale, setVideoScale] = useState<number>(1.0);
   // The clip's frame COUNT, which the browser does not report: it is estimated
@@ -872,6 +930,17 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
   const videoTrimmedFrames = Math.max(
     0,
     videoRawFrames - (params.input_trim_start_frames ?? 0) - (params.input_trim_end_frames ?? 0)
+  );
+  // What the backend's `plan_video_inpaint_span` actually regenerates: the
+  // requested range expanded OUTWARD to latent-group boundaries, never
+  // shrunk (mirrors VideoInpaintTimeline's own `effective` range). The mask
+  // preview overlay must clamp to THIS span, not the raw requested one --
+  // the backend applies the held first/last keyframe mask across the whole
+  // snapped span, including the frames the snap added.
+  const videoMaskOverlaySpan = snapRangeToLatentGroups(
+    latentGroupSpans(latentChunkPattern, videoTrimmedFrames),
+    params.regenerate_start_frame ?? 0,
+    params.regenerate_end_frame ?? 0,
   );
   // The clip length itself has to be on the grid here (temporal inpaint samples
   // the whole clip), and the route refuses an off-grid length rather than
@@ -2545,6 +2614,17 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
   };
 
   const handleClearVideo = () => {
+    // The Exit-fullscreen button lives in the `videoPreviewUrl ? ... : ...`
+    // branch below, but the fullscreened container itself does not -- so
+    // clearing the clip while fullscreen would otherwise swap that branch to
+    // the empty-state placeholder while still occupying the whole screen,
+    // exitable only by Esc. Exit fullscreen here instead of also rendering
+    // the button outside the ternary.
+    const doc = document as Document & { webkitFullscreenElement?: Element | null; webkitExitFullscreen?: () => Promise<void> | void };
+    if ((doc.fullscreenElement ?? doc.webkitFullscreenElement ?? null) === videoContainerRef.current) {
+      if (document.exitFullscreen) void document.exitFullscreen().catch(() => {});
+      else if (doc.webkitExitFullscreen) void doc.webkitExitFullscreen();
+    }
     if (videoPreviewUrl) {
       releaseVideoFrameGrabber(videoPreviewUrl);
       URL.revokeObjectURL(videoPreviewUrl);
@@ -5452,7 +5532,14 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
                 </Button>
               )}
             </div>
-            <div className="relative h-[clamp(10rem,22vh,13rem)] bg-gray-800 rounded-lg overflow-hidden border-2 border-dashed border-gray-600">
+            <div
+              ref={videoContainerRef}
+              className={
+                isVideoFullscreen
+                  ? "relative w-full h-full bg-gray-800"
+                  : "relative h-[clamp(10rem,22vh,13rem)] bg-gray-800 rounded-lg overflow-hidden border-2 border-dashed border-gray-600"
+              }
+            >
               {videoPreviewUrl ? (
                 <>
                   <video
@@ -5461,6 +5548,8 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
                     onLoadedMetadata={handleVideoLoadedMetadata}
                     className="w-full h-full object-contain"
                     controls
+                    controlsList="nofullscreen"
+                    disablePictureInPicture
                     muted
                     playsInline
                   />
@@ -5472,8 +5561,8 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
                     manifest={videoMaskManifest}
                     assets={videoMaskAssets}
                     assetRefs={videoMaskUploadedRefsRef.current}
-                    rangeStart={params.regenerate_start_frame ?? 0}
-                    rangeEnd={params.regenerate_end_frame ?? 0}
+                    rangeStart={videoMaskOverlaySpan.start}
+                    rangeEnd={videoMaskOverlaySpan.end}
                     // inputVideoPlayer.currentFrame is the <video> element's
                     // RAW frame number; sampleFrames/keyframe.frame/rangeStart/
                     // End are all in TRIMMED-clip coordinates (see
@@ -5489,6 +5578,26 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
                     enabled={videoMaskPreviewEnabled}
                     opacity={videoMaskPreviewOpacity}
                   />
+                  {/* Pushed down below the overlay's own top-1 badges (Updating
+                      mask preview.../Mask preview unavailable/Playhead outside
+                      regenerate range) instead of sharing their corner -- both
+                      used to sit at top-*-2/top-1 right-1 and occluded each
+                      other. Still clear of the native <video> control bar,
+                      which is pinned to the bottom of this container. */}
+                  {/* isMounted as well: the feature detection below reads
+                      `document`, so it is false during SSR and would
+                      otherwise mismatch on hydration. */}
+                  {isMounted && canFullscreenContainer && (
+                    <button
+                      type="button"
+                      onClick={toggleVideoFullscreen}
+                      className="absolute top-8 right-2 z-10 p-1.5 rounded-lg bg-gray-900/70 text-white hover:bg-gray-900/90"
+                      aria-label={isVideoFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
+                      title={isVideoFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
+                    >
+                      {isVideoFullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
+                    </button>
+                  )}
                 </>
               ) : (
                 <div className="w-full h-full flex items-center justify-center">
@@ -5526,6 +5635,12 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
                     the nearest sampled frame to the playhead. It is not a live per-frame render, and
                     a sharp edge here is not a claim about the exact per-pixel boundary generation
                     produces.
+                  </p>
+                  <p>
+                    Only shown while the playhead sits inside the regenerate range -- outside it
+                    (including right after upload, before the range is widened or the playhead is
+                    moved into it) a badge on the video says so instead of drawing nothing
+                    unexplained.
                   </p>
                 </InlineHelp>
               </div>

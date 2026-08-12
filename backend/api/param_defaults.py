@@ -1048,6 +1048,32 @@ REF2VID_DEFAULTS["keyframe_frame_indices"] = None
 # past any architecture's own production length.
 MAX_VIDEO_UPLOAD_DECODE_BYTES: int = 8 * 1024 * 1024 * 1024
 
+# A spatial-mask video inpaint request (`spatial_mask_manifest` on
+# `/generate/inpaint/video`) allocates float32 buffers ON TOP OF the
+# already-decoded uint8 clip that `MAX_VIDEO_UPLOAD_DECODE_BYTES` bounds --
+# `core.inference.video_mask_timeline.build_spatial_mask_plan` rasterizes the
+# full manifest span and holds it as `full_masks` (one float32 array shaped
+# `[clip_frames, height, width]`) alongside a same-shape `range_array`
+# produced by `rasterize_mask_timeline` inside it, and `composite_masked_frames`
+# (called after) allocates its own output buffer over the same frame count.
+# Measured with `tracemalloc` around `build_spatial_mask_plan` at three clip
+# lengths (100/362/1000 frames, 768x1344 canvas -- MiniMax-H3's own max): the
+# call's own peak was a REPRODUCIBLE 5.00x the raw uint8 clip's byte count
+# (`clip_frames * width * height * 3`) at every length tested, not a value
+# that drifts with clip length -- this is what `SPATIAL_MASK_GENERATION_PEAK_MULTIPLIER`
+# below encodes.  This is a SEPARATE ceiling from `MAX_VIDEO_UPLOAD_DECODE_BYTES`,
+# not a replacement for it: both are checked (the raw decode first, this one
+# second, once the spatial-mask branch is known to be active), and this one is
+# unconditionally tighter at the same canvas because of that 5x multiplier --
+# a spatial-mask request is refused at roughly 1/5th the frame count a
+# mask-free request of the same resolution is. Kept at the same 8 GiB order of
+# magnitude as `MAX_VIDEO_UPLOAD_DECODE_BYTES` (same reasoning: room for the
+# rest of the process's working set alongside one in-flight request) rather
+# than a larger value, since this buffer is transient CPU RAM that exists
+# purely to validate/build a plan before any GPU work starts.
+MAX_SPATIAL_MASK_GENERATION_RAM_BYTES: int = 8 * 1024 * 1024 * 1024
+SPATIAL_MASK_GENERATION_PEAK_MULTIPLIER: float = 5.0
+
 # ---------------------------------------------------------------------------
 # Video temporal outpaint (POST /generate/outpaint/video — LTX-2.3)
 # ---------------------------------------------------------------------------

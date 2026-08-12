@@ -1331,11 +1331,16 @@ paths:
         outside every keyframe's span still resolves through the manifest's
         own hold-past-the-last-keyframe behavior, but the total span the
         request implies (every keyframe's frame number union every requested
-        frame) is capped at 4096 frames independent of how many frames are
-        requested, since the rasterizer must process the whole implied span
-        contiguously -- a manifest with two widely separated keyframes cannot
-        be used to force a huge rasterization by requesting one frame near
-        each end.
+        frame) is bounded by an explicit RAM budget, since the rasterizer
+        holds the whole implied span as one float32 buffer PER FRAME at the
+        manifest's own canvas size -- a manifest with two widely separated
+        keyframes cannot be used to force a huge rasterization by requesting
+        one frame near each end. The budget is
+        `MASK_PREVIEW_RASTER_BUDGET_BYTES` (2 GiB;
+        `core/inference/video_mask_preview.py`) divided by the manifest
+        canvas's own per-frame byte count, so a larger canvas allows a
+        shorter span and a smaller canvas allows a longer one -- there is no
+        fixed frame-count cap independent of canvas size.
 
         **`max_size`**: the longest edge, in pixels, of the returned per-frame
         tile (16..1024, default 256); the manifest canvas is downscaled to it
@@ -1399,8 +1404,10 @@ paths:
             mismatch or duplicate in the repeated spatial_mask_ids/
             spatial_mask_files mapping, too many unique mask assets, an empty
             or oversized frames list, a duplicate frame number, max_size
-            outside 16..1024, or a keyframe+requested-frame span over the
-            4096-frame preview limit.
+            outside 16..1024, or a keyframe+requested-frame span whose
+            rasterization would exceed this endpoint's 2 GiB preview RAM
+            budget at the manifest's own canvas size (see `frames`' own
+            description above for how that budget maps to a frame count).
           content:
             application/json:
               schema:
@@ -9273,6 +9280,7 @@ components:
         - frame_width
         - frame_height
         - frames
+        - warnings
         - strip_png
       properties:
         canvas_width:

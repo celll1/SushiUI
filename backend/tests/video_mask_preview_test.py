@@ -41,8 +41,9 @@ for _path in (_REPO_ROOT, _BACKEND_ROOT):
         sys.path.insert(0, _path)
 
 from core.inference.video_mask_preview import (  # noqa: E402
+    MASK_PREVIEW_RASTER_BUDGET_BYTES,
+    MASK_PREVIEW_RASTER_PEAK_MULTIPLIER,
     MAX_MASK_PREVIEW_FRAMES,
-    MAX_MASK_PREVIEW_SPAN_FRAMES,
     MAX_PREVIEW_MAX_SIZE,
     MIN_PREVIEW_MAX_SIZE,
     MaskPreviewError,
@@ -209,32 +210,52 @@ def test_max_size_must_be_within_bounds():
         build_mask_preview_strip(timeline, masks, [10], max_size=MAX_PREVIEW_MAX_SIZE + 1)
 
 
+def _frame_budget_for_canvas(width: int, height: int) -> int:
+    """The exact span-frame cap `build_mask_preview_strip` computes for a
+    canvas of this size, mirroring `video_mask_preview.py`'s own arithmetic
+    so this test does not hardcode a canvas-size-independent constant that no
+    longer exists post byte-budget cap."""
+    canvas_px = width * height
+    return int(
+        MASK_PREVIEW_RASTER_BUDGET_BYTES
+        // max(1, int(canvas_px * 4 * MASK_PREVIEW_RASTER_PEAK_MULTIPLIER))
+    )
+
+
 def test_a_span_far_past_the_keyframes_is_refused_independent_of_frame_count():
     """H-x: the DoS this guards -- two keyframes close together, one
     requested frame far away, must not force a multi-million-pixel
-    contiguous rasterization just because only ONE frame was asked for."""
+    contiguous rasterization just because only ONE frame was asked for.
+
+    Byte-budget cap (post `a33347f9`, which removed MiniMax-H3's own
+    clip-length ceiling): uses a large canvas so the byte budget, not an
+    unrelated frame-count constant, is what is actually pinned here."""
+    width, height = 1024, 1024
+    frame_budget = _frame_budget_for_canvas(width, height)
     timeline = parse_mask_timeline_manifest(_manifest_dict([
         {"frame": 0, "mask_id": "m", "interpolation_to_next": "hold"},
-    ]))
-    masks = {"m": _half_split_mask()}
-    with pytest.raises(MaskPreviewError, match=str(MAX_MASK_PREVIEW_SPAN_FRAMES)):
-        build_mask_preview_strip(timeline, masks, [MAX_MASK_PREVIEW_SPAN_FRAMES + 10], max_size=256)
-    # NEGATIVE CONTROL: a span exactly at the cap is accepted.
+    ], width=width, height=height))
+    masks = {"m": _half_split_mask(width=width, height=height)}
+    with pytest.raises(MaskPreviewError, match="GiB"):
+        build_mask_preview_strip(timeline, masks, [frame_budget + 10], max_size=256)
+    # NEGATIVE CONTROL: a span within the budget is accepted.
     _png, metadata = build_mask_preview_strip(
-        timeline, masks, [MAX_MASK_PREVIEW_SPAN_FRAMES - 1], max_size=256,
+        timeline, masks, [frame_budget - 1], max_size=256,
     )
-    assert metadata["frames"][0]["frame"] == MAX_MASK_PREVIEW_SPAN_FRAMES - 1
+    assert metadata["frames"][0]["frame"] == frame_budget - 1
 
 
 def test_the_wide_keyframe_span_itself_is_also_bounded_with_no_requested_frames_far_out():
     """The same cap catches a manifest whose OWN keyframes are far apart,
     even when every requested frame sits right next to one of them."""
+    width, height = 1024, 1024
+    frame_budget = _frame_budget_for_canvas(width, height)
     timeline = parse_mask_timeline_manifest(_manifest_dict([
         {"frame": 0, "mask_id": "m", "interpolation_to_next": "hold"},
-        {"frame": MAX_MASK_PREVIEW_SPAN_FRAMES + 100, "mask_id": "m", "interpolation_to_next": "hold"},
-    ]))
-    masks = {"m": _half_split_mask()}
-    with pytest.raises(MaskPreviewError, match=str(MAX_MASK_PREVIEW_SPAN_FRAMES)):
+        {"frame": frame_budget + 100, "mask_id": "m", "interpolation_to_next": "hold"},
+    ], width=width, height=height))
+    masks = {"m": _half_split_mask(width=width, height=height)}
+    with pytest.raises(MaskPreviewError, match="GiB"):
         build_mask_preview_strip(timeline, masks, [0], max_size=256)
 
 

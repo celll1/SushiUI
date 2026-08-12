@@ -1178,6 +1178,47 @@ def encode_prompt(
     return hidden, len(token_ids)
 
 
+@torch.no_grad()
+def project_prompt_embeds(
+    prompt_embeds: torch.Tensor,
+    projection: Dict[str, Any],
+    *,
+    text_dim: int,
+    device: torch.device | str = "cuda",
+    dtype: torch.dtype = torch.bfloat16,
+) -> torch.Tensor:
+    """A substituted encoder's hidden state, mapped onto the DiT's ``text_dim``.
+
+    Same contract as ``encode_presentation``'s return -- ``[1, S, text_dim]``,
+    ``dtype``, on the CPU -- so everything downstream is unchanged. S is
+    ASSERTED rather than assumed: the packed layout puts text rows at
+    ``t = 0..S-1`` and starts the media rotary clock at ``num_text_tokens``, so a
+    projection that dropped or added a row would silently move every media row.
+
+    ~126M parameters in float32; running it on the GPU costs milliseconds and
+    keeps the projection in the precision it was fitted in.
+    """
+    from core.models.minimax_h3.te_projection import apply_te_projection
+
+    tokens = prompt_embeds.shape[-2]
+    if isinstance(device, str) and device.startswith("cuda") and not torch.cuda.is_available():
+        device = "cpu"
+    projected = apply_te_projection(prompt_embeds.to(device), projection)
+    if projected.shape[-2] != tokens:
+        raise RuntimeError(
+            f"MiniMax-H3's text-encoder projection returned {projected.shape[-2]} token row(s) for "
+            f"{tokens}; it is a per-token map and the packed layout's rotary clock is keyed on the "
+            f"token count.")
+    if projected.shape[-1] != text_dim:
+        raise RuntimeError(
+            f"MiniMax-H3's text-encoder projection produced {projected.shape[-1]}-wide "
+            f"conditioning but the DiT's condition_proj takes text_dim={text_dim}.")
+    if not torch.isfinite(projected).all():
+        raise RuntimeError(
+            "MiniMax-H3's text-encoder projection produced non-finite conditioning.")
+    return projected.to("cpu", dtype)
+
+
 # Floating dtypes this helper is allowed to WIDEN to float32. Deliberately an
 # allow-list, not "is_floating_point() and dtype is not float8_*": a new float8
 # variant (or any other narrow float format a future quant module buffers)

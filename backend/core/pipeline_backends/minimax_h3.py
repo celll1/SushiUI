@@ -47,6 +47,7 @@ and the DiT are both wanted at once.
 """
 
 from typing import Any, Callable, Dict, Optional, Sequence, Tuple
+import os
 import random
 import time
 
@@ -659,6 +660,54 @@ class MiniMaxH3Mixin:
         )
         print(f"[MiniMax-H3 LoRA] Unloaded {restored} LoRA wrapper(s)")
         return restored
+
+    def _minimax_h3_project_prompt_embeds(
+        self,
+        prompt_embeds_cpu: torch.Tensor,
+        components: Dict[str, Any],
+        params: Dict[str, Any],
+        *,
+        device,
+    ) -> torch.Tensor:
+        """Project a substituted encoder's hidden state, and report that it was.
+
+        A released encoder carries no projection and this returns its argument
+        untouched -- that path emits no warning and runs no extra arithmetic.
+        """
+        params["text_encoder_file"] = os.path.basename(
+            str(components.get("text_encoder_path") or ""))
+        projection = components.get("te_projection")
+        if not projection:
+            return prompt_embeds_cpu
+
+        from core.models.minimax_h3 import h3_pipeline_ops as ops
+        from core.models.minimax_h3.te_projection import (
+            TE_SUBSTITUTION_WARNING_CODE, describe_te_substitution,
+        )
+
+        te_path = str(components.get("text_encoder_path") or "")
+        projection_path = str(projection.get("path") or "")
+        # A component switch replaces the encoder in the same dict and leaves
+        # `te_projection` behind; `apply_te_projection`'s own d_in guard would
+        # catch that, but it cannot name the cause.
+        d_in = int(projection["spec"]["d_in"])
+        if prompt_embeds_cpu.shape[-1] != d_in:
+            raise RuntimeError(
+                f"MiniMax-H3's loaded text encoder ({os.path.basename(te_path)}) produced "
+                f"{prompt_embeds_cpu.shape[-1]}-wide hidden states but the paired projection "
+                f"{os.path.basename(projection_path)} takes d_in={d_in}. The two no longer belong "
+                f"to each other -- reload the model to re-resolve the pairing.")
+        projected = ops.project_prompt_embeds(
+            prompt_embeds_cpu, projection,
+            text_dim=int(components["transformer_config"]["text_dim"]), device=device,
+        )
+        params["clip_projection_file"] = os.path.basename(projection_path)
+
+        message = describe_te_substitution(te_path, projection_path)
+        print(f"[MiniMax-H3] {message}")
+        from api.generation_status import add_warning
+        add_warning(message, code=TE_SUBSTITUTION_WARNING_CODE)
+        return projected
 
     # ------------------------------------------------------------------
     # Generation
@@ -1904,6 +1953,19 @@ class MiniMaxH3Mixin:
                 f"conditioning is a trained behaviour of that partition alone, and the two files "
                 f"are otherwise indistinguishable, so running it here would silently produce a bad "
                 f"video rather than fail.")
+        # Defensive re-check of the route's gate, for a caller that bypasses it.
+        # Prompt-only requests fall through; everything else is refused when the
+        # loaded encoder is a converted text-only one.
+        if (keyframes or references or input_audio is not None
+                or pinned_video_frames or pinned_video_row_indices):
+            from api.generation_utils import resolve_minimax_h3_text_only_te_gate
+            resolve_minimax_h3_text_only_te_gate(
+                components,
+                workflow=f"{label} conditioning",
+                has_vision_references=any(
+                    getattr(reference, "kind", "") in ("image", "video")
+                    for reference in references),
+            )
 
         device = "cuda" if torch.cuda.is_available() else "cpu"
         torch_device = torch.device(device)
@@ -2017,6 +2079,11 @@ class MiniMaxH3Mixin:
                     text_encoder, tokenizer, prompt, device=device,
                     dtype=torch.bfloat16, layer=ops.TEXT_ENCODER_LAYER,
                 )
+            # A substituted encoder's hidden state is not conditioning until it
+            # is projected: this is the one seam where that is true, and the
+            # projection is a per-token map, so `num_text_tokens` is unchanged.
+            prompt_embeds_cpu = self._minimax_h3_project_prompt_embeds(
+                prompt_embeds_cpu, components, params, device=device)
         self._minimax_h3_empty_cache()
         text_allocated, text_reserved, text_peak = self._minimax_h3_vram_stats()
         phase_peaks["text_encode"] = text_peak

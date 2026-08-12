@@ -21,7 +21,7 @@ import json
 import os
 import struct
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import torch
 
@@ -35,6 +35,62 @@ _REQUIRED_TENSORS = (
     "W", "mean_in", "std_in", "mean_out", "std_out", "sink_out",
     "mlp.0.weight", "mlp.0.bias", "mlp.2.weight", "mlp.2.bias",
 )
+
+# The code every user-visible report of a substituted encoder carries.
+TE_SUBSTITUTION_WARNING_CODE = "minimax_h3_substituted_text_encoder"
+
+# Measured agreement per (encoder file, projection file), lowercased basenames.
+# Gate G0c (`scratchpad/minimax_h3_te_small_gate_g0c.md`): 111 prompt-only
+# presentations, post-`token_refiner`, row 0 excluded. `cosine` is mean-removed
+# (raw cosine in 5120 dims is uninformative: a constant predictor scores 0.895
+# there and -0.022 mean-removed). `rel_rms_floor` is the SAME encoder in another
+# quantization, i.e. what a difference that is only rounding looks like.
+#
+# ONE table, so a newly measured pairing is added here and reaches the loader
+# log, the generation warning and any future surface at once. A pairing absent
+# from it is reported as unmeasured, never as measured-by-analogy.
+MEASURED_TE_SUBSTITUTIONS: Dict[Tuple[str, str], Dict[str, Any]] = {
+    ("qwen3vl_4b_heretic_tap24_bf16.safetensors", "mmh3-4b-clipproj-celeb-mlp.safetensors"): {
+        "reference": "qwen3vl_32b_minimax_h3_int8_convrot.safetensors",
+        "cosine": 0.826,
+        "rel_rms": 0.214,
+        "rel_rms_floor": 0.048,
+        "presentations": 111,
+    },
+    ("qwen3vl_8b_instruct_tap24_bf16.safetensors", "mmh3-8b-clipproj-celeb-mlp.safetensors"): {
+        "reference": "qwen3vl_32b_minimax_h3_int8_convrot.safetensors",
+        "cosine": 0.843,
+        "rel_rms": 0.205,
+        "rel_rms_floor": 0.048,
+        "presentations": 111,
+    },
+}
+
+
+def measured_te_substitution(te_path: str, projection_path: str) -> Optional[Dict[str, Any]]:
+    """The recorded agreement for this exact pairing, or ``None``."""
+    return MEASURED_TE_SUBSTITUTIONS.get(
+        (os.path.basename(te_path).lower(), os.path.basename(projection_path).lower()))
+
+
+def describe_te_substitution(te_path: str, projection_path: str) -> str:
+    """One factual sentence pair naming the substitution and its measurement.
+
+    Worded for both the loader's log line and the per-generation warning, so
+    the two cannot drift.
+    """
+    encoder, projector = os.path.basename(te_path), os.path.basename(projection_path)
+    head = (f"MiniMax-H3 text conditioning comes from {encoder} through the trained projection "
+            f"{projector}, not from a released Qwen3-VL-32B text encoder.")
+    measured = measured_te_substitution(te_path, projection_path)
+    if measured is None:
+        return head + (" No agreement with a released encoder is recorded for this "
+                       "(encoder, projection) pair.")
+    return head + (
+        f" Measured against {measured['reference']} on {measured['presentations']} prompt-only "
+        f"presentations, post-token_refiner: mean-removed cosine {measured['cosine']}, relative "
+        f"RMS {measured['rel_rms']} against {measured['rel_rms_floor']} for that same encoder in "
+        f"another quantization.")
 
 
 def _read_header(path: str) -> Dict[str, Any]:

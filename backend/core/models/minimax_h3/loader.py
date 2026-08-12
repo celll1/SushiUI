@@ -2734,7 +2734,9 @@ def resolve_minimax_h3_te_projection(
     fallback to unprojected conditioning, because that is a wrong encode rather
     than a cheaper one.
     """
-    from core.models.minimax_h3.te_projection import load_te_projection, resolve_te_projection
+    from core.models.minimax_h3.te_projection import (
+        describe_te_substitution, load_te_projection, resolve_te_projection,
+    )
 
     dims = _te_declared_dims(declared)
     hidden_size = int(dims["hidden_size"]) if dims else text_dim
@@ -2749,6 +2751,9 @@ def resolve_minimax_h3_te_projection(
     projection = load_te_projection(spec)
     print(f"[MiniMaxH3Loader] TE projection: {spec['path']} "
           f"(d_in {spec['d_in']} -> d_out {spec['d_out']}, tap {spec['tap']})")
+    # The selection line above names the encoder; this names what it is only
+    # usable through, and what is measured about the pair.
+    print(f"[MiniMaxH3Loader] {describe_te_substitution(te_path, spec['path'])}")
     return projection
 
 

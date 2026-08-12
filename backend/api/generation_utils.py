@@ -1695,6 +1695,54 @@ def resolve_minimax_h3_outpaint_reference_gate(
         )
 
 
+def resolve_minimax_h3_text_only_te_gate(
+    components: Optional[Dict[str, Any]],
+    *,
+    workflow: str,
+    has_vision_references: bool = False,
+) -> None:
+    """Refuse a non-``t2va`` request when the loaded H3 text encoder is text-only.
+
+    A converted small encoder (``te_gguf_convert``) carries no vision tower, and
+    it stands in for the released 32B only through a projection measured on
+    prompt-only presentations. PURE (raises or returns None), shared by the
+    video routes (fast 400, before the load and the GPU slot) and by
+    ``_generate_minimax_h3`` (defensive re-check for a caller that bypasses the
+    route) -- the decision exists once.
+
+    ``has_vision_references`` is the harder half: an image or video reference is
+    presented to the encoder AS a vision block, so it is not a fidelity question
+    at all.
+    """
+    from api.error_handlers import ValidationError
+    from core.models.minimax_h3.te_projection import describe_te_substitution
+
+    if not isinstance(components, dict) or not components.get("te_text_only"):
+        return
+    encoder = os.path.basename(str(components.get("text_encoder_path") or "the loaded encoder"))
+    projection = components.get("te_projection") or {}
+    substitution = (describe_te_substitution(str(components.get("text_encoder_path") or ""),
+                                             str(projection.get("path") or ""))
+                    if projection.get("path") else "")
+    remedy = ("Load text_encoders/qwen3vl_32b_minimax_h3_int8_convrot.safetensors (or another "
+              "released 32B encoder) for this workflow, or send a prompt-only request to "
+              "/generate/txt2vid.")
+    if has_vision_references:
+        raise ValidationError(
+            f"{encoder} is a text-only MiniMax-H3 text encoder and cannot read references",
+            detail=f"A reference image or video is presented to the conditioner as a vision block: "
+                   f"its rows need the Qwen3-VL vision tower's deepstack features and the 3-D "
+                   f"(t, h, w) positions get_rope_index builds from the block's grid. {encoder} "
+                   f"was converted without that tower, so neither can be produced. {remedy}",
+        )
+    raise ValidationError(
+        f"{encoder} is a text-only MiniMax-H3 text encoder and serves prompt-only requests",
+        detail=f"{substitution} That agreement is the only thing measured about this "
+               f"substitution, and {workflow} was not part of it, so it is not served by this "
+               f"encoder. {remedy}".strip(),
+    )
+
+
 def latent_frame_spans(spec, num_latent_frames: int) -> List[Tuple[int, int]]:
     """``[(pixel_start, pixel_end_exclusive), ...]`` per latent frame.
 

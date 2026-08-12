@@ -942,12 +942,7 @@ def _render_output_name(job_id: str) -> str:
 
 
 def _collect_render_warnings(manifest: Mapping[str, Any]) -> List[str]:
-    """Feature-degradation notices that do not fail the job but the client
-    should be told about, mirroring the `warnings[]` convention used by the
-    live generation endpoints (see `api/generation_status.py:add_warning`,
-    which is keyed to a live generation id and not reachable from a
-    background render job -- this list is the per-job equivalent, stored on
-    `StudioRenderJob.warnings` instead)."""
+    """Collect non-fatal notices for the completed render job."""
     warnings: List[str] = []
     render = manifest["render"]
     tracks = {track["id"]: track for track in manifest["tracks"]}

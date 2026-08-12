@@ -184,8 +184,9 @@
 .previewToolbar > div { gap: 2px; }
 .previewToolbar button { width: auto; min-width: 28px; height: 25px; padding: 0 7px; font-size: 10px; }
 .preview { position: relative; flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; overflow: hidden; cursor: pointer; background: radial-gradient(circle at 50% 50%, #162130, #060a0e 68%); }
-.preview video,
-.preview > img { width: 100%; height: 100%; object-fit: contain; }
+.previewCanvas { position: relative; width: 100%; max-width: 100%; max-height: 100%; overflow: hidden; background: #080c12; }
+.previewCanvas video,
+.previewCanvas > img { width: 100%; height: 100%; object-fit: contain; }
 .emptyPreview,
 .audioPreview { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; color: #657387; }
 .emptyPreview strong,
@@ -212,18 +213,22 @@
 .touchHint { display: none; color: #7b899b; font-size: 8px; text-align: center; white-space: nowrap; }
 .timeline { flex: 1; min-height: 0; display: grid; grid-template-columns: 122px minmax(0, 1fr); }
 .trackHeaders { z-index: 2; border-right: 1px solid var(--border); background: #0e151f; }
-.rulerHeader { height: 33px; display: flex; align-items: center; padding: 0 10px; color: #59687a; border-bottom: 1px solid var(--border); font-size: 8px; font-weight: 800; letter-spacing: .12em; }
+.rulerHeader { height: 46px; display: flex; align-items: center; padding: 0 10px; color: #59687a; border-bottom: 1px solid var(--border); font-size: 8px; font-weight: 800; letter-spacing: .12em; }
 .trackHeader { height: 51px; display: grid; grid-template-columns: 17px 1fr 17px 17px; align-items: center; gap: 4px; padding: 0 8px; color: #748294; border-bottom: 1px solid var(--border-soft); }
 .trackHeader strong { overflow: hidden; color: #aeb8c5; font-size: 9px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
 .trackHeader button { display: flex; align-items: center; justify-content: center; padding: 0; color: #657486; border: 0; background: transparent; }
 .timelineScroll { min-width: 0; overflow: auto; }
 .timelineContent { position: relative; min-width: 100%; }
-.ruler { position: relative; height: 33px; overflow: hidden; border-bottom: 1px solid var(--border); background-color: #0b1119; background-image: repeating-linear-gradient(90deg, transparent 0, transparent calc(1px * var(--zoom, 18) - 1px), #2b3643 calc(1px * var(--zoom, 18))); cursor: crosshair; }
-.ruler > span { position: absolute; top: 7px; transform: translateX(3px); color: #657387; font-size: 8px; font-variant-numeric: tabular-nums; }
-.outputRange { position: absolute; top: 20px; height: 10px; min-width: 2px; border: 1px solid var(--purple-2); border-bottom: 0; background: rgba(124, 92, 255, .22); }
-.outputRange span { position: absolute; bottom: 11px; left: 3px; color: #b7a5ff; font-size: 7px; white-space: nowrap; }
-.inpaintRange { position: absolute; top: 20px; height: 10px; min-width: 2px; border: 1px solid #e49362; border-bottom: 0; background: rgba(228, 147, 98, .24); }
-.inpaintRange span { position: absolute; bottom: 11px; left: 3px; color: #e9ae83; font-size: 7px; white-space: nowrap; }
+.ruler { position: relative; z-index: 3; height: 46px; overflow: visible; border-bottom: 1px solid var(--border); background-color: #0b1119; background-image: repeating-linear-gradient(90deg, transparent 0, transparent calc(1px * var(--zoom, 18) - 1px), #2b3643 calc(1px * var(--zoom, 18))); cursor: crosshair; }
+.ruler > span { position: absolute; z-index: 1; top: 5px; transform: translateX(3px); color: #657387; font-size: 8px; font-variant-numeric: tabular-nums; }
+.outputRange,
+.inpaintRange { position: absolute; z-index: 2; height: 12px; min-width: 2px; box-sizing: border-box; border-radius: 2px 2px 0 0; pointer-events: none; }
+.outputRange { top: 18px; border: 1px solid var(--purple-2); background: rgba(124, 92, 255, .22); }
+.outputRange span,
+.inpaintRange span { position: absolute; top: 2px; bottom: auto; left: 3px; padding: 1px 3px; border-radius: 2px; font-size: 7px; line-height: 1; white-space: nowrap; }
+.outputRange span { color: #b7a5ff; background: rgba(39, 27, 86, .82); }
+.inpaintRange { top: 32px; border: 1px solid #e49362; background: rgba(228, 147, 98, .24); }
+.inpaintRange span { color: #e9ae83; background: rgba(91, 49, 26, .84); }
 .trackLane { position: relative; height: 51px; border-bottom: 1px solid var(--border-soft); background-color: #0b1119; background-image: repeating-linear-gradient(90deg, transparent 0, transparent 89px, rgba(46, 60, 76, .25) 90px); }
 .audioLane { background-color: #0b1316; }
 .timelineClip { position: absolute; top: 4px; bottom: 4px; min-width: 18px; overflow: hidden; color: #f0f4f8; border: 1px solid #43658f; border-radius: 4px; background-color: #17304c; background-size: auto 100%; background-position: center; cursor: grab; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .03); }
@@ -255,6 +260,19 @@
 .trimEnd:hover { background: rgba(220, 211, 255, .65); }
 .selectedClip .trimStart,
 .selectedClip .trimEnd { background: var(--purple-2); }
+.stillClip .trimStart::after,
+.stillClip .trimEnd::after { position: absolute; z-index: 30; top: calc(100% + 6px); left: 50%; padding: 4px 6px; color: #f2edff; border: 1px solid #6655a6; border-radius: 4px; background: #17152a; box-shadow: 0 7px 18px rgba(0, 0, 0, .42); font-size: 8px; line-height: 1.2; white-space: nowrap; pointer-events: none; }
+.stillClip .trimStart::after,
+.stillClip .trimEnd::after { content: "Ctrl/Cmd + drag to extend still"; opacity: 0; transform: translate(-50%, -2px); transition: opacity .12s, transform .12s; }
+.stillClip .trimStart:hover::after,
+.stillClip .trimStart:focus-visible::after,
+.stillClip .trimEnd:hover::after,
+.stillClip .trimEnd:focus-visible::after { opacity: 1; transform: translate(-50%, 0); }
+.transport .seekButton { position: relative; width: 32px; height: 32px; color: #91a0b2; border: 1px solid transparent; }
+.transport .seekButton:hover:not(:disabled),
+.transport .seekButton:focus-visible { color: #fff; border-color: #3b4b60; background: #202b38; box-shadow: 0 0 0 1px rgba(53, 201, 237, .12); }
+.transport .seekButton:active:not(:disabled),
+.transport .seekButton[data-hold-active="true"] { color: #fff; border-color: var(--purple-2); background: rgba(124, 92, 255, .2); }
 .linkBadge,
 .generationBadge { position: absolute; z-index: 2; bottom: 4px; padding: 2px; border-radius: 3px; background: rgba(5, 8, 12, .72); box-sizing: content-box; }
 .linkBadge { right: 4px; color: var(--cyan); }
@@ -278,6 +296,11 @@
 .ready { color: #8be6b9; background: rgba(65, 201, 139, .13); }
 .unavailable { color: #e99e9e; background: rgba(215, 76, 76, .13); }
 .modelCard small { display: block; margin-top: 3px; color: #687689; }
+.canvasCard { padding: 9px; border: 1px solid var(--border); border-radius: 6px; background: #101720; }
+.canvasFields { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin-top: 7px; }
+.canvasFields label { display: flex; flex-direction: column; gap: 4px; color: #8491a2; font-size: 9px; }
+.canvasFields input { width: 100%; padding: 6px; color: #e8edf3; border: 1px solid var(--border); border-radius: 4px; background: #0d141d; font-size: 10px; }
+.canvasNote { display: block; margin-top: 7px; color: #687689; font-size: 8px; line-height: 1.4; }
 .resolvedModeCard { display: flex; flex-direction: column; gap: 4px; padding: 9px; border: 1px solid #53428f; border-radius: 6px; background: rgba(93, 69, 183, .12); }
 .resolvedModeCard strong { color: #e3ddff; font-size: 11px; }
 .resolvedModeCard small { color: #9188b7; font-size: 8px; }
@@ -312,6 +335,14 @@
 .referenceList small { color: #81779f; font-size: 8px; }
 .dropHint { display: block; margin-top: 6px; color: #a99de0; font-size: 8px; }
 .editorOverlay { position: fixed; z-index: 100; inset: 0; display: grid; place-items: center; padding: 18px; background: rgba(3, 6, 10, .78); }
+.canvasFitOverlay { position: fixed; z-index: 110; inset: 0; display: grid; place-items: center; padding: 18px; background: rgba(3, 6, 10, .78); }
+.canvasFitDialog { width: min(390px, 100%); padding: 16px; border: 1px solid #514579; border-radius: 8px; background: #121923; box-shadow: 0 18px 48px rgba(0, 0, 0, .55); }
+.canvasFitDialog h2 { margin: 0 0 5px; color: #f0f4f8; font-size: 14px; }
+.canvasFitDialog p { margin: 0 0 12px; color: #91a0b2; font-size: 10px; line-height: 1.45; }
+.canvasFitPreview { display: block; width: 100%; height: 150px; margin-bottom: 12px; object-fit: contain; border-radius: 5px; background: #080c12; }
+.canvasFitActions { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
+.canvasFitActions button { padding: 8px; color: #d9d2ff; border: 1px solid #53428f; border-radius: 5px; background: rgba(124, 92, 255, .12); font-size: 10px; }
+.canvasFitActions button:last-child { grid-column: 1 / -1; color: #9ba8b8; border-color: var(--border); background: #0d141d; }
 .advancedPrompt { border-bottom: 1px solid var(--border-soft); }
 .advancedPrompt summary { display: flex; align-items: center; gap: 5px; padding: 3px 0 8px; color: #8491a2; cursor: pointer; list-style: none; }
 .advancedPrompt[open] summary svg { transform: rotate(90deg); }
@@ -525,12 +556,12 @@
   .zoomControls input { width: 64px; }
   .timeline { grid-template-columns: 90px minmax(0, 1fr); }
   .trackHeaders { min-width: 0; }
-  .rulerHeader { height: 38px; padding: 0 7px; }
+  .rulerHeader { height: 52px; padding: 0 7px; }
   .trackHeader { height: 58px; grid-template-columns: 18px minmax(0, 1fr) 18px 18px; gap: 2px; padding: 0 5px; }
   .trackHeader strong { font-size: 8px; }
   .timelineScroll { overscroll-behavior: contain; touch-action: pan-x pan-y; }
   .timelineContent { user-select: none; }
-  .ruler { height: 38px; touch-action: none; }
+  .ruler { height: 52px; touch-action: none; }
   .trackLane { height: 58px; touch-action: pan-x pan-y; }
   .timelineClip { top: 6px; bottom: 6px; min-width: 24px; touch-action: none; }
   .clipName { padding: 6px 14px; font-size: 9px; }
@@ -539,6 +570,7 @@
   .clipSourceHandle { right: 25px; bottom: 6px; padding: 4px; }
   .trimStart,
   .trimEnd { width: 18px; }
+  .transport .seekButton { width: 40px; height: 40px; }
 
   .rightPane {
     order: 3;

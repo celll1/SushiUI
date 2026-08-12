@@ -48,7 +48,13 @@ export const loadStudioProject = async (): Promise<StudioProject | null> => {
     });
     const project: StudioProject = {
       ...parsed,
-      schemaVersion: 2,
+      schemaVersion: 3,
+      width: Number.isFinite(parsed.width) && parsed.width! > 0
+        ? Math.max(64, Math.min(8192, Math.round(parsed.width! / 16) * 16))
+        : 1920,
+      height: Number.isFinite(parsed.height) && parsed.height! > 0
+        ? Math.max(64, Math.min(8192, Math.round(parsed.height! / 16) * 16))
+        : 1080,
       fps,
       clips: migratedClips,
       revision: Number.isFinite(parsed.revision) ? parsed.revision! : 0,

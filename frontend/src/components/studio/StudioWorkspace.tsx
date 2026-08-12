@@ -1690,7 +1690,7 @@ export default function StudioWorkspace() {
         togglePlayback();
       } else if (event.key.toLowerCase() === "v" && !event.ctrlKey && !event.metaKey) {
         setTool("select");
-      } else if (event.key.toLowerCase() === "b" || event.key.toLowerCase() === "c") {
+      } else if ((event.key.toLowerCase() === "b" || event.key.toLowerCase() === "c") && !event.ctrlKey && !event.metaKey) {
         setTool("blade");
       } else if (event.key.toLowerCase() === "h" && !event.ctrlKey && !event.metaKey) {
         setTool("hand");
@@ -2994,6 +2994,9 @@ export default function StudioWorkspace() {
     setRange(null);
     setInpaintRange(null);
     setReferenceAssetIds([]);
+    rangeRef.current = null;
+    inpaintRangeRef.current = null;
+    referenceAssetIdsRef.current = [];
     setJobs([]);
     setResultAssetIds([]);
     clearClipSelection();
@@ -3017,6 +3020,9 @@ export default function StudioWorkspace() {
     setRange(restored.outputRange ?? null);
     setInpaintRange(restored.inpaintRange ?? null);
     setReferenceAssetIds(restored.referenceAssetIds ?? []);
+    rangeRef.current = restored.outputRange ?? null;
+    inpaintRangeRef.current = restored.inpaintRange ?? null;
+    referenceAssetIdsRef.current = restored.referenceAssetIds ?? [];
     setJobs(restored.jobs ?? []);
     setResultAssetIds((restored.jobs ?? []).flatMap((job) => job.assetId ? [job.assetId] : []));
     clearClipSelection();

@@ -54,6 +54,7 @@ from api.param_defaults import (
     OUTPAINT_VIDEO_ARCH_OVERLAYS,
     INPAINT_VIDEO_ARCH_OVERLAYS,
     PROMPT_ASSIST_DEFAULTS,
+    PARAM_BOUNDS,
     video_defaults_for_arch,
 )
 from api.generation_utils import (
@@ -543,6 +544,12 @@ async def get_generation_defaults():
         "txt2aud": TXT2AUD_DEFAULTS,
         "aud2aud": AUD2AUD_DEFAULTS,
         "outpaint_aud": OUTPAINT_AUDIO_DEFAULTS,
+        # User-overridable slider/number-input UPPER BOUNDS registry (see
+        # param_defaults.py's PARAM_BOUNDS docstring for the eligibility rule).
+        # Consumed by frontend/src/utils/paramBounds.ts's resolveBound() and
+        # by the Settings page's "Slider Bounds" card, which renders one row
+        # per entry -- never hardcoded on the frontend.
+        "param_bounds": PARAM_BOUNDS,
     }
 
 @router.get("/schema/prompt-assist-defaults")
@@ -8575,6 +8582,7 @@ async def get_generation_settings(db: Session = Depends(get_gallery_db)):
         return {
             "inpaint_use_dedicated_model": settings_record.inpaint_use_dedicated_model if settings_record.inpaint_use_dedicated_model is not None else False,
             "video_frame_slider_max": settings_record.video_frame_slider_max,
+            "slider_bounds": settings_record.slider_bounds or {},
         }
     except Exception as e:
         print(f"Error getting generation settings: {e}")
@@ -8606,6 +8614,45 @@ async def save_generation_settings(
                     raise HTTPException(status_code=400, detail="video_frame_slider_max must be a positive integer or null")
                 settings_record.video_frame_slider_max = parsed_slider_max
 
+        # General slider-bounds override map (backend/api/param_defaults.py's
+        # PARAM_BOUNDS registry). Body carries {bound_name: value | null}; a
+        # null value RESETS that one key to its builtin (removes it from the
+        # stored dict) rather than clearing every override -- the settings
+        # page's per-row checkbox is the reset, and "reset all" simply sends
+        # every currently-set key back as null in one request. Every key must
+        # be a known bound (rejects unknown keys with 400, catching a stale
+        # frontend or a typo) and every non-null value must fall within that
+        # bound's own [floor, ceiling] (rejects out-of-range with 400) --
+        # mirroring video_frame_slider_max's own validation shape above.
+        if "slider_bounds" in settings_data:
+            raw_bounds = settings_data["slider_bounds"]
+            if raw_bounds is None:
+                settings_record.slider_bounds = None
+            else:
+                if not isinstance(raw_bounds, dict):
+                    raise HTTPException(status_code=400, detail="slider_bounds must be an object or null")
+                merged = dict(settings_record.slider_bounds or {})
+                for bound_name, raw_value in raw_bounds.items():
+                    if bound_name not in PARAM_BOUNDS:
+                        raise HTTPException(status_code=400, detail=f"Unknown slider bound: {bound_name}")
+                    if raw_value is None:
+                        merged.pop(bound_name, None)
+                        continue
+                    spec = PARAM_BOUNDS[bound_name]
+                    try:
+                        parsed_value = float(raw_value)
+                    except (TypeError, ValueError):
+                        raise HTTPException(status_code=400, detail=f"slider_bounds.{bound_name} must be numeric or null")
+                    if parsed_value < spec["floor"] or parsed_value > spec["ceiling"]:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"slider_bounds.{bound_name} must be between {spec['floor']} and {spec['ceiling']}",
+                        )
+                    # Preserve int-ness for integer builtins so the value
+                    # round-trips as the same type the frontend sent.
+                    merged[bound_name] = int(parsed_value) if isinstance(spec["builtin"], int) else parsed_value
+                settings_record.slider_bounds = merged
+
         settings_record.updated_at = datetime.utcnow()
         db.commit()
         db.refresh(settings_record)
@@ -8613,6 +8660,7 @@ async def save_generation_settings(
         print(f"[Settings] Updated generation settings:")
         print(f"  inpaint_use_dedicated_model: {settings_record.inpaint_use_dedicated_model}")
         print(f"  video_frame_slider_max: {settings_record.video_frame_slider_max}")
+        print(f"  slider_bounds: {settings_record.slider_bounds}")
 
         return {
             "success": True,
@@ -8620,6 +8668,7 @@ async def save_generation_settings(
             "settings": {
                 "inpaint_use_dedicated_model": settings_record.inpaint_use_dedicated_model,
                 "video_frame_slider_max": settings_record.video_frame_slider_max,
+                "slider_bounds": settings_record.slider_bounds or {},
             }
         }
     except HTTPException:

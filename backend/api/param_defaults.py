@@ -736,6 +736,111 @@ UPSCALE_DEFAULTS: Dict[str, Any] = {
 }
 
 # ---------------------------------------------------------------------------
+# User-overridable SLIDER BOUNDS registry
+# ---------------------------------------------------------------------------
+# Single source of truth for which UI slider/number-input UPPER BOUNDS a user
+# may raise (or lower) from Settings, and how far. Served to the frontend via
+# GET /schema/generation-defaults (key "param_bounds"); the frontend never
+# hardcodes this list -- it drives both the Settings page's "Slider Bounds"
+# card and every panel control's `resolveBound()` call (see
+# frontend/src/utils/paramBounds.ts).
+#
+# THE RULE (decided; do not relitigate): a bound is user-overridable IFF
+# exceeding it can only produce a worse or slower result, never a wrong or
+# refused one. That means: UI conveniences this frontend invented for a
+# slider/number-input's track (arbitrary "how far should this drag reach"
+# choices) qualify. It excludes anything the BACKEND snaps or validates --
+# frame grids (17n+5 / 8k+1), `pixel_align`, `min_frames`,
+# `min_inference_steps`, `max_pixel_hw`, latent-chunk boundaries, keyframe
+# indices -- because a value that violates one of those is not "worse", it is
+# either silently snapped to a different value than the one requested or
+# rejected outright by a real backend check, and this mechanism must never be
+# used to paper over that with a bigger number.
+#
+# Support for the claim that raising the caps below cannot 400, only OOM: as
+# of this registry's introduction there is not a single `Field(ge=/le=)` (or
+# equivalent Form()/Query() range constraint) anywhere under `backend/api/`
+# for a generation parameter. The only server-side generation-param range
+# validators in the whole tree are `validate_video_geometry`,
+# `validate_video_steps`, the `% pixel_align == 0` divisibility checks, and
+# outpaint's `total_frames` grid check -- none of which this registry touches.
+#
+# Each entry: {"builtin": <today's literal>, "floor": <lowest a user may set>,
+# "ceiling": <highest a user may set>, "family": <settings-card grouping>,
+# "label": <settings-card row label>}. `builtin` MUST equal the literal it
+# replaces at every wiring site (verified by tests) -- it is what "reset to
+# default" (the row's own enable checkbox, unchecked) falls back to, and what
+# `resolveBound()` uses when the user has no override on file.
+#
+# --- Adding a new overridable bound: registry entry + wiring, nothing else --
+# 1. Add one entry below (builtin/floor/ceiling/family/label).
+# 2. In the frontend, replace the control's bare literal `max` with
+#    `resolveBound("your_bound_name", generationDefaults?.param_bounds,
+#    sliderBounds, currentValue, archLimit)` (frontend/src/utils/
+#    paramBounds.ts). No new Settings-page wiring is needed -- the "Slider
+#    Bounds" card in frontend/src/app/settings/page.tsx renders one row per
+#    registry entry generically (grouped by `family`), so a new entry appears
+#    there automatically.
+# That is the entire cost. No DB migration (the override lives in ONE JSON
+# column, `UserSettings.slider_bounds`, keyed by bound name -- see
+# backend/database/models.py), no new endpoint (POST /settings/generation's
+# existing `slider_bounds` handling validates any key present in this
+# registry against its own floor/ceiling).
+#
+# --- Why only ~7 bounds are exposed here, not the ~100 numeric knobs that
+# exist across GENERATION_DEFAULTS/OUTPAINT_DEFAULTS/VIDEO_GEN_DEFAULTS ---
+# The excluded set (roughly 100 fields: every spectrum_*, fbcache_*,
+# seam_structure_*, boundary_relax_*, outpaint_seam_*/outpaint_commit_*/
+# outpaint_controlnet_* knob, block-swap tuning, PiD tiling, etc.) is expert
+# tuning surface for opt-in quality/acceleration features, not general-purpose
+# slider tracks. They fail THE RULE for a different reason than the hard
+# backend-validated bounds above: most of them are UNBOUNDED already (no
+# `max` literal exists anywhere to override -- a NumberInput with no `max`
+# prop, or a value typed rather than dragged), so there is no "raise the
+# ceiling" action to register; the handful that do have a `max` prop are
+# feature-specific strength/threshold dials (e.g. `seam_structure_max_area`
+# capped at a fraction of the region, `pid_tile_native` capped by a decoder
+# constant) whose real ceiling is architecture- or algorithm-derived, not a
+# frontend convenience -- moving them here would misrepresent them as safe to
+# raise arbitrarily. Someone who wants one added should follow the "Adding a
+# new overridable bound" steps above; nothing about this registry's shape
+# limits it to 7 entries.
+PARAM_BOUNDS: Dict[str, Dict[str, Any]] = {
+    # --- Canvas (txt2img/img2img width & height sliders) ---
+    # Wired: Txt2ImgPanel.tsx, Img2ImgPanel.tsx. NOT YET WIRED: InpaintPanel.tsx
+    # (off-limits to this change -- another session owns that file; its two
+    # width/height literals at the time of writing still need the same
+    # `resolveBound("image_width_max"/"image_height_max", ...)` call).
+    "image_width_max": {
+        "builtin": 2048, "floor": 512, "ceiling": 8192,
+        "family": "canvas", "label": "Image width slider max",
+    },
+    "image_height_max": {
+        "builtin": 2048, "floor": 512, "ceiling": 8192,
+        "family": "canvas", "label": "Image height slider max",
+    },
+    # --- Sampling (txt2img/img2img/upscale-diffusion steps & CFG) ---
+    "steps_max": {
+        "builtin": 150, "floor": 20, "ceiling": 1000,
+        "family": "sampling", "label": "Sampling steps slider max",
+    },
+    "cfg_scale_max": {
+        "builtin": 30, "floor": 5, "ceiling": 100,
+        "family": "sampling", "label": "CFG scale slider max",
+    },
+    # --- Video (txt2vid/img2vid frame-rate slider) ---
+    "video_frame_rate_max": {
+        "builtin": 60, "floor": 8, "ceiling": 240,
+        "family": "video", "label": "Video frame-rate slider max",
+    },
+    # --- Upscale (spandrel/diffusion tile-size number input) ---
+    "upscale_tile_size_max": {
+        "builtin": 4096, "floor": 512, "ceiling": 16384,
+        "family": "upscale", "label": "Upscale tile size max",
+    },
+}
+
+# ---------------------------------------------------------------------------
 # Video generation (POST /generate/txt2vid — LTX-2.3)
 # ---------------------------------------------------------------------------
 # Video-only keys, kept out of GENERATION_DEFAULTS (no overlap with the

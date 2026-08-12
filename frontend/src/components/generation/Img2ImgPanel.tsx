@@ -16,6 +16,7 @@ import TextareaWithTagSuggestions from "../common/TextareaWithTagSuggestions";
 import Button from "../common/Button";
 import Slider from "../common/Slider";
 import Select from "../common/Select";
+import { resolveBound } from "@/utils/paramBounds";
 import ModelLoadSection from "../common/ModelLoadSection";
 import LoRASelector from "../common/LoRASelector";
 import ControlNetSelector from "../common/ControlNetSelector";
@@ -488,7 +489,7 @@ interface Img2ImgPanelProps {
 }
 
 export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgPanelProps = {}) {
-  const { modelLoaded, isBackendReady, generationDefaults, isVideo, isAudio, archCapabilities, resolveModality, modelInfoVersion, videoFrameSliderMax } = useStartup();
+  const { modelLoaded, isBackendReady, generationDefaults, isVideo, isAudio, archCapabilities, resolveModality, modelInfoVersion, videoFrameSliderMax, sliderBounds } = useStartup();
   const [params, setParams] = useState<Img2ImgParams>(DEFAULT_PARAMS);
   const [isGenerating, setIsGenerating] = useState(false);
   const [generatedImage, setGeneratedImage] = useState<string | null>(null);
@@ -5421,7 +5422,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
                 <Slider
                   label="Frame Rate (fps)"
                   min={1}
-                  max={60}
+                  max={resolveBound("video_frame_rate_max", generationDefaults?.param_bounds, sliderBounds, params.frame_rate ?? 24.0)}
                   step={1}
                   value={params.frame_rate ?? 24.0}
                   onChange={(e) => setParams({ ...params, frame_rate: parseFloat(e.target.value) })}
@@ -5731,7 +5732,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
               <Slider
                 label="Steps"
                 min={1}
-                max={150}
+                max={resolveBound("steps_max", generationDefaults?.param_bounds, sliderBounds, params.steps)}
                 step={1}
                 value={params.steps}
                 onChange={(e) => setParams({ ...params, steps: parseInt(e.target.value) })}
@@ -5739,7 +5740,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
               <Slider
                 label="CFG Scale"
                 min={0}
-                max={30}
+                max={resolveBound("cfg_scale_max", generationDefaults?.param_bounds, sliderBounds, params.cfg_scale)}
                 step={0.5}
                 value={params.cfg_scale}
                 onChange={(e) => setParams({ ...params, cfg_scale: parseFloat(e.target.value) })}
@@ -5776,7 +5777,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
                     <Slider
                       label="Width"
                       min={64}
-                      max={2048}
+                      max={resolveBound("image_width_max", generationDefaults?.param_bounds, sliderBounds, params.width)}
                       step={resolutionStep}
                       value={params.width}
                       onChange={(e) => setParams({ ...params, width: parseInt(e.target.value) })}
@@ -5784,7 +5785,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
                     <Slider
                       label="Height"
                       min={64}
-                      max={2048}
+                      max={resolveBound("image_height_max", generationDefaults?.param_bounds, sliderBounds, params.height)}
                       step={resolutionStep}
                       value={params.height}
                       onChange={(e) => setParams({ ...params, height: parseInt(e.target.value) })}

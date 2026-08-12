@@ -47,6 +47,19 @@ class UserSettings(GalleryBase):
     # (TRAINED_RANGE_SLIDER_HEADROOM / UNCAPPED_FRAME_SLIDER_CEILING in that
     # component), so a user who never opens Settings sees no change.
     video_frame_slider_max = Column(Integer, nullable=True)
+    # General user-override mechanism for slider/number-input UPPER BOUNDS
+    # (see backend/api/param_defaults.py's PARAM_BOUNDS registry for the
+    # eligibility rule + the full list of overridable bounds). ONE JSON
+    # column holding {bound_name: value} for every bound the user has
+    # overridden -- deliberately NOT one column per bound, so adding a new
+    # overridable bound is a PARAM_BOUNDS registry entry, never a migration.
+    # A key absent from this dict means "use PARAM_BOUNDS[key]['builtin']".
+    # `video_frame_slider_max` above predates this mechanism and is
+    # deliberately NOT folded into it -- a data migration to move that one
+    # column's value into this dict is not worth it for a single field, so
+    # the two coexist: video_frame_slider_max stays its own legacy column,
+    # and every bound added from here on lives in slider_bounds instead.
+    slider_bounds = Column(JSON, nullable=True)
 
     def to_dict(self):
         return {
@@ -58,6 +71,7 @@ class UserSettings(GalleryBase):
             "training_dir": self.training_dir,
             "inpaint_use_dedicated_model": self.inpaint_use_dedicated_model if self.inpaint_use_dedicated_model is not None else False,
             "video_frame_slider_max": self.video_frame_slider_max,
+            "slider_bounds": self.slider_bounds or {},
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
 

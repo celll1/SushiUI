@@ -72,6 +72,7 @@ import {
   VIDEO_BLOCK_SWAP_MAX,
 } from "@/utils/api";
 import { createH3ReferenceInventory, maybeTransformH3PromptForGeneration } from "@/utils/h3PromptAssist";
+import { resolveBound } from "@/utils/paramBounds";
 import { readGlobalAttentionType } from "@/utils/attentionSettings";
 import { wsClient, CFGMetrics } from "@/utils/websocket";
 import { saveTempImage, loadTempImage, deleteTempImageRef } from "@/utils/tempImageStorage";
@@ -503,7 +504,7 @@ interface OutpaintPanelProps {
 }
 
 export default function OutpaintPanel({ onTabChange, onImageGenerated }: OutpaintPanelProps = {}) {
-  const { isBackendReady, modelLoaded, generationDefaults, isVideo, isAudio, archCapabilities, resolveModality, modelInfoVersion } = useStartup();
+  const { isBackendReady, modelLoaded, generationDefaults, isVideo, isAudio, archCapabilities, resolveModality, modelInfoVersion, sliderBounds } = useStartup();
   const [params, setParams] = useState<OutpaintPanelParams>(DEFAULT_PARAMS);
   const [generatedImageParams, setGeneratedImageParams] = useState<OutpaintPanelParams | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
@@ -3806,7 +3807,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
               <Slider
                 label="Steps"
                 min={1}
-                max={150}
+                max={resolveBound("steps_max", generationDefaults?.param_bounds, sliderBounds, params.steps)}
                 step={1}
                 value={params.steps ?? 20}
                 onChange={(e) => setParams({ ...params, steps: parseInt(e.target.value) })}
@@ -3814,7 +3815,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
               <Slider
                 label="CFG Scale"
                 min={0}
-                max={30}
+                max={resolveBound("cfg_scale_max", generationDefaults?.param_bounds, sliderBounds, params.cfg_scale)}
                 step={0.5}
                 value={params.cfg_scale ?? 7.0}
                 onChange={(e) => setParams({ ...params, cfg_scale: parseFloat(e.target.value) })}
@@ -4473,7 +4474,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
             <Slider
               label="Frame Rate (fps)"
               min={1}
-              max={60}
+              max={resolveBound("video_frame_rate_max", generationDefaults?.param_bounds, sliderBounds, params.frame_rate ?? 24.0)}
               step={1}
               value={params.frame_rate ?? 24.0}
               onChange={(e) => setParams({ ...params, frame_rate: parseFloat(e.target.value) })}

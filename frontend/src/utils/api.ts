@@ -1194,7 +1194,24 @@ export interface GenerationDefaultsResponse {
   // Same thing for the keys that exist only on /generate/inpaint/video
   // (currently `inpaint_video_audio_mode`).
   inpaint_video_arch_overlays?: Record<string, Record<string, unknown>>;
+  // User-overridable slider/number-input UPPER BOUNDS registry (backend
+  // PARAM_BOUNDS). Optional so an older backend without the key still
+  // type-checks. See frontend/src/utils/paramBounds.ts's resolveBound().
+  param_bounds?: ParamBoundsRegistry;
 }
+
+// One PARAM_BOUNDS entry (backend/api/param_defaults.py). `builtin` is
+// today's literal (what a control falls back to with no user override and no
+// architecture clamp); `floor`/`ceiling` bound what a user override may be
+// set to (enforced server-side too, in save_generation_settings).
+export interface ParamBoundSpec {
+  builtin: number;
+  floor: number;
+  ceiling: number;
+  family: string;
+  label: string;
+}
+export type ParamBoundsRegistry = Record<string, ParamBoundSpec>;
 
 // The outpaint-video defaults for one architecture, resolved from the SAME
 // three layers the backend resolves them from, in the same order.
@@ -1229,6 +1246,10 @@ export const fetchGenerationDefaults = async (): Promise<GenerationDefaultsRespo
 export interface GenerationSettingsResponse {
   inpaint_use_dedicated_model: boolean;
   video_frame_slider_max: number | null;
+  // User overrides for slider/number-input UPPER BOUNDS, keyed by bound name
+  // (see param_defaults.py's PARAM_BOUNDS for the eligible keys). A key
+  // absent means that bound uses its builtin value. Always an object.
+  slider_bounds: Record<string, number>;
 }
 
 export const fetchGenerationSettings = async (): Promise<GenerationSettingsResponse> =>
@@ -1249,6 +1270,17 @@ export const saveVideoFrameSliderMax = async (
   value: number | null
 ): Promise<GenerationSettingsResponse> =>
   (await api.post("/settings/generation", { video_frame_slider_max: value })).data.settings;
+
+// Persists a partial update of the `slider_bounds` override map (see
+// PARAM_BOUNDS in param_defaults.py). `null` for a key RESETS that one bound
+// to its builtin. Backend validates unknown keys / out-of-[floor,ceiling]
+// values with a 400 (see save_generation_settings). Same commit-time-write
+// contract as saveVideoFrameSliderMax -- the caller updates StartupContext's
+// sliderBounds/setSliderBounds itself on success.
+export const saveSliderBounds = async (
+  overrides: Record<string, number | null>
+): Promise<GenerationSettingsResponse> =>
+  (await api.post("/settings/generation", { slider_bounds: overrides })).data.settings;
 
 export const fetchTrainingDefaults = async (): Promise<Record<string, unknown>> =>
   (await api.get("/schema/training-defaults")).data;

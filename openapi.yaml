@@ -12359,12 +12359,17 @@ components:
           example: [0, 2]
         binding_source:
           type: string
-          enum: [default_all, explicit]
+          enum: [default_all, explicit, token_implied]
           default: default_all
           description: >-
             `default_all` — the request stated no segments, so the reference
             applies to every segment (the backward-compatible carry-to-all
             behaviour). `explicit` — the segment set was chosen by the caller.
+            `token_implied` — at least one segment was added because its
+            compiled text names this reference's `token`. A segment that
+            mentions a reference receives it, so narrowing can never cut a
+            token out of the middle of a sentence; the widening is reported in
+            `warnings` rather than performed silently.
           example: "explicit"
         token:
           type: string

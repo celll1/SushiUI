@@ -370,14 +370,18 @@ def test_the_draw_is_structurally_unconditional():
         "no longer the only thing that decides the noise")
 
     # 4. The substitution follows the draw (the "discard" half of the contract).
+    # Two mutually exclusive branches assign `audio_rows` from
+    # `pinned_audio_rows` (the WHOLE-track shorthand, and the PARTIAL pin via
+    # `ops.substitute_and_permute_audio_rows`) -- both must still be textually
+    # after the draw, since only one runs per request.
     substitutions = [node for node in ast.walk(tree)
                      if isinstance(node, ast.Assign)
                      and any(isinstance(t, ast.Name) and t.id == "audio_rows"
                              for t in node.targets)
                      and "pinned_audio_rows" in {n.id for n in ast.walk(node.value)
                                                  if isinstance(n, ast.Name)}]
-    assert len(substitutions) == 1
-    assert substitutions[0].lineno > draw.lineno
+    assert len(substitutions) >= 1
+    assert all(s.lineno > draw.lineno for s in substitutions)
 
 
 def test_the_backend_muxes_the_source_and_does_not_decode_the_pinned_rows():
@@ -386,16 +390,43 @@ def test_the_backend_muxes_the_source_and_does_not_decode_the_pinned_rows():
     NOT `pinned_audio_latents` -- that branch is guarded to the WHOLE-track pin
     only (`and not pinned_audio_latents`), because a PARTIAL pin's decode needs
     the generated free rows too, which this shortcut never produces.
+
+    Anchored on the `If` node's STRUCTURE via the AST -- an `and` of
+    `audio_enable`, `input_audio is not None` and `not pinned_audio_latents`
+    -- rather than an exact source string. A `str.index` anchor on the
+    condition's literal text breaks on any rewrap (a reformat, a line split
+    past some column width); this survives one because the three operand
+    names are what identifies the branch, not their exact spelling on one
+    line.
     """
+    import ast
+    import textwrap
+
     from core.pipeline_backends.minimax_h3 import MiniMaxH3Mixin
 
-    source = inspect.getsource(MiniMaxH3Mixin._generate_minimax_h3)
-    branch = source[source.index(
-        "if audio_enable and input_audio is not None and not pinned_audio_latents:"):]
-    branch = branch[:branch.index("elif audio_enable:")]
-    assert "trim_audio_to_video(" in branch
-    assert "input_audio" in branch
-    assert "decode_audio(" not in branch
+    source = textwrap.dedent(inspect.getsource(MiniMaxH3Mixin._generate_minimax_h3))
+    tree = ast.parse(source)
+
+    def _names(node) -> set:
+        return {n.id for n in ast.walk(node) if isinstance(n, ast.Name)}
+
+    branch = None
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.If) and isinstance(node.test, ast.BoolOp)
+                and isinstance(node.test.op, ast.And)
+                and {"audio_enable", "input_audio", "pinned_audio_latents"} <= _names(node.test)):
+            branch = node
+            break
+    assert branch is not None, (
+        "could not find the whole-track ia2v mux branch (an `if` guarded by "
+        "audio_enable / input_audio / pinned_audio_latents) in the shipped source")
+
+    # The `if` BODY only -- not the chained `elif audio_enable:` branch
+    # (`node.orelse`), which is the decode-and-mux path this one must not use.
+    if_body = "\n".join(ast.get_source_segment(source, stmt) or "" for stmt in branch.body)
+    assert "trim_audio_to_video(" in if_body
+    assert "input_audio" in if_body
+    assert "decode_audio(" not in if_body
 
 
 # --------------------------------------------------------------------------

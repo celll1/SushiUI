@@ -2133,6 +2133,45 @@ def _refuse_double_mapping(te_path: str) -> None:
         f"Refusing here so the cause is visible instead of the backend simply vanishing.")
 
 
+def _te_guard_state_dict(
+    state_dict: Dict[str, torch.Tensor],
+    *,
+    swappable_layer_configs: Dict[str, Dict[str, Any]],
+    nvfp4_layer_configs: Dict[str, Dict[str, Any]],
+) -> Dict[str, torch.Tensor]:
+    """The text encoder's view of its own tensors for the semantics refusal.
+
+    Hides exactly what the builder goes on to implement, and nothing else:
+
+    * the ``.comfy_quant`` marker of a validated ConvRot/NVFP4 Linear, which
+      stays as live module state on the swapped module;
+    * the ``.pre_quant_scale`` of a validated NVFP4 layer that
+      ``_supported_h3_nvfp4_marker`` confirmed carries one -- ``Nvfp4Linear``
+      applies it, and the generic guard refuses that suffix outright, so
+      leaving it visible refused a file this builder fully reads.
+
+    ``model.embed_tokens``'s plain ``int8_tensorwise`` marker stays visible
+    (the generic guard does not refuse it), as does a ``.pre_quant_scale`` on
+    any other layer -- no module here would apply one.
+
+    Same waiver as the header-side probe in ``_guard_component_file``; the two
+    views of one file must not disagree about which keys are hidden.
+    """
+    waived = {
+        layer + ".pre_quant_scale"
+        for layer, cfg in nvfp4_layer_configs.items()
+        if cfg.get("has_pre_quant_scale")
+    }
+    return {
+        key: value for key, value in state_dict.items()
+        if key not in waived
+        and not (
+            key.endswith(".comfy_quant")
+            and key[: -len(".comfy_quant")] in swappable_layer_configs
+        )
+    }
+
+
 def _build_text_encoder(te_path: str, official_dir: Optional[str]):
     """Build the truncated Qwen3-VL and install the file's tensors BY REFERENCE.
 
@@ -2287,20 +2326,11 @@ def _build_text_encoder(te_path: str, official_dir: Optional[str]):
             **int8_convrot_layer_configs, **nvfp4_layer_configs,
         }
 
-        # The early header guard validated every supported ConvRot/NVFP4
-        # marker. Keep those markers as live module state (`ConvRotInt8Linear`
-        # / `Nvfp4Linear`'s own `comfy_quant` buffer); every other declaration
-        # still passes through the generic refusal before any tensor is
-        # installed. `model.embed_tokens`'s marker is left in (its plain,
-        # unrotated `int8_tensorwise` declaration does not trip the generic
-        # refusal -- see `_guard_component_file`).
-        guard_state_dict = {
-            key: value for key, value in state_dict.items()
-            if not (
-                key.endswith(".comfy_quant")
-                and key[: -len(".comfy_quant")] in swappable_layer_configs
-            )
-        }
+        guard_state_dict = _te_guard_state_dict(
+            state_dict,
+            swappable_layer_configs=swappable_layer_configs,
+            nvfp4_layer_configs=nvfp4_layer_configs,
+        )
         _assert_guard_reached(guard_state_dict, label="text encoder", path=te_path)
 
         # This builder swaps ONLY the validated ConvRot/NVFP4 Linears and the

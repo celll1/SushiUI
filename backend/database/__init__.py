@@ -3,6 +3,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import NullPool
 from config.settings import settings
 import os
+import shutil
 
 # Import bases from models
 from .models import GalleryBase, DatasetBase, TrainingBase
@@ -67,15 +68,28 @@ def init_db():
     gallery_db = GallerySessionLocal()
     try:
         from datetime import datetime
+        interrupted_staging_dirs = []
         interrupted = gallery_db.query(StudioRenderJob).filter(
             StudioRenderJob.state.in_(["queued", "running", "cancel_requested"])
         ).all()
         for job in interrupted:
+            interrupted_staging_dirs.append(job.input_dir)
             job.state = "failed"
             job.error = "Backend restarted before the Studio render completed."
             job.finished_at = datetime.now()
         if interrupted:
             gallery_db.commit()
+        staging_root = os.path.realpath(os.path.join(settings.cache_dir, "studio_render_jobs"))
+        for staging_dir in interrupted_staging_dirs:
+            if not isinstance(staging_dir, str):
+                continue
+            target = os.path.realpath(staging_dir)
+            try:
+                inside_root = os.path.commonpath([staging_root, target]) == staging_root
+            except ValueError:
+                inside_root = False
+            if inside_root and target != staging_root:
+                shutil.rmtree(target, ignore_errors=True)
     except Exception as exc:
         gallery_db.rollback()
         print(f"[Database] Studio render recovery warning: {exc}")

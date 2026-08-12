@@ -6,6 +6,12 @@ export type StudioInputRole = "keyframe";
 export type StudioClipPresentation = "frame" | "hold" | "clip";
 export type StudioClipFitMode = "cover" | "contain";
 
+export interface StudioAssetSourceRef {
+  name?: string;
+  size?: number;
+  lastModified?: number;
+}
+
 export interface StudioAsset {
   id: string;
   galleryId?: number;
@@ -27,6 +33,8 @@ export interface StudioAsset {
   modelName?: string;
   seed?: number;
   parameters?: Record<string, unknown>;
+  missing?: boolean;
+  sourceRef?: StudioAssetSourceRef;
 }
 
 export type StudioTrackKind = "video" | "audio";
@@ -106,7 +114,7 @@ export interface StudioJob {
 }
 
 export const createStudioProject = (): StudioProject => ({
-  schemaVersion: 3,
+  schemaVersion: 4,
   revision: 0,
   id: newId(),
   name: "Untitled Studio Project",

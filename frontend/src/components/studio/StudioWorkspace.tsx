@@ -110,6 +110,14 @@ import {
   videoOutpaintPlacement,
 } from "./studioGeneration";
 import { createH3ReferenceInventory, maybeTransformH3PromptForGeneration } from "@/utils/h3PromptAssist";
+import {
+  parseStudioProjectFile,
+  projectFileName,
+  readRecentProjects,
+  rememberRecentProject,
+  serializeStudioProject,
+  type StudioRecentProject,
+} from "./studioProjectFile";
 import styles from "./studio.module.css";
 
 interface StudioFormState {
@@ -199,6 +207,14 @@ const normalizeImportedAsset = (raw: unknown): StudioAsset => {
     modelName: stringOrUndefined(asset.modelName),
     seed: numeric(asset.seed),
     parameters: asset.parameters && typeof asset.parameters === "object" ? asset.parameters as Record<string, unknown> : undefined,
+    missing: booleanValue(asset.missing) ?? (!asset.url && asset.galleryId == null && !asset.blobKey),
+    sourceRef: asset.sourceRef && typeof asset.sourceRef === "object"
+      ? {
+        name: stringOrUndefined(asset.sourceRef.name),
+        size: numeric(asset.sourceRef.size),
+        lastModified: numeric(asset.sourceRef.lastModified),
+      }
+      : undefined,
   };
 };
 
@@ -504,6 +520,11 @@ interface PendingPlacement {
   holdStill: boolean;
 }
 
+interface ClipDragPreview {
+  clips: Array<{ clipId: string; trackId: string; start: number; duration: number }>;
+  valid: boolean;
+}
+
 export default function StudioWorkspace() {
   const [project, setProject] = useState<StudioProject>(() => createStudioProject());
   const [restored, setRestored] = useState(false);
@@ -520,6 +541,7 @@ export default function StudioWorkspace() {
   const [defaultsIdentity, setDefaultsIdentity] = useState<string | null>(null);
   const [selectedAssetId, setSelectedAssetId] = useState<string | null>(null);
   const [selectedClipId, setSelectedClipId] = useState<string | null>(null);
+  const [selectedClipIds, setSelectedClipIds] = useState<string[]>([]);
   const [tool, setTool] = useState<StudioTool>("select");
   const [rightPane, setRightPane] = useState<StudioPane>("generate");
   const [form, setForm] = useState<StudioFormState>(EMPTY_FORM);
@@ -549,6 +571,11 @@ export default function StudioWorkspace() {
   // the undoable project state.
   const [hoveredClipId, setHoveredClipId] = useState<string | null>(null);
   const [pendingPlacement, setPendingPlacement] = useState<PendingPlacement | null>(null);
+  const [clipDragPreview, setClipDragPreview] = useState<ClipDragPreview | null>(null);
+  const [projectSettingsOpen, setProjectSettingsOpen] = useState(false);
+  const [canvasAspectLocked, setCanvasAspectLocked] = useState(true);
+  const [recentProjectsOpen, setRecentProjectsOpen] = useState(false);
+  const [recentProjects, setRecentProjects] = useState<StudioRecentProject[]>([]);
   const [canvasDraft, setCanvasDraft] = useState({ width: String(project.width), height: String(project.height) });
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const projectFileInputRef = useRef<HTMLInputElement | null>(null);
@@ -569,11 +596,13 @@ export default function StudioWorkspace() {
   const renderControllersRef = useRef(new Map<string, AbortController>());
   const studioUnmountedRef = useRef(false);
   const suppressClipClickRef = useRef<string | null>(null);
+  const selectedClipIdsRef = useRef<string[]>([]);
   const pendingImageMaskRef = useRef<string | undefined>(undefined);
   // Keep edit callbacks independent from high-frequency state changes.
   const projectRef = useRef(project);
   useEffect(() => { projectRef.current = project; }, [project]);
   useEffect(() => { playheadRef.current = playhead; }, [playhead]);
+  useEffect(() => { selectedClipIdsRef.current = selectedClipIds; }, [selectedClipIds]);
   useEffect(() => {
     setCanvasDraft({ width: String(project.width), height: String(project.height) });
   }, [project.height, project.width]);
@@ -633,6 +662,41 @@ export default function StudioWorkspace() {
     commit((current) => ({ ...current, width, height }));
   }, [canvasDraft.height, canvasDraft.width, commit]);
 
+  const updateCanvasDraft = useCallback((field: "width" | "height", value: string) => {
+    if (!canvasAspectLocked) {
+      setCanvasDraft((current) => ({ ...current, [field]: value }));
+      return;
+    }
+    const numericValue = Number(value);
+    const currentWidth = Number(canvasDraft.width) || projectRef.current.width;
+    const currentHeight = Number(canvasDraft.height) || projectRef.current.height;
+    const ratio = field === "width" ? currentHeight / currentWidth : currentWidth / currentHeight;
+    const paired = Number.isFinite(numericValue) && numericValue > 0
+      ? Math.round((field === "width" ? numericValue * ratio : numericValue * ratio))
+      : field === "width" ? currentHeight : currentWidth;
+    setCanvasDraft(field === "width"
+      ? { width: value, height: String(paired) }
+      : { width: String(paired), height: value });
+  }, [canvasAspectLocked, canvasDraft.height, canvasDraft.width]);
+
+  const clearClipSelection = useCallback(() => {
+    selectedClipIdsRef.current = [];
+    setSelectedClipIds([]);
+    setSelectedClipId(null);
+  }, []);
+
+  const selectClip = useCallback((clipId: string, additive = false) => {
+    const current = selectedClipIdsRef.current;
+    const next = additive
+      ? current.includes(clipId)
+        ? current.filter((id) => id !== clipId)
+        : [...current, clipId]
+      : [clipId];
+    selectedClipIdsRef.current = next;
+    setSelectedClipIds(next);
+    setSelectedClipId(next.at(-1) || null);
+  }, []);
+
   const undo = useCallback(() => {
     const previous = undoStackRef.current.at(-1);
     if (!previous) return;
@@ -684,6 +748,7 @@ export default function StudioWorkspace() {
   }, [applyProject]);
 
   useEffect(() => {
+    setRecentProjects(readRecentProjects());
     loadStudioProject()
       .then((saved) => {
         if (saved) {
@@ -808,7 +873,7 @@ export default function StudioWorkspace() {
         if (audioEnable !== undefined) next.audioEnable = audioEnable;
         return next;
       });
-      setSelectedClipId(null);
+      clearClipSelection();
       setRightPane("generate");
       setNotice(`Received ${asset?.name || "generation settings"} from ${pendingTransfer.source}.`);
       setPendingTransfer(null);
@@ -831,7 +896,9 @@ export default function StudioWorkspace() {
   useEffect(() => {
     if (!restored) return;
     const timer = window.setTimeout(() => {
-      const result = saveStudioProject({ ...project, jobs, outputRange: range, inpaintRange, referenceAssetIds });
+      const snapshot = { ...project, jobs, outputRange: range, inpaintRange, referenceAssetIds };
+      const result = saveStudioProject(snapshot);
+      setRecentProjects(rememberRecentProject(snapshot));
       if (!result.ok) setNotice("Could not save the project locally (browser storage is full). Recent edits may be lost on reload.");
     }, 350);
     return () => window.clearTimeout(timer);
@@ -1050,7 +1117,7 @@ export default function StudioWorkspace() {
       clips: [...current.clips, clip],
     }));
     setSelectedAssetId(asset.id);
-    setSelectedClipId(clip.id);
+    selectClip(clip.id);
     return true;
   }, [activeClips, commit, project.duration, project.fps, project.tracks]);
 
@@ -1098,53 +1165,58 @@ export default function StudioWorkspace() {
   const finishAssetPress = () => cancelAssetPress();
 
   const deleteSelectedClip = useCallback(() => {
-    if (!selectedClipId) return;
-    const target = project.clips.find((clip) => clip.id === selectedClipId);
-    const track = project.tracks.find((item) => item.id === target?.trackId);
-    if (!target || track?.locked) {
-      if (track?.locked) setNotice(`Unlock ${track.name} before deleting this clip.`);
+    const selectedIds = new Set(selectedClipIdsRef.current.length ? selectedClipIdsRef.current : selectedClipId ? [selectedClipId] : []);
+    if (!selectedIds.size) return;
+    const locked = project.clips.find((clip) => selectedIds.has(clip.id)
+      && project.tracks.find((track) => track.id === clip.trackId)?.locked);
+    if (locked) {
+      setNotice(`Unlock ${project.tracks.find((track) => track.id === locked.trackId)?.name || "the track"} before deleting this clip.`);
       return;
     }
-    const replacement = target.takeGroupId
-      ? project.clips.find((clip) => clip.takeGroupId === target.takeGroupId && clip.id !== target.id)
-      : undefined;
+    const replacements = new Map(project.clips
+      .filter((clip) => selectedIds.has(clip.id) && clip.takeGroupId)
+      .map((clip) => [clip.takeGroupId!, project.clips.find((candidate) => candidate.takeGroupId === clip.takeGroupId && !selectedIds.has(candidate.id))]));
     commit((current) => ({
       ...current,
       clips: current.clips
-        .filter((clip) => clip.id !== selectedClipId)
-        .map((clip) => replacement && clip.id === replacement.id ? { ...clip, activeTake: true } : clip),
+        .filter((clip) => !selectedIds.has(clip.id))
+        .map((clip) => [...replacements.values()].includes(clip) ? { ...clip, activeTake: true } : clip),
     }));
-    setSelectedClipId(replacement?.id || null);
-    if (replacement) setSelectedAssetId(replacement.assetId);
-  }, [commit, project.clips, project.tracks, selectedClipId]);
+    clearClipSelection();
+  }, [clearClipSelection, commit, project.clips, project.tracks, selectedClipId]);
 
-  const splitSelectedClip = useCallback((targetClip?: StudioClip | null) => {
-    const clipToSplit = targetClip || selectedClip;
-    const track = project.tracks.find((item) => item.id === clipToSplit?.trackId);
-    if (track?.locked) {
-      setNotice(`Unlock ${track.name} before splitting this clip.`);
-      return;
-    }
-    if (!clipToSplit || playhead <= clipToSplit.start + 0.05 || playhead >= clipToSplit.start + clipToSplit.duration - 0.05) {
+  const splitSelectedClip = useCallback((targetClip?: StudioClip | null, splitTime = playhead) => {
+    const selectedIds = new Set(selectedClipIdsRef.current.length ? selectedClipIdsRef.current : selectedClipId ? [selectedClipId] : []);
+    const candidates = (targetClip && !selectedIds.has(targetClip.id)
+      ? [targetClip]
+      : project.clips.filter((clip) => selectedIds.has(clip.id)))
+      .filter((clip) => splitTime > clip.start + frameDurationFor(project.fps)
+        && splitTime < clip.start + clip.duration - frameDurationFor(project.fps));
+    if (!candidates.length) {
       setNotice("Move the playhead inside the selected clip before splitting.");
       return;
     }
-    const leftDuration = playhead - clipToSplit.start;
-    const right: StudioClip = {
-      ...clipToSplit,
-      id: newId(),
-      start: playhead,
-      duration: clipToSplit.duration - leftDuration,
-      sourceIn: clipToSplit.sourceIn + leftDuration,
-    };
+    const locked = candidates.find((clip) => project.tracks.find((track) => track.id === clip.trackId)?.locked);
+    if (locked) {
+      setNotice(`Unlock ${project.tracks.find((track) => track.id === locked.trackId)?.name || "the track"} before splitting this clip.`);
+      return;
+    }
+    const rightIds: string[] = [];
     commit((current) => ({
       ...current,
-      clips: current.clips.flatMap((clip) =>
-        clip.id === clipToSplit.id ? [{ ...clip, duration: leftDuration }, right] : [clip],
-      ),
+      clips: current.clips.flatMap((clip) => {
+        const match = candidates.find((candidate) => candidate.id === clip.id);
+        if (!match) return [clip];
+        const leftDuration = splitTime - match.start;
+        const right = { ...match, id: newId(), start: splitTime, duration: match.duration - leftDuration, sourceIn: match.sourceIn + leftDuration };
+        rightIds.push(right.id);
+        return [{ ...match, duration: leftDuration }, right];
+      }),
     }));
-    setSelectedClipId(right.id);
-  }, [commit, playhead, project.tracks, selectedClip]);
+    selectedClipIdsRef.current = rightIds;
+    setSelectedClipIds(rightIds);
+    setSelectedClipId(rightIds.at(-1) || null);
+  }, [commit, playhead, project.clips, project.fps, project.tracks, selectedClipId]);
 
   const moveClip = useCallback((clipId: string, trackId: string, start: number) => {
     const targetTrack = project.tracks.find((track) => track.id === trackId);
@@ -1231,10 +1303,7 @@ export default function StudioWorkspace() {
     const file = event.target.files?.[0];
     if (!file) return;
     try {
-      const parsed = JSON.parse(await file.text()) as Partial<StudioProject>;
-      if (!parsed.id || !Array.isArray(parsed.assets) || !Array.isArray(parsed.tracks) || !Array.isArray(parsed.clips)) {
-        throw new Error("The selected file is not a Studio project manifest.");
-      }
+      const parsed = parseStudioProjectFile(JSON.parse(await file.text()));
       const defaults = createStudioProject();
       const fps = (numeric(parsed.fps) || 0) > 0 ? Number(parsed.fps) : defaults.fps;
       const normalizedClips = (parsed.clips as unknown[])
@@ -1257,7 +1326,7 @@ export default function StudioWorkspace() {
       const imported: StudioProject = {
         ...defaults,
         ...parsed,
-        schemaVersion: 3,
+        schemaVersion: 4,
         name: stringOrUndefined(parsed.name) || defaults.name,
         createdAt: stringOrUndefined(parsed.createdAt) || defaults.createdAt,
         updatedAt: stringOrUndefined(parsed.updatedAt) || defaults.updatedAt,
@@ -1295,9 +1364,9 @@ export default function StudioWorkspace() {
       const assets = await Promise.all(normalized.assets.map(async (asset) => {
         if (!asset.blobKey) return asset;
         const blob = await loadImportedMedia(asset.blobKey);
-        if (!blob) return { ...asset, url: "", thumbnailUrl: undefined };
+        if (!blob) return { ...asset, url: "", thumbnailUrl: undefined, missing: true };
         const url = URL.createObjectURL(blob);
-        return { ...asset, url, thumbnailUrl: asset.kind === "image" ? url : undefined };
+        return { ...asset, url, thumbnailUrl: asset.kind === "image" ? url : undefined, missing: false };
       }));
       const restored = { ...normalized, assets };
       // The project currently in memory may hold `blob:` URLs created by
@@ -1314,7 +1383,7 @@ export default function StudioWorkspace() {
       setReferenceAssetIds(importedReferenceAssetIds);
       setJobs(restored.jobs || []);
       setResultAssetIds((restored.jobs || []).flatMap((job) => job.assetId ? [job.assetId] : []));
-      setSelectedClipId(null);
+      clearClipSelection();
       setSelectedAssetId(null);
       setUndoStack([]);
       setRedoStack([]);
@@ -1327,7 +1396,7 @@ export default function StudioWorkspace() {
       undoStackRef.current = [];
       redoStackRef.current = [];
       staleBlobUrls.forEach((url) => { try { URL.revokeObjectURL(url); } catch { /* already revoked */ } });
-      const missingLocalMedia = assets.filter((asset) => asset.blobKey && !asset.url).length;
+      const missingLocalMedia = assets.filter((asset) => asset.missing || (asset.blobKey && !asset.url)).length;
       setNotice(missingLocalMedia
         ? `Imported ${restored.name}; ${missingLocalMedia} local media item(s) need to be re-imported.`
         : `Imported ${restored.name}.`);
@@ -1358,7 +1427,7 @@ export default function StudioWorkspace() {
         ? current
         : { ...current, assets: [...current.assets, frame] });
     }
-    setSelectedClipId(clip.id);
+    selectClip(clip.id);
     setSelectedAssetId(inputAsset.id);
     setRightPane("generate");
   }, [allAssets, commit, playhead]);
@@ -1392,11 +1461,11 @@ export default function StudioWorkspace() {
         ? current
         : { ...current, assets: [...current.assets, frame] });
       setSelectedAssetId(frame.id);
-      setSelectedClipId(null);
+      clearClipSelection();
       return;
     }
     setSelectedAssetId(hydrated.id);
-    setSelectedClipId(null);
+    clearClipSelection();
   };
 
   const handleReferenceDrop = async (event: DragEvent<HTMLElement>) => {
@@ -1494,7 +1563,7 @@ export default function StudioWorkspace() {
     };
     commit((current) => ({ ...current, assets: [...current.assets, derived] }));
     setSelectedAssetId(derived.id);
-    setSelectedClipId(null);
+    clearClipSelection();
     setImageEditorState(null);
     pendingImageMaskRef.current = undefined;
   };
@@ -1621,6 +1690,10 @@ export default function StudioWorkspace() {
         togglePlayback();
       } else if (event.key.toLowerCase() === "v" && !event.ctrlKey && !event.metaKey) {
         setTool("select");
+      } else if (event.key.toLowerCase() === "b" || event.key.toLowerCase() === "c") {
+        setTool("blade");
+      } else if (event.key.toLowerCase() === "h" && !event.ctrlKey && !event.metaKey) {
+        setTool("hand");
       } else if (event.key.toLowerCase() === "s" && !event.ctrlKey && !event.metaKey) {
         splitSelectedClip();
       } else if (event.key === "Delete" || event.key === "Backspace") {
@@ -1708,6 +1781,30 @@ export default function StudioWorkspace() {
     if (timelinePointersRef.current.size < 2) timelinePinchRef.current = null;
   };
 
+  const beginTimelinePan = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (tool !== "hand" || event.button !== 0 || event.pointerType === "touch") return;
+    const scroll = timelineScrollRef.current;
+    if (!scroll) return;
+    event.preventDefault();
+    const originX = event.clientX;
+    const originY = event.clientY;
+    const initialLeft = scroll.scrollLeft;
+    const initialTop = scroll.scrollTop;
+    const move = (pointerEvent: PointerEvent) => {
+      scroll.scrollLeft = initialLeft - (pointerEvent.clientX - originX);
+      scroll.scrollTop = initialTop - (pointerEvent.clientY - originY);
+    };
+    const finish = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", finish);
+      window.removeEventListener("pointercancel", finish);
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", finish);
+    window.addEventListener("pointercancel", finish);
+  };
+
   const beginRange = (event: ReactPointerEvent<HTMLDivElement>) => {
     const element = event.currentTarget;
     const bounds = element.getBoundingClientRect();
@@ -1719,7 +1816,7 @@ export default function StudioWorkspace() {
     const pushRangeHistory = () => pushHistoryEntry({ project, range, inpaintRange, referenceAssetIds });
     if (tool !== "range") {
       seekTimeline(start);
-      setSelectedClipId(null);
+      clearClipSelection();
       setSelectedAssetId(null);
       if (event.pointerType !== "touch") {
         // Ruler dragging scrubs unless range mode is active.
@@ -1858,7 +1955,7 @@ export default function StudioWorkspace() {
       project.duration,
     );
     seekTimeline(timeAt(event.clientX));
-    setSelectedClipId(null);
+    clearClipSelection();
     setSelectedAssetId(null);
     const move = (pointerEvent: PointerEvent) => seekTimeline(timeAt(pointerEvent.clientX));
     const finish = () => {
@@ -1877,7 +1974,7 @@ export default function StudioWorkspace() {
     window.addEventListener("pointercancel", finish);
   };
 
-  const beginClipMove = (event: ReactPointerEvent<HTMLDivElement>, clip: StudioClip) => {
+  const beginClipMoveLegacy = (event: ReactPointerEvent<HTMLDivElement>, clip: StudioClip) => {
     if (event.button !== 0 || tool !== "select") return;
     if (event.pointerType === "touch" && timelinePointersRef.current.size > 1) return;
     event.preventDefault();
@@ -1888,7 +1985,7 @@ export default function StudioWorkspace() {
       return;
     }
     timelineGestureCleanupRef.current?.();
-    setSelectedClipId(clip.id);
+    selectClip(clip.id);
     setSelectedAssetId(clip.assetId);
     const asset = allAssets.find((item) => item.id === clip.assetId);
     const isTouch = event.pointerType === "touch";
@@ -1997,6 +2094,122 @@ export default function StudioWorkspace() {
       window.removeEventListener("pointerup", up);
       window.removeEventListener("pointercancel", cancel);
     };
+    timelineGestureCleanupRef.current = cleanup;
+    timelineGestureCancelRef.current = cancel;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", cancel);
+  };
+
+  const beginClipMove = (event: ReactPointerEvent<HTMLDivElement>, clip: StudioClip) => {
+    if (event.button !== 0 || tool !== "select") return;
+    if (event.pointerType === "touch" && timelinePointersRef.current.size > 1) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const currentSelection = selectedClipIdsRef.current;
+    const dragIds = currentSelection.includes(clip.id)
+      ? currentSelection
+      : event.shiftKey ? [...currentSelection, clip.id] : [clip.id];
+    const dragClips = project.clips.filter((item) => dragIds.includes(item.id));
+    const locked = dragClips.find((item) => project.tracks.find((track) => track.id === item.trackId)?.locked);
+    if (locked) {
+      setNotice(`Unlock ${project.tracks.find((track) => track.id === locked.trackId)?.name || "the track"} before moving this clip.`);
+      return;
+    }
+    timelineGestureCleanupRef.current?.();
+    if (!currentSelection.includes(clip.id)) selectClip(clip.id, event.shiftKey);
+    setSelectedAssetId(clip.assetId);
+    const asset = allAssets.find((item) => item.id === clip.assetId);
+    const isTouch = event.pointerType === "touch";
+    let touchState: "pending" | "moving" | "editor" = isTouch ? "pending" : "moving";
+    let longPressTimer: number | null = null;
+    const beginTouchMove = () => { if (touchState === "pending") touchState = "moving"; };
+    if (isTouch) {
+      longPressTimer = window.setTimeout(() => {
+        if (touchState !== "pending") return;
+        if (asset?.kind === "image" && dragClips.length === 1) {
+          touchState = "editor";
+          suppressClipClickRef.current = clip.id;
+          openImageEditor(asset, imageInputMode === "inpaint" ? "inpaint" : "edit");
+        } else beginTouchMove();
+      }, 420);
+    }
+    const originX = event.clientX;
+    let changed = false;
+    const buildPreview = (pointerEvent: PointerEvent): ClipDragPreview => {
+      const lane = document.elementFromPoint(pointerEvent.clientX, pointerEvent.clientY)?.closest<HTMLElement>("[data-studio-track-id]");
+      const targetTrackId = lane?.dataset.studioTrackId || clip.trackId;
+      const targetTrack = project.tracks.find((item) => item.id === targetTrackId);
+      const valid = Boolean(targetTrack && !targetTrack.locked && dragClips.every((item) => {
+        const source = allAssets.find((candidate) => candidate.id === item.assetId);
+        return source && targetTrack.kind === (source.kind === "audio" ? "audio" : "video");
+      }));
+      const delta = (pointerEvent.clientX - originX) / zoom;
+      return {
+        valid,
+        clips: dragClips.map((item) => {
+          const raw = snapEnabled ? Math.round((item.start + delta) * project.fps) / project.fps : item.start + delta;
+          return { clipId: item.id, trackId: valid ? targetTrackId : item.trackId, start: clampTime(raw, Math.max(0, project.duration - item.duration)), duration: item.duration };
+        }),
+      };
+    };
+    const move = (pointerEvent: PointerEvent) => {
+      if (isTouch && touchState === "pending") {
+        if (Math.hypot(pointerEvent.clientX - event.clientX, pointerEvent.clientY - event.clientY) <= 8) return;
+        if (longPressTimer != null) window.clearTimeout(longPressTimer);
+        longPressTimer = null;
+        beginTouchMove();
+      }
+      if (touchState !== "moving") return;
+      const preview = buildPreview(pointerEvent);
+      changed = preview.clips.some((candidate) => {
+        const original = dragClips.find((item) => item.id === candidate.clipId);
+        return original && (original.trackId !== candidate.trackId || Math.abs(original.start - candidate.start) >= 0.0001);
+      });
+      setClipDragPreview(preview);
+    };
+    const finishGesture = () => {
+      if (longPressTimer != null) window.clearTimeout(longPressTimer);
+      longPressTimer = null;
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", cancel);
+      if (timelineGestureCleanupRef.current === cleanup) timelineGestureCleanupRef.current = null;
+      if (timelineGestureCancelRef.current === cancel) timelineGestureCancelRef.current = null;
+    };
+    const up = (pointerEvent: PointerEvent) => {
+      finishGesture();
+      if (touchState !== "moving") { setClipDragPreview(null); return; }
+      const generationTarget = document.elementFromPoint(pointerEvent.clientX, pointerEvent.clientY)?.closest("[data-studio-generation-drop]");
+      if (generationTarget) {
+        setClipDragPreview(null);
+        if (changed) suppressClipClickRef.current = clip.id;
+        void handleTimelineInput(clip, pointerEvent.shiftKey);
+        return;
+      }
+      const preview = buildPreview(pointerEvent);
+      setClipDragPreview(null);
+      if (!preview.valid) { setNotice("This clip cannot be moved to the target track."); return; }
+      const didChange = preview.clips.some((candidate) => {
+        const original = dragClips.find((item) => item.id === candidate.clipId);
+        return original && (original.trackId !== candidate.trackId || Math.abs(original.start - candidate.start) >= 0.0001);
+      });
+      if (!didChange) return;
+      pushHistoryEntry({ project, range, inpaintRange, referenceAssetIds });
+      applyProject((current) => ({
+        ...current,
+        clips: current.clips.map((item) => {
+          const candidate = preview.clips.find((next) => next.clipId === item.id);
+          return candidate ? { ...item, trackId: candidate.trackId, start: candidate.start } : item;
+        }),
+        revision: current.revision + 1,
+        updatedAt: new Date().toISOString(),
+      }));
+      suppressClipClickRef.current = clip.id;
+    };
+    const cancel = () => { finishGesture(); setClipDragPreview(null); };
+    const cleanup = () => { if (longPressTimer != null) window.clearTimeout(longPressTimer); longPressTimer = null; setClipDragPreview(null); };
     timelineGestureCleanupRef.current = cleanup;
     timelineGestureCancelRef.current = cancel;
     event.currentTarget.setPointerCapture(event.pointerId);
@@ -2479,7 +2692,7 @@ export default function StudioWorkspace() {
         clips: [...current.clips.map((item) => item.id === selectedClip?.id ? { ...item, takeGroupId } : item), clip],
       }));
       setSelectedAssetId(asset.id);
-      setSelectedClipId(clip.id);
+      selectClip(clip.id);
       setResultAssetIds((current) => [asset.id, ...current]);
       setJobs((current) => current.map((job) => job.id === jobId
         ? { ...job, status: (selectedClip ? "review" : "applied") as const, assetId: asset.id }
@@ -2556,7 +2769,7 @@ export default function StudioWorkspace() {
         ...current,
         clips: current.clips.map((item) => item.id === clip.id ? { ...item, activeTake: true } : item),
       }));
-      setSelectedClipId(clip.id);
+      selectClip(clip.id);
       setSelectedAssetId(clip.assetId);
     }
     setJobs((current) => current.map((item) => item.id === job.id ? { ...item, status: "applied" as const } : item));
@@ -2756,24 +2969,63 @@ export default function StudioWorkspace() {
     }
   };
 
-  const exportProject = () => {
-    const manifest = new Blob([JSON.stringify({
-      ...project,
-      jobs,
-      assets: project.assets.map((asset) => asset.blobKey
-        ? { ...asset, url: "", thumbnailUrl: undefined }
-        : asset),
-    }, null, 2)], { type: "application/json" });
+  const saveProjectFile = () => {
+    const snapshot = { ...projectRef.current, jobs, outputRange: range, inpaintRange, referenceAssetIds };
+    const manifest = new Blob([serializeStudioProject(snapshot)], { type: "application/json" });
     const url = URL.createObjectURL(manifest);
     const anchor = document.createElement("a");
     anchor.href = url;
-    anchor.download = `${project.name.replace(/[^a-z0-9-_]+/gi, "_") || "studio-project"}.json`;
+    anchor.download = projectFileName(snapshot.name);
     anchor.click();
     // Revoking synchronously after click() works in Chromium today, but the
     // spec only guarantees the URL is valid for as long as the download is
     // in flight; deferring the revoke avoids racing that on other engines.
     window.setTimeout(() => URL.revokeObjectURL(url), 0);
-    setNotice("Project manifest exported.");
+    setRecentProjects(rememberRecentProject(snapshot));
+    setNotice("Project saved.");
+  };
+
+  const createNewProject = () => {
+    if ((project.clips.length || project.assets.length) && !window.confirm("Start a new Studio project? The current project will remain in Recent.")) return;
+    const currentSnapshot = { ...projectRef.current, jobs, outputRange: range, inpaintRange, referenceAssetIds };
+    const next = createStudioProject();
+    setRecentProjects(rememberRecentProject(currentSnapshot));
+    applyProject(next);
+    setRange(null);
+    setInpaintRange(null);
+    setReferenceAssetIds([]);
+    setJobs([]);
+    setResultAssetIds([]);
+    clearClipSelection();
+    setSelectedAssetId(null);
+    setUndoStack([]);
+    setRedoStack([]);
+    setRecentProjects(rememberRecentProject(next));
+    setNotice("New Studio project created.");
+  };
+
+  const openRecentProject = async (entry: StudioRecentProject) => {
+    const assets = await Promise.all(entry.manifest.assets.map(async (asset) => {
+      if (!asset.blobKey) return asset;
+      const blob = await loadImportedMedia(asset.blobKey);
+      if (!blob) return { ...asset, url: "", thumbnailUrl: undefined, missing: true };
+      const url = URL.createObjectURL(blob);
+      return { ...asset, url, thumbnailUrl: asset.kind === "image" ? url : undefined, missing: false };
+    }));
+    const restored = { ...entry.manifest, assets };
+    applyProject(restored);
+    setRange(restored.outputRange ?? null);
+    setInpaintRange(restored.inpaintRange ?? null);
+    setReferenceAssetIds(restored.referenceAssetIds ?? []);
+    setJobs(restored.jobs ?? []);
+    setResultAssetIds((restored.jobs ?? []).flatMap((job) => job.assetId ? [job.assetId] : []));
+    clearClipSelection();
+    setSelectedAssetId(null);
+    setUndoStack([]);
+    setRedoStack([]);
+    setRecentProjects(rememberRecentProject(restored));
+    setRecentProjectsOpen(false);
+    setNotice(`Opened ${restored.name}.`);
   };
 
   const updateSelectedClip = (changes: Partial<StudioClip>) => {
@@ -2883,7 +3135,7 @@ export default function StudioWorkspace() {
         ? clip.takeGroupId === target.takeGroupId ? { ...clip, activeTake: clip.id === clipId } : clip
         : clip.id === clipId ? { ...clip, activeTake: true } : clip),
     }));
-    setSelectedClipId(target.id);
+    selectClip(target.id);
     setSelectedAssetId(target.assetId);
     return true;
   };
@@ -2909,16 +3161,52 @@ export default function StudioWorkspace() {
           <span className={styles.savedState}>Saved locally · {new Date(project.updatedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
         </div>
         <div className={styles.exportControls}>
-          <span className={styles.sequenceBadge}>{project.width}×{project.height} · {project.fps} fps</span>
-          <button className={styles.projectImportButton} onClick={() => projectFileInputRef.current?.click()}><FolderOpen size={14} /> Import</button>
-          <input ref={projectFileInputRef} type="file" accept="application/json,.json" hidden onChange={handleProjectImport} />
-          <button className={styles.exportButton} onClick={exportProject}><Upload size={16} /> Export project</button>
+          <button className={styles.sequenceBadge} onClick={() => setProjectSettingsOpen((open) => !open)} aria-expanded={projectSettingsOpen} title="Open project settings">{project.width}×{project.height} · {project.fps} fps</button>
+          <button className={styles.projectImportButton} onClick={createNewProject}><Plus size={14} /> New</button>
+          <button className={styles.projectImportButton} onClick={() => projectFileInputRef.current?.click()}><FolderOpen size={14} /> Open</button>
+          <button className={styles.projectImportButton} onClick={() => setRecentProjectsOpen((open) => !open)} aria-expanded={recentProjectsOpen}><Clock3 size={14} /> Recent</button>
+          <input ref={projectFileInputRef} type="file" accept=".sushistudio,.json,application/json" hidden onChange={handleProjectImport} />
+          <button className={styles.exportButton} onClick={saveProjectFile}><Upload size={16} /> Save</button>
           <button className={styles.renderButton} onClick={renderTimeline} disabled={rendering}>
             <Film size={15} /> {rendering ? `Rendering ${Math.round(renderProgress * 100)}%` : "Render video"}
           </button>
           {rendering && <button className={styles.cancelRenderButton} onClick={cancelTimelineRender}>Cancel</button>}
         </div>
       </header>
+
+      {projectSettingsOpen && (
+        <section className={styles.projectSettingsPopover} role="dialog" aria-label="Project settings">
+          <div className={styles.sectionTitle}><strong>Project settings</strong><button onClick={() => setProjectSettingsOpen(false)} aria-label="Close project settings"><X size={14} /></button></div>
+          <p className={styles.projectSettingsNote}>Canvas is the final preview/render surface. Generate Width/Height are model output settings.</p>
+          <div className={styles.canvasFields}>
+            <label>Width<input type="number" min={64} max={8192} step={16} value={canvasDraft.width} onChange={(event) => updateCanvasDraft("width", event.target.value)} /></label>
+            <label>Height<input type="number" min={64} max={8192} step={16} value={canvasDraft.height} onChange={(event) => updateCanvasDraft("height", event.target.value)} /></label>
+          </div>
+          <div className={styles.canvasSliders}>
+            <label>Width<input type="range" min={64} max={8192} step={16} value={Number(canvasDraft.width) || project.width} onChange={(event) => updateCanvasDraft("width", event.target.value)} /></label>
+            <label>Height<input type="range" min={64} max={8192} step={16} value={Number(canvasDraft.height) || project.height} onChange={(event) => updateCanvasDraft("height", event.target.value)} /></label>
+          </div>
+          <label className={styles.toggleField}><span>Lock aspect ratio</span><input type="checkbox" checked={canvasAspectLocked} onChange={(event) => setCanvasAspectLocked(event.target.checked)} /></label>
+          <div className={styles.canvasPresets}>
+            {[{ label: "16:9", width: 1920, height: 1080 }, { label: "9:16", width: 1080, height: 1920 }, { label: "1:1", width: 1080, height: 1080 }].map((preset) => (
+              <button key={preset.label} onClick={() => { setCanvasAspectLocked(false); setCanvasDraft({ width: String(preset.width), height: String(preset.height) }); }}>{preset.label}</button>
+            ))}
+          </div>
+          <button className={styles.applySettingsButton} onClick={() => { commitCanvasSize(); setProjectSettingsOpen(false); }}>Apply canvas size</button>
+        </section>
+      )}
+      {recentProjectsOpen && (
+        <section className={styles.recentProjectsPopover} role="dialog" aria-label="Recent projects">
+          <div className={styles.sectionTitle}><strong>Recent projects</strong><button onClick={() => setRecentProjectsOpen(false)} aria-label="Close recent projects"><X size={14} /></button></div>
+          {!recentProjects.length && <small className={styles.emptyRecent}>No recent projects yet.</small>}
+          {recentProjects.map((entry) => (
+            <button key={entry.id} className={styles.recentProjectItem} onClick={() => void openRecentProject(entry)}>
+              <span><strong>{entry.name}</strong><small>{entry.width}×{entry.height} · {entry.assetCount} assets</small></span>
+              <time>{new Date(entry.updatedAt).toLocaleDateString()}</time>
+            </button>
+          ))}
+        </section>
+      )}
 
       <div className={styles.workbench}>
         <aside className={styles.mediaPane} aria-label="Media library">
@@ -2982,7 +3270,7 @@ export default function StudioWorkspace() {
                     event.dataTransfer.setData("application/x-studio-hold-still", "1");
                   }
                 }}
-                onClick={() => { selectAsset(asset); setSelectedClipId(null); }}
+                onClick={() => { selectAsset(asset); clearClipSelection(); }}
                 onDoubleClick={() => { void hydrateGalleryAsset(asset).then((hydrated) => addAssetToTimeline(hydrated)); }}
                 className={`${styles.assetCard} ${selectedAssetId === asset.id && !selectedClipId ? styles.selectedAsset : ""}`}
                 title={`${asset.name} — double-click to add to timeline`}
@@ -3061,7 +3349,7 @@ export default function StudioWorkspace() {
               </div>
             </div>
 
-            <div className={styles.timeline}>
+            <div className={`${styles.timeline} ${tool === "hand" ? styles.handTool : ""}`}>
               <div className={styles.trackHeaders}>
                 <div className={styles.rulerHeader}>TRACKS</div>
                 {project.tracks.map((track) => (
@@ -3076,6 +3364,7 @@ export default function StudioWorkspace() {
               <div
                 ref={timelineScrollRef}
                 className={styles.timelineScroll}
+                onPointerDown={beginTimelinePan}
                 onPointerDownCapture={handleTimelinePointerDownCapture}
                 onPointerMoveCapture={handleTimelinePointerMoveCapture}
                 onPointerUpCapture={finishTimelinePointer}
@@ -3112,7 +3401,7 @@ export default function StudioWorkspace() {
                             project.duration,
                             ((event.clientX - bounds.left) + (timelineScrollRef.current?.scrollLeft || 0)) / zoom,
                           )));
-                          setSelectedClipId(null);
+                          clearClipSelection();
                           setSelectedAssetId(null);
                         }
                       }}
@@ -3120,6 +3409,7 @@ export default function StudioWorkspace() {
                       {track.visible && activeClips.filter((clip) => clip.trackId === track.id).map((clip) => {
                         const asset = allAssets.find((item) => item.id === clip.assetId);
                         const clipFrameCount = Math.max(1, Math.round(clip.duration * project.fps));
+                        const dragCandidate = clipDragPreview?.clips.find((item) => item.clipId === clip.id);
                         return (
                           <div
                             key={clip.id}
@@ -3139,23 +3429,29 @@ export default function StudioWorkspace() {
                                 suppressClipClickRef.current = null;
                                 return;
                               }
-                              setSelectedClipId(clip.id);
+                              if (tool === "blade") {
+                                const bounds = event.currentTarget.getBoundingClientRect();
+                                const splitTime = clampTime(clip.start + (event.clientX - bounds.left) / zoom, project.duration);
+                                splitSelectedClip(clip, splitTime);
+                                return;
+                              }
+                              selectClip(clip.id, event.shiftKey);
                               setSelectedAssetId(clip.assetId);
                               setRightPane("inspector");
-                              if (tool === "blade") splitSelectedClip(clip);
                             }}
                             onKeyDown={(event) => {
                               if (event.key !== "Enter") return;
                               event.preventDefault();
-                              setSelectedClipId(clip.id);
+                              selectClip(clip.id, event.shiftKey);
                               setSelectedAssetId(clip.assetId);
                               setRightPane("inspector");
                             }}
-                            className={`${styles.timelineClip} ${asset?.kind === "audio" ? styles.audioClip : ""} ${clip.generated ? styles.generatedClip : ""} ${selectedClipId === clip.id ? styles.selectedClip : ""} ${selectedClipId && selectedClipId !== clip.id ? styles.dimmedClip : ""} ${clip.presentation === "frame" ? styles.stillClip : ""}`}
+                            className={`${styles.timelineClip} ${asset?.kind === "audio" ? styles.audioClip : ""} ${asset?.missing ? styles.missingClip : ""} ${clip.generated ? styles.generatedClip : ""} ${selectedClipIds.includes(clip.id) ? styles.selectedClip : ""} ${selectedClipIds.length > 0 && !selectedClipIds.includes(clip.id) ? styles.dimmedClip : ""} ${dragCandidate ? styles.draggingClip : ""} ${clip.presentation === "frame" ? styles.stillClip : ""}`}
                             style={{ left: clip.start * zoom, width: Math.max(18, clip.duration * zoom), backgroundImage: asset?.thumbnailUrl && asset.kind !== "audio" ? `linear-gradient(90deg, rgba(8,12,18,.42), rgba(8,12,18,.08)), url(${asset.thumbnailUrl})` : undefined, backgroundSize: clip.fitMode === "contain" ? "contain" : "cover", backgroundRepeat: "no-repeat" }}
                           >
                             <button className={styles.trimStart} onPointerDown={(event) => beginTrim(event, clip, "start")} aria-label={`Trim start of ${clip.name}`} title={asset?.kind === "image" && clip.presentation === "frame" ? "Ctrl/Cmd + drag to extend still" : `Trim start of ${clip.name}`} />
                             <span className={styles.clipName}>{clip.name}</span>
+                            {asset?.missing && <span className={styles.missingClipLabel}>Missing media</span>}
                             <span className={styles.clipInputControls} onPointerDown={(event) => event.stopPropagation()}>
                               {asset && asset.kind !== "audio" && (
                                 <label title="Use as keyframe">
@@ -3191,6 +3487,12 @@ export default function StudioWorkspace() {
                             )}
                           </div>
                         );
+                      })}
+                      {track.visible && clipDragPreview?.clips.filter((candidate) => candidate.trackId === track.id).map((candidate) => {
+                        const sourceClip = project.clips.find((item) => item.id === candidate.clipId);
+                        const asset = sourceClip ? allAssets.find((item) => item.id === sourceClip.assetId) : null;
+                        if (!sourceClip) return null;
+                        return <div key={`drag-ghost-${candidate.clipId}`} className={`${styles.timelineClip} ${styles.dragGhost} ${!clipDragPreview.valid ? styles.dragGhostInvalid : ""}`} style={{ left: candidate.start * zoom, width: Math.max(18, candidate.duration * zoom), backgroundImage: asset?.thumbnailUrl ? `url(${asset.thumbnailUrl})` : undefined }}><span className={styles.clipName}>{sourceClip.name}</span></div>;
                       })}
                     </div>
                   ))}
@@ -3243,14 +3545,6 @@ export default function StudioWorkspace() {
                 <div className={styles.modelLine}><strong>{currentModelName}</strong><span className={isBackendReady ? styles.ready : styles.unavailable}>{isBackendReady ? "READY" : "OFFLINE"}</span></div>
                 <small>{loadedArch || "No architecture"}</small>
               </section>
-              <section className={styles.canvasCard}>
-                <div className={styles.sectionTitle}><span>Project canvas</span><small>Output frame</small></div>
-                <div className={styles.canvasFields}>
-                  <label>Width<input type="number" min={64} max={8192} step={16} value={canvasDraft.width} onChange={(event) => setCanvasDraft((current) => ({ ...current, width: event.target.value }))} onBlur={commitCanvasSize} /></label>
-                  <label>Height<input type="number" min={64} max={8192} step={16} value={canvasDraft.height} onChange={(event) => setCanvasDraft((current) => ({ ...current, height: event.target.value }))} onBlur={commitCanvasSize} /></label>
-                </div>
-                <small className={styles.canvasNote}>Fixed for the timeline. Generation Width/Height below are model output settings; new media is fit to this canvas.</small>
-              </section>
               <section className={styles.resolvedModeCard}>
                 <span className={styles.eyebrow}>RESOLVED WORKFLOW</span>
                 <strong>{resolvedModeLabel[resolvedMode]}</strong>
@@ -3295,7 +3589,7 @@ export default function StudioWorkspace() {
               )}
               {selectedAsset?.kind === "image" && (
                 <section className={styles.inputCard}>
-                  <div className={styles.sectionTitle}><span>{isVideoModel ? "Image keyframe" : "Input image"}</span><button onClick={() => { setSelectedAssetId(null); setSelectedClipId(null); setImageInputMode("i2i"); }}><X size={12} /></button></div>
+                  <div className={styles.sectionTitle}><span>{isVideoModel ? "Image keyframe" : "Input image"}</span><button onClick={() => { setSelectedAssetId(null); clearClipSelection(); setImageInputMode("i2i"); }}><X size={12} /></button></div>
                   <div className={styles.keyframeSlot}>
                     {(selectedAsset.thumbnailUrl || selectedAsset.url)
                       ? <NextImage src={selectedAsset.thumbnailUrl || selectedAsset.url} alt="" width={74} height={48} unoptimized />

@@ -90,13 +90,31 @@ Every one of the four component loads runs the state dict through
 ``core.models.common.quantized_checkpoint_guard`` BEFORE any tensor is
 installed: the DiT through ``quantized_state_dict_report`` +
 ``scaled_quantization_report`` + ``verify_quantized_swap`` (it supports the
-scaled layout), and the TE and both VAEs through ``refuse_quantized_state_dict``
-(they have no swap path, so a quantized file must be refused rather than cast).
-The DiT additionally accepts the exact released ``int8_tensorwise`` ConvRot
-contract (groupsize 256) and executes its online activation rotation through
-Comfy-Kitchen; other ConvRot declarations remain refused. Packed
-``asym_w4a8_int8`` DiTs are handled separately from file-level metadata.
-``_assert_guard_reached`` pins the remaining guard property in code.
+scaled layout), the TE through the same census/verify pattern restricted to
+its non-ConvRot layers (see below), and both VAEs through
+``refuse_quantized_state_dict`` (they have no swap path at all, so a
+quantized file must be refused rather than cast).
+
+Both the DiT and the TE additionally accept the exact released
+``int8_tensorwise`` ConvRot contract (groupsize 256) and execute its online
+activation rotation through Comfy-Kitchen (``ConvRotInt8Linear``); other
+ConvRot declarations remain refused. The TE additionally accepts the exact
+released ``nvfp4`` / ``full_precision_matrix_mult`` AWQ contract on its
+co-distributed ``nvfp4_awq`` file: the AWQ smoothing already folded into
+``input_layernorm`` / ``post_attention_layernorm`` is loaded as-is (no
+un-smoothing needed -- the file is self-consistent), and the ``.pre_quant_scale``
+vectors that exist only on ``self_attn.o_proj`` / ``mlp.down_proj`` (the two
+Linears per decoder layer with nowhere upstream to fold the smoothing into) are
+installed on a dedicated ``Nvfp4Linear`` and applied to the ACTIVATION at
+inference (see ``core.models.common.nvfp4_linear`` and
+``scratchpad/minimax_h3_te_nvfp4_verification.md``). That file's
+``model.embed_tokens`` carries a THIRD, unrelated ``int8_tensorwise`` (no
+rotation) contract on an ``nn.Embedding`` rather than an ``nn.Linear``, handled
+by a dedicated gather-then-scale ``Int8Embedding``
+(``core.models.common.int8_embedding``). Every other quantization declaration
+on the TE remains refused. Packed ``asym_w4a8_int8`` DiTs are handled
+separately from file-level metadata. ``_assert_guard_reached`` pins the
+remaining guard property in code.
 """
 
 from __future__ import annotations
@@ -106,7 +124,7 @@ import math
 import os
 import struct
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, FrozenSet, List, Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -138,8 +156,28 @@ MINIMAX_H3_AUDIO_VAE_PATTERNS: List[str] = [
     "minimax_h3_audio_vae_fp16.safetensors",
 ]
 MINIMAX_H3_TE_PATTERNS: List[str] = [
+    "qwen3vl_32b_minimax_h3_int8_convrot.safetensors",
     "qwen3vl_32b_minimax_h3_bf16.safetensors",
+    "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
 ]
+
+# ``.comfy_quant`` "format" strings (see ``quantized_checkpoint_guard.py``)
+# whose TEXT ENCODER weights ``_build_text_encoder`` can actually install.
+# ``int8_tensorwise`` (the co-distributed ConvRot file, groupsize 256) is
+# installable: ``_build_text_encoder`` accepts the same exact contract the DiT
+# builder does (``_supported_int8_convrot_marker``) and swaps in
+# ``ConvRotInt8Linear`` before ``load_state_dict``. ``nvfp4`` (the
+# co-distributed ``nvfp4_awq`` file) is installable too: ``_build_text_encoder``
+# validates the exact released contract (``_supported_h3_nvfp4_marker``) and
+# swaps in ``Nvfp4Linear``; its ``model.embed_tokens`` layer is a separate,
+# always-installable ``int8_tensorwise`` (no rotation) ``nn.Embedding`` contract
+# handled by ``Int8Embedding`` regardless of which TE file is selected. This
+# frozenset only gates ``_te_capability_accept``'s header-only "is a quantized
+# file loadable at all" predicate (it does not itself discriminate by format
+# string -- see that function); a later TE quant contract this loader cannot
+# yet install still needs its own ``_supported_h3_*_marker`` validator and swap
+# path before adding its format string here would be honest.
+MINIMAX_H3_TE_LOADABLE_QUANT_FORMATS: FrozenSet[str] = frozenset({"int8_tensorwise", "nvfp4"})
 
 # Sibling directory names probed for MiniMax's config-only tree (configs +
 # tokenizer + processor). ``official`` is what the download script produces.
@@ -267,8 +305,10 @@ def _is_h3_model_index(directory: Path) -> bool:
         return False
 
 
-def detect_minimax_h3_layout(path: str) -> Optional[Dict[str, Optional[str]]]:
-    """``{dit, vae, audio_vae, text_encoder, official, root, variant}`` or ``None``.
+def detect_minimax_h3_layout(
+    path: str, *, te_override: Optional[str] = None,
+) -> Optional[Dict[str, Optional[str]]]:
+    """``{dit, vae, audio_vae, text_encoder, official, root, variant, text_encoder_reason}`` or ``None``.
 
     Accepts three spellings of the same tree:
 
@@ -278,7 +318,23 @@ def detect_minimax_h3_layout(path: str) -> Optional[Dict[str, Optional[str]]]:
       ``model_index.json`` whose ``_class_name`` is ``MiniMaxH3ModularPipeline``
       -- resolved to its parent when that parent holds the weights, because
       ``official/`` alone has none.
+
+    ``te_override``, when given, names the exact text encoder file to use,
+    symmetric with the DiT ``.safetensors``-path spelling of ``path`` above: an
+    explicit request bypasses ``MINIMAX_H3_TE_PATTERNS`` and the loadability
+    predicate entirely, because naming a file IS the caller's decision, not
+    ours to second-guess. It is still validated here (existence + extension)
+    so a typo fails with a message naming the bad path, rather than as a
+    downstream "missing text_encoder" that does not mention it.
     """
+    te_override_path: Optional[Path] = None
+    if te_override is not None:
+        te_override_path = Path(te_override)
+        if not te_override_path.is_file() or te_override_path.suffix != ".safetensors":
+            raise FileNotFoundError(
+                f"MiniMax-H3 text_encoder override {te_override!r} is not an existing "
+                f".safetensors file")
+
     if not path:
         return None
     p = Path(path)
@@ -287,7 +343,7 @@ def detect_minimax_h3_layout(path: str) -> Optional[Dict[str, Optional[str]]]:
     if p.is_file() and p.suffix == ".safetensors":
         for parent in p.parents:
             if (parent / "diffusion_models").is_dir():
-                return _layout_from_root(parent, dit_override=p)
+                return _layout_from_root(parent, dit_override=p, te_override=te_override_path)
         return None
     if not p.is_dir():
         return None
@@ -302,13 +358,74 @@ def detect_minimax_h3_layout(path: str) -> Optional[Dict[str, Optional[str]]]:
         # detection is honest about WHAT this is) with every weight slot None;
         # the loader turns that into a message naming the missing files.
         return {"dit": None, "vae": None, "audio_vae": None, "text_encoder": None,
+                "text_encoder_reason": None,
                 "official": str(p), "root": str(p), "variant": None}
     if root is None:
         return None
-    return _layout_from_root(root)
+    return _layout_from_root(root, te_override=te_override_path)
 
 
-def _layout_from_root(root: Path, dit_override: Optional[Path] = None) -> Optional[Dict[str, Optional[str]]]:
+def _te_capability_accept(path: Path) -> bool:
+    """HEADER-ONLY: can ``_build_text_encoder`` actually load ``path`` today?
+
+    Zero tensor bytes are read (the JSON a ``.comfy_quant`` marker carries lives
+    in the tensor BODY, and deciding "is this file quantized" needs only the
+    header's key names). Any of the three markers a quantized Comfy-Org text
+    encoder distribution carries -- ``.comfy_quant``, ``.pre_quant_scale``, or a
+    ``.weight_scale`` beside its ``.weight`` -- is treated as positive evidence
+    of quantization; ``_build_text_encoder`` calls
+    ``refuse_quantized_state_dict``/``refuse_unsupported_quant_semantics``
+    unconditionally, so a file with any of that evidence would be refused at
+    load time regardless of which specific format it declares. The only escape
+    is a non-empty ``MINIMAX_H3_TE_LOADABLE_QUANT_FORMATS`` -- consulted here,
+    the single named place -- which is empty until a TE quant decode path
+    exists.
+    """
+    header = read_safetensors_header(str(path))
+    header.pop("__metadata__", None)
+    quantized = any(
+        key.endswith(".comfy_quant") or key.endswith(".pre_quant_scale")
+        or key.endswith(".weight_scale")
+        for key in header
+    )
+    if not quantized:
+        return True
+    return bool(MINIMAX_H3_TE_LOADABLE_QUANT_FORMATS)
+
+
+def _te_selection_reason(directory: Path, selected: Optional[Path]) -> Optional[str]:
+    """Why ``selected`` (or nothing) is the resolved text encoder, for the log.
+
+    Distinguishes "the most-preferred candidate was used" from "a
+    less-preferred one was used because a more-preferred file exists on disk
+    but ``_te_capability_accept`` rejected it" -- so a user expecting int8 and
+    silently getting bf16 can see why from the loader's own log line, instead
+    of having to diff directory listings against ``MINIMAX_H3_TE_PATTERNS``.
+    """
+    if selected is None:
+        return "no text encoder file found"
+    for idx, pattern in enumerate(MINIMAX_H3_TE_PATTERNS):
+        if directory / pattern == selected:
+            if idx == 0:
+                return "preferred"
+            skipped_present = [
+                other for other in MINIMAX_H3_TE_PATTERNS[:idx]
+                if (directory / other).is_file()
+            ]
+            if skipped_present:
+                return (
+                    f"fell back past {', '.join(skipped_present)} (present but not "
+                    f"loadable by this build -- see MINIMAX_H3_TE_LOADABLE_QUANT_FORMATS)"
+                )
+            return "preferred candidate(s) not present"
+    return "resolved via glob fallback, no listed filename matched"
+
+
+def _layout_from_root(
+    root: Path,
+    dit_override: Optional[Path] = None,
+    te_override: Optional[Path] = None,
+) -> Optional[Dict[str, Optional[str]]]:
     # The DiT slot is filtered by the SAME key-name signature detection uses, so
     # the file this resolves and the file that made the tree detect as MiniMax-H3
     # are always the same one.
@@ -323,7 +440,13 @@ def _layout_from_root(root: Path, dit_override: Optional[Path] = None) -> Option
     # when only one of the two is present; a video VAE is not an audio VAE.
     if vae is not None and audio_vae is not None and vae == audio_vae:
         audio_vae = None
-    te = _find_first(root / "text_encoders", MINIMAX_H3_TE_PATTERNS)
+    te_dir = root / "text_encoders"
+    if te_override is not None:
+        te = te_override
+        te_reason: Optional[str] = "explicit override"
+    else:
+        te = _find_first(te_dir, MINIMAX_H3_TE_PATTERNS, accept=_te_capability_accept)
+        te_reason = _te_selection_reason(te_dir, te)
     name = dit.name.lower()
     variant = "ref2va" if "ref2va" in name else ("fl2va" if "fl2va" in name else None)
     return {
@@ -331,6 +454,7 @@ def _layout_from_root(root: Path, dit_override: Optional[Path] = None) -> Option
         "vae": str(vae) if vae else None,
         "audio_vae": str(audio_vae) if audio_vae else None,
         "text_encoder": str(te) if te else None,
+        "text_encoder_reason": te_reason,
         "official": _resolve_official_dir(root),
         "root": str(root),
         "variant": variant,
@@ -919,11 +1043,152 @@ def _supported_int8_convrot_marker(
     return {"convrot_groupsize": 256, "marker_numel": int(marker.numel())}
 
 
+# Decoder layers whose input does NOT come from a layernorm, so the co-
+# distributed NVFP4/AWQ file's smoothing scale has nowhere upstream to fold
+# into and is stored explicitly as ``.pre_quant_scale`` instead (see
+# ``scratchpad/minimax_h3_te_nvfp4_verification.md``, section E). Named here,
+# not inlined, because both the marker validator and its test must agree on
+# EXACTLY these two suffixes.
+_H3_NVFP4_PRE_QUANT_SCALE_LAYER_SUFFIXES = (".self_attn.o_proj", ".mlp.down_proj")
+
+
+def _supported_h3_nvfp4_marker(
+    key: str,
+    marker: torch.Tensor,
+    header: Dict[str, Any],
+    *,
+    path: str,
+) -> Optional[Dict[str, Any]]:
+    """Validate the one NVFP4/AWQ contract implemented by the H3 TE loader.
+
+    Verified against the real file at the noise floor of 4-bit block-scaled
+    quantization (cos ~0.9955-0.9957, relFrob ~0.0925-0.0949) -- see
+    ``scratchpad/minimax_h3_te_nvfp4_verification.md``. Refuses (returns
+    ``None``, which the caller treats as an unrecognized marker, still
+    refused by the generic guard) a ``.pre_quant_scale`` on any layer other
+    than ``self_attn.o_proj`` / ``mlp.down_proj``, and a MISSING one on those
+    two -- not a blanket bypass of the AWQ contract, the exact one measured.
+    """
+    from core.models.common.quantized_checkpoint_guard import decode_comfy_quant_marker
+
+    parsed = decode_comfy_quant_marker(marker)
+    if parsed != {"format": "nvfp4", "full_precision_matrix_mult": True}:
+        return None
+    layer = key[: -len(".comfy_quant")]
+    weight = header.get(layer + ".weight")
+    scale = header.get(layer + ".weight_scale")
+    scale_2 = header.get(layer + ".weight_scale_2")
+    if not isinstance(weight, dict) or not isinstance(scale, dict) or not isinstance(scale_2, dict):
+        raise ValueError(
+            f"{path}: NVFP4 layer '{layer}' is missing weight, weight_scale or weight_scale_2"
+        )
+    shape = weight.get("shape", [])
+    if weight.get("dtype") != "U8" or not isinstance(shape, list) or len(shape) != 2:
+        raise ValueError(f"{path}: NVFP4 layer '{layer}' weight must be 2-D U8")
+    out_features, packed_k = (int(x) for x in shape)
+    # ``packed_k`` is K/2 (two E2M1 codes per byte). Requiring it divisible by
+    # 8 is exactly requiring K divisible by 16, the block size -- the "K/2 and
+    # K/16 divisibility" the task specifies collapse to this one check.
+    if packed_k % 8:
+        raise ValueError(
+            f"{path}: NVFP4 layer '{layer}' packed K/2={packed_k} is not divisible by 8 "
+            f"(K={packed_k * 2} would not be divisible by the block size 16)"
+        )
+    in_features = packed_k * 2
+    scale_shape = list(scale.get("shape", []))
+    if scale.get("dtype") != "F8_E4M3" or scale_shape != [out_features, in_features // 16]:
+        raise ValueError(
+            f"{path}: NVFP4 layer '{layer}' weight_scale must be F8_E4M3 "
+            f"[{out_features}, {in_features // 16}], got {scale.get('dtype')} {scale_shape}"
+        )
+    scale_2_shape = list(scale_2.get("shape", []))
+    if scale_2.get("dtype") != "F32" or scale_2_shape not in ([], [1]):
+        raise ValueError(
+            f"{path}: NVFP4 layer '{layer}' weight_scale_2 must be a scalar F32, "
+            f"got {scale_2.get('dtype')} {scale_2_shape}"
+        )
+    pqs_key = layer + ".pre_quant_scale"
+    pqs = header.get(pqs_key)
+    is_smoothing_source_layer = layer.endswith(_H3_NVFP4_PRE_QUANT_SCALE_LAYER_SUFFIXES)
+    if pqs is not None:
+        if not is_smoothing_source_layer:
+            raise ValueError(
+                f"{path}: NVFP4 layer '{layer}' carries '{pqs_key}', but only "
+                f"{_H3_NVFP4_PRE_QUANT_SCALE_LAYER_SUFFIXES} layers are validated to have "
+                f"one -- refusing rather than silently ignoring an AWQ scale on a layer "
+                f"this build has never seen it on"
+            )
+        pqs_shape = list(pqs.get("shape", []))
+        if pqs.get("dtype") != "BF16" or pqs_shape != [in_features]:
+            raise ValueError(
+                f"{path}: NVFP4 layer '{layer}' pre_quant_scale must be BF16 "
+                f"[{in_features}], got {pqs.get('dtype')} {pqs_shape}"
+            )
+    elif is_smoothing_source_layer:
+        raise ValueError(
+            f"{path}: NVFP4 layer '{layer}' matches {_H3_NVFP4_PRE_QUANT_SCALE_LAYER_SUFFIXES} "
+            f"but carries no '{pqs_key}' -- its input does not come from a layernorm, so "
+            f"the AWQ smoothing has nowhere to have been folded and must be present"
+        )
+    return {
+        "in_features": in_features,
+        "out_features": out_features,
+        "has_pre_quant_scale": pqs is not None,
+        "marker_numel": int(marker.numel()),
+    }
+
+
+def _supported_h3_int8_embedding_marker(
+    key: str,
+    marker: torch.Tensor,
+    header: Dict[str, Any],
+    *,
+    path: str,
+) -> Optional[Dict[str, Any]]:
+    """Validate the plain (non-rotated) int8 ``nn.Embedding`` contract.
+
+    The co-distributed NVFP4/AWQ file's ``model.embed_tokens`` carries this --
+    a SEPARATE contract from the ``nvfp4`` one above, on an ``nn.Embedding``
+    rather than an ``nn.Linear`` (see ``scratchpad/minimax_h3_te_nvfp4_verification.md``,
+    section A). Its marker declares only ``{"format": "int8_tensorwise"}``
+    (no ``"convrot"`` key), which the GENERIC guard already treats as an
+    ordinary per-row-scaled tensor and does not refuse -- this validator exists
+    to identify the layer for ``Int8Embedding``'s gather-then-scale swap, not
+    to waive anything the generic guard would otherwise block.
+    """
+    from core.models.common.quantized_checkpoint_guard import decode_comfy_quant_marker
+
+    parsed = decode_comfy_quant_marker(marker)
+    if parsed != {"format": "int8_tensorwise"}:
+        return None
+    layer = key[: -len(".comfy_quant")]
+    weight = header.get(layer + ".weight")
+    scale = header.get(layer + ".weight_scale")
+    if not isinstance(weight, dict) or not isinstance(scale, dict):
+        raise ValueError(f"{path}: INT8 embedding '{layer}' is missing weight or weight_scale")
+    shape = weight.get("shape", [])
+    if weight.get("dtype") != "I8" or not isinstance(shape, list) or len(shape) != 2:
+        raise ValueError(f"{path}: INT8 embedding '{layer}' weight must be 2-D I8")
+    num_embeddings, embedding_dim = (int(x) for x in shape)
+    scale_shape = list(scale.get("shape", []))
+    if scale.get("dtype") != "F32" or scale_shape not in ([num_embeddings], [num_embeddings, 1]):
+        raise ValueError(
+            f"{path}: INT8 embedding '{layer}' weight_scale must be F32 "
+            f"[{num_embeddings}] or [{num_embeddings}, 1], got {scale.get('dtype')} {scale_shape}"
+        )
+    return {
+        "num_embeddings": num_embeddings,
+        "embedding_dim": embedding_dim,
+        "marker_numel": int(marker.numel()),
+    }
+
+
 def _guard_component_file(
     path: str,
     *,
     label: str,
     allow_h3_int8_convrot: bool = False,
+    allow_h3_nvfp4: bool = False,
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """THE FIRST STATEMENT of every component builder.
 
@@ -947,17 +1212,24 @@ def _guard_component_file(
     header actually declares ``.comfy_quant`` markers -- so the 48 GiB text
     encoder is not mapped at all on the ordinary path. ``.pre_quant_scale`` needs
     no bytes; a zero-element dtype proxy is enough for the guard to see it.
+
+    ``allow_h3_nvfp4`` waives the ONE exact NVFP4/AWQ contract
+    ``_supported_h3_nvfp4_marker`` validates: a marker exactly matching it is
+    excluded from the probe, and so is its ``.pre_quant_scale`` sidecar (but
+    ONLY when that marker's own layer is one the validator confirmed is
+    allowed to carry one, ``self_attn.o_proj`` / ``mlp.down_proj`` --
+    ``.pre_quant_scale`` on any other layer, or one the marker validator
+    otherwise rejects, still hits the probe and refuses exactly as before).
+    ``model.embed_tokens``'s separate ``int8_tensorwise`` (no rotation) marker
+    needs no flag here: the generic guard already treats a known, unrotated
+    format as an ordinary scaled tensor and does not refuse it.
     """
     header = read_safetensors_header(path)
     metadata = header.pop("__metadata__", None) or {}
 
     probe: Dict[str, torch.Tensor] = {}
     marker_keys = [k for k in header if k.endswith(".comfy_quant")]
-    for key, entry in header.items():
-        if key.endswith(".pre_quant_scale"):
-            dtype = _HEADER_DTYPES.get((entry or {}).get("dtype"), torch.float32) \
-                if isinstance(entry, dict) else torch.float32
-            probe[key] = torch.empty(0, dtype=dtype)
+    validated_nvfp4_layers: Dict[str, Dict[str, Any]] = {}
     if marker_keys:
         from safetensors import safe_open
 
@@ -971,7 +1243,22 @@ def _guard_component_file(
                     ) is not None
                 ):
                     continue
+                if allow_h3_nvfp4:
+                    nvfp4_config = _supported_h3_nvfp4_marker(key, marker, header, path=path)
+                    if nvfp4_config is not None:
+                        validated_nvfp4_layers[key[: -len(".comfy_quant")]] = nvfp4_config
+                        continue
                 probe[key] = marker
+    for key, entry in header.items():
+        if not key.endswith(".pre_quant_scale"):
+            continue
+        layer = key[: -len(".pre_quant_scale")]
+        validated_config = validated_nvfp4_layers.get(layer)
+        if validated_config is not None and validated_config.get("has_pre_quant_scale"):
+            continue
+        dtype = _HEADER_DTYPES.get((entry or {}).get("dtype"), torch.float32) \
+            if isinstance(entry, dict) else torch.float32
+        probe[key] = torch.empty(0, dtype=dtype)
     if probe:
         _assert_guard_reached(probe, label=label, path=path)
     return header, metadata
@@ -989,6 +1276,42 @@ def _int8_convrot_layers_from_markers(
         if not key.endswith(".comfy_quant"):
             continue
         config = _supported_int8_convrot_marker(
+            key, handle.get_tensor(key), header, path=path
+        )
+        if config is not None:
+            layers[key[: -len(".comfy_quant")]] = config
+    return layers
+
+
+def _h3_nvfp4_layers_from_markers(
+    handle,
+    header: Dict[str, Any],
+    *,
+    path: str,
+) -> Dict[str, Dict[str, Any]]:
+    """Return source-layer configs for validated H3 NVFP4/AWQ marker tensors."""
+    layers: Dict[str, Dict[str, Any]] = {}
+    for key in header:
+        if not key.endswith(".comfy_quant"):
+            continue
+        config = _supported_h3_nvfp4_marker(key, handle.get_tensor(key), header, path=path)
+        if config is not None:
+            layers[key[: -len(".comfy_quant")]] = config
+    return layers
+
+
+def _h3_int8_embedding_layers_from_markers(
+    handle,
+    header: Dict[str, Any],
+    *,
+    path: str,
+) -> Dict[str, Dict[str, Any]]:
+    """Return source-layer configs for validated H3 plain-int8 embedding markers."""
+    layers: Dict[str, Dict[str, Any]] = {}
+    for key in header:
+        if not key.endswith(".comfy_quant"):
+            continue
+        config = _supported_h3_int8_embedding_marker(
             key, handle.get_tensor(key), header, path=path
         )
         if config is not None:
@@ -1557,7 +1880,19 @@ def _rewrite_te_key(key: str) -> str:
 
     The file uses the older flat Qwen3-VL naming; the installed transformers
     expects the language model and the vision tower under ``model.``.
+
+    ``key == "model.embed_tokens"`` (no trailing dot) is handled explicitly,
+    not only ``"model.embed_tokens."``: the INT8-embedding marker layer
+    configs are keyed by the LAYER STEM (``.comfy_quant``/``.weight`` stripped
+    off), which for this one module IS the whole tensor-name prefix with
+    nothing after it -- unlike every ``model.layers.N....`` stem, which always
+    has more path after the prefix. Without this branch the stem would fail
+    BOTH ``startswith`` checks and pass through unmodified, mapping the
+    embedding swap's config key to the file's flat name instead of the built
+    model's ``model.language_model.embed_tokens`` path.
     """
+    if key == "model.embed_tokens":
+        return "model.language_model.embed_tokens"
     if key.startswith("model.layers."):
         return "model.language_model.layers." + key[len("model.layers."):]
     if key.startswith("model.embed_tokens."):
@@ -1633,6 +1968,16 @@ def _build_text_encoder(te_path: str, official_dir: Optional[str]):
 
     The dtype stays the file's bf16. It is NOT cast here, because a cast is a
     copy and a copy is the failure above.
+
+    ConvRot-swapped layers keep this property. The int8 ``.weight`` and the
+    ``.comfy_quant`` marker are installed exactly as ``safe_open`` returns
+    them; the only transform is ``.weight_scale.reshape(-1)`` on a `[out, 1]`
+    tensor, which PyTorch resolves as a stride-only view (an ``[out, 1]``
+    C-contiguous tensor is always reshapeable to ``[out]`` without a copy), so
+    no new storage is allocated even for that one. Nothing here reads the int8
+    codes into a dense fp32/bf16 dequantized weight -- the point of ConvRot at
+    inference is that comfy-kitchen's kernel consumes the codes and the scale
+    directly (see ``ConvRotInt8Linear.forward``).
     """
     import weakref
 
@@ -1640,13 +1985,23 @@ def _build_text_encoder(te_path: str, official_dir: Optional[str]):
     from safetensors import safe_open
     from transformers import Qwen3VLConfig, Qwen3VLForConditionalGeneration
 
-    from core.models.common.quantized_checkpoint_guard import refuse_quantized_state_dict
+    from core.models.common.quantized_checkpoint_guard import (
+        quantized_state_dict_report, scaled_quantization_report, verify_quantized_swap,
+    )
 
     # THE GUARD FIRST -- ahead of the double-mapping check and both config reads.
     # The co-distributed `qwen3vl_32b_minimax_h3_int8_convrot` / `_nvfp4_awq`
-    # text encoders are exactly what it exists for, and a reload that also
-    # tripped `_refuse_double_mapping` would otherwise answer with THAT.
-    header, metadata = _guard_component_file(te_path, label="text encoder")
+    # text encoders are exactly what it exists for. `allow_h3_int8_convrot`
+    # waives only the one exact ConvRot contract this builder goes on to
+    # install (`_supported_int8_convrot_marker`, same validation the DiT
+    # builder runs); `allow_h3_nvfp4` waives the one exact NVFP4/AWQ contract
+    # (`_supported_h3_nvfp4_marker`) below. `model.embed_tokens`'s separate
+    # plain int8 marker needs no flag (see `_guard_component_file`). A reload
+    # that also tripped `_refuse_double_mapping` would otherwise answer with
+    # THAT.
+    header, metadata = _guard_component_file(
+        te_path, label="text encoder", allow_h3_int8_convrot=True, allow_h3_nvfp4=True,
+    )
 
     _refuse_double_mapping(te_path)
 
@@ -1684,10 +2039,175 @@ def _build_text_encoder(te_path: str, official_dir: Optional[str]):
         model = Qwen3VLForConditionalGeneration(config)
 
     with safe_open(te_path, framework="pt", device="cpu") as handle:
+        int8_convrot_source_layers = _int8_convrot_layers_from_markers(
+            handle, header, path=te_path
+        )
+        nvfp4_source_layers = _h3_nvfp4_layers_from_markers(handle, header, path=te_path)
+        int8_embedding_source_layers = _h3_int8_embedding_layers_from_markers(
+            handle, header, path=te_path
+        )
+        # Unlike the DiT's fused `qkv_proj`, every quantized TE Linear is
+        # already a single Linear -- marker coverage is exactly
+        # self_attn.{q,k,v,o}_proj and mlp.{gate,up,down}_proj on all 50
+        # decoder layers, no fused projection among them (measured; see
+        # scratchpad/minimax_h3_te_convrot_verification.md /
+        # scratchpad/minimax_h3_te_nvfp4_verification.md) -- so the source
+        # key rewritten through `_rewrite_te_key` IS the target module path;
+        # no fan-out helper like `_mapped_int8_convrot_layer_configs` is
+        # needed. Same for `model.embed_tokens` (a single fixed path).
+        int8_convrot_layer_configs = {
+            _rewrite_te_key(source): dict(cfg)
+            for source, cfg in int8_convrot_source_layers.items()
+        }
+        nvfp4_layer_configs = {
+            _rewrite_te_key(source): dict(cfg)
+            for source, cfg in nvfp4_source_layers.items()
+        }
+        int8_embedding_layer_configs = {
+            _rewrite_te_key(source): dict(cfg)
+            for source, cfg in int8_embedding_source_layers.items()
+        }
+        if int8_convrot_layer_configs:
+            from core.models.common.convrot_int8_linear import require_convrot_int8_runtime
+
+            require_convrot_int8_runtime()
+        if nvfp4_layer_configs:
+            from core.models.common.nvfp4_linear import require_nvfp4_runtime
+
+            require_nvfp4_runtime()
+
         state_dict = {_rewrite_te_key(k): handle.get_tensor(k) for k in header}
-        refuse_quantized_state_dict(
-            state_dict, arch="MiniMax-H3", path=te_path, label="text encoder")
-        _assert_guard_reached(state_dict, label="text encoder", path=te_path)
+
+        # `Int8Linear.weight_scale` (the base class `ConvRotInt8Linear` swaps
+        # in) registers `(out_features,)`; the marker-validated file stores
+        # `[out, 1]` (`_supported_int8_convrot_marker` accepts both, the
+        # narrower of which this file uses). Reshaped here, on the very
+        # tensors both the swap below and the `load_state_dict` after it read,
+        # so the two cannot disagree about which shape is expected -- squeezing
+        # a copy elsewhere is exactly the "obvious fix" the module docstring
+        # above warns turns every guard green on a rotated model. `Int8Embedding`
+        # has the identical `(num_embeddings,)` vs `[num_embeddings, 1]` shape
+        # gap; `Nvfp4Linear.weight_scale` needs NO reshape, it already stores
+        # `[out, K/16]`, matching the module's buffer shape exactly.
+        for layer in int8_convrot_layer_configs:
+            scale_key = layer + ".weight_scale"
+            scale = state_dict.get(scale_key)
+            if scale is not None:
+                state_dict[scale_key] = scale.reshape(-1)
+        for layer in int8_embedding_layer_configs:
+            scale_key = layer + ".weight_scale"
+            scale = state_dict.get(scale_key)
+            if scale is not None:
+                state_dict[scale_key] = scale.reshape(-1)
+
+        swappable_layer_configs = {
+            **int8_convrot_layer_configs, **nvfp4_layer_configs,
+        }
+
+        # The early header guard validated every supported ConvRot/NVFP4
+        # marker. Keep those markers as live module state (`ConvRotInt8Linear`
+        # / `Nvfp4Linear`'s own `comfy_quant` buffer); every other declaration
+        # still passes through the generic refusal before any tensor is
+        # installed. `model.embed_tokens`'s marker is left in (its plain,
+        # unrotated `int8_tensorwise` declaration does not trip the generic
+        # refusal -- see `_guard_component_file`).
+        guard_state_dict = {
+            key: value for key, value in state_dict.items()
+            if not (
+                key.endswith(".comfy_quant")
+                and key[: -len(".comfy_quant")] in swappable_layer_configs
+            )
+        }
+        _assert_guard_reached(guard_state_dict, label="text encoder", path=te_path)
+
+        # This builder swaps ONLY the validated ConvRot/NVFP4 Linears and the
+        # validated plain-int8 embedding -- there is no Int8Linear/Fp8Linear
+        # swap for anything else on this component, unlike the DiT. Excluding
+        # those layers and running the DiT's own census+verify pattern on the
+        # remainder (with an always-0 swap count, since nothing else here is
+        # swappable) still catches a scale-only or unscaled quantized tensor
+        # the header guard above did not recognize, instead of letting
+        # `load_state_dict` cast its codes into a bf16 parameter -- the exact
+        # silent failure this module exists to prevent.
+        excluded_prefixes = tuple(
+            name + "." for name in (*swappable_layer_configs, *int8_embedding_layer_configs)
+        )
+        scaled_state_dict = {
+            key: value for key, value in state_dict.items()
+            if not excluded_prefixes or not key.startswith(excluded_prefixes)
+        }
+        census = quantized_state_dict_report(
+            scaled_state_dict, arch="MiniMax-H3", path=te_path, label="text encoder")
+        report = scaled_quantization_report(
+            census, arch="MiniMax-H3", path=te_path, label="text encoder")
+        verify_quantized_swap(
+            report, 0, arch="MiniMax-H3", path=te_path, label="text encoder")
+
+        # Plain provenance markers have served their purpose. ConvRot/NVFP4
+        # modules retain theirs so a state_dict/export cannot lose the
+        # rotation/AWQ contract. `Int8Embedding` retains its own for the same
+        # provenance reason.
+        retained_marker_layers = {
+            **swappable_layer_configs, **int8_embedding_layer_configs,
+        }
+        state_dict = {
+            key: value for key, value in state_dict.items()
+            if not key.endswith(".comfy_quant")
+            or key[: -len(".comfy_quant")] in retained_marker_layers
+        }
+
+        if int8_convrot_layer_configs:
+            from core.models.common.convrot_int8_linear import swap_linears_to_convrot_int8
+
+            # The file's own dtype (bf16, never cast -- see the docstring
+            # above); `compute_dtype` only feeds a bias buffer this arch's
+            # quantized layers do not have (Qwen3-VL's q/k/v/o_proj,
+            # gate/up/down_proj all carry `attention_bias=False` / no MLP
+            # bias here).
+            convrot_swapped = swap_linears_to_convrot_int8(
+                model, state_dict, int8_convrot_layer_configs, torch.bfloat16
+            )
+            if convrot_swapped != len(int8_convrot_layer_configs):
+                raise RuntimeError(
+                    f"the MiniMax-H3 text encoder ({te_path}) ConvRot metadata mapped "
+                    f"{len(int8_convrot_layer_configs)} Linear(s), but only "
+                    f"{convrot_swapped} module(s) were replaced -- the marker's module "
+                    f"paths and the built Qwen3-VL model disagree")
+            print(f"[MiniMaxH3Loader] text encoder: {convrot_swapped} ConvRot INT8 "
+                  f"Linear(s) kept quantized (comfy-kitchen online activation rotation)")
+
+        if nvfp4_layer_configs:
+            from core.models.common.nvfp4_linear import swap_linears_to_nvfp4
+
+            nvfp4_swapped = swap_linears_to_nvfp4(
+                model, state_dict, nvfp4_layer_configs, torch.bfloat16
+            )
+            if nvfp4_swapped != len(nvfp4_layer_configs):
+                raise RuntimeError(
+                    f"the MiniMax-H3 text encoder ({te_path}) NVFP4 metadata mapped "
+                    f"{len(nvfp4_layer_configs)} Linear(s), but only "
+                    f"{nvfp4_swapped} module(s) were replaced -- the marker's module "
+                    f"paths and the built Qwen3-VL model disagree")
+            with_pqs = sum(1 for cfg in nvfp4_layer_configs.values() if cfg.get("has_pre_quant_scale"))
+            print(f"[MiniMaxH3Loader] text encoder: {nvfp4_swapped} NVFP4 Linear(s) kept "
+                  f"quantized ({with_pqs} with AWQ pre_quant_scale on the activation, "
+                  f"comfy-kitchen dequant-on-device)")
+
+        if int8_embedding_layer_configs:
+            from core.models.common.int8_embedding import swap_embedding_to_int8
+
+            embedding_swapped = swap_embedding_to_int8(
+                model, state_dict, int8_embedding_layer_configs, torch.bfloat16
+            )
+            if embedding_swapped != len(int8_embedding_layer_configs):
+                raise RuntimeError(
+                    f"the MiniMax-H3 text encoder ({te_path}) INT8 embedding metadata mapped "
+                    f"{len(int8_embedding_layer_configs)} nn.Embedding(s), but only "
+                    f"{embedding_swapped} module(s) were replaced -- the marker's module "
+                    f"paths and the built Qwen3-VL model disagree")
+            print(f"[MiniMaxH3Loader] text encoder: {embedding_swapped} INT8 "
+                  f"nn.Embedding(s) kept quantized (gather-then-scale)")
+
         result = model.load_state_dict(state_dict, strict=False, assign=True)
         del state_dict
 
@@ -1792,6 +2312,7 @@ def load_minimax_h3_from_path(
     *,
     load_text_encoder: bool = True,
     video_vae_dtype: Optional[torch.dtype] = None,
+    te_override: Optional[str] = None,
 ) -> dict:
     """Load MiniMax-H3 from its ComfyUI-style flat tree (or MiniMax's own dir).
 
@@ -1810,8 +2331,19 @@ def load_minimax_h3_from_path(
     holding the tiling policy fixed, or the A/B measures tiling instead of
     precision. The dtype actually used is reported back as ``video_vae_dtype`` in
     the component dict so a measurement cannot mislabel itself.
+
+    ``te_override`` names an exact text encoder file, bypassing
+    ``MINIMAX_H3_TE_PATTERNS`` and its loadability predicate -- see
+    ``detect_minimax_h3_layout``. Whatever this build's ``_build_text_encoder``
+    then does with it (load, or refuse with its own quantization-semantics
+    error) is unchanged by naming the file explicitly here.
     """
-    layout = detect_minimax_h3_layout(model_path)
+    # ``te_override is None`` calls with the ORIGINAL one-argument signature,
+    # not with an explicit ``te_override=None`` -- callers (including existing
+    # tests) that monkeypatch ``detect_minimax_h3_layout`` with a single-arg
+    # stub must keep working when they never asked for an override.
+    layout = (detect_minimax_h3_layout(model_path, te_override=te_override)
+              if te_override is not None else detect_minimax_h3_layout(model_path))
     if layout is None:
         raise ValueError(
             f"MiniMax-H3 model layout not found at {model_path!r}. Expected a directory holding "
@@ -1827,7 +2359,8 @@ def load_minimax_h3_from_path(
             f"MiniMax-H3 at {layout['root']!r} is missing the following component file(s): "
             f"{', '.join(missing)}. Expected diffusion_models/{MINIMAX_H3_DIT_PATTERNS[0]}, "
             f"vae/{MINIMAX_H3_VIDEO_VAE_PATTERNS[0]}, vae/{MINIMAX_H3_AUDIO_VAE_PATTERNS[0]} and "
-            f"text_encoders/{MINIMAX_H3_TE_PATTERNS[0]}.")
+            f"text_encoders/ holding one of {MINIMAX_H3_TE_PATTERNS} (searched in that "
+            f"preference order, with a glob fallback).")
 
     official = layout["official"]
     # Checked UP FRONT, not where it is first needed. The transformer is the only
@@ -1858,7 +2391,8 @@ def load_minimax_h3_from_path(
     print(f"[MiniMaxH3Loader] DiT:          {layout['dit']} (variant={layout['variant']})")
     print(f"[MiniMaxH3Loader] video VAE:    {layout['vae']}")
     print(f"[MiniMaxH3Loader] audio VAE:    {layout['audio_vae']}")
-    print(f"[MiniMaxH3Loader] text encoder: {layout['text_encoder']}")
+    print(f"[MiniMaxH3Loader] text encoder: {layout['text_encoder']} "
+          f"({layout.get('text_encoder_reason') or 'n/a'})")
     print(f"[MiniMaxH3Loader] configs:      {official}")
 
     # Map the 48 GiB encoder before the smaller component files.  On Windows,

@@ -61,12 +61,16 @@ refused rather than ignored. The same trap exists for NVFP4/AWQ files, whose
 ``.pre_quant_scale`` ``[in_features]`` vectors ComfyUI applies to the INPUT at
 runtime; ignoring those is equally wrong, so they are refused here too.
 
-This generic guard deliberately does not waive ConvRot declarations. The
-MiniMax-H3 loader recognizes one exact contract (``int8_tensorwise``, groupsize
-256), validates it before removing it from this guard's input, and installs a
-dedicated Comfy-Kitchen-backed module. Other loaders and other declarations
-still fail here. Evidence and the derivation:
-``scratchpad/minimax_h3_weight_formats.md``.
+This generic guard deliberately does not waive ConvRot or NVFP4/AWQ
+declarations. The MiniMax-H3 loader recognizes exactly two contracts -- the
+ConvRot ``int8_tensorwise`` ROTATED one (groupsize 256) and the co-distributed
+text encoder's ``nvfp4`` / ``full_precision_matrix_mult`` one (whose
+``.pre_quant_scale`` is validated to appear only on ``self_attn.o_proj`` /
+``mlp.down_proj``) -- validates each before removing it from this guard's
+input, and installs a dedicated Comfy-Kitchen-backed module for each. Other
+loaders and other declarations still fail here. Evidence and the derivation:
+``scratchpad/minimax_h3_weight_formats.md`` and
+``scratchpad/minimax_h3_te_nvfp4_verification.md``.
 """
 
 from __future__ import annotations

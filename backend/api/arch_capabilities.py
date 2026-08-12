@@ -421,7 +421,7 @@ _add("minimax_h3", "controlnets",
 _add("minimax_h3", "unet_quantization",
      "the released MiniMax-H3 DiT already ships weight-only FP8-quantized, so there is no unquantized transformer for the per-generation converter to convert")
 _add("minimax_h3", "text_encoder_quantization",
-     "text-encoder quantization is not applied on this architecture's text-encoder path; its Qwen3-VL conditioner is streamed layer by layer from the memory-mapped bf16 file instead")
+     "there is no per-generation converter for this architecture's text encoder; the co-distributed qwen3vl_32b_minimax_h3_int8_convrot.safetensors is a separate file the loader selects and loads pre-quantized (ConvRot INT8, comfy-kitchen), same as the bf16 file, streamed layer by layer from the memory-mapped weights either way")
 _add("minimax_h3", "cpu_text_encoding",
      "CPU text encoding is not honored by this architecture's encode path, which streams each decoder layer to the GPU and keeps the CPU weights memory-mapped")
 _add("minimax_h3", "attention_impl",

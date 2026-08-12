@@ -1178,19 +1178,43 @@ def encode_prompt(
     return hidden, len(token_ids)
 
 
+# Floating dtypes this helper is allowed to WIDEN to float32. Deliberately an
+# allow-list, not "is_floating_point() and dtype is not float8_*": a new float8
+# variant (or any other narrow float format a future quant module buffers)
+# must opt IN by being added here, not be silently promoted by default. Every
+# dtype outside this set -- narrow floats included -- passes through
+# unchanged, keyed on DTYPE alone so this stays correct for any module (a
+# `ConvRotInt8Linear`'s int8 codes, an `Nvfp4Linear`'s packed uint8 codes and
+# float8_e4m3fn block scales, or a future module class this file never names).
+_WIDEN_TO_FLOAT32_DTYPES = frozenset({torch.float16, torch.bfloat16, torch.float32, torch.float64})
+
+
 def _gpu_module_params(module, device) -> Dict[str, torch.Tensor]:
-    """One module's parameters and buffers, on ``device`` in float32.
+    """One module's parameters and buffers, on ``device``, narrow floats widened.
 
     The dict `torch.func.functional_call` runs the module with. Building it
     instead of moving the module is the whole point (see the module docstring):
     the CPU tensors stay attached to the memory-mapped file, so a 48 GiB encoder
     never materialises an anonymous copy of itself.
+
+    Ordinary bf16/fp16 parameters and buffers are widened to float32 (the
+    precision `functional_call` runs the module in). A buffer whose dtype is
+    NOT in ``_WIDEN_TO_FLOAT32_DTYPES`` keeps its own dtype instead: that
+    includes every non-floating buffer (a mask, an index, an int8/uint8
+    quantization code) AND, since ``torch.float8_e4m3fn.is_floating_point()``
+    is True, a narrow float8 block scale (``Nvfp4Linear.weight_scale``) --
+    which a plain ``is_floating_point()`` branch would otherwise widen into a
+    float32 tensor `comfy_kitchen.dequantize_nvfp4` does not accept as its
+    block-scale argument, corrupting the dequant silently rather than erroring.
     """
-    gpu_params = {name: tensor.to(device, torch.float32)
-                  for name, tensor in module.named_parameters()}
+    gpu_params = {
+        name: tensor.to(device, torch.float32) if tensor.dtype in _WIDEN_TO_FLOAT32_DTYPES
+        else tensor.to(device)
+        for name, tensor in module.named_parameters()
+    }
     gpu_params.update({
-        # A non-float buffer (a mask, an index) must keep its dtype.
-        name: tensor.to(device, torch.float32) if tensor.is_floating_point() else tensor.to(device)
+        name: tensor.to(device, torch.float32) if tensor.dtype in _WIDEN_TO_FLOAT32_DTYPES
+        else tensor.to(device)
         for name, tensor in module.named_buffers()
     })
     return gpu_params

@@ -20,17 +20,20 @@ from api.studio_render_jobs import (  # noqa: E402
 )
 
 
-def _manifest(*, duration=2.0, fps=24.0, clip_duration=1.0, presentation="frame"):
+def _manifest(*, duration=2.0, fps=24.0, clip_duration=1.0, presentation="frame", fit_mode=None):
+    clip = {
+        "id": "clip-1", "assetId": "image-1", "trackId": "video-1",
+        "start": 0, "duration": clip_duration, "sourceIn": 0,
+        "presentation": presentation, "activeTake": True,
+    }
+    if fit_mode:
+        clip["fitMode"] = fit_mode
     return {
         "project": {"id": "project-1", "revision": 2, "duration": duration, "fps": fps, "width": 320, "height": 240},
         "render": {"audio_enabled": False, "fit_mode": "contain"},
         "assets": [{"id": "image-1", "kind": "image", "name": "still.png"}],
         "tracks": [{"id": "video-1", "kind": "video", "visible": True, "muted": False}],
-        "clips": [{
-            "id": "clip-1", "assetId": "image-1", "trackId": "video-1",
-            "start": 0, "duration": clip_duration, "sourceIn": 0,
-            "presentation": presentation, "activeTake": True,
-        }],
+        "clips": [clip],
     }
 
 
@@ -65,6 +68,18 @@ def test_filtergraph_uses_argv_and_timeline_overlay(tmp_path):
     assert "trim=start=0.000000:duration=1.000000" in graph
     assert "overlay=eof_action=pass" in graph
     assert "-progress" in command
+
+
+def test_clip_fit_mode_overrides_render_default(tmp_path):
+    image = tmp_path / "still.png"
+    image.write_bytes(b"not decoded by graph builder")
+    manifest = _canonical_manifest(_manifest(fit_mode="contain", presentation="hold"))
+    manifest["assets"][0]["staged_name"] = "still.png"
+    manifest["render"]["fit_mode"] = "cover"
+    command = build_render_command(manifest, str(tmp_path), "ffmpeg.exe", str(tmp_path / "out.mp4"))
+    graph = command[command.index("-filter_complex") + 1]
+    assert "force_original_aspect_ratio=decrease" in graph
+    assert "force_original_aspect_ratio=increase" not in graph
 
 
 def test_video_clip_cannot_extend_past_probed_source():

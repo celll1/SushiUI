@@ -6965,6 +6965,11 @@ components:
             Defaults to "frame" for an image clip with duration_frames == 1,
             "hold" for a longer image clip (required in that case), and
             "clip" for video/audio.
+        fitMode:
+          type: string
+          enum: [cover, contain]
+          default: cover
+          description: How the clip is scaled into the fixed project canvas.
         activeTake:
           type: boolean
           default: true

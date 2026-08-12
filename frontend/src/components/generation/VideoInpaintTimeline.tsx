@@ -118,6 +118,11 @@ export interface VideoInpaintTimelineProps {
    */
   maskDisabled?: boolean;
   /**
+   * Why `maskDisabled` is set, shown next to the inert controls. Omitted
+   * when the reason is self-evident (a generation running).
+   */
+  maskDisabledReason?: string;
+  /**
    * Undo/redo for the keyframe/asset manifest, owned by InpaintPanel (see
    * the module comment above for why). This component only renders the
    * buttons and their enabled state.
@@ -179,6 +184,7 @@ export default function VideoInpaintTimeline({
   onCompositeFeatherPxChange,
   assets,
   maskDisabled = false,
+  maskDisabledReason,
   canUndo = false,
   canRedo = false,
   onUndo,
@@ -526,6 +532,13 @@ export default function VideoInpaintTimeline({
             </Button>
           </div>
         </div>
+
+        {maskDisabled && maskDisabledReason && (
+          // Every mask control above and below is inert while maskDisabled
+          // is set, and a disabled button that says nothing reads as the
+          // feature being broken rather than as a condition to fix.
+          <p className="text-xs text-amber-400">{maskDisabledReason}</p>
+        )}
 
         <div className="flex flex-wrap items-center gap-2">
           <label className="text-xs text-gray-500" htmlFor="composite-feather-px">

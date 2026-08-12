@@ -49,7 +49,7 @@ export function clipSignatureOf(file: File | null): VideoMaskClipSignature | nul
   return { name: file.name, size: file.size, lastModified: file.lastModified };
 }
 
-function clipSignaturesMatch(
+export function clipSignaturesMatch(
   a: VideoMaskClipSignature | null | undefined,
   b: VideoMaskClipSignature | null | undefined,
 ): boolean {

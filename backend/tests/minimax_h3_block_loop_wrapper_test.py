@@ -200,6 +200,44 @@ class WrapperReproducesTheStockForwardTest(unittest.TestCase):
         for a, b in zip(first, second):
             self.assertTrue(torch.allclose(a, b, rtol=1e-5, atol=1e-6))
 
+    def test_fbcache_guard_tolerates_a_different_audio_row_count_between_calls(self):
+        """The guard indicator is built from VIDEO rows alone.
+
+        ``video_residual = first_residual.index_select(1, video_indices)``, then
+        sliced by ``condition_video_rows`` and reshaped by ``rows_per_frame`` --
+        neither reads ``audio_indices`` or the audio row count anywhere. This is
+        the invariant a PARTIAL audio pin (``h3_pipeline_ops``'s
+        ``pinned_audio_latents``) depends on: unlike the spatial-mask video pin
+        (refused ahead of generation, `minimax_h3_spatial_mask_fbcache_test.py`,
+        because ITS row-level pin can break the video tiling this guard
+        assumes), an audio-only change -- a different row COUNT, a permuted
+        order, different content -- must never touch this arithmetic. Two calls
+        with the SAME video geometry but a DIFFERENT audio geometry must both
+        run FBCache to completion without error.
+        """
+        from core.inference.fbcache import FirstBlockCache
+
+        wrapper = MiniMaxH3BlockLoopWrapper(self.model)
+        cache = FirstBlockCache(
+            threshold=1.0, warmup_steps=0, max_consecutive_hits=2,
+            total_steps=4, tail_steps=1,
+        )
+        wrapper.attach_fbcache(cache, rows_per_frame=2, condition_video_rows=0)
+
+        with torch.no_grad():
+            wrapper(**self.inputs)
+
+        # A DIFFERENT audio layout -- more rows, its own indices and content --
+        # built as an entirely separate packed request. The video part (6 rows,
+        # `rows_per_frame=2`) is the same SHAPE as `self.inputs`, which is what
+        # the guard actually reads; nothing here asks the two audio blocks to
+        # agree with each other.
+        other = _inputs(self.model, num_video=6, num_audio=9, num_text=5, seed=99)
+        with torch.no_grad():
+            wrapper(**other)
+
+        self.assertEqual(cache.n_hits + cache.n_miss, 2)
+
     def test_fbcache_refuses_block_swap(self):
         from core.inference.fbcache import FirstBlockCache
 

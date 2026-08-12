@@ -6578,18 +6578,22 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
                 options={[
                   { value: "preserve_input", label: "Preserve the clip's own track" },
                   { value: "regenerate", label: "Regenerate the whole track" },
-                  { value: "regenerate_range", label: "Regenerate only inside the range, keep the input's audio elsewhere" },
+                  { value: "regenerate_range", label: "Regenerate inside the range, condition on and keep the input's audio elsewhere" },
                 ]}
               />
               <InlineHelp label="Audio mode details">
                 <p>
-                  &quot;Regenerate only inside the range, keep the input&apos;s audio elsewhere&quot;
-                  generates the soundtrack for the whole clip without the input audio as
-                  conditioning, same as &quot;Regenerate&quot;, then splices the input clip&apos;s
-                  own audio back over the frames outside the regenerate range, with a short
-                  crossfade at the two boundaries. The audio inside the range is generated, not
-                  continued from the original. It falls back to &quot;Regenerate&quot; (with a
-                  warning) if the clip has no audio stream.
+                  &quot;Regenerate inside the range, condition on and keep the input&apos;s audio
+                  elsewhere&quot; pins the audio outside the regenerate range as conditioning, the
+                  same mechanism &quot;Preserve the clip&apos;s own track&quot; uses, so the audio
+                  inside the range is generated with the surrounding original track as context.
+                  The frames outside the regenerate range are then spliced back from the input
+                  clip&apos;s own audio after decode, with a short crossfade at the two boundaries.
+                  The pinned/free boundary snaps to the audio latent grid, which is finer than the
+                  video latent-group grid, so it can differ from the pixel range by up to one audio
+                  latent per side. It falls back to &quot;Regenerate&quot; (with a warning) if the
+                  clip has no audio stream or if the regenerate range covers the whole clip, since
+                  there is then nothing to pin.
                 </p>
               </InlineHelp>
             </div>

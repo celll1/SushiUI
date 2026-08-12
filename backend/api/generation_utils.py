@@ -8,6 +8,7 @@ from typing import List, Dict, Any, Optional, Callable, Tuple
 from PIL import Image
 import base64
 from io import BytesIO
+import math
 import os
 
 
@@ -1717,6 +1718,47 @@ def plan_video_inpaint_span(
         "regenerate_latent_frames": regenerate,
         "pinned_latent_frames": pinned,
     }
+
+
+def plan_audio_pin_latents(
+    start_frame: int,
+    end_frame: int,
+    num_audio_latents: int,
+    *,
+    fps: float = 24.0,
+    latents_per_second: float = 40.0,
+) -> Tuple[Tuple[int, ...], Tuple[int, ...]]:
+    """``(free_latents, pinned_latents)`` audio-latent indices for a video span.
+
+    ``(start_frame, end_frame)`` is a SNAPPED pixel-frame range (the video
+    pin's own output, e.g. ``plan_video_inpaint_span``'s ``start_frame`` /
+    ``end_frame``) -- this does not itself snap anything, so route and backend
+    computing it from the same ``(start_frame, end_frame)`` share one
+    arithmetic. The video grid snaps outward to latent GROUPS of up to 4
+    frames; audio runs at ``latents_per_second`` (a FINER grid, one latent
+    every ``fps / latents_per_second`` pixel frames), so this snap is smaller
+    -- up to one audio latent (``1000 / latents_per_second`` ms) of boundary
+    error per side, the same "a boundary goes to regenerate" convention the
+    video snap uses: an audio latent is FREE iff its time interval overlaps
+    the pixel range at all (``floor`` on the low edge, ``ceil`` on the high
+    edge), so a latent that only partially overlaps the range is generated
+    rather than pinned.
+
+    Returns ascending latent indices in ``[0, num_audio_latents)``; ``pinned``
+    is the exact complement of ``free``, so ``pinned == ()`` names the
+    degenerate case where the free span already covers the whole audio grid --
+    there is nothing left to pin.
+    """
+    if num_audio_latents <= 0:
+        return (), ()
+    lo = int(math.floor(start_frame * latents_per_second / fps))
+    hi = int(math.ceil(end_frame * latents_per_second / fps))
+    lo = max(0, min(lo, num_audio_latents))
+    hi = max(lo, min(hi, num_audio_latents))
+    free = tuple(range(lo, hi))
+    free_set = set(free)
+    pinned = tuple(t for t in range(num_audio_latents) if t not in free_set)
+    return free, pinned
 
 
 # ---------------------------------------------------------------------------

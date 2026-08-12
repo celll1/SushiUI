@@ -381,11 +381,17 @@ def test_the_draw_is_structurally_unconditional():
 
 
 def test_the_backend_muxes_the_source_and_does_not_decode_the_pinned_rows():
-    """The ia2v branch of the decode stage returns the uploaded samples."""
+    """The ia2v branch of the decode stage returns the uploaded samples.
+
+    NOT `pinned_audio_latents` -- that branch is guarded to the WHOLE-track pin
+    only (`and not pinned_audio_latents`), because a PARTIAL pin's decode needs
+    the generated free rows too, which this shortcut never produces.
+    """
     from core.pipeline_backends.minimax_h3 import MiniMaxH3Mixin
 
     source = inspect.getsource(MiniMaxH3Mixin._generate_minimax_h3)
-    branch = source[source.index("if audio_enable and input_audio is not None:"):]
+    branch = source[source.index(
+        "if audio_enable and input_audio is not None and not pinned_audio_latents:"):]
     branch = branch[:branch.index("elif audio_enable:")]
     assert "trim_audio_to_video(" in branch
     assert "input_audio" in branch

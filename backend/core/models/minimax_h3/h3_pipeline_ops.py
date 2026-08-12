@@ -370,6 +370,51 @@ def _validated_pinned_video_row_indices(
     return tuple(sorted(rows))
 
 
+def _validated_pinned_audio_latents(
+    pinned_audio_latents: Sequence[int],
+    num_audio_latents: int,
+) -> Tuple[int, ...]:
+    """The pinned audio LATENT indices (temporal, per-channel), ascending."""
+    latents: List[int] = []
+    for latent in pinned_audio_latents:
+        if isinstance(latent, bool) or not isinstance(latent, (int, np.integer)):
+            raise ValueError(
+                f"A pinned audio latent must be an integer index, got {latent!r}.")
+        latent = int(latent)
+        if not 0 <= latent < num_audio_latents:
+            raise ValueError(
+                f"A pinned audio latent at index {latent} is outside this clip's audio grid: it "
+                f"has {num_audio_latents} latent(s) per channel, so the last addressable index is "
+                f"{num_audio_latents - 1}.")
+        latents.append(latent)
+    if len(set(latents)) != len(latents):
+        raise ValueError(f"Pinned audio latents must be distinct, got {list(pinned_audio_latents)!r}.")
+    return tuple(sorted(latents))
+
+
+def audio_pin_row_indices(
+    latents: Sequence[int],
+    num_audio_latents: int,
+    channels: int = AUDIO_CHANNELS,
+) -> Tuple[int, ...]:
+    """The CHANNEL-MAJOR row indices of a set of audio LATENT positions.
+
+    Audio rows are channel-major (``row = channel * num_audio_latents +
+    latent``, see :func:`_fill_audio_positions`), so naming a temporal latent
+    span always means naming BOTH channels' rows for it -- a "half" prefix of
+    the row block would pin one stereo channel's entire timeline instead of
+    half the clip (see :func:`build_packed_layout`'s docstring). ``latents`` is
+    walked in ITS OWN order for every channel, so a caller that hands over an
+    already-sorted sequence gets an ascending, channel-major row list back --
+    which is what both :func:`build_packed_layout` (to build the permutation)
+    and the backend substitution site (to address the ORIGINAL, unpermuted row
+    block) need.
+    """
+    latent_tuple = tuple(int(t) for t in latents)
+    return tuple(channel * num_audio_latents + latent
+                for channel in range(channels) for latent in latent_tuple)
+
+
 def pin_video_rows(
     video_rows: torch.Tensor,
     source_rows: torch.Tensor,
@@ -412,6 +457,7 @@ def build_packed_layout(
     pinned_video_frames: Sequence[int] = (),
     pinned_video_row_indices: Sequence[int] = (),
     pin_target_audio: bool = False,
+    pinned_audio_latents: Sequence[int] = (),
     text_token_tags: Optional[torch.Tensor] = None,
     device: Optional[torch.device | str] = None,
 ) -> Dict[str, Any]:
@@ -431,22 +477,31 @@ def build_packed_layout(
 
     ``pin_target_audio`` is ia2v (``/generate/img2vid``'s ``input_audio``): the
     generated clip's OWN audio rows are supplied at their true value and never
-    denoised. It changes exactly one number in the returned dict --
-    ``num_condition_audio_rows`` becomes every audio row instead of 0 -- because
-    a pinned whole track needs no rows of its own: the target audio rows already
-    sit on the target's clock (``_fill_audio_positions``), and
-    ``build_row_timesteps`` pins ``audio_indices[:n_cond_audio]`` at
-    ``AUDIO_COND_TIMESTEP`` (1.0, which is EXACTLY CLEAN under this model's
-    ``x_t = t*x0 + (1-t)*noise``), leaving ``denoise`` an empty slice to write.
-    Every tensor built here is identical either way, which is why this is a flag
-    and not a second builder.
+    denoised. It is the WHOLE-TRACK special case of ``pinned_audio_latents``
+    below (every latent named, in order), kept as its own flag because ia2v
+    never needs to name a subset -- passing both raises. It changes exactly one
+    number in the returned dict from the unpinned case -- ``num_condition_audio_rows``
+    becomes every audio row instead of 0 -- because a pinned whole track needs
+    no rows of its own: the target audio rows already sit on the target's clock
+    (``_fill_audio_positions``), and ``build_row_timesteps`` pins
+    ``audio_indices[:n_cond_audio]`` at ``AUDIO_COND_TIMESTEP`` (1.0, which is
+    EXACTLY CLEAN under this model's ``x_t = t*x0 + (1-t)*noise``), leaving
+    ``denoise`` an empty slice to write. Every tensor built here is identical
+    either way, which is why this is a flag and not a second builder.
 
-    WHOLE TRACK ONLY -- but because the count is a prefix, not because a prefix
-    is all the mechanism can express: the audio rows are CHANNEL-MAJOR, so a
-    "half" prefix pins one stereo channel's entire timeline rather than half the
-    clip. A partial track is reachable the same way ``pinned_video_frames``
-    reaches a partial clip, by permuting ``audio_indices``; no caller asks for
-    it yet, so it is not built.
+    ``pinned_audio_latents`` is a PARTIAL audio pin: the latent indices (into
+    ``[0, num_audio_latents)``, per channel) that are supplied at their true
+    value and never denoised, while the rest of the track is generated. The
+    audio rows are CHANNEL-MAJOR, so a "half" prefix of the row block would pin
+    one stereo channel's entire timeline rather than half the clip -- naming an
+    arbitrary temporal SET is reached the same way ``pinned_video_frames``
+    reaches a partial clip, by permuting ``audio_indices``: the pinned latents'
+    rows (both channels, via :func:`audio_pin_row_indices`) are moved to the
+    front, ``num_condition_audio_rows`` becomes their count, and
+    ``audio_row_permutation`` / ``audio_row_order`` record the permutation and
+    its inverse for the caller's draw-time substitution and decode-time
+    un-permute (mirroring ``video_row_permutation`` / ``video_row_order``
+    exactly). Measured in ``scratchpad/minimax_h3_ai_probe_results.md``.
 
     ``pinned_video_frames`` is temporal inpaint: the LATENT frames that are
     supplied at (near) their true value and never denoised while the rest of the
@@ -542,6 +597,32 @@ def build_packed_layout(
         video_indices = video_indices[video_row_permutation]
         num_condition_video_rows = len(pinned) * rows_per_frame
 
+    if pin_target_audio and len(pinned_audio_latents):
+        raise ValueError(
+            "MiniMax-H3 cannot combine pin_target_audio with pinned_audio_latents: pass the "
+            "whole-track pin via pin_target_audio=True, or a subset via pinned_audio_latents, "
+            "not both.")
+    if pin_target_audio:
+        # The whole-track case, generalised through the same permutation path
+        # a partial pin takes: every latent named, ascending, which is an
+        # IDENTITY permutation of an already-ascending `audio_indices` -- so
+        # this is bitwise unchanged from the pre-partial-pin behaviour.
+        pinned_audio_latents = tuple(range(num_audio_latents))
+
+    num_condition_audio_rows = 0
+    audio_row_permutation: Optional[torch.Tensor] = None
+    audio_row_order: Optional[torch.Tensor] = None
+    if len(pinned_audio_latents):
+        pinned_latents = _validated_pinned_audio_latents(pinned_audio_latents, num_audio_latents)
+        pinned_latent_set = set(pinned_latents)
+        free_latents = tuple(t for t in range(num_audio_latents) if t not in pinned_latent_set)
+        pinned_rows = audio_pin_row_indices(pinned_latents, num_audio_latents)
+        free_rows = audio_pin_row_indices(free_latents, num_audio_latents)
+        audio_row_permutation = torch.tensor((*pinned_rows, *free_rows), dtype=torch.long)
+        audio_row_order = torch.argsort(audio_row_permutation)
+        audio_indices = audio_indices[audio_row_permutation]
+        num_condition_audio_rows = len(pinned_rows)
+
     token_tags = torch.empty(sequence_length, dtype=torch.long)
     if text_token_tags is None:
         token_tags[text_indices] = TEXT_TAG
@@ -563,15 +644,20 @@ def build_packed_layout(
         "audio_indices": audio_indices,
         "text_indices": text_indices,
         "num_condition_video_rows": num_condition_video_rows,
-        "num_condition_audio_rows": num_audio_rows if pin_target_audio else 0,
+        "num_condition_audio_rows": num_condition_audio_rows,
         "rows_per_frame": rows_per_frame,
         # frame-major rows -> packed rows, and back.
         "video_row_permutation": video_row_permutation,
         "video_row_order": video_row_order,
+        # channel-major audio rows -> packed rows, and back. Same contract as
+        # the video pair above: both None when nothing is pinned.
+        "audio_row_permutation": audio_row_permutation,
+        "audio_row_order": audio_row_order,
     }
     if device is not None:
         for key in ("position_ids", "token_tags", "video_indices", "audio_indices", "text_indices",
-                    "video_row_permutation", "video_row_order"):
+                    "video_row_permutation", "video_row_order",
+                    "audio_row_permutation", "audio_row_order"):
             if layout[key] is not None:
                 layout[key] = layout[key].to(device)
     return layout
@@ -760,9 +846,13 @@ def build_ref2va_packed_layout(
         "num_condition_video_rows": num_condition_video_rows,
         "num_condition_audio_rows": num_condition_audio_rows,
         "rows_per_frame": rows_per_frame,
-        # Same dict shape as `build_packed_layout`; ref2va pins nothing.
+        # Same dict shape as `build_packed_layout`; ref2va pins nothing -- a
+        # reference soundtrack conditions through its own leading block
+        # (`reference_audio_row_counts`), never through this permutation pair.
         "video_row_permutation": None,
         "video_row_order": None,
+        "audio_row_permutation": None,
+        "audio_row_order": None,
     }
     if device is not None:
         for key in ("position_ids", "token_tags", "video_indices", "audio_indices", "text_indices"):

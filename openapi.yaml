@@ -1246,16 +1246,19 @@ paths:
         - `regenerate`: the audio rows are generated for the whole clip, so the
           preserved video span carries generated audio that need not match its
           visuals.
-        - `regenerate_range`: the audio rows are generated unconditioned for
-          the whole clip, same as `regenerate`, but only the audio inside the
-          regenerate range is kept from that generated track. The audio
-          outside the range is the input clip's own track, spliced back in
-          after decode with a short crossfade at the two boundaries. This is
-          an output-level splice, not a conditioning mechanism: the model is
-          never given the input audio in this mode, so the audio inside the
-          range is generated from scratch, not continued from the original.
-          Falls back to `regenerate`, with a warning, when the uploaded clip
-          has no audio stream.
+        - `regenerate_range`: the audio outside the regenerate range is
+          pinned as conditioning (the same mechanism `preserve_input` uses),
+          so the audio inside the range is generated with the surrounding
+          original track as context. The preserved spans are then spliced
+          back from the input clip's own audio after decode, with a short
+          crossfade at the two boundaries, the same way the pixel path pastes
+          preserved frames over a pin that has already been through the VAE.
+          The pinned/free boundary snaps to the audio latent grid, which is
+          finer than the video latent-group grid, so it can differ from the
+          pixel range by up to one audio latent per side. Falls back to
+          `regenerate`, with a warning, when the uploaded clip has no audio
+          stream or when the regenerate range covers the whole clip (there is
+          nothing to pin).
 
         **Spatial mask (optional).** Supply `spatial_mask_manifest` together
         with repeated `spatial_mask_ids` and `spatial_mask_files` to generate
@@ -9594,14 +9597,17 @@ components:
             "regenerate": generate the soundtrack for the whole clip, so the
             preserved video span carries generated audio that need not match its
             visuals. Only relevant when audio_enable is true.
-            "regenerate_range": generate the soundtrack for the whole clip
-            unconditioned, same as "regenerate", but keep only the span inside
-            the regenerate range from that generated track; the preserved spans
-            outside the range are spliced back in from the input clip's own
-            audio, with a short crossfade at the two boundaries. The model is
-            never given the input audio in this mode -- the audio inside the
-            range is generated, not continued from the original. Falls back to
-            "regenerate" (with a warning) when the clip has no audio stream.
+            "regenerate_range": pin the audio outside the regenerate range as
+            conditioning (the same mechanism "preserve_input" uses), so the
+            audio inside the range is generated with the surrounding original
+            track as context. The preserved spans are then spliced back from
+            the input clip's own audio after decode, with a short crossfade at
+            the two boundaries. The pinned/free boundary snaps to the audio
+            latent grid, which is finer than the video latent-group grid, so
+            it can differ from the pixel range by up to one audio latent per
+            side. Falls back to "regenerate" (with a warning) when the clip
+            has no audio stream or when the regenerate range covers the whole
+            clip (there is nothing to pin).
 
             PER-ARCHITECTURE DEFAULT. The `default: regenerate` above is the
             architecture-neutral base value; MiniMax-H3 resolves to

@@ -2947,7 +2947,6 @@ export default function StudioWorkspace() {
                 </div>
               )}
               {range && <div className={styles.rangeReadout}>OUTPUT {formatTimecode(range.start, project.fps)} — {formatTimecode(range.end, project.fps)}</div>}
-            </div>
               </div>
             </div>
             <div className={styles.transport}>

@@ -34,10 +34,12 @@ export const loadStudioProject = async (): Promise<StudioProject | null> => {
     const fps = Number.isFinite(parsed.fps) && parsed.fps! > 0 ? parsed.fps! : 24;
     const imageAssetIds = new Set((parsed.assets || []).filter((asset) => asset.kind === "image").map((asset) => asset.id));
     const migratedClips = (parsed.clips || []).map((clip) => {
-      if (!imageAssetIds.has(clip.assetId) || clip.presentation) return clip;
+      const inputRoles = clip.inputRoles?.filter((role) => role === "keyframe");
+      if (!imageAssetIds.has(clip.assetId) || clip.presentation) return { ...clip, inputRoles };
       const wasHeld = Number(clip.duration) > (1 / fps) + 0.0001;
       return {
         ...clip,
+        inputRoles,
         duration: wasHeld ? clip.duration : 1 / fps,
         sourceIn: 0,
         presentation: wasHeld ? "hold" as const : "frame" as const,

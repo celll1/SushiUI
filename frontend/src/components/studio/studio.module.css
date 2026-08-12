@@ -305,6 +305,7 @@
 .referenceList { display: flex; flex-direction: column; gap: 4px; margin-bottom: 6px; }
 .referenceList button { display: flex; align-items: center; justify-content: space-between; gap: 5px; padding: 5px; overflow: hidden; color: #c7c0e8; text-align: left; border: 1px solid #514579; border-radius: 4px; background: #15172a; font-size: 8px; }
 .referenceList small { color: #81779f; font-size: 8px; }
+.dropHint { display: block; margin-top: 6px; color: #a99de0; font-size: 8px; }
 .editorOverlay { position: fixed; z-index: 100; inset: 0; display: grid; place-items: center; padding: 18px; background: rgba(3, 6, 10, .78); }
 .emptySlot { width: 100%; display: flex; align-items: center; justify-content: center; gap: 6px; padding: 13px; color: #8a97a8; border: 1px dashed #3a4758; border-radius: 6px; background: #0f161f; }
 .advancedPrompt { border-bottom: 1px solid var(--border-soft); }

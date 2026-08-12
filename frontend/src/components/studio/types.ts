@@ -1,6 +1,6 @@
 export type StudioAssetKind = "image" | "video" | "audio";
 
-export type StudioInputRole = "keyframe" | "reference";
+export type StudioInputRole = "keyframe";
 export type StudioClipPresentation = "frame" | "hold" | "clip";
 
 export interface StudioAsset {

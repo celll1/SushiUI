@@ -103,7 +103,6 @@ export const planStudioGeneration = ({
     : inpaintRange;
   const hasVideoInput = !!videoClip;
   const hasImageInput = !!imageClip;
-  const videoAsset = videoClip ? assetFor(videoClip) : null;
   const outputExtendsVideo = !!videoClip && (
     outputRange.start < videoClip.start || outputRange.end > clipEnd(videoClip)
   );
@@ -125,8 +124,5 @@ export const planStudioGeneration = ({
     mode = "t2v";
   }
 
-  // Keep the local variable in the plan calculation so a future planner can
-  // add architecture-specific source bounds without changing its contract.
-  void videoAsset;
   return { mode, outputRange, inpaintRange: effectiveInpaintRange, videoClip, imageClip, hasVideoInput, hasImageInput, outputExtendsVideo };
 };

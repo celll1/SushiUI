@@ -70,6 +70,7 @@ import {
   getImages,
   getResultFilename,
   getResultPlaybackFilename,
+  isValidVideoFrameCount,
   videoFrameOptions,
 } from "@/utils/api";
 import type { GenerationParams, Img2ImgParams, InpaintParams, InpaintVideoParams, MiniMaxH3References, OutpaintVideoParams, Ref2VidParams } from "@/utils/api";
@@ -91,10 +92,9 @@ import {
   StudioTool,
   createStudioProject,
 } from "./types";
-import { clipEnd, frameDuration, maxTimelineDuration, planStudioGeneration } from "./studioTimeline";
+import { clipEnd, frameDuration, frameIndexAt, maxTimelineDuration, planStudioGeneration } from "./studioTimeline";
 import {
   frameTimeForClip,
-  frameIndexForClipTime,
   sourceTrimFrames,
   studioAssetFromGeneration,
   videoInpaintFrames,
@@ -265,7 +265,7 @@ const captureVideoFrameAsset = async (asset: StudioAsset, time: number): Promise
   video.preload = "auto";
   video.muted = true;
   video.playsInline = true;
-  video.src = asset.url;
+  video.src = asset.masterUrl || asset.url;
   try {
     await new Promise<void>((resolve, reject) => {
       const loaded = () => { cleanup(); resolve(); };
@@ -679,7 +679,7 @@ export default function StudioWorkspace() {
 
   const selectedClip = project.clips.find((clip) => clip.id === selectedClipId) || null;
   const selectedAsset =
-    allAssets.find((asset) => asset.id === (selectedClip?.assetId || selectedAssetId)) || null;
+    allAssets.find((asset) => asset.id === (selectedAssetId || selectedClip?.assetId)) || null;
   const activeClips = project.clips.filter((clip) => clip.activeTake !== false);
   const timelinePreviewClip = [...activeClips]
     .sort((left, right) => project.tracks.findIndex((track) => track.id === left.trackId) - project.tracks.findIndex((track) => track.id === right.trackId))
@@ -728,9 +728,10 @@ export default function StudioWorkspace() {
   }, [hydrateGalleryAsset]);
 
   const outputDuration = useMemo(() => {
+    if (isVideoModel && range) return Math.max(0, range.end - range.start);
     if (!form.numFrames || !form.frameRate) return 0;
     return form.numFrames / form.frameRate;
-  }, [form.frameRate, form.numFrames]);
+  }, [form.frameRate, form.numFrames, isVideoModel, range]);
 
   const addAssetToTimeline = useCallback((asset: StudioAsset, start?: number, trackId?: string, holdStill = false) => {
     const targetTrack =
@@ -953,6 +954,37 @@ export default function StudioWorkspace() {
     setSelectedAssetId(hydrated.id);
     setSelectedClipId(null);
     if (hydrated.kind === "image") setMode("i2v");
+  };
+
+  const handleReferenceDrop = async (event: DragEvent<HTMLElement>) => {
+    event.preventDefault();
+    const clipId = event.dataTransfer.getData("application/x-studio-clip");
+    if (clipId) {
+      setNotice("References are chosen explicitly from Media; drop a clip on Generate to use its input.");
+      return;
+    }
+    const frameAssetId = event.dataTransfer.getData("application/x-studio-frame");
+    const assetId = frameAssetId || event.dataTransfer.getData("application/x-studio-asset");
+    const asset = allAssets.find((item) => item.id === assetId);
+    if (!asset) return;
+    const hydrated = await hydrateGalleryAsset(asset);
+    if (frameAssetId) {
+      if (hydrated.kind === "audio") {
+        setNotice("Audio clips do not have a still frame to use as a reference.");
+        return;
+      }
+      const frame = await captureVideoFrameAsset(hydrated, numeric(event.dataTransfer.getData("application/x-studio-frame-time")) ?? playhead);
+      if (!frame) {
+        setNotice("Could not capture a frame from this media.");
+        return;
+      }
+      commit((current) => current.assets.some((item) => item.id === frame.id)
+        ? current
+        : { ...current, assets: [...current.assets, frame] });
+      setReferenceAssetIds((current) => current.includes(frame.id) ? current : [...current, frame.id]);
+      return;
+    }
+    setReferenceAssetIds((current) => current.includes(hydrated.id) ? current : [...current, hydrated.id]);
   };
 
   const toggleClipInputRole = (clipId: string, role: StudioInputRole) => {
@@ -1253,7 +1285,9 @@ export default function StudioWorkspace() {
       let nextPresentation = clip.presentation || (asset.kind === "image" ? "frame" : "clip");
       if (edge === "start") {
         const rawStart = snapEnabled ? Math.round((clip.start + delta) * project.fps) / project.fps : clip.start + delta;
-        const minimumStart = Math.max(0, clip.start - clip.sourceIn);
+        const minimumStart = asset.kind === "image" && modifierHeld
+          ? 0
+          : Math.max(0, clip.start - clip.sourceIn);
         const sourceStartLimit = asset.kind === "image" || sourceDuration == null
           ? Number.POSITIVE_INFINITY
           : clip.start + Math.max(0, sourceDuration - clip.sourceIn - frameDuration);
@@ -1352,21 +1386,39 @@ export default function StudioWorkspace() {
       clips: activeClips,
       assets: allAssets,
     });
-    if (!modality.isVideo && plan.hasVideoInput) {
+    if (!modality.isVideo && plan.hasVideoInput && selectedAsset?.kind !== "image") {
       setNotice("An image model cannot use a video clip as its image input. Shift-drag a frame first.");
       return;
     }
-    const referenceIds = Array.from(new Set([
-      ...referenceAssetIds,
-      ...activeClips.filter((clip) => clip.inputRoles?.includes("reference")).map((clip) => clip.assetId),
-    ]));
-    const inferredMode: StudioGenerationMode = modality.isVideo && !plan.hasVideoInput
-      && (plan.hasImageInput || selectedAsset?.kind === "image")
+    const referenceIds = Array.from(new Set(referenceAssetIds));
+    const inferredMode: StudioGenerationMode = modality.isVideo
+      && (selectedAsset?.kind === "image" || (!plan.hasVideoInput && plan.hasImageInput))
       ? "i2v"
       : plan.mode;
     const planMode: StudioGenerationMode = modality.isVideo && modelInfo?.variant === "ref2va" && referenceIds.length
       ? "ref2v"
       : inferredMode;
+    if (modality.isVideo && referenceIds.length && modelInfo?.variant !== "ref2va") {
+      setNotice("Explicit references require the MiniMax-H3 ref2va model; they are not inferred for fl2va or LTX.");
+      return;
+    }
+    if (modality.isVideo && modelInfo?.variant === "ref2va" && !referenceIds.length) {
+      setNotice("MiniMax-H3 ref2va requires at least one explicit image or video reference.");
+      return;
+    }
+    const videoFrameRate = form.frameRate || project.fps;
+    const rangeFrameCount = range
+      ? Math.max(1, Math.round((plan.outputRange.end - plan.outputRange.start) * videoFrameRate))
+      : null;
+    const generatedFrameCount = modality.isVideo && range && planMode !== "inpaint" && planMode !== "outpaint"
+      ? rangeFrameCount
+      : form.numFrames;
+    const videoConstraintsKnown = Boolean(loadedArch && archCapabilities?.video_constraints?.[loadedArch]);
+    if (modality.isVideo && range && planMode !== "inpaint" && planMode !== "outpaint"
+      && videoConstraintsKnown && !isValidVideoFrameCount(archCapabilities, loadedArch, generatedFrameCount)) {
+      setNotice(`Output range resolves to ${generatedFrameCount} frames, which ${loadedArch} does not accept. Drag the range to a supported clip length.`);
+      return;
+    }
     if (planMode === "inpaint" && loadedArch !== "minimax_h3") {
       setNotice("Temporal inpaint currently requires the MiniMax-H3 fl2va model.");
       return;
@@ -1387,23 +1439,20 @@ export default function StudioWorkspace() {
     const keyframeAssets = await Promise.all(keyframeClips.map(async (clip) => {
       const asset = allAssets.find((item) => item.id === clip.assetId);
       if (!asset?.url) return null;
+      const keyframeTimelineTime = Math.max(clip.start, Math.min(clipEnd(clip), playhead));
       const image = asset.kind === "image"
         ? asset
-        : await captureVideoFrameAsset(asset, frameTimeForClip(clip, playhead));
-      return image?.url ? { image: image.url, frame_index: frameIndexForClipTime(clip, playhead, form.frameRate || project.fps) } : null;
+        : await captureVideoFrameAsset(asset, frameTimeForClip(clip, keyframeTimelineTime));
+      return image?.url
+        ? { image: image.url, frame_index: frameIndexAt(Math.max(0, keyframeTimelineTime - plan.outputRange.start), form.frameRate || project.fps) }
+        : null;
     }));
     const keyframes = keyframeAssets.filter((item): item is { image: string; frame_index: number } => !!item);
     const firstKeyframe = keyframes[0] || (imageInput?.url ? {
       image: imageInput.url,
-      frame_index: imageInput === selectedAsset ? frameIndexForClipTime(plan.imageClip || {
-        id: "studio-input",
-        assetId: imageInput.id,
-        trackId: "video-1",
-        name: imageInput.name,
-        start: playhead,
-        duration: frameDuration(form.frameRate || project.fps),
-        sourceIn: 0,
-      }, playhead, form.frameRate || project.fps) : 0,
+      frame_index: imageInput === selectedAsset
+        ? frameIndexAt(Math.max(0, playhead - plan.outputRange.start), form.frameRate || project.fps)
+        : 0,
     } : null);
 
     const jobId = crypto.randomUUID();
@@ -1417,7 +1466,7 @@ export default function StudioWorkspace() {
       negative_prompt: supportsNegativePrompt ? form.negativePrompt : "",
       width: form.width,
       height: form.height,
-      num_frames: form.numFrames,
+      num_frames: generatedFrameCount,
       frame_rate: form.frameRate,
       num_inference_steps: form.steps,
       guidance_scale: form.guidance,
@@ -1443,7 +1492,7 @@ export default function StudioWorkspace() {
         negative_prompt: supportsNegativePrompt ? form.negativePrompt : "",
         width: form.width,
         height: form.height,
-        num_frames: form.numFrames,
+        num_frames: generatedFrameCount,
         frame_rate: form.frameRate,
         num_inference_steps: form.steps,
         guidance_scale: form.guidance,
@@ -1463,7 +1512,7 @@ export default function StudioWorkspace() {
           schedule_type: form.scheduleType,
           seed: form.seed,
         };
-        if (planMode === "image-inpaint" || imageInputMode === "inpaint") {
+        if (planMode === "image-inpaint" || imageInputMode === "inpaint" || !!imageInput?.maskUrl || (!!inpaintRange && !!imageInput)) {
           if (!imageInput?.maskUrl) {
             throw new Error("Open the image editor and draw a mask before using image inpaint.");
           }
@@ -1530,7 +1579,7 @@ export default function StudioWorkspace() {
       if (!filename || !masterFilename) throw new Error("Generation completed without an output filename.");
       const generatedKind: StudioAsset["kind"] = modality.isVideo ? "video" : "image";
       const fallbackDuration = modality.isVideo
-        ? (form.numFrames || 1) / (form.frameRate || project.fps)
+        ? (generatedFrameCount || 1) / (form.frameRate || project.fps)
         : 0;
       const asset = studioAssetFromGeneration(result, {
         id: `generation-${jobId}`,
@@ -1550,18 +1599,28 @@ export default function StudioWorkspace() {
         seed: form.seed,
         parameters: recipe,
       });
-      const targetStart = range?.start ?? playhead;
-      const targetDuration = range ? Math.max(frameDuration(project.fps), range.end - range.start) : (asset.duration || fallbackDuration || frameDuration(project.fps));
+      const targetStart = planMode === "outpaint"
+        ? plan.outputRange.start
+        : range?.start ?? playhead;
+      const targetDuration = planMode === "outpaint"
+        ? Math.max(frameDuration(project.fps), plan.outputRange.end - plan.outputRange.start)
+        : range
+          ? Math.max(frameDuration(project.fps), range.end - range.start)
+          : (asset.duration || fallbackDuration || frameDuration(project.fps));
       const takeGroupId = selectedClip?.takeGroupId || (selectedClip ? crypto.randomUUID() : undefined);
+      const selectedTrack = selectedClip ? project.tracks.find((track) => track.id === selectedClip.trackId) : null;
       const clip: StudioClip = {
         id: crypto.randomUUID(),
         assetId: asset.id,
-        trackId: selectedClip?.trackId || "video-1",
+        trackId: selectedTrack?.kind === "video" ? selectedTrack.id : "video-1",
         name: filename,
-        start: selectedClip?.start ?? targetStart,
+        start: planMode === "outpaint" ? targetStart : selectedClip?.start ?? targetStart,
         duration: generatedKind === "image"
           ? frameDuration(project.fps)
-          : Math.min(selectedClip?.duration ?? targetDuration, asset.duration || targetDuration),
+          : Math.min(
+            planMode === "outpaint" ? targetDuration : selectedClip?.duration ?? targetDuration,
+            asset.duration || targetDuration,
+          ),
         sourceIn: 0,
         presentation: generatedKind === "image" ? "frame" : "clip",
         sourceDuration: asset.duration || targetDuration,
@@ -1714,12 +1773,12 @@ export default function StudioWorkspace() {
     clips: activeClips,
     assets: allAssets,
   });
-  const hasReferenceInput = referenceAssetIds.length > 0 || activeClips.some((clip) => clip.inputRoles?.includes("reference"));
+  const hasReferenceInput = referenceAssetIds.length > 0;
   const resolvedMode: StudioGenerationMode = isVideoModel && modelInfo?.variant === "ref2va" && hasReferenceInput
     ? "ref2v"
     : !isVideoModel && selectedAsset?.kind === "image"
-      ? (imageInputMode === "inpaint" || inpaintRange ? "image-inpaint" : "i2i")
-      : isVideoModel && !resolvedPlan.hasVideoInput && selectedAsset?.kind === "image"
+      ? (imageInputMode === "inpaint" || !!selectedAsset?.maskUrl || inpaintRange ? "image-inpaint" : "i2i")
+      : isVideoModel && selectedAsset?.kind === "image"
         ? "i2v"
         : resolvedPlan.mode;
   const resolvedModeLabel: Record<StudioGenerationMode, string> = {
@@ -2001,10 +2060,6 @@ export default function StudioWorkspace() {
                                   <span>K</span>
                                 </label>
                               )}
-                              <label title="Use as explicit reference">
-                                <input type="checkbox" checked={clip.inputRoles?.includes("reference") || false} onChange={() => toggleClipInputRole(clip.id, "reference")} />
-                                <span>R</span>
-                              </label>
                             </span>
                             <span
                               className={styles.clipSourceHandle}
@@ -2086,30 +2141,31 @@ export default function StudioWorkspace() {
               {isVideoModel && (
                 <section>
                   <label className={styles.fieldLabel}>Timeline inputs</label>
-                  {activeClips.filter((clip) => clip.inputRoles?.includes("keyframe")).map((clip) => <span key={clip.id}><Check size={11} /> {clip.name}</span>)}
-                  {selectedAsset?.kind !== "image" && !activeClips.some((clip) => clip.inputRoles?.includes("keyframe")) && <small>Tick K on a timeline clip to use it as a keyframe.</small>}
-                  {selectedAsset?.kind === "image" && false ? (
-                    <button className={styles.keyframeSlot} onClick={() => setSelectedAssetId(null)}>
-                      <NextImage src={selectedAsset?.thumbnailUrl || selectedAsset?.url || ""} alt="" width={74} height={48} unoptimized />
-                      <span><strong>{selectedAsset.name}</strong><small>Selected image · click to clear</small></span>
-                    </button>
-                  ) : (
-                    <button className={styles.emptySlot} onClick={() => { setMediaFilter("image"); setNotice("Select an image from Media."); }}><Plus size={18} /> Select image</button>
-                  )}
+                  <div className={styles.inputSummary}>
+                    {activeClips.filter((clip) => clip.inputRoles?.includes("keyframe")).map((clip) => <span key={clip.id}><Check size={11} /> {clip.name}</span>)}
+                    {!activeClips.some((clip) => clip.inputRoles?.includes("keyframe")) && <small>Tick K on a timeline clip to use it as a keyframe.</small>}
+                  </div>
                 </section>
               )}
               {selectedAsset?.kind === "image" && (
                 <section className={styles.inputCard}>
-                  <div className={styles.sectionTitle}><span>{isVideoModel ? "Image keyframe" : "Input image"}</span><button onClick={() => { setSelectedAssetId(null); setImageInputMode("i2i"); }}><X size={12} /></button></div>
+                  <div className={styles.sectionTitle}><span>{isVideoModel ? "Image keyframe" : "Input image"}</span><button onClick={() => { setSelectedAssetId(null); setSelectedClipId(null); setImageInputMode("i2i"); }}><X size={12} /></button></div>
                   <div className={styles.keyframeSlot}><NextImage src={selectedAsset.thumbnailUrl || selectedAsset.url} alt="" width={74} height={48} unoptimized /><span><strong>{selectedAsset.name}</strong><small>{isVideoModel ? "I2VA anchor" : imageInputMode === "inpaint" ? "Mask enabled" : "I2I input"}</small></span></div>
                   {!isVideoModel && <div className={styles.inputActions}><button onClick={() => openImageEditor(selectedAsset, "edit")}><ImagePlus size={13} /> Edit image</button><button onClick={() => { setImageInputMode("inpaint"); openImageEditor(selectedAsset, "inpaint"); }}>Mask / inpaint</button></div>}
                 </section>
               )}
-              <section className={styles.referenceDropCard}>
-                <div className={styles.sectionTitle}><span>Explicit references</span><small>drag here or use R</small></div>
-                <div className={styles.referenceList}>{referenceAssetIds.map((assetId) => { const asset = allAssets.find((item) => item.id === assetId); return asset ? <button key={assetId} onClick={() => setReferenceAssetIds((current) => current.filter((id) => id !== assetId))}>{asset.name}<X size={11} /></button> : null; })}{!referenceAssetIds.length && <small>References are never inferred from clips.</small>}</div>
-                {selectedAsset && <button className={styles.addReferenceButton} onClick={() => setReferenceAssetIds((current) => current.includes(selectedAsset.id) ? current : [...current, selectedAsset.id])}>Add selected media as reference</button>}
-              </section>
+              {isVideoModel && (
+                <section
+                  className={styles.referenceDropCard}
+                  onDragOver={(event) => event.preventDefault()}
+                  onDrop={handleReferenceDrop}
+                >
+                  <div className={styles.sectionTitle}><span>Explicit references</span><small>Media only · drag here</small></div>
+                  <div className={styles.referenceList}>{referenceAssetIds.map((assetId) => { const asset = allAssets.find((item) => item.id === assetId); return asset ? <button key={assetId} onClick={() => setReferenceAssetIds((current) => current.filter((id) => id !== assetId))}>{asset.name}<X size={11} /></button> : null; })}{!referenceAssetIds.length && <small>References are never inferred from clips.</small>}</div>
+                  {selectedAsset && <button className={styles.addReferenceButton} onClick={() => setReferenceAssetIds((current) => current.includes(selectedAsset.id) ? current : [...current, selectedAsset.id])}>Add selected media as reference</button>}
+                  {frameDropLoading && <small className={styles.dropHint}>Capturing the requested frame…</small>}
+                </section>
+              )}
               <details className={styles.advancedPrompt}>
                 <summary><ChevronRight size={14} /> Negative prompt {!supportsNegativePrompt && <small>Not supported by {loadedArch}</small>}</summary>
                 <textarea disabled={!supportsNegativePrompt} value={form.negativePrompt} onChange={(event) => setForm((current) => ({ ...current, negativePrompt: event.target.value }))} />

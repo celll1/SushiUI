@@ -229,6 +229,9 @@
 .timelineClip { position: absolute; top: 4px; bottom: 4px; min-width: 18px; overflow: hidden; color: #f0f4f8; border: 1px solid #43658f; border-radius: 4px; background-color: #17304c; background-size: auto 100%; background-position: center; cursor: grab; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .03); }
 .timelineClip:active { cursor: grabbing; }
 .timelineClip:focus-visible { outline: 2px solid var(--cyan); outline-offset: 1px; }
+/* Lets the still-image preview popover (gated to image assets in the
+   markup) escape the clip's own overflow:hidden on hover. */
+.timelineClip:hover { overflow: visible; }
 .audioClip { border-color: #328660; background: #173b2d; }
 .generatedClip { border-color: #7257d5; box-shadow: inset 0 0 0 1px rgba(144, 113, 255, .24); }
 .selectedClip { border-color: #aa8cff; box-shadow: 0 0 0 2px rgba(124, 92, 255, .46), inset 0 0 0 1px rgba(255, 255, 255, .12); }
@@ -241,6 +244,7 @@
 .clipInputControls input { width: 8px; height: 8px; margin: 0; accent-color: var(--purple-2); }
 .stillPopover { position: absolute; z-index: 20; top: calc(100% + 7px); left: 0; display: flex; width: 180px; flex-direction: column; gap: 3px; padding: 7px; color: #e8edf3; border: 1px solid #6e5ac7; border-radius: 5px; background: #111925; box-shadow: 0 12px 28px rgba(0,0,0,.45); pointer-events: none; }
 .stillPopover img { width: 164px; height: 92px; object-fit: contain; background: #080d13; }
+.stillPopoverMissingThumb { display: flex; width: 164px; height: 92px; align-items: center; justify-content: center; color: #5a6b80; border-radius: 3px; background: #080d13; }
 .stillPopover strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 9px; }
 .stillPopover small { color: #93a0b0; font-size: 8px; }
 .trimStart,
@@ -284,10 +288,6 @@
 .rangeButtons .activeRangeTarget { color: #e5ddff; border-color: #765de1; background: rgba(124,92,255,.12); }
 .clearRanges { margin-top: 6px; color: #a994fa; border: 0; background: transparent; font-size: 9px; }
 .fieldLabel { display: block; margin-bottom: 6px; color: #b6c0cc; font-size: 10px; font-weight: 650; }
-.modeTabs { display: grid; grid-template-columns: repeat(4, 1fr); overflow: hidden; border: 1px solid var(--border); border-radius: 5px; }
-.modeTabs button { padding: 8px 2px; color: #8290a1; border: 0; border-right: 1px solid var(--border); background: #111925; font-size: 9px; }
-.modeTabs button:last-child { border-right: 0; }
-.modeTabs .activeMode { color: white; background: linear-gradient(135deg, #6d4cdd, #7c5cff); }
 .promptBox { position: relative; overflow: hidden; border: 1px solid var(--border); border-radius: 6px; background: #101720; }
 .promptBox:focus-within { border-color: #6651ba; box-shadow: 0 0 0 2px rgba(124, 92, 255, .12); }
 .promptBox textarea { width: 100%; min-height: 83px; padding: 9px; color: #e8edf3; resize: vertical; border: 0; outline: none; background: transparent; line-height: 1.5; }
@@ -295,6 +295,7 @@
 .promptBox span { display: block; padding: 0 8px 6px; text-align: right; color: #5f6d7e; font-size: 8px; }
 .keyframeSlot { width: 100%; display: grid; grid-template-columns: 74px 1fr; gap: 9px; padding: 6px; text-align: left; color: #dbe2ea; border: 1px solid #4f447f; border-radius: 6px; background: #15172a; }
 .keyframeSlot img { width: 74px; height: 48px; object-fit: cover; border-radius: 3px; }
+.missingThumb { display: flex; width: 74px; height: 48px; align-items: center; justify-content: center; color: #5a6b80; border-radius: 3px; background: #0f161f; }
 .keyframeSlot span { min-width: 0; display: flex; flex-direction: column; justify-content: center; gap: 4px; }
 .keyframeSlot strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; }
 .keyframeSlot small { color: #81779f; font-size: 8px; }
@@ -311,7 +312,6 @@
 .referenceList small { color: #81779f; font-size: 8px; }
 .dropHint { display: block; margin-top: 6px; color: #a99de0; font-size: 8px; }
 .editorOverlay { position: fixed; z-index: 100; inset: 0; display: grid; place-items: center; padding: 18px; background: rgba(3, 6, 10, .78); }
-.emptySlot { width: 100%; display: flex; align-items: center; justify-content: center; gap: 6px; padding: 13px; color: #8a97a8; border: 1px dashed #3a4758; border-radius: 6px; background: #0f161f; }
 .advancedPrompt { border-bottom: 1px solid var(--border-soft); }
 .advancedPrompt summary { display: flex; align-items: center; gap: 5px; padding: 3px 0 8px; color: #8491a2; cursor: pointer; list-style: none; }
 .advancedPrompt[open] summary svg { transform: rotate(90deg); }
@@ -548,8 +548,6 @@
   .paneTabs { position: sticky; top: 0; z-index: 3; height: 52px; flex-basis: 52px; padding: 0 4px; background: var(--panel); }
   .paneTabs button { min-height: 50px; font-size: 12px; }
   .paneBody { gap: 14px; padding: 12px; overscroll-behavior: contain; }
-  .modeTabs { grid-template-columns: repeat(2, 1fr); }
-  .modeTabs button { min-height: 42px; font-size: 11px; }
   .promptBox textarea { min-height: 100px; font-size: 13px; }
   .rangeButtons button { min-height: 52px; }
   .inputActions { flex-wrap: wrap; }

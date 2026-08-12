@@ -43,12 +43,15 @@ import MiniMaxH3KeyframeTimeline from "../common/MiniMaxH3KeyframeTimeline";
 import MiniMaxH3ReferenceSelector, { EMPTY_MINIMAX_H3_REFERENCES, countMiniMaxH3References, MAX_VIDEOS, MAX_TOTAL } from "../common/MiniMaxH3ReferenceSelector";
 import VideoFrameCountSlider from "../common/VideoFrameCountSlider";
 import VideoChainConfirmDialog, { VideoChainPlanInput } from "../common/VideoChainConfirmDialog";
+import ChainDriftPauseDialog from "../common/ChainDriftPauseDialog";
 import {
   buildChainContinuationQueueItems,
   buildChainImageReferenceInventory,
   segmentChainReferenceImages,
   segmentChainText,
   advanceVideoChain,
+  ChainAdvanceResult,
+  ChainDriftPause,
 } from "@/utils/videoChain";
 import { migrateLoopGenerationConfig, computeLoopDecodeDirective } from "@/utils/loopGenerationInheritance";
 import { getSamplers, getScheduleTypes, generateImg2Img, generateImg2Vid, Img2VidParams, Txt2VidParams, MiniMaxH3Keyframe, MiniMaxH3References, generateRef2Vid, Ref2VidParams, generateOutpaintVideo, OutpaintVideoParams, generateAud2Aud, Aud2AudParams, generateImg2ImgTrainingPreview, toBase64, LoRAConfig, ControlNetConfig, generateTIPOPrompt, cancelGeneration, getCurrentModel, isLatentOnlyResult, getResultFilename, getResultPlaybackFilename, getResultSeed, getResultAncestralSeed, unetQuantizationOptions, normalizeUnetQuantization, transformerQuantizationLabel, archSupportsFeature, archDisplayName, normalizeVideoFrames, fitVideoCanvas, videoCanvasRule, videoCanvasAxisBounds, videoMinInferenceSteps, videoCanvasExceedsEnvelope, isGenerationStalledError, planVideoChain, effectiveSegmentFrames, VideoChainManifest, VIDEO_BLOCK_SWAP_MAX } from "@/utils/api";
@@ -539,6 +542,11 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
   // set by advanceVideoChain via processQueue, shown next to the frame
   // slider until the user starts a new chain or dismisses it.
   const [videoChainStoppedMessage, setVideoChainStoppedMessage] = useState<string | null>(null);
+  // Design §4.1: mirrors Txt2ImgPanel's own `chainDriftPause` state -- set
+  // when a segment's actual accumulated frame count drifts from the
+  // manifest's planned value by more than its tolerance, blocking the queue
+  // from dispatching the next chain segment until resolved.
+  const [chainDriftPause, setChainDriftPause] = useState<ChainDriftPause | null>(null);
   // User-settable chain segment length (`chain_segment_frames`, client-side
   // orchestration only -- NEVER sent to the backend). See Txt2ImgPanel's own
   // `chainSegmentFrames` state for the full rationale; the two panels share
@@ -2690,6 +2698,11 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
       chainManifestId: manifest?.chain_id,
       chainPlanHash: manifest?.plan_hash,
       chainSegmentIndex: manifest ? 0 : undefined,
+      // Design §4.1: segment 0's own planned accumulated frame count (its
+      // `owned_end_frame`) and the manifest's drift tolerance. Absent with no
+      // manifest, same as every other chain-provenance field here.
+      chainPlannedAccumulatedFrames: manifest?.segments.find((s) => s.index === 0)?.owned_end_frame,
+      chainDriftToleranceFrames: manifest?.chain_drift_tolerance_frames,
     };
 
     if (isRef2Va && refParams && references) {
@@ -2746,6 +2759,41 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
     });
     continuationItems.forEach((item) => addToQueue(item));
   };
+
+  // Design §4.1: mirrors Txt2ImgPanel's `handleChainDriftPause` -- see that
+  // panel's comment for the full rationale (the two panels dispatch
+  // chain_vid steps from the same queue).
+  const handleChainDriftPause = useCallback((outcome: ChainAdvanceResult): boolean => {
+    if (!outcome.driftPause) return true;
+    setChainDriftPause(outcome.driftPause);
+    return false;
+  }, []);
+
+  // Mirrors Txt2ImgPanel's `resolveChainDriftPause`.
+  const resolveChainDriftPause = useCallback((action: "continue" | "stop") => {
+    const pause = chainDriftPause;
+    if (!pause) return;
+    setChainDriftPause(null);
+    if (action === "continue") {
+      updateQueueItemByLoop(pause.loopGroupId, pause.nextStepIndex, (queued) => ({
+        inputVideo: pause.file,
+        chainPreviousFrames: pause.actualAccumulatedFrames,
+        chainLastDriftFrames: pause.driftFrames,
+        params: { ...(queued.params as OutpaintVideoParams), total_frames: pause.nextTotal },
+      }));
+    } else {
+      cancelLoopGroup(pause.loopGroupId);
+      setVideoChainStoppedMessage(
+        `Video chain stopped after segment ${pause.segmentsCompleted}: that segment's actual accumulated ` +
+        `frame count (${pause.actualAccumulatedFrames}) drifted ${pause.driftFrames} frames from the plan's ` +
+        `${pause.plannedAccumulatedFrames} (tolerance ${pause.toleranceFrames}). ` +
+        `${pause.segmentsCompleted} segment(s) already completed are saved to the gallery.`
+      );
+    }
+    setTimeout(() => {
+      if (processQueueRef.current) processQueueRef.current();
+    }, 100);
+  }, [chainDriftPause, updateQueueItemByLoop, cancelLoopGroup]);
 
   const clearLongPressTimer = () => {
     if (longPressTimerRef.current) {
@@ -3150,6 +3198,11 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
           updateQueueItemByLoop,
           cancelLoopGroup,
         });
+        // Design §4.1: a driftPause means the next chain_vid item was
+        // deliberately left unpatched -- do not schedule the queue until the
+        // user resolves it via ChainDriftPauseDialog (resolveChainDriftPause
+        // schedules it itself once they do).
+        const shouldScheduleNext = handleChainDriftPause(chainOutcome);
         setVideoChainStoppedMessage(chainOutcome.message ?? null);
 
         isGeneratingRef.current = false;
@@ -3157,9 +3210,11 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         setProgress(0);
         setProgressMessage("");
         completeCurrentItem();
-        setTimeout(() => {
-          if (processQueueRef.current) processQueueRef.current();
-        }, 100);
+        if (shouldScheduleNext) {
+          setTimeout(() => {
+            if (processQueueRef.current) processQueueRef.current();
+          }, 100);
+        }
       } catch (error: any) {
         console.error("[Img2Img] img2vid generation failed:", error);
         isGeneratingRef.current = false;
@@ -3252,6 +3307,11 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
           updateQueueItemByLoop,
           cancelLoopGroup,
         });
+        // Design §4.1: a driftPause means the next chain_vid item was
+        // deliberately left unpatched -- do not schedule the queue until the
+        // user resolves it via ChainDriftPauseDialog (resolveChainDriftPause
+        // schedules it itself once they do).
+        const shouldScheduleNext = handleChainDriftPause(chainOutcome);
         setVideoChainStoppedMessage(chainOutcome.message ?? null);
 
         isGeneratingRef.current = false;
@@ -3259,9 +3319,11 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         setProgress(0);
         setProgressMessage("");
         completeCurrentItem();
-        setTimeout(() => {
-          if (processQueueRef.current) processQueueRef.current();
-        }, 100);
+        if (shouldScheduleNext) {
+          setTimeout(() => {
+            if (processQueueRef.current) processQueueRef.current();
+          }, 100);
+        }
       } catch (error: any) {
         console.error("[Img2Img] ref2vid generation failed:", error);
         isGeneratingRef.current = false;
@@ -3353,6 +3415,11 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
           updateQueueItemByLoop,
           cancelLoopGroup,
         });
+        // Design §4.1: a driftPause means the next chain_vid item was
+        // deliberately left unpatched -- do not schedule the queue until the
+        // user resolves it via ChainDriftPauseDialog (resolveChainDriftPause
+        // schedules it itself once they do).
+        const shouldScheduleNext = handleChainDriftPause(chainOutcome);
         setVideoChainStoppedMessage(chainOutcome.message ?? null);
 
         isGeneratingRef.current = false;
@@ -3360,9 +3427,11 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         setProgress(0);
         setProgressMessage("");
         completeCurrentItem();
-        setTimeout(() => {
-          if (processQueueRef.current) processQueueRef.current();
-        }, 100);
+        if (shouldScheduleNext) {
+          setTimeout(() => {
+            if (processQueueRef.current) processQueueRef.current();
+          }, 100);
+        }
       } catch (error: any) {
         console.error("[Img2Img] chain_vid generation failed:", error);
         isGeneratingRef.current = false;
@@ -5490,6 +5559,9 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
                   {currentItem.chainPlanHash
                     ? `, plan ${currentItem.chainPlanHash.slice(0, 12)}.`
                     : ". Legacy repeat: every segment is sent the same full-length prompt."}
+                  {currentItem.chainLastDriftFrames != null
+                    ? ` Previous segment's frame drift from plan: ${currentItem.chainLastDriftFrames} frames.`
+                    : ""}
                 </p>
               )}
               {videoChainStoppedMessage && (
@@ -6682,6 +6754,14 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         onCancel={() => setVideoChainPrompt(null)}
         onGenerateAtCap={handleVideoChainGenerateAtCap}
         onStartChain={handleVideoChainStart}
+      />
+
+      {/* Design §4.1: planned/actual frame drift over tolerance pauses the
+          chain here until the user picks continue or stop -- never silent. */}
+      <ChainDriftPauseDialog
+        pause={chainDriftPause}
+        onContinue={() => resolveChainDriftPause("continue")}
+        onStop={() => resolveChainDriftPause("stop")}
       />
     </ResizableColumns>
   );

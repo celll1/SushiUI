@@ -42,12 +42,15 @@ import LoopGenerationPanel, { LoopGenerationConfig } from "./LoopGenerationPanel
 import QuantizedGemmSelect from "./QuantizedGemmSelect";
 import VideoFrameCountSlider from "../common/VideoFrameCountSlider";
 import VideoChainConfirmDialog, { VideoChainPlanInput } from "../common/VideoChainConfirmDialog";
+import ChainDriftPauseDialog from "../common/ChainDriftPauseDialog";
 import {
   buildChainContinuationQueueItems,
   buildChainImageReferenceInventory,
   segmentChainReferenceImages,
   segmentChainText,
   advanceVideoChain,
+  ChainAdvanceResult,
+  ChainDriftPause,
 } from "@/utils/videoChain";
 import { migrateLoopGenerationConfig, computeLoopDecodeDirective } from "@/utils/loopGenerationInheritance";
 import { generateTxt2Img, generateImg2Img, generateTxt2Vid, Txt2VidParams, generateRef2Vid, Ref2VidParams, generateOutpaintVideo, OutpaintVideoParams, MiniMaxH3References, MiniMaxH3Keyframe, generateTxt2Aud, Txt2AudParams, generateTxt2ImgTrainingPreview, GenerationParams, getSamplers, getScheduleTypes, tokenizePrompt, generateTIPOPrompt, cancelGeneration, getCurrentModel, isLatentOnlyResult, getResultFilename, getResultPlaybackFilename, getResultSeed, getResultAncestralSeed, unetQuantizationOptions, normalizeUnetQuantization, transformerQuantizationLabel, archSupportsFeature, archDisplayName, normalizeVideoFrames, videoCanvasRule, videoCanvasAxisBounds, videoMinInferenceSteps, videoCanvasExceedsEnvelope, isGenerationStalledError, planVideoChain, effectiveSegmentFrames, VideoChainManifest, VIDEO_BLOCK_SWAP_MAX } from "@/utils/api";
@@ -378,6 +381,12 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
   // set by advanceVideoChain via processQueue, shown next to the frame
   // slider until the user starts a new chain or dismisses it.
   const [videoChainStoppedMessage, setVideoChainStoppedMessage] = useState<string | null>(null);
+  // Design §4.1: set by `advanceVideoChain` (via `handleChainDriftPause`
+  // below) when a segment's actual accumulated frame count drifts from the
+  // manifest's planned value by more than its tolerance. Non-null blocks the
+  // queue from dispatching the next chain segment until the user resolves it
+  // through `ChainDriftPauseDialog` (continue anyway / stop the chain).
+  const [chainDriftPause, setChainDriftPause] = useState<ChainDriftPause | null>(null);
   // User-settable chain segment length (`chain_segment_frames`, client-side
   // orchestration only -- NEVER sent to the backend). `null` = unset = never
   // split: raising the total frame count alone splits nothing, regardless of
@@ -2078,6 +2087,11 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
       chainManifestId: manifest?.chain_id,
       chainPlanHash: manifest?.plan_hash,
       chainSegmentIndex: manifest ? 0 : undefined,
+      // Design §4.1: segment 0's own planned accumulated frame count (its
+      // `owned_end_frame`) and the manifest's drift tolerance. Absent with no
+      // manifest, same as every other chain-provenance field here.
+      chainPlannedAccumulatedFrames: manifest?.segments.find((s) => s.index === 0)?.owned_end_frame,
+      chainDriftToleranceFrames: manifest?.chain_drift_tolerance_frames,
     });
 
     const continuationItems = buildChainContinuationQueueItems({
@@ -2094,6 +2108,48 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
     });
     continuationItems.forEach((item) => addToQueue(item));
   };
+
+  // Design §4.1: called with every `advanceVideoChain` result right after it
+  // resolves, before the usual complete-current-item / schedule-next-queue
+  // step. Returns whether the caller should schedule the queue as normal
+  // (true) or hold off because the chain just paused for drift (false) --
+  // the next queued `chain_vid` item has deliberately not been patched with
+  // an `inputVideo` yet, so dispatching it now would fail with an unrelated
+  // "no input video" error instead of the real reason.
+  const handleChainDriftPause = useCallback((outcome: ChainAdvanceResult): boolean => {
+    if (!outcome.driftPause) return true;
+    setChainDriftPause(outcome.driftPause);
+    return false;
+  }, []);
+
+  // The user's choice from ChainDriftPauseDialog. "continue" performs
+  // exactly the patch `advanceVideoChain` deferred (inputVideo/total_frames,
+  // plus the recorded drift for display); "stop" cancels the rest of the
+  // loop group with a factual reason. Either way the queue resumes.
+  const resolveChainDriftPause = useCallback((action: "continue" | "stop") => {
+    const pause = chainDriftPause;
+    if (!pause) return;
+    setChainDriftPause(null);
+    if (action === "continue") {
+      updateQueueItemByLoop(pause.loopGroupId, pause.nextStepIndex, (queued) => ({
+        inputVideo: pause.file,
+        chainPreviousFrames: pause.actualAccumulatedFrames,
+        chainLastDriftFrames: pause.driftFrames,
+        params: { ...(queued.params as OutpaintVideoParams), total_frames: pause.nextTotal },
+      }));
+    } else {
+      cancelLoopGroup(pause.loopGroupId);
+      setVideoChainStoppedMessage(
+        `Video chain stopped after segment ${pause.segmentsCompleted}: that segment's actual accumulated ` +
+        `frame count (${pause.actualAccumulatedFrames}) drifted ${pause.driftFrames} frames from the plan's ` +
+        `${pause.plannedAccumulatedFrames} (tolerance ${pause.toleranceFrames}). ` +
+        `${pause.segmentsCompleted} segment(s) already completed are saved to the gallery.`
+      );
+    }
+    setTimeout(() => {
+      if (processQueueRef.current) processQueueRef.current();
+    }, 100);
+  }, [chainDriftPause, updateQueueItemByLoop, cancelLoopGroup]);
 
   // Add loop generation steps to queue immediately (without base image URL)
   const addLoopStepsToQueueImmediate = useCallback(async (mainParams: GenerationParams, loopGroupId: string) => {
@@ -2552,6 +2608,11 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
           updateQueueItemByLoop,
           cancelLoopGroup,
         });
+        // Design §4.1: a driftPause means the next chain_vid item was
+        // deliberately left unpatched -- do not schedule the queue until the
+        // user resolves it via ChainDriftPauseDialog (resolveChainDriftPause
+        // schedules it itself once they do).
+        const shouldScheduleNext = handleChainDriftPause(chainOutcome);
         setVideoChainStoppedMessage(chainOutcome.message ?? null);
 
         isGeneratingRef.current = false;
@@ -2559,9 +2620,11 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         setProgress(0);
         setProgressMessage("");
         completeCurrentItem();
-        setTimeout(() => {
-          if (processQueueRef.current) processQueueRef.current();
-        }, 100);
+        if (shouldScheduleNext) {
+          setTimeout(() => {
+            if (processQueueRef.current) processQueueRef.current();
+          }, 100);
+        }
       } catch (error: any) {
         console.error(`[Txt2Img] ${nextItem.type} generation failed:`, error);
         isGeneratingRef.current = false;
@@ -2662,6 +2725,11 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
           updateQueueItemByLoop,
           cancelLoopGroup,
         });
+        // Design §4.1: a driftPause means the next chain_vid item was
+        // deliberately left unpatched -- do not schedule the queue until the
+        // user resolves it via ChainDriftPauseDialog (resolveChainDriftPause
+        // schedules it itself once they do).
+        const shouldScheduleNext = handleChainDriftPause(chainOutcome);
         setVideoChainStoppedMessage(chainOutcome.message ?? null);
 
         isGeneratingRef.current = false;
@@ -2669,9 +2737,11 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         setProgress(0);
         setProgressMessage("");
         completeCurrentItem();
-        setTimeout(() => {
-          if (processQueueRef.current) processQueueRef.current();
-        }, 100);
+        if (shouldScheduleNext) {
+          setTimeout(() => {
+            if (processQueueRef.current) processQueueRef.current();
+          }, 100);
+        }
       } catch (error: any) {
         console.error("[Txt2Img] chain_vid generation failed:", error);
         isGeneratingRef.current = false;
@@ -4537,6 +4607,9 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                   {currentItem.chainPlanHash
                     ? `, plan ${currentItem.chainPlanHash.slice(0, 12)}.`
                     : ". Legacy repeat: every segment is sent the same full-length prompt."}
+                  {currentItem.chainLastDriftFrames != null
+                    ? ` Previous segment's frame drift from plan: ${currentItem.chainLastDriftFrames} frames.`
+                    : ""}
                 </p>
               )}
               {videoChainStoppedMessage && (
@@ -5529,6 +5602,14 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         onCancel={() => setVideoChainPrompt(null)}
         onGenerateAtCap={handleVideoChainGenerateAtCap}
         onStartChain={handleVideoChainStart}
+      />
+
+      {/* Design §4.1: planned/actual frame drift over tolerance pauses the
+          chain here until the user picks continue or stop -- never silent. */}
+      <ChainDriftPauseDialog
+        pause={chainDriftPause}
+        onContinue={() => resolveChainDriftPause("continue")}
+        onStop={() => resolveChainDriftPause("stop")}
       />
 
     </ResizableColumns>

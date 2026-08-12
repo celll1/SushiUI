@@ -273,6 +273,46 @@ export function buildChainContinuationParams(
   };
 }
 
+// Design §4.1 (scratchpad/video_chain_context_design.md): planned-vs-actual
+// accumulated-frame drift, evaluated at the start of every continuation.
+// Mirrors `evaluate_chain_drift` / `DriftCheck`
+// (`backend/core/inference/video_chain_context.py`) bit for bit -- same
+// inputs, same `abs()` comparison, same `continue`/`pause` verdict. This is
+// NOT a second, independently-designed judgment: there is currently no live
+// per-continuation endpoint to call for it (the backend function exists but
+// is only exercised by its own unit tests today), so the arithmetic is
+// reproduced here rather than left unwired; if a route for it is added
+// later, this is the one call site that should be pointed at it.
+// `toleranceFrames` is never a literal here -- it always comes from the
+// fetched Chain Manifest's `chain_drift_tolerance_frames`, which the backend
+// fills from `param_defaults.py`'s `VIDEO_CHAIN_DEFAULTS` (single source of
+// truth) even when the plan request didn't set one.
+export interface ChainDriftCheck {
+  plannedAccumulatedFrames: number;
+  actualAccumulatedFrames: number;
+  driftFrames: number;
+  toleranceFrames: number;
+  withinTolerance: boolean;
+  action: "continue" | "pause";
+}
+
+export function evaluateChainDrift(
+  plannedAccumulatedFrames: number,
+  actualAccumulatedFrames: number,
+  toleranceFrames: number
+): ChainDriftCheck {
+  const driftFrames = Math.abs(actualAccumulatedFrames - plannedAccumulatedFrames);
+  const withinTolerance = driftFrames <= toleranceFrames;
+  return {
+    plannedAccumulatedFrames,
+    actualAccumulatedFrames,
+    driftFrames,
+    toleranceFrames,
+    withinTolerance,
+    action: withinTolerance ? "continue" : "pause",
+  };
+}
+
 // The `chain_vid` loop-step items (segments 2..N) to enqueue alongside the
 // main segment-1 item (a plain `txt2vid`/`img2vid`/`ref2vid` item the caller
 // still builds and enqueues itself, at `loopStepIndex: -1`, exactly as it
@@ -361,6 +401,13 @@ export function buildChainContinuationQueueItems(args: {
       chainManifestId: args.manifest?.chain_id,
       chainPlanHash: args.manifest?.plan_hash,
       chainSegmentIndex: segmentIndex,
+      // Design §4.1: `total` IS `owned_end_frame` when a manifest drove this
+      // total (see `manifestTotals` above), so this is the manifest's own
+      // planned accumulated frame count for this segment, not a re-derivation.
+      // Absent with no manifest (legacy repeat), which is how `advanceVideoChain`
+      // knows to skip the drift check on that path.
+      chainPlannedAccumulatedFrames: args.manifest ? total : undefined,
+      chainDriftToleranceFrames: args.manifest?.chain_drift_tolerance_frames,
     });
     previous = total;
   });
@@ -377,12 +424,42 @@ export async function fetchVideoAsFile(url: string, filename = "chain_segment.mp
   return new File([blob], filename, { type: blob.type || "video/mp4" });
 }
 
+// Design §4.1: everything the caller needs to show the user a pause and let
+// them pick continue/stop, and everything `advanceVideoChain` needs to
+// finish the patch it deferred if they pick continue. `file` is fetched
+// eagerly (before the caller has decided) so "continue" does not have to
+// re-fetch the clip the paused segment already produced.
+export interface ChainDriftPause {
+  loopGroupId: string;
+  nextStepIndex: number;
+  plannedAccumulatedFrames: number;
+  actualAccumulatedFrames: number;
+  driftFrames: number;
+  toleranceFrames: number;
+  /** How many segments of the chain had completed when this one drifted. */
+  segmentsCompleted: number;
+  /** `total_frames` the next continuation would be sent with, exactly as
+   *  `nextVideoChainTotalFrames` computed it (unaffected by the drift
+   *  check -- §4.1 "drift は segment prompt のローカル時刻には影響しない"). */
+  nextTotal: number;
+  file: File;
+}
+
 export interface ChainAdvanceResult {
   /** Set only when the chain stopped for a reason worth telling the user
    *  about (no forward progress, or the architecture could not produce a
    *  further continuation) -- undefined for a normal on-plan finish, whether
    *  or not this was the chain's last segment. */
   message?: string;
+  /** Design §4.1: the just-finished segment's actual accumulated frame count
+   *  is more than `chainDriftToleranceFrames` away from the manifest's
+   *  planned value for it. The chain must PAUSE here -- `advanceVideoChain`
+   *  has deliberately NOT patched the next queued item yet, so it will not
+   *  be dispatched. The caller must render a choice (continue anyway / stop
+   *  the chain) and, on "continue", apply this pause's `nextTotal`/`file`
+   *  itself via `updateQueueItemByLoop` (see `resolveChainDriftPause`-style
+   *  handling in Txt2ImgPanel/Img2ImgPanel). Never silently continued. */
+  driftPause?: ChainDriftPause;
 }
 
 // Called after EVERY segment of a chain finishes (the main item as well as
@@ -467,10 +544,49 @@ export async function advanceVideoChain(args: {
     return {};
   }
 
+  // Design §4.1: at the start of every continuation, compare the segment
+  // that just finished's ACTUAL accumulated frames against what the manifest
+  // PLANNED for it. Only when both fields are present, i.e. this chain has a
+  // manifest -- legacy repeat (no manifest, no per-segment plan) has nothing
+  // to drift from and is not checked, matching current behaviour there.
+  let driftFrames: number | undefined;
+  if (item.chainPlannedAccumulatedFrames != null && item.chainDriftToleranceFrames != null) {
+    const drift = evaluateChainDrift(
+      item.chainPlannedAccumulatedFrames,
+      args.resultFrames,
+      item.chainDriftToleranceFrames
+    );
+    if (drift.action === "pause") {
+      // Over tolerance: pause. Fetch the clip now (so "continue" needs no
+      // extra round trip) but do NOT patch the next item -- it must not be
+      // dispatched until the caller has a decision from the user.
+      const file = await fetchVideoAsFile(args.resultVideoUrl);
+      return {
+        driftPause: {
+          loopGroupId: item.loopGroupId,
+          nextStepIndex,
+          plannedAccumulatedFrames: drift.plannedAccumulatedFrames,
+          actualAccumulatedFrames: drift.actualAccumulatedFrames,
+          driftFrames: drift.driftFrames,
+          toleranceFrames: drift.toleranceFrames,
+          segmentsCompleted,
+          nextTotal,
+          file,
+        },
+      };
+    }
+    driftFrames = drift.driftFrames;
+  }
+
   const file = await fetchVideoAsFile(args.resultVideoUrl);
   args.updateQueueItemByLoop(item.loopGroupId, nextStepIndex, (queued) => ({
     inputVideo: file,
     chainPreviousFrames: args.resultFrames,
+    // §4.1 "許容内: そのまま続行し、drift 値を...記録する" -- recorded on the
+    // item that is now about to run, purely for display; it never gates
+    // anything (`driftFrames` is undefined, so this key is simply omitted,
+    // on the legacy-repeat / no-manifest path).
+    ...(driftFrames != null ? { chainLastDriftFrames: driftFrames } : {}),
     params: { ...(queued.params as OutpaintVideoParams), total_frames: nextTotal },
   }));
   return {};

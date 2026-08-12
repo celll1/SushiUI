@@ -269,9 +269,15 @@ def _validate_limits(project: Mapping[str, Any], assets: Sequence[Mapping[str, A
     # than `max_render_seconds` was sized for -- see
     # `max_output_pixel_frames`'s definition in param_defaults.py.
     output_pixel_frames = width * height * timeline_frames
-    if output_pixel_frames > float(STUDIO_RENDER_DEFAULTS["max_output_pixel_frames"]):
+    output_budget = float(STUDIO_RENDER_DEFAULTS["max_output_pixel_frames"])
+    if output_pixel_frames > output_budget:
+        # State both numbers and what they are made of: the caller cannot tell
+        # which of the canvas, the frame rate or the length to reduce from a
+        # bare refusal, and the three multiply.
         raise StudioRenderValidationError(
-            "The requested canvas size and timeline duration exceed the renderer's output budget"
+            f"This render would write {output_pixel_frames:,} output pixel-frames "
+            f"({width}x{height} over {timeline_frames} frames), above the limit of "
+            f"{int(output_budget):,}. Reduce the canvas size, the frame rate, or the timeline length."
         )
     return width, height, timeline_frames, int(round(fps * 1000)), canonical_duration
 
@@ -289,8 +295,12 @@ def _validate_decode_budget(manifest: Mapping[str, Any]) -> None:
         height = int(asset.get("height") or project["height"])
         clip_frames = int(clip["duration_frames"])
         total_pixel_frames += width * height * clip_frames
-    if total_pixel_frames > float(STUDIO_RENDER_DEFAULTS["max_decode_pixel_frames"]):
-        raise StudioRenderValidationError("The timeline exceeds the renderer decode budget")
+    decode_budget = float(STUDIO_RENDER_DEFAULTS["max_decode_pixel_frames"])
+    if total_pixel_frames > decode_budget:
+        raise StudioRenderValidationError(
+            f"This render would read {int(total_pixel_frames):,} source pixel-frames, above the "
+            f"limit of {int(decode_budget):,}. Use smaller sources, or shorten the clips that use them."
+        )
 
 
 def _canonical_manifest(raw: Mapping[str, Any], source_metadata: Optional[Mapping[str, Mapping[str, Any]]] = None) -> Dict[str, Any]:

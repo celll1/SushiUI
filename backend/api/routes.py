@@ -82,10 +82,18 @@ from api.generation_utils import (
     MINIMAX_H3_DOCUMENTED_ANCHOR_SCOPE,
 )
 from api.error_handlers import (
+    APIError,
     GenerationError,
     ModelError,
     NotFoundError,
     ValidationError as CustomValidationError
+)
+from api.temp_image_utils import (
+    TEMP_IMG_PREFIX,
+    TempImageRefError,
+    TempImageRefTooLargeError,
+    resolve_temp_image_bytes,
+    resolve_temp_image_path,
 )
 from api.media_utils import get_or_create_preview, range_file_response, PREVIEW_DEFAULT_WIDTH
 from core.extensions.minimax_h3_prompt_assistant import (
@@ -5943,11 +5951,142 @@ async def generate_inpaint_video(
         )
 
 
+class VideoMaskRefUnresolvedError(APIError):
+    """One or more `spatial_mask_refs` did not resolve to a temp image.
+
+    A distinct status (409, not the 400 every other validation error in this
+    route uses) so the client can tell "retry this SAME request with these
+    asset(s) uploaded as bytes instead" apart from a request that is simply
+    invalid. `detail` is a JSON object (`{"unresolved_ref_ids": [...]}`, not a
+    prose string like every other error here) so the client can drive the
+    retry without string-parsing a message meant for a human.
+    """
+    def __init__(self, unresolved_ref_ids: List[str]):
+        super().__init__(
+            "Video mask ref unresolved",
+            status_code=409,
+            detail=json.dumps({"unresolved_ref_ids": unresolved_ref_ids}),
+        )
+
+
+# In-memory LRU cache for rasterized mask preview strips, following the same
+# OrderedDict pattern as `_browser_img_cache` above. Keyed on a sha256 of the
+# manifest JSON + sorted frame list + max_size + every referenced asset's own
+# content hash, so an unchanged edit (the common case: the user is scrubbing
+# the timeline or previewing a range, not redrawing a mask) never re-decodes
+# or re-rasterizes anything.
+from collections import OrderedDict as _MaskPreviewOrderedDict
+
+_MASK_PREVIEW_CACHE: "_MaskPreviewOrderedDict[str, tuple]" = _MaskPreviewOrderedDict()
+# Bounded by total BYTES, not entry count: one entry's size varies with the
+# request that produced it (up to MAX_MASK_PREVIEW_FRAMES=64 tiles at up to
+# MAX_PREVIEW_MAX_SIZE=1024px each), so a flat entry-count cap does not bound
+# total memory -- a worst-case entry (64 frames of a 1024x1024-ish canvas) is
+# plausibly hundreds of MB of encoded PNG before compression helps at all,
+# not the "few hundred KB" a flat-count cap would need to be true.
+_MASK_PREVIEW_CACHE_MAX_BYTES = 256 * 1024 * 1024
+_mask_preview_cache_bytes = 0
+
+
+def _mask_preview_cache_entry_bytes(value: tuple) -> int:
+    png_bytes, metadata = value
+    return len(png_bytes) + len(json.dumps(metadata).encode("utf-8"))
+
+
+def _mask_preview_cache_get(key: str):
+    entry = _MASK_PREVIEW_CACHE.get(key)
+    if entry is not None:
+        _MASK_PREVIEW_CACHE.move_to_end(key)
+    return entry
+
+
+def _mask_preview_cache_put(key: str, value: tuple) -> None:
+    global _mask_preview_cache_bytes
+    existing = _MASK_PREVIEW_CACHE.get(key)
+    if existing is not None:
+        _mask_preview_cache_bytes -= _mask_preview_cache_entry_bytes(existing)
+    _MASK_PREVIEW_CACHE[key] = value
+    _MASK_PREVIEW_CACHE.move_to_end(key)
+    _mask_preview_cache_bytes += _mask_preview_cache_entry_bytes(value)
+    while _MASK_PREVIEW_CACHE and _mask_preview_cache_bytes > _MASK_PREVIEW_CACHE_MAX_BYTES:
+        _, evicted = _MASK_PREVIEW_CACHE.popitem(last=False)
+        _mask_preview_cache_bytes -= _mask_preview_cache_entry_bytes(evicted)
+
+
+# `X-Mask-Preview-Meta` byte budget: Node's default max header size is 16 KB,
+# and this response is proxied through Next.js (see `frontend/next.config.js`'s
+# own rewrite of /api/v1/*), so an oversized header does not surface as an
+# app-level error -- it becomes an opaque proxy failure. Every field in
+# `metadata` except `warnings` is already bounded (frame count capped at
+# MAX_MASK_PREVIEW_FRAMES, canvas/frame dimensions are single integers); only
+# `warnings` is unbounded, since `rasterize_mask_timeline` emits up to two
+# per keyframe PAIR (MAX_MASK_KEYFRAMES=128 keyframes -> up to 127 pairs) and
+# the thin-frame message alone runs ~700 chars. Kept well under the 16 KB
+# proxy ceiling, not right up against it.
+_MASK_PREVIEW_META_HEADER_BUDGET_BYTES = 8192
+
+
+def _bounded_mask_preview_meta_header(metadata: dict) -> str:
+    """Serialize `metadata` for the `X-Mask-Preview-Meta` header, capping
+    `warnings` so the header can never approach
+    `_MASK_PREVIEW_META_HEADER_BUDGET_BYTES`. Warnings are kept in REQUEST
+    order (greedy, front to back) up to the budget; anything past that is
+    dropped and counted in `warnings_truncated` instead of silently lost."""
+    warnings = metadata.get("warnings") or []
+    base = {k: v for k, v in metadata.items() if k != "warnings"}
+    kept: List[str] = []
+    for warning in warnings:
+        remaining_after = len(warnings) - len(kept) - 1
+        candidate = dict(base, warnings=kept + [warning])
+        if remaining_after > 0:
+            candidate["warnings_truncated"] = remaining_after
+        if len(json.dumps(candidate).encode("utf-8")) > _MASK_PREVIEW_META_HEADER_BUDGET_BYTES:
+            break
+        kept.append(warning)
+    truncated = len(warnings) - len(kept)
+    result = dict(base, warnings=kept)
+    if truncated > 0:
+        result["warnings_truncated"] = truncated
+    header = json.dumps(result)
+    header_bytes = len(header.encode("utf-8"))
+    assert header_bytes < _MASK_PREVIEW_META_HEADER_BUDGET_BYTES, (
+        f"X-Mask-Preview-Meta is {header_bytes} bytes even after truncating "
+        f"warnings to {len(kept)}, exceeding its "
+        f"{_MASK_PREVIEW_META_HEADER_BUDGET_BYTES} byte budget -- the fixed "
+        "(non-warning) fields alone are too large."
+    )
+    return header
+
+
+_TEMP_IMG_FILENAME_HASH_RE = re.compile(r"^\d+_([0-9a-f]{16})\.png$")
+
+
+def _content_hash_from_temp_ref(ref: str) -> Optional[str]:
+    """Extract the sha256[:16] content hash `upload_temp_image` already
+    embeds in every temp image's filename, so a ref-based asset gets its
+    cache-key hash for free instead of re-hashing bytes already read once to
+    resolve the ref. Returns None for anything that doesn't match (falls back
+    to hashing the resolved bytes).
+
+    NOTE: this hash is over the bytes `upload_temp_image` originally
+    received, NOT the file's on-disk bytes -- `upload_temp_image` re-encodes
+    through `PIL.Image.save`, so the two differ byte-for-byte. This is still
+    a correct cache key because PNG is lossless: the re-encoded file decodes
+    to the exact same pixel array `decode_mask_pngs` rasterizes from, and
+    that pixel array (not the file's bytes) is this cache's actual identity."""
+    if not ref.startswith("temp_img://"):
+        return None
+    match = _TEMP_IMG_FILENAME_HASH_RE.match(ref[len("temp_img://"):])
+    return match.group(1) if match else None
+
+
 @router.post("/video-mask/preview")
 async def preview_video_mask(
     spatial_mask_manifest: str = Form(...),
     spatial_mask_files: List[UploadFile] = File([]),
     spatial_mask_ids: List[str] = Form([]),
+    spatial_mask_ref_ids: List[str] = Form([]),
+    spatial_mask_refs: List[str] = Form([]),
     frames: List[int] = Form(...),
     max_size: int = Form(256),
 ):
@@ -5960,6 +6099,18 @@ async def preview_video_mask(
     `sdf`'s distance-transform morph in the browser -- see
     `core/inference/video_mask_preview.py` for the preview-only bookkeeping
     (frame selection, downscale, sprite packing) layered on top of it.
+
+    Each manifest keyframe's mask asset is supplied EITHER as a direct upload
+    (`spatial_mask_ids`/`spatial_mask_files`, unchanged) OR as a
+    `temp_img://` reference the asset was already uploaded to earlier
+    (`spatial_mask_ref_ids`/`spatial_mask_refs`) -- never both for the same
+    id. A ref that fails to resolve raises `VideoMaskRefUnresolvedError`
+    (409) instead of falling back to treating it as missing, so the caller
+    can retry with exactly that asset uploaded as bytes rather than guessing.
+
+    Returns the sprite as a raw `image/png` body (not base64-in-JSON) with
+    every other field `build_mask_preview_strip` returns (plus `warnings`)
+    packed into the `X-Mask-Preview-Meta` response header as JSON.
 
     This route's validation is INTENTIONALLY a near-duplicate of
     `generate_inpaint_video`'s spatial-mask block rather than a shared helper:
@@ -5984,7 +6135,7 @@ async def preview_video_mask(
         MaskPreviewError,
         build_mask_preview_strip,
     )
-    import base64
+    import hashlib
 
     try:
         timeline = parse_mask_timeline_manifest(spatial_mask_manifest)
@@ -5996,47 +6147,55 @@ async def preview_video_mask(
 
     mask_files = spatial_mask_files or []
     mask_ids = spatial_mask_ids or []
+    ref_ids = spatial_mask_ref_ids or []
+    refs = spatial_mask_refs or []
     if len(mask_files) != len(mask_ids):
         raise CustomValidationError(
             "spatial_mask_files and spatial_mask_ids must have the same number of entries",
             detail=f"Got {len(mask_files)} files and {len(mask_ids)} IDs.",
         )
+    if len(refs) != len(ref_ids):
+        raise CustomValidationError(
+            "spatial_mask_refs and spatial_mask_ref_ids must have the same number of entries",
+            detail=f"Got {len(refs)} refs and {len(ref_ids)} ref IDs.",
+        )
     # Same defense-in-depth as generate_inpaint_video: this cap is checked
-    # BEFORE any upload is read, not only inside decode_mask_pngs after every
-    # upload is already in memory.
-    if len(mask_ids) > MAX_MASK_ASSETS:
+    # BEFORE any upload is read or ref resolved, not only inside
+    # decode_mask_pngs after every asset is already in memory.
+    if len(mask_ids) + len(ref_ids) > MAX_MASK_ASSETS:
         raise CustomValidationError(
             "Too many unique spatial mask assets",
-            detail=f"Got {len(mask_ids)} mask ID(s); at most {MAX_MASK_ASSETS} are allowed.",
+            detail=f"Got {len(mask_ids) + len(ref_ids)} mask ID(s); at most {MAX_MASK_ASSETS} are allowed.",
         )
 
     seen_mask_ids = set()
     duplicate_ids = set()
-    for mask_id in mask_ids:
+    for mask_id in mask_ids + ref_ids:
         if mask_id in seen_mask_ids:
             duplicate_ids.add(mask_id)
         seen_mask_ids.add(mask_id)
     duplicate_ids = sorted(duplicate_ids)
     if duplicate_ids:
         raise CustomValidationError(
-            "spatial_mask_ids must not contain duplicate IDs",
+            "spatial_mask_ids and spatial_mask_ref_ids must not contain duplicate or overlapping IDs",
             detail=f"Duplicate IDs: {duplicate_ids}",
         )
 
     expected_mask_ids = {keyframe.mask_id for keyframe in timeline.keyframes}
-    actual_mask_ids = set(mask_ids)
+    actual_mask_ids = set(mask_ids) | set(ref_ids)
     missing_mask_ids = sorted(expected_mask_ids - actual_mask_ids)
     unknown_mask_ids = sorted(actual_mask_ids - expected_mask_ids)
     if missing_mask_ids or unknown_mask_ids:
         raise CustomValidationError(
-            "spatial_mask_ids must exactly match the manifest keyframe mask IDs",
+            "spatial_mask_ids/spatial_mask_ref_ids must exactly match the manifest keyframe mask IDs",
             detail=f"Missing IDs: {missing_mask_ids}; unknown IDs: {unknown_mask_ids}.",
         )
 
     # Read-time byte cap derived from the manifest's own canvas, exactly as
     # generate_inpaint_video bounds its own mask uploads.
     _max_mask_bytes = timeline.canvas.width * timeline.canvas.height * 4 + 65536
-    mask_bytes_by_id = {}
+    mask_bytes_by_id: Dict[str, bytes] = {}
+    content_hash_by_id: Dict[str, str] = {}
     for mask_id, mask_file in zip(mask_ids, mask_files):
         try:
             mask_bytes = await mask_file.read(_max_mask_bytes + 1)
@@ -6061,35 +6220,92 @@ async def preview_video_mask(
                 detail=f"Mask ID {mask_id!r} has an empty upload.",
             )
         mask_bytes_by_id[mask_id] = mask_bytes
+        # Truncated to 16 hex chars (64 bits, plenty for a cache key) to
+        # match the hash a ref-sourced asset gets for free from its filename
+        # below -- an upload and a ref for the SAME content must land on the
+        # same cache key, or the cache never pays off for a mixed request
+        # pattern (e.g. one asset just redrawn hence uploaded, another still
+        # fetched by ref).
+        content_hash_by_id[mask_id] = hashlib.sha256(mask_bytes).hexdigest()[:16]
 
-    try:
-        mask_arrays = decode_mask_pngs(mask_bytes_by_id, timeline)
-    except MaskDecodeError as exc:
-        raise CustomValidationError(
-            "Invalid spatial mask PNG upload",
-            detail=str(exc),
-        ) from exc
+    unresolved_ref_ids: List[str] = []
+    for mask_id, ref in zip(ref_ids, refs):
+        try:
+            ref_bytes = resolve_temp_image_bytes(ref, TEMP_DIR, max_bytes=_max_mask_bytes)
+        except TempImageRefTooLargeError as exc:
+            # The ref resolves fine -- re-uploading the SAME file would fail
+            # this same cap again, so this is a 400 (this request is invalid
+            # as sent), not the 409 "retry by uploading" the generic
+            # unresolved-ref case below is for.
+            raise CustomValidationError(
+                "Referenced spatial mask is too large for its manifest canvas",
+                detail=(
+                    f"Mask ID {mask_id!r}: {exc} -- {_max_mask_bytes} bytes is the largest an "
+                    f"uncompressed RGBA raster of the manifest's "
+                    f"{timeline.canvas.width}x{timeline.canvas.height} canvas (plus PNG overhead) "
+                    "can legitimately be."
+                ),
+            ) from exc
+        except TempImageRefError:
+            unresolved_ref_ids.append(mask_id)
+            continue
+        mask_bytes_by_id[mask_id] = ref_bytes
+        content_hash_by_id[mask_id] = _content_hash_from_temp_ref(ref) or hashlib.sha256(ref_bytes).hexdigest()[:16]
+    if unresolved_ref_ids:
+        # Every unresolved id is reported at once so a single retry (see this
+        # error's docstring) can switch all of them to uploads together,
+        # rather than the client discovering them one at a time.
+        raise VideoMaskRefUnresolvedError(sorted(unresolved_ref_ids))
 
-    warnings: List[str] = []
-    try:
-        png_bytes, metadata = build_mask_preview_strip(
-            timeline, mask_arrays, frames, max_size,
-            sdf_fallback_warnings=warnings,
-        )
-    except MaskPreviewError as exc:
-        raise CustomValidationError(
-            "Invalid video mask preview request",
-            detail=str(exc),
-        ) from exc
-    except VideoMaskTimelineError as exc:
-        raise CustomValidationError(
-            "Invalid spatial mask timeline",
-            detail=str(exc),
-        ) from exc
+    cache_key = hashlib.sha256(
+        json.dumps(
+            {
+                "manifest": spatial_mask_manifest,
+                "frames": sorted(frames),
+                "max_size": max_size,
+                "assets": sorted(content_hash_by_id.items()),
+            },
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
 
-    metadata["warnings"] = warnings
-    metadata["strip_png"] = f"data:image/png;base64,{base64.b64encode(png_bytes).decode('ascii')}"
-    return metadata
+    cached = _mask_preview_cache_get(cache_key)
+    if cached is not None:
+        png_bytes, metadata = cached
+    else:
+        try:
+            mask_arrays = decode_mask_pngs(mask_bytes_by_id, timeline)
+        except MaskDecodeError as exc:
+            raise CustomValidationError(
+                "Invalid spatial mask PNG upload",
+                detail=str(exc),
+            ) from exc
+
+        warnings: List[str] = []
+        try:
+            png_bytes, metadata = build_mask_preview_strip(
+                timeline, mask_arrays, frames, max_size,
+                sdf_fallback_warnings=warnings,
+            )
+        except MaskPreviewError as exc:
+            raise CustomValidationError(
+                "Invalid video mask preview request",
+                detail=str(exc),
+            ) from exc
+        except VideoMaskTimelineError as exc:
+            raise CustomValidationError(
+                "Invalid spatial mask timeline",
+                detail=str(exc),
+            ) from exc
+
+        metadata["warnings"] = warnings
+        _mask_preview_cache_put(cache_key, (png_bytes, metadata))
+
+    return Response(
+        content=png_bytes,
+        media_type="image/png",
+        headers={"X-Mask-Preview-Meta": _bounded_mask_preview_meta_header(metadata)},
+    )
 
 
 @router.get("/models/upscalers")
@@ -9020,9 +9236,14 @@ async def upload_temp_image(image_base64: str = Form(...)):
 async def get_temp_image(image_id: str):
     """Get a temp image by ID and return as base64"""
     try:
-        filepath = os.path.join(TEMP_DIR, image_id)
-
-        if not os.path.exists(filepath):
+        # `image_id` is a raw path param, not a `temp_img://` ref -- routed
+        # through the same traversal-safe resolver as every actual ref
+        # anyway (prefixing it back on costs nothing) rather than joining it
+        # onto TEMP_DIR directly: FastAPI's `{image_id}` path param regex
+        # (`[^/]+`) still matches a URL-encoded `..\` on Windows.
+        try:
+            filepath = resolve_temp_image_path(f"{TEMP_IMG_PREFIX}{image_id}", TEMP_DIR)
+        except TempImageRefError:
             raise HTTPException(status_code=404, detail="Image not found")
 
         # Read image and convert to base64
@@ -13680,12 +13901,10 @@ async def create_training_run(
             prompt_dict = dict(sp) if not isinstance(sp, dict) else sp.copy()
             cip = prompt_dict.get("condition_image_path", "")
             if cip and cip.startswith("temp_img://"):
-                image_id = cip[len("temp_img://"):]
-                resolved_path = os.path.join(TEMP_DIR, image_id)
-                if os.path.exists(resolved_path):
-                    prompt_dict["condition_image_path"] = resolved_path
-                else:
-                    print(f"[Training] WARNING: temp image not found: {resolved_path}")
+                try:
+                    prompt_dict["condition_image_path"] = resolve_temp_image_path(cip, TEMP_DIR)
+                except TempImageRefError as exc:
+                    print(f"[Training] WARNING: {exc}")
                     prompt_dict["condition_image_path"] = ""
             resolved_sample_prompts.append(prompt_dict)
 
@@ -14168,12 +14387,10 @@ async def update_training_run(
             prompt_dict = dict(sp) if not isinstance(sp, dict) else sp.copy()
             cip = prompt_dict.get("condition_image_path", "")
             if cip and cip.startswith("temp_img://"):
-                image_id = cip[len("temp_img://"):]
-                resolved_path = os.path.join(TEMP_DIR, image_id)
-                if os.path.exists(resolved_path):
-                    prompt_dict["condition_image_path"] = resolved_path
-                else:
-                    print(f"[Training] WARNING: temp image not found: {resolved_path}")
+                try:
+                    prompt_dict["condition_image_path"] = resolve_temp_image_path(cip, TEMP_DIR)
+                except TempImageRefError as exc:
+                    print(f"[Training] WARNING: {exc}")
                     prompt_dict["condition_image_path"] = ""
             resolved_sample_prompts.append(prompt_dict)
 
@@ -15140,7 +15357,15 @@ async def visualize_debug_latent(
     if "reference_image_path" in data:
         try:
             from PIL import Image as _PILImage
-            ref_path = str(data["reference_image_path"]).replace("temp_img://", "")
+            raw_ref_path = str(data["reference_image_path"])
+            # Debug .pt files normally carry an already-resolved filesystem
+            # path (see the sample_prompts resolution above, run before the
+            # trainer ever sees this value) -- the temp_img:// branch below
+            # only guards an older debug file that predates that resolution.
+            if raw_ref_path.startswith("temp_img://"):
+                ref_path = resolve_temp_image_path(raw_ref_path, TEMP_DIR)
+            else:
+                ref_path = raw_ref_path
             ref_img = _PILImage.open(ref_path).convert("RGB")
             ref_img.thumbnail((256, 256))
             result["reference_image"] = image_to_base64(ref_img)

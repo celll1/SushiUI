@@ -1361,10 +1361,16 @@ paths:
 
         **Wire format**, identical to `/generate/inpaint/video`'s spatial mask
         fields: `spatial_mask_manifest` (required here; a preview has nothing
-        to rasterize without one), plus one PNG in `spatial_mask_files` and its
-        ID in `spatial_mask_ids` for every unique `mask_id` the manifest
-        references. The manifest's own `canvas.width`/`canvas.height` define
-        the mask's coordinate space; there is no separate width/height field.
+        to rasterize without one), plus for every unique `mask_id` the
+        manifest references, EITHER a PNG in `spatial_mask_files` with its ID
+        in `spatial_mask_ids`, OR a previously-uploaded asset's
+        `temp_img://` reference in `spatial_mask_refs` with its ID in
+        `spatial_mask_ref_ids` -- never both for the same ID. The ref form
+        lets a debounced re-fetch (the common case: scrubbing the timeline,
+        not redrawing a mask) send a few hundred bytes instead of
+        re-uploading a PNG that has not changed. The manifest's own
+        `canvas.width`/`canvas.height` define the mask's coordinate space;
+        there is no separate width/height field.
 
         **`frames`**: the exact frame numbers (repeated form field) to
         rasterize, at most 64 per request and with no duplicates. A frame
@@ -1389,19 +1395,27 @@ paths:
         looks sharp in this preview is not a claim about the exact per-pixel
         boundary a generation call with the same manifest produces.
 
-        **Response**: a single JSON object; the PNG strip is embedded as a
-        `data:image/png;base64,...` URI (the same convention
-        `/controlnet/preprocess-image` uses), not a multipart response, so a
-        plain `fetch`/`axios` JSON call is enough on the frontend. All
-        returned frames share one `frame_width`/`frame_height` (every frame in
-        a timeline shares one canvas), and `frames[]` lists each requested
-        frame's `x_offset` into the strip in ascending, de-duplicated frame
-        order (not necessarily the order they were requested in).
+        **Response**: the PNG sprite strip itself as the raw `image/png`
+        response body (not base64-in-JSON -- a JSON body would cost the usual
+        +33% base64 overhead on top of an already-repeated request), with
+        every other field `VideoMaskPreviewResponse` describes packed as JSON
+        into the `X-Mask-Preview-Meta` response header. All returned frames
+        share one `frame_width`/`frame_height` (every frame in a timeline
+        shares one canvas), and `frames[]` lists each requested frame's
+        `x_offset` into the strip in ascending, de-duplicated frame order
+        (not necessarily the order they were requested in).
 
         Applies the exact same upload-size and asset-count validation as
         `/generate/inpaint/video`'s spatial mask handling (at most 64 unique
-        PNG assets, each bounded by the manifest canvas's own uncompressed
-        byte count) -- being a read-only preview does not relax it.
+        mask assets total across `spatial_mask_files` and `spatial_mask_refs`
+        combined, each bounded by the manifest canvas's own uncompressed byte
+        count) -- being a read-only preview does not relax it.
+
+        **Caching**: identical requests (same manifest, frame list, max_size,
+        and every referenced asset's own PNG content) are served from a
+        bounded in-memory LRU without re-rasterizing, so repeated scrubbing
+        over an unchanged mask costs no server-side work past the first
+        fetch.
       operationId: previewVideoMask
       requestBody:
         required: true
@@ -1416,42 +1430,71 @@ paths:
               spatial_mask_ids:
                 style: form
                 explode: true
+              spatial_mask_ref_ids:
+                style: form
+                explode: true
+              spatial_mask_refs:
+                style: form
+                explode: true
               frames:
                 style: form
                 explode: true
       responses:
         '200':
-          description: Preview rasterized successfully
-          content:
-            application/json:
+          description: >-
+            Preview rasterized successfully. The body is the raw PNG sprite
+            strip; every other field of VideoMaskPreviewResponse is JSON in
+            the X-Mask-Preview-Meta header.
+          headers:
+            X-Mask-Preview-Meta:
+              description: JSON-encoded VideoMaskPreviewResponse (the PNG bytes themselves are the response body, not part of this header).
               schema:
                 $ref: '#/components/schemas/VideoMaskPreviewResponse'
-              example:
-                canvas_width: 640
-                canvas_height: 384
-                frame_width: 256
-                frame_height: 154
-                frames:
-                  - frame: 40
-                    x_offset: 0
-                  - frame: 62
-                    x_offset: 256
-                warnings: []
-                strip_png: "data:image/png;base64,iVBORw0KGgo..."
+          content:
+            image/png:
+              schema:
+                type: string
+                format: binary
         '400':
           description: >-
             Invalid spatial_mask_manifest, a malformed or empty mask PNG, a
             mismatch or duplicate in the repeated spatial_mask_ids/
-            spatial_mask_files mapping, too many unique mask assets, an empty
-            or oversized frames list, a duplicate frame number, max_size
-            outside 16..1024, or a keyframe+requested-frame span whose
-            rasterization would exceed this endpoint's 2 GiB preview RAM
-            budget at the manifest's own canvas size (see `frames`' own
-            description above for how that budget maps to a frame count).
+            spatial_mask_files or spatial_mask_ref_ids/spatial_mask_refs
+            mapping, an ID used in both the upload and ref lists, too many
+            unique mask assets, an empty or oversized frames list, a
+            duplicate frame number, max_size outside 16..1024, a
+            keyframe+requested-frame span whose rasterization would exceed
+            this endpoint's 2 GiB preview RAM budget at the manifest's own
+            canvas size (see `frames`' own description above for how that
+            budget maps to a frame count), or a spatial_mask_refs entry that
+            DID resolve but whose file exceeds the same per-asset byte cap a
+            direct upload is held to -- unlike an unresolved ref (409 below),
+            retrying this with the same file uploaded directly would fail
+            the identical cap again, so it is reported as an invalid request
+            rather than something a client should retry.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: >-
+            One or more spatial_mask_refs entries could not be resolved at
+            all (e.g. the temp file expired or was swept -- NOT the oversized
+            case above, which is a 400). `detail` is a JSON object,
+            `{"unresolved_ref_ids": [...]}`, naming the affected manifest
+            mask IDs (not the refs themselves) -- retry the SAME request with
+            exactly those IDs' assets moved to spatial_mask_ids/
+            spatial_mask_files instead.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: "Video mask ref unresolved"
+                detail: '{"unresolved_ref_ids": ["subject"]}'
+                status_code: 409
+                timestamp: "2026-08-12T12:00:00.000Z"
+                path: "/api/v1/video-mask/preview"
         '500':
           description: Preview rasterization failed unexpectedly
           content:
@@ -9678,8 +9721,11 @@ components:
       description: |
         Multipart request for `/video-mask/preview`. Carries the same
         spatial-mask-timeline fields as `InpaintVideoRequest` (manifest +
-        repeated PNG uploads/IDs), plus the frame list and preview size that
-        are specific to this read-only endpoint.
+        repeated PNG uploads/IDs), plus a ref-based alternative to uploading
+        each asset (spatial_mask_ref_ids/spatial_mask_refs) and the frame
+        list and preview size that are specific to this read-only endpoint.
+        Every manifest keyframe's `mask_id` must appear in EXACTLY ONE of
+        `spatial_mask_ids` or `spatial_mask_ref_ids`.
       properties:
         spatial_mask_manifest:
           type: string
@@ -9700,6 +9746,23 @@ components:
           description: "Repeated form IDs paired positionally with spatial_mask_files, exactly as InpaintVideoRequest.spatial_mask_ids."
           items:
             type: string
+        spatial_mask_ref_ids:
+          type: array
+          description: "Repeated form IDs paired positionally with spatial_mask_refs -- the ref-based counterpart of spatial_mask_ids. An ID must not also appear in spatial_mask_ids."
+          items:
+            type: string
+        spatial_mask_refs:
+          type: array
+          description: >-
+            Repeated temp_img:// references (from a prior
+            /temp-images/upload of the same PNG this asset would otherwise
+            upload), paired positionally with spatial_mask_ref_ids. A ref
+            that fails to resolve server-side answers 409, naming the
+            unresolved ID(s) so the client can retry with just those moved to
+            spatial_mask_ids/spatial_mask_files.
+          items:
+            type: string
+          example: ["temp_img://1700000000000_a1b2c3d4e5f60718.png"]
         frames:
           type: array
           description: |
@@ -9718,6 +9781,10 @@ components:
 
     VideoMaskPreviewResponse:
       type: object
+      description: >-
+        The `/video-mask/preview` response's metadata, carried as JSON in the
+        `X-Mask-Preview-Meta` response header -- the sprite PNG itself is the
+        raw response body (media type image/png), not a field of this schema.
       required:
         - canvas_width
         - canvas_height
@@ -9725,7 +9792,6 @@ components:
         - frame_height
         - frames
         - warnings
-        - strip_png
       properties:
         canvas_width:
           type: integer
@@ -9736,14 +9802,14 @@ components:
           example: 384
         frame_width:
           type: integer
-          description: "Width, in pixels, of one tile in strip_png. Shared by every returned frame."
+          description: "Width, in pixels, of one tile in the response body's sprite strip. Shared by every returned frame."
           example: 256
         frame_height:
           type: integer
           example: 154
         frames:
           type: array
-          description: "One entry per requested frame, ascending and de-duplicated by frame number, each naming its tile's left edge inside strip_png."
+          description: "One entry per requested frame, ascending and de-duplicated by frame number, each naming its tile's left edge inside the response body's sprite strip."
           items:
             type: object
             required: [frame, x_offset]
@@ -9753,17 +9819,29 @@ components:
                 example: 40
               x_offset:
                 type: integer
-                description: "Left edge, in strip_png pixels, of this frame's tile. Its width is frame_width and its height is frame_height."
+                description: "Left edge, in pixels, of this frame's tile inside the response body's sprite strip. Its width is frame_width and its height is frame_height."
                 example: 0
         warnings:
           type: array
-          description: "Human-readable notices, e.g. an sdf interpolation segment that fell back to holding an endpoint's mask on some of the returned frames. Same wording as the generation endpoint's own sdf warnings."
+          description: >-
+            Human-readable notices, e.g. an sdf interpolation segment that
+            fell back to holding an endpoint's mask on some of the returned
+            frames. Same wording as the generation endpoint's own sdf
+            warnings. Capped so this whole header stays well under 8 KB
+            (Node's default max header size is 16 KB, and this response is
+            proxied through Next.js) -- if more warnings were produced than
+            fit, the excess is dropped from this array and counted in
+            `warnings_truncated` instead.
           items:
             type: string
           example: []
-        strip_png:
-          type: string
-          description: "The sprite strip as a data:image/png;base64,... URI: one 8-bit grayscale PNG, frame_width * len(frames) wide by frame_height tall, tiles left-to-right in the same order as frames[]."
+        warnings_truncated:
+          type: integer
+          description: >-
+            Present only when `warnings` above had to be capped to fit the
+            response header's byte budget. Counts how many additional
+            warnings were dropped, beyond what `warnings` holds.
+          example: 3
 
     Txt2AudRequest:
       type: object

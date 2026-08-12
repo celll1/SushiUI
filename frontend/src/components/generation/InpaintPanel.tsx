@@ -5471,6 +5471,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
                     outputHeight={videoMaskManifest.canvas.height}
                     manifest={videoMaskManifest}
                     assets={videoMaskAssets}
+                    assetRefs={videoMaskUploadedRefsRef.current}
                     rangeStart={params.regenerate_start_frame ?? 0}
                     rangeEnd={params.regenerate_end_frame ?? 0}
                     // inputVideoPlayer.currentFrame is the <video> element's

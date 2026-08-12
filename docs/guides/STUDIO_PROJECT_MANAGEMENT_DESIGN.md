@@ -31,6 +31,10 @@ project to `canvasMode: "manual"`, which keeps later insertions from changing
 the canvas. Older manifests with an existing visual clip migrate to manual
 mode.
 
+This persisted field is part of schema version 5; older manifests migrate
+through the same manual-mode safety rule before they are opened or added to
+Recent.
+
 Studio uses the `.sushistudio` extension. A project file is a JSON manifest
 with a format marker and schema version. Save downloads the current manifest;
 Open accepts `.sushistudio`, `.json`, and legacy Studio JSON manifests. New

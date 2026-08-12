@@ -118,6 +118,7 @@ import {
   readRecentProjects,
   rememberRecentProject,
   serializeStudioProject,
+  STUDIO_PROJECT_VERSION,
   type StudioRecentProject,
 } from "./studioProjectFile";
 import styles from "./studio.module.css";
@@ -1341,7 +1342,7 @@ export default function StudioWorkspace() {
       const imported: StudioProject = {
         ...defaults,
         ...parsed,
-        schemaVersion: 4,
+        schemaVersion: STUDIO_PROJECT_VERSION,
         name: stringOrUndefined(parsed.name) || defaults.name,
         createdAt: stringOrUndefined(parsed.createdAt) || defaults.createdAt,
         updatedAt: stringOrUndefined(parsed.updatedAt) || defaults.updatedAt,
@@ -1361,7 +1362,11 @@ export default function StudioWorkspace() {
           ? parsed.referenceAssetIds.filter((id): id is string => typeof id === "string")
           : [],
       };
-      imported.canvasMode = resolveStudioCanvasMode(parsed.canvasMode, imported.clips, imported.assets);
+      imported.canvasMode = resolveStudioCanvasMode(
+        parsed.schemaVersion === STUDIO_PROJECT_VERSION ? parsed.canvasMode : "manual",
+        imported.clips,
+        imported.assets,
+      );
       const imageAssetIds = new Set(imported.assets.filter((asset) => asset.kind === "image").map((asset) => asset.id));
       const clips = imported.clips.map((clip) => {
         const inputRoles = clip.inputRoles?.filter((role) => role === "keyframe");
@@ -2676,6 +2681,13 @@ export default function StudioWorkspace() {
         : range
           ? Math.max(frameDuration(project.fps), range.end - range.start)
           : (asset.duration || fallbackDuration || frameDuration(project.fps));
+      const generatedCanvasFit = generatedKind !== "audio"
+        && projectRef.current.canvasMode === "auto"
+        && !hasStudioVisualClip(projectRef.current.clips, allAssets)
+        && Number.isFinite(asset.width) && Number.isFinite(asset.height)
+        && asset.width! > 0 && asset.height! > 0;
+      const generatedCanvasWidth = generatedCanvasFit ? normalizeCanvasDimension(asset.width!, projectRef.current.width) : projectRef.current.width;
+      const generatedCanvasHeight = generatedCanvasFit ? normalizeCanvasDimension(asset.height!, projectRef.current.height) : projectRef.current.height;
       const takeGroupId = selectedClip?.takeGroupId || (selectedClip ? newId() : undefined);
       const selectedTrack = selectedClip ? project.tracks.find((track) => track.id === selectedClip.trackId) : null;
       const clip: StudioClip = {
@@ -2693,7 +2705,7 @@ export default function StudioWorkspace() {
         sourceIn: 0,
         presentation: generatedKind === "image" ? "frame" : "clip",
         sourceDuration: asset.duration || targetDuration,
-        ...(generatedKind !== "audio" && form.width && form.height && (form.width !== project.width || form.height !== project.height)
+        ...(generatedKind !== "audio" && form.width && form.height && (form.width !== generatedCanvasWidth || form.height !== generatedCanvasHeight)
           ? { fitMode: "cover" as const }
           : {}),
         takeGroupId,
@@ -2704,12 +2716,14 @@ export default function StudioWorkspace() {
       };
       commit((current) => ({
         ...current,
+        ...(generatedCanvasFit ? { width: generatedCanvasWidth, height: generatedCanvasHeight, canvasMode: "manual" as const } : {}),
         assets: current.assets.some((item) => item.id === asset.id) ? current.assets : [...current.assets, asset],
         clips: [...current.clips.map((item) => item.id === selectedClip?.id ? { ...item, takeGroupId } : item), clip],
       }));
       setSelectedAssetId(asset.id);
       selectClip(clip.id);
       setResultAssetIds((current) => [asset.id, ...current]);
+      if (generatedCanvasFit) setNotice(`Canvas set to ${generatedCanvasWidth}×${generatedCanvasHeight} from ${asset.name}.`);
       setJobs((current) => current.map((job) => job.id === jobId
         ? { ...job, status: (selectedClip ? "review" : "applied") as const, assetId: asset.id }
         : job));
@@ -3033,7 +3047,14 @@ export default function StudioWorkspace() {
     }));
     const restored = {
       ...entry.manifest,
-      canvasMode: resolveStudioCanvasMode(entry.manifest.canvasMode, entry.manifest.clips, assets),
+      schemaVersion: STUDIO_PROJECT_VERSION,
+      width: normalizeCanvasDimension(entry.manifest.width, 1920),
+      height: normalizeCanvasDimension(entry.manifest.height, 1080),
+      canvasMode: resolveStudioCanvasMode(
+        entry.manifest.schemaVersion === STUDIO_PROJECT_VERSION ? entry.manifest.canvasMode : "manual",
+        entry.manifest.clips,
+        assets,
+      ),
       assets,
     };
     applyProject(restored);

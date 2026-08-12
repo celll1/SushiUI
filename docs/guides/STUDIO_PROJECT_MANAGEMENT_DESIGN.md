@@ -24,6 +24,13 @@ generation Width/Height or clip source media; clips retain their per-clip
 
 ### Local project files
 
+An empty project starts in `canvasMode: "auto"`. The first image or video clip
+with known dimensions sets the canvas to that asset's quantized dimensions; an
+audio-only clip does not trigger this. Applying Project Settings switches the
+project to `canvasMode: "manual"`, which keeps later insertions from changing
+the canvas. Older manifests with an existing visual clip migrate to manual
+mode.
+
 Studio uses the `.sushistudio` extension. A project file is a JSON manifest
 with a format marker and schema version. Save downloads the current manifest;
 Open accepts `.sushistudio`, `.json`, and legacy Studio JSON manifests. New

@@ -1,5 +1,5 @@
 import { openDB } from "idb";
-import type { StudioAsset, StudioProject } from "./types";
+import { resolveStudioCanvasMode, type StudioAsset, type StudioProject } from "./types";
 
 const PROJECT_KEY = "sushiui_studio_project_v1";
 const DATABASE_NAME = "sushiui-studio";
@@ -55,6 +55,7 @@ export const loadStudioProject = async (): Promise<StudioProject | null> => {
       height: Number.isFinite(parsed.height) && parsed.height! > 0
         ? Math.max(64, Math.min(8192, Math.round(parsed.height! / 16) * 16))
         : 1080,
+      canvasMode: resolveStudioCanvasMode(parsed.canvasMode, migratedClips, parsed.assets || []),
       fps,
       clips: migratedClips,
       revision: Number.isFinite(parsed.revision) ? parsed.revision! : 0,

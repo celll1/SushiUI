@@ -99,6 +99,24 @@ def start_generation(generation_type: str) -> int:
     Also binds the id to the calling context so emitters deep in the call stack
     need no id — see the attribution note at the top of this module.
     """
+    from core.pipeline import pipeline_manager
+    if getattr(pipeline_manager, "component_health", None) == "degraded":
+        from fastapi import HTTPException
+        raise HTTPException(
+            status_code=503,
+            detail="The loaded model is degraded after a component switch failure; reload the model before generating.",
+        )
+
+    from core.model_state_coordinator import (
+        ModelStateBusyError,
+        model_state_coordinator,
+    )
+    try:
+        model_state_coordinator.begin_generation()
+    except ModelStateBusyError as exc:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
     global _next_id
     with _lock:
         now = _now()
@@ -267,9 +285,12 @@ def _finish(generation_id: Optional[int]) -> Optional[list]:
             # No identity at all: retire the OLDEST active generation (the one
             # holding the GPU slot), matching _bucket_for_emitter().
             generation_id = _active_ids[0] if _active_ids else None
-    if generation_id is not None and generation_id in _active_ids:
+    retired = generation_id is not None and generation_id in _active_ids
+    if retired:
         _active_ids.remove(generation_id)
         _evict_locked()
+        from core.model_state_coordinator import model_state_coordinator
+        model_state_coordinator.end_generation()
     if generation_id is None:
         return None
     return _buckets.get(generation_id)

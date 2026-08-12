@@ -29,6 +29,8 @@ export interface ModelInfo {
   variant?: string;
   source?: string;
   is_v_prediction?: boolean;
+  model_revision?: number;
+  component_revision?: number;
   [key: string]: unknown;
 }
 
@@ -135,7 +137,8 @@ const MODEL_SYNC_MS = 20000;
 function modelIdentity(info: ModelInfo | null): string {
   if (!info) return "";
   return JSON.stringify([info.type ?? null, info.source ?? null, info.variant ?? null,
-                         info.is_video === true, info.is_audio === true]);
+                         info.is_video === true, info.is_audio === true,
+                         info.model_revision ?? null, info.component_revision ?? null]);
 }
 
 export function StartupProvider({ children }: StartupProviderProps) {

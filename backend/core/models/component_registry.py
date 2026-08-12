@@ -26,6 +26,7 @@ import os
 import struct
 import hashlib
 import threading
+import copy
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -37,6 +38,7 @@ try:
         ComponentWiringSpec,
         SD15_WIRING, SDXL_WIRING, ZIMAGE_WIRING, ANIMA_WIRING, LENS_WIRING,
         IDEOGRAM4_WIRING, MINIT2I_WIRING, KREA2_WIRING, FLUX2_WIRING, LTX2_WIRING,
+        ACESTEP_WIRING,
         MINIMAX_H3_WIRING,
     )
     _WIRING_BY_ARCH: Dict[str, ComponentWiringSpec] = {
@@ -50,6 +52,7 @@ try:
         "krea2": KREA2_WIRING,
         "flux2": FLUX2_WIRING,
         "ltx2": LTX2_WIRING,
+        "acestep": ACESTEP_WIRING,
         # 5-D 24ch latents -> `scan_model` reports is_video=True for MiniMax-H3
         # even before its `audio_vae` component is seen (the flat ComfyUI tree
         # has no `audio_vae/` subfolder for `_scan_diffusers` to find).
@@ -676,6 +679,10 @@ def scan_model(path: str, source_type: Optional[str] = None) -> Dict[str, Any]:
     except Exception as e:
         print(f"[ComponentRegistry] extraction failed for {path}: {e}")
 
+    # Preserve what headers/configs actually proved. Compatibility checks must
+    # not mistake wiring defaults folded below for observed candidate metadata.
+    record["observed_components"] = copy.deepcopy(record["components"])
+
     # baseline + mismatches
     try:
         _fold_baseline(record, arch)
@@ -704,6 +711,8 @@ def scan_model(path: str, source_type: Optional[str] = None) -> Dict[str, Any]:
 #     VAE latent_channels class-default fallback; lens/ideogram4/flux2 wiring latent=32.
 # v4: bare original/LDM-format AutoencoderKL VAE (un-prefixed decoder/encoder/
 #     quant_conv keys, no config.json) is now recognized as a standalone VAE.
+# v5: observed component metadata is separate from wiring defaults; ACE-Step
+#     participates in baseline matching.
 # NOT bumped for the minimax_h3 wiring entry: unlike v3's latent-channel
 #     corrections, it changes no record of a path any earlier version could have
 #     scanned as something else -- an H3 tree used to detect as "sd15" only if it
@@ -711,7 +720,7 @@ def scan_model(path: str, source_type: Optional[str] = None) -> Dict[str, Any]:
 #     of every other model's headers to fix records that are already right. If
 #     an H3 record ever does turn up carrying arch "sd15", `invalidate(path)` is
 #     the targeted fix.
-_REGISTRY_SCHEMA_VERSION = 4
+_REGISTRY_SCHEMA_VERSION = 5
 
 
 class ComponentRegistryCache:

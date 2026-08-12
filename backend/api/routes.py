@@ -8270,6 +8270,7 @@ async def get_models(db: Session = Depends(get_gallery_db), force_rescan: bool =
                 rec = _cr_get_or_scan(m["path"], m.get("source_type"))
                 comps = rec.get("components", {}) or {}
                 m["components"] = comps
+                m["observed_components"] = rec.get("observed_components", {}) or {}
                 m["is_video"] = rec.get("is_video", False)
                 m["latent_channels"] = (comps.get("vae", {}) or {}).get("latent_channels")
                 m["te_out_dim"] = (comps.get("text_encoder", {}) or {}).get("out_dim")
@@ -8312,6 +8313,8 @@ async def list_vision_encoders(db: Session = Depends(get_gallery_db)):
             item_path = os.path.join(models_dir, item)
             architecture = ModelLoader.detect_model_type(item_path)
             if architecture == "vision_encoder":
+                from core.vision_encoder import inspect_vision_encoder_candidate
+                inspection = inspect_vision_encoder_candidate(item_path)
                 file_size = os.path.getsize(item_path) / (1024**3)
                 vision_encoders.append({
                     "name": item.replace('.safetensors', ''),
@@ -8319,6 +8322,9 @@ async def list_vision_encoders(db: Session = Depends(get_gallery_db)):
                     "size_gb": round(file_size, 2),
                     "source_dir": models_dir,
                     "architecture": "vision_encoder",
+                    "compatibility_verified": inspection["compatible"],
+                    "compatibility_reason": inspection["reason"],
+                    "hidden_size": inspection["hidden_size"],
                 })
     return {"vision_encoders": vision_encoders}
 
@@ -8428,7 +8434,20 @@ async def list_vaes(db: Session = Depends(get_gallery_db)):
             cand = classify_vae_candidate(path)
         except Exception as e:
             print(f"[VAEs] classify failed for {path}: {e}")
-            return
+            cand = None
+        from core.models.anima.anima_loader import inspect_anima_component_candidate
+        anima = inspect_anima_component_candidate(path, "vae")
+        if cand is None and anima["compatible"]:
+            cand = {
+                "name": os.path.splitext(os.path.basename(path))[0],
+                "path": path,
+                "arch": "anima",
+                "latent_channels": 16,
+                "vae_class": "AutoencoderKLQwenImage",
+                "scale_spatial": 8,
+                "scale_temporal": None,
+                "kind": "autoencoder",
+            }
         if cand is not None:
             seen_paths.add(_key(path))
             # Also dedup on the candidate's RESOLVED path: a PiD checkpoint is
@@ -8439,6 +8458,9 @@ async def list_vaes(db: Session = Depends(get_gallery_db)):
                 if _key(cand_path) in seen_paths:
                     return
                 seen_paths.add(_key(cand_path))
+            anima = inspect_anima_component_candidate(cand["path"], "vae")
+            cand["anima_compatible"] = anima["compatible"]
+            cand["anima_compatibility_reason"] = anima["reason"]
             results.append(cand)
 
     for scan_dir in _override_scan_dirs(db):
@@ -8463,6 +8485,24 @@ async def list_vaes(db: Session = Depends(get_gallery_db)):
                             sub.startswith("PiD_") and sub.endswith(".pth")
                         ):
                             _consider(_sub_path)
+                            if os.path.isdir(_sub_path) and sub in ("vae", "text_encoders"):
+                                try:
+                                    for nested in os.listdir(_sub_path):
+                                        if nested.endswith(".safetensors"):
+                                            _consider(os.path.join(_sub_path, nested))
+                                except OSError:
+                                    pass
+                            elif os.path.isdir(_sub_path):
+                                try:
+                                    for nested in os.listdir(_sub_path):
+                                        nested_dir = os.path.join(_sub_path, nested)
+                                        if nested not in ("vae", "text_encoders") or not os.path.isdir(nested_dir):
+                                            continue
+                                        for filename in os.listdir(nested_dir):
+                                            if filename.endswith(".safetensors"):
+                                                _consider(os.path.join(nested_dir, filename))
+                                except OSError:
+                                    pass
                 except OSError:
                     pass
             elif name.endswith(".safetensors") or (name.startswith("PiD_") and name.endswith(".pth")):
@@ -8504,9 +8544,22 @@ async def list_text_encoders(db: Session = Depends(get_gallery_db)):
             cand = classify_te_candidate(path)
         except Exception as e:
             print(f"[TextEncoders] classify failed for {path}: {e}")
-            return
+            cand = None
+        from core.models.anima.anima_loader import inspect_anima_component_candidate
+        anima = inspect_anima_component_candidate(path, "text_encoder")
+        if cand is None and anima["compatible"]:
+            cand = {
+                "name": os.path.splitext(os.path.basename(path))[0],
+                "path": path,
+                "arch": "anima",
+                "out_dim": 1024,
+                "te_type": "qwen3",
+            }
         if cand is not None:
             seen_paths.add(path)
+            anima = inspect_anima_component_candidate(cand["path"], "text_encoder")
+            cand["anima_compatible"] = anima["compatible"]
+            cand["anima_compatibility_reason"] = anima["reason"]
             results.append(cand)
 
     for scan_dir in _override_scan_dirs(db):
@@ -8529,6 +8582,24 @@ async def list_text_encoders(db: Session = Depends(get_gallery_db)):
                             sub.startswith("PiD_") and sub.endswith(".pth")
                         ):
                             _consider(_sub_path)
+                            if os.path.isdir(_sub_path) and sub in ("vae", "text_encoders"):
+                                try:
+                                    for nested in os.listdir(_sub_path):
+                                        if nested.endswith(".safetensors"):
+                                            _consider(os.path.join(_sub_path, nested))
+                                except OSError:
+                                    pass
+                            elif os.path.isdir(_sub_path):
+                                try:
+                                    for nested in os.listdir(_sub_path):
+                                        nested_dir = os.path.join(_sub_path, nested)
+                                        if nested not in ("vae", "text_encoders") or not os.path.isdir(nested_dir):
+                                            continue
+                                        for filename in os.listdir(nested_dir):
+                                            if filename.endswith(".safetensors"):
+                                                _consider(os.path.join(nested_dir, filename))
+                                except OSError:
+                                    pass
                 except OSError:
                     pass
             elif name.endswith(".safetensors"):
@@ -8633,6 +8704,9 @@ async def load_model(
             "model_info": pipeline_manager.current_model_info
         }
     except Exception as e:
+        from core.model_state_coordinator import ModelStateBusyError
+        if isinstance(e, ModelStateBusyError):
+            raise HTTPException(status_code=409, detail=str(e)) from e
         import traceback
         error_detail = f"{str(e)}\n\nTraceback:\n{traceback.format_exc()}"
         print(f"Error loading model: {error_detail}")
@@ -8744,12 +8818,130 @@ async def get_current_model():
                     info["latent_channels"] = _spec.latent_channels
             except Exception:
                 pass
+        info["model_revision"] = int(getattr(pipeline_manager, "model_revision", 0))
+        info["component_revision"] = int(getattr(pipeline_manager, "component_revision", 0))
         return {
             "loaded": True,
             "model_info": info
         }
     else:
         return {"loaded": False}
+
+
+class ComponentSwitchRequest(BaseModel):
+    slot: Literal["text_encoder", "vision_encoder", "backbone", "vae", "audio_vae"]
+    candidate_id: str
+    expected_model_revision: int
+    expected_component_revision: int
+
+
+async def _current_component_catalog(db: Session):
+    from core.models.components.component_catalog import build_catalog
+
+    models_response, vaes_response, text_encoders_response, vision_encoders_response = await asyncio.gather(
+        get_models(db),
+        list_vaes(db),
+        list_text_encoders(db),
+        list_vision_encoders(db),
+    )
+    h3_text_encoders = []
+    info = pipeline_manager.current_model_info or {}
+    if str(info.get("type") or "").lower() == "minimax_h3" and info.get("source"):
+        from core.models.minimax_h3.loader import list_minimax_h3_text_encoder_candidates
+        try:
+            h3_text_encoders = list_minimax_h3_text_encoder_candidates(str(info["source"]))
+        except Exception as exc:
+            print(f"[Components] H3 text-encoder candidate scan failed: {exc}")
+            h3_text_encoders = []
+        for candidate in h3_text_encoders:
+            candidate["name"] = os.path.splitext(os.path.basename(candidate["path"]))[0]
+
+    return build_catalog(
+        pipeline_manager,
+        models=models_response.get("models", []),
+        vaes=vaes_response.get("vaes", []),
+        text_encoders=text_encoders_response.get("text_encoders", []),
+        vision_encoders=vision_encoders_response.get("vision_encoders", []),
+        h3_text_encoders=h3_text_encoders,
+    )
+
+
+@router.get("/models/current/components")
+async def get_current_model_components(db: Session = Depends(get_gallery_db)):
+    from core.models.components.component_catalog import build_response
+    from core.models.components.component_switcher import current_operation
+
+    if not pipeline_manager.current_model_info:
+        return build_response(pipeline_manager, {}, current_operation())
+    catalog = await _current_component_catalog(db)
+    return build_response(pipeline_manager, catalog, current_operation())
+
+
+@router.get("/models/current/components/candidates")
+async def list_current_model_component_candidates(
+    slot: str,
+    db: Session = Depends(get_gallery_db),
+):
+    from core.models.components.component_catalog import SLOTS, build_response
+
+    if slot not in SLOTS:
+        raise HTTPException(status_code=400, detail=f"Unknown component slot: {slot}")
+    if not pipeline_manager.current_model_info:
+        raise HTTPException(status_code=404, detail="No model is loaded")
+    catalog = await _current_component_catalog(db)
+    state = build_response(pipeline_manager, catalog)
+    slot_state = next(item for item in state["slots"] if item["slot"] == slot)
+    return {
+        "model_revision": state["model_revision"],
+        "component_revision": state["component_revision"],
+        "slot": slot,
+        "candidates": slot_state["candidates"],
+    }
+
+
+@router.post("/models/current/components/switch")
+async def switch_current_model_component(
+    request: ComponentSwitchRequest,
+    db: Session = Depends(get_gallery_db),
+):
+    from core.model_state_coordinator import ModelStateBusyError
+    from core.models.components.component_catalog import build_response, find_candidate
+    from core.models.components.component_switcher import (
+        ComponentSwitchError,
+        current_operation,
+        switch_component,
+    )
+
+    if not pipeline_manager.current_model_info:
+        raise HTTPException(status_code=404, detail="No model is loaded")
+    catalog = await _current_component_catalog(db)
+    candidate = find_candidate(catalog, request.slot, request.candidate_id)
+    if candidate is None:
+        raise HTTPException(status_code=404, detail="Component candidate was not found; refresh the list")
+    try:
+        loop = asyncio.get_running_loop()
+        operation = await loop.run_in_executor(
+            None,
+            switch_component,
+            pipeline_manager,
+            request.slot,
+            candidate,
+            request.expected_model_revision,
+            request.expected_component_revision,
+        )
+    except ModelStateBusyError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ComponentSwitchError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Component switch failed after releasing the old component: {exc}") from exc
+
+    refreshed_catalog = await _current_component_catalog(db)
+    return {
+        "success": True,
+        "operation": operation,
+        "components": build_response(pipeline_manager, refreshed_catalog, current_operation()),
+    }
 
 @router.get("/samplers")
 async def get_samplers():
@@ -14609,6 +14801,14 @@ async def start_training_run(run_id: int, db: Session = Depends(get_training_db)
     if run.status == "running":
         raise HTTPException(status_code=400, detail="Training run is already running")
 
+    previous_training_state = {
+        "status": run.status,
+        "error_message": run.error_message,
+        "started_at": run.started_at,
+        "last_resumed_at": run.last_resumed_at,
+        "resumed_from_step": run.resumed_from_step,
+    }
+
     try:
         print(f"[API] Starting training run {run_id}")
 
@@ -14960,6 +15160,13 @@ async def start_training_run(run_id: int, db: Session = Depends(get_training_db)
 
     except Exception as e:
         db.rollback()
+        from core.model_state_coordinator import ModelStateBusyError
+        if isinstance(e, ModelStateBusyError):
+            training_process_manager.processes.pop(run_id, None)
+            for key, value in previous_training_state.items():
+                setattr(run, key, value)
+            db.commit()
+            raise HTTPException(status_code=409, detail=str(e)) from e
         raise HTTPException(status_code=500, detail=f"Failed to start training: {str(e)}")
 
 @router.post("/training/runs/{run_id}/stop")
@@ -16838,6 +17045,9 @@ async def start_tagger_training_run(run_id: str, training_db: Session = Depends(
         raise HTTPException(status_code=404, detail="Tagger training run not found")
     if run.status in ("running", "starting"):
         raise HTTPException(status_code=400, detail="Run is already running")
+    previous_status = run.status
+    previous_started_at = run.started_at
+    previous_error_message = run.error_message
 
     run.status        = "starting"
     run.started_at    = datetime.now()
@@ -17049,11 +17259,34 @@ async def start_tagger_training_run(run_id: str, training_db: Session = Depends(
         finally:
             db.close()
             _tagger_training_threads.pop(run_id, None)
+            model_state_coordinator.end_activity(lifecycle_activity)
 
+    from core.model_state_coordinator import (
+        ModelStateBusyError,
+        model_state_coordinator,
+    )
+    lifecycle_activity = f"tagger training run {run_id}"
+    try:
+        model_state_coordinator.begin_activity(lifecycle_activity)
+    except ModelStateBusyError as exc:
+        run.status = previous_status
+        run.started_at = previous_started_at
+        run.error_message = previous_error_message
+        training_db.commit()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     thread = threading.Thread(target=_run, daemon=True, name=f"tagger-{run_id[:8]}")
     _tagger_training_threads[run_id] = {"thread": thread, "trainer_holder": trainer_holder}
-    thread.start()
+    try:
+        thread.start()
+    except Exception:
+        _tagger_training_threads.pop(run_id, None)
+        model_state_coordinator.end_activity(lifecycle_activity)
+        run.status = previous_status
+        run.started_at = previous_started_at
+        run.error_message = previous_error_message
+        training_db.commit()
+        raise
 
     training_db.refresh(run)
     return {"message": "started", "run": run.to_dict()}

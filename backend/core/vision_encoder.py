@@ -14,6 +14,8 @@ Usage in generation:
 """
 
 import os
+import json
+import struct
 import torch
 import torch.nn.functional as F
 from torch import nn
@@ -51,6 +53,82 @@ _KNOWN_CONFIGS = {
         "processor_repo": "google/siglip2-so400m-patch16-naflex",
     },
 }
+
+
+def inspect_vision_encoder_candidate(path: str) -> Dict[str, Any]:
+    """Header-only check for the exact SigLIP2 geometries this wrapper supports."""
+    result: Dict[str, Any] = {
+        "compatible": False,
+        "reason": "Vision encoder geometry could not be verified.",
+        "hidden_size": None,
+    }
+    try:
+        with open(path, "rb") as handle:
+            raw_length = handle.read(8)
+            if len(raw_length) != 8:
+                raise ValueError("truncated safetensors header")
+            (header_length,) = struct.unpack("<Q", raw_length)
+            if header_length <= 0 or header_length > 512 * 1024 * 1024:
+                raise ValueError("invalid safetensors header length")
+            header = json.loads(handle.read(header_length).decode("utf-8"))
+    except Exception as exc:
+        result["reason"] = f"Header inspection failed: {exc}"
+        return result
+
+    def entry(*names: str):
+        for name in names:
+            value = header.get(name)
+            if isinstance(value, dict):
+                return value
+        return {}
+
+    patch = entry(
+        "embeddings.patch_embedding.weight",
+        "vision_model.embeddings.patch_embedding.weight",
+    ).get("shape")
+    if not isinstance(patch, list) or len(patch) not in (2, 4):
+        result["reason"] = "Missing SigLIP2 patch embedding."
+        return result
+    hidden_size = int(patch[0])
+    result["hidden_size"] = hidden_size
+    expected = _KNOWN_CONFIGS.get(hidden_size)
+    expected_patch = (
+        [hidden_size, expected["patch_size"] ** 2 * expected["num_channels"]]
+        if expected is not None and len(patch) == 2 else
+        [hidden_size, expected["num_channels"], expected["patch_size"], expected["patch_size"]]
+        if expected is not None else None
+    )
+    if expected is None or patch != expected_patch:
+        result["reason"] = "Patch input/output dimensions are not a supported SigLIP2 geometry."
+        return result
+
+    def shape_for(name: str):
+        value = entry(name, f"vision_model.{name}")
+        return value.get("shape")
+
+    layer_shapes = {
+        "self_attn.q_proj.weight": [hidden_size, hidden_size],
+        "self_attn.k_proj.weight": [hidden_size, hidden_size],
+        "self_attn.v_proj.weight": [hidden_size, hidden_size],
+        "self_attn.out_proj.weight": [hidden_size, hidden_size],
+        "mlp.fc1.weight": [expected["intermediate_size"], hidden_size],
+        "mlp.fc2.weight": [hidden_size, expected["intermediate_size"]],
+        "layer_norm1.weight": [hidden_size],
+        "layer_norm2.weight": [hidden_size],
+    }
+    complete = all(
+        shape_for(f"encoder.layers.{layer}.{suffix}") == shape
+        for layer in range(expected["num_hidden_layers"])
+        for suffix, shape in layer_shapes.items()
+    )
+    if not complete:
+        result["reason"] = (
+            f"SigLIP2 hidden size {hidden_size} requires {expected['num_hidden_layers']} complete layers with matching projections."
+        )
+        return result
+    result["compatible"] = True
+    result["reason"] = f"SigLIP2 hidden size {hidden_size} and layer geometry are supported."
+    return result
 
 
 def _infer_config_from_state_dict(state_dict: Dict[str, torch.Tensor]) -> Dict[str, Any]:

@@ -2,7 +2,7 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, Depends, UploadFi
 from fastapi.responses import Response, StreamingResponse, FileResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import func, or_
-from typing import List, Optional, Dict, Any, Callable, Tuple, Literal
+from typing import List, Optional, Dict, Any, Callable, Sequence, Tuple, Literal
 from pydantic import BaseModel, Field
 from datetime import datetime
 from pathlib import Path
@@ -55,6 +55,7 @@ from api.param_defaults import (
     OUTPAINT_VIDEO_ARCH_OVERLAYS,
     INPAINT_VIDEO_ARCH_OVERLAYS,
     PROMPT_ASSIST_DEFAULTS, STUDIO_RENDER_DEFAULTS,
+    VIDEO_CHAIN_DEFAULTS,
     PARAM_BOUNDS,
     video_defaults_for_arch,
 )
@@ -17246,4 +17247,1168 @@ def preview_tagger_vocabulary(
     return {
         "num_tags": len(tag_counts),
         "category_counts": sorted_cat_counts,
+    }
+
+
+# ===========================================================================
+# Video chain planning  (POST /video-chain/plan, POST /video-chain/validate)
+# ===========================================================================
+#
+# Phase A of the long-form video chain design. These two routes are PURE
+# planning: no checkpoint is loaded, nothing is generated, no gallery row is
+# written. Every rule they express -- frame arithmetic, event ownership,
+# reference binding, seed policy, `plan_hash` -- lives in
+# `core/inference/video_chain_context.py` and is CALLED here, never restated:
+# a second implementation of the arithmetic is exactly what the design forbids
+# (and what `plan_hash` determinism would break first).
+#
+# What this layer owns, and only this layer:
+#   1. the HTTP contract in `openapi.yaml` (`VideoChain*` schemas), including
+#      the places where the wire shape and the core dataclasses differ;
+#   2. the request-level refusals that must be a 400 rather than a finding
+#      inside a 200 (unknown architecture, an unadvertised `continuation_mode`,
+#      a free-form prompt with no `context_mode` chosen);
+#   3. supplying every default from `api/param_defaults.py::VIDEO_CHAIN_DEFAULTS`.
+
+from core.inference.video_chain_context import (
+    CONTEXT_MODES as VIDEO_CHAIN_CONTEXT_MODES,
+    CONTINUATION_MODES as VIDEO_CHAIN_CONTINUATION_MODES,
+    MANIFEST_VERSION as VIDEO_CHAIN_MANIFEST_VERSION,
+    SEED_POLICIES as VIDEO_CHAIN_SEED_POLICIES,
+    VIDEO_CHAIN_ANCHOR_FRAMES,
+    ChainManifest,
+    ChainPlanRequest,
+    ChainReference,
+    PersistentContext,
+    SegmentPlan,
+    TimelineEvent,
+    VideoChainPlanError,
+    VideoGridSpec,
+    build_segment_spans,
+    chain_segment_cap,
+    compute_plan_hash,
+    extract_verbatim,
+    parse_h3_structured_prompt,
+    plan_h3_chain_from_prompt,
+    plan_video_chain_manifest,
+    resolve_reference_bindings,
+    resolve_root_seed,
+    resolve_segment_seeds,
+    segment_reference_ids,
+    strip_reference_tokens,
+    validate_manifest,
+    validate_timeline,
+    # Private in name only: these ARE the single definitions of the reference
+    # token grammar and of a segment's visual-context record. Re-deriving either
+    # here would create the second implementation this module exists to avoid.
+    _REFERENCE_TOKEN_RE as VIDEO_CHAIN_TOKEN_RE,
+    _REFERENCE_TOKEN_WORD as VIDEO_CHAIN_TOKEN_WORD,
+    _visual_context_for as video_chain_visual_context,
+)
+from core.extensions.minimax_h3_prompt_assistant import (
+    ALL_MODES as MINIMAX_H3_PROMPT_MODES,
+    # The one definition of the mode-specific reference alignment instruction,
+    # shared with the prompt assistant and its validator.
+    _alignment_instruction as minimax_h3_alignment_instruction,
+)
+
+VIDEO_CHAIN_ARCH_MINIMAX_H3 = "minimax_h3"
+
+# MiniMax-H3 workflow selectors a client may send in `workflow` to ask for the
+# full-reference prompt layout when it does not send a `variant`.
+_VIDEO_CHAIN_REF_WORKFLOWS = {"ref", "ref2va", "reference", "full_reference", "full-reference"}
+
+# `VideoChainEvent.kind` (openapi) vs `TimelineEvent.kind` (core). Two core
+# kinds simply have shorter wire names; the third difference -- the core's
+# `shot`, which the deterministic MiniMax-H3 path produces for every shot -- has
+# no wire enum member at all, so it travels as `visual_action` PLUS a non-null
+# `shot_number`, which is what makes the wire <-> core round-trip lossless (and
+# therefore `plan_hash` reproducible from a re-submitted manifest).
+_VIDEO_CHAIN_EVENT_KIND_TO_WIRE = {"physical_sound": "sound", "music_transition": "music"}
+_VIDEO_CHAIN_EVENT_KIND_FROM_WIRE = {"sound": "physical_sound", "music": "music_transition"}
+
+_VIDEO_CHAIN_SEGMENT_PREFIX_RE = re.compile(r"^Segment\s+(\d+)")
+
+
+# --- request models --------------------------------------------------------
+#
+# Enum-valued fields are plain `str` on purpose: FastAPI answers a Literal
+# mismatch with 422, while `openapi.yaml` documents 400 for a body this server
+# cannot read. Each value is checked below and refused with the repo's standard
+# `ValidationError` (400) instead.
+
+
+class VideoChainSourceSpanModel(BaseModel):
+    start_char: int = 0
+    end_char: int = 0
+
+
+class VideoChainEventModel(BaseModel):
+    id: str
+    kind: str
+    start_frame: int
+    end_frame: int
+    description: str = ""
+    subject_ids: List[str] = Field(default_factory=list)
+    one_shot: bool = True
+    must_complete: bool = False
+    resulting_state: str = ""
+    source_span: Optional[VideoChainSourceSpanModel] = None
+    # Round-trip carriers (additional properties; OpenAPI permits them).
+    shot_number: Optional[int] = None
+    verbatim: Optional[List[str]] = None
+
+
+class VideoChainPersistentContextModel(BaseModel):
+    subjects: List[str] = Field(default_factory=list)
+    environment: List[str] = Field(default_factory=list)
+    visual_style: List[str] = Field(default_factory=list)
+    camera_rules: List[str] = Field(default_factory=list)
+    audio_bed: List[str] = Field(default_factory=list)
+    hard_constraints: List[str] = Field(default_factory=list)
+
+
+class VideoChainSegmentStateModel(BaseModel):
+    summary: str = ""
+    subjects: List[str] = Field(default_factory=list)
+    camera: str = ""
+    lighting: str = ""
+    ongoing_actions: List[str] = Field(default_factory=list)
+    ongoing_audio: List[str] = Field(default_factory=list)
+
+
+class VideoChainVisualContextModel(BaseModel):
+    mode: str = "initial"
+    frames: Optional[int] = None
+    source_segment_index: Optional[int] = None
+    shared_context_frames: Optional[int] = None
+
+
+class VideoChainReferenceInputModel(BaseModel):
+    id: str
+    kind: str
+    label: str = ""
+    segment_indices: Optional[List[int]] = None
+    # Additional property: the token this reference carries in the ROOT prompt.
+    # Omitted by a client that follows the schema, in which case it is derived
+    # from the inventory order (see `_video_chain_references_from_input`).
+    token: Optional[str] = None
+
+
+class VideoChainReferenceModel(VideoChainReferenceInputModel):
+    binding_source: str = VIDEO_CHAIN_DEFAULTS["reference_binding_source"]
+
+
+class VideoChainSegmentModel(BaseModel):
+    index: int
+    anchor_global_frame: Optional[int] = None
+    owned_start_frame: int
+    owned_end_frame: int
+    generated_span_frames: int
+    requested_total_frames: Optional[int] = None
+    prompt: str = ""
+    negative_prompt: str = ""
+    incoming_state: Optional[VideoChainSegmentStateModel] = None
+    outgoing_state: Optional[VideoChainSegmentStateModel] = None
+    owned_event_ids: List[str] = Field(default_factory=list)
+    reference_ids: List[str] = Field(default_factory=list)
+    seed: int = 0
+    visual_context: Optional[VideoChainVisualContextModel] = None
+    continuation_state_in: Optional[str] = None
+    continuation_state_out: Optional[str] = None
+    requested_overlap_frames: int = VIDEO_CHAIN_DEFAULTS["requested_overlap_frames"]
+    effective_overlap_frames: int = 0
+    effective_overlap_samples: int = 0
+
+
+class VideoChainManifestModel(BaseModel):
+    manifest_version: int = VIDEO_CHAIN_DEFAULTS["manifest_version"]
+    chain_id: str = ""
+    plan_hash: str = ""
+    architecture: str
+    variant: Optional[str] = None
+    root_prompt: str = ""
+    root_prompt_hash: str = ""
+    fps: float = VIDEO_CHAIN_DEFAULTS["fps"]
+    target_frames: int
+    expected_final_frames: int
+    context_mode: str = VIDEO_CHAIN_DEFAULTS["context_mode"]
+    continuation_mode: str = VIDEO_CHAIN_DEFAULTS["continuation_mode"]
+    seed_policy: str = VIDEO_CHAIN_DEFAULTS["seed_policy"]
+    root_seed: int = VIDEO_CHAIN_DEFAULTS["root_seed"]
+    chain_drift_tolerance_frames: int = VIDEO_CHAIN_DEFAULTS["chain_drift_tolerance_frames"]
+    persistent_context: Optional[VideoChainPersistentContextModel] = None
+    references: List[VideoChainReferenceModel] = Field(default_factory=list)
+    events: List[VideoChainEventModel] = Field(default_factory=list)
+    segments: List[VideoChainSegmentModel] = Field(default_factory=list)
+    warnings: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+class VideoChainCanonicalTimelineModel(BaseModel):
+    persistent_context: Optional[VideoChainPersistentContextModel] = None
+    events: List[VideoChainEventModel] = Field(default_factory=list)
+
+
+class VideoChainPlanRequestModel(BaseModel):
+    architecture: str
+    variant: Optional[str] = None
+    root_prompt: str
+    negative_prompt: str = VIDEO_CHAIN_DEFAULTS["negative_prompt"]
+    workflow: Optional[str] = VIDEO_CHAIN_DEFAULTS["workflow"]
+    target_frames: int
+    fps: float = VIDEO_CHAIN_DEFAULTS["fps"]
+    requested_segment_frames: Optional[int] = VIDEO_CHAIN_DEFAULTS["requested_segment_frames"]
+    # NOT `VIDEO_CHAIN_DEFAULTS["context_mode"]`: the default only applies to a
+    # prompt the planner can parse structurally. `None` means "the caller did
+    # not choose", which for free-form prose is a hard error asking for a
+    # choice, never a silent `legacy_repeat` (design §6.2 / §17-1, and the
+    # comment on that key in param_defaults.py).
+    context_mode: Optional[str] = None
+    seed_policy: str = VIDEO_CHAIN_DEFAULTS["seed_policy"]
+    root_seed: int = VIDEO_CHAIN_DEFAULTS["root_seed"]
+    continuation_mode: str = VIDEO_CHAIN_DEFAULTS["continuation_mode"]
+    requested_overlap_frames: int = VIDEO_CHAIN_DEFAULTS["requested_overlap_frames"]
+    chain_drift_tolerance_frames: int = VIDEO_CHAIN_DEFAULTS["chain_drift_tolerance_frames"]
+    references: List[VideoChainReferenceInputModel] = Field(default_factory=list)
+    canonical_timeline: Optional[VideoChainCanonicalTimelineModel] = None
+
+
+class VideoChainValidateRequestModel(BaseModel):
+    manifest: VideoChainManifestModel
+    recompute_plan_hash: bool = True
+
+
+# --- issues ----------------------------------------------------------------
+
+
+def _video_chain_issue(
+    code: str,
+    severity: str,
+    message: str,
+    segment_index: Optional[int] = None,
+    event_id: Optional[str] = None,
+    reference_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """One `VideoChainIssue`."""
+    return {
+        "code": code,
+        "severity": severity,
+        "message": message,
+        "segment_index": segment_index,
+        "event_id": event_id,
+        "reference_id": reference_id,
+    }
+
+
+def _video_chain_warning_issues(messages: Sequence[str]) -> List[Dict[str, Any]]:
+    """Core warning strings -> `VideoChainIssue`s.
+
+    The planner's warnings are prose. The only structure worth recovering is the
+    `Segment N: ...` prefix it uses, so the editor can put the warning next to
+    the right segment; N is 1-based there and `segment_index` is 0-based.
+    """
+    issues: List[Dict[str, Any]] = []
+    for message in messages:
+        match = _VIDEO_CHAIN_SEGMENT_PREFIX_RE.match(message)
+        index = int(match.group(1)) - 1 if match else None
+        issues.append(
+            _video_chain_issue("plan_warning", "warning", message, segment_index=index)
+        )
+    return issues
+
+
+# --- wire <-> core conversion ----------------------------------------------
+
+
+def _video_chain_state_to_wire(lines: Sequence[str]) -> Dict[str, Any]:
+    """Core boundary state (a list of sentences) -> `VideoChainSegmentState`.
+
+    Phase A's compiler produces sentences, not a slot-filled state record, so
+    they travel in `ongoing_actions` and the typed slots stay empty rather than
+    being invented. `_video_chain_state_from_wire` reads every slot back, so an
+    editor that fills `summary` or `camera` is not discarded.
+    """
+    return {
+        "summary": "",
+        "subjects": [],
+        "camera": "",
+        "lighting": "",
+        "ongoing_actions": [line for line in lines],
+        "ongoing_audio": [],
+    }
+
+
+def _video_chain_state_from_wire(state: Optional[VideoChainSegmentStateModel]) -> List[str]:
+    if state is None:
+        return []
+    lines: List[str] = []
+    if state.summary.strip():
+        lines.append(state.summary.strip())
+    lines.extend(state.subjects)
+    if state.camera.strip():
+        lines.append(state.camera.strip())
+    if state.lighting.strip():
+        lines.append(state.lighting.strip())
+    lines.extend(state.ongoing_actions)
+    lines.extend(state.ongoing_audio)
+    return [line for line in lines if str(line).strip()]
+
+
+def _video_chain_event_to_wire(event: TimelineEvent) -> Dict[str, Any]:
+    kind = _VIDEO_CHAIN_EVENT_KIND_TO_WIRE.get(event.kind, event.kind)
+    if kind == "shot":
+        # No `shot` member in the wire enum; `shot_number` below is what marks
+        # it, and what turns it back into a shot on the way in.
+        kind = "visual_action"
+    span = event.source_span
+    return {
+        "id": event.id,
+        "kind": kind,
+        "start_frame": event.start_frame,
+        "end_frame": event.end_frame,
+        "description": event.description,
+        "subject_ids": list(event.subject_ids),
+        "one_shot": bool(event.one_shot),
+        "must_complete": bool(event.must_complete),
+        "resulting_state": event.resulting_state,
+        "source_span": (
+            {"start_char": int(span[0]), "end_char": int(span[1])} if span else None
+        ),
+        "shot_number": event.shot_number,
+        "verbatim": list(event.verbatim),
+    }
+
+
+def _video_chain_event_from_wire(model: VideoChainEventModel) -> TimelineEvent:
+    kind = _VIDEO_CHAIN_EVENT_KIND_FROM_WIRE.get(model.kind, model.kind)
+    if model.shot_number is not None and kind in ("visual_action", "shot"):
+        kind = "shot"
+    return TimelineEvent(
+        id=model.id,
+        kind=kind,
+        start_frame=model.start_frame,
+        end_frame=model.end_frame,
+        description=model.description,
+        subject_ids=list(model.subject_ids),
+        one_shot=model.one_shot,
+        must_complete=model.must_complete,
+        resulting_state=model.resulting_state,
+        source_span=(
+            (model.source_span.start_char, model.source_span.end_char)
+            if model.source_span
+            else None
+        ),
+        shot_number=model.shot_number,
+        # Derived, not guessed: `extract_verbatim` is the same detector the
+        # planner ran, so a client that omits the field gets the same quoted
+        # spans the manifest was built with (design §14.1.6).
+        verbatim=(
+            list(model.verbatim)
+            if model.verbatim is not None
+            else extract_verbatim(model.description)
+        ),
+    )
+
+
+def _video_chain_reference_to_wire(reference: ChainReference) -> Dict[str, Any]:
+    payload = reference.to_dict()
+    payload["segment_indices"] = list(reference.segment_indices or [])
+    return payload
+
+
+def _video_chain_references_from_input(
+    items: Sequence[VideoChainReferenceInputModel],
+) -> List[ChainReference]:
+    """Plan-request inventory -> `ChainReference`s.
+
+    `VideoChainReferenceInput` carries no root-prompt token, so the token is
+    derived from the inventory order per kind: the inventory IS the order the
+    references are passed to the model, which is the order the root prompt
+    numbers them in. An explicit `token` (an additional property) wins when a
+    client sends one.
+    """
+    counters: Dict[str, int] = {}
+    references: List[ChainReference] = []
+    for item in items:
+        kind = (item.kind or "").strip().lower()
+        if kind not in VIDEO_CHAIN_TOKEN_WORD:
+            raise CustomValidationError(
+                "Unknown reference kind",
+                detail=(
+                    f"Reference '{item.id}' has kind '{item.kind}'; expected one of "
+                    f"{', '.join(sorted(VIDEO_CHAIN_TOKEN_WORD))}"
+                ),
+            )
+        word = VIDEO_CHAIN_TOKEN_WORD[kind]
+        counters[word] = counters.get(word, 0) + 1
+        references.append(
+            ChainReference(
+                id=item.id,
+                kind=kind,
+                label=item.label,
+                token=(item.token or f"<{word} {counters[word]}>"),
+                segment_indices=(
+                    None if item.segment_indices is None else [int(i) for i in item.segment_indices]
+                ),
+            )
+        )
+    return references
+
+
+def _video_chain_references_from_wire(
+    items: Sequence[VideoChainReferenceModel],
+) -> List[ChainReference]:
+    references = _video_chain_references_from_input(items)
+    for reference, item in zip(references, items):
+        reference.binding_source = item.binding_source
+    return references
+
+
+def _video_chain_segment_to_wire(segment: SegmentPlan) -> Dict[str, Any]:
+    visual = dict(segment.visual_context or {})
+    mode = str(visual.get("mode", "initial"))
+    wire_visual: Dict[str, Any] = {
+        "mode": mode,
+        "frames": visual.get("frames"),
+        "source_segment_index": None if segment.index == 0 else segment.index - 1,
+    }
+    if "shared_context_frames" in visual:
+        wire_visual["shared_context_frames"] = visual["shared_context_frames"]
+    return {
+        "index": segment.index,
+        "anchor_global_frame": segment.anchor_global_frame,
+        "owned_start_frame": segment.owned_start_frame,
+        "owned_end_frame": segment.owned_end_frame,
+        "generated_span_frames": segment.generated_span_frames,
+        # Additional property: the `total_frames` this segment's request asks
+        # for. Equal to `owned_end_frame`, but stated so a client never has to
+        # re-derive a request parameter.
+        "requested_total_frames": segment.requested_total_frames,
+        "prompt": segment.prompt,
+        "negative_prompt": segment.negative_prompt,
+        "incoming_state": _video_chain_state_to_wire(segment.incoming_state),
+        "outgoing_state": _video_chain_state_to_wire(segment.outgoing_state),
+        "owned_event_ids": list(segment.owned_event_ids),
+        "reference_ids": list(segment.reference_ids),
+        "seed": segment.seed,
+        "visual_context": wire_visual,
+        "continuation_state_in": segment.continuation_state_in,
+        "continuation_state_out": segment.continuation_state_out,
+        "requested_overlap_frames": segment.requested_overlap_frames,
+        "effective_overlap_frames": segment.effective_overlap_frames,
+        "effective_overlap_samples": segment.effective_overlap_samples,
+    }
+
+
+def _video_chain_segment_from_wire(model: VideoChainSegmentModel) -> SegmentPlan:
+    visual: Dict[str, Any] = {"mode": "initial"}
+    if model.visual_context is not None:
+        visual = {"mode": model.visual_context.mode}
+        if model.visual_context.shared_context_frames is not None:
+            visual["shared_context_frames"] = int(model.visual_context.shared_context_frames)
+        elif model.visual_context.mode == "boundary_frame":
+            visual["shared_context_frames"] = VIDEO_CHAIN_ANCHOR_FRAMES
+        if model.visual_context.frames is not None:
+            visual["frames"] = int(model.visual_context.frames)
+    return SegmentPlan(
+        index=model.index,
+        anchor_global_frame=model.anchor_global_frame,
+        owned_start_frame=model.owned_start_frame,
+        owned_end_frame=model.owned_end_frame,
+        generated_span_frames=model.generated_span_frames,
+        # `accumulated_after == owned_end_frame` for every segment, including
+        # segment 0, so an omitted value is derived rather than defaulted.
+        requested_total_frames=(
+            model.owned_end_frame
+            if model.requested_total_frames is None
+            else model.requested_total_frames
+        ),
+        prompt=model.prompt,
+        negative_prompt=model.negative_prompt,
+        incoming_state=_video_chain_state_from_wire(model.incoming_state),
+        outgoing_state=_video_chain_state_from_wire(model.outgoing_state),
+        owned_event_ids=list(model.owned_event_ids),
+        reference_ids=list(model.reference_ids),
+        seed=model.seed,
+        visual_context=visual,
+        continuation_state_in=model.continuation_state_in,
+        continuation_state_out=model.continuation_state_out,
+        requested_overlap_frames=model.requested_overlap_frames,
+        effective_overlap_frames=model.effective_overlap_frames,
+        effective_overlap_samples=model.effective_overlap_samples,
+    )
+
+
+def _video_chain_manifest_to_wire(
+    manifest: ChainManifest,
+    drift_tolerance_frames: int,
+    warnings: Sequence[Dict[str, Any]],
+) -> Dict[str, Any]:
+    payload = {
+        "manifest_version": manifest.manifest_version,
+        "chain_id": manifest.chain_id,
+        "plan_hash": manifest.plan_hash,
+        "architecture": manifest.architecture,
+        "variant": manifest.variant or None,
+        "root_prompt": manifest.root_prompt,
+        "root_prompt_hash": manifest.root_prompt_hash,
+        "fps": manifest.fps,
+        "target_frames": manifest.target_frames,
+        "expected_final_frames": manifest.expected_final_frames,
+        "context_mode": manifest.context_mode,
+        "continuation_mode": manifest.continuation_mode,
+        "seed_policy": manifest.seed_policy,
+        "root_seed": manifest.root_seed,
+        # Carried at the wire level only. It is a RUN-TIME knob (the drift check
+        # runs while the chain executes), so including it in `plan_hash` would
+        # make two identical plans hash differently over a value that changes
+        # nothing about the prompts, seeds or geometry.
+        "chain_drift_tolerance_frames": int(drift_tolerance_frames),
+        "persistent_context": manifest.persistent_context.to_dict(),
+        "references": [_video_chain_reference_to_wire(r) for r in manifest.references],
+        "events": [_video_chain_event_to_wire(e) for e in manifest.events],
+        "segments": [_video_chain_segment_to_wire(s) for s in manifest.segments],
+        "warnings": list(warnings),
+    }
+    return payload
+
+
+def _video_chain_manifest_from_wire(model: VideoChainManifestModel) -> ChainManifest:
+    """Read an edited manifest back into the core dataclasses.
+
+    Raises `ValidationError` (400) for a document this server cannot read at
+    all; content problems are left to the validators so they come back as
+    `errors[]` inside a 200.
+    """
+    if int(model.manifest_version) != VIDEO_CHAIN_MANIFEST_VERSION:
+        raise CustomValidationError(
+            "Unsupported chain manifest version",
+            detail=(
+                f"This server reads manifest_version {VIDEO_CHAIN_MANIFEST_VERSION}; "
+                f"the submitted manifest is version {model.manifest_version}. Re-plan the chain."
+            ),
+        )
+    if model.context_mode not in VIDEO_CHAIN_CONTEXT_MODES:
+        raise CustomValidationError(
+            "Unknown context_mode in manifest",
+            detail=f"Expected one of {', '.join(VIDEO_CHAIN_CONTEXT_MODES)}; got '{model.context_mode}'",
+        )
+    if model.seed_policy not in VIDEO_CHAIN_SEED_POLICIES:
+        raise CustomValidationError(
+            "Unknown seed_policy in manifest",
+            detail=f"Expected one of {', '.join(VIDEO_CHAIN_SEED_POLICIES)}; got '{model.seed_policy}'",
+        )
+    _video_chain_require_continuation_mode(model.continuation_mode, model.architecture)
+    if model.fps <= 0:
+        raise CustomValidationError("Manifest fps must be positive", detail=f"fps={model.fps}")
+
+    return ChainManifest(
+        chain_id=model.chain_id or str(uuid.uuid4()),
+        architecture=model.architecture,
+        variant=model.variant or "",
+        root_prompt=model.root_prompt,
+        fps=float(model.fps),
+        target_frames=int(model.target_frames),
+        expected_final_frames=int(model.expected_final_frames),
+        context_mode=model.context_mode,
+        segments=[_video_chain_segment_from_wire(s) for s in model.segments],
+        manifest_version=int(model.manifest_version),
+        plan_hash=model.plan_hash,
+        root_prompt_hash=model.root_prompt_hash,
+        continuation_mode=model.continuation_mode,
+        seed_policy=model.seed_policy,
+        root_seed=int(model.root_seed),
+        persistent_context=(
+            PersistentContext(**model.persistent_context.model_dump())
+            if model.persistent_context is not None
+            else PersistentContext()
+        ),
+        references=_video_chain_references_from_wire(model.references),
+        events=[_video_chain_event_from_wire(e) for e in model.events],
+        warnings=[],
+    )
+
+
+# --- planning helpers ------------------------------------------------------
+
+
+def _video_chain_grid(architecture: str) -> VideoGridSpec:
+    """The architecture's frame grid, from the backend's own `TemporalSpec`."""
+    from api.arch_capabilities import video_constraints_payload
+
+    payload = video_constraints_payload()
+    constraints = payload.get(architecture)
+    if constraints is None:
+        raise CustomValidationError(
+            "Unknown video architecture",
+            detail=(
+                f"'{architecture}' is not a video architecture this server can plan for. "
+                f"Known: {', '.join(sorted(payload))}"
+            ),
+        )
+    return VideoGridSpec.from_video_constraints(constraints)
+
+
+def _video_chain_require_continuation_mode(mode: str, architecture: str) -> None:
+    """Design §7.7: a mode the architecture does not advertise is a 400.
+
+    Phase A implements exactly one continuation context (the shared boundary
+    frame). The richer modes in the schema are per-architecture capabilities
+    that no architecture advertises yet, so they are refused here rather than
+    quietly downgraded to `boundary_frame`.
+    """
+    if mode not in VIDEO_CHAIN_CONTINUATION_MODES:
+        raise CustomValidationError(
+            "Unsupported continuation_mode",
+            detail=(
+                f"'{architecture}' does not advertise continuation_mode '{mode}'. "
+                f"Supported: {', '.join(VIDEO_CHAIN_CONTINUATION_MODES)}. "
+                "The request is refused rather than downgraded."
+            ),
+        )
+
+
+def _video_chain_h3_mode(
+    architecture: str, variant: Optional[str], workflow: Optional[str]
+) -> Optional[str]:
+    """The MiniMax-H3 prompt mode to compile for, or None for another arch."""
+    if architecture != VIDEO_CHAIN_ARCH_MINIMAX_H3:
+        return None
+    if variant:
+        mode = variant.strip().lower()
+        if mode not in MINIMAX_H3_PROMPT_MODES:
+            raise CustomValidationError(
+                "Unknown MiniMax-H3 variant",
+                detail=f"Expected one of {', '.join(sorted(MINIMAX_H3_PROMPT_MODES))}; got '{variant}'",
+            )
+        return mode
+    # No variant stated: the workflow selects the prompt layout, defaulting to
+    # the base (non-reference) one.
+    if workflow and workflow.strip().lower() in _VIDEO_CHAIN_REF_WORKFLOWS:
+        return "ref2va"
+    return "t2va"
+
+
+def _video_chain_frame_grid_text(
+    spec: VideoGridSpec, segment_cap: Optional[int]
+) -> str:
+    """Human-readable legal span lengths, for explaining an overshoot."""
+    parts = [f"{spec.frame_multiple}n+{spec.frame_offset}"]
+    parts.append(f"minimum {spec.floor_frames}")
+    if spec.max_frames is not None:
+        parts.append(f"architecture maximum {spec.max_frames}")
+    else:
+        parts.append("no enforced architecture maximum")
+    if segment_cap is not None:
+        parts.append(f"per-segment cap {segment_cap}")
+    return ", ".join(parts)
+
+
+def _video_chain_normalized_text(text: str) -> str:
+    return re.sub(r"\s+", " ", strip_reference_tokens(text)).strip()
+
+
+def _video_chain_expected_instruction(
+    mode: Optional[str], fps: float, span_frames: int, owned_events: int
+) -> str:
+    if not mode or fps <= 0:
+        return ""
+    return minimax_h3_alignment_instruction(mode, span_frames / fps, max(owned_events, 1))
+
+
+def _video_chain_split_instruction(prompt: str, expected: str) -> Tuple[str, str]:
+    """(instruction, rest) when `prompt` opens with `expected` modulo tokens.
+
+    The formatter emits `instruction + "\\n\\n" + body` and the token rewriter
+    only deletes tokens and collapses the spaces they leave, so the first blank
+    line is a reliable split. When the head is something else (a manifest whose
+    prompt was rewritten by hand, or `legacy_repeat`), this returns no
+    instruction and the caller leaves the prompt alone.
+    """
+    if not expected:
+        return "", prompt
+    head, separator, rest = prompt.partition("\n\n")
+    if not separator:
+        rest = ""
+    if _video_chain_normalized_text(head) == _video_chain_normalized_text(expected):
+        return head, rest
+    return "", prompt
+
+
+def _video_chain_restore_alignment_instructions(
+    manifest: ChainManifest, mode: Optional[str]
+) -> bool:
+    """Keep the mode alignment instruction OUT of reference-token rewriting.
+
+    i2va / l2va state their keyframe alignment with `<Picture N>` tokens. Those
+    pictures are the mode's own keyframe inputs (start / end frame), NOT entries
+    in the manifest's reference inventory, so the segment compiler's
+    per-segment renumbering -- which drops every token that is not bound to the
+    segment -- deletes them and leaves a mangled sentence.
+
+    The alignment instruction is therefore exempt from token rewriting: it is
+    re-emitted here from the shared `_alignment_instruction`, already rebased to
+    this segment's own duration and last shot number. The alternative (binding
+    the keyframe images into `references[]`) would invent inventory entries the
+    request never declared, shift the numbering of genuine references, and
+    inflate the per-segment reference count the editor shows as a cost.
+
+    Returns True when any prompt changed, so the caller can recompute the plan
+    hash before the manifest is returned.
+    """
+    if not mode:
+        return False
+    restored: Dict[int, set] = {}
+    for segment in manifest.segments:
+        expected = _video_chain_expected_instruction(
+            mode, manifest.fps, segment.generated_span_frames, len(segment.owned_event_ids)
+        )
+        if not expected:
+            continue
+        head, rest = _video_chain_split_instruction(segment.prompt, expected)
+        if not head or head == expected:
+            continue
+        segment.prompt = f"{expected}\n\n{rest}" if rest else expected
+        restored[segment.index] = {m.group(0) for m in VIDEO_CHAIN_TOKEN_RE.finditer(expected)}
+    if not restored:
+        return False
+    # Drop the compiler's "removed reference tokens" warning when every token it
+    # named belongs to an instruction that has just been put back, so the plan
+    # does not report a removal that did not survive. Warnings whose tokens also
+    # occur in the body are left in place.
+    kept: List[str] = []
+    for message in manifest.warnings:
+        match = _VIDEO_CHAIN_SEGMENT_PREFIX_RE.match(message)
+        index = int(match.group(1)) - 1 if match else None
+        tokens = {m.group(0) for m in VIDEO_CHAIN_TOKEN_RE.finditer(message)}
+        if index in restored and tokens and tokens <= restored[index]:
+            continue
+        kept.append(message)
+    manifest.warnings = kept
+    return True
+
+
+def _video_chain_apply_requested_overlap(
+    manifest: ChainManifest, requested_overlap_frames: int
+) -> bool:
+    """Record the requested overlap and disclose the effective one.
+
+    Phase A's only continuation context is the single shared anchor frame, so
+    `effective_overlap_frames` / `_samples` stay 0 whatever is requested. That
+    is stated as a warning rather than absorbed silently -- the effective values
+    are the authoritative ones by design, and they are what the client reads.
+    """
+    if requested_overlap_frames <= 0:
+        return False
+    for segment in manifest.segments:
+        if segment.index == 0:
+            continue
+        segment.requested_overlap_frames = int(requested_overlap_frames)
+    manifest.warnings.append(
+        f"requested_overlap_frames={requested_overlap_frames} is recorded but not honoured: "
+        f"continuation_mode '{manifest.continuation_mode}' shares exactly "
+        f"{VIDEO_CHAIN_ANCHOR_FRAMES} anchor frame, so effective_overlap_frames is 0."
+    )
+    return True
+
+
+def _video_chain_refreeze(manifest: ChainManifest) -> None:
+    """Recompute `plan_hash` and the seeds derived from it, in the planner's order."""
+    manifest.plan_hash = compute_plan_hash(manifest.to_dict())
+    seeds = resolve_segment_seeds(
+        manifest.seed_policy,
+        manifest.root_seed,
+        manifest.plan_hash,
+        len(manifest.segments),
+        [segment.seed for segment in manifest.segments]
+        if manifest.seed_policy == "explicit"
+        else None,
+    )
+    for segment, seed in zip(manifest.segments, seeds):
+        segment.seed = seed
+
+
+def _video_chain_geometry_only_manifest(
+    request: VideoChainPlanRequestModel,
+    grid: VideoGridSpec,
+    context_mode: str,
+    references: Sequence[ChainReference],
+    errors: List[Dict[str, Any]],
+    warnings: List[str],
+) -> ChainManifest:
+    """The manifest returned when compiling the prompts failed.
+
+    `VideoChainPlanResponse` requires a manifest even when `success` is false,
+    and the editor needs somewhere to show the error, so the geometry (which is
+    computed before any prompt work and did succeed) is returned with empty
+    prompts.
+    """
+    spans = build_segment_spans(grid, request.target_frames, request.requested_segment_frames, warnings)
+    try:
+        bound = resolve_reference_bindings(references, len(spans), warnings)
+    except VideoChainPlanError as exc:
+        errors.append(_video_chain_issue("reference_binding_invalid", "error", str(exc)))
+        bound = []
+    root_seed = resolve_root_seed(request.root_seed)
+    manifest = ChainManifest(
+        chain_id=str(uuid.uuid4()),
+        architecture=request.architecture,
+        variant=(request.variant or ""),
+        root_prompt=request.root_prompt,
+        fps=float(request.fps),
+        target_frames=int(request.target_frames),
+        expected_final_frames=spans[-1].owned_end_frame,
+        context_mode=context_mode,
+        segments=[
+            SegmentPlan(
+                index=span.index,
+                anchor_global_frame=span.anchor_global_frame,
+                owned_start_frame=span.owned_start_frame,
+                owned_end_frame=span.owned_end_frame,
+                generated_span_frames=span.generated_span_frames,
+                requested_total_frames=span.requested_total_frames,
+                prompt="",
+                negative_prompt=request.negative_prompt,
+                reference_ids=segment_reference_ids(bound, span.index),
+                visual_context=video_chain_visual_context(span),
+            )
+            for span in spans
+        ],
+        continuation_mode=request.continuation_mode,
+        seed_policy=request.seed_policy,
+        root_seed=root_seed,
+        references=list(bound),
+        warnings=list(warnings),
+    )
+    _video_chain_refreeze(manifest)
+    return manifest
+
+
+def _video_chain_reference_token_errors(
+    manifest: ChainManifest, mode: Optional[str]
+) -> List[Dict[str, Any]]:
+    """A segment prompt may only use tokens for the references bound to it.
+
+    Numbering is per segment and starts at 1 (design §5.1.2), so the legal token
+    numbers for a segment are 1..(number of bound references of that kind). The
+    mode alignment instruction is excluded for the reason documented on
+    `_video_chain_restore_alignment_instructions`, and `legacy_repeat` is
+    excluded because repeating the root prompt verbatim -- tokens included -- is
+    exactly what that mode is.
+    """
+    if manifest.context_mode == "legacy_repeat":
+        return []
+    issues: List[Dict[str, Any]] = []
+    for segment in manifest.segments:
+        allowed: Dict[str, int] = {}
+        for reference in manifest.references:
+            if segment.index not in (reference.segment_indices or []):
+                continue
+            if reference.kind not in VIDEO_CHAIN_TOKEN_WORD:
+                continue
+            word = VIDEO_CHAIN_TOKEN_WORD[reference.kind]
+            allowed[word] = allowed.get(word, 0) + 1
+        expected = _video_chain_expected_instruction(
+            mode, manifest.fps, segment.generated_span_frames, len(segment.owned_event_ids)
+        )
+        _, body = _video_chain_split_instruction(segment.prompt, expected)
+        for match in VIDEO_CHAIN_TOKEN_RE.finditer(body):
+            word, number = match.group(1), int(match.group(2))
+            if number > allowed.get(word, 0):
+                issues.append(
+                    _video_chain_issue(
+                        "reference_token_not_bound",
+                        "error",
+                        (
+                            f"Segment {segment.index + 1} uses {match.group(0)} but only "
+                            f"{allowed.get(word, 0)} {word.lower()} reference(s) are bound to it."
+                        ),
+                        segment_index=segment.index,
+                    )
+                )
+    return issues
+
+
+def _video_chain_binding_warnings(manifest: ChainManifest) -> Tuple[List[str], List[Dict[str, Any]]]:
+    """Re-run the reference-binding advisories over an edited manifest."""
+    warnings: List[str] = []
+    errors: List[Dict[str, Any]] = []
+    try:
+        resolve_reference_bindings(manifest.references, len(manifest.segments), warnings)
+    except VideoChainPlanError as exc:
+        errors.append(_video_chain_issue("reference_binding_invalid", "error", str(exc)))
+    return warnings, errors
+
+
+def _video_chain_segment_previews(manifest: ChainManifest) -> List[Dict[str, Any]]:
+    return [
+        {
+            "index": segment.index,
+            "prompt": segment.prompt,
+            "negative_prompt": segment.negative_prompt,
+            "global_frame_start": segment.owned_start_frame,
+            "global_frame_end": segment.owned_end_frame,
+            "generated_span_frames": segment.generated_span_frames,
+            "new_output_frames": segment.owned_end_frame - segment.owned_start_frame,
+            "reference_count": len(segment.reference_ids),
+            "seed": segment.seed,
+        }
+        for segment in manifest.segments
+    ]
+
+
+@router.post("/video-chain/plan", tags=["video-chain"])
+async def plan_video_chain_route(request: VideoChainPlanRequestModel):
+    """Plan a long-form video chain and return an immutable Chain Manifest."""
+    architecture = (request.architecture or "").strip()
+    if not architecture:
+        raise CustomValidationError("architecture is required", detail="No architecture was sent")
+    if request.target_frames <= 0:
+        raise CustomValidationError(
+            "target_frames must be positive", detail=f"target_frames={request.target_frames}"
+        )
+    if request.fps <= 0:
+        raise CustomValidationError("fps must be positive", detail=f"fps={request.fps}")
+    if (
+        request.requested_segment_frames is not None
+        and request.requested_segment_frames <= VIDEO_CHAIN_ANCHOR_FRAMES
+    ):
+        raise CustomValidationError(
+            "requested_segment_frames is too short",
+            detail=(
+                f"A segment must be longer than the {VIDEO_CHAIN_ANCHOR_FRAMES}-frame shared "
+                f"anchor; got {request.requested_segment_frames}"
+            ),
+        )
+    if request.chain_drift_tolerance_frames < 0:
+        raise CustomValidationError(
+            "chain_drift_tolerance_frames cannot be negative",
+            detail=f"chain_drift_tolerance_frames={request.chain_drift_tolerance_frames}",
+        )
+    if request.requested_overlap_frames < 0:
+        raise CustomValidationError(
+            "requested_overlap_frames cannot be negative",
+            detail=f"requested_overlap_frames={request.requested_overlap_frames}",
+        )
+    if request.seed_policy not in VIDEO_CHAIN_SEED_POLICIES:
+        raise CustomValidationError(
+            "Unknown seed_policy",
+            detail=f"Expected one of {', '.join(VIDEO_CHAIN_SEED_POLICIES)}; got '{request.seed_policy}'",
+        )
+    if request.seed_policy == "explicit":
+        # `explicit` means per-segment values chosen in the plan editor, and the
+        # plan request has no field to carry them. Planning with `fixed` or
+        # `derived` and editing the seeds afterwards is the supported route;
+        # quietly planning something else here would freeze seeds the caller
+        # never chose.
+        raise CustomValidationError(
+            "seed_policy 'explicit' cannot be used when planning",
+            detail=(
+                "Explicit seeds are per-segment editor values. Plan with 'fixed' or 'derived', "
+                "then set the seeds on the manifest and re-validate."
+            ),
+        )
+    _video_chain_require_continuation_mode(request.continuation_mode, architecture)
+
+    grid = _video_chain_grid(architecture)
+    mode = _video_chain_h3_mode(architecture, request.variant, request.workflow)
+    references = _video_chain_references_from_input(request.references)
+
+    # Deterministic structural parse (design §6.2). Failure is not an error by
+    # itself: it only means the prompt is free-form, which decides what
+    # `context_mode` is allowed to be.
+    structured = None
+    if mode:
+        try:
+            structured = parse_h3_structured_prompt(
+                request.root_prompt,
+                mode,
+                request.target_frames / request.fps,
+                [{"token": r.token or "", "label": r.label} for r in references] or None,
+            )
+        except VideoChainPlanError:
+            structured = None
+
+    context_mode = request.context_mode
+    if context_mode is None:
+        if structured is None:
+            raise CustomValidationError(
+                "This prompt has no structure the planner can split, so a context_mode must be chosen",
+                detail=(
+                    "The root prompt has no parsable [Shot N] structure. Choose a context_mode: "
+                    "'manual' with a canonical_timeline, or 'legacy_repeat' to repeat the whole "
+                    "root prompt in every segment (its events can then be re-enacted in later "
+                    "segments). The planner does not choose for you."
+                ),
+            )
+        context_mode = VIDEO_CHAIN_DEFAULTS["context_mode"]
+    if context_mode not in VIDEO_CHAIN_CONTEXT_MODES:
+        raise CustomValidationError(
+            "Unknown context_mode",
+            detail=f"Expected one of {', '.join(VIDEO_CHAIN_CONTEXT_MODES)}; got '{context_mode}'",
+        )
+    timeline = request.canonical_timeline
+    if context_mode == "manual" and timeline is None:
+        raise CustomValidationError(
+            "context_mode 'manual' requires a canonical_timeline",
+            detail="Send canonical_timeline.events (global frames) with context_mode 'manual'.",
+        )
+    if context_mode == "timeline" and structured is None and timeline is None:
+        raise CustomValidationError(
+            "context_mode 'timeline' needs a prompt the planner can split",
+            detail=(
+                "The root prompt has no parsable [Shot N] structure and no canonical_timeline was "
+                "sent. Supply canonical_timeline, or choose 'legacy_repeat'."
+            ),
+        )
+
+    errors: List[Dict[str, Any]] = []
+    warnings: List[str] = []
+    manifest: Optional[ChainManifest] = None
+    try:
+        if context_mode == "timeline" and timeline is None:
+            manifest = plan_h3_chain_from_prompt(
+                prompt=request.root_prompt,
+                mode=mode,
+                grid=grid,
+                fps=request.fps,
+                target_frames=request.target_frames,
+                segment_frames=request.requested_segment_frames,
+                references=references,
+                negative_prompt=request.negative_prompt,
+                seed_policy=request.seed_policy,
+                root_seed=request.root_seed,
+            )
+        else:
+            events = (
+                [_video_chain_event_from_wire(e) for e in timeline.events]
+                if timeline is not None
+                else []
+            )
+            persistent = (
+                PersistentContext(**timeline.persistent_context.model_dump())
+                if timeline is not None and timeline.persistent_context is not None
+                else PersistentContext()
+            )
+            manifest = plan_video_chain_manifest(
+                ChainPlanRequest(
+                    architecture=architecture,
+                    root_prompt=request.root_prompt,
+                    grid=grid,
+                    fps=request.fps,
+                    target_frames=request.target_frames,
+                    variant=(mode or request.variant or ""),
+                    negative_prompt=request.negative_prompt,
+                    segment_frames=request.requested_segment_frames,
+                    context_mode=context_mode,
+                    seed_policy=request.seed_policy,
+                    root_seed=request.root_seed,
+                    references=references,
+                    persistent_context=persistent,
+                    events=events,
+                )
+            )
+    except VideoChainPlanError as exc:
+        errors.append(_video_chain_issue("plan_error", "error", str(exc)))
+
+    if manifest is None:
+        try:
+            manifest = _video_chain_geometry_only_manifest(
+                request, grid, context_mode, references, errors, warnings
+            )
+        except VideoChainPlanError as exc:
+            raise CustomValidationError("This chain cannot be planned", detail=str(exc))
+    else:
+        manifest.continuation_mode = request.continuation_mode
+        manifest.warnings.extend(warnings)
+
+    changed = _video_chain_apply_requested_overlap(manifest, request.requested_overlap_frames)
+    changed = _video_chain_restore_alignment_instructions(manifest, mode) or changed
+    if changed:
+        _video_chain_refreeze(manifest)
+        if not errors:
+            try:
+                validate_manifest(manifest)
+            except VideoChainPlanError as exc:
+                errors.append(_video_chain_issue("plan_error", "error", str(exc)))
+
+    cap = chain_segment_cap(grid, request.requested_segment_frames)
+    if len(manifest.segments) == 1 and cap is None:
+        manifest.warnings.append(
+            "No per-segment length was requested and this architecture has no enforced "
+            "single-inference maximum, so the whole clip is planned as one segment. Set "
+            "requested_segment_frames to split it into a chain."
+        )
+    errors.extend(_video_chain_reference_token_errors(manifest, mode))
+
+    warning_issues = _video_chain_warning_issues(manifest.warnings)
+    wire_manifest = _video_chain_manifest_to_wire(
+        manifest, request.chain_drift_tolerance_frames, warning_issues
+    )
+    return {
+        "success": not errors,
+        "manifest": wire_manifest,
+        "segments": _video_chain_segment_previews(manifest),
+        "frame_plan": {
+            "target_frames": manifest.target_frames,
+            "expected_final_frames": manifest.expected_final_frames,
+            "overshoot_frames": manifest.expected_final_frames - manifest.target_frames,
+            "segment_frames": [s.generated_span_frames for s in manifest.segments],
+            "frame_grid": _video_chain_frame_grid_text(grid, cap),
+        },
+        "errors": errors,
+        "warnings": warning_issues,
+        "plan_schema_version": VIDEO_CHAIN_DEFAULTS["plan_schema_version"],
+        # Null on the deterministic path: no timeline extraction ran, so there
+        # is nothing to cache. Phase A has no LLM extraction at all.
+        "planner_cache_key": None,
+    }
+
+
+@router.post("/video-chain/validate", tags=["video-chain"])
+async def validate_video_chain_route(request: VideoChainValidateRequestModel):
+    """Re-validate an edited Chain Manifest and recompute its plan hash."""
+    manifest = _video_chain_manifest_from_wire(request.manifest)
+    mode = (
+        _video_chain_h3_mode(manifest.architecture, manifest.variant, None)
+        if manifest.architecture == VIDEO_CHAIN_ARCH_MINIMAX_H3
+        else None
+    )
+
+    errors: List[Dict[str, Any]] = []
+    total_frames = manifest.segments[-1].owned_end_frame if manifest.segments else 0
+    try:
+        validate_timeline(manifest.events, total_frames)
+    except VideoChainPlanError as exc:
+        errors.append(_video_chain_issue("timeline_invalid", "error", str(exc)))
+    try:
+        validate_manifest(manifest)
+    except VideoChainPlanError as exc:
+        errors.append(_video_chain_issue("manifest_invalid", "error", str(exc)))
+    warnings, binding_errors = _video_chain_binding_warnings(manifest)
+    errors.extend(binding_errors)
+    errors.extend(_video_chain_reference_token_errors(manifest, mode))
+
+    valid = not errors
+    plan_hash: Optional[str] = None
+    wire_manifest: Optional[Dict[str, Any]] = None
+    warning_issues = _video_chain_warning_issues(warnings)
+    if valid:
+        # Derived field, recomputed from the authoritative binding rather than
+        # trusted from the body (they were just proven to agree).
+        for segment in manifest.segments:
+            segment.reference_ids = segment_reference_ids(manifest.references, segment.index)
+        manifest.warnings = list(warnings)
+        if request.recompute_plan_hash:
+            manifest.plan_hash = compute_plan_hash(manifest.to_dict())
+            plan_hash = manifest.plan_hash
+        wire_manifest = _video_chain_manifest_to_wire(
+            manifest, request.manifest.chain_drift_tolerance_frames, warning_issues
+        )
+    return {
+        "valid": valid,
+        "errors": errors,
+        "warnings": warning_issues,
+        "plan_hash": plan_hash,
+        "manifest": wire_manifest,
     }

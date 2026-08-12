@@ -2067,9 +2067,30 @@ export default function StudioWorkspace() {
     const controller = new AbortController();
     renderControllersRef.current.set(jobId, controller);
     setRendering(true);
+    let transientFailures = 0;
     try {
       while (!controller.signal.aborted && !studioUnmountedRef.current) {
-        const status = await getStudioRenderJob(jobId, controller.signal);
+        let status: any;
+        try {
+          status = await getStudioRenderJob(jobId, controller.signal);
+          transientFailures = 0;
+        } catch (error) {
+          if (controller.signal.aborted || studioUnmountedRef.current) return;
+          const responseStatus = error && typeof error === "object" && "response" in error
+            ? Number((error as { response?: { status?: number } }).response?.status)
+            : 0;
+          if (responseStatus === 404) throw new Error("Studio render job was not found.");
+          transientFailures += 1;
+          setNotice("Render status is temporarily unavailable; retrying…");
+          await new Promise<void>((resolve, reject) => {
+            const timer = window.setTimeout(resolve, Math.min(5000, 1000 * transientFailures));
+            controller.signal.addEventListener("abort", () => {
+              window.clearTimeout(timer);
+              reject(new DOMException("Render polling cancelled", "AbortError"));
+            }, { once: true });
+          });
+          continue;
+        }
         if (controller.signal.aborted || studioUnmountedRef.current) return;
         setRenderProgress(Math.max(0, Math.min(1, Number(status.progress) || 0)));
         if (status.state === "completed") {

@@ -392,21 +392,28 @@ const ImageEditor = forwardRef<ImageEditorHandle, ImageEditorProps>(function Ima
   // here, since the ref is only read once regardless.
   const initialImageUrlRef = useRef(imageUrl);
 
-  // Allocates (or resizes) backing canvases for the CURRENT editable layers
-  // whenever a layer is added or removed (addLayer/deleteLayer below).
-  // Deliberately keyed on `layers.length` + the id set, NOT `layers` itself
-  // or `composeLayers` -- toggling a layer's visibility/opacity/name also
-  // changes `layers` (and therefore `composeLayers`'s identity) without
-  // adding or removing a layer, and must not re-run this. No-op before the
-  // base image has loaded (dimensions are still 0); the mount effect below
-  // creates the initial canvases once it knows the image size. Recompositing
-  // after a new canvas is created is handled by the separate
-  // "recomposite on layer list change" effect above, which already fires on
-  // every `layers` change.
+  // The size the base image actually decoded to, published by BOTH loaders
+  // below (mount, and the post-mount base swap). Same-size republishes are
+  // dropped so frame navigation, which decodes a new image of identical
+  // dimensions every time, costs no extra render.
+  const [baseCanvasSize, setBaseCanvasSize] = useState<{ width: number; height: number } | null>(null);
+  const publishBaseCanvasSize = useCallback((width: number, height: number) => {
+    setBaseCanvasSize(prev => (prev && prev.width === width && prev.height === height ? prev : { width, height }));
+  }, []);
+
+  // Allocates (or resizes) backing canvases for the CURRENT editable layers.
+  // Keyed on the decoded base size + the layer id set, NOT on `layers` itself
+  // or `composeLayers` -- toggling a layer's visibility/opacity/name changes
+  // both identities without adding or removing a layer, and must not re-run
+  // this. Including `baseCanvasSize` is what covers a layer added while the
+  // base image was still decoding (the id-set deps fired then, but with
+  // width 0 and no allocation) and a base swap to different pixel dimensions
+  // (the mask canvas would otherwise stay at the OLD size: misaligned on
+  // screen, and rejected by the backend's exact-size check when exported).
   useEffect(() => {
     const baseLayer = baseLayerRef.current;
-    const width = baseLayer?.width ?? 0;
-    const height = baseLayer?.height ?? 0;
+    const width = baseCanvasSize?.width ?? baseLayer?.width ?? 0;
+    const height = baseCanvasSize?.height ?? baseLayer?.height ?? 0;
     if (!width || !height) return;
 
     const editableLayers = layers.filter(l => l.editable);
@@ -431,8 +438,13 @@ const ImageEditor = forwardRef<ImageEditorHandle, ImageEditorProps>(function Ima
         if (ctx && tempCtx) ctx.drawImage(tempCanvas, 0, 0);
       }
     }
+    // A canvas created or resized here holds pixels the composite does not
+    // show yet, and neither the "recomposite on layer list change" effect
+    // (its `layers` identity did not change) nor the loaders below
+    // necessarily run again after this.
+    composeLayers();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [layers.length, layers.map(l => l.id).join(',')]);
+  }, [baseCanvasSize, layers.length, layers.map(l => l.id).join(',')]);
 
   // Load the base image and seed zoom/pan/history -- runs EXACTLY once per
   // mount (`[]` deps). This used to also re-run whenever `layers`/
@@ -461,6 +473,7 @@ const ImageEditor = forwardRef<ImageEditorHandle, ImageEditorProps>(function Ima
       baseLayer.height = height;
       composite.width = width;
       composite.height = height;
+      publishBaseCanvasSize(width, height);
 
       // Draw original image to base layer
       const baseCtx = baseLayer.getContext("2d");
@@ -534,6 +547,12 @@ const ImageEditor = forwardRef<ImageEditorHandle, ImageEditorProps>(function Ima
         }
       }
     };
+    img.onerror = () => {
+      // Otherwise this fails completely silently: no layer canvas is ever
+      // allocated, so every later stroke returns early at the `!layerCanvas`
+      // guard and the editor just looks unresponsive.
+      console.error("[ImageEditor] Could not decode the base image; the editor has nothing to draw on.");
+    };
     img.src = initialImageUrlRef.current;
     // Deliberately empty deps -- see the comment above.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -560,9 +579,11 @@ const ImageEditor = forwardRef<ImageEditorHandle, ImageEditorProps>(function Ima
       const composite = compositeCanvasRef.current;
       // Resize base/composite canvases if the new frame's pixel dimensions
       // differ from the previous one (should not normally happen within one
-      // video clip, but this is defensive rather than assumed). Editable
-      // layer canvases are never resized here -- only the two read-only
-      // display surfaces.
+      // video clip, but this is defensive rather than assumed). The editable
+      // layer canvases follow via `baseCanvasSize` and the allocation effect
+      // above -- content-preserving, so a mask drawn on the previous frame
+      // is carried over rather than dropped, and never left at a size that
+      // would misalign it or fail the backend's exact-size check.
       if (baseLayer.width !== img.width || baseLayer.height !== img.height) {
         baseLayer.width = img.width;
         baseLayer.height = img.height;
@@ -571,12 +592,16 @@ const ImageEditor = forwardRef<ImageEditorHandle, ImageEditorProps>(function Ima
           composite.height = img.height;
         }
       }
+      publishBaseCanvasSize(img.width, img.height);
       const ctx = baseLayer.getContext("2d");
       if (ctx) {
         ctx.clearRect(0, 0, baseLayer.width, baseLayer.height);
         ctx.drawImage(img, 0, 0);
       }
       composeLayers();
+    };
+    img.onerror = () => {
+      console.error("[ImageEditor] Could not decode the new base image; kept the previous one.");
     };
     img.src = imageUrl;
   }, [imageUrl, composeLayers]);
@@ -2479,6 +2504,22 @@ const ImageEditor = forwardRef<ImageEditorHandle, ImageEditorProps>(function Ima
               onPointerDown={handlePointerDown}
               onPointerMove={handlePointerMove}
               onPointerUp={handlePointerUp}
+              // A cancelled pointer (the browser claiming a pen/touch
+              // gesture, or pointer capture being lost) used to leave its id
+              // in activePointersRef forever, so the very next pointerdown
+              // saw size > 1, latched isPinching, and drawing was dead until
+              // the editor was remounted -- which VideoMaskFrameEditor
+              // deliberately never does, making it dead for the session.
+              onPointerCancel={handlePointerUp}
+              // Bookkeeping only -- this also fires on a NORMAL pointerup
+              // (capture is released then too), and running the full
+              // handler there would apply the stroke's alpha and push
+              // history a second time, since `isDrawing` in this closure is
+              // still the pre-update value.
+              onLostPointerCapture={(e) => {
+                activePointersRef.current.delete(e.pointerId);
+                if (activePointersRef.current.size === 0) setIsPinching(false);
+              }}
               onPointerLeave={handlePointerLeave}
               className={tool === "pan" ? "cursor-grab" : "cursor-none"}
               style={{

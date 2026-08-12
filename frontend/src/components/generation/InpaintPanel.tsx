@@ -70,12 +70,14 @@ import CFGMetricsGraph from "../common/CFGMetricsGraph";
 import { saveTempImage, loadTempImage, deleteTempImageRef } from "@/utils/tempImageStorage";
 import {
   clipSignatureOf,
+  clipSignaturesMatch,
   clearVideoMaskPersistence,
   loadVideoMaskManifest,
   persistVideoMaskManifest,
   releaseAllTrackedMaskAssets,
   VideoMaskTempStorageUnavailableError,
   type VideoMaskAssetRefMap,
+  type VideoMaskClipSignature,
 } from "@/utils/videoMaskPersistence";
 import {
   deleteMediaInput,
@@ -622,6 +624,12 @@ function isInpaintOptionsTabActive(tabId: InpaintOptionsTabId, params: InpaintPa
 }
 
 const STORAGE_KEY = "inpaint_params";
+// The hand-corrected clip frame COUNT, stored next to the clip signature it
+// was entered for. Not part of `params` (the route derives the length from
+// the trims, and never receives this), but it feeds videoRawFrames -- so
+// losing it on a panel switch changed videoTrimmedFrames underneath a
+// restored regenerate range and got the range discarded as "no longer fits".
+const CLIP_FRAMES_OVERRIDE_STORAGE_KEY = "inpaint_clip_frames_override";
 const PREVIEW_STORAGE_KEY = "inpaint_preview";
 // Image and video results are mutually exclusive in storage: the panel writes
 // whichever modality it just produced and the helper clears the other (see
@@ -754,6 +762,9 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
   // trimmed length has to be exactly on the architecture's grid and an estimate
   // one frame out would otherwise only surface as the route's 400.
   const [clipFramesOverride, setClipFramesOverride] = useState<number | null>(null);
+  // The clip source `applyClipLength` was last run for -- see
+  // handleVideoLoadedMetadata.
+  const lastClipLengthAppliedSrcRef = useRef<string | null>(null);
   const [generatedVideo, setGeneratedVideo] = useState<string | null>(null);
   // Playback source for the <video> element, when it differs from
   // generatedVideo (a video_lossless FFV1-in-mkv master no browser can
@@ -1586,6 +1597,38 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         }
         if (url) await saveMediaInput(INPAINT_VIDEO_INPUT_KEY, file);
         if (isStale()) return;
+        // Everything that describes the clip must be settled BEFORE its src
+        // is attached below: `loadedmetadata` fires once and never again for
+        // an unchanged src, so anything landing after it (these used to sit
+        // past the `await` further down) is never reconciled.
+        if (!isReplacement) {
+          // Same clip, so a frame count corrected by hand for it still
+          // applies. The two branches are mutually exclusive with the
+          // `setClipFramesOverride(null)` below.
+          try {
+            const storedOverride = localStorage.getItem(CLIP_FRAMES_OVERRIDE_STORAGE_KEY);
+            if (storedOverride) {
+              const parsedOverride = JSON.parse(storedOverride) as { clip?: unknown; frames?: unknown };
+              const frames = parsedOverride.frames;
+              if (
+                typeof frames === "number"
+                && Number.isFinite(frames)
+                && frames > 0
+                && clipSignaturesMatch(
+                  parsedOverride.clip as VideoMaskClipSignature | null,
+                  clipSignatureOf(file),
+                )
+              ) {
+                setClipFramesOverride(Math.round(frames));
+              }
+            }
+          } catch (error) {
+            console.error("[Inpaint] Failed to restore the corrected clip frame count:", error);
+          }
+        }
+        setVideoDurationSec(null);
+        setInputVideoSize(null);
+        if (isReplacement) setClipFramesOverride(null);
         preserveVideoSettingsRef.current = !isReplacement;
         setVideoPreviewUrl(prev => {
           if (prev) URL.revokeObjectURL(prev);
@@ -1642,9 +1685,6 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
             console.error("[Inpaint] Failed to restore video mask manifest:", error);
           }
         }
-        setVideoDurationSec(null);
-        setInputVideoSize(null);
-        if (isReplacement) setClipFramesOverride(null);
       } catch (error) {
         console.error("[Inpaint] Failed to restore input video:", error);
       } finally {
@@ -1719,6 +1759,23 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
       }
     }
   }, [params, isMounted, isInitialLoad]);
+
+  // Persist the hand-corrected clip frame count alongside the clip it was
+  // entered for. Gated on `videoMaskHydrated` for the same reason the mask
+  // manifest persist effect is: the mount restore has to have had its turn
+  // first, or this would write the pre-restore `null` over the stored value.
+  useEffect(() => {
+    if (!isMounted || !videoMaskHydrated) return;
+    const signature = clipSignatureOf(videoFile);
+    if (clipFramesOverride == null || !signature) {
+      localStorage.removeItem(CLIP_FRAMES_OVERRIDE_STORAGE_KEY);
+      return;
+    }
+    localStorage.setItem(
+      CLIP_FRAMES_OVERRIDE_STORAGE_KEY,
+      JSON.stringify({ clip: signature, frames: clipFramesOverride }),
+    );
+  }, [clipFramesOverride, videoFile, isMounted, videoMaskHydrated]);
 
   // Listen for localStorage changes from Gallery/Preview (send to feature)
   useEffect(() => {
@@ -2449,10 +2506,21 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
   const handleVideoLoadedMetadata = (e: React.SyntheticEvent<HTMLVideoElement>) => {
     const preserveSettings = preserveVideoSettingsRef.current;
     const duration = e.currentTarget.duration;
+    // `loadedmetadata` fires again every time the <video> remounts
+    // (collapsing/expanding the Input Video card, the temporal-inpaint
+    // subtree reappearing after a model reload), and `preserveSettings` is a
+    // one-shot ref the FIRST of those consumes -- so without a source test
+    // every later remount re-ran applyClipLength and silently replaced the
+    // regenerate range with the middle third. Keyed on the resolved source
+    // rather than on "have we measured a duration yet" so a metadata event
+    // still in flight for the PREVIOUS clip cannot be mistaken for this one.
+    const clipSource = e.currentTarget.currentSrc || videoPreviewUrl || "";
+    const isNewClipSource = lastClipLengthAppliedSrcRef.current !== clipSource;
     if (Number.isFinite(duration) && duration > 0) {
+      lastClipLengthAppliedSrcRef.current = clipSource;
       setVideoDurationSec(duration);
       const raw = Math.max(1, Math.round(duration * clipFrameRate));
-      if (!preserveSettings) {
+      if (isNewClipSource && !preserveSettings) {
         applyClipLength(raw, largestValidVideoFrameCount(archCapabilities, loadedArchType, raw));
       }
     }
@@ -5586,6 +5654,17 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
             onCompositeFeatherPxChange={handleVideoMaskFeatherChange}
             assets={videoMaskAssets}
             maskDisabled={isGenerating || !videoTrimmedLengthValid || videoTrimmedFrames <= 0}
+            maskDisabledReason={
+              isGenerating
+                ? undefined
+                : videoDurationSec == null && clipFramesOverride == null
+                  ? "Mask editing is unavailable until a clip's length has been read."
+                  : videoTrimmedFrames <= 0
+                    ? "Mask editing is unavailable because the trim removes the whole clip. Reduce Trim start/end above."
+                    : !videoTrimmedLengthValid
+                      ? "Mask editing is unavailable while the trimmed clip length is off this architecture's frame grid. Use Fit, or adjust the trim, first."
+                      : undefined
+            }
             canUndo={videoMaskHistory.canUndo}
             canRedo={videoMaskHistory.canRedo}
             onUndo={() => videoMaskHistory.undo(currentVideoMaskSnapshot())}

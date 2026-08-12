@@ -25,10 +25,9 @@ Modifications
     changes, as the MiniMax H3 Community License Agreement requires for
     modified files. The substantive one is in ``transformer_minimax_h3.py``:
     support for the released "pruned" checkpoints' AdaLN-curve variant
-    (``adaln_curve_grid``), ported from ComfyUI's ``comfy/ldm/minimax/model.py``
-    (Apache-2.0, comfyanonymous/ComfyUI). Upstream diffusers implements only
-    the full-modulation variant, which none of the ``*_pruned_*`` single-file
-    checkpoints contain.
+    (``adaln_curve_grid``). Those checkpoints ship no timestep MLP, only an
+    ``adaln_t_table``, while upstream diffusers implements only the
+    full-modulation variant.
 
 Weights license
     The MiniMax-H3 weights are covered by the MiniMax H3 Community License
@@ -56,6 +55,7 @@ from .transformer_minimax_h3 import (
     MiniMaxH3Transformer3DModel,
     MiniMaxH3TransformerBlock,
     MiniMaxH3TransformerOutput,
+    sample_adaln_curve,
 )
 
 __all__ = [
@@ -72,4 +72,5 @@ __all__ = [
     "MiniMaxH3Transformer3DModel",
     "MiniMaxH3TransformerBlock",
     "MiniMaxH3TransformerOutput",
+    "sample_adaln_curve",
 ]

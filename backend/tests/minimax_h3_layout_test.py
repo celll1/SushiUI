@@ -11,8 +11,8 @@ loads perfectly, runs to completion and generates noise.
 
 * **The packed-sequence layout.** ``h3_pipeline_ops.build_packed_layout`` is a
   port of the diffusers ``minimax-h3`` ``MiniMaxH3PrepareLayoutStep``. During
-  Phase 0 that port was validated against a SECOND, independent port of
-  ComfyUI's ``PackedLayout`` on six fixed shape tuples; the resulting index
+  Phase 0 that port was validated against a SECOND, independently written
+  packed-layout implementation on six fixed shape tuples; the resulting index
   tables are reproduced here as literals so the shipped function is pinned to
   them rather than to a re-derivation of itself.
 
@@ -417,8 +417,8 @@ def test_the_first_keyframe_is_stretched_and_every_later_one_is_cover_cropped():
     """The two anchors are put onto the canvas DIFFERENTLY, on purpose.
 
     Both independent reference implementations do this (diffusers
-    ``MiniMaxH3ResizeStep``: `index == 0` plain resize, else cover-crop;
-    ComfyUI ``nodes_minimax_h3``: `"disabled"` vs `"center"`), because the first
+    ``MiniMaxH3ResizeStep``: `index == 0` plain resize, else cover-crop; the
+    other spells the same split `"disabled"` vs `"center"`), because the first
     keyframe is the geometry anchor while the follower has no say in the canvas.
     Stretching the follower hands the model a distorted anchor it is then pinned
     to for the whole loop, and nothing downstream can notice.
@@ -902,8 +902,8 @@ def test_step_callback_without_preview_geometry_is_refused():
 # ---------------------------------------------------------------------------
 # `build_ref2va_packed_layout` is a port of the diffusers `minimax-h3` block
 # `MiniMaxH3Ref2VAPrepareLayoutStep.build_ref2va_packed_sequence`. It was
-# validated against a SECOND, independent port -- ComfyUI's `PackedLayout` with
-# its `refs` branch -- on the seven configurations below: identical sequence
+# validated against a SECOND, independently written packed-layout implementation
+# (its reference branch) on the seven configurations below: identical sequence
 # length, identical ORDERED index tensors, identical conditioning row counts,
 # and a float64 position grid agreeing to <= 1e-4 after our fp32 cast. The
 # numbers recorded here are that comparison's, so the shipped function is pinned

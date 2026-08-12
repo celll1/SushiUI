@@ -41,10 +41,10 @@ WHAT THIS LOADER HAS TO GET RIGHT (all measured in Phase 0 / K0; see
    script's premise, which is written for the original MiniMax shards). The
    video VAE decoder's ``to_qkv`` IS per-head interleaved and MUST be
    de-interleaved. Both were discriminated by measured RoPE row-norm signatures
-   (rotated q/k rows vs flat v rows) and corroborated against ComfyUI's own
-   ``split`` / ``view(...).chunk(3)`` call sites. Getting either one backwards
+   (rotated q/k rows vs flat v rows) and corroborated against a second,
+   independently written reader of the same files. Getting either one backwards
    produces a model that loads perfectly and generates noise.
-3. **SwiGLU halves are swapped.** Comfy/reference ``fc1`` is ``[gate; up]``
+3. **SwiGLU halves are swapped.** The single-file/reference ``fc1`` is ``[gate; up]``
    (``silu(gate) * up``); the diffusers ``SwiGLU`` chunks to ``[hidden; gate]``
    (``hidden * silu(gate)``). Swap at load, in the DiT and in the video VAE.
 4. **The audio VAE ships weight-norm PRE-FOLDED.** The vendored class carries
@@ -203,9 +203,10 @@ def minimax_h3_latent_frames(num_frames: int) -> int:
     """Latent frame count for ``num_frames`` pixel frames. MEASURED.
 
     ``1`` at ``T == 1`` (the spatial-only image-conditioning path), else
-    ``ceil(T / 17) * 5 - 3``. ComfyUI's own ``2 if T<=5 else ((T-5)//17)*5+2``
-    agrees only on the ``17n+5`` grid and disagrees off it (T=18: Comfy 2,
-    measured 7), so this form is the one to use.
+    ``ceil(T / 17) * 5 - 3``. The closed form that circulates for this model,
+    ``2 if T<=5 else ((T-5)//17)*5+2``, agrees only on the ``17n+5`` grid and
+    disagrees off it (T=18: it says 2, measured 7), so this form is the one to
+    use.
 
     Note the decode floor this implies: ``_decode`` needs at least 7 latent
     frames, so the shortest decodable clip is 22 pixel frames (0.917 s) -- T = 5
@@ -607,11 +608,10 @@ def _rename_dit_key(key: str) -> str:
 _DIT_FP32_MODULES = ("proj_in.", "audio_proj_in.", "proj_out.", "audio_proj_out.",
                      "time_embedder.")
 
-# The AdaLN projections run in float32 in curve mode -- ComfyUI sets
-# ``adaln_dtype = torch.float32`` there, and the F16-stored weights are upcast.
-# The modulation vectors are cast back down to the block stack's dtype inside the
-# block (mirroring ComfyUI's ``_mod_scale_shift``), so this does NOT promote the
-# residual stream.
+# The AdaLN projections run in float32 in curve mode: their input is the 8-dim
+# curve coordinate read from a float32 table, and the F16-stored weights are
+# upcast to match. The modulation vectors are cast back down to the block stack's
+# dtype inside the block, so this does NOT promote the residual stream.
 _DIT_ADALN_KEYS = (".adaln_proj.linear.", "norm_out.linear.")
 
 

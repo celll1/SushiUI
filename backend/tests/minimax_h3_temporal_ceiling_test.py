@@ -5,9 +5,9 @@ Run with:
 
 WHY THIS FILE EXISTS
 --------------------
-`MINIMAX_H3_TEMPORAL.max_frames` used to be 362 (corrected from 345: ComfyUI's
-node states the trained range as "~124-362, longer is untested"; 362 is the
-grid point AT that stated top, 345 undersold it by one grid step) and was an
+`MINIMAX_H3_TEMPORAL.max_frames` used to be 362 (corrected from 345: the
+trained range is stated as "~124-362, longer is untested"; 362 is the grid
+point AT that stated top, 345 undersold it by one grid step) and was an
 ENFORCED production ceiling, lifted only by an opt-in env gate
 (`SUSHI_TEMPORAL_UNCAPPED`).
 

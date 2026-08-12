@@ -20,11 +20,10 @@ WHERE THIS COMES FROM
 Every rule below is a port of the diffusers ``minimax-h3`` branch modular
 blocks (Apache-2.0): ``before_encoder.MiniMaxH3Ref2VASetupStep`` (normalisation
 + limits), ``encoders.MiniMaxH3Ref2VAReferenceEncoderStep`` (VAE encoding) and
-``encoders.MiniMaxH3Ref2VATextEncoderStep`` (presentation). Where ComfyUI's
-``nodes_minimax_h3.MiniMaxH3ReferenceToVideo`` does the same thing differently,
-the difference is called out inline and the diffusers form is the one
-implemented — it is the reference this integration's vendored model code came
-from.
+``encoders.MiniMaxH3Ref2VATextEncoderStep`` (presentation). Where another
+tool's reference-to-video node does the same thing differently, the difference
+is called out inline and the diffusers form is the one implemented — it is the
+reference this integration's vendored model code came from.
 
 THE ORDER OF THE LIST IS SEMANTIC, TWICE OVER
 ---------------------------------------------
@@ -240,7 +239,7 @@ def normalize_reference_image(
       the released checkpoint, **upscaling included and with no area cap**. An
       image reference never binds the generated geometry, so it is not put on
       the generation canvas.
-    * ``canvas=(height, width)`` -- ComfyUI's ``ref_image_size="match"``: an
+    * ``canvas=(height, width)`` -- the "match the generation area" recipe: an
       aspect-preserving scale, DOWN ONLY, to the generation's pixel area.
       Cheaper, because a reference's rows ride through every sampling step.
 
@@ -479,7 +478,7 @@ def normalize_references(
 
     ``image_canvas`` selects the image sizing (see
     :func:`normalize_reference_image`): ``None`` is the released 2048-short-edge
-    recipe, a ``(height, width)`` pair is ComfyUI's "match the generation area".
+    recipe, a ``(height, width)`` pair is the "match the generation area" one.
     Every soundtrack is truncated to the generated duration, because that is what
     the packed layout can hold rows for.
     """

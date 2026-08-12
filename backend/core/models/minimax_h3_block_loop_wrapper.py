@@ -62,6 +62,7 @@ from core.models.minimax_h3.adaln_chunking import chunked_norm_out_proj_fused
 from core.models.minimax_h3.vendor.transformer_minimax_h3 import (
     MINIMAX_H3_MODALITY_NUM,
     MiniMaxH3TransformerOutput,
+    sample_adaln_curve,
 )
 
 
@@ -254,15 +255,11 @@ class MiniMaxH3BlockLoopWrapper(nn.Module):
         hidden_states = hidden_states.index_copy(1, audio_indices, audio_embeds.to(text_embeds.dtype))
 
         # 2. Timestep embedding — the AdaLN-curve lookup for the pruned variant,
-        # the sinusoid + MLP for the full-modulation one. Copied from the stock
-        # forward verbatim, including the two traps K0.2 pinned: the SiLU is
-        # baked into the table (no extra activation here) and the max-clamp keeps
-        # t = 1.0 on the last interval.
+        # the sinusoid + MLP for the full-modulation one. Same calls as the stock
+        # forward, including the trap K0.2 pinned: the SiLU is baked into the
+        # table, so there is no extra activation here.
         if t.use_adaln_curves:
-            table = t.adaln_t_table
-            position = timestep.to(table.device, torch.float32).clamp(0.0, 1.0) * (table.shape[0] - 1)
-            lower = position.floor().long().clamp(max=table.shape[0] - 2)
-            temb = torch.lerp(table[lower], table[lower + 1], (position - lower).unsqueeze(1))
+            temb = sample_adaln_curve(t.adaln_t_table, timestep)
         else:
             temb = t.time_proj(timestep)
             temb = t.time_embedder(temb.to(t.time_embedder.linear_1.weight.dtype))

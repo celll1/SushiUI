@@ -87,13 +87,14 @@ export const planStudioGeneration = ({
   const activeClips = clips.filter((clip) => clip.activeTake !== false);
   const assetFor = (clip: StudioClip) => assets.find((asset) => asset.id === clip.assetId);
   const selected = selectedClipId ? activeClips.find((clip) => clip.id === selectedClipId) : null;
+  const clipsInOutput = activeClips.filter((clip) => clipOverlapsRange(clip, outputRange));
   const videoClip =
-    (selected && assetFor(selected)?.kind === "video" ? selected : null) ||
-    activeClips.find((clip) => assetFor(clip)?.kind === "video" && clipOverlapsRange(clip, outputRange)) ||
+    (selected && clipsInOutput.includes(selected) && assetFor(selected)?.kind === "video" ? selected : null) ||
+    clipsInOutput.find((clip) => assetFor(clip)?.kind === "video") ||
     null;
   const imageClip =
-    (selected && assetFor(selected)?.kind === "image" ? selected : null) ||
-    activeClips.find((clip) => assetFor(clip)?.kind === "image" && clipOverlapsRange(clip, outputRange)) ||
+    (selected && clipsInOutput.includes(selected) && assetFor(selected)?.kind === "image" ? selected : null) ||
+    clipsInOutput.find((clip) => assetFor(clip)?.kind === "image") ||
     null;
   const effectiveInpaintRange = inpaintRange && videoClip
     ? normalizedRange({

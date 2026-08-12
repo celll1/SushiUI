@@ -4,6 +4,7 @@ export type StudioAssetKind = "image" | "video" | "audio";
 
 export type StudioInputRole = "keyframe";
 export type StudioClipPresentation = "frame" | "hold" | "clip";
+export type StudioClipFitMode = "cover" | "contain";
 
 export interface StudioAsset {
   id: string;
@@ -51,6 +52,8 @@ export interface StudioClip {
   presentation?: StudioClipPresentation;
   /** Source media duration in seconds at insertion time, for safe trim limits. */
   sourceDuration?: number;
+  /** How this clip is composited into the fixed project canvas. */
+  fitMode?: StudioClipFitMode;
   /** Timeline inputs are opt-in; references never come from an implicit clip. */
   inputRoles?: StudioInputRole[];
   linkGroupId?: string;
@@ -103,7 +106,7 @@ export interface StudioJob {
 }
 
 export const createStudioProject = (): StudioProject => ({
-  schemaVersion: 2,
+  schemaVersion: 3,
   revision: 0,
   id: newId(),
   name: "Untitled Studio Project",

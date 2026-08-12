@@ -22,6 +22,7 @@ import {
   Download,
   Eye,
   EyeOff,
+  FastForward,
   Film,
   FolderOpen,
   Hand,
@@ -37,6 +38,7 @@ import {
   Play,
   Plus,
   Redo2,
+  Rewind,
   RotateCcw,
   Scissors,
   Search,
@@ -81,11 +83,13 @@ import { useStartup } from "@/contexts/StartupContext";
 import { formatTimecode } from "@/utils/timecode";
 import { newId } from "@/utils/id";
 import ImageEditor from "../common/ImageEditor";
+import ModelLoadSection from "../common/ModelLoadSection";
 import { loadImportedMedia, loadStudioProject, saveImportedMedia, saveStudioProject } from "./studioStorage";
 import { resolveStudioTransferUrl, takeStudioTransfer, type StudioTransferPayload } from "./studioTransfer";
 import {
   StudioAsset,
   StudioClip,
+  StudioClipFitMode,
   StudioGenerationMode,
   StudioInputRole,
   StudioJob,
@@ -161,12 +165,7 @@ const booleanValue = (value: unknown): boolean | undefined =>
 const stringOrUndefined = (value: unknown): string | undefined =>
   typeof value === "string" && value ? value : undefined;
 
-// An imported project manifest is untrusted input: it may have been
-// hand-edited, come from an older schema, or simply be truncated. Every
-// numeric field the UI later calls `.toFixed`/arithmetic on (asset and clip
-// duration above all) must come out of import as an actual finite number,
-// or a single malformed entry crashes the whole tab the moment it is
-// rendered or measured against the timeline.
+// Normalize imported numeric fields before timeline arithmetic.
 const normalizeImportedAsset = (raw: unknown): StudioAsset => {
   const asset = (raw && typeof raw === "object" ? raw : {}) as Partial<StudioAsset>;
   return {
@@ -205,13 +204,7 @@ const normalizeImportedTrack = (raw: unknown): StudioTrack => {
   };
 };
 
-// Returns null (dropped by the caller) for a clip that cannot refer to
-// anything on the timeline -- an empty assetId/trackId is not a degraded
-// clip, it is not a clip at all -- and otherwise clamps every field to the
-// range the timeline math above already assumes: start >= 0, and duration
-// at least one frame (a 0-duration clip is the exact defect
-// `addAssetToTimeline` refuses to create at runtime, so import must not be
-// able to smuggle one in and make the whole timeline unrenderable).
+// Drop clips without valid asset/track references and clamp timeline values.
 const normalizeImportedClip = (raw: unknown, fps: number): StudioClip | null => {
   const clip = (raw && typeof raw === "object" ? raw : {}) as Partial<StudioClip>;
   const assetId = stringOrUndefined(clip.assetId);
@@ -228,6 +221,7 @@ const normalizeImportedClip = (raw: unknown, fps: number): StudioClip | null => 
     sourceIn: Math.max(0, numeric(clip.sourceIn) ?? 0),
     presentation: clip.presentation === "hold" || clip.presentation === "frame" || clip.presentation === "clip" ? clip.presentation : undefined,
     sourceDuration: numeric(clip.sourceDuration),
+    fitMode: clip.fitMode === "contain" || clip.fitMode === "cover" ? clip.fitMode : undefined,
     inputRoles: Array.isArray(clip.inputRoles) ? clip.inputRoles.filter((role) => role === "keyframe") : undefined,
     linkGroupId: stringOrUndefined(clip.linkGroupId),
     takeGroupId: stringOrUndefined(clip.takeGroupId),
@@ -247,13 +241,7 @@ const normalizeImportedRange = (raw: unknown): StudioRange | null => {
 const JOB_STATUSES: StudioJob["status"][] = ["running", "review", "failed", "applied"];
 const JOB_MODES: StudioGenerationMode[] = ["t2v", "i2v", "inpaint", "outpaint", "ref2v", "t2i", "i2i", "image-inpaint"];
 
-// A job manifest entry is untrusted input for the same reasons the asset/
-// track/clip entries above are (see normalizeImportedAsset): an imported
-// project or a hand-edited localStorage payload can carry a `jobs` array
-// whose elements are missing fields, non-string, or not objects at all. The
-// Jobs pane renders `job.status`/`job.mode.toUpperCase()`/`job.recipe.*`
-// unconditionally, so anything short of a fully-typed StudioJob crashes the
-// tab the moment that pane (or "Restore recipe") is opened.
+// Normalize imported jobs before the Jobs pane renders them.
 const normalizeImportedJob = (raw: unknown): StudioJob => {
   const job = (raw && typeof raw === "object" ? raw : {}) as Partial<StudioJob>;
   return {
@@ -297,6 +285,14 @@ const defaultClipDurationForAsset = (
   const sourceDuration = sourceDurationForAsset(asset) || remaining;
   return Math.min(remaining, Math.max(frameDuration, sourceDuration));
 };
+
+const normalizeCanvasDimension = (value: number, fallback: number): number => {
+  if (!Number.isFinite(value)) return fallback;
+  return Math.max(64, Math.min(8192, Math.round(value / 16) * 16));
+};
+
+const assetNeedsCanvasFit = (asset: StudioAsset, width: number, height: number): boolean =>
+  asset.kind !== "audio" && !!asset.width && !!asset.height && (asset.width !== width || asset.height !== height);
 
 const safeModelLabel = (value: unknown): string => {
   const raw = String(value || "No model loaded");
@@ -484,6 +480,13 @@ interface StudioHistoryEntry {
   referenceAssetIds: string[];
 }
 
+interface PendingPlacement {
+  asset: StudioAsset;
+  start?: number;
+  trackId?: string;
+  holdStill: boolean;
+}
+
 export default function StudioWorkspace() {
   const [project, setProject] = useState<StudioProject>(() => createStudioProject());
   const [restored, setRestored] = useState(false);
@@ -503,6 +506,8 @@ export default function StudioWorkspace() {
   const [tool, setTool] = useState<StudioTool>("select");
   const [rightPane, setRightPane] = useState<StudioPane>("generate");
   const [form, setForm] = useState<StudioFormState>(EMPTY_FORM);
+  const [studioVaePath, setStudioVaePath] = useState<string | null>(null);
+  const [studioTextEncoderPath, setStudioTextEncoderPath] = useState<string | null>(null);
   const [playhead, setPlayhead] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [zoom, setZoom] = useState(18);
@@ -526,11 +531,15 @@ export default function StudioWorkspace() {
   // the timeline. Nothing else reads it, so it is deliberately not part of
   // the undoable project state.
   const [hoveredClipId, setHoveredClipId] = useState<string | null>(null);
+  const [pendingPlacement, setPendingPlacement] = useState<PendingPlacement | null>(null);
+  const [canvasDraft, setCanvasDraft] = useState({ width: String(project.width), height: String(project.height) });
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const projectFileInputRef = useRef<HTMLInputElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const playStartedRef = useRef({ at: 0, playhead: 0 });
+  const playheadRef = useRef(0);
+  const seekRepeatRef = useRef<{ timer: number | null; interval: number | null }>({ timer: null, interval: null });
   const initializedDefaultsForArchRef = useRef<string | null>(null);
   const galleryHydrationRef = useRef(new Map<string, Promise<StudioAsset>>());
   const galleryRequestRef = useRef(0);
@@ -544,13 +553,13 @@ export default function StudioWorkspace() {
   const studioUnmountedRef = useRef(false);
   const suppressClipClickRef = useRef<string | null>(null);
   const pendingImageMaskRef = useRef<string | undefined>(undefined);
-  // Lets `commit`/`undo`/`redo` read the latest value of state that changes
-  // on nearly every edit without listing it in their own dependency arrays
-  // (which would otherwise recreate them -- and every callback that in turn
-  // depends on them -- on every single clip/range edit, same as the
-  // original `[]`-deps design intended).
+  // Keep edit callbacks independent from high-frequency state changes.
   const projectRef = useRef(project);
   useEffect(() => { projectRef.current = project; }, [project]);
+  useEffect(() => { playheadRef.current = playhead; }, [playhead]);
+  useEffect(() => {
+    setCanvasDraft({ width: String(project.width), height: String(project.height) });
+  }, [project.height, project.width]);
   const rangeRef = useRef(range);
   useEffect(() => { rangeRef.current = range; }, [range]);
   const inpaintRangeRef = useRef(inpaintRange);
@@ -565,16 +574,13 @@ export default function StudioWorkspace() {
     isBackendReady,
     isVideo,
     modelInfo,
+    refreshModelInfo,
     generationDefaults,
     archCapabilities,
     resolveModality,
   } = useStartup();
 
-  // Every caller that pushes an undo entry outside of `commit` (drag-move,
-  // trim, range drag, the I/O range shortcut, "Clear ranges") goes through
-  // this one function, so the ref mirrors below can never fall out of sync
-  // with the state the way a one-off `setUndoStack(...)` call at each call
-  // site would risk.
+  // Keep undo stack refs synchronized for gesture edits.
   const pushHistoryEntry = useCallback((entry: StudioHistoryEntry) => {
     const nextUndoStack = [...undoStackRef.current, entry].slice(-MAX_HISTORY);
     setUndoStack(nextUndoStack);
@@ -583,33 +589,14 @@ export default function StudioWorkspace() {
     redoStackRef.current = [];
   }, []);
 
-  // The only place `project` state is written. `projectRef.current` is
-  // updated synchronously here rather than by the mirroring effect above,
-  // which only runs on the next passive-effect pass -- at least one
-  // microtask after this call returns. Anything that reads
-  // `projectRef.current` right after an `applyProject` call (most
-  // importantly `commit`, which builds its next state from it) therefore
-  // sees this write even if React hasn't flushed a render yet. Never call
-  // `setProject` directly anywhere else in this component: a direct call
-  // skips this sync, so a `commit`/`applyProject` that runs later in the
-  // same task would build its next state from a stale `projectRef.current`
-  // and silently discard the direct call's result.
+  // Keep the project ref synchronous; all project writes go through here.
   const applyProject = useCallback((next: StudioProject | ((current: StudioProject) => StudioProject)) => {
     const resolved = typeof next === "function" ? (next as (current: StudioProject) => StudioProject)(projectRef.current) : next;
     projectRef.current = resolved;
     setProject(resolved);
   }, []);
 
-  // commit/undo/redo each push exactly one history entry and make exactly
-  // one `applyProject` call; none of that is nested inside another
-  // setState's updater. (An earlier version nested setUndoStack/setRedoStack
-  // calls inside the setProject updater, which double-pushed history
-  // entries under React 18 Strict Mode's dev-only double-invoke -- real bug,
-  // but development-only, not the "most important" issue it was once
-  // described as.) What actually matters here in production is
-  // `applyProject`'s synchronous ref sync above: it is what stops `commit`
-  // from building its next state on top of a `projectRef.current` that a
-  // just-queued update elsewhere hasn't landed in yet.
+  // Commit one undo entry and one synchronous project update.
   const commit = useCallback((updater: (current: StudioProject) => StudioProject) => {
     const current = projectRef.current;
     pushHistoryEntry({
@@ -620,6 +607,14 @@ export default function StudioWorkspace() {
     });
     applyProject((latest) => ({ ...updater(latest), revision: latest.revision + 1, updatedAt: new Date().toISOString() }));
   }, [applyProject, pushHistoryEntry]);
+
+  const commitCanvasSize = useCallback(() => {
+    const width = normalizeCanvasDimension(Number(canvasDraft.width), projectRef.current.width);
+    const height = normalizeCanvasDimension(Number(canvasDraft.height), projectRef.current.height);
+    setCanvasDraft({ width: String(width), height: String(height) });
+    if (width === projectRef.current.width && height === projectRef.current.height) return;
+    commit((current) => ({ ...current, width, height }));
+  }, [canvasDraft.height, canvasDraft.width, commit]);
 
   const undo = useCallback(() => {
     const previous = undoStackRef.current.at(-1);
@@ -996,7 +991,7 @@ export default function StudioWorkspace() {
     return form.numFrames / form.frameRate;
   }, [form.frameRate, form.numFrames, isVideoModel, range]);
 
-  const addAssetToTimeline = useCallback((asset: StudioAsset, start?: number, trackId?: string, holdStill = false): boolean => {
+  const placeAssetOnTimeline = useCallback((asset: StudioAsset, start?: number, trackId?: string, holdStill = false, requestedFitMode?: StudioClipFitMode): boolean => {
     const targetTrack =
       project.tracks.find((track) => track.id === trackId && track.kind === (asset.kind === "audio" ? "audio" : "video")) ||
       project.tracks.find((track) => track.kind === (asset.kind === "audio" ? "audio" : "video"));
@@ -1030,6 +1025,7 @@ export default function StudioWorkspace() {
       sourceIn: 0,
       presentation: asset.kind === "image" ? (holdStill ? "hold" : "frame") : "clip",
       ...(sourceDuration != null ? { sourceDuration } : {}),
+      ...(asset.kind !== "audio" && requestedFitMode ? { fitMode: requestedFitMode } : {}),
     };
     commit((current) => ({
       ...current,
@@ -1040,6 +1036,22 @@ export default function StudioWorkspace() {
     setSelectedClipId(clip.id);
     return true;
   }, [activeClips, commit, project.duration, project.fps, project.tracks]);
+
+  const addAssetToTimeline = useCallback((asset: StudioAsset, start?: number, trackId?: string, holdStill = false, fitMode?: StudioClipFitMode): boolean => {
+    if (asset.kind === "image" && assetNeedsCanvasFit(asset, project.width, project.height) && !fitMode) {
+      setPendingPlacement({ asset, start, trackId, holdStill });
+      setSelectedAssetId(asset.id);
+      return false;
+    }
+    return placeAssetOnTimeline(asset, start, trackId, holdStill, fitMode || (asset.kind === "video" ? "cover" : undefined));
+  }, [placeAssetOnTimeline, project.height, project.width]);
+
+  const confirmPendingPlacement = useCallback((fitMode: StudioClipFitMode) => {
+    const pending = pendingPlacement;
+    if (!pending) return;
+    setPendingPlacement(null);
+    placeAssetOnTimeline(pending.asset, pending.start, pending.trackId, pending.holdStill, fitMode);
+  }, [pendingPlacement, placeAssetOnTimeline]);
 
   const cancelAssetPress = () => {
     const press = assetPressRef.current;
@@ -1136,7 +1148,7 @@ export default function StudioWorkspace() {
     event.preventDefault();
     const bounds = event.currentTarget.getBoundingClientRect();
     const start = clampTime(
-      (event.clientX - bounds.left) / zoom,
+      ((event.clientX - bounds.left) + (timelineScrollRef.current?.scrollLeft || 0)) / zoom,
       project.duration,
     );
     const clipId = event.dataTransfer.getData("application/x-studio-clip");
@@ -1228,7 +1240,7 @@ export default function StudioWorkspace() {
       const imported: StudioProject = {
         ...defaults,
         ...parsed,
-        schemaVersion: 2,
+        schemaVersion: 3,
         name: stringOrUndefined(parsed.name) || defaults.name,
         createdAt: stringOrUndefined(parsed.createdAt) || defaults.createdAt,
         updatedAt: stringOrUndefined(parsed.updatedAt) || defaults.updatedAt,
@@ -1236,8 +1248,8 @@ export default function StudioWorkspace() {
         revision: numeric(parsed.revision) ?? 0,
         duration: numeric(parsed.duration) ?? defaults.duration,
         fps,
-        width: numeric(parsed.width) ?? defaults.width,
-        height: numeric(parsed.height) ?? defaults.height,
+        width: normalizeCanvasDimension(numeric(parsed.width) ?? defaults.width, defaults.width),
+        height: normalizeCanvasDimension(numeric(parsed.height) ?? defaults.height, defaults.height),
         assets: (parsed.assets as unknown[]).map(normalizeImportedAsset),
         tracks: (parsed.tracks as unknown[]).map(normalizeImportedTrack),
         clips: dedupedClips,
@@ -1470,13 +1482,55 @@ export default function StudioWorkspace() {
     pendingImageMaskRef.current = undefined;
   };
 
+  const setTimelinePlayhead = useCallback((time: number) => {
+    const next = clampTime(time, projectRef.current.duration);
+    playheadRef.current = next;
+    setPlayhead(next);
+  }, []);
+
+  const seekTimeline = useCallback((time: number) => {
+    const next = clampTime(time, projectRef.current.duration);
+    playStartedRef.current = { at: performance.now(), playhead: next };
+    setTimelinePlayhead(next);
+    if (next >= projectRef.current.duration) setPlaying(false);
+    const localTime = previewClip
+      ? previewClip.sourceIn + Math.max(0, next - previewClip.start)
+      : next;
+    if (videoRef.current && Number.isFinite(videoRef.current.duration)) videoRef.current.currentTime = localTime;
+    if (audioRef.current && Number.isFinite(audioRef.current.duration)) audioRef.current.currentTime = localTime;
+  }, [previewClip, setTimelinePlayhead]);
+
+  const seekBy = useCallback((seconds: number) => {
+    seekTimeline(playheadRef.current + seconds);
+  }, [seekTimeline]);
+
   const togglePlayback = useCallback(() => {
     setPlaying((current) => {
-      const next = !current;
-      if (next) playStartedRef.current = { at: performance.now(), playhead };
-      return next;
+      if (current) return false;
+      const start = playheadRef.current >= projectRef.current.duration ? 0 : playheadRef.current;
+      playStartedRef.current = { at: performance.now(), playhead: start };
+      if (start !== playheadRef.current) setTimelinePlayhead(start);
+      return true;
     });
-  }, [playhead]);
+  }, [setTimelinePlayhead]);
+
+  const stopSeekRepeat = useCallback(() => {
+    const repeat = seekRepeatRef.current;
+    if (repeat.timer != null) window.clearTimeout(repeat.timer);
+    if (repeat.interval != null) window.clearInterval(repeat.interval);
+    seekRepeatRef.current = { timer: null, interval: null };
+  }, []);
+
+  const beginSeekRepeat = useCallback((event: ReactPointerEvent<HTMLButtonElement>, direction: -1 | 1) => {
+    event.preventDefault();
+    stopSeekRepeat();
+    seekBy(direction * 5);
+    seekRepeatRef.current.timer = window.setTimeout(() => {
+      seekRepeatRef.current.interval = window.setInterval(() => seekBy(direction * 0.5), 100);
+    }, 350);
+  }, [seekBy, stopSeekRepeat]);
+
+  useEffect(() => stopSeekRepeat, [stopSeekRepeat]);
 
   useEffect(() => {
     if (!playing) {
@@ -1494,16 +1548,16 @@ export default function StudioWorkspace() {
     const tick = (now: number) => {
       const next = playStartedRef.current.playhead + (now - playStartedRef.current.at) / 1000;
       if (next >= project.duration) {
-        setPlayhead(0);
+        setTimelinePlayhead(0);
         setPlaying(false);
         return;
       }
-      setPlayhead(next);
+      setTimelinePlayhead(next);
       animation = requestAnimationFrame(tick);
     };
     animation = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(animation);
-  }, [playing, previewAsset?.url, previewClip, project.duration]);
+  }, [playing, previewAsset?.url, previewClip, project.duration, setTimelinePlayhead]);
 
   useEffect(() => {
     if (playing || !previewAsset) return;
@@ -1528,14 +1582,17 @@ export default function StudioWorkspace() {
         splitSelectedClip();
       } else if (event.key === "Delete" || event.key === "Backspace") {
         deleteSelectedClip();
+      } else if (event.key === "Home") {
+        event.preventDefault();
+        seekTimeline(0);
+      } else if (event.key === "End") {
+        event.preventDefault();
+        seekTimeline(project.duration);
       } else if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
         const frames = event.shiftKey ? 10 : 1;
         const direction = event.key === "ArrowRight" ? 1 : -1;
-        setPlayhead((current) => Math.max(0, Math.min(project.duration, current + direction * frames / project.fps)));
-      } else if (event.key.toLowerCase() === "k") {
-        setPlaying(false);
-      } else if (event.key.toLowerCase() === "l") {
-        if (!playing) togglePlayback();
+        event.preventDefault();
+        seekBy(direction * frames / project.fps);
       } else if (event.key.toLowerCase() === "i" || event.key.toLowerCase() === "o") {
         const isStart = event.key.toLowerCase() === "i";
         const currentRange = event.altKey ? inpaintRange : range;
@@ -1555,7 +1612,7 @@ export default function StudioWorkspace() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [deleteSelectedClip, inpaintRange, playing, project.duration, project.fps, pushHistoryEntry, range, redo, referenceAssetIds, splitSelectedClip, togglePlayback, undo]);
+  }, [deleteSelectedClip, inpaintRange, project.duration, project.fps, pushHistoryEntry, range, redo, referenceAssetIds, seekBy, seekTimeline, splitSelectedClip, togglePlayback, undo]);
 
   const handleTimelinePointerDownCapture = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (event.pointerType !== "touch") return;
@@ -1612,26 +1669,21 @@ export default function StudioWorkspace() {
     const element = event.currentTarget;
     const bounds = element.getBoundingClientRect();
     const start = clampTime(
-      (event.clientX - bounds.left) / zoom,
+      ((event.clientX - bounds.left) + (timelineScrollRef.current?.scrollLeft || 0)) / zoom,
       project.duration,
     );
-    // `range`/`inpaintRange` are frozen at their pre-gesture values for the
-    // life of this closure (the drag handlers below only ever call
-    // `setRange`/`setInpaintRange`, never read them back), so this is the
-    // state a later Ctrl+Z should restore.
+    // Capture the pre-gesture state for one undo entry.
     const pushRangeHistory = () => pushHistoryEntry({ project, range, inpaintRange, referenceAssetIds });
     if (tool !== "range") {
-      setPlayhead(start);
+      seekTimeline(start);
       setSelectedClipId(null);
       setSelectedAssetId(null);
       if (event.pointerType !== "touch") {
-        // Mouse: drag the ruler to scrub the playhead. This does not arm
-        // range selection -- that still requires the Range tool or a
-        // touch long-press -- so it never touches the undo history.
+        // Ruler dragging scrubs unless range mode is active.
         event.preventDefault();
         timelineGestureCleanupRef.current?.();
         const move = (pointerEvent: PointerEvent) => {
-          setPlayhead(clampTime((pointerEvent.clientX - bounds.left) / zoom, project.duration));
+          seekTimeline(clampTime(((pointerEvent.clientX - bounds.left) + (timelineScrollRef.current?.scrollLeft || 0)) / zoom, project.duration));
         };
         const finish = () => {
           window.removeEventListener("pointermove", move);
@@ -1662,7 +1714,7 @@ export default function StudioWorkspace() {
       }, 420);
       const move = (pointerEvent: PointerEvent) => {
         const current = clampTime(
-          (pointerEvent.clientX - bounds.left) / zoom,
+          ((pointerEvent.clientX - bounds.left) + (timelineScrollRef.current?.scrollLeft || 0)) / zoom,
           project.duration,
         );
         if (rangeArmed) {
@@ -1670,7 +1722,7 @@ export default function StudioWorkspace() {
           if (rangeTarget === "output") setRange(next);
           else setInpaintRange(next);
         } else {
-          setPlayhead(current);
+          seekTimeline(current);
         }
       };
       const finish = () => {
@@ -1719,7 +1771,7 @@ export default function StudioWorkspace() {
     updateRange(start);
     const move = (pointerEvent: PointerEvent) => {
       updateRange(clampTime(
-        (pointerEvent.clientX - bounds.left) / zoom,
+        ((pointerEvent.clientX - bounds.left) + (timelineScrollRef.current?.scrollLeft || 0)) / zoom,
         project.duration,
       ));
     };
@@ -1750,6 +1802,36 @@ export default function StudioWorkspace() {
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", finish);
     window.addEventListener("pointercancel", cancel);
+  };
+
+  const beginTrackScrub = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0 || event.target !== event.currentTarget) return;
+    event.preventDefault();
+    timelineGestureCleanupRef.current?.();
+    const element = event.currentTarget;
+    const bounds = element.getBoundingClientRect();
+    const timeAt = (clientX: number) => clampTime(
+      ((clientX - bounds.left) + (timelineScrollRef.current?.scrollLeft || 0)) / zoom,
+      project.duration,
+    );
+    seekTimeline(timeAt(event.clientX));
+    setSelectedClipId(null);
+    setSelectedAssetId(null);
+    const move = (pointerEvent: PointerEvent) => seekTimeline(timeAt(pointerEvent.clientX));
+    const finish = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", finish);
+      window.removeEventListener("pointercancel", finish);
+      if (timelineGestureCleanupRef.current === cleanup) timelineGestureCleanupRef.current = null;
+      if (timelineGestureCancelRef.current === cleanup) timelineGestureCancelRef.current = null;
+    };
+    const cleanup = finish;
+    timelineGestureCleanupRef.current = cleanup;
+    timelineGestureCancelRef.current = cleanup;
+    element.setPointerCapture(event.pointerId);
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", finish);
+    window.addEventListener("pointercancel", finish);
   };
 
   const beginClipMove = (event: ReactPointerEvent<HTMLDivElement>, clip: StudioClip) => {
@@ -1895,7 +1977,7 @@ export default function StudioWorkspace() {
     const sourceDuration = clip.sourceDuration ?? sourceDurationForAsset(asset);
     const initialHold = clip.presentation === "hold" || (asset.kind === "image" && clip.duration > frameDuration + 0.0001);
     const isTouch = event.pointerType === "touch";
-    let modifierHeld = event.ctrlKey || event.metaKey || event.altKey;
+    let modifierHeld = event.ctrlKey || event.metaKey;
     let longPressTimer: number | null = null;
     if (isTouch) {
       longPressTimer = window.setTimeout(() => {
@@ -1909,6 +1991,7 @@ export default function StudioWorkspace() {
     let stillNoticeShown = false;
 
     const update = (pointerEvent: PointerEvent) => {
+      if (!isTouch) modifierHeld = pointerEvent.ctrlKey || pointerEvent.metaKey;
       if (isTouch && longPressTimer != null
         && Math.hypot(pointerEvent.clientX - event.clientX, pointerEvent.clientY - event.clientY) > 8) {
         window.clearTimeout(longPressTimer);
@@ -2169,6 +2252,8 @@ export default function StudioWorkspace() {
       denoising_strength: form.denoisingStrength,
       seed: form.seed,
       audio_enable: form.audioEnable,
+      vae_path: studioVaePath,
+      text_encoder_path: studioTextEncoderPath,
       output_range: range,
       inpaint_range: inpaintRange,
       source_clip_id: plan.videoClip?.id,
@@ -2190,6 +2275,8 @@ export default function StudioWorkspace() {
         guidance_scale: form.guidance,
         seed: form.seed,
         audio_enable: form.audioEnable,
+        vae_path: studioVaePath,
+        text_encoder_path: studioTextEncoderPath,
       };
       let result: any;
       if (!modality.isVideo) {
@@ -2203,6 +2290,8 @@ export default function StudioWorkspace() {
           sampler: form.sampler,
           schedule_type: form.scheduleType,
           seed: form.seed,
+          vae_path: studioVaePath,
+          text_encoder_path: studioTextEncoderPath,
         };
         if (planMode === "image-inpaint" || imageInputMode === "inpaint" || !!imageInput?.maskUrl || (!!inpaintRange && !!imageInput)) {
           if (!imageInput?.maskUrl) {
@@ -2316,6 +2405,9 @@ export default function StudioWorkspace() {
         sourceIn: 0,
         presentation: generatedKind === "image" ? "frame" : "clip",
         sourceDuration: asset.duration || targetDuration,
+        ...(generatedKind !== "audio" && form.width && form.height && (form.width !== project.width || form.height !== project.height)
+          ? { fitMode: "cover" as const }
+          : {}),
         takeGroupId,
         // No clip to review against yet, so make it active immediately;
         // a take that replaces a selected clip still waits for review.
@@ -2344,6 +2436,8 @@ export default function StudioWorkspace() {
 
   const restoreRecipe = (job: StudioJob) => {
     const recipe = job.recipe;
+    setStudioVaePath(typeof recipe.vae_path === "string" ? recipe.vae_path : null);
+    setStudioTextEncoderPath(typeof recipe.text_encoder_path === "string" ? recipe.text_encoder_path : null);
     const recipeMatchesModel = recipe.architecture === loadedArch && recipe.model_variant === modelInfo?.variant;
     if (!recipeMatchesModel) {
       setForm((current) => ({ ...current, prompt: String(recipe.prompt || ""), negativePrompt: "" }));
@@ -2464,15 +2558,8 @@ export default function StudioWorkspace() {
             : { ...current, renderJobId: undefined, assets: [...current.assets, asset], revision: current.revision + 1, updatedAt: new Date().toISOString() });
           setResultAssetIds((current) => [asset.id, ...current.filter((id) => id !== asset.id)]);
           setSelectedAssetId(asset.id);
-          // The manifest below always sends `fit_mode: "cover"` (Studio does
-          // not yet expose another option), so the backend's "fit_mode is
-          // 'cover': ...cropped" warning fires on every single render --
-          // it is informational about a setting Studio always uses, not a
-          // signal about anything specific to this render. Surfacing it on
-          // every success toast would just make the toast longer without
-          // telling the user anything they didn't already know.
           const renderWarnings: string[] = Array.isArray(status.warnings)
-            ? status.warnings.filter((entry: unknown): entry is string => typeof entry === "string" && !entry.includes("fit_mode is 'cover'"))
+            ? status.warnings.filter((entry: unknown): entry is string => typeof entry === "string")
             : [];
           setNotice(`Timeline rendered and registered in Gallery as ${asset.name}.${renderWarnings.length ? ` ${renderWarnings.join(" ")}` : ""}`);
           refreshLibrary();
@@ -2513,13 +2600,7 @@ export default function StudioWorkspace() {
   const renderTimeline = async () => {
     if (rendering) return;
     setNotice(null);
-    // A muted track's `muted` flag is still passed through in the manifest
-    // below so the backend can drop just a muted *video* track's embedded
-    // audio while keeping its picture (620bea78) -- dropping the whole
-    // track here would reintroduce that bug. A muted *audio* track has no
-    // picture to keep, so its clips are excluded entirely below; this also
-    // means the render never needs their assets, so a since-expired source
-    // URL on a muted, unused clip can no longer fail the whole render.
+    // Preserve muted video pictures while excluding muted audio tracks.
     const renderTracks = project.tracks.filter((track) => track.visible);
     const renderTrackIds = new Set(renderTracks.map((track) => track.id));
     const mutedAudioTrackIds = new Set(
@@ -2590,6 +2671,7 @@ export default function StudioWorkspace() {
           duration: clip.duration,
           sourceIn: clip.sourceIn,
           presentation: clip.presentation,
+          fitMode: clip.fitMode,
           activeTake: true,
         })),
       };
@@ -2850,10 +2932,11 @@ export default function StudioWorkspace() {
               <div><button>Fit</button><button>Proxy</button><button aria-label="Fullscreen preview"><Maximize2 size={14} /></button></div>
             </div>
             <div className={styles.preview} onClick={togglePlayback}>
+              <div className={styles.previewCanvas} style={{ aspectRatio: `${project.width} / ${project.height}` }}>
               {previewAsset?.url && previewAsset.kind === "video" ? (
-                <video ref={videoRef} src={previewAsset.url} muted={previewTrack?.muted ?? false} playsInline onLoadedMetadata={(event) => { if (previewClip) event.currentTarget.currentTime = previewClip.sourceIn + Math.max(0, playhead - previewClip.start); if (playing) void event.currentTarget.play(); }} />
+                <video ref={videoRef} src={previewAsset.url} muted={previewTrack?.muted ?? false} playsInline style={{ objectFit: previewClip?.fitMode === "contain" ? "contain" : "cover" }} onLoadedMetadata={(event) => { if (previewClip) event.currentTarget.currentTime = previewClip.sourceIn + Math.max(0, playhead - previewClip.start); if (playing) void event.currentTarget.play(); }} />
               ) : previewAsset?.url && previewAsset.kind === "image" ? (
-                <NextImage src={previewAsset.url} alt={previewAsset.name} fill sizes="(max-width: 1180px) 55vw, 45vw" unoptimized />
+                <NextImage src={previewAsset.url} alt={previewAsset.name} fill sizes="(max-width: 1180px) 55vw, 45vw" unoptimized style={{ objectFit: previewClip?.fitMode === "contain" ? "contain" : "cover" }} />
               ) : previewAsset?.url && previewAsset.kind === "audio" ? (
                 <div className={styles.audioPreview}><AudioLines size={50} /><span>{previewAsset.name}</span><audio ref={audioRef} src={previewAsset.url} muted={previewTrack?.muted ?? false} onLoadedMetadata={(event) => { if (previewClip) event.currentTarget.currentTime = previewClip.sourceIn + Math.max(0, playhead - previewClip.start); if (playing) void event.currentTarget.play(); }} /></div>
               ) : (
@@ -2865,12 +2948,15 @@ export default function StudioWorkspace() {
               )}
               {range && <div className={styles.rangeReadout}>OUTPUT {formatTimecode(range.start, project.fps)} — {formatTimecode(range.end, project.fps)}</div>}
             </div>
+              </div>
+            </div>
             <div className={styles.transport}>
               <span>{formatTimecode(playhead, project.fps)} <small>/ {formatTimecode(project.duration, project.fps)}</small></span>
               <div>
-                <button onClick={() => setPlayhead(0)} aria-label="Go to start"><RotateCcw size={15} /></button>
+                <button className={styles.seekButton} onPointerDown={(event) => beginSeekRepeat(event, -1)} onPointerUp={stopSeekRepeat} onPointerCancel={stopSeekRepeat} onPointerLeave={stopSeekRepeat} onClick={(event) => { if (event.detail === 0) seekBy(-5); }} aria-label="Rewind five seconds" title="Rewind 5 seconds; hold to continue"><Rewind size={15} /></button>
+                <button className={styles.seekButton} onClick={() => seekTimeline(0)} aria-label="Go to start" title="Go to start (Home)"><RotateCcw size={15} /></button>
                 <button onClick={(event) => { event.stopPropagation(); togglePlayback(); }} className={styles.playButton} aria-label={playing ? "Pause" : "Play"}>{playing ? <Pause size={19} /> : <Play size={19} fill="currentColor" />}</button>
-                <button onClick={() => setPlayhead(project.duration)} aria-label="Go to end"><ChevronRight size={17} /></button>
+                <button className={styles.seekButton} onPointerDown={(event) => beginSeekRepeat(event, 1)} onPointerUp={stopSeekRepeat} onPointerCancel={stopSeekRepeat} onPointerLeave={stopSeekRepeat} onClick={(event) => { if (event.detail === 0) seekBy(5); }} aria-label="Fast-forward five seconds" title="Fast-forward 5 seconds; hold to continue"><FastForward size={15} /></button>
               </div>
               <div className={styles.volume}><Volume2 size={15} /><span /><Maximize2 size={15} /></div>
             </div>
@@ -2940,14 +3026,15 @@ export default function StudioWorkspace() {
                       key={track.id}
                       data-studio-track-id={track.id}
                       className={`${styles.trackLane} ${track.kind === "audio" ? styles.audioLane : ""}`}
+                      onPointerDown={beginTrackScrub}
                       onDragOver={(event) => event.preventDefault()}
                       onDrop={(event) => handleTrackDrop(event, track.id)}
                       onClick={(event) => {
                         if (event.target === event.currentTarget) {
                           const bounds = event.currentTarget.getBoundingClientRect();
-                          setPlayhead(Math.max(0, Math.min(
+                          seekTimeline(Math.max(0, Math.min(
                             project.duration,
-                            (event.clientX - bounds.left) / zoom,
+                            ((event.clientX - bounds.left) + (timelineScrollRef.current?.scrollLeft || 0)) / zoom,
                           )));
                           setSelectedClipId(null);
                           setSelectedAssetId(null);
@@ -2989,9 +3076,9 @@ export default function StudioWorkspace() {
                               setRightPane("inspector");
                             }}
                             className={`${styles.timelineClip} ${asset?.kind === "audio" ? styles.audioClip : ""} ${clip.generated ? styles.generatedClip : ""} ${selectedClipId === clip.id ? styles.selectedClip : ""} ${selectedClipId && selectedClipId !== clip.id ? styles.dimmedClip : ""} ${clip.presentation === "frame" ? styles.stillClip : ""}`}
-                            style={{ left: clip.start * zoom, width: Math.max(18, clip.duration * zoom), backgroundImage: asset?.thumbnailUrl && asset.kind !== "audio" ? `linear-gradient(90deg, rgba(8,12,18,.42), rgba(8,12,18,.08)), url(${asset.thumbnailUrl})` : undefined }}
+                            style={{ left: clip.start * zoom, width: Math.max(18, clip.duration * zoom), backgroundImage: asset?.thumbnailUrl && asset.kind !== "audio" ? `linear-gradient(90deg, rgba(8,12,18,.42), rgba(8,12,18,.08)), url(${asset.thumbnailUrl})` : undefined, backgroundSize: clip.fitMode === "contain" ? "contain" : "cover", backgroundRepeat: "no-repeat" }}
                           >
-                            <button className={styles.trimStart} onPointerDown={(event) => beginTrim(event, clip, "start")} aria-label={`Trim start of ${clip.name}`} />
+                            <button className={styles.trimStart} onPointerDown={(event) => beginTrim(event, clip, "start")} aria-label={`Trim start of ${clip.name}`} title={asset?.kind === "image" && clip.presentation === "frame" ? "Ctrl/Cmd + drag to extend still" : `Trim start of ${clip.name}`} />
                             <span className={styles.clipName}>{clip.name}</span>
                             <span className={styles.clipInputControls} onPointerDown={(event) => event.stopPropagation()}>
                               {asset && asset.kind !== "audio" && (
@@ -3016,7 +3103,7 @@ export default function StudioWorkspace() {
                             {clip.linkGroupId && <Link2 size={11} className={styles.linkBadge} />}
                             {clip.generated && <Sparkles size={11} className={styles.generationBadge} />}
                             {asset?.kind === "audio" && <span className={styles.waveform} />}
-                            <button className={styles.trimEnd} onPointerDown={(event) => beginTrim(event, clip, "end")} aria-label={`Trim end of ${clip.name}`} />
+                            <button className={styles.trimEnd} onPointerDown={(event) => beginTrim(event, clip, "end")} aria-label={`Trim end of ${clip.name}`} title={asset?.kind === "image" && clip.presentation === "frame" ? "Ctrl/Cmd + drag to extend still" : `Trim end of ${clip.name}`} />
                             {hoveredClipId === clip.id && asset?.kind === "image" && (
                               <span className={styles.stillPopover} role="tooltip">
                                 {(asset.url || asset.thumbnailUrl)
@@ -3061,10 +3148,29 @@ export default function StudioWorkspace() {
               }}
               onDrop={async (event) => { event.preventDefault(); setGenerationDropActive(false); setFrameDropLoading(true); try { await handleRightPaneDrop(event); } finally { setFrameDropLoading(false); } }}
             >
+              <ModelLoadSection
+                storageKeyPrefix="studio"
+                vaePath={studioVaePath}
+                onVaePathChange={setStudioVaePath}
+                textEncoderPath={studioTextEncoderPath}
+                onTextEncoderChange={setStudioTextEncoderPath}
+                onModelLoad={async () => {
+                  await refreshModelInfo();
+                  setNotice("Studio model updated. Review the generation settings before submitting.");
+                }}
+              />
               <section className={styles.modelCard}>
                 <span className={styles.eyebrow}>{isVideoModel ? "VIDEO MODEL" : "IMAGE MODEL"}</span>
                 <div className={styles.modelLine}><strong>{currentModelName}</strong><span className={isBackendReady ? styles.ready : styles.unavailable}>{isBackendReady ? "READY" : "OFFLINE"}</span></div>
                 <small>{loadedArch || "No architecture"}</small>
+              </section>
+              <section className={styles.canvasCard}>
+                <div className={styles.sectionTitle}><span>Project canvas</span><small>Output frame</small></div>
+                <div className={styles.canvasFields}>
+                  <label>Width<input type="number" min={64} max={8192} step={16} value={canvasDraft.width} onChange={(event) => setCanvasDraft((current) => ({ ...current, width: event.target.value }))} onBlur={commitCanvasSize} /></label>
+                  <label>Height<input type="number" min={64} max={8192} step={16} value={canvasDraft.height} onChange={(event) => setCanvasDraft((current) => ({ ...current, height: event.target.value }))} onBlur={commitCanvasSize} /></label>
+                </div>
+                <small className={styles.canvasNote}>Fixed for the timeline. Generation Width/Height below are model output settings; new media is fit to this canvas.</small>
               </section>
               <section className={styles.resolvedModeCard}>
                 <span className={styles.eyebrow}>RESOLVED WORKFLOW</span>
@@ -3184,6 +3290,7 @@ export default function StudioWorkspace() {
                     <label>Timeline start<input type="number" step="0.04" min="0" max={project.duration - selectedClip.duration} value={selectedClip.start} onChange={(event) => updateSelectedClip({ start: Number(event.target.value) })} /></label>
                     <label>Duration<input type="number" step="0.04" min="0.1" max={project.duration - selectedClip.start} value={selectedClip.duration} onChange={(event) => updateSelectedClip({ duration: Number(event.target.value) })} /></label>
                     <label>Source in<input type="number" step="0.04" min="0" value={selectedClip.sourceIn} onChange={(event) => updateSelectedClip({ sourceIn: Number(event.target.value) })} /></label>
+                    {selectedAsset?.kind !== "audio" && <label>Canvas fit<select value={selectedClip.fitMode || "cover"} onChange={(event) => updateSelectedClip({ fitMode: event.target.value as StudioClipFitMode })}><option value="cover">Fill and crop</option><option value="contain">Fit and letterbox</option></select></label>}
                   </div>
                   <section className={styles.inspectorSection}><div><strong>Link group</strong><small>Stream-aware linked A/V editing is planned for the backend media-import phase.</small></div><button disabled><Link2 size={14} /> Unavailable</button></section>
                   <section className={styles.inspectorSection}><div><strong>Generation context</strong><small>Use this clip as the next shot&apos;s visual context.</small></div><button onClick={() => setRightPane("generate")}>Generate from clip</button></section>
@@ -3218,6 +3325,20 @@ export default function StudioWorkspace() {
           )}
         </aside>
       </div>
+      {pendingPlacement && (
+        <div className={styles.canvasFitOverlay} role="dialog" aria-modal="true" aria-label="Fit media to project canvas">
+          <div className={styles.canvasFitDialog}>
+            {pendingPlacement.asset.url && <NextImage className={styles.canvasFitPreview} src={pendingPlacement.asset.url} alt="" width={358} height={150} unoptimized />}
+            <h2>Fit “{pendingPlacement.asset.name}” to the project canvas?</h2>
+            <p>Project canvas: {project.width} × {project.height}. The source is {pendingPlacement.asset.width} × {pendingPlacement.asset.height}. Choose whether to crop the edges or preserve the whole image with letterbox space.</p>
+            <div className={styles.canvasFitActions}>
+              <button onClick={() => confirmPendingPlacement("cover")}>Fill and crop</button>
+              <button onClick={() => confirmPendingPlacement("contain")}>Fit and letterbox</button>
+              <button onClick={() => setPendingPlacement(null)}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
       {imageEditorState && (() => {
         const asset = allAssets.find((item) => item.id === imageEditorState.assetId);
         if (!asset) return null;

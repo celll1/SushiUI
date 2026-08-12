@@ -16,7 +16,6 @@ import {
   type AttentionImplementation,
   type InferenceAttentionType,
 } from "@/utils/attentionSettings";
-import { readGlobalVideoFrameCount, writeGlobalVideoFrameCount } from "@/utils/videoFrameSettings";
 
 // Default presets
 const DEFAULT_ASPECT_RATIO_PRESETS = [
@@ -77,14 +76,6 @@ export default function SettingsPage() {
   // Attention type
   const [attentionType, setAttentionType] = useState<InferenceAttentionType>("normal");
   const [attentionImpl, setAttentionImpl] = useState<AttentionImplementation>("conduit");
-
-  // Default video frame count. `null` = unset = "use the architecture
-  // default" -- also the initial value here, so a user who never opens this
-  // page sees no change. See utils/videoFrameSettings.ts for why this is a
-  // localStorage preference rather than a backend UserSettings field, and
-  // for why the raw value is stored unsnapped (each generation panel snaps
-  // it onto the LOADED architecture's own frame grid at the point of use).
-  const [defaultVideoFrameCount, setDefaultVideoFrameCount] = useState<number | null>(null);
 
   // Font size (mobile UI scaling)
   const [fontSize, setFontSize] = useState(100); // 100 = 100% (default)
@@ -222,11 +213,6 @@ export default function SettingsPage() {
       const savedAttentionImpl = readGlobalAttentionImpl();
       if (savedAttentionImpl) {
         setAttentionImpl(savedAttentionImpl);
-      }
-
-      const savedDefaultVideoFrameCount = readGlobalVideoFrameCount();
-      if (savedDefaultVideoFrameCount != null) {
-        setDefaultVideoFrameCount(savedDefaultVideoFrameCount);
       }
 
       const savedResolutionStep = localStorage.getItem('resolution_step');
@@ -759,43 +745,6 @@ export default function SettingsPage() {
                   </select>
                   <p className="text-xs text-gray-500 mt-1">
                     Selects which implementation runs the FLUX.2 attention kernel. <strong>Conduit</strong> routes through SushiUI&apos;s unified dispatch so the Attention Type above (including TQ) applies to FLUX.2. <strong>Diffusers</strong> keeps diffusers&apos; own registry (reproduces the previous behavior). Native output is identical either way; other architectures ignore this.
-                  </p>
-                </div>
-
-                <div className="space-y-2">
-                  <label className="flex items-center gap-2 text-sm font-medium text-gray-300">
-                    <input
-                      type="checkbox"
-                      checked={defaultVideoFrameCount != null}
-                      onChange={(e) => {
-                        if (!e.target.checked) {
-                          setDefaultVideoFrameCount(null);
-                          writeGlobalVideoFrameCount(null);
-                          return;
-                        }
-                        const seed = defaultVideoFrameCount ?? 121;
-                        setDefaultVideoFrameCount(seed);
-                        writeGlobalVideoFrameCount(seed);
-                      }}
-                      className="w-4 h-4 bg-gray-700 border-gray-600 rounded focus:ring-blue-500"
-                    />
-                    Default Video Frame Count
-                  </label>
-                  {defaultVideoFrameCount != null && (
-                    <NumberInput
-                      label="Default Video Frame Count"
-                      value={defaultVideoFrameCount}
-                      onCommit={(v) => {
-                        setDefaultVideoFrameCount(v);
-                        writeGlobalVideoFrameCount(v);
-                      }}
-                      min={1}
-                      parse="int"
-                      className="w-28"
-                    />
-                  )}
-                  <p className="text-xs text-gray-500 mt-1">
-                    Frame count a video generation panel starts from for a new (never-persisted) session, in place of the architecture&apos;s own served default. Snapped to the loaded architecture&apos;s frame grid when a video model is loaded. Unchecked uses the architecture default. A panel that already has its own saved frame count (from a previous session) keeps that value; this setting only applies where there is nothing to fall back on yet.
                   </p>
                 </div>
 

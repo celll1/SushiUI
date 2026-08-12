@@ -780,6 +780,17 @@ VIDEO_GEN_DEFAULTS: Dict[str, Any] = {
     # measured savings (-21%, vs -10.5% at 20) without also engaging the
     # max-value FF-chunking path (49), which is a distinct behaviour change.
     "blocks_to_swap_enabled_default": 40,
+    # UI-ONLY (not a request field; not read by any /generate/* route): the
+    # value Settings' "Video Frame Count Slider Track Max" checkbox seeds the
+    # number box with when a user first checks it (backend UserSettings.
+    # video_frame_slider_max, GET/POST /settings/generation). Deliberately
+    # equal to VideoFrameCountSlider.tsx's own UNCAPPED_FRAME_SLIDER_CEILING
+    # constant (the track's built-in reach on an architecture with neither a
+    # hard `max_frames` nor a `trained_max_frames`), so checking the box
+    # without changing the seeded value is a no-op against today's behaviour
+    # -- the setting only does something once the user actually raises or
+    # lowers it.
+    "video_frame_slider_max_seed": 241,
     # AP2: First-Block-Cache (dynamic per-step trajectory-redundancy skip). Only
     # available when the transformer runs through Ltx2BlockLoopWrapper (either
     # because blocks_to_swap > 0, or the wrapper is force-attached for FBCache

@@ -8527,6 +8527,7 @@ async def get_generation_settings(db: Session = Depends(get_gallery_db)):
 
         return {
             "inpaint_use_dedicated_model": settings_record.inpaint_use_dedicated_model if settings_record.inpaint_use_dedicated_model is not None else False,
+            "video_frame_slider_max": settings_record.video_frame_slider_max,
         }
     except Exception as e:
         print(f"Error getting generation settings: {e}")
@@ -8548,20 +8549,34 @@ async def save_generation_settings(
         if "inpaint_use_dedicated_model" in settings_data:
             settings_record.inpaint_use_dedicated_model = bool(settings_data["inpaint_use_dedicated_model"])
 
+        if "video_frame_slider_max" in settings_data:
+            raw_slider_max = settings_data["video_frame_slider_max"]
+            if raw_slider_max is None:
+                settings_record.video_frame_slider_max = None
+            else:
+                parsed_slider_max = int(raw_slider_max)
+                if parsed_slider_max <= 0:
+                    raise HTTPException(status_code=400, detail="video_frame_slider_max must be a positive integer or null")
+                settings_record.video_frame_slider_max = parsed_slider_max
+
         settings_record.updated_at = datetime.utcnow()
         db.commit()
         db.refresh(settings_record)
 
         print(f"[Settings] Updated generation settings:")
         print(f"  inpaint_use_dedicated_model: {settings_record.inpaint_use_dedicated_model}")
+        print(f"  video_frame_slider_max: {settings_record.video_frame_slider_max}")
 
         return {
             "success": True,
             "message": "Generation settings saved successfully",
             "settings": {
                 "inpaint_use_dedicated_model": settings_record.inpaint_use_dedicated_model,
+                "video_frame_slider_max": settings_record.video_frame_slider_max,
             }
         }
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"Error saving generation settings: {e}")
         import traceback

@@ -6519,6 +6519,16 @@ paths:
                 properties:
                   inpaint_use_dedicated_model:
                     type: boolean
+                  video_frame_slider_max:
+                    type: integer
+                    nullable: true
+                    description: |
+                      User-configured upper bound for the video frame-count SLIDER
+                      TRACK (not a value cap). `null` (the default) means unset --
+                      the track uses its built-in reach. The number box next to the
+                      slider is never bounded by this value; it always accepts any
+                      frame count, including one above this setting.
+                    example: 600
     post:
       tags: [settings]
       summary: Save user-configured generation settings
@@ -6532,6 +6542,14 @@ paths:
               properties:
                 inpaint_use_dedicated_model:
                   type: boolean
+                video_frame_slider_max:
+                  type: integer
+                  nullable: true
+                  description: |
+                    Upper bound for the video frame-count slider TRACK. `null`
+                    clears the setting (reverts to the built-in track reach). Does
+                    not bound the paired number box.
+                  example: 600
       responses:
         '200':
           description: Settings saved
@@ -6549,6 +6567,9 @@ paths:
                     properties:
                       inpaint_use_dedicated_model:
                         type: boolean
+                      video_frame_slider_max:
+                        type: integer
+                        nullable: true
         '500':
           description: Failed to save settings
           content:

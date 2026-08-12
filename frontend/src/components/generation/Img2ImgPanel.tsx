@@ -53,7 +53,6 @@ import { saveTempImage, loadTempImage, deleteTempImageRef } from "@/utils/tempIm
 import { previewStorageKeys, loadVideoPreview, saveVideoPreview, loadAudioPreview, saveAudioPreview, saveImagePreview, clearVideoPreview, clearAudioPreview, clearImagePreview, outputExists, stripCacheBuster, withCacheBuster, imagePreviewGone } from "@/utils/previewStorage";
 import { sendToPanel, sendImageToImg2Img, sendImageToInpaint, sendImageToUpscale, sendImageToOutpaint, fetchUrlToFile, sendVideoToOutpaint, sendVideoToInpaint, sendVideoToReference, sendAudioToOutpaint, sendAudioToImg2Img } from "@/utils/sendHelpers";
 import { useStartup } from "@/contexts/StartupContext";
-import { readGlobalVideoFrameCount } from "@/utils/videoFrameSettings";
 import { useGenerationQueue } from "@/contexts/GenerationQueueContext";
 import { createH3ReferenceInventory, maybeTransformH3PromptForGeneration } from "@/utils/h3PromptAssist";
 import { readGlobalAttentionType } from "@/utils/attentionSettings";
@@ -489,7 +488,7 @@ interface Img2ImgPanelProps {
 }
 
 export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgPanelProps = {}) {
-  const { modelLoaded, isBackendReady, generationDefaults, isVideo, isAudio, archCapabilities, resolveModality, modelInfoVersion } = useStartup();
+  const { modelLoaded, isBackendReady, generationDefaults, isVideo, isAudio, archCapabilities, resolveModality, modelInfoVersion, videoFrameSliderMax } = useStartup();
   const [params, setParams] = useState<Img2ImgParams>(DEFAULT_PARAMS);
   const [isGenerating, setIsGenerating] = useState(false);
   const [generatedImage, setGeneratedImage] = useState<string | null>(null);
@@ -1496,21 +1495,14 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
   // aud2aud defaults are merged on top so the audio fields (lyrics, cover_strength,
   // inference_steps, shift, guidance_scale, vocal_language) reflect param_defaults.py
   // even though this panel's primary shape is img2img.
-  // A global `num_frames` preference (Settings -> Default Video Frame Count)
-  // is layered on top at this same "nothing to fall back on yet" gate --
-  // see Txt2ImgPanel's mirrored effect for the full precedence rationale.
-  // It is applied unsnapped; the `normalizeVideoFrames` effect above
-  // re-snaps it onto the loaded architecture's grid once that is known.
   useEffect(() => {
     if (!generationDefaults) return;
     const stored = localStorage.getItem(STORAGE_KEY);
     if (!stored) {
-      const globalFrames = readGlobalVideoFrameCount();
       setParams(prev => ({
         ...DEFAULT_PARAMS,
         ...(generationDefaults.img2img as Partial<typeof DEFAULT_PARAMS>),
         ...(generationDefaults.aud2aud as Partial<typeof DEFAULT_PARAMS>),
-        ...(globalFrames != null ? { num_frames: globalFrames } : {}),
       }));
     }
   }, [generationDefaults]);
@@ -5349,6 +5341,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
                 value={params.num_frames ?? 121}
                 onChange={(frames) => setParams({ ...params, num_frames: frames })}
                 fallbackFps={params.frame_rate ?? 24.0}
+                sliderMaxOverride={videoFrameSliderMax}
               />
               {/* Opt-in video-length chaining, segment length -- see the
                   identical control in Txt2ImgPanel for the full rationale.
@@ -5384,6 +5377,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
                   fallbackFps={params.frame_rate ?? 24.0}
                   allowOverCap={false}
                   disabled={(params.num_frames ?? 0) <= chainSegmentFrames}
+                  sliderMaxOverride={videoFrameSliderMax}
                 />
               )}
               {chainSegmentFramesReplacedNotice && (

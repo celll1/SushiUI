@@ -53,7 +53,6 @@ import { saveTempImage, loadTempImage } from "@/utils/tempImageStorage";
 import { previewStorageKeys, loadVideoPreview, saveVideoPreview, loadAudioPreview, saveAudioPreview, saveImagePreview, clearVideoPreview, clearAudioPreview, clearImagePreview, outputExists, stripCacheBuster, withCacheBuster, imagePreviewGone } from "@/utils/previewStorage";
 import { sendToPanel, sendImageToImg2Img, sendBase64ImageToInpaint, sendBase64ImageToUpscale, sendBase64ImageToOutpaint, sendVideoToOutpaint, sendVideoToInpaint, sendVideoToReference, sendAudioToOutpaint, sendAudioToImg2Img, fetchUrlToFile } from "@/utils/sendHelpers";
 import { useStartup } from "@/contexts/StartupContext";
-import { readGlobalVideoFrameCount } from "@/utils/videoFrameSettings";
 import { useGenerationQueue } from "@/contexts/GenerationQueueContext";
 import { createH3ReferenceInventory, maybeTransformH3PromptForGeneration } from "@/utils/h3PromptAssist";
 import { readGlobalAttentionType } from "@/utils/attentionSettings";
@@ -320,7 +319,7 @@ interface Txt2ImgPanelProps {
 }
 
 export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgPanelProps = {}) {
-  const { modelLoaded, isBackendReady, generationDefaults, isVideo, isAudio, archCapabilities, resolveModality, modelInfoVersion } = useStartup();
+  const { modelLoaded, isBackendReady, generationDefaults, isVideo, isAudio, archCapabilities, resolveModality, modelInfoVersion, videoFrameSliderMax } = useStartup();
   const pathname = usePathname();
   const [params, setParams] = useState<GenerationParams>(DEFAULT_PARAMS);
   const [isGenerating, setIsGenerating] = useState(false);
@@ -1077,25 +1076,12 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
     }
   }, [chainSegmentFrames, isMounted]);
 
-  // Apply backend-fetched defaults when they arrive (only if no localStorage value exists).
-  // A global `num_frames` preference (Settings -> Default Video Frame Count)
-  // is layered on top of the served default at this same "nothing to fall
-  // back on yet" gate -- so a panel that already has its own saved value
-  // from a previous session (`stored` truthy) never has it overridden, and
-  // the global preference only ever supplies a STARTING point, exactly like
-  // `generationDefaults.txt2img` itself does. It is applied unsnapped here;
-  // the `normalizeVideoFrames` effect above re-snaps it onto the loaded
-  // architecture's grid once that is known, same as any other seeded value.
+  // Apply backend-fetched defaults when they arrive (only if no localStorage value exists)
   useEffect(() => {
     if (!generationDefaults) return;
     const stored = localStorage.getItem(STORAGE_KEY);
     if (!stored) {
-      const globalFrames = readGlobalVideoFrameCount();
-      setParams(prev => ({
-        ...DEFAULT_PARAMS,
-        ...(generationDefaults.txt2img as Partial<typeof DEFAULT_PARAMS>),
-        ...(globalFrames != null ? { num_frames: globalFrames } : {}),
-      }));
+      setParams(prev => ({ ...DEFAULT_PARAMS, ...(generationDefaults.txt2img as Partial<typeof DEFAULT_PARAMS>) }));
     }
   }, [generationDefaults]);
 
@@ -4404,6 +4390,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                 value={params.num_frames ?? 121}
                 onChange={(frames) => setParams({ ...params, num_frames: frames })}
                 fallbackFps={params.frame_rate ?? 24.0}
+                sliderMaxOverride={videoFrameSliderMax}
               />
               {/* Opt-in video-length chaining, segment length: unset (default)
                   means "never split" -- raising the frame count above does not
@@ -4443,6 +4430,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                   fallbackFps={params.frame_rate ?? 24.0}
                   allowOverCap={false}
                   disabled={(params.num_frames ?? 0) <= chainSegmentFrames}
+                  sliderMaxOverride={videoFrameSliderMax}
                 />
               )}
               {chainSegmentFramesReplacedNotice && (

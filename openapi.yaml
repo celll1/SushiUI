@@ -264,6 +264,15 @@ paths:
                   outpaint_aud:
                     type: object
                     additionalProperties: true
+                  studio_render:
+                    type: object
+                    description: >-
+                      `STUDIO_RENDER_DEFAULTS` from `backend/api/param_defaults.py`
+                      -- renderer policy defaults and limits (audio/fit-mode
+                      defaults, size/duration/asset-count ceilings, decode and
+                      output pixel-frame budgets, disk-space margin, render
+                      timeout) for `POST /studio/render-jobs`.
+                    additionalProperties: true
                   video_arch_overlays:
                     type: object
                     description: >-
@@ -2089,8 +2098,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-        '503':
-          description: Render job could not be staged or queued
+        '500':
+          description: Render job could not be staged or queued (server-side failure; see backend log)
           content:
             application/json:
               schema:
@@ -2120,9 +2129,23 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Unexpected server error while reading the job
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
     delete:
       tags: [studio]
       summary: Cancel a Studio timeline render
+      description: |
+        Requests cancellation of a queued or running render. A `queued` job is
+        cancelled immediately and its staged inputs are discarded. A
+        `running` job is moved to `cancel_requested` and its FFmpeg process
+        is killed; the worker thread then finalizes the row to `cancelled`.
+        Calling this on a job that is already in a terminal state
+        (`cancelled`, `completed`, `failed`) is a no-op that returns that
+        state.
       operationId: cancelStudioRenderJob
       parameters:
         - name: job_id
@@ -2146,8 +2169,18 @@ paths:
                   state:
                     type: string
                     enum: [queued, running, cancel_requested, cancelled, completed, failed]
+              example:
+                success: true
+                job_id: "3f2a1c9e8b7d4a6f9c0e1b2a3d4e5f60"
+                state: cancel_requested
         '404':
           description: Render job not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Unexpected server error while requesting cancellation
           content:
             application/json:
               schema:
@@ -6855,6 +6888,7 @@ components:
         id:
           type: string
           description: Client-local asset id; never a filesystem path.
+          example: "asset-1"
         kind:
           type: string
           enum: [image, video, audio]
@@ -6879,40 +6913,58 @@ components:
       properties:
         id:
           type: string
+          example: "track-video-1"
         kind:
           type: string
           enum: [video, audio]
         muted:
           type: boolean
           default: false
+          description: Audio-only. Excludes this track's audio from the mix; the track's video is still composited.
         visible:
           type: boolean
           default: true
+          description: Excludes this track from both the video composite and, for an audio track, its audio.
     StudioRenderClip:
       type: object
-      required: [id, assetId, trackId, start, duration, sourceIn]
+      # `id`, `start`, and `sourceIn` are all server-defaulted when omitted
+      # (`id` -> "clip-<index>", `start`/`sourceIn` -> 0); only the fields the
+      # server has no reasonable default for are required. See
+      # `_canonical_manifest()` in backend/api/studio_render_jobs.py.
+      required: [assetId, trackId, duration]
       properties:
         id:
           type: string
+          example: "clip-1"
         assetId:
           type: string
+          example: "asset-1"
         trackId:
           type: string
+          example: "track-video-1"
         start:
           type: number
           minimum: 0
+          default: 0
           description: Timeline position in seconds; normalized to an integer output frame.
+          example: 0
         duration:
           type: number
           exclusiveMinimum: 0
           description: Presentation duration in seconds; normalized to output frames.
+          example: 2.5
         sourceIn:
           type: number
           minimum: 0
+          default: 0
           description: Source trim offset in seconds.
         presentation:
           type: string
           enum: [frame, hold, clip]
+          description: >-
+            Defaults to "frame" for an image clip with duration_frames == 1,
+            "hold" for a longer image clip (required in that case), and
+            "clip" for video/audio.
         activeTake:
           type: boolean
           default: true
@@ -6925,6 +6977,11 @@ components:
         project:
           type: object
           required: [id, revision, duration, fps, width, height]
+          # NOTE: the numeric bounds below (duration/fps/width/height) mirror
+          # backend/api/param_defaults.py's STUDIO_RENDER_DEFAULTS, which is
+          # this project's single source of truth and the one the backend
+          # actually enforces. If that file's limits change, these bounds
+          # must be updated too -- the backend does not read this spec.
           properties:
             id:
               type: string
@@ -6936,6 +6993,7 @@ components:
               type: number
               exclusiveMinimum: 0
               maximum: 600
+              description: Seconds. Mirrors `STUDIO_RENDER_DEFAULTS["max_duration_seconds"]`.
             fps:
               type: number
               minimum: 1
@@ -6958,6 +7016,17 @@ components:
               type: string
               enum: [cover, contain]
               default: cover
+              description: >-
+                "cover" scales a clip up and crops its edges to fill the
+                canvas; "contain" scales it down and letterboxes with black
+                bars instead.
+            video_lossless:
+              type: boolean
+              default: false
+              description: >-
+                Only `false` is currently accepted; the renderer produces
+                browser-playable H.264 output only. Sending `true` is
+                rejected with a 422.
         assets:
           type: array
           items:
@@ -6977,6 +7046,7 @@ components:
         manifest:
           type: string
           description: JSON-encoded StudioRenderManifest.
+          example: '{"project":{"id":"proj-1","revision":1,"duration":2.5,"fps":30,"width":1920,"height":1080},"assets":[{"id":"asset-1","kind":"image","galleryId":42}],"tracks":[{"id":"track-video-1","kind":"video"}],"clips":[{"assetId":"asset-1","trackId":"track-video-1","duration":2.5}]}'
         asset_ids:
           type: array
           items:
@@ -6997,6 +7067,7 @@ components:
           default: true
         job_id:
           type: string
+          example: "3f2a1c9e8b7d4a6f9c0e1b2a3d4e5f60"
         state:
           type: string
           enum: [queued, running, cancel_requested, cancelled, completed, failed]
@@ -7004,21 +7075,35 @@ components:
           type: number
           minimum: 0
           maximum: 1
+          example: 0.42
         message:
           type: string
           nullable: true
+          example: "Rendering timeline"
         gallery_image_id:
           type: integer
           nullable: true
         filename:
           type: string
           nullable: true
+          example: "studio_render_20260812_143022_3f2a1c9e8b7d.mp4"
         preview_filename:
           type: string
           nullable: true
         error:
           type: string
           nullable: true
+        warnings:
+          type: array
+          items:
+            type: string
+          description: >-
+            Non-fatal feature-degradation notices (e.g. a missing audio
+            source despite audio being enabled, a failed poster/thumbnail
+            generation, or the edge-cropping side effect of fit_mode
+            "cover"). Populated once the job reaches a terminal state.
+          example:
+            - "Audio was enabled for this render, but no unmuted clip on the timeline has an audio source; the output has no sound track."
         created_at:
           type: string
           nullable: true

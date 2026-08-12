@@ -26,6 +26,7 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from fastapi import UploadFile
 from PIL import Image
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from config.settings import settings
@@ -33,7 +34,7 @@ from database import GallerySessionLocal
 from database.models import GeneratedImage, StudioRenderJob
 from api.param_defaults import STUDIO_RENDER_DEFAULTS
 from utils.dataset_scanner import _find_ffprobe
-from utils.image_utils import create_thumbnail
+from utils.image_utils import calculate_file_hash, create_thumbnail
 from utils.video_utils import _locate_ffmpeg
 
 
@@ -51,6 +52,64 @@ _render_executor = ThreadPoolExecutor(max_workers=1)
 render_submission_lock = asyncio.Lock()
 _process_lock = threading.Lock()
 _active_processes: Dict[str, subprocess.Popen] = {}
+# In-process cancellation signal, keyed by job id. `_render_worker` creates
+# one right before it starts ffmpeg and `request_cancel_render_job` sets it;
+# this is the primary cancellation channel (checked every loop iteration in
+# `_run_ffmpeg`) so the render loop does not have to open a fresh SQLite
+# connection at 4 Hz just to notice a cancellation the same process already
+# knows about (see M5 in the Studio render audit).
+_cancel_events: Dict[str, threading.Event] = {}
+
+
+def _transition_job_state(
+    job_id: str,
+    from_states: Sequence[str],
+    to_state: str,
+    db: Optional[Session] = None,
+    **extra_values: Any,
+) -> bool:
+    """Atomically move a job from one of ``from_states`` to ``to_state``.
+
+    Returns True iff the row was actually in one of ``from_states`` at the
+    moment of the UPDATE and the transition happened; False if the row did
+    not exist or was already in some other state.
+
+    This is a single ``UPDATE ... WHERE id = ? AND state IN (...)``
+    statement, not a read-then-write. A read-then-write (query the state,
+    decide in Python, write it back) has a window between the read and the
+    write in which the render worker and a cancel request can each observe
+    the OTHER's pre-write state and both proceed as if they own the
+    transition -- e.g. a cancel reading "queued" a moment before the worker
+    commits "running", after which the cancel's write both stomps the
+    worker's state AND (formerly) deleted the now-in-use staging directory
+    out from under a running ffmpeg process. Collapsing the precondition
+    check into the WHERE clause makes that race impossible: SQLite's own
+    write lock serializes the two UPDATE statements, and whichever one runs
+    second simply matches zero rows instead of clobbering the first.
+    """
+    own_session = db is None
+    session = db or GallerySessionLocal()
+    try:
+        values: Dict[str, Any] = {"state": to_state, **extra_values}
+        matched = (
+            session.query(StudioRenderJob)
+            .filter(StudioRenderJob.id == job_id, StudioRenderJob.state.in_(list(from_states)))
+            .update(values, synchronize_session=False)
+        )
+        session.commit()
+        return bool(matched)
+    except OperationalError:
+        # A transient SQLite lock contention (busy timeout, or a
+        # SQLITE_BUSY_SNAPSHOT under WAL) must not surface to the caller as
+        # an unhandled 500 -- it means "the transition did not happen this
+        # time", which is the same externally-observable outcome as losing
+        # the race above, and every caller here already treats `False` as
+        # "someone else is responsible for this job's state instead".
+        session.rollback()
+        return False
+    finally:
+        if own_session:
+            session.close()
 
 
 def _now() -> datetime:
@@ -128,7 +187,11 @@ def _metadata_for_file(path: str, kind: str) -> Dict[str, Any]:
 
     ffprobe = _find_ffprobe()
     if not ffprobe:
-        raise StudioRenderValidationError("ffprobe is required to validate video and audio assets")
+        # A missing ffprobe is a server configuration problem, not a bad
+        # request -- it is not `StudioRenderValidationError` so it surfaces
+        # as a 500 (with a server-side log line) rather than a 422 blaming
+        # the client for something wrong with the deployment.
+        raise RuntimeError("ffprobe is required to validate video and audio assets")
     command = [
         ffprobe,
         "-v", "error",
@@ -198,6 +261,18 @@ def _validate_limits(project: Mapping[str, Any], assets: Sequence[Mapping[str, A
         raise StudioRenderValidationError("Too many assets in the render manifest")
     if len(clips) > int(STUDIO_RENDER_DEFAULTS["max_clips"]):
         raise StudioRenderValidationError("Too many clips in the render manifest")
+    # Bounds the OUTPUT side of the job (canvas area * full timeline length),
+    # independent of `_validate_decode_budget()` below, which only bounds
+    # pixel-frames actually read from source assets. A small still image
+    # held for the whole timeline on a large canvas can pass the decode
+    # budget by orders of magnitude while requesting an encode far larger
+    # than `max_render_seconds` was sized for -- see
+    # `max_output_pixel_frames`'s definition in param_defaults.py.
+    output_pixel_frames = width * height * timeline_frames
+    if output_pixel_frames > float(STUDIO_RENDER_DEFAULTS["max_output_pixel_frames"]):
+        raise StudioRenderValidationError(
+            "The requested canvas size and timeline duration exceed the renderer's output budget"
+        )
     return width, height, timeline_frames, int(round(fps * 1000)), canonical_duration
 
 
@@ -274,6 +349,7 @@ def _canonical_manifest(raw: Mapping[str, Any], source_metadata: Optional[Mappin
             })
             if actual.get("source_hash"):
                 entry["source_hash"] = str(actual["source_hash"])
+                entry["hash_kind"] = str(actual.get("hash_kind") or "file_bytes")
         else:
             entry["duration"] = max(0.0, _as_number(item.get("duration", 0), f"asset {asset_id} duration"))
             entry["has_audio"] = bool(item.get("has_audio", False))
@@ -416,69 +492,148 @@ async def prepare_render_inputs(
     staging_dir = os.path.join(staging_root, job_id)
     os.makedirs(staging_dir, exist_ok=False)
     metadata: Dict[str, Dict[str, Any]] = {}
+    staged_info: Dict[str, Dict[str, str]] = {}
     staged_bytes = 0
+    # A conservative disk-space reservation for the file `_render_worker`
+    # will eventually write to this same staging directory. This is a
+    # margin, not a size prediction; see `output_bytes_per_pixel_frame`'s
+    # definition in param_defaults.py.
+    project = initial["project"]
+    output_pixel_frames = int(project["width"]) * int(project["height"]) * int(project["duration_frames"])
+    estimated_output_bytes = output_pixel_frames * float(STUDIO_RENDER_DEFAULTS["output_bytes_per_pixel_frame"])
+    output_margin_bytes = max(256 * 1024 * 1024, int(estimated_output_bytes))
+
+    def _require_free_space(extra_bytes: int) -> None:
+        # Checked BEFORE writing, not after: writing first and checking once
+        # at the end let a submission fill the disk with up to
+        # `max_total_input_bytes` (4 GiB) of staged input before the check
+        # ever ran (see M2 in the Studio render audit).
+        free_bytes = shutil.disk_usage(staging_root).free
+        if free_bytes < extra_bytes + output_margin_bytes:
+            raise StudioRenderValidationError("Not enough free disk space for the Studio render")
+
     try:
+        # Phase 1 (event loop): read every uploaded asset onto disk. This is
+        # the only part of ingestion that has to run on the event loop --
+        # `UploadFile.read()` is itself a coroutine -- and it never touches
+        # Gallery files, so it cannot block on a multi-GiB `shutil.copy2` or
+        # an `ffprobe` subprocess the way the rest of staging can.
+        upload_targets: Dict[str, Tuple[str, str]] = {}
         for asset in initial["assets"]:
             asset_id = asset["id"]
-            gallery_id = asset.get("gallery_id")
+            if asset.get("gallery_id") is not None:
+                continue
+            upload = uploads.pop(asset_id, None)
+            if upload is None:
+                raise StudioRenderValidationError(
+                    f"Asset {asset_id} is not a Gallery asset and has no uploaded file"
+                )
             staged_name = f"asset_{asset_id}"
-            if gallery_id is not None:
-                row = db.query(GeneratedImage).filter(GeneratedImage.id == gallery_id).first()
-                if not row:
-                    raise StudioRenderValidationError(f"Gallery asset {gallery_id} was not found")
-                if _gallery_kind(row) != asset["kind"]:
-                    raise StudioRenderValidationError(f"Gallery asset {gallery_id} has a different media kind")
-                source = _gallery_source_path(row)
-                suffix = Path(row.filename).suffix.lower()
-                if suffix and re.fullmatch(r"\.[a-z0-9]{1,8}", suffix):
-                    staged_name += suffix
-                target = os.path.join(staging_dir, staged_name)
-                source_size = os.path.getsize(source)
-                if source_size > int(STUDIO_RENDER_DEFAULTS["max_upload_bytes"]):
-                    raise StudioRenderValidationError("A Gallery asset is too large to render")
-                staged_bytes += source_size
-                if staged_bytes > int(STUDIO_RENDER_DEFAULTS["max_total_input_bytes"]):
-                    raise StudioRenderValidationError("Total Studio render input size is too large")
-                shutil.copy2(source, target)
-                source_hash = row.image_hash or _sha256_file(target)
-            else:
-                upload = uploads.pop(asset_id, None)
-                if upload is None:
-                    raise StudioRenderValidationError(
-                        f"Asset {asset_id} is not a Gallery asset and has no uploaded file"
-                    )
-                suffix = Path(upload.filename or "").suffix.lower()
-                if suffix and re.fullmatch(r"\.[a-z0-9]{1,8}", suffix):
-                    staged_name += suffix
-                target = os.path.join(staging_dir, staged_name)
-                staged_bytes += await _write_upload(upload, target)
-                if staged_bytes > int(STUDIO_RENDER_DEFAULTS["max_total_input_bytes"]):
-                    raise StudioRenderValidationError("Total Studio render input size is too large")
-                source_hash = _sha256_file(target)
-            probed = _metadata_for_file(target, asset["kind"])
-            if asset["kind"] != "image" and probed["duration"] <= 0:
-                raise StudioRenderValidationError(f"Asset {asset_id} has no usable duration")
-            probed["staged_name"] = staged_name
-            probed["source_hash"] = source_hash
-            metadata[asset_id] = probed
-            asset["staged_name"] = staged_name
-            asset["source"] = "gallery" if gallery_id is not None else "upload"
-
+            suffix = Path(upload.filename or "").suffix.lower()
+            if suffix and re.fullmatch(r"\.[a-z0-9]{1,8}", suffix):
+                staged_name += suffix
+            target = os.path.join(staging_dir, staged_name)
+            # The upload's true size is not known ahead of the read (chunked
+            # `UploadFile.read()`), so the best that can be checked here is
+            # remaining headroom against the worst case a single asset could
+            # be (`max_upload_bytes`); the per-asset write itself is still
+            # bounded by that same limit inside `_write_upload`.
+            _require_free_space(int(STUDIO_RENDER_DEFAULTS["max_upload_bytes"]))
+            staged_bytes += await _write_upload(upload, target)
+            if staged_bytes > int(STUDIO_RENDER_DEFAULTS["max_total_input_bytes"]):
+                raise StudioRenderValidationError("Total Studio render input size is too large")
+            upload_targets[asset_id] = (target, staged_name)
         if uploads:
             unknown = next(iter(uploads))
             raise StudioRenderValidationError(f"Uploaded asset {unknown} is not referenced by the manifest")
 
+        # Phase 2 (worker thread): Gallery copy, hashing, and ffprobe/PIL
+        # probing are all blocking I/O or `subprocess.run()` calls. A single
+        # submission can touch up to `max_total_input_bytes` (4 GiB) of
+        # Gallery files and run `ffprobe` once per asset (up to `max_assets`,
+        # each with its own timeout) -- running that inline on the event
+        # loop stalls every other request (including this job's own cancel
+        # DELETE) and every WebSocket progress update for as long as it
+        # takes. `render_submission_lock` only needs to protect the
+        # single-active-job check and the row insert in routes.py, not this.
+        def _stage_and_probe() -> int:
+            local_staged_bytes = staged_bytes
+            for asset in initial["assets"]:
+                asset_id = asset["id"]
+                gallery_id = asset.get("gallery_id")
+                if gallery_id is not None:
+                    row = db.query(GeneratedImage).filter(GeneratedImage.id == gallery_id).first()
+                    if not row:
+                        raise StudioRenderValidationError(f"Gallery asset {gallery_id} was not found")
+                    if _gallery_kind(row) != asset["kind"]:
+                        raise StudioRenderValidationError(f"Gallery asset {gallery_id} has a different media kind")
+                    source = _gallery_source_path(row)
+                    staged_name = f"asset_{asset_id}"
+                    suffix = Path(row.filename).suffix.lower()
+                    if suffix and re.fullmatch(r"\.[a-z0-9]{1,8}", suffix):
+                        staged_name += suffix
+                    target = os.path.join(staging_dir, staged_name)
+                    source_size = os.path.getsize(source)
+                    if source_size > int(STUDIO_RENDER_DEFAULTS["max_upload_bytes"]):
+                        raise StudioRenderValidationError("A Gallery asset is too large to render")
+                    local_staged_bytes += source_size
+                    if local_staged_bytes > int(STUDIO_RENDER_DEFAULTS["max_total_input_bytes"]):
+                        raise StudioRenderValidationError("Total Studio render input size is too large")
+                    # Checked before the copy, with the asset's actual known
+                    # size (Gallery files are local, so `getsize()` is free
+                    # here) -- not once at the very end after every Gallery
+                    # asset has already been copied.
+                    _require_free_space(source_size)
+                    shutil.copy2(source, target)
+                    if row.image_hash:
+                        source_hash = row.image_hash
+                        # Gallery still images are hashed by re-encoded pixel
+                        # content (see `calculate_image_hash`); video/audio
+                        # rows are hashed by raw file bytes. Record which one
+                        # this value is so a later provenance check knows
+                        # what it can and can't be compared against.
+                        hash_kind = "image_pixels" if asset["kind"] == "image" else "file_bytes"
+                    else:
+                        source_hash = calculate_file_hash(target)
+                        hash_kind = "file_bytes"
+                else:
+                    target, staged_name = upload_targets[asset_id]
+                    source_hash = calculate_file_hash(target)
+                    hash_kind = "file_bytes"
+                probed = _metadata_for_file(target, asset["kind"])
+                if asset["kind"] != "image" and probed["duration"] <= 0:
+                    raise StudioRenderValidationError(f"Asset {asset_id} has no usable duration")
+                probed["staged_name"] = staged_name
+                probed["source_hash"] = source_hash
+                probed["hash_kind"] = hash_kind
+                metadata[asset_id] = probed
+                staged_info[asset_id] = {
+                    "staged_name": staged_name,
+                    "source": "gallery" if gallery_id is not None else "upload",
+                }
+            return local_staged_bytes
+
+        staged_bytes = await asyncio.to_thread(_stage_and_probe)
+
         # Re-run all frame-boundary checks with server-probed durations. The
         # client may not be trusted to report a video's true source length.
-        final_manifest = _canonical_manifest(initial, source_metadata=metadata)
+        #
+        # This MUST re-parse `raw_manifest`, not `initial`: `initial` has
+        # already been through `_canonical_manifest()` once, so its clips use
+        # the canonical `start_frame`/`duration_frames`/`source_in_frame` keys
+        # -- not the `start`/`duration`/`sourceIn` keys `_canonical_manifest()`
+        # expects to parse. Feeding it back in a second time silently zeroed
+        # every clip's start/sourceIn (missing keys defaulted to 0) and threw
+        # a validation error on the second clip (missing `duration`), which
+        # surfaced to the client as a 422 on every manifest with 2+ clips.
+        final_manifest = _canonical_manifest(raw_manifest, source_metadata=metadata)
         for asset in final_manifest["assets"]:
-            original = next(item for item in initial["assets"] if item["id"] == asset["id"])
-            asset["staged_name"] = original["staged_name"]
-            asset["source"] = original["source"]
+            info = staged_info.get(asset["id"])
+            if info is None:
+                raise StudioRenderValidationError(f"Asset {asset['id']} was not staged")
+            asset["staged_name"] = info["staged_name"]
+            asset["source"] = info["source"]
         _validate_decode_budget(final_manifest)
-        free_bytes = shutil.disk_usage(staging_root).free
-        if free_bytes < max(256 * 1024 * 1024, staged_bytes * 2):
-            raise StudioRenderValidationError("Not enough free disk space for the Studio render")
         return final_manifest, staging_dir
     except Exception:
         shutil.rmtree(staging_dir, ignore_errors=True)
@@ -547,7 +702,10 @@ def build_render_command(manifest: Mapping[str, Any], staging_dir: str, ffmpeg: 
     for visual_index, (index, clip) in enumerate(visual_clips):
         track = tracks[clip["track_id"]]
         asset = assets[clip["asset_id"]]
-        if track["kind"] != "video" or track.get("muted") or not track.get("visible", True):
+        # `muted` is an audio-only concept (see the audio pass below, which
+        # applies it to the audio graph). Excluding it here as well made
+        # muting a video track's audio silently drop its picture too.
+        if track["kind"] != "video" or not track.get("visible", True):
             continue
         source_in = clip["source_in_frame"] / fps
         clip_start = clip["start_frame"] / fps
@@ -632,6 +790,13 @@ def _job_cancel_requested(job_id: str) -> bool:
     try:
         job = db.query(StudioRenderJob).filter(StudioRenderJob.id == job_id).first()
         return bool(job and job.state == "cancel_requested")
+    except OperationalError:
+        # A busy/locked SQLite read here must not turn into a render
+        # failure -- the in-process `_cancel_events` Event is the primary
+        # cancellation channel; this DB read is only a fallback poll, so
+        # "could not check this time" is treated the same as "not
+        # cancelled" and the next poll a second later will retry.
+        return False
     finally:
         db.close()
 
@@ -649,7 +814,7 @@ def _update_job(job_id: str, **values: Any) -> None:
         db.close()
 
 
-def _run_ffmpeg(command: List[str], job_id: str, total_frames: int) -> None:
+def _run_ffmpeg(command: List[str], job_id: str, total_frames: int, cancel_event: threading.Event) -> None:
     try:
         process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     except OSError as exc:
@@ -682,12 +847,29 @@ def _run_ffmpeg(command: List[str], job_id: str, total_frames: int) -> None:
     progress_thread.start()
     stderr_thread.start()
     started = time.monotonic()
+    last_db_poll = started
     try:
         while True:
-            if _job_cancel_requested(job_id):
+            if cancel_event.is_set():
                 process.kill()
                 raise StudioRenderCancelled()
-            if time.monotonic() - started > float(STUDIO_RENDER_DEFAULTS["max_render_seconds"]):
+            now = time.monotonic()
+            if now - last_db_poll >= 1.0:
+                # Fallback poll for a cancellation that reached the DB
+                # without going through `request_cancel_render_job`'s
+                # in-process event (there is currently no such path, but a
+                # multi-process deployment or an admin editing the row
+                # directly would take this route). Deliberately at 1 Hz,
+                # not 4 Hz: this opens a fresh SQLite connection every time,
+                # and `_job_cancel_requested` already treats a locked/busy
+                # read as "not cancelled yet, ask again next second" rather
+                # than raising.
+                last_db_poll = now
+                if _job_cancel_requested(job_id):
+                    cancel_event.set()
+                    process.kill()
+                    raise StudioRenderCancelled()
+            if now - started > float(STUDIO_RENDER_DEFAULTS["max_render_seconds"]):
                 process.kill()
                 raise RuntimeError("Studio render exceeded the renderer time limit")
             try:
@@ -723,19 +905,11 @@ def _run_ffmpeg(command: List[str], job_id: str, total_frames: int) -> None:
             print(f"[StudioRender] ffmpeg: {stderr_text}")
 
 
-def _sha256_file(path: str) -> str:
-    digest = hashlib.sha256()
-    with open(path, "rb") as source:
-        for chunk in iter(lambda: source.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def _write_poster(video_path: str, poster_path: str, duration: float) -> None:
+def _write_poster(video_path: str, poster_path: str, duration: float) -> bool:
     try:
         ffmpeg = _locate_ffmpeg()
     except RuntimeError:
-        return
+        return False
     command = [
         ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
         "-ss", f"{max(0.0, duration / 2):.6f}", "-i", video_path,
@@ -744,12 +918,46 @@ def _write_poster(video_path: str, poster_path: str, duration: float) -> None:
     ]
     try:
         subprocess.run(command, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
+        return True
     except (OSError, subprocess.SubprocessError):
-        return
+        return False
 
 
 def _render_output_name(job_id: str) -> str:
     return f"studio_render_{time.strftime('%Y%m%d_%H%M%S')}_{job_id[:12]}.mp4"
+
+
+def _collect_render_warnings(manifest: Mapping[str, Any]) -> List[str]:
+    """Feature-degradation notices that do not fail the job but the client
+    should be told about, mirroring the `warnings[]` convention used by the
+    live generation endpoints (see `api/generation_status.py:add_warning`,
+    which is keyed to a live generation id and not reachable from a
+    background render job -- this list is the per-job equivalent, stored on
+    `StudioRenderJob.warnings` instead)."""
+    warnings: List[str] = []
+    render = manifest["render"]
+    tracks = {track["id"]: track for track in manifest["tracks"]}
+    assets = {asset["id"]: asset for asset in manifest["assets"]}
+    if render["audio_enabled"]:
+        has_any_audio = False
+        for clip in manifest["clips"]:
+            track = tracks.get(clip["track_id"])
+            asset = assets.get(clip["asset_id"])
+            if not track or not asset or track.get("muted") or not track.get("visible", True):
+                continue
+            if asset["kind"] == "audio" or (asset["kind"] == "video" and asset.get("has_audio")):
+                has_any_audio = True
+                break
+        if not has_any_audio:
+            warnings.append(
+                "Audio was enabled for this render, but no unmuted clip on the timeline has an audio source; "
+                "the output has no sound track."
+            )
+    if render["fit_mode"] == "cover":
+        warnings.append(
+            "fit_mode is 'cover': clips whose aspect ratio does not match the canvas have their edges cropped."
+        )
+    return warnings
 
 
 def _persist_render_output(
@@ -770,20 +978,23 @@ def _persist_render_output(
     num_frames = int(project["duration_frames"])
     fps = float(project["fps"])
     duration = num_frames / fps
+    warnings = _collect_render_warnings(manifest)
     poster_path = os.path.join(settings.outputs_dir, f"{Path(filename).stem}.png")
-    _write_poster(output_path, poster_path, duration)
+    if not _write_poster(output_path, poster_path, duration):
+        warnings.append("Poster frame generation failed; the Gallery entry has no preview thumbnail.")
     if os.path.isfile(poster_path):
         try:
             create_thumbnail(poster_path)
         except Exception as exc:
             print(f"[StudioRender] thumbnail creation failed: {exc}")
+            warnings.append("Thumbnail generation failed for the rendered output.")
 
     manifest_without_staged = json.loads(json.dumps(manifest))
     for asset in manifest_without_staged.get("assets", []):
         asset.pop("staged_name", None)
     manifest_json = json.dumps(manifest_without_staged, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     manifest_hash = hashlib.sha256(manifest_json.encode("utf-8")).hexdigest()
-    media_hash = _sha256_file(output_path)
+    media_hash = calculate_file_hash(output_path)
     params = {
         "prompt": "",
         "negative_prompt": "",
@@ -809,29 +1020,43 @@ def _persist_render_output(
                 "asset_id": asset["id"],
                 "gallery_id": asset.get("gallery_id"),
                 "source_hash": asset.get("source_hash"),
+                "hash_kind": asset.get("hash_kind"),
             }
             for asset in manifest["assets"]
         ],
         "fit_mode": render["fit_mode"],
+        "warnings": warnings,
     }
     sidecar = {
         "generation_type": "studio_render",
         "filename": filename,
         "preview_filename": None,
+        # Keys shared with `save_video_with_metadata()`'s sidecar
+        # (utils/video_utils.py) so any code that reads a video sidecar
+        # generically does not have to special-case Studio renders. None of
+        # these have a Studio-render meaning (no prompt, no model, no
+        # inference), so they are populated with the same "not applicable"
+        # values a non-generative video write would use.
+        "prompt": "",
+        "negative_prompt": "",
         "model_name": "Studio timeline renderer",
+        "model_hash": None,
         "seed": -1,
         "num_frames": num_frames,
         "fps": fps,
         "width": int(project["width"]),
         "height": int(project["height"]),
-        "duration": duration,
+        "num_inference_steps": None,
+        "guidance_scale": None,
         "audio_enable": bool(render["audio_enabled"]),
+        "audio_sample_rate": None,
+        "duration": duration,
         "lossless": False,
         "studio_manifest_sha256": manifest_hash,
     }
     with open(os.path.join(settings.outputs_dir, f"{Path(filename).stem}.json"), "w", encoding="utf-8") as sidecar_file:
         json.dump(sidecar, sidecar_file, ensure_ascii=False, indent=2)
-    return filename, None, {"params": params, "media_hash": media_hash}
+    return filename, None, {"params": params, "media_hash": media_hash, "warnings": warnings}
 
 
 def _render_worker(job_id: str) -> None:
@@ -839,15 +1064,25 @@ def _render_worker(job_id: str) -> None:
     temp_output = ""
     staging_dir = ""
     persisted_filename = ""
+    cancel_event = threading.Event()
     try:
-        job = db.query(StudioRenderJob).filter(StudioRenderJob.id == job_id).first()
-        if not job or job.state != "queued":
+        # Atomic queued -> running claim. This MUST be a single
+        # UPDATE ... WHERE state = 'queued', not a read-then-write: a
+        # read-then-write leaves a window in which `request_cancel_render_job`
+        # can see "queued", cancel it, and delete its staging directory,
+        # right before this commits "running" and starts reading files out
+        # of that now-deleted directory (see H2 in the Studio render audit).
+        claimed = _transition_job_state(
+            job_id, ["queued"], "running", db=db,
+            started_at=_now(), progress=0.0, message="Preparing renderer",
+        )
+        if not claimed:
             return
-        job.state = "running"
-        job.started_at = _now()
-        job.progress = 0.0
-        job.message = "Preparing renderer"
-        db.commit()
+        with _process_lock:
+            _cancel_events[job_id] = cancel_event
+        job = db.query(StudioRenderJob).filter(StudioRenderJob.id == job_id).first()
+        if not job:
+            return
         manifest = job.manifest
         staging_dir = job.input_dir
         if not _inside(os.path.join(settings.cache_dir, "studio_render_jobs"), staging_dir):
@@ -858,8 +1093,8 @@ def _render_worker(job_id: str) -> None:
         except RuntimeError as exc:
             raise RuntimeError("ffmpeg is required to render a Studio timeline") from exc
         command = build_render_command(manifest, staging_dir, ffmpeg, temp_output)
-        _run_ffmpeg(command, job_id, int(manifest["project"]["duration_frames"]))
-        if _job_cancel_requested(job_id):
+        _run_ffmpeg(command, job_id, int(manifest["project"]["duration_frames"]), cancel_event)
+        if cancel_event.is_set():
             raise StudioRenderCancelled()
         persisted_filename = _render_output_name(job_id)
         filename, preview_filename, saved = _persist_render_output(
@@ -884,25 +1119,27 @@ def _render_worker(job_id: str) -> None:
         )
         db.add(image)
         db.flush()
-        job = db.query(StudioRenderJob).filter(StudioRenderJob.id == job_id).first()
-        if job:
-            job.state = "completed"
-            job.progress = 1.0
-            job.message = "Render complete"
-            job.gallery_image_id = image.id
-            job.filename = filename
-            job.preview_filename = preview_filename
-            job.finished_at = _now()
-        db.commit()
+        # The worker is the sole owner of a "running"/"cancel_requested" job
+        # -- nothing else transitions those states except this same
+        # atomic-UPDATE pattern -- but the transition is still expressed as
+        # one so a job row that somehow vanished (never observed, but not
+        # provably impossible) is a logged no-op instead of a
+        # `NoneType has no attribute` crash after the Gallery row is already
+        # committed.
+        if not _transition_job_state(
+            job_id, ["running", "cancel_requested"], "completed", db=db,
+            progress=1.0, message="Render complete", gallery_image_id=image.id,
+            filename=filename, preview_filename=preview_filename, finished_at=_now(),
+            warnings=saved.get("warnings") or [],
+        ):
+            print(f"[StudioRender] job {job_id} completed but its row could not be updated to 'completed'")
     except StudioRenderCancelled:
         db.rollback()
-        job = db.query(StudioRenderJob).filter(StudioRenderJob.id == job_id).first()
-        if job:
-            job.state = "cancelled"
-            job.message = "Render cancelled"
-            job.error = None
-            job.finished_at = _now()
-            db.commit()
+        if not _transition_job_state(
+            job_id, ["running", "cancel_requested"], "cancelled", db=db,
+            message="Render cancelled", error=None, finished_at=_now(),
+        ):
+            print(f"[StudioRender] job {job_id} cancelled but its row could not be updated to 'cancelled'")
         if temp_output and os.path.exists(temp_output):
             os.remove(temp_output)
         if persisted_filename:
@@ -910,22 +1147,24 @@ def _render_worker(job_id: str) -> None:
     except Exception as exc:
         db.rollback()
         print(f"[StudioRender] job {job_id} failed: {exc}")
-        job = db.query(StudioRenderJob).filter(StudioRenderJob.id == job_id).first()
-        if job:
-            job.state = "failed"
-            job.message = "Render failed"
-            job.error = (
+        if not _transition_job_state(
+            job_id, ["running", "cancel_requested"], "failed", db=db,
+            message="Render failed",
+            error=(
                 str(exc)[:1000]
                 if isinstance(exc, StudioRenderValidationError)
                 else "Studio render failed. Check the backend log for details."
-            )
-            job.finished_at = _now()
-            db.commit()
+            ),
+            finished_at=_now(),
+        ):
+            print(f"[StudioRender] job {job_id} failed but its row could not be updated to 'failed'")
         if temp_output and os.path.exists(temp_output):
             os.remove(temp_output)
         if persisted_filename:
             _remove_persisted_output(persisted_filename)
     finally:
+        with _process_lock:
+            _cancel_events.pop(job_id, None)
         db.close()
         if staging_dir:
             shutil.rmtree(staging_dir, ignore_errors=True)
@@ -956,27 +1195,51 @@ def submit_render_job(job_id: str) -> None:
 
 
 def request_cancel_render_job(job_id: str) -> Optional[str]:
+    """Cancel a queued or running Studio render.
+
+    Both branches below use `_transition_job_state`'s single
+    UPDATE ... WHERE state = ? statement instead of a read-then-write, and
+    the state-mutating action that follows a successful transition (staging
+    cleanup, or killing the ffmpeg process) is gated on that same
+    transition having actually happened:
+
+    - queued -> cancelled: `cleanup_render_staging()` only runs if the
+      UPDATE matched a row that was still "queued" in the same statement
+      that wrote "cancelled". If `_render_worker` had already claimed the
+      job (queued -> running) by the time this runs, the UPDATE here
+      matches zero rows and staging is left untouched -- the worker's own
+      files, mid-render, are never deleted out from under it.
+    - running -> cancel_requested: only a job that was actually still
+      "running" at the moment of the UPDATE reaches the `process.kill()`
+      call, so this cannot fire against a process that already exited
+      (which would otherwise leave `cancel_requested` permanently stuck --
+      see the SQLITE_BUSY_SNAPSHOT scenario in the Studio render audit).
+    """
     db = GallerySessionLocal()
     try:
+        if _transition_job_state(
+            job_id, ["queued"], "cancelled", db=db,
+            message="Render cancelled", finished_at=_now(),
+        ):
+            cleanup_render_staging(job_id)
+            return "cancelled"
+
+        if _transition_job_state(
+            job_id, ["running"], "cancel_requested", db=db,
+            message="Cancelling render",
+        ):
+            with _process_lock:
+                process = _active_processes.get(job_id)
+                cancel_event = _cancel_events.get(job_id)
+            if cancel_event is not None:
+                cancel_event.set()
+            if process and process.poll() is None:
+                process.kill()
+            return "cancel_requested"
+
         job = db.query(StudioRenderJob).filter(StudioRenderJob.id == job_id).first()
         if not job:
             return None
-        if job.state == "queued":
-            job.state = "cancelled"
-            job.message = "Render cancelled"
-            job.finished_at = _now()
-            db.commit()
-            cleanup_render_staging(job_id)
-            return job.state
-        if job.state == "running":
-            job.state = "cancel_requested"
-            job.message = "Cancelling render"
-            db.commit()
-            with _process_lock:
-                process = _active_processes.get(job_id)
-            if process and process.poll() is None:
-                process.kill()
-            return job.state
         return job.state
     finally:
         db.close()
@@ -999,3 +1262,48 @@ def cleanup_render_staging(job_id: str) -> None:
     target = os.path.join(root, job_id)
     if _inside(root, target):
         shutil.rmtree(target, ignore_errors=True)
+
+
+def reap_stale_render_jobs(db: Session) -> None:
+    """Reclaim `running`/`cancel_requested` rows this process is not
+    actually backing with a subprocess.
+
+    The single-render-slot gate in `routes.py` treats any row in one of
+    these two states as "busy" and rejects every new submission with a 409.
+    Under the fixed atomic transitions (see `_transition_job_state`) a row
+    should never get stuck here -- but a stuck row was exactly the
+    observed failure mode of the read-then-write races this replaces, and a
+    permanently-wedged single slot (recoverable only by a backend restart)
+    is bad enough to defend twice. `_active_processes`/`_cancel_events` are
+    populated for the whole lifetime of a job this process is rendering, so
+    a "running"/"cancel_requested" row this process has no record of, whose
+    `started_at` is old enough to rule out "still in the setup window
+    before Popen()", is reclassified as failed instead of blocking the gate
+    forever.
+    """
+    from datetime import timedelta
+
+    stale_before = _now() - timedelta(seconds=float(STUDIO_RENDER_DEFAULTS["max_render_seconds"]) * 2 + 60)
+    try:
+        candidates = (
+            db.query(StudioRenderJob)
+            .filter(
+                StudioRenderJob.state.in_(["running", "cancel_requested"]),
+                StudioRenderJob.started_at.isnot(None),
+                StudioRenderJob.started_at < stale_before,
+            )
+            .all()
+        )
+    except OperationalError:
+        return
+    for job in candidates:
+        with _process_lock:
+            has_process = job.id in _active_processes or job.id in _cancel_events
+        if has_process:
+            continue
+        _transition_job_state(
+            job.id, ["running", "cancel_requested"], "failed", db=db,
+            message="Render failed",
+            error="Studio render job was stuck without an active renderer process and was reclaimed.",
+            finished_at=_now(),
+        )

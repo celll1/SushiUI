@@ -375,7 +375,7 @@ class StudioRenderJob(GalleryBase):
     """
     __tablename__ = "studio_render_jobs"
 
-    id = Column(String, primary_key=True, index=True)
+    id = Column(String, primary_key=True)
     state = Column(String, nullable=False, default="queued", index=True)
     manifest = Column(JSON, nullable=False)
     input_dir = Column(String, nullable=False)
@@ -385,6 +385,12 @@ class StudioRenderJob(GalleryBase):
     filename = Column(String, nullable=True)
     preview_filename = Column(String, nullable=True)
     error = Column(Text, nullable=True)
+    # Feature-degradation notices (poster/thumbnail generation failures,
+    # silent-audio output, cropped-edge fit_mode, ...) that do not fail the
+    # job but the client should be told about. Mirrors the `warnings[]`
+    # convention used by the live generation endpoints, but stored per-row
+    # here since a render job has no live generation-id context.
+    warnings = Column(JSON, nullable=True, default=list)
     created_at = Column(DateTime, default=get_local_now, index=True)
     started_at = Column(DateTime, nullable=True)
     finished_at = Column(DateTime, nullable=True)
@@ -400,6 +406,7 @@ class StudioRenderJob(GalleryBase):
             "filename": self.filename,
             "preview_filename": self.preview_filename,
             "error": self.error,
+            "warnings": list(self.warnings or []),
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "started_at": self.started_at.isoformat() if self.started_at else None,
             "finished_at": self.finished_at.isoformat() if self.finished_at else None,

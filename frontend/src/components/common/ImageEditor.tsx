@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, forwardRef, useImperativeHandle } from "react";
+import type { ReactNode } from "react";
 import Button from "./Button";
 import { Menu, X, Undo2, Redo2, Maximize2, Maximize, Layers, Check } from "lucide-react";
 import {
@@ -16,6 +17,43 @@ interface ImageEditorProps {
   onSaveMask?: (maskUrl: string) => void; // Optional callback for mask export
   mode?: "edit" | "inpaint"; // Editor mode (default: "edit")
   initialMaskUrl?: string; // Initial mask image to load (for inpaint mode)
+  /**
+   * Extra controls rendered inside the left toolbox, above the History
+   * section. Added for VideoMaskFrameEditor's frame navigation UI; every
+   * existing host leaves this undefined and sees no layout change.
+   */
+  auxiliaryControls?: ReactNode;
+}
+
+/**
+ * Imperative surface for hosts that keep one ImageEditor instance mounted
+ * across multiple mask documents (VideoMaskFrameEditor, across video
+ * frames) instead of remounting per document. Existing hosts never attach
+ * a ref and are unaffected.
+ */
+export interface ImageEditorHandle {
+  /** Encode the current mask layer to a PNG data URL (mask polarity: see maskConventions.ts). Returns null if mode !== "inpaint" or the mask layer/context is unavailable. */
+  exportMask: () => string | null;
+  /**
+   * Replace the mask layer's pixels with `url` (or clear it if `url` is
+   * null/undefined) and reset the undo/redo history to that new state --
+   * a frame change is a frame-scoped undo boundary, not a stroke on the
+   * mask that was already there.
+   */
+  /**
+   * Replace the mask layer with `url` (or clear it for null/undefined) and
+   * reseed the frame-scoped undo history. Resolves false if the mask could
+   * not be decoded -- the layer is cleared in that case rather than left
+   * holding the previous document's pixels.
+   */
+  loadMask: (url: string | null | undefined) => Promise<boolean>;
+  /**
+   * True if any stroke has been recorded on the mask layer since the last
+   * `loadMask` call (or since mount, if `loadMask` was never called).
+   * Reuses the existing undo-history bookkeeping (`history`/`historyIndex`)
+   * rather than diffing PNG data URLs.
+   */
+  hasUnsavedMaskEdits: () => boolean;
 }
 
 type Tool = "pen" | "eraser" | "blur" | "eyedropper" | "bucket" | "pan";
@@ -35,7 +73,10 @@ interface HistoryState {
   layerData: ImageData;
 }
 
-export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mode = "edit", initialMaskUrl }: ImageEditorProps) {
+const ImageEditor = forwardRef<ImageEditorHandle, ImageEditorProps>(function ImageEditor(
+  { imageUrl, onSave, onClose, onSaveMask, mode = "edit", initialMaskUrl, auxiliaryControls },
+  ref,
+) {
   // Set global flag when Image Editor is mounted
   useEffect(() => {
     document.body.dataset.imageEditorOpen = "true";
@@ -253,6 +294,73 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
     }
   }, [layers, getLayerCanvas]);
 
+  // Imperative surface for hosts that keep one ImageEditor instance mounted
+  // across multiple mask "documents" (VideoMaskFrameEditor, across video
+  // frames) instead of remounting per document. See ImageEditorHandle above.
+  const exportMask = useCallback((): string | null => {
+    if (mode !== "inpaint") return null;
+    const maskCanvas = layerCanvasRefs.current.get("mask");
+    if (!maskCanvas) return null;
+    return encodeMaskLayerToPng(maskCanvas);
+  }, [mode]);
+
+  const loadMask = useCallback((url: string | null | undefined): Promise<boolean> => {
+    return new Promise((resolve) => {
+      const maskCanvas = layerCanvasRefs.current.get("mask");
+      const ctx = maskCanvas?.getContext("2d");
+      if (!maskCanvas || !ctx) {
+        resolve(false);
+        return;
+      }
+      const finish = (loaded: boolean) => {
+        // Frame-scoped undo boundary: replacing the mask layer wholesale
+        // here means "a different frame's mask document", not a stroke on
+        // the mask that was already loaded, so history is reseeded exactly
+        // like the initial-mount effect above seeds it for a fresh document
+        // (VideoMaskFrameEditor relies on this to keep undo/redo scoped to
+        // the frame currently open in the editor).
+        const initialData = ctx.getImageData(0, 0, maskCanvas.width, maskCanvas.height);
+        setHistory([{ layerId: "mask", layerData: initialData }]);
+        setHistoryIndex(0);
+        composeLayers();
+        resolve(loaded);
+      };
+      if (!url) {
+        ctx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
+        finish(true);
+        return;
+      }
+      const img = new Image();
+      img.crossOrigin = "anonymous";
+      img.onload = () => {
+        ctx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
+        ctx.drawImage(img, 0, 0, maskCanvas.width, maskCanvas.height);
+        finish(true);
+      };
+      img.onerror = () => {
+        // Clear before finishing: leaving the previous document's pixels in
+        // place would make them the history baseline for the mask that
+        // failed to load, and a later save would write them out as if they
+        // had been drawn for this one.
+        console.error("[ImageEditor] Could not decode the mask to load; cleared the mask layer instead.");
+        ctx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
+        finish(false);
+      };
+      img.src = url;
+    });
+  }, [composeLayers]);
+
+  const hasUnsavedMaskEdits = useCallback((): boolean => {
+    if (mode !== "inpaint" || historyIndex <= 0) return false;
+    return history.slice(1, historyIndex + 1).some((entry) => entry.layerId === "mask");
+  }, [mode, history, historyIndex]);
+
+  useImperativeHandle(
+    ref,
+    () => ({ exportMask, loadMask, hasUnsavedMaskEdits }),
+    [exportMask, loadMask, hasUnsavedMaskEdits],
+  );
+
   // Schedule a composeLayers call for the next animation frame (batched)
   const scheduleCompose = useCallback(() => {
     needsComposeRef.current = true;
@@ -272,7 +380,71 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
     composeLayers();
   }, [layers, composeLayers]);
 
-  // Load image and initialize layers
+  // Captures the imageUrl this component instance was FIRST mounted with.
+  // The mount-only effect below reads from this ref (not the `imageUrl`
+  // prop directly) so it keeps loading the SAME image even if a host swaps
+  // `imageUrl` post-mount (VideoMaskFrameEditor, for frame navigation) --
+  // that path is handled by the separate "swap base layer only" effect
+  // further below instead. Existing hosts (InpaintPanel, Img2ImgPanel,
+  // ControlNetSelector) do briefly change `imageUrl` themselves, in the
+  // window between saving an edit and closing the modal (they update the
+  // state this prop is bound to before the modal unmounts) -- irrelevant
+  // here, since the ref is only read once regardless.
+  const initialImageUrlRef = useRef(imageUrl);
+
+  // Allocates (or resizes) backing canvases for the CURRENT editable layers
+  // whenever a layer is added or removed (addLayer/deleteLayer below).
+  // Deliberately keyed on `layers.length` + the id set, NOT `layers` itself
+  // or `composeLayers` -- toggling a layer's visibility/opacity/name also
+  // changes `layers` (and therefore `composeLayers`'s identity) without
+  // adding or removing a layer, and must not re-run this. No-op before the
+  // base image has loaded (dimensions are still 0); the mount effect below
+  // creates the initial canvases once it knows the image size. Recompositing
+  // after a new canvas is created is handled by the separate
+  // "recomposite on layer list change" effect above, which already fires on
+  // every `layers` change.
+  useEffect(() => {
+    const baseLayer = baseLayerRef.current;
+    const width = baseLayer?.width ?? 0;
+    const height = baseLayer?.height ?? 0;
+    if (!width || !height) return;
+
+    const editableLayers = layers.filter(l => l.editable);
+    for (const layer of editableLayers) {
+      let canvas = layerCanvasRefs.current.get(layer.id);
+      if (!canvas) {
+        canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        layerCanvasRefs.current.set(layer.id, canvas);
+        const ctx = canvas.getContext("2d");
+        if (ctx) ctx.clearRect(0, 0, width, height);
+      } else if (canvas.width !== width || canvas.height !== height) {
+        const tempCanvas = document.createElement("canvas");
+        tempCanvas.width = canvas.width;
+        tempCanvas.height = canvas.height;
+        const tempCtx = tempCanvas.getContext("2d");
+        if (tempCtx) tempCtx.drawImage(canvas, 0, 0);
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext("2d");
+        if (ctx && tempCtx) ctx.drawImage(tempCanvas, 0, 0);
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [layers.length, layers.map(l => l.id).join(',')]);
+
+  // Load the base image and seed zoom/pan/history -- runs EXACTLY once per
+  // mount (`[]` deps). This used to also re-run whenever `layers`/
+  // `activeLayerId`/`initialMaskUrl`/`composeLayers` changed identity, which
+  // meant any layers-panel interaction (toggling a layer's eye icon,
+  // clicking a layer name to make it active) reset the base image back to
+  // `initialImageUrlRef`, reset zoom/pan, and wiped undo history -- silently
+  // discarding whatever had been drawn since. `layers`/`mode`/
+  // `initialMaskUrl`/`activeLayerId` here are read from this render's
+  // closure, same "document this instance was mounted with" semantics as
+  // `initialImageUrlRef`. New layers added after mount get their canvas
+  // from the layer-allocation effect above instead.
   useEffect(() => {
     const baseLayer = baseLayerRef.current;
     const composite = compositeCanvasRef.current;
@@ -301,41 +473,14 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
       for (const layer of editableLayers) {
         let canvas = layerCanvasRefs.current.get(layer.id);
         if (!canvas) {
-          // Create new canvas only if it doesn't exist
           canvas = document.createElement("canvas");
           canvas.width = width;
           canvas.height = height;
           layerCanvasRefs.current.set(layer.id, canvas);
-
-          // Clear new canvas to transparent
           const ctx = canvas.getContext("2d");
           if (ctx) {
             ctx.clearRect(0, 0, width, height);
           }
-        } else {
-          // Canvas already exists - check if resize is needed
-          if (canvas.width !== width || canvas.height !== height) {
-            // Only resize if dimensions actually changed
-            // Save existing content first
-            const tempCanvas = document.createElement("canvas");
-            tempCanvas.width = canvas.width;
-            tempCanvas.height = canvas.height;
-            const tempCtx = tempCanvas.getContext("2d");
-            if (tempCtx) {
-              tempCtx.drawImage(canvas, 0, 0);
-            }
-
-            // Resize canvas (this clears content)
-            canvas.width = width;
-            canvas.height = height;
-
-            // Restore content
-            const ctx = canvas.getContext("2d");
-            if (ctx && tempCtx) {
-              ctx.drawImage(tempCanvas, 0, 0);
-            }
-          }
-          // Canvas already has correct size, no action needed
         }
       }
 
@@ -389,9 +534,52 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
         }
       }
     };
-    img.src = imageUrl;
+    img.src = initialImageUrlRef.current;
+    // Deliberately empty deps -- see the comment above.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [imageUrl, layers.length, layers.map(l => l.id).join(','), composeLayers, activeLayerId, initialMaskUrl]);
+  }, []);
+
+  // Swap ONLY the base (background) layer when `imageUrl` changes after the
+  // initial mount, e.g. VideoMaskFrameEditor moving to a different video
+  // frame. Deliberately never touches the mask/edit layer canvases, zoom,
+  // pan, or history -- those are either owned by the caller (mask contents,
+  // via the loadMask imperative handle below) or meant to survive a frame
+  // change untouched (zoom/pan; this is the whole point of not remounting
+  // ImageEditor per frame). No-op on the initial render, since
+  // `lastAppliedBaseImageUrlRef` starts equal to `imageUrl`.
+  const lastAppliedBaseImageUrlRef = useRef(imageUrl);
+  useEffect(() => {
+    if (imageUrl === lastAppliedBaseImageUrlRef.current) return;
+    lastAppliedBaseImageUrlRef.current = imageUrl;
+    const baseLayer = baseLayerRef.current;
+    if (!baseLayer) return;
+
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    img.onload = () => {
+      const composite = compositeCanvasRef.current;
+      // Resize base/composite canvases if the new frame's pixel dimensions
+      // differ from the previous one (should not normally happen within one
+      // video clip, but this is defensive rather than assumed). Editable
+      // layer canvases are never resized here -- only the two read-only
+      // display surfaces.
+      if (baseLayer.width !== img.width || baseLayer.height !== img.height) {
+        baseLayer.width = img.width;
+        baseLayer.height = img.height;
+        if (composite) {
+          composite.width = img.width;
+          composite.height = img.height;
+        }
+      }
+      const ctx = baseLayer.getContext("2d");
+      if (ctx) {
+        ctx.clearRect(0, 0, baseLayer.width, baseLayer.height);
+        ctx.drawImage(img, 0, 0);
+      }
+      composeLayers();
+    };
+    img.src = imageUrl;
+  }, [imageUrl, composeLayers]);
 
   const saveToHistory = useCallback((layerId: string, ctx: CanvasRenderingContext2D) => {
     const layerCanvas = getLayerCanvas(layerId);
@@ -2220,6 +2408,15 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
           </div>
         </div>
 
+        {/* Auxiliary controls slot (e.g. VideoMaskFrameEditor's frame
+            navigation UI). Undefined for every existing host, so this
+            renders nothing and changes no layout for them. */}
+        {auxiliaryControls && (
+          <div className="space-y-2 pt-4 border-t border-gray-700">
+            {auxiliaryControls}
+          </div>
+        )}
+
         {/* Undo/Redo */}
         <div className="space-y-2">
           <h3 className="text-sm font-semibold text-gray-300">History</h3>
@@ -2469,4 +2666,6 @@ export default function ImageEditor({ imageUrl, onSave, onClose, onSaveMask, mod
       </div>
     </div>
   );
-}
+});
+
+export default ImageEditor;

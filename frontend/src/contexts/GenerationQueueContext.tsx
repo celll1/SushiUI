@@ -84,6 +84,26 @@ export interface QueueItem {
   chainManifestId?: string;
   chainPlanHash?: string;
   chainSegmentIndex?: number;
+  // Design §4.1 (scratchpad/video_chain_context_design.md): the manifest's
+  // planned accumulated frame count at the END of THIS item's own segment
+  // (`VideoChainSegment.owned_end_frame` for `chainSegmentIndex`), and the
+  // drift tolerance the manifest was planned with
+  // (`VideoChainManifest.chain_drift_tolerance_frames`, itself sourced from
+  // `backend/api/param_defaults.py`'s `VIDEO_CHAIN_DEFAULTS`). Both frozen at
+  // enqueue time, same as every other chain field on this item. Present only
+  // when this chain has a manifest (absent in legacy-repeat mode, where §4.1
+  // does not apply because there is no per-segment plan to drift from).
+  // `advanceVideoChain` (videoChain.ts) compares this against the segment's
+  // ACTUAL reported accumulated frame count when it finishes, before feeding
+  // the next continuation.
+  chainPlannedAccumulatedFrames?: number;
+  chainDriftToleranceFrames?: number;
+  // The |actual - planned| drift measured when THIS item's own segment
+  // finished, recorded (never used to gate anything) once the chain
+  // continues past it within tolerance -- design §4.1 "許容内: そのまま続行
+  // し、drift 値を記録する". Undefined if this item's segment had no manifest
+  // to drift from, or has not finished yet.
+  chainLastDriftFrames?: number;
   status: "pending" | "generating" | "completed" | "failed";
   addedAt: number;
   prompt: string; // For display purposes

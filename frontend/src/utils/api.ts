@@ -1700,6 +1700,237 @@ export const effectiveSegmentFrames = (
   return Math.min(requestedFrames, cap);
 };
 
+// --- Backend video-chain planner (POST /video-chain/plan, /video-chain/validate) ---
+//
+// Types transcribed from `openapi.yaml`'s `VideoChain*` schemas, which are the
+// contract. The chain-length helpers ABOVE stay: they are what the queue is
+// still built from, and they are the parity reference the backend planner is
+// ported against, so both exist until the migration is finished.
+//
+// Frame ranges are half-open `[owned_start_frame, owned_end_frame)` in integer
+// GLOBAL frames; seconds anywhere in this feature are display-only.
+
+export type VideoChainIssueSeverity = "error" | "warning";
+
+export interface VideoChainIssue {
+  code: string;
+  severity: VideoChainIssueSeverity;
+  message: string;
+  segment_index?: number | null;
+  event_id?: string | null;
+  reference_id?: string | null;
+}
+
+export interface VideoChainSourceSpan {
+  start_char: number;
+  end_char: number;
+}
+
+export type VideoChainEventKind =
+  | "visual_action"
+  | "camera"
+  | "dialogue"
+  | "sound"
+  | "music"
+  | "state_change";
+
+export interface VideoChainEvent {
+  id: string;
+  kind: VideoChainEventKind;
+  start_frame: number;
+  end_frame: number;
+  description: string;
+  subject_ids?: string[];
+  one_shot?: boolean;
+  must_complete?: boolean;
+  resulting_state?: string;
+  source_span?: VideoChainSourceSpan | null;
+}
+
+export interface VideoChainPersistentContext {
+  subjects?: string[];
+  environment?: string[];
+  visual_style?: string[];
+  camera_rules?: string[];
+  audio_bed?: string[];
+  hard_constraints?: string[];
+}
+
+export interface VideoChainSegmentState {
+  summary?: string;
+  subjects?: string[];
+  camera?: string;
+  lighting?: string;
+  ongoing_actions?: string[];
+  ongoing_audio?: string[];
+}
+
+export type VideoChainReferenceKind = "image" | "video" | "audio";
+
+// A reference and the segments it is bound to. Binding is many-to-many: one
+// reference may cover several non-contiguous segments, and one segment may
+// carry several references. `VideoChainSegment.reference_ids` is a read-only
+// inverse of this, recomputed by the backend on validate.
+export interface VideoChainReference {
+  id: string;
+  kind: VideoChainReferenceKind;
+  label: string;
+  segment_indices: number[];
+  binding_source: "default_all" | "explicit";
+}
+
+// Plan-request inventory entry: kind and label only, never file bytes or a path.
+export interface VideoChainReferenceInput {
+  id: string;
+  kind: VideoChainReferenceKind;
+  label: string;
+  segment_indices?: number[] | null;
+}
+
+export type VideoChainContextMode = "timeline" | "manual" | "legacy_repeat";
+export type VideoChainSeedPolicy = "fixed" | "derived" | "explicit";
+export type VideoChainContinuationMode =
+  | "boundary_frame"
+  | "motion_preroll"
+  | "tail_reference_video"
+  | "sampler_state";
+
+export interface VideoChainVisualContext {
+  mode: "initial" | VideoChainContinuationMode;
+  frames?: number | null;
+  source_segment_index?: number | null;
+}
+
+export interface VideoChainSegment {
+  index: number;
+  // Global frame this segment's local index 0 reproduces. Null for segment 0.
+  anchor_global_frame: number | null;
+  owned_start_frame: number;
+  owned_end_frame: number;
+  // Includes the shared anchor frame, so this segment ADDS
+  // `generated_span_frames - 1` new frames (0 excepted).
+  generated_span_frames: number;
+  prompt: string;
+  negative_prompt?: string;
+  incoming_state?: VideoChainSegmentState;
+  outgoing_state?: VideoChainSegmentState;
+  owned_event_ids?: string[];
+  reference_ids?: string[];
+  seed: number;
+  visual_context: VideoChainVisualContext;
+  continuation_state_in?: string | null;
+  continuation_state_out?: string | null;
+  requested_overlap_frames?: number;
+  effective_overlap_frames?: number;
+  effective_overlap_samples?: number;
+}
+
+export interface VideoChainManifest {
+  manifest_version: number;
+  chain_id: string;
+  plan_hash: string;
+  architecture: string;
+  variant?: string | null;
+  root_prompt: string;
+  root_prompt_hash: string;
+  fps: number;
+  target_frames: number;
+  expected_final_frames: number;
+  context_mode: VideoChainContextMode;
+  continuation_mode: VideoChainContinuationMode;
+  seed_policy: VideoChainSeedPolicy;
+  root_seed?: number;
+  chain_drift_tolerance_frames?: number;
+  persistent_context?: VideoChainPersistentContext;
+  references?: VideoChainReference[];
+  events?: VideoChainEvent[];
+  segments: VideoChainSegment[];
+  warnings?: VideoChainIssue[];
+}
+
+export interface VideoChainPlanRequest {
+  architecture: string;
+  variant?: string | null;
+  root_prompt: string;
+  negative_prompt?: string;
+  workflow?: string | null;
+  target_frames: number;
+  fps?: number;
+  requested_segment_frames?: number | null;
+  context_mode?: VideoChainContextMode;
+  seed_policy?: VideoChainSeedPolicy;
+  root_seed?: number;
+  continuation_mode?: VideoChainContinuationMode;
+  requested_overlap_frames?: number;
+  chain_drift_tolerance_frames?: number;
+  references?: VideoChainReferenceInput[];
+  canonical_timeline?: {
+    persistent_context?: VideoChainPersistentContext;
+    events?: VideoChainEvent[];
+  } | null;
+}
+
+export interface VideoChainSegmentPreview {
+  index: number;
+  prompt: string;
+  negative_prompt?: string;
+  global_frame_start: number;
+  global_frame_end: number;
+  generated_span_frames: number;
+  new_output_frames?: number;
+  // References bound to this segment. A cost as well as a quality knob:
+  // reference rows ride through every denoise step.
+  reference_count?: number;
+  seed?: number;
+}
+
+export interface VideoChainFramePlan {
+  target_frames: number;
+  expected_final_frames: number;
+  overshoot_frames: number;
+  segment_frames: number[];
+  frame_grid?: string | null;
+}
+
+export interface VideoChainPlanResponse {
+  success: boolean;
+  manifest: VideoChainManifest;
+  segments: VideoChainSegmentPreview[];
+  frame_plan: VideoChainFramePlan;
+  errors: VideoChainIssue[];
+  warnings: VideoChainIssue[];
+  plan_schema_version: number;
+  planner_cache_key?: string | null;
+}
+
+export interface VideoChainValidateRequest {
+  manifest: VideoChainManifest;
+  recompute_plan_hash?: boolean;
+}
+
+export interface VideoChainValidateResponse {
+  valid: boolean;
+  errors: VideoChainIssue[];
+  warnings: VideoChainIssue[];
+  plan_hash?: string | null;
+  manifest?: VideoChainManifest | null;
+}
+
+// Build the Chain Manifest. Pure planning: loads no model, generates nothing.
+// A 200 with `success: false` is normal — content problems come back as
+// `errors` so the plan editor can show them next to the offending segment.
+export const planVideoChainRequest = async (
+  request: VideoChainPlanRequest
+): Promise<VideoChainPlanResponse> =>
+  (await api.post("/video-chain/plan", request)).data;
+
+// Re-validate a manifest edited in the plan editor and recompute its
+// `plan_hash`. The backend owns that hash; nothing here recomputes it.
+export const validateVideoChainManifest = async (
+  request: VideoChainValidateRequest
+): Promise<VideoChainValidateResponse> =>
+  (await api.post("/video-chain/validate", request)).data;
+
 // The temporal-outpaint placements the loaded arch can anchor, from the
 // backend's own table. An unknown arch (or a backend that does not serve the
 // key) is treated as unconstrained, the same "assume supported" convention as

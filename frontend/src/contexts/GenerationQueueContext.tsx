@@ -76,6 +76,14 @@ export interface QueueItem {
   // already enqueued is frozen at enqueue time and must not be retargeted by
   // a later change to the panel's segment-length control.
   chainSegmentFrames?: number | null;
+  // Chain Manifest provenance for a segment planned by POST /video-chain/plan:
+  // the chain the segment belongs to, the hash of the plan it was compiled
+  // from, and which manifest segment this item is (0 = the main item, so a
+  // `chain_vid` step at loopStepIndex n is segment n+1). Absent on a chain run
+  // without a manifest (legacy repeat) and on every non-chain item.
+  chainManifestId?: string;
+  chainPlanHash?: string;
+  chainSegmentIndex?: number;
   status: "pending" | "generating" | "completed" | "failed";
   addedAt: number;
   prompt: string; // For display purposes

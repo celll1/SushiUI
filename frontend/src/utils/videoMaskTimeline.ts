@@ -415,6 +415,30 @@ export function keyframeAtOrBefore(
   return result;
 }
 
+/** Strictly-after-`frame` nearest keyframe, or null past the last one. Used by VideoMaskFrameEditor's "next keyframe" navigation button. */
+export function nextKeyframeAfter(
+  keyframes: VideoMaskKeyframe[],
+  frame: number,
+): VideoMaskKeyframe | null {
+  for (const keyframe of sortKeyframes(keyframes)) {
+    if (keyframe.frame > frame) return keyframe;
+  }
+  return null;
+}
+
+/** Strictly-before-`frame` nearest keyframe, or null before the first one. Used by VideoMaskFrameEditor's "previous keyframe" navigation button. */
+export function previousKeyframeBefore(
+  keyframes: VideoMaskKeyframe[],
+  frame: number,
+): VideoMaskKeyframe | null {
+  let result: VideoMaskKeyframe | null = null;
+  for (const keyframe of sortKeyframes(keyframes)) {
+    if (keyframe.frame >= frame) break;
+    result = keyframe;
+  }
+  return result;
+}
+
 export function clampFrame(frame: number, minFrame: number, maxFrame: number): number {
   const min = Math.min(Math.round(minFrame), Math.round(maxFrame));
   const max = Math.max(Math.round(minFrame), Math.round(maxFrame));

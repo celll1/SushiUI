@@ -45,15 +45,17 @@ import { migrateLoopGenerationConfig, computeLoopDecodeDirective } from "@/utils
 import { getSamplers, getScheduleTypes, generateInpaint, generateInpaintVideo, generateInpaintTrainingPreview, toBase64, InpaintParams as ApiInpaintParams, InpaintVideoParams, LoRAConfig, ControlNetConfig, generateTIPOPrompt, cancelGeneration, getCurrentModel, getResultFilename, getResultPlaybackFilename, getResultSeed, getResultAncestralSeed, isLatentOnlyResult, unetQuantizationOptions, normalizeUnetQuantization, transformerQuantizationLabel, archSupportsFeature, archDisplayName, inpaintVideoDefaultsForArch, fitVideoCanvas, videoCanvasRule, videoCanvasAxisBounds, videoCanvasExceedsEnvelope, largestValidVideoFrameCount, isValidVideoFrameCount, latentGroupSpans, snapRangeToLatentGroups, isGenerationStalledError, VIDEO_BLOCK_SWAP_MAX } from "@/utils/api";
 import VideoInpaintTimeline from "./VideoInpaintTimeline";
 import VideoMaskPreviewOverlay from "./VideoMaskPreviewOverlay";
+import VideoMaskFrameEditor from "./VideoMaskFrameEditor";
 import { useActiveTraining } from "@/hooks/useActiveTraining";
 import { useSnapshotHistory } from "@/hooks/useSnapshotHistory";
 import { useSmoothProgress } from "@/hooks/useSmoothProgress";
 import { useVideoPlayhead } from "@/hooks/useVideoPlayhead";
-import { grabVideoFrame, releaseVideoFrameGrabber } from "@/utils/videoFrameGrabber";
+import { releaseVideoFrameGrabber } from "@/utils/videoFrameGrabber";
 import { centerCropToCanvas } from "@/utils/canvasFit";
 import {
   createDefaultMaskTransform,
   MAX_MASK_ASSETS,
+  MAX_MASK_KEYFRAMES,
   serializeVideoMaskManifestForApi,
   sortKeyframes,
   upsertKeyframe,
@@ -877,26 +879,27 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
   const [isDragging, setIsDragging] = useState(false);
   const [showImageEditor, setShowImageEditor] = useState(false);
   const [editingImageUrl, setEditingImageUrl] = useState<string | null>(null);
-  const [videoMaskEditor, setVideoMaskEditor] = useState<{
-    keyframeId: string;
-    frame: number;
-    imageUrl: string;
-    initialMaskUrl?: string;
-  } | null>(null);
-  const videoMaskEditorOpeningRef = useRef(false);
+  // The static (single-frame) mask editor and the video mask editor are now
+  // separate mounts (VideoMaskFrameEditor owns frame navigation/grabbing/
+  // caching itself, P4) -- this only records which frame a video-mask
+  // editing SESSION was opened for; everything else (which frame is
+  // currently open, its base image, its mask) lives inside
+  // VideoMaskFrameEditor and is re-derived from `videoMaskManifest`/
+  // `videoMaskAssets` (passed down as props) on every navigation.
+  const [videoMaskEditorSession, setVideoMaskEditorSession] = useState<{ initialFrame: number } | null>(null);
   const videoMaskCanvasWidth = Math.max(1, Math.round(params.width ?? 768));
   const videoMaskCanvasHeight = Math.max(1, Math.round(params.height ?? 512));
   // `videoMaskManifest.canvas` is intentionally NOT kept in sync with the
   // live output size here. It records the canvas size the existing
   // keyframes/assets were actually drawn for (set in
-  // handleVideoMaskEditorSaveMask whenever a mask is saved); comparing that
+  // persistVideoMaskFrame whenever a mask is saved); comparing that
   // stored value against the current output canvas is what lets
   // `videoMaskCanvasMismatch` (below) and the submit-time check flag a stale
   // mask instead of either silently reusing pixels drawn for a different
   // resolution or discarding every keyframe and its PNG the instant a size
   // slider is touched.
   // Per-asset, not per-manifest: `videoMaskManifest.canvas` only ever records
-  // the size at the LAST save (handleVideoMaskEditorSaveMask overwrites it
+  // the size at the LAST save (persistVideoMaskFrame overwrites it
   // every time), so after a resize a fresh save on one keyframe makes the
   // manifest-level canvas match again even though older sibling keyframes'
   // PNGs are still sized for the pre-resize canvas. Each asset carries its
@@ -1386,7 +1389,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
             createDefaultVideoMaskManifest(previous.canvas.width, previous.canvas.height),
           );
           setVideoMaskAssets([]);
-          setVideoMaskEditor(null);
+          setVideoMaskEditorSession(null);
           setVideoMaskError(null);
         }
         setVideoDurationSec(null);
@@ -1762,82 +1765,36 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
 
   const handleEditorClose = () => {
     setShowImageEditor(false);
-    setVideoMaskEditor(null);
   };
 
-  const openVideoMaskEditor = async (frame: number, existingKeyframe?: VideoMaskKeyframe) => {
+  // Opens a video-mask editing session at `frame`. Grabbing/cropping the
+  // frame image and resolving which mask to show now happen INSIDE
+  // VideoMaskFrameEditor (its own `navigate` effect, keyed off
+  // `initialFrame`) rather than here, so this is just a synchronous state
+  // flip -- the async work, and its double-click/race guard, moved with it.
+  const openVideoMaskEditor = (frame: number) => {
     if (!videoPreviewUrl || videoTrimmedFrames <= 0) return;
-    // In-flight guard: repeated clicks (e.g. double-clicking "Add at
-    // playhead") would otherwise fire overlapping grabVideoFrame calls that
-    // each try to open the editor once they resolve.
-    if (videoMaskEditorOpeningRef.current) return;
-    videoMaskEditorOpeningRef.current = true;
-    try {
-      const requestedFrame = Math.max(0, Math.round(frame));
-      const sourceUrl = videoPreviewUrl;
-      const trimStart = params.input_trim_start_frames ?? 0;
-      const targetTimeSec = (trimStart + requestedFrame) / clipFrameRate;
-      // grabVideoFrame reports exact:false when this request was superseded
-      // by a newer one before its turn and it substituted a nearby cached
-      // frame instead. Retry once against the same (still current) time
-      // before giving up, so the editor does not silently open showing a
-      // different frame than the keyframe number it was opened for.
-      let frameResult = await grabVideoFrame(sourceUrl, targetTimeSec, {
-        maxWidth: Math.max(videoMaskCanvasWidth, 1024),
-      });
-      if (frameResult && !frameResult.exact) {
-        frameResult = await grabVideoFrame(sourceUrl, targetTimeSec, {
-          maxWidth: Math.max(videoMaskCanvasWidth, 1024),
-        });
-      }
-      if (!frameResult?.dataUrl) {
-        setVideoMaskError("Could not capture that video frame for mask editing.");
-        return;
-      }
-      if (!frameResult.exact) {
-        setVideoMaskError(
-          `Could not capture the exact frame ${requestedFrame} for mask editing (the video was still seeking). Try again.`,
-        );
-        return;
-      }
-      const imageUrl = await centerCropToCanvas(
-        frameResult.dataUrl,
-        videoMaskCanvasWidth,
-        videoMaskCanvasHeight,
-      );
-      // Frame-independent ids: a keyframeId/maskId derived from `frame`
-      // collides once a keyframe is deleted and a new one is added at the
-      // same frame number, silently inheriting a stale asset that happened
-      // to still be keyed by that frame (see the InpaintPanel spatial-mask
-      // audit, C2/H3).
-      const keyframeId = existingKeyframe?.id ?? crypto.randomUUID();
-      const maskId = existingKeyframe?.maskId ?? crypto.randomUUID();
-      const existingAsset = videoMaskAssets.find((asset) => asset.id === maskId);
-      setVideoMaskEditor({
-        keyframeId,
-        frame: requestedFrame,
-        imageUrl,
-        initialMaskUrl: existingAsset?.dataUrl,
-      });
-      setVideoMaskError(null);
-      setShowImageEditor(true);
-    } catch (error) {
-      console.error("[Inpaint] Failed to prepare video mask editor frame:", error);
-      setVideoMaskError("Could not prepare that video frame for mask editing.");
-    } finally {
-      videoMaskEditorOpeningRef.current = false;
-    }
+    setVideoMaskError(null);
+    setVideoMaskEditorSession({ initialFrame: Math.max(0, Math.round(frame)) });
+  };
+
+  const handleVideoMaskEditorClose = () => {
+    setVideoMaskEditorSession(null);
   };
 
   const handleAddVideoMaskKeyframe = (frame: number) => {
-    void openVideoMaskEditor(frame);
+    openVideoMaskEditor(frame);
   };
 
   const handleEditVideoMaskKeyframe = (keyframe: VideoMaskKeyframe) => {
-    void openVideoMaskEditor(keyframe.frame, keyframe);
+    // No longer passed through to the editor: VideoMaskFrameEditor looks up
+    // whichever keyframe/asset currently sits at `keyframe.frame` from the
+    // live `keyframes`/`assets` props itself (frame is the stable lookup
+    // key end to end now, not a keyframeId captured at open time).
+    openVideoMaskEditor(keyframe.frame);
   };
 
-  // Shared by handleVideoMaskKeyframesChange and handleVideoMaskEditorSaveMask
+  // Shared by handleVideoMaskKeyframesChange and persistVideoMaskFrame
   // so both paths enforce the same affine invariant (an "affine" link
   // requires identical maskId on both ends) instead of only one of them
   // catching a mismatch it itself introduced.
@@ -1867,9 +1824,9 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
   // EVERY way the keyframe/asset list changes: VideoInpaintTimeline's own
   // controls (duplicate/delete/transform/interpolation/frame-move/composite
   // feather, via `handleVideoMaskKeyframesChange`/`handleVideoMaskFeatherChange`
-  // below) AND drawing a brand-new mask (`handleVideoMaskEditorSaveMask`,
-  // which VideoInpaintTimeline never sees -- this panel opens ImageEditor
-  // and commits that save directly). A history stack that only covered the
+  // below) AND drawing a brand-new mask (`persistVideoMaskFrame`, called from
+  // VideoMaskFrameEditor's `onSaveFrame` prop, which VideoInpaintTimeline
+  // never sees). A history stack that only covered the
   // first group -- as a prior version of this undo/redo did -- lets undo
   // replace the keyframe list wholesale with a snapshot that predates a
   // mask added by drawing, silently deleting that keyframe AND its saved
@@ -1928,17 +1885,36 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
     });
   };
 
-  const handleVideoMaskEditorSaveMask = async (maskUrl: string) => {
-    const editor = videoMaskEditor;
-    if (!editor) return;
+  /**
+   * Persists a drawn mask for `frame` -- the fork/new-asset/MAX_MASK_ASSETS
+   * handling and the manifest-level undo push that used to live inline in
+   * `handleVideoMaskEditorSaveMask` (single-frame editor, closed the modal
+   * itself on success). Extracted (P4) so both VideoMaskFrameEditor's
+   * per-frame auto-save (on navigating away from a dirty frame) and its
+   * "Save & Use" button share this ONE persistence path instead of two
+   * near-duplicate copies; closing the editor is now the CALLER's decision
+   * (auto-save must NOT close it), so this only returns a result.
+   *
+   * Keyed by `frame` (not a keyframeId captured when the editor was opened):
+   * VideoMaskFrameEditor can call this for any frame in the manifest at any
+   * time during one open session, so the keyframe this session started on
+   * is no longer necessarily the one being saved.
+   */
+  const persistVideoMaskFrame = async (
+    frame: number,
+    maskUrl: string,
+  ): Promise<
+    | { warnings: string[]; keyframes: VideoMaskKeyframe[]; assets: VideoMaskAsset[] }
+    | { error: string }
+  > => {
     try {
       // The mask canvas ImageEditor hands back is already sized to
       // videoMaskCanvasWidth x videoMaskCanvasHeight (its base layer was
-      // initialized from `editor.imageUrl` above, which centerCropToCanvas
-      // already rendered at that exact size), so this call is normally an
-      // identity copy -- it exists to apply the SAME mapping rule as the
-      // frame above rather than to actually resize anything, so the two
-      // stay provably consistent instead of merely coincidentally equal.
+      // initialized from a frame image that centerCropToCanvas already
+      // rendered at that exact size), so this call is normally an identity
+      // copy -- it exists to apply the SAME mapping rule as the frame image
+      // rather than to actually resize anything, so the two stay provably
+      // consistent instead of merely coincidentally equal.
       const normalizedMaskUrl = await centerCropToCanvas(
         maskUrl,
         videoMaskCanvasWidth,
@@ -1949,8 +1925,19 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
       // immediately instead of after the rest of the queue has run.
       const isEmptyMask = !(await dataUrlHasWhitePixel(normalizedMaskUrl).catch(() => true));
       const existingKeyframe = videoMaskManifest.keyframes.find(
-        (keyframe) => keyframe.id === editor.keyframeId,
+        (keyframe) => keyframe.frame === frame,
       );
+      // Mirrors VideoInpaintTimeline's own MAX_MASK_KEYFRAMES gate on its
+      // Add/Duplicate buttons -- those only guarded the button click, but
+      // VideoMaskFrameEditor's in-place frame navigation is a second entry
+      // point that creates a brand-new keyframe (drawing on a frame with no
+      // keyframe yet) without going through either button.
+      if (!existingKeyframe && videoMaskManifest.keyframes.length >= MAX_MASK_KEYFRAMES) {
+        const message = `This clip already has the maximum of ${MAX_MASK_KEYFRAMES} mask keyframes. Delete one before adding another.`;
+        setVideoMaskError(message);
+        alert(message);
+        return { error: message };
+      }
       // Duplicate (in VideoInpaintTimeline) intentionally shares a
       // maskId across keyframes so affine interpolation has identical
       // source pixels on both ends. Repainting that asset in place would
@@ -1975,11 +1962,11 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         const message = `This clip already has the maximum of ${MAX_MASK_ASSETS} saved mask images. Delete a keyframe (or reuse Duplicate instead of drawing a new mask) before adding another.`;
         setVideoMaskError(message);
         alert(message);
-        return;
+        return { error: message };
       }
       const keyframe: VideoMaskKeyframe = {
-        id: editor.keyframeId,
-        frame: editor.frame,
+        id: existingKeyframe?.id ?? crypto.randomUUID(),
+        frame,
         maskId,
         interpolationToNext: existingKeyframe?.interpolationToNext ?? "hold",
         transform: existingKeyframe?.transform
@@ -2043,14 +2030,29 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
           ? "Affine interpolation needs the same mask asset on both keyframes; changed to Hold."
           : null,
       ].filter((message): message is string => message !== null);
+      // Closing the editor (or not) on success is the CALLER's decision now
+      // (see the doc comment above) -- auto-save-on-navigate must leave it
+      // open, while the "Save & Use" button closes it. Both callers still
+      // surface these warnings via `setVideoMaskError`, same as before.
       setVideoMaskError(warnings.length > 0 ? warnings.join(" ") : null);
-      setShowImageEditor(false);
-      setVideoMaskEditor(null);
+      // Returned alongside `warnings` so VideoMaskFrameEditor's navigate()
+      // can resolve the mask for the frame it is moving TO using the
+      // just-confirmed keyframes/assets instead of the `keyframes`/`assets`
+      // props it closed over when navigate() was invoked -- those props
+      // only reflect this update after InpaintPanel re-renders, which has
+      // not happened yet inside this same async call.
+      return { warnings, keyframes: merged.keyframes, assets: nextAssets };
     } catch (error) {
       console.error("[Inpaint] Failed to save video mask:", error);
-      setVideoMaskError("Could not save the video mask. Please try again.");
+      const message = "Could not save the video mask. Please try again.";
+      setVideoMaskError(message);
+      return { error: message };
     }
   };
+
+  /** VideoMaskFrameEditor's `onSaveFrame` prop -- thin pass-through, kept as its own function so the prop identity/name at the call site reads as "the video-frame-editor integration point" rather than the lower-level persistence helper. */
+  const handleVideoMaskFrameSave = (frame: number, maskDataUrl: string) =>
+    persistVideoMaskFrame(frame, maskDataUrl);
 
   const handleScaleChange = (newScale: number) => {
     setScale(newScale);
@@ -2098,9 +2100,8 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
   const resetVideoMaskTimeline = () => {
     setVideoMaskManifest(createDefaultVideoMaskManifest(params.width, params.height));
     setVideoMaskAssets([]);
-    setVideoMaskEditor(null);
+    setVideoMaskEditorSession(null);
     setVideoMaskError(null);
-    setShowImageEditor(false);
   };
 
   const processVideoFile = (file: File) => {
@@ -6626,15 +6627,36 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         </Card>
       </div>
 
-      {/* Image Editor Modal */}
-      {showImageEditor && (videoMaskEditor?.imageUrl || editingImageUrl) && (
+      {/* Image Editor Modal (static input-image mask editing only -- the
+          video mask editor below is now a separate mount, P4) */}
+      {showImageEditor && editingImageUrl && (
         <ImageEditor
-          imageUrl={videoMaskEditor?.imageUrl ?? editingImageUrl ?? ""}
-          onSave={videoMaskEditor ? () => undefined : handleEditorSave}
+          imageUrl={editingImageUrl}
+          onSave={handleEditorSave}
           onClose={handleEditorClose}
-          onSaveMask={videoMaskEditor ? handleVideoMaskEditorSaveMask : handleEditorSaveMask}
+          onSaveMask={handleEditorSaveMask}
           mode="inpaint"
-          initialMaskUrl={videoMaskEditor ? videoMaskEditor.initialMaskUrl : (maskImage ?? undefined)}
+          initialMaskUrl={maskImage ?? undefined}
+        />
+      )}
+
+      {/* Video Mask Frame Editor: one ImageEditor instance stays mounted for
+          the whole session and navigates frames in place (P4) -- see
+          VideoMaskFrameEditor's own header comment. */}
+      {videoMaskEditorSession && videoPreviewUrl && (
+        <VideoMaskFrameEditor
+          videoUrl={videoPreviewUrl}
+          trimStartFrames={params.input_trim_start_frames ?? 0}
+          frameRate={clipFrameRate}
+          minFrame={0}
+          maxFrame={Math.max(0, videoTrimmedFrames - 1)}
+          canvasWidth={videoMaskCanvasWidth}
+          canvasHeight={videoMaskCanvasHeight}
+          initialFrame={videoMaskEditorSession.initialFrame}
+          keyframes={videoMaskManifest.keyframes}
+          assets={videoMaskAssets}
+          onSaveFrame={handleVideoMaskFrameSave}
+          onClose={handleVideoMaskEditorClose}
         />
       )}
 

@@ -4328,13 +4328,60 @@ export interface VideoMaskPreviewResult {
   frame_width: number;
   frame_height: number;
   frames: VideoMaskPreviewFrame[];
+  /**
+   * Always includes a trailing summary entry (e.g. "3 more warning(s) not
+   * shown...") when the backend's `X-Mask-Preview-Meta` header had to drop
+   * some warnings to stay under its byte budget -- see
+   * `warnings_truncated` in `openapi.yaml`'s `VideoMaskPreviewResponse`.
+   * Callers that just render every entry in this array (the common case)
+   * therefore never need to read `warnings_truncated` themselves.
+   */
   warnings: string[];
+  /** Present only when `warnings` above was capped server-side; already folded into the trailing summary entry in `warnings`. */
+  warnings_truncated?: number;
+  /**
+   * A `blob:` object URL for the sprite strip (the route returns raw
+   * `image/png` bytes, not base64-in-JSON). The caller is responsible for
+   * `URL.revokeObjectURL`-ing the PREVIOUS value once a new result replaces
+   * it -- see `useMaskPreview.ts`, which owns that lifecycle.
+   */
   strip_png: string;
+}
+
+/**
+ * Thrown by `previewVideoMask` when the backend answers 409 because one or
+ * more `spatial_mask_refs` entries could not be resolved (e.g. the temp file
+ * was swept). `unresolvedRefIds` are manifest mask IDs, not the refs
+ * themselves -- a caller retries by re-sending the SAME request with just
+ * those IDs' assets uploaded as bytes instead of by ref.
+ */
+export class VideoMaskRefUnresolvedError extends Error {
+  code = "SUSHIUI_VIDEO_MASK_REF_UNRESOLVED";
+  unresolvedRefIds: string[];
+  constructor(unresolvedRefIds: string[]) {
+    super(`Video mask ref(s) could not be resolved: ${unresolvedRefIds.join(", ")}`);
+    this.name = "VideoMaskRefUnresolvedError";
+    this.unresolvedRefIds = unresolvedRefIds;
+  }
+}
+
+// `responseType: "blob"` means axios hands back an error response's JSON
+// body as an unparsed Blob too (it only auto-parses the success path) --
+// this reads it back out so the 409 case above can be told apart from any
+// other failure.
+async function readBlobErrorBody(data: unknown): Promise<{ error?: string; detail?: string } | null> {
+  if (typeof Blob === "undefined" || !(data instanceof Blob)) return null;
+  try {
+    return JSON.parse(await data.text());
+  } catch {
+    return null;
+  }
 }
 
 export const previewVideoMask = async (
   manifestJson: string,
   maskParts: Array<{ id: string; file: File }>,
+  maskRefParts: Array<{ id: string; ref: string }>,
   frames: number[],
   maxSize = 256,
 ): Promise<VideoMaskPreviewResult> => {
@@ -4344,15 +4391,50 @@ export const previewVideoMask = async (
     formData.append("spatial_mask_ids", part.id);
     formData.append("spatial_mask_files", part.file, sanitizeMaskAssetFilename(part.id));
   }
+  for (const part of maskRefParts) {
+    formData.append("spatial_mask_ref_ids", part.id);
+    formData.append("spatial_mask_refs", part.ref);
+  }
   for (const frame of frames) {
     formData.append("frames", String(frame));
   }
   formData.append("max_size", String(maxSize));
 
-  const response = await api.post("/video-mask/preview", formData, {
-    headers: { "Content-Type": "multipart/form-data" },
-  });
-  return response.data;
+  try {
+    const response = await api.post("/video-mask/preview", formData, {
+      headers: { "Content-Type": "multipart/form-data" },
+      responseType: "blob",
+    });
+    const metaHeader = response.headers["x-mask-preview-meta"] as string | undefined;
+    const meta = metaHeader ? JSON.parse(metaHeader) : {};
+    const warnings: string[] = Array.isArray(meta.warnings) ? meta.warnings : [];
+    if (typeof meta.warnings_truncated === "number" && meta.warnings_truncated > 0) {
+      warnings.push(
+        `${meta.warnings_truncated} more warning(s) not shown (the server caps how many fit in one response).`,
+      );
+    }
+    return {
+      ...meta,
+      warnings,
+      strip_png: URL.createObjectURL(response.data as Blob),
+    } as VideoMaskPreviewResult;
+  } catch (err) {
+    if (axios.isAxiosError(err) && err.response?.status === 409) {
+      const body = await readBlobErrorBody(err.response.data);
+      if (body?.error === "Video mask ref unresolved" && typeof body.detail === "string") {
+        try {
+          const parsedDetail = JSON.parse(body.detail) as { unresolved_ref_ids?: unknown };
+          if (Array.isArray(parsedDetail.unresolved_ref_ids)) {
+            throw new VideoMaskRefUnresolvedError(parsedDetail.unresolved_ref_ids as string[]);
+          }
+        } catch (parseErr) {
+          if (parseErr instanceof VideoMaskRefUnresolvedError) throw parseErr;
+          // Malformed 409 body: fall through and rethrow the original error.
+        }
+      }
+    }
+    throw err;
+  }
 };
 
 // MiniMax-H3 Prompt Assist API

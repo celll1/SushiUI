@@ -90,6 +90,29 @@ def _write_wav(audio, audio_sample_rate: int, wav_path: str) -> int:
     return num_channels
 
 
+# Design sec.13. Order is the design's own; values are ids, integers and
+# hashes -- never the root prompt or the canonical timeline.
+_CHAIN_PROVENANCE_KEYS = (
+    "chain_id",
+    "chain_manifest_version",
+    "chain_plan_hash",
+    "chain_segment_index",
+    "chain_segment_count",
+    "chain_global_frame_start",
+    "chain_global_frame_end",
+    "chain_context_mode",
+    "chain_root_prompt_hash",
+)
+
+
+def _chain_provenance_tags(params: Dict[str, Any]) -> Dict[str, Any]:
+    """The chain-provenance subset of ``params``, or {} outside a chain."""
+    if not params.get("chain_id"):
+        return {}
+    return {key: params[key] for key in _CHAIN_PROVENANCE_KEYS
+            if params.get(key) is not None}
+
+
 def save_video_with_metadata(
     frames: np.ndarray,
     audio,
@@ -176,6 +199,13 @@ def save_video_with_metadata(
         "frame_rate": str(frame_rate),
         "model_name": model_name,
     }
+    # Video chain provenance (design sec.13): identifiers and hashes only. The
+    # root prompt and the canonical timeline stay in the manifest -- copying
+    # either onto every segment is what `chain_plan_hash` /
+    # `chain_root_prompt_hash` exist to avoid. Empty for a generation that is
+    # not a chain segment.
+    chain_meta = _chain_provenance_tags(params)
+    meta_tags.update({key: str(value) for key, value in chain_meta.items()})
 
     wav_path = os.path.join(settings.outputs_dir, f"{base_name}.wav")
     audio_written = False
@@ -307,6 +337,7 @@ def save_video_with_metadata(
         "audio_sample_rate": audio_sample_rate if audio_written else None,
         "duration": duration_s,
         "lossless": bool(lossless),
+        **chain_meta,
     }
     try:
         with open(os.path.join(settings.outputs_dir, f"{base_name}.json"), "w", encoding="utf-8") as f:

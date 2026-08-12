@@ -1131,6 +1131,128 @@ def apply_generation_timings(params: Dict[str, Any], total_seconds: float) -> No
 
 
 # ---------------------------------------------------------------------------
+# Video chain provenance (design sec.13)
+# ---------------------------------------------------------------------------
+
+_CHAIN_ID_MAX_LEN = 128
+_SHA256_HEX_LEN = 64
+
+
+def resolve_chain_provenance(raw: Dict[str, Any]) -> Dict[str, Any]:
+    """Validate one request's chain-provenance fields into the recorded set.
+
+    ``raw`` holds whatever the request sent for the
+    ``param_defaults.VIDEO_CHAIN_PROVENANCE_DEFAULTS`` keys. Returns that same
+    key set, either all-None (this generation is not a chain segment) or fully
+    validated. The result is merged into ``params``, so it reaches the video
+    sidecar metadata, the DB row's ``parameters`` and the gallery from one
+    place on every video route.
+
+    ``chain_id``, ``chain_plan_hash`` and ``chain_segment_index`` travel
+    together: a row that names a chain without saying which plan compiled it,
+    or which segment it is, cannot be tied back to anything, and accepting one
+    would put unusable provenance in the gallery rather than none.
+
+    Raises ``ValidationError`` (HTTP 400) for a malformed value — never a
+    silent drop, which would leave a chain segment recorded as a standalone
+    generation.
+    """
+    from api.error_handlers import ValidationError
+    from api.param_defaults import VIDEO_CHAIN_PROVENANCE_DEFAULTS
+    from core.inference.video_chain_context import CONTEXT_MODES
+
+    resolved: Dict[str, Any] = dict(VIDEO_CHAIN_PROVENANCE_DEFAULTS)
+
+    def _text(key: str) -> Optional[str]:
+        value = raw.get(key)
+        if value is None:
+            return None
+        value = str(value).strip()
+        return value or None
+
+    chain_id = _text("chain_id")
+    plan_hash = _text("chain_plan_hash")
+    segment_index = raw.get("chain_segment_index")
+    if chain_id is None:
+        if plan_hash is not None or segment_index is not None:
+            raise ValidationError(
+                "Chain provenance without a chain_id",
+                detail="chain_plan_hash / chain_segment_index only mean something as part of "
+                       "a chain. Send chain_id as well, or none of the three.",
+            )
+        return resolved
+
+    if len(chain_id) > _CHAIN_ID_MAX_LEN:
+        raise ValidationError(
+            "chain_id is too long",
+            detail=f"At most {_CHAIN_ID_MAX_LEN} characters; got {len(chain_id)}.",
+        )
+    if plan_hash is None or segment_index is None:
+        raise ValidationError(
+            "Incomplete chain provenance",
+            detail="chain_id, chain_plan_hash and chain_segment_index must be sent together.",
+        )
+
+    def _hash(key: str, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        lowered = value.lower()
+        if len(lowered) != _SHA256_HEX_LEN or any(c not in "0123456789abcdef" for c in lowered):
+            raise ValidationError(
+                f"Invalid {key}",
+                detail=f"Expected a 64-character sha256 hex digest, got {value!r}.",
+            )
+        return lowered
+
+    def _int(key: str, *, minimum: int) -> Optional[int]:
+        value = raw.get(key)
+        if value is None:
+            return None
+        try:
+            number = int(value)
+        except (TypeError, ValueError):
+            raise ValidationError(f"Invalid {key}", detail=f"Expected an integer, got {value!r}.")
+        if number < minimum:
+            raise ValidationError(
+                f"Invalid {key}", detail=f"Must be >= {minimum}, got {number}.")
+        return number
+
+    resolved["chain_id"] = chain_id
+    resolved["chain_plan_hash"] = _hash("chain_plan_hash", plan_hash)
+    resolved["chain_root_prompt_hash"] = _hash("chain_root_prompt_hash",
+                                               _text("chain_root_prompt_hash"))
+    resolved["chain_manifest_version"] = _int("chain_manifest_version", minimum=1)
+    resolved["chain_segment_index"] = _int("chain_segment_index", minimum=0)
+    resolved["chain_segment_count"] = _int("chain_segment_count", minimum=1)
+    resolved["chain_global_frame_start"] = _int("chain_global_frame_start", minimum=0)
+    resolved["chain_global_frame_end"] = _int("chain_global_frame_end", minimum=0)
+
+    index, count = resolved["chain_segment_index"], resolved["chain_segment_count"]
+    if count is not None and index >= count:
+        raise ValidationError(
+            "chain_segment_index is outside the plan",
+            detail=f"Segment {index} of a {count}-segment chain (indices are 0-based).",
+        )
+    start, end = resolved["chain_global_frame_start"], resolved["chain_global_frame_end"]
+    if start is not None and end is not None and end <= start:
+        # Half-open [start, end): a segment always owns at least one frame.
+        raise ValidationError(
+            "Empty chain_global_frame range",
+            detail=f"chain_global_frame_end ({end}) must be greater than "
+                   f"chain_global_frame_start ({start}).",
+        )
+
+    context_mode = _text("chain_context_mode")
+    if context_mode is not None and context_mode not in CONTEXT_MODES:
+        raise ValidationError(
+            "Invalid chain_context_mode",
+            detail=f"Must be one of {', '.join(CONTEXT_MODES)}; got {context_mode!r}.",
+        )
+    resolved["chain_context_mode"] = context_mode
+    return resolved
+
+
+# ---------------------------------------------------------------------------
 # Per-architecture video request resolution (design sec.8 / sec.9)
 # ---------------------------------------------------------------------------
 

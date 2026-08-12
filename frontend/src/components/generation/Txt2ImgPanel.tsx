@@ -48,6 +48,7 @@ import {
   buildChainImageReferenceInventory,
   segmentChainReferenceImages,
   segmentChainText,
+  chainSegmentProvenance,
   advanceVideoChain,
   ChainAdvanceResult,
   ChainDriftPause,
@@ -2063,6 +2064,10 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
       num_frames: capFrames,
       prompt: mainText.prompt,
       negative_prompt: mainText.negative_prompt,
+      // Design §13: segment 0 records the same provenance every continuation
+      // does, on the request itself -- otherwise the first segment of a chain
+      // would be the one gallery row that cannot say which chain it belongs to.
+      ...chainSegmentProvenance(manifest, 0),
     };
     // Segment 0 obeys the same binding as every other segment: a reference the
     // user unbound from it is not sent, and the manifest's prompt tokens were

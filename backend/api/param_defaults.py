@@ -1621,6 +1621,47 @@ VIDEO_CHAIN_DEFAULTS: Dict[str, Any] = {
 }
 
 # ---------------------------------------------------------------------------
+# Video chain provenance (design §13) — carried BY a generation request
+# ---------------------------------------------------------------------------
+# Every value is None: "this generation is not a chain segment" is the only
+# defensible default, and a chain segment supplies the whole set from the
+# manifest it was planned from. They are stamps a chain runner attaches, never
+# knobs a user edits, which is why they are their own dict instead of extra
+# keys in VIDEO_GEN_DEFAULTS / TXT2VID_DEFAULTS / OUTPAINT_VIDEO_DEFAULTS:
+# those maps are mirrored into the video panels' DEFAULT_PARAMS through
+# `/schema/generation-defaults`, and nine permanently-null keys there would
+# advertise editable parameters that do not exist. Separate from
+# VIDEO_CHAIN_DEFAULTS for the mirror-image reason: those are planner-only
+# knobs that never reach a `/generate/*` route, these ONLY reach one.
+#
+# Design §13 also fixes what is deliberately absent: the full root prompt and
+# the canonical timeline live once in the manifest and are never copied onto a
+# gallery row — `chain_plan_hash` / `chain_root_prompt_hash` are the references
+# that stand in for them.
+VIDEO_CHAIN_PROVENANCE_DEFAULTS: Dict[str, Any] = {
+    # Which chain this segment belongs to, and the hash of the exact plan it
+    # was compiled from (`compute_plan_hash`, the one definition — design §5.1).
+    "chain_id": None,
+    "chain_plan_hash": None,
+    "chain_manifest_version": None,
+    # Which segment this is, and how many the plan has. 0 = the first segment
+    # (the txt2vid/img2vid/ref2vid request that starts a chain); every later
+    # one is an outpaint-video continuation.
+    "chain_segment_index": None,
+    "chain_segment_count": None,
+    # This segment's half-open [start, end) span on the chain's GLOBAL frame
+    # timeline (the manifest's `owned_start_frame`/`owned_end_frame`).
+    "chain_global_frame_start": None,
+    "chain_global_frame_end": None,
+    # How the segment prompts were produced ("timeline"/"manual"/
+    # "legacy_repeat"), so a row records which planning mode wrote its prompt.
+    "chain_context_mode": None,
+    # sha256 of the chain's root prompt. The prompt ITSELF stays in the
+    # manifest; this is what lets a row be tied back to it.
+    "chain_root_prompt_hash": None,
+}
+
+# ---------------------------------------------------------------------------
 # LoRA / Full-FT Training (TrainingRunCreateRequest)
 # ---------------------------------------------------------------------------
 # Authoritative source: backend Pydantic model.

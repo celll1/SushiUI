@@ -1292,6 +1292,49 @@ export default function ImageGrid() {
                           {(selectedImage.audio_enable ?? selectedImage.parameters?.audio_enable) ? 'on' : 'off'}
                         </div>
                       </div>
+                      {/* Video chain provenance (design §13): shown only for a
+                          row produced as one segment of a chained long clip.
+                          Hashes are truncated for display; the full values are
+                          in `parameters`. */}
+                      {selectedImage.chain_id && (
+                        <div className="space-y-1 rounded border border-gray-700 p-2">
+                          <div className="text-gray-400">Video chain</div>
+                          <div className="grid grid-cols-2 gap-2">
+                            <div>
+                              <span className="text-gray-400">Segment:</span>{' '}
+                              {selectedImage.chain_segment_index}
+                              {selectedImage.chain_segment_count
+                                ? ` / ${selectedImage.chain_segment_count}`
+                                : ''}
+                            </div>
+                            <div>
+                              <span className="text-gray-400">Frames:</span>{' '}
+                              {selectedImage.chain_global_frame_start != null
+                                ? `${selectedImage.chain_global_frame_start}–${selectedImage.chain_global_frame_end}`
+                                : '—'}
+                            </div>
+                          </div>
+                          <div className="grid grid-cols-2 gap-2">
+                            <div>
+                              <span className="text-gray-400">Plan:</span>{' '}
+                              {selectedImage.chain_plan_hash?.slice(0, 12) ?? '—'}
+                            </div>
+                            <div>
+                              <span className="text-gray-400">Prompt mode:</span>{' '}
+                              {selectedImage.chain_context_mode ?? '—'}
+                            </div>
+                          </div>
+                          <div className="break-all">
+                            <span className="text-gray-400">Chain ID:</span> {selectedImage.chain_id}
+                          </div>
+                          {selectedImage.chain_root_prompt_hash && (
+                            <div>
+                              <span className="text-gray-400">Root prompt:</span>{' '}
+                              {selectedImage.chain_root_prompt_hash.slice(0, 12)}
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </>
                   ) : isSelectedAudio ? (
                     <>

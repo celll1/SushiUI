@@ -238,8 +238,9 @@ export default function VideoFrameCountSlider({
               {chainPlan != null
                 ? ` Reaching it takes ${chainPlan.segments} generation requests (actually reaches ${chainPlan.finalFrames} frames` +
                   `${chainPlan.finalFrames !== value ? `, ${chainPlan.finalFrames - value} more than this` : ""}); segments after` +
-                  ` the first are conditioned only on the boundary frame of the previous segment, not the rest of its content or the` +
-                  ` original prompt context. Generate will ask you to choose between a single inference at the cap and the chain.`
+                  ` the first are conditioned on the boundary frame of the previous segment, not the rest of its content, while the` +
+                  ` same full-length prompt is resent unchanged on every segment. Generate will ask you to choose between a single` +
+                  ` inference at the cap and the chain.`
                 : ""}
             </>
           ) : (
@@ -249,8 +250,8 @@ export default function VideoFrameCountSlider({
               {chainPlan != null
                 ? ` A chain segment length is set, so reaching it takes ${chainPlan.segments} generation requests (actually reaches` +
                   ` ${chainPlan.finalFrames} frames${chainPlan.finalFrames !== value ? `, ${chainPlan.finalFrames - value} more than this` : ""});` +
-                  ` segments after the first are conditioned only on the boundary frame of the previous segment, not the rest of its` +
-                  ` content or the original prompt context.`
+                  ` segments after the first are conditioned on the boundary frame of the previous segment, not the rest of its` +
+                  ` content, while the same full-length prompt is resent unchanged on every segment.`
                 : ""}
             </>
           )}

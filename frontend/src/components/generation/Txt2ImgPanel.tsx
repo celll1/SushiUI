@@ -2537,19 +2537,31 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         // a cancel, not a generic failure, and say how many chain segments
         // (if any) already completed and are in the gallery.
         const isCancelled = String(error?.message || error?.response?.data?.detail || "").toLowerCase().includes("cancel");
+        const isChainSegment = !!nextItem.loopGroupId && nextItem.chainTargetFrames != null;
         failCurrentItem();
+        // A chain segment failing or being cancelled must not let the
+        // remaining pending "chain_vid" steps of the SAME loop group dispatch
+        // next -- each of them would otherwise fail its own generic "no
+        // input video" error (their `inputVideo` is only filled in by a
+        // segment that finishes successfully), cascading into one alert per
+        // remaining segment. Drop them all up front instead; already
+        // completed segments stay in the gallery.
+        if (isChainSegment) {
+          cancelLoopGroup(nextItem.loopGroupId!);
+        }
         setTimeout(() => {
           if (processQueueRef.current) processQueueRef.current();
         }, 100);
-        if (!isCancelled) {
+        if (isChainSegment) {
+          const completedSegments = (nextItem.loopStepIndex ?? -1) + 1;
+          const reason = isCancelled ? "cancelled" : "stopped: a segment failed";
+          alert(completedSegments > 0
+            ? `Video chain ${reason}. ${completedSegments} segment(s) completed before this are saved to the gallery.`
+            : `Video chain ${reason} before any segment completed.`);
+        } else if (!isCancelled) {
           alert(isGenerationStalledError(error)
             ? error.message
             : `${nextItem.type} generation failed: ${error?.response?.data?.detail || error?.response?.data?.error || "see the console for details."}`);
-        } else if (nextItem.loopGroupId && nextItem.chainTargetFrames != null) {
-          const completedSegments = (nextItem.loopStepIndex ?? -1) + 1;
-          alert(completedSegments > 0
-            ? `Video chain cancelled. ${completedSegments} segment(s) completed before the cancel are saved to the gallery.`
-            : "Video chain cancelled before any segment completed.");
         }
       }
       return;
@@ -2632,16 +2644,29 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         setProgressMessage("");
         const isCancelled = String(error?.message || error?.response?.data?.detail || "").toLowerCase().includes("cancel");
         failCurrentItem();
+        // Drop the remaining pending "chain_vid" steps of this loop group up
+        // front. Without this, each of them dispatches next with no
+        // `inputVideo` (only a successful predecessor fills that in) and
+        // throws its own generic error, cascading into one alert per
+        // remaining segment. Already completed segments stay in the gallery.
+        if (nextItem.loopGroupId) {
+          cancelLoopGroup(nextItem.loopGroupId);
+        }
         setTimeout(() => {
           if (processQueueRef.current) processQueueRef.current();
         }, 100);
+        const completedSegments = (nextItem.loopStepIndex ?? -1) + 1;
         if (!isCancelled) {
-          alert(isGenerationStalledError(error)
+          const detail = isGenerationStalledError(error)
             ? error.message
-            : `Video chain segment failed: ${error?.response?.data?.detail || error?.message || "see the console for details."}`);
+            : (error?.response?.data?.detail || error?.message || "see the console for details.");
+          alert(completedSegments > 0
+            ? `Video chain stopped: segment failed (${detail}). ${completedSegments} segment(s) completed before this are saved to the gallery.`
+            : `Video chain stopped: segment failed (${detail}).`);
         } else {
-          const completedSegments = (nextItem.loopStepIndex ?? -1) + 1;
-          alert(`Video chain cancelled. ${completedSegments} segment(s) completed before the cancel are saved to the gallery.`);
+          alert(completedSegments > 0
+            ? `Video chain cancelled. ${completedSegments} segment(s) completed before the cancel are saved to the gallery.`
+            : "Video chain cancelled before any segment completed.");
         }
       }
       return;

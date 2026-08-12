@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { previewVideoMask, type VideoMaskPreviewResult } from "@/utils/api";
 import {
   serializeVideoMaskManifestForApi,
@@ -52,27 +52,52 @@ export function useMaskPreview(
   const [error, setError] = useState<string | null>(null);
   const versionRef = useRef(0);
 
-  const referencedIds = Array.from(new Set(manifest.keyframes.map((keyframe) => keyframe.maskId))).sort();
-  const assetsById = new Map(assets.map((asset) => [asset.id, asset]));
-  // Folds every referenced asset's actual PNG content into the key (not just
-  // its id): editing a mask's pixels in place (same id, new dataUrl) must
-  // count as a distinct input, or a stale sprite would keep being treated as
-  // current after the user redraws a mask without changing any id.
-  const assetDigest = referencedIds.map((id) => `${id}:${assetsById.get(id)?.dataUrl ?? ""}`).join("|");
-  const dedupedFrames = Array.from(new Set(frames)).sort((a, b) => a - b);
-  const key = JSON.stringify({
-    manifest: manifestKeyPart(manifest),
-    assetDigest,
-    frames: dedupedFrames,
-    maxSize,
-  });
+  // Recomputed only when `manifest`/`assets`/`frames`/`maxSize` actually
+  // change reference -- NOT on every render. `VideoMaskPreviewOverlay`
+  // passes `currentFrame` through this hook's caller at up to video frame
+  // rate during playback (it re-renders on every playhead tick), and without
+  // this memo, `assetDigest` below would re-concatenate every referenced
+  // asset's FULL data-URL (each up to `maxSize`x`maxSize` px of PNG-as-
+  // base64, several hundred KB) on every one of those re-renders even though
+  // none of manifest/assets/frames/maxSize changed.
+  const { referencedIds, assetsById, dedupedFrames, key } = useMemo(() => {
+    const ids = Array.from(new Set(manifest.keyframes.map((keyframe) => keyframe.maskId))).sort();
+    const byId = new Map(assets.map((asset) => [asset.id, asset]));
+    // Folds every referenced asset's actual PNG content into the key (not
+    // just its id): editing a mask's pixels in place (same id, new dataUrl)
+    // must count as a distinct input, or a stale sprite would keep being
+    // treated as current after the user redraws a mask without changing any
+    // id.
+    const digest = ids.map((id) => `${id}:${byId.get(id)?.dataUrl ?? ""}`).join("|");
+    const dedupedFrameList = Array.from(new Set(frames)).sort((a, b) => a - b);
+    const computedKey = JSON.stringify({
+      manifest: manifestKeyPart(manifest),
+      assetDigest: digest,
+      frames: dedupedFrameList,
+      maxSize,
+    });
+    return { referencedIds: ids, assetsById: byId, assetDigest: digest, dedupedFrames: dedupedFrameList, key: computedKey };
+  }, [manifest, assets, frames, maxSize]);
 
   useEffect(() => {
-    if (dedupedFrames.length === 0 || referencedIds.length === 0) {
-      // Nothing to preview: no keyframes yet, or no frames requested. Not an
-      // error -- just nothing to show, and any held sprite is now for a
-      // manifest that no longer has these referenced ids, so isStale (below)
-      // already reflects that without needing to clear `held` here.
+    if (referencedIds.length === 0) {
+      // No keyframes reference any mask asset (e.g. every keyframe was just
+      // deleted, or undone away). Any held sprite was rasterized for a
+      // manifest that no longer exists -- it must not be handed back as
+      // `result` at all, since `isStale` alone is not a strong enough
+      // contract for a caller that only checks "do I have a result" (rather
+      // than also checking `isStale`) before drawing it.
+      setHeld(null);
+      setIsPending(false);
+      setError(null);
+      return;
+    }
+    if (dedupedFrames.length === 0) {
+      // Masks still exist, but the caller is not currently requesting any
+      // frames (e.g. the overlay is toggled off). Leave `held` alone --
+      // `isStale` will already read true once frames are requested again
+      // with a different key, and there is nothing wrong to redraw here in
+      // the meantime since nothing is being drawn (frames.length === 0).
       setIsPending(false);
       setError(null);
       return;

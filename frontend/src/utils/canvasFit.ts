@@ -33,7 +33,19 @@
  * Render `dataUrl` onto a `width` x `height` canvas using center-crop-cover:
  * scale so the source fully covers the target box, then crop off whatever
  * hangs outside (never letterboxing, never stretching). Matches the
- * backend's `center_crop_resize_frames`.
+ * backend's `center_crop_resize_frames` at the level of WHICH region gets
+ * kept -- not bit-exactly. Two known differences, both sub-pixel/filter-level
+ * and neither of which changes which region is cropped: (1) the backend
+ * crops with an INTEGER `(src - new) // 2` (floor) offset then LANCZOS-
+ * resamples, while this function crops at a FLOAT-centered offset and lets
+ * the browser resample with `imageSmoothingQuality: "high"` (an
+ * implementation-defined filter, not LANCZOS) -- when `src - new` is odd,
+ * the two centers differ by up to 0.5px; (2) the two resampling filters
+ * themselves produce different pixel values even at an identical crop
+ * window. Neither difference is user-visible at the coordinate-alignment
+ * level this module exists for (see `computeCoverCropDisplayRect` below),
+ * but do not read "Matches the backend's ..." as a claim of byte-identical
+ * output.
  *
  * Returns a PNG data URL sized exactly `width` x `height`.
  */

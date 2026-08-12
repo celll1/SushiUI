@@ -467,6 +467,20 @@ export function clampKeyframe(
  */
 export const MAX_MASK_PREVIEW_FRAMES = 64;
 
+/** Result of {@link computeMaskPreviewSampleFrames}. */
+export interface MaskPreviewSampleFrames {
+  /** The frames to actually request from `/video-mask/preview`. */
+  frames: number[];
+  /**
+   * How many of the manifest's own keyframes could NOT be given their own
+   * exact sample because there were more valid keyframes than `maxFrames`
+   * allows. 0 when every keyframe got its own sample. Callers should surface
+   * this (e.g. a badge) rather than silently sampling a subset -- see the
+   * Medium-E audit note on this function.
+   */
+  keyframesOmitted: number;
+}
+
 /**
  * Chooses which frames to fetch from `/video-mask/preview` for a manifest:
  * every keyframe's own frame (so a scrub landing exactly on one shows the
@@ -474,6 +488,15 @@ export const MAX_MASK_PREVIEW_FRAMES = 64;
  * across `[rangeStart, rangeEnd)` to fill the rest of the budget, so
  * scrubbing BETWEEN keyframes still has a nearby exact backend rasterization
  * to fall back to instead of only ever the keyframes themselves.
+ *
+ * When there are MORE valid keyframes than `maxFrames` allows, this decimates
+ * the keyframe list EVENLY across its full span (always keeping the first
+ * and last) rather than keeping only the earliest `maxFrames` of them --
+ * naively truncating a sorted list would otherwise silently drop every
+ * keyframe past the cutoff, leaving the back half of a long clip with no
+ * nearby exact sample at all (the overlay would then draw whichever early
+ * keyframe happens to be numerically nearest, which is not this frame's own
+ * mask).
  *
  * This is a SAMPLING decision, not a rasterization one: the returned frames
  * are exactly what gets sent to the backend, which rasterizes each one
@@ -486,11 +509,29 @@ export function computeMaskPreviewSampleFrames(
   rangeStart: number,
   rangeEnd: number,
   maxFrames: number = MAX_MASK_PREVIEW_FRAMES,
-): number[] {
-  const frames = new Set<number>();
-  for (const frame of keyframeFrames) {
-    if (Number.isInteger(frame) && frame >= 0) frames.add(frame);
+): MaskPreviewSampleFrames {
+  const validKeyframeFrames = Array.from(
+    new Set(keyframeFrames.filter((frame) => Number.isInteger(frame) && frame >= 0)),
+  ).sort((a, b) => a - b);
+
+  let selectedKeyframeFrames: number[];
+  if (validKeyframeFrames.length <= maxFrames) {
+    selectedKeyframeFrames = validKeyframeFrames;
+  } else {
+    // Evenly-spaced INDICES into the full sorted keyframe list, not a slice
+    // off one end -- this is what keeps coverage across the whole clip
+    // instead of only its earliest keyframes.
+    const picked = new Set<number>();
+    const lastIndex = validKeyframeFrames.length - 1;
+    for (let i = 0; i < maxFrames; i++) {
+      const idx = maxFrames === 1 ? 0 : Math.round((i * lastIndex) / (maxFrames - 1));
+      picked.add(validKeyframeFrames[idx]);
+    }
+    selectedKeyframeFrames = Array.from(picked).sort((a, b) => a - b);
   }
+  const keyframesOmitted = validKeyframeFrames.length - selectedKeyframeFrames.length;
+
+  const frames = new Set<number>(selectedKeyframeFrames);
   const clampedStart = Math.max(0, Math.round(Math.min(rangeStart, rangeEnd)));
   const clampedEnd = Math.max(clampedStart + 1, Math.round(Math.max(rangeStart, rangeEnd)));
   const span = clampedEnd - clampedStart;
@@ -502,7 +543,10 @@ export function computeMaskPreviewSampleFrames(
       if (frame >= 0) frames.add(frame);
     }
   }
-  return [...frames].sort((a, b) => a - b).slice(0, maxFrames);
+  return {
+    frames: [...frames].sort((a, b) => a - b).slice(0, maxFrames),
+    keyframesOmitted,
+  };
 }
 
 export function validateKeyframes(keyframes: VideoMaskKeyframe[]): string[] {

@@ -44,6 +44,17 @@ export const MASK_OVERLAY_BLEND_MODE = "screen" as const;
 export const MASK_OVERLAY_ALPHA = 0.5;
 
 /**
+ * Luminance threshold (0-255, R channel of an already-grayscale
+ * `MASK_POLARITY` PNG) above which a pixel counts as "white" (marked for
+ * generation) rather than "black" (preserved). Matches the backend's own
+ * `>= 0.5` on a [0, 1]-normalized mask (`0.5 * 255 = 127.5`); frontend
+ * callers that need a binary white/black check on decoded mask pixel data
+ * (e.g. "does this mask have anything drawn at all") should compare against
+ * this constant rather than re-deriving their own copy of the same number.
+ */
+export const MASK_WHITE_LUMINANCE_THRESHOLD = 127;
+
+/**
  * Canvas 2D context and CSS use different vocabularies for the same blend
  * concept; both consumers should read from these so the two preview paths
  * (ImageEditor's <canvas> compositing and InpaintPanel's CSS <img> overlay)

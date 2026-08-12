@@ -68,6 +68,15 @@ import { wsClient, CFGMetrics } from "@/utils/websocket";
 import CFGMetricsGraph from "../common/CFGMetricsGraph";
 import { saveTempImage, loadTempImage, deleteTempImageRef } from "@/utils/tempImageStorage";
 import {
+  clipSignatureOf,
+  clearVideoMaskPersistence,
+  loadVideoMaskManifest,
+  persistVideoMaskManifest,
+  releaseAllTrackedMaskAssets,
+  VideoMaskTempStorageUnavailableError,
+  type VideoMaskAssetRefMap,
+} from "@/utils/videoMaskPersistence";
+import {
   deleteMediaInput,
   INPAINT_VIDEO_INPUT_KEY,
   INPAINT_VIDEO_PENDING_KEY,
@@ -663,7 +672,69 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
     createDefaultVideoMaskManifest(DEFAULT_PARAMS.width, DEFAULT_PARAMS.height),
   );
   const [videoMaskAssets, setVideoMaskAssets] = useState<VideoMaskAsset[]>([]);
+  // Edit-time validation warnings only (e.g. affine-link demotion below).
+  // Restore/persistence status is a SEPARATE channel (videoMaskPersistenceNotice)
+  // so an unrelated edit can no longer silently clear a persistence notice the
+  // user has not acted on -- see videoMaskPersistence.ts's module doc comment.
   const [videoMaskError, setVideoMaskError] = useState<string | null>(null);
+  // ── Video mask reload-persistence (P5) ──────────────────────────────────
+  // See videoMaskPersistence.ts's module doc comment for the storage model.
+  // `videoMaskUploadedRefsRef` mirrors, for the CURRENT clip, which asset ids
+  // this session has already uploaded and under what ref. `videoMaskHydrated`
+  // gates the persist effect below until the mount-time restore attempt has
+  // run at least once, so it never fires against the transient empty-default
+  // manifest that exists for one render before restore applies.
+  // `videoMaskRestoreAbortedRef` is set when a restore found a matching
+  // persisted record but could not load one of its PNGs (transient, NOT
+  // "permanently gone" -- see loadVideoMaskManifest's doc comment); while set,
+  // the persist effect must not write anything. It is cleared -- via
+  // `dismissAbortedVideoMaskRestore` -- the moment the user performs any
+  // explicit edit on the mask timeline, since that supersedes whatever
+  // restore was pending.
+  const videoMaskUploadedRefsRef = useRef<VideoMaskAssetRefMap>(new Map());
+  const videoMaskRestoreAbortedRef = useRef(false);
+  // Bumped every time `videoMaskRestoreAbortedRef.current` is freshly set to
+  // true. A plain ref mutation triggers no re-render, so the dedicated retry
+  // effect below (keyed on `[isBackendReady, videoFile, videoMaskAbortEpoch]`)
+  // would otherwise never get a chance to re-evaluate when the abort happens
+  // in a tick where NEITHER `isBackendReady` NOR `videoFile` also changes
+  // (e.g. the backend was already marked ready but the one temp-storage
+  // fetch during this restore hit a transient failure) -- this epoch exists
+  // purely to give that effect a dependency to react to in that case.
+  const [videoMaskAbortEpoch, setVideoMaskAbortEpoch] = useState(0);
+  const [videoMaskHydrated, setVideoMaskHydrated] = useState(false);
+  // Restore/persistence status shown to the user: an aborted restore, a
+  // discarded pending restore (superseded by an edit), or a persist attempt
+  // that fell back to inline storage and was refused (see
+  // VideoMaskTempStorageUnavailableError). Deliberately not `videoMaskError`
+  // (see that state's comment).
+  const [videoMaskPersistenceNotice, setVideoMaskPersistenceNotice] = useState<string | null>(null);
+  // Serializes every persistVideoMaskManifest/clearVideoMaskPersistence call
+  // this panel instance issues into a single FIFO chain: neither function has
+  // its own lock, and firing them concurrently (fast keyframe edits, a clip
+  // replacement landing mid-upload, etc.) can race on the shared
+  // `videoMaskUploadedRefsRef` map / localStorage record. See
+  // videoMaskPersistence.ts's module doc comment. Errors are swallowed here
+  // (each op logs/handles its own) so one failure never wedges the chain for
+  // later ops.
+  const videoMaskPersistChainRef = useRef<Promise<void>>(Promise.resolve());
+  // Monotonic counter handed to persistVideoMaskManifest as its `isCurrent`
+  // check: only the MOST RECENTLY enqueued persist op is allowed to perform
+  // its localStorage write, so an op that becomes stale while queued behind
+  // others (state changed again before it got a turn) skips a write that
+  // would otherwise clobber a newer one written by the op ahead of/behind it.
+  const videoMaskPersistGenerationRef = useRef(0);
+  const enqueueVideoMaskPersistOp = useCallback((op: () => Promise<void>) => {
+    videoMaskPersistChainRef.current = videoMaskPersistChainRef.current.then(op, op).catch((error) => {
+      console.error("[Inpaint] A queued video mask persistence operation failed:", error);
+    });
+  }, []);
+  // Distinguishes overlapping invocations of the `inpaint_input_video_updated`
+  // handler (mount + a sender's replace event firing again before the first
+  // invocation's awaits have resolved) from one another, since the `cancelled`
+  // flag below only distinguishes "still mounted" from "unmounted" and cannot
+  // tell two in-flight invocations of the SAME still-mounted effect apart.
+  const videoInputRunSeqRef = useRef(0);
   // Local UI state (not a generation param): whether the rasterized mask
   // preview overlay is drawn on top of the input clip, and its opacity.
   // Defaults on -- the whole point of the overlay is to be visible by
@@ -1337,11 +1408,114 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
             }
           }
         }
+
       };
 
       reloadImages();
     }
   }, [isBackendReady]);
+
+  // Retry the video mask manifest restore if the mount-time attempt aborted
+  // (temp storage unreachable at the time) -- mirrors the input/mask image
+  // retry above, but as its OWN effect keyed on `videoFile` (and
+  // `videoMaskAbortEpoch`) too: the mount-time restore attempt runs while
+  // `videoFile` is still null (the clip is loaded asynchronously by the
+  // separate `inpaint_input_video_updated` handler), so folding this into the
+  // `[isBackendReady]`-only effect meant it fired exactly once, at a point
+  // `videoFile` was always null, and then never again for the lifetime of the
+  // panel -- the one case that most needs a retry (a persisted record whose
+  // PNGs could not be loaded) never got one. `videoMaskAbortEpoch` closes the
+  // remaining gap where the abort itself happens without `isBackendReady` or
+  // `videoFile` also changing (see its declaration).
+  useEffect(() => {
+    if (!isBackendReady || !videoMaskRestoreAbortedRef.current || !videoFile) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const outcome = await loadVideoMaskManifest(clipSignatureOf(videoFile));
+        if (cancelled) return;
+        if (outcome.status === "ok") {
+          setVideoMaskManifest(outcome.manifest);
+          setVideoMaskAssets(outcome.assets);
+          videoMaskUploadedRefsRef.current = outcome.refs;
+          videoMaskRestoreAbortedRef.current = false;
+          setVideoMaskPersistenceNotice(null);
+        } else if (outcome.status === "none") {
+          // The record no longer matches this clip (or was cleared/
+          // superseded meanwhile) -- stop retrying.
+          videoMaskRestoreAbortedRef.current = false;
+          setVideoMaskPersistenceNotice(null);
+        }
+        // "aborted" again: leave the flag (and notice) set; this effect
+        // re-runs on the next `videoFile`/`isBackendReady` change. Does NOT
+        // bump `videoMaskAbortEpoch` itself -- that would make this retry
+        // fire itself again immediately in a tight loop on a persistently
+        // unreachable backend.
+      } catch (error) {
+        console.error("[Inpaint] Retry of video mask manifest restore failed:", error);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isBackendReady, videoFile, videoMaskAbortEpoch]);
+
+  // Persist the video mask timeline (keyframes + feather + per-keyframe PNG
+  // assets) so a reload does not lose keyframes drawn for a clip that is
+  // still loaded. Gated on `videoMaskHydrated` (see its declaration) so this
+  // never runs before the mount-time restore attempt above has had a chance
+  // to apply whatever it found, and skipped entirely while
+  // `videoMaskRestoreAbortedRef` is set (an unresolved restore for a
+  // matching persisted record must not be overwritten by the empty state
+  // that restore left in place).
+  //
+  // Every call is enqueued through `enqueueVideoMaskPersistOp` (FIFO chain)
+  // instead of fired directly: this effect can run again -- with a newer
+  // manifest/assets snapshot -- before a previous call's uploads/deletes
+  // have finished, and without serialization the two calls' awaits interleave
+  // arbitrarily on the SAME `videoMaskUploadedRefsRef` map and localStorage
+  // key (orphaned uploads, a stale write clobbering a newer one, a deleted
+  // keyframe's PNG being deleted out from under a still-in-flight upload of
+  // it). `videoMaskPersistGenerationRef` is bumped for every enqueued call so
+  // `persistVideoMaskManifest` can skip its own write if a newer call has
+  // already been enqueued behind it by the time it gets its turn.
+  useEffect(() => {
+    if (!isMounted || !videoMaskHydrated) return;
+    if (videoMaskRestoreAbortedRef.current) return;
+    const signature = clipSignatureOf(videoFile);
+    if (!signature) return; // no clip loaded -- nothing meaningful to persist against
+    const manifestSnapshot = videoMaskManifest;
+    const assetsSnapshot = videoMaskAssets;
+    const generation = ++videoMaskPersistGenerationRef.current;
+    // Captured NOW (not read lazily as `videoMaskUploadedRefsRef.current`
+    // inside the queued closure below): a clip replacement/reset landing
+    // before this op's turn comes reassigns `videoMaskUploadedRefsRef.current`
+    // to a brand-new Map for the NEXT clip (see resetVideoMaskTimeline and
+    // the mount handler) rather than mutating this one in place, precisely
+    // so an op that captures the map object eagerly, like this one, keeps
+    // operating on the map it was actually enqueued for.
+    const refsMap = videoMaskUploadedRefsRef.current;
+    enqueueVideoMaskPersistOp(() =>
+      persistVideoMaskManifest(
+        manifestSnapshot,
+        assetsSnapshot,
+        signature,
+        refsMap,
+        () => videoMaskPersistGenerationRef.current === generation,
+      ).catch((error) => {
+        if (error instanceof VideoMaskTempStorageUnavailableError) {
+          setVideoMaskPersistenceNotice(
+            "The video mask timeline could not be saved for reload right now (backend temp storage " +
+            "unavailable). Your current keyframes are unaffected in this session; saving will retry " +
+            "the next time the mask timeline changes.",
+          );
+          return;
+        }
+        console.error("[Inpaint] Failed to persist video mask manifest:", error);
+      }),
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [videoMaskManifest, videoMaskAssets, videoFile, isMounted, videoMaskHydrated]);
 
   useEffect(() => {
     // Listen for input image updates from txt2img or img2img
@@ -1370,14 +1544,46 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
   useEffect(() => {
     let cancelled = false;
     const handleVideoInputUpdate = async () => {
+      // A fresh run id for THIS invocation: mount fires this handler once,
+      // and a sender's replace event can fire it again before that first
+      // invocation's `await`s (loadMediaInput/loadVideoMaskManifest, etc.)
+      // have resolved. `isStale()` lets every await-resumption below tell
+      // "a newer invocation has since started" apart from "I am still the
+      // most recent invocation" -- `cancelled` alone only ever catches
+      // unmount, not this overlap.
+      const runId = ++videoInputRunSeqRef.current;
+      const isStale = () => cancelled || runId !== videoInputRunSeqRef.current;
       const url = localStorage.getItem("inpaint_input_video");
       const isReplacement = url !== null || localStorage.getItem(INPAINT_VIDEO_PENDING_KEY) === "1";
       try {
         const file = url
           ? await fetchUrlToFile(url)
           : await loadMediaInput(INPAINT_VIDEO_INPUT_KEY);
-        if (!file || cancelled) return;
+        if (!file || isStale()) {
+          if (!file && !isStale()) {
+            // No clip at all -- nothing a persisted mask manifest could
+            // still apply to. Release any leftover backend temp PNGs from a
+            // previous session/clip rather than let them leak indefinitely.
+            // The ref is REASSIGNED to a fresh Map (not `.clear()`ed in
+            // place) so a still-queued persist call for the old clip -- which
+            // captured the old Map object, not this ref, at its own enqueue
+            // time -- keeps operating on that unaffected object; the stale
+            // object is handed to releaseAllTrackedMaskAssets so uploads it
+            // makes are still released even if its own write gets skipped.
+            const staleRefs = videoMaskUploadedRefsRef.current;
+            videoMaskUploadedRefsRef.current = new Map();
+            videoMaskRestoreAbortedRef.current = false;
+            setVideoMaskPersistenceNotice(null);
+            enqueueVideoMaskPersistOp(() =>
+              releaseAllTrackedMaskAssets(staleRefs).catch((error) =>
+                console.error("[Inpaint] Failed to clear a stale video mask record:", error),
+              ),
+            );
+          }
+          return;
+        }
         if (url) await saveMediaInput(INPAINT_VIDEO_INPUT_KEY, file);
+        if (isStale()) return;
         preserveVideoSettingsRef.current = !isReplacement;
         setVideoPreviewUrl(prev => {
           if (prev) URL.revokeObjectURL(prev);
@@ -1391,6 +1597,48 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
           setVideoMaskAssets([]);
           setVideoMaskEditorSession(null);
           setVideoMaskError(null);
+          setVideoMaskPersistenceNotice(null);
+          // A replacement clip invalidates any mask timeline drawn for the
+          // old one -- release its backend temp PNGs instead of leaking them.
+          // See the "no clip" branch above on why the ref is reassigned
+          // rather than cleared in place.
+          {
+            const staleRefs = videoMaskUploadedRefsRef.current;
+            videoMaskUploadedRefsRef.current = new Map();
+            videoMaskRestoreAbortedRef.current = false;
+            enqueueVideoMaskPersistOp(() =>
+              releaseAllTrackedMaskAssets(staleRefs).catch((error) =>
+                console.error("[Inpaint] Failed to clear the replaced clip's video mask record:", error),
+              ),
+            );
+          }
+        } else {
+          // Mount-time restore of the SAME clip (mediaInputStorage.ts is a
+          // single-slot record, not content-addressed, so this is the one
+          // path where a persisted manifest could still apply): try to
+          // reload the mask timeline saved for this clip's signature.
+          try {
+            const outcome = await loadVideoMaskManifest(clipSignatureOf(file));
+            if (!isStale()) {
+              if (outcome.status === "ok") {
+                setVideoMaskManifest(outcome.manifest);
+                setVideoMaskAssets(outcome.assets);
+                videoMaskUploadedRefsRef.current = outcome.refs;
+                videoMaskRestoreAbortedRef.current = false;
+                setVideoMaskPersistenceNotice(null);
+              } else if (outcome.status === "aborted") {
+                videoMaskRestoreAbortedRef.current = true;
+                setVideoMaskAbortEpoch((epoch) => epoch + 1);
+                setVideoMaskPersistenceNotice(
+                  "Saved video mask keyframes for this clip could not be loaded and have not been restored. " +
+                  "This will retry automatically; use Discard below if it does not recover.",
+                );
+              }
+              // "none": no persisted record for this clip -- nothing to restore.
+            }
+          } catch (error) {
+            console.error("[Inpaint] Failed to restore video mask manifest:", error);
+          }
         }
         setVideoDurationSec(null);
         setInputVideoSize(null);
@@ -1400,6 +1648,12 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
       } finally {
         if (url) localStorage.removeItem("inpaint_input_video");
         localStorage.removeItem(INPAINT_VIDEO_PENDING_KEY);
+        // Always flips, including on the "no clip"/error paths above -- the
+        // persist effect below must never fire before this first restore
+        // attempt (successful or not) has had its chance to run. Skipped
+        // when stale: a newer invocation is already in flight and will flip
+        // this itself once IT completes.
+        if (!isStale()) setVideoMaskHydrated(true);
       }
     };
     window.addEventListener("inpaint_input_video_updated", handleVideoInputUpdate);
@@ -1858,7 +2112,49 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
     assets: videoMaskAssets,
   });
 
+  // An explicit edit supersedes any pending (aborted) restore -- the persist
+  // effect must resume writing from here on regardless. If a restore WAS
+  // still pending (its persisted PNGs never got read this session), it is
+  // about to be overwritten by whatever state this edit leaves behind, so
+  // that outcome is surfaced as its own notice rather than silently clearing
+  // `videoMaskPersistenceNotice` to null the way an ordinary "restore
+  // resolved" transition would -- otherwise the user sees the "could not be
+  // restored yet" banner disappear with no indication the unread saved
+  // keyframes are now gone for good.
+  const dismissAbortedVideoMaskRestore = () => {
+    if (videoMaskRestoreAbortedRef.current) {
+      videoMaskRestoreAbortedRef.current = false;
+      setVideoMaskPersistenceNotice(
+        "Previously saved video mask keyframes for this clip could not be loaded and have now been " +
+        "discarded by this edit.",
+      );
+    } else {
+      setVideoMaskPersistenceNotice(null);
+    }
+  };
+
+  // Explicit user action for a restore that never recovers: the backend
+  // temp files themselves can go away independently of this panel (Settings'
+  // "Clear temp images", or the backend's own 24h sweep) without this session
+  // ever finding out, in which case retries never succeed and the "not
+  // restored yet" notice would otherwise persist across every future reload
+  // with no way for the user to get the timeline back to a clean, editable
+  // state. Discarding here releases the (now inevitably orphaned) localStorage
+  // record instead of leaving it to accumulate retries indefinitely.
+  const handleDiscardStuckVideoMaskRestore = () => {
+    const staleRefs = videoMaskUploadedRefsRef.current;
+    videoMaskUploadedRefsRef.current = new Map();
+    videoMaskRestoreAbortedRef.current = false;
+    setVideoMaskPersistenceNotice(null);
+    enqueueVideoMaskPersistOp(() =>
+      releaseAllTrackedMaskAssets(staleRefs).catch((error) =>
+        console.error("[Inpaint] Failed to discard the unrestorable video mask record:", error),
+      ),
+    );
+  };
+
   const handleVideoMaskKeyframesChange = (keyframes: VideoMaskKeyframe[]) => {
+    dismissAbortedVideoMaskRestore();
     const { keyframes: normalized, changed: normalizedAffine } = demoteMismatchedAffineLinks(keyframes);
     const referencedMaskIds = new Set(normalized.map((keyframe) => keyframe.maskId));
     const nextAssets = videoMaskAssets.filter((asset) => referencedMaskIds.has(asset.id));
@@ -1878,6 +2174,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
   // of the manifest's wire format (`composite_feather_px`); only the UI to
   // change it was missing.
   const handleVideoMaskFeatherChange = (value: number) => {
+    dismissAbortedVideoMaskRestore();
     videoMaskHistory.push(currentVideoMaskSnapshot(), {
       keyframes: videoMaskManifest.keyframes,
       compositeFeatherPx: value,
@@ -1907,6 +2204,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
     | { warnings: string[]; keyframes: VideoMaskKeyframe[]; assets: VideoMaskAsset[] }
     | { error: string }
   > => {
+    dismissAbortedVideoMaskRestore();
     try {
       // The mask canvas ImageEditor hands back is already sized to
       // videoMaskCanvasWidth x videoMaskCanvasHeight (its base layer was
@@ -2102,6 +2400,23 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
     setVideoMaskAssets([]);
     setVideoMaskEditorSession(null);
     setVideoMaskError(null);
+    setVideoMaskPersistenceNotice(null);
+    // Both call sites (processVideoFile, handleClearVideo) reset the
+    // timeline because the clip it was drawn for is going away (a new
+    // upload, or none at all) -- the persisted record can never apply
+    // afterwards, so release its backend temp PNGs here too instead of
+    // leaking them. Enqueued (not fired directly) so it cannot race a
+    // still-in-flight persist call for the clip that is being replaced; the
+    // ref is reassigned rather than cleared in place for the same reason
+    // (see the mount handler's "no clip" branch).
+    const staleRefs = videoMaskUploadedRefsRef.current;
+    videoMaskUploadedRefsRef.current = new Map();
+    videoMaskRestoreAbortedRef.current = false;
+    enqueueVideoMaskPersistOp(() =>
+      releaseAllTrackedMaskAssets(staleRefs).catch((error) =>
+        console.error("[Inpaint] Failed to clear the video mask record:", error),
+      ),
+    );
   };
 
   const processVideoFile = (file: File) => {
@@ -5280,10 +5595,24 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
                 && " The selected range reaches the end of the clip, so this overwrites its current tail rather than extending it."}
             </p>
           )}
-          {(videoMaskError || videoMaskCanvasMismatch) && (
+          {(videoMaskError || videoMaskPersistenceNotice || videoMaskCanvasMismatch) && (
             <div className="mt-4 border-t border-gray-700 pt-4">
               {videoMaskError && (
                 <p className="mt-2 text-xs text-amber-400" role="alert">{videoMaskError}</p>
+              )}
+              {videoMaskPersistenceNotice && (
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  <p className="text-xs text-amber-400" role="alert">{videoMaskPersistenceNotice}</p>
+                  {videoMaskRestoreAbortedRef.current && (
+                    <button
+                      type="button"
+                      onClick={handleDiscardStuckVideoMaskRestore}
+                      className="rounded border border-gray-600 px-2 py-0.5 text-xs text-gray-300 hover:bg-gray-700"
+                    >
+                      Discard saved keyframes
+                    </button>
+                  )}
+                </div>
               )}
               {videoMaskCanvasMismatch && (
                 <p className="mt-2 text-xs text-amber-400" role="alert">

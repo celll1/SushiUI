@@ -26,6 +26,18 @@ interface VideoFrameCountSliderProps {
   fallbackFps: number;
   disabled?: boolean;
   className?: string;
+  /**
+   * Whether the number box may accept a value ABOVE the single-inference
+   * cap (`c.max_frames`), the opt-in entry point for the chain feature on
+   * the main `num_frames` control. Callers using this component for a
+   * value that is itself a single-inference length -- e.g. a chain's own
+   * segment length -- pass `false` so the field stays within the cap and
+   * the "exceeds the single-inference limit" / chain-plan messaging below
+   * (which talks about splitting the CURRENT field, not the one this
+   * control represents) does not render. Defaults to `true`, preserving
+   * the original `num_frames` behaviour.
+   */
+  allowOverCap?: boolean;
 }
 
 // How far the SLIDER TRACK reaches on an architecture that declares no
@@ -71,6 +83,7 @@ export default function VideoFrameCountSlider({
   fallbackFps,
   disabled,
   className = "",
+  allowOverCap = true,
 }: VideoFrameCountSliderProps) {
   const c = arch ? caps?.video_constraints?.[arch] : undefined;
 
@@ -142,7 +155,7 @@ export default function VideoFrameCountSlider({
   // — this splits it out so the two get separate, non-contradictory messages
   // (the off-grid one says the value "will be snapped", which is not true of
   // an over-cap value: it is deliberately left alone for the chain feature).
-  const overCap = overCapThreshold != null && value > overCapThreshold;
+  const overCap = allowOverCap && overCapThreshold != null && value > overCapThreshold;
   const chainPlan = overCap ? planVideoChain(caps, arch, value) : null;
   const thresholdSeconds = overCapThreshold != null && fps > 0 ? (overCapThreshold / fps).toFixed(2) : null;
 
@@ -185,13 +198,15 @@ export default function VideoFrameCountSlider({
         <NumberInput
           label={videoFrameLabel(caps, arch)}
           value={value}
-          onCommit={(v) => onChange(snapAllowingOverCap(v))}
+          onCommit={(v) => onChange(allowOverCap ? snapAllowingOverCap(v) : snap(v))}
           min={min}
           // No `max`: the number box (unlike the slider track, whose native
           // `max` stays at the cap below) must accept a value ABOVE the
           // single-inference cap -- that is the opt-in entry point for the
           // chain feature. `snapAllowingOverCap` is what still keeps a
-          // within-cap value on the frame grid.
+          // within-cap value on the frame grid. Callers with `allowOverCap`
+          // false (a length that is itself a single-inference cap, e.g. a
+          // chain segment length) use the plain, clamping `snap` instead.
           step={step}
           parse="int"
           disabled={disabled}

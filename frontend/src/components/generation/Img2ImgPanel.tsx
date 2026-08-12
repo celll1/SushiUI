@@ -53,6 +53,7 @@ import { saveTempImage, loadTempImage, deleteTempImageRef } from "@/utils/tempIm
 import { previewStorageKeys, loadVideoPreview, saveVideoPreview, loadAudioPreview, saveAudioPreview, saveImagePreview, clearVideoPreview, clearAudioPreview, clearImagePreview, outputExists, stripCacheBuster, withCacheBuster, imagePreviewGone } from "@/utils/previewStorage";
 import { sendToPanel, sendImageToImg2Img, sendImageToInpaint, sendImageToUpscale, sendImageToOutpaint, fetchUrlToFile, sendVideoToOutpaint, sendVideoToInpaint, sendVideoToReference, sendAudioToOutpaint, sendAudioToImg2Img } from "@/utils/sendHelpers";
 import { useStartup } from "@/contexts/StartupContext";
+import { readGlobalVideoFrameCount } from "@/utils/videoFrameSettings";
 import { useGenerationQueue } from "@/contexts/GenerationQueueContext";
 import { createH3ReferenceInventory, maybeTransformH3PromptForGeneration } from "@/utils/h3PromptAssist";
 import { readGlobalAttentionType } from "@/utils/attentionSettings";
@@ -464,6 +465,11 @@ const REF_IMAGES_STORAGE_KEY = "img2img_ref_images";
 // storing it anywhere made it the one parameter that silently vanished on
 // reload while every other one came back.
 const LAST_FRAME_STORAGE_KEY = "img2img_last_frame_image";
+// Chain segment length (`chainSegmentFrames`) round-trips separately from
+// `params` -- see Txt2ImgPanel's own `CHAIN_SEGMENT_FRAMES_STORAGE_KEY` for
+// the full rationale (client-side chain orchestration only, never sent to
+// the backend; `null` must round-trip as `null`).
+const CHAIN_SEGMENT_FRAMES_STORAGE_KEY = "img2img_chain_segment_frames";
 
 /**
  * A conditioning image OTHER than the uploaded input image, addressed by the
@@ -528,8 +534,15 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
   // orchestration only -- NEVER sent to the backend). See Txt2ImgPanel's own
   // `chainSegmentFrames` state for the full rationale; the two panels share
   // this exact contract because `chain_vid` loop steps started from either
-  // one continue via the same `advanceVideoChain` (videoChain.ts).
+  // one continue via the same `advanceVideoChain` (videoChain.ts). Persisted
+  // separately under `CHAIN_SEGMENT_FRAMES_STORAGE_KEY`; restoring it never
+  // touches an already-enqueued item's own frozen copy.
   const [chainSegmentFrames, setChainSegmentFrames] = useState<number | null>(null);
+  // Set when the architecture-grid snap (below) actually changes a held
+  // `chainSegmentFrames` -- including one just restored from localStorage
+  // under an architecture that no longer accepts it. See Txt2ImgPanel's own
+  // `chainSegmentFramesReplacedNotice` for the full rationale.
+  const [chainSegmentFramesReplacedNotice, setChainSegmentFramesReplacedNotice] = useState<string | null>(null);
   // Audio output (produced when an audio model is loaded / aud2aud queue item).
   const [generatedAudio, setGeneratedAudio] = useState<string | null>(null);
   const [generatedAudioInfo, setGeneratedAudioInfo] = useState<{ duration?: number; sample_rate?: number } | null>(null);
@@ -658,14 +671,21 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
     });
   }, [archCapabilities, loadedArch]);
   // Same snap for a held `chainSegmentFrames` -- see Txt2ImgPanel's mirrored
-  // effect. A null value (the default -- "never split") is left alone.
+  // effect. A null value (the default -- "never split") is left alone. A
+  // real change (including one caused by a value just restored from
+  // localStorage) is reported via `chainSegmentFramesReplacedNotice` rather
+  // than applied silently.
   useEffect(() => {
     if (!archCapabilities || !loadedArch) return;
-    setChainSegmentFrames((prev) => {
-      if (prev == null) return prev;
-      const normalized = normalizeVideoFrames(archCapabilities, loadedArch, prev);
-      return normalized == null || normalized === prev ? prev : normalized;
-    });
+    if (chainSegmentFrames == null) return;
+    const normalized = normalizeVideoFrames(archCapabilities, loadedArch, chainSegmentFrames);
+    if (normalized == null || normalized === chainSegmentFrames) return;
+    const previous = chainSegmentFrames;
+    setChainSegmentFrames(normalized);
+    setChainSegmentFramesReplacedNotice(
+      `The chain segment length (${previous} frames) does not fit this architecture's frame grid and was replaced with ${normalized} frames.`
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [archCapabilities, loadedArch]);
   const supportsLastFrame = archSupportsFeature(archCapabilities, loadedArch, "last_frame_image");
   // Keyframe PLACEMENT is a separate capability from "there is a last-frame
@@ -883,6 +903,21 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
       const savedLastFrame = localStorage.getItem(LAST_FRAME_STORAGE_KEY);
       if (savedLastFrame) {
         setParams((prev) => ({ ...prev, last_frame_image: savedLastFrame }));
+      }
+
+      // Load chain segment length. See CHAIN_SEGMENT_FRAMES_STORAGE_KEY /
+      // Txt2ImgPanel's mirrored restore for the round-trip contract:
+      // `getItem` returning `null` means the key was never written
+      // (default, unset); a written `"null"` parses back to `null` too, so
+      // both an unset and an explicitly-cleared value land the same way.
+      const savedChainSegmentFrames = localStorage.getItem(CHAIN_SEGMENT_FRAMES_STORAGE_KEY);
+      if (savedChainSegmentFrames !== null) {
+        try {
+          const parsedChainSegmentFrames = JSON.parse(savedChainSegmentFrames);
+          setChainSegmentFrames(typeof parsedChainSegmentFrames === "number" ? parsedChainSegmentFrames : null);
+        } catch (error) {
+          console.error("Failed to load saved chain segment length:", error);
+        }
       }
 
       // Load preview image
@@ -1448,18 +1483,34 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
     }
   }, [loopGenerationConfig, isMounted]);
 
+  // Save chain segment length whenever it changes. `null` is written
+  // explicitly (`JSON.stringify(null) === "null"`) -- see Txt2ImgPanel's
+  // mirrored persist effect for why that matters for the round trip.
+  useEffect(() => {
+    if (isMounted) {
+      localStorage.setItem(CHAIN_SEGMENT_FRAMES_STORAGE_KEY, JSON.stringify(chainSegmentFrames));
+    }
+  }, [chainSegmentFrames, isMounted]);
+
   // Apply backend-fetched defaults when they arrive (only if no localStorage value exists).
   // aud2aud defaults are merged on top so the audio fields (lyrics, cover_strength,
   // inference_steps, shift, guidance_scale, vocal_language) reflect param_defaults.py
   // even though this panel's primary shape is img2img.
+  // A global `num_frames` preference (Settings -> Default Video Frame Count)
+  // is layered on top at this same "nothing to fall back on yet" gate --
+  // see Txt2ImgPanel's mirrored effect for the full precedence rationale.
+  // It is applied unsnapped; the `normalizeVideoFrames` effect above
+  // re-snaps it onto the loaded architecture's grid once that is known.
   useEffect(() => {
     if (!generationDefaults) return;
     const stored = localStorage.getItem(STORAGE_KEY);
     if (!stored) {
+      const globalFrames = readGlobalVideoFrameCount();
       setParams(prev => ({
         ...DEFAULT_PARAMS,
         ...(generationDefaults.img2img as Partial<typeof DEFAULT_PARAMS>),
         ...(generationDefaults.aud2aud as Partial<typeof DEFAULT_PARAMS>),
+        ...(globalFrames != null ? { num_frames: globalFrames } : {}),
       }));
     }
   }, [generationDefaults]);
@@ -5308,6 +5359,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
                     type="checkbox"
                     checked={chainSegmentFrames != null}
                     onChange={(e) => {
+                      setChainSegmentFramesReplacedNotice(null);
                       if (!e.target.checked) {
                         setChainSegmentFrames(null);
                         return;
@@ -5319,21 +5371,31 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
                   />
                   Chain segment length
                 </label>
-                {chainSegmentFrames != null && (
-                  <NumberInput
-                    label="Chain segment length"
-                    value={chainSegmentFrames}
-                    onCommit={(v) => setChainSegmentFrames(v)}
-                    min={(loadedArch ? archCapabilities?.video_constraints?.[loadedArch]?.min_frames : undefined) ?? 1}
-                    step={(loadedArch ? archCapabilities?.video_constraints?.[loadedArch]?.frame_multiple : undefined) ?? 1}
-                    parse="int"
-                    className="w-20"
-                  />
-                )}
               </div>
+              {chainSegmentFrames != null && (
+                <VideoFrameCountSlider
+                  caps={archCapabilities}
+                  arch={loadedArch}
+                  value={chainSegmentFrames}
+                  onChange={(frames) => {
+                    setChainSegmentFramesReplacedNotice(null);
+                    setChainSegmentFrames(frames);
+                  }}
+                  fallbackFps={params.frame_rate ?? 24.0}
+                  allowOverCap={false}
+                  disabled={(params.num_frames ?? 0) <= chainSegmentFrames}
+                />
+              )}
+              {chainSegmentFramesReplacedNotice && (
+                <p className="text-xs text-amber-400">{chainSegmentFramesReplacedNotice}</p>
+              )}
               {chainSegmentFrames == null ? (
                 <p className="text-xs text-gray-500">
                   A chained generation is never split by default; check the box to split into requests of a fixed length.
+                </p>
+              ) : (params.num_frames ?? 0) <= chainSegmentFrames ? (
+                <p className="text-xs text-gray-500">
+                  Chain segment length has no effect while the total frame count ({params.num_frames ?? 0}) is at or below it.
                 </p>
               ) : (
                 <p className="text-xs text-gray-500">

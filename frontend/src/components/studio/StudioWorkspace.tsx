@@ -1291,6 +1291,7 @@ export default function StudioWorkspace() {
         height: metadata.height,
         source: "import",
         blobKey,
+        sourceRef: { name: file.name, size: file.size, lastModified: file.lastModified },
         createdAt: new Date(file.lastModified || Date.now()).toISOString(),
       };
       commit((current) => ({ ...current, assets: [...current.assets, asset] }));

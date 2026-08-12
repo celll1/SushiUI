@@ -614,6 +614,10 @@ async def create_studio_render_job(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:
         db.rollback()
+        queued_job = db.query(StudioRenderJob).filter(StudioRenderJob.id == job_id).first()
+        if queued_job:
+            db.delete(queued_job)
+            db.commit()
         from api.studio_render_jobs import cleanup_render_staging
         cleanup_render_staging(job_id)
         raise HTTPException(status_code=503, detail="Could not queue Studio render") from exc

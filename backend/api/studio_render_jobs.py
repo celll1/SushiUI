@@ -252,6 +252,8 @@ def _canonical_manifest(raw: Mapping[str, Any], source_metadata: Optional[Mappin
                 "duration": float(actual.get("duration") or 0.0),
                 "has_audio": bool(actual.get("has_audio")),
             })
+            if actual.get("source_hash"):
+                entry["source_hash"] = str(actual["source_hash"])
         else:
             entry["duration"] = max(0.0, _as_number(item.get("duration", 0), f"asset {asset_id} duration"))
             entry["has_audio"] = bool(item.get("has_audio", False))
@@ -413,6 +415,7 @@ async def prepare_render_inputs(
                 if os.path.getsize(source) > int(STUDIO_RENDER_DEFAULTS["max_upload_bytes"]):
                     raise StudioRenderValidationError("A Gallery asset is too large to render")
                 shutil.copy2(source, target)
+                source_hash = row.image_hash or _sha256_file(target)
             else:
                 upload = uploads.pop(asset_id, None)
                 if upload is None:
@@ -424,10 +427,12 @@ async def prepare_render_inputs(
                     staged_name += suffix
                 target = os.path.join(staging_dir, staged_name)
                 await _write_upload(upload, target)
+                source_hash = _sha256_file(target)
             probed = _metadata_for_file(target, asset["kind"])
             if asset["kind"] != "image" and probed["duration"] <= 0:
                 raise StudioRenderValidationError(f"Asset {asset_id} has no usable duration")
             probed["staged_name"] = staged_name
+            probed["source_hash"] = source_hash
             metadata[asset_id] = probed
             asset["staged_name"] = staged_name
             asset["source"] = "gallery" if gallery_id is not None else "upload"
@@ -717,7 +722,14 @@ def _persist_render_output(job_id: str, manifest: Mapping[str, Any], staging_dir
         "studio_project_revision": project.get("revision"),
         "studio_manifest_sha256": manifest_hash,
         "studio_manifest": manifest_without_staged,
-        "source_gallery_ids": [asset["gallery_id"] for asset in manifest["assets"] if asset.get("gallery_id") is not None],
+        "source_assets": [
+            {
+                "asset_id": asset["id"],
+                "gallery_id": asset.get("gallery_id"),
+                "source_hash": asset.get("source_hash"),
+            }
+            for asset in manifest["assets"]
+        ],
         "fit_mode": render["fit_mode"],
     }
     sidecar = {
@@ -818,7 +830,11 @@ def _render_worker(job_id: str) -> None:
         if job:
             job.state = "failed"
             job.message = "Render failed"
-            job.error = str(exc)[:1000]
+            job.error = (
+                str(exc)[:1000]
+                if isinstance(exc, StudioRenderValidationError)
+                else "Studio render failed. Check the backend log for details."
+            )
             job.finished_at = _now()
             db.commit()
         if temp_output and os.path.exists(temp_output):

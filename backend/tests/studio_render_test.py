@@ -56,7 +56,7 @@ def test_inactive_take_is_not_rendered():
 def test_filtergraph_uses_argv_and_timeline_overlay(tmp_path):
     image = tmp_path / "still.png"
     image.write_bytes(b"not decoded by graph builder")
-    manifest = _canonical_manifest(_manifest(clip_duration=1.0))
+    manifest = _canonical_manifest(_manifest(clip_duration=1.0, presentation="hold"))
     manifest["assets"][0]["staged_name"] = "still.png"
     command = build_render_command(manifest, str(tmp_path), "ffmpeg.exe", str(tmp_path / "out.mp4"))
     assert command[0] == "ffmpeg.exe"

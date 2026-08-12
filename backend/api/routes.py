@@ -99,6 +99,7 @@ from api.studio_render_jobs import (
     StudioRenderValidationError,
     get_render_job,
     prepare_render_inputs,
+    render_submission_lock,
     request_cancel_render_job,
     submit_render_job,
 )
@@ -580,47 +581,48 @@ async def create_studio_render_job(
     except (TypeError, json.JSONDecodeError) as exc:
         raise HTTPException(status_code=422, detail="manifest must contain valid JSON") from exc
 
-    busy = db.query(StudioRenderJob).filter(
-        StudioRenderJob.state.in_(["queued", "running", "cancel_requested"])
-    ).first()
-    if busy:
-        raise HTTPException(status_code=409, detail="Another Studio render is already queued or running")
+    async with render_submission_lock:
+        busy = db.query(StudioRenderJob).filter(
+            StudioRenderJob.state.in_(["queued", "running", "cancel_requested"])
+        ).first()
+        if busy:
+            raise HTTPException(status_code=409, detail="Another Studio render is already queued or running")
 
-    job_id = uuid.uuid4().hex
-    try:
-        canonical, staging_dir = await prepare_render_inputs(
-            parsed_manifest,
-            asset_ids,
-            asset_files,
-            db,
-            job_id,
-        )
-        job = StudioRenderJob(
-            id=job_id,
-            state="queued",
-            manifest=canonical,
-            input_dir=staging_dir,
-            progress=0.0,
-            message="Queued",
-        )
-        db.add(job)
-        db.commit()
-        db.refresh(job)
-        submit_render_job(job_id)
-        return {"success": True, **job.to_dict()}
-    except StudioRenderValidationError as exc:
-        from api.studio_render_jobs import cleanup_render_staging
-        cleanup_render_staging(job_id)
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    except Exception as exc:
-        db.rollback()
-        queued_job = db.query(StudioRenderJob).filter(StudioRenderJob.id == job_id).first()
-        if queued_job:
-            db.delete(queued_job)
+        job_id = uuid.uuid4().hex
+        try:
+            canonical, staging_dir = await prepare_render_inputs(
+                parsed_manifest,
+                asset_ids,
+                asset_files,
+                db,
+                job_id,
+            )
+            job = StudioRenderJob(
+                id=job_id,
+                state="queued",
+                manifest=canonical,
+                input_dir=staging_dir,
+                progress=0.0,
+                message="Queued",
+            )
+            db.add(job)
             db.commit()
-        from api.studio_render_jobs import cleanup_render_staging
-        cleanup_render_staging(job_id)
-        raise HTTPException(status_code=503, detail="Could not queue Studio render") from exc
+            db.refresh(job)
+            submit_render_job(job_id)
+            return {"success": True, **job.to_dict()}
+        except StudioRenderValidationError as exc:
+            from api.studio_render_jobs import cleanup_render_staging
+            cleanup_render_staging(job_id)
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except Exception as exc:
+            db.rollback()
+            queued_job = db.query(StudioRenderJob).filter(StudioRenderJob.id == job_id).first()
+            if queued_job:
+                db.delete(queued_job)
+                db.commit()
+            from api.studio_render_jobs import cleanup_render_staging
+            cleanup_render_staging(job_id)
+            raise HTTPException(status_code=503, detail="Could not queue Studio render") from exc
 
 
 @router.get("/studio/render-jobs/{job_id}", tags=["studio"])

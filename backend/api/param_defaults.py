@@ -998,6 +998,9 @@ STUDIO_RENDER_DEFAULTS: Dict[str, Any] = {
     "max_assets": 128,
     "max_clips": 512,
     "max_upload_bytes": 2 * 1024 * 1024 * 1024,
+    "max_total_input_bytes": 4 * 1024 * 1024 * 1024,
+    "max_decode_pixel_frames": 20_000_000_000,
+    "max_render_seconds": 1800.0,
 }
 
 # ---------------------------------------------------------------------------

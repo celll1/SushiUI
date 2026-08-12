@@ -170,11 +170,41 @@ pasting the rest of the input back after decode. MiniMax-H3 `fl2va` only (a
 `ref2va` load or a non-H3 video model is refused, mirroring `/generate/img2vid`'s
 and `/generate/outpaint/video`'s partition gates). The route expands the
 requested range OUTWARD to the video VAE's latent-group boundaries — the
-frontend's `VideoInpaintRangeTimeline.tsx` snaps its own handles to those same
-boundaries (read from `video_constraints.latent_chunk_pattern`) so a built
-request is already the range the server will run. See the route's own
+frontend's `VideoInpaintTimeline.tsx` snaps its own regenerate-range handles to
+those same boundaries (read from `video_constraints.latent_chunk_pattern`) so a
+built request is already the range the server will run. See the route's own
 docstring in `backend/api/routes.py` and `openapi.yaml` for the full parameter
 surface.
+
+An optional `spatial_mask_manifest` (+ per-keyframe mask PNGs) additionally
+restricts *which pixels within* the regenerate range get regenerated, on top
+of the temporal range — validated and rasterized by
+`backend/core/inference/video_mask_timeline.py`, previewable without a GPU via
+`POST /video-mask/preview` (`video_mask_preview.py`). Facts a change here must
+not silently break:
+
+- **No spatial mask is bit-identical to the pre-spatial-mask temporal-only
+  path** (same pinned-row set, noise draw order, and paste) — this is a
+  measured invariant, not incidental behavior.
+- Interpolation between mask keyframes (`hold`/`affine`/`sdf`) is rasterized
+  by the backend only; the frontend never reimplements it (`sdf`'s distance
+  transform and `affine`'s resampling do not have a practical bit-identical
+  TS equivalent to canvas `drawImage`). `sdf`'s centroid-aligned blend
+  degrades on multi-connected-component or large-centroid-offset keyframe
+  pairs — measured as low as ~2.6% of an endpoint's own area on an
+  intermediate frame — hence the warning it emits.
+- Spatial masks and FBCache are mutually exclusive (400 at the route, an
+  invariant check in the backend): FBCache's per-frame reuse decision needs
+  the free video rows to tile on latent-frame boundaries, which row-level
+  pinning does not guarantee.
+- The effective spatial granularity is one latent token (`vae_scale_factor_spatial
+  × transformer patch size` — 32×32 output px on MiniMax-H3): a token whose
+  max pooled mask value is below the 0.5 generate threshold is pinned
+  (never denoised) in full.
+- Output compositing is pixel-exact to the source only where the soft mask is
+  exactly `0.0`; a feathered pixel can show generated content even when its
+  own token was pinned, since pinning is a per-token model decision and
+  compositing is a continuous per-pixel blend at a different granularity.
 
 ## Progress reporting
 

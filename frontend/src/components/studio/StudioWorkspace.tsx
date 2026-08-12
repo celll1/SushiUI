@@ -1490,8 +1490,13 @@ export default function StudioWorkspace() {
       setNotice(`Output range resolves to ${generatedFrameCount} frames, which ${loadedArch} does not accept. Drag the range to a supported clip length.`);
       return;
     }
-    if (planMode === "inpaint" && loadedArch !== "minimax_h3") {
+    if (planMode === "inpaint" && (loadedArch !== "minimax_h3" || (modelInfo?.variant != null && modelInfo.variant !== "fl2va"))) {
       setNotice("Temporal inpaint currently requires the MiniMax-H3 fl2va model.");
+      return;
+    }
+    if (planMode === "outpaint" && modelInfo?.variant === "ref2va" && plan.videoClip
+      && Math.abs(plan.outputRange.start - plan.videoClip.start) > 1 / (form.frameRate || project.fps)) {
+      setNotice("MiniMax-H3 ref2va outpaint only supports extending forward from the clip start.");
       return;
     }
     if (planMode === "ref2v" && (loadedArch !== "minimax_h3" || modelInfo?.variant !== "ref2va")) {

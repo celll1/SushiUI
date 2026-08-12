@@ -5,6 +5,7 @@ import Card from "../common/Card";
 import Button from "../common/Button";
 import Slider from "../common/Slider";
 import Select from "../common/Select";
+import { resolveBound } from "@/utils/paramBounds";
 import NumberInput from "../common/NumberInput";
 import Textarea, {
   GENERATION_NEGATIVE_PROMPT_HEIGHT_KEY,
@@ -80,7 +81,7 @@ interface UpscalePanelProps {
 }
 
 export default function UpscalePanel({ onTabChange, onImageGenerated }: UpscalePanelProps = {}) {
-  const { isBackendReady, generationDefaults, modelInfo, archCapabilities } = useStartup();
+  const { isBackendReady, generationDefaults, modelInfo, archCapabilities, sliderBounds } = useStartup();
   const [params, setParams] = useState<UpscaleParams>(DEFAULT_PARAMS);
   const [isMounted, setIsMounted] = useState(false);
   const [isInitialLoad, setIsInitialLoad] = useState(true);
@@ -757,7 +758,7 @@ export default function UpscalePanel({ onTabChange, onImageGenerated }: UpscaleP
                   value={params.tile_size ?? 512}
                   onCommit={(v) => setParams({ ...params, tile_size: v })}
                   min={0}
-                  max={4096}
+                  max={resolveBound("upscale_tile_size_max", generationDefaults?.param_bounds, sliderBounds, params.tile_size ?? 512)}
                   step={64}
                   parse="int"
                   className="w-full"
@@ -830,7 +831,7 @@ export default function UpscalePanel({ onTabChange, onImageGenerated }: UpscaleP
                   value={params.steps ?? 20}
                   onCommit={(v) => setParams({ ...params, steps: v })}
                   min={1}
-                  max={150}
+                  max={resolveBound("steps_max", generationDefaults?.param_bounds, sliderBounds, params.steps ?? 20)}
                   step={1}
                   parse="int"
                   className="w-full"
@@ -843,7 +844,7 @@ export default function UpscalePanel({ onTabChange, onImageGenerated }: UpscaleP
                   value={params.cfg_scale ?? 7.0}
                   onCommit={(v) => setParams({ ...params, cfg_scale: v })}
                   min={1.0}
-                  max={30.0}
+                  max={resolveBound("cfg_scale_max", generationDefaults?.param_bounds, sliderBounds, params.cfg_scale ?? 7.0)}
                   step={0.1}
                   parse="float"
                   className="w-full"

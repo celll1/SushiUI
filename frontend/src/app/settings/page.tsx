@@ -8,9 +8,10 @@ import DirectorySettings from "@/components/settings/DirectorySettings";
 import GenerationSettings from "@/components/settings/GenerationSettings";
 import QuantizedGemmSettings from "@/components/settings/QuantizedGemmSettings";
 import ProtectedRoute from "@/components/common/ProtectedRoute";
-import { restartBackend, restartFrontend, restartBoth, saveVideoFrameSliderMax } from "@/utils/api";
+import { restartBackend, restartFrontend, restartBoth, saveVideoFrameSliderMax, saveSliderBounds } from "@/utils/api";
 import NumberInput from "@/components/common/NumberInput";
 import { useStartup } from "@/contexts/StartupContext";
+import { isAboveBuiltin } from "@/utils/paramBounds";
 import {
   readGlobalAttentionImpl,
   readGlobalAttentionType,
@@ -59,11 +60,21 @@ export default function SettingsPage() {
   // "saving this setting did not apply it").
   // generationDefaults: source of the checkbox's seed value (see
   // videoFrameSliderMaxSeed below) -- never a bare literal per param_defaults.py.
+  // sliderBounds/setSliderBounds: the general PARAM_BOUNDS override
+  // mechanism (backend UserSettings.slider_bounds) -- see paramBounds.ts's
+  // resolveBound() for how panel controls consume it, and the "Slider
+  // Bounds" card below for where it is edited.
   const {
     videoFrameSliderMax: liveVideoFrameSliderMax,
     setVideoFrameSliderMax: setLiveVideoFrameSliderMax,
+    sliderBounds: liveSliderBounds,
+    setSliderBounds: setLiveSliderBounds,
     generationDefaults,
   } = useStartup();
+  // backend/api/param_defaults.py PARAM_BOUNDS, served via
+  // GET /schema/generation-defaults's `param_bounds` field. {} until fetched
+  // -- the card below simply renders no rows until then.
+  const paramBounds = generationDefaults?.param_bounds ?? {};
 
   const [isRestarting, setIsRestarting] = useState(false);
   const [storageInfo, setStorageInfo] = useState({ used: 0, quota: 0 });
@@ -200,6 +211,130 @@ export default function SettingsPage() {
       void commitVideoFrameSliderMax(v);
     }, 600);
   };
+
+  // ---------------------------------------------------------------------
+  // Slider Bounds card: one row per PARAM_BOUNDS registry entry
+  // (backend/api/param_defaults.py). Generic over `boundName` rather than a
+  // state variable per bound, so a new registry entry needs no new state
+  // here -- it just appears as a row (see "Adding a new overridable bound"
+  // in PARAM_BOUNDS's own docstring). Same commit-time-write / debounce /
+  // revert-on-failure contract as the video_frame_slider_max control above,
+  // generalized to a per-row map instead of one set of variables each.
+  // ---------------------------------------------------------------------
+  const [sliderBoundEnabled, setSliderBoundEnabled] = useState<Record<string, boolean>>({});
+  const [sliderBoundValue, setSliderBoundValue] = useState<Record<string, number>>({});
+  const [sliderBoundSaving, setSliderBoundSaving] = useState<Record<string, boolean>>({});
+  const [sliderBoundsMessage, setSliderBoundsMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
+
+  // Mirror the live override map into per-row local editing state whenever
+  // it changes (initial fetch, this page's own successful write, or a
+  // fresh registry arriving) -- same "mirror the context value" pattern as
+  // the video_frame_slider_max useEffect above.
+  useEffect(() => {
+    const nextEnabled: Record<string, boolean> = {};
+    const nextValue: Record<string, number> = {};
+    for (const boundName of Object.keys(paramBounds)) {
+      const overridden = liveSliderBounds[boundName];
+      nextEnabled[boundName] = overridden != null;
+      nextValue[boundName] = overridden ?? paramBounds[boundName].builtin;
+    }
+    setSliderBoundEnabled(nextEnabled);
+    setSliderBoundValue(nextValue);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [liveSliderBounds, generationDefaults]);
+
+  // Per-bound debounce timers/pending values, keyed the same way as the
+  // enabled/value state above. Flushed on unmount so a value typed and then
+  // navigated away from within the debounce window is not silently dropped
+  // (same reasoning as the video_frame_slider_max flush effect).
+  const sliderBoundDebounceRef = useRef<Record<string, ReturnType<typeof setTimeout> | null>>({});
+  const sliderBoundPendingRef = useRef<Record<string, number | null>>({});
+  useEffect(() => {
+    return () => {
+      const timers = sliderBoundDebounceRef.current;
+      for (const boundName of Object.keys(timers)) {
+        const timer = timers[boundName];
+        if (timer) {
+          clearTimeout(timer);
+          const pending = sliderBoundPendingRef.current[boundName];
+          if (pending != null) {
+            void saveSliderBounds({ [boundName]: pending }).catch((error) => {
+              console.error(`Failed to flush slider bound ${boundName} on unmount:`, error);
+            });
+          }
+        }
+      }
+    };
+  }, []);
+
+  const commitSliderBound = async (boundName: string, value: number | null) => {
+    setSliderBoundSaving((prev) => ({ ...prev, [boundName]: true }));
+    setSliderBoundsMessage(null);
+    try {
+      const saved = await saveSliderBounds({ [boundName]: value });
+      setLiveSliderBounds(saved.slider_bounds ?? {});
+    } catch (error) {
+      console.error(`Failed to save slider bound ${boundName}:`, error);
+      const label = paramBounds[boundName]?.label ?? boundName;
+      setSliderBoundsMessage({
+        type: "error",
+        text: `Failed to save the "${label}" bound. The previous value is still in effect; please check the console and try again.`,
+      });
+      // Revert this one row to the last known-good (live) value, same
+      // honesty contract as commitVideoFrameSliderMax's own catch block.
+      setSliderBoundEnabled((prev) => ({ ...prev, [boundName]: liveSliderBounds[boundName] != null }));
+      setSliderBoundValue((prev) => ({
+        ...prev,
+        [boundName]: liveSliderBounds[boundName] ?? paramBounds[boundName]?.builtin ?? prev[boundName],
+      }));
+    } finally {
+      setSliderBoundSaving((prev) => ({ ...prev, [boundName]: false }));
+    }
+  };
+
+  const handleSliderBoundNumberCommit = (boundName: string, v: number) => {
+    setSliderBoundValue((prev) => ({ ...prev, [boundName]: v }));
+    const timers = sliderBoundDebounceRef.current;
+    if (timers[boundName]) clearTimeout(timers[boundName]!);
+    sliderBoundPendingRef.current[boundName] = v;
+    timers[boundName] = setTimeout(() => {
+      timers[boundName] = null;
+      sliderBoundPendingRef.current[boundName] = null;
+      void commitSliderBound(boundName, v);
+    }, 600);
+  };
+
+  // The per-row checkbox IS the per-item reset (unchecking commits `null`,
+  // which the backend removes from the stored map -- see
+  // save_generation_settings's slider_bounds handling). This is the one
+  // "reset all" action: clears every currently-set override in a single
+  // request rather than one round trip per row.
+  const resetAllSliderBounds = async () => {
+    const overrides: Record<string, number | null> = {};
+    for (const boundName of Object.keys(liveSliderBounds)) {
+      overrides[boundName] = null;
+    }
+    if (Object.keys(overrides).length === 0) return;
+    setSliderBoundsMessage(null);
+    try {
+      const saved = await saveSliderBounds(overrides);
+      setLiveSliderBounds(saved.slider_bounds ?? {});
+    } catch (error) {
+      console.error("Failed to reset slider bounds:", error);
+      setSliderBoundsMessage({
+        type: "error",
+        text: "Failed to reset slider bounds. The previous overrides are still in effect; please check the console and try again.",
+      });
+    }
+  };
+
+  const SLIDER_BOUND_FAMILY_LABELS: Record<string, string> = {
+    canvas: "Canvas",
+    sampling: "Sampling",
+    video: "Video",
+    upscale: "Upscale",
+  };
+  const sliderBoundFamilies = Array.from(new Set(Object.values(paramBounds).map((spec) => spec.family)));
 
   // Font size (mobile UI scaling)
   const [fontSize, setFontSize] = useState(100); // 100 = 100% (default)
@@ -760,52 +895,6 @@ export default function SettingsPage() {
                   </p>
                 </div>
 
-                <div className="space-y-2">
-                  {videoFrameSliderMaxMessage && (
-                    <div className={`p-3 rounded text-sm ${videoFrameSliderMaxMessage.type === "success" ? "bg-green-900/30 text-green-400" : "bg-red-900/30 text-red-400"}`}>
-                      {videoFrameSliderMaxMessage.text}
-                    </div>
-                  )}
-                  <label className="flex items-center gap-2 text-sm font-medium text-gray-300 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      id="video_frame_slider_max_enabled"
-                      checked={videoFrameSliderMaxEnabled}
-                      disabled={videoFrameSliderMaxSaving}
-                      onChange={(e) => {
-                        const checked = e.target.checked;
-                        setVideoFrameSliderMaxEnabled(checked);
-                        void commitVideoFrameSliderMax(checked ? (videoFrameSliderMaxValue ?? videoFrameSliderMaxSeed) : null);
-                      }}
-                      className="w-4 h-4 bg-gray-700 border-gray-600 rounded focus:ring-blue-500"
-                    />
-                    Video Frame Count Slider Track Max
-                  </label>
-                  {videoFrameSliderMaxEnabled && (
-                    <div className="flex items-center space-x-4">
-                      <NumberInput
-                        id="video_frame_slider_max"
-                        label="Video Frame Count Slider Track Max"
-                        value={videoFrameSliderMaxValue}
-                        onCommit={handleVideoFrameSliderMaxNumberCommit}
-                        min={1}
-                        parse="int"
-                        disabled={videoFrameSliderMaxSaving}
-                        className="w-28 px-3 py-2 bg-gray-700 border border-gray-600 rounded text-gray-100 focus:ring-blue-500 focus:border-blue-500"
-                      />
-                    </div>
-                  )}
-                  <p className="text-xs text-gray-500 mt-1">
-                    Sets how far the video frame-count slider&apos;s track reaches on an
-                    architecture that does not impose a hard per-request frame limit.
-                    The number box next to the slider is not bounded by this setting
-                    and always accepts a value above it. Unchecked uses the
-                    slider&apos;s own built-in track reach. The value is snapped onto
-                    the loaded architecture&apos;s frame grid where the slider is used.
-                    Applies immediately and is held on the server.
-                  </p>
-                </div>
-
                 <div className="flex items-start space-x-3">
                   <input
                     type="checkbox"
@@ -918,6 +1007,135 @@ export default function SettingsPage() {
                   </p>
                 </div>
 
+              </div>
+            </div>
+          </Card>
+
+          <Card title="Slider Bounds">
+            <div className="space-y-4">
+              <p className="text-gray-400 text-sm mb-4">
+                Raises the slider/number-input range for the settings below;
+                does not change model or hardware limits.
+              </p>
+
+              {sliderBoundsMessage && (
+                <div className={`p-3 rounded text-sm ${sliderBoundsMessage.type === "success" ? "bg-green-900/30 text-green-400" : "bg-red-900/30 text-red-400"}`}>
+                  {sliderBoundsMessage.text}
+                </div>
+              )}
+
+              <div className="flex justify-end">
+                <Button onClick={() => void resetAllSliderBounds()} variant="secondary" size="sm">
+                  Reset All
+                </Button>
+              </div>
+
+              <div className="space-y-6">
+                {sliderBoundFamilies.map((family) => (
+                  <div key={family} className="space-y-4">
+                    <h4 className="text-sm font-semibold text-gray-300 border-b border-gray-700 pb-1">
+                      {SLIDER_BOUND_FAMILY_LABELS[family] ?? family}
+                    </h4>
+                    {Object.entries(paramBounds)
+                      .filter(([, spec]) => spec.family === family)
+                      .map(([boundName, spec]) => {
+                        const enabled = sliderBoundEnabled[boundName] ?? false;
+                        const value = sliderBoundValue[boundName] ?? spec.builtin;
+                        const saving = sliderBoundSaving[boundName] ?? false;
+                        return (
+                          <div key={boundName} className="space-y-2">
+                            <label className="flex items-center gap-2 text-sm font-medium text-gray-300 cursor-pointer">
+                              <input
+                                type="checkbox"
+                                id={`slider_bound_${boundName}_enabled`}
+                                checked={enabled}
+                                disabled={saving}
+                                onChange={(e) => {
+                                  const checked = e.target.checked;
+                                  setSliderBoundEnabled((prev) => ({ ...prev, [boundName]: checked }));
+                                  void commitSliderBound(boundName, checked ? (sliderBoundValue[boundName] ?? spec.builtin) : null);
+                                }}
+                                className="w-4 h-4 bg-gray-700 border-gray-600 rounded focus:ring-blue-500"
+                              />
+                              {spec.label}
+                            </label>
+                            {enabled && (
+                              <NumberInput
+                                id={`slider_bound_${boundName}`}
+                                label={spec.label}
+                                value={value}
+                                onCommit={(v) => handleSliderBoundNumberCommit(boundName, v)}
+                                min={spec.floor}
+                                max={spec.ceiling}
+                                parse="int"
+                                disabled={saving}
+                                className="w-28 px-3 py-2 bg-gray-700 border border-gray-600 rounded text-gray-100 focus:ring-blue-500 focus:border-blue-500"
+                              />
+                            )}
+                            <p className="text-xs text-gray-500">
+                              Effective value: {enabled ? value : spec.builtin} ({enabled ? "your override" : "built-in"}
+                              {enabled ? `, built-in is ${spec.builtin}` : ""}).
+                            </p>
+                            {isAboveBuiltin(boundName, paramBounds, enabled ? value : spec.builtin) && (
+                              <p className="text-xs text-amber-400">
+                                This raises {spec.label.toLowerCase()} above the built-in default ({spec.builtin});
+                                territory beyond the built-in default is untested.
+                              </p>
+                            )}
+                          </div>
+                        );
+                      })}
+                  </div>
+                ))}
+
+                <div className="space-y-4">
+                  <h4 className="text-sm font-semibold text-gray-300 border-b border-gray-700 pb-1">Video</h4>
+                  <div className="space-y-2">
+                    {videoFrameSliderMaxMessage && (
+                      <div className={`p-3 rounded text-sm ${videoFrameSliderMaxMessage.type === "success" ? "bg-green-900/30 text-green-400" : "bg-red-900/30 text-red-400"}`}>
+                        {videoFrameSliderMaxMessage.text}
+                      </div>
+                    )}
+                    <label className="flex items-center gap-2 text-sm font-medium text-gray-300 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        id="video_frame_slider_max_enabled"
+                        checked={videoFrameSliderMaxEnabled}
+                        disabled={videoFrameSliderMaxSaving}
+                        onChange={(e) => {
+                          const checked = e.target.checked;
+                          setVideoFrameSliderMaxEnabled(checked);
+                          void commitVideoFrameSliderMax(checked ? (videoFrameSliderMaxValue ?? videoFrameSliderMaxSeed) : null);
+                        }}
+                        className="w-4 h-4 bg-gray-700 border-gray-600 rounded focus:ring-blue-500"
+                      />
+                      Video Frame Count Slider Track Max
+                    </label>
+                    {videoFrameSliderMaxEnabled && (
+                      <div className="flex items-center space-x-4">
+                        <NumberInput
+                          id="video_frame_slider_max"
+                          label="Video Frame Count Slider Track Max"
+                          value={videoFrameSliderMaxValue}
+                          onCommit={handleVideoFrameSliderMaxNumberCommit}
+                          min={1}
+                          parse="int"
+                          disabled={videoFrameSliderMaxSaving}
+                          className="w-28 px-3 py-2 bg-gray-700 border border-gray-600 rounded text-gray-100 focus:ring-blue-500 focus:border-blue-500"
+                        />
+                      </div>
+                    )}
+                    <p className="text-xs text-gray-500 mt-1">
+                    Sets how far the video frame-count slider&apos;s track reaches on an
+                    architecture that does not impose a hard per-request frame limit.
+                    The number box next to the slider is not bounded by this setting
+                    and always accepts a value above it. Unchecked uses the
+                    slider&apos;s own built-in track reach. The value is snapped onto
+                    the loaded architecture&apos;s frame grid where the slider is used.
+                    Applies immediately and is held on the server.
+                    </p>
+                  </div>
+                </div>
               </div>
             </div>
           </Card>

@@ -304,6 +304,37 @@ paths:
                     example:
                       minimax_h3:
                         inpaint_video_audio_mode: preserve_input
+                  param_bounds:
+                    type: object
+                    description: >-
+                      User-overridable slider/number-input UPPER BOUNDS
+                      registry (`PARAM_BOUNDS` in
+                      `backend/api/param_defaults.py`). Keyed by bound name;
+                      each entry's `builtin` is today's literal, and
+                      `floor`/`ceiling` are the range a user override
+                      (`UserSettings.slider_bounds`, `GET/POST
+                      /settings/generation`) may fall within. Consumed by the
+                      frontend's `resolveBound()` (never hardcoded per panel).
+                    additionalProperties:
+                      type: object
+                      properties:
+                        builtin:
+                          type: number
+                        floor:
+                          type: number
+                        ceiling:
+                          type: number
+                        family:
+                          type: string
+                        label:
+                          type: string
+                    example:
+                      steps_max:
+                        builtin: 150
+                        floor: 20
+                        ceiling: 1000
+                        family: sampling
+                        label: Sampling steps slider max
   /schema/prompt-assist-defaults:
     get:
       tags: [Schema]
@@ -6536,6 +6567,19 @@ paths:
                       slider is never bounded by this value; it always accepts any
                       frame count, including one above this setting.
                     example: 600
+                  slider_bounds:
+                    type: object
+                    additionalProperties:
+                      type: number
+                    description: |
+                      User overrides for slider/number-input UPPER BOUNDS, keyed by
+                      bound name (see backend/api/param_defaults.py's PARAM_BOUNDS
+                      registry for the eligible keys and their [floor, ceiling]). A
+                      key absent from this object means that bound uses its builtin
+                      value. Always an object (empty when no overrides are set).
+                    example:
+                      steps_max: 300
+                      image_width_max: 4096
     post:
       tags: [settings]
       summary: Save user-configured generation settings
@@ -6557,6 +6601,19 @@ paths:
                     clears the setting (reverts to the built-in track reach). Does
                     not bound the paired number box.
                   example: 600
+                slider_bounds:
+                  type: object
+                  additionalProperties:
+                    type: number
+                    nullable: true
+                  description: |
+                    Partial update of slider-bound overrides, keyed by bound name
+                    (see PARAM_BOUNDS in backend/api/param_defaults.py). Only the
+                    keys present are changed; a `null` value for a key resets that
+                    one bound to its builtin. Unknown keys or values outside that
+                    bound's [floor, ceiling] are rejected with 400.
+                  example:
+                    steps_max: 300
       responses:
         '200':
           description: Settings saved
@@ -6577,6 +6634,16 @@ paths:
                       video_frame_slider_max:
                         type: integer
                         nullable: true
+                      slider_bounds:
+                        type: object
+                        additionalProperties:
+                          type: number
+        '400':
+          description: Unknown slider bound key, or a value outside its [floor, ceiling]
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: Failed to save settings
           content:

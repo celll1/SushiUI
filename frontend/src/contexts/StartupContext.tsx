@@ -77,6 +77,17 @@ interface StartupContextType {
   // ever change on the next full page load, since fetchStartupPayloads runs
   // once from a mount effect.
   setVideoFrameSliderMax: (value: number | null) => void;
+  // User overrides for slider/number-input UPPER BOUNDS (backend
+  // UserSettings.slider_bounds, GET /settings/generation), keyed by
+  // PARAM_BOUNDS bound name. A key absent means that bound uses its
+  // registry `builtin` (generationDefaults?.param_bounds). Resolved together
+  // with the registry by frontend/src/utils/paramBounds.ts's resolveBound().
+  sliderBounds: Record<string, number>;
+  // Updates the live map without a re-fetch, same pattern as
+  // setVideoFrameSliderMax -- called by the Settings page's "Slider Bounds"
+  // card right after a successful POST /settings/generation write, so every
+  // mounted panel's resolveBound() call sees the new override at once.
+  setSliderBounds: (value: Record<string, number>) => void;
 }
 
 const StartupContext = createContext<StartupContextType>({
@@ -97,6 +108,8 @@ const StartupContext = createContext<StartupContextType>({
   archCapabilities: null,
   videoFrameSliderMax: null,
   setVideoFrameSliderMax: () => {},
+  sliderBounds: {},
+  setSliderBounds: () => {},
 });
 
 export const useStartup = () => useContext(StartupContext);
@@ -138,6 +151,7 @@ export function StartupProvider({ children }: StartupProviderProps) {
   const [bundleVaeDefaultsByArch, setBundleVaeDefaultsByArch] = useState<Record<string, boolean> | null>(null);
   const [archCapabilities, setArchCapabilities] = useState<ArchCapabilities | null>(null);
   const [videoFrameSliderMax, setVideoFrameSliderMax] = useState<number | null>(null);
+  const [sliderBounds, setSliderBounds] = useState<Record<string, number>>({});
 
   const [modelInfoVersion, setModelInfoVersion] = useState(0);
   // Last known info, kept in a ref so a failed refresh can fall back to it
@@ -177,6 +191,7 @@ export function StartupProvider({ children }: StartupProviderProps) {
         setBundleVaeDefaultsByArch(bvByArch);
         setArchCapabilities(archCaps);
         setVideoFrameSliderMax(genSettings.video_frame_slider_max ?? null);
+        setSliderBounds(genSettings.slider_bounds ?? {});
         payloadsLoadedRef.current = true;
         console.log("[StartupContext] Param defaults + arch capabilities loaded from backend");
       } catch (e) {
@@ -327,6 +342,8 @@ export function StartupProvider({ children }: StartupProviderProps) {
       archCapabilities,
       videoFrameSliderMax,
       setVideoFrameSliderMax,
+      sliderBounds,
+      setSliderBounds,
     }}>
       {children}
     </StartupContext.Provider>

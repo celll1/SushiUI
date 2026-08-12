@@ -77,6 +77,8 @@ export interface StudioProject {
   tracks: StudioTrack[];
   clips: StudioClip[];
   jobs: StudioJob[];
+  /** Server-side render job to resume polling after Studio is reopened. */
+  renderJobId?: string;
   outputRange?: StudioRange | null;
   inpaintRange?: StudioRange | null;
   referenceAssetIds?: string[];

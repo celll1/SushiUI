@@ -228,6 +228,23 @@ class GeneratedImage(GalleryBase):
                     result["guidance_scale"] = str(self.parameters["guidance_scale"])
                 if "num_inference_steps" in self.parameters:
                     result["num_inference_steps"] = str(self.parameters["num_inference_steps"])
+                # Video chain provenance (design sec.13): which chain/plan/
+                # segment produced this row. Present only on a chained
+                # generation; the root prompt and canonical timeline are NOT
+                # here by design -- the two hashes reference the manifest that
+                # holds them once.
+                if self.parameters.get("chain_id"):
+                    for key in ("chain_id",
+                                "chain_manifest_version",
+                                "chain_plan_hash",
+                                "chain_segment_index",
+                                "chain_segment_count",
+                                "chain_global_frame_start",
+                                "chain_global_frame_end",
+                                "chain_context_mode",
+                                "chain_root_prompt_hash"):
+                        if self.parameters.get(key) is not None:
+                            result[key] = str(self.parameters[key])
 
             # Audio parameters (generation_type == "txt2aud")
             if self.parameters.get("is_audio"):

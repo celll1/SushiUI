@@ -49,6 +49,7 @@ import {
   buildChainImageReferenceInventory,
   segmentChainReferenceImages,
   segmentChainText,
+  chainSegmentProvenance,
   advanceVideoChain,
   ChainAdvanceResult,
   ChainDriftPause,
@@ -2704,6 +2705,11 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
       chainPlannedAccumulatedFrames: manifest?.segments.find((s) => s.index === 0)?.owned_end_frame,
       chainDriftToleranceFrames: manifest?.chain_drift_tolerance_frames,
     };
+    // Design §13, and a different thing from `chainProvenance` above: those
+    // fields stay on the QUEUE ITEM (the chain runner reads them), these are
+    // sent WITH the request so the gallery row segment 0 produces says which
+    // chain, plan and segment made it -- exactly as every continuation does.
+    const segmentProvenance = chainSegmentProvenance(manifest, 0);
 
     if (isRef2Va && refParams && references) {
       // Segment 0 obeys the same binding as the continuations: an image
@@ -2717,6 +2723,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
           num_frames: capFrames,
           prompt: mainText.prompt,
           negative_prompt: mainText.negative_prompt,
+          ...segmentProvenance,
         } as any,
         references: { ...references, images: mainReferenceImages ?? [] },
         prompt: mainText.prompt,
@@ -2734,6 +2741,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
           prompt: mainText.prompt,
           negative_prompt: mainText.negative_prompt,
           input_audio: (supportsAudioConditioning && inputAudioTrack) ? inputAudioTrack : null,
+          ...segmentProvenance,
         } as any,
         inputImage: keyframeImage,
         inputAudio: (supportsAudioConditioning && inputAudioTrack) ? inputAudioTrack : undefined,

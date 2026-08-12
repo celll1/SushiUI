@@ -50,6 +50,7 @@ import {
   OutpaintVideoParams,
   QuantizedGemmMode,
   VideoChainManifest,
+  VideoChainProvenance,
   VideoChainReferenceInput,
   nextVideoChainTotalFrames,
   planVideoChainSegments,
@@ -162,6 +163,38 @@ export const segmentChainReferenceImages = (
   return selected.length > 0 ? selected : undefined;
 };
 
+// What ONE segment stamps onto the generation it produces (design §13), read
+// from the manifest and sent with the request itself -- so a gallery row says
+// which chain, which plan and which segment made it. The single builder for
+// both ends of a chain: segment 0's txt2vid/img2vid/ref2vid request and every
+// continuation's outpaint-video request call this with their own index.
+//
+// Empty without a manifest (legacy repeat): there is no plan to be a segment
+// of, and the backend refuses a partial stamp rather than recording provenance
+// that leads nowhere.
+//
+// Only ids, integers and hashes: the root prompt and the canonical timeline
+// stay in the manifest (§13 "全 gallery row へ巨大 JSON を複製しない"), which
+// `chain_plan_hash` / `chain_root_prompt_hash` reference.
+export const chainSegmentProvenance = (
+  manifest: VideoChainManifest | null | undefined,
+  segmentIndex: number
+): VideoChainProvenance => {
+  if (!manifest) return {};
+  const segment = manifest.segments.find((s) => s.index === segmentIndex);
+  return {
+    chain_id: manifest.chain_id,
+    chain_manifest_version: manifest.manifest_version,
+    chain_plan_hash: manifest.plan_hash,
+    chain_segment_index: segmentIndex,
+    chain_segment_count: manifest.segments.length,
+    chain_global_frame_start: segment?.owned_start_frame,
+    chain_global_frame_end: segment?.owned_end_frame,
+    chain_context_mode: manifest.context_mode,
+    chain_root_prompt_hash: manifest.root_prompt_hash,
+  };
+};
+
 // This segment's compiled text, or the root text when the chain runs without
 // a manifest (legacy repeat / planner declined -- both explicit user choices).
 export const segmentChainText = (
@@ -230,9 +263,14 @@ export function buildChainContinuationParams(
   base: ChainContinuationBase,
   totalFrames: number,
   text: ChainSegmentText,
-  referenceImageSize?: "max" | "match"
+  referenceImageSize?: "max" | "match",
+  // This segment's provenance stamp (`chainSegmentProvenance`). Sent with the
+  // request, not merely held on the queue item, so it reaches the video's
+  // metadata and its gallery row.
+  provenance?: VideoChainProvenance
 ): OutpaintVideoParams {
   return {
+    ...provenance,
     prompt: text.prompt,
     negative_prompt: text.negative_prompt ?? base.negative_prompt,
     width: base.width,
@@ -384,7 +422,8 @@ export function buildChainContinuationQueueItems(args: {
         args.continuationBase,
         total,
         text,
-        args.referenceImageSize
+        args.referenceImageSize,
+        chainSegmentProvenance(args.manifest, segmentIndex)
       ),
       referenceImages: segmentChainReferenceImages(
         args.manifest,

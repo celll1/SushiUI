@@ -671,6 +671,69 @@ export interface OutpaintParams extends GenerationParams {
   outpaint_fill_mode?: string;
 }
 
+// Video chain provenance (design §13), carried BY a generation request and
+// recorded on the gallery row it produces: which chain a segment belongs to,
+// which plan compiled it, which segment it is and what it owns on the chain's
+// global frame timeline. Absent on an ordinary, unchained generation.
+//
+// Every video request shape that can be a chain segment includes these
+// (Txt2VidParams -- hence Img2VidParams/Ref2VidParams -- for segment 0, and
+// OutpaintVideoParams for every continuation), so ONE interface is what both
+// ends of a chain send.
+//
+// The chain's root prompt and canonical timeline are deliberately not here:
+// they live once in the manifest, and the two hashes reference them instead of
+// being copied onto every segment. `chain_id`, `chain_plan_hash` and
+// `chain_segment_index` are sent together or not at all (the backend answers
+// 400 for a partial set).
+export interface VideoChainProvenance {
+  chain_id?: string;
+  chain_manifest_version?: number;
+  chain_plan_hash?: string;
+  chain_segment_index?: number;
+  chain_segment_count?: number;
+  /** Half-open [start, end) span this segment owns on the chain timeline. */
+  chain_global_frame_start?: number;
+  chain_global_frame_end?: number;
+  chain_context_mode?: VideoChainContextMode;
+  chain_root_prompt_hash?: string;
+}
+
+const VIDEO_CHAIN_PROVENANCE_KEYS: Array<keyof VideoChainProvenance> = [
+  "chain_id",
+  "chain_manifest_version",
+  "chain_plan_hash",
+  "chain_segment_index",
+  "chain_segment_count",
+  "chain_global_frame_start",
+  "chain_global_frame_end",
+  "chain_context_mode",
+  "chain_root_prompt_hash",
+];
+
+// The provenance fields that are actually set, for a JSON request body. An
+// unchained generation contributes nothing: the backend's defaults are all
+// null, so an omitted field and an explicit null are the same request, and
+// omitting keeps an ordinary video request exactly as it was.
+const chainProvenanceBody = (params: VideoChainProvenance): Record<string, unknown> => {
+  const body: Record<string, unknown> = {};
+  for (const key of VIDEO_CHAIN_PROVENANCE_KEYS) {
+    const value = params[key];
+    if (value != null) body[key] = value;
+  }
+  return body;
+};
+
+// Same set on a multipart request. Every video route except txt2vid takes the
+// provenance as Form fields, and a field that is only in the params object is
+// a field the backend never sees (CLAUDE.md failure pattern 1).
+const appendChainProvenance = (formData: FormData, params: VideoChainProvenance): void => {
+  for (const key of VIDEO_CHAIN_PROVENANCE_KEYS) {
+    const value = params[key];
+    if (value != null) formData.append(key, String(value));
+  }
+};
+
 // Video temporal outpaint (LTX-2.3): place a (optionally trimmed) input clip
 // at a frame offset inside a LONGER output timeline and generate the frames
 // before/after, preserving the placed input frames byte-exact. Mirrors the
@@ -678,7 +741,7 @@ export interface OutpaintParams extends GenerationParams {
 // of POST /generate/outpaint/video (routes.py). Standalone shape (does not
 // extend GenerationParams, matching Txt2VidParams/Img2VidParams -- video has
 // no width/height/steps/sampler concept beyond the fields below).
-export interface OutpaintVideoParams {
+export interface OutpaintVideoParams extends VideoChainProvenance {
   prompt: string;
   negative_prompt?: string;
   width?: number;                  // multiple of 32 (default 768)
@@ -925,6 +988,21 @@ export interface GeneratedImage {
   fps?: number;
   duration?: number;
   audio_enable?: boolean;
+  // Video chain provenance (design §13), emitted as a group on a video row
+  // that was one segment of a chained long clip and absent on every other row.
+  // Stringified by `GeneratedImage.to_dict()` like the other conditional
+  // fields. The root prompt and canonical timeline are NOT here: the row's
+  // `prompt` is this segment's own compiled prompt, and the two hashes point at
+  // the manifest that holds the originals once.
+  chain_id?: string;
+  chain_manifest_version?: string;
+  chain_plan_hash?: string;
+  chain_segment_index?: string;
+  chain_segment_count?: string;
+  chain_global_frame_start?: string;
+  chain_global_frame_end?: string;
+  chain_context_mode?: string;
+  chain_root_prompt_hash?: string;
   // Audio parameters (generation_type === 'txt2aud' / 'aud2aud'; filename is a .flac)
   is_audio?: boolean;
   sample_rate?: number;
@@ -935,7 +1013,7 @@ export interface GeneratedImage {
 // Video generation (LTX-2.3) — txt2vid (JSON) / img2vid (multipart keyframe)
 // ---------------------------------------------------------------------------
 
-export interface Txt2VidParams {
+export interface Txt2VidParams extends VideoChainProvenance {
   prompt: string;
   negative_prompt?: string;
   width?: number;             // multiple of 32 (default 768)
@@ -3161,6 +3239,9 @@ export const generateTxt2Vid = async (params: Txt2VidParams) => {
     spectrum_flex_window: params.spectrum_flex_window ?? 0.75,
     spectrum_tail: params.spectrum_tail ?? 0.12,
     spectrum_max_cache: params.spectrum_max_cache ?? 0,
+    // Video chain provenance -- present only when this request is a chain's
+    // first segment (design §13).
+    ...chainProvenanceBody(params),
   };
 
   const response = await postGenerationRequest("/generate/txt2vid", body);
@@ -3272,6 +3353,9 @@ export const generateImg2Vid = async (
   formData.append("spectrum_flex_window", String(params.spectrum_flex_window ?? 0.75));
   formData.append("spectrum_tail", String(params.spectrum_tail ?? 0.12));
   formData.append("spectrum_max_cache", String(params.spectrum_max_cache ?? 0));
+  // Chain provenance -- present only when this request is a chain's first
+  // segment (design §13).
+  appendChainProvenance(formData, params);
 
   const response = await postGenerationRequest("/generate/img2vid", formData, {
     headers: { "Content-Type": "multipart/form-data" },
@@ -3368,6 +3452,9 @@ export const generateRef2Vid = async (
   formData.append("spectrum_flex_window", String(params.spectrum_flex_window ?? 0.75));
   formData.append("spectrum_tail", String(params.spectrum_tail ?? 0.12));
   formData.append("spectrum_max_cache", String(params.spectrum_max_cache ?? 0));
+  // Chain provenance -- present only when this request is a chain's first
+  // segment (design §13).
+  appendChainProvenance(formData, params);
 
   const response = await postGenerationRequest("/generate/ref2vid", formData, {
     headers: { "Content-Type": "multipart/form-data" },
@@ -3996,6 +4083,10 @@ export const generateOutpaintVideo = async (
     formData.append("reference_images", image);
   }
   formData.append("loras", JSON.stringify(params.loras || []));
+  // Chain provenance (design §13). This endpoint runs every CONTINUATION
+  // segment, so a chained request always carries it here; a plain video
+  // outpaint carries nothing.
+  appendChainProvenance(formData, params);
 
   const response = await postGenerationRequest("/generate/outpaint/video", formData, {
     headers: { "Content-Type": "multipart/form-data" },

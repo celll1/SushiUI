@@ -1784,7 +1784,9 @@ paths:
             to decode ("the input clip is too long/high-resolution to
             decode" / "the bridge clip is too long/high-resolution to
             decode"), naming the clip's probed frame count/resolution and the
-            budget.
+            budget. Also returned for an incomplete or malformed chain
+            provenance stamp (see `chain_id`), which is refused rather than
+            dropped so a row never records provenance that leads nowhere.
           content:
             application/json:
               schema:
@@ -9080,6 +9082,97 @@ components:
                 default: 1.0
                 description: "LoRA strength multiplier."
           example: []
+        chain_id:
+          type: string
+          nullable: true
+          default: null
+          description: |
+            Video chain provenance. Identifies the chain this generation is the
+            FIRST segment of — a long clip produced as several requests, planned
+            once by `POST /video-chain/plan` (`VideoChainManifest.chain_id`).
+            Every later segment of the same chain sends the identical value to
+            `POST /generate/outpaint/video`.
+
+            `chain_id`, `chain_plan_hash` and `chain_segment_index` are sent
+            TOGETHER or not at all; sending some of them is a 400, so a gallery
+            row never names a chain it cannot be traced back to. Omitting all of
+            them (the default) is an ordinary, unchained generation.
+
+            The chain's root prompt and canonical timeline are deliberately NOT
+            request fields: they live once in the manifest, and
+            `chain_plan_hash` / `chain_root_prompt_hash` reference them instead
+            of being copied onto every segment's gallery row.
+          example: "3f1c2b9e-3c8a-4f0a-9a1c-2b7d5f0e4a11"
+        chain_manifest_version:
+          type: integer
+          nullable: true
+          minimum: 1
+          default: null
+          description: "Manifest schema version this segment was planned under (`VideoChainManifest.manifest_version`)."
+          example: 1
+        chain_plan_hash:
+          type: string
+          nullable: true
+          default: null
+          description: >-
+            sha256 hex digest of the plan this segment was compiled from
+            (`VideoChainManifest.plan_hash`). Must be 64 hex characters.
+          example: "9f2c0b1d5e4a3c8b7d6e5f4a3b2c1d0e9f8a7b6c5d4e3f2a1b0c9d8e7f6a5b4c"
+        chain_segment_index:
+          type: integer
+          nullable: true
+          minimum: 0
+          default: null
+          description: >-
+            Which segment of the plan this request is, 0-based. 0 is the
+            segment a chain starts with (this endpoint); every later index
+            arrives on `/generate/outpaint/video`. Must be less than
+            `chain_segment_count` when that is also sent.
+          example: 0
+        chain_segment_count:
+          type: integer
+          nullable: true
+          minimum: 1
+          default: null
+          description: "How many segments the plan has."
+          example: 4
+        chain_global_frame_start:
+          type: integer
+          nullable: true
+          minimum: 0
+          default: null
+          description: >-
+            Start of this segment's half-open `[start, end)` span on the
+            chain's global frame timeline (`VideoChainSegment.owned_start_frame`).
+          example: 0
+        chain_global_frame_end:
+          type: integer
+          nullable: true
+          minimum: 0
+          default: null
+          description: >-
+            End (exclusive) of that span (`VideoChainSegment.owned_end_frame`).
+            Must be greater than `chain_global_frame_start`.
+          example: 362
+        chain_context_mode:
+          type: string
+          nullable: true
+          enum: [timeline, manual, legacy_repeat, null]
+          default: null
+          description: >-
+            How the segment prompts were produced
+            (`VideoChainManifest.context_mode`), recorded so a row states which
+            planning mode wrote its prompt.
+          example: timeline
+        chain_root_prompt_hash:
+          type: string
+          nullable: true
+          default: null
+          description: >-
+            sha256 hex digest of the chain's root prompt
+            (`VideoChainManifest.root_prompt_hash`), 64 hex characters. The
+            prompt itself stays in the manifest.
+          example: "1b0c9d8e7f6a5b4c3d2e1f0a9b8c7d6e5f4a3b2c1d0e9f8a7b6c5d4e3f2a1b0c"
 
     Img2VidRequest:
       allOf:
@@ -9618,6 +9711,74 @@ components:
             contract and same MiniMax-H3-only capability as `Txt2VidRequest.loras`
             -- see there for details.
           example: '[{"path": "minimax_h3_lora.safetensors", "strength": 1.0}]'
+        chain_id:
+          type: string
+          nullable: true
+          default: null
+          description: |
+            Video chain provenance. This endpoint is where every CONTINUATION
+            segment of a chain runs, so a chained request carries the same
+            `chain_id` its segment 0 (`/generate/txt2vid`, `/generate/img2vid`
+            or `/generate/ref2vid`) sent, with this segment's own index and
+            frame span. Identical semantics, identical validation and the same
+            send-them-together rule as `Txt2VidRequest.chain_id` — see there.
+          example: "3f1c2b9e-3c8a-4f0a-9a1c-2b7d5f0e4a11"
+        chain_manifest_version:
+          type: integer
+          nullable: true
+          minimum: 1
+          default: null
+          description: "See `Txt2VidRequest.chain_manifest_version`."
+          example: 1
+        chain_plan_hash:
+          type: string
+          nullable: true
+          default: null
+          description: "See `Txt2VidRequest.chain_plan_hash` (64 hex characters)."
+          example: "9f2c0b1d5e4a3c8b7d6e5f4a3b2c1d0e9f8a7b6c5d4e3f2a1b0c9d8e7f6a5b4c"
+        chain_segment_index:
+          type: integer
+          nullable: true
+          minimum: 0
+          default: null
+          description: >-
+            See `Txt2VidRequest.chain_segment_index`. Always >= 1 here: index 0
+            is the request that starts the chain, which is not an outpaint.
+          example: 1
+        chain_segment_count:
+          type: integer
+          nullable: true
+          minimum: 1
+          default: null
+          description: "See `Txt2VidRequest.chain_segment_count`."
+          example: 4
+        chain_global_frame_start:
+          type: integer
+          nullable: true
+          minimum: 0
+          default: null
+          description: "See `Txt2VidRequest.chain_global_frame_start`."
+          example: 362
+        chain_global_frame_end:
+          type: integer
+          nullable: true
+          minimum: 0
+          default: null
+          description: "See `Txt2VidRequest.chain_global_frame_end`."
+          example: 723
+        chain_context_mode:
+          type: string
+          nullable: true
+          enum: [timeline, manual, legacy_repeat, null]
+          default: null
+          description: "See `Txt2VidRequest.chain_context_mode`."
+          example: timeline
+        chain_root_prompt_hash:
+          type: string
+          nullable: true
+          default: null
+          description: "See `Txt2VidRequest.chain_root_prompt_hash` (64 hex characters)."
+          example: "1b0c9d8e7f6a5b4c3d2e1f0a9b8c7d6e5f4a3b2c1d0e9f8a7b6c5d4e3f2a1b0c"
 
     InpaintVideoRequest:
       type: object
@@ -11862,6 +12023,43 @@ components:
         num_inference_steps:
           type: string
           description: Step count used by the video pipeline. Stringified integer.
+        chain_id:
+          type: string
+          description: |
+            Video chain provenance (emitted as a group on video rows produced as
+            one segment of a chained long clip; absent on every other row).
+            Identifies the chain. The eight fields below are the rest of the
+            group and carry the values the request sent — see
+            `Txt2VidRequest.chain_id`.
+
+            The chain's root prompt and canonical timeline are NOT on the row:
+            they are held once by the manifest, which `chain_plan_hash` and
+            `chain_root_prompt_hash` reference. The row's own `prompt` is this
+            segment's compiled prompt, and `seed` the seed it actually ran with.
+        chain_manifest_version:
+          type: string
+          description: Manifest schema version. Stringified integer.
+        chain_plan_hash:
+          type: string
+          description: sha256 hex digest of the plan this segment was compiled from.
+        chain_segment_index:
+          type: string
+          description: 0-based segment index within the plan. Stringified integer.
+        chain_segment_count:
+          type: string
+          description: Number of segments in the plan. Stringified integer.
+        chain_global_frame_start:
+          type: string
+          description: Start of this segment's half-open global frame span. Stringified integer.
+        chain_global_frame_end:
+          type: string
+          description: End (exclusive) of that span. Stringified integer.
+        chain_context_mode:
+          type: string
+          description: "Planning mode that wrote this segment's prompt: timeline, manual or legacy_repeat."
+        chain_root_prompt_hash:
+          type: string
+          description: sha256 hex digest of the chain's root prompt.
         model_variant:
           type: string
           description: |

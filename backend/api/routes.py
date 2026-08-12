@@ -56,6 +56,7 @@ from api.param_defaults import (
     INPAINT_VIDEO_ARCH_OVERLAYS,
     PROMPT_ASSIST_DEFAULTS, STUDIO_RENDER_DEFAULTS,
     VIDEO_CHAIN_DEFAULTS,
+    VIDEO_CHAIN_PROVENANCE_DEFAULTS,
     PARAM_BOUNDS,
     video_defaults_for_arch,
 )
@@ -80,6 +81,7 @@ from api.generation_utils import (
     validate_video_geometry,
     validate_video_steps,
     plan_keyframe_placements,
+    resolve_chain_provenance,
     MINIMAX_H3_DOCUMENTED_ANCHOR_SCOPE,
 )
 from api.error_handlers import (
@@ -288,6 +290,20 @@ class Txt2VidRequest(BaseModel):
     # all -- accepted and ignored, with a warning when non-empty (see
     # api.arch_capabilities's "lora" feature).
     loras: Optional[List[LoRAConfig]] = TXT2VID_DEFAULTS["loras"]
+    # Video chain provenance (design sec.13). Null on an ordinary request; a
+    # chain's FIRST segment carries the whole set from the manifest it was
+    # planned from, exactly as every continuation does on
+    # /generate/outpaint/video. Validated together by
+    # `generation_utils.resolve_chain_provenance`.
+    chain_id: Optional[str] = VIDEO_CHAIN_PROVENANCE_DEFAULTS["chain_id"]
+    chain_manifest_version: Optional[int] = VIDEO_CHAIN_PROVENANCE_DEFAULTS["chain_manifest_version"]
+    chain_plan_hash: Optional[str] = VIDEO_CHAIN_PROVENANCE_DEFAULTS["chain_plan_hash"]
+    chain_segment_index: Optional[int] = VIDEO_CHAIN_PROVENANCE_DEFAULTS["chain_segment_index"]
+    chain_segment_count: Optional[int] = VIDEO_CHAIN_PROVENANCE_DEFAULTS["chain_segment_count"]
+    chain_global_frame_start: Optional[int] = VIDEO_CHAIN_PROVENANCE_DEFAULTS["chain_global_frame_start"]
+    chain_global_frame_end: Optional[int] = VIDEO_CHAIN_PROVENANCE_DEFAULTS["chain_global_frame_end"]
+    chain_context_mode: Optional[str] = VIDEO_CHAIN_PROVENANCE_DEFAULTS["chain_context_mode"]
+    chain_root_prompt_hash: Optional[str] = VIDEO_CHAIN_PROVENANCE_DEFAULTS["chain_root_prompt_hash"]
 
 
 class Txt2AudRequest(BaseModel):
@@ -2729,6 +2745,9 @@ async def generate_txt2vid(
     # (same 400-before-start_generation contract as the image routes).
     params["attention_type"] = _validated_attention_type(
         params.get("attention_type"), TXT2VID_DEFAULTS["attention_type"])
+    # Chain provenance (design sec.13): validated here, before the run opens, so
+    # a malformed stamp is a 400 rather than an unusable gallery row.
+    params.update(resolve_chain_provenance(params))
 
     if not (getattr(pipeline_manager, "is_ltx2_model", False)
             or getattr(pipeline_manager, "is_minimax_h3_model", False)):
@@ -3608,6 +3627,17 @@ async def generate_img2vid(
     # `x_t = t*x0 + (1-t)*noise` -- across the WHOLE clip, and the muxed output
     # carries the source samples rather than a decode of rows nothing wrote.
     input_audio: Optional[UploadFile] = File(None),
+    # Video chain provenance (design sec.13). See Txt2VidRequest's fields of the
+    # same names: null on an ordinary request, the whole set on a chain segment.
+    chain_id: Optional[str] = Form(VIDEO_CHAIN_PROVENANCE_DEFAULTS["chain_id"]),
+    chain_manifest_version: Optional[int] = Form(VIDEO_CHAIN_PROVENANCE_DEFAULTS["chain_manifest_version"]),
+    chain_plan_hash: Optional[str] = Form(VIDEO_CHAIN_PROVENANCE_DEFAULTS["chain_plan_hash"]),
+    chain_segment_index: Optional[int] = Form(VIDEO_CHAIN_PROVENANCE_DEFAULTS["chain_segment_index"]),
+    chain_segment_count: Optional[int] = Form(VIDEO_CHAIN_PROVENANCE_DEFAULTS["chain_segment_count"]),
+    chain_global_frame_start: Optional[int] = Form(VIDEO_CHAIN_PROVENANCE_DEFAULTS["chain_global_frame_start"]),
+    chain_global_frame_end: Optional[int] = Form(VIDEO_CHAIN_PROVENANCE_DEFAULTS["chain_global_frame_end"]),
+    chain_context_mode: Optional[str] = Form(VIDEO_CHAIN_PROVENANCE_DEFAULTS["chain_context_mode"]),
+    chain_root_prompt_hash: Optional[str] = Form(VIDEO_CHAIN_PROVENANCE_DEFAULTS["chain_root_prompt_hash"]),
     db: Session = Depends(get_gallery_db)
 ):
     """Generate a video from uploaded media (LTX-2.3 or MiniMax-H3).
@@ -3734,6 +3764,19 @@ async def generate_img2vid(
     # multipart `loras` field). See Txt2VidRequest.loras.
     import json
     params["loras"] = json.loads(loras) if loras else []
+
+    # Chain provenance (design sec.13), validated as one set before the run opens.
+    params.update(resolve_chain_provenance({
+        "chain_id": chain_id,
+        "chain_manifest_version": chain_manifest_version,
+        "chain_plan_hash": chain_plan_hash,
+        "chain_segment_index": chain_segment_index,
+        "chain_segment_count": chain_segment_count,
+        "chain_global_frame_start": chain_global_frame_start,
+        "chain_global_frame_end": chain_global_frame_end,
+        "chain_context_mode": chain_context_mode,
+        "chain_root_prompt_hash": chain_root_prompt_hash,
+    }))
 
     # Training-free reference-style transfer (video). See generate_txt2vid's
     # identical wiring / core.inference.style_ltx2 for the mechanism.
@@ -4171,6 +4214,17 @@ async def generate_ref2vid(
     keyframe_frame_indices: List[int] = Form([]),
     # Generation-time LoRA. See Txt2VidRequest.loras.
     loras: str = Form("[]"),
+    # Video chain provenance (design sec.13). See Txt2VidRequest's fields of the
+    # same names: null on an ordinary request, the whole set on a chain segment.
+    chain_id: Optional[str] = Form(VIDEO_CHAIN_PROVENANCE_DEFAULTS["chain_id"]),
+    chain_manifest_version: Optional[int] = Form(VIDEO_CHAIN_PROVENANCE_DEFAULTS["chain_manifest_version"]),
+    chain_plan_hash: Optional[str] = Form(VIDEO_CHAIN_PROVENANCE_DEFAULTS["chain_plan_hash"]),
+    chain_segment_index: Optional[int] = Form(VIDEO_CHAIN_PROVENANCE_DEFAULTS["chain_segment_index"]),
+    chain_segment_count: Optional[int] = Form(VIDEO_CHAIN_PROVENANCE_DEFAULTS["chain_segment_count"]),
+    chain_global_frame_start: Optional[int] = Form(VIDEO_CHAIN_PROVENANCE_DEFAULTS["chain_global_frame_start"]),
+    chain_global_frame_end: Optional[int] = Form(VIDEO_CHAIN_PROVENANCE_DEFAULTS["chain_global_frame_end"]),
+    chain_context_mode: Optional[str] = Form(VIDEO_CHAIN_PROVENANCE_DEFAULTS["chain_context_mode"]),
+    chain_root_prompt_hash: Optional[str] = Form(VIDEO_CHAIN_PROVENANCE_DEFAULTS["chain_root_prompt_hash"]),
     db: Session = Depends(get_gallery_db)
 ):
     """Generate a video from omni-references (MiniMax-H3 `ref2va` only).
@@ -4347,6 +4401,19 @@ async def generate_ref2vid(
     # Generation-time LoRA (JSON string). See Txt2VidRequest.loras.
     import json
     params["loras"] = json.loads(loras) if loras else []
+
+    # Chain provenance (design sec.13), validated as one set before the run opens.
+    params.update(resolve_chain_provenance({
+        "chain_id": chain_id,
+        "chain_manifest_version": chain_manifest_version,
+        "chain_plan_hash": chain_plan_hash,
+        "chain_segment_index": chain_segment_index,
+        "chain_segment_count": chain_segment_count,
+        "chain_global_frame_start": chain_global_frame_start,
+        "chain_global_frame_end": chain_global_frame_end,
+        "chain_context_mode": chain_context_mode,
+        "chain_root_prompt_hash": chain_root_prompt_hash,
+    }))
 
     _vid_arch = (pipeline_manager.current_model_info or {}).get("type")
     _omitted = {key for key, value in (
@@ -4647,6 +4714,18 @@ async def generate_outpaint_video(
     bridge_video: Optional[UploadFile] = File(None),
     # Generation-time LoRA. See Txt2VidRequest.loras.
     loras: str = Form("[]"),
+    # Video chain provenance (design sec.13). This is the endpoint every chain
+    # CONTINUATION runs on, so a chained request carries the whole set here; see
+    # Txt2VidRequest's fields of the same names for the segment-0 side.
+    chain_id: Optional[str] = Form(VIDEO_CHAIN_PROVENANCE_DEFAULTS["chain_id"]),
+    chain_manifest_version: Optional[int] = Form(VIDEO_CHAIN_PROVENANCE_DEFAULTS["chain_manifest_version"]),
+    chain_plan_hash: Optional[str] = Form(VIDEO_CHAIN_PROVENANCE_DEFAULTS["chain_plan_hash"]),
+    chain_segment_index: Optional[int] = Form(VIDEO_CHAIN_PROVENANCE_DEFAULTS["chain_segment_index"]),
+    chain_segment_count: Optional[int] = Form(VIDEO_CHAIN_PROVENANCE_DEFAULTS["chain_segment_count"]),
+    chain_global_frame_start: Optional[int] = Form(VIDEO_CHAIN_PROVENANCE_DEFAULTS["chain_global_frame_start"]),
+    chain_global_frame_end: Optional[int] = Form(VIDEO_CHAIN_PROVENANCE_DEFAULTS["chain_global_frame_end"]),
+    chain_context_mode: Optional[str] = Form(VIDEO_CHAIN_PROVENANCE_DEFAULTS["chain_context_mode"]),
+    chain_root_prompt_hash: Optional[str] = Form(VIDEO_CHAIN_PROVENANCE_DEFAULTS["chain_root_prompt_hash"]),
     db: Session = Depends(get_gallery_db)
 ):
     """Video temporal outpaint (LTX-2.3 or MiniMax-H3): place a (trimmed) input
@@ -4984,6 +5063,20 @@ async def generate_outpaint_video(
     # Generation-time LoRA (JSON string). See Txt2VidRequest.loras.
     import json
     params["loras"] = json.loads(loras) if loras else []
+
+    # Chain provenance (design sec.13), validated as one set before the run
+    # opens. Every continuation segment of a video chain arrives here.
+    params.update(resolve_chain_provenance({
+        "chain_id": chain_id,
+        "chain_manifest_version": chain_manifest_version,
+        "chain_plan_hash": chain_plan_hash,
+        "chain_segment_index": chain_segment_index,
+        "chain_segment_count": chain_segment_count,
+        "chain_global_frame_start": chain_global_frame_start,
+        "chain_global_frame_end": chain_global_frame_end,
+        "chain_context_mode": chain_context_mode,
+        "chain_root_prompt_hash": chain_root_prompt_hash,
+    }))
 
     # Reject a clip that cannot fit at all (trim leaves nothing) -- cheap
     # up-front check; the backend re-validates against the SNAPPED offset

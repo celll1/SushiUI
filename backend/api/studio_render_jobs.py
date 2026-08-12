@@ -415,6 +415,9 @@ def _canonical_manifest(raw: Mapping[str, Any], source_metadata: Optional[Mappin
         presentation = item.get("presentation") or ("frame" if asset["kind"] == "image" else "clip")
         if presentation not in ("frame", "hold", "clip"):
             raise StudioRenderValidationError("Unsupported clip presentation")
+        fit_mode = item.get("fitMode", item.get("fit_mode", render["fit_mode"]))
+        if fit_mode not in ("cover", "contain"):
+            raise StudioRenderValidationError("clip.fitMode must be 'cover' or 'contain'")
         if asset["kind"] == "image":
             if duration_frames > 1 and presentation != "hold":
                 raise StudioRenderValidationError("An image longer than one frame must use presentation='hold'")
@@ -437,6 +440,7 @@ def _canonical_manifest(raw: Mapping[str, Any], source_metadata: Optional[Mappin
             "duration_frames": duration_frames,
             "source_in_frame": source_frame,
             "presentation": presentation,
+            "fit_mode": fit_mode,
         })
 
     return {
@@ -724,7 +728,7 @@ def build_render_command(manifest: Mapping[str, Any], staging_dir: str, ffmpeg: 
         input_number = clip_inputs[clip["id"]]
         filters.append(
             f"[{input_number}:v:0]trim=start={source_in:.6f}:duration={clip_duration:.6f},"
-            f"setpts=PTS-STARTPTS+{clip_start:.6f}/TB,{_scale_filter(width, height, render['fit_mode'])}[{source_label}]"
+            f"setpts=PTS-STARTPTS+{clip_start:.6f}/TB,{_scale_filter(width, height, clip.get('fit_mode', render['fit_mode']))}[{source_label}]"
         )
         next_video = f"base{visual_index + 1}"
         filters.append(
@@ -963,10 +967,21 @@ def _collect_render_warnings(manifest: Mapping[str, Any]) -> List[str]:
                 "Audio was enabled for this render, but no unmuted clip on the timeline has an audio source; "
                 "the output has no sound track."
             )
-    if render["fit_mode"] == "cover":
-        warnings.append(
-            "fit_mode is 'cover': clips whose aspect ratio does not match the canvas have their edges cropped."
-        )
+    project = manifest["project"]
+    canvas_ratio = float(project["width"]) / float(project["height"])
+    warned_clips: set[str] = set()
+    for clip in manifest["clips"]:
+        asset = assets.get(clip["asset_id"])
+        if not asset or asset["kind"] == "audio":
+            continue
+        source_width = int(asset.get("width") or 0)
+        source_height = int(asset.get("height") or 0)
+        if source_width <= 0 or source_height <= 0 or clip.get("fit_mode", render["fit_mode"]) != "cover":
+            continue
+        if abs((source_width / source_height) - canvas_ratio) < 0.01 or clip["id"] in warned_clips:
+            continue
+        warned_clips.add(clip["id"])
+        warnings.append(f"Clip {clip['id']} is filled to the canvas and its edges are cropped.")
     return warnings
 
 

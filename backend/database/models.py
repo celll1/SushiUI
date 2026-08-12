@@ -366,6 +366,45 @@ class GeneratedImage(GalleryBase):
         return result
 
 
+class StudioRenderJob(GalleryBase):
+    """Persistent state for a Studio timeline render.
+
+    Render inputs are copied into a server-owned staging directory before the
+    job is queued; ``input_dir`` is therefore an internal path, never a client
+    supplied filename or URL.
+    """
+    __tablename__ = "studio_render_jobs"
+
+    id = Column(String, primary_key=True, index=True)
+    state = Column(String, nullable=False, default="queued", index=True)
+    manifest = Column(JSON, nullable=False)
+    input_dir = Column(String, nullable=False)
+    progress = Column(Float, nullable=False, default=0.0)
+    message = Column(String, nullable=True)
+    gallery_image_id = Column(Integer, nullable=True)
+    filename = Column(String, nullable=True)
+    preview_filename = Column(String, nullable=True)
+    error = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=get_local_now, index=True)
+    started_at = Column(DateTime, nullable=True)
+    finished_at = Column(DateTime, nullable=True)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "job_id": self.id,
+            "state": self.state,
+            "progress": float(self.progress or 0.0),
+            "message": self.message,
+            "gallery_image_id": self.gallery_image_id,
+            "filename": self.filename,
+            "preview_filename": self.preview_filename,
+            "error": self.error,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "started_at": self.started_at.isoformat() if self.started_at else None,
+            "finished_at": self.finished_at.isoformat() if self.finished_at else None,
+        }
+
+
 # ============================================================
 # Dataset Management Models
 # ============================================================

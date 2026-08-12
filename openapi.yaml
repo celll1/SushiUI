@@ -2051,6 +2051,102 @@ paths:
                 last_error: null
                 last_result: null
 
+  /studio/render-jobs:
+    post:
+      tags: [studio]
+      summary: Queue a Studio timeline render
+      description: |
+        Stage the active Studio timeline media and render the complete project
+        timeline with FFmpeg. Gallery assets are referenced by Gallery id inside
+        the JSON manifest; browser-imported assets are supplied as multipart
+        files keyed positionally by `asset_ids`. URLs, local filesystem paths,
+        and blob URLs are not accepted. The endpoint returns immediately with
+        a persistent single-worker render job. The completed video is inserted
+        into the normal Gallery as `generation_type: studio_render`.
+      operationId: createStudioRenderJob
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/StudioRenderRequest'
+      responses:
+        '202':
+          description: Render job queued
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StudioRenderJob'
+        '422':
+          description: Invalid manifest or media asset
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Render job could not be staged or queued
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /studio/render-jobs/{job_id}:
+    get:
+      tags: [studio]
+      summary: Get Studio timeline render status
+      operationId: getStudioRenderJob
+      parameters:
+        - name: job_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Current render status; completed jobs include the Gallery image
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StudioRenderJob'
+        '404':
+          description: Render job not found (for example after a backend restart before persistence was available)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      tags: [studio]
+      summary: Cancel a Studio timeline render
+      operationId: cancelStudioRenderJob
+      parameters:
+        - name: job_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Cancellation requested or job already terminal
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, job_id, state]
+                properties:
+                  success:
+                    type: boolean
+                  job_id:
+                    type: string
+                  state:
+                    type: string
+                    enum: [queued, running, cancel_requested, cancelled, completed, failed]
+        '404':
+          description: Render job not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /images:
     get:
       tags: [images]
@@ -6746,6 +6842,188 @@ components:
       bearerFormat: JWT
 
   schemas:
+    StudioRenderAssetRef:
+      type: object
+      required: [id, kind]
+      properties:
+        id:
+          type: string
+          description: Client-local asset id; never a filesystem path.
+        kind:
+          type: string
+          enum: [image, video, audio]
+        galleryId:
+          type: integer
+          nullable: true
+          description: Existing Gallery row id. Omit this for an uploaded asset.
+        name:
+          type: string
+        duration:
+          type: number
+          minimum: 0
+        width:
+          type: integer
+          nullable: true
+        height:
+          type: integer
+          nullable: true
+    StudioRenderTrack:
+      type: object
+      required: [id, kind]
+      properties:
+        id:
+          type: string
+        kind:
+          type: string
+          enum: [video, audio]
+        muted:
+          type: boolean
+          default: false
+        visible:
+          type: boolean
+          default: true
+    StudioRenderClip:
+      type: object
+      required: [id, assetId, trackId, start, duration, sourceIn]
+      properties:
+        id:
+          type: string
+        assetId:
+          type: string
+        trackId:
+          type: string
+        start:
+          type: number
+          minimum: 0
+          description: Timeline position in seconds; normalized to an integer output frame.
+        duration:
+          type: number
+          exclusiveMinimum: 0
+          description: Presentation duration in seconds; normalized to output frames.
+        sourceIn:
+          type: number
+          minimum: 0
+          description: Source trim offset in seconds.
+        presentation:
+          type: string
+          enum: [frame, hold, clip]
+        activeTake:
+          type: boolean
+          default: true
+    StudioRenderManifest:
+      type: object
+      required: [project, assets, tracks, clips]
+      properties:
+        schemaVersion:
+          type: integer
+        project:
+          type: object
+          required: [id, revision, duration, fps, width, height]
+          properties:
+            id:
+              type: string
+            revision:
+              type: integer
+            name:
+              type: string
+            duration:
+              type: number
+              exclusiveMinimum: 0
+              maximum: 600
+            fps:
+              type: number
+              minimum: 1
+              maximum: 120
+            width:
+              type: integer
+              minimum: 64
+              maximum: 8192
+            height:
+              type: integer
+              minimum: 64
+              maximum: 8192
+        render:
+          type: object
+          properties:
+            audio_enabled:
+              type: boolean
+              default: true
+            fit_mode:
+              type: string
+              enum: [cover, contain]
+              default: cover
+        assets:
+          type: array
+          items:
+            $ref: '#/components/schemas/StudioRenderAssetRef'
+        tracks:
+          type: array
+          items:
+            $ref: '#/components/schemas/StudioRenderTrack'
+        clips:
+          type: array
+          items:
+            $ref: '#/components/schemas/StudioRenderClip'
+    StudioRenderRequest:
+      type: object
+      required: [manifest]
+      properties:
+        manifest:
+          type: string
+          description: JSON-encoded StudioRenderManifest.
+        asset_ids:
+          type: array
+          items:
+            type: string
+          description: Repeated ids corresponding positionally to asset_files.
+        asset_files:
+          type: array
+          items:
+            type: string
+            format: binary
+          description: Browser-imported files; Gallery assets must not be uploaded again.
+    StudioRenderJob:
+      type: object
+      required: [job_id, state, progress]
+      properties:
+        job_id:
+          type: string
+        state:
+          type: string
+          enum: [queued, running, cancel_requested, cancelled, completed, failed]
+        progress:
+          type: number
+          minimum: 0
+          maximum: 1
+        message:
+          type: string
+          nullable: true
+        gallery_image_id:
+          type: integer
+          nullable: true
+        filename:
+          type: string
+          nullable: true
+        preview_filename:
+          type: string
+          nullable: true
+        error:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+          nullable: true
+        started_at:
+          type: string
+          nullable: true
+        finished_at:
+          type: string
+          nullable: true
+        image:
+          allOf:
+            - $ref: '#/components/schemas/GeneratedImage'
+          nullable: true
+
     PromptAssistReference:
       type: object
       required: [token, kind, role]
@@ -11080,7 +11358,7 @@ components:
           description: Output height in pixels; 0 for audio rows.
         generation_type:
           type: string
-          enum: [txt2img, img2img, inpaint, outpaint, upscale, txt2vid, img2vid, outpaint_vid, txt2aud, aud2aud, repaint, outpaint_aud]
+          enum: [txt2img, img2img, inpaint, outpaint, upscale, txt2vid, img2vid, outpaint_vid, inpaint_vid, ref2vid, studio_render, txt2aud, aud2aud, repaint, outpaint_aud]
           description: Endpoint that produced the row. `repaint` is written by `/generate/aud2aud` when `mode=repaint`.
         parameters:
           type: object

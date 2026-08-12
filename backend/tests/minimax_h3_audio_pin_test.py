@@ -19,6 +19,7 @@ on CPU, with the pin applied"), which is the probe's own guarantee that these
 properties hold against the SHIPPED code rather than a hand re-derivation.
 """
 
+import inspect
 import math
 import os
 import sys
@@ -120,6 +121,121 @@ def test_permute_then_unpermute_is_the_identity_on_a_synthetic_channel_major_blo
     # permutation names them.
     assert torch.equal(packed[:len(pinned_latents) * ops.AUDIO_CHANNELS],
                        rows[torch.tensor(ops.audio_pin_row_indices(pinned_latents, NUM_AUDIO_LATENTS))])
+
+
+# --------------------------------------------------------------------------
+# substitute_and_permute_audio_rows: THE HELPER the draw-time call site uses.
+#
+# WHY THESE EXIST: `test_permute_then_unpermute_is_the_identity_on_a_synthetic_
+# channel_major_block` above reads `audio_row_permutation` / `audio_row_order`
+# straight off the layout and never touches production code, and
+# `minimax_h3_audio_pin_test.py`'s backend-wiring tests (further down) stub
+# `_generate_minimax_h3` wholesale -- so a bug in the actual substitute-then-
+# permute step, or a swap of WHICH layout key each of the two call sites uses,
+# is invisible to either. These tests drive the real helper
+# `_generate_minimax_h3`'s draw site calls, with `free_rows` and `source_rows`
+# given DISJOINT value ranges so "packed the source" and "packed the free draw"
+# cannot be confused by a shape/dtype-only check.
+# --------------------------------------------------------------------------
+
+def _free_and_source_rows():
+    free_rows = torch.arange(2 * NUM_AUDIO_LATENTS * 4, dtype=torch.float32).reshape(
+        2 * NUM_AUDIO_LATENTS, 4)
+    source_rows = free_rows + 1000.0
+    return free_rows, source_rows
+
+
+def test_substitute_and_permute_packs_the_pinned_source_into_the_prefix():
+    """The PREFIX of the packed block is the pinned SOURCE rows, in the order
+    the permutation names them -- not the free draw that occupied those rows
+    before the substitution."""
+    pinned_latents = _middle_third_pinned()
+    layout = _layout(pinned_latents)
+    free_rows, source_rows = _free_and_source_rows()
+
+    packed = ops.substitute_and_permute_audio_rows(
+        free_rows.clone(), source_rows, pinned_latents, NUM_AUDIO_LATENTS,
+        layout["audio_row_permutation"])
+
+    n_cond = len(pinned_latents) * ops.AUDIO_CHANNELS
+    pin_indices = torch.tensor(ops.audio_pin_row_indices(pinned_latents, NUM_AUDIO_LATENTS))
+    assert torch.equal(packed[:n_cond], source_rows[pin_indices])
+    assert bool((packed[:n_cond] >= 1000.0).all())
+
+
+def test_substitute_and_permute_leaves_the_free_rows_as_the_original_draw():
+    """NEGATIVE CONTROL: the rows AFTER the prefix are still the free draw."""
+    pinned_latents = _middle_third_pinned()
+    layout = _layout(pinned_latents)
+    free_rows, source_rows = _free_and_source_rows()
+
+    packed = ops.substitute_and_permute_audio_rows(
+        free_rows.clone(), source_rows, pinned_latents, NUM_AUDIO_LATENTS,
+        layout["audio_row_permutation"])
+
+    n_cond = len(pinned_latents) * ops.AUDIO_CHANNELS
+    assert bool((packed[n_cond:] < 1000.0).all())
+
+
+def test_the_decode_unpermute_restores_channel_major_order_of_the_substituted_block():
+    """The FULL round trip a real request goes through: pin + pack at the draw
+    site, then un-permute with `audio_row_order` at the decode site -- and the
+    result must be the ORIGINAL channel-major block with only the pinned rows
+    replaced by the source, not merely SOME permutation's round trip.
+
+    THE MUTANT THIS EXISTS FOR: swapping which layout key is used at the draw
+    site (`audio_row_permutation`) and the decode site (`audio_row_order`) for
+    one another. Both are shape/dtype-identical bijections of the same row
+    block, so a swap raises nothing; it silently reorders every generated
+    audio row in the decoded output. This test drives the exact helper the
+    draw site calls, un-permutes with the exact key the decode site reads, and
+    checks CONTENT equality against the expected channel-major array -- a test
+    that only checks `perm(inverse(x)) == x` cannot distinguish "the two keys
+    were used correctly" from "the two keys were swapped and still compose to
+    the identity as a pair", which is exactly the class of bug this closes.
+    """
+    pinned_latents = _middle_third_pinned()
+    layout = _layout(pinned_latents)
+    permutation, order = layout["audio_row_permutation"], layout["audio_row_order"]
+    free_rows, source_rows = _free_and_source_rows()
+    pin_indices = torch.tensor(ops.audio_pin_row_indices(pinned_latents, NUM_AUDIO_LATENTS))
+    expected = free_rows.clone()
+    expected[pin_indices] = source_rows[pin_indices]
+
+    packed = ops.substitute_and_permute_audio_rows(
+        free_rows.clone(), source_rows, pinned_latents, NUM_AUDIO_LATENTS, permutation)
+    restored = packed[order]
+    assert torch.equal(restored, expected)
+
+    # NEGATIVE CONTROL for the swap itself: un-permuting with the DRAW-time
+    # permutation instead of the decode-time order does NOT restore the
+    # channel-major block for this (non-involutory) pinned latent set.
+    wrongly_restored = packed[permutation]
+    assert not torch.equal(wrongly_restored, expected)
+
+
+def test_the_backend_draw_and_decode_sites_use_the_correct_layout_keys():
+    """Anchors WHICH layout key each of the two production call sites reads.
+
+    Companion to the content tests above: those catch the bug numerically,
+    against synthetic data; this one pins the shipped source text directly,
+    so a future edit that moves the calls around still has to keep the right
+    key at each site or fail here immediately, without needing a GPU or a
+    loaded model to exercise the real denoise loop.
+    """
+    from core.pipeline_backends.minimax_h3 import MiniMaxH3Mixin
+
+    source = inspect.getsource(MiniMaxH3Mixin._generate_minimax_h3)
+
+    draw_call = source[source.index("ops.substitute_and_permute_audio_rows("):]
+    draw_call = draw_call[:draw_call.index(")\n") + 1]
+    assert 'layout["audio_row_permutation"]' in draw_call
+    assert 'layout["audio_row_order"]' not in draw_call
+
+    decode_unpermute = source[source.index('audio_row_order = layout["audio_row_order"]'):]
+    decode_unpermute = decode_unpermute[:decode_unpermute.index("full_audio_rows = ") + 200]
+    assert 'layout["audio_row_order"]' in decode_unpermute
+    assert 'layout["audio_row_permutation"]' not in decode_unpermute
 
 
 def test_unpack_audio_rows_on_the_restored_block_is_channel_correct():

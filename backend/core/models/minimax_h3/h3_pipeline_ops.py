@@ -445,6 +445,48 @@ def pin_video_rows(
     return video_rows
 
 
+def substitute_and_permute_audio_rows(
+    audio_rows: torch.Tensor,
+    source_rows: torch.Tensor,
+    pinned_latents: Sequence[int],
+    num_audio_latents: int,
+    permutation: Optional[torch.Tensor],
+) -> torch.Tensor:
+    """The draw-time half of a PARTIAL audio pin: substitute, then pack.
+
+    Mirrors :func:`pin_video_rows`'s "substitute in ORIGINAL row space first"
+    recipe, plus the pack step audio alone needs: the audio block is
+    CHANNEL-MAJOR, so an arbitrary temporal SET of pinned latents is not a
+    contiguous prefix until it is moved there by the layout's own permutation
+    (:func:`build_packed_layout`'s ``audio_row_permutation``) -- video's pins
+    never need this because ``pinned_video_row_indices`` / ``pinned_video_frames``
+    already name a frame-major set the layout addresses directly, with no
+    accompanying reorder of the row storage itself.
+
+    ``permutation`` MUST be the SAME layout's ``audio_row_permutation`` --
+    passing its ``audio_row_order`` (the INVERSE, meant for the decode-time
+    un-permute back to channel-major order) here has the same shape and dtype
+    as the correct tensor, so nothing raises; it silently packs the wrong rows
+    into the conditioning prefix instead.
+
+    Both ``audio_rows`` and ``source_rows`` are addressed in ORIGINAL
+    (unpermuted, channel-major) row space before the pack, so the free rows'
+    own draw (K0.6's recorded order) is untouched by which latents are pinned.
+    Mutates ``audio_rows`` in place before permuting it (matching the call
+    site's previous inline behaviour) and returns the packed tensor.
+    """
+    if permutation is None:
+        raise RuntimeError(
+            "MiniMax-H3 partial audio pin: the layout built no permutation for it.")
+    pin_rows = torch.tensor(
+        audio_pin_row_indices(sorted(int(t) for t in pinned_latents), num_audio_latents),
+        dtype=torch.long, device=audio_rows.device,
+    )
+    source = source_rows.to(audio_rows.device, audio_rows.dtype)
+    audio_rows[pin_rows] = source[pin_rows]
+    return audio_rows[permutation.to(audio_rows.device)]
+
+
 def build_packed_layout(
     num_text_tokens: int,
     num_latent_frames: int,
@@ -501,7 +543,11 @@ def build_packed_layout(
     ``audio_row_permutation`` / ``audio_row_order`` record the permutation and
     its inverse for the caller's draw-time substitution and decode-time
     un-permute (mirroring ``video_row_permutation`` / ``video_row_order``
-    exactly). Measured in ``scratchpad/minimax_h3_ai_probe_results.md``.
+    exactly). Measured in ``scratchpad/minimax_h3_ai_probe_results.md``, with
+    video left free (its own §4) -- the same shape with video ALSO pinned on
+    the same range, the actual ``regenerate_range`` configuration when both
+    this parameter and ``pinned_video_frames``/``pinned_video_row_indices``
+    are supplied together, was not measured there.
 
     ``pinned_video_frames`` is temporal inpaint: the LATENT frames that are
     supplied at (near) their true value and never denoised while the rest of the

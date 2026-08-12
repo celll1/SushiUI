@@ -41,10 +41,16 @@ import ResizableColumns, {
 import LoopGenerationPanel, { LoopGenerationConfig } from "./LoopGenerationPanel";
 import QuantizedGemmSelect from "./QuantizedGemmSelect";
 import VideoFrameCountSlider from "../common/VideoFrameCountSlider";
-import VideoChainConfirmDialog from "../common/VideoChainConfirmDialog";
-import { buildChainContinuationQueueItems, advanceVideoChain } from "@/utils/videoChain";
+import VideoChainConfirmDialog, { VideoChainPlanInput } from "../common/VideoChainConfirmDialog";
+import {
+  buildChainContinuationQueueItems,
+  buildChainImageReferenceInventory,
+  segmentChainReferenceImages,
+  segmentChainText,
+  advanceVideoChain,
+} from "@/utils/videoChain";
 import { migrateLoopGenerationConfig, computeLoopDecodeDirective } from "@/utils/loopGenerationInheritance";
-import { generateTxt2Img, generateImg2Img, generateTxt2Vid, Txt2VidParams, generateRef2Vid, Ref2VidParams, generateOutpaintVideo, OutpaintVideoParams, MiniMaxH3References, MiniMaxH3Keyframe, generateTxt2Aud, Txt2AudParams, generateTxt2ImgTrainingPreview, GenerationParams, getSamplers, getScheduleTypes, tokenizePrompt, generateTIPOPrompt, cancelGeneration, getCurrentModel, isLatentOnlyResult, getResultFilename, getResultPlaybackFilename, getResultSeed, getResultAncestralSeed, unetQuantizationOptions, normalizeUnetQuantization, transformerQuantizationLabel, archSupportsFeature, archDisplayName, normalizeVideoFrames, videoCanvasRule, videoCanvasAxisBounds, videoMinInferenceSteps, videoCanvasExceedsEnvelope, isGenerationStalledError, planVideoChain, effectiveSegmentFrames, VIDEO_BLOCK_SWAP_MAX } from "@/utils/api";
+import { generateTxt2Img, generateImg2Img, generateTxt2Vid, Txt2VidParams, generateRef2Vid, Ref2VidParams, generateOutpaintVideo, OutpaintVideoParams, MiniMaxH3References, MiniMaxH3Keyframe, generateTxt2Aud, Txt2AudParams, generateTxt2ImgTrainingPreview, GenerationParams, getSamplers, getScheduleTypes, tokenizePrompt, generateTIPOPrompt, cancelGeneration, getCurrentModel, isLatentOnlyResult, getResultFilename, getResultPlaybackFilename, getResultSeed, getResultAncestralSeed, unetQuantizationOptions, normalizeUnetQuantization, transformerQuantizationLabel, archSupportsFeature, archDisplayName, normalizeVideoFrames, videoCanvasRule, videoCanvasAxisBounds, videoMinInferenceSteps, videoCanvasExceedsEnvelope, isGenerationStalledError, planVideoChain, effectiveSegmentFrames, VideoChainManifest, VIDEO_BLOCK_SWAP_MAX } from "@/utils/api";
 import { useActiveTraining } from "@/hooks/useActiveTraining";
 import { useSmoothProgress } from "@/hooks/useSmoothProgress";
 import { wsClient, CFGMetrics } from "@/utils/websocket";
@@ -362,6 +368,10 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
     targetFrames: number;
     capFrames: number;
     segmentFrames: number | null;
+    // Loaded variant at Generate time. The planner decides the available
+    // continuation modes from the architecture/variant pair, never from a
+    // checkpoint name, so it is captured here rather than re-read later.
+    variant: string | null;
   } | null>(null);
   // Any-segment-of-a-chain reason the chain stopped short of its target
   // (no forward progress / architecture could not continue further) --
@@ -1934,6 +1944,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
           targetFrames: params.num_frames ?? 0,
           capFrames: chainPlan.capFrames,
           segmentFrames: chainSegmentFrames,
+          variant: modality.modelInfo?.variant ?? null,
         });
         return;
       }
@@ -2022,19 +2033,40 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
   // so the two buttons in the dialog behave identically regardless of whether
   // a generation is already running (see videoChain.ts for why this runs on
   // the queue at all).
-  const handleVideoChainStart = () => {
+  // `manifest` is the plan the user approved in the dialog; `null` is the
+  // legacy repeat mode they picked by name. Everything a segment says (prompt)
+  // and is conditioned on (which image references) is fixed onto the queue
+  // items HERE, so a later change to this panel's prompt, segment length or
+  // references cannot reach a chain that is already enqueued.
+  const handleVideoChainStart = (manifest: VideoChainManifest | null) => {
     if (!videoChainPrompt) return;
     const { videoParams, isRef2Va, references, targetFrames, capFrames, segmentFrames } = videoChainPrompt;
     setVideoChainPrompt(null);
 
     const loopGroupId = `chain_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-    const cappedParams: Txt2VidParams = { ...videoParams, num_frames: capFrames };
     const referenceImages = references.images && references.images.length > 0 ? references.images : undefined;
+    const mainText = segmentChainText(manifest, 0, {
+      prompt: videoParams.prompt,
+      negative_prompt: videoParams.negative_prompt,
+    });
+    const cappedParams: Txt2VidParams = {
+      ...videoParams,
+      num_frames: capFrames,
+      prompt: mainText.prompt,
+      negative_prompt: mainText.negative_prompt,
+    };
+    // Segment 0 obeys the same binding as every other segment: a reference the
+    // user unbound from it is not sent, and the manifest's prompt tokens were
+    // renumbered for exactly the set that IS sent.
+    const mainReferenceImages = segmentChainReferenceImages(manifest, 0, referenceImages);
+    const mainReferences: MiniMaxH3References | undefined = isRef2Va
+      ? { ...references, images: mainReferenceImages ?? [] }
+      : undefined;
 
     addToQueue({
       type: isRef2Va ? "ref2vid" : "txt2vid",
       params: cappedParams as any,
-      references: isRef2Va ? references : undefined,
+      references: mainReferences,
       prompt: cappedParams.prompt,
       loopGroupId,
       loopStepIndex: -1,
@@ -2043,6 +2075,9 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
       // Frozen at enqueue time -- see `chainSegmentFrames` state's own
       // comment. A later change to that control never retargets this chain.
       chainSegmentFrames: segmentFrames,
+      chainManifestId: manifest?.chain_id,
+      chainPlanHash: manifest?.plan_hash,
+      chainSegmentIndex: manifest ? 0 : undefined,
     });
 
     const continuationItems = buildChainContinuationQueueItems({
@@ -2055,6 +2090,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
       continuationBase: videoParams,
       referenceImageSize: isRef2Va ? (videoParams as Ref2VidParams).reference_image_size : undefined,
       referenceImages: isRef2Va ? referenceImages : undefined,
+      manifest,
     });
     continuationItems.forEach((item) => addToQueue(item));
   };
@@ -4044,6 +4080,25 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
       );
     }
   }
+  // What POST /video-chain/plan is asked for. Only IMAGE references are listed:
+  // they are the only kind a continuation segment can be given, so they are the
+  // only kind a per-segment binding could apply to.
+  const videoChainPlanInput: VideoChainPlanInput | null =
+    videoChainPrompt && loadedArch
+      ? {
+          architecture: loadedArch,
+          variant: videoChainPrompt.variant,
+          rootPrompt: videoChainPrompt.videoParams.prompt,
+          negativePrompt: videoChainPrompt.videoParams.negative_prompt,
+          targetFrames: videoChainPrompt.targetFrames,
+          fps: videoChainPrompt.videoParams.frame_rate ?? 24,
+          requestedSegmentFrames: videoChainPrompt.segmentFrames,
+          rootSeed: videoChainPrompt.videoParams.seed,
+          references: videoChainPrompt.isRef2Va
+            ? buildChainImageReferenceInventory(videoChainPrompt.references?.images)
+            : [],
+        }
+      : null;
 
   return (
     <ResizableColumns
@@ -4478,7 +4533,10 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
               {currentItem?.loopGroupId && currentItem.chainTargetFrames != null && (
                 <p className="text-xs text-amber-400">
                   Video chain: segment {(currentItem.loopStepIndex ?? -1) + 2}
-                  {" "}running (target {currentItem.chainTargetFrames} frames).
+                  {" "}running (target {currentItem.chainTargetFrames} frames)
+                  {currentItem.chainPlanHash
+                    ? `, plan ${currentItem.chainPlanHash.slice(0, 12)}.`
+                    : ". Legacy repeat: every segment is sent the same full-length prompt."}
                 </p>
               )}
               {videoChainStoppedMessage && (
@@ -5466,6 +5524,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         }
         finalSeconds={videoChainFinalSeconds}
         plan={videoChainPlan}
+        planInput={videoChainPlanInput}
         notes={videoChainNotes}
         onCancel={() => setVideoChainPrompt(null)}
         onGenerateAtCap={handleVideoChainGenerateAtCap}

@@ -39,11 +39,18 @@
 // estimate), and patches it onto the already-queued item with
 // `updateQueueItemByLoop` -- the same mechanism img2img loop steps already
 // use to inherit the previous step's output image.
+//
+// What each segment SAYS and what it is conditioned on is a different matter:
+// the Chain Manifest (POST /video-chain/plan) fixes one prompt and one
+// reference set per segment at enqueue time, and neither is ever rewritten
+// afterwards -- the plan the user approved is what runs.
 import {
   ArchCapabilities,
   LoRAConfig,
   OutpaintVideoParams,
   QuantizedGemmMode,
+  VideoChainManifest,
+  VideoChainReferenceInput,
   nextVideoChainTotalFrames,
   planVideoChainSegments,
 } from "./api";
@@ -110,13 +117,73 @@ export interface ChainContinuationBase {
   spectrum_max_cache?: number;
 }
 
+// What one segment says, as opposed to what it executes with. Separated from
+// `ChainContinuationBase` because everything in that interface replays the
+// request that started the chain unchanged, while this changes per segment.
+export interface ChainSegmentText {
+  prompt: string;
+  negative_prompt?: string;
+}
+
+// Image references travel as an ORDERED File[] (their order is semantic --
+// it fixes the <Picture i> labels the prompt refers to), while a manifest
+// binds references by id. One id scheme, derived from that order, is what
+// connects the two; nothing else may invent another.
+export const chainReferenceImageId = (index: number): string => `ref_image_${index}`;
+
+// The plan-request inventory for a set of image references: kind and label
+// only, never bytes. `segment_indices` is left unset, which is the manifest's
+// `default_all` binding and therefore today's carry-to-every-segment
+// behaviour; the plan editor is where a user narrows it.
+export const buildChainImageReferenceInventory = (
+  images: File[] | undefined
+): VideoChainReferenceInput[] =>
+  (images ?? []).map((file, index) => ({
+    id: chainReferenceImageId(index),
+    kind: "image" as const,
+    label: file.name,
+  }));
+
+// The image references bound to ONE segment, in inventory order. An empty
+// `reference_ids` means this segment gets none; an ABSENT one (or no manifest
+// at all, i.e. legacy) means all of them, which is the pre-manifest behaviour
+// and the manifest's own `default_all` binding.
+export const segmentChainReferenceImages = (
+  manifest: VideoChainManifest | null | undefined,
+  segmentIndex: number,
+  images: File[] | undefined
+): File[] | undefined => {
+  if (!images || images.length === 0) return undefined;
+  if (!manifest) return images;
+  const bound = manifest.segments.find((s) => s.index === segmentIndex)?.reference_ids;
+  if (bound == null) return images;
+  const boundSet = new Set(bound);
+  const selected = images.filter((_, index) => boundSet.has(chainReferenceImageId(index)));
+  return selected.length > 0 ? selected : undefined;
+};
+
+// This segment's compiled text, or the root text when the chain runs without
+// a manifest (legacy repeat / planner declined -- both explicit user choices).
+export const segmentChainText = (
+  manifest: VideoChainManifest | null | undefined,
+  segmentIndex: number,
+  fallback: ChainSegmentText
+): ChainSegmentText => {
+  const segment = manifest?.segments.find((s) => s.index === segmentIndex);
+  if (!segment) return fallback;
+  return {
+    prompt: segment.prompt,
+    negative_prompt: segment.negative_prompt ?? fallback.negative_prompt,
+  };
+};
+
 // The Txt2VidParams/Img2VidParams/Ref2VidParams -> OutpaintVideoParams
 // mapping a continuation segment sends, in ONE place (previously duplicated,
-// near-verbatim, in both Txt2ImgPanel and Img2ImgPanel). `total_frames` is
-// the only field that changes segment to segment; everything else -- content
-// (prompt/geometry/steps/guidance/seed) AND execution/acceleration
-// (blocks_to_swap, quantization, LoRAs) -- replays the request that started
-// the chain unchanged. Segments 2..N are one clip to the user, not N
+// near-verbatim, in both Txt2ImgPanel and Img2ImgPanel). `total_frames` and
+// the segment text are what change segment to segment; everything else --
+// geometry/steps/guidance/seed AND execution/acceleration (blocks_to_swap,
+// quantization, LoRAs) -- replays the request that started the chain
+// unchanged. Segments 2..N are one clip to the user, not N
 // independent requests, so an execution setting the user picked for a real
 // reason (most concretely: block swap because the card cannot hold the model
 // resident) has to hold for every segment or a later one can OOM on the exact
@@ -151,14 +218,23 @@ export interface ChainContinuationBase {
 //     continuation is conditioned only on the boundary frame the placed clip
 //     itself provides via `extend_forward`, not on any anchor from the
 //     original request.
+//
+// The prompt is NOT taken from `base`: a chain manifest compiles one prompt
+// per segment (events assigned to exactly one owner, timestamps rebased onto
+// that segment's own span), and copying the full-length prompt into every
+// continuation is the defect this feature exists to fix. Callers pass the text
+// for THIS segment explicitly; the legacy repeat mode passes the root prompt
+// itself, which makes that behaviour a deliberate, visible choice rather than
+// the default.
 export function buildChainContinuationParams(
   base: ChainContinuationBase,
   totalFrames: number,
+  text: ChainSegmentText,
   referenceImageSize?: "max" | "match"
 ): OutpaintVideoParams {
   return {
-    prompt: base.prompt,
-    negative_prompt: base.negative_prompt,
+    prompt: text.prompt,
+    negative_prompt: text.negative_prompt ?? base.negative_prompt,
     width: base.width,
     height: base.height,
     frame_rate: base.frame_rate,
@@ -220,27 +296,71 @@ export function buildChainContinuationQueueItems(args: {
   loopGroupId: string;
   continuationBase: ChainContinuationBase;
   referenceImageSize?: "max" | "match";
-  // MiniMax-H3 ref2va only: the ORIGINAL image references, carried onto
-  // every continuation segment (identity continuity is what ref2va is for),
-  // on top of the boundary-frame anchor the placed clip itself provides.
+  // MiniMax-H3 ref2va only: the ORIGINAL image references, in the order the
+  // model reads them. Which of them each segment actually gets is the
+  // manifest's binding (`segmentChainReferenceImages`); with no manifest they
+  // all carry to every segment, as they did before the planner existed.
   referenceImages?: File[];
+  // The plan every segment's prompt and reference set is fixed from. Null =
+  // legacy repeat: the root prompt is resent unchanged on every segment and
+  // every reference carries to all of them. That is a mode the user picks in
+  // the plan dialog, never a fallback taken silently.
+  manifest?: VideoChainManifest | null;
 }): Array<Omit<QueueItem, "id" | "status" | "addedAt">> {
   const plannedTotals =
     planVideoChainSegments(args.caps, args.arch, args.targetFrames, args.segmentFrames) ?? [];
+  // With a manifest, its own geometry is the authority: a continuation's
+  // `total_frames` is the accumulated length it ends at, i.e. its
+  // `owned_end_frame`. The frontend planner still runs so a divergence
+  // between the two implementations is visible while both exist (design §12);
+  // it is reported, not silently preferred either way.
+  const manifestTotals = args.manifest
+    ? args.manifest.segments.filter((s) => s.index > 0).map((s) => s.owned_end_frame)
+    : null;
+  if (manifestTotals && manifestTotals.join(",") !== plannedTotals.join(",")) {
+    console.warn(
+      "[videoChain] plan parity: backend manifest totals",
+      manifestTotals,
+      "differ from the frontend planner's",
+      plannedTotals
+    );
+  }
+  const totals = manifestTotals ?? plannedTotals;
+
+  const rootText: ChainSegmentText = {
+    prompt: args.continuationBase.prompt,
+    negative_prompt: args.continuationBase.negative_prompt,
+  };
   const items: Array<Omit<QueueItem, "id" | "status" | "addedAt">> = [];
   let previous = args.capFrames;
-  plannedTotals.forEach((total, index) => {
+  totals.forEach((total, index) => {
+    // Loop step `index` is manifest segment `index + 1`: segment 0 is the
+    // main item the caller enqueues itself at loopStepIndex -1.
+    const segmentIndex = index + 1;
+    const text = segmentChainText(args.manifest, segmentIndex, rootText);
     items.push({
       type: "chain_vid",
-      params: buildChainContinuationParams(args.continuationBase, total, args.referenceImageSize),
-      referenceImages: args.referenceImages,
-      prompt: args.continuationBase.prompt,
+      params: buildChainContinuationParams(
+        args.continuationBase,
+        total,
+        text,
+        args.referenceImageSize
+      ),
+      referenceImages: segmentChainReferenceImages(
+        args.manifest,
+        segmentIndex,
+        args.referenceImages
+      ),
+      prompt: text.prompt,
       loopGroupId: args.loopGroupId,
       loopStepIndex: index,
       isLoopStep: true,
       chainTargetFrames: args.targetFrames,
       chainPreviousFrames: previous,
       chainSegmentFrames: args.segmentFrames ?? null,
+      chainManifestId: args.manifest?.chain_id,
+      chainPlanHash: args.manifest?.plan_hash,
+      chainSegmentIndex: segmentIndex,
     });
     previous = total;
   });
@@ -277,6 +397,11 @@ export interface ChainAdvanceResult {
 // 500-segment guard in `nextVideoChainTotalFrames`/`planVideoChain`).
 // A no-op (`{}`, no queue mutation) for a queue item that never belonged to a
 // chain in the first place.
+//
+// It patches the next step's INPUT and length only. Prompt and references are
+// fixed at enqueue time from the manifest and are never rewritten here: the
+// plan the user approved is what runs, and a retry of the same manifest row
+// reproduces the same request.
 export async function advanceVideoChain(args: {
   caps: ArchCapabilities | null | undefined;
   arch: string | null | undefined;

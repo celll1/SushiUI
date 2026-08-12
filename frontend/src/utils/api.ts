@@ -2192,6 +2192,40 @@ export const getResultSeed = (result: any): number =>
 export const getResultAncestralSeed = (result: any): number | null =>
   result?.image?.ancestral_seed ?? result?.actual_ancestral_seed ?? null;
 
+export interface StudioRenderUpload {
+  assetId: string;
+  file: File;
+}
+
+/** Queue a server-side render of a Studio timeline. */
+export const renderStudioProject = async (
+  manifest: Record<string, unknown>,
+  uploads: StudioRenderUpload[] = [],
+) => {
+  const formData = new FormData();
+  formData.append("manifest", JSON.stringify(manifest));
+  for (const upload of uploads) {
+    formData.append("asset_ids", upload.assetId);
+    formData.append("asset_files", upload.file, upload.file.name || "studio-media");
+  }
+  const response = await api.post("/studio/render-jobs", formData, {
+    // The request only stages the files and queues the job. The FFmpeg work is
+    // polled separately, so this timeout is only a guard for a stalled upload.
+    timeout: 600000,
+  });
+  return response.data;
+};
+
+export const getStudioRenderJob = async (jobId: string) => {
+  const response = await api.get(`/studio/render-jobs/${encodeURIComponent(jobId)}`);
+  return response.data;
+};
+
+export const cancelStudioRenderJob = async (jobId: string) => {
+  const response = await api.delete(`/studio/render-jobs/${encodeURIComponent(jobId)}`);
+  return response.data;
+};
+
 export const generateTxt2Img = async (params: GenerationParams) => {
   // Only load ControlNet images if they exist (avoid unnecessary localStorage access)
   const controlnets = (params.controlnets && params.controlnets.length > 0)

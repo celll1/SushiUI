@@ -17318,15 +17318,6 @@ VIDEO_CHAIN_ARCH_MINIMAX_H3 = "minimax_h3"
 # full-reference prompt layout when it does not send a `variant`.
 _VIDEO_CHAIN_REF_WORKFLOWS = {"ref", "ref2va", "reference", "full_reference", "full-reference"}
 
-# `VideoChainEvent.kind` (openapi) vs `TimelineEvent.kind` (core). Two core
-# kinds simply have shorter wire names; the third difference -- the core's
-# `shot`, which the deterministic MiniMax-H3 path produces for every shot -- has
-# no wire enum member at all, so it travels as `visual_action` PLUS a non-null
-# `shot_number`, which is what makes the wire <-> core round-trip lossless (and
-# therefore `plan_hash` reproducible from a re-submitted manifest).
-_VIDEO_CHAIN_EVENT_KIND_TO_WIRE = {"physical_sound": "sound", "music_transition": "music"}
-_VIDEO_CHAIN_EVENT_KIND_FROM_WIRE = {"sound": "physical_sound", "music": "music_transition"}
-
 _VIDEO_CHAIN_SEGMENT_PREFIX_RE = re.compile(r"^Segment\s+(\d+)")
 
 
@@ -17354,7 +17345,6 @@ class VideoChainEventModel(BaseModel):
     must_complete: bool = False
     resulting_state: str = ""
     source_span: Optional[VideoChainSourceSpanModel] = None
-    # Round-trip carriers (additional properties; OpenAPI permits them).
     shot_number: Optional[int] = None
     verbatim: Optional[List[str]] = None
 
@@ -17389,9 +17379,9 @@ class VideoChainReferenceInputModel(BaseModel):
     kind: str
     label: str = ""
     segment_indices: Optional[List[int]] = None
-    # Additional property: the token this reference carries in the ROOT prompt.
-    # Omitted by a client that follows the schema, in which case it is derived
-    # from the inventory order (see `_video_chain_references_from_input`).
+    # The token this reference carries in the ROOT prompt. Omitted by a client
+    # that follows the schema, in which case it is derived from the inventory
+    # order (see `_video_chain_references_from_input`).
     token: Optional[str] = None
 
 
@@ -17555,15 +17545,10 @@ def _video_chain_state_from_wire(state: Optional[VideoChainSegmentStateModel]) -
 
 
 def _video_chain_event_to_wire(event: TimelineEvent) -> Dict[str, Any]:
-    kind = _VIDEO_CHAIN_EVENT_KIND_TO_WIRE.get(event.kind, event.kind)
-    if kind == "shot":
-        # No `shot` member in the wire enum; `shot_number` below is what marks
-        # it, and what turns it back into a shot on the way in.
-        kind = "visual_action"
     span = event.source_span
     return {
         "id": event.id,
-        "kind": kind,
+        "kind": event.kind,
         "start_frame": event.start_frame,
         "end_frame": event.end_frame,
         "description": event.description,
@@ -17580,12 +17565,9 @@ def _video_chain_event_to_wire(event: TimelineEvent) -> Dict[str, Any]:
 
 
 def _video_chain_event_from_wire(model: VideoChainEventModel) -> TimelineEvent:
-    kind = _VIDEO_CHAIN_EVENT_KIND_FROM_WIRE.get(model.kind, model.kind)
-    if model.shot_number is not None and kind in ("visual_action", "shot"):
-        kind = "shot"
     return TimelineEvent(
         id=model.id,
-        kind=kind,
+        kind=model.kind,
         start_frame=model.start_frame,
         end_frame=model.end_frame,
         description=model.description,
@@ -17621,11 +17603,10 @@ def _video_chain_references_from_input(
 ) -> List[ChainReference]:
     """Plan-request inventory -> `ChainReference`s.
 
-    `VideoChainReferenceInput` carries no root-prompt token, so the token is
-    derived from the inventory order per kind: the inventory IS the order the
-    references are passed to the model, which is the order the root prompt
-    numbers them in. An explicit `token` (an additional property) wins when a
-    client sends one.
+    A client that omits `token` gets one derived from the inventory order per
+    kind: the inventory IS the order the references are passed to the model,
+    which is the order the root prompt numbers them in. An explicit `token`
+    wins when a client sends one.
     """
     counters: Dict[str, int] = {}
     references: List[ChainReference] = []
@@ -17671,18 +17652,17 @@ def _video_chain_segment_to_wire(segment: SegmentPlan) -> Dict[str, Any]:
         "mode": mode,
         "frames": visual.get("frames"),
         "source_segment_index": None if segment.index == 0 else segment.index - 1,
+        "shared_context_frames": visual.get("shared_context_frames"),
     }
-    if "shared_context_frames" in visual:
-        wire_visual["shared_context_frames"] = visual["shared_context_frames"]
     return {
         "index": segment.index,
         "anchor_global_frame": segment.anchor_global_frame,
         "owned_start_frame": segment.owned_start_frame,
         "owned_end_frame": segment.owned_end_frame,
         "generated_span_frames": segment.generated_span_frames,
-        # Additional property: the `total_frames` this segment's request asks
-        # for. Equal to `owned_end_frame`, but stated so a client never has to
-        # re-derive a request parameter.
+        # The `total_frames` this segment's request asks for. Equal to
+        # `owned_end_frame`, but stated so a client never has to re-derive a
+        # request parameter.
         "requested_total_frames": segment.requested_total_frames,
         "prompt": segment.prompt,
         "negative_prompt": segment.negative_prompt,

@@ -42,6 +42,7 @@
 }
 
 .topbar {
+  position: relative;
   height: 52px;
   flex: 0 0 52px;
   display: grid;
@@ -103,7 +104,8 @@
 .mediaHeader button:hover { color: white; background: #202b38; }
 .savedState { margin-left: 8px; color: #728092; font-size: 10px; white-space: nowrap; }
 .exportControls { justify-content: flex-end; gap: 8px; }
-.sequenceBadge { padding: 6px 9px; color: #aab5c3; border: 1px solid var(--border); border-radius: 5px; background: #0d141d; white-space: nowrap; }
+.sequenceBadge { padding: 6px 9px; color: #aab5c3; border: 1px solid var(--border); border-radius: 5px; background: #0d141d; white-space: nowrap; cursor: pointer; }
+.sequenceBadge:hover { color: white; border-color: #52647a; background: #172230; }
 .projectImportButton { display: inline-flex; align-items: center; gap: 5px; padding: 7px 9px; color: #b8addf; border: 1px solid #443776; border-radius: 5px; background: rgba(124, 92, 255, .08); }
 .exportButton { display: inline-flex; align-items: center; gap: 7px; padding: 8px 16px; color: white; font-weight: 700; border: 0; border-radius: 6px; background: linear-gradient(135deg, #6c4ee8, #825cf0); box-shadow: 0 5px 18px rgba(108, 78, 232, .25); }
 .exportButton:hover { filter: brightness(1.12); }
@@ -212,6 +214,8 @@
 .zoomControls input { width: 105px; accent-color: var(--purple); }
 .touchHint { display: none; color: #7b899b; font-size: 8px; text-align: center; white-space: nowrap; }
 .timeline { flex: 1; min-height: 0; display: grid; grid-template-columns: 122px minmax(0, 1fr); }
+.handTool .timelineScroll { cursor: grab; }
+.handTool .timelineScroll:active { cursor: grabbing; }
 .trackHeaders { z-index: 2; border-right: 1px solid var(--border); background: #0e151f; }
 .rulerHeader { height: 46px; display: flex; align-items: center; padding: 0 10px; color: #59687a; border-bottom: 1px solid var(--border); font-size: 8px; font-weight: 800; letter-spacing: .12em; }
 .trackHeader { height: 51px; display: grid; grid-template-columns: 17px 1fr 17px 17px; align-items: center; gap: 4px; padding: 0 8px; color: #748294; border-bottom: 1px solid var(--border-soft); }
@@ -238,9 +242,14 @@
    markup) escape the clip's own overflow:hidden on hover. */
 .timelineClip:hover { overflow: visible; }
 .audioClip { border-color: #328660; background: #173b2d; }
+.missingClip { border-color: #a15b65; background: repeating-linear-gradient(135deg, #3b202a 0 8px, #2a1820 8px 16px); }
+.missingClipLabel { position: absolute; right: 5px; bottom: 4px; z-index: 3; padding: 2px 4px; color: #f0b6bd; border-radius: 3px; background: rgba(35, 11, 18, .82); font-size: 7px; }
 .generatedClip { border-color: #7257d5; box-shadow: inset 0 0 0 1px rgba(144, 113, 255, .24); }
 .selectedClip { border-color: #aa8cff; box-shadow: 0 0 0 2px rgba(124, 92, 255, .46), inset 0 0 0 1px rgba(255, 255, 255, .12); }
 .dimmedClip { opacity: .36; filter: saturate(.55); }
+.draggingClip { opacity: .2; }
+.dragGhost { z-index: 8; opacity: .58; pointer-events: none; border-style: dashed; border-color: var(--cyan); background-color: rgba(53, 201, 237, .16); }
+.dragGhostInvalid { border-color: #e68e8e; background-color: rgba(190, 71, 71, .16); }
 .stillClip { min-width: 14px; overflow: visible; border-radius: 50%; background-color: #7860d5; }
 .clipName { position: relative; z-index: 2; display: block; padding: 4px 7px; overflow: hidden; text-overflow: ellipsis; text-shadow: 0 1px 3px black; white-space: nowrap; font-size: 8px; }
 .clipSourceHandle { position: absolute; z-index: 5; right: 7px; bottom: 4px; display: inline-flex; padding: 2px; color: #cfc3ff; border-radius: 3px; background: rgba(5, 8, 12, .72); cursor: copy; }
@@ -307,6 +316,26 @@
 .canvasFields label { display: flex; flex-direction: column; gap: 4px; color: #8491a2; font-size: 9px; }
 .canvasFields input { width: 100%; padding: 6px; color: #e8edf3; border: 1px solid var(--border); border-radius: 4px; background: #0d141d; font-size: 10px; }
 .canvasNote { display: block; margin-top: 7px; color: #687689; font-size: 8px; line-height: 1.4; }
+.projectSettingsPopover { position: absolute; z-index: 30; top: 58px; right: 12px; width: min(330px, calc(100vw - 24px)); padding: 11px; border: 1px solid #514579; border-radius: 7px; background: #121a25; box-shadow: 0 18px 40px rgba(0, 0, 0, .45); }
+.projectSettingsPopover .sectionTitle { justify-content: space-between; }
+.projectSettingsPopover .sectionTitle button { display: inline-flex; align-items: center; justify-content: center; padding: 3px; color: #8d9bad; border: 0; background: transparent; }
+.projectSettingsNote { margin: 7px 0 10px; color: #7f8da0; font-size: 9px; line-height: 1.4; }
+.canvasSliders { display: grid; gap: 5px; margin-top: 8px; }
+.canvasSliders label { display: flex; align-items: center; justify-content: space-between; gap: 7px; color: #8491a2; font-size: 9px; }
+.canvasSliders input { flex: 1; accent-color: var(--purple); }
+.canvasPresets { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; margin: 5px 0 8px; }
+.canvasPresets button { padding: 5px; color: #c3b5ff; border: 1px solid #4d3d84; border-radius: 4px; background: rgba(124, 92, 255, .1); font-size: 9px; }
+.applySettingsButton { width: 100%; padding: 7px; color: white; border: 0; border-radius: 5px; background: linear-gradient(135deg, #6946da, #7f5cf0); font-size: 10px; font-weight: 700; }
+.recentProjectsPopover { position: absolute; z-index: 30; top: 58px; right: 12px; width: min(360px, calc(100vw - 24px)); max-height: min(460px, calc(100vh - 72px)); padding: 10px; overflow-y: auto; border: 1px solid var(--border); border-radius: 7px; background: #121a25; box-shadow: 0 18px 40px rgba(0, 0, 0, .45); }
+.recentProjectsPopover .sectionTitle { justify-content: space-between; margin-bottom: 5px; }
+.recentProjectsPopover .sectionTitle button { display: inline-flex; align-items: center; justify-content: center; padding: 3px; color: #8d9bad; border: 0; background: transparent; }
+.emptyRecent { display: block; padding: 12px 5px; color: #758397; }
+.recentProjectItem { display: flex; align-items: center; justify-content: space-between; gap: 9px; width: 100%; padding: 8px 6px; color: #d5dce5; text-align: left; border: 0; border-top: 1px solid var(--border-soft); background: transparent; }
+.recentProjectItem:hover { background: #1a2532; }
+.recentProjectItem > span { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.recentProjectItem strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; }
+.recentProjectItem small,
+.recentProjectItem time { color: #7c8b9f; font-size: 8px; white-space: nowrap; }
 .resolvedModeCard { display: flex; flex-direction: column; gap: 4px; padding: 9px; border: 1px solid #53428f; border-radius: 6px; background: rgba(93, 69, 183, .12); }
 .resolvedModeCard strong { color: #e3ddff; font-size: 11px; }
 .resolvedModeCard small { color: #9188b7; font-size: 8px; }
@@ -440,7 +469,7 @@
   .assetFilterPanel { position: fixed; z-index: 80; top: 56px; left: 78px; width: 220px; margin: 0; box-shadow: 0 12px 35px rgba(0, 0, 0, .45); }
   .assetFilterPanel .mobileAssetSearch { display: flex !important; }
   .assetGrid { padding: 8px 6px; }
-  .sequenceBadge { display: none; }
+  .sequenceBadge { display: inline-flex; max-width: 118px; overflow: hidden; padding: 6px; text-overflow: ellipsis; }
 }
 
 @media (max-width: 900px) {

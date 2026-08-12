@@ -48,7 +48,7 @@ export const loadStudioProject = async (): Promise<StudioProject | null> => {
     });
     const project: StudioProject = {
       ...parsed,
-      schemaVersion: 3,
+      schemaVersion: 4,
       width: Number.isFinite(parsed.width) && parsed.width! > 0
         ? Math.max(64, Math.min(8192, Math.round(parsed.width! / 16) * 16))
         : 1920,
@@ -64,9 +64,9 @@ export const loadStudioProject = async (): Promise<StudioProject | null> => {
       project.assets.map(async (asset): Promise<StudioAsset> => {
         if (!asset.blobKey) return asset;
         const blob = await loadImportedMedia(asset.blobKey);
-        if (!blob) return { ...asset, url: "", thumbnailUrl: undefined };
+        if (!blob) return { ...asset, url: "", thumbnailUrl: undefined, missing: true };
         const url = URL.createObjectURL(blob);
-        return { ...asset, url, thumbnailUrl: asset.kind === "image" ? url : undefined };
+        return { ...asset, url, thumbnailUrl: asset.kind === "image" ? url : undefined, missing: false };
       }),
     );
     return { ...project, assets };

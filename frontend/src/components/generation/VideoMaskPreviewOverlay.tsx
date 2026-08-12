@@ -28,7 +28,17 @@ export interface VideoMaskPreviewOverlayProps {
   /** The regenerate range (pixel frames of the trimmed clip), used only to choose sample frames -- see computeMaskPreviewSampleFrames. */
   rangeStart: number;
   rangeEnd: number;
-  /** The live playhead frame (from useVideoPlayhead), or null. Used only to pick the nearest already-fetched sample to draw -- never sent as a fresh request by itself. */
+  /**
+   * The live playhead frame, in TRIMMED-clip coordinates -- the SAME
+   * coordinate space as `rangeStart`/`rangeEnd` and every keyframe's own
+   * `frame` (see `VideoInpaintTimeline`'s `- trimStart`). This is NOT the
+   * raw `<video>` element's own frame number (`useVideoPlayhead`'s
+   * `currentFrame`) unless `input_trim_start_frames` is 0 -- the caller must
+   * subtract the trim-start offset before passing it in here, or the
+   * "nearest sample" lookup below silently picks the wrong frame's mask.
+   * May be null. Used only to pick the nearest already-fetched sample to
+   * draw -- never sent as a fresh request by itself.
+   */
   currentFrame: number | null;
   enabled: boolean;
   /** 0..1. Independent of MASK_OVERLAY_ALPHA, which is the fixed blend alpha baked into the highlight itself; this is a user-facing overall opacity on top of it. */
@@ -80,9 +90,18 @@ export default function VideoMaskPreviewOverlay({
   const preview = useMaskPreview(
     manifest,
     assets,
-    enabled ? sampleFrames : [],
+    enabled ? sampleFrames.frames : [],
     PREVIEW_MAX_SIZE,
   );
+
+  // Once a fetch has ever produced a sprite, remember that -- so the
+  // "Updating…" badge can still fire after every keyframe is deleted (the
+  // mask that WAS there is now gone, which is worth surfacing) without also
+  // firing permanently on a pristine timeline that has never had a mask at
+  // all (where `preview.isStale` is trivially true forever, since `held`
+  // starts and stays null until a first successful fetch).
+  const everHadResultRef = useRef(false);
+  if (preview.result != null) everHadResultRef.current = true;
 
   // Track the video element's own rendered box (its client size IS the
   // display container: the panel renders it with w-full h-full).
@@ -107,7 +126,13 @@ export default function VideoMaskPreviewOverlay({
       canvas.height = 0;
     };
 
-    if (!enabled || !containerSize || !nativeSize || !preview.result) {
+    if (!enabled || !containerSize || !nativeSize || !preview.result || preview.isStale) {
+      // `isStale` covers both "the input changed since this sprite was
+      // fetched" AND "there is no longer any mask to show at all" (see
+      // `useMaskPreview`'s early-return when every keyframe is deleted,
+      // which clears `held` so `result` is null and `isStale` is true) --
+      // never draw a sprite the hook itself says no longer matches the
+      // current mask.
       clear();
       return;
     }
@@ -166,7 +191,7 @@ export default function VideoMaskPreviewOverlay({
       };
       image.src = result.strip_png;
     }
-  }, [enabled, containerSize, nativeSize, outputWidth, outputHeight, preview.result, currentFrame, opacity]);
+  }, [enabled, containerSize, nativeSize, outputWidth, outputHeight, preview.result, preview.isStale, currentFrame, opacity]);
 
   if (!enabled) return null;
 
@@ -177,14 +202,21 @@ export default function VideoMaskPreviewOverlay({
         className="absolute inset-0 pointer-events-none"
         style={{ width: "100%", height: "100%" }}
       />
-      {(preview.isPending || preview.isStale) && manifest.keyframes.length > 0 && (
-        <div className="absolute top-1 right-1 pointer-events-none rounded bg-black/60 px-1.5 py-0.5 text-[10px] text-gray-300">
-          Updating mask preview…
-        </div>
-      )}
+      {(preview.isPending || preview.isStale) &&
+        (manifest.keyframes.length > 0 || everHadResultRef.current) &&
+        !preview.error && (
+          <div className="absolute top-1 right-1 pointer-events-none rounded bg-black/60 px-1.5 py-0.5 text-[10px] text-gray-300">
+            Updating mask preview…
+          </div>
+        )}
       {preview.error && (
         <div className="absolute top-1 right-1 pointer-events-none rounded bg-black/60 px-1.5 py-0.5 text-[10px] text-amber-400">
           Mask preview unavailable
+        </div>
+      )}
+      {sampleFrames.keyframesOmitted > 0 && (
+        <div className="absolute bottom-1 right-1 pointer-events-none rounded bg-black/60 px-1.5 py-0.5 text-[10px] text-amber-400">
+          {sampleFrames.keyframesOmitted} keyframe{sampleFrames.keyframesOmitted === 1 ? "" : "s"} not previewed
         </div>
       )}
     </>

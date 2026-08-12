@@ -40,6 +40,7 @@ import {
   MASK_OVERLAY_ALPHA,
   MASK_OVERLAY_CSS_MIX_BLEND_MODE,
   MASK_POLARITY,
+  MASK_WHITE_LUMINANCE_THRESHOLD,
 } from "@/utils/maskConventions";
 import { migrateLoopGenerationConfig, computeLoopDecodeDirective } from "@/utils/loopGenerationInheritance";
 import { getSamplers, getScheduleTypes, generateInpaint, generateInpaintVideo, generateInpaintTrainingPreview, toBase64, InpaintParams as ApiInpaintParams, InpaintVideoParams, LoRAConfig, ControlNetConfig, generateTIPOPrompt, cancelGeneration, getCurrentModel, getResultFilename, getResultPlaybackFilename, getResultSeed, getResultAncestralSeed, isLatentOnlyResult, unetQuantizationOptions, normalizeUnetQuantization, transformerQuantizationLabel, archSupportsFeature, archDisplayName, inpaintVideoDefaultsForArch, fitVideoCanvas, videoCanvasRule, videoCanvasAxisBounds, videoCanvasExceedsEnvelope, largestValidVideoFrameCount, isValidVideoFrameCount, latentGroupSpans, snapRangeToLatentGroups, isGenerationStalledError, VIDEO_BLOCK_SWAP_MAX } from "@/utils/api";
@@ -429,7 +430,7 @@ function dataUrlHasWhitePixel(dataUrl: string): Promise<boolean> {
       context.drawImage(image, 0, 0);
       const { data } = context.getImageData(0, 0, canvas.width, canvas.height);
       for (let i = 0; i < data.length; i += 4) {
-        if (data[i] > 127) {
+        if (data[i] > MASK_WHITE_LUMINANCE_THRESHOLD) {
           resolve(true);
           return;
         }
@@ -5403,7 +5404,18 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
                     assets={videoMaskAssets}
                     rangeStart={params.regenerate_start_frame ?? 0}
                     rangeEnd={params.regenerate_end_frame ?? 0}
-                    currentFrame={inputVideoPlayer.currentFrame}
+                    // inputVideoPlayer.currentFrame is the <video> element's
+                    // RAW frame number; sampleFrames/keyframe.frame/rangeStart/
+                    // End are all in TRIMMED-clip coordinates (see
+                    // VideoInpaintTimeline's own `- trimStart`), so the raw
+                    // frame must be shifted into that same coordinate space
+                    // here or the overlay picks the wrong sample whenever
+                    // input_trim_start_frames > 0.
+                    currentFrame={
+                      inputVideoPlayer.currentFrame != null
+                        ? inputVideoPlayer.currentFrame - (params.input_trim_start_frames ?? 0)
+                        : null
+                    }
                     enabled={videoMaskPreviewEnabled}
                     opacity={videoMaskPreviewOpacity}
                   />

@@ -5309,14 +5309,16 @@ async def generate_inpaint_video(
     `regenerate` with a warning when the clip has no audio stream.
     `regenerate` generates the soundtrack for the whole clip, so the preserved
     video span carries generated audio that need not match its visuals.
-    `regenerate_range` generates the soundtrack for the whole clip unconditioned,
-    same as `regenerate`, but keeps only the span inside the regenerate range
-    from that generated track; the preserved spans outside the range are
+    `regenerate_range` pins the audio latents OUTSIDE the regenerate range as
+    conditioning, so the soundtrack generated inside the range is generated with
+    the surrounding original track as context; the preserved spans are then also
     spliced back in from the input clip's own audio, with a short crossfade at
-    the two boundaries. The model is never given the input audio in this mode
-    -- the audio inside the range is generated, not continued from the
-    original. It also falls back to `regenerate` with a warning when the clip
-    has no audio stream.
+    the two boundaries, because a pinned latent still returns through an
+    audio-VAE round trip. The pinned/free boundary snaps on the audio latent
+    grid, which is finer than the video one, so it can differ from the pixel
+    range by at most one audio latent per side. It falls back to `regenerate`
+    with a warning when the clip has no audio stream, and when the range covers
+    the whole clip and there is nothing left to pin.
 
     **Spatial mask (optional).** When `spatial_mask_manifest` is supplied,
     `spatial_mask_ids` and `spatial_mask_files` must have the same length and

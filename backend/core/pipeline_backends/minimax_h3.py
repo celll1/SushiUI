@@ -1208,9 +1208,11 @@ class MiniMaxH3Mixin:
         from api.generation_utils import (
             MINIMAX_H3_DOCUMENTED_ANCHOR_SCOPE,
             latent_frame_spans,
+            plan_audio_pin_latents,
             plan_video_inpaint_span,
         )
         from core.inference.outpaint_utils import center_crop_resize_frames
+        from core.models.minimax_h3 import h3_pipeline_ops as ops
 
         if not getattr(self, "minimax_h3_components", None):
             raise RuntimeError("MiniMax-H3 components are not loaded. Load a MiniMax-H3 model first.")
@@ -1393,13 +1395,19 @@ class MiniMaxH3Mixin:
         # clip through the shipped ia2v machinery and muxes it back verbatim, so
         # the regenerated span has the original soundtrack both to condition on
         # and in the output; the pin and the exact mux are both
-        # `_generate_minimax_h3`'s ia2v behaviour. `regenerate_range` pins
-        # nothing -- audio generates unconditioned for the whole clip exactly
-        # as `regenerate` does -- and the input's own track is spliced back in
-        # AFTER generation, only over the spans outside the regenerate range
-        # (`_minimax_h3_splice_inpaint_range_audio`, below). ----
+        # `_generate_minimax_h3`'s ia2v behaviour. `regenerate_range` now pins
+        # the PRESERVED spans only -- the same partial-audio-pin mechanism
+        # `build_packed_layout`'s `pinned_audio_latents` builds
+        # (`scratchpad/minimax_h3_ai_probe_results.md`) -- so the range itself
+        # still generates against real conditioning either side of it, rather
+        # than blind; the input's own track is ALSO spliced back in over those
+        # spans AFTER generation (`_minimax_h3_splice_inpaint_range_audio`,
+        # below), because a pinned latent still comes back through an
+        # audio-VAE round trip -- "pin for conditioning, paste for exactness",
+        # the same reason the pixel path pastes. ----
         audio_mode = str(params.get("inpaint_video_audio_mode") or "regenerate")
         pinned_audio = None
+        pinned_audio_latents: Tuple[int, ...] = ()
         if audio_mode == "preserve_input":
             pinned_audio = self._minimax_h3_inpaint_pinned_audio(
                 input_audio, clip_frames=clip_frames, source_fps=float(fps or frame_rate),
@@ -1413,22 +1421,59 @@ class MiniMaxH3Mixin:
                      "the output file.",
                      code="minimax_h3_input_audio_not_muxed")
         elif audio_mode == "regenerate_range" and not input_audio:
-            # No conditioning is pinned in this mode either way; the only thing
-            # `regenerate_range` needs from `input_audio` is the track to
-            # splice back in AFTER generation, so a clip with no audio stream
-            # has nothing to fall back to but plain `regenerate`.
+            # `regenerate_range` needs `input_audio` both to pin the preserved
+            # spans as conditioning and to splice them back in after
+            # generation, so a clip with no audio stream has nothing to fall
+            # back to but plain `regenerate`.
             warn("inpaint_video_audio_mode='regenerate_range' was requested but the uploaded "
                  "clip has no audio stream; the whole clip's soundtrack is generated instead",
                  code="inpaint_video_no_input_audio")
             audio_mode = "regenerate"
             params["inpaint_video_audio_mode"] = "regenerate"
+        elif audio_mode == "regenerate_range":
+            components = self.minimax_h3_components
+            audio_latent_rate = float(components.get("audio_latent_rate", 40.0))
+            num_audio_latents = ops.audio_latent_frames(
+                clip_frames, fps=frame_rate, latents_per_second=audio_latent_rate)
+            _free_audio_latents, pinned_audio_latent_span = plan_audio_pin_latents(
+                start_frame, end_frame, num_audio_latents,
+                fps=frame_rate, latents_per_second=audio_latent_rate)
+            if not pinned_audio_latent_span:
+                # The snapped range covers the whole clip's audio grid: there
+                # is nothing outside it to pin, so this degenerates to plain
+                # `regenerate` (the output-level splice below is a no-op too,
+                # since both preserved spans are empty).
+                warn("regenerate_range's regenerate range covers the whole clip's audio grid, so "
+                     "there is nothing to pin; the soundtrack generates unconditioned exactly as "
+                     "plain 'regenerate' does",
+                     code="inpaint_video_audio_range_full")
+            else:
+                pinned_audio = self._minimax_h3_inpaint_pinned_audio(
+                    input_audio, clip_frames=clip_frames, source_fps=float(fps or frame_rate),
+                    trim_start=trim_start, frame_rate=frame_rate, warn=warn)
+                if pinned_audio is not None:
+                    pinned_audio_latents = pinned_audio_latent_span
+                    warn(
+                        "inpaint_video_audio_mode='regenerate_range' conditions the regenerate "
+                        f"range's audio on the input track outside it (frames {start_frame}-"
+                        f"{end_frame}) via the same mid-clip audio pin mechanism as the video "
+                        "pin -- an even less documented shape than that pin alone.",
+                        code="minimax_h3_undocumented_audio_conditioning",
+                    )
+                # else: `_minimax_h3_inpaint_pinned_audio` already warned (no
+                # stream, or the window extraction failed); `pinned_audio`
+                # stays None and the range generates unconditioned, exactly the
+                # pre-partial-pin `regenerate_range` behaviour. The output-level
+                # splice below still runs regardless.
 
         print(f"[MiniMax-H3] vid_inpaint: {width}x{height} clip={clip_frames} frame(s) "
               f"regenerate {start_frame}..{end_frame} "
               f"({len(plan['regenerate_latent_frames'])} of {plan['latent_frames']} latent "
               f"frames) audio={audio_mode} @ {frame_rate} fps"
               + (f" spatial_pinned_rows={len(pinned_video_row_indices)}"
-                 if spatial_mask_mode else ""))
+                 if spatial_mask_mode else "")
+              + (f" audio_pinned_latents={len(pinned_audio_latents)}"
+                 if pinned_audio_latents else ""))
 
         sub_params = dict(params)
         sub_params["num_frames"] = clip_frames
@@ -1437,14 +1482,16 @@ class MiniMaxH3Mixin:
                 sub_params,
                 pinned_video_frames=(),
                 pinned_video_row_indices=pinned_video_row_indices,
-                pinned_video_source=clip, input_audio=pinned_audio, label="vid_inpaint",
+                pinned_video_source=clip, input_audio=pinned_audio,
+                pinned_audio_latents=pinned_audio_latents, label="vid_inpaint",
                 progress_callback=progress_callback, step_callback=step_callback,
             )
         else:
             frames_gen, audio_out, audio_sample_rate, seed = self._generate_minimax_h3(
                 sub_params,
                 pinned_video_frames=plan["pinned_latent_frames"],
-                pinned_video_source=clip, input_audio=pinned_audio, label="vid_inpaint",
+                pinned_video_source=clip, input_audio=pinned_audio,
+                pinned_audio_latents=pinned_audio_latents, label="vid_inpaint",
                 progress_callback=progress_callback, step_callback=step_callback,
             )
         if frames_gen.shape[0] != clip_frames:  # pragma: no cover - decode guarantees it
@@ -1512,13 +1559,16 @@ class MiniMaxH3Mixin:
         warn: Callable[[str, str], None],
     ):
         """Splice the input clip's own audio back over the PRESERVED spans of
-        an already-generated (unconditioned) whole-clip track.
+        an already-generated whole-clip track.
 
-        This is the output-level half of ``regenerate_range``: unlike
-        ``preserve_input``, the input audio is never pinned as conditioning
-        here, so the generated track already covers the whole clip -- the
-        audio inside ``[start_frame, end_frame)`` stays exactly that
-        generated track, and only the two spans outside it
+        This is the output-level half of ``regenerate_range``, and it runs on
+        top of the conditioning half rather than instead of it: the preserved
+        spans are pinned as conditioning during generation, but a pinned latent
+        still comes back through an audio-VAE round trip, so they are pasted
+        here for exactness -- the same "pin for conditioning, paste for
+        exactness" split the pixel path already uses. The decoded track covers
+        the whole clip; the audio inside ``[start_frame, end_frame)`` stays
+        exactly that generated track, and only the two spans outside it
         (``[0, start_frame)`` and ``[end_frame, clip_frames)``) are
         overwritten, through the same ``extract_audio_window`` ->
         ``mux_audio_over_span`` pair (50 ms crossfade confined to the
@@ -1585,8 +1635,8 @@ class MiniMaxH3Mixin:
             warn(
                 "inpaint_video_audio_mode='regenerate_range': audio outside the regenerate "
                 f"range ({start_frame}-{end_frame}) is the input clip's own track, spliced back "
-                "in with a crossfade; audio inside the range is generated without the input "
-                "audio as conditioning.",
+                "in with a crossfade; audio inside the range was generated with the surrounding "
+                "track pinned as conditioning.",
                 code="inpaint_video_audio_range_spliced",
             )
 
@@ -1673,6 +1723,7 @@ class MiniMaxH3Mixin:
         keyframes: Sequence[Tuple[Any, Any]] = (),
         references: Sequence[Any] = (),
         input_audio=None,
+        pinned_audio_latents: Sequence[int] = (),
         pinned_video_frames: Sequence[int] = (),
         pinned_video_row_indices: Sequence[int] = (),
         pinned_video_source: Optional[np.ndarray] = None,
@@ -1708,6 +1759,17 @@ class MiniMaxH3Mixin:
         ref2va reaches an audio track through its own reference block, at a
         different rotary offset.
 
+        ``pinned_audio_latents`` narrows ``input_audio`` from a WHOLE-track pin
+        to a PARTIAL one: the audio-latent indices (per channel, into
+        ``[0, num_audio_latents)``) that are pinned, with every other latent
+        generated freely against them. Needs ``input_audio`` (there is nothing
+        to substitute without a source) and is empty by default, which
+        reproduces the whole-track ia2v behaviour exactly. See
+        ``h3_pipeline_ops.build_packed_layout``'s ``pinned_audio_latents`` for
+        the permutation this builds on and
+        ``scratchpad/minimax_h3_ai_probe_results.md`` for what is measured
+        about it.
+
         ``pinned_video_frames`` / ``pinned_video_row_indices`` /
         ``pinned_video_source`` are temporal inpaint:
         the LATENT frames of the clip that are supplied at (near) their true
@@ -1742,8 +1804,11 @@ class MiniMaxH3Mixin:
             pinned_video_frames = ()
         if pinned_video_row_indices is None:
             pinned_video_row_indices = ()
+        if pinned_audio_latents is None:
+            pinned_audio_latents = ()
         pinned_video_frames = tuple(pinned_video_frames)
         pinned_video_row_indices = tuple(pinned_video_row_indices)
+        pinned_audio_latents = tuple(int(t) for t in pinned_audio_latents)
         if pinned_video_frames and pinned_video_row_indices:
             raise RuntimeError(
                 "MiniMax-H3 cannot combine pinned video frames with pinned video row indices: "
@@ -1763,6 +1828,10 @@ class MiniMaxH3Mixin:
                 "MiniMax-H3 cannot pin an input audio track on a ref2va request: a reference "
                 "soundtrack already occupies its own block at its own rotary offset, while ia2v "
                 "pins the TARGET's audio rows. Send the track as an audio reference instead.")
+        if pinned_audio_latents and input_audio is None:
+            raise RuntimeError(
+                "MiniMax-H3 partial audio pin needs input_audio: pinned_audio_latents names which "
+                "of its encoded rows are kept, and there is no track to encode without one.")
         if references and (components.get("variant") or "") != "ref2va":
             raise RuntimeError(
                 f"ref2vid needs the MiniMax-H3 ref2va transformer, but the loaded checkpoint is "
@@ -1846,7 +1915,8 @@ class MiniMaxH3Mixin:
               f"conditions={list(anchors) if anchors else 'none (t2va)'}"
               + (f" references=[{refs.describe_references(normalized_references)}]"
                  if normalized_references else "")
-              + (f" input_audio={int(input_audio.shape[-1])} sample(s) pinned"
+              + (f" input_audio={int(input_audio.shape[-1])} sample(s) "
+                 f"{(str(len(pinned_audio_latents)) + '/' + str(num_audio_latents) + ' latents') if pinned_audio_latents else 'whole track'} pinned"
                  if input_audio is not None else ""))
 
         phase_peaks: Dict[str, float] = {}
@@ -2062,11 +2132,17 @@ class MiniMaxH3Mixin:
                 # ia2v needs no rows of its own: the target audio rows are
                 # already on the target's clock, and this flag only moves them
                 # from "generated" to "conditioning" in the row-timestep plan.
-                "pin_target_audio": pinned_audio_rows is not None,
+                # A PARTIAL pin (pinned_audio_latents) is a different flag on
+                # the same builder -- the two are mutually exclusive there --
+                # so the whole-track shorthand only applies when nothing was
+                # asked to stay free.
+                "pin_target_audio": pinned_audio_rows is not None and not pinned_audio_latents,
                 "device": torch_device,
             }
             if pinned_video_row_indices:
                 layout_kwargs["pinned_video_row_indices"] = tuple(pinned_video_row_indices)
+            if pinned_audio_latents:
+                layout_kwargs["pinned_audio_latents"] = pinned_audio_latents
             layout = ops.build_packed_layout(
                 num_text_tokens, latent_frames, latent_height, latent_width, num_audio_latents,
                 **layout_kwargs,
@@ -2154,7 +2230,35 @@ class MiniMaxH3Mixin:
                 raise RuntimeError(
                     f"MiniMax-H3 input audio packs into {tuple(pinned_audio_rows.shape)} where "
                     f"this clip's audio rows are {tuple(audio_rows.shape)}.")
-            audio_rows = pinned_audio_rows.to(audio_rows.device, audio_rows.dtype)
+            if pinned_audio_latents:
+                # PARTIAL pin: only the rows named by `pinned_audio_latents` are
+                # the clean source; every other row keeps its own draw. Both
+                # sides are addressed in ORIGINAL (unpermuted, channel-major)
+                # row space first -- exactly like `pin_video_rows` above -- so
+                # the free rows' draw order (K0.6) is untouched, then the SAME
+                # permutation the layout built is applied, so a permuted row
+                # and its permuted index address the same sequence slot.
+                source_rows = pinned_audio_rows.to(audio_rows.device, audio_rows.dtype)
+                pin_rows = torch.tensor(
+                    ops.audio_pin_row_indices(sorted(pinned_audio_latents), num_audio_latents),
+                    dtype=torch.long, device=audio_rows.device,
+                )
+                audio_rows[pin_rows] = source_rows[pin_rows]
+                del source_rows
+                permutation = layout["audio_row_permutation"]
+                if permutation is None:  # pragma: no cover - build_packed_layout always sets it here
+                    raise RuntimeError(
+                        "MiniMax-H3 partial audio pin: the layout built no permutation for it.")
+                audio_rows = audio_rows[permutation.to(audio_rows.device)]
+                print(f"[MiniMax-H3] partial audio pin: {pin_rows.numel()} of {audio_rows.shape[0]} "
+                      f"audio row(s) pinned at t={ops.AUDIO_COND_TIMESTEP} "
+                      f"(latents {list(pinned_audio_latents)[:4]}"
+                      f"{'...' if len(pinned_audio_latents) > 4 else ''})")
+            else:
+                # Whole-track pin (ia2v): every row is the source, so there is
+                # nothing to substitute into a draw and no permutation to apply
+                # -- bitwise unchanged from the pre-partial-pin behaviour.
+                audio_rows = pinned_audio_rows.to(audio_rows.device, audio_rows.dtype)
             del pinned_audio_rows
 
         if condition_latents:
@@ -2315,14 +2419,16 @@ class MiniMaxH3Mixin:
         # pipeline already produced.
         audio_out = None
         audio_sample_rate = None
-        if audio_enable and input_audio is not None:
-            # ia2v: the SOURCE waveform is handed back, sample for sample. The
-            # pinned rows were never written, so decoding them would return a
-            # VAE round trip of the input and nothing else -- strictly worse
-            # than the samples that are already in hand. This is the same
-            # exact-preservation stance the outpaint path's `preserve_input`
-            # takes. The trim is the one the decode path uses, so the muxed
-            # track ends with the last frame either way.
+        if audio_enable and input_audio is not None and not pinned_audio_latents:
+            # ia2v (WHOLE-track pin only -- a partial pin falls through to the
+            # decode branch below, since most of the track was denoised and has
+            # no source samples to hand back): the SOURCE waveform is handed
+            # back, sample for sample. The pinned rows were never written, so
+            # decoding them would return a VAE round trip of the input and
+            # nothing else -- strictly worse than the samples that are already
+            # in hand. This is the same exact-preservation stance the outpaint
+            # path's `preserve_input` takes. The trim is the one the decode
+            # path uses, so the muxed track ends with the last frame either way.
             #
             # WHAT THIS DOES NOT PROMISE: the mp4. `save_video_with_metadata`
             # encodes audio as AAC unless a caller asks for lossless, so the
@@ -2336,7 +2442,17 @@ class MiniMaxH3Mixin:
                   f"{audio_sample_rate} Hz (the pinned rows are never denoised, so there is "
                   f"nothing to decode)")
         elif audio_enable:
-            audio_latents = ops.unpack_audio_rows(audio_rows[n_cond_audio:], num_audio_latents)
+            # A partial pin permuted the audio rows so the pinned prefix could
+            # share the video pin's write-slice trick; the decode needs the
+            # WHOLE block back in channel-major order, not the generated
+            # suffix -- exactly the video pin's `video_row_order` un-permute
+            # above. Every other caller (no pin, or a ref2va reference count)
+            # leaves `audio_row_order` `None` and takes the unpinned slice
+            # unchanged.
+            audio_row_order = layout["audio_row_order"]
+            full_audio_rows = (audio_rows[audio_row_order.to(audio_rows.device)]
+                               if audio_row_order is not None else audio_rows[n_cond_audio:])
+            audio_latents = ops.unpack_audio_rows(full_audio_rows, num_audio_latents)
             self._minimax_h3_reset_peak_vram()
             self._minimax_h3_move("audio_vae", torch_device)
             try:

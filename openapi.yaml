@@ -6962,15 +6962,19 @@ paths:
           which is why `expected_final_frames` may overshoot `target_frames`.
         - `context_mode`: `timeline` (compile per-segment prompts), `manual`
           (caller supplies `canonical_timeline`), or `legacy_repeat` (copy the
-          root prompt verbatim — explicit opt-in, always warned about). For a
+          root prompt verbatim — explicit opt-in, always warned about). It has
+          no schema default because "unset" is a distinct request: `timeline`
+          is applied only when the root prompt parses structurally. For a
           free-form prose root prompt with no parsable structure the planner
           does **not** pick a mode for you: it returns a hard error so the user
           chooses. It never silently falls back to `legacy_repeat`.
-        - `seed_policy`: `fixed` (default, every segment reuses the root seed),
-          `derived` (stable hash of root seed, plan hash and segment index) or
-          `explicit`. Concrete seeds are frozen into the manifest here and are
-          never re-drawn at generation time — a `root_seed` of `-1` is resolved
-          to a real value during planning.
+        - `seed_policy`: `fixed` (default, every segment reuses the root seed)
+          or `derived` (stable hash of root seed, plan hash and segment index).
+          `explicit` is a manifest-only policy and is refused here with a 400,
+          because the plan request carries no per-segment seeds. Concrete seeds
+          are frozen into the manifest here and are never re-drawn at
+          generation time — a `root_seed` of `-1` is resolved to a real value
+          during planning.
         - `references`: an **inventory only** — kind and label, no file bytes
           and no paths. Binding is many-to-many: one reference may apply to
           several non-contiguous segments, and one segment may carry several
@@ -7013,7 +7017,11 @@ paths:
             `continuation_mode` the architecture does not advertise (never
             silently downgraded), `context_mode: manual` without a
             `canonical_timeline`, a free-form root prompt with no explicit
-            `context_mode` choice, or a non-positive `target_frames`.
+            `context_mode` choice, `seed_policy: explicit` (no per-segment
+            seeds can be sent here), a `requested_segment_frames` no longer
+            than the shared anchor, a negative `requested_overlap_frames` or
+            `chain_drift_tolerance_frames`, or a non-positive `target_frames`
+            or `fps`.
           content:
             application/json:
               schema:
@@ -12136,11 +12144,24 @@ components:
           example: "ev_3"
         kind:
           type: string
-          enum: [visual_action, camera, dialogue, sound, music, state_change]
+          enum:
+            - shot
+            - visual_action
+            - camera
+            - dialogue
+            - physical_sound
+            - music_transition
+            - state_change
           description: >-
-            What sort of occurrence this is. Dialogue, on-screen text and
-            lyrics are kept verbatim and placed in exactly one segment.
-          example: "visual_action"
+            What sort of occurrence this is; the same set the planner's
+            canonical timeline uses. `shot` is what the deterministic
+            MiniMax-H3 path produces for every `[Shot N]` block, and shots are
+            the only kind required to tile the clip without gaps or overlaps —
+            the other kinds may overlap each other freely (a sound continues
+            through a camera move) and are only range-checked. Dialogue,
+            on-screen text and lyrics are kept verbatim and placed in exactly
+            one segment.
+          example: "shot"
         start_frame:
           type: integer
           minimum: 0
@@ -12185,6 +12206,29 @@ components:
             - $ref: '#/components/schemas/VideoChainSourceSpan'
           nullable: true
           description: Where in the root prompt this event came from. Null for a manually authored event.
+        shot_number:
+          type: integer
+          nullable: true
+          minimum: 1
+          default: null
+          description: >-
+            The `[Shot N]` number this event was parsed from, in the ROOT
+            prompt's numbering. Non-null only for `kind: shot`. Segment prompts
+            renumber their own shots from 1, so this is provenance, not the
+            number that appears in a compiled prompt. Null for any event that
+            did not come from a shot marker.
+          example: 2
+        verbatim:
+          type: array
+          items:
+            type: string
+          description: >-
+            Quoted spans (dialogue, lyrics, on-screen text) detected inside
+            `description`, which the validator requires to appear in exactly
+            one segment prompt. Omit it and the server re-derives it from
+            `description` with the same detector the planner used, so a client
+            never has to author this field.
+          example: ["\"Don't open it.\""]
 
     VideoChainPersistentContext:
       type: object
@@ -12237,6 +12281,16 @@ components:
         Condition of the scene at a segment boundary. `incoming_state` is what
         already holds when the segment starts (past events folded into a state
         rather than re-narrated); `outgoing_state` is what must hold at its end.
+
+        **Round-trip rule.** The planner's compiler produces boundary state as
+        plain sentences, not as a slot-filled record, so a planned manifest
+        carries them in `ongoing_actions` and leaves the other slots empty
+        rather than inventing a `camera` or `lighting` value it did not derive.
+        On the way back in every slot is read: an editor that fills `summary`,
+        `subjects`, `camera`, `lighting` or `ongoing_audio` keeps that text,
+        which is concatenated in the order the properties are listed here. The
+        object shape is therefore the contract, and it is lossless in both
+        directions; it is not a hint that the planner infers per-slot state.
       properties:
         summary:
           type: string
@@ -12312,6 +12366,17 @@ components:
             applies to every segment (the backward-compatible carry-to-all
             behaviour). `explicit` — the segment set was chosen by the caller.
           example: "explicit"
+        token:
+          type: string
+          nullable: true
+          default: null
+          description: >-
+            The reference token this entry carries in the ROOT prompt, e.g.
+            `<Picture 2>`. It is what lets the compiler renumber tokens per
+            segment: a segment that receives a subset of the references does
+            not inherit the root prompt's numbering. Assigned from the request
+            inventory order per kind when the request did not state one.
+          example: "<Picture 2>"
 
     VideoChainReferenceInput:
       type: object
@@ -12345,6 +12410,18 @@ components:
             Segments to bind this reference to. Omit or send null to apply it to
             every segment (`binding_source: default_all`).
           example: [0, 2]
+        token:
+          type: string
+          nullable: true
+          default: null
+          description: >-
+            The token this reference already carries in `root_prompt`, e.g.
+            `<Picture 2>`. Omit it and the planner derives it from this
+            inventory's order per kind (`<Picture 1>`, `<Picture 2>`, …), which
+            is the order the references are passed to the model and therefore
+            the order the root prompt numbers them in. Send it only when the
+            root prompt's numbering differs from the inventory order.
+          example: "<Picture 2>"
 
     VideoChainVisualContext:
       type: object
@@ -12376,6 +12453,19 @@ components:
           minimum: 0
           description: Segment the context is taken from. Null for `initial`.
           example: 0
+        shared_context_frames:
+          type: integer
+          nullable: true
+          minimum: 0
+          default: null
+          description: >-
+            Frames this segment shares in time with its predecessor: 1 under
+            `boundary_frame` (the shared anchor), null for `initial`. A mode
+            that overlaps several frames reports the overlap here, and
+            `segments[].effective_overlap_frames` stays the authoritative
+            value used in the frame arithmetic. Omitting it on a
+            `boundary_frame` context is read back as 1.
+          example: 1
 
     VideoChainSegment:
       type: object
@@ -12428,6 +12518,19 @@ components:
             Frames this invocation asks the model for, including the shared
             anchor. Snapped to the architecture's frame grid.
           example: 362
+        requested_total_frames:
+          type: integer
+          nullable: true
+          minimum: 1
+          default: null
+          description: >-
+            The `total_frames` this segment's generation request asks for: the
+            accumulated clip length after it runs, not its generated span. It
+            equals `owned_end_frame` for every segment, segment 0 included, and
+            is stated so a client never has to re-derive a request parameter.
+            Omit it (or send null) in an edited manifest and the server derives
+            it from `owned_end_frame`.
+          example: 723
         prompt:
           type: string
           description: >-
@@ -12443,11 +12546,17 @@ components:
         incoming_state:
           allOf:
             - $ref: '#/components/schemas/VideoChainSegmentState'
-          description: State already established when the segment begins.
+          description: >-
+            State already established when the segment begins. A planned
+            manifest carries the compiler's sentences in `ongoing_actions`; see
+            the round-trip rule on `VideoChainSegmentState`.
         outgoing_state:
           allOf:
             - $ref: '#/components/schemas/VideoChainSegmentState'
-          description: State that must hold at the segment's end.
+          description: >-
+            State that must hold at the segment's end, filled from the last
+            owned event's `resulting_state`. Carried the same way as
+            `incoming_state`.
         owned_event_ids:
           type: array
           items:
@@ -12629,7 +12738,10 @@ components:
           description: >-
             Allowed divergence between planned and actual accumulated frames
             before the chain pauses for a user decision. Exceeding it never
-            silently continues.
+            silently continues. Echoed from the request and **excluded from
+            `plan_hash`**: it is a run-time knob that changes no prompt, seed or
+            frame range, so two otherwise identical plans must keep the same
+            hash across a change to it.
           example: 12
         persistent_context:
           $ref: '#/components/schemas/VideoChainPersistentContext'
@@ -12652,7 +12764,12 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/VideoChainIssue'
-          description: Advisory findings. Excluded from `plan_hash`.
+          description: >-
+            Advisory findings, the same objects `/video-chain/plan` returns at
+            the top level, repeated here so a stored manifest keeps them.
+            Excluded from `plan_hash`, and ignored on input: `/video-chain/validate`
+            discards whatever is sent and returns the findings of the
+            validators it just re-ran.
 
     VideoChainPlanRequest:
       type: object
@@ -12718,22 +12835,33 @@ components:
         context_mode:
           type: string
           enum: [timeline, manual, legacy_repeat]
-          default: timeline
+          nullable: true
           description: >-
-            How to turn the root prompt into segment prompts. `timeline` is the
-            default for a structurally parsable prompt. For free-form prose the
-            planner refuses to choose and returns a 400 asking the caller to
-            pick — it never silently falls back to `legacy_repeat`. `manual`
-            requires `canonical_timeline`.
+            How to turn the root prompt into segment prompts. **Deliberately
+            has no schema default**: the server must be able to tell "the
+            caller chose `timeline`" from "the caller chose nothing", so an
+            omitted or null value is not the same request as `timeline`.
+            Omitted, the planner applies `timeline` only when the root prompt
+            parses structurally (`[Shot N]` markers); for free-form prose it
+            refuses to choose and returns a 400 asking the caller to pick, and
+            it never silently falls back to `legacy_repeat`. Sending
+            `timeline` explicitly for a prompt that does not parse and without
+            a `canonical_timeline` is also a 400. `manual` requires
+            `canonical_timeline`.
           example: "timeline"
         seed_policy:
           type: string
-          enum: [fixed, derived, explicit]
+          enum: [fixed, derived]
           default: fixed
           description: >-
             Per-segment seeding. `fixed` (default) reuses the root seed
-            everywhere, matching today's behaviour; `derived` and `explicit` are
-            opt-in.
+            everywhere, matching today's behaviour; `derived` hashes root seed,
+            plan hash and segment index. `explicit` — a member of the manifest's
+            `seed_policy` enum — is **not accepted here** and is answered with a
+            400: this request has no field that carries per-segment seeds, so
+            planning with it would freeze seeds the caller never chose. Reach it
+            by planning with `fixed` or `derived`, setting `segments[].seed` in
+            the editor and re-validating.
           example: "fixed"
         root_seed:
           type: integer
@@ -12767,7 +12895,9 @@ components:
           default: 12
           description: >-
             Allowed planned-vs-actual accumulated-frame divergence before the
-            chain pauses. In frames, so it does not depend on `fps`.
+            chain pauses. In frames, so it does not depend on `fps`. Carried
+            through to the manifest unchanged and excluded from `plan_hash` —
+            it changes nothing the plan is made of.
           example: 12
         references:
           type: array
@@ -12895,7 +13025,18 @@ components:
           description: True when the plan has no hard errors and may be started.
           example: true
         manifest:
-          $ref: '#/components/schemas/VideoChainManifest'
+          allOf:
+            - $ref: '#/components/schemas/VideoChainManifest'
+          description: >-
+            The Chain Manifest. Always present, `success: false` included:
+            frame geometry is computed before any prompt work, so when
+            compiling the prompts fails the response still carries a
+            **geometry-only manifest** — real segment spans, ownership ranges,
+            reference bindings, seeds and `plan_hash`, but every
+            `segments[].prompt` empty — and the reason is in `errors`. That
+            gives the editor somewhere to show the error next to the offending
+            segment. A manifest whose prompts are empty must never be started;
+            gate on `success`, not on the manifest's presence.
         segments:
           type: array
           items:

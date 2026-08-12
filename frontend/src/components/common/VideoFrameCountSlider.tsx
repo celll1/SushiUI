@@ -38,6 +38,21 @@ interface VideoFrameCountSliderProps {
    * the original `num_frames` behaviour.
    */
   allowOverCap?: boolean;
+  /**
+   * User-configured upper bound for the slider TRACK (Settings ->
+   * `UserSettings.video_frame_slider_max`, threaded down from
+   * `useStartup().videoFrameSliderMax`). Bounds the track only -- see
+   * `rawCeiling` below, and the number box's own comment, for why it is
+   * never applied to the number box. `null`/`undefined` (unset) keeps this
+   * component's own built-in track reach (`UNCAPPED_FRAME_SLIDER_CEILING` /
+   * `TRAINED_RANGE_SLIDER_HEADROOM`), so a user who never opens Settings
+   * sees no change. Applies identically to both call sites of this
+   * component (`num_frames` and a chain segment length): both compute the
+   * track ceiling through the same `rawCeiling` expression below, and this
+   * setting is about how far a slider TRACK reaches, a property of the
+   * track, not of which quantity it happens to be editing.
+   */
+  sliderMaxOverride?: number | null;
 }
 
 // How far the SLIDER TRACK reaches on an architecture that declares no
@@ -84,6 +99,7 @@ export default function VideoFrameCountSlider({
   disabled,
   className = "",
   allowOverCap = true,
+  sliderMaxOverride = null,
 }: VideoFrameCountSliderProps) {
   const c = arch ? caps?.video_constraints?.[arch] : undefined;
 
@@ -104,8 +120,8 @@ export default function VideoFrameCountSlider({
   const min = c.min_frames;
   const rawCeiling = c.max_frames ?? (
     c.trained_max_frames != null
-      ? Math.max(Math.round(c.trained_max_frames * TRAINED_RANGE_SLIDER_HEADROOM), value)
-      : Math.max(UNCAPPED_FRAME_SLIDER_CEILING, value)
+      ? Math.max(sliderMaxOverride ?? Math.round(c.trained_max_frames * TRAINED_RANGE_SLIDER_HEADROOM), value)
+      : Math.max(sliderMaxOverride ?? UNCAPPED_FRAME_SLIDER_CEILING, value)
   );
   const max = largestValidVideoFrameCount(caps, arch, rawCeiling) ?? rawCeiling;
   const step = c.frame_multiple;

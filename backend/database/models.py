@@ -40,6 +40,13 @@ class UserSettings(GalleryBase):
     # Inpaint method: False = mask blending (default, same as Z-Image/FLUX.2)
     #                 True = construct dedicated 9ch inpaint model (legacy SD/SDXL method)
     inpaint_use_dedicated_model = Column(Boolean, default=False)
+    # Upper bound for the video frame-count SLIDER TRACK (frontend
+    # VideoFrameCountSlider), not a value cap: the paired number box is never
+    # bounded by this and always accepts a longer length. NULL (the default)
+    # means unset -- the slider keeps its built-in track reach
+    # (TRAINED_RANGE_SLIDER_HEADROOM / UNCAPPED_FRAME_SLIDER_CEILING in that
+    # component), so a user who never opens Settings sees no change.
+    video_frame_slider_max = Column(Integer, nullable=True)
 
     def to_dict(self):
         return {
@@ -50,6 +57,7 @@ class UserSettings(GalleryBase):
             "cache_dir": self.cache_dir,
             "training_dir": self.training_dir,
             "inpaint_use_dedicated_model": self.inpaint_use_dedicated_model if self.inpaint_use_dedicated_model is not None else False,
+            "video_frame_slider_max": self.video_frame_slider_max,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
 

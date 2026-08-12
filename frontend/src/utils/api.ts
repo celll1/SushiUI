@@ -1221,6 +1221,19 @@ export const inpaintVideoDefaultsForArch = (
 export const fetchGenerationDefaults = async (): Promise<GenerationDefaultsResponse> =>
   (await api.get("/schema/generation-defaults")).data;
 
+// User-configured generation settings (backend UserSettings row, GET/POST
+// /settings/generation) -- distinct from the schema *defaults* above:
+// per-installation, backend-persisted config rather than a request-shape
+// default. `video_frame_slider_max` is the upper bound for the video
+// frame-count SLIDER TRACK (VideoFrameCountSlider); `null` means unset.
+export interface GenerationSettingsResponse {
+  inpaint_use_dedicated_model: boolean;
+  video_frame_slider_max: number | null;
+}
+
+export const fetchGenerationSettings = async (): Promise<GenerationSettingsResponse> =>
+  (await api.get("/settings/generation")).data;
+
 export const fetchTrainingDefaults = async (): Promise<Record<string, unknown>> =>
   (await api.get("/schema/training-defaults")).data;
 

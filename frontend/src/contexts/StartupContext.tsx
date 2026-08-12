@@ -9,6 +9,7 @@ import {
   fetchTimestepDefaultsByArch,
   fetchBundleVaeDefaultsByArch,
   fetchArchCapabilities,
+  fetchGenerationSettings,
   getCurrentModel,
   GenerationDefaultsResponse,
   ArchCapabilities,
@@ -64,6 +65,11 @@ interface StartupContextType {
   // null until fetched; archSupportsFeature() treats null as "supported" so a
   // control is never hidden just because the matrix has not arrived.
   archCapabilities: ArchCapabilities | null;
+  // Upper bound for the video frame-count SLIDER TRACK (backend UserSettings.
+  // video_frame_slider_max, GET /settings/generation). null = unset = the
+  // slider's own built-in track reach (VideoFrameCountSlider's constants).
+  // Never bounds the paired number box.
+  videoFrameSliderMax: number | null;
 }
 
 const StartupContext = createContext<StartupContextType>({
@@ -82,6 +88,7 @@ const StartupContext = createContext<StartupContextType>({
   timestepDefaultsByArch: null,
   bundleVaeDefaultsByArch: null,
   archCapabilities: null,
+  videoFrameSliderMax: null,
 });
 
 export const useStartup = () => useContext(StartupContext);
@@ -122,6 +129,7 @@ export function StartupProvider({ children }: StartupProviderProps) {
   const [timestepDefaultsByArch, setTimestepDefaultsByArch] = useState<Record<string, Record<string, unknown>> | null>(null);
   const [bundleVaeDefaultsByArch, setBundleVaeDefaultsByArch] = useState<Record<string, boolean> | null>(null);
   const [archCapabilities, setArchCapabilities] = useState<ArchCapabilities | null>(null);
+  const [videoFrameSliderMax, setVideoFrameSliderMax] = useState<number | null>(null);
 
   const [modelInfoVersion, setModelInfoVersion] = useState(0);
   // Last known info, kept in a ref so a failed refresh can fall back to it
@@ -143,7 +151,7 @@ export function StartupProvider({ children }: StartupProviderProps) {
 
     const inFlight = (async () => {
       try {
-        const [genDef, trainDef, taggerDef, vaeDef, tsByArch, bvByArch, archCaps] = await Promise.all([
+        const [genDef, trainDef, taggerDef, vaeDef, tsByArch, bvByArch, archCaps, genSettings] = await Promise.all([
           fetchGenerationDefaults(),
           fetchTrainingDefaults(),
           fetchTaggerTrainingDefaults(),
@@ -151,6 +159,7 @@ export function StartupProvider({ children }: StartupProviderProps) {
           fetchTimestepDefaultsByArch(),
           fetchBundleVaeDefaultsByArch(),
           fetchArchCapabilities(),
+          fetchGenerationSettings(),
         ]);
         setGenerationDefaults(genDef);
         setTrainingDefaults(trainDef);
@@ -159,6 +168,7 @@ export function StartupProvider({ children }: StartupProviderProps) {
         setTimestepDefaultsByArch(tsByArch);
         setBundleVaeDefaultsByArch(bvByArch);
         setArchCapabilities(archCaps);
+        setVideoFrameSliderMax(genSettings.video_frame_slider_max ?? null);
         payloadsLoadedRef.current = true;
         console.log("[StartupContext] Param defaults + arch capabilities loaded from backend");
       } catch (e) {
@@ -307,6 +317,7 @@ export function StartupProvider({ children }: StartupProviderProps) {
       timestepDefaultsByArch,
       bundleVaeDefaultsByArch,
       archCapabilities,
+      videoFrameSliderMax,
     }}>
       {children}
     </StartupContext.Provider>

@@ -159,7 +159,7 @@ def describe_vae(path: str, source_type: Optional[str] = None) -> Dict[str, Any]
         }
 
     rec = _get_or_scan(path, source_type)
-    comps = rec.get("components") or {}
+    comps = rec.get("observed_components") or rec.get("components") or {}
     vcomp = comps.get("vae") or {}
     bb = comps.get("backbone") or {}
     arch = rec.get("arch")
@@ -207,7 +207,7 @@ def describe_vae(path: str, source_type: Optional[str] = None) -> Dict[str, Any]
 def describe_te(path: str, source_type: Optional[str] = None) -> Dict[str, Any]:
     """Best-effort observed text-encoder dims for a model/TE at ``path``."""
     rec = _get_or_scan(path, source_type)
-    comps = rec.get("components") or {}
+    comps = rec.get("observed_components") or rec.get("components") or {}
     tcomp = comps.get("text_encoder") or {}
     bb = comps.get("backbone") or {}
     arch = rec.get("arch")

@@ -37,9 +37,12 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         self.img2img_pipeline: Optional[StableDiffusionImg2ImgPipeline] = None
         self.inpaint_pipeline: Optional[StableDiffusionInpaintPipeline] = None
         self.current_model: Optional[str] = None
-        self.current_model_info: Optional[Dict[str, str]] = None
+        self.current_model_info: Optional[Dict[str, Any]] = None
         self.extensions: List[BaseExtension] = []
         self.device = settings.device
+        self.model_revision = 0
+        self.component_revision = 0
+        self.component_health = "unloaded"
 
         # Serializes model loading. The boot-time auto-load runs in a background
         # thread (main.py _auto_load_last_model) and can race a concurrent manual
@@ -195,9 +198,24 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         only) way to undo an in-place runtime INT8 conversion, a VAE/TE override,
         or any other per-session mutation of the loaded components -- a silent
         no-op when the user re-selected the SAME checkpoint."""
-        with self._load_model_lock:
-            result = self._load_model_locked(
-                source_type, source, pipeline_type, force_reload=force_reload, **kwargs)
+        from core.model_state_coordinator import model_state_coordinator
+        previous_info = self.current_model_info
+        mutation_started = False
+        try:
+            with model_state_coordinator.mutation("model load"):
+                mutation_started = True
+                with self._load_model_lock:
+                    result = self._load_model_locked(
+                        source_type, source, pipeline_type, force_reload=force_reload, **kwargs)
+        except Exception:
+            if mutation_started:
+                self.component_health = "degraded" if previous_info is not None else "unloaded"
+            raise
+
+        if self.current_model_info is not None and self.current_model_info is not previous_info:
+            self.model_revision += 1
+            self.component_revision += 1
+            self.component_health = "ready"
 
         # Auto-discover a per-model `loras/` sibling directory (e.g.
         # M:/model/minimax_h3/loras next to diffusion_models/text_encoders/vae)

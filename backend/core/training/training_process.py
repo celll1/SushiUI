@@ -107,6 +107,8 @@ class TrainingProcess:
         self.current_step = 0
         self.current_loss: Optional[float] = None
         self.current_lr: Optional[float] = None
+        self._lifecycle_activity = f"training run {run_id}"
+        self._lifecycle_activity_active = False
 
     async def start(
         self,
@@ -122,6 +124,10 @@ class TrainingProcess:
         """
         if self.is_running:
             raise RuntimeError("Training process is already running")
+
+        from core.model_state_coordinator import model_state_coordinator
+        model_state_coordinator.begin_activity(self._lifecycle_activity)
+        self._lifecycle_activity_active = True
 
         # Construct SushiUI training command
         # Run as script directly instead of module
@@ -161,14 +167,19 @@ class TrainingProcess:
 
         # Start asyncio subprocess (non-blocking)
         # Increase buffer limit to handle long tqdm progress bars (default is 64KB)
-        self.process = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-            env=env,
-            cwd=str(backend_dir),
-            limit=1024 * 1024,  # 1MB buffer to handle long progress bars
-        )
+        try:
+            self.process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+                env=env,
+                cwd=str(backend_dir),
+                limit=1024 * 1024,  # 1MB buffer to handle long progress bars
+            )
+        except Exception:
+            model_state_coordinator.end_activity(self._lifecycle_activity)
+            self._lifecycle_activity_active = False
+            raise
 
         self.is_running = True
 
@@ -188,6 +199,10 @@ class TrainingProcess:
             log_callback: Callback for log streaming
         """
         if not self.process or not self.process.stdout:
+            if self._lifecycle_activity_active:
+                from core.model_state_coordinator import model_state_coordinator
+                model_state_coordinator.end_activity(self._lifecycle_activity)
+                self._lifecycle_activity_active = False
             return
 
         # Regex patterns for log parsing
@@ -279,6 +294,10 @@ class TrainingProcess:
 
         finally:
             self.is_running = False
+            if self._lifecycle_activity_active:
+                from core.model_state_coordinator import model_state_coordinator
+                model_state_coordinator.end_activity(self._lifecycle_activity)
+                self._lifecycle_activity_active = False
             print(f"[Training] Process monitoring ended. Final returncode: {self.process.returncode if self.process else 'N/A'}")
 
     async def stop(self) -> None:

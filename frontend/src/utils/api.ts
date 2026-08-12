@@ -214,7 +214,7 @@ const loadControlNetImages = async (
 export interface ModelInfo {
   source_type: string;
   source: string;
-  type: "sd15" | "sdxl" | "zimage" | "flux2" | "anima" | "lens" | "ideogram4" | "minit2i" | "krea2";  // DEUS support removed
+  type: "sd15" | "sdxl" | "zimage" | "flux2" | "anima" | "lens" | "ideogram4" | "minit2i" | "krea2" | "ltx2" | "acestep" | "minimax_h3";
   is_v_prediction: boolean;
   model_hash: string;
   // Model-list entry fields (from GET /models)
@@ -222,6 +222,59 @@ export interface ModelInfo {
   path?: string;
   architecture?: string;
   vae_type?: string;  // MiniT2I: "none" (pixel) | "sdxl" | "flux1" (latent)
+}
+
+export type ComponentSlotId = "text_encoder" | "vision_encoder" | "backbone" | "vae" | "audio_vae";
+export type ComponentOrigin = "embedded_checkpoint" | "model_tree" | "architecture_default" | "selected_external" | "unused" | "unavailable";
+
+export interface ComponentCandidate {
+  candidate_id: string;
+  slot: ComponentSlotId;
+  kind: "text_encoder" | "vision_encoder" | "transformer" | "unet" | "vae" | "audio_vae";
+  display_name: string;
+  origin: ComponentOrigin;
+  path_display?: string | null;
+  container_size_bytes?: number | null;
+  estimated_component_size_bytes?: number | null;
+  compatibility: "compatible" | "unknown" | "incompatible";
+  compatibility_reason?: string | null;
+  switchable: boolean;
+  switch_reason?: string | null;
+  is_current: boolean;
+  load_strategy: "none" | "standalone" | "embedded_extract" | "architecture_resolved" | "unsupported";
+  variant?: string | null;
+}
+
+export interface EffectiveComponent {
+  candidate_id: string;
+  slot: ComponentSlotId;
+  kind: string;
+  display_name: string;
+  origin: ComponentOrigin;
+  residency: "resident" | "configured" | "unloaded" | "unavailable";
+  embedded: boolean;
+  path_display?: string | null;
+  container_size_bytes?: number | null;
+}
+
+export interface ComponentSlotState {
+  slot: ComponentSlotId;
+  visible: boolean;
+  current: EffectiveComponent | null;
+  runtime_override: EffectiveComponent | null;
+  switchable: boolean;
+  reason?: string | null;
+  candidates: ComponentCandidate[];
+}
+
+export interface CurrentComponentsResponse {
+  loaded: boolean;
+  model_revision: number;
+  component_revision: number;
+  health: "ready" | "mutating" | "degraded" | "unloaded";
+  architecture: string | null;
+  operation?: Record<string, unknown> | null;
+  slots: ComponentSlotState[];
 }
 
 export interface LoRAConfig {
@@ -4357,6 +4410,40 @@ export const createScratchMiniT2I = async (
 export const getCurrentModel = async () => {
   const response = await api.get("/models/current");
   return response.data;
+};
+
+export const getCurrentModelComponents = async (): Promise<CurrentComponentsResponse> => {
+  const response = await api.get("/models/current/components");
+  return response.data;
+};
+
+export const getCurrentModelComponentCandidates = async (slot: ComponentSlotId) => {
+  const response = await api.get("/models/current/components/candidates", { params: { slot } });
+  return response.data as {
+    model_revision: number;
+    component_revision: number;
+    slot: ComponentSlotId;
+    candidates: ComponentCandidate[];
+  };
+};
+
+export const switchCurrentModelComponent = async (
+  slot: ComponentSlotId,
+  candidateId: string,
+  expectedModelRevision: number,
+  expectedComponentRevision: number,
+) => {
+  const response = await api.post("/models/current/components/switch", {
+    slot,
+    candidate_id: candidateId,
+    expected_model_revision: expectedModelRevision,
+    expected_component_revision: expectedComponentRevision,
+  });
+  return response.data as {
+    success: boolean;
+    operation: Record<string, unknown>;
+    components: CurrentComponentsResponse;
+  };
 };
 
 // `force`: reload even when this model is already the loaded one. Without it the

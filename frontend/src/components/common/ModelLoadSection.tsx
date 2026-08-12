@@ -3,13 +3,16 @@
 import { useCallback, useState, useEffect, type KeyboardEvent } from "react";
 import Card from "./Card";
 import ModelSelector from "./ModelSelector";
-import VisionEncoderSelector from "./VisionEncoderSelector";
 import VaeOverrideSelector from "./VaeOverrideSelector";
 import QuantizedExportSection from "./QuantizedExportSection";
 import TextEncoderOverrideSelector from "./TextEncoderOverrideSelector";
 import Select from "./Select";
 import NumberInput from "./NumberInput";
+import LoadedComponentSelector from "./LoadedComponentSelector";
 import { useStartup } from "@/contexts/StartupContext";
+import { useModelComponents } from "@/contexts/ModelComponentsContext";
+import { useResizablePanelHeight } from "@/hooks/useResizablePanelHeight";
+import type { ComponentSlotId } from "@/utils/api";
 
 // Fallback arch -> latent_channels map, used only when the loaded model's
 // latent_channels isn't exposed by GET /models/current (pipeline_manager's
@@ -77,7 +80,6 @@ type ModelWorkspaceTab = "model" | "components" | "quantization";
 // from StartupContext (the single source of truth).
 export default function ModelLoadSection({
   onModelLoad,
-  showVisionEncoder = true,
   visionEncoderPath = null,
   onVisionEncoderChange,
   vaePath,
@@ -99,6 +101,15 @@ export default function ModelLoadSection({
   storageKeyPrefix = "model_load",
 }: ModelLoadSectionProps) {
   const { modelInfo, modelInfoVersion, refreshModelInfo } = useStartup();
+  const {
+    snapshot: componentSnapshot,
+    loading: componentsLoading,
+    switchingSlot,
+    error: componentError,
+    switchComponent,
+    clearError: clearComponentError,
+  } = useModelComponents();
+  const panelHeight = useResizablePanelHeight(`${storageKeyPrefix}_workspace_height`);
   const modelType = modelInfo?.type;
   const [selectedVaeKind, setSelectedVaeKind] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<ModelWorkspaceTab>("model");
@@ -161,7 +172,7 @@ export default function ModelLoadSection({
     onModelLoad?.(mi);
   };
 
-  const showVE = showVisionEncoder && modelType !== "flux2" && !!onVisionEncoderChange;
+  const canClearLegacyVisionPath = !!onVisionEncoderChange;
 
   // Concise summary of the active component overrides, shown in the Card header
   // even while collapsed so a set override is visible at a glance.
@@ -187,7 +198,6 @@ export default function ModelLoadSection({
     }
     overrideSummary.push(v);
   }
-  if (showVE && visionEncoderPath) overrideSummary.push(`Vision: ${_basename(visionEncoderPath)}`);
   if (textEncoderPath) overrideSummary.push(`TE: ${_basename(textEncoderPath)}`);
   const overrideSummaryText = overrideSummary.length > 0
     ? overrideSummary.join(" · ")
@@ -220,6 +230,10 @@ export default function ModelLoadSection({
     setQuantizationAvailable(available);
     setQuantizationResolved(resolved);
   }, []);
+  const componentState = (slot: ComponentSlotId) => componentSnapshot?.slots.find((item) => item.slot === slot);
+  const switchLoadedComponent = (slot: ComponentSlotId, candidateId: string) => (
+    switchComponent(slot, candidateId)
+  );
 
   return (
     <Card>
@@ -273,7 +287,10 @@ export default function ModelLoadSection({
         )}
       </div>
 
-      <div className="h-[clamp(7rem,15vh,8.5rem)] overflow-y-auto overscroll-contain pr-1">
+      <div
+        className="overflow-y-auto overscroll-contain pr-1"
+        style={{ height: panelHeight.height }}
+      >
         <div
           id={panelId("model")}
           role="tabpanel"
@@ -289,12 +306,59 @@ export default function ModelLoadSection({
           aria-labelledby={tabId("components")}
           className={activeTab === "components" ? "space-y-2" : "hidden"}
         >
-          {showVE && (
-            <VisionEncoderSelector
-              value={visionEncoderPath ?? null}
-              onChange={onVisionEncoderChange!}
-            />
+          {componentError && (
+            <div role="alert" className="flex items-start justify-between gap-2 rounded border border-red-800 bg-red-950/40 p-2 text-xs text-red-300">
+              <span>{componentError}</span>
+              <button type="button" onClick={clearComponentError} aria-label="Dismiss component error">Close</button>
+            </div>
           )}
+          {componentsLoading && !componentSnapshot && (
+            <p className="text-xs text-gray-500">Loading effective component state…</p>
+          )}
+
+          <LoadedComponentSelector
+            label="Text Encoder"
+            state={componentState("text_encoder")}
+            compatibleOnly={compatibleOnly}
+            switching={switchingSlot === "text_encoder"}
+            onSwitch={(id) => switchLoadedComponent("text_encoder", id)}
+          />
+          <LoadedComponentSelector
+            label="Vision Encoder (reference conditioning)"
+            state={componentState("vision_encoder")}
+            compatibleOnly={compatibleOnly}
+            switching={switchingSlot === "vision_encoder"}
+            onSwitch={async (id) => {
+              await switchLoadedComponent("vision_encoder", id);
+              if (canClearLegacyVisionPath && visionEncoderPath) {
+                onVisionEncoderChange(null);
+              }
+            }}
+          >
+            <p className="text-[11px] text-gray-500">
+              Optional. When loaded, this resident encoder conditions reference images; not loading one is normal.
+            </p>
+          </LoadedComponentSelector>
+          <LoadedComponentSelector
+            label={componentState("backbone")?.current?.kind === "unet" ? "U-Net" : "Transformer"}
+            state={componentState("backbone")}
+            compatibleOnly={compatibleOnly}
+            switching={switchingSlot === "backbone"}
+            onSwitch={(id) => switchLoadedComponent("backbone", id)}
+          />
+          <LoadedComponentSelector
+            label="VAE"
+            state={componentState("vae")}
+            compatibleOnly={compatibleOnly}
+            switching={switchingSlot === "vae"}
+            onSwitch={(id) => switchLoadedComponent("vae", id)}
+          >
+            {componentState("audio_vae")?.visible && componentState("audio_vae")?.current && (
+              <p className="text-[11px] text-gray-500">
+                Audio VAE: {componentState("audio_vae")?.current?.display_name} · {componentState("audio_vae")?.current?.residency}
+              </p>
+            )}
+          </LoadedComponentSelector>
 
           <label className="flex items-center gap-2 cursor-pointer">
             <input
@@ -304,9 +368,25 @@ export default function ModelLoadSection({
               className="w-4 h-4 rounded border-gray-600 bg-gray-700 text-blue-500 focus:ring-2 focus:ring-blue-500"
             />
             <span className="text-sm text-gray-300">
-              Show only VAE / text encoder compatible with loaded model
+              Show only compatible scanned candidates
             </span>
           </label>
+
+          <details className="rounded-md border border-gray-800 p-2">
+            <summary className="cursor-pointer select-none text-xs font-medium text-gray-400">
+              Generation-only overrides
+            </summary>
+            <p className="my-2 text-[11px] text-gray-500">
+              These values apply to generation requests and do not change the resident component shown above.
+            </p>
+            <div className="space-y-2">
+              <TextEncoderOverrideSelector
+                value={textEncoderPath}
+                onChange={onTextEncoderChange}
+                disabled={teDisabled}
+                compatibleOnly={compatibleOnly}
+                loadedArch={loadedArch}
+              />
 
           <VaeOverrideSelector
             value={vaePath}
@@ -394,13 +474,8 @@ export default function ModelLoadSection({
               </details>
             </div>
           )}
-          <TextEncoderOverrideSelector
-            value={textEncoderPath}
-            onChange={onTextEncoderChange}
-            disabled={teDisabled}
-            compatibleOnly={compatibleOnly}
-            loadedArch={loadedArch}
-          />
+            </div>
+          </details>
         </div>
 
         <div
@@ -421,6 +496,30 @@ export default function ModelLoadSection({
             onAvailabilityChange={handleQuantizationAvailability}
           />
         </div>
+      </div>
+      <div className="mt-1 flex items-center gap-2">
+        <div
+          role="separator"
+          aria-label="Resize Model, Components, and Quantization panel height"
+          aria-orientation="horizontal"
+          aria-valuemin={panelHeight.minHeight}
+          aria-valuemax={panelHeight.maxHeight}
+          aria-valuenow={panelHeight.height}
+          tabIndex={0}
+          title="Drag or use Arrow keys to resize; Enter or double-click resets"
+          className="group flex h-3 flex-1 cursor-row-resize touch-none items-center justify-center rounded focus:outline-none focus:ring-1 focus:ring-violet-500"
+          {...panelHeight.separatorProps}
+        >
+          <span className="h-0.5 w-12 rounded bg-gray-700 transition-colors group-hover:bg-violet-500 group-focus:bg-violet-500" />
+        </div>
+        <button
+          type="button"
+          onClick={panelHeight.reset}
+          className="text-[10px] text-gray-500 hover:text-gray-300"
+          title="Reset panel height"
+        >
+          Reset height
+        </button>
       </div>
     </Card>
   );

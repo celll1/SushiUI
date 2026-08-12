@@ -348,27 +348,29 @@ def _run_export(pipeline_manager, job_id, arch, modules, output_path, *,
                 "from the loaded checkpoint, not from an in-place conversion in this "
                 "session")
 
+        from core.model_state_coordinator import model_state_coordinator
         load_lock = getattr(pipeline_manager, "_load_model_lock", None)
-        _update(job_id, message="waiting for the model lock")
-        if load_lock is not None:
-            load_lock.acquire()
-        try:
-            _update(job_id, message="writing")
-            result = export_quantized_transformer(
-                modules,
-                arch,
-                output_path,
-                config=config,
-                audit=audit,
-                audit_note=audit_note,
-                source=source,
-                link_siblings_from=source_root if link_siblings else None,
-                progress_cb=progress,
-                overwrite=overwrite,
-            )
-        finally:
+        _update(job_id, message="waiting for the model lifecycle gate")
+        with model_state_coordinator.mutation("quantized export"):
             if load_lock is not None:
-                load_lock.release()
+                load_lock.acquire()
+            try:
+                _update(job_id, message="writing")
+                result = export_quantized_transformer(
+                    modules,
+                    arch,
+                    output_path,
+                    config=config,
+                    audit=audit,
+                    audit_note=audit_note,
+                    source=source,
+                    link_siblings_from=source_root if link_siblings else None,
+                    progress_cb=progress,
+                    overwrite=overwrite,
+                )
+            finally:
+                if load_lock is not None:
+                    load_lock.release()
 
         _update(job_id, state="completed", result=result,
                 written_path=result.get("output_path"),

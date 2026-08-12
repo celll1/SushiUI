@@ -2697,6 +2697,18 @@ class ModelLoader:
             - StableDiffusionPipeline for SD1.5/SDXL
             - Dict of components for Z-Image
         """
+        # Component switching uses Anima's existing explicit companion inputs.
+        # No other architecture receives these paths through this generic API.
+        if (kwargs.get("text_encoder_path") is not None or kwargs.get("vae_path") is not None):
+            if ModelLoader.detect_model_type(source) != "anima":
+                raise ValueError("Explicit text_encoder_path/vae_path model reload is supported only for Anima")
+            return ModelLoader.load_anima_from_files(
+                source,
+                device,
+                torch.bfloat16,
+                text_encoder_path=kwargs.get("text_encoder_path"),
+                vae_path=kwargs.get("vae_path"),
+            )
         if source_type == "safetensors":
             return ModelLoader.load_from_safetensors(source, device, torch_dtype)
         elif source_type == "diffusers":
@@ -2728,6 +2740,9 @@ class ModelLoader:
         from core.models.anima.anima_loader import (
             load_anima_components, detect_anima_split_layout, discover_anima_components,
         )
+
+        explicit_text_encoder = text_encoder_path is not None
+        explicit_vae = vae_path is not None
 
         # If the user pointed at a directory (split layout), pick the DiT file
         dit_path = path
@@ -2761,7 +2776,7 @@ class ModelLoader:
                         models_root = p
                         break
 
-        return load_anima_components(
+        components = load_anima_components(
             dit_path=dit_path,
             text_encoder_path=text_encoder_path,
             vae_path=vae_path,
@@ -2771,6 +2786,16 @@ class ModelLoader:
             te_dtype=torch_dtype,
             vae_dtype=torch_dtype,
         )
+        components["text_encoder_origin"] = (
+            "selected_external" if explicit_text_encoder else "architecture_default"
+        )
+        if explicit_vae:
+            components["vae_origin"] = "selected_external"
+        elif components.get("vae_source") == "embedded (checkpoint)":
+            components["vae_origin"] = "embedded_checkpoint"
+        else:
+            components["vae_origin"] = "architecture_default"
+        return components
 
     @staticmethod
     def load_lens_from_path(

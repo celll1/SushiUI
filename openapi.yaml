@@ -2847,7 +2847,88 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ModelInfo'
+                $ref: '#/components/schemas/CurrentModelResponse'
+
+  /models/current/components:
+    get:
+      tags: [models]
+      summary: Get effective loaded components
+      description: |
+        Returns the configured and resident state of each component slot in the
+        currently loaded model. Generation-only VAE/text-encoder overrides are
+        reported separately and never replace the configured component identity.
+      operationId: getCurrentModelComponents
+      responses:
+        '200':
+          description: Effective component state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CurrentComponentsResponse'
+
+  /models/current/components/candidates:
+    get:
+      tags: [models]
+      summary: List component candidates for the loaded architecture
+      operationId: listCurrentModelComponentCandidates
+      parameters:
+        - in: query
+          name: slot
+          required: true
+          schema:
+            $ref: '#/components/schemas/ComponentSlotId'
+      responses:
+        '200':
+          description: Candidate list, including the current value even when it is no longer scanned
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [model_revision, component_revision, slot, candidates]
+                properties:
+                  model_revision:
+                    type: integer
+                  component_revision:
+                    type: integer
+                  slot:
+                    $ref: '#/components/schemas/ComponentSlotId'
+                  candidates:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ComponentCandidate'
+        '400':
+          description: Invalid slot
+        '404':
+          description: No model is loaded
+
+  /models/current/components/switch:
+    post:
+      tags: [models]
+      summary: Switch one loaded component safely
+      description: |
+        Switches only slots with an architecture adapter that guarantees the old
+        component is detached and released before the new weights are read.
+        Unsupported and unsafe slots are rejected with 422.
+      operationId: switchCurrentModelComponent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ComponentSwitchRequest'
+      responses:
+        '200':
+          description: Component switched and refreshed state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ComponentSwitchResponse'
+        '404':
+          description: No model or candidate was found
+        '409':
+          description: Stale revision or model lifecycle activity is in progress
+        '422':
+          description: Candidate is incompatible or the slot has no safe adapter
 
   /loras:
     get:
@@ -6488,7 +6569,12 @@ paths:
     get:
       tags: [models]
       summary: List safetensors files detected as SigLIP2 vision encoders
-      description: Scans the configured model directories directly (no cache) so newly added files are visible immediately.
+      description: |
+        Scans the configured model directories directly (no cache) so newly
+        added files are visible immediately. Compatibility is verified from
+        the safetensors header geometry; candidates with unknown or mismatched
+        input channels, hidden width, or layer projections remain listed but
+        are not eligible for resident switching.
       operationId: listVisionEncoders
       responses:
         '200':
@@ -6514,6 +6600,17 @@ paths:
                         architecture:
                           type: string
                           example: vision_encoder
+                        compatibility_verified:
+                          type: boolean
+                          description: True only when the header matches a supported SigLIP2 input/output and layer geometry.
+                        compatibility_reason:
+                          type: string
+                          description: Header-only compatibility result or fail-closed rejection reason.
+                        hidden_size:
+                          type: integer
+                          nullable: true
+                          description: Vision hidden width observed from the patch embedding, or null when unavailable.
+                          example: 768
 
   /models/vaes:
     get:
@@ -6579,6 +6676,12 @@ paths:
                         scale_temporal:
                           type: integer
                           nullable: true
+                        anima_compatible:
+                          type: boolean
+                          description: True only when the standalone file header matches Anima's RGB-input, 16-channel Qwen-Image VAE geometry.
+                        anima_compatibility_reason:
+                          type: string
+                          description: Header-only Anima compatibility result or fail-closed rejection reason.
                         training:
                           type: object
                           nullable: true
@@ -6640,7 +6743,9 @@ paths:
         Same scan surface as /models/vaes. A candidate is a standalone text
         encoder directory or a model whose component-registry record has a text
         encoder present and no backbone. Dims (out_dim/te_type) come from the
-        component registry. Best-effort; unclassifiable entries are skipped.
+        component registry. Standalone Anima files may additionally be
+        recognized by their header geometry. Best-effort; entries whose
+        architecture cannot be classified remain unavailable for switching.
       operationId: listTextEncoders
       responses:
         '200':
@@ -6665,6 +6770,12 @@ paths:
                         te_type:
                           type: string
                           nullable: true
+                        anima_compatible:
+                          type: boolean
+                          description: True only when the standalone file header matches Anima's 28-layer Qwen3-0.6B input/output geometry.
+                        anima_compatibility_reason:
+                          type: string
+                          description: Header-only Anima compatibility result or fail-closed rejection reason.
 
   /models/upscalers:
     get:
@@ -12247,6 +12358,205 @@ components:
           type: string
         size:
           type: integer
+
+    LoadedModelInfo:
+      type: object
+      additionalProperties: true
+      properties:
+        source_type:
+          type: string
+        source:
+          type: string
+        type:
+          type: string
+        variant:
+          type: string
+          nullable: true
+        is_video:
+          type: boolean
+        is_audio:
+          type: boolean
+        model_revision:
+          type: integer
+        component_revision:
+          type: integer
+
+    CurrentModelResponse:
+      type: object
+      required: [loaded]
+      properties:
+        loaded:
+          type: boolean
+        model_info:
+          allOf:
+            - $ref: '#/components/schemas/LoadedModelInfo'
+          nullable: true
+
+    ComponentSlotId:
+      type: string
+      enum: [text_encoder, vision_encoder, backbone, vae, audio_vae]
+
+    ComponentCandidate:
+      type: object
+      required:
+        - candidate_id
+        - slot
+        - kind
+        - display_name
+        - origin
+        - compatibility
+        - switchable
+        - is_current
+      properties:
+        candidate_id:
+          type: string
+        slot:
+          $ref: '#/components/schemas/ComponentSlotId'
+        kind:
+          type: string
+          enum: [text_encoder, vision_encoder, transformer, unet, vae, audio_vae]
+        display_name:
+          type: string
+        origin:
+          type: string
+          enum: [embedded_checkpoint, model_tree, architecture_default, selected_external, unused, unavailable]
+        path_display:
+          type: string
+          nullable: true
+        container_size_bytes:
+          type: integer
+          nullable: true
+        estimated_component_size_bytes:
+          type: integer
+          nullable: true
+        compatibility:
+          type: string
+          enum: [compatible, unknown, incompatible]
+        compatibility_reason:
+          type: string
+          nullable: true
+        switchable:
+          type: boolean
+        switch_reason:
+          type: string
+          nullable: true
+        is_current:
+          type: boolean
+        load_strategy:
+          type: string
+          enum: [none, standalone, embedded_extract, architecture_resolved, unsupported]
+        variant:
+          type: string
+          nullable: true
+
+    EffectiveComponent:
+      type: object
+      required:
+        - candidate_id
+        - slot
+        - kind
+        - display_name
+        - origin
+        - residency
+        - embedded
+      properties:
+        candidate_id:
+          type: string
+        slot:
+          $ref: '#/components/schemas/ComponentSlotId'
+        kind:
+          type: string
+        display_name:
+          type: string
+        origin:
+          type: string
+        residency:
+          type: string
+          enum: [resident, configured, unloaded, unavailable]
+        embedded:
+          type: boolean
+        path_display:
+          type: string
+          nullable: true
+        container_size_bytes:
+          type: integer
+          nullable: true
+
+    ComponentSlotState:
+      type: object
+      required: [slot, visible, switchable, candidates]
+      properties:
+        slot:
+          $ref: '#/components/schemas/ComponentSlotId'
+        visible:
+          type: boolean
+        current:
+          allOf:
+            - $ref: '#/components/schemas/EffectiveComponent'
+          nullable: true
+        runtime_override:
+          allOf:
+            - $ref: '#/components/schemas/EffectiveComponent'
+          nullable: true
+        switchable:
+          type: boolean
+        reason:
+          type: string
+          nullable: true
+        candidates:
+          type: array
+          items:
+            $ref: '#/components/schemas/ComponentCandidate'
+
+    CurrentComponentsResponse:
+      type: object
+      required: [loaded, model_revision, component_revision, health, architecture, slots]
+      properties:
+        loaded:
+          type: boolean
+        model_revision:
+          type: integer
+        component_revision:
+          type: integer
+        health:
+          type: string
+          enum: [ready, mutating, degraded, unloaded]
+        architecture:
+          type: string
+          nullable: true
+        operation:
+          type: object
+          nullable: true
+          additionalProperties: true
+        slots:
+          type: array
+          items:
+            $ref: '#/components/schemas/ComponentSlotState'
+
+    ComponentSwitchRequest:
+      type: object
+      required: [slot, candidate_id, expected_model_revision, expected_component_revision]
+      properties:
+        slot:
+          $ref: '#/components/schemas/ComponentSlotId'
+        candidate_id:
+          type: string
+        expected_model_revision:
+          type: integer
+        expected_component_revision:
+          type: integer
+
+    ComponentSwitchResponse:
+      type: object
+      required: [success, operation, components]
+      properties:
+        success:
+          type: boolean
+        operation:
+          type: object
+          additionalProperties: true
+        components:
+          $ref: '#/components/schemas/CurrentComponentsResponse'
 
     ErrorResponse:
       type: object

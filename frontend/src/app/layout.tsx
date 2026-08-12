@@ -3,6 +3,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import { StartupProvider } from "@/contexts/StartupContext";
+import { ModelComponentsProvider } from "@/contexts/ModelComponentsContext";
 import { GenerationQueueProvider } from "@/contexts/GenerationQueueContext";
 import { AuthProvider } from "@/contexts/AuthContext";
 import { TagSuggestionsProvider } from "@/contexts/TagSuggestionsContext";
@@ -26,7 +27,9 @@ function LayoutContent({ children }: { children: React.ReactNode }) {
     <AuthProvider>
       <TagSuggestionsProvider>
         <StartupProvider>
-          <GenerationQueueProvider>{children}</GenerationQueueProvider>
+          <ModelComponentsProvider>
+            <GenerationQueueProvider>{children}</GenerationQueueProvider>
+          </ModelComponentsProvider>
         </StartupProvider>
       </TagSuggestionsProvider>
     </AuthProvider>

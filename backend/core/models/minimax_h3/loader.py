@@ -393,6 +393,187 @@ def _te_capability_accept(path: Path) -> bool:
     return bool(MINIMAX_H3_TE_LOADABLE_QUANT_FORMATS)
 
 
+def inspect_minimax_h3_text_encoder_candidate(path: str) -> Dict[str, Any]:
+    """Header-only compatibility result for the dedicated H3 TE loader.
+
+    Candidate discovery must never open a second tensor mapping while the live
+    encoder is mapped. Only the three formats this loader explicitly implements
+    are accepted; renamed or structurally ambiguous files remain visible but
+    disabled.
+    """
+    result: Dict[str, Any] = {
+        "path": path,
+        "compatible": False,
+        "variant": "unknown",
+        "reason": "Not an implemented MiniMax-H3 text-encoder format.",
+        "size_bytes": None,
+    }
+    try:
+        result["size_bytes"] = os.path.getsize(path)
+        header = read_safetensors_header(path)
+    except Exception as exc:
+        result["reason"] = f"Header inspection failed: {exc}"
+        return result
+
+    keys = [key for key in header if key != "__metadata__"]
+    layers = {
+        int(parts[2])
+        for key in keys
+        if key.startswith("model.layers.")
+        for parts in (key.split("."),)
+        if len(parts) > 3 and parts[2].isdigit()
+    }
+    embed = _header_shape(header, "model.embed_tokens.weight")
+    q_proj = _header_shape(header, "model.layers.0.self_attn.q_proj.weight")
+    if layers != set(range(50)) or embed != [151936, 5120]:
+        result["reason"] = "H3 requires the released 50-layer Qwen3-VL-32B encoder geometry."
+        return result
+    q_entry = header.get("model.layers.0.self_attn.q_proj.weight") or {}
+    marker_count = sum(key.endswith(".comfy_quant") for key in keys)
+    scale_count = sum(key.endswith(".weight_scale") for key in keys)
+    pre_quant_count = sum(key.endswith(".pre_quant_scale") for key in keys)
+    q_dtype = q_entry.get("dtype")
+    dense_shapes = {
+        "self_attn.q_proj": [8192, 5120],
+        "self_attn.k_proj": [1024, 5120],
+        "self_attn.v_proj": [1024, 5120],
+        "self_attn.o_proj": [5120, 8192],
+        "mlp.gate_proj": [25600, 5120],
+        "mlp.up_proj": [25600, 5120],
+        "mlp.down_proj": [5120, 25600],
+    }
+
+    def geometry_matches(dtype: str, packed: bool = False) -> bool:
+        for layer in range(50):
+            for suffix, expected in dense_shapes.items():
+                entry = header.get(f"model.layers.{layer}.{suffix}.weight")
+                shape = list(expected)
+                if packed:
+                    shape[1] //= 2
+                if not isinstance(entry, dict) or entry.get("dtype") != dtype or entry.get("shape") != shape:
+                    return False
+        return True
+
+    if (q_proj == [8192, 5120] and q_dtype == "BF16"
+            and not (marker_count or scale_count or pre_quant_count)
+            and geometry_matches("BF16")):
+        variant = "bf16"
+    elif (q_proj == [8192, 5120] and q_dtype == "I8"
+          and marker_count == 350 and scale_count == 350 and pre_quant_count == 0
+          and geometry_matches("I8")):
+        variant = "int8_convrot"
+    elif (q_proj == [8192, 2560] and q_dtype == "U8"
+          and marker_count == 351 and scale_count == 351 and pre_quant_count == 100
+          and geometry_matches("U8", packed=True)):
+        variant = "nvfp4_awq"
+    else:
+        result["reason"] = (
+            "Q projection dtype/shape and quantization marker coverage do not match "
+            "an implemented H3 TE format."
+        )
+        return result
+
+    if variant != "bf16":
+        try:
+            markers = _read_comfy_quant_markers(path, header)
+            if variant == "int8_convrot":
+                valid = len(markers) == 350 and all(
+                    _supported_int8_convrot_marker(key, marker, header, path=path) is not None
+                    for key, marker in markers.items()
+                )
+            else:
+                valid = len(markers) == 351 and all(
+                    (
+                        _supported_h3_int8_embedding_marker(key, marker, header, path=path)
+                        if key == "model.embed_tokens.comfy_quant"
+                        else _supported_h3_nvfp4_marker(key, marker, header, path=path)
+                    ) is not None
+                    for key, marker in markers.items()
+                )
+            if not valid:
+                result["reason"] = "Quantization marker payloads do not match the implemented H3 loader contract."
+                return result
+        except Exception as exc:
+            result["reason"] = f"Quantization marker inspection failed: {exc}"
+            return result
+
+    result["variant"] = variant
+    result["compatible"] = True
+    result["reason"] = f"Header matches the H3 {variant} loader contract."
+    return result
+
+
+def _read_comfy_quant_markers(path: str, header: Dict[str, Any]) -> Dict[str, torch.Tensor]:
+    """Read only tiny U8 marker payloads without mapping checkpoint weights."""
+    with open(path, "rb") as handle:
+        raw_length = handle.read(8)
+        if len(raw_length) != 8:
+            raise ValueError("truncated safetensors header")
+        (header_length,) = struct.unpack("<Q", raw_length)
+        data_start = 8 + header_length
+        markers: Dict[str, torch.Tensor] = {}
+        for key, entry in header.items():
+            if not key.endswith(".comfy_quant"):
+                continue
+            if not isinstance(entry, dict) or entry.get("dtype") != "U8":
+                raise ValueError(f"{key} is not a U8 marker")
+            shape = entry.get("shape")
+            offsets = entry.get("data_offsets")
+            if (not isinstance(shape, list) or len(shape) != 1
+                    or not isinstance(offsets, list) or len(offsets) != 2):
+                raise ValueError(f"{key} has invalid marker metadata")
+            start, end = (int(value) for value in offsets)
+            if start < 0 or end < start or end - start != int(shape[0]) or end - start > 4096:
+                raise ValueError(f"{key} marker range is invalid")
+            handle.seek(data_start + start)
+            payload = handle.read(end - start)
+            if len(payload) != end - start:
+                raise ValueError(f"{key} marker is truncated")
+            markers[key] = torch.tensor(list(payload), dtype=torch.uint8)
+        return markers
+
+
+def list_minimax_h3_text_encoder_candidates(model_path: str) -> List[Dict[str, Any]]:
+    """List every H3-tree safetensors TE, including disabled unknown files."""
+    layout = detect_minimax_h3_layout(model_path)
+    if layout is None or not layout.get("root"):
+        return []
+    directory = Path(str(layout["root"])) / "text_encoders"
+    if not directory.is_dir():
+        return []
+    return [
+        inspect_minimax_h3_text_encoder_candidate(str(path))
+        for path in sorted(directory.glob("*.safetensors"), key=lambda item: item.name.lower())
+    ]
+
+
+def assert_no_live_text_encoder() -> None:
+    """Assert that all prior H3 TE owners and their mapped storages are gone."""
+    import gc
+
+    gc.collect()
+    live = sorted(path for path, ref in _LIVE_TEXT_ENCODER.items() if ref() is not None)
+    live_tensors = {
+        path: sum(ref() is not None for ref in refs)
+        for path, refs in _LIVE_TEXT_ENCODER_TENSORS.items()
+        if any(ref() is not None for ref in refs)
+    }
+    if live or live_tensors:
+        raise RuntimeError(
+            "MiniMax-H3 text encoder detach left a live owner; refusing to map another "
+            f"50 GB-class encoder (models: {live}, mapped tensors: {live_tensors})."
+        )
+
+
+def build_minimax_h3_text_encoder(te_path: str, official_dir: Optional[str]):
+    """Dedicated TE-only entry point; intentionally performs no device move."""
+    inspected = inspect_minimax_h3_text_encoder_candidate(te_path)
+    if not inspected["compatible"]:
+        raise ValueError(inspected["reason"])
+    assert_no_live_text_encoder()
+    return _build_text_encoder(te_path, official_dir)
+
+
 def _te_selection_reason(directory: Path, selected: Optional[Path]) -> Optional[str]:
     """Why ``selected`` (or nothing) is the resolved text encoder, for the log.
 
@@ -1914,6 +2095,7 @@ _TE_EXPECTED_MISSING = frozenset({"lm_head.weight", "model.language_model.norm.w
 # `PipelineManager._load_model_lock`, and a stale entry only costs one
 # `gc.collect()`.
 _LIVE_TEXT_ENCODER: Dict[str, Any] = {}
+_LIVE_TEXT_ENCODER_TENSORS: Dict[str, Tuple[Any, ...]] = {}
 
 
 def _refuse_double_mapping(te_path: str) -> None:
@@ -1935,10 +2117,11 @@ def _refuse_double_mapping(te_path: str) -> None:
     import gc
 
     ref = _LIVE_TEXT_ENCODER.get(te_path)
-    if ref is None or ref() is None:
+    tensor_refs = _LIVE_TEXT_ENCODER_TENSORS.get(te_path, ())
+    if (ref is None or ref() is None) and not any(item() is not None for item in tensor_refs):
         return
     gc.collect()
-    if ref() is None:
+    if (ref is None or ref() is None) and not any(item() is not None for item in tensor_refs):
         return
     raise RuntimeError(
         f"a MiniMax-H3 text encoder built from {te_path} is STILL ALIVE in this process. Its "
@@ -2239,6 +2422,10 @@ def _build_text_encoder(te_path: str, official_dir: Optional[str]):
 
     model.eval().requires_grad_(False)
     _LIVE_TEXT_ENCODER[te_path] = weakref.ref(model)
+    _LIVE_TEXT_ENCODER_TENSORS[te_path] = tuple(
+        weakref.ref(tensor)
+        for tensor in list(model.parameters()) + list(model.buffers())
+    )
     return model, config
 
 
@@ -2456,5 +2643,6 @@ def load_minimax_h3_from_path(
         "dit_path": layout["dit"],
         "audio_vae_path": layout["audio_vae"],
         "text_encoder_path": layout["text_encoder"],
+        "text_encoder_origin": "selected_external" if te_override is not None else "architecture_default",
         "official_dir": official,
     }

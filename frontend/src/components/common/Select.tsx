@@ -2,7 +2,7 @@ import { SelectHTMLAttributes } from "react";
 
 interface SelectProps extends SelectHTMLAttributes<HTMLSelectElement> {
   label?: string;
-  options: Array<{ value: string; label: string }>;
+  options: Array<{ value: string; label: string; disabled?: boolean; title?: string }>;
 }
 
 export default function Select({
@@ -25,7 +25,7 @@ export default function Select({
         {...props}
       >
         {options.map((option) => (
-          <option key={option.value} value={option.value}>
+          <option key={option.value} value={option.value} disabled={option.disabled} title={option.title}>
             {option.label}
           </option>
         ))}

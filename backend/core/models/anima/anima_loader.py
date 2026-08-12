@@ -11,6 +11,7 @@ Supports two distribution formats:
 
 import os
 import json
+import struct
 from pathlib import Path
 from typing import Optional, Dict, Any, Tuple, List
 
@@ -48,6 +49,55 @@ QWEN_IMAGE_VAE_CONFIG = dict(
     dropout=0.0,
     input_channels=3,
 )
+
+
+def inspect_anima_component_candidate(path: str, slot: str) -> Dict[str, Any]:
+    """Header-only wiring check for Anima's explicit TE/VAE loader inputs."""
+    result = {"compatible": False, "reason": "Anima component geometry is unknown."}
+    if slot not in ("text_encoder", "vae") or not os.path.isfile(path):
+        result["reason"] = "Anima switching currently requires a standalone safetensors file."
+        return result
+    try:
+        with open(path, "rb") as handle:
+            raw_length = handle.read(8)
+            if len(raw_length) != 8:
+                raise ValueError("truncated safetensors header")
+            (header_length,) = struct.unpack("<Q", raw_length)
+            if header_length <= 0 or header_length > 512 * 1024 * 1024:
+                raise ValueError("invalid safetensors header length")
+            header = json.loads(handle.read(header_length).decode("utf-8"))
+    except Exception as exc:
+        result["reason"] = f"Header inspection failed: {exc}"
+        return result
+
+    def shape(key: str):
+        entry = header.get(key)
+        return entry.get("shape") if isinstance(entry, dict) else None
+
+    if slot == "text_encoder":
+        layers = {
+            int(parts[2])
+            for key in header
+            if key.startswith("model.layers.")
+            for parts in (key.split("."),)
+            if len(parts) > 3 and parts[2].isdigit()
+        }
+        if shape("model.embed_tokens.weight") != [151936, 1024] or layers != set(range(28)):
+            result["reason"] = "Anima requires the 28-layer Qwen3-0.6B 1024-wide encoder geometry."
+            return result
+        result.update(compatible=True, reason="Qwen3 input vocabulary, output width 1024, and 28 layers match Anima wiring.")
+        return result
+
+    expected = {
+        "encoder.conv1.weight": [96, 3, 3, 3, 3],
+        "decoder.conv1.weight": [384, 16, 3, 3, 3],
+        "conv2.weight": [16, 16, 1, 1, 1],
+    }
+    if any(shape(key) != value for key, value in expected.items()):
+        result["reason"] = "Anima VAE RGB input or 16-channel latent geometry does not match."
+        return result
+    result.update(compatible=True, reason="RGB input and 16-channel Qwen-Image latent geometry match Anima wiring.")
+    return result
 
 
 # -------- Detection ----------

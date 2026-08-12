@@ -31,9 +31,11 @@ for _path in (_REPO_ROOT, _BACKEND_ROOT):
         sys.path.insert(0, _path)
 
 from core.inference.video_chain_context import (  # noqa: E402
+    ChainPlanRequest,
     ChainReference,
     VideoGridSpec,
     plan_h3_chain_from_prompt,
+    plan_video_chain_manifest,
     split_alignment_instruction,
 )
 
@@ -110,6 +112,53 @@ def test_a_token_in_the_body_still_widens_the_binding():
     assert manifest.references[0].segment_indices == [0, 1]
     assert manifest.references[0].binding_source == "token_implied"
     assert [w for w in manifest.warnings if "so the sentence stays intact" in w]
+
+
+def _legacy_repeat_plan(body: str, segment_indices):
+    return plan_video_chain_manifest(
+        ChainPlanRequest(
+            architecture="minimax_h3",
+            root_prompt=(
+                f"{I2VA_INSTRUCTION}\n\n"
+                f"integrated_multimodal_description: [Shot 1] {body}\n\n"
+                "overall_soundscape: waves against the pilings\n\n"
+                "non_diegetic_music: N/A"
+            ),
+            grid=H3_GRID,
+            fps=FPS,
+            target_frames=TARGET_FRAMES,
+            variant="i2va",
+            segment_frames=SEGMENT_FRAMES,
+            context_mode="legacy_repeat",
+            root_seed=1,
+            references=[
+                ChainReference(
+                    id="ref1",
+                    kind="image",
+                    label="woman",
+                    token="<Picture 1>",
+                    segment_indices=segment_indices,
+                )
+            ],
+        )
+    )
+
+
+def test_legacy_repeat_applies_the_same_instruction_exemption():
+    # legacy_repeat resends the root prompt verbatim, instruction included, so
+    # without the exemption its `<Picture 1>` would widen an explicitly narrow
+    # binding to every segment -- the asymmetry with the timeline path above.
+    manifest = _legacy_repeat_plan("The woman walks along the pier.", [0])
+    assert len(manifest.segments) == 2
+    assert manifest.references[0].segment_indices == [0]
+    assert manifest.references[0].binding_source == "explicit"
+    assert manifest.segments[1].reference_ids == []
+
+
+def test_legacy_repeat_still_widens_on_a_token_in_the_body():
+    manifest = _legacy_repeat_plan("The woman in <Picture 1> walks along the pier.", [0])
+    assert manifest.references[0].segment_indices == [0, 1]
+    assert manifest.references[0].binding_source == "token_implied"
 
 
 def test_split_alignment_instruction_only_matches_the_head():

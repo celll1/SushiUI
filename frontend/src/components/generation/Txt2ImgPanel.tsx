@@ -48,6 +48,7 @@ import {
   buildChainImageReferenceInventory,
   segmentChainReferenceImages,
   segmentChainText,
+  segmentChainSeed,
   chainSegmentProvenance,
   advanceVideoChain,
   ChainAdvanceResult,
@@ -2064,6 +2065,10 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
       num_frames: capFrames,
       prompt: mainText.prompt,
       negative_prompt: mainText.negative_prompt,
+      // Design §8: the manifest froze this segment's seed at plan time (a
+      // `-1` panel seed was resolved there, once). Sending the panel's raw
+      // value would redraw a different random seed per segment.
+      seed: segmentChainSeed(manifest, 0, videoParams.seed),
       // Design §13: segment 0 records the same provenance every continuation
       // does, on the request itself -- otherwise the first segment of a chain
       // would be the one gallery row that cannot say which chain it belongs to.

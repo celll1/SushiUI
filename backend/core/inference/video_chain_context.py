@@ -1534,7 +1534,9 @@ def plan_video_chain_manifest(request: ChainPlanRequest) -> ChainManifest:
 
     if request.context_mode == "legacy_repeat":
         references = derive_token_bindings(
-            references, [request.root_prompt] * segment_count, warnings
+            references,
+            [_legacy_binding_scan_text(request)] * segment_count,
+            warnings,
         )
         segments = _legacy_repeat_segments(request, spans, references, warnings)
         events: List[TimelineEvent] = []
@@ -1618,6 +1620,41 @@ def _legacy_repeat_segments(
         )
         for span in spans
     ]
+
+
+def _legacy_binding_scan_text(request: ChainPlanRequest) -> str:
+    """Root prompt minus its mode alignment instruction, for token binding.
+
+    `legacy_repeat` resends the root prompt verbatim, so its head can be the
+    mode's own keyframe alignment instruction; those `<Picture N>` labels are
+    mode inputs, not manifest reference usage, and must not widen a binding the
+    caller narrowed -- the same rule `binding_scan_text` applies on the timeline
+    path. The instruction there covers the WHOLE clip, so it is matched against
+    one span covering the whole clip. A head that matches nothing (hand-written
+    prompt, non-H3 architecture) leaves the prompt scanned in full, as before.
+    """
+    if request.architecture != "minimax_h3":
+        return request.root_prompt
+    root_span = SegmentSpan(
+        index=0,
+        accumulated_before=0,
+        generated_span_frames=request.target_frames,
+        anchor_global_frame=None,
+        owned_start_frame=0,
+        owned_end_frame=request.target_frames,
+        requested_total_frames=request.target_frames,
+    )
+    ctx = SegmentCompileContext(
+        span=root_span,
+        segment_count=1,
+        fps=request.fps,
+        persistent_context=PersistentContext(),
+        incoming_state=[],
+        owned_events=[],
+        outgoing_state=[],
+    )
+    formatter = MiniMaxH3SegmentFormatter(request.variant or "t2va")
+    return formatter.binding_scan_text(ctx, request.root_prompt)
 
 
 def _compile_segments(

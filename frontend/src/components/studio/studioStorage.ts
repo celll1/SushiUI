@@ -70,12 +70,26 @@ export const loadStudioProject = async (): Promise<StudioProject | null> => {
   }
 };
 
-export const saveStudioProject = (project: StudioProject) => {
+// localStorage has a small quota (commonly ~5MB) shared by the whole origin.
+// Assets backed by a `blobKey` live in IndexedDB (see `saveImportedMedia`
+// above) and are excluded from the serialized payload here, but any asset
+// that still carries an inline data URL (e.g. a caller that has not yet
+// been migrated to the blobKey pattern) is written verbatim and can exceed
+// the quota. `localStorage.setItem` throws synchronously in that case, so
+// callers must check the returned result rather than assume this always
+// succeeds.
+export const saveStudioProject = (project: StudioProject): { ok: true } | { ok: false; error: unknown } => {
   const serializable = {
     ...project,
     assets: project.assets.map((asset) =>
       asset.blobKey ? { ...asset, url: "", thumbnailUrl: undefined } : asset,
     ),
   };
-  localStorage.setItem(PROJECT_KEY, JSON.stringify(serializable));
+  try {
+    localStorage.setItem(PROJECT_KEY, JSON.stringify(serializable));
+    return { ok: true };
+  } catch (error) {
+    console.error("[Studio] Failed to persist project", error);
+    return { ok: false, error };
+  }
 };

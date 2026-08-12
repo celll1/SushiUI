@@ -1,5 +1,6 @@
 import { loadImportedMedia, saveImportedMedia } from "./studioStorage";
 import type { StudioAssetKind } from "./types";
+import { newId } from "@/utils/id";
 
 const TRANSFER_KEY = "sushiui_studio_transfer_v1";
 
@@ -77,13 +78,13 @@ export const queueStudioTransfer = async ({
   if (media && transientUrl(media.url)) {
     const response = await fetch(media.url);
     const blob = await response.blob();
-    const blobKey = `transfer-${crypto.randomUUID()}`;
+    const blobKey = `transfer-${newId()}`;
     await saveImportedMedia(blobKey, blob);
     transferredMedia = { ...media, url: "", masterUrl: undefined, thumbnailUrl: undefined, blobKey };
   }
 
   const payload: StudioTransferPayload = {
-    id: crypto.randomUUID(),
+    id: newId(),
     source,
     createdAt: new Date().toISOString(),
     media: transferredMedia,

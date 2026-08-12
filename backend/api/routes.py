@@ -5189,7 +5189,12 @@ async def generate_inpaint_video(
     from api.generation_status import start_generation, complete_generation, fail_generation, get_warnings
     from utils.video_utils import save_video_with_metadata, load_video_frames, extract_audio_stream, probe_upload_clip
     from api.generation_utils import plan_video_inpaint_span
-    from api.param_defaults import inpaint_video_defaults_for_arch, MAX_VIDEO_UPLOAD_DECODE_BYTES
+    from api.param_defaults import (
+        inpaint_video_defaults_for_arch,
+        MAX_VIDEO_UPLOAD_DECODE_BYTES,
+        MAX_SPATIAL_MASK_GENERATION_RAM_BYTES,
+        SPATIAL_MASK_GENERATION_PEAK_MULTIPLIER,
+    )
     from core.models.components.wiring import temporal_spec_for_arch
     from core.inference.video_mask_timeline import (
         MAX_MASK_ASSETS,
@@ -5434,6 +5439,44 @@ async def generate_inpaint_video(
         )
     validate_video_steps({"num_inference_steps": num_inference_steps}, _vid_arch)
 
+    # H-B (spatial-mask memory audit, 2026-08): a SEPARATE, TIGHTER RAM guard
+    # for the spatial-mask branch only -- `_refuse_if_decode_too_large` below
+    # only bounds the raw decoded uint8 clip; `build_spatial_mask_plan`
+    # allocates float32 buffers over the SAME clip length on top of that (see
+    # `MAX_SPATIAL_MASK_GENERATION_RAM_BYTES`'s docstring in param_defaults.py
+    # for the measured 5.00x multiplier), and this endpoint's decode is now
+    # unbounded in FRAME COUNT (`max_frames=None`, MiniMax-H3's own
+    # `trained_max_frames` ceiling was removed upstream) -- so a clip length
+    # that comfortably clears the raw-decode guard can still make this
+    # branch's own CPU-side buffers OOM the process before a single denoise
+    # step runs. Checked once `trimmed_len` (the exact `clip_frames` value
+    # `build_spatial_mask_plan` will later be called with) is known, and
+    # before `plan_video_inpaint_span`/`validate_spatial_mask_plan_cheap` do
+    # any further work -- refusing here is strictly cheaper than refusing
+    # after those run, and still strictly before the GPU generation slot is
+    # reserved further below.
+    def _refuse_if_spatial_mask_generation_too_large(*, clip_frames: int, width_px: int, height_px: int) -> None:
+        if width_px <= 0 or height_px <= 0 or clip_frames <= 0:
+            return
+        per_frame_bytes = width_px * height_px * 3
+        extra_bytes = int(clip_frames * per_frame_bytes * SPATIAL_MASK_GENERATION_PEAK_MULTIPLIER)
+        if extra_bytes > MAX_SPATIAL_MASK_GENERATION_RAM_BYTES:
+            frame_budget = int(
+                MAX_SPATIAL_MASK_GENERATION_RAM_BYTES
+                // max(1, int(per_frame_bytes * SPATIAL_MASK_GENERATION_PEAK_MULTIPLIER))
+            )
+            raise CustomValidationError(
+                "the spatial mask timeline is too long/high-resolution to build for this clip",
+                detail=f"Trimmed clip has {clip_frames} frames at {width_px}x{height_px}; building "
+                       f"the spatial mask plan over the whole clip would need an estimated "
+                       f"{extra_bytes / (1024 ** 3):.1f} GiB of additional RAM (measured peak of "
+                       f"the spatial-mask build/composite path, on top of the clip's own decode "
+                       f"budget) -- this endpoint's spatial-mask generation RAM budget is "
+                       f"{MAX_SPATIAL_MASK_GENERATION_RAM_BYTES / (1024 ** 3):.0f} GiB, i.e. at most "
+                       f"{frame_budget} frames at this resolution. Trim the clip, lower its "
+                       f"resolution, or drop the spatial mask.",
+            )
+
     # Decode the clip (+ its audio track) BEFORE the GPU slot, so a malformed
     # upload is a 400 that reserved nothing.
     #
@@ -5549,6 +5592,10 @@ async def generate_inpaint_video(
             detail=f"Uploaded clip has {video_frames.shape[0]} frames; "
                    f"input_trim_start_frames={input_trim_start_frames}, "
                    f"input_trim_end_frames={input_trim_end_frames}.",
+        )
+    if spatial_mask_timeline is not None:
+        _refuse_if_spatial_mask_generation_too_large(
+            clip_frames=int(trimmed_len), width_px=int(width), height_px=int(height)
         )
 
     # No post-decode "too long" refusal here anymore: the decode above is

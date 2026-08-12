@@ -35,11 +35,40 @@ MAX_MASK_PREVIEW_FRAMES = 64
 # keyframe to lie inside the contiguous range it rasterizes, so a manifest
 # with only two keyframes a huge distance apart would otherwise force a huge
 # contiguous rasterization no matter how few frames were actually requested
-# near them. No shipped video architecture's own clip-length ceiling exceeds
-# 362 frames (MiniMax-H3's documented maximum); this is a generous multiple
-# of that, not a per-architecture value, since this preview endpoint loads no
-# model and therefore has no architecture context to size the cap from.
-MAX_MASK_PREVIEW_SPAN_FRAMES = 4096
+# near them.
+#
+# This USED to be a flat frame-count cap (4096), justified by "no shipped
+# video architecture's own clip-length ceiling exceeds 362 frames". That
+# premise no longer holds: MiniMax-H3's `max_frames` was changed to `None`
+# (its 362-frame figure, `trained_max_frames`, is now an advisory documented
+# maximum, not an enforced decoder limit -- see `core.models.components.
+# wiring`), so a clip's length -- and therefore a legitimate keyframe span --
+# is no longer bounded by any architecture's own ceiling either. A flat
+# frame-count cap also never bounded the actual resource this endpoint
+# spends: `rasterize_mask_timeline` holds the WHOLE requested span as one
+# list of float32 `[canvas_height, canvas_width]` arrays (measured with
+# `tracemalloc`: its own peak is the whole span's byte count to within ~1%,
+# i.e. essentially `span_frames * canvas_width * canvas_height * 4` bytes,
+# with no dependency on canvas size in the old cap at all) -- at the largest
+# canvas this module's own `decode_mask_pngs` already allows
+# (`video_mask_timeline.MAX_MASK_PIXELS`, 16,777,216px) and the old 4096-frame
+# cap, that is up to 256 GiB, and a canvas as small as 768x1344 (MiniMax-H3's
+# own maximum) reaches double-digit GiB well inside the old cap (a 768x1344
+# canvas with two keyframes ~2773 frames apart measures ~10.8 GiB, reachable
+# from the UI's own debounced preview fetch with no unusual input). The cap
+# below is therefore an explicit BYTE budget instead, computed against the
+# manifest's own canvas size the same way the video-inpaint route's spatial-
+# mask RAM guard is (`api.param_defaults.MAX_SPATIAL_MASK_GENERATION_RAM_BYTES`)
+# -- kept smaller than that guard's 8 GiB because this endpoint runs with NO
+# model loaded and is hit far more casually (a scrubbing UI's debounced
+# fetch, not a single confirmed generate click), so more than one request can
+# plausibly be in flight against the same process at once.
+MASK_PREVIEW_RASTER_BUDGET_BYTES = 2 * 1024 * 1024 * 1024
+# `rasterize_mask_timeline`'s own measured peak (see above) is the span's raw
+# byte count to within ~1% at every canvas size/span length probed; this
+# multiplier keeps a small margin over that measurement rather than pretend
+# it is exactly 1.0x.
+MASK_PREVIEW_RASTER_PEAK_MULTIPLIER = 1.1
 MIN_PREVIEW_MAX_SIZE = 16
 MAX_PREVIEW_MAX_SIZE = 1024
 
@@ -122,11 +151,21 @@ def build_mask_preview_strip(
     keyframe_frames = [keyframe.frame for keyframe in timeline.keyframes]
     span_start = min(keyframe_frames + validated_frames)
     span_end = max(keyframe_frames + validated_frames) + 1
-    if span_end - span_start > MAX_MASK_PREVIEW_SPAN_FRAMES:
+    span_frames = span_end - span_start
+    canvas_px = timeline.canvas.width * timeline.canvas.height
+    estimated_bytes = int(span_frames * canvas_px * 4 * MASK_PREVIEW_RASTER_PEAK_MULTIPLIER)
+    if estimated_bytes > MASK_PREVIEW_RASTER_BUDGET_BYTES:
+        frame_budget = int(
+            MASK_PREVIEW_RASTER_BUDGET_BYTES
+            // max(1, int(canvas_px * 4 * MASK_PREVIEW_RASTER_PEAK_MULTIPLIER))
+        )
         raise MaskPreviewError(
             "the manifest's keyframes and requested frames together span "
-            f"{span_end - span_start} frames, more than the "
-            f"{MAX_MASK_PREVIEW_SPAN_FRAMES}-frame preview limit"
+            f"{span_frames} frames at a {timeline.canvas.width}x{timeline.canvas.height} canvas, "
+            f"which would need an estimated {estimated_bytes / (1024 ** 3):.1f} GiB to rasterize -- "
+            f"more than this preview endpoint's {MASK_PREVIEW_RASTER_BUDGET_BYTES / (1024 ** 3):.0f} "
+            f"GiB budget, i.e. at most {frame_budget} frames of span at this canvas size. Move the "
+            "manifest's keyframes closer together, or request frames closer to them."
         )
 
     # Unmodified call into the generation-path rasterizer: same manifest,
@@ -170,7 +209,8 @@ def build_mask_preview_strip(
 
 __all__ = [
     "MAX_MASK_PREVIEW_FRAMES",
-    "MAX_MASK_PREVIEW_SPAN_FRAMES",
+    "MASK_PREVIEW_RASTER_BUDGET_BYTES",
+    "MASK_PREVIEW_RASTER_PEAK_MULTIPLIER",
     "MIN_PREVIEW_MAX_SIZE",
     "MAX_PREVIEW_MAX_SIZE",
     "MaskPreviewError",

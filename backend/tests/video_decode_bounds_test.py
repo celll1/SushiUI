@@ -249,7 +249,11 @@ class InpaintVideoPostDecodeOverlongClipTest(unittest.TestCase):
         source = _routes_source()
         inpaint_anchor = source.index("This used to be bounded by the arch's `max_frames`")
         anchor = source.index("trimmed_len = video_frames.shape[0]", inpaint_anchor)
-        section = source[anchor:anchor + 1500]
+        # Widened from 1500: the High-B spatial-mask RAM guard call
+        # (`_refuse_if_spatial_mask_generation_too_large`, added after
+        # trimmed_len is computed) now sits between this anchor and
+        # `plan_video_inpaint_span(`.
+        section = source[anchor:anchor + 3000]
         # No post-decode length-cap refusal left: plan_video_inpaint_span is
         # what judges trimmed_len now (off-grid or below floor is still a
         # 400; on-grid past the DOCUMENTED trained range is accepted and

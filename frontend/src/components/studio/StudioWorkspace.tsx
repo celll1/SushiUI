@@ -892,7 +892,10 @@ export default function StudioWorkspace() {
   const handleTrackDrop = async (event: DragEvent<HTMLDivElement>, trackId: string) => {
     event.preventDefault();
     const bounds = event.currentTarget.getBoundingClientRect();
-    const start = clampTime((event.clientX - bounds.left) / zoom, project.duration);
+    const start = clampTime(
+      (event.clientX - bounds.left + (timelineScrollRef.current?.scrollLeft || 0)) / zoom,
+      project.duration,
+    );
     const clipId = event.dataTransfer.getData("application/x-studio-clip");
     if (clipId) {
       moveClip(clipId, trackId, start);

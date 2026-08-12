@@ -567,8 +567,13 @@ async def get_generation_defaults():
 @router.post("/studio/render-jobs", status_code=202, tags=["studio"])
 async def create_studio_render_job(
     manifest: str = Form(..., description="Frame-based Studio render manifest JSON"),
-    asset_ids: Optional[List[str]] = Form(None, description="IDs corresponding positionally to asset_files"),
-    asset_files: Optional[List[UploadFile]] = File(None, description="Non-Gallery Studio media, keyed by asset_ids"),
+    # `List[...] = Form([])`, not `Optional[List[...]] = Form(None)`: the
+    # optional form was rejecting every multipart submission that carried
+    # uploads with "Input should be a valid list" before the handler ran.
+    # This matches `spatial_mask_ids`/`spatial_mask_files` further down, which
+    # is the shape that works on the installed FastAPI/pydantic pair.
+    asset_ids: List[str] = Form([], description="IDs corresponding positionally to asset_files"),
+    asset_files: List[UploadFile] = File([], description="Non-Gallery Studio media, keyed by asset_ids"),
     db: Session = Depends(get_gallery_db),
 ):
     """Queue a complete Studio timeline render.

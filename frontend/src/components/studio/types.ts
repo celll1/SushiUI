@@ -5,6 +5,7 @@ export type StudioAssetKind = "image" | "video" | "audio";
 export type StudioInputRole = "keyframe";
 export type StudioClipPresentation = "frame" | "hold" | "clip";
 export type StudioClipFitMode = "cover" | "contain";
+export type StudioCanvasMode = "auto" | "manual";
 
 export interface StudioAssetSourceRef {
   name?: string;
@@ -86,6 +87,8 @@ export interface StudioProject {
   fps: number;
   width: number;
   height: number;
+  /** Empty projects adopt the first visual asset; Project Settings switches this to manual. */
+  canvasMode: StudioCanvasMode;
   assets: StudioAsset[];
   tracks: StudioTrack[];
   clips: StudioClip[];
@@ -96,6 +99,19 @@ export interface StudioProject {
   inpaintRange?: StudioRange | null;
   referenceAssetIds?: string[];
 }
+
+export const hasStudioVisualClip = (clips: readonly StudioClip[], assets: readonly StudioAsset[]): boolean => {
+  const visualAssetIds = new Set(assets
+    .filter((asset) => asset.kind === "image" || asset.kind === "video")
+    .map((asset) => asset.id));
+  return clips.some((clip) => visualAssetIds.has(clip.assetId));
+};
+
+export const resolveStudioCanvasMode = (
+  value: unknown,
+  clips: readonly StudioClip[],
+  assets: readonly StudioAsset[],
+): StudioCanvasMode => value === "manual" || hasStudioVisualClip(clips, assets) ? "manual" : "auto";
 
 export type StudioTool = "select" | "blade" | "hand" | "range" | "link";
 export type StudioGenerationMode = "t2v" | "i2v" | "inpaint" | "outpaint" | "ref2v" | "t2i" | "i2i" | "image-inpaint";
@@ -124,6 +140,7 @@ export const createStudioProject = (): StudioProject => ({
   fps: 24,
   width: 1920,
   height: 1080,
+  canvasMode: "auto",
   assets: [],
   tracks: [
     { id: "video-1", name: "VIDEO 1", kind: "video", muted: false, locked: false, visible: true },

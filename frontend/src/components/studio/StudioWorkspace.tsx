@@ -100,6 +100,8 @@ import {
   StudioTool,
   StudioTrack,
   createStudioProject,
+  hasStudioVisualClip,
+  resolveStudioCanvasMode,
 } from "./types";
 import { clipEnd, frameDuration, frameIndexAt, maxTimelineDuration, planStudioGeneration } from "./studioTimeline";
 import {
@@ -658,8 +660,8 @@ export default function StudioWorkspace() {
     const width = normalizeCanvasDimension(Number(canvasDraft.width), projectRef.current.width);
     const height = normalizeCanvasDimension(Number(canvasDraft.height), projectRef.current.height);
     setCanvasDraft({ width: String(width), height: String(height) });
-    if (width === projectRef.current.width && height === projectRef.current.height) return;
-    commit((current) => ({ ...current, width, height }));
+    if (width === projectRef.current.width && height === projectRef.current.height && projectRef.current.canvasMode === "manual") return;
+    commit((current) => ({ ...current, width, height, canvasMode: "manual" }));
   }, [canvasDraft.height, canvasDraft.width, commit]);
 
   const updateCanvasDraft = useCallback((field: "width" | "height", value: string) => {
@@ -1111,24 +1113,36 @@ export default function StudioWorkspace() {
       ...(sourceDuration != null ? { sourceDuration } : {}),
       ...(asset.kind !== "audio" && requestedFitMode ? { fitMode: requestedFitMode } : {}),
     };
+    const autoFitCanvas = asset.kind !== "audio"
+      && projectRef.current.canvasMode === "auto"
+      && !hasStudioVisualClip(projectRef.current.clips, allAssets)
+      && Number.isFinite(asset.width) && Number.isFinite(asset.height)
+      && asset.width! > 0 && asset.height! > 0;
+    const autoCanvasWidth = autoFitCanvas ? normalizeCanvasDimension(asset.width!, projectRef.current.width) : projectRef.current.width;
+    const autoCanvasHeight = autoFitCanvas ? normalizeCanvasDimension(asset.height!, projectRef.current.height) : projectRef.current.height;
     commit((current) => ({
       ...current,
+      ...(autoFitCanvas ? { width: autoCanvasWidth, height: autoCanvasHeight, canvasMode: "manual" as const } : {}),
       assets: current.assets.some((item) => item.id === asset.id) ? current.assets : [...current.assets, asset],
       clips: [...current.clips, clip],
     }));
     setSelectedAssetId(asset.id);
     selectClip(clip.id);
+    if (autoFitCanvas) setNotice(`Canvas set to ${autoCanvasWidth}×${autoCanvasHeight} from ${asset.name}.`);
     return true;
-  }, [activeClips, commit, project.duration, project.fps, project.tracks]);
+  }, [activeClips, allAssets, commit, project.duration, project.fps, project.tracks]);
 
   const addAssetToTimeline = useCallback((asset: StudioAsset, start?: number, trackId?: string, holdStill = false, fitMode?: StudioClipFitMode): boolean => {
-    if (asset.kind === "image" && assetNeedsCanvasFit(asset, project.width, project.height) && !fitMode) {
+    const canvasWillAutoFit = asset.kind !== "audio"
+      && project.canvasMode === "auto"
+      && !hasStudioVisualClip(project.clips, allAssets);
+    if (asset.kind === "image" && assetNeedsCanvasFit(asset, project.width, project.height) && !fitMode && !canvasWillAutoFit) {
       setPendingPlacement({ asset, start, trackId, holdStill });
       setSelectedAssetId(asset.id);
       return false;
     }
     return placeAssetOnTimeline(asset, start, trackId, holdStill, fitMode || (asset.kind === "video" ? "cover" : undefined));
-  }, [placeAssetOnTimeline, project.height, project.width]);
+  }, [allAssets, placeAssetOnTimeline, project.canvasMode, project.clips, project.height, project.width]);
 
   const confirmPendingPlacement = useCallback((fitMode: StudioClipFitMode) => {
     const pending = pendingPlacement;
@@ -1347,6 +1361,7 @@ export default function StudioWorkspace() {
           ? parsed.referenceAssetIds.filter((id): id is string => typeof id === "string")
           : [],
       };
+      imported.canvasMode = resolveStudioCanvasMode(parsed.canvasMode, imported.clips, imported.assets);
       const imageAssetIds = new Set(imported.assets.filter((asset) => asset.kind === "image").map((asset) => asset.id));
       const clips = imported.clips.map((clip) => {
         const inputRoles = clip.inputRoles?.filter((role) => role === "keyframe");
@@ -3016,7 +3031,11 @@ export default function StudioWorkspace() {
       const url = URL.createObjectURL(blob);
       return { ...asset, url, thumbnailUrl: asset.kind === "image" ? url : undefined, missing: false };
     }));
-    const restored = { ...entry.manifest, assets };
+    const restored = {
+      ...entry.manifest,
+      canvasMode: resolveStudioCanvasMode(entry.manifest.canvasMode, entry.manifest.clips, assets),
+      assets,
+    };
     applyProject(restored);
     setRange(restored.outputRange ?? null);
     setInpaintRange(restored.inpaintRange ?? null);

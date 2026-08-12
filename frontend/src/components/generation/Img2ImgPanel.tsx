@@ -44,7 +44,7 @@ import VideoFrameCountSlider from "../common/VideoFrameCountSlider";
 import VideoChainConfirmDialog from "../common/VideoChainConfirmDialog";
 import { buildChainContinuationQueueItems, advanceVideoChain } from "@/utils/videoChain";
 import { migrateLoopGenerationConfig, computeLoopDecodeDirective } from "@/utils/loopGenerationInheritance";
-import { getSamplers, getScheduleTypes, generateImg2Img, generateImg2Vid, Img2VidParams, Txt2VidParams, MiniMaxH3Keyframe, MiniMaxH3References, generateRef2Vid, Ref2VidParams, generateOutpaintVideo, OutpaintVideoParams, generateAud2Aud, Aud2AudParams, generateImg2ImgTrainingPreview, toBase64, LoRAConfig, ControlNetConfig, generateTIPOPrompt, cancelGeneration, getCurrentModel, isLatentOnlyResult, getResultFilename, getResultPlaybackFilename, getResultSeed, getResultAncestralSeed, unetQuantizationOptions, normalizeUnetQuantization, transformerQuantizationLabel, archSupportsFeature, archDisplayName, normalizeVideoFrames, fitVideoCanvas, videoCanvasRule, videoCanvasAxisBounds, videoCanvasExceedsEnvelope, isGenerationStalledError, planVideoChain, effectiveSegmentFrames, VIDEO_BLOCK_SWAP_MAX } from "@/utils/api";
+import { getSamplers, getScheduleTypes, generateImg2Img, generateImg2Vid, Img2VidParams, Txt2VidParams, MiniMaxH3Keyframe, MiniMaxH3References, generateRef2Vid, Ref2VidParams, generateOutpaintVideo, OutpaintVideoParams, generateAud2Aud, Aud2AudParams, generateImg2ImgTrainingPreview, toBase64, LoRAConfig, ControlNetConfig, generateTIPOPrompt, cancelGeneration, getCurrentModel, isLatentOnlyResult, getResultFilename, getResultPlaybackFilename, getResultSeed, getResultAncestralSeed, unetQuantizationOptions, normalizeUnetQuantization, transformerQuantizationLabel, archSupportsFeature, archDisplayName, normalizeVideoFrames, fitVideoCanvas, videoCanvasRule, videoCanvasAxisBounds, videoMinInferenceSteps, videoCanvasExceedsEnvelope, isGenerationStalledError, planVideoChain, effectiveSegmentFrames, VIDEO_BLOCK_SWAP_MAX } from "@/utils/api";
 import { useActiveTraining } from "@/hooks/useActiveTraining";
 import { useSmoothProgress } from "@/hooks/useSmoothProgress";
 import { wsClient, CFGMetrics } from "@/utils/websocket";
@@ -5409,7 +5409,10 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <Slider
                   label="Steps"
-                  min={1}
+                  // Arch floor, not 1: `validate_video_steps` answers 400 below
+                  // it (MiniMax-H3 declares 2 -- its steps are sigma grid points,
+                  // so 1 evaluates nothing).
+                  min={videoMinInferenceSteps(archCapabilities, loadedArch)}
                   max={100}
                   step={1}
                   value={params.num_inference_steps ?? 8}

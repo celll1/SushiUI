@@ -1949,6 +1949,30 @@ export const VIDEO_BLOCK_SWAP_MAX = 49;
  * either. An unknown arch (or a matrix that has not loaded) gets align 32 and
  * no cap: the same "assume supported" convention as archSupportsFeature.
  */
+/**
+ * The loaded video architecture's own floor on `num_inference_steps`, for the
+ * step slider's `min`.
+ *
+ * This is a CORRECTNESS bound, not a UI one: `validate_video_steps`
+ * (backend/api/generation_utils.py) answers 400 below it. MiniMax-H3 declares
+ * 2 -- its step count is a sigma GRID POINT count, so N drives N-1 model
+ * evaluations and 1 evaluates nothing -- while LTX-2.3 declares 1. Three of the
+ * four video panels hardcoded `min={1}`, which let the user pick a value that
+ * could only ever come back as a 400; this exists so the fallback rule lives in
+ * one place instead of being re-derived per panel.
+ *
+ * An unknown arch (or a matrix that has not loaded) gets 1, matching the
+ * "assume supported, let the backend re-validate" convention used elsewhere
+ * here -- the request is still checked server-side either way.
+ */
+export const videoMinInferenceSteps = (
+  caps: ArchCapabilities | null | undefined,
+  arch: string | null | undefined
+): number => {
+  const c = arch ? caps?.video_constraints?.[arch] : undefined;
+  return c?.min_inference_steps ?? 1;
+};
+
 export const videoCanvasAxisBounds = (
   caps: ArchCapabilities | null | undefined,
   arch: string | null | undefined,

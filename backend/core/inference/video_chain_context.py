@@ -863,7 +863,11 @@ def derive_token_bindings(
     `segment_indices` and the token-derived ones, and it is part of `plan_hash`.
 
     `segment_texts[i]` must be the text segment `i` will actually carry, before
-    token renumbering; anything else would leave droppable tokens behind.
+    token renumbering, MINUS any mode-owned preamble
+    (`SegmentPromptFormatter.binding_scan_text`): an i2va/l2va alignment
+    instruction says `<Picture 1>` in every segment about the mode's own
+    keyframe, and reading that as reference usage would widen a narrowly bound
+    `<Picture 1>` reference across the whole chain.
     """
     sink = warnings if warnings is not None else []
     present = [set(scan_reference_tokens(text)) for text in segment_texts]
@@ -1199,11 +1203,46 @@ def _join_sentences(lines: Sequence[str]) -> str:
     return " ".join(line.strip() for line in lines if line and line.strip())
 
 
+def _normalize_for_instruction_match(text: str) -> str:
+    return re.sub(r"\s+", " ", strip_reference_tokens(text)).strip()
+
+
+def split_alignment_instruction(prompt: str, expected: str) -> Tuple[str, str]:
+    """(instruction, rest) when `prompt` opens with `expected` modulo tokens.
+
+    THE definition of "this part of the prompt is a mode alignment instruction,
+    not manifest reference usage". Both the token-binding derivation here and the
+    API's token validation go through it, so the exemption has one definition.
+
+    The formatter emits `instruction + "\\n\\n" + body` and the token rewriter
+    only deletes tokens and collapses the spaces they leave, so the first blank
+    line is a reliable split. When the head is something else (a hand-rewritten
+    prompt, or `legacy_repeat`), this returns no instruction and the caller
+    treats the whole prompt as body.
+    """
+    if not expected:
+        return "", prompt
+    head, separator, rest = prompt.partition("\n\n")
+    if not separator:
+        rest = ""
+    if _normalize_for_instruction_match(head) == _normalize_for_instruction_match(expected):
+        return head, rest
+    return "", prompt
+
+
 class SegmentPromptFormatter:
     """Architecture adapter: FORMAT only (design §6.5)."""
 
     def format(self, ctx: SegmentCompileContext) -> str:  # pragma: no cover - interface
         raise NotImplementedError
+
+    def alignment_instruction(self, ctx: SegmentCompileContext) -> str:
+        """Mode-owned preamble, if this architecture has one."""
+        return ""
+
+    def binding_scan_text(self, ctx: SegmentCompileContext, formatted: str) -> str:
+        """The part of `formatted` whose reference tokens imply a binding."""
+        return split_alignment_instruction(formatted, self.alignment_instruction(ctx))[1]
 
 
 class PlainSegmentFormatter(SegmentPromptFormatter):
@@ -1295,11 +1334,22 @@ class MiniMaxH3SegmentFormatter(SegmentPromptFormatter):
         ]
         return "\n\n".join(sections)
 
+    def alignment_instruction(self, ctx: SegmentCompileContext) -> str:
+        """i2va / l2va / fl2va keyframe alignment, rebased to THIS segment.
+
+        Its `<Picture N>` labels are the mode's own keyframe inputs, not manifest
+        references, so they must not be read as reference usage
+        (`binding_scan_text`) nor renumbered per segment.
+        """
+        return _alignment_instruction(
+            self.mode,
+            ctx.span.generated_span_frames / ctx.fps,
+            max(len(ctx.owned_events), 1),
+        )
+
     def format(self, ctx: SegmentCompileContext) -> str:
         body = self._ref(ctx) if self.family == "ref" else self._base(ctx)
-        duration = ctx.span.generated_span_frames / ctx.fps
-        last_shot = max(len(ctx.owned_events), 1)
-        instruction = _alignment_instruction(self.mode, duration, last_shot)
+        instruction = self.alignment_instruction(ctx)
         return f"{instruction}\n\n{body}" if instruction else body
 
 
@@ -1637,7 +1687,11 @@ def _compile_segments(
                 carried_state.append(state)
 
     formatted = [formatter.format(ctx) for ctx in contexts]
-    references = derive_token_bindings(references, formatted, warnings)
+    references = derive_token_bindings(
+        references,
+        [formatter.binding_scan_text(ctx, text) for ctx, text in zip(contexts, formatted)],
+        warnings,
+    )
 
     segments: List[SegmentPlan] = []
     for ctx, text in zip(contexts, formatted):

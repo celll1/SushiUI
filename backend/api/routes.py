@@ -17295,7 +17295,7 @@ from core.inference.video_chain_context import (
     resolve_root_seed,
     resolve_segment_seeds,
     segment_reference_ids,
-    strip_reference_tokens,
+    split_alignment_instruction,
     validate_manifest,
     validate_timeline,
     # Private in name only: these ARE the single definitions of the reference
@@ -17884,35 +17884,12 @@ def _video_chain_frame_grid_text(
     return ", ".join(parts)
 
 
-def _video_chain_normalized_text(text: str) -> str:
-    return re.sub(r"\s+", " ", strip_reference_tokens(text)).strip()
-
-
 def _video_chain_expected_instruction(
     mode: Optional[str], fps: float, span_frames: int, owned_events: int
 ) -> str:
     if not mode or fps <= 0:
         return ""
     return minimax_h3_alignment_instruction(mode, span_frames / fps, max(owned_events, 1))
-
-
-def _video_chain_split_instruction(prompt: str, expected: str) -> Tuple[str, str]:
-    """(instruction, rest) when `prompt` opens with `expected` modulo tokens.
-
-    The formatter emits `instruction + "\\n\\n" + body` and the token rewriter
-    only deletes tokens and collapses the spaces they leave, so the first blank
-    line is a reliable split. When the head is something else (a manifest whose
-    prompt was rewritten by hand, or `legacy_repeat`), this returns no
-    instruction and the caller leaves the prompt alone.
-    """
-    if not expected:
-        return "", prompt
-    head, separator, rest = prompt.partition("\n\n")
-    if not separator:
-        rest = ""
-    if _video_chain_normalized_text(head) == _video_chain_normalized_text(expected):
-        return head, rest
-    return "", prompt
 
 
 def _video_chain_restore_alignment_instructions(
@@ -17945,7 +17922,7 @@ def _video_chain_restore_alignment_instructions(
         )
         if not expected:
             continue
-        head, rest = _video_chain_split_instruction(segment.prompt, expected)
+        head, rest = split_alignment_instruction(segment.prompt, expected)
         if not head or head == expected:
             continue
         segment.prompt = f"{expected}\n\n{rest}" if rest else expected
@@ -18091,7 +18068,7 @@ def _video_chain_reference_token_errors(
         expected = _video_chain_expected_instruction(
             mode, manifest.fps, segment.generated_span_frames, len(segment.owned_event_ids)
         )
-        _, body = _video_chain_split_instruction(segment.prompt, expected)
+        _, body = split_alignment_instruction(segment.prompt, expected)
         for match in VIDEO_CHAIN_TOKEN_RE.finditer(body):
             word, number = match.group(1), int(match.group(2))
             if number > allowed.get(word, 0):

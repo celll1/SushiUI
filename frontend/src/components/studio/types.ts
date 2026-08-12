@@ -1,5 +1,8 @@
 export type StudioAssetKind = "image" | "video" | "audio";
 
+export type StudioInputRole = "keyframe" | "reference";
+export type StudioClipPresentation = "frame" | "hold" | "clip";
+
 export interface StudioAsset {
   id: string;
   galleryId?: number;
@@ -8,6 +11,7 @@ export interface StudioAsset {
   url: string;
   masterUrl?: string;
   thumbnailUrl?: string;
+  maskUrl?: string;
   duration: number;
   width?: number;
   height?: number;
@@ -41,6 +45,12 @@ export interface StudioClip {
   start: number;
   duration: number;
   sourceIn: number;
+  /** A still is one frame by default; only an explicit hold may exceed it. */
+  presentation?: StudioClipPresentation;
+  /** Source media duration in seconds at insertion time, for safe trim limits. */
+  sourceDuration?: number;
+  /** Timeline inputs are opt-in; references never come from an implicit clip. */
+  inputRoles?: StudioInputRole[];
   linkGroupId?: string;
   takeGroupId?: string;
   activeTake?: boolean;
@@ -53,7 +63,7 @@ export interface StudioRange {
 }
 
 export interface StudioProject {
-  schemaVersion: 1;
+  schemaVersion: number;
   revision: number;
   id: string;
   name: string;
@@ -67,10 +77,14 @@ export interface StudioProject {
   tracks: StudioTrack[];
   clips: StudioClip[];
   jobs: StudioJob[];
+  outputRange?: StudioRange | null;
+  inpaintRange?: StudioRange | null;
+  referenceAssetIds?: string[];
 }
 
 export type StudioTool = "select" | "blade" | "hand" | "range" | "link";
-export type StudioMode = "t2v" | "i2v";
+export type StudioGenerationMode = "t2v" | "i2v" | "inpaint" | "outpaint" | "ref2v" | "t2i" | "i2i" | "image-inpaint";
+export type StudioMode = StudioGenerationMode;
 export type StudioPane = "generate" | "inspector" | "jobs";
 
 export interface StudioJob {
@@ -85,7 +99,7 @@ export interface StudioJob {
 }
 
 export const createStudioProject = (): StudioProject => ({
-  schemaVersion: 1,
+  schemaVersion: 2,
   revision: 0,
   id: crypto.randomUUID(),
   name: "Untitled Studio Project",

@@ -31,9 +31,24 @@ export const loadStudioProject = async (): Promise<StudioProject | null> => {
   try {
     const parsed = JSON.parse(raw) as Partial<StudioProject>;
     if (!parsed.id || !parsed.tracks || !parsed.clips || !parsed.assets) return null;
+    const fps = Number.isFinite(parsed.fps) && parsed.fps! > 0 ? parsed.fps! : 24;
+    const imageAssetIds = new Set((parsed.assets || []).filter((asset) => asset.kind === "image").map((asset) => asset.id));
+    const migratedClips = (parsed.clips || []).map((clip) => {
+      if (!imageAssetIds.has(clip.assetId) || clip.presentation) return clip;
+      const wasHeld = Number(clip.duration) > (1 / fps) + 0.0001;
+      return {
+        ...clip,
+        duration: wasHeld ? clip.duration : 1 / fps,
+        sourceIn: 0,
+        presentation: wasHeld ? "hold" as const : "frame" as const,
+        sourceDuration: 0,
+      };
+    });
     const project: StudioProject = {
       ...parsed,
-      schemaVersion: 1,
+      schemaVersion: 2,
+      fps,
+      clips: migratedClips,
       revision: Number.isFinite(parsed.revision) ? parsed.revision! : 0,
       jobs: parsed.jobs || [],
     } as StudioProject;

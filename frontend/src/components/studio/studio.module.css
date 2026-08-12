@@ -218,6 +218,8 @@
 .ruler > span { position: absolute; top: 7px; transform: translateX(3px); color: #657387; font-size: 8px; font-variant-numeric: tabular-nums; }
 .outputRange { position: absolute; top: 20px; height: 10px; min-width: 2px; border: 1px solid var(--purple-2); border-bottom: 0; background: rgba(124, 92, 255, .22); }
 .outputRange span { position: absolute; bottom: 11px; left: 3px; color: #b7a5ff; font-size: 7px; white-space: nowrap; }
+.inpaintRange { position: absolute; top: 20px; height: 10px; min-width: 2px; border: 1px solid #e49362; border-bottom: 0; background: rgba(228, 147, 98, .24); }
+.inpaintRange span { position: absolute; bottom: 11px; left: 3px; color: #e9ae83; font-size: 7px; white-space: nowrap; }
 .trackLane { position: relative; height: 51px; border-bottom: 1px solid var(--border-soft); background-color: #0b1119; background-image: repeating-linear-gradient(90deg, transparent 0, transparent 89px, rgba(46, 60, 76, .25) 90px); }
 .audioLane { background-color: #0b1316; }
 .timelineClip { position: absolute; top: 4px; bottom: 4px; min-width: 18px; overflow: hidden; color: #f0f4f8; border: 1px solid #43658f; border-radius: 4px; background-color: #17304c; background-size: auto 100%; background-position: center; cursor: grab; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .03); }
@@ -226,11 +228,23 @@
 .audioClip { border-color: #328660; background: #173b2d; }
 .generatedClip { border-color: #7257d5; box-shadow: inset 0 0 0 1px rgba(144, 113, 255, .24); }
 .selectedClip { border-color: #aa8cff; box-shadow: 0 0 0 2px rgba(124, 92, 255, .46), inset 0 0 0 1px rgba(255, 255, 255, .12); }
+.dimmedClip { opacity: .36; filter: saturate(.55); }
+.stillClip { min-width: 14px; overflow: visible; border-radius: 50%; background-color: #7860d5; }
 .clipName { position: relative; z-index: 2; display: block; padding: 4px 7px; overflow: hidden; text-overflow: ellipsis; text-shadow: 0 1px 3px black; white-space: nowrap; font-size: 8px; }
+.clipSourceHandle { position: absolute; z-index: 5; right: 7px; bottom: 4px; display: inline-flex; padding: 2px; color: #cfc3ff; border-radius: 3px; background: rgba(5, 8, 12, .72); cursor: copy; }
+.clipInputControls { position: absolute; z-index: 5; top: 3px; right: 4px; display: inline-flex; gap: 3px; font-size: 7px; }
+.clipInputControls label { display: inline-flex; align-items: center; gap: 1px; padding: 1px 2px; color: #d0c7ff; border-radius: 2px; background: rgba(5, 8, 12, .72); }
+.clipInputControls input { width: 8px; height: 8px; margin: 0; accent-color: var(--purple-2); }
+.stillPopover { position: absolute; z-index: 20; top: calc(100% + 7px); left: 0; display: flex; width: 180px; flex-direction: column; gap: 3px; padding: 7px; color: #e8edf3; border: 1px solid #6e5ac7; border-radius: 5px; background: #111925; box-shadow: 0 12px 28px rgba(0,0,0,.45); pointer-events: none; }
+.stillPopover img { width: 164px; height: 92px; object-fit: contain; background: #080d13; }
+.stillPopover strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 9px; }
+.stillPopover small { color: #93a0b0; font-size: 8px; }
 .trimStart,
 .trimEnd { position: absolute; z-index: 4; top: 0; bottom: 0; width: 5px; padding: 0; border: 0; background: transparent; cursor: ew-resize; }
 .trimStart { left: 0; }
 .trimEnd { right: 0; }
+.trimStart:hover,
+.trimEnd:hover { background: rgba(220, 211, 255, .65); }
 .selectedClip .trimStart,
 .selectedClip .trimEnd { background: var(--purple-2); }
 .linkBadge,
@@ -248,6 +262,7 @@
 .paneTabs .activePane { color: #c3b5ff; border-bottom-color: var(--purple); }
 .liveDot { position: absolute; top: 11px; width: 5px; height: 5px; margin-left: 4px; border-radius: 50%; background: var(--green); animation: pulse 1.4s infinite; }
 .paneBody { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 13px; padding: 11px; overflow-y: auto; }
+.generationDropActive { outline: 1px solid var(--purple-2); outline-offset: -4px; background: rgba(98, 70, 190, .08); }
 .modelCard { padding: 10px; border: 1px solid var(--border); border-radius: 6px; background: linear-gradient(135deg, #151e2a, #101720); }
 .modelLine { justify-content: space-between; gap: 10px; margin-top: 5px; }
 .modelLine strong { overflow: hidden; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
@@ -255,6 +270,15 @@
 .ready { color: #8be6b9; background: rgba(65, 201, 139, .13); }
 .unavailable { color: #e99e9e; background: rgba(215, 76, 76, .13); }
 .modelCard small { display: block; margin-top: 3px; color: #687689; }
+.resolvedModeCard { display: flex; flex-direction: column; gap: 4px; padding: 9px; border: 1px solid #53428f; border-radius: 6px; background: rgba(93, 69, 183, .12); }
+.resolvedModeCard strong { color: #e3ddff; font-size: 11px; }
+.resolvedModeCard small { color: #9188b7; font-size: 8px; }
+.rangeControls { padding: 8px; border: 1px solid var(--border); border-radius: 6px; background: #101720; }
+.rangeButtons { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; }
+.rangeButtons button { display: flex; flex-direction: column; gap: 3px; padding: 7px; text-align: left; color: #aeb8c5; border: 1px solid var(--border); border-radius: 4px; background: #0d141d; }
+.rangeButtons button small { color: #748196; font-size: 8px; }
+.rangeButtons .activeRangeTarget { color: #e5ddff; border-color: #765de1; background: rgba(124,92,255,.12); }
+.clearRanges { margin-top: 6px; color: #a994fa; border: 0; background: transparent; font-size: 9px; }
 .fieldLabel { display: block; margin-bottom: 6px; color: #b6c0cc; font-size: 10px; font-weight: 650; }
 .modeTabs { display: grid; grid-template-columns: repeat(4, 1fr); overflow: hidden; border: 1px solid var(--border); border-radius: 5px; }
 .modeTabs button { padding: 8px 2px; color: #8290a1; border: 0; border-right: 1px solid var(--border); background: #111925; font-size: 9px; }
@@ -270,6 +294,18 @@
 .keyframeSlot span { min-width: 0; display: flex; flex-direction: column; justify-content: center; gap: 4px; }
 .keyframeSlot strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; }
 .keyframeSlot small { color: #81779f; font-size: 8px; }
+.inputCard { display: flex; flex-direction: column; gap: 6px; }
+.inputActions { display: flex; gap: 5px; }
+.inputActions button,
+.addReferenceButton { display: inline-flex; align-items: center; gap: 4px; padding: 5px 7px; color: #bfb1fa; border: 1px solid #53428f; border-radius: 4px; background: rgba(124,92,255,.1); font-size: 9px; }
+.inputSummary { display: flex; flex-wrap: wrap; gap: 4px; min-height: 25px; padding: 6px; color: #a99de0; border: 1px dashed #514579; border-radius: 5px; background: rgba(74,55,142,.08); }
+.inputSummary span { display: inline-flex; align-items: center; gap: 3px; padding: 2px 4px; border-radius: 3px; background: rgba(124,92,255,.17); font-size: 8px; }
+.inputSummary small { color: #7d789b; font-size: 8px; }
+.referenceDropCard { padding: 8px; border: 1px dashed #4c426c; border-radius: 6px; background: rgba(55,45,101,.08); }
+.referenceList { display: flex; flex-direction: column; gap: 4px; margin-bottom: 6px; }
+.referenceList button { display: flex; align-items: center; justify-content: space-between; gap: 5px; padding: 5px; overflow: hidden; color: #c7c0e8; text-align: left; border: 1px solid #514579; border-radius: 4px; background: #15172a; font-size: 8px; }
+.referenceList small { color: #81779f; font-size: 8px; }
+.editorOverlay { position: fixed; z-index: 100; inset: 0; display: grid; place-items: center; padding: 18px; background: rgba(3, 6, 10, .78); }
 .emptySlot { width: 100%; display: flex; align-items: center; justify-content: center; gap: 6px; padding: 13px; color: #8a97a8; border: 1px dashed #3a4758; border-radius: 6px; background: #0f161f; }
 .advancedPrompt { border-bottom: 1px solid var(--border-soft); }
 .advancedPrompt summary { display: flex; align-items: center; gap: 5px; padding: 3px 0 8px; color: #8491a2; cursor: pointer; list-style: none; }

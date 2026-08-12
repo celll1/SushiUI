@@ -1414,6 +1414,12 @@ export const latentGroupSpans = (
   let cursor = 0;
   for (let index = 0; cursor < frames; index += 1) {
     const width = pattern[index % pattern.length];
+    // `Math.min` here trims a final span that would run past `frames`; the
+    // backend's `latent_frame_spans` does not do this trim, so on an
+    // off-grid `frames` this span could come out narrower than the
+    // backend's. Currently unreachable in practice because
+    // `videoTrimmedLengthValid` (InpaintPanel.tsx) blocks submit unless
+    // `frames` is already a multiple of the pattern.
     spans.push([cursor, Math.min(frames, cursor + width)]);
     cursor += width;
   }

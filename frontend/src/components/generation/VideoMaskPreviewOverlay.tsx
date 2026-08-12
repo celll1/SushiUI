@@ -38,7 +38,19 @@ export interface VideoMaskPreviewOverlayProps {
    * the live one -- see useMaskPreview.
    */
   assetRefs?: VideoMaskAssetRefMap;
-  /** The regenerate range (pixel frames of the trimmed clip), used only to choose sample frames for the `sdf` backend fallback -- see computeMaskPreviewSampleFrames. */
+  /**
+   * `[rangeStart, rangeEnd)`, in TRIMMED-clip pixel frames -- NOT the raw
+   * requested regenerate range, but that range already snapped OUTWARD to
+   * latent-group boundaries the same way the backend's own
+   * `plan_video_inpaint_span` snaps it (the caller is expected to compute
+   * this with `latentGroupSpans` + `snapRangeToLatentGroups`, see
+   * `InpaintPanel`'s `videoMaskOverlaySpan`). Outside this span the backend
+   * regenerates nothing and the mask has no effect at all
+   * (`composite_masked_frames` returns the source verbatim there), so this
+   * is also the hard bound the draw effect below clamps `currentFrame`
+   * against before drawing anything on EITHER path -- not merely a hint for
+   * choosing `sdf` sample frames.
+   */
   rangeStart: number;
   rangeEnd: number;
   /**
@@ -50,10 +62,10 @@ export interface VideoMaskPreviewOverlayProps {
    * subtract the trim-start offset before passing it in here, or both the
    * client rasterizer and the `sdf` "nearest sample" fallback below silently
    * pick the wrong frame's mask.
-   * May be null: when there is no live playhead yet, this falls back to the
-   * manifest's own first keyframe (its "before the first keyframe" hold
-   * behavior), matching the `sdf` fallback path's previous "nearest is the
-   * earliest sample" behavior for the same case.
+   * `null` (no live playhead yet) and any value outside `[rangeStart,
+   * rangeEnd)` both draw nothing: painting the manifest's held first/last
+   * keyframe mask at a playhead position the backend would never actually
+   * regenerate is exactly the misleading preview this clamp exists to avoid.
    */
   currentFrame: number | null;
   enabled: boolean;
@@ -96,6 +108,24 @@ export default function VideoMaskPreviewOverlay({
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [containerSize, setContainerSize] = useState<{ width: number; height: number } | null>(null);
   const spriteImageRef = useRef<{ src: string; image: HTMLImageElement } | null>(null);
+
+  // `window.devicePixelRatio` tracked as state (not just read inline inside
+  // the draw effect below) so dragging the window to a different-DPI monitor
+  // invalidates the canvas backing store instead of leaving it sized for the
+  // DPR at mount time. `matchMedia('(resolution: Xdppx)')` fires exactly when
+  // the ratio crosses away from its last known value; the listener is
+  // re-created at that new value each time so the next crossing (in either
+  // direction) is caught too.
+  const [devicePixelRatio, setDevicePixelRatio] = useState(
+    () => (typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1),
+  );
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;
+    const mediaQuery = window.matchMedia(`(resolution: ${devicePixelRatio}dppx)`);
+    const update = () => setDevicePixelRatio(window.devicePixelRatio || 1);
+    mediaQuery.addEventListener("change", update);
+    return () => mediaQuery.removeEventListener("change", update);
+  }, [devicePixelRatio]);
 
   // Decoded HTMLImageElements for client-rasterized assets, memoized by
   // dataUrl so a scrub tick that keeps resolving to the same asset never
@@ -215,14 +245,22 @@ export default function VideoMaskPreviewOverlay({
       return;
     }
 
-    const dpr = typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1;
+    // Outside `[rangeStart, rangeEnd)` the backend regenerates nothing and
+    // the mask has no effect (see the `rangeStart`/`rangeEnd` prop docs), so
+    // there is nothing correct to draw here -- including for `currentFrame
+    // == null` (no live playhead yet), which used to fall back to the
+    // manifest's first keyframe and is exactly the "mask shown outside the
+    // regenerate range" bug this clamp fixes.
+    if (currentFrame == null || currentFrame < rangeStart || currentFrame >= rangeEnd) {
+      clear();
+      setClientRasterError(false);
+      return;
+    }
+
+    const dpr = devicePixelRatio;
 
     if (clientRasterizable) {
-      // `currentFrame == null` mirrors the sdf fallback's own "nothing
-      // scrubbed yet" behavior below: resolve as if before the timeline's
-      // first keyframe, which resolveMaskAtFrame does for any frame less
-      // than every keyframe's own frame (keyframe.frame is validated >= 0).
-      const resolved = resolveMaskAtFrame(manifest.keyframes, currentFrame ?? -1);
+      const resolved = resolveMaskAtFrame(manifest.keyframes, currentFrame);
       if (!resolved || "needsServer" in resolved) {
         clear();
         setClientRasterError(false);
@@ -381,19 +419,30 @@ export default function VideoMaskPreviewOverlay({
 
     const { result } = preview;
     const drawTile = (image: HTMLImageElement) => {
-      const frames = result.frames;
-      if (frames.length === 0) return;
-      // Nearest already-fetched sample to the live playhead -- never a fresh
-      // request, and never an interpolation between two samples.
-      let nearest = frames[0];
-      if (currentFrame != null) {
-        let bestDistance = Infinity;
-        for (const entry of frames) {
-          const distance = Math.abs(entry.frame - currentFrame);
-          if (distance < bestDistance) {
-            bestDistance = distance;
-            nearest = entry;
-          }
+      // `result.frames` is NOT confined to `[rangeStart, rangeEnd)`:
+      // `computeMaskPreviewSampleFrames` seeds its set with EVERY keyframe
+      // frame unconditionally (an out-of-range keyframe is a supported
+      // state -- see `VideoInpaintTimeline`'s "outside range" markers/rows)
+      // and only the FILLER samples come from the span. `currentFrame` is
+      // guaranteed inside `[rangeStart, rangeEnd)` here (see the clamp above
+      // this branch), so the nearest-sample search below must itself be
+      // restricted to in-range samples, or an out-of-range keyframe sample
+      // could win the "nearest" search and draw a mask the backend would
+      // never actually apply at this playhead position.
+      const inRangeFrames = result.frames.filter(
+        (entry) => entry.frame >= rangeStart && entry.frame < rangeEnd,
+      );
+      if (inRangeFrames.length === 0) {
+        clear();
+        return;
+      }
+      let nearest = inRangeFrames[0];
+      let bestDistance = Infinity;
+      for (const entry of inRangeFrames) {
+        const distance = Math.abs(entry.frame - currentFrame);
+        if (distance < bestDistance) {
+          bestDistance = distance;
+          nearest = entry;
         }
       }
       ctx.save();
@@ -422,6 +471,7 @@ export default function VideoMaskPreviewOverlay({
     enabled, containerSize, nativeSize, outputWidth, outputHeight,
     clientRasterizable, manifest.keyframes, assets, decodeTick,
     preview.result, preview.isStale, currentFrame, opacity,
+    rangeStart, rangeEnd, devicePixelRatio,
   ]);
 
   if (!enabled) return null;
@@ -456,6 +506,19 @@ export default function VideoMaskPreviewOverlay({
           {sampleFrames.keyframesOmitted} keyframe{sampleFrames.keyframesOmitted === 1 ? "" : "s"} not previewed
         </div>
       )}
+      {/* The draw effect above clears the canvas whenever `currentFrame` is
+          null or outside `[rangeStart, rangeEnd)` -- correct (the backend
+          would regenerate nothing there), but with nothing drawn AND no
+          message this is indistinguishable from the overlay being broken.
+          `useVideoPlayhead` syncs `currentFrame` to 0 as soon as a clip loads
+          (not null), and the regenerate range defaults to the clip's middle
+          third, so this fires immediately on upload for most clips. */}
+      {(currentFrame == null || currentFrame < rangeStart || currentFrame >= rangeEnd) &&
+        manifest.keyframes.length > 0 && (
+          <div className="absolute top-1 left-1 pointer-events-none rounded bg-black/60 px-1.5 py-0.5 text-[10px] text-amber-400">
+            Playhead outside regenerate range — mask not shown here
+          </div>
+        )}
     </>
   );
 }

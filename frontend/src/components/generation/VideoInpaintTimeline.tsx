@@ -137,6 +137,123 @@ function frameDescription(frame: number): string {
   return `Frame ${frame}`;
 }
 
+// ---------------------------------------------------------------------------
+// Mode-coloured mask spans, drawn under the diamond markers in `MaskTrack`.
+// Mirrors the per-frame governing logic of the backend's
+// `rasterize_mask_timeline` (backend/core/inference/video_mask_timeline.py,
+// the `for frame in range(start_frame, end_frame)` loop): a frame before the
+// first keyframe holds that keyframe's mask, a frame at/after the last
+// keyframe holds ITS mask, and every frame in between belongs to the segment
+// [L.frame, R.frame) whose character is `L.interpolationToNext`. Segments
+// are clipped to [rangeStart, rangeEnd) -- the same latent-group-snapped
+// span the "Inpaint range" band already highlights -- so a keyframe sitting
+// outside that span still contributes a correctly-bounded terminal segment
+// (it governs frames right up to the edge of the visible range) rather than
+// a bar drawn off the track or spanning the wrong frames.
+// ---------------------------------------------------------------------------
+
+interface MaskSegment {
+  key: string;
+  /** Trimmed-clip frame, inclusive. */
+  start: number;
+  /** Trimmed-clip frame, exclusive. */
+  end: number;
+  mode: MaskInterpolation;
+  title: string;
+}
+
+const MASK_SEGMENT_MODE_LABEL: Record<MaskInterpolation, string> = {
+  hold: "Hold",
+  affine: "Affine",
+  sdf: "SDF morph",
+};
+
+function computeMaskSegments(sortedKeyframes: VideoMaskKeyframe[], rangeStart: number, rangeEnd: number): MaskSegment[] {
+  if (rangeEnd <= rangeStart || sortedKeyframes.length === 0) return [];
+
+  // Defensive de-duplication by frame: `moveKeyframe` above already rejects
+  // a frame collision in the committed manifest, but this function must not
+  // produce a zero-width or overlapping pair of segments if it is ever
+  // handed a transient duplicate. Mirrors the backend's tie-break
+  // (`rasterize_mask_timeline`'s `while frame_numbers[right] <= frame`,
+  // backend/core/inference/video_mask_timeline.py): when several keyframes
+  // share a frame, that loop advances past all of them, so the LAST one in
+  // sorted order ends up governing -- keep the last occurrence here too,
+  // not the first.
+  const unique: VideoMaskKeyframe[] = [];
+  const seenFrames = new Map<number, number>();
+  for (const keyframe of sortedKeyframes) {
+    const existingIndex = seenFrames.get(keyframe.frame);
+    if (existingIndex !== undefined) {
+      unique[existingIndex] = keyframe;
+      continue;
+    }
+    seenFrames.set(keyframe.frame, unique.length);
+    unique.push(keyframe);
+  }
+
+  const segments: MaskSegment[] = [];
+  const first = unique[0];
+  const last = unique[unique.length - 1];
+
+  if (rangeStart < first.frame) {
+    const start = rangeStart;
+    const end = Math.min(rangeEnd, first.frame);
+    if (end > start) {
+      segments.push({
+        key: `before-${first.id}`,
+        start,
+        end,
+        mode: "hold",
+        title: `Hold: frame ${first.frame}'s mask, held back over frames [${start}, ${end})`,
+      });
+    }
+  }
+
+  for (let i = 0; i < unique.length - 1; i += 1) {
+    const left = unique[i];
+    const right = unique[i + 1];
+    const start = Math.max(rangeStart, left.frame);
+    const end = Math.min(rangeEnd, right.frame);
+    if (end <= start) continue;
+    const mode: MaskInterpolation = left.interpolationToNext || DEFAULT_MASK_INTERPOLATION;
+    segments.push({
+      key: `${left.id}-${right.id}`,
+      start,
+      end,
+      mode,
+      title: `${MASK_SEGMENT_MODE_LABEL[mode]}: frame ${left.frame} to frame ${right.frame}, frames [${start}, ${end})`,
+    });
+  }
+
+  if (rangeEnd > last.frame) {
+    const start = Math.max(rangeStart, last.frame);
+    const end = rangeEnd;
+    if (end > start) {
+      segments.push({
+        key: `after-${last.id}`,
+        start,
+        end,
+        mode: "hold",
+        title: `Hold: frame ${last.frame}'s mask, held forward over frames [${start}, ${end})`,
+      });
+    }
+  }
+
+  return segments;
+}
+
+// Colour + border-style pair per mode, so the encoding is not colour-alone.
+// Teal/sky/fuchsia are chosen to stay
+// clear of this file's other timeline colours: amber (the "Inpaint range"
+// band), violet (the diamond markers/selection), and emerald (the shared
+// `Timeline` playhead).
+const MASK_SEGMENT_STYLE: Record<MaskInterpolation, string> = {
+  hold: "border-teal-400/70 bg-teal-500/35",
+  affine: "border-sky-400/70 bg-sky-500/35 border-dashed",
+  sdf: "border-fuchsia-400/70 bg-fuchsia-500/35 border-dotted",
+};
+
 function uniqueCopyId(source: VideoMaskKeyframe, keyframes: VideoMaskKeyframe[]): string {
   const ids = new Set(keyframes.map((keyframe) => keyframe.id));
   const base = `${source.id}-copy`;
@@ -452,6 +569,14 @@ export default function VideoInpaintTimeline({
           disabled={disabled || maskDisabled}
         />
       </Timeline>
+      {/* Outside `Timeline`'s click-to-seek surface (that container's
+          `onPointerDown` seeks/scrubs on any press in empty track space) so
+          clicking the legend cannot jump the playhead, and outside the
+          shared playhead line's `absolute inset-y-0` stacking context so
+          that line no longer stretches over the legend row. Gated on there
+          being segments -- with zero keyframes, or while the mask track is
+          disabled, there is nothing on the track for the legend to explain. */}
+      {!maskDisabled && hasRange && orderedKeyframes.length > 0 && <MaskSegmentLegend />}
 
       {bounds.length > 0 ? (
         <p className="text-xs text-gray-500">
@@ -1124,6 +1249,14 @@ function MaskTrack({
     setDragGhostFrame(null);
   };
 
+  // Keyframes actually being DRAGGED report their live ghost frame here too,
+  // so the segment bars re-flow with the marker instead of lagging behind it
+  // until the drag commits.
+  const segmentSourceKeyframes = keyframes.map((keyframe) =>
+    dragId === keyframe.id && dragGhostFrame != null ? { ...keyframe, frame: dragGhostFrame } : keyframe,
+  );
+  const segments = computeMaskSegments(sortKeyframes(segmentSourceKeyframes), rangeStart, rangeEnd);
+
   return (
     <div className="relative h-16 overflow-hidden rounded border border-gray-700 bg-gray-800">
       <div
@@ -1134,6 +1267,24 @@ function MaskTrack({
         <span className="absolute left-1 top-1 text-[10px] text-amber-200 pointer-events-none">Inpaint range</span>
       </div>
       <div className="absolute inset-x-0 top-1/2 h-px bg-gray-600" />
+
+      {/* Mode-coloured spans, drawn below the diamond markers (earlier in
+          DOM order, so the markers stack on top) and `pointer-events-none`
+          so they never intercept the markers' own drag/click handlers. */}
+      <div className="absolute inset-x-0 bottom-1 h-3" aria-hidden="true">
+        {segments.map((segment) => {
+          const left = pctForFrame(segment.start);
+          const width = Math.max(0.4, pctForFrame(segment.end) - left);
+          return (
+            <div
+              key={segment.key}
+              className={cn("absolute inset-y-0 rounded-sm border pointer-events-none", MASK_SEGMENT_STYLE[segment.mode])}
+              style={{ left: `${left}%`, width: `${width}%` }}
+              title={segment.title}
+            />
+          );
+        })}
+      </div>
 
       <div className="absolute inset-x-0 top-0 h-full" role="list" aria-label="Mask keyframe markers">
         {keyframes.map((keyframe) => {
@@ -1173,6 +1324,24 @@ function MaskTrack({
           );
         })}
       </div>
+    </div>
+  );
+}
+
+// Maps the mode colours drawn on the track back to their names, since a
+// colour alone is not discoverable -- matches this file's `interpolationOptions`
+// naming (the per-keyframe interpolation `<Select>` above).
+function MaskSegmentLegend() {
+  const entries: MaskInterpolation[] = ["hold", "affine", "sdf"];
+  return (
+    <div className="mt-1 flex flex-wrap items-center gap-3 text-[10px] text-gray-500">
+      <span>Mask span:</span>
+      {entries.map((mode) => (
+        <span key={mode} className="flex items-center gap-1">
+          <span className={cn("inline-block h-2 w-4 rounded-sm border", MASK_SEGMENT_STYLE[mode])} />
+          {MASK_SEGMENT_MODE_LABEL[mode]}
+        </span>
+      ))}
     </div>
   );
 }

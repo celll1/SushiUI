@@ -62,7 +62,11 @@ WHAT THIS LOADER HAS TO GET RIGHT (all measured in Phase 0 / K0; see
    ``Qwen3VLForConditionalGeneration`` with ``num_hidden_layers=50``, leaving
    exactly two missing keys (``lm_head.weight``,
    ``model.language_model.norm.weight``), neither of which the
-   "unnormalised hidden state after layer 50" read uses.
+   "unnormalised hidden state after layer 50" read uses. A file converted from
+   a smaller Qwen3-VL (``te_gguf_convert``) declares its own dims and is built
+   from THEM, is text-only, and is refused unless a projection trained for that
+   exact (width, tap) pair resolves -- see ``te_projection.py``. Such a file is
+   never auto-selected; only an explicit override reaches it.
 7. **The TE's CPU weights must stay MEMORY-MAPPED.** ``load_state_dict(assign=True)``
    installs the ``safe_open`` tensors directly and nothing here writes them back
    or casts them. K0.7 measured the alternative: moving each layer with
@@ -124,7 +128,7 @@ import math
 import os
 import struct
 from pathlib import Path
-from typing import Any, Dict, FrozenSet, List, Optional, Tuple
+from typing import Any, Dict, FrozenSet, List, Optional, Set, Tuple
 
 import torch
 import torch.nn as nn
@@ -365,8 +369,53 @@ def detect_minimax_h3_layout(
     return _layout_from_root(root, te_override=te_override_path)
 
 
+# The dims a CONVERTED small encoder (``te_gguf_convert``) declares in its own
+# ``minimax_h3_te`` metadata. The shipped 32B files declare only
+# ``num_hidden_layers`` and ``output``, so "all of these present" is what
+# discriminates a file whose geometry comes from ITSELF from one whose geometry
+# comes from ``official/text_encoder/config.json``.
+_TE_DECLARED_DIM_KEYS = ("hidden_size", "num_attention_heads", "num_key_value_heads",
+                         "head_dim", "intermediate_size", "rms_norm_eps", "rope_theta",
+                         "mrope_section", "vocab_size")
+
+
+def _te_declaration(metadata: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """A text encoder file's own ``minimax_h3_te`` block, or ``{}``."""
+    try:
+        declared = json.loads((metadata or {}).get("minimax_h3_te", "{}"))
+    except Exception:
+        return {}
+    return declared if isinstance(declared, dict) else {}
+
+
+def _te_declared_dims(declared: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """The declared text-config dims, or ``None`` when the file declares none."""
+    if all(key in declared for key in _TE_DECLARED_DIM_KEYS):
+        return {key: declared[key] for key in _TE_DECLARED_DIM_KEYS}
+    return None
+
+
+def _te_file_declaration(te_path: str) -> Dict[str, Any]:
+    """Header-only ``minimax_h3_te`` block of ``te_path``; ``{}`` if unreadable.
+
+    Unreadable is not fatal here: every caller goes on to build the encoder from
+    the same file and fails there with its own message.
+    """
+    try:
+        header = read_safetensors_header(te_path)
+    except Exception:
+        return {}
+    return _te_declaration(header.get("__metadata__"))
+
+
 def _te_capability_accept(path: Path) -> bool:
     """HEADER-ONLY: can ``_build_text_encoder`` actually load ``path`` today?
+
+    A converted small encoder is rejected outright, however loadable it is: it
+    is a DIFFERENT model that only approximates the shipped 32B, and
+    ``_find_first``'s glob fallbacks would otherwise auto-select one the moment
+    no shipped file is present. Reaching it must take an explicit
+    ``te_override``.
 
     Zero tensor bytes are read (the JSON a ``.comfy_quant`` marker carries lives
     in the tensor BODY, and deciding "is this file quantized" needs only the
@@ -382,7 +431,9 @@ def _te_capability_accept(path: Path) -> bool:
     exists.
     """
     header = read_safetensors_header(str(path))
-    header.pop("__metadata__", None)
+    metadata = header.pop("__metadata__", None)
+    if _te_declared_dims(_te_declaration(metadata)) is not None:
+        return False
     quantized = any(
         key.endswith(".comfy_quant") or key.endswith(".pre_quant_scale")
         or key.endswith(".weight_scale")
@@ -391,6 +442,39 @@ def _te_capability_accept(path: Path) -> bool:
     if not quantized:
         return True
     return bool(MINIMAX_H3_TE_LOADABLE_QUANT_FORMATS)
+
+
+def _inspect_converted_te_candidate(
+    result: Dict[str, Any], declared: Dict[str, Any], dims: Dict[str, Any],
+    layers: Set[int], embed: Optional[List[int]],
+) -> Dict[str, Any]:
+    """Listing entry for a converted small encoder: loadable, never the default.
+
+    Kept out of the 32B geometry branch because the whole point of these files
+    is that their geometry differs; what is checked instead is that the file
+    agrees with its OWN declaration.
+    """
+    tap = declared.get("num_hidden_layers")
+    hidden = dims["hidden_size"]
+    vocab = dims["vocab_size"]
+    if not isinstance(tap, int) or set(layers) != set(range(tap)):
+        result["reason"] = (
+            f"Declares num_hidden_layers={tap} but carries decoder layers "
+            f"{sorted(layers)[:3]}...{sorted(layers)[-1:] or []}.")
+        return result
+    if embed != [vocab, hidden]:
+        result["reason"] = (
+            f"Declares vocab_size={vocab}/hidden_size={hidden} but its embedding is {embed}.")
+        return result
+
+    size = declared.get("source_size_label") or "small"
+    result["compatible"] = True
+    result["variant"] = "converted_small"
+    result["reason"] = (
+        f"Converted {size} Qwen3-VL ({tap} blocks, hidden {hidden}), text-only. Never the "
+        f"architecture default; usable only with the trained d_in={hidden} projection from "
+        f"clip_projections/, which is paired at model load and not by a component switch.")
+    return result
 
 
 def inspect_minimax_h3_text_encoder_candidate(path: str) -> Dict[str, Any]:
@@ -425,6 +509,12 @@ def inspect_minimax_h3_text_encoder_candidate(path: str) -> Dict[str, Any]:
     }
     embed = _header_shape(header, "model.embed_tokens.weight")
     q_proj = _header_shape(header, "model.layers.0.self_attn.q_proj.weight")
+
+    declared = _te_declaration(header.get("__metadata__"))
+    dims = _te_declared_dims(declared)
+    if dims is not None:
+        return _inspect_converted_te_candidate(result, declared, dims, layers, embed)
+
     if layers != set(range(50)) or embed != [151936, 5120]:
         result["reason"] = "H3 requires the released 50-layer Qwen3-VL-32B encoder geometry."
         return result
@@ -570,6 +660,15 @@ def build_minimax_h3_text_encoder(te_path: str, official_dir: Optional[str]):
     inspected = inspect_minimax_h3_text_encoder_candidate(te_path)
     if not inspected["compatible"]:
         raise ValueError(inspected["reason"])
+    if _te_declared_dims(_te_file_declaration(te_path)) is not None:
+        # This entry point returns (model, config) and has nowhere to put the
+        # paired projection, so it would install a narrower encoder whose
+        # hidden state nothing would project. Refused until the component-switch
+        # path carries a projection alongside the encoder.
+        raise ValueError(
+            f"{os.path.basename(te_path)} is a converted small text encoder and is usable only "
+            f"with its trained projection, which component switching does not carry yet. Load the "
+            f"model with this encoder selected instead.")
     assert_no_live_text_encoder()
     return _build_text_encoder(te_path, official_dir)
 
@@ -584,6 +683,13 @@ def _te_selection_reason(directory: Path, selected: Optional[Path]) -> Optional[
     of having to diff directory listings against ``MINIMAX_H3_TE_PATTERNS``.
     """
     if selected is None:
+        converted = sorted(
+            path.name for path in (directory.glob("*.safetensors") if directory.is_dir() else ())
+            if _te_declared_dims(_te_file_declaration(str(path))) is not None
+        )
+        if converted:
+            return (f"no text encoder file found ({', '.join(converted)} are converted small "
+                    f"encoders, reachable only as an explicit override)")
         return "no text encoder file found"
     for idx, pattern in enumerate(MINIMAX_H3_TE_PATTERNS):
         if directory / pattern == selected:
@@ -2089,6 +2195,31 @@ def _rewrite_te_key(key: str) -> str:
 # after layer 50.
 _TE_EXPECTED_MISSING = frozenset({"lm_head.weight", "model.language_model.norm.weight"})
 
+# Where `_rewrite_te_key` puts the vision tower. A converted (`modalities:
+# "text"`) file has none of it.
+_TE_VISION_PREFIX = "model.visual."
+
+
+def _te_text_config_from_dims(official_text_config: Optional[Dict[str, Any]],
+                              dims: Dict[str, Any]) -> Dict[str, Any]:
+    """The official 32B text config with the FILE's declared dims substituted.
+
+    Everything the file does not declare (activation, attention_bias, the token
+    ids, ``mrope_interleaved``) is kept from ``official/``. ``mrope_interleaved``
+    is immaterial on the text-only path: all three mrope position streams carry
+    the same positions there, so the sectioning cannot change the rotation.
+    """
+    text_config = dict(official_text_config or {})
+    for key in ("hidden_size", "num_attention_heads", "num_key_value_heads", "head_dim",
+                "intermediate_size", "rms_norm_eps", "rope_theta", "vocab_size"):
+        text_config[key] = dims[key]
+    rope = dict(text_config.get("rope_scaling") or {})
+    rope["mrope_section"] = list(dims["mrope_section"])
+    rope.setdefault("rope_type", "default")
+    text_config["rope_scaling"] = rope
+    return text_config
+
+
 # Weak reference to the text encoder this process built last, keyed by file path.
 # Weak so it never keeps one alive; see `_refuse_double_mapping` for what it is
 # for. Not thread-safe by design -- a model load is already serialised by
@@ -2237,10 +2368,10 @@ def _build_text_encoder(te_path: str, official_dir: Optional[str]):
     with open(cfg_path, encoding="utf-8") as fh:
         raw_config = {k: v for k, v in json.load(fh).items() if k != "architectures"}
 
+    declared = _te_declaration(metadata)
     num_layers = None
     try:
-        declared = json.loads(metadata.get("minimax_h3_te", "{}"))
-        num_layers = int(declared.get("num_hidden_layers")) if declared.get("num_hidden_layers") else None
+        num_layers = int(declared["num_hidden_layers"]) if declared.get("num_hidden_layers") else None
     except Exception:
         num_layers = None
     if num_layers is None:
@@ -2252,6 +2383,16 @@ def _build_text_encoder(te_path: str, official_dir: Optional[str]):
     if num_layers <= 0:
         raise ValueError(f"could not determine the decoder depth of {te_path}")
 
+    dims = _te_declared_dims(declared)
+    text_only = str(declared.get("modalities") or "") == "text"
+    if dims is not None:
+        raw_config["text_config"] = _te_text_config_from_dims(raw_config.get("text_config"), dims)
+        print(f"[MiniMaxH3Loader] text encoder: geometry from the file's own minimax_h3_te "
+              f"metadata (hidden {dims['hidden_size']}, {dims['num_attention_heads']} heads / "
+              f"{dims['num_key_value_heads']} kv, head_dim {dims['head_dim']}, ffn "
+              f"{dims['intermediate_size']}, vocab {dims['vocab_size']}) -- the 32B "
+              f"text_encoder/config.json is NOT applied")
+
     config = Qwen3VLConfig(**raw_config)
     config.text_config.num_hidden_layers = num_layers
     print(f"[MiniMaxH3Loader] text encoder: Qwen3-VL truncated to {num_layers} decoder layer(s) "
@@ -2259,6 +2400,20 @@ def _build_text_encoder(te_path: str, official_dir: Optional[str]):
 
     with init_empty_weights():
         model = Qwen3VLForConditionalGeneration(config)
+
+    # torch 2.10's `load_state_dict(assign=True)` DOES shape-check (measured;
+    # `Module._load_from_state_dict`, "Shape checks are already done above"),
+    # but it blames the checkpoint for disagreeing with a skeleton this loader
+    # built from the file's own declaration. Checking here fires before
+    # anything is installed and names the declaration as the suspect. Only the
+    # declared-dims path needs it: the official-config path's module shapes are
+    # the file's by construction.
+    skeleton_shapes = None
+    if dims is not None:
+        skeleton_shapes = {
+            name: tuple(tensor.shape)
+            for name, tensor in (list(model.named_parameters()) + list(model.named_buffers()))
+        }
 
     with safe_open(te_path, framework="pt", device="cpu") as handle:
         int8_convrot_source_layers = _int8_convrot_layers_from_markers(
@@ -2421,6 +2576,18 @@ def _build_text_encoder(te_path: str, official_dir: Optional[str]):
             print(f"[MiniMaxH3Loader] text encoder: {embedding_swapped} INT8 "
                   f"nn.Embedding(s) kept quantized (gather-then-scale)")
 
+        if skeleton_shapes is not None:
+            mismatched = {
+                key: f"file {tuple(value.shape)} != model {skeleton_shapes[key]}"
+                for key, value in state_dict.items()
+                if key in skeleton_shapes and tuple(value.shape) != skeleton_shapes[key]
+            }
+            if mismatched:
+                raise RuntimeError(
+                    f"the MiniMax-H3 text encoder ({te_path}) has {len(mismatched)} tensor(s) "
+                    f"whose shape contradicts the dims its own minimax_h3_te metadata declares "
+                    f"(first 5: {dict(list(mismatched.items())[:5])}).")
+
         result = model.load_state_dict(state_dict, strict=False, assign=True)
         del state_dict
 
@@ -2430,11 +2597,15 @@ def _build_text_encoder(te_path: str, official_dir: Optional[str]):
         raise RuntimeError(
             f"the MiniMax-H3 text encoder ({te_path}) produced {len(unexpected)} unexpected "
             f"key(s) (first 5: {unexpected[:5]}); the prefix rewrite and the file disagree.")
-    if set(missing) - _TE_EXPECTED_MISSING:
+    unexplained = [key for key in missing
+                   if key not in _TE_EXPECTED_MISSING
+                   and not (text_only and key.startswith(_TE_VISION_PREFIX))]
+    if unexplained:
         raise RuntimeError(
-            f"the MiniMax-H3 text encoder ({te_path}) is missing key(s) beyond the two the "
-            f"truncated read expects ({sorted(_TE_EXPECTED_MISSING)}): "
-            f"{sorted(set(missing) - _TE_EXPECTED_MISSING)[:5]}. Those parameters were built on "
+            f"the MiniMax-H3 text encoder ({te_path}) is missing key(s) beyond what the "
+            f"truncated read expects ({sorted(_TE_EXPECTED_MISSING)}"
+            f"{' plus the vision tower, this file declaring modalities=text' if text_only else ''}): "
+            f"{sorted(unexplained)[:5]}. Those parameters were built on "
             f"the meta device and would detonate at the first forward.")
 
     # The two absent modules are REPLACED rather than left holding meta tensors:
@@ -2443,12 +2614,22 @@ def _build_text_encoder(te_path: str, official_dir: Optional[str]):
     model.lm_head = None
     model.model.language_model.norm = nn.Identity()
 
+    # A text-only file's vision tower KEEPS its meta tensors. `encode_presentation`
+    # reaches `model.visual` only through `vision_inputs`, which the t2va path
+    # never sets; P3 refuses ref2va/fl2va for such an encoder via `te_text_only`.
     stranded = [n for n, t in list(model.named_parameters()) + list(model.named_buffers())
-                if getattr(t, "is_meta", False)]
+                if getattr(t, "is_meta", False)
+                and not (text_only and n.startswith(_TE_VISION_PREFIX))]
     if stranded:
         raise RuntimeError(
             f"the MiniMax-H3 text encoder from {te_path} still holds {len(stranded)} meta "
             f"tensor(s) after loading (first 5: {stranded[:5]}).")
+    if text_only:
+        vision_meta = sum(
+            1 for _n, t in list(model.named_parameters()) + list(model.named_buffers())
+            if getattr(t, "is_meta", False))
+        print(f"[MiniMaxH3Loader] text encoder: text-only file; {vision_meta} vision-tower "
+              f"tensor(s) left on the meta device (never reached by the t2va path)")
 
     model.eval().requires_grad_(False)
     _LIVE_TEXT_ENCODER[te_path] = weakref.ref(model)
@@ -2523,6 +2704,54 @@ def _load_schedulers(official_dir: Optional[str]):
 MINIMAX_H3_VIDEO_VAE_DTYPE = torch.float16
 
 
+def dit_text_dim(dit_path: str) -> int:
+    """The DiT's conditioning width, from its header alone (``condition_proj``).
+
+    Read WITHOUT building the transformer so a projection that would not fit is
+    refused before the encode and VAE phases, not inside ``context_embedder``
+    at the end of them.
+    """
+    shape = _header_shape(read_safetensors_header(dit_path), "condition_proj.weight")
+    if not shape or len(shape) != 2:
+        raise ValueError(
+            f"the MiniMax-H3 DiT {dit_path} has no 2-D 'condition_proj.weight'; its text "
+            f"conditioning width cannot be read from the header.")
+    return int(shape[1])
+
+
+def resolve_minimax_h3_te_projection(
+    *,
+    te_path: str,
+    declared: Dict[str, Any],
+    root: Optional[str],
+    text_dim: int,
+    override: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """The loaded projection this text encoder needs, or ``None`` if it needs none.
+
+    A file that declares its own dims (a converted small encoder) and whose
+    ``hidden_size`` is not the DiT's ``text_dim`` MUST be paired: there is no
+    fallback to unprojected conditioning, because that is a wrong encode rather
+    than a cheaper one.
+    """
+    from core.models.minimax_h3.te_projection import load_te_projection, resolve_te_projection
+
+    dims = _te_declared_dims(declared)
+    hidden_size = int(dims["hidden_size"]) if dims else text_dim
+    if override is None and hidden_size == text_dim:
+        return None
+
+    spec = resolve_te_projection(
+        root=root, te_path=te_path, hidden_size=hidden_size,
+        num_hidden_layers=int(declared.get("num_hidden_layers") or 0),
+        text_dim=text_dim, override=override,
+    )
+    projection = load_te_projection(spec)
+    print(f"[MiniMaxH3Loader] TE projection: {spec['path']} "
+          f"(d_in {spec['d_in']} -> d_out {spec['d_out']}, tap {spec['tap']})")
+    return projection
+
+
 def load_minimax_h3_from_path(
     model_path: str,
     torch_dtype: torch.dtype = torch.bfloat16,
@@ -2530,6 +2759,7 @@ def load_minimax_h3_from_path(
     load_text_encoder: bool = True,
     video_vae_dtype: Optional[torch.dtype] = None,
     te_override: Optional[str] = None,
+    te_projection_override: Optional[str] = None,
 ) -> dict:
     """Load MiniMax-H3 from its ComfyUI-style flat tree (or MiniMax's own dir).
 
@@ -2554,6 +2784,9 @@ def load_minimax_h3_from_path(
     ``detect_minimax_h3_layout``. Whatever this build's ``_build_text_encoder``
     then does with it (load, or refuse with its own quantization-semantics
     error) is unchanged by naming the file explicitly here.
+
+    ``te_projection_override`` names the trained projection to pair with it,
+    skipping ``clip_projections/`` discovery. Every pairing check still runs.
     """
     # ``te_override is None`` calls with the ORIGINAL one-argument signature,
     # not with an explicit ``te_override=None`` -- callers (including existing
@@ -2611,6 +2844,21 @@ def load_minimax_h3_from_path(
     print(f"[MiniMaxH3Loader] text encoder: {layout['text_encoder']} "
           f"({layout.get('text_encoder_reason') or 'n/a'})")
     print(f"[MiniMaxH3Loader] configs:      {official}")
+
+    # The pairing gates run BEFORE the encoder is mapped: a mismatch is knowable
+    # from two headers, and answering it after 5-48 GiB has been installed is a
+    # minute of work spent to reach a message that was available immediately.
+    te_declaration: Dict[str, Any] = {}
+    te_projection = None
+    if load_text_encoder:
+        te_declaration = _te_file_declaration(layout["text_encoder"])
+        # A file that declares no dims of its own is the shipped 32B: same width
+        # as the DiT, nothing to pair, and the DiT header is not read at all.
+        if _te_declared_dims(te_declaration) is not None or te_projection_override is not None:
+            te_projection = resolve_minimax_h3_te_projection(
+                te_path=layout["text_encoder"], declared=te_declaration, root=layout["root"],
+                text_dim=dit_text_dim(layout["dit"]), override=te_projection_override,
+            )
 
     # Map the 48 GiB encoder before the smaller component files.  On Windows,
     # doing this last can access-violate inside safetensors/torch storage.
@@ -2674,5 +2922,9 @@ def load_minimax_h3_from_path(
         "audio_vae_path": layout["audio_vae"],
         "text_encoder_path": layout["text_encoder"],
         "text_encoder_origin": "selected_external" if te_override is not None else "architecture_default",
+        # A converted small encoder: no vision tower (P3 refuses ref2va/fl2va on
+        # it) and its hidden state is only usable through `te_projection`.
+        "te_text_only": str(te_declaration.get("modalities") or "") == "text",
+        "te_projection": te_projection,
         "official_dir": official,
     }

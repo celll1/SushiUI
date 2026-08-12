@@ -2115,7 +2115,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/StudioRenderJob'
         '404':
-          description: Render job not found (for example after a backend restart before persistence was available)
+          description: Render job not found or no longer retained
           content:
             application/json:
               schema:
@@ -11192,7 +11192,7 @@ components:
         generation_type:
           type: string
           nullable: true
-          enum: [txt2img, img2img, inpaint, outpaint, upscale, txt2vid, img2vid, outpaint_vid, txt2aud, aud2aud, outpaint_aud]
+          enum: [txt2img, img2img, inpaint, outpaint, upscale, txt2vid, img2vid, inpaint_vid, outpaint_vid, ref2vid, studio_render, txt2aud, aud2aud, outpaint_aud]
           description: Which endpoint the most recently started generation used; null before any generation has run.
           example: "txt2img"
         current_step:
@@ -11636,7 +11636,7 @@ components:
           type: string
         generation_type:
           type: string
-          enum: [txt2img, img2img, inpaint, outpaint, outpaint_vid, outpaint_aud, txt2vid, img2vid, txt2aud, aud2aud, repaint, upscale]
+          enum: [txt2img, img2img, inpaint, outpaint, inpaint_vid, outpaint_vid, ref2vid, studio_render, outpaint_aud, txt2vid, img2vid, txt2aud, aud2aud, repaint, upscale]
         width:
           type: integer
         height:

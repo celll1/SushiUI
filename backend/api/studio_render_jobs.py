@@ -706,6 +706,8 @@ def _run_ffmpeg(command: List[str], job_id: str, total_frames: int) -> None:
                 break
         return_code = process.wait()
         if return_code != 0:
+            if _job_cancel_requested(job_id):
+                raise StudioRenderCancelled()
             raise RuntimeError("FFmpeg could not render the Studio timeline")
     finally:
         with _process_lock:

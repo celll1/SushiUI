@@ -1518,10 +1518,12 @@ export const snapUpValidVideoFrameCount = (
 // together via POST /generate/outpaint/video's `extend_forward` placement,
 // each one continuing from the previous segment's own output. This is never
 // automatic (see CLAUDE.md / the panels that call it) because a continuation
-// segment is conditioned only on the BOUNDARY FRAME of the clip it continues
-// from, not the rest of its content or the original prompt context — prompt
-// adherence degrades across segment boundaries in a way a single inference
-// does not have.
+// segment is conditioned on the BOUNDARY FRAME of the clip it continues from
+// (plus, for ref2va/ia2v, original image references and an automatic video
+// reference derived from the previous segment's end), not the rest of its
+// content, while the SAME full-length prompt is resent unchanged on every
+// segment — prompt adherence degrades across segment boundaries in a way a
+// single inference does not have.
 //
 // The arithmetic below mirrors OutpaintPanel's own extend_forward handling
 // (`preservedFrames + effectiveGeneratedFrames - sharedAnchorFrames`): the

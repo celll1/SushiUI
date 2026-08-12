@@ -80,8 +80,10 @@ export default function VideoChainConfirmDialog({
               outpaint. The chain actually reaches {plan.finalFrames} frames
               {finalSeconds != null ? ` (${finalSeconds}s)` : ""}
               {overshoot > 0 ? `, ${overshoot} more than requested (the arithmetic that lands each segment on the model's frame grid does not land exactly on the requested total)` : ""}.
-              Segments after the first are conditioned only on the boundary frame of the previous segment, not the
-              rest of its content or the original prompt context.
+              Segments after the first are conditioned on the boundary frame of the previous segment (and, for
+              ref2va/ia2v, the original image references and an automatic video reference derived from the end of
+              the previous segment), not the rest of its content. The same full-length prompt is resent unchanged
+              on every segment, even though each segment cannot see the earlier segments' actual video content.
             </p>
           )}
           {notes != null && notes.map((note, index) => (

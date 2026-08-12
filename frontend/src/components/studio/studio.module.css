@@ -287,8 +287,14 @@
 .paneTabs button:hover { color: #ccd4de; }
 .paneTabs .activePane { color: #c3b5ff; border-bottom-color: var(--purple); }
 .liveDot { position: absolute; top: 11px; width: 5px; height: 5px; margin-left: 4px; border-radius: 50%; background: var(--green); animation: pulse 1.4s infinite; }
-.paneBody { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 13px; padding: 11px; overflow-y: auto; }
+.paneBody { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 9px; padding: 8px; overflow-y: auto; }
 .generationDropActive { outline: 1px solid var(--purple-2); outline-offset: -4px; background: rgba(98, 70, 190, .08); }
+.modelLoadDisclosure { border: 1px solid var(--border); border-radius: 6px; background: #101720; }
+.modelLoadDisclosure > summary { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 8px; color: #b9c4d0; cursor: pointer; list-style: none; font-size: 10px; }
+.modelLoadDisclosure > summary::-webkit-details-marker { display: none; }
+.modelLoadDisclosure > summary small { max-width: 58%; overflow: hidden; color: #758397; text-overflow: ellipsis; white-space: nowrap; font-size: 8px; }
+.modelLoadDisclosure[open] { padding: 0 8px 8px; }
+.modelLoadDisclosure[open] > summary { margin: 0 -8px 8px; border-bottom: 1px solid var(--border-soft); }
 .modelCard { padding: 10px; border: 1px solid var(--border); border-radius: 6px; background: linear-gradient(135deg, #151e2a, #101720); }
 .modelLine { justify-content: space-between; gap: 10px; margin-top: 5px; }
 .modelLine strong { overflow: hidden; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
@@ -313,7 +319,7 @@
 .fieldLabel { display: block; margin-bottom: 6px; color: #b6c0cc; font-size: 10px; font-weight: 650; }
 .promptBox { position: relative; overflow: hidden; border: 1px solid var(--border); border-radius: 6px; background: #101720; }
 .promptBox:focus-within { border-color: #6651ba; box-shadow: 0 0 0 2px rgba(124, 92, 255, .12); }
-.promptBox textarea { width: 100%; min-height: 83px; padding: 9px; color: #e8edf3; resize: vertical; border: 0; outline: none; background: transparent; line-height: 1.5; }
+.promptBox textarea { width: 100%; min-height: 64px; padding: 8px; color: #e8edf3; resize: vertical; border: 0; outline: none; background: transparent; line-height: 1.45; }
 .promptBox textarea::placeholder { color: #5f6d7d; }
 .promptBox span { display: block; padding: 0 8px 6px; text-align: right; color: #5f6d7e; font-size: 8px; }
 .keyframeSlot { width: 100%; display: grid; grid-template-columns: 74px 1fr; gap: 9px; padding: 6px; text-align: left; color: #dbe2ea; border: 1px solid #4f447f; border-radius: 6px; background: #15172a; }
@@ -351,7 +357,7 @@
 .rangeCard > div { gap: 6px; grid-column: 1 / -1; }
 .rangeCard > span { color: #8e80c4; font-variant-numeric: tabular-nums; }
 .rangeCard button { justify-self: end; color: #a994fa; border: 0; background: transparent; }
-.settingsGrid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.settingsGrid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; }
 .settingsGrid label,
 .inspectorFields label { display: flex; flex-direction: column; gap: 5px; color: #8693a4; font-size: 9px; }
 .settingsGrid input,

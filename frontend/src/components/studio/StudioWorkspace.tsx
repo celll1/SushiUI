@@ -77,7 +77,7 @@ import type { GenerationParams, Img2ImgParams, InpaintParams, InpaintVideoParams
 import { useStartup } from "@/contexts/StartupContext";
 import { formatTimecode } from "@/utils/timecode";
 import ImageEditor from "../common/ImageEditor";
-import { loadStudioProject, saveImportedMedia, saveStudioProject } from "./studioStorage";
+import { loadImportedMedia, loadStudioProject, saveImportedMedia, saveStudioProject } from "./studioStorage";
 import { resolveStudioTransferUrl, takeStudioTransfer, type StudioTransferPayload } from "./studioTransfer";
 import {
   StudioAsset,
@@ -378,6 +378,7 @@ export default function StudioWorkspace() {
   const [libraryLoading, setLibraryLoading] = useState(true);
   const [snapEnabled, setSnapEnabled] = useState(true);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const projectFileInputRef = useRef<HTMLInputElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const playStartedRef = useRef({ at: 0, playhead: 0 });
@@ -558,16 +559,16 @@ export default function StudioWorkspace() {
 
   useEffect(() => {
     if (!restored) return;
-    const timer = window.setTimeout(() => saveStudioProject({ ...project, outputRange: range, inpaintRange, referenceAssetIds }), 350);
+    const timer = window.setTimeout(() => saveStudioProject({ ...project, jobs, outputRange: range, inpaintRange, referenceAssetIds }), 350);
     return () => window.clearTimeout(timer);
-  }, [inpaintRange, project, range, referenceAssetIds, restored]);
+  }, [inpaintRange, jobs, project, range, referenceAssetIds, restored]);
 
   useEffect(() => {
     if (!restored) return;
-    const saveOnExit = () => saveStudioProject({ ...project, outputRange: range, inpaintRange, referenceAssetIds });
+    const saveOnExit = () => saveStudioProject({ ...project, jobs, outputRange: range, inpaintRange, referenceAssetIds });
     window.addEventListener("pagehide", saveOnExit);
     return () => window.removeEventListener("pagehide", saveOnExit);
-  }, [inpaintRange, project, range, referenceAssetIds, restored]);
+  }, [inpaintRange, jobs, project, range, referenceAssetIds, restored]);
 
   useEffect(() => {
     if (!generationDefaults || !modelInfo?.type) return;
@@ -891,6 +892,76 @@ export default function StudioWorkspace() {
       setSelectedAssetId(asset.id);
     }
     event.target.value = "";
+  };
+
+  const handleProjectImport = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    try {
+      const parsed = JSON.parse(await file.text()) as Partial<StudioProject>;
+      if (!parsed.id || !Array.isArray(parsed.assets) || !Array.isArray(parsed.tracks) || !Array.isArray(parsed.clips)) {
+        throw new Error("The selected file is not a Studio project manifest.");
+      }
+      const defaults = createStudioProject();
+      const imported: StudioProject = {
+        ...defaults,
+        ...parsed,
+        schemaVersion: 2,
+        revision: numeric(parsed.revision) ?? 0,
+        duration: numeric(parsed.duration) ?? defaults.duration,
+        fps: (numeric(parsed.fps) || 0) > 0 ? Number(parsed.fps) : defaults.fps,
+        width: numeric(parsed.width) ?? defaults.width,
+        height: numeric(parsed.height) ?? defaults.height,
+        assets: parsed.assets as StudioAsset[],
+        tracks: parsed.tracks as StudioProject["tracks"],
+        clips: parsed.clips as StudioProject["clips"],
+        jobs: parsed.jobs || [],
+        outputRange: parsed.outputRange ?? null,
+        inpaintRange: parsed.inpaintRange ?? null,
+        referenceAssetIds: parsed.referenceAssetIds || [],
+      };
+      const imageAssetIds = new Set(imported.assets.filter((asset) => asset.kind === "image").map((asset) => asset.id));
+      const clips = imported.clips.map((clip) => {
+        const inputRoles = clip.inputRoles?.filter((role) => role === "keyframe");
+        if (!imageAssetIds.has(clip.assetId) || clip.presentation) return { ...clip, inputRoles };
+        const held = Number(clip.duration) > (1 / imported.fps) + 0.0001;
+        return {
+          ...clip,
+          inputRoles,
+          duration: held ? clip.duration : 1 / imported.fps,
+          sourceIn: 0,
+          presentation: held ? "hold" as const : "frame" as const,
+          sourceDuration: 0,
+        };
+      });
+      const normalized = { ...imported, clips };
+      const assets = await Promise.all(normalized.assets.map(async (asset) => {
+        if (!asset.blobKey) return asset;
+        const blob = await loadImportedMedia(asset.blobKey);
+        if (!blob) return { ...asset, url: "", thumbnailUrl: undefined };
+        const url = URL.createObjectURL(blob);
+        return { ...asset, url, thumbnailUrl: asset.kind === "image" ? url : undefined };
+      }));
+      const restored = { ...normalized, assets };
+      setProject(restored);
+      setRange(restored.outputRange ?? null);
+      setInpaintRange(restored.inpaintRange ?? null);
+      setReferenceAssetIds(restored.referenceAssetIds || []);
+      setJobs(restored.jobs || []);
+      setResultAssetIds((restored.jobs || []).flatMap((job) => job.assetId ? [job.assetId] : []));
+      setSelectedClipId(null);
+      setSelectedAssetId(null);
+      setUndoStack([]);
+      setRedoStack([]);
+      const missingLocalMedia = assets.filter((asset) => asset.blobKey && !asset.url).length;
+      setNotice(missingLocalMedia
+        ? `Imported ${restored.name}; ${missingLocalMedia} local media item(s) need to be re-imported.`
+        : `Imported ${restored.name}.`);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Could not import the Studio project.");
+    } finally {
+      event.target.value = "";
+    }
   };
 
   const handleTimelineInput = useCallback(async (clip: StudioClip, asFrame: boolean) => {
@@ -1710,7 +1781,13 @@ export default function StudioWorkspace() {
   };
 
   const exportProject = () => {
-    const manifest = new Blob([JSON.stringify({ ...project, jobs }, null, 2)], { type: "application/json" });
+    const manifest = new Blob([JSON.stringify({
+      ...project,
+      jobs,
+      assets: project.assets.map((asset) => asset.blobKey
+        ? { ...asset, url: "", thumbnailUrl: undefined }
+        : asset),
+    }, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(manifest);
     const anchor = document.createElement("a");
     anchor.href = url;
@@ -1833,6 +1910,8 @@ export default function StudioWorkspace() {
         </div>
         <div className={styles.exportControls}>
           <span className={styles.sequenceBadge}>{project.width}×{project.height} · {project.fps} fps</span>
+          <button className={styles.projectImportButton} onClick={() => projectFileInputRef.current?.click()}><FolderOpen size={14} /> Import</button>
+          <input ref={projectFileInputRef} type="file" accept="application/json,.json" hidden onChange={handleProjectImport} />
           <button className={styles.exportButton} onClick={exportProject}><Upload size={16} /> Export project</button>
         </div>
       </header>

@@ -729,6 +729,12 @@ def extract_verbatim(text: str) -> List[str]:
 # ---------------------------------------------------------------------------
 
 
+# `token_implied` is a binding this module DERIVED from the prompt text: a
+# segment whose text uses a reference's token gets that reference (design §5.1,
+# see `derive_token_bindings`).
+BINDING_SOURCES = ("default_all", "explicit", "token_implied")
+
+
 @dataclass
 class ChainReference:
     id: str
@@ -736,7 +742,7 @@ class ChainReference:
     label: str = ""
     token: Optional[str] = None  # the token used in the ROOT prompt, e.g. "<Picture 2>"
     segment_indices: Optional[List[int]] = None  # None => every segment
-    binding_source: str = "default_all"  # "default_all" | "explicit"
+    binding_source: str = "default_all"  # one of BINDING_SOURCES
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -765,11 +771,16 @@ def resolve_reference_bindings(
     references: Sequence[ChainReference],
     segment_count: int,
     warnings: Optional[List[str]] = None,
+    emit_coverage_warnings: bool = True,
 ) -> List[ChainReference]:
     """Turn `segment_indices=None` into the explicit default-all binding.
 
     `references[]` is the source of truth; a reference may cover several
     (non-contiguous) segments and a segment may carry several references.
+
+    Callers that afterwards run `derive_token_bindings` pass
+    `emit_coverage_warnings=False` and warn once the binding is final, so an
+    empty coverage the token pass fills is not reported as empty.
     """
     sink = warnings if warnings is not None else []
     seen: set = set()
@@ -794,8 +805,6 @@ def resolve_reference_bindings(
                         f"reference {ref.id} is bound to segment index {index}, which "
                         f"does not exist (the chain has {segment_count} segments)"
                     )
-            if not indices:
-                sink.append(f"Reference {ref.label or ref.id} is not used by any segment.")
         resolved.append(
             ChainReference(
                 id=ref.id,
@@ -807,13 +816,86 @@ def resolve_reference_bindings(
             )
         )
 
-    if resolved:
+    if emit_coverage_warnings:
+        sink.extend(reference_coverage_warnings(resolved, segment_count))
+    return resolved
+
+
+def reference_coverage_warnings(
+    references: Sequence[ChainReference], segment_count: int
+) -> List[str]:
+    """Advisory-only coverage report of a FINAL binding (design §5.1)."""
+    messages: List[str] = []
+    for ref in references:
+        if not (ref.segment_indices or []):
+            messages.append(f"Reference {ref.label or ref.id} is not used by any segment.")
+    if references:
         for index in range(segment_count):
-            if not any(index in ref.segment_indices for ref in resolved):
-                sink.append(
+            if not any(index in (ref.segment_indices or []) for ref in references):
+                messages.append(
                     f"Segment {index + 1} has no reference bound to it; identity is "
                     "carried only by the boundary frame there."
                 )
+    return messages
+
+
+def scan_reference_tokens(text: str) -> List[str]:
+    """The reference tokens `text` uses, in first-appearance order."""
+    found: List[str] = []
+    for match in _REFERENCE_TOKEN_RE.finditer(text):
+        if match.group(0) not in found:
+            found.append(match.group(0))
+    return found
+
+
+def derive_token_bindings(
+    references: Sequence[ChainReference],
+    segment_texts: Sequence[str],
+    warnings: Optional[List[str]] = None,
+) -> List[ChainReference]:
+    """A segment whose text uses a reference's token GETS that reference.
+
+    The token's presence is itself a binding: widening the binding is preferred
+    over deleting the token, because deleting it leaves a mutilated sentence
+    ("the woman shown in ."). This also applies to a reference the user narrowed
+    away from that segment in the plan editor -- text wins, and the widening is
+    reported, never silent. The final binding is the union of the explicit
+    `segment_indices` and the token-derived ones, and it is part of `plan_hash`.
+
+    `segment_texts[i]` must be the text segment `i` will actually carry, before
+    token renumbering; anything else would leave droppable tokens behind.
+    """
+    sink = warnings if warnings is not None else []
+    present = [set(scan_reference_tokens(text)) for text in segment_texts]
+    resolved: List[ChainReference] = []
+    for ref in references:
+        if ref.segment_indices is None:
+            # Still means "every segment"; nothing to widen.
+            resolved.append(ref)
+            continue
+        indices = sorted({int(i) for i in ref.segment_indices})
+        added = (
+            []
+            if not ref.token
+            else [i for i, tokens in enumerate(present) if ref.token in tokens and i not in indices]
+        )
+        if added and ref.binding_source == "explicit":
+            sink.append(
+                f"Reference {ref.label or ref.id} ({ref.token}) was not bound to "
+                f"segment{'s' if len(added) > 1 else ''} "
+                f"{', '.join(str(i + 1) for i in added)}, but that text uses its "
+                "token; the reference was applied there so the sentence stays intact."
+            )
+        resolved.append(
+            ChainReference(
+                id=ref.id,
+                kind=ref.kind,
+                label=ref.label,
+                token=ref.token,
+                segment_indices=sorted(set(indices) | set(added)),
+                binding_source="token_implied" if added else ref.binding_source,
+            )
+        )
     return resolved
 
 
@@ -1225,10 +1307,15 @@ def compile_segment_prompt(
     ctx: SegmentCompileContext,
     formatter: SegmentPromptFormatter,
     warnings: Optional[List[str]] = None,
+    formatted: Optional[str] = None,
 ) -> str:
-    """Format, then renumber/drop reference tokens for THIS segment (design §5.1.2)."""
+    """Format, then renumber/drop reference tokens for THIS segment (design §5.1.2).
+
+    `formatted` lets a caller that already formatted the segment (to derive
+    token bindings from it) reuse that text instead of formatting twice.
+    """
     sink = warnings if warnings is not None else []
-    prompt = formatter.format(ctx)
+    prompt = formatter.format(ctx) if formatted is None else formatted
     prompt, dropped = rewrite_reference_tokens(prompt, ctx.token_map)
     if dropped:
         sink.append(
@@ -1390,10 +1477,15 @@ def plan_video_chain_manifest(request: ChainPlanRequest) -> ChainManifest:
     segment_count = len(spans)
     final_frames = spans[-1].owned_end_frame
 
-    references = resolve_reference_bindings(request.references, segment_count, warnings)
+    references = resolve_reference_bindings(
+        request.references, segment_count, warnings, emit_coverage_warnings=False
+    )
     root_seed = resolve_root_seed(request.root_seed, request.rng)
 
     if request.context_mode == "legacy_repeat":
+        references = derive_token_bindings(
+            references, [request.root_prompt] * segment_count, warnings
+        )
         segments = _legacy_repeat_segments(request, spans, references, warnings)
         events: List[TimelineEvent] = []
         persistent = PersistentContext()
@@ -1408,9 +1500,11 @@ def plan_video_chain_manifest(request: ChainPlanRequest) -> ChainManifest:
         owners = assign_event_owners(
             events, spans, warnings, allow_boundary_split=request.allow_boundary_split
         )
-        segments = _compile_segments(
+        segments, references = _compile_segments(
             request, spans, references, persistent, events, owners, warnings
         )
+
+    warnings.extend(reference_coverage_warnings(references, segment_count))
 
     manifest = ChainManifest(
         chain_id=request.chain_id or str(uuid.uuid4()),
@@ -1484,7 +1578,13 @@ def _compile_segments(
     events: Sequence[TimelineEvent],
     owners: Dict[str, int],
     warnings: List[str],
-) -> List[SegmentPlan]:
+) -> Tuple[List[SegmentPlan], List[ChainReference]]:
+    """Compile every segment prompt; returns them with the FINAL reference binding.
+
+    Two passes on purpose: the binding a segment gets depends on the tokens its
+    formatted text uses (`derive_token_bindings`), and the per-segment token
+    renumbering depends on that binding.
+    """
     formatter: SegmentPromptFormatter
     if request.architecture == "minimax_h3":
         formatter = MiniMaxH3SegmentFormatter(request.variant or "t2va")
@@ -1495,7 +1595,7 @@ def _compile_segments(
     for event in sorted(events, key=lambda e: (e.start_frame, e.id)):
         by_segment[owners[event.id]].append(event)
 
-    segments: List[SegmentPlan] = []
+    contexts: List[SegmentCompileContext] = []
     carried_state: List[str] = []
     for span in spans:
         owned = by_segment[span.index]
@@ -1510,25 +1610,39 @@ def _compile_segments(
             event.resulting_state for event in owned if event.resulting_state.strip()
         ][-1:]
 
-        ctx = SegmentCompileContext(
-            span=span,
-            segment_count=len(spans),
-            fps=request.fps,
-            persistent_context=persistent,
-            incoming_state=incoming,
-            owned_events=owned,
-            outgoing_state=outgoing,
-            soundscape=request.soundscape,
-            music=request.music,
-            extra_sections=dict(request.extra_sections),
-            token_map=segment_token_map(references, span.index),
+        contexts.append(
+            SegmentCompileContext(
+                span=span,
+                segment_count=len(spans),
+                fps=request.fps,
+                persistent_context=persistent,
+                incoming_state=incoming,
+                owned_events=owned,
+                outgoing_state=outgoing,
+                soundscape=request.soundscape,
+                music=request.music,
+                extra_sections=dict(request.extra_sections),
+            )
         )
-        prompt = compile_segment_prompt(ctx, formatter, warnings)
         if not owned:
             warnings.append(
                 f"Segment {span.index + 1} owns no event; it will only continue the "
                 "state it inherits."
             )
+        # Past events fold into the incoming state; they are never restated
+        # (design §6.3 "過去の event は incoming state に畳み込み").
+        for event in owned:
+            state = event.resulting_state.strip()
+            if state and state not in carried_state:
+                carried_state.append(state)
+
+    formatted = [formatter.format(ctx) for ctx in contexts]
+    references = derive_token_bindings(references, formatted, warnings)
+
+    segments: List[SegmentPlan] = []
+    for ctx, text in zip(contexts, formatted):
+        span = ctx.span
+        ctx.token_map = segment_token_map(references, span.index)
         segments.append(
             SegmentPlan(
                 index=span.index,
@@ -1537,22 +1651,16 @@ def _compile_segments(
                 owned_end_frame=span.owned_end_frame,
                 generated_span_frames=span.generated_span_frames,
                 requested_total_frames=span.requested_total_frames,
-                prompt=prompt,
+                prompt=compile_segment_prompt(ctx, formatter, warnings, formatted=text),
                 negative_prompt=request.negative_prompt,
-                incoming_state=incoming,
-                outgoing_state=outgoing,
-                owned_event_ids=[event.id for event in owned],
+                incoming_state=list(ctx.incoming_state),
+                outgoing_state=list(ctx.outgoing_state),
+                owned_event_ids=[event.id for event in ctx.owned_events],
                 reference_ids=segment_reference_ids(references, span.index),
                 visual_context=_visual_context_for(span),
             )
         )
-        # Past events fold into the incoming state; they are never restated
-        # (design §6.3 "過去の event は incoming state に畳み込み").
-        for event in owned:
-            state = event.resulting_state.strip()
-            if state and state not in carried_state:
-                carried_state.append(state)
-    return segments
+    return segments, list(references)
 
 
 def plan_h3_chain_from_prompt(

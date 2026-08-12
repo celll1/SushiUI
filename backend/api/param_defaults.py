@@ -1547,6 +1547,80 @@ OUTPAINT_AUDIO_DEFAULTS: Dict[str, Any] = {
 }
 
 # ---------------------------------------------------------------------------
+# Video chain planning (POST /video-chain/plan, POST /video-chain/validate)
+# ---------------------------------------------------------------------------
+# Planner-only knobs for the long-form video Chain Manifest. Deliberately its
+# own dict rather than extra keys in VIDEO_GEN_DEFAULTS: those keys are the
+# request body of /generate/txt2vid & friends and are mirrored into the video
+# panels' DEFAULT_PARAMS, whereas nothing here is ever sent to a /generate/*
+# route -- the planner emits a manifest and the existing generation requests
+# are built FROM it. Same separation as PROMPT_ASSIST_DEFAULTS.
+#
+# Values shared with an actual generation request (fps, negative prompt, root
+# seed) are read from VIDEO_GEN_DEFAULTS instead of restated, so a chain plan
+# and a single-shot generation cannot drift apart.
+
+VIDEO_CHAIN_DEFAULTS: Dict[str, Any] = {
+    # Manifest/plan schema versions. Bumped only on a breaking manifest change;
+    # a client holding an older manifest must re-plan rather than guess.
+    "manifest_version": 1,
+    "plan_schema_version": 1,
+    # How the root prompt becomes per-segment prompts:
+    #   "timeline"      - parse/normalize into a canonical timeline, then
+    #                     compile one prompt per segment (deterministic for an
+    #                     H3 structured prompt whose `[Shot N]` headers parse).
+    #   "manual"        - the caller supplies the canonical timeline.
+    #   "legacy_repeat" - today's behaviour: copy the root prompt verbatim into
+    #                     every segment. Explicit opt-in, always warned about.
+    # This default applies to a prompt the planner can parse structurally. For
+    # free-form prose there is NO defensible default (no measured basis for
+    # making the LLM extraction path automatic), so the planner refuses to pick
+    # one: it returns a hard error asking the caller to choose a mode. Reading
+    # this key does not authorize a silent fallback to it.
+    "context_mode": "timeline",
+    # Per-segment noise seeding. "fixed" (every segment reuses the root seed)
+    # is today's behaviour and keeps a text-only A/B honest by holding noise
+    # constant. "derived" (stable hash of root_seed + plan_hash + segment index)
+    # and "explicit" (per-segment values from the editor) ship alongside it as
+    # opt-in. Whichever is chosen, concrete seeds are frozen into the manifest
+    # at plan time and never re-drawn at run time.
+    "seed_policy": "fixed",
+    # -1 = draw once while planning and freeze the drawn value in the manifest.
+    "root_seed": VIDEO_GEN_DEFAULTS["seed"],
+    # What a continuation actually receives from its predecessor. Only the
+    # boundary frame is implemented today; richer modes (native sampler-state
+    # overlap, motion pre-roll, bounded tail reference video) are per-arch
+    # capabilities. An architecture that does not advertise a mode gets a 400,
+    # never a guessed upgrade or a silent downgrade.
+    "continuation_mode": "boundary_frame",
+    # Allowed |actual - planned| accumulated-frame divergence before the chain
+    # pauses for a user decision. Frames, not seconds, so it is fps-independent.
+    # Non-zero because re-decoding an mp4 does not always return the frame count
+    # that was written; drift only ever shifts event ownership near a boundary,
+    # never the local timestamps inside a segment prompt.
+    "chain_drift_tolerance_frames": 12,
+    # Requested shared frames between neighbouring segments. 0 = the single
+    # shared anchor frame of the current boundary-frame continuation. The
+    # authoritative value is the backend's effective_overlap_frames/_samples
+    # (snapped to the video VAE temporal group and the audio clock), never this
+    # request value.
+    "requested_overlap_frames": 0,
+    # Reference binding for a reference whose segment set is not stated
+    # explicitly: apply it to every segment, which is today's carry-to-all
+    # behaviour.
+    "reference_binding_source": "default_all",
+    # Plan request fields that have a meaningful "unset". null segment length
+    # means "use the architecture's own maximum span"; null workflow means
+    # "the loaded variant's default workflow".
+    "requested_segment_frames": None,
+    "workflow": None,
+    "canonical_timeline": None,
+    "references": [],
+    "negative_prompt": VIDEO_GEN_DEFAULTS["negative_prompt"],
+    "fps": VIDEO_GEN_DEFAULTS["frame_rate"],
+}
+
+# ---------------------------------------------------------------------------
 # LoRA / Full-FT Training (TrainingRunCreateRequest)
 # ---------------------------------------------------------------------------
 # Authoritative source: backend Pydantic model.

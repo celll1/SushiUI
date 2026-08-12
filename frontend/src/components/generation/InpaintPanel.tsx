@@ -249,7 +249,7 @@ interface InpaintParams {
   regenerate_end_frame?: number;
   input_trim_start_frames?: number;
   input_trim_end_frames?: number;
-  inpaint_video_audio_mode?: "regenerate" | "preserve_input";
+  inpaint_video_audio_mode?: "regenerate" | "preserve_input" | "regenerate_range";
   // Which architecture the audio mode above was resolved for, so a per-arch
   // default is re-applied on a model change but a user's own choice is not
   // (the OutpaintPanel pattern; not sent to the backend).
@@ -1018,7 +1018,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
   // user makes afterwards is never overwritten.
   const archAudioMode =
     (inpaintVideoDefaultsForArch(generationDefaults, loadedArchType)
-      .inpaint_video_audio_mode as "regenerate" | "preserve_input" | undefined)
+      .inpaint_video_audio_mode as "regenerate" | "preserve_input" | "regenerate_range" | undefined)
     ?? DEFAULT_PARAMS.inpaint_video_audio_mode!;
   useEffect(() => {
     if (!generationDefaults || !loadedArchType) return;
@@ -1959,7 +1959,8 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
       input_trim_start_frames: (vid.input_trim_start_frames as number) ?? DEFAULT_PARAMS.input_trim_start_frames,
       input_trim_end_frames: (vid.input_trim_end_frames as number) ?? DEFAULT_PARAMS.input_trim_end_frames,
       inpaint_video_audio_mode:
-        (vid.inpaint_video_audio_mode as "regenerate" | "preserve_input") ?? DEFAULT_PARAMS.inpaint_video_audio_mode,
+        (vid.inpaint_video_audio_mode as "regenerate" | "preserve_input" | "regenerate_range")
+        ?? DEFAULT_PARAMS.inpaint_video_audio_mode,
       video_lossless: (vid.video_lossless as boolean) ?? DEFAULT_PARAMS.video_lossless,
       video_blocks_to_swap: (vid.blocks_to_swap as number) ?? DEFAULT_PARAMS.video_blocks_to_swap,
       fuse_output_proj: (vid.fuse_output_proj as boolean) ?? DEFAULT_PARAMS.fuse_output_proj,
@@ -6569,15 +6570,29 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
           </label>
 
           <div className="ml-6 mt-1">
-            <Select
-              label="Audio mode"
-              value={params.inpaint_video_audio_mode || archAudioMode}
-              onChange={(e) => setParams({ ...params, inpaint_video_audio_mode: e.target.value as "regenerate" | "preserve_input" })}
-              options={[
-                { value: "preserve_input", label: "Preserve the clip's own track" },
-                { value: "regenerate", label: "Regenerate the whole track" },
-              ]}
-            />
+            <div className="flex items-center gap-1">
+              <Select
+                label="Audio mode"
+                value={params.inpaint_video_audio_mode || archAudioMode}
+                onChange={(e) => setParams({ ...params, inpaint_video_audio_mode: e.target.value as "regenerate" | "preserve_input" | "regenerate_range" })}
+                options={[
+                  { value: "preserve_input", label: "Preserve the clip's own track" },
+                  { value: "regenerate", label: "Regenerate the whole track" },
+                  { value: "regenerate_range", label: "Regenerate only inside the range, keep the input's audio elsewhere" },
+                ]}
+              />
+              <InlineHelp label="Audio mode details">
+                <p>
+                  &quot;Regenerate only inside the range, keep the input&apos;s audio elsewhere&quot;
+                  generates the soundtrack for the whole clip without the input audio as
+                  conditioning, same as &quot;Regenerate&quot;, then splices the input clip&apos;s
+                  own audio back over the frames outside the regenerate range, with a short
+                  crossfade at the two boundaries. The audio inside the range is generated, not
+                  continued from the original. It falls back to &quot;Regenerate&quot; (with a
+                  warning) if the clip has no audio stream.
+                </p>
+              </InlineHelp>
+            </div>
             <p className="text-xs text-gray-500 mt-1">
               &quot;Preserve the clip&apos;s own track&quot; conditions the generation on the source
               audio across the whole clip and muxes that track back verbatim; it falls back to

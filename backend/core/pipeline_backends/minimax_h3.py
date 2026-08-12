@@ -1392,8 +1392,12 @@ class MiniMaxH3Mixin:
         # ---- Audio. `preserve_input` pins the clip's own track across the WHOLE
         # clip through the shipped ia2v machinery and muxes it back verbatim, so
         # the regenerated span has the original soundtrack both to condition on
-        # and in the output. There is no second audio path here: the pin and the
-        # exact mux are both `_generate_minimax_h3`'s ia2v behaviour. ----
+        # and in the output; the pin and the exact mux are both
+        # `_generate_minimax_h3`'s ia2v behaviour. `regenerate_range` pins
+        # nothing -- audio generates unconditioned for the whole clip exactly
+        # as `regenerate` does -- and the input's own track is spliced back in
+        # AFTER generation, only over the spans outside the regenerate range
+        # (`_minimax_h3_splice_inpaint_range_audio`, below). ----
         audio_mode = str(params.get("inpaint_video_audio_mode") or "regenerate")
         pinned_audio = None
         if audio_mode == "preserve_input":
@@ -1408,6 +1412,16 @@ class MiniMaxH3Mixin:
                      "(its rows ride the packed sequence at t = 1.0), and nothing is muxed into "
                      "the output file.",
                      code="minimax_h3_input_audio_not_muxed")
+        elif audio_mode == "regenerate_range" and not input_audio:
+            # No conditioning is pinned in this mode either way; the only thing
+            # `regenerate_range` needs from `input_audio` is the track to
+            # splice back in AFTER generation, so a clip with no audio stream
+            # has nothing to fall back to but plain `regenerate`.
+            warn("inpaint_video_audio_mode='regenerate_range' was requested but the uploaded "
+                 "clip has no audio stream; the whole clip's soundtrack is generated instead",
+                 code="inpaint_video_no_input_audio")
+            audio_mode = "regenerate"
+            params["inpaint_video_audio_mode"] = "regenerate"
 
         print(f"[MiniMax-H3] vid_inpaint: {width}x{height} clip={clip_frames} frame(s) "
               f"regenerate {start_frame}..{end_frame} "
@@ -1466,7 +1480,117 @@ class MiniMaxH3Mixin:
         params["inpaint_video_effective_end_frame"] = end_frame
         params["inpaint_video_preserved_frames"] = clip_frames - (end_frame - start_frame)
 
+        if audio_mode == "regenerate_range":
+            # The output-level half of this mode: `pinned_audio` was never set
+            # above, so the generated track already covers the whole clip
+            # unconditioned, same as plain `regenerate`. Splice the input's
+            # own audio back over the two preserved spans -- everything
+            # outside [start_frame, end_frame) -- with the same helpers the
+            # outpaint path splices with, leaving the range itself as
+            # generated.
+            audio_out = self._minimax_h3_splice_inpaint_range_audio(
+                audio_out, input_audio, audio_sample_rate,
+                clip_frames=clip_frames, start_frame=start_frame, end_frame=end_frame,
+                source_fps=float(fps or frame_rate), trim_start=trim_start,
+                frame_rate=frame_rate, warn=warn,
+            )
+
         return frames_out, audio_out, audio_sample_rate, seed
+
+    def _minimax_h3_splice_inpaint_range_audio(
+        self,
+        audio_out,
+        input_audio: Optional[bytes],
+        sample_rate: int,
+        *,
+        clip_frames: int,
+        start_frame: int,
+        end_frame: int,
+        source_fps: float,
+        trim_start: int,
+        frame_rate: float,
+        warn: Callable[[str, str], None],
+    ):
+        """Splice the input clip's own audio back over the PRESERVED spans of
+        an already-generated (unconditioned) whole-clip track.
+
+        This is the output-level half of ``regenerate_range``: unlike
+        ``preserve_input``, the input audio is never pinned as conditioning
+        here, so the generated track already covers the whole clip -- the
+        audio inside ``[start_frame, end_frame)`` stays exactly that
+        generated track, and only the two spans outside it
+        (``[0, start_frame)`` and ``[end_frame, clip_frames)``) are
+        overwritten, through the same ``extract_audio_window`` ->
+        ``mux_audio_over_span`` pair (50 ms crossfade confined to the
+        generated side) that ``_minimax_h3_outpaint_audio``'s
+        ``preserve_input`` branch and ``_minimax_h3_inpaint_pinned_audio``
+        both use.
+
+        Assumes the caller already handled the no-audio-stream fallback (this
+        mode is downgraded to ``regenerate`` before generation when
+        ``input_audio`` is empty), so this only defends against it, it does
+        not warn about it again.
+        """
+        import numpy as _np
+        from utils.video_utils import extract_audio_window, mux_audio_over_span
+
+        if not input_audio or audio_out is None or not sample_rate:
+            return audio_out
+
+        generated = audio_out.numpy() if hasattr(audio_out, "numpy") else _np.asarray(audio_out)
+        channels = generated.shape[0]
+        full = _np.array(generated, copy=True)
+        source_fps = float(source_fps or frame_rate)
+
+        spliced_any = False
+        for span_start, span_end in ((0, start_frame), (end_frame, clip_frames)):
+            span_frames = int(span_end) - int(span_start)
+            if span_frames <= 0:
+                continue
+            offset_sec = span_start / frame_rate
+            target_dur_sec = span_frames / frame_rate
+            # Same convention as `_minimax_h3_inpaint_pinned_audio`: pixel
+            # frames are not resampled between source and output, so a span's
+            # SOURCE duration is stretched/compressed to the OUTPUT frame
+            # rate rather than read at 1:1 time.
+            src_start_sec = (trim_start + span_start) / source_fps
+            src_dur_sec = target_dur_sec * (frame_rate / source_fps)
+            if target_dur_sec > 0 and abs(src_dur_sec - target_dur_sec) / target_dur_sec > 0.005:
+                warn(f"regenerate_range preserved audio was time-stretched ({src_dur_sec:.3f}s -> "
+                     f"{target_dur_sec:.3f}s) because the uploaded clip's frame rate "
+                     f"({source_fps:.3f}) differs from MiniMax-H3's fixed {frame_rate:.3f} fps",
+                     code="inpaint_video_audio_stretched")
+            try:
+                window = extract_audio_window(
+                    input_audio, src_start_sec, src_dur_sec, target_dur_sec,
+                    sample_rate=sample_rate, channels=channels,
+                )
+            except Exception as exc:
+                window = None
+                print(f"[MiniMax-H3] vid_inpaint regenerate_range audio window extraction "
+                      f"raised: {exc}")
+            if window is None:
+                # NEVER overwrite with silence on a failure -- leave the
+                # generated track already in that span.
+                warn("regenerate_range preserved audio window extraction failed; that span was "
+                     "left as generated", code="inpaint_video_audio_extract_failed")
+                continue
+            full = mux_audio_over_span(
+                full, window, offset_sec=offset_sec, dur_sec=target_dur_sec,
+                sample_rate=sample_rate, crossfade_ms=50.0,
+            )
+            spliced_any = True
+
+        if spliced_any:
+            warn(
+                "inpaint_video_audio_mode='regenerate_range': audio outside the regenerate "
+                f"range ({start_frame}-{end_frame}) is the input clip's own track, spliced back "
+                "in with a crossfade; audio inside the range is generated without the input "
+                "audio as conditioning.",
+                code="inpaint_video_audio_range_spliced",
+            )
+
+        return torch.from_numpy(full)
 
     def _minimax_h3_inpaint_pinned_audio(
         self,

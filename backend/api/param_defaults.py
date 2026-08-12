@@ -1364,7 +1364,13 @@ INPAINT_VIDEO_DEFAULTS: Dict[str, Any] = {
     # other request, so the preserved video span carries generated audio that
     # need not match its visuals. "preserve_input" = the clip's own track is
     # pinned as conditioning across the whole clip (the shipped ia2v mechanism)
-    # and muxed back verbatim.
+    # and muxed back verbatim. "regenerate_range" = the audio rows are
+    # generated unconditioned for the whole clip like "regenerate", but only
+    # the span inside the regenerate range is kept from that generated track;
+    # the preserved spans outside the range are the input clip's own audio,
+    # spliced back over the generated track after decode. This is an
+    # output-level splice, not a conditioning mechanism -- the model is never
+    # told about the input audio in this mode, unlike "preserve_input".
     #
     # The base value is "regenerate" because this map's base is architecture-
     # neutral; the one architecture that implements this endpoint overlays the

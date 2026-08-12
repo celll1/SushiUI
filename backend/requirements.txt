@@ -11,6 +11,7 @@ diffusers>=0.25.0  # Note: 0.36.0 has torchao bug, use main branch or 0.37.0+ wh
 transformers>=4.36.0
 accelerate>=0.25.0
 safetensors>=0.4.1
+gguf>=0.19.0  # Reads GGUF containers when converting a Qwen3-VL text encoder for MiniMax-H3
 comfy-kitchen==0.2.28  # Packed ConvRot W4A8 inference (MiniMax-H3)
 omegaconf>=2.3.0
 peft>=0.7.0  # Required for LoRA support

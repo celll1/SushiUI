@@ -55,6 +55,8 @@ tags:
     description: Backend console log retrieval
   - name: video-mask
     description: Spatial mask timeline rasterization for UI preview (no model load, no generation)
+  - name: video-chain
+    description: Long-form video chain planning and manifest validation (no model load, no generation)
   - name: debug
     description: Developer-mode diagnostics (VRAM inspection)
 
@@ -6929,6 +6931,157 @@ paths:
                   message:
                     type: string
 
+  /video-chain/plan:
+    post:
+      tags: [video-chain]
+      summary: Plan a long-form video chain and return an immutable Chain Manifest
+      operationId: planVideoChain
+      description: |
+        Builds the **Chain Manifest** for a video longer than one model
+        invocation can produce. Planning is a pure, model-free computation: it
+        loads no checkpoint, generates nothing, and writes no gallery row. The
+        client generates by turning the returned manifest into the ordinary
+        `/generate/*` requests it already uses.
+
+        **Why this exists:** today a chain splits only the *length* and copies
+        the same full-length prompt into every continuation, so each segment
+        re-enacts events that belong to other segments (repeated actions,
+        reversed order, restarted dialogue and ambience). The planner instead
+        normalizes the root prompt into a canonical timeline once, assigns each
+        event to exactly one owning segment, and compiles a per-segment prompt
+        whose timestamps are rebased to that segment's own span.
+
+        **Key parameters:**
+        - `architecture` / `variant`: the loaded model. Frame grid, maximum
+          segment length and available `continuation_mode`s come from the
+          backend's capabilities for this pair, never from a checkpoint name.
+        - `target_frames` / `fps`: the desired final length. Frames are the
+          authoritative unit; seconds are a display-only derivation.
+        - `requested_segment_frames`: per-invocation span. `null` uses the
+          architecture's own maximum. Snapped up to the model's frame grid,
+          which is why `expected_final_frames` may overshoot `target_frames`.
+        - `context_mode`: `timeline` (compile per-segment prompts), `manual`
+          (caller supplies `canonical_timeline`), or `legacy_repeat` (copy the
+          root prompt verbatim — explicit opt-in, always warned about). For a
+          free-form prose root prompt with no parsable structure the planner
+          does **not** pick a mode for you: it returns a hard error so the user
+          chooses. It never silently falls back to `legacy_repeat`.
+        - `seed_policy`: `fixed` (default, every segment reuses the root seed),
+          `derived` (stable hash of root seed, plan hash and segment index) or
+          `explicit`. Concrete seeds are frozen into the manifest here and are
+          never re-drawn at generation time — a `root_seed` of `-1` is resolved
+          to a real value during planning.
+        - `references`: an **inventory only** — kind and label, no file bytes
+          and no paths. Binding is many-to-many: one reference may apply to
+          several non-contiguous segments, and one segment may carry several
+          references. A reference with no `segment_indices` applies to every
+          segment, which is the backward-compatible carry-to-all behaviour.
+
+        **Example use cases:**
+        - Plan a 1000-frame MiniMax-H3 clip as three snapped segments and
+          review the compiled per-segment prompts before queuing anything.
+        - Bind a character sheet to the opening and closing segments only, and
+          see the per-segment reference count (and therefore the per-step cost)
+          each binding implies.
+
+        Frame arithmetic follows the shared-anchor rule: a continuation's first
+        generated frame is the same instant as the previous segment's last
+        frame, so a segment of `generated_span_frames` adds
+        `generated_span_frames - 1` new frames. Ownership ranges are half-open
+        `[owned_start_frame, owned_end_frame)`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VideoChainPlanRequest'
+      responses:
+        '200':
+          description: >-
+            Plan computed. A 200 does not mean the plan is runnable: check
+            `success` and `errors`. Hard errors (an event owned by no segment,
+            a timestamp outside the clip, an unknown reference token) are
+            reported here rather than as an HTTP error, so the editor can show
+            them next to the offending segment.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VideoChainPlanResponse'
+        '400':
+          description: >-
+            Request rejected before planning: unknown architecture/variant, a
+            `continuation_mode` the architecture does not advertise (never
+            silently downgraded), `context_mode: manual` without a
+            `canonical_timeline`, a free-form root prompt with no explicit
+            `context_mode` choice, or a non-positive `target_frames`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Planning failed unexpectedly
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /video-chain/validate:
+    post:
+      tags: [video-chain]
+      summary: Re-validate an edited Chain Manifest
+      operationId: validateVideoChain
+      description: |
+        Re-runs the planner's validators over a manifest the user has edited in
+        the plan editor (typically after rewriting segment prompts or changing
+        reference bindings) and recomputes its `plan_hash`. Loads no model and
+        generates nothing.
+
+        **Key parameters:**
+        - `manifest`: the edited manifest, in the exact shape `/video-chain/plan`
+          returned.
+        - `recompute_plan_hash`: when true (default) the response carries the
+          hash of the edited manifest, which becomes the provenance value
+          recorded with every generated segment. The backend is the only
+          implementation of this hash; clients display it and never recompute
+          it.
+
+        **Example use cases:**
+        - Gate the editor's "Start chain" button: enable it only while `valid`
+          is true and `errors` is empty.
+        - Confirm after a reference-binding edit that `references[].segment_indices`
+          and `segments[].reference_ids` still agree in both directions, and
+          surface the warning for a segment left with no reference at all.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VideoChainValidateRequest'
+      responses:
+        '200':
+          description: >-
+            Validation result. Content problems are returned as `errors` /
+            `warnings` with `valid: false`, not as an HTTP error status.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VideoChainValidateResponse'
+        '400':
+          description: >-
+            The submitted document is not a manifest this server can read at
+            all — missing or unsupported `manifest_version`, or a body that
+            does not match the manifest schema.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Validation failed unexpectedly
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
 components:
   securitySchemes:
     bearerAuth:
@@ -11911,6 +12064,928 @@ components:
           type: string
           description: Request path that caused the error
           example: "/generate/txt2img"
+
+    VideoChainIssue:
+      type: object
+      description: >-
+        One validator finding. `severity: error` blocks the chain from
+        starting; `severity: warning` is advisory (an unused reference, a
+        segment left with no reference, a grid-snap overshoot).
+      required: [code, severity, message]
+      properties:
+        code:
+          type: string
+          description: Stable machine-readable identifier for the finding.
+          example: "event_owned_by_no_segment"
+        severity:
+          type: string
+          enum: [error, warning]
+          description: Errors block generation; warnings do not.
+          example: "error"
+        message:
+          type: string
+          description: Human-readable explanation shown in the plan editor.
+          example: "Event 'ev_3' spans frames 990-1020, outside the planned clip."
+        segment_index:
+          type: integer
+          nullable: true
+          minimum: 0
+          description: Segment the finding belongs to, if any.
+          example: 2
+        event_id:
+          type: string
+          nullable: true
+          description: Canonical-timeline event the finding belongs to, if any.
+          example: "ev_3"
+        reference_id:
+          type: string
+          nullable: true
+          description: Reference the finding belongs to, if any.
+          example: "ref_0"
+
+    VideoChainSourceSpan:
+      type: object
+      description: >-
+        Character range of the root prompt an event was extracted from, so the
+        editor can show provenance and the validator can check that nothing in
+        the root prompt was dropped.
+      required: [start_char, end_char]
+      properties:
+        start_char:
+          type: integer
+          minimum: 0
+          description: Inclusive start offset into `root_prompt`.
+          example: 128
+        end_char:
+          type: integer
+          minimum: 0
+          description: Exclusive end offset into `root_prompt`.
+          example: 194
+
+    VideoChainEvent:
+      type: object
+      description: >-
+        One normalized occurrence from the canonical timeline. Frame range is
+        half-open `[start_frame, end_frame)` in GLOBAL frames; an event is
+        owned by exactly one segment.
+      required: [id, kind, start_frame, end_frame, description]
+      properties:
+        id:
+          type: string
+          description: Stable identifier, unique within the manifest.
+          example: "ev_3"
+        kind:
+          type: string
+          enum: [visual_action, camera, dialogue, sound, music, state_change]
+          description: >-
+            What sort of occurrence this is. Dialogue, on-screen text and
+            lyrics are kept verbatim and placed in exactly one segment.
+          example: "visual_action"
+        start_frame:
+          type: integer
+          minimum: 0
+          description: Inclusive global start frame.
+          example: 720
+        end_frame:
+          type: integer
+          minimum: 0
+          description: Exclusive global end frame.
+          example: 810
+        description:
+          type: string
+          description: The occurrence itself, in the root prompt's own wording.
+          example: "The woman reaches the window and pushes it open."
+        subject_ids:
+          type: array
+          items:
+            type: string
+          description: Subjects from `persistent_context.subjects` involved here.
+          example: ["subj_woman"]
+        one_shot:
+          type: boolean
+          default: true
+          description: >-
+            True when re-enacting the event in a later segment would be wrong.
+            One-shot events are removed from every non-owning segment's prompt
+            and folded into the next segment's `incoming_state`.
+          example: true
+        must_complete:
+          type: boolean
+          default: false
+          description: >-
+            True when the event may not be split across a segment boundary.
+            A must-complete event straddling a boundary is a hard error.
+          example: false
+        resulting_state:
+          type: string
+          description: State that persists after the event, carried forward as incoming state.
+          example: "The window is open; the woman stands in front of it."
+        source_span:
+          allOf:
+            - $ref: '#/components/schemas/VideoChainSourceSpan'
+          nullable: true
+          description: Where in the root prompt this event came from. Null for a manually authored event.
+
+    VideoChainPersistentContext:
+      type: object
+      description: >-
+        Constraints that do not change over the clip. Restated in full in every
+        segment prompt — this is the only content that is deliberately repeated.
+      properties:
+        subjects:
+          type: array
+          items:
+            type: string
+          description: Identity/appearance/wardrobe descriptions, one per subject.
+          example: ["subj_woman: a woman in a dark green coat, shoulder-length black hair"]
+        environment:
+          type: array
+          items:
+            type: string
+          description: Location, time of day, weather.
+          example: ["A narrow apartment room at dusk, rain on the glass"]
+        visual_style:
+          type: array
+          items:
+            type: string
+          description: Style, film stock, grade, lens character.
+          example: ["Muted anamorphic film look, soft practical lighting"]
+        camera_rules:
+          type: array
+          items:
+            type: string
+          description: Camera grammar that holds for the whole clip.
+          example: ["Handheld, eye level, no whip pans"]
+        audio_bed:
+          type: array
+          items:
+            type: string
+          description: Ambience that continues across every segment.
+          example: ["Continuous rain against the window"]
+        hard_constraints:
+          type: array
+          items:
+            type: string
+          description: >-
+            User constraints with the highest precedence; never overridden by
+            planned or observed state.
+          example: ["No on-screen text", "No additional characters"]
+
+    VideoChainSegmentState:
+      type: object
+      description: >-
+        Condition of the scene at a segment boundary. `incoming_state` is what
+        already holds when the segment starts (past events folded into a state
+        rather than re-narrated); `outgoing_state` is what must hold at its end.
+      properties:
+        summary:
+          type: string
+          description: One-line statement of the boundary condition.
+          example: "The woman is mid-stride toward the window."
+        subjects:
+          type: array
+          items:
+            type: string
+          description: Per-subject pose/position/expression at the boundary.
+          example: ["subj_woman: walking, three steps from the window, facing away"]
+        camera:
+          type: string
+          description: Camera position and motion at the boundary.
+          example: "Slow push-in from behind, waist height"
+        lighting:
+          type: string
+          description: Lighting state at the boundary.
+          example: "Cool window light from frame left, interior lamp off"
+        ongoing_actions:
+          type: array
+          items:
+            type: string
+          description: Actions in progress across the boundary (not one-shot).
+          example: ["walking toward the window"]
+        ongoing_audio:
+          type: array
+          items:
+            type: string
+          description: Sound continuing across the boundary.
+          example: ["rain", "footsteps on wood"]
+
+    VideoChainReference:
+      type: object
+      description: >-
+        A conditioning reference and the segments it is bound to. Binding is
+        many-to-many: `segment_indices` may list non-contiguous segments, and a
+        segment may appear in several references. `segments[].reference_ids` is
+        a read-only inverse of this list — a disagreement between the two is a
+        validation error.
+      required: [id, kind, label, segment_indices, binding_source]
+      properties:
+        id:
+          type: string
+          description: Stable identifier, unique within the manifest.
+          example: "ref_0"
+        kind:
+          type: string
+          enum: [image, video, audio]
+          description: Reference modality. The bytes themselves are never part of the plan.
+          example: "image"
+        label:
+          type: string
+          description: >-
+            Display name only (typically the original filename). Not a path and
+            not resolved server-side.
+          example: "protagonist_sheet.png"
+        segment_indices:
+          type: array
+          items:
+            type: integer
+            minimum: 0
+          description: >-
+            Segments this reference is passed to, ascending. With
+            `binding_source: default_all` this is the full segment list.
+          example: [0, 2]
+        binding_source:
+          type: string
+          enum: [default_all, explicit]
+          default: default_all
+          description: >-
+            `default_all` — the request stated no segments, so the reference
+            applies to every segment (the backward-compatible carry-to-all
+            behaviour). `explicit` — the segment set was chosen by the caller.
+          example: "explicit"
+
+    VideoChainReferenceInput:
+      type: object
+      description: >-
+        Reference inventory entry for a plan request: kind and label only. No
+        file content, no base64, no server path — the planner needs to know how
+        many references a segment carries and in what order, not what they show.
+      required: [id, kind, label]
+      properties:
+        id:
+          type: string
+          description: Caller-assigned identifier, echoed into the manifest.
+          example: "ref_0"
+        kind:
+          type: string
+          enum: [image, video, audio]
+          description: Reference modality.
+          example: "image"
+        label:
+          type: string
+          description: Display name (typically the original filename).
+          example: "protagonist_sheet.png"
+        segment_indices:
+          type: array
+          nullable: true
+          items:
+            type: integer
+            minimum: 0
+          default: null
+          description: >-
+            Segments to bind this reference to. Omit or send null to apply it to
+            every segment (`binding_source: default_all`).
+          example: [0, 2]
+
+    VideoChainVisualContext:
+      type: object
+      description: >-
+        What pixel-side context a segment actually receives from its
+        predecessor. Only `initial` and `boundary_frame` are produced today.
+      required: [mode]
+      properties:
+        mode:
+          type: string
+          enum: [initial, boundary_frame, motion_preroll, tail_reference_video, sampler_state]
+          description: >-
+            `initial` — the first segment, which has no predecessor.
+            `boundary_frame` — the predecessor's final frame as the anchor.
+            The remaining modes are per-architecture capabilities and are only
+            valid when the architecture advertises them.
+          example: "boundary_frame"
+        frames:
+          type: integer
+          nullable: true
+          minimum: 0
+          description: >-
+            Context length in frames for modes that take one (pre-roll length,
+            tail reference-video window). Null for `initial`/`boundary_frame`.
+          example: null
+        source_segment_index:
+          type: integer
+          nullable: true
+          minimum: 0
+          description: Segment the context is taken from. Null for `initial`.
+          example: 0
+
+    VideoChainSegment:
+      type: object
+      description: >-
+        One model invocation. `generated_span_frames` includes the shared
+        anchor frame, which is the same instant as the previous segment's last
+        frame, so this segment adds `generated_span_frames - 1` new frames.
+        Ownership is half-open `[owned_start_frame, owned_end_frame)`.
+      required:
+        - index
+        - anchor_global_frame
+        - owned_start_frame
+        - owned_end_frame
+        - generated_span_frames
+        - prompt
+        - seed
+        - visual_context
+      properties:
+        index:
+          type: integer
+          minimum: 0
+          description: Zero-based position in the chain.
+          example: 1
+        anchor_global_frame:
+          type: integer
+          nullable: true
+          minimum: 0
+          description: >-
+            Global frame that local index 0 of this segment reproduces
+            (`accumulated_frames_before - 1`). Null for segment 0, which has no
+            predecessor to share an anchor with.
+          example: 361
+        owned_start_frame:
+          type: integer
+          minimum: 0
+          description: >-
+            Inclusive first global frame this segment owns. For a continuation
+            this is `anchor_global_frame + 1` — the shared anchor is owned by
+            the previous segment, so a boundary action is never assigned twice.
+          example: 362
+        owned_end_frame:
+          type: integer
+          minimum: 0
+          description: Exclusive last global frame this segment owns.
+          example: 723
+        generated_span_frames:
+          type: integer
+          minimum: 1
+          description: >-
+            Frames this invocation asks the model for, including the shared
+            anchor. Snapped to the architecture's frame grid.
+          example: 362
+        prompt:
+          type: string
+          description: >-
+            The compiled prompt actually sent for this segment: persistent
+            context, incoming state, owned events, outgoing state, and this
+            segment's own soundscape, with timestamps rebased so that local
+            time zero is the shared anchor.
+          example: "[Shot 1] The woman reaches the window and pushes it open. ..."
+        negative_prompt:
+          type: string
+          description: Negative prompt for this segment (usually the root value).
+          example: ""
+        incoming_state:
+          allOf:
+            - $ref: '#/components/schemas/VideoChainSegmentState'
+          description: State already established when the segment begins.
+        outgoing_state:
+          allOf:
+            - $ref: '#/components/schemas/VideoChainSegmentState'
+          description: State that must hold at the segment's end.
+        owned_event_ids:
+          type: array
+          items:
+            type: string
+          description: Events this segment performs, once. Every event has exactly one owner.
+          example: ["ev_3", "ev_4"]
+        reference_ids:
+          type: array
+          items:
+            type: string
+          description: >-
+            Read-only inverse of `references[].segment_indices`, in the order
+            the backend adapter passes them to the model. Prompt reference
+            tokens are renumbered to match this order.
+          example: ["ref_0"]
+        seed:
+          type: integer
+          description: >-
+            Concrete seed frozen at plan time. Never -1 in a manifest and never
+            re-drawn at generation time.
+          example: 1234567890
+        visual_context:
+          $ref: '#/components/schemas/VideoChainVisualContext'
+        continuation_state_in:
+          type: string
+          nullable: true
+          default: null
+          description: >-
+            Opaque server-side id of the sampler state imported at the start of
+            this segment. Always null in Phase A (no continuation-state
+            artifacts exist yet); reserved so the manifest shape does not change
+            when they do.
+          example: null
+        continuation_state_out:
+          type: string
+          nullable: true
+          default: null
+          description: >-
+            Opaque server-side id of the sampler state captured at the end of
+            this segment. Always null in Phase A.
+          example: null
+        requested_overlap_frames:
+          type: integer
+          minimum: 0
+          default: 0
+          description: >-
+            Shared frames requested between this segment and its predecessor.
+            0 = the single shared anchor frame.
+          example: 0
+        effective_overlap_frames:
+          type: integer
+          minimum: 0
+          description: >-
+            Authoritative overlap after snapping to the video VAE's temporal
+            group. This value, not the requested one, is used in frame
+            arithmetic.
+          example: 0
+        effective_overlap_samples:
+          type: integer
+          minimum: 0
+          description: >-
+            Authoritative audio overlap in samples, matching
+            `effective_overlap_frames` in physical time so rounding does not
+            accumulate across segments.
+          example: 0
+
+    VideoChainManifest:
+      type: object
+      description: >-
+        The complete, immutable plan for one chain. Fixed before generation
+        starts; queued items read from it and never mutate it. Frame ranges are
+        half-open and expressed in integer frames — seconds are display-only.
+      required:
+        - manifest_version
+        - chain_id
+        - plan_hash
+        - architecture
+        - root_prompt
+        - root_prompt_hash
+        - fps
+        - target_frames
+        - expected_final_frames
+        - context_mode
+        - continuation_mode
+        - seed_policy
+        - segments
+      properties:
+        manifest_version:
+          type: integer
+          minimum: 1
+          default: 1
+          description: Manifest schema version. A client holding an older version must re-plan.
+          example: 1
+        chain_id:
+          type: string
+          format: uuid
+          description: Identifier for this chain, recorded on every generated segment.
+          example: "1f0d2a6e-9a1b-4f0e-9f2c-2a7f0f1c33b4"
+        plan_hash:
+          type: string
+          description: >-
+            sha256 over the canonical form of this manifest, excluding
+            `plan_hash`, `warnings` and run-time-written fields. Computed by one
+            backend function; clients display it and never recompute it.
+          example: "8f14e45fceea167a5a36dedd4bea2543f1c1b7c8f1d1a0e4c1a0b7f3d2e5a6b7"
+        architecture:
+          type: string
+          description: Architecture the plan was computed for.
+          example: "minimax_h3"
+        variant:
+          type: string
+          nullable: true
+          description: Loaded variant, which decides the available continuation modes.
+          example: "fl2va"
+        root_prompt:
+          type: string
+          description: >-
+            The user's original full-length prompt. Kept for provenance; never
+            sent verbatim to a segment unless `context_mode` is `legacy_repeat`.
+          example: "A woman stands up, walks to the window, opens it and looks outside..."
+        root_prompt_hash:
+          type: string
+          description: sha256 of `root_prompt`, so gallery rows can reference it without copying it.
+          example: "c2b7d0f1a3e4c5b6a7981f0e2d3c4b5a69788796a5b4c3d2e1f0a9b8c7d6e5f4"
+        fps:
+          type: number
+          format: float
+          minimum: 1
+          maximum: 240
+          description: Frame rate the frame/second conversions in this plan assume.
+          example: 24.0
+        target_frames:
+          type: integer
+          minimum: 1
+          description: Final length the user asked for, before grid snapping.
+          example: 1000
+        expected_final_frames:
+          type: integer
+          minimum: 1
+          description: >-
+            Length the chain will actually produce after grid snapping and
+            shared-anchor de-duplication. May exceed `target_frames`.
+          example: 1016
+        context_mode:
+          type: string
+          enum: [timeline, manual, legacy_repeat]
+          default: timeline
+          description: How segment prompts were produced.
+          example: "timeline"
+        continuation_mode:
+          type: string
+          enum: [boundary_frame, motion_preroll, tail_reference_video, sampler_state]
+          default: boundary_frame
+          description: >-
+            What each continuation receives from its predecessor. Only
+            `boundary_frame` is implemented today; the others require an
+            explicit architecture capability.
+          example: "boundary_frame"
+        seed_policy:
+          type: string
+          enum: [fixed, derived, explicit]
+          default: fixed
+          description: >-
+            How `segments[].seed` was assigned. `fixed` reuses the root seed
+            everywhere (today's behaviour, and what keeps a text-only A/B
+            honest); `derived` hashes root seed, plan hash and segment index;
+            `explicit` takes per-segment values from the editor.
+          example: "fixed"
+        root_seed:
+          type: integer
+          description: >-
+            The resolved root seed. A requested -1 is drawn once during planning
+            and frozen here.
+          example: 1234567890
+        chain_drift_tolerance_frames:
+          type: integer
+          minimum: 0
+          default: 12
+          description: >-
+            Allowed divergence between planned and actual accumulated frames
+            before the chain pauses for a user decision. Exceeding it never
+            silently continues.
+          example: 12
+        persistent_context:
+          $ref: '#/components/schemas/VideoChainPersistentContext'
+        references:
+          type: array
+          items:
+            $ref: '#/components/schemas/VideoChainReference'
+          description: Reference inventory and its many-to-many segment binding. Authoritative.
+        events:
+          type: array
+          items:
+            $ref: '#/components/schemas/VideoChainEvent'
+          description: Canonical timeline. Empty under `legacy_repeat`.
+        segments:
+          type: array
+          items:
+            $ref: '#/components/schemas/VideoChainSegment'
+          description: Segments in execution order.
+        warnings:
+          type: array
+          items:
+            $ref: '#/components/schemas/VideoChainIssue'
+          description: Advisory findings. Excluded from `plan_hash`.
+
+    VideoChainPlanRequest:
+      type: object
+      description: >-
+        Input to the planner. Carries no media: references are described by
+        kind and label only.
+      required: [architecture, root_prompt, target_frames]
+      properties:
+        architecture:
+          type: string
+          description: >-
+            Architecture to plan for; must match the loaded model. Decides the
+            frame grid, the maximum segment span and the legal continuation
+            modes.
+          example: "minimax_h3"
+        variant:
+          type: string
+          nullable: true
+          default: null
+          description: Loaded variant (e.g. MiniMax-H3 `fl2va` / `ref2va` / `ia2v`).
+          example: "fl2va"
+        root_prompt:
+          type: string
+          description: The user's full-length prompt for the whole clip.
+          example: "A woman stands up, walks to the window, opens it and looks outside..."
+        negative_prompt:
+          type: string
+          default: ""
+          description: Negative prompt applied to every segment.
+          example: ""
+        workflow:
+          type: string
+          nullable: true
+          default: null
+          description: >-
+            Architecture-specific prompt workflow (e.g. MiniMax-H3 `base` vs
+            full-reference). Null uses the loaded variant's default.
+          example: "base"
+        target_frames:
+          type: integer
+          minimum: 1
+          description: >-
+            Desired final length in frames. The plan may overshoot this to land
+            on the architecture's frame grid.
+          example: 1000
+        fps:
+          type: number
+          format: float
+          minimum: 1
+          maximum: 240
+          default: 24.0
+          description: Frame rate used for frame/second conversions.
+          example: 24.0
+        requested_segment_frames:
+          type: integer
+          nullable: true
+          minimum: 1
+          default: null
+          description: >-
+            Preferred per-invocation span, including the shared anchor. Null
+            uses the architecture's own maximum. Snapped up to the frame grid.
+          example: 362
+        context_mode:
+          type: string
+          enum: [timeline, manual, legacy_repeat]
+          default: timeline
+          description: >-
+            How to turn the root prompt into segment prompts. `timeline` is the
+            default for a structurally parsable prompt. For free-form prose the
+            planner refuses to choose and returns a 400 asking the caller to
+            pick — it never silently falls back to `legacy_repeat`. `manual`
+            requires `canonical_timeline`.
+          example: "timeline"
+        seed_policy:
+          type: string
+          enum: [fixed, derived, explicit]
+          default: fixed
+          description: >-
+            Per-segment seeding. `fixed` (default) reuses the root seed
+            everywhere, matching today's behaviour; `derived` and `explicit` are
+            opt-in.
+          example: "fixed"
+        root_seed:
+          type: integer
+          minimum: -1
+          default: -1
+          description: >-
+            Root seed. -1 draws a real seed once during planning and freezes it
+            in the manifest, so a re-run of the same plan is reproducible.
+          example: -1
+        continuation_mode:
+          type: string
+          enum: [boundary_frame, motion_preroll, tail_reference_video, sampler_state]
+          default: boundary_frame
+          description: >-
+            Requested continuation context. A mode the architecture does not
+            advertise is a 400, never a downgrade.
+          example: "boundary_frame"
+        requested_overlap_frames:
+          type: integer
+          minimum: 0
+          default: 0
+          description: >-
+            Requested shared frames between neighbouring segments. 0 = the
+            single shared anchor frame. The response's
+            `effective_overlap_frames` is authoritative.
+          example: 0
+        chain_drift_tolerance_frames:
+          type: integer
+          minimum: 0
+          maximum: 240
+          default: 12
+          description: >-
+            Allowed planned-vs-actual accumulated-frame divergence before the
+            chain pauses. In frames, so it does not depend on `fps`.
+          example: 12
+        references:
+          type: array
+          default: []
+          items:
+            $ref: '#/components/schemas/VideoChainReferenceInput'
+          description: >-
+            Reference inventory (kind and label only). Entries without
+            `segment_indices` bind to every segment.
+        canonical_timeline:
+          type: object
+          nullable: true
+          default: null
+          description: >-
+            Caller-supplied timeline, required when `context_mode` is `manual`
+            and ignored otherwise. Same shape the planner would have produced.
+          properties:
+            persistent_context:
+              $ref: '#/components/schemas/VideoChainPersistentContext'
+            events:
+              type: array
+              items:
+                $ref: '#/components/schemas/VideoChainEvent'
+              description: Events in global frames, each owned by exactly one segment after planning.
+
+    VideoChainSegmentPreview:
+      type: object
+      description: >-
+        Flattened per-segment view for the plan editor, so a client can render
+        the segment list without walking the manifest.
+      required: [index, prompt, global_frame_start, global_frame_end, generated_span_frames]
+      properties:
+        index:
+          type: integer
+          minimum: 0
+          description: Segment index.
+          example: 1
+        prompt:
+          type: string
+          description: Compiled prompt for this segment.
+          example: "[Shot 1] The woman reaches the window and pushes it open. ..."
+        negative_prompt:
+          type: string
+          description: Negative prompt for this segment.
+          example: ""
+        global_frame_start:
+          type: integer
+          minimum: 0
+          description: Inclusive first owned global frame.
+          example: 362
+        global_frame_end:
+          type: integer
+          minimum: 0
+          description: Exclusive last owned global frame.
+          example: 723
+        generated_span_frames:
+          type: integer
+          minimum: 1
+          description: Frames requested from the model, including the shared anchor.
+          example: 362
+        new_output_frames:
+          type: integer
+          minimum: 0
+          description: Frames this segment adds (`generated_span_frames - 1` for a continuation).
+          example: 361
+        reference_count:
+          type: integer
+          minimum: 0
+          description: >-
+            References bound to this segment. Shown because reference rows are
+            carried through every denoise step, so this is a cost as well as a
+            quality knob.
+          example: 1
+        seed:
+          type: integer
+          description: Frozen seed for this segment.
+          example: 1234567890
+
+    VideoChainFramePlan:
+      type: object
+      description: Frame arithmetic after grid snapping, summarised for display.
+      required: [target_frames, expected_final_frames, overshoot_frames, segment_frames]
+      properties:
+        target_frames:
+          type: integer
+          minimum: 1
+          description: Requested final length.
+          example: 1000
+        expected_final_frames:
+          type: integer
+          minimum: 1
+          description: Final length after snapping and shared-anchor de-duplication.
+          example: 1016
+        overshoot_frames:
+          type: integer
+          description: >-
+            `expected_final_frames - target_frames`. Positive when the frame
+            grid forces a longer clip than requested.
+          example: 16
+        segment_frames:
+          type: array
+          items:
+            type: integer
+            minimum: 1
+          description: Per-segment `generated_span_frames`, in order.
+          example: [362, 362, 294]
+        frame_grid:
+          type: string
+          nullable: true
+          description: >-
+            Human-readable description of the architecture's legal span lengths,
+            for explaining the overshoot.
+          example: "17n+5, capped at 362"
+
+    VideoChainPlanResponse:
+      type: object
+      description: >-
+        Planner output. `success: false` with populated `errors` is a normal
+        200: content problems belong next to the offending segment in the
+        editor, not in an HTTP status.
+      required: [success, manifest, segments, frame_plan, errors, warnings, plan_schema_version]
+      properties:
+        success:
+          type: boolean
+          description: True when the plan has no hard errors and may be started.
+          example: true
+        manifest:
+          $ref: '#/components/schemas/VideoChainManifest'
+        segments:
+          type: array
+          items:
+            $ref: '#/components/schemas/VideoChainSegmentPreview'
+          description: Per-segment prompt previews in execution order.
+        frame_plan:
+          $ref: '#/components/schemas/VideoChainFramePlan'
+        errors:
+          type: array
+          items:
+            $ref: '#/components/schemas/VideoChainIssue'
+          description: Hard errors. Non-empty means the chain must not start.
+        warnings:
+          type: array
+          items:
+            $ref: '#/components/schemas/VideoChainIssue'
+          description: Advisory findings (grid overshoot, unused reference, unreferenced segment).
+        plan_schema_version:
+          type: integer
+          minimum: 1
+          description: Version of the planner's request/response contract.
+          example: 1
+        planner_cache_key:
+          type: string
+          nullable: true
+          description: >-
+            Cache key for the timeline-extraction step, so an unchanged root
+            prompt and settings can reuse the previous extraction. Null when no
+            extraction was needed (the deterministic path) or nothing was
+            cached.
+          example: "h3-timeline:v1:9f2c1a...:8f14e4"
+
+    VideoChainValidateRequest:
+      type: object
+      description: Re-validate a manifest the user edited in the plan editor.
+      required: [manifest]
+      properties:
+        manifest:
+          allOf:
+            - $ref: '#/components/schemas/VideoChainManifest'
+          description: The edited manifest, in the shape `/video-chain/plan` returned.
+        recompute_plan_hash:
+          type: boolean
+          default: true
+          description: >-
+            Recompute `plan_hash` over the edited manifest and return it. The
+            backend is the only implementation of this hash.
+          example: true
+
+    VideoChainValidateResponse:
+      type: object
+      description: Validation result for an edited manifest.
+      required: [valid, errors, warnings]
+      properties:
+        valid:
+          type: boolean
+          description: True when `errors` is empty; the editor gates "Start chain" on this.
+          example: true
+        errors:
+          type: array
+          items:
+            $ref: '#/components/schemas/VideoChainIssue'
+          description: >-
+            Hard errors: an event owned by no segment or by more than one, a
+            timestamp outside its segment's span, a reference token for a
+            reference not bound to that segment, or a mismatch between
+            `references[].segment_indices` and `segments[].reference_ids`.
+        warnings:
+          type: array
+          items:
+            $ref: '#/components/schemas/VideoChainIssue'
+          description: >-
+            Advisory findings, e.g. a reference bound to no segment at all, or a
+            segment left with no references on a variant whose identity
+            retention depends on them.
+        plan_hash:
+          type: string
+          nullable: true
+          description: >-
+            Hash of the edited manifest when `recompute_plan_hash` is true, else
+            null. This is the value recorded as provenance on generated segments.
+          example: "8f14e45fceea167a5a36dedd4bea2543f1c1b7c8f1d1a0e4c1a0b7f3d2e5a6b7"
+        manifest:
+          allOf:
+            - $ref: '#/components/schemas/VideoChainManifest'
+          nullable: true
+          description: >-
+            The normalized manifest (derived fields such as
+            `segments[].reference_ids` recomputed) when validation succeeded,
+            else null.
 
     ControlNetInfo:
       type: object

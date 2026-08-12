@@ -90,6 +90,33 @@ def init_db():
                 inside_root = False
             if inside_root and target != staging_root:
                 shutil.rmtree(target, ignore_errors=True)
+
+        # The above only cleans staging directories that made it far enough
+        # to have a DB row (`StudioRenderJob.input_dir`). A backend restart
+        # (or crash) DURING `prepare_render_inputs()` -- before that row is
+        # inserted -- leaves its `cache/studio_render_jobs/<job_id>/`
+        # directory (up to `max_total_input_bytes`, 4 GiB) with no row
+        # pointing at it, so nothing above ever finds it. Sweep the staging
+        # root directly and remove any per-job directory that isn't backed
+        # by a row in ANY state (not just the interrupted ones just failed),
+        # since a job that finished normally already had its own staging
+        # directory removed by `_render_worker`'s `finally` block -- any
+        # directory still present at this point, backed or not, is either
+        # this leak or (for a backed one) a second restart landing between
+        # this recovery pass and that `finally` running, which is harmless
+        # to leave for the next restart to catch.
+        if os.path.isdir(staging_root):
+            known_job_ids = {
+                row[0] for row in gallery_db.query(StudioRenderJob.id).all()
+            }
+            for entry in os.listdir(staging_root):
+                if entry in known_job_ids:
+                    continue
+                orphan = os.path.join(staging_root, entry)
+                if os.path.realpath(orphan) == staging_root:
+                    continue
+                if os.path.isdir(orphan):
+                    shutil.rmtree(orphan, ignore_errors=True)
     except Exception as exc:
         gallery_db.rollback()
         print(f"[Database] Studio render recovery warning: {exc}")

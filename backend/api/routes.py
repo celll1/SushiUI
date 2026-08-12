@@ -99,6 +99,7 @@ from api.studio_render_jobs import (
     StudioRenderValidationError,
     get_render_job,
     prepare_render_inputs,
+    reap_stale_render_jobs,
     render_submission_lock,
     request_cancel_render_job,
     submit_render_job,
@@ -581,22 +582,48 @@ async def create_studio_render_job(
     except (TypeError, json.JSONDecodeError) as exc:
         raise HTTPException(status_code=422, detail="manifest must contain valid JSON") from exc
 
-    async with render_submission_lock:
-        busy = db.query(StudioRenderJob).filter(
+    def _busy_job() -> Optional[StudioRenderJob]:
+        # Reclaim any `running`/`cancel_requested` row this process has no
+        # backing subprocess for before deciding whether the single render
+        # slot is actually occupied -- otherwise a stale row from the race
+        # this endpoint used to have (see H2 in the Studio render audit)
+        # would reject every future submission until the backend restarts.
+        reap_stale_render_jobs(db)
+        return db.query(StudioRenderJob).filter(
             StudioRenderJob.state.in_(["queued", "running", "cancel_requested"])
         ).first()
-        if busy:
+
+    # The lock only guards the single-active-job invariant: the busy check
+    # and the row insert/commit that claims a slot. Staging/probing a
+    # submission (`prepare_render_inputs`) runs OUTSIDE the lock and off the
+    # event loop -- it can copy up to 4 GiB of Gallery media and run
+    # `ffprobe` once per asset, and holding an `asyncio.Lock` across that
+    # would block every OTHER submission's busy check (and this request's
+    # own eventual cancel) for as long as staging takes, on top of the
+    # blocking-I/O problem `prepare_render_inputs` itself now solves.
+    #
+    # Because the slot is not reserved before staging, two concurrent
+    # submissions can both pass this check and both stage in parallel; only
+    # one of them wins the final commit below and the loser's staged files
+    # are discarded via `cleanup_render_staging`. That is strictly better
+    # than serializing every submission's expensive I/O behind a global
+    # lock to prevent a race that, at worst, wastes disk I/O once.
+    async with render_submission_lock:
+        if _busy_job():
             raise HTTPException(status_code=409, detail="Another Studio render is already queued or running")
 
-        job_id = uuid.uuid4().hex
-        try:
-            canonical, staging_dir = await prepare_render_inputs(
-                parsed_manifest,
-                asset_ids,
-                asset_files,
-                db,
-                job_id,
-            )
+    job_id = uuid.uuid4().hex
+    try:
+        canonical, staging_dir = await prepare_render_inputs(
+            parsed_manifest,
+            asset_ids,
+            asset_files,
+            db,
+            job_id,
+        )
+        async with render_submission_lock:
+            if _busy_job():
+                raise HTTPException(status_code=409, detail="Another Studio render is already queued or running")
             job = StudioRenderJob(
                 id=job_id,
                 state="queued",
@@ -610,19 +637,22 @@ async def create_studio_render_job(
             db.refresh(job)
             submit_render_job(job_id)
             return {"success": True, **job.to_dict()}
-        except StudioRenderValidationError as exc:
-            from api.studio_render_jobs import cleanup_render_staging
-            cleanup_render_staging(job_id)
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        except Exception as exc:
-            db.rollback()
-            queued_job = db.query(StudioRenderJob).filter(StudioRenderJob.id == job_id).first()
-            if queued_job:
-                db.delete(queued_job)
-                db.commit()
-            from api.studio_render_jobs import cleanup_render_staging
-            cleanup_render_staging(job_id)
-            raise HTTPException(status_code=503, detail="Could not queue Studio render") from exc
+    except StudioRenderValidationError as exc:
+        db.rollback()
+        from api.studio_render_jobs import cleanup_render_staging
+        cleanup_render_staging(job_id)
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except HTTPException:
+        db.rollback()
+        from api.studio_render_jobs import cleanup_render_staging
+        cleanup_render_staging(job_id)
+        raise
+    except Exception as exc:
+        db.rollback()
+        from api.studio_render_jobs import cleanup_render_staging
+        cleanup_render_staging(job_id)
+        print(f"[StudioRender] failed to queue job {job_id}: {exc!r}")
+        raise HTTPException(status_code=500, detail="Could not queue Studio render") from exc
 
 
 @router.get("/studio/render-jobs/{job_id}", tags=["studio"])

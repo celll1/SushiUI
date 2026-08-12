@@ -1000,6 +1000,30 @@ STUDIO_RENDER_DEFAULTS: Dict[str, Any] = {
     "max_upload_bytes": 2 * 1024 * 1024 * 1024,
     "max_total_input_bytes": 4 * 1024 * 1024 * 1024,
     "max_decode_pixel_frames": 20_000_000_000,
+    # Bounds total OUTPUT work (`canvas width * height * timeline duration
+    # frames`), independent of `max_decode_pixel_frames`, which only bounds
+    # INPUT pixel-frames actually read from source assets. Before this
+    # existed, a small still image held for a long duration on a large
+    # canvas (e.g. one 320x240 image held for the full 600s duration limit
+    # at 120fps on an 8192x8192 canvas) passed the decode budget while the
+    # requested OUTPUT was ~120x larger than that budget -- an encode job an
+    # order of magnitude past what `max_render_seconds` was sized for.
+    # Deliberately the same order of magnitude as `max_decode_pixel_frames`:
+    # decode and encode cost the same class of work per pixel-frame, so a
+    # single shared ceiling is the simplest symmetric policy and keeps a
+    # request that already respects the input budget from being rejected
+    # for output reasons in the common case (few, short, native-resolution
+    # clips at canvas resolution).
+    "max_output_pixel_frames": 20_000_000_000,
+    # Internal disk-space safety margin, NOT a claimed/measured encode
+    # bitrate: `prepare_render_inputs()` multiplies this by the requested
+    # output's pixel-frame count to reserve extra free disk space for the
+    # rendered file before staging begins, so a submission that would leave
+    # the render with nowhere to write its output fails fast instead of
+    # filling the disk mid-encode. Chosen as an order-of-magnitude upper
+    # bound for libx264 "medium" output at typical Studio-render bitrates,
+    # not a benchmarked value.
+    "output_bytes_per_pixel_frame": 0.02,
     "max_render_seconds": 1800.0,
 }
 

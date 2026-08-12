@@ -13,13 +13,14 @@ import sys
 import json
 import time
 import subprocess
+import uuid
 from PIL import Image
 import io
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 
 from database import get_gallery_db, get_datasets_db, get_training_db, get_db  # Legacy
-from database.models import GeneratedImage, UserSettings, Dataset, DatasetItem, DatasetCaption, TagDictionary, TrainingRun, TrainingCheckpoint, TrainingSample, TrainingPreset, TaggerTrainingRun, TaggerTrainingMetrics
+from database.models import GeneratedImage, StudioRenderJob, UserSettings, Dataset, DatasetItem, DatasetCaption, TagDictionary, TrainingRun, TrainingCheckpoint, TrainingSample, TrainingPreset, TaggerTrainingRun, TaggerTrainingMetrics
 from core.pipeline import pipeline_manager
 from core.utils.taesd import taesd_manager
 from core.extensions.lora_manager import lora_manager, LoRAAmbiguousIdentifierError
@@ -53,7 +54,7 @@ from api.param_defaults import (
     VIDEO_GEN_ARCH_OVERLAYS,
     OUTPAINT_VIDEO_ARCH_OVERLAYS,
     INPAINT_VIDEO_ARCH_OVERLAYS,
-    PROMPT_ASSIST_DEFAULTS,
+    PROMPT_ASSIST_DEFAULTS, STUDIO_RENDER_DEFAULTS,
     PARAM_BOUNDS,
     video_defaults_for_arch,
 )
@@ -93,6 +94,13 @@ from core.extensions.minimax_h3_prompt_assistant import (
     build_template as build_h3_prompt_template,
     MiniMaxH3PromptAssistant,
     validate_prompt as validate_h3_prompt,
+)
+from api.studio_render_jobs import (
+    StudioRenderValidationError,
+    get_render_job,
+    prepare_render_inputs,
+    request_cancel_render_job,
+    submit_render_job,
 )
 
 router = APIRouter()
@@ -544,6 +552,7 @@ async def get_generation_defaults():
         "txt2aud": TXT2AUD_DEFAULTS,
         "aud2aud": AUD2AUD_DEFAULTS,
         "outpaint_aud": OUTPAINT_AUDIO_DEFAULTS,
+        "studio_render": STUDIO_RENDER_DEFAULTS,
         # User-overridable slider/number-input UPPER BOUNDS registry (see
         # param_defaults.py's PARAM_BOUNDS docstring for the eligibility rule).
         # Consumed by frontend/src/utils/paramBounds.ts's resolveBound() and
@@ -551,6 +560,81 @@ async def get_generation_defaults():
         # per entry -- never hardcoded on the frontend.
         "param_bounds": PARAM_BOUNDS,
     }
+
+
+@router.post("/studio/render-jobs", status_code=202, tags=["studio"])
+async def create_studio_render_job(
+    manifest: str = Form(..., description="Frame-based Studio render manifest JSON"),
+    asset_ids: Optional[List[str]] = Form(None, description="IDs corresponding positionally to asset_files"),
+    asset_files: Optional[List[UploadFile]] = File(None, description="Non-Gallery Studio media, keyed by asset_ids"),
+    db: Session = Depends(get_gallery_db),
+):
+    """Queue a complete Studio timeline render.
+
+    Gallery assets are identified by their Gallery id in the manifest. Assets
+    imported in the browser are uploaded as multipart files and staged before
+    the worker starts; URLs and filesystem paths are deliberately ignored.
+    """
+    try:
+        parsed_manifest = json.loads(manifest)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=422, detail="manifest must contain valid JSON") from exc
+
+    busy = db.query(StudioRenderJob).filter(
+        StudioRenderJob.state.in_(["queued", "running", "cancel_requested"])
+    ).first()
+    if busy:
+        raise HTTPException(status_code=409, detail="Another Studio render is already queued or running")
+
+    job_id = uuid.uuid4().hex
+    try:
+        canonical, staging_dir = await prepare_render_inputs(
+            parsed_manifest,
+            asset_ids,
+            asset_files,
+            db,
+            job_id,
+        )
+        job = StudioRenderJob(
+            id=job_id,
+            state="queued",
+            manifest=canonical,
+            input_dir=staging_dir,
+            progress=0.0,
+            message="Queued",
+        )
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+        submit_render_job(job_id)
+        return {"success": True, **job.to_dict()}
+    except StudioRenderValidationError as exc:
+        from api.studio_render_jobs import cleanup_render_staging
+        cleanup_render_staging(job_id)
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        db.rollback()
+        from api.studio_render_jobs import cleanup_render_staging
+        cleanup_render_staging(job_id)
+        raise HTTPException(status_code=503, detail="Could not queue Studio render") from exc
+
+
+@router.get("/studio/render-jobs/{job_id}", tags=["studio"])
+async def get_studio_render_job(job_id: str, db: Session = Depends(get_gallery_db)):
+    """Return Studio render state and the normal Gallery image when complete."""
+    result = get_render_job(job_id, db)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Studio render job not found")
+    return result
+
+
+@router.delete("/studio/render-jobs/{job_id}", tags=["studio"])
+async def cancel_studio_render_job(job_id: str):
+    """Cancel a queued or running Studio render."""
+    state = request_cancel_render_job(job_id)
+    if state is None:
+        raise HTTPException(status_code=404, detail="Studio render job not found")
+    return {"success": True, "job_id": job_id, "state": state}
 
 @router.get("/schema/prompt-assist-defaults")
 async def get_prompt_assist_defaults():

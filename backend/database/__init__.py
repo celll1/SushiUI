@@ -49,7 +49,7 @@ def init_db():
         return
     _db_initialized = True
     from .models import (
-        GeneratedImage, UserSettings,  # Gallery
+        GeneratedImage, StudioRenderJob, UserSettings,  # Gallery
         Dataset, DatasetItem, DatasetCaption, TagDictionary,  # Datasets
         TrainingRun, TrainingCheckpoint, TrainingSample,  # Training
         TaggerTrainingRun, TaggerTrainingMetrics  # Tagger Training
@@ -60,6 +60,27 @@ def init_db():
     # Create tables for each database
     print("[Database] Initializing gallery.db...")
     GalleryBase.metadata.create_all(bind=gallery_engine)
+
+    # A server restart must not leave a render job looking active forever.
+    # Queued jobs are safe to resume only after their staging directory has
+    # been revalidated, so both transient states are surfaced as interrupted.
+    gallery_db = GallerySessionLocal()
+    try:
+        from datetime import datetime
+        interrupted = gallery_db.query(StudioRenderJob).filter(
+            StudioRenderJob.state.in_(["queued", "running", "cancel_requested"])
+        ).all()
+        for job in interrupted:
+            job.state = "failed"
+            job.error = "Backend restarted before the Studio render completed."
+            job.finished_at = datetime.now()
+        if interrupted:
+            gallery_db.commit()
+    except Exception as exc:
+        gallery_db.rollback()
+        print(f"[Database] Studio render recovery warning: {exc}")
+    finally:
+        gallery_db.close()
 
     print("[Database] Initializing datasets.db...")
     DatasetBase.metadata.create_all(bind=datasets_engine)

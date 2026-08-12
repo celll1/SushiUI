@@ -985,6 +985,22 @@ VIDEO_GEN_DEFAULTS: Dict[str, Any] = {
 }
 
 # ---------------------------------------------------------------------------
+# Studio timeline render defaults (SSOT)
+# ---------------------------------------------------------------------------
+# These are renderer policy defaults rather than diffusion-model parameters.
+# They are still exposed through the generation-defaults schema so the Studio
+# client does not need to duplicate limits or output choices.
+STUDIO_RENDER_DEFAULTS: Dict[str, Any] = {
+    "audio_enabled": True,
+    "fit_mode": "cover",
+    "video_lossless": False,
+    "max_duration_seconds": 600.0,
+    "max_assets": 128,
+    "max_clips": 512,
+    "max_upload_bytes": 2 * 1024 * 1024 * 1024,
+}
+
+# ---------------------------------------------------------------------------
 # Per-architecture video defaults (SSOT)
 # ---------------------------------------------------------------------------
 # `VIDEO_GEN_DEFAULTS` above is LTX-2.3-shaped (768x512, 121 frames, 8 steps).

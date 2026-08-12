@@ -1234,6 +1234,22 @@ export interface GenerationSettingsResponse {
 export const fetchGenerationSettings = async (): Promise<GenerationSettingsResponse> =>
   (await api.get("/settings/generation")).data;
 
+// Persists ONE field of GenerationSettingsResponse. POST /settings/generation
+// only updates the keys present in the body (see routes.py's
+// save_generation_settings), so this does not disturb
+// inpaint_use_dedicated_model, which is saved separately by
+// GenerationSettings.tsx's own Save button.
+//
+// This is a commit-time write (call it from a NumberInput's onCommit /a
+// checkbox's onChange, never per keystroke). The caller is responsible for
+// also updating the live value the panels read (StartupContext's
+// videoFrameSliderMax / setVideoFrameSliderMax) -- this function only
+// persists to the backend.
+export const saveVideoFrameSliderMax = async (
+  value: number | null
+): Promise<GenerationSettingsResponse> =>
+  (await api.post("/settings/generation", { video_frame_slider_max: value })).data.settings;
+
 export const fetchTrainingDefaults = async (): Promise<Record<string, unknown>> =>
   (await api.get("/schema/training-defaults")).data;
 

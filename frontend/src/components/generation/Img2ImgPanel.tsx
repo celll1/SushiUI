@@ -49,6 +49,7 @@ import {
   buildChainImageReferenceInventory,
   segmentChainReferenceImages,
   segmentChainText,
+  segmentChainSeed,
   chainSegmentProvenance,
   advanceVideoChain,
   ChainAdvanceResult,
@@ -2693,6 +2694,11 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
       prompt: base.prompt,
       negative_prompt: base.negative_prompt,
     });
+    // Design §8: the manifest froze segment 0's seed at plan time (a `-1` panel
+    // seed was resolved there, once). Sending the panel's raw value would
+    // redraw a different random seed per segment. `base` is the very params
+    // object each branch below spreads, so this is that branch's own fallback.
+    const mainSeed = segmentChainSeed(manifest, 0, base.seed);
     const chainProvenance = {
       chainTargetFrames: targetFrames,
       chainSegmentFrames: segmentFrames,
@@ -2723,6 +2729,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
           num_frames: capFrames,
           prompt: mainText.prompt,
           negative_prompt: mainText.negative_prompt,
+          seed: mainSeed,
           ...segmentProvenance,
         } as any,
         references: { ...references, images: mainReferenceImages ?? [] },
@@ -2740,6 +2747,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
           num_frames: capFrames,
           prompt: mainText.prompt,
           negative_prompt: mainText.negative_prompt,
+          seed: mainSeed,
           input_audio: (supportsAudioConditioning && inputAudioTrack) ? inputAudioTrack : null,
           ...segmentProvenance,
         } as any,

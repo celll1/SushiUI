@@ -41,8 +41,8 @@
 // use to inherit the previous step's output image.
 //
 // What each segment SAYS and what it is conditioned on is a different matter:
-// the Chain Manifest (POST /video-chain/plan) fixes one prompt and one
-// reference set per segment at enqueue time, and neither is ever rewritten
+// the Chain Manifest (POST /video-chain/plan) fixes one prompt, one reference
+// set and one seed per segment at enqueue time, and none of them is rewritten
 // afterwards -- the plan the user approved is what runs.
 import {
   ArchCapabilities,
@@ -210,13 +210,27 @@ export const segmentChainText = (
   };
 };
 
+// The seed THIS segment runs with. A manifest resolves `root_seed: -1` to a
+// concrete value once, at plan time, and freezes one seed per segment
+// (`resolve_segment_seeds`, design §8) -- so sending the panel's raw seed
+// instead would let the backend draw a fresh random one per segment and the
+// plan the user approved (and the seed the editor showed) would not be what
+// ran. Without a manifest the panel's own seed is sent unchanged: legacy
+// repeat keeps its pre-manifest behaviour, `-1` included.
+export const segmentChainSeed = (
+  manifest: VideoChainManifest | null | undefined,
+  segmentIndex: number,
+  fallback: number | undefined
+): number | undefined =>
+  manifest?.segments.find((s) => s.index === segmentIndex)?.seed ?? fallback;
+
 // The Txt2VidParams/Img2VidParams/Ref2VidParams -> OutpaintVideoParams
 // mapping a continuation segment sends, in ONE place (previously duplicated,
-// near-verbatim, in both Txt2ImgPanel and Img2ImgPanel). `total_frames` and
-// the segment text are what change segment to segment; everything else --
-// geometry/steps/guidance/seed AND execution/acceleration (blocks_to_swap,
-// quantization, LoRAs) -- replays the request that started the chain
-// unchanged. Segments 2..N are one clip to the user, not N
+// near-verbatim, in both Txt2ImgPanel and Img2ImgPanel). `total_frames`, the
+// segment text and the segment seed are what change segment to segment;
+// everything else -- geometry/steps/guidance AND execution/acceleration
+// (blocks_to_swap, quantization, LoRAs) -- replays the request that started
+// the chain unchanged. Segments 2..N are one clip to the user, not N
 // independent requests, so an execution setting the user picked for a real
 // reason (most concretely: block swap because the card cannot hold the model
 // resident) has to hold for every segment or a later one can OOM on the exact
@@ -267,7 +281,10 @@ export function buildChainContinuationParams(
   // This segment's provenance stamp (`chainSegmentProvenance`). Sent with the
   // request, not merely held on the queue item, so it reaches the video's
   // metadata and its gallery row.
-  provenance?: VideoChainProvenance
+  provenance?: VideoChainProvenance,
+  // This segment's frozen seed (`segmentChainSeed`). Undefined on the legacy
+  // path, where `base.seed` is sent exactly as it was before manifests existed.
+  segmentSeed?: number
 ): OutpaintVideoParams {
   return {
     ...provenance,
@@ -278,7 +295,7 @@ export function buildChainContinuationParams(
     frame_rate: base.frame_rate,
     num_inference_steps: base.num_inference_steps,
     guidance_scale: base.guidance_scale,
-    seed: base.seed,
+    seed: segmentSeed ?? base.seed,
     num_videos_per_prompt: base.num_videos_per_prompt,
     max_sequence_length: base.max_sequence_length,
     audio_enable: base.audio_enable,
@@ -423,7 +440,8 @@ export function buildChainContinuationQueueItems(args: {
         total,
         text,
         args.referenceImageSize,
-        chainSegmentProvenance(args.manifest, segmentIndex)
+        chainSegmentProvenance(args.manifest, segmentIndex),
+        segmentChainSeed(args.manifest, segmentIndex, args.continuationBase.seed)
       ),
       referenceImages: segmentChainReferenceImages(
         args.manifest,
@@ -514,8 +532,8 @@ export interface ChainAdvanceResult {
 // A no-op (`{}`, no queue mutation) for a queue item that never belonged to a
 // chain in the first place.
 //
-// It patches the next step's INPUT and length only. Prompt and references are
-// fixed at enqueue time from the manifest and are never rewritten here: the
+// It patches the next step's INPUT and length only. Prompt, references and
+// seed are fixed at enqueue time from the manifest and never rewritten here: the
 // plan the user approved is what runs, and a retry of the same manifest row
 // reproduces the same request.
 export async function advanceVideoChain(args: {

@@ -7055,6 +7055,13 @@ paths:
           implementation of this hash; clients display it and never recompute
           it.
 
+        `segments[].seed` comes back re-derived from `seed_policy`, `root_seed`
+        and the manifest's `plan_hash`, in the planner's own order: under
+        `derived` the seeds are a function of the hash, so an edit that moves
+        the hash moves them. `explicit` per-segment seeds are returned as sent,
+        and a manifest whose `root_seed` is still -1 keeps the seeds it carried
+        (an unresolved root seed is only ever drawn at plan time).
+
         **Example use cases:**
         - Gate the editor's "Start chain" button: enable it only while `valid`
           is true and `errors` is empty.

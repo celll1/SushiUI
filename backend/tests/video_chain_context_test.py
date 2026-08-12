@@ -940,6 +940,17 @@ class DriftTest(unittest.TestCase):
         self.assertTrue(evaluate_chain_drift(100, 112).within_tolerance)
         self.assertFalse(evaluate_chain_drift(100, 113).within_tolerance)
 
+    def test_module_default_matches_the_api_default(self):
+        # This module keeps its own literal so it stays import-pure and the API
+        # layer always passes the real value in; pin the two equal so changing
+        # one alone cannot split them.
+        from api.param_defaults import VIDEO_CHAIN_DEFAULTS
+
+        self.assertEqual(
+            DEFAULT_CHAIN_DRIFT_TOLERANCE_FRAMES,
+            VIDEO_CHAIN_DEFAULTS["chain_drift_tolerance_frames"],
+        )
+
     def test_negative_tolerance_is_refused(self):
         with self.assertRaises(VideoChainPlanError):
             evaluate_chain_drift(1, 1, tolerance_frames=-1)

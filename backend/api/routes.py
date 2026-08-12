@@ -18062,9 +18062,18 @@ def _video_chain_apply_requested_overlap(
     return True
 
 
-def _video_chain_refreeze(manifest: ChainManifest) -> None:
-    """Recompute `plan_hash` and the seeds derived from it, in the planner's order."""
-    manifest.plan_hash = compute_plan_hash(manifest.to_dict())
+def _video_chain_reseed(manifest: ChainManifest) -> None:
+    """Re-derive `segments[].seed` from the policy and the CURRENT `plan_hash`.
+
+    The seeds are a function of (`seed_policy`, `root_seed`, `plan_hash`); an
+    edited manifest whose seeds were carried over from before the edit is
+    internally inconsistent under the `derived` policy, and the client sends
+    `segments[].seed` as the seed each segment actually runs with.
+    """
+    if manifest.root_seed < 0:
+        # An unresolved root seed is only ever turned into a concrete value at
+        # plan time; drawing one here would make validation itself random.
+        return
     seeds = resolve_segment_seeds(
         manifest.seed_policy,
         manifest.root_seed,
@@ -18076,6 +18085,12 @@ def _video_chain_refreeze(manifest: ChainManifest) -> None:
     )
     for segment, seed in zip(manifest.segments, seeds):
         segment.seed = seed
+
+
+def _video_chain_refreeze(manifest: ChainManifest) -> None:
+    """Recompute `plan_hash` and the seeds derived from it, in the planner's order."""
+    manifest.plan_hash = compute_plan_hash(manifest.to_dict())
+    _video_chain_reseed(manifest)
 
 
 def _video_chain_geometry_only_manifest(
@@ -18450,8 +18465,13 @@ async def validate_video_chain_route(request: VideoChainValidateRequestModel):
             segment.reference_ids = segment_reference_ids(manifest.references, segment.index)
         manifest.warnings = list(warnings)
         if request.recompute_plan_hash:
-            manifest.plan_hash = compute_plan_hash(manifest.to_dict())
+            # Hash then seeds, the planner's order: `derived` seeds are a
+            # function of the hash, so recomputing one without the other hands
+            # back a manifest whose seeds no longer match its own plan.
+            _video_chain_refreeze(manifest)
             plan_hash = manifest.plan_hash
+        else:
+            _video_chain_reseed(manifest)
         wire_manifest = _video_chain_manifest_to_wire(
             manifest, request.manifest.chain_drift_tolerance_frames, warning_issues
         )

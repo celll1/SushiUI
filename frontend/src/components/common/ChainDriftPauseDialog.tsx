@@ -41,8 +41,9 @@ export default function ChainDriftPauseDialog({
             <div>drift: {pause.driftFrames} frames (tolerance {pause.toleranceFrames})</div>
           </div>
           <p className="text-xs text-gray-400">
-            Continuing sends the next segment at the plan's frame count regardless of this drift; the
-            segment prompt's own local timing is unaffected. Stopping keeps the {pause.segmentsCompleted}{" "}
+            Continuing sends the next segment with total_frames {pause.nextTotal}, derived from the
+            actual {pause.actualAccumulatedFrames} frames rather than from the plan; the segment
+            prompt's own local timing is unaffected. Stopping keeps the {pause.segmentsCompleted}{" "}
             segment(s) already completed, saved to the gallery.
           </p>
         </div>

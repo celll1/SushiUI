@@ -5309,6 +5309,14 @@ async def generate_inpaint_video(
     `regenerate` with a warning when the clip has no audio stream.
     `regenerate` generates the soundtrack for the whole clip, so the preserved
     video span carries generated audio that need not match its visuals.
+    `regenerate_range` generates the soundtrack for the whole clip unconditioned,
+    same as `regenerate`, but keeps only the span inside the regenerate range
+    from that generated track; the preserved spans outside the range are
+    spliced back in from the input clip's own audio, with a short crossfade at
+    the two boundaries. The model is never given the input audio in this mode
+    -- the audio inside the range is generated, not continued from the
+    original. It also falls back to `regenerate` with a warning when the clip
+    has no audio stream.
 
     **Spatial mask (optional).** When `spatial_mask_manifest` is supplied,
     `spatial_mask_ids` and `spatial_mask_files` must have the same length and
@@ -5366,10 +5374,11 @@ async def generate_inpaint_video(
                    "diffusion_models/minimax_h3_fl2va_pruned_fp8_scaled.safetensors.",
         )
     if inpaint_video_audio_mode is not None and inpaint_video_audio_mode not in (
-            "regenerate", "preserve_input"):
+            "regenerate", "preserve_input", "regenerate_range"):
         raise CustomValidationError(
             "Invalid inpaint_video_audio_mode",
-            detail=f"Must be 'regenerate' or 'preserve_input', got {inpaint_video_audio_mode!r}.",
+            detail=f"Must be 'regenerate', 'preserve_input' or 'regenerate_range', "
+                   f"got {inpaint_video_audio_mode!r}.",
         )
 
     _vid_arch = (pipeline_manager.current_model_info or {}).get("type")
@@ -5675,8 +5684,12 @@ async def generate_inpaint_video(
             detail=str(e),
         )
 
+    # `regenerate_range` splices the input's own audio back over the preserved
+    # spans after decode (see minimax_h3.py's mode branch), so it needs the
+    # same raw track `preserve_input` pins as conditioning -- just not fed to
+    # the model.
     input_audio = None
-    if inpaint_video_audio_mode == "preserve_input":
+    if inpaint_video_audio_mode in ("preserve_input", "regenerate_range"):
         input_audio = extract_audio_stream(video_data)
 
     params = {

@@ -1246,6 +1246,16 @@ paths:
         - `regenerate`: the audio rows are generated for the whole clip, so the
           preserved video span carries generated audio that need not match its
           visuals.
+        - `regenerate_range`: the audio rows are generated unconditioned for
+          the whole clip, same as `regenerate`, but only the audio inside the
+          regenerate range is kept from that generated track. The audio
+          outside the range is the input clip's own track, spliced back in
+          after decode with a short crossfade at the two boundaries. This is
+          an output-level splice, not a conditioning mechanism: the model is
+          never given the input audio in this mode, so the audio inside the
+          range is generated from scratch, not continued from the original.
+          Falls back to `regenerate`, with a warning, when the uploaded clip
+          has no audio stream.
 
         **Spatial mask (optional).** Supply `spatial_mask_manifest` together
         with repeated `spatial_mask_ids` and `spatial_mask_files` to generate
@@ -9574,7 +9584,7 @@ components:
           example: 0
         inpaint_video_audio_mode:
           type: string
-          enum: [regenerate, preserve_input]
+          enum: [regenerate, preserve_input, regenerate_range]
           default: regenerate
           description: |
             "preserve_input": pin the clip's own track as conditioning across
@@ -9584,6 +9594,14 @@ components:
             "regenerate": generate the soundtrack for the whole clip, so the
             preserved video span carries generated audio that need not match its
             visuals. Only relevant when audio_enable is true.
+            "regenerate_range": generate the soundtrack for the whole clip
+            unconditioned, same as "regenerate", but keep only the span inside
+            the regenerate range from that generated track; the preserved spans
+            outside the range are spliced back in from the input clip's own
+            audio, with a short crossfade at the two boundaries. The model is
+            never given the input audio in this mode -- the audio inside the
+            range is generated, not continued from the original. Falls back to
+            "regenerate" (with a warning) when the clip has no audio stream.
 
             PER-ARCHITECTURE DEFAULT. The `default: regenerate` above is the
             architecture-neutral base value; MiniMax-H3 resolves to

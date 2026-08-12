@@ -766,7 +766,7 @@ export interface InpaintVideoParams {
   input_trim_end_frames?: number;
   // Omit to take the LOADED ARCHITECTURE's default ("preserve_input" on
   // MiniMax-H3); resolve it client-side with `inpaintVideoDefaultsForArch`.
-  inpaint_video_audio_mode?: "regenerate" | "preserve_input";
+  inpaint_video_audio_mode?: "regenerate" | "preserve_input" | "regenerate_range";
   // Optional spatial mask timeline. Referenced PNG assets are uploaded
   // separately by generateInpaintVideo.
   spatial_mask_manifest?: string;

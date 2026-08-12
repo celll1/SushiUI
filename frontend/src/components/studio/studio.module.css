@@ -592,7 +592,7 @@
   .inputActions button,
   .addReferenceButton { min-height: 40px; }
   .referenceList button { min-height: 40px; }
-  .settingsGrid { gap: 10px; }
+  .settingsGrid { grid-template-columns: 1fr 1fr; gap: 10px; }
   .settingsGrid input,
   .settingsGrid select,
   .inspectorFields input { height: 42px; font-size: 13px; }

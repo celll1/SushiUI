@@ -107,6 +107,8 @@
 .projectImportButton { display: inline-flex; align-items: center; gap: 5px; padding: 7px 9px; color: #b8addf; border: 1px solid #443776; border-radius: 5px; background: rgba(124, 92, 255, .08); }
 .exportButton { display: inline-flex; align-items: center; gap: 7px; padding: 8px 16px; color: white; font-weight: 700; border: 0; border-radius: 6px; background: linear-gradient(135deg, #6c4ee8, #825cf0); box-shadow: 0 5px 18px rgba(108, 78, 232, .25); }
 .exportButton:hover { filter: brightness(1.12); }
+.renderButton { display: inline-flex; align-items: center; gap: 7px; padding: 8px 12px; color: white; font-weight: 700; border: 1px solid #35c9ed; border-radius: 6px; background: rgba(53, 201, 237, .16); }
+.cancelRenderButton { padding: 8px 9px; color: #f0aaaa; border: 1px solid #633940; border-radius: 6px; background: transparent; }
 
 .workbench {
   flex: 1;
@@ -207,6 +209,7 @@
 .toolbarDivider { width: 1px; height: 19px; margin: 0 4px; background: var(--border); }
 .zoomControls { gap: 6px; color: #748196; }
 .zoomControls input { width: 105px; accent-color: var(--purple); }
+.touchHint { display: none; color: #7b899b; font-size: 8px; text-align: center; white-space: nowrap; }
 .timeline { flex: 1; min-height: 0; display: grid; grid-template-columns: 122px minmax(0, 1fr); }
 .trackHeaders { z-index: 2; border-right: 1px solid var(--border); background: #0e151f; }
 .rulerHeader { height: 33px; display: flex; align-items: center; padding: 0 10px; color: #59687a; border-bottom: 1px solid var(--border); font-size: 8px; font-weight: 800; letter-spacing: .12em; }
@@ -401,6 +404,169 @@
   .assetFilterPanel .mobileAssetSearch { display: flex !important; }
   .assetGrid { padding: 8px 6px; }
   .sequenceBadge { display: none; }
+}
+
+@media (max-width: 900px) {
+  .studio {
+    height: 100dvh;
+    min-height: 100dvh;
+    font-size: 13px;
+  }
+
+  .topbar {
+    height: 50px;
+    flex-basis: 50px;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    gap: 4px;
+    padding: 0 7px;
+  }
+
+  .projectIdentity { gap: 6px; overflow: hidden; }
+  .projectIdentity > svg { flex: 0 0 auto; }
+  .studioLabel,
+  .projectIdentity .divider { display: none; }
+  .projectName { width: auto; min-width: 0; flex: 1; font-size: 13px; text-overflow: ellipsis; }
+  .historyControls { gap: 0; }
+  .historyControls button,
+  .exportControls button { width: 40px; height: 40px; }
+  .savedState,
+  .sequenceBadge { display: none; }
+  .exportControls { gap: 3px; }
+  .projectImportButton,
+  .exportButton,
+  .renderButton { width: 40px; height: 40px; padding: 0; gap: 0; font-size: 0; }
+  .cancelRenderButton { width: 40px; height: 40px; padding: 0; font-size: 0; }
+  .cancelRenderButton::before { content: "x"; font-size: 20px; }
+
+  .workbench {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 6px;
+    overflow-x: hidden;
+    overflow-y: auto;
+    overscroll-behavior-y: contain;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .mediaPane,
+  .center,
+  .rightPane { width: 100%; min-width: 0; }
+  .mediaPane {
+    order: 1;
+    flex: 0 0 194px;
+    max-height: 220px;
+  }
+
+  .mediaHeader { min-height: 43px; padding: 7px 9px; }
+  .mediaHeader > div { display: flex; }
+  .mediaHeader button { width: 40px; height: 40px; }
+  .mediaHeader strong { font-size: 12px; }
+  .searchRow { padding: 6px 8px 5px; }
+  .searchBox { display: flex; min-height: 36px; }
+  .searchBox input { font-size: 12px; }
+  .filterButton { flex-basis: 36px; height: 36px; }
+  .mediaFilters { display: flex; padding: 0 8px 6px; }
+  .mediaFilters button { min-height: 30px; padding: 5px 9px; }
+  .assetFilterPanel {
+    position: fixed;
+    z-index: 90;
+    top: 56px;
+    right: 8px;
+    left: 8px;
+    width: auto;
+    max-height: calc(100dvh - 72px);
+    margin: 0;
+    overflow: auto;
+    box-shadow: 0 12px 35px rgba(0, 0, 0, .55);
+  }
+  .assetGrid {
+    grid-template-columns: none;
+    grid-template-rows: 1fr;
+    grid-auto-flow: column;
+    grid-auto-columns: 138px;
+    gap: 7px;
+    padding: 0 8px 8px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    align-content: stretch;
+    min-height: 0;
+    touch-action: pan-x;
+  }
+  .assetCard { width: 138px; }
+  .assetName { display: block; }
+  .loadMoreButton { margin: 0 8px 6px; }
+  .importButton { display: flex; min-height: 42px; margin: 0 8px 8px; }
+
+  .center {
+    order: 2;
+    display: flex;
+    flex: 0 0 auto;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .previewShell { flex: 0 0 min(40dvh, 360px); min-height: 230px; }
+  .previewToolbar { height: 42px; flex-basis: 42px; padding: 0 8px 0 10px; }
+  .previewToolbar button { min-width: 40px; height: 36px; }
+  .preview { touch-action: manipulation; }
+  .transport { height: 52px; flex-basis: 52px; padding: 0 8px; }
+  .transport > span { width: auto; font-size: 12px; }
+  .transport .playButton { width: 42px; height: 42px; }
+  .transport > div { gap: 2px; }
+  .volume { display: none; }
+
+  .timelineShell { flex: 0 0 360px; min-height: 330px; }
+  .timelineToolbar { height: 48px; flex-basis: 48px; gap: 4px; padding: 0 6px; overflow-x: auto; }
+  .timelineToolbar button { width: 40px; height: 40px; flex: 0 0 40px; }
+  .toolGroup { gap: 1px; flex: 0 0 auto; }
+  .toolbarDivider { height: 25px; margin: 0 2px; }
+  .touchHint { display: inline-block; flex: 1; min-width: 112px; }
+  .zoomControls { gap: 3px; flex: 0 0 auto; }
+  .zoomControls input { width: 64px; }
+  .timeline { grid-template-columns: 90px minmax(0, 1fr); }
+  .trackHeaders { min-width: 0; }
+  .rulerHeader { height: 38px; padding: 0 7px; }
+  .trackHeader { height: 58px; grid-template-columns: 18px minmax(0, 1fr) 18px 18px; gap: 2px; padding: 0 5px; }
+  .trackHeader strong { font-size: 8px; }
+  .timelineScroll { overscroll-behavior: contain; touch-action: pan-x pan-y; }
+  .timelineContent { user-select: none; }
+  .ruler { height: 38px; touch-action: none; }
+  .trackLane { height: 58px; touch-action: pan-x pan-y; }
+  .timelineClip { top: 6px; bottom: 6px; min-width: 24px; touch-action: none; }
+  .clipName { padding: 6px 14px; font-size: 9px; }
+  .clipInputControls { top: 4px; right: 7px; font-size: 9px; }
+  .clipInputControls input { width: 14px; height: 14px; }
+  .clipSourceHandle { right: 25px; bottom: 6px; padding: 4px; }
+  .trimStart,
+  .trimEnd { width: 18px; }
+
+  .rightPane {
+    order: 3;
+    flex: 0 0 560px;
+    min-height: 500px;
+  }
+  .paneTabs { position: sticky; top: 0; z-index: 3; height: 52px; flex-basis: 52px; padding: 0 4px; background: var(--panel); }
+  .paneTabs button { min-height: 50px; font-size: 12px; }
+  .paneBody { gap: 14px; padding: 12px; overscroll-behavior: contain; }
+  .modeTabs { grid-template-columns: repeat(2, 1fr); }
+  .modeTabs button { min-height: 42px; font-size: 11px; }
+  .promptBox textarea { min-height: 100px; font-size: 13px; }
+  .rangeButtons button { min-height: 52px; }
+  .inputActions { flex-wrap: wrap; }
+  .inputActions button,
+  .addReferenceButton { min-height: 40px; }
+  .referenceList button { min-height: 40px; }
+  .settingsGrid { gap: 10px; }
+  .settingsGrid input,
+  .settingsGrid select,
+  .inspectorFields input { height: 42px; font-size: 13px; }
+  .generateButton { min-height: 48px; font-size: 13px; }
+  .editorOverlay { align-items: stretch; padding: 8px; overflow: auto; }
+}
+
+@media (max-width: 420px) {
+  .projectImportButton,
+  .exportButton { display: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {

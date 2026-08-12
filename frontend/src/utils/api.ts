@@ -2216,8 +2216,8 @@ export const renderStudioProject = async (
   return response.data;
 };
 
-export const getStudioRenderJob = async (jobId: string) => {
-  const response = await api.get(`/studio/render-jobs/${encodeURIComponent(jobId)}`);
+export const getStudioRenderJob = async (jobId: string, signal?: AbortSignal) => {
+  const response = await api.get(`/studio/render-jobs/${encodeURIComponent(jobId)}`, { signal });
   return response.data;
 };
 

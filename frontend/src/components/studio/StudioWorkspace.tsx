@@ -57,6 +57,7 @@ import {
 import {
   GeneratedImage,
   archSupportsFeature,
+  cancelStudioRenderJob,
   cancelGeneration,
   generateImg2Img,
   generateImg2Vid,
@@ -68,9 +69,11 @@ import {
   generateTxt2Vid,
   getImage,
   getImages,
+  getStudioRenderJob,
   getResultFilename,
   getResultPlaybackFilename,
   isValidVideoFrameCount,
+  renderStudioProject,
   videoFrameOptions,
 } from "@/utils/api";
 import type { GenerationParams, Img2ImgParams, InpaintParams, InpaintVideoParams, MiniMaxH3References, OutpaintVideoParams, Ref2VidParams } from "@/utils/api";
@@ -169,6 +172,9 @@ const frameDurationFor = (fps: number): number => 1 / Math.max(1, fps);
 const clampTime = (value: number, duration: number): number =>
   Math.max(0, Math.min(duration, Number.isFinite(value) ? value : 0));
 
+const clampTimelineZoom = (value: number): number =>
+  Math.max(8, Math.min(48, Math.round(Number.isFinite(value) ? value : 18)));
+
 const defaultClipDurationForAsset = (
   asset: StudioAsset,
   fps: number,
@@ -219,7 +225,7 @@ const galleryAsset = (image: GeneratedImage): StudioAsset => {
 };
 
 const galleryTypesFor = (filter: MediaFilter): string | undefined => {
-  if (filter === "video") return "txt2vid,img2vid,ref2vid,inpaint_vid,outpaint_vid";
+  if (filter === "video") return "txt2vid,img2vid,ref2vid,inpaint_vid,outpaint_vid,studio_render";
   if (filter === "audio") return "txt2aud,aud2aud,repaint,outpaint_aud";
   if (filter === "image") return "txt2img,img2img,inpaint,outpaint,upscale";
   return undefined;
@@ -374,6 +380,9 @@ export default function StudioWorkspace() {
   const [frameDropLoading, setFrameDropLoading] = useState(false);
   const [jobs, setJobs] = useState<StudioJob[]>([]);
   const [resultAssetIds, setResultAssetIds] = useState<string[]>([]);
+  const [rendering, setRendering] = useState(false);
+  const [renderJobId, setRenderJobId] = useState<string | null>(null);
+  const [renderProgress, setRenderProgress] = useState(0);
   const [notice, setNotice] = useState<string | null>(null);
   const [libraryLoading, setLibraryLoading] = useState(true);
   const [snapEnabled, setSnapEnabled] = useState(true);
@@ -386,6 +395,13 @@ export default function StudioWorkspace() {
   const galleryHydrationRef = useRef(new Map<string, Promise<StudioAsset>>());
   const galleryRequestRef = useRef(0);
   const timelineGestureCleanupRef = useRef<(() => void) | null>(null);
+  const timelineGestureCancelRef = useRef<(() => void) | null>(null);
+  const timelineScrollRef = useRef<HTMLDivElement | null>(null);
+  const timelinePointersRef = useRef(new Map<number, { x: number; y: number }>());
+  const timelinePinchRef = useRef<{ distance: number; zoom: number; centerX: number; centerTime: number } | null>(null);
+  const assetPressRef = useRef<{ assetId: string; timer: number; x: number; y: number } | null>(null);
+  const renderControllersRef = useRef(new Map<string, AbortController>());
+  const studioUnmountedRef = useRef(false);
   const suppressClipClickRef = useRef<string | null>(null);
   const pendingImageMaskRef = useRef<string | undefined>(undefined);
   const {
@@ -442,6 +458,10 @@ export default function StudioWorkspace() {
           setReferenceAssetIds(saved.referenceAssetIds ?? []);
           setJobs(restoredJobs);
           setResultAssetIds(restoredJobs.flatMap((job) => job.assetId ? [job.assetId] : []));
+          if (saved.renderJobId) {
+            setRenderJobId(saved.renderJobId);
+            setRendering(true);
+          }
         }
       })
       .finally(() => setRestored(true));
@@ -451,8 +471,19 @@ export default function StudioWorkspace() {
     setPendingTransfer(takeStudioTransfer());
   }, []);
 
-  useEffect(() => () => {
-    timelineGestureCleanupRef.current?.();
+  useEffect(() => {
+    studioUnmountedRef.current = false;
+    return () => {
+      studioUnmountedRef.current = true;
+      renderControllersRef.current.forEach((controller) => controller.abort());
+      renderControllersRef.current.clear();
+      timelineGestureCleanupRef.current?.();
+      timelineGestureCancelRef.current = null;
+      timelinePointersRef.current.clear();
+      timelinePinchRef.current = null;
+      if (assetPressRef.current) window.clearTimeout(assetPressRef.current.timer);
+      assetPressRef.current = null;
+    };
   }, []);
 
   useEffect(() => {
@@ -767,6 +798,32 @@ export default function StudioWorkspace() {
     setSelectedAssetId(asset.id);
     setSelectedClipId(clip.id);
   }, [activeClips, commit, project.duration, project.fps, project.tracks]);
+
+  const cancelAssetPress = () => {
+    const press = assetPressRef.current;
+    if (!press) return;
+    window.clearTimeout(press.timer);
+    assetPressRef.current = null;
+  };
+
+  const beginAssetPress = (event: ReactPointerEvent<HTMLButtonElement>, asset: StudioAsset) => {
+    if (event.pointerType !== "touch") return;
+    cancelAssetPress();
+    const timer = window.setTimeout(() => {
+      if (assetPressRef.current?.assetId !== asset.id) return;
+      assetPressRef.current = null;
+      void hydrateGalleryAsset(asset).then((hydrated) => addAssetToTimeline(hydrated));
+      setNotice(`Added ${asset.name} to the timeline.`);
+    }, 420);
+    assetPressRef.current = { assetId: asset.id, timer, x: event.clientX, y: event.clientY };
+  };
+
+  const moveAssetPress = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    const press = assetPressRef.current;
+    if (!press || Math.hypot(event.clientX - press.x, event.clientY - press.y) > 10) cancelAssetPress();
+  };
+
+  const finishAssetPress = () => cancelAssetPress();
 
   const deleteSelectedClip = useCallback(() => {
     if (!selectedClipId) return;
@@ -1188,19 +1245,131 @@ export default function StudioWorkspace() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [deleteSelectedClip, inpaintRange, playing, project.duration, project.fps, range, redo, splitSelectedClip, togglePlayback, undo]);
 
-  const beginRange = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (tool !== "range") {
-      const bounds = event.currentTarget.getBoundingClientRect();
-      setPlayhead(clampTime((event.clientX - bounds.left) / zoom, project.duration));
-      setSelectedClipId(null);
-      setSelectedAssetId(null);
-      return;
+  const handleTimelinePointerDownCapture = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.pointerType !== "touch") return;
+    const pointers = timelinePointersRef.current;
+    pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    if (pointers.size !== 2) return;
+    const [first, second] = [...pointers.values()];
+    timelineGestureCancelRef.current?.();
+    timelineGestureCleanupRef.current?.();
+    timelineGestureCleanupRef.current = null;
+    timelineGestureCancelRef.current = null;
+    const centerX = (first.x + second.x) / 2;
+    const scroll = timelineScrollRef.current;
+    const bounds = scroll?.getBoundingClientRect();
+    timelinePinchRef.current = {
+      distance: Math.max(1, Math.hypot(first.x - second.x, first.y - second.y)),
+      zoom,
+      centerX,
+      centerTime: bounds && scroll ? (scroll.scrollLeft + centerX - bounds.left) / zoom : centerX / zoom,
+    };
+    event.preventDefault();
+  };
+
+  const handleTimelinePointerMoveCapture = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.pointerType !== "touch") return;
+    const pointer = timelinePointersRef.current.get(event.pointerId);
+    if (!pointer) return;
+    pointer.x = event.clientX;
+    pointer.y = event.clientY;
+    const pinch = timelinePinchRef.current;
+    if (!pinch || timelinePointersRef.current.size < 2) return;
+    const [first, second] = [...timelinePointersRef.current.values()];
+    const distance = Math.max(1, Math.hypot(first.x - second.x, first.y - second.y));
+    const nextZoom = clampTimelineZoom(pinch.zoom * distance / pinch.distance);
+    setZoom(nextZoom);
+    const scroll = timelineScrollRef.current;
+    const bounds = scroll?.getBoundingClientRect();
+    if (scroll && bounds) {
+      window.requestAnimationFrame(() => {
+        if (timelinePinchRef.current !== pinch) return;
+        scroll.scrollLeft = Math.max(0, pinch.centerTime * nextZoom - (pinch.centerX - bounds.left));
+      });
     }
     event.preventDefault();
-    timelineGestureCleanupRef.current?.();
+  };
+
+  const finishTimelinePointer = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.pointerType !== "touch") return;
+    timelinePointersRef.current.delete(event.pointerId);
+    if (timelinePointersRef.current.size < 2) timelinePinchRef.current = null;
+  };
+
+  const beginRange = (event: ReactPointerEvent<HTMLDivElement>) => {
     const element = event.currentTarget;
     const bounds = element.getBoundingClientRect();
-    const start = clampTime((event.clientX - bounds.left) / zoom, project.duration);
+    const timelineScroll = timelineScrollRef.current;
+    const start = clampTime(
+      (event.clientX - bounds.left + (timelineScroll?.scrollLeft || 0)) / zoom,
+      project.duration,
+    );
+    if (tool !== "range") {
+      setPlayhead(start);
+      setSelectedClipId(null);
+      setSelectedAssetId(null);
+      if (event.pointerType !== "touch") return;
+
+      event.preventDefault();
+      timelineGestureCleanupRef.current?.();
+      let rangeArmed = false;
+      const longPress = window.setTimeout(() => {
+        rangeArmed = true;
+        setTool("range");
+        const next = { start, end: Math.min(project.duration, start + frameDurationFor(project.fps)) };
+        if (rangeTarget === "output") setRange(next);
+        else setInpaintRange(next);
+      }, 420);
+      const move = (pointerEvent: PointerEvent) => {
+        const current = clampTime(
+          (pointerEvent.clientX - bounds.left + (timelineScroll?.scrollLeft || 0)) / zoom,
+          project.duration,
+        );
+        if (rangeArmed) {
+          const next = { start: Math.min(start, current), end: Math.max(start, current) };
+          if (rangeTarget === "output") setRange(next);
+          else setInpaintRange(next);
+        } else {
+          setPlayhead(current);
+        }
+      };
+      const finish = () => {
+        window.clearTimeout(longPress);
+        window.removeEventListener("pointermove", move);
+        window.removeEventListener("pointerup", finish);
+        window.removeEventListener("pointercancel", cancel);
+        if (timelineGestureCleanupRef.current === cleanup) timelineGestureCleanupRef.current = null;
+        if (timelineGestureCancelRef.current === cancel) timelineGestureCancelRef.current = null;
+        if (rangeArmed) {
+          setRightPane("generate");
+          setTool("select");
+        }
+      };
+      const cancel = () => {
+        finish();
+        if (rangeArmed) {
+          const next = { start, end: Math.min(project.duration, start + frameDurationFor(project.fps)) };
+          if (rangeTarget === "output") setRange(next);
+          else setInpaintRange(next);
+        }
+      };
+      const cleanup = () => {
+        window.clearTimeout(longPress);
+        window.removeEventListener("pointermove", move);
+        window.removeEventListener("pointerup", finish);
+        window.removeEventListener("pointercancel", cancel);
+      };
+      timelineGestureCleanupRef.current = cleanup;
+      timelineGestureCancelRef.current = cancel;
+      element.setPointerCapture(event.pointerId);
+      window.addEventListener("pointermove", move);
+      window.addEventListener("pointerup", finish);
+      window.addEventListener("pointercancel", cancel);
+      return;
+    }
+
+    event.preventDefault();
+    timelineGestureCleanupRef.current?.();
     const updateRange = (current: number) => {
       const next = { start: Math.min(start, current), end: Math.max(start, current) };
       if (rangeTarget === "output") setRange(next);
@@ -1208,7 +1377,10 @@ export default function StudioWorkspace() {
     };
     updateRange(start);
     const move = (pointerEvent: PointerEvent) => {
-      updateRange(clampTime((pointerEvent.clientX - bounds.left) / zoom, project.duration));
+      updateRange(clampTime(
+        (pointerEvent.clientX - bounds.left + (timelineScroll?.scrollLeft || 0)) / zoom,
+        project.duration,
+      ));
     };
     const finish = () => {
       element.removeEventListener("pointermove", move);
@@ -1216,6 +1388,7 @@ export default function StudioWorkspace() {
       window.removeEventListener("pointerup", finish);
       window.removeEventListener("pointercancel", cancel);
       if (timelineGestureCleanupRef.current === cleanup) timelineGestureCleanupRef.current = null;
+      if (timelineGestureCancelRef.current === cancel) timelineGestureCancelRef.current = null;
       setRightPane("generate");
     };
     const cancel = () => {
@@ -1230,6 +1403,7 @@ export default function StudioWorkspace() {
       window.removeEventListener("pointercancel", cancel);
     };
     timelineGestureCleanupRef.current = cleanup;
+    timelineGestureCancelRef.current = cancel;
     element.setPointerCapture(event.pointerId);
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", finish);
@@ -1238,6 +1412,7 @@ export default function StudioWorkspace() {
 
   const beginClipMove = (event: ReactPointerEvent<HTMLDivElement>, clip: StudioClip) => {
     if (event.button !== 0 || tool !== "select") return;
+    if (event.pointerType === "touch" && timelinePointersRef.current.size > 1) return;
     event.preventDefault();
     event.stopPropagation();
     const track = project.tracks.find((item) => item.id === clip.trackId);
@@ -1248,10 +1423,36 @@ export default function StudioWorkspace() {
     timelineGestureCleanupRef.current?.();
     setSelectedClipId(clip.id);
     setSelectedAssetId(clip.assetId);
+    const asset = allAssets.find((item) => item.id === clip.assetId);
+    const isTouch = event.pointerType === "touch";
+    let touchState: "pending" | "moving" | "editor" = isTouch ? "pending" : "moving";
+    let longPressTimer: number | null = null;
+    const beginTouchMove = () => {
+      if (touchState === "pending") touchState = "moving";
+    };
+    if (isTouch) {
+      longPressTimer = window.setTimeout(() => {
+        if (touchState !== "pending") return;
+        if (asset?.kind === "image") {
+          touchState = "editor";
+          suppressClipClickRef.current = clip.id;
+          openImageEditor(asset, imageInputMode === "inpaint" ? "inpaint" : "edit");
+        } else {
+          beginTouchMove();
+        }
+      }, 420);
+    }
     const originX = event.clientX;
     const initialStart = clip.start;
     let changed = false;
     const move = (pointerEvent: PointerEvent) => {
+      if (isTouch && touchState === "pending") {
+        if (Math.hypot(pointerEvent.clientX - event.clientX, pointerEvent.clientY - event.clientY) <= 8) return;
+        if (longPressTimer != null) window.clearTimeout(longPressTimer);
+        longPressTimer = null;
+        beginTouchMove();
+      }
+      if (touchState !== "moving") return;
       const delta = (pointerEvent.clientX - originX) / zoom;
       const raw = snapEnabled ? Math.round((initialStart + delta) * project.fps) / project.fps : initialStart + delta;
       const nextStart = clampTime(raw, Math.max(0, project.duration - clip.duration));
@@ -1269,10 +1470,14 @@ export default function StudioWorkspace() {
       }));
     };
     const up = (pointerEvent: PointerEvent) => {
+      if (longPressTimer != null) window.clearTimeout(longPressTimer);
+      longPressTimer = null;
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
       window.removeEventListener("pointercancel", cancel);
       if (timelineGestureCleanupRef.current === cleanup) timelineGestureCleanupRef.current = null;
+      if (timelineGestureCancelRef.current === cancel) timelineGestureCancelRef.current = null;
+      if (touchState !== "moving") return;
 
       const generationTarget = document.elementFromPoint(pointerEvent.clientX, pointerEvent.clientY)
         ?.closest("[data-studio-generation-drop]");
@@ -1310,18 +1515,25 @@ export default function StudioWorkspace() {
       }
     };
     const cancel = () => {
+      if (longPressTimer != null) window.clearTimeout(longPressTimer);
+      longPressTimer = null;
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
       window.removeEventListener("pointercancel", cancel);
       if (timelineGestureCleanupRef.current === cleanup) timelineGestureCleanupRef.current = null;
+      if (timelineGestureCancelRef.current === cancel) timelineGestureCancelRef.current = null;
       restore();
     };
     const cleanup = () => {
+      if (longPressTimer != null) window.clearTimeout(longPressTimer);
+      longPressTimer = null;
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
       window.removeEventListener("pointercancel", cancel);
     };
     timelineGestureCleanupRef.current = cleanup;
+    timelineGestureCancelRef.current = cancel;
+    event.currentTarget.setPointerCapture(event.pointerId);
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
     window.addEventListener("pointercancel", cancel);
@@ -1341,7 +1553,14 @@ export default function StudioWorkspace() {
     const frameDuration = frameDurationFor(project.fps);
     const sourceDuration = clip.sourceDuration ?? sourceDurationForAsset(asset);
     const initialHold = clip.presentation === "hold" || (asset.kind === "image" && clip.duration > frameDuration + 0.0001);
-    const modifierHeld = event.ctrlKey || event.metaKey || event.altKey;
+    const isTouch = event.pointerType === "touch";
+    let modifierHeld = event.ctrlKey || event.metaKey || event.altKey;
+    let longPressTimer: number | null = null;
+    if (isTouch) {
+      longPressTimer = window.setTimeout(() => {
+        modifierHeld = true;
+      }, 360);
+    }
     const originX = event.clientX;
     const initialEnd = clip.start + clip.duration;
     const snapshot = project;
@@ -1349,6 +1568,11 @@ export default function StudioWorkspace() {
     let stillNoticeShown = false;
 
     const update = (pointerEvent: PointerEvent) => {
+      if (isTouch && longPressTimer != null
+        && Math.hypot(pointerEvent.clientX - event.clientX, pointerEvent.clientY - event.clientY) > 8) {
+        window.clearTimeout(longPressTimer);
+        longPressTimer = null;
+      }
       const delta = (pointerEvent.clientX - originX) / zoom;
       let nextStart = clip.start;
       let nextEnd = initialEnd;
@@ -1403,29 +1627,82 @@ export default function StudioWorkspace() {
       }));
     };
     const finish = () => {
+      if (longPressTimer != null) window.clearTimeout(longPressTimer);
+      longPressTimer = null;
       window.removeEventListener("pointermove", update);
       window.removeEventListener("pointerup", finish);
       window.removeEventListener("pointercancel", cancel);
       if (timelineGestureCleanupRef.current === cleanup) timelineGestureCleanupRef.current = null;
+      if (timelineGestureCancelRef.current === cancel) timelineGestureCancelRef.current = null;
       if (!changed) return;
       setUndoStack((history) => [...history, snapshot].slice(-MAX_HISTORY));
       setRedoStack([]);
       setProject((current) => ({ ...current, revision: current.revision + 1, updatedAt: new Date().toISOString() }));
     };
     const cancel = () => {
+      if (longPressTimer != null) window.clearTimeout(longPressTimer);
+      longPressTimer = null;
       window.removeEventListener("pointermove", update);
       window.removeEventListener("pointerup", finish);
       window.removeEventListener("pointercancel", cancel);
       if (timelineGestureCleanupRef.current === cleanup) timelineGestureCleanupRef.current = null;
+      if (timelineGestureCancelRef.current === cancel) timelineGestureCancelRef.current = null;
       setProject(snapshot);
     };
     const cleanup = () => {
+      if (longPressTimer != null) window.clearTimeout(longPressTimer);
+      longPressTimer = null;
       window.removeEventListener("pointermove", update);
       window.removeEventListener("pointerup", finish);
       window.removeEventListener("pointercancel", cancel);
     };
     timelineGestureCleanupRef.current = cleanup;
+    timelineGestureCancelRef.current = cancel;
+    event.currentTarget.setPointerCapture(event.pointerId);
     window.addEventListener("pointermove", update);
+    window.addEventListener("pointerup", finish);
+    window.addEventListener("pointercancel", cancel);
+  };
+
+  const beginClipSourcePress = (event: ReactPointerEvent<HTMLSpanElement>, clip: StudioClip) => {
+    if (event.pointerType !== "touch") {
+      event.stopPropagation();
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    const originX = event.clientX;
+    const originY = event.clientY;
+    let timer: number | null = window.setTimeout(() => {
+      timer = null;
+      suppressClipClickRef.current = clip.id;
+      void handleTimelineInput(clip, true);
+    }, 420);
+    const move = (pointerEvent: PointerEvent) => {
+      if (Math.hypot(pointerEvent.clientX - originX, pointerEvent.clientY - originY) <= 8) return;
+      cancel();
+    };
+    const finish = () => {
+      if (timer != null) window.clearTimeout(timer);
+      timer = null;
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", finish);
+      window.removeEventListener("pointercancel", cancel);
+      if (timelineGestureCleanupRef.current === cleanup) timelineGestureCleanupRef.current = null;
+      if (timelineGestureCancelRef.current === cancel) timelineGestureCancelRef.current = null;
+    };
+    const cancel = () => finish();
+    const cleanup = () => {
+      if (timer != null) window.clearTimeout(timer);
+      timer = null;
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", finish);
+      window.removeEventListener("pointercancel", cancel);
+    };
+    timelineGestureCleanupRef.current = cleanup;
+    timelineGestureCancelRef.current = cancel;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", finish);
     window.addEventListener("pointercancel", cancel);
   };
@@ -1785,6 +2062,168 @@ export default function StudioWorkspace() {
     setJobs((current) => current.map((item) => item.id === job.id ? { ...item, status: "applied" as const } : item));
   };
 
+  const pollRenderJob = useCallback(async (jobId: string) => {
+    if (renderControllersRef.current.has(jobId)) return;
+    const controller = new AbortController();
+    renderControllersRef.current.set(jobId, controller);
+    setRendering(true);
+    try {
+      while (!controller.signal.aborted && !studioUnmountedRef.current) {
+        const status = await getStudioRenderJob(jobId, controller.signal);
+        if (controller.signal.aborted || studioUnmountedRef.current) return;
+        setRenderProgress(Math.max(0, Math.min(1, Number(status.progress) || 0)));
+        if (status.state === "completed") {
+          const image = status.image;
+          if (!image) throw new Error("Render completed without a Gallery result.");
+          const fallbackFilename = String(status.filename || image.filename || `studio-render-${jobId}.mp4`);
+          const asset = studioAssetFromGeneration({ image }, {
+            id: `studio-render-${jobId}`,
+            filename: fallbackFilename,
+            kind: "video",
+            url: `/outputs/${image.preview_filename || fallbackFilename}`,
+            masterUrl: `/outputs/${fallbackFilename}`,
+            duration: project.duration,
+            width: project.width,
+            height: project.height,
+            source: "generation",
+            generationType: "studio_render",
+            modelName: "Studio timeline renderer",
+            seed: -1,
+            parameters: { studio_project_id: project.id, studio_render_job_id: jobId },
+          });
+          setProject((current) => current.assets.some((item) => item.id === asset.id)
+            ? { ...current, renderJobId: undefined }
+            : { ...current, renderJobId: undefined, assets: [...current.assets, asset], revision: current.revision + 1, updatedAt: new Date().toISOString() });
+          setResultAssetIds((current) => [asset.id, ...current.filter((id) => id !== asset.id)]);
+          setSelectedAssetId(asset.id);
+          setNotice(`Timeline rendered and registered in Gallery as ${asset.name}.`);
+          refreshLibrary();
+          return;
+        }
+        if (status.state === "failed") throw new Error(status.error || "Studio render failed.");
+        if (status.state === "cancelled") throw new Error("Studio render cancelled.");
+        await new Promise<void>((resolve, reject) => {
+          const timer = window.setTimeout(resolve, 1000);
+          controller.signal.addEventListener("abort", () => {
+            window.clearTimeout(timer);
+            reject(new DOMException("Render polling cancelled", "AbortError"));
+          }, { once: true });
+        });
+      }
+    } catch (error) {
+      if (!controller.signal.aborted && !studioUnmountedRef.current) {
+        setProject((current) => ({ ...current, renderJobId: undefined }));
+        setNotice(error instanceof Error ? error.message : "Studio render failed.");
+      }
+    } finally {
+      renderControllersRef.current.delete(jobId);
+      if (!studioUnmountedRef.current) {
+        setRendering(false);
+        setRenderJobId((current) => current === jobId ? null : current);
+      }
+    }
+  }, [project, refreshLibrary]);
+
+  useEffect(() => {
+    if (!restored || !renderJobId) return;
+    void pollRenderJob(renderJobId);
+  }, [pollRenderJob, renderJobId, restored]);
+
+  const renderTimeline = async () => {
+    if (rendering) return;
+    setNotice(null);
+    const renderTracks = project.tracks.filter((track) => track.visible && !track.muted);
+    const renderTrackIds = new Set(renderTracks.map((track) => track.id));
+    const renderClips = project.clips.filter((clip) =>
+      clip.activeTake !== false && renderTrackIds.has(clip.trackId),
+    );
+    if (!renderClips.length) {
+      setNotice("Add a visible, active clip before rendering the timeline.");
+      return;
+    }
+
+    setRendering(true);
+    setRenderProgress(0);
+    try {
+      const assetMap = new Map(allAssets.map((asset) => [asset.id, asset]));
+      const requiredAssets = Array.from(new Set(renderClips.map((clip) => clip.assetId)))
+        .map((assetId) => assetMap.get(assetId))
+        .filter((asset): asset is StudioAsset => !!asset);
+      if (requiredAssets.length !== new Set(renderClips.map((clip) => clip.assetId)).size) {
+        throw new Error("A timeline clip refers to a missing media asset.");
+      }
+
+      const hydratedAssets = await Promise.all(requiredAssets.map((asset) => hydrateGalleryAsset(asset)));
+      const uploads = [] as { assetId: string; file: File }[];
+      const manifestAssets = [] as Record<string, unknown>[];
+      for (const asset of hydratedAssets) {
+        if (asset.galleryId == null) {
+          uploads.push({ assetId: asset.id, file: await mediaFileForUpload(asset) });
+        }
+        manifestAssets.push({
+          id: asset.id,
+          name: asset.name,
+          kind: asset.kind,
+          galleryId: asset.galleryId,
+          duration: asset.duration,
+          width: asset.width,
+          height: asset.height,
+        });
+      }
+
+      const manifest: Record<string, unknown> = {
+        schemaVersion: project.schemaVersion,
+        project: {
+          id: project.id,
+          revision: project.revision,
+          name: project.name,
+          duration: project.duration,
+          fps: project.fps,
+          width: project.width,
+          height: project.height,
+        },
+        render: { audio_enabled: true, fit_mode: "cover" },
+        assets: manifestAssets,
+        tracks: renderTracks.map((track) => ({
+          id: track.id,
+          name: track.name,
+          kind: track.kind,
+          muted: track.muted,
+          visible: track.visible,
+        })),
+        clips: renderClips.map((clip) => ({
+          id: clip.id,
+          assetId: clip.assetId,
+          trackId: clip.trackId,
+          start: clip.start,
+          duration: clip.duration,
+          sourceIn: clip.sourceIn,
+          presentation: clip.presentation,
+          activeTake: true,
+        })),
+      };
+
+      const queued = await renderStudioProject(manifest, uploads);
+      const jobId = String(queued.job_id || "");
+      if (!jobId) throw new Error("The server did not return a Studio render job id.");
+      setRenderJobId(jobId);
+      setProject((current) => ({ ...current, renderJobId: jobId, revision: current.revision + 1, updatedAt: new Date().toISOString() }));
+    } catch (error) {
+      setRendering(false);
+      setNotice(error instanceof Error ? error.message : "Studio render failed.");
+    }
+  };
+
+  const cancelTimelineRender = async () => {
+    if (!renderJobId) return;
+    try {
+      await cancelStudioRenderJob(renderJobId);
+      setNotice("Cancelling Studio render...");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Could not cancel Studio render.");
+    }
+  };
+
   const exportProject = () => {
     const manifest = new Blob([JSON.stringify({
       ...project,
@@ -1799,7 +2238,7 @@ export default function StudioWorkspace() {
     anchor.download = `${project.name.replace(/[^a-z0-9-_]+/gi, "_") || "studio-project"}.json`;
     anchor.click();
     URL.revokeObjectURL(url);
-    setNotice("Project manifest exported. Sequence media rendering needs a backend render endpoint.");
+    setNotice("Project manifest exported.");
   };
 
   const updateSelectedClip = (changes: Partial<StudioClip>) => {
@@ -1918,6 +2357,10 @@ export default function StudioWorkspace() {
           <button className={styles.projectImportButton} onClick={() => projectFileInputRef.current?.click()}><FolderOpen size={14} /> Import</button>
           <input ref={projectFileInputRef} type="file" accept="application/json,.json" hidden onChange={handleProjectImport} />
           <button className={styles.exportButton} onClick={exportProject}><Upload size={16} /> Export project</button>
+          <button className={styles.renderButton} onClick={renderTimeline} disabled={rendering}>
+            <Film size={15} /> {rendering ? `Rendering ${Math.round(renderProgress * 100)}%` : "Render video"}
+          </button>
+          {rendering && <button className={styles.cancelRenderButton} onClick={cancelTimelineRender}>Cancel</button>}
         </div>
       </header>
 
@@ -1968,6 +2411,10 @@ export default function StudioWorkspace() {
               <button
                 key={asset.id}
                 draggable
+                onPointerDown={(event) => beginAssetPress(event, asset)}
+                onPointerMove={moveAssetPress}
+                onPointerUp={finishAssetPress}
+                onPointerCancel={finishAssetPress}
                 onDragStart={(event) => {
                   event.dataTransfer.effectAllowed = "copy";
                   event.dataTransfer.setData("application/x-studio-asset", asset.id);
@@ -2049,6 +2496,7 @@ export default function StudioWorkspace() {
                 <button onClick={deleteSelectedClip} disabled={!selectedClipId} title="Delete selected clip"><Trash2 size={15} /></button>
                 <button className={snapEnabled ? styles.snapActive : ""} onClick={() => setSnapEnabled((value) => !value)} title="Toggle snapping"><Magnet size={15} /></button>
               </div>
+              <span className={styles.touchHint}>Tap scrub / swipe move / hold edit / pinch zoom</span>
               <div className={styles.zoomControls}>
                 <ZoomOut size={14} /><input aria-label="Timeline zoom" type="range" min="8" max="48" value={zoom} onChange={(event) => setZoom(Number(event.target.value))} /><ZoomIn size={14} />
               </div>
@@ -2066,7 +2514,14 @@ export default function StudioWorkspace() {
                   </div>
                 ))}
               </div>
-              <div className={styles.timelineScroll}>
+              <div
+                ref={timelineScrollRef}
+                className={styles.timelineScroll}
+                onPointerDownCapture={handleTimelinePointerDownCapture}
+                onPointerMoveCapture={handleTimelinePointerMoveCapture}
+                onPointerUpCapture={finishTimelinePointer}
+                onPointerCancelCapture={finishTimelinePointer}
+              >
                 <div className={styles.timelineContent} style={{ width: Math.max(project.duration * zoom, 920) }}>
                   <div className={styles.ruler} onPointerDown={beginRange}>
                     {Array.from({ length: Math.ceil(project.duration / 5) + 1 }, (_, index) => (
@@ -2093,7 +2548,10 @@ export default function StudioWorkspace() {
                       onClick={(event) => {
                         if (event.target === event.currentTarget) {
                           const bounds = event.currentTarget.getBoundingClientRect();
-                          setPlayhead(Math.max(0, Math.min(project.duration, (event.clientX - bounds.left) / zoom)));
+                          setPlayhead(Math.max(0, Math.min(
+                            project.duration,
+                            (event.clientX - bounds.left + (timelineScrollRef.current?.scrollLeft || 0)) / zoom,
+                          )));
                           setSelectedClipId(null);
                           setSelectedAssetId(null);
                         }
@@ -2145,17 +2603,17 @@ export default function StudioWorkspace() {
                                 </label>
                               )}
                             </span>
-                            <span
-                              className={styles.clipSourceHandle}
-                              draggable={!track.locked}
-                              onPointerDown={(event) => event.stopPropagation()}
+                              <span
+                                className={styles.clipSourceHandle}
+                                draggable={!track.locked}
+                                onPointerDown={(event) => beginClipSourcePress(event, clip)}
                               onDragStart={(event) => {
                                 event.dataTransfer.effectAllowed = "copy";
                                 event.dataTransfer.setData("application/x-studio-clip", clip.id);
                                 event.dataTransfer.setData("application/x-studio-frame-time", String(frameTimeForClip(clip, playhead)));
                                 if (event.shiftKey) event.dataTransfer.setData("application/x-studio-input-mode", "frame");
                               }}
-                              title="Drag to Generate; Shift: current frame"
+                               title="Drag to Generate; Shift or long-press: current frame"
                             ><ImagePlus size={10} /></span>
                             {clip.linkGroupId && <Link2 size={11} className={styles.linkBadge} />}
                             {clip.generated && <Sparkles size={11} className={styles.generationBadge} />}

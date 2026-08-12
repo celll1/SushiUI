@@ -32,7 +32,7 @@ export const videoOutpaintPlacement = (
   sourceDuration: number,
   fps: number,
 ) => ({
-  totalFrames: Math.max(1, frameIndexAt(outputRange.end - outputRange.start, fps) + 1),
+  totalFrames: Math.max(1, frameIndexAt(outputRange.end - outputRange.start, fps)),
   inputOffsetFrames: Math.max(0, frameIndexAt(clip.start - outputRange.start, fps)),
   inputTrimStartFrames: frameIndexAt(clip.sourceIn, fps),
   inputTrimEndFrames: Math.max(0, frameIndexAt(Math.max(0, sourceDuration - clip.sourceIn - clip.duration), fps)),

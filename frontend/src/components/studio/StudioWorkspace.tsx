@@ -78,11 +78,12 @@ import {
   renderStudioProject,
   videoFrameOptions,
 } from "@/utils/api";
-import type { GenerationParams, Img2ImgParams, InpaintParams, InpaintVideoParams, MiniMaxH3References, OutpaintVideoParams, Ref2VidParams } from "@/utils/api";
+import type { GenerationParams, H3PromptMode, Img2ImgParams, InpaintParams, InpaintVideoParams, MiniMaxH3References, OutpaintVideoParams, Ref2VidParams } from "@/utils/api";
 import { useStartup } from "@/contexts/StartupContext";
 import { formatTimecode } from "@/utils/timecode";
 import { newId } from "@/utils/id";
 import ImageEditor from "../common/ImageEditor";
+import H3PromptAssist from "../common/H3PromptAssist";
 import ModelLoadSection from "../common/ModelLoadSection";
 import { loadImportedMedia, loadStudioProject, saveImportedMedia, saveStudioProject } from "./studioStorage";
 import { resolveStudioTransferUrl, takeStudioTransfer, type StudioTransferPayload } from "./studioTransfer";
@@ -108,6 +109,7 @@ import {
   videoInpaintFrames,
   videoOutpaintPlacement,
 } from "./studioGeneration";
+import { createH3ReferenceInventory, maybeTransformH3PromptForGeneration } from "@/utils/h3PromptAssist";
 import styles from "./studio.module.css";
 
 interface StudioFormState {
@@ -129,6 +131,14 @@ interface StudioFormState {
 type MediaFilter = "all" | "image" | "video" | "audio";
 type AssetScope = "all" | "gallery" | "import" | "generation";
 type RangeTarget = "output" | "inpaint";
+type SeekRepeatState = {
+  timer: number | null;
+  frame: number | null;
+  direction: -1 | 1;
+  started: boolean;
+  startedAt: number;
+  lastAt: number;
+};
 
 interface AssetFilters {
   scope: AssetScope;
@@ -285,6 +295,13 @@ const defaultClipDurationForAsset = (
   const sourceDuration = sourceDurationForAsset(asset) || remaining;
   return Math.min(remaining, Math.max(frameDuration, sourceDuration));
 };
+
+function h3PromptModeForStudio(mode: StudioGenerationMode): H3PromptMode {
+  if (mode === "ref2v") return "ref2va";
+  if (mode === "i2v") return "i2va";
+  if (mode === "inpaint" || mode === "outpaint") return "fl2va";
+  return "t2va";
+}
 
 const normalizeCanvasDimension = (value: number, fallback: number): number => {
   if (!Number.isFinite(value)) return fallback;
@@ -539,7 +556,7 @@ export default function StudioWorkspace() {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const playStartedRef = useRef({ at: 0, playhead: 0 });
   const playheadRef = useRef(0);
-  const seekRepeatRef = useRef<{ timer: number | null; interval: number | null }>({ timer: null, interval: null });
+  const seekRepeatRef = useRef<SeekRepeatState>({ timer: null, frame: null, direction: 1, started: false, startedAt: 0, lastAt: 0 });
   const initializedDefaultsForArchRef = useRef<string | null>(null);
   const galleryHydrationRef = useRef(new Map<string, Promise<StudioAsset>>());
   const galleryRequestRef = useRef(0);
@@ -1517,17 +1534,43 @@ export default function StudioWorkspace() {
   const stopSeekRepeat = useCallback(() => {
     const repeat = seekRepeatRef.current;
     if (repeat.timer != null) window.clearTimeout(repeat.timer);
-    if (repeat.interval != null) window.clearInterval(repeat.interval);
-    seekRepeatRef.current = { timer: null, interval: null };
+    if (repeat.frame != null) window.cancelAnimationFrame(repeat.frame);
+    repeat.timer = null;
+    repeat.frame = null;
+    repeat.started = false;
   }, []);
 
   const beginSeekRepeat = useCallback((event: ReactPointerEvent<HTMLButtonElement>, direction: -1 | 1) => {
     event.preventDefault();
     stopSeekRepeat();
-    seekBy(direction * 5);
-    seekRepeatRef.current.timer = window.setTimeout(() => {
-      seekRepeatRef.current.interval = window.setInterval(() => seekBy(direction * 0.5), 100);
+    const repeat = seekRepeatRef.current;
+    repeat.direction = direction;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    repeat.timer = window.setTimeout(() => {
+      const active = seekRepeatRef.current;
+      active.timer = null;
+      active.started = true;
+      active.startedAt = performance.now();
+      active.lastAt = active.startedAt;
+      const tick = (now: number) => {
+        const current = seekRepeatRef.current;
+        if (!current.started || current.direction !== direction) return;
+        const delta = Math.min(0.05, Math.max(0, (now - current.lastAt) / 1000));
+        current.lastAt = now;
+        const heldSeconds = (now - current.startedAt) / 1000;
+        const speed = Math.min(24, 4 + heldSeconds * 12);
+        seekBy(direction * delta * speed);
+        current.frame = window.requestAnimationFrame(tick);
+      };
+      active.frame = window.requestAnimationFrame(tick);
     }, 350);
+  }, [seekBy, stopSeekRepeat]);
+
+  const finishSeekRepeat = useCallback((direction: -1 | 1) => {
+    const repeat = seekRepeatRef.current;
+    const wasClick = repeat.timer != null && !repeat.started;
+    stopSeekRepeat();
+    if (wasClick) seekBy(direction * 5);
   }, [seekBy, stopSeekRepeat]);
 
   useEffect(() => stopSeekRepeat, [stopSeekRepeat]);
@@ -2203,6 +2246,21 @@ export default function StudioWorkspace() {
       setNotice("Explicit reference video generation requires MiniMax-H3 ref2va.");
       return;
     }
+    let generationPrompt = form.prompt;
+    if (modality.isVideo && modality.modelInfo?.type === "minimax_h3") {
+      try {
+        const assisted = await maybeTransformH3PromptForGeneration({
+          prompt: generationPrompt,
+          mode: h3PromptModeForStudio(planMode),
+          durationSeconds: Math.max(frameDuration(project.fps), plan.outputRange.end - plan.outputRange.start),
+          references: studioH3References,
+        });
+        generationPrompt = assisted.prompt;
+      } catch (error: any) {
+        setNotice(error?.message || "MiniMax H3 Prompt Assist failed.");
+        return;
+      }
+    }
     const imageInput = selectedAsset?.kind === "image"
       ? selectedAsset
       : plan.imageClip
@@ -2238,7 +2296,8 @@ export default function StudioWorkspace() {
       architecture: modality.modelInfo?.type,
       model_variant: modality.modelInfo?.variant,
       mode: planMode,
-      prompt: form.prompt,
+      prompt: generationPrompt,
+      source_prompt: form.prompt,
       negative_prompt: supportsNegativePrompt ? form.negativePrompt : "",
       width: form.width,
       height: form.height,
@@ -2260,12 +2319,12 @@ export default function StudioWorkspace() {
       keyframe_asset_id: imageInput?.id,
       reference_asset_ids: referenceIds,
     };
-    setJobs((current) => [{ id: jobId, mode: planMode, prompt: form.prompt, status: "running", startedAt: Date.now(), recipe }, ...current]);
+    setJobs((current) => [{ id: jobId, mode: planMode, prompt: generationPrompt, status: "running", startedAt: Date.now(), recipe }, ...current]);
     setRightPane("jobs");
 
     try {
       const baseVideoParameters = {
-        prompt: form.prompt,
+        prompt: generationPrompt,
         negative_prompt: supportsNegativePrompt ? form.negativePrompt : "",
         width: form.width,
         height: form.height,
@@ -2281,7 +2340,7 @@ export default function StudioWorkspace() {
       let result: any;
       if (!modality.isVideo) {
         const imageParameters: GenerationParams = {
-          prompt: form.prompt,
+          prompt: generationPrompt,
           negative_prompt: supportsNegativePrompt ? form.negativePrompt : "",
           width: form.width,
           height: form.height,
@@ -2373,7 +2432,7 @@ export default function StudioWorkspace() {
         width: form.width,
         height: form.height,
         source: "generation",
-        prompt: form.prompt,
+        prompt: generationPrompt,
         negativePrompt: supportsNegativePrompt ? form.negativePrompt : "",
         generationType: planMode,
         modelName: resolvedModelName,
@@ -2791,6 +2850,24 @@ export default function StudioWorkspace() {
     i2i: "I2I · image to image",
     "image-inpaint": "Image inpaint",
   };
+  const studioH3Mode = h3PromptModeForStudio(resolvedMode);
+  const studioH3References = useMemo(() => {
+    let pictures = 0;
+    let videos = 0;
+    let audios = 0;
+    const countAsset = (assetId: string) => {
+      const asset = allAssets.find((item) => item.id === assetId);
+      if (asset?.kind === "image") pictures += 1;
+      else if (asset?.kind === "video") videos += 1;
+      else if (asset?.kind === "audio") audios += 1;
+    };
+    activeClips
+      .filter((clip) => clip.inputRoles?.includes("keyframe"))
+      .forEach((clip) => countAsset(clip.assetId));
+    referenceAssetIds.forEach(countAsset);
+    return createH3ReferenceInventory({ pictures, videos, audios });
+  }, [activeClips, allAssets, referenceAssetIds]);
+  const studioH3Duration = Math.max(frameDuration(project.fps), outputDuration || project.duration);
 
   const activateTake = (clipId: string): boolean => {
     const target = project.clips.find((clip) => clip.id === clipId);
@@ -2952,10 +3029,10 @@ export default function StudioWorkspace() {
             <div className={styles.transport}>
               <span>{formatTimecode(playhead, project.fps)} <small>/ {formatTimecode(project.duration, project.fps)}</small></span>
               <div>
-                <button className={styles.seekButton} onPointerDown={(event) => beginSeekRepeat(event, -1)} onPointerUp={stopSeekRepeat} onPointerCancel={stopSeekRepeat} onPointerLeave={stopSeekRepeat} onClick={(event) => { if (event.detail === 0) seekBy(-5); }} aria-label="Rewind five seconds" title="Rewind 5 seconds; hold to continue"><Rewind size={15} /></button>
+                <button className={styles.seekButton} onPointerDown={(event) => beginSeekRepeat(event, -1)} onPointerUp={() => finishSeekRepeat(-1)} onPointerCancel={stopSeekRepeat} onClick={(event) => { if (event.detail === 0) seekBy(-5); }} aria-label="Rewind five seconds" title="Rewind 5 seconds; hold to continue"><Rewind size={15} /></button>
                 <button className={styles.seekButton} onClick={() => seekTimeline(0)} aria-label="Go to start" title="Go to start (Home)"><RotateCcw size={15} /></button>
                 <button onClick={(event) => { event.stopPropagation(); togglePlayback(); }} className={styles.playButton} aria-label={playing ? "Pause" : "Play"}>{playing ? <Pause size={19} /> : <Play size={19} fill="currentColor" />}</button>
-                <button className={styles.seekButton} onPointerDown={(event) => beginSeekRepeat(event, 1)} onPointerUp={stopSeekRepeat} onPointerCancel={stopSeekRepeat} onPointerLeave={stopSeekRepeat} onClick={(event) => { if (event.detail === 0) seekBy(5); }} aria-label="Fast-forward five seconds" title="Fast-forward 5 seconds; hold to continue"><FastForward size={15} /></button>
+                <button className={styles.seekButton} onPointerDown={(event) => beginSeekRepeat(event, 1)} onPointerUp={() => finishSeekRepeat(1)} onPointerCancel={stopSeekRepeat} onClick={(event) => { if (event.detail === 0) seekBy(5); }} aria-label="Fast-forward five seconds" title="Fast-forward 5 seconds; hold to continue"><FastForward size={15} /></button>
               </div>
               <div className={styles.volume}><Volume2 size={15} /><span /><Maximize2 size={15} /></div>
             </div>
@@ -3147,17 +3224,20 @@ export default function StudioWorkspace() {
               }}
               onDrop={async (event) => { event.preventDefault(); setGenerationDropActive(false); setFrameDropLoading(true); try { await handleRightPaneDrop(event); } finally { setFrameDropLoading(false); } }}
             >
-              <ModelLoadSection
-                storageKeyPrefix="studio"
-                vaePath={studioVaePath}
-                onVaePathChange={setStudioVaePath}
-                textEncoderPath={studioTextEncoderPath}
-                onTextEncoderChange={setStudioTextEncoderPath}
-                onModelLoad={async () => {
-                  await refreshModelInfo();
-                  setNotice("Studio model updated. Review the generation settings before submitting.");
-                }}
-              />
+              <details className={styles.modelLoadDisclosure}>
+                <summary><span>Model &amp; components</span><small>{currentModelName}</small></summary>
+                <ModelLoadSection
+                  storageKeyPrefix="studio"
+                  vaePath={studioVaePath}
+                  onVaePathChange={setStudioVaePath}
+                  textEncoderPath={studioTextEncoderPath}
+                  onTextEncoderChange={setStudioTextEncoderPath}
+                  onModelLoad={async () => {
+                    await refreshModelInfo();
+                    setNotice("Studio model updated. Review the generation settings before submitting.");
+                  }}
+                />
+              </details>
               <section className={styles.modelCard}>
                 <span className={styles.eyebrow}>{isVideoModel ? "VIDEO MODEL" : "IMAGE MODEL"}</span>
                 <div className={styles.modelLine}><strong>{currentModelName}</strong><span className={isBackendReady ? styles.ready : styles.unavailable}>{isBackendReady ? "READY" : "OFFLINE"}</span></div>
@@ -3195,6 +3275,15 @@ export default function StudioWorkspace() {
                   <span>{form.prompt.length}/1000</span>
                 </div>
               </section>
+              {loadedArch === "minimax_h3" && isVideoModel && (
+                <H3PromptAssist
+                  prompt={form.prompt}
+                  onApply={(prompt) => setForm((current) => ({ ...current, prompt }))}
+                  suggestedMode={studioH3Mode}
+                  durationSeconds={studioH3Duration}
+                  references={studioH3References}
+                />
+              )}
               {isVideoModel && (
                 <section>
                   <label className={styles.fieldLabel}>Timeline inputs</label>

@@ -2,7 +2,7 @@ import type { StudioProject } from "./types";
 
 export const STUDIO_PROJECT_EXTENSION = ".sushistudio";
 export const STUDIO_PROJECT_FORMAT = "sushiui-studio";
-export const STUDIO_PROJECT_VERSION = 4;
+export const STUDIO_PROJECT_VERSION = 5;
 const RECENT_PROJECTS_KEY = "sushiui_studio_recent_v1";
 const MAX_RECENT_PROJECTS = 12;
 

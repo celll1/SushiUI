@@ -130,7 +130,7 @@ export interface StudioJob {
 }
 
 export const createStudioProject = (): StudioProject => ({
-  schemaVersion: 4,
+  schemaVersion: 5,
   revision: 0,
   id: newId(),
   name: "Untitled Studio Project",

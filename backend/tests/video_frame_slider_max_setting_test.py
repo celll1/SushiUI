@@ -250,6 +250,32 @@ class StartupContextTest(unittest.TestCase):
         body = self.source[provider_start:provider_end]
         self.assertIn("videoFrameSliderMax,", body)
 
+    # --- Defect 1: saving the setting must apply it without a reload -------
+    # fetchStartupPayloads only runs once from a mount effect, so the ONLY
+    # way a panel's videoFrameSliderMax can ever change after that without a
+    # full page reload is a live setter exposed on the context and called by
+    # whatever writes the setting.
+    def test_context_type_declares_a_live_setter(self):
+        match = re.search(
+            r"interface StartupContextType \{(.*?)\n\}", self.source, re.DOTALL)
+        self.assertIsNotNone(match)
+        self.assertIn(
+            "setVideoFrameSliderMax: (value: number | null) => void;", match.group(1)
+        )
+
+    def test_default_context_value_declares_a_no_op_setter(self):
+        match = re.search(
+            r"const StartupContext = createContext<StartupContextType>\(\{(.*?)\n\}\);",
+            self.source, re.DOTALL)
+        self.assertIsNotNone(match)
+        self.assertIn("setVideoFrameSliderMax: () => {},", match.group(1))
+
+    def test_provider_value_exposes_the_setter(self):
+        provider_start = self.source.index("<StartupContext.Provider value={{")
+        provider_end = self.source.index("}}>", provider_start)
+        body = self.source[provider_start:provider_end]
+        self.assertIn("setVideoFrameSliderMax,", body)
+
 
 # ---------------------------------------------------------------------------
 # 8. VideoFrameCountSlider.tsx: sliderMaxOverride bounds the TRACK only.
@@ -327,51 +353,132 @@ class PanelWiringTest(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# 10. GenerationSettings.tsx: the Settings-page control, its round trip, and
-#     the exact user-visible help text (factual, no invented numbers).
+# 10. GenerationSettings.tsx no longer owns this field. It was originally
+#     implemented as a save-button field there (alongside
+#     inpaint_use_dedicated_model), which meant saving it required a button
+#     press while its two "generation behavior" neighbours (Resolution slider
+#     step size, Attention Type) apply immediately. The control moved to
+#     settings/page.tsx's "Generation Behavior" card to match those siblings;
+#     GenerationSettings.tsx keeps only inpaint_use_dedicated_model, its
+#     actual save-button field.
 # ---------------------------------------------------------------------------
-class GenerationSettingsControlTest(unittest.TestCase):
+class GenerationSettingsNoLongerOwnsTheFieldTest(unittest.TestCase):
     def setUp(self):
         self.source = _read(
             "frontend", "src", "components", "settings", "GenerationSettings.tsx")
 
-    def test_loads_the_field_from_the_settings_response(self):
-        load_start = self.source.index("const loadSettings = async () => {")
-        load_end = self.source.index("\n  };", load_start)
-        body = self.source[load_start:load_end]
-        self.assertIn("setVideoFrameSliderMax(data.video_frame_slider_max ?? null);", body)
+    def test_component_does_not_reference_the_field(self):
+        self.assertNotIn("video_frame_slider_max", self.source)
+        self.assertNotIn("videoFrameSliderMax", self.source)
 
-    def test_save_sends_the_field(self):
+    def test_data_interface_only_declares_the_dedicated_model_field(self):
+        match = re.search(
+            r"interface GenerationSettingsData \{(.*?)\n\}", self.source, re.DOTALL)
+        self.assertIsNotNone(match)
+        self.assertIn("inpaint_use_dedicated_model: boolean;", match.group(1))
+
+    def test_save_only_sends_the_dedicated_model_field(self):
         save_start = self.source.index("const handleSave = async () => {")
         save_end = self.source.index("\n  };", save_start)
         body = self.source[save_start:save_end]
-        self.assertIn("video_frame_slider_max: videoFrameSliderMax,", body)
+        self.assertIn("inpaint_use_dedicated_model: inpaintUseDedicatedModel,", body)
 
-    def test_checkbox_unchecked_clears_to_null(self):
+
+# ---------------------------------------------------------------------------
+# 11. settings/page.tsx: the control now lives in the "Generation Behavior"
+#     card, next to its immediate-apply siblings (Resolution slider step
+#     size, Attention Type) -- but unlike those (which are localStorage-only)
+#     it must ALSO stay server-persisted, so committing it writes the backend
+#     AND the live StartupContext value in the same action.
+# ---------------------------------------------------------------------------
+class SettingsPageControlTest(unittest.TestCase):
+    def setUp(self):
+        self.source = _read("frontend", "src", "app", "settings", "page.tsx")
+
+    def test_page_imports_the_save_function_and_startup_hook(self):
+        self.assertIn("saveVideoFrameSliderMax", self.source)
+        self.assertIn('from "@/contexts/StartupContext"', self.source)
+        self.assertIn("useStartup();", self.source)
+
+    def test_seed_variable_sourced_from_generation_defaults_txt2vid_not_a_bare_literal(self):
+        seed_start = self.source.index("const videoFrameSliderMaxSeed =")
+        seed_line = self.source[seed_start:self.source.index(";", seed_start) + 1]
         self.assertIn(
-            "setVideoFrameSliderMax(e.target.checked ? (videoFrameSliderMax ?? videoFrameSliderMaxSeed) : null);",
-            self.source,
+            'generationDefaults?.txt2vid?.video_frame_slider_max_seed', seed_line
+        )
+        # The literal 241 is only permitted as this expression's OWN
+        # pre-fetch fallback (`?? 241`), never as the value committed when
+        # the checkbox is checked (that must read the fetched variable).
+        self.assertRegex(seed_line, r"\?\?\s*241\b")
+
+    def test_checkbox_commits_through_the_shared_commit_function_not_a_bare_literal(self):
+        checkbox_onchange_start = self.source.index('id="video_frame_slider_max_enabled"')
+        checkbox_onchange_end = self.source.index("}}\n", checkbox_onchange_start)
+        body = self.source[checkbox_onchange_start:checkbox_onchange_end]
+        self.assertIn(
+            "commitVideoFrameSliderMax(checked ? (videoFrameSliderMaxValue ?? videoFrameSliderMaxSeed) : null)",
+            body,
         )
 
-    def test_seed_comes_from_the_backend_not_a_bare_literal_in_the_ternary(self):
-        """The checked-branch of the seed ternary must read the fetched
-        `videoFrameSliderMaxSeed` variable, not a numeric literal -- the
-        literal (241) is only permitted as ITS OWN pre-fetch fallback,
-        checked separately below."""
-        ternary_start = self.source.index("setVideoFrameSliderMax(e.target.checked ? (")
-        ternary_line = self.source[ternary_start:self.source.index("\n", ternary_start)]
-        self.assertIn("videoFrameSliderMaxSeed", ternary_line)
-        self.assertNotRegex(ternary_line, r"\?\?\s*\d+\)")
+    def test_number_input_commit_does_not_post_synchronously_per_keystroke(self):
+        """`NumberInput`'s onCommit fires on every keystroke that parses, not
+        only on blur -- the handler wired to it must defer the network write
+        (setTimeout-based debounce) rather than call the save function
+        directly, or every digit typed would fire its own POST."""
+        handler_start = self.source.index(
+            "const handleVideoFrameSliderMaxNumberCommit = (v: number) => {")
+        handler_end = self.source.index("\n  };", handler_start)
+        body = self.source[handler_start:handler_end]
+        self.assertIn("setTimeout(", body)
+        self.assertIn("commitVideoFrameSliderMax(v)", body)
+        # The immediate line inside the handler body must not itself be an
+        # unconditional/undeferred call to the network function.
+        first_line_after_signature = body.split("\n")[1].strip()
+        self.assertNotIn("commitVideoFrameSliderMax(", first_line_after_signature)
 
-    def test_seed_variable_sourced_from_generation_defaults_txt2vid(self):
+    def test_number_input_wired_to_the_debounced_handler(self):
+        number_input_start = self.source.index('id="video_frame_slider_max"')
+        number_input_end = self.source.index("/>", number_input_start)
+        body = self.source[number_input_start:number_input_end]
+        self.assertIn("onCommit={handleVideoFrameSliderMaxNumberCommit}", body)
+
+    def test_commit_function_updates_both_the_backend_and_the_live_context_value(self):
+        """This is the property that actually fixes Defect 1: a successful
+        write must call the StartupContext setter, not only update this
+        page's own local state -- otherwise panels keep the stale value."""
+        commit_start = self.source.index(
+            "const commitVideoFrameSliderMax = async (value: number | null) => {")
+        commit_end = self.source.index("\n  };", commit_start)
+        body = self.source[commit_start:commit_end]
+        self.assertIn("await saveVideoFrameSliderMax(value)", body)
+        self.assertIn("setLiveVideoFrameSliderMax(saved.video_frame_slider_max ?? null);", body)
+
+    def test_commit_function_reverts_local_state_on_failure_and_reports_it(self):
+        """On a failed write, the user must not be left believing an
+        unsaved value is in effect: the local UI reverts to the last
+        known-good (live) value, and an error message is surfaced -- the
+        same honesty contract QuantizedGemmSettings.tsx follows for its own
+        backend-persisted toggles (report the error, then reload actual
+        state instead of trusting the optimistic local edit)."""
+        commit_start = self.source.index(
+            "const commitVideoFrameSliderMax = async (value: number | null) => {")
+        commit_end = self.source.index("\n  };", commit_start)
+        body = self.source[commit_start:commit_end]
+        catch_start = body.index("} catch (error)")
+        catch_body = body[catch_start:]
+        self.assertIn('type: "error"', catch_body)
         self.assertIn(
-            'generationDefaults?.txt2vid?.video_frame_slider_max_seed', self.source
+            "setVideoFrameSliderMaxEnabled(liveVideoFrameSliderMax != null);", catch_body
+        )
+        self.assertIn(
+            "setVideoFrameSliderMaxValue(liveVideoFrameSliderMax ?? videoFrameSliderMaxSeed);",
+            catch_body,
         )
 
     def test_help_text_states_the_number_box_is_not_bounded(self):
         self.assertIn(
             "The number box next to the slider is not bounded by this setting\n"
-            "            and always accepts a value above it.",
+            "                    and always accepts a value above it.",
             self.source,
         )
 

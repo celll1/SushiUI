@@ -70,6 +70,13 @@ interface StartupContextType {
   // slider's own built-in track reach (VideoFrameCountSlider's constants).
   // Never bounds the paired number box.
   videoFrameSliderMax: number | null;
+  // Updates the live value above without a re-fetch or a page reload. The
+  // Settings page's video-frame-slider-max control calls this immediately
+  // after a successful POST /settings/generation write, so panels reading
+  // videoFrameSliderMax see the new bound at once -- otherwise it would only
+  // ever change on the next full page load, since fetchStartupPayloads runs
+  // once from a mount effect.
+  setVideoFrameSliderMax: (value: number | null) => void;
 }
 
 const StartupContext = createContext<StartupContextType>({
@@ -89,6 +96,7 @@ const StartupContext = createContext<StartupContextType>({
   bundleVaeDefaultsByArch: null,
   archCapabilities: null,
   videoFrameSliderMax: null,
+  setVideoFrameSliderMax: () => {},
 });
 
 export const useStartup = () => useContext(StartupContext);
@@ -318,6 +326,7 @@ export function StartupProvider({ children }: StartupProviderProps) {
       bundleVaeDefaultsByArch,
       archCapabilities,
       videoFrameSliderMax,
+      setVideoFrameSliderMax,
     }}>
       {children}
     </StartupContext.Provider>

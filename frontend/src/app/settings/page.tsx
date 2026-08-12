@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import Sidebar from "@/components/common/Sidebar";
 import Card from "@/components/common/Card";
 import Button from "@/components/common/Button";
@@ -8,8 +8,9 @@ import DirectorySettings from "@/components/settings/DirectorySettings";
 import GenerationSettings from "@/components/settings/GenerationSettings";
 import QuantizedGemmSettings from "@/components/settings/QuantizedGemmSettings";
 import ProtectedRoute from "@/components/common/ProtectedRoute";
-import { restartBackend, restartFrontend, restartBoth } from "@/utils/api";
+import { restartBackend, restartFrontend, restartBoth, saveVideoFrameSliderMax } from "@/utils/api";
 import NumberInput from "@/components/common/NumberInput";
+import { useStartup } from "@/contexts/StartupContext";
 import {
   readGlobalAttentionImpl,
   readGlobalAttentionType,
@@ -51,6 +52,19 @@ const DEFAULT_FIXED_RESOLUTION_PRESETS = [
 ];
 
 export default function SettingsPage() {
+  // videoFrameSliderMax: the live value panels read (StartupContext,
+  // sourced from GET /settings/generation at startup).
+  // setVideoFrameSliderMax: the context setter this page calls right after a
+  // successful write, so the new bound applies without a reload (the fix for
+  // "saving this setting did not apply it").
+  // generationDefaults: source of the checkbox's seed value (see
+  // videoFrameSliderMaxSeed below) -- never a bare literal per param_defaults.py.
+  const {
+    videoFrameSliderMax: liveVideoFrameSliderMax,
+    setVideoFrameSliderMax: setLiveVideoFrameSliderMax,
+    generationDefaults,
+  } = useStartup();
+
   const [isRestarting, setIsRestarting] = useState(false);
   const [storageInfo, setStorageInfo] = useState({ used: 0, quota: 0 });
   const [restoreOnCancel, setRestoreOnCancel] = useState(false);
@@ -76,6 +90,116 @@ export default function SettingsPage() {
   // Attention type
   const [attentionType, setAttentionType] = useState<InferenceAttentionType>("normal");
   const [attentionImpl, setAttentionImpl] = useState<AttentionImplementation>("conduit");
+
+  // Video frame-count slider track max (server-persisted UserSettings row,
+  // GET/POST /settings/generation) -- unlike the other controls in this card
+  // it is NOT localStorage; it commits to the backend on NumberInput's
+  // onCommit / the checkbox's onChange, same trigger points as its
+  // localStorage-backed siblings, just backed by a network write instead.
+  // `null` = unset = the slider's own built-in track reach; bounds the
+  // TRACK only, never the paired number box.
+  const [videoFrameSliderMaxEnabled, setVideoFrameSliderMaxEnabled] = useState(false);
+  const [videoFrameSliderMaxValue, setVideoFrameSliderMaxValue] = useState(241);
+  const [videoFrameSliderMaxSaving, setVideoFrameSliderMaxSaving] = useState(false);
+  const [videoFrameSliderMaxMessage, setVideoFrameSliderMaxMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
+  // backend/api/param_defaults.py VIDEO_GEN_DEFAULTS.video_frame_slider_max_seed
+  // (fetched via generationDefaults.txt2vid, which resolves it like every
+  // other video-only key). 241 mirrors that same value as the pre-fetch
+  // fallback, per this repo's convention for DEFAULT_PARAMS-style fallbacks
+  // (see param_defaults.py's comment on that constant for why 241 specifically).
+  const videoFrameSliderMaxSeed =
+    (generationDefaults?.txt2vid?.video_frame_slider_max_seed as number | undefined) ?? 241;
+
+  // Mirror the live context value into local editing state. Runs on the
+  // initial startup fetch AND after this page's own successful write (the
+  // context echoes the saved value back), so it never fights an edit that is
+  // still in flight -- it is not consulted again until the next write.
+  useEffect(() => {
+    setVideoFrameSliderMaxEnabled(liveVideoFrameSliderMax != null);
+    if (liveVideoFrameSliderMax != null) {
+      setVideoFrameSliderMaxValue(liveVideoFrameSliderMax);
+    }
+  }, [liveVideoFrameSliderMax]);
+
+  // NumberInput's onCommit fires on every keystroke that parses to a valid
+  // number (see NumberInput.tsx's onChange), not only on blur -- so wiring
+  // the POST straight to onCommit would write on every digit typed. This
+  // debounces the actual network write to once per pause in typing (plus the
+  // final settle on blur, which re-fires onCommit with the same value and so
+  // collapses into the same pending timer): the *local* value still updates
+  // immediately for a responsive field, only the backend round trip waits.
+  const videoFrameSliderMaxDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // The value a pending timer is going to write, kept so unmount can FLUSH it
+  // rather than drop it. Cancelling the timer on unmount would mean a value
+  // typed and then navigated away from within the debounce window is silently
+  // never saved -- which the help text ("Applies immediately and is held on
+  // the server") would then be lying about. The flush is fire-and-forget: any
+  // state it would set belongs to a page that is going away, and the write
+  // itself is what matters.
+  const videoFrameSliderMaxPendingRef = useRef<number | null>(null);
+  useEffect(() => {
+    return () => {
+      if (videoFrameSliderMaxDebounceRef.current) {
+        clearTimeout(videoFrameSliderMaxDebounceRef.current);
+        videoFrameSliderMaxDebounceRef.current = null;
+        const pending = videoFrameSliderMaxPendingRef.current;
+        if (pending != null) {
+          void saveVideoFrameSliderMax(pending).catch((error) => {
+            console.error("Failed to flush video frame slider max on unmount:", error);
+          });
+        }
+      }
+    };
+  }, []);
+
+  // Commit-time write (checkbox onChange directly; NumberInput onCommit via
+  // the debounce above) -- never per keystroke. On success, updates both
+  // this page's local state and the live StartupContext value, so panels see
+  // the new bound immediately. On failure, reverts the local UI to the last
+  // known-good (live) value and surfaces an error, so the user is never left
+  // believing an unsaved value took effect -- same honesty contract
+  // QuantizedGemmSettings.tsx uses for its own backend-persisted toggles
+  // (show the error, then reload actual state instead of trusting the
+  // optimistic local edit).
+  const commitVideoFrameSliderMax = async (value: number | null) => {
+    setVideoFrameSliderMaxSaving(true);
+    setVideoFrameSliderMaxMessage(null);
+    try {
+      const saved = await saveVideoFrameSliderMax(value);
+      setLiveVideoFrameSliderMax(saved.video_frame_slider_max ?? null);
+      setVideoFrameSliderMaxEnabled(saved.video_frame_slider_max != null);
+      if (saved.video_frame_slider_max != null) {
+        setVideoFrameSliderMaxValue(saved.video_frame_slider_max);
+      }
+    } catch (error) {
+      console.error("Failed to save video frame slider max:", error);
+      setVideoFrameSliderMaxMessage({
+        type: "error",
+        text: "Failed to save the video frame-count slider track max. The previous value is still in effect; please check the console and try again.",
+      });
+      // Revert to the last known-good value rather than leave the just-typed
+      // value looking applied when it was not saved.
+      setVideoFrameSliderMaxEnabled(liveVideoFrameSliderMax != null);
+      setVideoFrameSliderMaxValue(liveVideoFrameSliderMax ?? videoFrameSliderMaxSeed);
+    } finally {
+      setVideoFrameSliderMaxSaving(false);
+    }
+  };
+
+  // NumberInput onCommit target: updates the field immediately, defers the
+  // actual save (see the debounce comment above `commitVideoFrameSliderMax`).
+  const handleVideoFrameSliderMaxNumberCommit = (v: number) => {
+    setVideoFrameSliderMaxValue(v);
+    if (videoFrameSliderMaxDebounceRef.current) {
+      clearTimeout(videoFrameSliderMaxDebounceRef.current);
+    }
+    videoFrameSliderMaxPendingRef.current = v;
+    videoFrameSliderMaxDebounceRef.current = setTimeout(() => {
+      videoFrameSliderMaxDebounceRef.current = null;
+      videoFrameSliderMaxPendingRef.current = null;
+      void commitVideoFrameSliderMax(v);
+    }, 600);
+  };
 
   // Font size (mobile UI scaling)
   const [fontSize, setFontSize] = useState(100); // 100 = 100% (default)
@@ -633,6 +757,52 @@ export default function SettingsPage() {
                   </div>
                   <p className="text-xs text-gray-500 mt-1">
                     Controls the step size for width and height sliders in generation panels. Default is 64.
+                  </p>
+                </div>
+
+                <div className="space-y-2">
+                  {videoFrameSliderMaxMessage && (
+                    <div className={`p-3 rounded text-sm ${videoFrameSliderMaxMessage.type === "success" ? "bg-green-900/30 text-green-400" : "bg-red-900/30 text-red-400"}`}>
+                      {videoFrameSliderMaxMessage.text}
+                    </div>
+                  )}
+                  <label className="flex items-center gap-2 text-sm font-medium text-gray-300 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      id="video_frame_slider_max_enabled"
+                      checked={videoFrameSliderMaxEnabled}
+                      disabled={videoFrameSliderMaxSaving}
+                      onChange={(e) => {
+                        const checked = e.target.checked;
+                        setVideoFrameSliderMaxEnabled(checked);
+                        void commitVideoFrameSliderMax(checked ? (videoFrameSliderMaxValue ?? videoFrameSliderMaxSeed) : null);
+                      }}
+                      className="w-4 h-4 bg-gray-700 border-gray-600 rounded focus:ring-blue-500"
+                    />
+                    Video Frame Count Slider Track Max
+                  </label>
+                  {videoFrameSliderMaxEnabled && (
+                    <div className="flex items-center space-x-4">
+                      <NumberInput
+                        id="video_frame_slider_max"
+                        label="Video Frame Count Slider Track Max"
+                        value={videoFrameSliderMaxValue}
+                        onCommit={handleVideoFrameSliderMaxNumberCommit}
+                        min={1}
+                        parse="int"
+                        disabled={videoFrameSliderMaxSaving}
+                        className="w-28 px-3 py-2 bg-gray-700 border border-gray-600 rounded text-gray-100 focus:ring-blue-500 focus:border-blue-500"
+                      />
+                    </div>
+                  )}
+                  <p className="text-xs text-gray-500 mt-1">
+                    Sets how far the video frame-count slider&apos;s track reaches on an
+                    architecture that does not impose a hard per-request frame limit.
+                    The number box next to the slider is not bounded by this setting
+                    and always accepts a value above it. Unchecked uses the
+                    slider&apos;s own built-in track reach. The value is snapped onto
+                    the loaded architecture&apos;s frame grid where the slider is used.
+                    Applies immediately and is held on the server.
                   </p>
                 </div>
 

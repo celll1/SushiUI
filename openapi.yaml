@@ -2083,6 +2083,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Another Studio render is already queued or running
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '503':
           description: Render job could not be staged or queued
           content:
@@ -6984,8 +6990,11 @@ components:
           description: Browser-imported files; Gallery assets must not be uploaded again.
     StudioRenderJob:
       type: object
-      required: [job_id, state, progress]
+      required: [success, job_id, state, progress]
       properties:
+        success:
+          type: boolean
+          default: true
         job_id:
           type: string
         state:

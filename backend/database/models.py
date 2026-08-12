@@ -391,6 +391,7 @@ class StudioRenderJob(GalleryBase):
 
     def to_dict(self) -> Dict[str, Any]:
         return {
+            "success": True,
             "job_id": self.id,
             "state": self.state,
             "progress": float(self.progress or 0.0),

@@ -7,6 +7,7 @@ starts, so FFmpeg never receives a client URL or filesystem path.
 
 from __future__ import annotations
 
+import asyncio
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
@@ -18,6 +19,7 @@ import subprocess
 import threading
 import time
 import uuid
+from queue import Empty, Queue
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
@@ -46,6 +48,7 @@ class StudioRenderCancelled(RuntimeError):
 _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 _STUDIO_RENDER_VERSION = 1
 _render_executor = ThreadPoolExecutor(max_workers=1)
+render_submission_lock = asyncio.Lock()
 _process_lock = threading.Lock()
 _active_processes: Dict[str, subprocess.Popen] = {}
 
@@ -196,6 +199,23 @@ def _validate_limits(project: Mapping[str, Any], assets: Sequence[Mapping[str, A
     if len(clips) > int(STUDIO_RENDER_DEFAULTS["max_clips"]):
         raise StudioRenderValidationError("Too many clips in the render manifest")
     return width, height, timeline_frames, int(round(fps * 1000)), canonical_duration
+
+
+def _validate_decode_budget(manifest: Mapping[str, Any]) -> None:
+    project = manifest["project"]
+    fps = float(project["fps"])
+    assets = {asset["id"]: asset for asset in manifest["assets"]}
+    total_pixel_frames = 0.0
+    for clip in manifest["clips"]:
+        asset = assets[clip["asset_id"]]
+        if asset["kind"] == "audio":
+            continue
+        width = int(asset.get("width") or project["width"])
+        height = int(asset.get("height") or project["height"])
+        clip_frames = int(clip["duration_frames"])
+        total_pixel_frames += width * height * clip_frames
+    if total_pixel_frames > float(STUDIO_RENDER_DEFAULTS["max_decode_pixel_frames"]):
+        raise StudioRenderValidationError("The timeline exceeds the renderer decode budget")
 
 
 def _canonical_manifest(raw: Mapping[str, Any], source_metadata: Optional[Mapping[str, Mapping[str, Any]]] = None) -> Dict[str, Any]:
@@ -396,6 +416,7 @@ async def prepare_render_inputs(
     staging_dir = os.path.join(staging_root, job_id)
     os.makedirs(staging_dir, exist_ok=False)
     metadata: Dict[str, Dict[str, Any]] = {}
+    staged_bytes = 0
     try:
         for asset in initial["assets"]:
             asset_id = asset["id"]
@@ -412,8 +433,12 @@ async def prepare_render_inputs(
                 if suffix and re.fullmatch(r"\.[a-z0-9]{1,8}", suffix):
                     staged_name += suffix
                 target = os.path.join(staging_dir, staged_name)
-                if os.path.getsize(source) > int(STUDIO_RENDER_DEFAULTS["max_upload_bytes"]):
+                source_size = os.path.getsize(source)
+                if source_size > int(STUDIO_RENDER_DEFAULTS["max_upload_bytes"]):
                     raise StudioRenderValidationError("A Gallery asset is too large to render")
+                staged_bytes += source_size
+                if staged_bytes > int(STUDIO_RENDER_DEFAULTS["max_total_input_bytes"]):
+                    raise StudioRenderValidationError("Total Studio render input size is too large")
                 shutil.copy2(source, target)
                 source_hash = row.image_hash or _sha256_file(target)
             else:
@@ -426,7 +451,9 @@ async def prepare_render_inputs(
                 if suffix and re.fullmatch(r"\.[a-z0-9]{1,8}", suffix):
                     staged_name += suffix
                 target = os.path.join(staging_dir, staged_name)
-                await _write_upload(upload, target)
+                staged_bytes += await _write_upload(upload, target)
+                if staged_bytes > int(STUDIO_RENDER_DEFAULTS["max_total_input_bytes"]):
+                    raise StudioRenderValidationError("Total Studio render input size is too large")
                 source_hash = _sha256_file(target)
             probed = _metadata_for_file(target, asset["kind"])
             if asset["kind"] != "image" and probed["duration"] <= 0:
@@ -448,6 +475,10 @@ async def prepare_render_inputs(
             original = next(item for item in initial["assets"] if item["id"] == asset["id"])
             asset["staged_name"] = original["staged_name"]
             asset["source"] = original["source"]
+        _validate_decode_budget(final_manifest)
+        free_bytes = shutil.disk_usage(staging_root).free
+        if free_bytes < max(256 * 1024 * 1024, staged_bytes * 2):
+            raise StudioRenderValidationError("Not enough free disk space for the Studio render")
         return final_manifest, staging_dir
     except Exception:
         shutil.rmtree(staging_dir, ignore_errors=True)
@@ -504,7 +535,16 @@ def build_render_command(manifest: Mapping[str, Any], staging_dir: str, ffmpeg: 
     filters: List[str] = []
     filters.append(f"color=c=black:s={width}x{height}:r={fps}:d={duration:.6f}[base0]")
     current_video = "base0"
-    for index, clip in enumerate(clips):
+    track_order = {track_id: order for order, track_id in enumerate(track["id"] for track in manifest["tracks"])}
+    visual_clips = sorted(
+        enumerate(clips),
+        key=lambda pair: (
+            track_order.get(pair[1]["track_id"], 0),
+            pair[1]["start_frame"],
+            pair[0],
+        ),
+    )
+    for visual_index, (index, clip) in enumerate(visual_clips):
         track = tracks[clip["track_id"]]
         asset = assets[clip["asset_id"]]
         if track["kind"] != "video" or track.get("muted") or not track.get("visible", True):
@@ -518,7 +558,7 @@ def build_render_command(manifest: Mapping[str, Any], staging_dir: str, ffmpeg: 
             f"[{input_number}:v:0]trim=start={source_in:.6f}:duration={clip_duration:.6f},"
             f"setpts=PTS-STARTPTS+{clip_start:.6f}/TB,{_scale_filter(width, height, render['fit_mode'])}[{source_label}]"
         )
-        next_video = f"base{index + 1}"
+        next_video = f"base{visual_index + 1}"
         filters.append(
             f"[{current_video}][{source_label}]overlay=eof_action=pass:shortest=0:"
             f"format=auto:enable='between(t,{clip_start:.6f},{clip_start + clip_duration:.6f})'[{next_video}]"
@@ -616,14 +656,44 @@ def _run_ffmpeg(command: List[str], job_id: str, total_frames: int) -> None:
         raise RuntimeError("Could not start the video renderer") from exc
     with _process_lock:
         _active_processes[job_id] = process
-    stderr_text = ""
+    stderr_lines: List[str] = []
+    progress_lines: Queue[Optional[str]] = Queue()
+
+    def drain_progress() -> None:
+        if process.stdout:
+            for line in process.stdout:
+                progress_lines.put(line)
+        progress_lines.put(None)
+
+    def drain_stderr() -> None:
+        if process.stderr:
+            stderr_lines.extend(process.stderr.readlines())
+
+    progress_thread = threading.Thread(
+        target=drain_progress,
+        name=f"studio-render-progress-{job_id[:8]}",
+        daemon=True,
+    )
+    stderr_thread = threading.Thread(
+        target=drain_stderr,
+        name=f"studio-render-stderr-{job_id[:8]}",
+        daemon=True,
+    )
+    progress_thread.start()
+    stderr_thread.start()
+    started = time.monotonic()
     try:
-        assert process.stdout is not None
         while True:
             if _job_cancel_requested(job_id):
                 process.kill()
                 raise StudioRenderCancelled()
-            line = process.stdout.readline()
+            if time.monotonic() - started > float(STUDIO_RENDER_DEFAULTS["max_render_seconds"]):
+                process.kill()
+                raise RuntimeError("Studio render exceeded the renderer time limit")
+            try:
+                line = progress_lines.get(timeout=0.25)
+            except Empty:
+                line = ""
             if line:
                 if line.startswith("frame="):
                     try:
@@ -632,10 +702,8 @@ def _run_ffmpeg(command: List[str], job_id: str, total_frames: int) -> None:
                     except ValueError:
                         pass
                 continue
-            if process.poll() is not None:
+            if line is None or process.poll() is not None:
                 break
-            time.sleep(0.05)
-        stderr_text = (process.stderr.read() if process.stderr else "")[-2000:]
         return_code = process.wait()
         if return_code != 0:
             raise RuntimeError("FFmpeg could not render the Studio timeline")
@@ -644,6 +712,9 @@ def _run_ffmpeg(command: List[str], job_id: str, total_frames: int) -> None:
             _active_processes.pop(job_id, None)
         if process.poll() is None:
             process.kill()
+        progress_thread.join(timeout=2)
+        stderr_thread.join(timeout=2)
+        stderr_text = "".join(stderr_lines)[-2000:]
         if stderr_text:
             # Keep the log useful for operators without returning paths or the
             # raw command to the browser.
@@ -675,12 +746,21 @@ def _write_poster(video_path: str, poster_path: str, duration: float) -> None:
         return
 
 
-def _persist_render_output(job_id: str, manifest: Mapping[str, Any], staging_dir: str, temp_output: str) -> Tuple[str, Optional[str], Dict[str, Any]]:
+def _render_output_name(job_id: str) -> str:
+    return f"studio_render_{time.strftime('%Y%m%d_%H%M%S')}_{job_id[:12]}.mp4"
+
+
+def _persist_render_output(
+    job_id: str,
+    manifest: Mapping[str, Any],
+    staging_dir: str,
+    temp_output: str,
+    filename: Optional[str] = None,
+) -> Tuple[str, Optional[str], Dict[str, Any]]:
     project = manifest["project"]
     render = manifest["render"]
     os.makedirs(settings.outputs_dir, exist_ok=True)
-    timestamp = time.strftime("%Y%m%d_%H%M%S")
-    filename = f"studio_render_{timestamp}_{job_id[:12]}.mp4"
+    filename = filename or _render_output_name(job_id)
     output_path = os.path.join(settings.outputs_dir, filename)
     if not _inside(settings.outputs_dir, output_path):
         raise RuntimeError("Invalid Studio render output path")
@@ -779,8 +859,10 @@ def _render_worker(job_id: str) -> None:
         _run_ffmpeg(command, job_id, int(manifest["project"]["duration_frames"]))
         if _job_cancel_requested(job_id):
             raise StudioRenderCancelled()
-        filename, preview_filename, saved = _persist_render_output(job_id, manifest, staging_dir, temp_output)
-        persisted_filename = filename
+        persisted_filename = _render_output_name(job_id)
+        filename, preview_filename, saved = _persist_render_output(
+            job_id, manifest, staging_dir, temp_output, filename=persisted_filename
+        )
         params = saved["params"]
         image = GeneratedImage(
             filename=filename,

@@ -29,6 +29,7 @@ from core.inference.video_chain_context import (  # noqa: E402
     chain_segment_cap,
     compute_plan_hash,
     derive_segment_seed,
+    derive_token_bindings,
     evaluate_chain_drift,
     format_timestamp,
     new_output_frames,
@@ -470,12 +471,12 @@ class ReferenceBindingTest(unittest.TestCase):
     def test_manifest_prompts_use_the_segment_local_token_numbering(self):
         events = [
             TimelineEvent(id="e0", kind="shot", start_frame=0, end_frame=362,
-                          description="<Picture 1> unlocks the door."),
+                          description="<Picture 3> unlocks the door."),
             TimelineEvent(id="e1", kind="shot", start_frame=362,
                           end_frame=PLANNED_FINAL_FRAMES,
-                          description="<Picture 3> jumps onto the counter."),
+                          description="The cat jumps onto the counter."),
         ]
-        # This plan has two segments, so ref_2 binds to segment 1 only.
+        # Two segments here, so ref_2's [0, 2] narrows to segment 1 only.
         references = self.refs()
         references[2].segment_indices = [0]
         manifest = plan_video_chain_manifest(
@@ -483,9 +484,142 @@ class ReferenceBindingTest(unittest.TestCase):
         )
         self.assertEqual(manifest.segments[0].reference_ids, ["ref_0", "ref_2"])
         self.assertEqual(manifest.segments[1].reference_ids, ["ref_0", "ref_1"])
-        self.assertIn("<Picture 1> unlocks", manifest.segments[0].prompt)
-        # ref_2 is not bound to segment 2, so its token must not survive there.
-        self.assertNotIn("<Picture 3>", manifest.segments[1].prompt)
+        # Segment 1 carries ref_0 and ref_2, so ref_2 is its SECOND picture.
+        self.assertIn("<Picture 2> unlocks", manifest.segments[0].prompt)
+        self.assertNotIn("<Picture 3>", manifest.segments[0].prompt)
+
+
+class TokenImpliedBindingTest(unittest.TestCase):
+    """§5.1 -- a reference token in a segment's text binds that reference to it.
+
+    Deleting the token instead would leave a mutilated sentence ("the woman
+    shown in ."), so the binding is widened and the widening is reported.
+    """
+
+    def _events_using(self, token):
+        return [
+            TimelineEvent(id="e0", kind="shot", start_frame=0, end_frame=362,
+                          description="The baker unlocks the door."),
+            TimelineEvent(id="e1", kind="shot", start_frame=362,
+                          end_frame=PLANNED_FINAL_FRAMES,
+                          description=f"{token} jumps onto the counter."),
+        ]
+
+    def test_derive_token_bindings_unions_with_the_explicit_binding(self):
+        resolved = resolve_reference_bindings(
+            [ChainReference(id="r", kind="image", token="<Picture 1>",
+                            segment_indices=[0])],
+            3,
+        )
+        warnings = []
+        derived = derive_token_bindings(
+            resolved, ["nothing here", "<Picture 1> waves", "<Picture 1> leaves"], warnings
+        )
+        self.assertEqual(derived[0].segment_indices, [0, 1, 2])
+        self.assertEqual(derived[0].binding_source, "token_implied")
+        self.assertTrue(any("segments 2, 3" in w for w in warnings))
+
+    def test_untouched_bindings_keep_their_source_and_warn_nothing(self):
+        resolved = resolve_reference_bindings(
+            [
+                ChainReference(id="a", kind="image", token="<Picture 1>"),
+                ChainReference(id="b", kind="image", token="<Picture 2>",
+                               segment_indices=[1]),
+            ],
+            2,
+        )
+        warnings = []
+        derived = derive_token_bindings(
+            resolved, ["nothing here", "<Picture 1> and <Picture 2>"], warnings
+        )
+        self.assertEqual([r.binding_source for r in derived], ["default_all", "explicit"])
+        self.assertEqual(derived[1].segment_indices, [1])
+        self.assertEqual(warnings, [])
+
+    def test_a_token_in_a_shot_applies_the_reference_to_its_owner_segment(self):
+        # The user narrowed ref_1 to segment 1, but segment 2's shot names it.
+        references = [
+            ChainReference(id="ref_0", kind="image", token="<Picture 1>"),
+            ChainReference(id="ref_1", kind="image", label="cat.png",
+                           token="<Picture 2>", segment_indices=[0]),
+        ]
+        manifest = plan_video_chain_manifest(
+            _plan_request(events=self._events_using("<Picture 2>"),
+                          references=references)
+        )
+        self.assertEqual(manifest.references[1].segment_indices, [0, 1])
+        self.assertEqual(manifest.references[1].binding_source, "token_implied")
+        self.assertEqual(manifest.segments[1].reference_ids, ["ref_0", "ref_1"])
+        # ... and the token survives instead of leaving "jumps onto the counter."
+        self.assertIn("<Picture 2> jumps onto the counter.", manifest.segments[1].prompt)
+
+    def test_widening_an_explicit_binding_is_warned_never_silent(self):
+        references = [
+            ChainReference(id="ref_1", kind="image", label="cat.png",
+                           token="<Picture 1>", segment_indices=[0]),
+        ]
+        manifest = plan_video_chain_manifest(
+            _plan_request(events=self._events_using("<Picture 1>"),
+                          references=references)
+        )
+        self.assertTrue(
+            any("was not bound to segment 2" in w for w in manifest.warnings),
+            manifest.warnings,
+        )
+
+    def test_only_tokens_outside_the_inventory_are_dropped(self):
+        references = [
+            ChainReference(id="ref_1", kind="image", token="<Picture 1>",
+                           segment_indices=[0]),
+        ]
+        manifest = plan_video_chain_manifest(
+            _plan_request(events=self._events_using("<Picture 9>"),
+                          references=references)
+        )
+        dropped = [w for w in manifest.warnings if "removed reference tokens" in w]
+        self.assertEqual(len(dropped), 1)
+        self.assertIn("<Picture 9>", dropped[0])
+        self.assertNotIn("<Picture 9>", manifest.segments[1].prompt)
+        # The known reference was still widened rather than dropped anywhere.
+        self.assertEqual(manifest.references[0].segment_indices, [0])
+
+    def test_a_segment_with_no_reference_still_warns(self):
+        references = [
+            ChainReference(id="ref_1", kind="image", token="<Picture 1>",
+                           segment_indices=[0]),
+        ]
+        manifest = plan_video_chain_manifest(
+            _plan_request(events=self._events_using("the cat"), references=references)
+        )
+        self.assertTrue(
+            any("Segment 2 has no reference bound to it" in w for w in manifest.warnings)
+        )
+
+    def test_token_derived_binding_is_part_of_the_plan_hash(self):
+        request = dict(events=self._events_using("<Picture 2>"), seed_policy="derived")
+        references = [
+            ChainReference(id="ref_0", kind="image", token="<Picture 1>"),
+            ChainReference(id="ref_1", kind="image", token="<Picture 2>",
+                           segment_indices=[0]),
+        ]
+        a = plan_video_chain_manifest(_plan_request(references=references, **request))
+        b = plan_video_chain_manifest(_plan_request(references=references, **request))
+        self.assertEqual(a.plan_hash, b.plan_hash)
+        self.assertEqual([s.seed for s in a.segments], [s.seed for s in b.segments])
+        # The hash is over the WIDENED binding, not the requested one.
+        self.assertEqual(compute_plan_hash(a.to_dict()), a.plan_hash)
+        self.assertEqual(a.to_dict()["references"][1]["segment_indices"], [0, 1])
+        # A reference the user had already bound everywhere hashes differently
+        # only through `binding_source`, which is part of the plan.
+        explicit = [
+            ChainReference(id="ref_0", kind="image", token="<Picture 1>"),
+            ChainReference(id="ref_1", kind="image", token="<Picture 2>",
+                           segment_indices=[0, 1]),
+        ]
+        c = plan_video_chain_manifest(_plan_request(references=explicit, **request))
+        self.assertEqual(c.references[1].binding_source, "explicit")
+        self.assertEqual(a.segment_prompts(), c.segment_prompts())
+        self.assertNotEqual(a.plan_hash, c.plan_hash)
 
 
 class SeedPolicyTest(unittest.TestCase):
@@ -721,6 +855,68 @@ class MiniMaxH3DeterministicPathTest(unittest.TestCase):
         self.assertEqual(a.plan_hash, b.plan_hash)
         self.assertEqual(a.segment_prompts(), b.segment_prompts())
         self.assertEqual([s.seed for s in a.segments], [s.seed for s in b.segments])
+
+
+REF2VA_PROMPT = (
+    "subject_definitions: <Picture 1> is a woman in a red coat. <Picture 2> is a "
+    "station platform at dusk.\n\n"
+    "summary: The woman waits on the platform and boards the train.\n\n"
+    "retention_analysis: The woman shown in <Picture 1> keeps her coat and face "
+    "throughout; the platform shown in <Picture 2> keeps its lamps and signage.\n\n"
+    "detailed_description: [Shot 1] The woman shown in <Picture 1> walks along the "
+    "platform shown in <Picture 2>.\n"
+    "[Shot 2] At 00:15.000 She stops beside a bench and checks the departure board.\n"
+    "[Shot 3] At 00:25.000 A train pulls in and she steps aboard.\n\n"
+    "overall_soundscape: Rain on the canopy and distant announcements.\n\n"
+    "non_diegetic_music: N/A"
+)
+
+
+class Ref2vaTokenSurvivalTest(unittest.TestCase):
+    """The regression this rule exists for: no "the woman shown in ." sentences."""
+
+    def _manifest(self, first_reference_segments):
+        references = [
+            ChainReference(id="ref_a", kind="image", label="woman.png",
+                           token="<Picture 1>",
+                           segment_indices=first_reference_segments),
+            ChainReference(id="ref_b", kind="image", label="platform.png",
+                           token="<Picture 2>"),
+        ]
+        return plan_h3_chain_from_prompt(
+            REF2VA_PROMPT, "ref2va", H3_GRID, 24.0, target_frames=700,
+            segment_frames=362, references=references, root_seed=99,
+            chain_id="ref2va-chain", allow_boundary_split=True,
+        )
+
+    def test_a_narrowed_reference_is_widened_instead_of_mutilating_the_text(self):
+        manifest = self._manifest([0])
+        for segment in manifest.segments:
+            self.assertNotIn("shown in .", segment.prompt)
+            self.assertNotIn("shown in  ", segment.prompt)
+            self.assertIn("The woman shown in <Picture 1>", segment.prompt)
+            self.assertIn("subject_definitions: <Picture 1> is a woman", segment.prompt)
+        self.assertEqual(manifest.references[0].segment_indices, [0, 1])
+        self.assertEqual(manifest.references[0].binding_source, "token_implied")
+        self.assertEqual([s.reference_ids for s in manifest.segments],
+                         [["ref_a", "ref_b"], ["ref_a", "ref_b"]])
+        self.assertTrue(
+            any("was not bound to segment 2" in w for w in manifest.warnings),
+            manifest.warnings,
+        )
+        self.assertFalse([w for w in manifest.warnings if "removed reference tokens" in w])
+
+    def test_the_default_binding_needs_no_widening(self):
+        manifest = self._manifest(None)
+        self.assertEqual([r.binding_source for r in manifest.references],
+                         ["default_all", "default_all"])
+        self.assertFalse([w for w in manifest.warnings if "was not bound" in w])
+        self.assertFalse([w for w in manifest.warnings if "removed reference tokens" in w])
+
+    def test_the_widened_plan_is_deterministic(self):
+        a, b = self._manifest([0]), self._manifest([0])
+        self.assertEqual(a.plan_hash, b.plan_hash)
+        self.assertEqual(a.segment_prompts(), b.segment_prompts())
 
 
 class DriftTest(unittest.TestCase):

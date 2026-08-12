@@ -88,6 +88,7 @@ import { previewStorageKeys, saveImagePreview, clearImagePreview, loadVideoPrevi
 import { sendToPanel, sendImageToImg2Img, sendImageToUpscale, sendImageToOutpaint, sendVideoToOutpaint, sendVideoToInpaint, sendVideoToReference, fetchUrlToFile } from "@/utils/sendHelpers";
 import { fixFloatingPointParams } from "@/utils/numberUtils";
 import { readGlobalAttentionType } from "@/utils/attentionSettings";
+import { newId } from "@/utils/id";
 import { useStartup } from "@/contexts/StartupContext";
 import { useGenerationQueue } from "@/contexts/GenerationQueueContext";
 import SendToStudioButton from "../studio/SendToStudioButton";
@@ -2248,7 +2249,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         ? videoMaskManifest.keyframes.filter((keyframe) => keyframe.maskId === priorMaskId).length
         : 0;
       const isFork = !!priorMaskId && sharerCount > 1;
-      const maskId = isFork ? crypto.randomUUID() : (priorMaskId ?? crypto.randomUUID());
+      const maskId = isFork ? newId() : (priorMaskId ?? newId());
       const isNewAsset = !videoMaskAssets.some((asset) => asset.id === maskId);
       if (isNewAsset && videoMaskAssets.length >= MAX_MASK_ASSETS) {
         // Medium-4 (final audit): this return happens while the mask editor
@@ -2264,7 +2265,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         return { error: message };
       }
       const keyframe: VideoMaskKeyframe = {
-        id: existingKeyframe?.id ?? crypto.randomUUID(),
+        id: existingKeyframe?.id ?? newId(),
         frame,
         maskId,
         interpolationToNext: existingKeyframe?.interpolationToNext ?? "hold",

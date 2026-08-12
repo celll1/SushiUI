@@ -1,3 +1,5 @@
+import { newId } from "@/utils/id";
+
 export type StudioAssetKind = "image" | "video" | "audio";
 
 export type StudioInputRole = "keyframe";
@@ -103,7 +105,7 @@ export interface StudioJob {
 export const createStudioProject = (): StudioProject => ({
   schemaVersion: 2,
   revision: 0,
-  id: crypto.randomUUID(),
+  id: newId(),
   name: "Untitled Studio Project",
   createdAt: new Date().toISOString(),
   updatedAt: new Date().toISOString(),

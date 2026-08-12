@@ -79,6 +79,7 @@ import {
 import type { GenerationParams, Img2ImgParams, InpaintParams, InpaintVideoParams, MiniMaxH3References, OutpaintVideoParams, Ref2VidParams } from "@/utils/api";
 import { useStartup } from "@/contexts/StartupContext";
 import { formatTimecode } from "@/utils/timecode";
+import { newId } from "@/utils/id";
 import ImageEditor from "../common/ImageEditor";
 import { loadImportedMedia, loadStudioProject, saveImportedMedia, saveStudioProject } from "./studioStorage";
 import { resolveStudioTransferUrl, takeStudioTransfer, type StudioTransferPayload } from "./studioTransfer";
@@ -308,14 +309,28 @@ const captureVideoFrameAsset = async (asset: StudioAsset, time: number): Promise
     const context = canvas.getContext("2d");
     if (!context) return null;
     context.drawImage(video, 0, 0, canvas.width, canvas.height);
-    const url = canvas.toDataURL("image/png");
+    const id = `frame-${asset.id}-${Math.round(target * 1000)}`;
+    // Persist the captured frame to IndexedDB (same store used for imported
+    // media) rather than embedding a data URL in the project. Studio's
+    // project manifest is persisted to localStorage, which has a small
+    // quota that a full-resolution PNG data URL can exceed on its own.
+    const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png"));
+    const blobKey = `media-${id}`;
+    let url: string;
+    if (blob) {
+      await saveImportedMedia(blobKey, blob);
+      url = URL.createObjectURL(blob);
+    } else {
+      url = canvas.toDataURL("image/png");
+    }
     return {
-      id: `frame-${asset.id}-${Math.round(target * 1000)}`,
+      id,
       name: `${asset.name} · frame ${target.toFixed(2)}s`,
       kind: "image",
       url,
       masterUrl: url,
       thumbnailUrl: url,
+      blobKey: blob ? blobKey : undefined,
       duration: 0,
       width: canvas.width,
       height: canvas.height,
@@ -386,6 +401,10 @@ export default function StudioWorkspace() {
   const [notice, setNotice] = useState<string | null>(null);
   const [libraryLoading, setLibraryLoading] = useState(true);
   const [snapEnabled, setSnapEnabled] = useState(true);
+  // Which clip the pointer is over, for the still-image preview popover on
+  // the timeline. Nothing else reads it, so it is deliberately not part of
+  // the undoable project state.
+  const [hoveredClipId, setHoveredClipId] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const projectFileInputRef = useRef<HTMLInputElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -590,7 +609,10 @@ export default function StudioWorkspace() {
 
   useEffect(() => {
     if (!restored) return;
-    const timer = window.setTimeout(() => saveStudioProject({ ...project, jobs, outputRange: range, inpaintRange, referenceAssetIds }), 350);
+    const timer = window.setTimeout(() => {
+      const result = saveStudioProject({ ...project, jobs, outputRange: range, inpaintRange, referenceAssetIds });
+      if (!result.ok) setNotice("Could not save the project locally (browser storage is full). Recent edits may be lost on reload.");
+    }, 350);
     return () => window.clearTimeout(timer);
   }, [inpaintRange, jobs, project, range, referenceAssetIds, restored]);
 
@@ -780,7 +802,7 @@ export default function StudioWorkspace() {
     const duration = defaultClipDurationForAsset(asset, project.fps, project.duration - clipStart, holdStill);
     const sourceDuration = sourceDurationForAsset(asset);
     const clip: StudioClip = {
-      id: crypto.randomUUID(),
+      id: newId(),
       assetId: asset.id,
       trackId: targetTrack.id,
       name: asset.name,
@@ -860,7 +882,7 @@ export default function StudioWorkspace() {
     const leftDuration = playhead - clipToSplit.start;
     const right: StudioClip = {
       ...clipToSplit,
-      id: crypto.randomUUID(),
+      id: newId(),
       start: playhead,
       duration: clipToSplit.duration - leftDuration,
       sourceIn: clipToSplit.sourceIn + leftDuration,
@@ -893,7 +915,7 @@ export default function StudioWorkspace() {
     event.preventDefault();
     const bounds = event.currentTarget.getBoundingClientRect();
     const start = clampTime(
-      (event.clientX - bounds.left + (timelineScrollRef.current?.scrollLeft || 0)) / zoom,
+      (event.clientX - bounds.left) / zoom,
       project.duration,
     );
     const clipId = event.dataTransfer.getData("application/x-studio-clip");
@@ -903,6 +925,7 @@ export default function StudioWorkspace() {
     }
     const frameAssetId = event.dataTransfer.getData("application/x-studio-frame");
     if (frameAssetId) {
+      const frameTime = numeric(event.dataTransfer.getData("application/x-studio-frame-time")) ?? playhead;
       const source = allAssets.find((item) => item.id === frameAssetId);
       if (!source) return;
       const hydrated = await hydrateGalleryAsset(source);
@@ -910,7 +933,7 @@ export default function StudioWorkspace() {
         setNotice("Audio clips do not have video frames to extract.");
         return;
       }
-      const frame = await captureVideoFrameAsset(hydrated, numeric(event.dataTransfer.getData("application/x-studio-frame-time")) ?? playhead);
+      const frame = await captureVideoFrameAsset(hydrated, frameTime);
       if (frame) addAssetToTimeline(frame, start, trackId);
       return;
     }
@@ -930,7 +953,7 @@ export default function StudioWorkspace() {
         : file.type.startsWith("audio/")
           ? "audio"
           : "video";
-      const id = crypto.randomUUID();
+      const id = newId();
       const blobKey = `media-${id}`;
       const url = URL.createObjectURL(file);
       const metadata = await readMediaMetadata(file, url);
@@ -1060,6 +1083,7 @@ export default function StudioWorkspace() {
     }
 
     const frameAssetId = event.dataTransfer.getData("application/x-studio-frame");
+    const frameTime = numeric(event.dataTransfer.getData("application/x-studio-frame-time")) ?? playhead;
     const assetId = frameAssetId || event.dataTransfer.getData("application/x-studio-asset");
     const asset = allAssets.find((item) => item.id === assetId);
     if (!asset) return;
@@ -1069,7 +1093,7 @@ export default function StudioWorkspace() {
         setNotice("Audio clips do not have a still frame to use as an image input.");
         return;
       }
-      const frame = await captureVideoFrameAsset(hydrated, numeric(event.dataTransfer.getData("application/x-studio-frame-time")) ?? playhead);
+      const frame = await captureVideoFrameAsset(hydrated, frameTime);
       if (!frame) {
         setNotice("Could not capture a frame from this media.");
         return;
@@ -1095,6 +1119,7 @@ export default function StudioWorkspace() {
       return;
     }
     const frameAssetId = event.dataTransfer.getData("application/x-studio-frame");
+    const frameTime = numeric(event.dataTransfer.getData("application/x-studio-frame-time")) ?? playhead;
     const assetId = frameAssetId || event.dataTransfer.getData("application/x-studio-asset");
     const asset = allAssets.find((item) => item.id === assetId);
     if (!asset) return;
@@ -1104,7 +1129,7 @@ export default function StudioWorkspace() {
         setNotice("Audio clips do not have a still frame to use as a reference.");
         return;
       }
-      const frame = await captureVideoFrameAsset(hydrated, numeric(event.dataTransfer.getData("application/x-studio-frame-time")) ?? playhead);
+      const frame = await captureVideoFrameAsset(hydrated, frameTime);
       if (!frame) {
         setNotice("Could not capture a frame from this media.");
         return;
@@ -1137,17 +1162,31 @@ export default function StudioWorkspace() {
     setImageEditorState({ assetId: asset.id, mode: editorMode });
   };
 
-  const saveStudioEditedImage = (editedImageUrl: string) => {
+  const saveStudioEditedImage = async (editedImageUrl: string) => {
     const source = imageEditorState ? allAssets.find((asset) => asset.id === imageEditorState.assetId) : null;
     if (!source) return;
+    const id = `studio-image-${newId()}`;
+    // Persist the edited image to IndexedDB rather than embedding a data URL
+    // in the project (see captureVideoFrameAsset for the same reasoning).
+    let url = editedImageUrl;
+    let blobKey: string | undefined;
+    try {
+      const blob = await (await fetch(editedImageUrl)).blob();
+      blobKey = `media-${id}`;
+      await saveImportedMedia(blobKey, blob);
+      url = URL.createObjectURL(blob);
+    } catch (error) {
+      console.error("[Studio] Failed to persist edited image to IndexedDB, keeping inline data URL", error);
+    }
     const derived: StudioAsset = {
       ...source,
-      id: `studio-image-${crypto.randomUUID()}`,
+      id,
       galleryId: undefined,
       name: `${source.name.replace(/\.[^/.]+$/, "")} · edited`,
-      url: editedImageUrl,
-      masterUrl: editedImageUrl,
-      thumbnailUrl: editedImageUrl,
+      url,
+      masterUrl: url,
+      thumbnailUrl: url,
+      blobKey,
       source: "generation",
       maskUrl: pendingImageMaskRef.current,
       createdAt: new Date().toISOString(),
@@ -1302,9 +1341,8 @@ export default function StudioWorkspace() {
   const beginRange = (event: ReactPointerEvent<HTMLDivElement>) => {
     const element = event.currentTarget;
     const bounds = element.getBoundingClientRect();
-    const timelineScroll = timelineScrollRef.current;
     const start = clampTime(
-      (event.clientX - bounds.left + (timelineScroll?.scrollLeft || 0)) / zoom,
+      (event.clientX - bounds.left) / zoom,
       project.duration,
     );
     if (tool !== "range") {
@@ -1325,7 +1363,7 @@ export default function StudioWorkspace() {
       }, 420);
       const move = (pointerEvent: PointerEvent) => {
         const current = clampTime(
-          (pointerEvent.clientX - bounds.left + (timelineScroll?.scrollLeft || 0)) / zoom,
+          (pointerEvent.clientX - bounds.left) / zoom,
           project.duration,
         );
         if (rangeArmed) {
@@ -1381,7 +1419,7 @@ export default function StudioWorkspace() {
     updateRange(start);
     const move = (pointerEvent: PointerEvent) => {
       updateRange(clampTime(
-        (pointerEvent.clientX - bounds.left + (timelineScroll?.scrollLeft || 0)) / zoom,
+        (pointerEvent.clientX - bounds.left) / zoom,
         project.duration,
       ));
     };
@@ -1493,7 +1531,7 @@ export default function StudioWorkspace() {
 
       const lane = document.elementFromPoint(pointerEvent.clientX, pointerEvent.clientY)
         ?.closest<HTMLElement>("[data-studio-track-id]");
-      const targetTrackId = lane?.dataset.trackId || clip.trackId;
+      const targetTrackId = lane?.dataset.studioTrackId || clip.trackId;
       const targetTrack = project.tracks.find((item) => item.id === targetTrackId);
       const asset = allAssets.find((item) => item.id === clip.assetId);
       const canDropOnTrack = Boolean(targetTrack && asset && !targetTrack.locked
@@ -1762,7 +1800,7 @@ export default function StudioWorkspace() {
       ? Math.max(1, Math.round((plan.outputRange.end - plan.outputRange.start) * videoFrameRate))
       : null;
     const generatedFrameCount = modality.isVideo && range && planMode !== "inpaint" && planMode !== "outpaint"
-      ? rangeFrameCount
+      ? rangeFrameCount ?? undefined
       : form.numFrames;
     const videoConstraintsKnown = Boolean(loadedArch && archCapabilities?.video_constraints?.[loadedArch]);
     if (modality.isVideo && range && planMode !== "inpaint" && planMode !== "outpaint"
@@ -1811,7 +1849,7 @@ export default function StudioWorkspace() {
         : 0,
     } : null);
 
-    const jobId = crypto.randomUUID();
+    const jobId = newId();
     const resolvedModelName = safeModelLabel(modality.modelInfo?.name || modality.modelInfo?.source || currentModelName);
     const recipe: Record<string, unknown> = {
       model: resolvedModelName,
@@ -1963,10 +2001,10 @@ export default function StudioWorkspace() {
         : range
           ? Math.max(frameDuration(project.fps), range.end - range.start)
           : (asset.duration || fallbackDuration || frameDuration(project.fps));
-      const takeGroupId = selectedClip?.takeGroupId || (selectedClip ? crypto.randomUUID() : undefined);
+      const takeGroupId = selectedClip?.takeGroupId || (selectedClip ? newId() : undefined);
       const selectedTrack = selectedClip ? project.tracks.find((track) => track.id === selectedClip.trackId) : null;
       const clip: StudioClip = {
-        id: crypto.randomUUID(),
+        id: newId(),
         assetId: asset.id,
         trackId: selectedTrack?.kind === "video" ? selectedTrack.id : "video-1",
         name: filename,
@@ -2574,7 +2612,7 @@ export default function StudioWorkspace() {
                           const bounds = event.currentTarget.getBoundingClientRect();
                           setPlayhead(Math.max(0, Math.min(
                             project.duration,
-                            (event.clientX - bounds.left + (timelineScrollRef.current?.scrollLeft || 0)) / zoom,
+                            (event.clientX - bounds.left) / zoom,
                           )));
                           setSelectedClipId(null);
                           setSelectedAssetId(null);
@@ -2758,7 +2796,7 @@ export default function StudioWorkspace() {
               {(notice || (!isBackendReady ? "Generation schema is unavailable. Start the backend to enable AI generation." : null)) && <div className={styles.notice}><AlertCircle size={15} /><span>{notice || "Generation schema is unavailable. Start the backend to enable AI generation."}</span><button onClick={() => setNotice(null)}>×</button></div>}
               <button className={styles.generateButton} onClick={generateClip} disabled={jobs.some((job) => job.status === "running")}><Sparkles size={17} /> Generate {isVideoModel ? "video" : "image"} {outputDuration > 0 && isVideoModel && <small>{outputDuration.toFixed(1)}s</small>}</button>
               <section className={styles.resultsShelf}>
-                <div className={styles.sectionTitle}><span>Generation results</span><button onClick={() => setMediaFilter("generation")}>See all</button></div>
+                <div className={styles.sectionTitle}><span>Generation results</span><button onClick={() => { setAssetFilters((current) => ({ ...current, scope: "generation" })); setMediaFilter("all"); setFiltersOpen(true); }}>See all</button></div>
                 <div className={styles.resultGrid}>
                   {resultAssetIds.length === 0 && <div className={styles.emptyResults}>New takes appear here and remain reusable.</div>}
                   {resultAssetIds.map((assetId) => {

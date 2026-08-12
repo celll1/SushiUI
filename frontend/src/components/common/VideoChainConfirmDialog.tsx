@@ -6,8 +6,8 @@ import {
   VideoChainManifest,
   VideoChainPlan,
   VideoChainPlanRequest,
+  VideoChainPlanRequestSeedPolicy,
   VideoChainReferenceInput,
-  VideoChainSeedPolicy,
   planVideoChainRequest,
   validateVideoChainManifest,
 } from "@/utils/api";
@@ -24,7 +24,7 @@ export interface VideoChainPlanInput {
   targetFrames: number;
   fps: number;
   requestedSegmentFrames?: number | null;
-  seedPolicy?: VideoChainSeedPolicy;
+  seedPolicy?: VideoChainPlanRequestSeedPolicy;
   rootSeed?: number;
   /** Reference inventory: kind and label only, in the order the model reads
    *  them (see videoChain.ts's `buildChainImageReferenceInventory`). */
@@ -70,18 +70,14 @@ export interface VideoChainConfirmDialogProps {
 
 type Phase = "planning" | "editor" | "unavailable";
 
-// `openapi.yaml` types every finding as a VideoChainIssue object, but the
-// planner module's own warnings are plain strings, so a manifest can carry
-// either shape at this seam. Both are rendered rather than one of them coming
-// out blank.
-const normalizeIssues = (issues: unknown): VideoChainIssue[] =>
-  Array.isArray(issues)
-    ? issues.map((issue) =>
-        typeof issue === "string"
-          ? { code: "warning", severity: "warning" as const, message: issue }
-          : (issue as VideoChainIssue)
-      )
-    : [];
+// The backend (`_video_chain_warning_issues` in routes.py) converts every
+// core planner warning -- plain strings internally -- into a `VideoChainIssue`
+// object before it crosses the wire, so `/video-chain/plan` and
+// `/video-chain/validate` responses always carry this one shape. This only
+// guards against a missing/malformed field (e.g. an aborted request), not a
+// string-vs-object split.
+const normalizeIssues = (issues: VideoChainIssue[] | null | undefined): VideoChainIssue[] =>
+  Array.isArray(issues) ? issues : [];
 
 const issueText = (issue: VideoChainIssue) =>
   issue.code && issue.code !== "warning" ? `${issue.message} (${issue.code})` : issue.message;

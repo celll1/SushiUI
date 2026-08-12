@@ -64,6 +64,7 @@ import {
   fitVideoCanvas,
   videoCanvasRule,
   videoCanvasAxisBounds,
+  videoMinInferenceSteps,
   videoCanvasExceedsEnvelope,
   isGenerationStalledError,
   archSupportsFeature,
@@ -4449,7 +4450,10 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-2">
             <Slider
               label="Steps"
-              min={1}
+              // Arch floor, not 1: `validate_video_steps` answers 400 below
+              // it (MiniMax-H3 declares 2 -- its steps are sigma grid points,
+              // so 1 evaluates nothing).
+              min={videoMinInferenceSteps(archCapabilities, loadedArchType)}
               max={100}
               step={1}
               value={params.num_inference_steps ?? 8}

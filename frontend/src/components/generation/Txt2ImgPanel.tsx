@@ -43,7 +43,7 @@ import VideoFrameCountSlider from "../common/VideoFrameCountSlider";
 import VideoChainConfirmDialog from "../common/VideoChainConfirmDialog";
 import { buildChainContinuationQueueItems, advanceVideoChain } from "@/utils/videoChain";
 import { migrateLoopGenerationConfig, computeLoopDecodeDirective } from "@/utils/loopGenerationInheritance";
-import { generateTxt2Img, generateImg2Img, generateTxt2Vid, Txt2VidParams, generateRef2Vid, Ref2VidParams, generateOutpaintVideo, OutpaintVideoParams, MiniMaxH3References, MiniMaxH3Keyframe, generateTxt2Aud, Txt2AudParams, generateTxt2ImgTrainingPreview, GenerationParams, getSamplers, getScheduleTypes, tokenizePrompt, generateTIPOPrompt, cancelGeneration, getCurrentModel, isLatentOnlyResult, getResultFilename, getResultPlaybackFilename, getResultSeed, getResultAncestralSeed, unetQuantizationOptions, normalizeUnetQuantization, transformerQuantizationLabel, archSupportsFeature, archDisplayName, normalizeVideoFrames, videoCanvasRule, videoCanvasAxisBounds, videoCanvasExceedsEnvelope, isGenerationStalledError, planVideoChain, effectiveSegmentFrames, VIDEO_BLOCK_SWAP_MAX } from "@/utils/api";
+import { generateTxt2Img, generateImg2Img, generateTxt2Vid, Txt2VidParams, generateRef2Vid, Ref2VidParams, generateOutpaintVideo, OutpaintVideoParams, MiniMaxH3References, MiniMaxH3Keyframe, generateTxt2Aud, Txt2AudParams, generateTxt2ImgTrainingPreview, GenerationParams, getSamplers, getScheduleTypes, tokenizePrompt, generateTIPOPrompt, cancelGeneration, getCurrentModel, isLatentOnlyResult, getResultFilename, getResultPlaybackFilename, getResultSeed, getResultAncestralSeed, unetQuantizationOptions, normalizeUnetQuantization, transformerQuantizationLabel, archSupportsFeature, archDisplayName, normalizeVideoFrames, videoCanvasRule, videoCanvasAxisBounds, videoMinInferenceSteps, videoCanvasExceedsEnvelope, isGenerationStalledError, planVideoChain, effectiveSegmentFrames, VIDEO_BLOCK_SWAP_MAX } from "@/utils/api";
 import { useActiveTraining } from "@/hooks/useActiveTraining";
 import { useSmoothProgress } from "@/hooks/useSmoothProgress";
 import { wsClient, CFGMetrics } from "@/utils/websocket";
@@ -4462,7 +4462,10 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <Slider
                   label="Steps"
-                  min={1}
+                  // Arch floor, not 1: `validate_video_steps` answers 400 below
+                  // it (MiniMax-H3 declares 2 -- its steps are sigma grid
+                  // points, so 1 evaluates nothing).
+                  min={videoMinInferenceSteps(archCapabilities, loadedArch)}
                   max={100}
                   step={1}
                   value={params.num_inference_steps ?? 8}

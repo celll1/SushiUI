@@ -1208,7 +1208,7 @@ export default function StudioWorkspace() {
         const match = candidates.find((candidate) => candidate.id === clip.id);
         if (!match) return [clip];
         const leftDuration = splitTime - match.start;
-        const right = { ...match, id: newId(), start: splitTime, duration: match.duration - leftDuration, sourceIn: match.sourceIn + leftDuration };
+        const right = { ...match, id: newId(), start: splitTime, duration: match.duration - leftDuration, sourceIn: match.presentation === "frame" || match.presentation === "hold" ? 0 : match.sourceIn + leftDuration };
         rightIds.push(right.id);
         return [{ ...match, duration: leftDuration }, right];
       }),

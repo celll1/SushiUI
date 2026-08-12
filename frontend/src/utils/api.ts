@@ -1727,11 +1727,12 @@ export interface VideoChainSourceSpan {
 }
 
 export type VideoChainEventKind =
+  | "shot"
   | "visual_action"
   | "camera"
   | "dialogue"
-  | "sound"
-  | "music"
+  | "physical_sound"
+  | "music_transition"
   | "state_change";
 
 export interface VideoChainEvent {
@@ -1745,6 +1746,13 @@ export interface VideoChainEvent {
   must_complete?: boolean;
   resulting_state?: string;
   source_span?: VideoChainSourceSpan | null;
+  // The `[Shot N]` number this event was parsed from, in the ROOT prompt's
+  // own numbering. Non-null only for `kind: "shot"`; provenance, not what a
+  // compiled segment prompt renumbers its own shots to.
+  shot_number?: number | null;
+  // Quoted spans (dialogue, lyrics, on-screen text) inside `description`.
+  // Omit it and the server re-derives it from `description`.
+  verbatim?: string[];
 }
 
 export interface VideoChainPersistentContext {
@@ -1771,12 +1779,17 @@ export type VideoChainReferenceKind = "image" | "video" | "audio";
 // reference may cover several non-contiguous segments, and one segment may
 // carry several references. `VideoChainSegment.reference_ids` is a read-only
 // inverse of this, recomputed by the backend on validate.
+export type VideoChainReferenceBindingSource = "default_all" | "explicit" | "token_implied";
+
 export interface VideoChainReference {
   id: string;
   kind: VideoChainReferenceKind;
   label: string;
   segment_indices: number[];
-  binding_source: "default_all" | "explicit";
+  binding_source: VideoChainReferenceBindingSource;
+  // The reference token this entry carries in the ROOT prompt, e.g.
+  // `<Picture 2>` -- lets the compiler renumber tokens per segment.
+  token?: string | null;
 }
 
 // Plan-request inventory entry: kind and label only, never file bytes or a path.
@@ -1785,10 +1798,19 @@ export interface VideoChainReferenceInput {
   kind: VideoChainReferenceKind;
   label: string;
   segment_indices?: number[] | null;
+  // The token this reference already carries in `root_prompt`. Omit it and
+  // the planner derives it from this inventory's order per kind.
+  token?: string | null;
 }
 
 export type VideoChainContextMode = "timeline" | "manual" | "legacy_repeat";
+// Manifest-side seed policy: how `segments[].seed` was actually assigned.
 export type VideoChainSeedPolicy = "fixed" | "derived" | "explicit";
+// Plan-request-side seed policy: `explicit` cannot be requested here (no field
+// on the request carries per-segment seeds); the server answers it with a 400.
+// Reach `explicit` by planning with `fixed`/`derived`, then setting
+// `segments[].seed` in the editor and re-validating.
+export type VideoChainPlanRequestSeedPolicy = "fixed" | "derived";
 export type VideoChainContinuationMode =
   | "boundary_frame"
   | "motion_preroll"
@@ -1799,6 +1821,10 @@ export interface VideoChainVisualContext {
   mode: "initial" | VideoChainContinuationMode;
   frames?: number | null;
   source_segment_index?: number | null;
+  // Frames this segment shares in time with its predecessor: 1 under
+  // `boundary_frame`, null for `initial`. `segments[].effective_overlap_frames`
+  // stays the authoritative value used in frame arithmetic.
+  shared_context_frames?: number | null;
 }
 
 export interface VideoChainSegment {
@@ -1810,6 +1836,10 @@ export interface VideoChainSegment {
   // Includes the shared anchor frame, so this segment ADDS
   // `generated_span_frames - 1` new frames (0 excepted).
   generated_span_frames: number;
+  // The `total_frames` this segment's generation request asks for (the
+  // accumulated clip length after it runs). Equals `owned_end_frame`. Omit
+  // it in an edited manifest and the server derives it from `owned_end_frame`.
+  requested_total_frames?: number | null;
   prompt: string;
   negative_prompt?: string;
   incoming_state?: VideoChainSegmentState;
@@ -1857,8 +1887,11 @@ export interface VideoChainPlanRequest {
   target_frames: number;
   fps?: number;
   requested_segment_frames?: number | null;
-  context_mode?: VideoChainContextMode;
-  seed_policy?: VideoChainSeedPolicy;
+  // Deliberately has no schema default and is nullable: the server must be
+  // able to tell "the caller chose `timeline`" from "the caller chose
+  // nothing" -- an omitted/null value is not the same request as `timeline`.
+  context_mode?: VideoChainContextMode | null;
+  seed_policy?: VideoChainPlanRequestSeedPolicy;
   root_seed?: number;
   continuation_mode?: VideoChainContinuationMode;
   requested_overlap_frames?: number;

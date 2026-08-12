@@ -12380,6 +12380,30 @@ components:
           type: integer
         component_revision:
           type: integer
+        text_encoder_file:
+          type: string
+          nullable: true
+          description: |
+            MiniMax-H3 only: basename of the text encoder the conditioning is
+            produced by.
+          example: qwen3vl_4b_heretic_tap24_bf16.safetensors
+        clip_projection_file:
+          type: string
+          nullable: true
+          description: |
+            MiniMax-H3 only: basename of the trained projection a converted
+            small text encoder's hidden state is mapped through, or null when
+            a released 32B encoder is loaded (which needs none).
+          example: mmh3-4b-ClipProj-celeb-mlp.safetensors
+        te_text_only:
+          type: boolean
+          description: |
+            MiniMax-H3 only: true when the loaded text encoder was converted
+            without a vision tower. Such an encoder serves prompt-only
+            (`/generate/txt2vid`) requests; `/generate/img2vid`,
+            `/generate/ref2vid`, `/generate/outpaint/video` and
+            `/generate/inpaint/video` are refused with 400.
+          example: false
 
     CurrentModelResponse:
       type: object

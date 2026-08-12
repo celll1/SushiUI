@@ -3818,6 +3818,12 @@ async def generate_img2vid(
                        "diffusion_models/minimax_h3_fl2va_pruned_fp8_scaled.safetensors, or send "
                        "the request to /generate/ref2vid with the loaded checkpoint.",
             )
+        # A converted text-only encoder serves prompt-only requests only.
+        from api.generation_utils import resolve_minimax_h3_text_only_te_gate
+        resolve_minimax_h3_text_only_te_gate(
+            getattr(pipeline_manager, "minimax_h3_components", None),
+            workflow="keyframe/audio conditioning (/generate/img2vid)",
+        )
 
     # ---- At least one conditioning medium, and WHICH ones this architecture
     # can read. `image` stopped being a required part when `input_audio`
@@ -4290,6 +4296,14 @@ async def generate_ref2vid(
     video_files = _present(reference_videos)
     video_audio_files = list(reference_video_audios or [])
     audio_files = _present(reference_audios)
+    # A converted text-only encoder has no vision tower to read an image or
+    # video reference with.
+    from api.generation_utils import resolve_minimax_h3_text_only_te_gate
+    resolve_minimax_h3_text_only_te_gate(
+        getattr(pipeline_manager, "minimax_h3_components", None),
+        workflow="reference conditioning (/generate/ref2vid)",
+        has_vision_references=bool(image_files or video_files),
+    )
     # C5: the optional keyframe anchors, same positional-pair convention as
     # /generate/img2vid.
     _keyframes = _present(keyframe_images)
@@ -4806,6 +4820,15 @@ async def generate_outpaint_video(
                        "diffusion_models/minimax_h3_ref2va_pruned_fp8_scaled.safetensors, or omit "
                        "reference_images to keep using fl2va's exact-preserving extend.",
             )
+        # A converted text-only encoder serves prompt-only requests only, and on
+        # ref2va the preserved clip is itself a video reference, so this refuses
+        # for the vision-tower reason even with no reference_images.
+        from api.generation_utils import resolve_minimax_h3_text_only_te_gate
+        resolve_minimax_h3_text_only_te_gate(
+            getattr(pipeline_manager, "minimax_h3_components", None),
+            workflow="clip extension (/generate/outpaint/video)",
+            has_vision_references=bool(_ref_image_files) or _h3_variant == "ref2va",
+        )
         from core.models.minimax_h3.h3_references import MAX_REFERENCE_IMAGES as _max_ref_images
         if len(_ref_image_files) > _max_ref_images:
             raise CustomValidationError(
@@ -5469,6 +5492,12 @@ async def generate_inpaint_video(
                    "reference conditioning is not implemented on any endpoint. Load "
                    "diffusion_models/minimax_h3_fl2va_pruned_fp8_scaled.safetensors.",
         )
+    # A converted text-only encoder serves prompt-only requests only.
+    from api.generation_utils import resolve_minimax_h3_text_only_te_gate
+    resolve_minimax_h3_text_only_te_gate(
+        getattr(pipeline_manager, "minimax_h3_components", None),
+        workflow="temporal inpaint (/generate/inpaint/video)",
+    )
     if inpaint_video_audio_mode is not None and inpaint_video_audio_mode not in (
             "regenerate", "preserve_input", "regenerate_range"):
         raise CustomValidationError(

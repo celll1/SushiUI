@@ -937,6 +937,16 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                         "vae_scale_factor_spatial", 16),
                     "vae_scale_factor_temporal": self.minimax_h3_components.get(
                         "vae_scale_factor_temporal", 4),
+                    # Which text encoder produced the conditioning, and (when it
+                    # is a converted small one) the projection it is only usable
+                    # through -- a client cannot tell a substitution apart from
+                    # the released encoder otherwise.
+                    "text_encoder_file": os.path.basename(
+                        str(self.minimax_h3_components.get("text_encoder_path") or "")) or None,
+                    "clip_projection_file": os.path.basename(
+                        str((self.minimax_h3_components.get("te_projection") or {}).get("path")
+                            or "")) or None,
+                    "te_text_only": bool(self.minimax_h3_components.get("te_text_only")),
                 }
                 self._save_last_model(source_type, source, pipeline_type)
                 print("[Pipeline] MiniMax-H3 model loaded successfully")
@@ -1200,6 +1210,13 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             "latent_channels": replacement.get("latent_channels", 24),
             "vae_scale_factor_spatial": replacement.get("vae_scale_factor_spatial", 16),
             "vae_scale_factor_temporal": replacement.get("vae_scale_factor_temporal", 4),
+            # The DiT-only reload keeps the mapped text encoder, so this reports
+            # the same encoder/projection the full load did.
+            "text_encoder_file": os.path.basename(
+                str(replacement.get("text_encoder_path") or "")) or None,
+            "clip_projection_file": os.path.basename(
+                str((replacement.get("te_projection") or {}).get("path") or "")) or None,
+            "te_text_only": bool(replacement.get("te_text_only")),
         }
         self._save_last_model(source_type, source, pipeline_type)
 

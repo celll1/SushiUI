@@ -53,6 +53,7 @@ import { saveTempImage, loadTempImage } from "@/utils/tempImageStorage";
 import { previewStorageKeys, loadVideoPreview, saveVideoPreview, loadAudioPreview, saveAudioPreview, saveImagePreview, clearVideoPreview, clearAudioPreview, clearImagePreview, outputExists, stripCacheBuster, withCacheBuster, imagePreviewGone } from "@/utils/previewStorage";
 import { sendToPanel, sendImageToImg2Img, sendBase64ImageToInpaint, sendBase64ImageToUpscale, sendBase64ImageToOutpaint, sendVideoToOutpaint, sendVideoToInpaint, sendVideoToReference, sendAudioToOutpaint, sendAudioToImg2Img, fetchUrlToFile } from "@/utils/sendHelpers";
 import { useStartup } from "@/contexts/StartupContext";
+import { readGlobalVideoFrameCount } from "@/utils/videoFrameSettings";
 import { useGenerationQueue } from "@/contexts/GenerationQueueContext";
 import { createH3ReferenceInventory, maybeTransformH3PromptForGeneration } from "@/utils/h3PromptAssist";
 import { readGlobalAttentionType } from "@/utils/attentionSettings";
@@ -301,6 +302,14 @@ const PREVIEW_STORAGE_KEY = "txt2img_preview";
 const PREVIEW_KEYS = previewStorageKeys(PREVIEW_STORAGE_KEY);
 const LOOP_GENERATION_STORAGE_KEY = "txt2img_loop_generation";
 const REF_IMAGES_STORAGE_KEY = "txt2img_ref_images";
+// Chain segment length (`chainSegmentFrames`) round-trips separately from
+// `params` -- see the state declaration below for why it is never part of
+// the `params` blob (it is client-side chain orchestration only, never sent
+// to the backend). `null` must round-trip as `null` ("never split"), which
+// JSON already does correctly (`JSON.stringify(null) === "null"`); the
+// restore/persist effects only need to distinguish "key absent" (never
+// persisted, also defaults to null) from "key present".
+const CHAIN_SEGMENT_FRAMES_STORAGE_KEY = "txt2img_chain_segment_frames";
 
 interface Txt2ImgPanelProps {
   onTabChange?: (tab: "txt2img" | "img2img" | "inpaint" | "outpaint" | "upscale") => void;
@@ -371,8 +380,17 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
   // documented trained range even though the backend would accept one huge
   // request. A chain already enqueued is frozen at enqueue time (the value
   // is copied onto each queue item's own `chainSegmentFrames` field) and is
-  // never retargeted by a later change here.
+  // never retargeted by a later change here. Persisted separately under
+  // `CHAIN_SEGMENT_FRAMES_STORAGE_KEY` (see the mount-restore/persist
+  // effects below); restoring it never touches an already-enqueued item's
+  // own frozen copy.
   const [chainSegmentFrames, setChainSegmentFrames] = useState<number | null>(null);
+  // Set when the architecture-grid snap (below) actually changes a held
+  // `chainSegmentFrames` -- including one just restored from localStorage
+  // under an architecture that no longer accepts it -- so the replacement
+  // is reported instead of silently applied. Same shape as InpaintPanel's
+  // `regenerateRangeReplacedNotice`.
+  const [chainSegmentFramesReplacedNotice, setChainSegmentFramesReplacedNotice] = useState<string | null>(null);
   // Audio output (produced when an audio model is loaded / txt2aud queue item).
   const [generatedAudio, setGeneratedAudio] = useState<string | null>(null);
   const [generatedAudioInfo, setGeneratedAudioInfo] = useState<{ duration?: number; sample_rate?: number } | null>(null);
@@ -522,16 +540,24 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
     });
   }, [archCapabilities, loadedArch]);
   // Same snap for a held `chainSegmentFrames`: a non-null value carried over
-  // from another architecture's grid is moved to the nearest length THIS
-  // architecture accepts, the same as `num_frames` above. A null value (the
-  // default -- "never split") is left alone; there is nothing to snap.
+  // from another architecture's grid -- including one just restored from
+  // localStorage -- is moved to the nearest length THIS architecture
+  // accepts, the same as `num_frames` above. A null value (the default --
+  // "never split") is left alone; there is nothing to snap. Unlike the
+  // `num_frames` effect above, a real change here is reported via
+  // `chainSegmentFramesReplacedNotice` rather than applied silently -- the
+  // restored/held value came from the user, not from a schema default.
   useEffect(() => {
     if (!archCapabilities || !loadedArch) return;
-    setChainSegmentFrames((prev) => {
-      if (prev == null) return prev;
-      const normalized = normalizeVideoFrames(archCapabilities, loadedArch, prev);
-      return normalized == null || normalized === prev ? prev : normalized;
-    });
+    if (chainSegmentFrames == null) return;
+    const normalized = normalizeVideoFrames(archCapabilities, loadedArch, chainSegmentFrames);
+    if (normalized == null || normalized === chainSegmentFrames) return;
+    const previous = chainSegmentFrames;
+    setChainSegmentFrames(normalized);
+    setChainSegmentFramesReplacedNotice(
+      `The chain segment length (${previous} frames) does not fit this architecture's frame grid and was replaced with ${normalized} frames.`
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [archCapabilities, loadedArch]);
   const [promptTokenCount, setPromptTokenCount] = useState<number>(0);
   const [negativePromptTokenCount, setNegativePromptTokenCount] = useState<number>(0);
@@ -670,6 +696,22 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         setParams(fixed);
       } catch (error) {
         console.error("Failed to load saved params:", error);
+      }
+    }
+
+    // Load chain segment length. Kept out of `params` (see the state
+    // declaration), so it is restored from its own key. `getItem` returning
+    // `null` means the key was never written (default: unset/never-split);
+    // a written `"null"` (from `JSON.stringify(null)`) parses back to the
+    // JS `null` a set-but-then-unchecked box would have written, so both
+    // cases land on `null` without a fallback default masking either one.
+    const savedChainSegmentFrames = localStorage.getItem(CHAIN_SEGMENT_FRAMES_STORAGE_KEY);
+    if (savedChainSegmentFrames !== null) {
+      try {
+        const parsedChainSegmentFrames = JSON.parse(savedChainSegmentFrames);
+        setChainSegmentFrames(typeof parsedChainSegmentFrames === "number" ? parsedChainSegmentFrames : null);
+      } catch (error) {
+        console.error("Failed to load saved chain segment length:", error);
       }
     }
 
@@ -1023,12 +1065,37 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
     }
   }, [loopGenerationConfig, isMounted]);
 
-  // Apply backend-fetched defaults when they arrive (only if no localStorage value exists)
+  // Save chain segment length whenever it changes. `null` is written
+  // explicitly (`JSON.stringify(null) === "null"`) rather than removing the
+  // key, so a reload can tell "explicitly unset" apart from "never saved" --
+  // both currently mean the same default, but writing `null` keeps that an
+  // intentional round trip rather than an accident of `JSON.stringify`
+  // dropping `undefined` keys.
+  useEffect(() => {
+    if (isMounted) {
+      localStorage.setItem(CHAIN_SEGMENT_FRAMES_STORAGE_KEY, JSON.stringify(chainSegmentFrames));
+    }
+  }, [chainSegmentFrames, isMounted]);
+
+  // Apply backend-fetched defaults when they arrive (only if no localStorage value exists).
+  // A global `num_frames` preference (Settings -> Default Video Frame Count)
+  // is layered on top of the served default at this same "nothing to fall
+  // back on yet" gate -- so a panel that already has its own saved value
+  // from a previous session (`stored` truthy) never has it overridden, and
+  // the global preference only ever supplies a STARTING point, exactly like
+  // `generationDefaults.txt2img` itself does. It is applied unsnapped here;
+  // the `normalizeVideoFrames` effect above re-snaps it onto the loaded
+  // architecture's grid once that is known, same as any other seeded value.
   useEffect(() => {
     if (!generationDefaults) return;
     const stored = localStorage.getItem(STORAGE_KEY);
     if (!stored) {
-      setParams(prev => ({ ...DEFAULT_PARAMS, ...(generationDefaults.txt2img as Partial<typeof DEFAULT_PARAMS>) }));
+      const globalFrames = readGlobalVideoFrameCount();
+      setParams(prev => ({
+        ...DEFAULT_PARAMS,
+        ...(generationDefaults.txt2img as Partial<typeof DEFAULT_PARAMS>),
+        ...(globalFrames != null ? { num_frames: globalFrames } : {}),
+      }));
     }
   }, [generationDefaults]);
 
@@ -4351,6 +4418,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                     type="checkbox"
                     checked={chainSegmentFrames != null}
                     onChange={(e) => {
+                      setChainSegmentFramesReplacedNotice(null);
                       if (!e.target.checked) {
                         setChainSegmentFrames(null);
                         return;
@@ -4362,21 +4430,31 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                   />
                   Chain segment length
                 </label>
-                {chainSegmentFrames != null && (
-                  <NumberInput
-                    label="Chain segment length"
-                    value={chainSegmentFrames}
-                    onCommit={(v) => setChainSegmentFrames(v)}
-                    min={(loadedArch ? archCapabilities?.video_constraints?.[loadedArch]?.min_frames : undefined) ?? 1}
-                    step={(loadedArch ? archCapabilities?.video_constraints?.[loadedArch]?.frame_multiple : undefined) ?? 1}
-                    parse="int"
-                    className="w-20"
-                  />
-                )}
               </div>
+              {chainSegmentFrames != null && (
+                <VideoFrameCountSlider
+                  caps={archCapabilities}
+                  arch={loadedArch}
+                  value={chainSegmentFrames}
+                  onChange={(frames) => {
+                    setChainSegmentFramesReplacedNotice(null);
+                    setChainSegmentFrames(frames);
+                  }}
+                  fallbackFps={params.frame_rate ?? 24.0}
+                  allowOverCap={false}
+                  disabled={(params.num_frames ?? 0) <= chainSegmentFrames}
+                />
+              )}
+              {chainSegmentFramesReplacedNotice && (
+                <p className="text-xs text-amber-400">{chainSegmentFramesReplacedNotice}</p>
+              )}
               {chainSegmentFrames == null ? (
                 <p className="text-xs text-gray-500">
                   A chained generation is never split by default; check the box to split into requests of a fixed length.
+                </p>
+              ) : (params.num_frames ?? 0) <= chainSegmentFrames ? (
+                <p className="text-xs text-gray-500">
+                  Chain segment length has no effect while the total frame count ({params.num_frames ?? 0}) is at or below it.
                 </p>
               ) : (
                 <p className="text-xs text-gray-500">

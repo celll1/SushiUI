@@ -198,11 +198,31 @@ class PanelChainSegmentStateTest(unittest.TestCase):
                 )
 
     def test_both_panels_snap_a_held_segment_length_on_arch_switch(self):
+        """Bails on a null value (nothing to snap) and reuses
+        `normalizeVideoFrames` -- the same helper `num_frames` itself is
+        snapped with -- rather than a second copy of the grid arithmetic."""
         for panel in ("Txt2ImgPanel.tsx", "Img2ImgPanel.tsx"):
             with self.subTest(panel=panel):
                 source = self._read(panel)
-                self.assertIn("setChainSegmentFrames((prev) => {", source)
-                self.assertIn("if (prev == null) return prev;", source)
+                self.assertIn("if (chainSegmentFrames == null) return;", source)
+                self.assertIn(
+                    "normalizeVideoFrames(archCapabilities, loadedArch, chainSegmentFrames)",
+                    source,
+                )
+
+    def test_both_panels_report_rather_than_silently_apply_the_arch_switch_snap(self):
+        """A snap that actually changes a held (including just-restored)
+        segment length is surfaced via a notice, not applied silently --
+        distinct from the schema-defaults seed path, which IS silent."""
+        for panel in ("Txt2ImgPanel.tsx", "Img2ImgPanel.tsx"):
+            with self.subTest(panel=panel):
+                source = self._read(panel)
+                self.assertIn(
+                    "const [chainSegmentFramesReplacedNotice, setChainSegmentFramesReplacedNotice] = useState<string | null>(null);",
+                    source,
+                )
+                self.assertIn("setChainSegmentFramesReplacedNotice(\n      `The chain segment length (${previous} frames)", source)
+                self.assertIn("{chainSegmentFramesReplacedNotice && (", source)
 
     def test_both_panels_render_the_segment_length_checkbox(self):
         for panel in ("Txt2ImgPanel.tsx", "Img2ImgPanel.tsx"):
@@ -239,6 +259,118 @@ class PanelChainSegmentStateTest(unittest.TestCase):
             with self.subTest(panel=panel):
                 source = self._read(panel)
                 self.assertIn("segmentFrames: number | null;", source)
+
+
+# ---------------------------------------------------------------------------
+# 6b. VideoFrameCountSlider: an `allowOverCap` prop parameterises the shared
+#    slider+NumberInput control for the chain segment length instead of
+#    building (or copy-pasting) a second slider component.
+# ---------------------------------------------------------------------------
+class SliderReuseTest(unittest.TestCase):
+    def setUp(self):
+        self.slider_source = _read(
+            "frontend", "src", "components", "common", "VideoFrameCountSlider.tsx")
+
+    def _read(self, name: str) -> str:
+        return _read("frontend", "src", "components", "generation", name)
+
+    def test_prop_declared_and_defaults_true(self):
+        """Defaulting to `true` preserves the original num_frames behaviour
+        (over-cap entry is the opt-in trigger for the chain feature) for
+        every caller that does not pass the prop."""
+        self.assertIn("allowOverCap?: boolean;", self.slider_source)
+        self.assertIn("allowOverCap = true,", self.slider_source)
+
+    def test_over_cap_state_is_gated_by_the_prop(self):
+        self.assertIn(
+            "const overCap = allowOverCap && overCapThreshold != null && value > overCapThreshold;",
+            self.slider_source,
+        )
+
+    def test_number_box_commit_uses_plain_snap_when_over_cap_is_disallowed(self):
+        self.assertIn(
+            "onCommit={(v) => onChange(allowOverCap ? snapAllowingOverCap(v) : snap(v))}",
+            self.slider_source,
+        )
+
+    def test_both_panels_use_the_slider_for_segment_length_with_over_cap_disallowed(self):
+        """The checkbox+NumberInput pair the segment length used to have is
+        gone; it now reuses VideoFrameCountSlider, the same control
+        `num_frames` uses, with `allowOverCap={false}` (a segment length is
+        itself a single-inference length -- it must not offer the opt-in
+        beyond-cap entry point `num_frames` offers)."""
+        for panel in ("Txt2ImgPanel.tsx", "Img2ImgPanel.tsx"):
+            with self.subTest(panel=panel):
+                source = self._read(panel)
+                self.assertIn("value={chainSegmentFrames}", source)
+                self.assertIn("allowOverCap={false}", source)
+                self.assertNotIn('label="Chain segment length"', source)
+
+    def test_both_panels_go_inert_without_mutating_when_total_is_at_or_below_segment(self):
+        """`disabled`, not a value change: the segment length is left
+        exactly as the user set it, it just has nothing to do while the
+        total frame count does not exceed it."""
+        for panel in ("Txt2ImgPanel.tsx", "Img2ImgPanel.tsx"):
+            with self.subTest(panel=panel):
+                source = self._read(panel)
+                self.assertIn(
+                    "disabled={(params.num_frames ?? 0) <= chainSegmentFrames}", source)
+                self.assertIn(
+                    "Chain segment length has no effect while the total frame count", source)
+
+
+# ---------------------------------------------------------------------------
+# 6c. Chain segment length persistence: round-trips through its OWN
+#    localStorage key (kept out of the `params` blob because it is never
+#    sent to the backend), with `null` surviving as `null`.
+# ---------------------------------------------------------------------------
+class ChainSegmentFramesPersistenceTest(unittest.TestCase):
+    def _read(self, name: str) -> str:
+        return _read("frontend", "src", "components", "generation", name)
+
+    def test_both_panels_declare_a_dedicated_storage_key(self):
+        for panel, key in (
+            ("Txt2ImgPanel.tsx", "txt2img_chain_segment_frames"),
+            ("Img2ImgPanel.tsx", "img2img_chain_segment_frames"),
+        ):
+            with self.subTest(panel=panel):
+                source = self._read(panel)
+                self.assertIn(
+                    f'const CHAIN_SEGMENT_FRAMES_STORAGE_KEY = "{key}";', source)
+
+    def test_both_panels_restore_null_and_numeric_value_distinctly(self):
+        """`getItem(...) !== null` (key was written at all, including a
+        written `"null"`) gates the restore, and the parsed value is used
+        verbatim only when it actually typechecks as a number -- otherwise
+        (including the literal parsed `null`) the state is set to `null`.
+        This is what makes both round trips (`null` -> `null`,
+        `42` -> `42`) hold rather than one of them collapsing onto a
+        fallback default."""
+        for panel in ("Txt2ImgPanel.tsx", "Img2ImgPanel.tsx"):
+            with self.subTest(panel=panel):
+                source = self._read(panel)
+                self.assertIn(
+                    "const savedChainSegmentFrames = localStorage.getItem(CHAIN_SEGMENT_FRAMES_STORAGE_KEY);",
+                    source,
+                )
+                self.assertIn("if (savedChainSegmentFrames !== null) {", source)
+                self.assertIn(
+                    "setChainSegmentFrames(typeof parsedChainSegmentFrames === \"number\" ? parsedChainSegmentFrames : null);",
+                    source,
+                )
+
+    def test_both_panels_persist_null_explicitly_rather_than_dropping_the_key(self):
+        """`JSON.stringify(null) === "null"` is written on every change
+        (gated only by `isMounted`, not by the value being non-null) --
+        this is the write side of the round trip the restore test checks."""
+        for panel in ("Txt2ImgPanel.tsx", "Img2ImgPanel.tsx"):
+            with self.subTest(panel=panel):
+                source = self._read(panel)
+                self.assertIn(
+                    "localStorage.setItem(CHAIN_SEGMENT_FRAMES_STORAGE_KEY, JSON.stringify(chainSegmentFrames));",
+                    source,
+                )
+                self.assertIn("}, [chainSegmentFrames, isMounted]);", source)
 
 
 # ---------------------------------------------------------------------------

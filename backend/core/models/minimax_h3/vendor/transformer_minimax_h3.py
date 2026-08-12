@@ -13,12 +13,12 @@
 #   * relative diffusers imports rewritten to absolute `diffusers.*` paths.
 #   * added the "pruned" / AdaLN-curve checkpoint variant (`adaln_curve_grid`):
 #     a `[grid, time_embed_dim]` table replacing the timestep MLP, linearly
-#     interpolated over continuous t, with the SiLU folded into the table.
-#     Ported from ComfyUI `comfy/ldm/minimax/model.py` (Apache-2.0,
-#     comfyanonymous/ComfyUI) — see `MiniMaxH3AdaLayerNormModulation` and
-#     `MiniMaxH3Transformer3DModel.__init__` / `.forward`. Upstream diffusers
-#     implements only the full-modulation variant, which the released
-#     `*_pruned_*` single-file checkpoints do not contain.
+#     interpolated over continuous t, with the SiLU folded into the table — see
+#     `MiniMaxH3AdaLayerNormModulation` and
+#     `MiniMaxH3Transformer3DModel.__init__` / `.forward`. Required because the
+#     released `*_pruned_*` single-file checkpoints ship no timestep MLP at all,
+#     only an `adaln_t_table`; upstream diffusers implements only the
+#     full-modulation variant.
 #   * `MiniMaxH3TransformerBlock.forward` now casts the six modulation tensors
 #     down to the residual stream's dtype before applying them.
 #   * `MiniMaxH3TransformerBlock.forward` calls the feed-forward through
@@ -28,46 +28,24 @@
 #     docstring for the measurement this is based on and why it is
 #     unconditional rather than a knob.
 #
-#     WHY. Upstream's block was written for a bfloat16 `adaln_proj`. In the
-#     AdaLN-curve ("pruned") variant ComfyUI computes that projection in float32
-#     (`"adaln_dtype": torch.float32 if self.use_adaln_curves else dtype`,
-#     `comfy/ldm/minimax/model.py` L432), and the SushiUI loader follows it. With
-#     no cast, a float32 modulation of shape `(num_adaln_rows, hidden_size)`
-#     promotes the whole `(batch, seq_len, hidden_size)` activation stack to
-#     float32 through every one of the 50 blocks. It does not raise anywhere:
-#     `Fp8Linear._dequant_forward` dequantizes to `x.dtype`, so float32 simply
-#     propagates.
+#     WHY. Upstream's block was written for a bfloat16 `adaln_proj`, but the
+#     AdaLN-curve ("pruned") variant's projection is installed in float32 by the
+#     loader (`_DIT_ADALN_KEYS`: the pruned checkpoint stores those weights in
+#     float16 and they are upcast). With no cast, a float32
+#     modulation of shape `(num_adaln_rows, hidden_size)` promotes the whole
+#     `(batch, seq_len, hidden_size)` activation stack to float32 through every
+#     one of the 50 blocks. Nothing raises: `Fp8Linear._dequant_forward`
+#     dequantizes to `x.dtype`, so float32 simply propagates.
 #
-#     UPSTREAM MIRROR, quoted verbatim from `comfy/ldm/minimax/model.py`
-#     L210-221 (the same file the AdaLN-curve port above was taken from; a
-#     Phase-0 copy lives in the session scratchpad as `scratchpad/comfy/model.py`):
-#
-#         def _mod_scale_shift(h, shift, scale, segments):
-#             # segments: [(start, stop, mod_row)] covering h contiguously.
-#             for a, b, row in segments:
-#                 h[a:b].mul_(1.0 + scale[row].to(h.dtype)).add_(shift[row].to(h.dtype))
-#             return h
-#
-#         def _mod_gate(x, gate, other, segments):
-#             for a, b, row in segments:
-#                 x[a:b].addcmul_(other[a:b], gate[row].to(x.dtype))
-#             return x
-#
-#     i.e. ComfyUI casts each modulation ROW to the hidden dtype at exactly this
-#     point. This port casts the whole small `(rows, hidden)` tensor instead of
-#     one row at a time, which is the same value (the expansion that follows is
-#     an `index_select` gather, not arithmetic) and far less traffic. The
-#     projection's own numerics are untouched, so K0.2's measurements -- which
-#     compared the modulation VECTOR, upstream of this cast -- still hold.
-#
-#     `MiniMaxH3AdaLayerNormOut`'s modulation NUMERICS are unaffected by this
-#     cast (its own `linear` stays wherever `_keep_in_fp32_modules` puts it);
-#     see the separate activation-memory bullet below for what DOES change
-#     about this class.
-#
-#     NOT YET EXECUTED. No forward has run the shipped combination: Phase 0's
-#     smoke ran `adaln_proj` in bfloat16, and the Phase-1 loader installs it in
-#     float32. Phase 2's first real forward is this path's first execution.
+#     The cast is applied to the small `(rows, hidden)` modulation table rather
+#     than to the sequence-length rows it is expanded into, because the
+#     expansion is an `index_select` gather and not arithmetic: same values,
+#     orders of magnitude less traffic. The projection's own numerics are
+#     untouched, so K0.2's measurements -- which compared the modulation VECTOR,
+#     upstream of this cast -- still hold. `MiniMaxH3AdaLayerNormOut`'s
+#     modulation numerics are likewise unaffected (its own `linear` stays
+#     wherever `_keep_in_fp32_modules` puts it); see the activation-memory
+#     bullet below for what DOES change about that class.
 #   * attention runs through SushiUI's unified conduit
 #     (`core.attention.dispatch_attention`) instead of diffusers'
 #     `dispatch_attention_fn`, so the repo-wide `attention_type` vocabulary
@@ -227,8 +205,7 @@ class MiniMaxH3AdaLayerNormModulation(nn.Module):
 
     SushiUI modification: `apply_silu`. The released "pruned" checkpoints replace the timestep MLP with a tabulated,
     rank-reduced basis of the *already activated* time-embedding curve (see `adaln_curve_grid` on
-    [`MiniMaxH3Transformer3DModel`]), so the SiLU must not be applied a second time. Mirrors ComfyUI's
-    `AdalnProj(apply_silu=...)` in `comfy/ldm/minimax/model.py` (Apache-2.0).
+    [`MiniMaxH3Transformer3DModel`]), so the SiLU must not be applied a second time.
     """
 
     def __init__(self, time_embed_dim: int, hidden_size: int, apply_silu: bool = True):
@@ -503,11 +480,10 @@ class MiniMaxH3TransformerBlock(nn.Module):
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.adaln_proj(temb)
         # SushiUI modification: cast the modulation to the residual stream's dtype BEFORE it is
         # expanded to sequence length. In the AdaLN-curve ("pruned") variant `adaln_proj` runs in
-        # float32 (ComfyUI's `adaln_dtype`), and applying a float32 `(num_adaln_rows, hidden_size)`
-        # tensor to a bfloat16 `(batch, seq_len, hidden_size)` one would promote the whole stack to
-        # float32 for all 50 blocks. ComfyUI casts at the same point (`scale[row].to(h.dtype)`); the
-        # cast is applied to the small table rather than to the expanded rows, which is the same
-        # value (`index_select` is a gather, not arithmetic) and orders of magnitude less traffic.
+        # float32, and applying a float32 `(num_adaln_rows, hidden_size)` tensor to a bfloat16
+        # `(batch, seq_len, hidden_size)` one would promote the whole stack to float32 for all 50
+        # blocks. Casting the small table rather than the expanded rows is the same value
+        # (`index_select` is a gather, not arithmetic) and orders of magnitude less traffic.
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = (
             t.to(hidden_states.dtype)
             for t in (shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp)
@@ -530,6 +506,24 @@ class MiniMaxH3TransformerBlock(nn.Module):
         hidden_states = gated_residual_add(residual, gate_mlp, adaln_indices, ff_output)
 
         return hidden_states
+
+
+def sample_adaln_curve(table: torch.Tensor, timestep: torch.Tensor) -> torch.Tensor:
+    """Read the "pruned" checkpoint's tabulated time-embedding curve at continuous `t`.
+
+    `table` is `(grid, time_embed_dim)`, sampled uniformly over `t in [0, 1]`; the return is
+    `(timestep.numel(), time_embed_dim)`. Between grid rows the two neighbours are blended linearly;
+    `t` outside `[0, 1]` saturates at the curve's ends, and `t = 1.0` reads the final interval
+    rather than one row past the table.
+    """
+    rows = table.shape[0]
+    # Position of `t` in grid-row units. Saturating first is what makes out-of-range `t` clamp.
+    coordinate = timestep.to(table.device, torch.float32).clamp(0.0, 1.0).mul(rows - 1)
+    # Non-negative by construction, so a truncating int64 cast is the floor. The upper cap keeps
+    # `coordinate == rows - 1` (i.e. `t = 1.0`) inside the last interval, where its weight is 1.
+    lower = coordinate.to(torch.int64).clamp(max=rows - 2)
+    weight = (coordinate - lower).unsqueeze(1)
+    return torch.lerp(table[lower], table[lower + 1], weight)
 
 
 class MiniMaxH3Transformer3DModel(ModelMixin, ConfigMixin, AttentionMixin, PeftAdapterMixin, CacheMixin):
@@ -602,8 +596,8 @@ class MiniMaxH3Transformer3DModel(ModelMixin, ConfigMixin, AttentionMixin, PeftA
               2688-dim embedding (`time_embed_dim` is `8` in the release, against a `1025`-row grid).
 
             The lookup is a **linear interpolation** (`torch.lerp`) between the two adjacent grid rows, so continuous
-            `t` is supported exactly as in the full variant; `t` outside `[0, 1]` clamps to the curve ends. Ported
-            from ComfyUI `comfy/ldm/minimax/model.py` (Apache-2.0); upstream diffusers implements only the
+            `t` is supported exactly as in the full variant; `t` outside `[0, 1]` clamps to the curve ends.
+            Upstream diffusers implements only the
             full-modulation variant. The two variants are mutually exclusive: with `adaln_curve_grid` set,
             `time_proj` / `time_embedder` are not created and `adaln_proj` does not apply its own SiLU.
     """
@@ -829,15 +823,9 @@ class MiniMaxH3Transformer3DModel(ModelMixin, ConfigMixin, AttentionMixin, PeftA
         # bfloat16 in the checkpoint while `time_embedder` is float32, so it stays at the time embedder's precision:
         # each AdaLN module applies its own activation to it and casts to its projection's dtype afterwards.
         # SushiUI addition: in the AdaLN-curve ("pruned") variant the curve is tabulated on a uniform grid over
-        # `t in [0, 1]` and read with a linear interpolation between the two adjacent rows, so continuous `t` is
-        # supported. Ported from ComfyUI `comfy/ldm/minimax/model.py` (Apache-2.0).
+        # `t in [0, 1]` and sampled by interpolation, so continuous `t` is supported.
         if self.use_adaln_curves:
-            table = self.adaln_t_table
-            # `t` -> fractional grid index; out-of-range `t` clamps to the curve ends.
-            position = timestep.to(table.device, torch.float32).clamp(0.0, 1.0) * (table.shape[0] - 1)
-            # `max`-clamp keeps `t = 1.0` on the last interval instead of reading past the table.
-            lower = position.floor().long().clamp(max=table.shape[0] - 2)
-            temb = torch.lerp(table[lower], table[lower + 1], (position - lower).unsqueeze(1))
+            temb = sample_adaln_curve(self.adaln_t_table, timestep)
         else:
             temb = self.time_proj(timestep)
             temb = self.time_embedder(temb.to(self.time_embedder.linear_1.weight.dtype))

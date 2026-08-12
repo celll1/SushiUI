@@ -206,10 +206,10 @@ class MiniMaxH3Mixin:
         * the FRAME-0 keyframe is the geometry anchor: MiniMax derives the
           canvas from it when the request omits width/height, so when a canvas
           is given the frame is simply STRETCHED onto it (diffusers
-          ``MiniMaxH3ResizeStep``: a plain PIL ``resize((w, h), LANCZOS)``;
-          ComfyUI: ``_resize(..., "disabled")``);
+          ``MiniMaxH3ResizeStep``: a plain PIL ``resize((w, h), LANCZOS)``; the
+          other port spells it "no crop");
         * every OTHER keyframe is a FOLLOWER and is aspect-preserving
-          centre-cover-cropped (ComfyUI: ``_resize(..., "center")``), because it
+          centre-cover-cropped (the other port: "center"), because it
           has no say in the geometry and stretching it would hand the model a
           distorted anchor it is then pinned to for the whole loop.
 

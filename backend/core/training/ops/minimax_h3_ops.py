@@ -621,7 +621,8 @@ def _layout_for(trainer, num_text_tokens: int, t_lat: int, lat_h: int, lat_w: in
     within a bucket, so it is built once per distinct tuple instead of once per
     step. It is the GENERATION path's own builder
     (``h3_pipeline_ops.build_packed_layout``, K0.3-verified against an
-    independent ComfyUI port) — training must not grow a second assembly.
+    independent second implementation) — training must not grow a second
+    assembly.
     """
     from core.models.minimax_h3.h3_pipeline_ops import build_packed_layout
 

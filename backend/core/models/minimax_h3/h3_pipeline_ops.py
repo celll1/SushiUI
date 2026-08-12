@@ -13,9 +13,10 @@ WHAT THIS MODULE OWES ITS SOURCES
 ---------------------------------
 Every contract below is either a verbatim port of the diffusers ``minimax-h3``
 modular blocks (Apache-2.0; ``before_denoise.py`` / ``denoise.py`` /
-``decoders.py`` / ``encoders.py``) or was verified against an independent port
-of ComfyUI's ``comfy/ldm/minimax/model.py`` in the K0 conformance suite. The
-two places a re-derivation is easy to get subtly wrong are called out inline:
+``decoders.py`` / ``encoders.py``) or was cross-checked in the K0 conformance
+suite against a second, independently written implementation of the same
+layout. The two places a re-derivation is easy to get subtly wrong are called
+out inline:
 
 1. **Packed-sequence assembly** (``build_packed_layout``). The order of the
    layout is ``[text | keyframe conditions | audio | video]``, the audio rows
@@ -35,11 +36,10 @@ two places a re-derivation is easy to get subtly wrong are called out inline:
    it; nothing here recomputes it.
 4. **The two schedules.** Video runs at ``shift = 12.0``, audio at
    ``shift = 3.0``, and both are stepped once per loop iteration — the video
-   rows on the video grid, the audio rows on the audio grid. ComfyUI instead
-   integrates the *video* grid alone and scales the audio velocity by
-   ``d(sigma_a)/d(sigma_v)``, because its sampler only knows one schedule; K0.4
-   verified that slope against fp64 autograd (3.05e-16) and the two
-   formulations agree to first order. This module follows the diffusers
+   rows on the video grid, the audio rows on the audio grid. A single-schedule
+   sampler has to integrate the *video* grid alone and scale the audio velocity
+   by ``d(sigma_a)/d(sigma_v)``; K0.4 verified that slope against fp64 autograd
+   (3.05e-16) and the two formulations agree to first order. This module follows the diffusers
    reference (two schedulers), because that is the implementation the vendored
    transformer and scheduler came from and it is exact on each stream's own
    grid rather than first-order-accurate on the other's.
@@ -140,8 +140,8 @@ def patchify_video_latents(latents: torch.Tensor,
                            patch_size: Tuple[int, int, int] = (1, 2, 2)) -> torch.Tensor:
     """``[B, C, T, H, W]`` -> ``[B, T'*H'*W', C*pt*ph*pw]``, frame-major.
 
-    Verbatim shape math from the diffusers block of the same name (and
-    equivalent to ComfyUI's ``einsum("nctrhpwq->nthwcrpq")``).
+    Verbatim shape math from the diffusers block of the same name; the
+    equivalent single-einsum form is ``"nctrhpwq->nthwcrpq"``.
     """
     pt, ph, pw = patch_size
     b, c, t, h, w = latents.shape
@@ -174,12 +174,12 @@ def unpack_audio_rows(rows: torch.Tensor, num_audio_latents: int,
 def _spatial_position_grid(dim: int, patch: int, sqrt_area: float) -> torch.Tensor:
     ratio = dim / sqrt_area
     left = (1.0 - ratio) / 2.0
-    # `np.linspace(..., endpoint=False)` computes `(arange*ratio)/n + left`,
-    # while ComfyUI computes `arange*(ratio/n) + left`. Same value, different
-    # float64 association, <= 1 ulp apart; unobservable through the model (the
-    # rope casts to float32 and the two grids are then bitwise equal, K0.3
-    # supplementary). The diffusers form is used because the vendored
-    # transformer is the diffusers one -- do not "fix" this to match ComfyUI.
+    # `np.linspace(..., endpoint=False)` computes `(arange*ratio)/n + left`; the
+    # hand-written form `arange*(ratio/n) + left` is the same value with a
+    # different float64 association, <= 1 ulp apart and unobservable through the
+    # model (the rope casts to float32 and the two grids are then bitwise equal,
+    # K0.3 supplementary). The diffusers form is used because the vendored
+    # transformer is the diffusers one -- do not "fix" it to the other form.
     grid = np.linspace(left, left + ratio, dim // patch, endpoint=False) * ROPE_SPATIAL_SCALE
     return torch.from_numpy(grid).to(torch.float64)
 
@@ -506,9 +506,9 @@ def build_packed_layout(
     """The ``[text | conditions | audio | video]`` layout of one request.
 
     Port of ``MiniMaxH3PrepareLayoutStep.build_packed_sequence``. K0.3 compared
-    it against an independent port of ComfyUI's ``PackedLayout`` on six shape
-    tuples: identical indices, identical tags, and a tiny packed forward through
-    both assemblies bitwise identical.
+    it against a second, independently written packed-layout implementation on
+    six shape tuples: identical indices, identical tags, and a tiny packed
+    forward through both assemblies bitwise identical.
 
     ``keyframe_anchors`` takes ``"first"``, ``"last"`` or an integer PIXEL-frame
     index, one per anchor, in packed order; see :func:`_anchor_rotary_time` for

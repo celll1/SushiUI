@@ -853,6 +853,15 @@ export interface OutpaintVideoParams extends VideoChainProvenance {
   reference_image_size?: "max" | "match";
   // Generation-time LoRA (see Txt2VidParams.loras).
   loras?: LoRAConfig[];
+  // What THIS continuation is conditioned on, and how many of the preserved
+  // clip's tail frames `pinned_tail` pins. Both come from the chain manifest
+  // (`buildChainContinuationParams`), never from a panel control: a mode the
+  // loaded architecture/variant does not advertise in
+  // `chain_context[arch].chain_continuation_modes` is a 400, and an overlap
+  // that is not a cumulative sum of `latent_chunk_pattern` is a 400 too --
+  // neither is snapped or downgraded server-side.
+  continuation_mode?: VideoChainContinuationMode;
+  continuation_overlap_frames?: number;
 }
 
 // Video TEMPORAL inpaint (POST /generate/inpaint/video, MiniMax-H3 fl2va):
@@ -1535,6 +1544,26 @@ export const chainContextCapability = (
   return entry.variants?.[key] ?? entry;
 };
 
+// The `continuation_overlap_frames` values a `pinned_tail` continuation can be
+// given on this arch/variant, ascending. A latent frame is conditioned or
+// generated whole, so the valid lengths are the cumulative sums of the arch's
+// `latent_chunk_pattern` up to `chain_context_max_frames` — derived from the
+// served pattern through the SAME `latentGroupSpans` the inpaint range uses,
+// never a second hardcoded list (the pattern CYCLES: MiniMax-H3's [1,4,4,4,4]
+// gives 1, 5, 9, 13, 17, 18, ... — 17 is followed by 18, not 33).
+export const chainContinuationOverlapLengths = (
+  caps: ArchCapabilities | null | undefined,
+  arch: string | null | undefined,
+  variant?: string | null
+): number[] => {
+  const max = chainContextCapability(caps, arch, variant)?.chain_context_max_frames ?? 0;
+  const pattern = arch ? caps?.video_constraints?.[arch]?.latent_chunk_pattern : undefined;
+  if (!max || !pattern?.length) return [];
+  return latentGroupSpans(pattern, max)
+    .map(([, end]) => end)
+    .filter((end) => end <= max);
+};
+
 // The reason `method` is refused for `arch`, or undefined when it is offered.
 // Used to disable a training-method control AND to title it with the backend's
 // own wording rather than a second copy of it in the UI.
@@ -2004,6 +2033,7 @@ export type VideoChainSeedPolicy = "fixed" | "derived" | "explicit";
 export type VideoChainPlanRequestSeedPolicy = "fixed" | "derived";
 export type VideoChainContinuationMode =
   | "boundary_frame"
+  | "pinned_tail"
   | "motion_preroll"
   | "tail_reference_video"
   | "sampler_state";
@@ -4255,6 +4285,16 @@ export const generateOutpaintVideo = async (
     formData.append("reference_images", image);
   }
   formData.append("loras", JSON.stringify(params.loras || []));
+  // Continuation context. Sent only when the caller actually chose one, so an
+  // ordinary (unchained) video outpaint is byte-identical to what it was: the
+  // backend's own default is `boundary_frame`, today's behaviour.
+  if (params.continuation_mode) {
+    formData.append("continuation_mode", params.continuation_mode);
+    formData.append(
+      "continuation_overlap_frames",
+      String(params.continuation_overlap_frames ?? 0)
+    );
+  }
   // Chain provenance (design §13). This endpoint runs every CONTINUATION
   // segment, so a chained request always carries it here; a plain video
   // outpaint carries nothing.

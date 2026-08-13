@@ -460,13 +460,20 @@ _add_training_unsupported(
 # transformer and false for `fl2va` with the same `TemporalSpec`.
 #
 # `chain_context_min_frames`/`chain_context_max_frames` count PIXEL frames of
-# the preceding segment that the advertised modes condition on. They are not a
-# knob today (Phase A has none); they say what the continuation actually gets.
-# A value is only meaningful on a video-VAE group boundary, i.e. it must be a
-# cumulative sum of `video_constraints[arch].latent_chunk_pattern` -- for
-# MiniMax-H3's (1, 4, 4, 4, 4) those are 1, 5, 9, 13, 17, 18, 22, ... The
-# pattern is already served next to this block and is the ONE enumerator; this
-# module does not restate the list.
+# the preceding segment that the advertised modes condition on. A value is only
+# meaningful on a video-VAE group boundary, i.e. it must be a cumulative sum of
+# `video_constraints[arch].latent_chunk_pattern` -- for MiniMax-H3's
+# (1, 4, 4, 4, 4) those are 1, 5, 9, 13, 17, 18, 22, ... (the pattern CYCLES).
+# The pattern is already served next to this block and is the ONE enumerator;
+# this module does not restate the list.
+
+# The longest `pinned_tail` overlap MiniMax-H3 serves: one full cycle of its
+# chunk pattern, and the top of the 1/5/17 comparison the mode exists to make.
+# It is a REFUSAL bound, not a clamp -- a longer pin is unmeasured, and it also
+# keeps every advertised overlap far below the shortest generated span (124), so
+# a pin can never claim the whole clip.
+MINIMAX_H3_PINNED_TAIL_MAX_FRAMES = 17
+
 CHAIN_CONTEXT: Dict[str, Dict[str, Any]] = {
     # MiniMax-H3: a continuation is POST /generate/outpaint/video with
     # `extend_forward`, which hands the model the preserved clip's last frame as
@@ -474,10 +481,16 @@ CHAIN_CONTEXT: Dict[str, Dict[str, Any]] = {
     # frames back untouched (core/pipeline_backends/minimax_h3.py:866-876). That
     # is exactly one frame of visual context, and one frame is latent frame 0's
     # whole coverage, so it is VAE-aligned by construction.
+    #
+    # `pinned_tail` widens that to `continuation_overlap_frames` frames by
+    # pinning the preserved tail as the generated clip's own leading latent
+    # frames -- the temporal-inpaint mechanism, reused rather than rebuilt. It
+    # rides the arch-level entry because the pin and a reference block claim the
+    # same conditioning prefix, so it is fl2va's and not ref2va's.
     "minimax_h3": {
-        "chain_continuation_modes": ["boundary_frame"],
+        "chain_continuation_modes": ["boundary_frame", "pinned_tail"],
         "chain_context_min_frames": 1,
-        "chain_context_max_frames": 1,
+        "chain_context_max_frames": MINIMAX_H3_PINNED_TAIL_MAX_FRAMES,
         # The outpaint route places only the boundary anchor(s); it carries no
         # keyframe fields at all. The index-addressable keyframe conditioning
         # this WOULD need exists on /generate/img2vid (`keyframe_placement`
@@ -495,6 +508,11 @@ CHAIN_CONTEXT: Dict[str, Dict[str, Any]] = {
             # minimax_h3.py:88-147; the route forces the 22-frame reference
             # floor). fl2va was never trained to read reference rows
             # (routes.py:4815-4822), so it stays on the arch-level entry.
+            #
+            # No `pinned_tail` here: `build_ref2va_packed_layout` returns no
+            # video row permutation at all (h3_pipeline_ops.py:895-901), so this
+            # partition has no opening for a pin, and the reference block
+            # already occupies the prefix a pin would take.
             "ref2va": {
                 "chain_continuation_modes": ["boundary_frame"],
                 "chain_context_min_frames": 1,

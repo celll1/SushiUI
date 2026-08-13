@@ -1555,12 +1555,17 @@ OUTPAINT_AUDIO_DEFAULTS: Dict[str, Any] = {
 # ---------------------------------------------------------------------------
 # Video chain planning (POST /video-chain/plan, POST /video-chain/validate)
 # ---------------------------------------------------------------------------
-# Planner-only knobs for the long-form video Chain Manifest. Deliberately its
-# own dict rather than extra keys in VIDEO_GEN_DEFAULTS: those keys are the
-# request body of /generate/txt2vid & friends and are mirrored into the video
-# panels' DEFAULT_PARAMS, whereas nothing here is ever sent to a /generate/*
-# route -- the planner emits a manifest and the existing generation requests
-# are built FROM it. Same separation as PROMPT_ASSIST_DEFAULTS.
+# Planner knobs for the long-form video Chain Manifest. Deliberately its own
+# dict rather than extra keys in VIDEO_GEN_DEFAULTS: those keys are the request
+# body of /generate/txt2vid & friends and are mirrored into the video panels'
+# DEFAULT_PARAMS, while these describe a PLAN. Same separation as
+# PROMPT_ASSIST_DEFAULTS.
+#
+# Two of them are also the wire defaults of `/generate/outpaint/video`'s
+# `continuation_mode` / `continuation_overlap_frames` (see `requested_overlap_frames`
+# below), because a continuation executes what the manifest planned: restating
+# either value at the route would be a second source of truth for the same
+# decision.
 #
 # Values shared with an actual generation request (fps, negative prompt, root
 # seed) are read from VIDEO_GEN_DEFAULTS instead of restated, so a chain plan
@@ -1593,11 +1598,13 @@ VIDEO_CHAIN_DEFAULTS: Dict[str, Any] = {
     "seed_policy": "fixed",
     # -1 = draw once while planning and freeze the drawn value in the manifest.
     "root_seed": VIDEO_GEN_DEFAULTS["seed"],
-    # What a continuation actually receives from its predecessor. Only the
-    # boundary frame is implemented today; richer modes (native sampler-state
-    # overlap, motion pre-roll, bounded tail reference video) are per-arch
-    # capabilities. An architecture that does not advertise a mode gets a 400,
-    # never a guessed upgrade or a silent downgrade.
+    # What a continuation actually receives from its predecessor. Also the
+    # `continuation_mode` default of /generate/outpaint/video. `boundary_frame`
+    # (one shared anchor) and `pinned_tail` (the predecessor's decoded tail
+    # pinned as the continuation's leading latent frames) are implemented;
+    # richer modes are per-arch capabilities. An architecture that does not
+    # advertise a mode gets a 400, never a guessed upgrade or a silent
+    # downgrade.
     "continuation_mode": "boundary_frame",
     # Allowed |actual - planned| accumulated-frame divergence before the chain
     # pauses for a user decision. Frames, not seconds, so it is fps-independent.
@@ -1605,11 +1612,12 @@ VIDEO_CHAIN_DEFAULTS: Dict[str, Any] = {
     # that was written; drift only ever shifts event ownership near a boundary,
     # never the local timestamps inside a segment prompt.
     "chain_drift_tolerance_frames": 12,
-    # Requested shared frames between neighbouring segments. 0 = the single
-    # shared anchor frame of the current boundary-frame continuation. The
-    # authoritative value is the backend's effective_overlap_frames/_samples
-    # (snapped to the video VAE temporal group and the audio clock), never this
-    # request value.
+    # Requested shared frames between neighbouring segments, and the
+    # `continuation_overlap_frames` default of /generate/outpaint/video. 0 = the
+    # single shared anchor frame of a boundary-frame continuation; `pinned_tail`
+    # requires >= 1 and refuses a length that is not on the video VAE's temporal
+    # group grid rather than snapping it. The authoritative value is the
+    # generation's effective_overlap_frames/_samples, never this request value.
     "requested_overlap_frames": 0,
     # Reference binding for a reference whose segment set is not stated
     # explicitly: apply it to every segment, which is today's carry-to-all

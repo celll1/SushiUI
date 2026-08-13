@@ -5631,6 +5631,10 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
           (videoChainPrompt.references?.videos?.length ?? 0) === 0 &&
           (videoChainPrompt.references?.audios?.length ?? 0) === 0
         }
+        // The continuation-mode control offers exactly what this arch/variant
+        // advertises; without the matrix the dialog renders none and plans with
+        // the default `boundary_frame`.
+        archCapabilities={archCapabilities}
         onCancel={() => setVideoChainPrompt(null)}
         onGenerateAtCap={handleVideoChainGenerateAtCap}
         onStartChain={handleVideoChainStart}

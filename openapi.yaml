@@ -8327,10 +8327,10 @@ components:
             $ref: '#/components/schemas/ChainContextCapability'
           example:
             minimax_h3:
-              chain_continuation_modes: [boundary_frame]
+              chain_continuation_modes: [boundary_frame, pinned_tail]
               chain_default_continuation_mode: boundary_frame
               chain_context_min_frames: 1
-              chain_context_max_frames: 1
+              chain_context_max_frames: 17
               chain_supports_sparse_motion_anchors: false
               chain_supports_reference_video: false
               chain_supports_exact_prefix: true
@@ -8396,7 +8396,7 @@ components:
           type: array
           items:
             type: string
-            enum: [boundary_frame, motion_preroll, tail_reference_video, sampler_state]
+            enum: [boundary_frame, pinned_tail, motion_preroll, tail_reference_video, sampler_state]
           description: |
             The `continuation_mode` values this architecture/variant advertises.
             ONLY IMPLEMENTED MODES APPEAR HERE: the `continuation_mode` enum
@@ -8412,7 +8412,13 @@ components:
             temporal-outpaint conditioning already provides. How much that is
             differs per architecture and is reported by
             `chain_context_min_frames`/`chain_context_max_frames`.
-          example: [boundary_frame]
+
+            `pinned_tail` — the preserved prefix's last
+            `continuation_overlap_frames` frames are pinned as the continuation's
+            own leading latent frames (and, with `preserve_input` audio, the
+            audio latents of the same physical time). Advertised by MiniMax-H3
+            `fl2va` only.
+          example: [boundary_frame, pinned_tail]
         chain_default_continuation_mode:
           type: string
           description: |
@@ -8427,8 +8433,10 @@ components:
           minimum: 1
           description: |
             The FEWEST pixel frames of the preceding segment the advertised
-            modes condition the model on. Phase A exposes no knob, so this is a
-            statement of fact rather than the bottom of a settable range.
+            modes condition the model on. It is the bottom of a settable range
+            only where `pinned_tail` is advertised (the knob is that mode's
+            `continuation_overlap_frames`); for `boundary_frame` it is a
+            statement of fact.
 
             A context length is only meaningful on a video-VAE temporal group
             boundary, because a latent frame is conditioned or generated as a
@@ -8451,12 +8459,16 @@ components:
             client can reason about: the architecture's own conditioning decides
             and it takes whatever the preserved prefix is.
 
-            MiniMax-H3 is `1` (its outpaint continuation hands the model the
-            preserved clip's last frame as the generated span's anchor and
-            nothing else). LTX-2.3 is `null`: its continuation places the whole
-            accumulated clip as one video condition, so the context grows with
-            the chain and cannot be made smaller.
-          example: 1
+            MiniMax-H3 `fl2va` is `17`: the longest `pinned_tail` overlap this
+            integration serves, one full cycle of its `[1, 4, 4, 4, 4]` chunk
+            pattern and the top of the 1/5/17 comparison the mode was built for
+            — a longer pin is refused rather than accepted untested. Its
+            `ref2va` variant is `1` (boundary anchor only, since references
+            claim the same conditioning prefix a pin would). LTX-2.3 is `null`:
+            its continuation places the whole accumulated clip as one video
+            condition, so the context grows with the chain and cannot be made
+            smaller.
+          example: 17
         chain_supports_sparse_motion_anchors:
           type: boolean
           description: |
@@ -10344,6 +10356,59 @@ components:
             contract and same MiniMax-H3-only capability as `Txt2VidRequest.loras`
             -- see there for details.
           example: '[{"path": "minimax_h3_lora.safetensors", "strength": 1.0}]'
+        continuation_mode:
+          type: string
+          enum: [boundary_frame, pinned_tail, motion_preroll, tail_reference_video, sampler_state]
+          default: boundary_frame
+          description: |
+            What THIS continuation is conditioned on. The enum is the wire
+            vocabulary (wider than any architecture advertises, so an
+            unimplemented candidate can be refused by name); a mode absent from
+            `GET /schema/arch-capabilities`'s
+            `chain_context[arch].chain_continuation_modes` — or from its
+            `variants[loaded_variant]` entry — is a 400, never a downgrade.
+
+            `boundary_frame` (default, unchanged behaviour): the preserved
+            clip's last frame is the generated span's first-frame anchor, and
+            one frame is all the model gets.
+
+            `pinned_tail`: the preserved clip's last `continuation_overlap_frames`
+            PIXEL frames become the generated clip's own leading latent frames,
+            pinned as conditioning and never denoised (the mechanism
+            `/generate/inpaint/video` already uses). With
+            `outpaint_video_audio_mode: preserve_input` the matching audio
+            latents — the ones whose time interval lies inside the same overlap
+            — are pinned too, so video and audio conditioning describe the same
+            physical time. MiniMax-H3 `fl2va` only: `ref2va` packs its
+            references into the same conditioning prefix and does not advertise
+            it, and LTX-2.3 already conditions on the whole preserved prefix.
+            The preserved frames stay pixel-exact either way (they are
+            concatenated, never sampled), and the overlap frames the model
+            re-renders are discarded.
+          example: boundary_frame
+        continuation_overlap_frames:
+          type: integer
+          minimum: 0
+          default: 0
+          description: |
+            PIXEL frames of the preserved clip that `continuation_mode:
+            pinned_tail` pins. Ignored by `boundary_frame` (which always shares
+            exactly one anchor frame), REQUIRED (>= 1) by `pinned_tail`.
+
+            Only a length that lands on a video-VAE temporal group boundary can
+            be pinned, because a latent frame is conditioned or generated whole:
+            the valid values are the cumulative sums of
+            `video_constraints[arch].latent_chunk_pattern`, which for
+            MiniMax-H3's `[1, 4, 4, 4, 4]` are 1, 5, 9, 13, 17, 18, 22, ... —
+            note that the pattern CYCLES, so 17 is followed by 18 and not by 33.
+            An unaligned value is a 400 listing the ones that work; it is never
+            snapped silently. The ceiling is
+            `chain_context[arch].chain_context_max_frames`.
+
+            The generated span grows by this many frames (the overlap is
+            re-rendered and thrown away), so the effective output length is
+            reported in `warnings[]` exactly as it is for `total_frames`.
+          example: 0
         chain_id:
           type: string
           nullable: true
@@ -13897,12 +13962,13 @@ components:
           example: "timeline"
         continuation_mode:
           type: string
-          enum: [boundary_frame, motion_preroll, tail_reference_video, sampler_state]
+          enum: [boundary_frame, pinned_tail, motion_preroll, tail_reference_video, sampler_state]
           default: boundary_frame
           description: >-
-            What each continuation receives from its predecessor. Only
-            `boundary_frame` is implemented today; the others require an
-            explicit architecture capability.
+            What each continuation receives from its predecessor.
+            `boundary_frame` and `pinned_tail` are implemented; the others
+            require an explicit architecture capability. Every mode is checked
+            against `chain_context[architecture].chain_continuation_modes`.
           example: "boundary_frame"
         seed_policy:
           type: string
@@ -14062,7 +14128,7 @@ components:
           example: -1
         continuation_mode:
           type: string
-          enum: [boundary_frame, motion_preroll, tail_reference_video, sampler_state]
+          enum: [boundary_frame, pinned_tail, motion_preroll, tail_reference_video, sampler_state]
           default: boundary_frame
           description: >-
             Requested continuation context. A mode absent from

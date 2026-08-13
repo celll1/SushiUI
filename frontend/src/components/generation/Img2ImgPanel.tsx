@@ -6796,6 +6796,9 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
           (videoChainPrompt.references?.videos?.length ?? 0) === 0 &&
           (videoChainPrompt.references?.audios?.length ?? 0) === 0
         }
+        // See the same prop in Txt2ImgPanel: the offered modes come from the
+        // capability matrix, never from a list in the dialog.
+        archCapabilities={archCapabilities}
         onCancel={() => setVideoChainPrompt(null)}
         onGenerateAtCap={handleVideoChainGenerateAtCap}
         onStartChain={handleVideoChainStart}

@@ -85,19 +85,19 @@ def test_payload_matches_openapi_schema(variant_schema):
 
 def test_only_implemented_modes_are_advertised():
     for label, entry in _entries(chain_context_payload()):
-        modes = entry["chain_context_modes"]
+        modes = entry["chain_continuation_modes"]
         assert modes, f"{label}: advertises no mode at all"
         unimplemented = [m for m in modes if m not in CONTINUATION_MODES]
         assert not unimplemented, f"{label}: advertises unimplemented {unimplemented}"
-        assert entry["chain_default_context_mode"] in modes, f"{label}: default outside its own list"
+        assert entry["chain_default_continuation_mode"] in modes, f"{label}: default outside its own list"
 
 
 def test_default_mode_comes_from_param_defaults():
     """The default is `VIDEO_CHAIN_DEFAULTS`, not a second literal."""
     requested = VIDEO_CHAIN_DEFAULTS["continuation_mode"]
     for label, entry in _entries(chain_context_payload()):
-        if requested in entry["chain_context_modes"]:
-            assert entry["chain_default_context_mode"] == requested, label
+        if requested in entry["chain_continuation_modes"]:
+            assert entry["chain_default_continuation_mode"] == requested, label
 
 
 def test_declared_for_exactly_the_video_architectures():
@@ -196,7 +196,7 @@ def test_unadvertised_mode_is_refused(mode, variant):
 
 @pytest.mark.parametrize("architecture,segment_frames", [("minimax_h3", None), ("ltx2", 121)])
 def test_advertised_default_is_accepted(architecture, segment_frames):
-    default = chain_context_payload()[architecture]["chain_default_context_mode"]
+    default = chain_context_payload()[architecture]["chain_default_continuation_mode"]
     body = _plan_body(architecture=architecture, continuation_mode=default,
                       target_frames=400)
     if segment_frames:

@@ -1486,13 +1486,13 @@ export interface ArchCapabilities {
 // backend/api/arch_capabilities.py. Served by GET /schema/arch-capabilities and
 // used by POST /video-chain/plan|validate to refuse an unadvertised
 // `continuation_mode` with a 400 — so a mode offered in the UI must come from
-// `chain_context_modes`, never from a hardcoded list here.
+// `chain_continuation_modes`, never from a hardcoded list here.
 export interface ChainContextVariantCapability {
   // Only IMPLEMENTED modes appear. `VideoChainContinuationMode` is the wider
   // wire vocabulary (it names the not-yet-built candidates so they can be
   // refused by name).
-  chain_context_modes: VideoChainContinuationMode[];
-  chain_default_context_mode: VideoChainContinuationMode;
+  chain_continuation_modes: VideoChainContinuationMode[];
+  chain_default_continuation_mode: VideoChainContinuationMode;
   // Pixel frames of the preceding segment the model is conditioned on. Not a
   // knob today: a statement of what the continuation actually gets. Valid
   // lengths sit on video-VAE group boundaries, i.e. the cumulative sums of

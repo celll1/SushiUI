@@ -18237,7 +18237,7 @@ def _video_chain_require_continuation_mode(mode: str, architecture: str,
     from api.arch_capabilities import chain_context_for
 
     capability = chain_context_for(architecture, variant)
-    supported = capability["chain_context_modes"] if capability else []
+    supported = capability["chain_continuation_modes"] if capability else []
     if mode not in supported:
         raise CustomValidationError(
             "Unsupported continuation_mode",

@@ -130,6 +130,27 @@ def _get_or_scan(path: str, source_type: Optional[str]) -> Dict[str, Any]:
         return {}
 
 
+def _component(rec: Dict[str, Any], name: str) -> Dict[str, Any]:
+    """Observed values for one component, backed by the model's declared ones.
+
+    ``observed_components`` holds only what was actually read out of the file,
+    which is what the component catalog needs: it must not present a wiring
+    default as evidence. This gate needs the opposite backstop. Its HARD
+    verdicts require dims on both sides, so a dim the scan cannot see -- a
+    text encoder's width in any single-file checkpoint, for instance -- would
+    silently downgrade a real mismatch to a warning and let the override run
+    until it faulted mid-generation. Observation still wins per field where it
+    exists; ``components`` only fills the gaps it leaves.
+    """
+    observed = (rec.get("observed_components") or {}).get(name) or {}
+    declared = (rec.get("components") or {}).get(name) or {}
+    if not observed:
+        return declared
+    merged = dict(declared)
+    merged.update({k: v for k, v in observed.items() if v is not None})
+    return merged
+
+
 def describe_vae(path: str, source_type: Optional[str] = None) -> Dict[str, Any]:
     """Best-effort observed VAE dims for a model/VAE at ``path``.
 
@@ -159,9 +180,8 @@ def describe_vae(path: str, source_type: Optional[str] = None) -> Dict[str, Any]
         }
 
     rec = _get_or_scan(path, source_type)
-    comps = rec.get("observed_components") or rec.get("components") or {}
-    vcomp = comps.get("vae") or {}
-    bb = comps.get("backbone") or {}
+    vcomp = _component(rec, "vae")
+    bb = _component(rec, "backbone")
     arch = rec.get("arch")
 
     lc = vcomp.get("latent_channels")
@@ -207,9 +227,8 @@ def describe_vae(path: str, source_type: Optional[str] = None) -> Dict[str, Any]
 def describe_te(path: str, source_type: Optional[str] = None) -> Dict[str, Any]:
     """Best-effort observed text-encoder dims for a model/TE at ``path``."""
     rec = _get_or_scan(path, source_type)
-    comps = rec.get("observed_components") or rec.get("components") or {}
-    tcomp = comps.get("text_encoder") or {}
-    bb = comps.get("backbone") or {}
+    tcomp = _component(rec, "text_encoder")
+    bb = _component(rec, "backbone")
     arch = rec.get("arch")
 
     out_dim = tcomp.get("out_dim")

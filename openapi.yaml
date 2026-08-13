@@ -2702,7 +2702,34 @@ paths:
                     Reload even when this model is already the loaded one. Without
                     it, a request for the currently loaded model returns success
                     without touching the pipeline, so nothing per-session is reset.
+
+                    Not needed to change `text_encoder_file` / `clip_projection_file`:
+                    naming an encoder other than the loaded one reloads on its own.
                   example: true
+                text_encoder_file:
+                  type: string
+                  nullable: true
+                  description: |
+                    **MiniMax-H3 only.** Absolute path to the `.safetensors` text
+                    encoder to build, inside this model's tree. Omitted/null uses
+                    the loader's own preference order — which never auto-selects a
+                    converted small Qwen3-VL, so reaching one takes this field.
+                    List the choices with
+                    `GET /models/minimax-h3/text-encoders`.
+
+                    Sent for any other architecture, the request is refused rather
+                    than silently ignored.
+                  example: "M:/model/minimax_h3/text_encoders/qwen3vl_4b_heretic_tap24_bf16.safetensors"
+                clip_projection_file:
+                  type: string
+                  nullable: true
+                  description: |
+                    **MiniMax-H3 only.** Absolute path to the trained projection to
+                    pair with `text_encoder_file`. Omitted/null discovers it in
+                    `clip_projections/` by matching declared widths. Only the
+                    converted small encoders need one; naming a projection for an
+                    encoder that does not is refused, not ignored.
+                  example: "M:/model/minimax_h3/clip_projections/mmh3-4b-clipproj-celeb-mlp.safetensors"
       responses:
         '200':
           description: Model loaded successfully
@@ -2721,6 +2748,56 @@ paths:
                     type: object
                     additionalProperties: true
                     description: Same payload as `GET /models/current`'s `model_info`.
+
+  /models/minimax-h3/text-encoders:
+    get:
+      tags: [models]
+      summary: MiniMax-H3 text encoders and CLIP projections in a model tree
+      description: |
+        The load-time choices behind `POST /models/load`'s `text_encoder_file`
+        and `clip_projection_file`, read from the tree's safetensors HEADERS
+        only — no weights are mapped, so this is safe to call while a model is
+        loaded.
+
+        `selected` / `selected_reason` are what a load with neither field set
+        would pick, straight from the loader's own selection. A converted small
+        Qwen3-VL is never selected that way; it is listed as compatible with
+        `requires_projection: true` and can only be reached by naming it.
+
+        `agreement` is the recorded measurement for the pairing this listing
+        would actually form (the encoder plus the single `clip_projections/`
+        file matching its width), and is null for a released 32B encoder, for an
+        unmeasured pairing and where the projection is ambiguous. No pairing
+        borrows another pairing's number.
+      operationId: listMiniMaxH3TextEncoders
+      parameters:
+        - name: model_path
+          in: query
+          required: true
+          schema:
+            type: string
+          description: A MiniMax-H3 DiT `.safetensors` path or the tree root.
+          example: "M:/model/minimax_h3/diffusion_models/minimax_h3_fl2va_pruned_fp8_scaled.safetensors"
+      responses:
+        '200':
+          description: Text encoders and projections found in the tree
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MiniMaxH3TextEncoderListResponse'
+        '400':
+          description: |
+            `model_path` does not resolve to a MiniMax-H3 model tree.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Scanning the tree failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /models/export-quantized:
     get:
@@ -12415,6 +12492,128 @@ components:
           allOf:
             - $ref: '#/components/schemas/LoadedModelInfo'
           nullable: true
+
+    MiniMaxH3TextEncoderCandidate:
+      type: object
+      required: [path, name, size_bytes, compatible, variant, reason, requires_projection]
+      properties:
+        path:
+          type: string
+          description: Absolute path; this is what `text_encoder_file` takes.
+          example: "M:/model/minimax_h3/text_encoders/qwen3vl_4b_heretic_tap24_bf16.safetensors"
+        name:
+          type: string
+          example: qwen3vl_4b_heretic_tap24_bf16
+        size_bytes:
+          type: integer
+          nullable: true
+          example: 5624901632
+        compatible:
+          type: boolean
+          description: Whether this build's H3 text-encoder loader implements this file.
+          example: true
+        variant:
+          type: string
+          description: "`bf16`, `int8_convrot`, `nvfp4_awq`, `converted_small`, or `unknown`."
+          example: converted_small
+        reason:
+          type: string
+          description: Why the file is compatible, or why it is not.
+        requires_projection:
+          type: boolean
+          description: |
+            True when the file declares its own geometry and is narrower than the
+            DiT's conditioning, i.e. it is usable only through a trained
+            projection.
+          example: true
+        hidden_size:
+          type: integer
+          nullable: true
+          description: The file's own declared width; null for the released 32B files.
+          example: 2560
+        num_hidden_layers:
+          type: integer
+          nullable: true
+          description: The file's own declared block count (the projection's tap).
+          example: 24
+        agreement:
+          type: object
+          nullable: true
+          additionalProperties: true
+          description: |
+            Recorded agreement of this pairing with a released encoder, or null.
+          properties:
+            reference:
+              type: string
+              example: qwen3vl_32b_minimax_h3_int8_convrot.safetensors
+            projection:
+              type: string
+              description: The projection basename this measurement was taken on.
+              example: mmh3-4b-clipproj-celeb-mlp.safetensors
+            cosine:
+              type: number
+              description: Mean-removed cosine, post-`token_refiner`.
+              example: 0.826
+            rel_rms:
+              type: number
+              example: 0.214
+            rel_rms_floor:
+              type: number
+              description: The same encoder in another quantization, i.e. the rounding floor.
+              example: 0.048
+            presentations:
+              type: integer
+              example: 111
+
+    MiniMaxH3ClipProjectionCandidate:
+      type: object
+      required: [path, name, size_bytes, d_in, d_out, tap]
+      properties:
+        path:
+          type: string
+          description: Absolute path; this is what `clip_projection_file` takes.
+          example: "M:/model/minimax_h3/clip_projections/mmh3-4b-clipproj-celeb-mlp.safetensors"
+        name:
+          type: string
+          example: mmh3-4b-clipproj-celeb-mlp
+        size_bytes:
+          type: integer
+          nullable: true
+          example: 314572800
+        d_in:
+          type: integer
+          description: Encoder width this projection takes.
+          example: 2560
+        d_out:
+          type: integer
+          description: DiT conditioning width it produces.
+          example: 5120
+        tap:
+          type: integer
+          description: Encoder block count it was trained against.
+          example: 24
+
+    MiniMaxH3TextEncoderListResponse:
+      type: object
+      required: [selected, selected_reason, text_encoders, clip_projections]
+      properties:
+        selected:
+          type: string
+          nullable: true
+          description: The encoder a load with no `text_encoder_file` would build.
+        selected_reason:
+          type: string
+          nullable: true
+          description: The loader's own reason string for that selection.
+          example: preferred
+        text_encoders:
+          type: array
+          items:
+            $ref: '#/components/schemas/MiniMaxH3TextEncoderCandidate'
+        clip_projections:
+          type: array
+          items:
+            $ref: '#/components/schemas/MiniMaxH3ClipProjectionCandidate'
 
     ComponentSlotId:
       type: string

@@ -8698,7 +8698,9 @@ async def load_model(
     source_type: str = Form(...),
     source: str = Form(...),
     revision: Optional[str] = Form(None),
-    force: bool = Form(False)
+    force: bool = Form(False),
+    text_encoder_file: Optional[str] = Form(None),
+    clip_projection_file: Optional[str] = Form(None),
 ):
     """Load a model from various sources (fp16 by default).
 
@@ -8706,6 +8708,11 @@ async def load_model(
     Without it that request is a no-op, which made the documented recovery for
     every per-session component mutation -- above all the one-way in-place
     runtime INT8 conversion -- do nothing at all.
+
+    ``text_encoder_file``/``clip_projection_file`` (MiniMax-H3 only) choose the
+    text encoder built at load time and the trained projection paired with it;
+    see ``GET /models/minimax-h3/text-encoders``. They do not need ``force``:
+    naming an encoder other than the loaded one reloads by itself.
     """
     try:
         kwargs = {}
@@ -8723,6 +8730,8 @@ async def load_model(
                 source=source,
                 pipeline_type="txt2img",
                 force_reload=bool(force),
+                text_encoder_file=text_encoder_file or None,
+                clip_projection_file=clip_projection_file or None,
                 **kwargs
             )
         )
@@ -8740,6 +8749,28 @@ async def load_model(
         error_detail = f"{str(e)}\n\nTraceback:\n{traceback.format_exc()}"
         print(f"Error loading model: {error_detail}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/models/minimax-h3/text-encoders")
+async def list_minimax_h3_text_encoders(model_path: str):
+    """The load-time text-encoder / projection choices in one MiniMax-H3 tree.
+
+    Header-only, so it is safe to call while a model is loaded. ``selected`` is
+    what a load with neither field set would build.
+    """
+    from core.models.minimax_h3.loader import describe_minimax_h3_text_encoder_choices
+
+    try:
+        choices = await asyncio.get_event_loop().run_in_executor(
+            executor, describe_minimax_h3_text_encoder_choices, model_path)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    for entry in choices["text_encoders"] + choices["clip_projections"]:
+        entry["name"] = os.path.splitext(os.path.basename(entry["path"]))[0]
+    return choices
+
 
 class QuantizedExportRequest(BaseModel):
     """Body of ``POST /models/export-quantized``."""

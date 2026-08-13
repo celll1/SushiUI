@@ -4,6 +4,7 @@ import { useState, useEffect } from "react";
 import Card from "./Card";
 import Button from "./Button";
 import Select from "./Select";
+import MiniMaxH3TextEncoderSelector from "./MiniMaxH3TextEncoderSelector";
 import { ChevronDown, ChevronUp, Folder } from "lucide-react";
 import { useStartup } from "@/contexts/StartupContext";
 import { getCurrentModel, getModels, loadModel } from "@/utils/api";
@@ -36,6 +37,46 @@ export default function ModelSelector({ onModelLoad, embedded = false }: ModelSe
   const [selectedSourceDir, setSelectedSourceDir] = useState<string>("all");
   const [showDirectoryFilter, setShowDirectoryFilter] = useState(false);
   const [loadError, setLoadError] = useState("");
+  // MiniMax-H3 only: the load-time text encoder / projection choice, remembered
+  // per model path. null on either means "let the loader decide".
+  const [h3TextEncoder, setH3TextEncoder] = useState<string | null>(null);
+  const [h3ClipProjection, setH3ClipProjection] = useState<string | null>(null);
+
+  const h3StorageKey = selectedModelPath ? `minimax_h3_te_choice_${selectedModelPath}` : "";
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const saved = h3StorageKey ? localStorage.getItem(h3StorageKey) : null;
+    if (!saved) {
+      setH3TextEncoder(null);
+      setH3ClipProjection(null);
+      return;
+    }
+    try {
+      const parsed = JSON.parse(saved);
+      setH3TextEncoder(typeof parsed?.text_encoder === "string" ? parsed.text_encoder : null);
+      setH3ClipProjection(typeof parsed?.clip_projection === "string" ? parsed.clip_projection : null);
+    } catch {
+      setH3TextEncoder(null);
+      setH3ClipProjection(null);
+    }
+  }, [h3StorageKey]);
+
+  // Written here rather than in an effect: an effect would fire once with the
+  // previous model's choice already under the new model's key.
+  const handleH3Change = (textEncoder: string | null, clipProjection: string | null) => {
+    setH3TextEncoder(textEncoder);
+    setH3ClipProjection(clipProjection);
+    if (typeof window === "undefined" || !h3StorageKey) return;
+    if (!textEncoder && !clipProjection) {
+      localStorage.removeItem(h3StorageKey);
+    } else {
+      localStorage.setItem(
+        h3StorageKey,
+        JSON.stringify({ text_encoder: textEncoder, clip_projection: clipProjection })
+      );
+    }
+  };
 
   useEffect(() => {
     loadModels();
@@ -83,9 +124,21 @@ export default function ModelSelector({ onModelLoad, embedded = false }: ModelSe
   const handleLoadModel = async (sourceType: string, source: string) => {
     setLoading(true);
     setLoadError("");
+    // Same path => force, which is also what makes a changed text encoder or
+    // projection take effect: the backend early-returns on an identical
+    // model_id, and the encoder choice is not part of that id.
     const isReload = currentModel?.source === source;
+    const model = models.find(m => m.path === source);
+    const isMiniMaxH3 = (model?.architecture || model?.type) === "minimax_h3";
     try {
-      const data = await loadModel(sourceType, source, undefined, isReload);
+      const data = await loadModel(
+        sourceType,
+        source,
+        undefined,
+        isReload,
+        isMiniMaxH3 ? h3TextEncoder : null,
+        isMiniMaxH3 ? h3ClipProjection : null
+      );
       if (!data.success) {
         throw new Error(data.detail || data.message || "The model could not be loaded.");
       }
@@ -215,6 +268,18 @@ export default function ModelSelector({ onModelLoad, embedded = false }: ModelSe
                     />
                   )}
                 </div>
+              )}
+
+              {/* Load-time text encoder choice (MiniMax-H3 only) */}
+              {selectedModel && archOf(selectedModel) === "minimax_h3" && (
+                <MiniMaxH3TextEncoderSelector
+                  className="sm:col-span-2"
+                  modelPath={selectedModel.path}
+                  textEncoderPath={h3TextEncoder}
+                  clipProjectionPath={h3ClipProjection}
+                  onChange={handleH3Change}
+                  disabled={loading}
+                />
               )}
 
               {/* Model Details */}

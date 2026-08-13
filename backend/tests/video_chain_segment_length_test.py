@@ -232,17 +232,23 @@ class PanelChainSegmentStateTest(unittest.TestCase):
                 self.assertIn("Chain segment length", source)
 
     def test_both_panels_pass_chain_segment_frames_to_the_generate_time_gate(self):
-        """The gate that decides whether the chain-choice dialog opens."""
-        source = self._read("Txt2ImgPanel.tsx")
-        self.assertIn(
-            "planVideoChain(archCapabilities, loadedArch, params.num_frames ?? 0, chainSegmentFrames)",
-            source,
-        )
-        source = self._read("Img2ImgPanel.tsx")
-        self.assertIn(
-            "planVideoChain(archCapabilities, loadedArch, params.num_frames ?? 0, chainSegmentFrames)",
-            source,
-        )
+        """The gate that decides whether the chain-choice dialog opens.
+
+        The length reaching the gate is the ON-GRID one, not the raw control
+        value: the model snaps an off-grid length up on its own, so planning
+        with the raw value predicts a first segment shorter than the one that
+        actually comes back, and every chain started off-grid would trip the
+        drift pause on its very first handover."""
+        for panel in ("Txt2ImgPanel.tsx", "Img2ImgPanel.tsx"):
+            with self.subTest(panel=panel):
+                source = self._read(panel)
+                self.assertIn("const snappedSegmentFrames = chainSegmentFrames != null", source)
+                self.assertIn("snapUpValidVideoFrameCount", source)
+                self.assertIn(
+                    "planVideoChain(archCapabilities, loadedArch, params.num_frames ?? 0, snappedSegmentFrames)",
+                    source,
+                )
+                self.assertIn("segmentFrames: snappedSegmentFrames,", source)
 
     def test_both_panels_freeze_the_segment_length_onto_the_enqueued_chain(self):
         """The main (segment 1) queue item's own `chainSegmentFrames` field

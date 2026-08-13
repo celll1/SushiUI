@@ -1302,7 +1302,12 @@ export default function ImageGrid() {
                           <div className="grid grid-cols-2 gap-2">
                             <div>
                               <span className="text-gray-400">Segment:</span>{' '}
-                              {selectedImage.chain_segment_index}
+                              {/* Stored 0-based (`chain_segment_index`); shown
+                                  1-based, the same numbering as the plan editor
+                                  and the running-segment readout. */}
+                              {Number.isFinite(Number(selectedImage.chain_segment_index))
+                                ? Number(selectedImage.chain_segment_index) + 1
+                                : '—'}
                               {selectedImage.chain_segment_count
                                 ? ` / ${selectedImage.chain_segment_count}`
                                 : ''}

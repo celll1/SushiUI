@@ -398,8 +398,9 @@ export function buildChainContinuationQueueItems(args: {
   referenceImages?: File[];
   // The plan every segment's prompt and reference set is fixed from. Null =
   // legacy repeat: the root prompt is resent unchanged on every segment and
-  // every reference carries to all of them. That is a mode the user picks in
-  // the plan dialog, never a fallback taken silently.
+  // every reference carries to all of them. Never a silent fallback -- the
+  // plan dialog only offers it by name, and only when the planner failed or
+  // the plan has errors (`showFallbackChoices`, VideoChainConfirmDialog).
   manifest?: VideoChainManifest | null;
 }): Array<Omit<QueueItem, "id" | "status" | "addedAt">> {
   const plannedTotals =
@@ -511,11 +512,13 @@ export interface ChainAdvanceResult {
   /** Design §4.1: the just-finished segment's actual accumulated frame count
    *  is more than `chainDriftToleranceFrames` away from the manifest's
    *  planned value for it. The chain must PAUSE here -- `advanceVideoChain`
-   *  has deliberately NOT patched the next queued item yet, so it will not
-   *  be dispatched. The caller must render a choice (continue anyway / stop
-   *  the chain) and, on "continue", apply this pause's `nextTotal`/`file`
-   *  itself via `updateQueueItemByLoop` (see `resolveChainDriftPause`-style
-   *  handling in Txt2ImgPanel/Img2ImgPanel). Never silently continued. */
+   *  has deliberately NOT patched the next queued item yet. The caller must
+   *  raise it on the queue (`pauseChain`, GenerationQueueContext) -- that is
+   *  what stops `startNextInQueue` from dispatching the unpatched item -- and
+   *  render a choice (continue anyway / stop the chain), applying this pause's
+   *  `nextTotal`/`file` via `updateQueueItemByLoop` on "continue" (see
+   *  `resolveChainDriftPause` in Txt2ImgPanel/Img2ImgPanel). Never silently
+   *  continued. */
   driftPause?: ChainDriftPause;
 }
 

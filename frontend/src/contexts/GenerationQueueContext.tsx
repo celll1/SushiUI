@@ -2,6 +2,9 @@
 
 import { createContext, useContext, useState, useCallback, ReactNode, useEffect, useRef } from "react";
 import { GenerationParams, Img2ImgParams, InpaintParams, InpaintVideoParams, OutpaintParams, OutpaintVideoParams, OutpaintAudioParams, UpscaleParams, Txt2VidParams, Img2VidParams, Ref2VidParams, MiniMaxH3References, Txt2AudParams, Aud2AudParams } from "@/utils/api";
+// Type-only (videoChain.ts imports QueueItem from here the same way), so this
+// mutual reference is erased at compile time and creates no runtime cycle.
+import type { ChainDriftPause } from "@/utils/videoChain";
 import { CFGMetrics, wsClient } from "@/utils/websocket";
 
 export type GenerationPanelId = "txt2img" | "img2img" | "inpaint" | "outpaint" | "upscale";
@@ -137,6 +140,17 @@ interface GenerationQueueContextType {
   progressSnapshot: GenerationProgressSnapshot | null;
   completedResults: Partial<Record<GenerationPanelId, GenerationResultSnapshot>>;
   publishCompletedResult: (result: Omit<GenerationResultSnapshot, "revision">) => void;
+  // Video-chain drift pause (videoChain.ts design §4.1). Held HERE, not in the
+  // panel that observed it: `chain_vid` is claimed by both Txt2Img and Img2Img,
+  // which are mounted exclusively per tab, so panel-local pause state would be
+  // destroyed (dialog and already-fetched clip with it) by a tab switch while
+  // the queue kept the unpatched item pending. Living on the queue also lets
+  // `startNextInQueue` refuse to dispatch the paused group, which is the only
+  // place that refusal actually holds -- suppressing one panel's explicit
+  // `processQueue()` call does not, because the auto-start effect re-enters it.
+  chainPause: ChainDriftPause | null;
+  pauseChain: (pause: ChainDriftPause) => void;
+  clearChainPause: () => void;
 }
 
 const GenerationQueueContext = createContext<GenerationQueueContextType | undefined>(undefined);
@@ -147,14 +161,29 @@ export function GenerationQueueProvider({ children }: { children: ReactNode }) {
   const [generateForever, setGenerateForever] = useState<boolean>(false);
   const [progressSnapshot, setProgressSnapshot] = useState<GenerationProgressSnapshot | null>(null);
   const [completedResults, setCompletedResults] = useState<Partial<Record<GenerationPanelId, GenerationResultSnapshot>>>({});
+  const [chainPause, setChainPause] = useState<ChainDriftPause | null>(null);
 
   // Use refs that are synchronously updated alongside state
   const queueRef = useRef<QueueItem[]>(queue);
   const currentItemRef = useRef<QueueItem | null>(currentItem);
+  // Written synchronously by pauseChain/clearChainPause so a pause raised in
+  // the same React batch as completeCurrentItem() is already visible to the
+  // startNextInQueue that batch's re-render triggers.
+  const chainPauseRef = useRef<ChainDriftPause | null>(chainPause);
 
   // Synchronously update refs whenever state changes
   queueRef.current = queue;
   currentItemRef.current = currentItem;
+
+  const pauseChain = useCallback((pause: ChainDriftPause) => {
+    chainPauseRef.current = pause;
+    setChainPause(pause);
+  }, []);
+
+  const clearChainPause = useCallback(() => {
+    chainPauseRef.current = null;
+    setChainPause(null);
+  }, []);
 
   useEffect(() => {
     const handleProgress = (
@@ -235,6 +264,14 @@ export function GenerationQueueProvider({ children }: { children: ReactNode }) {
   const cancelLoopGroup = useCallback((loopGroupId: string) => {
     console.log(`[QueueContext] Cancelling all pending items in loop group: ${loopGroupId}`);
 
+    // A drift pause is a held decision about THIS group; cancelling the group
+    // settles it, whether the cancel came from the pause dialog's "stop" or
+    // from the segment-failure cascade.
+    if (chainPauseRef.current?.loopGroupId === loopGroupId) {
+      chainPauseRef.current = null;
+      setChainPause(null);
+    }
+
     // Remove all pending items with this loopGroupId
     setQueue((prev) => prev.filter((item) =>
       !(item.loopGroupId === loopGroupId && item.status === "pending")
@@ -263,6 +300,18 @@ export function GenerationQueueProvider({ children }: { children: ReactNode }) {
 
     const { loopGroupId, isLoopStep, loopStepIndex } = item;
     const allItemsInGroup = queueRef.current.filter((i) => i.loopGroupId === loopGroupId);
+
+    // Removing the item a drift pause is holding settles that pause: case 1
+    // (main) drops the whole group, case 2 drops every step from
+    // `loopStepIndex` on, case 3 drops only that (last) step.
+    const pause = chainPauseRef.current;
+    if (
+      pause?.loopGroupId === loopGroupId &&
+      (!isLoopStep || (loopStepIndex !== undefined && pause.nextStepIndex >= loopStepIndex))
+    ) {
+      chainPauseRef.current = null;
+      setChainPause(null);
+    }
 
     // Case 1: Cancelling main generation (Base)
     if (!isLoopStep) {
@@ -329,6 +378,17 @@ export function GenerationQueueProvider({ children }: { children: ReactNode }) {
       return null;
     }
 
+    // The gate for a video-chain drift pause: the paused group's next segment
+    // is deliberately still unpatched (no `inputVideo`), so dispatching it
+    // would fail with an unrelated "no input video" error and the failure
+    // cascade would then cancel the rest of the group the user is being asked
+    // about. Items outside the paused group are unaffected.
+    const pausedGroupId = chainPauseRef.current?.loopGroupId;
+    const isDispatchable = (item: QueueItem) =>
+      item.status === "pending" &&
+      (!allowedTypes || allowedTypes.includes(item.type)) &&
+      !(pausedGroupId !== undefined && item.loopGroupId === pausedGroupId);
+
     let nextItem: QueueItem | undefined;
 
     // If current item is part of a loop group, prioritize next step in same group
@@ -338,8 +398,7 @@ export function GenerationQueueProvider({ children }: { children: ReactNode }) {
 
       // Find next step in the same loop group
       nextItem = currentQueue.find((item) =>
-        item.status === "pending" &&
-        (!allowedTypes || allowedTypes.includes(item.type)) &&
+        isDispatchable(item) &&
         item.loopGroupId === currentLoopGroupId &&
         (item.loopStepIndex ?? 0) === currentLoopStepIndex + 1
       );
@@ -350,8 +409,7 @@ export function GenerationQueueProvider({ children }: { children: ReactNode }) {
 
     // If no loop step found, get next pending item in queue order
     if (!nextItem) {
-      nextItem = currentQueue.find((item) =>
-        item.status === "pending" && (!allowedTypes || allowedTypes.includes(item.type)));
+      nextItem = currentQueue.find(isDispatchable);
       console.log("[QueueContext] Found next pending item:", nextItem);
     }
 
@@ -364,7 +422,10 @@ export function GenerationQueueProvider({ children }: { children: ReactNode }) {
       // back-to-back run is dispatched with keep_models_hot=false, which tells the
       // backend to release VRAM once that generation completes.
       const hasNext = currentQueue.some(
-        (item) => item.id !== nextItem!.id && item.status === "pending"
+        (item) =>
+          item.id !== nextItem!.id &&
+          item.status === "pending" &&
+          !(pausedGroupId !== undefined && item.loopGroupId === pausedGroupId)
       );
       const supportsKeepModelsHot =
         nextItem.type === "txt2img" || nextItem.type === "img2img" || nextItem.type === "inpaint";
@@ -436,6 +497,9 @@ export function GenerationQueueProvider({ children }: { children: ReactNode }) {
     currentItemRef.current = null;
     setCurrentItem(null);
     setProgressSnapshot(null);
+    // Nothing is left for a pause to hold.
+    chainPauseRef.current = null;
+    setChainPause(null);
   }, []);
 
   return (
@@ -458,6 +522,9 @@ export function GenerationQueueProvider({ children }: { children: ReactNode }) {
         progressSnapshot,
         completedResults,
         publishCompletedResult,
+        chainPause,
+        pauseChain,
+        clearChainPause,
       }}
     >
       {children}

@@ -38,6 +38,10 @@ export function ModelComponentsProvider({ children }: { children: React.ReactNod
     setLoading(true);
     try {
       setSnapshot(await getCurrentModelComponents());
+      // A successful fetch retires whatever the last failure said. Without
+      // this the banner from one backend restart stays up for the rest of the
+      // session, until someone closes it by hand.
+      setError(null);
     } catch (nextError) {
       setError(errorMessage(nextError));
     } finally {

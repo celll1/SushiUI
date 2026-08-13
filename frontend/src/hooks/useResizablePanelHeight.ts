@@ -6,12 +6,8 @@ const MIN_HEIGHT = 112;
 const DEFAULT_HEIGHT = 144;
 const MAX_HEIGHT = 560;
 
-function maximumHeight(): number {
-  return MAX_HEIGHT;
-}
-
 function clamp(value: number): number {
-  return Math.max(MIN_HEIGHT, Math.min(maximumHeight(), Math.round(value)));
+  return Math.max(MIN_HEIGHT, Math.min(MAX_HEIGHT, Math.round(value)));
 }
 
 export function useResizablePanelHeight(storageKey: string) {
@@ -53,7 +49,7 @@ export function useResizablePanelHeight(storageKey: string) {
     if (event.key === "ArrowUp") setClampedHeight(height - step);
     else if (event.key === "ArrowDown") setClampedHeight(height + step);
     else if (event.key === "Home") setClampedHeight(MIN_HEIGHT);
-    else if (event.key === "End") setClampedHeight(maximumHeight());
+    else if (event.key === "End") setClampedHeight(MAX_HEIGHT);
     else if (event.key === "Enter" || event.key === " ") reset();
     else return;
     event.preventDefault();

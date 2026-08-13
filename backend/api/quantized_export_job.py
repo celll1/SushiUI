@@ -41,6 +41,11 @@ from core.models.common.quantized_export import (
 _lock = threading.Lock()
 _job: Optional[Dict] = None
 
+# How long an export waits for the model-lifecycle gate before giving up. Long
+# enough to outlast a generation queue the user forgot about, short enough that
+# a job wedged behind a stuck gate still reports failure the same day.
+_EXPORT_GATE_WAIT_SECONDS = 3600.0
+
 
 # ---------------------------------------------------------------------------
 # Target resolution
@@ -351,7 +356,21 @@ def _run_export(pipeline_manager, job_id, arch, modules, output_path, *,
         from core.model_state_coordinator import model_state_coordinator
         load_lock = getattr(pipeline_manager, "_load_model_lock", None)
         _update(job_id, message="waiting for the model lifecycle gate")
-        with model_state_coordinator.mutation("quantized export"):
+
+        def _report_wait(reasons):
+            _update(job_id, message="waiting for " + ", ".join(reasons))
+
+        # Serializing weights while generation moves them between CPU and GPU
+        # would write torn tensors, so this needs the exclusive gate -- but as a
+        # background job it queues for it rather than dying on whatever happened
+        # to be running when the user pressed the button. Subprocess training is
+        # not a blocker: it never touches these in-process modules.
+        with model_state_coordinator.mutation(
+            "quantized export",
+            wait_timeout=_EXPORT_GATE_WAIT_SECONDS,
+            wait_for_activities=False,
+            on_wait=_report_wait,
+        ):
             if load_lock is not None:
                 load_lock.acquire()
             try:

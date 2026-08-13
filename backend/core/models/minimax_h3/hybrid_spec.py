@@ -53,6 +53,11 @@ HEADER_SOURCE = "base"
 
 PRESET_BLOCK_RANGE_ADALN = "block_range_adaln"
 
+#: Every implemented preset. ``validate_preset`` accepts exactly these and the
+#: overlay-candidates API advertises exactly these, so a preset cannot be
+#: accepted without being offered or offered without being accepted.
+SUPPORTED_PRESETS: Tuple[str, ...] = (PRESET_BLOCK_RANGE_ADALN,)
+
 #: Non-MVP recipes, enumerated so asking for one gets a refusal that says why
 #: rather than an "unknown preset" that reads like a typo.
 _REFUSED_PRESETS: Dict[str, str] = {
@@ -195,11 +200,11 @@ def validate_preset(preset: str, overlay_dit_path: Any) -> None:
     if preset in _REFUSED_PRESETS:
         raise _refuse("preset_unsupported",
                       f"overlay preset {preset!r} is refused: {_REFUSED_PRESETS[preset]}")
-    if preset != PRESET_BLOCK_RANGE_ADALN:
+    if preset not in SUPPORTED_PRESETS:
         raise _refuse(
             "preset_unknown",
-            f"unknown overlay preset {preset!r}; the only implemented preset is "
-            f"{PRESET_BLOCK_RANGE_ADALN!r}")
+            f"unknown overlay preset {preset!r}; the implemented preset(s) are "
+            f"{list(SUPPORTED_PRESETS)}")
 
 
 # ---------------------------------------------------------------------------
@@ -1028,6 +1033,99 @@ def hybrid_component_fields(preflight: MiniMaxH3HybridPreflight) -> Dict[str, An
         "hybrid_identity": hybrid_model_identity(spec),
         "overlay_dit_path": spec.overlay_dit_path,
     }
+
+
+# ---------------------------------------------------------------------------
+# C5 -- the overlay candidates one tree offers, for the API
+# ---------------------------------------------------------------------------
+
+def describe_minimax_h3_hybrid_overlay_choices(model_path: str) -> Dict[str, Any]:
+    """The overlay choices for one base DiT, for ``GET`` -- headers only.
+
+    The sibling of ``loader.describe_minimax_h3_text_encoder_choices``: same
+    shape, same header-only guarantee (so it is safe to call while a model is
+    loaded), same rule that a candidate's verdict comes from THE GATE THE LOAD
+    PATH RUNS -- here the whole preflight -- so this cannot offer a pair the
+    load would then refuse.
+
+    ``compatible`` is taken over EVERY block, not over the default range: the
+    per-key checks only shrink as the range does, so a pair that passes at
+    ``0..num_blocks-1`` passes at every range the caller can then choose. The
+    reverse is not true, which is why the verdict is reported with the range it
+    was taken at rather than as a bare boolean.
+
+    The response the route serves also carries a ``defaults`` object, which the
+    route adds from ``param_defaults.H3_HYBRID_LOAD_DEFAULTS``: API defaults are
+    that module's to state, and building them here would leave an override
+    placed there unable to reach the endpoint the frontend reads.
+    """
+    layout = detect_minimax_h3_layout(model_path)
+    if layout is None or not layout.get("dit"):
+        raise ValueError(f"{model_path!r} does not resolve to a MiniMax-H3 model tree.")
+
+    base = str(layout["dit"])
+    base_header, _base_metadata = _read_header_and_metadata(base, side="base")
+    num_blocks = _num_blocks(base_header)
+    checked = (0, max(num_blocks - 1, 0))
+
+    overlays: List[Dict[str, Any]] = []
+    for path in _sibling_dit_files(str(layout["root"]), exclude=base):
+        entry = {
+            "path": path,
+            "name": os.path.splitext(os.path.basename(path))[0],
+            "variant": (detect_minimax_h3_layout(path) or {}).get("variant"),
+            "size_bytes": _file_size(path),
+            "compatible": False,
+            "reason": None,
+            "refusal_code": None,
+            "quantization_format": None,
+            "num_blocks": None,
+        }
+        try:
+            preflight = preflight_minimax_h3_hybrid(
+                base, path, block_range_start=checked[0], block_range_end=checked[1])
+        except MiniMaxH3HybridRefusal as exc:
+            entry["reason"] = exc.message
+            entry["refusal_code"] = exc.code
+        else:
+            entry["compatible"] = True
+            entry["quantization_format"] = preflight.quant_format
+            entry["num_blocks"] = preflight.num_blocks
+        overlays.append(entry)
+
+    return {
+        "base": {
+            "path": base,
+            "name": os.path.splitext(os.path.basename(base))[0],
+            "variant": layout.get("variant"),
+            "num_blocks": num_blocks,
+        },
+        "checked_block_range": list(checked),
+        "overlays": overlays,
+    }
+
+
+def _sibling_dit_files(root: str, *, exclude: str) -> List[str]:
+    """Every H3 DiT in this tree's ``diffusion_models/`` but the base itself.
+
+    Filtered by the same key signature ``GET /models`` filters its partition
+    list by, so an overlay offered here is one of the entries the user already
+    sees as a selectable checkpoint.
+    """
+    directory = os.path.join(root, "diffusion_models")
+    try:
+        names = sorted(os.listdir(directory))
+    except OSError:
+        return []
+    found = []
+    for name in names:
+        if not name.endswith(".safetensors"):
+            continue
+        path = os.path.join(directory, name)
+        if same_path(path, exclude) or not is_minimax_h3_safetensors(path):
+            continue
+        found.append(path)
+    return found
 
 
 def hybrid_model_info_fields(components: Mapping[str, Any]) -> Dict[str, Any]:

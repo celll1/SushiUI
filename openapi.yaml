@@ -2976,6 +2976,70 @@ paths:
                     projection's `tap` also decides how many of the file's decoder
                     blocks are read.
                   example: "M:/model/minimax_h3/clip_projections/mmh3-4b-clipproj-celeb-mlp.safetensors"
+                overlay_file:
+                  type: string
+                  nullable: true
+                  description: |
+                    **MiniMax-H3 only.** Absolute path to a second DiT checkpoint
+                    in the same tree whose per-block AdaLN projection is read in
+                    place of `source`'s over the block range below. Omitted/null
+                    loads `source` alone, unchanged.
+
+                    The supported direction is base `fl2va` + overlay `ref2va`.
+                    List the candidates, with the verdict of the loader's own
+                    preflight for each, with
+                    `GET /models/minimax-h3/hybrid-overlays`.
+
+                    The merged model reports `variant: "hybrid"`, which every
+                    `/generate/*` route refuses until the measurements in the
+                    design document are in. Loading and inspecting it is what
+                    this field currently reaches.
+
+                    Not needed with `force`: the overlay and the recipe are part
+                    of the model identity, so changing either reloads.
+                  example: "M:/model/minimax_h3/diffusion_models/minimax_h3_ref2va_pruned_fp8_scaled.safetensors"
+                hybrid_preset:
+                  type: string
+                  enum: [block_range_adaln]
+                  default: block_range_adaln
+                  description: |
+                    **MiniMax-H3 only.** Which keys the overlay answers for.
+                    `block_range_adaln` reads
+                    `blocks.<N>.adaln_proj.linear.weight` (and `.bias` when both
+                    files carry it) for N in the range below, and nothing else.
+                    Any other value is refused by name, including `custom_glob`,
+                    `full_overlay` and `multi_overlay`.
+                  example: block_range_adaln
+                hybrid_block_range_start:
+                  type: integer
+                  minimum: 0
+                  default: 25
+                  description: |
+                    **MiniMax-H3 only.** First block index read from the overlay,
+                    inclusive. The default comes from the upstream loader this
+                    recipe is taken from and is that author's subjective result,
+                    not a measurement made here.
+                  example: 25
+                hybrid_block_range_end:
+                  type: integer
+                  minimum: 0
+                  default: 49
+                  description: |
+                    **MiniMax-H3 only.** Last block index read from the overlay,
+                    inclusive. Must not be below `hybrid_block_range_start` (an
+                    empty range is refused, not degraded to a base-only load) nor
+                    past the checkpoint's last block — see `base.num_blocks` from
+                    `GET /models/minimax-h3/hybrid-overlays`.
+                  example: 49
+                hybrid_final_adaln_from_overlay:
+                  type: boolean
+                  default: false
+                  description: |
+                    **MiniMax-H3 only.** Also read
+                    `final_layer.adaln_proj.linear.*` from the overlay. Off by
+                    default; the effect of the final layer's AdaLN coming from
+                    the other checkpoint has not been measured here.
+                  example: false
       responses:
         '200':
           description: Model loaded successfully
@@ -2994,7 +3058,48 @@ paths:
                     type: object
                     additionalProperties: true
                     description: Same payload as `GET /models/current`'s `model_info`.
+        '400':
+          description: |
+            The requested hybrid was refused. Returned only for a request that
+            sent `overlay_file`, and only for a refusal of the pair itself —
+            a fault while merging is a 500 with a server-side traceback, not a
+            statement that the request was invalid.
 
+            Every refusal reachable here is decided by the header-only
+            preflight, before anything is built or torn down, so the loaded
+            model is untouched.
+
+            `detail` opens with the refusal code in brackets, e.g.
+            `[key_set_mismatch] base and overlay declare different tensors: ...`.
+            The codes, by group:
+
+            - the request itself: `hybrid_request_no_overlay`,
+              `hybrid_request_unknown_field`, `hybrid_request_invalid`,
+              `multiple_overlays`, `preset_unknown`, `preset_unsupported`,
+              `hybrid_identity_unvalidated`, `hybrid_wrong_architecture`
+            - the files: `base_missing`, `overlay_missing`, `not_an_h3_tree`,
+              `not_h3_checkpoint`, `header_unreadable`, `different_tree`,
+              `variant_direction`
+            - base/overlay disagreement: `key_set_mismatch`, `shape_mismatch`,
+              `dtype_mismatch`, `geometry_mismatch`, `geometry_contradictory`,
+              `geometry_unsupported`
+            - mixed quantization: `format_mismatch`, `quant_metadata_mismatch`,
+              `quant_metadata_malformed`, `w4a8_contract_mismatch`,
+              `w4a8_contract_invalid`
+            - the block range: `block_range_invalid`, `block_range_empty`,
+              `block_range_out_of_range`, `no_transformer_blocks`,
+              `adaln_weight_missing`, `adaln_bias_partial`,
+              `adaln_bias_one_sided`, `adaln_sidecar_unknown`
+
+            An `overlay_file` sent for a `source` outside a MiniMax-H3 tree is
+            refused as `not_an_h3_tree`, naming that source: the hybrid loader
+            resolves the tree before any architecture is detected, so the
+            `hybrid_wrong_architecture` refusal above is not reached from this
+            route.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '409':
           description: >-
             Another model load, a component switch, an in-flight generation, or
@@ -3048,6 +3153,65 @@ paths:
         '400':
           description: |
             `model_path` does not resolve to a MiniMax-H3 model tree.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Scanning the tree failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /models/minimax-h3/hybrid-overlays:
+    get:
+      tags: [models]
+      summary: MiniMax-H3 overlay checkpoints one DiT can be hybridised with
+      description: |
+        The choices behind `POST /models/load`'s `overlay_file`, read from the
+        tree's safetensors HEADERS only — no weights are mapped, so this is safe
+        to call while a model is loaded.
+
+        `base` is the DiT `model_path` resolves to, and `overlays` is every
+        other MiniMax-H3 checkpoint in the same `diffusion_models/` directory,
+        i.e. the same partitions `GET /models` lists. `compatible` for each is
+        the verdict of the loader's own preflight — the identical run a load
+        performs — so an entry listed as compatible cannot be one the load then
+        refuses, and `reason`/`refusal_code` carry the refusal otherwise.
+
+        That verdict is taken over `checked_block_range`, which is EVERY block
+        rather than the default range: the per-key checks only shrink with the
+        range, so a compatible pair stays compatible for any range the caller
+        picks. `hybrid_final_adaln_from_overlay` is not covered by it and is
+        validated at load.
+
+        `defaults` is what `POST /models/load` applies when the hybrid fields
+        are omitted. It is served here rather than from `/schema/*` because a
+        block range is only meaningful beside the `base.num_blocks` this
+        endpoint reads from the same headers.
+      operationId: listMiniMaxH3HybridOverlays
+      parameters:
+        - name: model_path
+          in: query
+          required: true
+          schema:
+            type: string
+          description: |
+            The base: a MiniMax-H3 DiT `.safetensors` path, or a tree root (which
+            resolves to the DiT a load of that root would pick).
+          example: "M:/model/minimax_h3/diffusion_models/minimax_h3_fl2va_pruned_fp8_scaled.safetensors"
+      responses:
+        '200':
+          description: Overlay candidates found in the tree
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MiniMaxH3HybridOverlayListResponse'
+        '400':
+          description: |
+            `model_path` does not resolve to a MiniMax-H3 DiT, or its own header
+            cannot be read.
           content:
             application/json:
               schema:
@@ -13297,6 +13461,16 @@ components:
           type: string
         size:
           type: integer
+        variant:
+          type: string
+          nullable: true
+          description: |
+            MiniMax-H3 only: which partition this entry is, `fl2va` or `ref2va`,
+            derived from the file name. Null for every other architecture, and
+            for an H3 file whose name states neither. A hybrid is not listed
+            here — it is a pair chosen at load time, and the loaded model
+            reports it under `LoadedModelInfo`.
+          example: fl2va
 
     LoadedModelInfo:
       type: object
@@ -13343,6 +13517,32 @@ components:
             `/generate/ref2vid`, `/generate/outpaint/video` and
             `/generate/inpaint/video` are refused with 400.
           example: false
+        base_variant:
+          type: string
+          nullable: true
+          description: |
+            MiniMax-H3 hybrid only: the partition the base checkpoint is,
+            `fl2va`. Absent for a single-checkpoint load, where `variant` says
+            everything.
+          example: fl2va
+        overlay_variant:
+          type: string
+          nullable: true
+          description: |
+            MiniMax-H3 hybrid only: the partition the overlay is, `ref2va`.
+          example: ref2va
+        hybrid:
+          allOf:
+            - $ref: '#/components/schemas/MiniMaxH3HybridProvenance'
+          nullable: true
+          description: |
+            MiniMax-H3 hybrid only: which two checkpoints were merged and how.
+            Absent for a single-checkpoint load.
+
+            Read this, not `model_hash`, to tell two hybrids apart: the hash is
+            the base file's alone, so every hybrid built on one base reports the
+            same one here and in the gallery. `compatibility_digest` is the
+            identity of the validated pair.
 
     CurrentModelResponse:
       type: object
@@ -13548,6 +13748,189 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/MiniMaxH3ClipProjectionCandidate'
+
+    MiniMaxH3HybridRecipe:
+      type: object
+      required: [preset, block_range_start, block_range_end, final_adaln_from_overlay]
+      description: What was taken from the overlay, minus the file identities.
+      properties:
+        preset:
+          type: string
+          enum: [block_range_adaln]
+          example: block_range_adaln
+        block_range_start:
+          type: integer
+          example: 25
+        block_range_end:
+          type: integer
+          description: Inclusive.
+          example: 49
+        final_adaln_from_overlay:
+          type: boolean
+          example: false
+
+    MiniMaxH3HybridProvenance:
+      type: object
+      required: [variant, base_file, overlay_file, hybrid_recipe, compatibility_digest]
+      description: |
+        Which two MiniMax-H3 checkpoints the loaded DiT was merged from. File
+        names only, never paths: the same object is written into generation
+        metadata and the gallery row.
+      properties:
+        variant:
+          type: string
+          enum: [hybrid]
+          example: hybrid
+        base_variant:
+          type: string
+          nullable: true
+          example: fl2va
+        overlay_variant:
+          type: string
+          nullable: true
+          example: ref2va
+        base_file:
+          type: string
+          example: minimax_h3_fl2va_pruned_fp8_scaled.safetensors
+        overlay_file:
+          type: string
+          example: minimax_h3_ref2va_pruned_fp8_scaled.safetensors
+        hybrid_recipe:
+          $ref: '#/components/schemas/MiniMaxH3HybridRecipe'
+        compatibility_digest:
+          type: string
+          description: |
+            Stable digest of the validated contract — both files' key/dtype/shape
+            census, sizes, geometry and quantization contract. The recipe is
+            deliberately not an input, so the same pair digests the same across
+            block ranges.
+          example: "h3hybrid1:2f0c9d1e"
+        quantization_format:
+          type: string
+          description: |
+            The format label both files carry, e.g. `fp8_scaled`, `w4a8_mixed`,
+            `int8_convrot`, `unquantized`, or two joined with `+` for a file that
+            is genuinely mixed.
+          example: fp8_scaled
+        overlay_key_count:
+          type: integer
+          description: How many raw tensors were read from the overlay.
+          example: 25
+
+    MiniMaxH3HybridOverlayCandidate:
+      type: object
+      required: [path, name, variant, size_bytes, compatible, reason, refusal_code]
+      description: |
+        One checkpoint offered as an overlay for a specific base, with the
+        verdict of the loader's own preflight run against that base.
+      properties:
+        path:
+          type: string
+          description: Absolute path; this is what `overlay_file` takes.
+          example: "M:/model/minimax_h3/diffusion_models/minimax_h3_ref2va_pruned_fp8_scaled.safetensors"
+        name:
+          type: string
+          example: minimax_h3_ref2va_pruned_fp8_scaled
+        variant:
+          type: string
+          nullable: true
+          description: The partition this file is, from its name.
+          example: ref2va
+        size_bytes:
+          type: integer
+          description: -1 when the file could not be stat'ed.
+          example: 22508928000
+        compatible:
+          type: boolean
+          description: Whether the preflight validates this pair over every block.
+          example: true
+        reason:
+          type: string
+          nullable: true
+          description: The refusal message when `compatible` is false; null otherwise.
+        refusal_code:
+          type: string
+          nullable: true
+          description: |
+            The stable code of that refusal — the same set `POST /models/load`
+            returns in its 400 — so a client can branch on it instead of on
+            prose.
+          example: variant_direction
+        quantization_format:
+          type: string
+          nullable: true
+          description: The pair's shared format label. Null when the pair is refused.
+          example: fp8_scaled
+        num_blocks:
+          type: integer
+          nullable: true
+          description: Blocks the pair declares. Null when the pair is refused.
+          example: 50
+
+    MiniMaxH3HybridOverlayListResponse:
+      type: object
+      required: [base, checked_block_range, overlays, defaults]
+      properties:
+        base:
+          type: object
+          required: [path, name, variant, num_blocks]
+          description: The DiT `model_path` resolved to.
+          properties:
+            path:
+              type: string
+              example: "M:/model/minimax_h3/diffusion_models/minimax_h3_fl2va_pruned_fp8_scaled.safetensors"
+            name:
+              type: string
+              example: minimax_h3_fl2va_pruned_fp8_scaled
+            variant:
+              type: string
+              nullable: true
+              example: fl2va
+            num_blocks:
+              type: integer
+              description: |
+                Transformer blocks this checkpoint declares, i.e. the bound on
+                `hybrid_block_range_end` (which is inclusive, so the last valid
+                value is one less than this).
+              example: 50
+        checked_block_range:
+          type: array
+          description: |
+            The `[start, end]` each candidate's verdict was taken at — every
+            block, which is the strictest range.
+          items:
+            type: integer
+          example: [0, 49]
+        overlays:
+          type: array
+          description: Every other H3 checkpoint in the same tree, in file-name order.
+          items:
+            $ref: '#/components/schemas/MiniMaxH3HybridOverlayCandidate'
+        defaults:
+          type: object
+          required: [preset, presets, block_range_start, block_range_end, final_adaln_from_overlay]
+          description: |
+            What `POST /models/load` applies when the hybrid fields are omitted,
+            from the same constants the loader validates against.
+          properties:
+            preset:
+              type: string
+              example: block_range_adaln
+            presets:
+              type: array
+              description: Every implemented preset.
+              items:
+                type: string
+              example: [block_range_adaln]
+            block_range_start:
+              type: integer
+              example: 25
+            block_range_end:
+              type: integer
+              example: 49
+            final_adaln_from_overlay:
+              type: boolean
+              example: false
 
     MiniMaxH3ReferenceBankRequest:
       type: object

@@ -211,6 +211,31 @@ const loadControlNetImages = async (
   return loadedControlnets;
 };
 
+// What was taken from a MiniMax-H3 overlay checkpoint, minus the file identities.
+export interface MiniMaxH3HybridRecipe {
+  preset: "block_range_adaln";
+  block_range_start: number;
+  /** Inclusive. */
+  block_range_end: number;
+  final_adaln_from_overlay: boolean;
+}
+
+// Which two MiniMax-H3 checkpoints the loaded DiT was merged from. File names
+// only, never paths. Read `compatibility_digest`, not `model_hash`, to tell two
+// hybrids apart: the hash is the BASE file's alone, so every hybrid on one base
+// reports the same one here and in the gallery.
+export interface MiniMaxH3HybridProvenance {
+  variant: "hybrid";
+  base_variant: string | null;
+  overlay_variant: string | null;
+  base_file: string;
+  overlay_file: string;
+  hybrid_recipe: MiniMaxH3HybridRecipe;
+  compatibility_digest: string;
+  quantization_format?: string;
+  overlay_key_count?: number;
+}
+
 export interface ModelInfo {
   source_type: string;
   source: string;
@@ -222,6 +247,12 @@ export interface ModelInfo {
   path?: string;
   architecture?: string;
   vae_type?: string;  // MiniT2I: "none" (pixel) | "sdxl" | "flux1" (latent)
+  // MiniMax-H3: "fl2va" | "ref2va" for a single checkpoint, "hybrid" for a
+  // merged pair. Only a hybrid carries the three provenance fields after it.
+  variant?: string | null;
+  base_variant?: string | null;
+  overlay_variant?: string | null;
+  hybrid?: MiniMaxH3HybridProvenance | null;
 }
 
 export type ComponentSlotId = "text_encoder" | "vision_encoder" | "backbone" | "vae" | "audio_vae";
@@ -3481,6 +3512,66 @@ export const fetchMiniMaxH3TextEncoders = async (
   return response.data;
 };
 
+/** What `loadModel`'s 7th argument sends. Omit it entirely for a plain load. */
+export interface MiniMaxH3HybridLoadRequest {
+  /** Absolute path of the overlay DiT. Without it nothing hybrid is sent. */
+  overlay_file: string;
+  preset?: "block_range_adaln";
+  block_range_start?: number;
+  /** Inclusive. */
+  block_range_end?: number;
+  final_adaln_from_overlay?: boolean;
+}
+
+export interface MiniMaxH3HybridOverlayCandidate {
+  path: string;
+  name: string;
+  variant: string | null;
+  size_bytes: number;
+  // The loader's own preflight, run against this base over every block, so a
+  // compatible entry stays compatible for any range the user then picks. It is
+  // taken with final_adaln_from_overlay OFF, and that toggle selects a key the
+  // check never looked at, so turning it on can still be refused at load.
+  compatible: boolean;
+  reason: string | null;
+  /** Stable code of that refusal, the same set POST /models/load 400s with. */
+  refusal_code: string | null;
+  quantization_format: string | null;
+  num_blocks: number | null;
+}
+
+export interface MiniMaxH3HybridOverlaysResponse {
+  base: {
+    path: string;
+    name: string;
+    variant: string | null;
+    /** block_range_end is inclusive, so the last valid value is this minus one. */
+    num_blocks: number;
+  };
+  checked_block_range: [number, number];
+  overlays: MiniMaxH3HybridOverlayCandidate[];
+  // The backend's own defaults for the hybrid load fields. Served here rather
+  // than from /schema/* because a block range only means something beside
+  // base.num_blocks.
+  defaults: {
+    preset: string;
+    presets: string[];
+    block_range_start: number;
+    block_range_end: number;
+    final_adaln_from_overlay: boolean;
+  };
+}
+
+// modelPath is the BASE: either the DiT file or the model tree root.
+export const fetchMiniMaxH3HybridOverlays = async (
+  modelPath: string
+): Promise<MiniMaxH3HybridOverlaysResponse> => {
+  const response = await api.get("/models/minimax-h3/hybrid-overlays", {
+    params: { model_path: modelPath },
+  });
+  return response.data;
+};
+
 /**
  * Reference-bank job document. Before the first build of a backend process it
  * is just `{ state: "idle" }`.
@@ -4824,7 +4915,8 @@ export const loadModel = async (
   revision?: string,
   force?: boolean,
   textEncoderFile?: string | null,
-  clipProjectionFile?: string | null
+  clipProjectionFile?: string | null,
+  hybrid?: MiniMaxH3HybridLoadRequest | null
 ) => {
   const formData = new FormData();
   formData.append("source_type", sourceType);
@@ -4840,6 +4932,27 @@ export const loadModel = async (
   }
   if (clipProjectionFile) {
     formData.append("clip_projection_file", clipProjectionFile);
+  }
+  // Nothing is sent without an overlay: the backend then takes the load path it
+  // always took. The recipe fields ride along only with one, so a stale range
+  // in a caller's state cannot reach a base-only load.
+  if (hybrid?.overlay_file) {
+    formData.append("overlay_file", hybrid.overlay_file);
+    if (hybrid.preset) {
+      formData.append("hybrid_preset", hybrid.preset);
+    }
+    if (hybrid.block_range_start !== undefined) {
+      formData.append("hybrid_block_range_start", String(hybrid.block_range_start));
+    }
+    if (hybrid.block_range_end !== undefined) {
+      formData.append("hybrid_block_range_end", String(hybrid.block_range_end));
+    }
+    if (hybrid.final_adaln_from_overlay !== undefined) {
+      formData.append(
+        "hybrid_final_adaln_from_overlay",
+        hybrid.final_adaln_from_overlay ? "true" : "false"
+      );
+    }
   }
 
   const response = await api.post("/models/load", formData, {

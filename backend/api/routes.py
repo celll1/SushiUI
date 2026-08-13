@@ -8161,7 +8161,7 @@ def _expand_minimax_h3_tree(tree_path: str, name_prefix: str, source_dir: str) -
 
 
 @router.get("/models")
-async def get_models(db: Session = Depends(get_gallery_db), force_rescan: bool = False):
+def get_models(db: Session = Depends(get_gallery_db), force_rescan: bool = False):
     """
     Get list of available models from default and user-configured directories.
 
@@ -8371,7 +8371,7 @@ async def get_models(db: Session = Depends(get_gallery_db), force_rescan: bool =
     return result
 
 @router.get("/models/vision_encoders")
-async def list_vision_encoders(db: Session = Depends(get_gallery_db)):
+def list_vision_encoders(db: Session = Depends(get_gallery_db)):
     """List safetensors files detected as SigLIP2 vision encoders from the model directories.
 
     Scans directly without cache so new files are always visible immediately.
@@ -8485,7 +8485,7 @@ def _training_vae_export_dirs() -> List[str]:
 
 
 @router.get("/models/vaes")
-async def list_vaes(db: Session = Depends(get_gallery_db)):
+def list_vaes(db: Session = Depends(get_gallery_db)):
     """List standalone VAE candidates usable as a per-generation VAE override.
 
     Scans the shared VAE store (models_dir/vae), the configured model dirs, and
@@ -8604,7 +8604,7 @@ async def list_vaes(db: Session = Depends(get_gallery_db)):
 
 
 @router.get("/models/text_encoders")
-async def list_text_encoders(db: Session = Depends(get_gallery_db)):
+def list_text_encoders(db: Session = Depends(get_gallery_db)):
     """List standalone text-encoder candidates usable as a TE override.
 
     Same scan surface as ``/models/vaes``; a candidate is a standalone TE dir or
@@ -8949,15 +8949,19 @@ class ComponentSwitchRequest(BaseModel):
     projection_path: Optional[str] = None
 
 
-async def _current_component_catalog(db: Session):
+def _build_component_catalog(db: Session):
+    """Scan every component directory and assemble the catalog.
+
+    Blocking throughout: four directory walks, a safetensors header read per
+    candidate, and a registry rescan whenever its schema has moved on. It runs
+    off the event loop (see the caller) because none of that yields.
+    """
     from core.models.components.component_catalog import build_catalog
 
-    models_response, vaes_response, text_encoders_response, vision_encoders_response = await asyncio.gather(
-        get_models(db),
-        list_vaes(db),
-        list_text_encoders(db),
-        list_vision_encoders(db),
-    )
+    models_response = get_models(db)
+    vaes_response = list_vaes(db)
+    text_encoders_response = list_text_encoders(db)
+    vision_encoders_response = list_vision_encoders(db)
     h3_text_encoders = []
     info = pipeline_manager.current_model_info or {}
     if str(info.get("type") or "").lower() == "minimax_h3" and info.get("source"):
@@ -8981,6 +8985,13 @@ async def _current_component_catalog(db: Session):
         vision_encoders=vision_encoders_response.get("vision_encoders", []),
         h3_text_encoders=h3_text_encoders,
     )
+
+
+async def _current_component_catalog(db: Session):
+    # asyncio.gather over these looked concurrent but was not: none of the
+    # scans await, so they ran to completion one after another on the event
+    # loop, stalling every other request for the length of a full rescan.
+    return await asyncio.to_thread(_build_component_catalog, db)
 
 
 @router.get("/models/current/components")

@@ -8805,6 +8805,61 @@ async def list_minimax_h3_text_encoders(model_path: str):
     return choices
 
 
+class MiniMaxH3ReferenceBankRequest(BaseModel):
+    """Body of ``POST /models/minimax-h3/te-agreement/reference-bank``."""
+    text_encoder_path: str
+
+
+@router.get("/models/minimax-h3/te-agreement")
+async def get_minimax_h3_te_agreement(model_path: Optional[str] = None):
+    """Reference banks, stored measurements and build state for MiniMax-H3.
+
+    ``cost`` carries the measured price of a build so a client can state it
+    before the user commits to it. ``bank`` is the bank built from the LOADED
+    encoder only: one built from a different released encoder is listed under
+    ``banks`` and does not answer for this one.
+    """
+    from api.minimax_h3_reference_bank_job import agreement_status
+
+    try:
+        return await asyncio.to_thread(agreement_status, pipeline_manager, model_path)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/models/minimax-h3/te-agreement/reference-bank")
+async def start_minimax_h3_reference_bank(request: MiniMaxH3ReferenceBankRequest):
+    """Build this installation's reference bank from the loaded released encoder.
+
+    Refuses with 409 while a generation, a training run or another model-state
+    mutation is in flight, and with 400 when the loaded encoder is a substitute
+    or is not the one ``text_encoder_path`` names. The worker holds the model
+    lifecycle gate, so a generation started while it runs is refused in turn.
+    """
+    from api.minimax_h3_reference_bank_job import (
+        BankBusyError, BankUnavailableError, start_bank_build,
+    )
+
+    try:
+        return start_bank_build(pipeline_manager, request.text_encoder_path)
+    except BankBusyError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except BankUnavailableError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/models/minimax-h3/te-agreement/reference-bank")
+async def cancel_minimax_h3_reference_bank():
+    """Stop the running build. A cancelled build stores no bank."""
+    from api.minimax_h3_reference_bank_job import cancel_bank_build
+
+    return cancel_bank_build()
+
+
 class QuantizedExportRequest(BaseModel):
     """Body of ``POST /models/export-quantized``."""
     output_path: str

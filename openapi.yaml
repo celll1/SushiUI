@@ -3047,6 +3047,140 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /models/minimax-h3/te-agreement:
+    get:
+      tags: [models]
+      summary: MiniMax-H3 text-encoder agreement state for this installation
+      description: |
+        Everything a client needs to decide whether to build a reference bank
+        and how to read an existing measurement.
+
+        A converted small Qwen3-VL plus a trained projection stands in for the
+        released Qwen3-VL-32B. How well it stands in depends on three files the
+        user chose, so it is measured here rather than tabulated in the source
+        tree. The cost is split: the REFERENCE BANK (the released encoder's
+        hidden state for the tracked prompt suite) is built once per released
+        encoder file and is the expensive half; the substitute measurement
+        against that bank runs automatically on the first load of a pairing.
+
+        `bank` is the stored bank for the LOADED encoder — null when none was
+        built from it. A bank built from a different released encoder is
+        reported under `banks` and does not answer for this one, so it is not
+        promoted to `bank`.
+
+        `measurements` are the stored measurements whose text encoder or
+        reference encoder is a file in `model_path`'s tree; `measurements_reason`
+        says why that list is empty when the tree could not be scanned.
+
+        `loaded.substitution` is the backend's single wording for the loaded
+        pairing (the same sentence the loader logs and the generation warning
+        carries), and states whether the number came from this installation or
+        from the compiled-in table measured elsewhere.
+      operationId: getMiniMaxH3TeAgreement
+      parameters:
+        - name: model_path
+          in: query
+          required: false
+          schema:
+            type: string
+          description: |
+            A MiniMax-H3 DiT `.safetensors` path or tree root whose files the
+            `measurements` list is filtered to. Defaults to the loaded model's
+            own source.
+          example: "M:/model/minimax_h3/diffusion_models/minimax_h3_fl2va_pruned_fp8_scaled.safetensors"
+      responses:
+        '200':
+          description: Agreement state, stored banks and measurements, and any job
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MiniMaxH3TeAgreementStatus'
+        '500':
+          description: Reading the agreement store failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /models/minimax-h3/te-agreement/reference-bank:
+    post:
+      tags: [models]
+      summary: Build the reference bank from the loaded released text encoder
+      description: |
+        Start a background job that encodes the tracked prompt suite with the
+        LOADED released text encoder and stores the result as this
+        installation's reference bank.
+
+        Measured for suite `h3-te-suite-v1` on the 25 GB released encoder: about
+        5 minutes, 14-24 GiB of host RSS, 39 MB stored. `GET` reports those same
+        figures under `cost` so a client can state them before the click.
+
+        `text_encoder_path` names the encoder the client believes is loaded. The
+        build refuses when that is not the loaded encoder — a bank labelled with
+        the wrong released encoder is worse than no bank — and refuses when the
+        loaded encoder is itself a substitute, since a substitute is what
+        agreement is measured AGAINST a reference and cannot be one.
+
+        Returns immediately with the job document; poll `GET` for
+        `job.processed` / `job.total` (presentations encoded).
+      operationId: startMiniMaxH3ReferenceBank
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MiniMaxH3ReferenceBankRequest'
+      responses:
+        '200':
+          description: Bank build started
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MiniMaxH3ReferenceBankJob'
+        '400':
+          description: |
+            No MiniMax-H3 model is loaded, the loaded model has no text encoder,
+            the loaded encoder is a substitute, or `text_encoder_path` is not
+            the loaded encoder.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: |
+            An image generation or a training run is in flight, another
+            lifecycle mutation (model load, component switch, quantized export)
+            holds the model, or a bank build is already running. The build reads
+            the live text encoder and holds the model lifecycle gate for its
+            whole run, which is also why a generation started while it runs is
+            refused with 409.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: The job could not be started
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      tags: [models]
+      summary: Cancel the running reference-bank build
+      description: |
+        Ask the running build to stop. The worker checks after each presentation
+        and the bank file is written only once every presentation is encoded, so
+        a cancelled build stores nothing; an interrupted REBUILD leaves the
+        previous bank in place. The job document ends in state `cancelled`.
+      operationId: cancelMiniMaxH3ReferenceBank
+      responses:
+        '200':
+          description: Cancellation requested (or nothing was running)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MiniMaxH3ReferenceBankJob'
+
   /models/export-quantized:
     get:
       tags: [models]
@@ -13384,6 +13518,263 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/MiniMaxH3ClipProjectionCandidate'
+
+    MiniMaxH3ReferenceBankRequest:
+      type: object
+      required: [text_encoder_path]
+      properties:
+        text_encoder_path:
+          type: string
+          description: |
+            The released text encoder the client believes is loaded, as a path
+            or a bare file name. Cross-checked against the loaded encoder; a
+            mismatch is refused rather than relabelled.
+          example: "M:/model/minimax_h3/text_encoders/qwen3vl_32b_minimax_h3_int8_convrot.safetensors"
+    MiniMaxH3ReferenceBankJob:
+      type: object
+      description: |
+        Reference-bank job document. Before the first build of this backend
+        process it is the single key `{"state": "idle"}`.
+      required: [state]
+      properties:
+        job_id:
+          type: string
+          example: "9c2f1a70b4de"
+        state:
+          type: string
+          enum: [idle, running, completed, cancelled, failed]
+          example: running
+        reference:
+          type: string
+          nullable: true
+          description: Text encoder the bank is being built from.
+          example: qwen3vl_32b_minimax_h3_int8_convrot.safetensors
+        processed:
+          type: integer
+          description: Presentations encoded so far.
+          example: 47
+        total:
+          type: integer
+          description: |
+            Presentations in the suite corpus. 0 until the first presentation is
+            encoded, because the composites are built by tokenizing the prompts.
+          example: 111
+        message:
+          type: string
+          example: "encoding presentation p046"
+        error:
+          type: string
+          nullable: true
+          example: null
+        result:
+          type: object
+          nullable: true
+          additionalProperties: true
+          description: |
+            The stored bank's manifest when `state` is `completed`: reference
+            file and identity, suite version and digest, presentation count,
+            token total, and build seconds.
+        started_at:
+          type: number
+          format: double
+          example: 1786500123.4
+        finished_at:
+          type: number
+          format: double
+          nullable: true
+          example: null
+    MiniMaxH3ReferenceBankSummary:
+      type: object
+      description: One stored reference bank.
+      required: [reference, suite_version, presentations]
+      properties:
+        reference:
+          type: string
+          description: The released text encoder this bank was built from.
+          example: qwen3vl_32b_minimax_h3_int8_convrot.safetensors
+        suite_version:
+          type: string
+          example: h3-te-suite-v1
+        presentations:
+          type: integer
+          example: 111
+        token_total:
+          type: integer
+          example: 12480
+        hidden_size:
+          type: integer
+          example: 5120
+        built_at:
+          type: string
+          nullable: true
+          example: "2026-08-13T09:14:02"
+        is_loaded_encoder:
+          type: boolean
+          description: |
+            True when this bank was built from the encoder loaded right now. A
+            bank built from a different released encoder does not answer for it.
+          example: true
+    MiniMaxH3StoredMeasurement:
+      type: object
+      description: |
+        One stored substitute measurement. `stage` is `token_refiner` when the
+        DiT's context embedder and token refiner were available (what the packed
+        sequence actually contains) and `raw` when they were not.
+      required: [encoder, reference, cosine, rel_rms, presentations, stage]
+      properties:
+        encoder:
+          type: string
+          example: qwen3vl_4b_heretic_tap24_bf16.safetensors
+        projection:
+          type: string
+          nullable: true
+          example: mmh3-4b-clipproj-celeb-mlp.safetensors
+        reference:
+          type: string
+          example: qwen3vl_32b_minimax_h3_int8_convrot.safetensors
+        cosine:
+          type: number
+          description: Mean-removed cosine, median over non-sink rows.
+          example: 0.843
+        cosine_baseline:
+          type: number
+          nullable: true
+          description: The same statistic for a constant predictor, measured alongside.
+          example: -0.022
+        rel_rms:
+          type: number
+          example: 0.205
+        rel_rms_baseline:
+          type: number
+          nullable: true
+          example: 1.02
+        presentations:
+          type: integer
+          example: 111
+        stage:
+          type: string
+          enum: [token_refiner, raw]
+          example: token_refiner
+        suite_version:
+          type: string
+          example: h3-te-suite-v1
+        measured_at:
+          type: string
+          nullable: true
+          example: "2026-08-13T09:20:41"
+    MiniMaxH3TeAgreementStatus:
+      type: object
+      required: [supported, can_build, suite, cost, banks, measurements, job]
+      properties:
+        supported:
+          type: boolean
+          description: True when the loaded model is MiniMax-H3.
+          example: true
+        can_build:
+          type: boolean
+          description: True when a build started right now would be accepted.
+          example: true
+        reason:
+          type: string
+          nullable: true
+          description: Why `can_build` is false; null when it is true.
+          example: "an image generation is running"
+        model_path:
+          type: string
+          nullable: true
+          description: The tree the `measurements` list was filtered to.
+          example: "M:/model/minimax_h3"
+        loaded:
+          type: object
+          nullable: true
+          description: The loaded MiniMax-H3 text-encoder pairing; null when none is loaded.
+          properties:
+            text_encoder:
+              type: string
+              example: qwen3vl_32b_minimax_h3_int8_convrot.safetensors
+            text_encoder_path:
+              type: string
+              example: "M:/model/minimax_h3/text_encoders/qwen3vl_32b_minimax_h3_int8_convrot.safetensors"
+            projection:
+              type: string
+              nullable: true
+              example: null
+            is_substitute:
+              type: boolean
+              description: |
+                True when the loaded encoder runs through a projection. Such an
+                encoder cannot be a reference.
+              example: false
+            substitution:
+              type: string
+              nullable: true
+              description: |
+                The backend's single wording for a substituted pairing, stating
+                whether the number was measured on this installation or comes
+                from the compiled-in table measured elsewhere. Null for a
+                released encoder.
+        suite:
+          type: object
+          description: The tracked, versioned prompt suite a bank is built from.
+          properties:
+            version:
+              type: string
+              example: h3-te-suite-v1
+            prompts:
+              type: integer
+              description: |
+                Prompts in the suite. The corpus is these plus the long-form
+                composites built from them, so a bank holds more presentations
+                than this.
+              example: 102
+            digest:
+              type: string
+              description: Content digest; an edited suite at the same version does not match a stored record.
+              example: "6b1d0f..."
+        cost:
+          type: object
+          description: |
+            What a build costs, measured on the 25 GB released encoder for the
+            suite version named here. Reported so a client can state the cost
+            before the user commits to it.
+          properties:
+            suite_version:
+              type: string
+              example: h3-te-suite-v1
+            seconds:
+              type: integer
+              example: 300
+            host_ram_gib_min:
+              type: integer
+              example: 14
+            host_ram_gib_max:
+              type: integer
+              example: 24
+            stored_mb:
+              type: integer
+              example: 39
+        bank:
+          allOf:
+            - $ref: '#/components/schemas/MiniMaxH3ReferenceBankSummary'
+          nullable: true
+          description: The stored bank built from the LOADED encoder; null when none was.
+        banks:
+          type: array
+          description: Every readable bank in this installation's store.
+          items:
+            $ref: '#/components/schemas/MiniMaxH3ReferenceBankSummary'
+        measurements:
+          type: array
+          description: Stored measurements involving a file in `model_path`'s tree.
+          items:
+            $ref: '#/components/schemas/MiniMaxH3StoredMeasurement'
+        measurements_reason:
+          type: string
+          nullable: true
+          description: Why `measurements` could not be filtered to the tree; null when it was.
+          example: null
+        job:
+          $ref: '#/components/schemas/MiniMaxH3ReferenceBankJob'
 
     ComponentSlotId:
       type: string

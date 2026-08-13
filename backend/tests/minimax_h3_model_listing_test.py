@@ -24,25 +24,32 @@ import json
 import os
 import struct
 import sys
+from typing import Optional
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from api import routes  # noqa: E402
 
 
-def _write_fake_h3_dit(path: str) -> None:
+def _write_fake_h3_dit(path: str, header: Optional[dict] = None) -> None:
     """A header-only safetensors file carrying the H3 key signature.
 
     `is_minimax_h3_safetensors` reads the JSON header only (never tensor
     bytes), so an empty/undersized data section is fine for detection. The
     variant (fl2va/ref2va) is read off the FILENAME by the loader, not
     the header, so it is not encoded here.
+
+    `header`, when given, REPLACES the minimal default -- the hybrid preflight
+    tests (`minimax_h3_hybrid_preflight_test.py`) need pairs of files that
+    differ in key set, shape, dtype, geometry or quantization metadata, and
+    they build those headers themselves rather than duplicating this writer.
     """
-    header = {
-        "token_refiner.0.weight": {"dtype": "F32", "shape": [1, 1], "data_offsets": [0, 0]},
-        "adaln_t_table": {"dtype": "F32", "shape": [1], "data_offsets": [0, 0]},
-        "__metadata__": {"format": "pt"},
-    }
+    if header is None:
+        header = {
+            "token_refiner.0.weight": {"dtype": "F32", "shape": [1, 1], "data_offsets": [0, 0]},
+            "adaln_t_table": {"dtype": "F32", "shape": [1], "data_offsets": [0, 0]},
+            "__metadata__": {"format": "pt"},
+        }
     header_bytes = json.dumps(header).encode("utf-8")
     with open(path, "wb") as f:
         f.write(struct.pack("<Q", len(header_bytes)))

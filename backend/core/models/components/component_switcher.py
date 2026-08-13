@@ -262,6 +262,18 @@ def _switch_anima_component(manager: Any, slot: str, candidate: Dict[str, Any]) 
     new_te = selected if slot == "text_encoder" else old_te
     new_vae = selected if slot == "vae" else old_vae
 
+    # This adapter rebuilds the whole model, transformer included, so a
+    # per-generation TE/VAE override from before the switch does not survive
+    # it (_load_model_locked drops that state along with the components it
+    # referred to). Say so in the operation record rather than letting the
+    # generation panel keep showing an override that is no longer applied.
+    discarded = [
+        label for label, attr in (("VAE", "_override_vae_path"), ("text encoder", "_override_te_path"))
+        if getattr(manager, attr, None)
+    ]
+    if discarded:
+        _set_operation(discarded_overrides=discarded)
+
     def reload(text_encoder_path: Optional[str], vae_path: Optional[str]) -> None:
         # _load_model_locked, not load_model. The public entry point takes the
         # lifecycle mutation and _load_model_lock, both of which this switch is
@@ -306,12 +318,17 @@ def switch_component(
     global _operation
     arch = str((getattr(manager, "current_model_info", None) or {}).get("type") or "").lower()
     adapter = None
+    rebuilds_model = False
     if slot == "vision_encoder":
         adapter = lambda: _switch_vision_encoder(manager, candidate)
     elif arch == "minimax_h3" and slot == "text_encoder":
         adapter = lambda: _switch_minimax_h3_text_encoder(manager, candidate, projection_path)
     elif arch == "anima" and slot in ("text_encoder", "vae"):
         adapter = lambda: _switch_anima_component(manager, slot, candidate)
+        # Anima has no persistent single-slot adapter: it reloads the model
+        # whole, so the transformer a client was holding is gone too. That is a
+        # change of model identity, not just of one component.
+        rebuilds_model = True
     if adapter is None:
         raise ComponentSwitchError("This component slot has no verified unload-first adapter.")
     if projection_path and not (arch == "minimax_h3" and slot == "text_encoder"):
@@ -350,6 +367,8 @@ def switch_component(
                 _set_operation(phase="loading_new")
                 adapter()
                 manager.component_revision += 1
+                if rebuilds_model:
+                    manager.model_revision += 1
                 manager.component_health = "ready"
                 return _set_operation(state="succeeded", phase="complete", finished_at=time.time())
     except Exception as exc:

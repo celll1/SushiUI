@@ -638,7 +638,10 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     "is_v_prediction": False,  # flow matching
                     "model_hash": model_hash,
                 }
-                self._save_last_model(source_type, source, pipeline_type)
+                self._save_last_model(
+                    source_type, source, pipeline_type,
+                    text_encoder_path=kwargs.get("text_encoder_path"),
+                    vae_path=kwargs.get("vae_path"))
                 print("[Pipeline] Anima model loaded successfully")
                 return
 
@@ -2114,12 +2117,16 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
 
     def _save_last_model(self, source_type: str, source: str, pipeline_type: str,
                          text_encoder_file: Optional[str] = None,
-                         clip_projection_file: Optional[str] = None):
+                         clip_projection_file: Optional[str] = None,
+                         text_encoder_path: Optional[str] = None,
+                         vae_path: Optional[str] = None):
         """Save the last loaded model configuration to file.
 
-        The two H3 fields are written only when they were requested, so a file
-        written before they existed and one written by a default load look the
-        same.
+        The optional fields are written only when they were requested, so a
+        file written before they existed and one written by a default load look
+        the same. ``text_encoder_path``/``vae_path`` are Anima's explicit
+        companions: without them a live component switch would last only until
+        the next restart, which reads this file back.
         """
         try:
             config = {
@@ -2131,6 +2138,10 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                 config["text_encoder_file"] = text_encoder_file
             if clip_projection_file is not None:
                 config["clip_projection_file"] = clip_projection_file
+            if text_encoder_path is not None:
+                config["text_encoder_path"] = text_encoder_path
+            if vae_path is not None:
+                config["vae_path"] = vae_path
             with open(LAST_MODEL_CONFIG_FILE, 'w') as f:
                 json.dump(config, f, indent=2)
         except Exception as e:
@@ -2153,6 +2164,13 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             # by a load that made no explicit choice.
             text_encoder_file = config.get("text_encoder_file")
             clip_projection_file = config.get("clip_projection_file")
+            # Anima's explicit companions, recorded when they were chosen --
+            # either at load time or by a live component switch.
+            companions = {
+                key: config[key]
+                for key in ("text_encoder_path", "vae_path")
+                if config.get(key)
+            }
 
             if source_type and source:
                 print(f"Auto-loading last model: {source_type}:{source}")
@@ -2162,6 +2180,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     pipeline_type=pipeline_type,
                     text_encoder_file=text_encoder_file,
                     clip_projection_file=clip_projection_file,
+                    **companions,
                 )
                 print(f"Successfully loaded last model: {source}")
         except Exception as e:

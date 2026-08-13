@@ -762,6 +762,26 @@ def test_anima_geometry_candidates_and_full_reload_adapter(monkeypatch, tmp_path
         "vae_path": old_vae,
     }
     assert manager.component_revision == 8
+    # The adapter rebuilds the transformer too, so anything a client was
+    # holding against the old model is stale -- that is a model revision, not
+    # only a component one.
+    assert manager.model_revision == 5
+
+
+def test_single_slot_switch_does_not_claim_the_model_was_rebuilt():
+    """A persistent single-slot adapter leaves the model identity alone."""
+    manager = _Manager()
+    candidate = {
+        "candidate_id": "vision_encoder:test", "slot": "vision_encoder",
+        "compatibility": "compatible", "switchable": True,
+        "_path": "C:/models/vision.safetensors",
+    }
+    before = manager.model_revision
+
+    switch_component(manager, "vision_encoder", candidate, 4, 7)
+
+    assert manager.model_revision == before
+    assert manager.component_revision == 8
 
 
 def test_anima_switch_failure_reloads_prior_paths_serially(monkeypatch):

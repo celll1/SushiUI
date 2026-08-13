@@ -57,6 +57,15 @@ export interface VideoChainConfirmDialogProps {
    * omitted entirely when there is nothing to disclose.
    */
   notes?: string[];
+  /**
+   * True when the request that opened this dialog is conditioned on the image
+   * references alone (MiniMax-H3 ref2va with no video/audio reference track),
+   * so unbinding every reference from segment 1 in the editor would leave the
+   * first request with nothing to reference. The editor refuses to start on
+   * that binding rather than sending it; only the panel knows whether the
+   * other reference tracks exist, so it is the panel that sets this.
+   */
+  requireSegmentZeroReference?: boolean;
   onCancel: () => void;
   /** Default action: generate once, at the cap (snapped). */
   onGenerateAtCap: () => void;
@@ -112,6 +121,7 @@ export default function VideoChainConfirmDialog({
   plan,
   planInput,
   notes,
+  requireSegmentZeroReference,
   onCancel,
   onGenerateAtCap,
   onStartChain,
@@ -251,17 +261,34 @@ export default function VideoChainConfirmDialog({
       });
       setErrors(normalizeIssues(response.errors));
       setWarnings(normalizeIssues(response.warnings));
+      // `dirty` clears only when the edits actually came back with a hash to
+      // carry. A validate that returns neither a manifest nor a `plan_hash`
+      // leaves the edited manifest holding its PRE-edit hash, and that hash is
+      // stamped onto every segment's provenance -- so it stays dirty and the
+      // "Start chain" button stays disabled until a validate answers properly.
       if (response.manifest) {
         setManifest({
           ...response.manifest,
           plan_hash: response.plan_hash ?? response.manifest.plan_hash,
         });
+        setDirty(false);
       } else if (response.plan_hash) {
         setManifest((previous) =>
           previous == null ? previous : { ...previous, plan_hash: response.plan_hash as string }
         );
+        setDirty(false);
+      } else {
+        setErrors((previous) => [
+          ...previous,
+          {
+            code: "validate_no_plan_hash",
+            severity: "error",
+            message:
+              "The validator returned no recomputed plan hash, so these edits still carry the " +
+              "previous plan's hash. Validate again before starting the chain.",
+          },
+        ]);
       }
-      setDirty(false);
     } catch (error: any) {
       setErrors([
         {
@@ -282,7 +309,17 @@ export default function VideoChainConfirmDialog({
 
   const overshoot = plan != null ? plan.finalFrames - requestedFrames : 0;
   const segmentCount = manifest?.segments.length ?? 0;
-  const canStartPlanned = phase === "editor" && manifest != null && errors.length === 0 && !dirty;
+  // An ABSENT `reference_ids` is the manifest's `default_all` binding (every
+  // reference carries); an EMPTY one is an explicit "none", which for a
+  // reference-only request leaves segment 1 with nothing to condition on.
+  const segmentZeroBindings = manifest?.segments.find((s) => s.index === 0)?.reference_ids;
+  const segmentZeroUnbound =
+    requireSegmentZeroReference === true &&
+    (manifest?.references?.length ?? 0) > 0 &&
+    segmentZeroBindings != null &&
+    segmentZeroBindings.length === 0;
+  const canStartPlanned =
+    phase === "editor" && manifest != null && errors.length === 0 && !dirty && !segmentZeroUnbound;
   const showFallbackChoices = phase === "unavailable" || errors.length > 0;
 
   return (
@@ -352,6 +389,13 @@ export default function VideoChainConfirmDialog({
                 </p>
               )}
 
+              {segmentZeroUnbound && (
+                <p className="rounded border border-red-700 bg-red-950/40 p-3 text-xs text-red-300">
+                  Segment 1 has no reference bound to it. This request generates from image references
+                  only, so its first segment must carry at least one. Bind a reference to segment 1, or
+                  cancel and generate a single request at the cap.
+                </p>
+              )}
               {errors.length > 0 && (
                 <ul className="rounded border border-red-700 bg-red-950/40 p-3 space-y-1">
                   {errors.map((issue, index) => (

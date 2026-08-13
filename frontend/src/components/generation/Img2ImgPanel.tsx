@@ -53,10 +53,9 @@ import {
   chainSegmentProvenance,
   advanceVideoChain,
   ChainAdvanceResult,
-  ChainDriftPause,
 } from "@/utils/videoChain";
 import { migrateLoopGenerationConfig, computeLoopDecodeDirective } from "@/utils/loopGenerationInheritance";
-import { getSamplers, getScheduleTypes, generateImg2Img, generateImg2Vid, Img2VidParams, Txt2VidParams, MiniMaxH3Keyframe, MiniMaxH3References, generateRef2Vid, Ref2VidParams, generateOutpaintVideo, OutpaintVideoParams, generateAud2Aud, Aud2AudParams, generateImg2ImgTrainingPreview, toBase64, LoRAConfig, ControlNetConfig, generateTIPOPrompt, cancelGeneration, getCurrentModel, isLatentOnlyResult, getResultFilename, getResultPlaybackFilename, getResultSeed, getResultAncestralSeed, unetQuantizationOptions, normalizeUnetQuantization, transformerQuantizationLabel, archSupportsFeature, archDisplayName, normalizeVideoFrames, fitVideoCanvas, videoCanvasRule, videoCanvasAxisBounds, videoMinInferenceSteps, videoCanvasExceedsEnvelope, isGenerationStalledError, planVideoChain, effectiveSegmentFrames, VideoChainManifest, VIDEO_BLOCK_SWAP_MAX } from "@/utils/api";
+import { getSamplers, getScheduleTypes, generateImg2Img, generateImg2Vid, Img2VidParams, Txt2VidParams, MiniMaxH3Keyframe, MiniMaxH3References, generateRef2Vid, Ref2VidParams, generateOutpaintVideo, OutpaintVideoParams, generateAud2Aud, Aud2AudParams, generateImg2ImgTrainingPreview, toBase64, LoRAConfig, ControlNetConfig, generateTIPOPrompt, cancelGeneration, getCurrentModel, isLatentOnlyResult, getResultFilename, getResultPlaybackFilename, getResultSeed, getResultAncestralSeed, unetQuantizationOptions, normalizeUnetQuantization, transformerQuantizationLabel, archSupportsFeature, archDisplayName, normalizeVideoFrames, fitVideoCanvas, videoCanvasRule, videoCanvasAxisBounds, videoMinInferenceSteps, videoCanvasExceedsEnvelope, isGenerationStalledError, planVideoChain, snapUpValidVideoFrameCount, effectiveSegmentFrames, VideoChainManifest, VIDEO_BLOCK_SWAP_MAX } from "@/utils/api";
 import { useActiveTraining } from "@/hooks/useActiveTraining";
 import { useSmoothProgress } from "@/hooks/useSmoothProgress";
 import { wsClient, CFGMetrics } from "@/utils/websocket";
@@ -544,11 +543,6 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
   // set by advanceVideoChain via processQueue, shown next to the frame
   // slider until the user starts a new chain or dismisses it.
   const [videoChainStoppedMessage, setVideoChainStoppedMessage] = useState<string | null>(null);
-  // Design §4.1: mirrors Txt2ImgPanel's own `chainDriftPause` state -- set
-  // when a segment's actual accumulated frame count drifts from the
-  // manifest's planned value by more than its tolerance, blocking the queue
-  // from dispatching the next chain segment until resolved.
-  const [chainDriftPause, setChainDriftPause] = useState<ChainDriftPause | null>(null);
   // User-settable chain segment length (`chain_segment_frames`, client-side
   // orchestration only -- NEVER sent to the backend). See Txt2ImgPanel's own
   // `chainSegmentFrames` state for the full rationale; the two panels share
@@ -2185,7 +2179,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
     }
   };
 
-  const { addToQueue, updateQueueItem, updateQueueItemByLoop, cancelLoopGroup, startNextInQueue, completeCurrentItem, failCurrentItem, currentItem, queue, generateForever, setGenerateForever, progressSnapshot, completedResults, publishCompletedResult } = useGenerationQueue();
+  const { addToQueue, updateQueueItem, updateQueueItemByLoop, cancelLoopGroup, startNextInQueue, completeCurrentItem, failCurrentItem, currentItem, queue, generateForever, setGenerateForever, progressSnapshot, completedResults, publishCompletedResult, chainPause, pauseChain, clearChainPause } = useGenerationQueue();
 
   useEffect(() => {
     if (!currentItem || !["img2img", "img2vid", "ref2vid", "aud2aud", "chain_vid"].includes(currentItem.type)) {
@@ -2494,15 +2488,26 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         // single-inference cap is never enqueued (chained or clamped)
         // without the user picking one of the two choices explicitly -- see
         // VideoChainConfirmDialog.
-        const ref2vidChainPlan = planVideoChain(archCapabilities, loadedArch, params.num_frames ?? 0, chainSegmentFrames);
+        // Segment 1 is a plain request, so the backend snaps its length UP
+        // onto the model's frame grid. An off-grid segment length would make
+        // the plan's own segment-1 total wrong by up to a full grid step (16
+        // frames on MiniMax-H3's 17n+5 grid) and trip the drift check on the
+        // very first continuation, so the on-grid length is what gets planned
+        // with and frozen onto the chain.
+        const snappedSegmentFrames = chainSegmentFrames != null
+          ? (snapUpValidVideoFrameCount(archCapabilities, loadedArch, chainSegmentFrames) ?? chainSegmentFrames)
+          : null;
+        const ref2vidChainPlan = planVideoChain(archCapabilities, loadedArch, params.num_frames ?? 0, snappedSegmentFrames);
         if (ref2vidChainPlan != null) {
           setVideoChainPrompt({
             isRef2Va: true,
             refParams,
             references: h3References,
             targetFrames: params.num_frames ?? 0,
-            capFrames: ref2vidChainPlan.capFrames,
-            segmentFrames: chainSegmentFrames,
+            capFrames:
+              snapUpValidVideoFrameCount(archCapabilities, loadedArch, ref2vidChainPlan.capFrames)
+                ?? ref2vidChainPlan.capFrames,
+            segmentFrames: snappedSegmentFrames,
             variant: modality.modelInfo?.variant ?? null,
           });
           return;
@@ -2571,15 +2576,21 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
 
       // Opt-in video-length chaining -- see the identical check in the
       // ref2vid branch above.
-      const img2vidChainPlan = planVideoChain(archCapabilities, loadedArch, params.num_frames ?? 0, chainSegmentFrames);
+      // On-grid segment length -- see the ref2vid branch above.
+      const snappedImg2VidSegmentFrames = chainSegmentFrames != null
+        ? (snapUpValidVideoFrameCount(archCapabilities, loadedArch, chainSegmentFrames) ?? chainSegmentFrames)
+        : null;
+      const img2vidChainPlan = planVideoChain(archCapabilities, loadedArch, params.num_frames ?? 0, snappedImg2VidSegmentFrames);
       if (img2vidChainPlan != null) {
         setVideoChainPrompt({
           isRef2Va: false,
           img2vidParams: videoParams,
           keyframeImage: imageBase64,
           targetFrames: params.num_frames ?? 0,
-          capFrames: img2vidChainPlan.capFrames,
-          segmentFrames: chainSegmentFrames,
+          capFrames:
+            snapUpValidVideoFrameCount(archCapabilities, loadedArch, img2vidChainPlan.capFrames)
+              ?? img2vidChainPlan.capFrames,
+          segmentFrames: snappedImg2VidSegmentFrames,
           variant: modality.modelInfo?.variant ?? null,
         });
         return;
@@ -2781,15 +2792,15 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
   // chain_vid steps from the same queue).
   const handleChainDriftPause = useCallback((outcome: ChainAdvanceResult): boolean => {
     if (!outcome.driftPause) return true;
-    setChainDriftPause(outcome.driftPause);
+    pauseChain(outcome.driftPause);
     return false;
-  }, []);
+  }, [pauseChain]);
 
   // Mirrors Txt2ImgPanel's `resolveChainDriftPause`.
   const resolveChainDriftPause = useCallback((action: "continue" | "stop") => {
-    const pause = chainDriftPause;
+    const pause = chainPause;
     if (!pause) return;
-    setChainDriftPause(null);
+    clearChainPause();
     if (action === "continue") {
       updateQueueItemByLoop(pause.loopGroupId, pause.nextStepIndex, (queued) => ({
         inputVideo: pause.file,
@@ -2809,7 +2820,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
     setTimeout(() => {
       if (processQueueRef.current) processQueueRef.current();
     }, 100);
-  }, [chainDriftPause, updateQueueItemByLoop, cancelLoopGroup]);
+  }, [chainPause, clearChainPause, updateQueueItemByLoop, cancelLoopGroup]);
 
   const clearLongPressTimer = () => {
     if (longPressTimerRef.current) {
@@ -3867,7 +3878,15 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
 
   // Auto-start queue processing when queue has pending items and not currently generating
   useEffect(() => {
-    const hasPendingItems = queue.some(item => item.status === "pending" && (item.type === "img2img" || item.type === "img2vid" || item.type === "ref2vid" || item.type === "aud2aud" || item.type === "chain_vid"));
+    // Items held by a video-chain drift pause are not pending WORK: the queue
+    // refuses to dispatch them (startNextInQueue) until the user answers the
+    // dialog, so counting them here would just re-enter processQueue on every
+    // render for an item that cannot start.
+    const pausedGroupId = chainPause?.loopGroupId;
+    const hasPendingItems = queue.some(item =>
+      item.status === "pending" &&
+      !(pausedGroupId !== undefined && item.loopGroupId === pausedGroupId) &&
+      (item.type === "img2img" || item.type === "img2vid" || item.type === "ref2vid" || item.type === "aud2aud" || item.type === "chain_vid"));
     const isCurrentItemNull = currentItem === null;
 
     console.log("[Img2Img] Queue effect:", {
@@ -3880,8 +3899,10 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
       generateForever
     });
 
-    // If generate forever is enabled and queue is empty, add new item
-    if (generateForever && !hasPendingItems && isCurrentItemNull && !isGenerating && params.prompt && (inputImage || inputImagePreview)) {
+    // If generate forever is enabled and queue is empty, add new item.
+    // Not while a chain waits on the drift dialog: the chain is unfinished,
+    // and enqueuing past it would start unrelated work under the modal.
+    if (generateForever && !chainPause && !hasPendingItems && isCurrentItemNull && !isGenerating && params.prompt && (inputImage || inputImagePreview)) {
       console.log("[Img2Img] Generate forever: Adding new item to queue");
       handleAddToQueue();
       return;
@@ -3901,7 +3922,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
       console.log("[Img2Img] Auto-starting queue processing");
       processQueue();
     }
-  }, [queue, currentItem, isGenerating, processQueue, generateForever, params, inputImage, inputImagePreview, modelLoaded]);
+  }, [queue, currentItem, isGenerating, processQueue, generateForever, params, inputImage, inputImagePreview, modelLoaded, chainPause]);
 
   // Handle Ctrl+Enter keyboard shortcut
   useEffect(() => {
@@ -6767,6 +6788,14 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         plan={videoChainPlan}
         planInput={videoChainPlanInput}
         notes={videoChainNotes}
+        // Reference-only request (no video/audio reference track): unbinding
+        // every reference from segment 1 would leave it with nothing to
+        // reference, so the editor refuses that binding.
+        requireSegmentZeroReference={
+          videoChainPrompt?.isRef2Va === true &&
+          (videoChainPrompt.references?.videos?.length ?? 0) === 0 &&
+          (videoChainPrompt.references?.audios?.length ?? 0) === 0
+        }
         onCancel={() => setVideoChainPrompt(null)}
         onGenerateAtCap={handleVideoChainGenerateAtCap}
         onStartChain={handleVideoChainStart}
@@ -6775,7 +6804,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
       {/* Design §4.1: planned/actual frame drift over tolerance pauses the
           chain here until the user picks continue or stop -- never silent. */}
       <ChainDriftPauseDialog
-        pause={chainDriftPause}
+        pause={chainPause}
         onContinue={() => resolveChainDriftPause("continue")}
         onStop={() => resolveChainDriftPause("stop")}
       />

@@ -11,8 +11,9 @@ Files live in ``<root>/clip_projections/`` and carry their own
 ``__metadata__`` (``d_in``/``d_out``/``tap``/``mlp_hidden``/``mlp_depth``);
 discovery matches ``d_in`` to the encoder's declared ``hidden_size``.
 
-Measured agreement with the 32B encoder, post-``token_refiner``, mean-removed
-cosine: 4B 0.826, 8B 0.843, against -0.022 for a constant predictor (gate G0c).
+How well a pairing stands in for the released encoder is measured per
+installation by ``te_agreement.py``; this module only reports what that found,
+falling back to the published numbers below when nothing local exists.
 """
 
 from __future__ import annotations
@@ -39,38 +40,67 @@ _REQUIRED_TENSORS = (
 # The code every user-visible report of a substituted encoder carries.
 TE_SUBSTITUTION_WARNING_CODE = "minimax_h3_substituted_text_encoder"
 
-# Measured agreement per (encoder file, projection file), lowercased basenames.
-# Gate G0c (`scratchpad/minimax_h3_te_small_gate_g0c.md`): 111 prompt-only
-# presentations, post-`token_refiner`, row 0 excluded. `cosine` is mean-removed
-# (raw cosine in 5120 dims is uninformative: a constant predictor scores 0.895
-# there and -0.022 mean-removed). `rel_rms_floor` is the SAME encoder in another
-# quantization, i.e. what a difference that is only rounding looks like.
+# Agreement measured on the DEVELOPER'S machine, not on this installation, per
+# (encoder file, projection file) lowercased basename. Gate G0c
+# (`scratchpad/minimax_h3_te_small_gate_g0c.md`): 111 prompt-only presentations,
+# post-`token_refiner`, row 0 excluded. `cosine` is mean-removed (raw cosine in
+# 5120 dims is uninformative: a constant predictor scores 0.895 there and -0.022
+# mean-removed). `rel_rms_floor` is the SAME encoder in another quantization,
+# i.e. what a difference that is only rounding looks like.
 #
-# ONE table, so a newly measured pairing is added here and reaches the loader
-# log, the generation warning and any future surface at once. A pairing absent
-# from it is reported as unmeasured, never as measured-by-analogy.
-MEASURED_TE_SUBSTITUTIONS: Dict[Tuple[str, str], Dict[str, Any]] = {
+# Kept as a FALLBACK rather than deleted: measuring locally needs the released
+# 25-48 GB encoder, which is exactly what a user running a substitute may not
+# have. It is labelled as elsewhere-measured everywhere it surfaces, it applies
+# only to these two exact filenames, and a local measurement always wins.
+PUBLISHED_TE_SUBSTITUTIONS: Dict[Tuple[str, str], Dict[str, Any]] = {
     ("qwen3vl_4b_heretic_tap24_bf16.safetensors", "mmh3-4b-clipproj-celeb-mlp.safetensors"): {
         "reference": "qwen3vl_32b_minimax_h3_int8_convrot.safetensors",
         "cosine": 0.826,
+        "cosine_baseline": -0.022,
         "rel_rms": 0.214,
         "rel_rms_floor": 0.048,
         "presentations": 111,
+        "suite_version": "h3-te-suite-v1",
+        "stage": "token_refiner",
     },
     ("qwen3vl_8b_instruct_tap24_bf16.safetensors", "mmh3-8b-clipproj-celeb-mlp.safetensors"): {
         "reference": "qwen3vl_32b_minimax_h3_int8_convrot.safetensors",
         "cosine": 0.843,
+        "cosine_baseline": -0.022,
         "rel_rms": 0.205,
         "rel_rms_floor": 0.048,
         "presentations": 111,
+        "suite_version": "h3-te-suite-v1",
+        "stage": "token_refiner",
     },
 }
 
 
-def measured_te_substitution(te_path: str, projection_path: str) -> Optional[Dict[str, Any]]:
-    """The recorded agreement for this exact pairing, or ``None``."""
-    return MEASURED_TE_SUBSTITUTIONS.get(
+def published_te_substitution(te_path: str, projection_path: str) -> Optional[Dict[str, Any]]:
+    """The elsewhere-measured agreement for this exact pairing, or ``None``."""
+    entry = PUBLISHED_TE_SUBSTITUTIONS.get(
         (os.path.basename(te_path).lower(), os.path.basename(projection_path).lower()))
+    return dict(entry, source="published") if entry is not None else None
+
+
+def measured_te_substitution(te_path: str, projection_path: str) -> Optional[Dict[str, Any]]:
+    """This installation's own measurement, or the published fallback, or ``None``.
+
+    ``source`` says which. A local record wins unconditionally; a store that is
+    missing, unreadable or holds nothing for this pairing degrades to the
+    fallback and then to ``None``, never to another pairing's number.
+    """
+    from core.models.minimax_h3.te_agreement import (
+        local_te_agreement, summarize_measurement,
+    )
+
+    try:
+        record = local_te_agreement(te_path, projection_path)
+    except Exception:
+        record = None
+    if record is not None:
+        return summarize_measurement(record)
+    return published_te_substitution(te_path, projection_path)
 
 
 def describe_te_substitution(te_path: str, projection_path: str) -> str:
@@ -86,11 +116,21 @@ def describe_te_substitution(te_path: str, projection_path: str) -> str:
     if measured is None:
         return head + (" No agreement with a released encoder is recorded for this "
                        "(encoder, projection) pair.")
-    return head + (
-        f" Measured against {measured['reference']} on {measured['presentations']} prompt-only "
-        f"presentations, post-token_refiner: mean-removed cosine {measured['cosine']}, relative "
-        f"RMS {measured['rel_rms']} against {measured['rel_rms_floor']} for that same encoder in "
-        f"another quantization.")
+    where = ("Measured on this installation" if measured.get("source") == "local"
+             else "Measured on the developer's machine, not on this installation")
+    view = ("post-token_refiner" if measured.get("stage") == "token_refiner"
+            else "raw conditioning (the DiT's token refiner was unavailable)")
+    sentence = (
+        f" {where} against {measured['reference']} on {measured['presentations']} prompt-only "
+        f"presentations of suite {measured.get('suite_version')}, {view}: mean-removed cosine "
+        f"{measured['cosine']}")
+    if measured.get("cosine_baseline") is not None:
+        sentence += f" against {measured['cosine_baseline']} for a constant predictor"
+    sentence += f", relative RMS {measured['rel_rms']}"
+    if measured.get("rel_rms_floor") is not None:
+        sentence += (f" against {measured['rel_rms_floor']} for that same encoder in another "
+                     f"quantization")
+    return head + sentence + "."
 
 
 def _read_header(path: str) -> Dict[str, Any]:

@@ -154,8 +154,10 @@ def test_the_encode_seam_projects_records_and_warns(tmp_path):
     message = entries[0]["message"]
     assert message == describe_te_substitution(components["text_encoder_path"], projection["path"])
     assert ENCODER_4B in message and PROJECTION_4B in message
-    # The measured agreement, from the one table (gate G0c).
+    # No local measurement exists for these tmp_path files, so the shipped
+    # fallback answers -- and says whose machine it came from.
     assert "mean-removed cosine 0.826" in message
+    assert "not on this installation" in message
     assert "qwen3vl_32b_minimax_h3_int8_convrot.safetensors" in message
 
 

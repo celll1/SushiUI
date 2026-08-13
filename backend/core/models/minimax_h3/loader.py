@@ -809,7 +809,9 @@ def describe_minimax_h3_text_encoder_choices(model_path: str) -> Dict[str, Any]:
     ``projection_candidates`` is the set to choose FROM when auto-resolution
     refuses because several files declare this encoder's width.
 
-    ``agreement`` is the measurement recorded for that resolved pairing.
+    ``agreement`` is the measurement recorded for that resolved pairing; its
+    ``source`` is ``"local"`` (measured on this installation) or ``"published"``
+    (shipped, measured elsewhere).
     """
     from core.models.minimax_h3.te_projection import (
         measured_te_substitution, resolve_te_projection,
@@ -3311,7 +3313,7 @@ def load_minimax_h3_from_path(
 
     print("[MiniMaxH3Loader] Loaded MiniMax-H3 components (CPU-resident; no sampler wired yet).")
 
-    return {
+    components = {
         "type": "minimax_h3",
         "is_video": True,
         "variant": layout["variant"],
@@ -3358,3 +3360,13 @@ def load_minimax_h3_from_path(
         "te_projection": te_projection,
         "official_dir": official,
     }
+
+    # A substituted encoder's agreement with the released one, measured here the
+    # first time this pairing is loaded and stored per installation. Costs a
+    # directory listing unless a reference bank exists AND this pairing has no
+    # record yet; the measurement itself is seconds (gate G0c: 4.3 s at 4B).
+    # It cannot raise -- see `maybe_measure_substitution`.
+    from core.models.minimax_h3.te_agreement import maybe_measure_substitution
+
+    maybe_measure_substitution(components)
+    return components

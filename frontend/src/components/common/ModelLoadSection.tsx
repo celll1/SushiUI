@@ -231,8 +231,12 @@ export default function ModelLoadSection({
     setQuantizationResolved(resolved);
   }, []);
   const componentState = (slot: ComponentSlotId) => componentSnapshot?.slots.find((item) => item.slot === slot);
-  const switchLoadedComponent = (slot: ComponentSlotId, candidateId: string) => (
-    switchComponent(slot, candidateId)
+  const switchLoadedComponent = (
+    slot: ComponentSlotId,
+    candidateId: string,
+    projectionPath?: string | null,
+  ) => (
+    switchComponent(slot, candidateId, projectionPath)
   );
 
   return (
@@ -321,7 +325,7 @@ export default function ModelLoadSection({
             state={componentState("text_encoder")}
             compatibleOnly={compatibleOnly}
             switching={switchingSlot === "text_encoder"}
-            onSwitch={(id) => switchLoadedComponent("text_encoder", id)}
+            onSwitch={(id, projectionPath) => switchLoadedComponent("text_encoder", id, projectionPath)}
           />
           <LoadedComponentSelector
             label="Vision Encoder (reference conditioning)"

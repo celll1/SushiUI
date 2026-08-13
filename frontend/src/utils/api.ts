@@ -248,6 +248,9 @@ export interface ComponentCandidate {
   // (encoder, projection) pair, so it is never carried over to another one.
   requires_projection?: boolean;
   projection?: string | null;
+  // Every projection declaring this encoder's width. With more than one usable
+  // entry the backend refuses to choose, so the switch must name one.
+  projection_candidates?: MiniMaxH3ProjectionCandidate[];
   agreement?: MiniMaxH3TeAgreement | null;
 }
 
@@ -3405,6 +3408,20 @@ export interface MiniMaxH3TeAgreement {
   projection: string;
 }
 
+// One `clip_projections/` file that declares a given encoder's width. `usable`
+// is the backend's own pairing gates run with this file named, so an entry with
+// a matching d_in but a wrong d_out or tap is listed with `reason` rather than
+// dropped.
+export interface MiniMaxH3ProjectionCandidate {
+  path: string;
+  name: string;
+  d_in: number;
+  d_out: number;
+  tap: number;
+  usable: boolean;
+  reason: string | null;
+}
+
 export interface MiniMaxH3TextEncoderEntry {
   path: string;
   name: string;
@@ -3416,6 +3433,11 @@ export interface MiniMaxH3TextEncoderEntry {
   requires_projection: boolean | null;
   hidden_size: number | null;
   num_hidden_layers: number | null;
+  // What auto-discovery would adopt (null when none or several match), the
+  // refusal when it is null, and the set to choose from.
+  projection?: string | null;
+  projection_reason?: string | null;
+  projection_candidates?: MiniMaxH3ProjectionCandidate[];
   agreement: MiniMaxH3TeAgreement | null;
 }
 
@@ -4651,17 +4673,22 @@ export const getCurrentModelComponentCandidates = async (slot: ComponentSlotId) 
   };
 };
 
+// `projectionPath` (MiniMax-H3 text encoders only) names the projection to pair
+// with the new encoder; the backend refuses to pick when several declare that
+// encoder's width.
 export const switchCurrentModelComponent = async (
   slot: ComponentSlotId,
   candidateId: string,
   expectedModelRevision: number,
   expectedComponentRevision: number,
+  projectionPath?: string | null,
 ) => {
   const response = await api.post("/models/current/components/switch", {
     slot,
     candidate_id: candidateId,
     expected_model_revision: expectedModelRevision,
     expected_component_revision: expectedComponentRevision,
+    projection_path: projectionPath || null,
   });
   return response.data as {
     success: boolean;

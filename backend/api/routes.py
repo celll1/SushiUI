@@ -8943,6 +8943,10 @@ class ComponentSwitchRequest(BaseModel):
     candidate_id: str
     expected_model_revision: int
     expected_component_revision: int
+    # MiniMax-H3 text encoders: the projection to pair, from the candidate's
+    # `projection_candidates`. Required when several declare that encoder's
+    # width, since auto-discovery refuses to pick between them.
+    projection_path: Optional[str] = None
 
 
 async def _current_component_catalog(db: Session):
@@ -9035,12 +9039,14 @@ async def switch_current_model_component(
         loop = asyncio.get_running_loop()
         operation = await loop.run_in_executor(
             None,
-            switch_component,
-            pipeline_manager,
-            request.slot,
-            candidate,
-            request.expected_model_revision,
-            request.expected_component_revision,
+            lambda: switch_component(
+                pipeline_manager,
+                request.slot,
+                candidate,
+                request.expected_model_revision,
+                request.expected_component_revision,
+                projection_path=request.projection_path or None,
+            ),
         )
     except ModelStateBusyError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc

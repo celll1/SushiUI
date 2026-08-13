@@ -4,10 +4,9 @@ import { useEffect, useState } from "react";
 import Select from "./Select";
 import {
   fetchMiniMaxH3TextEncoders,
-  MiniMaxH3ClipProjectionEntry,
-  MiniMaxH3TextEncoderEntry,
   MiniMaxH3TextEncodersResponse,
 } from "@/utils/api";
+import { agreementCoversProjection } from "@/utils/minimaxH3Projection";
 
 interface MiniMaxH3TextEncoderSelectorProps {
   // DiT file or model tree root; the listing is re-read when it changes.
@@ -29,16 +28,6 @@ function formatSize(bytes: number): string {
   const gb = bytes / 1024 ** 3;
   if (gb >= 1) return `${gb.toFixed(1)} GB`;
   return `${(bytes / 1024 ** 2).toFixed(0)} MB`;
-}
-
-// A converted encoder is usable only through a projection trained for its exact
-// hidden size, so an unmatched pairing is never offered.
-function projectionsFor(
-  encoder: MiniMaxH3TextEncoderEntry | undefined,
-  projections: MiniMaxH3ClipProjectionEntry[]
-): MiniMaxH3ClipProjectionEntry[] {
-  if (!encoder || encoder.hidden_size == null) return [];
-  return projections.filter((p) => p.d_in === encoder.hidden_size);
 }
 
 export default function MiniMaxH3TextEncoderSelector({
@@ -88,9 +77,12 @@ export default function MiniMaxH3TextEncoderSelector({
   }, [modelPath]);
 
   const encoders = listing?.text_encoders ?? [];
-  const projections = listing?.clip_projections ?? [];
   const chosenEncoder = encoders.find((te) => te.path === textEncoderPath);
-  const usableProjections = projectionsFor(chosenEncoder, projections);
+  // The candidate set and its per-file verdicts come from the backend's own
+  // pairing gates; matching d_in here would offer files those gates refuse.
+  const projectionCandidates = chosenEncoder?.projection_candidates ?? [];
+  const usableProjections = projectionCandidates.filter((p) => p.usable);
+  const ambiguousProjection = usableProjections.length > 1;
   const needsProjection = chosenEncoder?.requires_projection === true;
 
   // A stored choice can name a file that is gone, or one this listing marks
@@ -115,13 +107,12 @@ export default function MiniMaxH3TextEncoderSelector({
       }
     }
     if (clipProjectionPath) {
-      const stillUsable = projectionsFor(
-        encoders.find((te) => te.path === textEncoderPath),
-        projections
-      ).some((p) => p.path === clipProjectionPath);
+      const stillUsable = (
+        encoders.find((te) => te.path === textEncoderPath)?.projection_candidates ?? []
+      ).some((p) => p.path === clipProjectionPath && p.usable);
       if (!stillUsable) {
         setStaleNotice(
-          `${baseName(clipProjectionPath)} does not pair with the selected text encoder. Falling back to auto-discovery.`
+          `${baseName(clipProjectionPath)} does not pair with the selected text encoder; the projection choice was cleared.`
         );
         onChange(textEncoderPath, null);
       }
@@ -150,28 +141,40 @@ export default function MiniMaxH3TextEncoderSelector({
     }),
   ];
 
+  // With several usable projections the loader refuses to choose, so the empty
+  // option would send a request the backend answers with that refusal.
   const projectionOptions = [
-    { value: "", label: "Auto-discovery in clip_projections/" },
-    ...usableProjections.map((p) => ({
-      value: p.path,
-      label: `${p.name} (d_in ${p.d_in} → d_out ${p.d_out}, tap ${p.tap})`,
-    })),
+    ambiguousProjection
+      ? { value: "", label: "Select a projection", disabled: true }
+      : { value: "", label: "Auto-discovery in clip_projections/" },
+    ...projectionCandidates.map((p) => {
+      const facts = `d_in ${p.d_in} → d_out ${p.d_out}, tap ${p.tap}`;
+      return {
+        value: p.path,
+        label: p.usable
+          ? `${p.name} (${facts})`
+          : `${p.name} (${facts}) — unusable: ${p.reason}`,
+        disabled: !p.usable,
+        title: p.reason || undefined,
+      };
+    }),
   ];
 
   // The measurement is keyed by the (encoder, projection) PAIR, so it only
   // describes what is about to be loaded while the selected projection is the
   // one it was measured with. Auto-discovery resolves to exactly that
-  // projection, so the common case shows it; picking a different one must not
-  // inherit the number.
+  // projection when only one matches, so the common case shows it; picking a
+  // different one, or leaving an ambiguous set unpicked, must not inherit the
+  // number.
   const rawAgreement = chosenEncoder?.agreement ?? null;
   const effectiveProjectionName = clipProjectionPath
-    ? usableProjections.find((p) => p.path === clipProjectionPath)?.name ?? null
-    : rawAgreement?.projection ?? null;
-  const agreementCoversSelection =
-    rawAgreement != null
-    && effectiveProjectionName != null
-    && effectiveProjectionName.toLowerCase() === rawAgreement.projection.toLowerCase();
-  const agreement = agreementCoversSelection ? rawAgreement : null;
+    ? projectionCandidates.find((p) => p.path === clipProjectionPath)?.name ?? null
+    : ambiguousProjection
+      ? null
+      : rawAgreement?.projection ?? null;
+  const agreement = agreementCoversProjection(rawAgreement, effectiveProjectionName)
+    ? rawAgreement
+    : null;
 
   return (
     <div className={`space-y-1.5 ${className}`}>
@@ -226,6 +229,13 @@ export default function MiniMaxH3TextEncoderSelector({
               {chosenEncoder?.hidden_size ?? "?"}, which this encoder&apos;s hidden state requires.
             </p>
           )}
+          {ambiguousProjection && !clipProjectionPath && (
+            <p className="text-xs text-amber-300">
+              {usableProjections.length} projections declare d_in {chosenEncoder?.hidden_size}. Which
+              one was trained for {chosenEncoder?.name} is not derivable from the files; select one
+              before loading.
+            </p>
+          )}
         </>
       )}
 
@@ -248,6 +258,12 @@ export default function MiniMaxH3TextEncoderSelector({
               {chosenEncoder.name} has a measurement recorded through{" "}
               {rawAgreement.projection}, not through {effectiveProjectionName}. No agreement is
               recorded for the pair selected here.
+            </p>
+          ) : rawAgreement ? (
+            <p>
+              {chosenEncoder.name} has a measurement recorded through{" "}
+              {rawAgreement.projection}. No projection is selected here, so no pairing is described
+              yet.
             </p>
           ) : (
             <p>

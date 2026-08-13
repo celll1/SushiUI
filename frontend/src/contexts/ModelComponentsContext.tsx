@@ -15,7 +15,8 @@ interface ModelComponentsContextValue {
   switchingSlot: ComponentSlotId | null;
   error: string | null;
   refresh: () => Promise<void>;
-  switchComponent: (slot: ComponentSlotId, candidateId: string) => Promise<void>;
+  // projectionPath: MiniMax-H3 text encoders only (see switchCurrentModelComponent).
+  switchComponent: (slot: ComponentSlotId, candidateId: string, projectionPath?: string | null) => Promise<void>;
   clearError: () => void;
 }
 
@@ -48,7 +49,11 @@ export function ModelComponentsProvider({ children }: { children: React.ReactNod
     void refresh();
   }, [modelInfoVersion, refresh]);
 
-  const switchComponent = useCallback(async (slot: ComponentSlotId, candidateId: string) => {
+  const switchComponent = useCallback(async (
+    slot: ComponentSlotId,
+    candidateId: string,
+    projectionPath?: string | null,
+  ) => {
     if (!snapshot) return;
     setSwitchingSlot(slot);
     setError(null);
@@ -58,6 +63,7 @@ export function ModelComponentsProvider({ children }: { children: React.ReactNod
         candidateId,
         snapshot.model_revision,
         snapshot.component_revision,
+        projectionPath,
       );
       setSnapshot(result.components);
     } catch (nextError) {

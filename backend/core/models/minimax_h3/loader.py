@@ -673,6 +673,41 @@ def list_minimax_h3_te_projection_candidates(model_path: str) -> List[Dict[str, 
     return found
 
 
+def _te_projection_candidates(
+    root: str, entry: Dict[str, Any], text_dim: int,
+) -> List[Dict[str, Any]]:
+    """Every projection declaring this encoder's width, each gated on its own.
+
+    ``usable`` comes from ``resolve_te_projection`` with the file NAMED, i.e.
+    from the gates the load path runs, so a candidate listed as usable cannot be
+    one a load would then refuse. One that matches ``d_in`` but fails another
+    gate is listed with its reason rather than dropped: a client offering the
+    set must be able to say why an entry is unavailable.
+    """
+    from core.models.minimax_h3.te_projection import (
+        discover_te_projections, resolve_te_projection,
+    )
+
+    hidden = int(entry["hidden_size"])
+    tap = int(entry.get("num_hidden_layers") or 0)
+    candidates: List[Dict[str, Any]] = []
+    for spec in discover_te_projections(root, d_in=hidden):
+        reason = None
+        try:
+            resolve_te_projection(
+                root=root, te_path=entry["path"], hidden_size=hidden,
+                num_hidden_layers=tap, text_dim=text_dim, override=spec["path"])
+        except Exception as exc:
+            reason = str(exc)
+        candidates.append({
+            "path": spec["path"],
+            "name": os.path.splitext(os.path.basename(spec["path"]))[0],
+            "d_in": spec["d_in"], "d_out": spec["d_out"], "tap": spec["tap"],
+            "usable": reason is None, "reason": reason,
+        })
+    return candidates
+
+
 def describe_minimax_h3_text_encoder_choices(model_path: str) -> Dict[str, Any]:
     """The load-time text-encoder choices for this tree, for the API.
 
@@ -685,6 +720,8 @@ def describe_minimax_h3_text_encoder_choices(model_path: str) -> Dict[str, Any]:
     same ``resolve_te_projection`` gates (header-only, no tensor bytes), so this
     listing cannot offer a pairing the load path would then refuse;
     ``projection_reason`` carries that refusal when none resolves.
+    ``projection_candidates`` is the set to choose FROM when auto-resolution
+    refuses because several files declare this encoder's width.
 
     ``agreement`` is the measurement recorded for that resolved pairing.
     """
@@ -705,8 +742,11 @@ def describe_minimax_h3_text_encoder_choices(model_path: str) -> Dict[str, Any]:
             hidden is not None and text_dim is not None and hidden != text_dim)
         entry["projection"] = None
         entry["projection_reason"] = None
+        entry["projection_candidates"] = []
         entry["agreement"] = None
         if entry["requires_projection"]:
+            entry["projection_candidates"] = _te_projection_candidates(
+                str(layout["root"]), entry, int(text_dim))
             try:
                 spec = resolve_te_projection(
                     root=str(layout["root"]), te_path=entry["path"], hidden_size=int(hidden),

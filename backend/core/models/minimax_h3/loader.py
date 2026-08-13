@@ -75,8 +75,12 @@ WHAT THIS LOADER HAS TO GET RIGHT (all measured in Phase 0 / K0; see
    from the file mapping and costs 73.08 GB peak RSS + pagefile growth against
    49.82 GB flat for the ``torch.func.functional_call`` shape Phase 2 must use.
    A second concurrent ``safe_open`` of the 48 GiB file in one process killed a
-   K0.7 run with Windows ``os error 1455``; this loader opens exactly one at a
-   time and closes it.
+   K0.7 run with Windows ``os error 1455``; this loader opens exactly one
+   mapping of the TE at a time and closes it, and one DiT mapping -- EXCEPT on
+   the hybrid path, where ``hybrid_reader.open_dit_reader`` holds the base and
+   the overlay DiT open together while the TE is already mapped. Whether that
+   third concurrent mapping reproduces 1455 on this host is unmeasured (design
+   section 4.6).
 8. **The video VAE's normalization vectors come from the fp32 config**, not from
    the fp16 tensors in the file (max abs diff 8.4e-4 -- pure rounding), and its
    pixel convention is ImageNet-normalised RGB over a ``[0, 1]`` base, NOT
@@ -1359,9 +1363,12 @@ def _map_dit_state_dict(
 ) -> Tuple[Dict[str, torch.Tensor], Dict[str, int]]:
     """Read the Comfy single file into the vendored model's key space.
 
-    ``handle`` is an OPEN ``safe_open``; tensors come back memory-mapped, so the
-    entries that need no value transform cost no resident memory here. The two
-    that do -- the qkv split and the SwiGLU half swap -- are handled as follows:
+    ``handle`` is an OPEN ``safe_open`` -- or a ``hybrid_reader`` over one or two
+    of them, which answers ``get_tensor`` and nothing else. Traversal is this
+    function's job either way, and it walks the BASE header. Tensors come back
+    memory-mapped, so the entries that need no value transform cost no resident
+    memory here. The two that do -- the qkv split and the SwiGLU half swap --
+    are handled as follows:
 
     * **qkv**: ``[q_all | k_all | v_all]`` CONTIGUOUS (measured; see the module
       docstring). Each third is a leading row slice of a contiguous tensor, so
@@ -1864,7 +1871,12 @@ def _int8_convrot_layers_from_markers(
     *,
     path: str,
 ) -> Dict[str, Dict[str, int]]:
-    """Return source-layer configs for validated H3 ConvRot marker tensors."""
+    """Return source-layer configs for validated H3 ConvRot marker tensors.
+
+    ``handle`` is the same object ``_map_dit_state_dict`` reads through -- a raw
+    ``safe_open`` or a hybrid reader. A marker must come from the file its weight
+    comes from (doc section 4.3).
+    """
     layers: Dict[str, Dict[str, int]] = {}
     for key in header:
         if not key.endswith(".comfy_quant"):
@@ -2110,22 +2122,113 @@ def _swap_minimax_h3_quantized_linears(model: nn.Module, state_dict: Dict[str, t
     return swapped
 
 
+def _verify_hybrid_files_unchanged(hybrid, *, header: Dict[str, Any],
+                                   metadata: Dict[str, Any],
+                                   overlay_header: Dict[str, Any]) -> None:
+    """Doc section 7's SECOND identity check: the files are still the validated ones.
+
+    The preflight's digest covers both files' key censuses and sizes, so
+    re-deriving it from the headers just read catches an overlay swapped between
+    preflight and load. Without it, a replacement loads cleanly and the
+    provenance records a digest computed against a different file. The
+    realised-read check cannot see this: it derives its expectations from the
+    BASE header.
+
+    LIMIT, measured: a rewrite that keeps every key, shape and dtype has the same
+    header and the same size, so this passes it. Detecting that would mean
+    hashing 12-21 GB per load.
+    """
+    from .hybrid_spec import digest_for_loaded_files
+
+    observed = digest_for_loaded_files(spec=hybrid.spec, header=header, metadata=metadata,
+                                       overlay_header=overlay_header)
+    if observed != hybrid.spec.compatibility_digest:
+        raise RuntimeError(
+            f"the MiniMax-H3 hybrid pair changed between preflight and load: the digest is now "
+            f"{observed} against the validated {hybrid.spec.compatibility_digest}. One of "
+            f"{os.path.basename(hybrid.spec.base_dit_path)} / "
+            f"{os.path.basename(hybrid.spec.overlay_dit_path)} was replaced or rewritten; "
+            f"re-run the preflight rather than loading a pair nothing validated.")
+
+
+def _verify_hybrid_overlay_reads(reader, hybrid, *, path: str) -> None:
+    """The overlay selection that HAPPENED equals the one the preflight approved.
+
+    The counterpart of the quantized-Linear swap counts: the selector is pure and
+    tested, but nothing else proves the mapping traversal actually asked for
+    every selected key, or that it asked for nothing else. Both directions are
+    silent -- an unread overlay key is a base-only load wearing a hybrid's
+    provenance, an extra one is a tensor pair nobody validated.
+    """
+    if not getattr(reader, "is_hybrid", False):
+        raise RuntimeError(
+            f"a hybrid load of {path} ran on a {type(reader).__name__}, which reads one file. "
+            f"Nothing came from the overlay.")
+    expected = set(hybrid.overlay_keys)
+    read = reader.overlay_keys_read
+    if read != expected:
+        unread, extra = sorted(expected - read), sorted(read - expected)
+        raise RuntimeError(
+            f"the MiniMax-H3 hybrid load of {path} read {len(read)} tensor(s) from the overlay "
+            f"but the preflight selected {len(expected)} (not read: {unread[:5]}, "
+            f"read but not selected: {extra[:5]}).")
+
+
 def _build_transformer(dit_path: str, torch_dtype: torch.dtype,
-                       official_dir: Optional[str]) -> Tuple[nn.Module, Dict[str, Any]]:
-    """Instantiate the vendored transformer and load ``dit_path`` into it."""
+                       official_dir: Optional[str], *,
+                       hybrid: Optional[Any] = None) -> Tuple[nn.Module, Dict[str, Any]]:
+    """Instantiate the vendored transformer and load ``dit_path`` into it.
+
+    ``hybrid`` is a validated ``MiniMaxH3HybridPreflight``: the tensors named by
+    its selector are then read from the overlay checkpoint instead, and
+    everything else in this function is unchanged. HEADER, ``__metadata__``,
+    geometry synthesis, the quantization contracts and the census all come from
+    ``dit_path`` -- the BASE file -- which the preflight proved equivalent to the
+    overlay's (doc section 4.2, closing contract).
+    """
     from accelerate import init_empty_weights
-    from safetensors import safe_open
 
     from core.models.common.quantized_checkpoint_guard import (
         quantized_state_dict_report, scaled_quantization_report, verify_quantized_swap,
     )
+    from .hybrid_reader import open_dit_reader
+    from .reload import same_path  # ``reload`` imports this module; import late.
     from .vendor import MiniMaxH3Transformer3DModel
 
+    overlay_path = None
+    if hybrid is not None:
+        if not hybrid.spec.validated:
+            raise ValueError(
+                "the hybrid spec carries no compatibility_digest, so it is a REQUEST that never "
+                "went through preflight_minimax_h3_hybrid, not a validated contract. Refusing "
+                "rather than loading a pair whose key sets, shapes and quantization contracts "
+                "nobody compared.")
+        if not hybrid.spec.overlay_dit_path:
+            raise ValueError(
+                "the hybrid spec names no overlay checkpoint. A hybrid load with no second file "
+                "is a base-only load; ask for one explicitly instead.")
+        if not same_path(hybrid.spec.base_dit_path, dit_path):
+            raise ValueError(
+                f"the hybrid preflight validated {hybrid.spec.base_dit_path!r} as the base, but "
+                f"the transformer is being built from {dit_path!r}. The header, the geometry and "
+                f"the quantization contract all come from the file named here, so a mismatch "
+                f"would validate one file and load another.")
+        overlay_path = hybrid.spec.overlay_dit_path
+
     # The guard must precede geometry synthesis so an unsupported quantized
-    # contract reports its actual incompatibility.
+    # contract reports its actual incompatibility. Both files get it, and the
+    # overlay's is done HERE rather than in the preflight: guarding at the point
+    # of use covers a caller that arrives with a stale or hand-built preflight,
+    # and the preflight's own contract is zero tensor reads.
     header, metadata = _guard_component_file(
         dit_path, label="transformer", allow_h3_int8_convrot=True
     )
+    if overlay_path is not None:
+        overlay_header, _overlay_metadata = _guard_component_file(
+            overlay_path, label="transformer overlay", allow_h3_int8_convrot=True
+        )
+        _verify_hybrid_files_unchanged(hybrid, header=header, metadata=metadata,
+                                       overlay_header=overlay_header)
     w4a8_source_layers = _w4a8_layers_from_metadata(metadata, header, path=dit_path)
     w4a8_layer_configs = _mapped_w4a8_layer_configs(w4a8_source_layers)
     if w4a8_layer_configs:
@@ -2141,9 +2244,13 @@ def _build_transformer(dit_path: str, torch_dtype: torch.dtype,
           f"variant={'AdaLN-curve (pruned)' if curve else 'full modulation'}"
           + (f", grid {config['adaln_curve_grid']} x {config['time_embed_dim']}" if curve else ""))
 
-    with safe_open(dit_path, framework="pt", device="cpu") as handle:
+    with open_dit_reader(dit_path, overlay_path=overlay_path,
+                         selector=None if hybrid is None else hybrid.selector) as reader:
+        # Both handle consumers take the READER. A marker read from the base
+        # while its weight comes from the overlay is a clean load and a wrong
+        # model (doc section 4.3).
         int8_convrot_source_layers = _int8_convrot_layers_from_markers(
-            handle, header, path=dit_path
+            reader, header, path=dit_path
         )
         int8_convrot_layer_configs = _mapped_int8_convrot_layer_configs(
             int8_convrot_source_layers
@@ -2153,13 +2260,15 @@ def _build_transformer(dit_path: str, torch_dtype: torch.dtype,
 
             require_convrot_int8_runtime()
         state_dict, stats = _map_dit_state_dict(
-            handle,
+            reader,
             header,
             config,
             torch_dtype,
             w4a8_layers=w4a8_source_layers,
             int8_convrot_layers=int8_convrot_source_layers,
         )
+        if hybrid is not None:
+            _verify_hybrid_overlay_reads(reader, hybrid, path=dit_path)
 
         # The early header guard validated every supported ConvRot marker. Keep
         # those markers as live module state, while every other declaration
@@ -2261,6 +2370,13 @@ def _build_transformer(dit_path: str, torch_dtype: torch.dtype,
         pinned = _dit_quantization_policy(model)
         print(f"[MiniMaxH3Loader] {swapped} weight-only quantized Linear(s) kept quantized; "
               f"{pinned} FP8 Linear(s) pinned to the dequant path")
+    if hybrid is not None:
+        recipe = hybrid.spec.recipe()
+        print(f"[MiniMaxH3Loader] hybrid: {len(hybrid.overlay_keys)} tensor(s) read from "
+              f"{os.path.basename(overlay_path)}, blocks "
+              f"{recipe['block_range_start']}..{recipe['block_range_end']}, final AdaLN from "
+              f"{'overlay' if recipe['final_adaln_from_overlay'] else 'base'} "
+              f"({hybrid.spec.compatibility_digest})")
 
     model.eval().requires_grad_(False)
     return model, config

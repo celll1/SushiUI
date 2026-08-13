@@ -769,6 +769,34 @@ def _validate_block_range(
 # 4.2 -- the compatibility digest
 # ---------------------------------------------------------------------------
 
+def digest_for_loaded_files(
+    *,
+    spec: MiniMaxH3HybridSpec,
+    header: Mapping[str, Any],
+    metadata: Mapping[str, Any],
+    overlay_header: Mapping[str, Any],
+) -> str:
+    """The digest re-derived from headers read at LOAD time (doc section 7).
+
+    Doc section 7 wants the file identity checked at preflight AND at the real
+    read; comparing this against ``spec.compatibility_digest`` is that second
+    check. It lives here so that the digest's inputs stay declared in exactly one
+    place: a caller that assembled the payload itself would silently stop
+    covering any input added to ``compatibility_digest`` later.
+    """
+    return compatibility_digest(
+        base_path=spec.base_dit_path,
+        overlay_path=spec.overlay_dit_path,
+        base_variant=spec.base_variant,
+        overlay_variant=spec.overlay_variant,
+        header=header,
+        metadata=metadata,
+        overlay_header=overlay_header,
+        quant_format=quantization_format(header, metadata),
+        num_blocks=_num_blocks(header),
+    )
+
+
 def compatibility_digest(
     *,
     base_path: str,

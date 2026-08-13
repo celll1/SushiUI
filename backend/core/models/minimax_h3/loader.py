@@ -3307,6 +3307,7 @@ def load_minimax_h3_from_path(
     video_vae_dtype: Optional[torch.dtype] = None,
     te_override: Optional[str] = None,
     te_projection_override: Optional[str] = None,
+    hybrid: Optional[Any] = None,
 ) -> dict:
     """Load MiniMax-H3 from its ComfyUI-style flat tree (or MiniMax's own dir).
 
@@ -3334,6 +3335,11 @@ def load_minimax_h3_from_path(
 
     ``te_projection_override`` names the trained projection to pair with it,
     skipping ``clip_projections/`` discovery. Every pairing check still runs.
+
+    ``hybrid`` is a VALIDATED ``MiniMaxH3HybridPreflight``: the DiT is then built
+    from its base plus the overlay tensors its selector names, and the component
+    dict reports ``variant="hybrid"`` instead of the base's. ``None`` is the
+    base-only load, unchanged in every respect.
     """
     # ``te_override is None`` calls with the ORIGINAL one-argument signature,
     # not with an explicit ``te_override=None`` -- callers (including existing
@@ -3384,8 +3390,20 @@ def load_minimax_h3_from_path(
             f"MiniMax-H3's config tree at {official!r} is missing {', '.join(missing_cfg)}. "
             f"Those carry the component geometry and the fp32 latents_mean/latents_std vectors; "
             f"they are not optional and are not derivable from the weight files.")
+    if hybrid is not None:
+        from .reload import same_path  # ``reload`` imports this module; import late.
+
+        if not same_path(hybrid.spec.base_dit_path, layout["dit"]):
+            raise ValueError(
+                f"the hybrid preflight validated {hybrid.spec.base_dit_path!r} as the base, but "
+                f"{model_path!r} resolves to {layout['dit']!r}. Loading the resolved file would "
+                f"merge an overlay onto a checkpoint nobody compared it against.")
+
     print(f"[MiniMaxH3Loader] root:         {layout['root']}")
     print(f"[MiniMaxH3Loader] DiT:          {layout['dit']} (variant={layout['variant']})")
+    if hybrid is not None:
+        print(f"[MiniMaxH3Loader] overlay:      {hybrid.spec.overlay_dit_path} "
+              f"(variant={hybrid.spec.overlay_variant}; the loaded model reports variant=hybrid)")
     print(f"[MiniMaxH3Loader] video VAE:    {layout['vae']}")
     print(f"[MiniMaxH3Loader] audio VAE:    {layout['audio_vae']}")
     print(f"[MiniMaxH3Loader] text encoder: {layout['text_encoder']} "
@@ -3414,7 +3432,10 @@ def load_minimax_h3_from_path(
         text_encoder, text_encoder_config = _build_text_encoder_for(
             layout["text_encoder"], official, te_projection)
 
-    transformer, transformer_config = _build_transformer(layout["dit"], torch_dtype, official)
+    # Base-only keeps the exact three-argument call it always had.
+    transformer, transformer_config = _build_transformer(
+        layout["dit"], torch_dtype, official,
+        **({} if hybrid is None else {"hybrid": hybrid}))
     # fp16 for the video VAE (see MINIMAX_H3_VIDEO_VAE_DTYPE), float32 for the
     # small audio one -- 0.6 GB, decoded once per generation, nothing to buy.
     vae_dtype = video_vae_dtype or MINIMAX_H3_VIDEO_VAE_DTYPE
@@ -3476,6 +3497,13 @@ def load_minimax_h3_from_path(
         "te_projection": te_projection,
         "official_dir": official,
     }
+    if hybrid is not None:
+        from .hybrid_spec import hybrid_component_fields
+
+        # OVERWRITES "variant" with "hybrid". See hybrid_component_fields: the
+        # layout's variant is a filename substring match, and an fl2va-named
+        # base would inherit fl2va's route capabilities.
+        components.update(hybrid_component_fields(hybrid))
 
     # A substituted encoder's agreement with the released one, measured here the
     # first time this pairing is loaded and stored per installation. Costs a

@@ -2103,6 +2103,7 @@ class ModelLoader:
         *,
         text_encoder_file: Optional[str] = None,
         clip_projection_file: Optional[str] = None,
+        hybrid: Optional[Any] = None,
     ) -> Union[StableDiffusionPipeline, Dict[str, Any]]:
         """Load model from .safetensors file
 
@@ -2117,6 +2118,7 @@ class ModelLoader:
         print(f"[ModelLoader] Detected model type: {model_type}")
         ModelLoader._refuse_load_time_te_choice(
             model_type, text_encoder_file, clip_projection_file)
+        ModelLoader._refuse_hybrid_on_other_arch(model_type, hybrid)
 
         # FLUX.2 format
         if model_type == "flux2":
@@ -2172,7 +2174,8 @@ class ModelLoader:
             return ModelLoader.load_minimax_h3_from_path(
                 file_path, torch.bfloat16,
                 text_encoder_file=text_encoder_file,
-                clip_projection_file=clip_projection_file)
+                clip_projection_file=clip_projection_file,
+                hybrid=hybrid)
 
         is_v_prediction = ModelLoader.detect_v_prediction(file_path)
 
@@ -2501,6 +2504,7 @@ class ModelLoader:
         *,
         text_encoder_file: Optional[str] = None,
         clip_projection_file: Optional[str] = None,
+        hybrid: Optional[Any] = None,
     ) -> Union[StableDiffusionPipeline, Dict[str, Any]]:
         """Load model from diffusers format directory
 
@@ -2514,6 +2518,7 @@ class ModelLoader:
         model_type = ModelLoader.detect_model_type(model_path)
         ModelLoader._refuse_load_time_te_choice(
             model_type, text_encoder_file, clip_projection_file)
+        ModelLoader._refuse_hybrid_on_other_arch(model_type, hybrid)
 
         # DEUS support removed - architecture no longer maintained
         # if model_type == "deus":
@@ -2570,7 +2575,8 @@ class ModelLoader:
             return ModelLoader.load_minimax_h3_from_path(
                 model_path, torch.bfloat16,
                 text_encoder_file=text_encoder_file,
-                clip_projection_file=clip_projection_file)
+                clip_projection_file=clip_projection_file,
+                hybrid=hybrid)
 
         is_v_prediction = ModelLoader.detect_v_prediction(model_path)
 
@@ -2700,6 +2706,20 @@ class ModelLoader:
         return pipeline
 
     @staticmethod
+    def _refuse_hybrid_on_other_arch(model_type: Optional[str], hybrid: Optional[Any]) -> None:
+        """Refuse a MiniMax-H3 hybrid spec on any other architecture.
+
+        Same reason as ``_refuse_load_time_te_choice``: dropping it would load
+        the base checkpoint alone and report success for a merge that never
+        happened.
+        """
+        if hybrid is None or model_type == "minimax_h3":
+            return
+        raise ValueError(
+            f"a MiniMax-H3 hybrid (base + overlay DiT) was requested, but this model detects "
+            f"as {model_type!r}. The hybrid loader is implemented for minimax_h3 only.")
+
+    @staticmethod
     def _refuse_load_time_te_choice(
         model_type: Optional[str],
         text_encoder_file: Optional[str],
@@ -2732,6 +2752,7 @@ class ModelLoader:
         torch_dtype: torch.dtype = torch.float16,
         text_encoder_file: Optional[str] = None,
         clip_projection_file: Optional[str] = None,
+        hybrid: Optional[Any] = None,
         **kwargs
     ) -> Union[StableDiffusionPipeline, Dict[str, Any]]:
         """Universal model loading method
@@ -2741,7 +2762,8 @@ class ModelLoader:
         rather than ``**kwargs`` entries all the way down to
         ``load_minimax_h3_from_path``, because a key this function did not
         recognise would be dropped here and the default encoder loaded with no
-        error at all.
+        error at all. ``hybrid`` -- a validated ``MiniMaxH3HybridPreflight`` --
+        is named for the same reason: dropped, it would load the base alone.
 
         Returns:
             - StableDiffusionPipeline for SD1.5/SDXL
@@ -2754,6 +2776,7 @@ class ModelLoader:
                 raise ValueError("Explicit text_encoder_path/vae_path model reload is supported only for Anima")
             ModelLoader._refuse_load_time_te_choice(
                 "anima", text_encoder_file, clip_projection_file)
+            ModelLoader._refuse_hybrid_on_other_arch("anima", hybrid)
             return ModelLoader.load_anima_from_files(
                 source,
                 device,
@@ -2765,13 +2788,19 @@ class ModelLoader:
             return ModelLoader.load_from_safetensors(
                 source, device, torch_dtype,
                 text_encoder_file=text_encoder_file,
-                clip_projection_file=clip_projection_file)
+                clip_projection_file=clip_projection_file,
+                hybrid=hybrid)
         elif source_type == "diffusers":
             return ModelLoader.load_from_diffusers(
                 source, device, torch_dtype,
                 text_encoder_file=text_encoder_file,
-                clip_projection_file=clip_projection_file)
+                clip_projection_file=clip_projection_file,
+                hybrid=hybrid)
         elif source_type == "huggingface":
+            if hybrid is not None:
+                raise ValueError(
+                    "a MiniMax-H3 hybrid names two local DiT checkpoints in one model tree and "
+                    "cannot be used with a huggingface source.")
             if text_encoder_file is not None or clip_projection_file is not None:
                 # No local tree to name an encoder file in, and no H3 hub path.
                 raise ValueError(
@@ -2955,6 +2984,7 @@ class ModelLoader:
         *,
         text_encoder_file: Optional[str] = None,
         clip_projection_file: Optional[str] = None,
+        hybrid: Optional[Any] = None,
     ) -> dict:
         """Load MiniMax-H3 from its flat ComfyUI-style model tree
         (diffusion_models/ + vae/ + text_encoders/ + MiniMax's config-only
@@ -2972,8 +3002,15 @@ class ModelLoader:
         and projection choice from ``POST /models/load``. Named parameters, not
         ``**kwargs``: a dropped key here would load the default encoder and
         report success.
+
+        ``hybrid`` is the validated base+overlay preflight from
+        ``preflight_minimax_h3_hybrid``; ``None`` is the ordinary single-file
+        load.
         """
         from core.models.minimax_h3.loader import load_minimax_h3_from_path as _load_h3
+
+        # Base-only keeps the exact call it always had.
         return _load_h3(model_path=path, torch_dtype=torch_dtype,
                         te_override=text_encoder_file,
-                        te_projection_override=clip_projection_file)
+                        te_projection_override=clip_projection_file,
+                        **({} if hybrid is None else {"hybrid": hybrid}))

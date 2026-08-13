@@ -194,6 +194,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         force_reload: bool = False,
         text_encoder_file: Optional[str] = None,
         clip_projection_file: Optional[str] = None,
+        hybrid: Optional[Dict[str, Any]] = None,
         **kwargs
     ):
         """Load a model, holding the lifecycle gate for the duration.
@@ -216,7 +217,13 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         other than the loaded one reloads on its own: the model id does not
         change with the encoder, so depending on the caller to send
         ``force_reload`` would make an ignored request look like a successful
-        one."""
+        one.
+
+        ``hybrid`` is MiniMax-H3's base+overlay DiT request -- a mapping of
+        ``HYBRID_REQUEST_KEYS`` (``overlay_file`` and the recipe). It IS part of
+        the model id (see ``_load_model_locked``), so a different overlay or a
+        different block range reloads without ``force_reload``. There is no API
+        surface for it yet; C5 owns that."""
         from core.model_state_coordinator import model_state_coordinator
         previous_info = self.current_model_info
         mutation_started = False
@@ -227,7 +234,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     result = self._load_model_locked(
                         source_type, source, pipeline_type, force_reload=force_reload,
                         text_encoder_file=text_encoder_file,
-                        clip_projection_file=clip_projection_file, **kwargs)
+                        clip_projection_file=clip_projection_file,
+                        hybrid=hybrid, **kwargs)
         except Exception:
             if mutation_started:
                 # Degraded means "the live components are not trustworthy", so
@@ -270,10 +278,27 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         force_reload: bool = False,
         text_encoder_file: Optional[str] = None,
         clip_projection_file: Optional[str] = None,
+        hybrid: Optional[Dict[str, Any]] = None,
         **kwargs
     ):
         """Load a Stable Diffusion model from various sources"""
         model_id = f"{source_type}:{source}"
+        hybrid_preflight = None
+        if hybrid is not None:
+            # HEADER-ONLY, and before anything is torn down: a refused hybrid
+            # pair leaves the live model exactly as it was. It also has to
+            # precede the same-model early return, because the identity below
+            # needs its digest.
+            from core.models.minimax_h3.hybrid_spec import (
+                hybrid_model_identity, preflight_hybrid_request,
+            )
+
+            hybrid_preflight = preflight_hybrid_request(source, hybrid)
+
+            # The base alone is NOT the identity of a hybrid: the same base with
+            # another overlay, or the same pair over another block range, is a
+            # different model and must not be answered by the early return.
+            model_id = f"{model_id}#{hybrid_model_identity(hybrid_preflight.spec)}"
 
         # A different H3 text encoder or projection is a different set of loaded
         # components under the SAME model id, so neither the same-model early
@@ -305,8 +330,12 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                 and not h3_te_selection_changed
                 and self.component_health != "degraded"):
             current_source = (self.current_model_info or {}).get("source")
+            # The DiT is the only thing a hybrid changes, so this path serves a
+            # hybrid request too -- and keeps the 48 GiB encoder mapped while
+            # doing it. Base-only keeps the exact five-argument call it had.
             if current_source and self._reload_minimax_h3_dit_only(
-                    source_type, source, current_source, pipeline_type, model_id):
+                    source_type, source, current_source, pipeline_type, model_id,
+                    **({} if hybrid_preflight is None else {"hybrid": hybrid_preflight})):
                 return
 
         self._minimax_h3_te_request = (text_encoder_file, clip_projection_file)
@@ -553,6 +582,9 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                 torch_dtype=torch_dtype,
                 text_encoder_file=text_encoder_file,
                 clip_projection_file=clip_projection_file,
+                # Base-only keeps the exact call it always had, as at every
+                # other site this commit touches.
+                **({} if hybrid_preflight is None else {"hybrid": hybrid_preflight}),
                 **kwargs
             )
 
@@ -983,6 +1015,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     except Exception as e:
                         print(f"[Pipeline] Hash compute skipped: {e}")
 
+                from core.models.minimax_h3.hybrid_spec import hybrid_model_info_fields
                 from core.models.minimax_h3.loader import minimax_h3_te_model_info_fields
                 self.current_model_info = {
                     "source_type": source_type,
@@ -991,6 +1024,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     "is_v_prediction": False,  # flow matching, velocity prediction
                     "model_hash": model_hash,
                     "is_video": True,
+                    # "hybrid" for a merged DiT -- the loader sets it explicitly,
+                    # never from the base's filename (see hybrid_component_fields).
                     "variant": self.minimax_h3_components.get("variant"),
                     "latent_channels": self.minimax_h3_components.get("latent_channels", 24),
                     "vae_scale_factor_spatial": self.minimax_h3_components.get(
@@ -1002,9 +1037,15 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     # through -- a client cannot tell a substitution apart from
                     # the released encoder otherwise.
                     **minimax_h3_te_model_info_fields(self.minimax_h3_components),
+                    # Sanitised base/overlay provenance; empty for a base-only load.
+                    **hybrid_model_info_fields(self.minimax_h3_components),
                 }
-                self._save_last_model(source_type, source, pipeline_type,
-                                      *self._minimax_h3_te_request)
+                # Base-only keeps the exact call it always had; a hybrid persists
+                # the request that reproduces it.
+                self._save_last_model(
+                    source_type, source, pipeline_type, *self._minimax_h3_te_request,
+                    **({} if hybrid_preflight is None
+                       else {"hybrid": self.minimax_h3_components.get("hybrid_request")}))
                 print("[Pipeline] MiniMax-H3 model loaded successfully")
                 return
 
@@ -1244,13 +1285,24 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         current_source: str,
         pipeline_type: str,
         model_id: str,
+        *,
+        hybrid: Optional[Any] = None,
     ) -> bool:
-        """Atomically replace only the DiT for two checkpoints in one H3 tree."""
+        """Atomically replace only the DiT for two checkpoints in one H3 tree.
+
+        ``hybrid`` is a validated preflight whose base is ``source``; the
+        replacement is then the merged DiT. Atomicity is unchanged either way --
+        the replacement is fully built before anything is swapped, so a failed
+        merge leaves the live transformer, TE, VAEs and schedulers untouched.
+        """
+        from core.models.minimax_h3.hybrid_spec import hybrid_model_info_fields
         from core.models.minimax_h3.loader import minimax_h3_te_model_info_fields
         from core.models.minimax_h3.reload import build_dit_only_reload
 
+        # Base-only keeps the exact three-argument call it always had.
         replacement = build_dit_only_reload(
-            self.minimax_h3_components, current_source, source)
+            self.minimax_h3_components, current_source, source,
+            **({} if hybrid is None else {"hybrid": hybrid}))
         if replacement is None:
             return False
 
@@ -1293,11 +1345,14 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             # The DiT-only reload keeps the mapped text encoder, so this reports
             # the same encoder/projection the full load did.
             **minimax_h3_te_model_info_fields(replacement),
+            **hybrid_model_info_fields(replacement),
         }
         # This path rebuilt only the DiT, so the encoder/projection request the
-        # retained bundle came from still describes it.
-        self._save_last_model(source_type, source, pipeline_type,
-                              *self._minimax_h3_te_request)
+        # retained bundle came from still describes it. The hybrid recipe does
+        # NOT carry over: it belongs to the DiT that was just replaced.
+        self._save_last_model(
+            source_type, source, pipeline_type, *self._minimax_h3_te_request,
+            **({} if hybrid is None else {"hybrid": replacement.get("hybrid_request")}))
 
         # The replacement dict shares every ancillary object but not the old
         # transformer. Collect after the attribute swap so its large CPU storage
@@ -2119,7 +2174,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                          text_encoder_file: Optional[str] = None,
                          clip_projection_file: Optional[str] = None,
                          text_encoder_path: Optional[str] = None,
-                         vae_path: Optional[str] = None):
+                         vae_path: Optional[str] = None,
+                         hybrid: Optional[Dict[str, Any]] = None):
         """Save the last loaded model configuration to file.
 
         The optional fields are written only when they were requested, so a
@@ -2127,6 +2183,10 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         the same. ``text_encoder_path``/``vae_path`` are Anima's explicit
         companions: without them a live component switch would last only until
         the next restart, which reads this file back.
+
+        ``hybrid`` is MiniMax-H3's overlay REQUEST (overlay file + recipe), not
+        its digest: a restore re-derives the digest from the files as they are
+        then, so a replaced overlay is refused instead of silently loaded.
         """
         try:
             config = {
@@ -2142,6 +2202,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                 config["text_encoder_path"] = text_encoder_path
             if vae_path is not None:
                 config["vae_path"] = vae_path
+            if hybrid is not None:
+                config["hybrid"] = dict(hybrid)
             with open(LAST_MODEL_CONFIG_FILE, 'w') as f:
                 json.dump(config, f, indent=2)
         except Exception as e:
@@ -2171,6 +2233,12 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                 for key in ("text_encoder_path", "vae_path")
                 if config.get(key)
             }
+            # MiniMax-H3's overlay request. Absent for every base-only load;
+            # re-validated (and re-digested) by the load it is passed to. NOT
+            # `or None`: an empty/malformed entry in a hand-edited file must
+            # reach normalize_hybrid_request and be refused by name, not degrade
+            # into a base-only load that reports success.
+            hybrid = config.get("hybrid")
 
             if source_type and source:
                 print(f"Auto-loading last model: {source_type}:{source}")
@@ -2180,6 +2248,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     pipeline_type=pipeline_type,
                     text_encoder_file=text_encoder_file,
                     clip_projection_file=clip_projection_file,
+                    hybrid=hybrid,
                     **companions,
                 )
                 print(f"Successfully loaded last model: {source}")

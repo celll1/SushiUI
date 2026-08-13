@@ -40,7 +40,7 @@ from .loader import (
     is_minimax_h3_safetensors,
     read_safetensors_header,
 )
-from .reload import _SHARED_LAYOUT_KEYS, same_path
+from .reload import _SHARED_LAYOUT_KEYS, canonical_path, same_path
 
 
 # Bumped independently: the spec's FIELD SET and the digest's INPUTS change for
@@ -849,3 +849,199 @@ def compatibility_digest(
         "header_source": HEADER_SOURCE,
     }
     return f"h3hybrid{DIGEST_VERSION}:{_sha256(_canonical(payload))}"
+
+
+# ---------------------------------------------------------------------------
+# C4 -- the request, the model identity, and the fields a load carries
+# ---------------------------------------------------------------------------
+
+#: The wire shape of a hybrid REQUEST: what a caller asks for, before any file
+#: is read. C5's ``/models/load`` form fields map onto these names.
+HYBRID_REQUEST_KEYS: Tuple[str, ...] = (
+    "overlay_file", "preset", "block_range_start", "block_range_end",
+    "final_adaln_from_overlay",
+)
+
+#: The component-dict keys a hybrid load adds. Enumerated because a DiT-only
+#: reload COPIES the live component dict: without stripping these, a base-only
+#: DiT would inherit the previous hybrid's recipe and keep reporting itself as a
+#: hybrid.
+HYBRID_COMPONENT_KEYS: Tuple[str, ...] = (
+    "base_variant", "overlay_variant", "hybrid_recipe", "hybrid_provenance",
+    "hybrid_spec", "hybrid_request", "hybrid_identity", "overlay_dit_path",
+)
+
+
+def normalize_hybrid_request(request: Any) -> Optional[Dict[str, Any]]:
+    """A caller's hybrid request, checked and defaulted. ``None`` stays ``None``.
+
+    ``None`` means "base-only load" and every path downstream keeps its existing
+    behaviour. Anything else must name an overlay: a request with no overlay is
+    refused rather than degraded to a base-only load, which would report success
+    for a merge that never happened. Unknown keys are refused for the same
+    reason a dropped ``text_encoder_file`` would be -- a misspelt
+    ``block_range_stat`` would silently load the default 25..49.
+    """
+    if request is None:
+        return None
+    if isinstance(request, MiniMaxH3HybridSpec):
+        return hybrid_request_from_spec(request)
+    if not isinstance(request, Mapping):
+        raise _refuse(
+            "hybrid_request_invalid",
+            f"a hybrid request must be a mapping of {HYBRID_REQUEST_KEYS}, got "
+            f"{type(request).__name__}")
+    unknown = sorted(set(request) - set(HYBRID_REQUEST_KEYS))
+    if unknown:
+        raise _refuse(
+            "hybrid_request_unknown_field",
+            f"the hybrid request carries unrecognised field(s) {unknown}; the supported fields "
+            f"are {list(HYBRID_REQUEST_KEYS)}. Ignoring one would load a different merge than "
+            "the caller asked for and report success.")
+
+    overlay = request.get("overlay_file")
+    preset = request.get("preset") or PRESET_BLOCK_RANGE_ADALN
+    validate_preset(preset, overlay)
+    if not isinstance(overlay, str) or not overlay:
+        raise _refuse(
+            "hybrid_request_no_overlay",
+            "a hybrid request names no overlay checkpoint. Pass no request at all for a "
+            "base-only load; an overlay-less hybrid is not one.")
+
+    final_adaln = request.get("final_adaln_from_overlay")
+    if final_adaln is None:
+        final_adaln = DEFAULT_FINAL_ADALN_FROM_OVERLAY
+    if not isinstance(final_adaln, bool):
+        raise _refuse(
+            "hybrid_request_invalid",
+            f"final_adaln_from_overlay must be a bool, got {final_adaln!r}. A string is not "
+            "coerced: 'false' would read as True.")
+
+    start = request.get("block_range_start")
+    end = request.get("block_range_end")
+    start = DEFAULT_BLOCK_RANGE_START if start is None else start
+    end = DEFAULT_BLOCK_RANGE_END if end is None else end
+    # Range VALUES are the preflight's check 9 (it knows the block count); this
+    # only rejects the types that would make the identity token meaningless.
+    for name, value in (("block_range_start", start), ("block_range_end", end)):
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise _refuse("hybrid_request_invalid",
+                          f"{name} must be an int, got {value!r}")
+    return {
+        "overlay_file": overlay,
+        "preset": preset,
+        "block_range_start": int(start),
+        "block_range_end": int(end),
+        "final_adaln_from_overlay": final_adaln,
+    }
+
+
+def preflight_hybrid_request(source: str, request: Any) -> Optional[MiniMaxH3HybridPreflight]:
+    """Resolve a ``(source, request)`` pair into a validated preflight.
+
+    ``source`` is whatever ``POST /models/load`` accepts -- a DiT file OR the
+    tree that holds it -- so the base is taken from the layout rather than from
+    the raw string, which is also what the loader will resolve and what
+    ``_build_transformer`` refuses to disagree with.
+    """
+    normalized = normalize_hybrid_request(request)
+    if normalized is None:
+        return None
+    layout = detect_minimax_h3_layout(source)
+    if layout is None or not layout.get("dit"):
+        raise _refuse(
+            "not_an_h3_tree",
+            f"a hybrid was requested for {source!r}, which does not resolve to a MiniMax-H3 DiT. "
+            "The hybrid loader is implemented for MiniMax-H3 only.")
+    return preflight_minimax_h3_hybrid(
+        layout["dit"], normalized["overlay_file"],
+        preset=normalized["preset"],
+        block_range_start=normalized["block_range_start"],
+        block_range_end=normalized["block_range_end"],
+        final_adaln_from_overlay=normalized["final_adaln_from_overlay"],
+    )
+
+
+def hybrid_request_from_spec(spec: MiniMaxH3HybridSpec) -> Dict[str, Any]:
+    """The request that reproduces ``spec``, for ``last_model.json``.
+
+    Only the inputs: the digest is deliberately absent, because a restore must
+    re-derive it from the files as they are NOW and refuse if they moved.
+    """
+    return {
+        "overlay_file": spec.overlay_dit_path,
+        "preset": spec.preset,
+        "block_range_start": spec.block_range_start,
+        "block_range_end": spec.block_range_end,
+        "final_adaln_from_overlay": spec.final_adaln_from_overlay,
+    }
+
+
+def hybrid_model_identity(spec: MiniMaxH3HybridSpec) -> str:
+    """What makes this hybrid a DIFFERENT loaded model (doc section 7).
+
+    Appended to the pipeline's ``f"{source_type}:{source}"`` model id, which
+    already carries the base. Covers, in order: the recipe (preset, range,
+    final-AdaLN toggle), the overlay's and the base's canonical paths, and the
+    validated compatibility digest. Without it, "same base, different overlay"
+    and "same pair, different range" are the same string and the same-model
+    early return answers both with the model already loaded.
+
+    Readable rather than one opaque hash: this string ends up in logs and in the
+    keep-hot cache key, and "which range is loaded" is the question being asked
+    of it. The TE/projection selection is NOT here -- it is carved out of the
+    early return by ``_minimax_h3_te_selection_differs``, which compares against
+    the LOADED encoder and covers base-only and hybrid loads alike.
+    """
+    if not spec.validated:
+        raise _refuse(
+            "hybrid_identity_unvalidated",
+            "a hybrid's model identity includes its compatibility digest, and this spec has "
+            "none: it never went through preflight_minimax_h3_hybrid.")
+    recipe = spec.recipe()
+    return (f"hybrid{SCHEMA_VERSION}:{recipe['preset']}:"
+            f"{recipe['block_range_start']}-{recipe['block_range_end']}:"
+            f"final={int(bool(recipe['final_adaln_from_overlay']))}:"
+            f"base={_sha256(canonical_path(spec.base_dit_path))[:12]}:"
+            f"overlay={_sha256(canonical_path(spec.overlay_dit_path))[:12]}:"
+            f"{spec.compatibility_digest}")
+
+
+def hybrid_component_fields(preflight: MiniMaxH3HybridPreflight) -> Dict[str, Any]:
+    """What a hybrid load writes into the component dict (doc section 5.1).
+
+    ``variant`` is set to ``"hybrid"`` HERE, explicitly, and never inherited
+    from the layout: ``loader._layout_from_root`` derives the variant by
+    SUBSTRING MATCH on the filename, so a hybrid whose base is
+    ``minimax_h3_fl2va_*.safetensors`` would otherwise label itself ``fl2va``
+    and walk through every gate C1 closed (doc section 7).
+    """
+    spec = preflight.spec
+    return {
+        "variant": "hybrid",
+        "base_variant": spec.base_variant,
+        "overlay_variant": spec.overlay_variant,
+        "hybrid_recipe": spec.recipe(),
+        "hybrid_provenance": preflight.provenance(),
+        "hybrid_spec": spec.as_dict(),
+        "hybrid_request": hybrid_request_from_spec(spec),
+        "hybrid_identity": hybrid_model_identity(spec),
+        "overlay_dit_path": spec.overlay_dit_path,
+    }
+
+
+def hybrid_model_info_fields(components: Mapping[str, Any]) -> Dict[str, Any]:
+    """The hybrid part of ``current_model_info``. Empty for a base-only load.
+
+    Sanitised: ``provenance()`` carries basenames, never absolute paths (doc
+    section 5.4). One function, so a full load and a DiT-only reload cannot
+    describe the same component dict differently.
+    """
+    provenance = components.get("hybrid_provenance")
+    if not isinstance(provenance, Mapping) or not provenance:
+        return {}
+    return {
+        "base_variant": components.get("base_variant"),
+        "overlay_variant": components.get("overlay_variant"),
+        "hybrid": dict(provenance),
+    }

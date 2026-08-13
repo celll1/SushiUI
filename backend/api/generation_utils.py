@@ -1890,6 +1890,11 @@ def resolve_minimax_h3_outpaint_reference_gate(
       refused outright: unmeasured, and structurally suspect (a ref2va
       layout places every reference before the target span on the rotary
       clock, which is a continuation order a backward extend contradicts).
+    * ``hybrid`` (an fl2va base carrying ref2va AdaLN blocks) refuses every
+      row, with or without ``reference_images``: nothing about its generation
+      behaviour is measured. Named here rather than left to the clause below,
+      which would stop refusing it the moment variant strings are normalised
+      differently.
     * Any other/unidentified variant refuses ``reference_images`` (a
       mismatch cannot be detected from the weights, so the safe default is
       to refuse rather than silently run reference conditioning through
@@ -1931,6 +1936,15 @@ def resolve_minimax_h3_outpaint_reference_gate(
                        f"or load the fl2va checkpoint.",
             )
         return
+    if variant == "hybrid":
+        raise ValidationError(
+            "The loaded MiniMax-H3 transformer is the hybrid variant",
+            detail="A hybrid transformer is an fl2va base carrying ref2va AdaLN blocks. No "
+                   "generation on any endpoint has been measured on that combination, so it is "
+                   "loadable and inspectable but does not generate -- including the extend this "
+                   "endpoint performs, with or without reference_images. Load the fl2va or "
+                   "ref2va checkpoint.",
+        )
     if has_reference_images:
         raise ValidationError(
             f"reference_images needs the MiniMax-H3 ref2va transformer, not "

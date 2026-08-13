@@ -592,8 +592,11 @@ paths:
                   generation_type: "txt2vid"
         '400':
           description: >-
-            Invalid parameters, or no video model loaded (neither LTX-2.3 nor
-            MiniMax-H3).
+            Invalid parameters; no video model loaded (neither LTX-2.3 nor
+            MiniMax-H3); or a loaded MiniMax-H3 transformer whose variant is
+            named and is neither `fl2va` nor `ref2va` (both released partitions
+            serve a prompt-only request; the `hybrid` variant — an `fl2va` base
+            carrying `ref2va` AdaLN blocks — generates on no endpoint).
           content:
             application/json:
               schema:
@@ -678,10 +681,11 @@ paths:
           centre-cover-cropped. This mirrors both reference implementations,
           where the first keyframe is the geometry anchor and later ones are
           followers.
-        - This endpoint serves the `fl2va` transformer partition. With the
-          `ref2va` partition loaded it answers 400: keyframe conditioning
-          combined with reference conditioning is not offered here (see
-          `/generate/ref2vid`).
+        - This endpoint serves the `fl2va` transformer partition. Every other
+          NAMED variant answers 400: with `ref2va` loaded, keyframe
+          conditioning combined with reference conditioning is not offered here
+          (see `/generate/ref2vid`); a `hybrid` transformer generates on no
+          endpoint at all.
         - MiniMax's model card documents this workflow for first- and
           last-frame conditioning with up to two images. A request that places
           an anchor at an intermediate frame, or sends more than two anchors,
@@ -749,8 +753,10 @@ paths:
                   generation_type: "img2vid"
         '400':
           description: >-
-            Invalid parameters, or no video model loaded (neither LTX-2.3 nor
-            MiniMax-H3).
+            Invalid parameters; no video model loaded (neither LTX-2.3 nor
+            MiniMax-H3); or a loaded MiniMax-H3 transformer whose variant is
+            named and is not `fl2va` (`ref2va`, or the `hybrid` variant, which
+            generates on no endpoint).
           content:
             application/json:
               schema:
@@ -1455,10 +1461,12 @@ paths:
         `warnings[]` entry with code `minimax_h3_undocumented_conditioning`.
 
         **Requirements:**
-        - A MiniMax-H3 `fl2va` model must be loaded. A `ref2va` checkpoint is
-          refused (the mid-clip pin is measured on `fl2va`), and so is every
-          other architecture -- LTX-2.3's conditions carry whole clips at latent
-          indices rather than pinning frames of the target itself.
+        - A MiniMax-H3 `fl2va` model must be loaded. Every other NAMED variant
+          is refused (the mid-clip pin is measured on `fl2va`: `ref2va` reads
+          reference blocks instead, and a `hybrid` transformer generates on no
+          endpoint), and so is every other architecture -- LTX-2.3's conditions
+          carry whole clips at latent indices rather than pinning frames of the
+          target itself.
         - `width`/`height` divisible by 32 and inside the model's envelope
           (short edge ≤ 768, long edge ≤ 1344).
         - Without a spatial mask, the range must leave something preserved. A
@@ -1941,7 +1949,9 @@ paths:
           and the preservation/concatenation guarantee below is unchanged.
           `extend_backward` and `bridge` are refused on `ref2va` (400,
           unmeasured shape), as is a generated span shorter than 22 frames
-          (the reference video floor). No configuration on this endpoint
+          (the reference video floor). A `hybrid` transformer is refused on
+          every placement, with or without `reference_images` (it generates on
+          no endpoint). No configuration on this endpoint
           regenerates the input; a refused request is never rerouted to
           `/generate/ref2vid`.
       operationId: generateOutpaintVideo
@@ -1975,7 +1985,9 @@ paths:
             is sent to a non-MiniMax-H3 model or a loaded `fl2va` transformer,
             or when a `ref2va` transformer is asked for `extend_backward`,
             `bridge`, or a generated span shorter than 22 frames (see the
-            partition/placement gate above). Also returned, before either
+            partition/placement gate above). A `hybrid` transformer is refused
+            on every placement, with or without `reference_images`, before the
+            upload is decoded. Also returned, before either
             upload is decoded, when `video` or `bridge_video` would need more
             than this endpoint's per-clip decode budget of raw RGB frame data
             to decode ("the input clip is too long/high-resolution to
@@ -8519,6 +8531,18 @@ components:
                   chain_motion_preroll_max_anchors: null
                   chain_supports_reference_video: true
                   chain_supports_exact_prefix: true
+                hybrid:
+                  chain_continuation_modes: [boundary_frame]
+                  chain_default_continuation_mode: boundary_frame
+                  chain_context_min_frames: 1
+                  chain_context_max_frames: 1
+                  chain_supports_sparse_motion_anchors: false
+                  chain_motion_preroll_min_frames: null
+                  chain_motion_preroll_max_frames: null
+                  chain_motion_preroll_min_anchors: null
+                  chain_motion_preroll_max_anchors: null
+                  chain_supports_reference_video: false
+                  chain_supports_exact_prefix: true
         runtime_int8_archs:
           type: array
           description: |
@@ -8662,8 +8686,10 @@ components:
             integration serves, one full cycle of its `[1, 4, 4, 4, 4]` chunk
             pattern and the top of the 5/17 comparison the mode was built for
             — a longer pin is refused rather than accepted untested. Its
-            `ref2va` variant is `1` (boundary anchor only, since references
-            claim the same conditioning prefix a pin would). LTX-2.3 is `null`:
+            `ref2va` and `hybrid` variants are both `1` (boundary anchor only:
+            on `ref2va` because references claim the same conditioning prefix a
+            pin would, on `hybrid` because nothing about it is measured).
+            LTX-2.3 is `null`:
             its continuation places the whole accumulated clip as one video
             condition, so the context grows with the chain and cannot be made
             smaller.
@@ -8771,11 +8797,15 @@ components:
               description: |
                 Loaded transformer variant -> its own capability, for the
                 variants whose answer differs from the architecture-level one.
-                A variant that is absent answers with the architecture-level
-                entry, which is always the conservative one (MiniMax-H3 lists
-                only `ref2va`, the variant that adds the automatic video
-                reference). The key is the variant the backend reports for the
-                loaded checkpoint, not a file name.
+                A variant that is absent answers with the ARCHITECTURE-LEVEL
+                entry — which is the widest one that architecture advertises,
+                not a conservative default — so a variant that serves LESS than
+                its architecture carries an entry here. MiniMax-H3 lists
+                `ref2va` (which adds the automatic video reference and drops
+                `pinned_tail`/`motion_preroll`) and `hybrid` (an `fl2va` base
+                carrying `ref2va` AdaLN blocks, which generates on no endpoint).
+                The key is the variant the backend reports for the loaded
+                checkpoint, not a file name.
               additionalProperties:
                 $ref: '#/components/schemas/ChainContextVariantCapability'
     Fp8ScaledMmState:

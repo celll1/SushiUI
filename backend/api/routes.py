@@ -4735,6 +4735,12 @@ async def generate_outpaint_video(
     bridge_video: Optional[UploadFile] = File(None),
     # Generation-time LoRA. See Txt2VidRequest.loras.
     loras: str = Form("[]"),
+    # What THIS continuation is conditioned on, and (for `pinned_tail`) how many
+    # of the preserved clip's tail frames it pins. Defaults come from
+    # VIDEO_CHAIN_DEFAULTS: a continuation executes what the manifest planned,
+    # so the two share one default rather than one each.
+    continuation_mode: str = Form(VIDEO_CHAIN_DEFAULTS["continuation_mode"]),
+    continuation_overlap_frames: int = Form(VIDEO_CHAIN_DEFAULTS["requested_overlap_frames"]),
     # Video chain provenance (design sec.13). This is the endpoint every chain
     # CONTINUATION runs on, so a chained request carries the whole set here; see
     # Txt2VidRequest's fields of the same names for the segment-0 side.
@@ -4854,6 +4860,27 @@ async def generate_outpaint_video(
         raise CustomValidationError(
             "Invalid outpaint_video_audio_mode",
             detail=f"Must be 'regenerate' or 'preserve_input', got {outpaint_video_audio_mode!r}.",
+        )
+
+    # ---- Continuation context (chain design sec.7.2a). Resolved HERE, before
+    # the upload is decoded: an unadvertised mode or an overlap that does not
+    # land on a video-VAE group boundary needs no clip to be refused, and the
+    # backend re-runs the identical resolver. `pinned_tail` composes with the
+    # placement gate below rather than around it -- the placement itself is
+    # planned with the resolved overlap, so the generated span grows and the
+    # OUTPUT length stays what was asked for.
+    from api.generation_utils import plan_video_continuation_context
+    _continuation = plan_video_continuation_context(
+        continuation_mode, continuation_overlap_frames,
+        (pipeline_manager.current_model_info or {}).get("type"),
+        _h3_variant or None,
+    )
+    if _continuation["mode"] != "boundary_frame" and _ref_image_files:
+        raise CustomValidationError(
+            f"continuation_mode '{_continuation['mode']}' cannot be combined with reference_images",
+            detail="A pinned tail and a reference block both claim the packed sequence's "
+                   "conditioning prefix, so only one of them can have it. Drop the reference "
+                   "images, or use continuation_mode 'boundary_frame'.",
         )
 
     # Per-architecture defaults FIRST: the decode bound and every geometry check
@@ -5054,6 +5081,11 @@ async def generate_outpaint_video(
         "input_trim_start_frames": input_trim_start_frames,
         "input_trim_end_frames": input_trim_end_frames,
         "outpaint_video_audio_mode": outpaint_video_audio_mode,
+        # The RESOLVED continuation context, not the raw fields: the backend
+        # re-checks it but must never re-interpret it, and the gallery row
+        # records what actually conditioned the segment.
+        "continuation_mode": _continuation["mode"],
+        "continuation_overlap_frames": _continuation["overlap_frames"],
         # Validated against the attention registry's vocabulary, same
         # 400-before-start_generation contract as every other route that takes
         # it (`attention_type_validation_test` is the forcing function).
@@ -5130,6 +5162,7 @@ async def generate_outpaint_video(
         params, _vid_arch,
         head_frames=int(trimmed_len),
         tail_frames=int(bridge_frames.shape[0]) if bridge_frames is not None else None,
+        overlap_frames=_continuation["overlap_frames"],
     )
 
     # ---- ref2va placement gate (needs the plan). Shared with the backend's
@@ -18349,26 +18382,52 @@ def _video_chain_restore_alignment_instructions(
 
 
 def _video_chain_apply_requested_overlap(
-    manifest: ChainManifest, requested_overlap_frames: int
+    manifest: ChainManifest,
+    requested_overlap_frames: int,
+    architecture: str,
+    variant: Optional[str] = None,
 ) -> bool:
     """Record the requested overlap and disclose the effective one.
 
-    Phase A's only continuation context is the single shared anchor frame, so
-    `effective_overlap_frames` / `_samples` stay 0 whatever is requested. That
-    is stated as a warning rather than absorbed silently -- the effective values
-    are the authoritative ones by design, and they are what the client reads.
+    `boundary_frame` shares exactly the anchor frame, so
+    `effective_overlap_frames` stays 0 whatever is requested; that is stated as
+    a warning rather than absorbed silently. `pinned_tail` honours the overlap
+    (refusing an unaddressable one through the same resolver the generation
+    route uses), and the sample count is left to the generation, which is the
+    only layer that knows the loaded audio VAE's rate.
     """
+    from api.generation_utils import plan_video_continuation_context
+
     if requested_overlap_frames <= 0:
         return False
+    pinned = manifest.continuation_mode == "pinned_tail"
+    resolved = (
+        plan_video_continuation_context(
+            manifest.continuation_mode, requested_overlap_frames, architecture, variant
+        )["overlap_frames"]
+        if pinned
+        else 0
+    )
     for segment in manifest.segments:
         if segment.index == 0:
             continue
         segment.requested_overlap_frames = int(requested_overlap_frames)
-    manifest.warnings.append(
-        f"requested_overlap_frames={requested_overlap_frames} is recorded but not honoured: "
-        f"continuation_mode '{manifest.continuation_mode}' shares exactly "
-        f"{VIDEO_CHAIN_ANCHOR_FRAMES} anchor frame, so effective_overlap_frames is 0."
-    )
+        segment.effective_overlap_frames = int(resolved)
+    if pinned:
+        manifest.warnings.append(
+            f"continuation_mode 'pinned_tail' pins {resolved} frame(s) of each segment's "
+            f"predecessor. The generated span grows by that much and is rounded up to the "
+            f"architecture's grid, so a segment's accumulated length can land past the planned "
+            f"one; the drift check reports it rather than the plan hiding it. "
+            f"effective_overlap_samples is reported by each generation, which is where the "
+            f"loaded audio VAE's rate is known."
+        )
+    else:
+        manifest.warnings.append(
+            f"requested_overlap_frames={requested_overlap_frames} is recorded but not honoured: "
+            f"continuation_mode '{manifest.continuation_mode}' shares exactly "
+            f"{VIDEO_CHAIN_ANCHOR_FRAMES} anchor frame, so effective_overlap_frames is 0."
+        )
     return True
 
 
@@ -18698,7 +18757,8 @@ async def plan_video_chain_route(request: VideoChainPlanRequestModel):
         manifest.continuation_mode = request.continuation_mode
         manifest.warnings.extend(warnings)
 
-    changed = _video_chain_apply_requested_overlap(manifest, request.requested_overlap_frames)
+    changed = _video_chain_apply_requested_overlap(
+        manifest, request.requested_overlap_frames, architecture, request.variant)
     changed = _video_chain_restore_alignment_instructions(manifest, mode) or changed
     if changed:
         _video_chain_refreeze(manifest)

@@ -74,7 +74,7 @@ SEED_POLICIES = ("fixed", "explicit", "derived")
 # be promised before it exists. `openapi.yaml`'s `continuation_mode` enum is
 # wider still: it names the unimplemented candidates so they can be refused by
 # name rather than as an unknown string.
-CONTINUATION_MODES = ("boundary_frame",)
+CONTINUATION_MODES = ("boundary_frame", "pinned_tail")
 
 EVENT_KINDS = (
     "shot",

@@ -1476,6 +1476,7 @@ def plan_video_outpaint_placement(
     *,
     head_frames: int,
     tail_frames: Optional[int] = None,
+    overlap_frames: int = 1,
 ) -> Dict[str, Any]:
     """Resolve a temporal-outpaint request against the arch's placement rule.
 
@@ -1487,6 +1488,13 @@ def plan_video_outpaint_placement(
     ``head_frames`` is the length of the (already trimmed) uploaded clip and
     ``tail_frames`` the length of the optional second (bridge) clip, or None
     when there is none.
+
+    ``overlap_frames`` is how many frames the generated span SHARES with the
+    preserved clip: 1 (the default, and the only value a ``boundary_frame``
+    continuation has) is the single anchor frame, and ``pinned_tail`` raises it
+    to the pinned tail's length. It only widens the shared region -- the span is
+    solved so the OUTPUT length is unchanged -- and it is refused rather than
+    clamped on the placements that cannot express it.
 
     Returns, for an arch whose ``TemporalSpec.outpaint_placements`` is
     ``("free",)`` (LTX-2.3) or which has no spec at all::
@@ -1500,7 +1508,7 @@ def plan_video_outpaint_placement(
          "generated_frames": int,                      # a VALID clip length
          "total_frames": int,                          # effective output length
          "requested_total_frames": int,
-         "shared_anchor_frames": int}                  # 1 for an extend, 2 for a bridge
+         "shared_anchor_frames": int}                  # `overlap_frames` for an extend, 2 for a bridge
 
     The generated span -- not the total -- is what has to be a length the model
     can generate, because the preserved frames are pasted rather than sampled.
@@ -1553,6 +1561,22 @@ def plan_video_outpaint_placement(
         "outpaint shape is unmeasured and is not offered here."
     )
 
+    overlap = max(1, int(overlap_frames or 1))
+    if overlap > 1 and (tail_frames is not None or offset != 0):
+        raise ValidationError(
+            "a shared overlap longer than one frame needs the extend-forward placement",
+            detail=f"Got overlap_frames={overlap} with "
+                   f"{'a bridge clip' if tail_frames is not None else f'input_offset_frames={offset}'}. "
+                   f"The overlap is the preserved clip's TAIL, pinned at the head of the generated "
+                   f"span, so only extend-forward (offset 0, no bridge clip) can carry it.",
+        )
+    if overlap > head_frames:
+        raise ValidationError(
+            "the preserved clip is shorter than the requested overlap",
+            detail=f"The (trimmed) clip has {head_frames} frame(s) and the request shares "
+                   f"{overlap} of them with the generated span.",
+        )
+
     if tail_frames is not None:
         if "bridge" not in placements:
             raise ValidationError(
@@ -1576,7 +1600,7 @@ def plan_video_outpaint_placement(
         tail = int(tail_frames)
     else:
         tail = 0
-        shared = 1
+        shared = overlap
         if offset == 0:
             placement = "extend_forward"
         elif offset + head_frames == requested_total:
@@ -1618,6 +1642,107 @@ def plan_video_outpaint_placement(
         "requested_total_frames": requested_total,
         "shared_anchor_frames": shared,
     }
+
+
+def video_continuation_overlap_lengths(spec, max_frames: int) -> Tuple[int, ...]:
+    """The overlap lengths a continuation can pin, ascending, up to ``max_frames``.
+
+    A latent frame is conditioned or generated whole, so an overlap is only
+    addressable where it lands on a video-VAE temporal group boundary. Those
+    boundaries are the cumulative sums of ``spec.latent_chunk_pattern``, and
+    :func:`latent_frame_spans` is the ONE enumerator of them (the pattern
+    CYCLES: MiniMax-H3's ``(1, 4, 4, 4, 4)`` gives 1, 5, 9, 13, 17, 18, 22, ...,
+    not 1, 5, 17, 33). Empty for an architecture that declares no chunking.
+    """
+    if spec is None or not getattr(spec, "latent_chunk_pattern", ()) or max_frames < 1:
+        return ()
+    # `max_frames` latent frames cover at least `max_frames` pixel frames (every
+    # chunk is >= 1 wide), so this enumerates past the cap and then cuts.
+    return tuple(end for _start, end in latent_frame_spans(spec, int(max_frames))
+                 if end <= max_frames)
+
+
+def plan_video_continuation_context(
+    mode: Optional[str],
+    overlap_frames: Optional[int],
+    arch: Optional[str],
+    variant: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Resolve a chain continuation's conditioning mode against the arch's capability.
+
+    PURE (raises or returns), for the reason :func:`plan_video_outpaint_placement`
+    is: the route calls it BEFORE decoding the upload, so an unavailable mode or
+    an unaddressable overlap is a cheap 400, and the backend calls it again as a
+    defensive re-check for a caller that bypasses the route.
+
+    Returns ``{"mode": str, "overlap_frames": int}``, where ``overlap_frames`` is
+    1 for ``boundary_frame`` (the single shared anchor) and the validated,
+    VAE-aligned pin length for ``pinned_tail``.
+
+    Every refusal is a refusal: an unadvertised mode is never downgraded to
+    ``boundary_frame`` and an unaligned overlap is never snapped to a nearby
+    valid one (design §7.7 -- a silently changed request is indistinguishable
+    from the one that was asked for once the video comes back).
+    """
+    from api.arch_capabilities import chain_context_for
+    from api.error_handlers import ValidationError
+    from api.param_defaults import VIDEO_CHAIN_DEFAULTS
+    from core.models.components.wiring import temporal_spec_for_arch
+
+    mode = (mode or VIDEO_CHAIN_DEFAULTS["continuation_mode"]).strip().lower()
+    requested = int(overlap_frames or 0)
+
+    capability = chain_context_for(arch, variant)
+    supported = list(capability["chain_continuation_modes"]) if capability else []
+    if capability is None and mode == "boundary_frame":
+        # An architecture with no chain-context entry (or a request that reached
+        # here before one was identified) still gets the behaviour it has always
+        # had: one shared anchor frame is what every temporal-outpaint request
+        # already does. Only a mode that asks for MORE needs a capability to
+        # authorize it.
+        return {"mode": mode, "overlap_frames": 1}
+    if mode not in supported:
+        raise ValidationError(
+            "Unsupported continuation_mode",
+            detail=f"'{arch or 'the loaded model'}'"
+                   f"{f' ({variant})' if variant else ''} does not advertise continuation_mode "
+                   f"'{mode}'. Supported: {', '.join(supported) or '(none)'} "
+                   f"(GET /schema/arch-capabilities -> chain_context). The request is refused "
+                   f"rather than downgraded.",
+        )
+
+    if mode == "boundary_frame":
+        # `continuation_overlap_frames` has no meaning here: this mode's shared
+        # region IS the single anchor frame. Said, not silently ignored.
+        if requested > 1:
+            raise ValidationError(
+                "continuation_overlap_frames needs a continuation_mode that pins an overlap",
+                detail=f"continuation_mode 'boundary_frame' shares exactly one anchor frame, so "
+                       f"continuation_overlap_frames={requested} cannot be honoured. Send "
+                       f"continuation_mode 'pinned_tail' to pin that many frames, or drop the "
+                       f"field.",
+            )
+        return {"mode": mode, "overlap_frames": 1}
+
+    ceiling = capability.get("chain_context_max_frames")
+    spec = temporal_spec_for_arch(arch)
+    valid = video_continuation_overlap_lengths(
+        spec, int(ceiling) if ceiling is not None else 0)
+    if not valid:
+        raise ValidationError(
+            f"'{arch or 'the loaded model'}' cannot pin a continuation overlap",
+            detail="Pinning the preceding segment's tail needs the architecture's video-VAE "
+                   "temporal chunking and a bounded context length; this one declares neither.",
+        )
+    if requested not in valid:
+        raise ValidationError(
+            "continuation_overlap_frames is not a length this model can pin",
+            detail=f"Got {requested}. A latent frame is conditioned or generated whole, so the "
+                   f"overlap must land on a video-VAE group boundary: "
+                   f"{', '.join(str(v) for v in valid)}. The value is refused rather than snapped "
+                   f"to a nearby one.",
+        )
+    return {"mode": mode, "overlap_frames": requested}
 
 
 def resolve_minimax_h3_outpaint_reference_gate(

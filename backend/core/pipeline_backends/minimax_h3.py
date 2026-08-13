@@ -916,7 +916,11 @@ class MiniMaxH3Mixin:
             tuple contract as every other video generate path.
         """
         from api.error_handlers import ValidationError
-        from api.generation_utils import plan_video_outpaint_placement
+        from api.generation_utils import (
+            MINIMAX_H3_DOCUMENTED_ANCHOR_SCOPE,
+            plan_video_continuation_context,
+            plan_video_outpaint_placement,
+        )
         from core.inference.outpaint_utils import center_crop_resize_frames
 
         if not getattr(self, "minimax_h3_components", None):
@@ -947,10 +951,20 @@ class MiniMaxH3Mixin:
             tail = center_crop_resize_frames(bridge_frames, width, height)
 
         arch = (getattr(self, "current_model_info", None) or {}).get("type")
+        # Defensive re-check of the route's own gate (a caller that bypasses the
+        # route reaches the same answer), and the source of the shared-overlap
+        # length the placement is solved with.
+        continuation = plan_video_continuation_context(
+            params.get("continuation_mode"), params.get("continuation_overlap_frames"),
+            arch or "minimax_h3",
+            (self.minimax_h3_components.get("variant") or "") or None,
+        )
+        overlap_frames = int(continuation["overlap_frames"])
         plan = plan_video_outpaint_placement(
             params, arch or "minimax_h3",
             head_frames=int(head.shape[0]),
             tail_frames=int(tail.shape[0]) if tail is not None else None,
+            overlap_frames=overlap_frames,
         )
         placement = plan["placement"]
         generated_frames = int(plan["generated_frames"])
@@ -981,9 +995,14 @@ class MiniMaxH3Mixin:
             )
 
         # ---- The conditioning anchors: boundary frames of the preserved
-        # clip(s), in PACKED order (first, then last). ----
+        # clip(s), in PACKED order (first, then last). `pinned_tail` takes none
+        # of them: its overlap already includes the boundary frame (latent frame
+        # 0 covers exactly it), and an anchor would claim the same conditioning
+        # prefix the pin needs. ----
         keyframes = []
-        if placement == "extend_forward":
+        if continuation["mode"] == "pinned_tail":
+            pass
+        elif placement == "extend_forward":
             keyframes.append(("first", Image.fromarray(head[-1])))
         elif placement == "extend_backward":
             keyframes.append(("last", Image.fromarray(head[0])))
@@ -993,7 +1012,9 @@ class MiniMaxH3Mixin:
 
         print(f"[MiniMax-H3] vid_outpaint: {placement} {width}x{height} "
               f"preserved head={plan['head_frames']} tail={plan['tail_frames']} "
-              f"generated={generated_frames} -> {out_frames_total} frame(s) @ {frame_rate} fps")
+              f"generated={generated_frames} -> {out_frames_total} frame(s) @ {frame_rate} fps"
+              + (f" continuation={continuation['mode']} overlap={overlap_frames}"
+                 if continuation["mode"] != "boundary_frame" else ""))
 
         # ---- ref2va: the source clip is ALWAYS the sole video reference on
         # extend_forward (decision table, minimax_h3_outpaint_refs_design.md
@@ -1012,6 +1033,30 @@ class MiniMaxH3Mixin:
         if variant == "ref2va":
             references = build_outpaint_references(head, generated_frames, frame_rate, reference_images)
 
+        pinned_video_frames: Tuple[int, ...] = ()
+        pinned_video_source = None
+        pinned_audio = None
+        pinned_audio_latents: Tuple[int, ...] = ()
+        if continuation["mode"] == "pinned_tail":
+            pinned_video_frames, pinned_video_source = self._minimax_h3_pinned_tail_video(
+                head, arch or "minimax_h3", generated_frames=generated_frames,
+                overlap_frames=overlap_frames)
+            pinned_audio, pinned_audio_latents = self._minimax_h3_pinned_tail_audio(
+                input_audio, params,
+                head_frames=int(plan["head_frames"]), generated_frames=generated_frames,
+                overlap_frames=overlap_frames, source_fps=float(fps or frame_rate),
+                trim_start=trim_start, frame_rate=frame_rate, warn=warn)
+            warn(
+                "This request conditions MiniMax-H3 outside the documented shape "
+                f"(continuation_mode 'pinned_tail': the preserved clip's last {overlap_frames} "
+                f"frame(s) are pinned as the generated span's own leading latent frames"
+                + (f", with {len(pinned_audio_latents)} audio latent(s) of the same physical time"
+                   if pinned_audio_latents else "")
+                + f"). {MINIMAX_H3_DOCUMENTED_ANCHOR_SCOPE}; the same pinning mechanism as "
+                  "/generate/inpaint/video is used here at the head of the span.",
+                code="minimax_h3_undocumented_conditioning",
+            )
+
         # Only the generated span is sampled; everything else about the run is
         # an ordinary fl2va (or, with references, ref2va) generation, so it
         # goes through the ONE generation path rather than a second copy of
@@ -1020,6 +1065,8 @@ class MiniMaxH3Mixin:
         sub_params["num_frames"] = generated_frames
         frames_gen, audio_gen, audio_sample_rate, seed = self._generate_minimax_h3(
             sub_params, keyframes=tuple(keyframes), references=references, label="vid_outpaint",
+            pinned_video_frames=pinned_video_frames, pinned_video_source=pinned_video_source,
+            input_audio=pinned_audio, pinned_audio_latents=pinned_audio_latents,
             progress_callback=progress_callback, step_callback=step_callback,
         )
         params.update({
@@ -1033,13 +1080,16 @@ class MiniMaxH3Mixin:
                 f"MiniMax-H3 returned {frames_gen.shape[0]} generated frame(s) where the placement "
                 f"plan expects {generated_frames}.")
 
-        # ---- Assemble. The anchor frame(s) of the GENERATED span are dropped:
-        # they are the model's reconstruction of a frame we are preserving
-        # exactly, at the same instant. ----
+        # ---- Assemble. The SHARED frame(s) at the head of the GENERATED span
+        # are dropped: they are the model's reconstruction of frames we are
+        # preserving exactly, at the same instants. With `pinned_tail` that is
+        # the whole pinned overlap, which is why the pin costs nothing in
+        # exactness -- pin for conditioning, concatenate for exactness. ----
         if placement == "extend_forward":
-            frames_out = np.concatenate([head, frames_gen[1:]], axis=0)
+            shared = int(plan["shared_anchor_frames"])
+            frames_out = np.concatenate([head, frames_gen[shared:]], axis=0)
             preserved_spans = [(0, plan["head_frames"], input_audio, fps, trim_start)]
-            gen_audio_start_frame = plan["head_frames"] - 1
+            gen_audio_start_frame = plan["head_frames"] - shared
         elif placement == "extend_backward":
             frames_out = np.concatenate([frames_gen[:-1], head], axis=0)
             preserved_spans = [(generated_frames - 1, out_frames_total, input_audio, fps, trim_start)]
@@ -1067,6 +1117,19 @@ class MiniMaxH3Mixin:
         params["outpaint_effective_pixel_end"] = int(preserved_spans[0][1])
         params["total_frames"] = out_frames_total
         params["num_frames"] = out_frames_total
+        # The EFFECTIVE continuation context (design sec.4: the effective values
+        # are the authoritative ones, not the requested ones). The audio figure
+        # is what was actually pinned, which is 0 whenever the clip had no track
+        # to pin -- a warning above says so rather than this number implying it.
+        params["continuation_mode"] = continuation["mode"]
+        params["continuation_overlap_frames"] = overlap_frames
+        params["continuation_effective_overlap_frames"] = (
+            overlap_frames if continuation["mode"] == "pinned_tail" else 0)
+        params["continuation_effective_overlap_samples"] = int(
+            len(pinned_audio_latents)
+            * int(self.minimax_h3_components.get("audio_sample_rate", 32000))
+            / float(self.minimax_h3_components.get("audio_latent_rate", 40.0))
+        ) if pinned_audio_latents else 0
 
         audio_out = audio_gen
         if audio_gen is not None and audio_sample_rate:
@@ -1078,6 +1141,146 @@ class MiniMaxH3Mixin:
             )
 
         return frames_out, audio_out, audio_sample_rate, seed
+
+    def _minimax_h3_pinned_tail_video(
+        self,
+        head: np.ndarray,
+        arch: str,
+        *,
+        generated_frames: int,
+        overlap_frames: int,
+    ) -> Tuple[Tuple[int, ...], np.ndarray]:
+        """``(pinned latent frames, the clip they are encoded from)``, `pinned_tail`.
+
+        The generated span's own timeline starts AT the overlap: its first
+        ``overlap_frames`` pixel frames are the preserved clip's last ones, so
+        the latent frames covering them are latent frames 0..m-1 and the pin is
+        a leading prefix -- an identity permutation, which is why this composes
+        with FBCache's whole-latent-frame assumption while an interior pin does
+        not (`minimax_h3_block_loop_wrapper.py`).
+
+        Putting the imported history at the START of the new clip is also what
+        keeps the rotary clock consistent: attention depends on position
+        DIFFERENCES, so history laid down as frames 0..m-1 of this clip needs no
+        knowledge of the clock it had in its own segment.
+
+        The frames after the overlap are held at the last preserved frame rather
+        than left black: only the pinned rows are substituted into the sampler,
+        but the VAE encodes the whole clip, so a cut to black at the overlap
+        boundary would be the one thing the pinned latents could see.
+        """
+        from api.error_handlers import ValidationError
+        from api.generation_utils import latent_frame_spans
+        from core.models.components.wiring import temporal_spec_for_arch
+        from core.models.minimax_h3.loader import minimax_h3_latent_frames
+
+        spec = temporal_spec_for_arch(arch)
+        spans = latent_frame_spans(spec, minimax_h3_latent_frames(generated_frames)) if spec else []
+        pinned = tuple(index for index, (_lo, hi) in enumerate(spans) if hi <= overlap_frames)
+        # Both of these are refused at the route (`plan_video_continuation_context`
+        # for the alignment, the 17-frame ceiling against the 124-frame floor for
+        # the emptiness); they are restated because getting either wrong pins a
+        # different span than the caller was told.
+        if not pinned or spans[pinned[-1]][1] != overlap_frames:
+            raise ValidationError(
+                "the continuation overlap does not land on a video-VAE group boundary",
+                detail=f"{overlap_frames} frame(s) cannot be pinned whole on this clip's "
+                       f"latent grid.",
+            )
+        if len(pinned) >= len(spans):
+            raise ValidationError(
+                "the continuation overlap leaves nothing to generate",
+                detail=f"{overlap_frames} pinned frame(s) cover the whole {generated_frames}-frame "
+                       f"generated span.",
+            )
+        filler = np.repeat(head[-1:], generated_frames - overlap_frames, axis=0)
+        return pinned, np.concatenate([head[-overlap_frames:], filler], axis=0)
+
+    def _minimax_h3_pinned_tail_audio(
+        self,
+        input_audio: Optional[bytes],
+        params: Dict[str, Any],
+        *,
+        head_frames: int,
+        generated_frames: int,
+        overlap_frames: int,
+        source_fps: float,
+        trim_start: int,
+        frame_rate: float,
+        warn: Callable[[str, str], None],
+    ):
+        """The audio half of `pinned_tail`: the same physical time, or nothing.
+
+        The pinned audio latents are the whole ones that fit INSIDE the video
+        overlap (``plan_audio_pin_latents``' inward snap, the same helper
+        ``regenerate_range`` uses), so the two pins never describe different
+        spans of time -- the audio grid is finer than the video one, so it can
+        only be a subset, never an overhang.
+
+        Returns ``(waveform | None, pinned latent indices)``. ``None`` means the
+        continuation runs with a video-only pin, which happens only when there
+        is no track to pin at all (the clip carries none, or the request did not
+        ask for the input's audio); that is warned, never assumed. A track that
+        EXISTS but cannot be cut is an error, not a downgrade: the caller asked
+        for a joint pin and would otherwise get a different, unannounced one.
+        """
+        from api.error_handlers import ValidationError
+        from api.generation_utils import plan_audio_pin_latents
+        from core.models.minimax_h3 import h3_pipeline_ops as ops
+
+        components = self.minimax_h3_components
+        if not input_audio:
+            warn(
+                "continuation_mode='pinned_tail' pinned video only: the clip's own soundtrack was "
+                f"not available to pin (outpaint_video_audio_mode="
+                f"{str(params.get('outpaint_video_audio_mode'))!r}, audio_enable="
+                f"{bool(params.get('audio_enable', True))}). The generated span's audio starts "
+                "from noise while its video continues the pinned frames.",
+                code="minimax_h3_pinned_tail_video_only",
+            )
+            return None, ()
+
+        latent_rate = float(components.get("audio_latent_rate", 40.0))
+        # The MODEL's fixed fps, for the reason `regenerate_range` states: this
+        # layer must not depend on the route having rewritten `frame_rate`.
+        model_fps = float(components.get("fps", 24.0))
+        num_audio_latents = ops.audio_latent_frames(
+            generated_frames, fps=model_fps, latents_per_second=latent_rate)
+        _free, pinned = plan_audio_pin_latents(
+            overlap_frames, generated_frames, num_audio_latents,
+            fps=model_fps, latents_per_second=latent_rate)
+        if not pinned:
+            warn(
+                f"continuation_mode='pinned_tail' pinned video only: a {overlap_frames}-frame "
+                f"overlap contains no whole audio latent at {latent_rate} latents/s.",
+                code="minimax_h3_pinned_tail_video_only",
+            )
+            return None, ()
+
+        waveform = self._minimax_h3_inpaint_pinned_audio(
+            input_audio, clip_frames=generated_frames, source_fps=source_fps,
+            trim_start=trim_start, frame_rate=frame_rate, warn=warn,
+            mode="pinned_tail", source_start_frame=head_frames - overlap_frames,
+            fallback_clause="the request is refused rather than pinning the video against an "
+                            "unpinned soundtrack",
+        )
+        if waveform is None:
+            raise ValidationError(
+                "the continuation's audio tail could not be pinned",
+                detail="continuation_mode='pinned_tail' pins video and audio for the same "
+                       "physical time; the uploaded clip's track could not be cut for it. Retry "
+                       "with continuation_mode='boundary_frame', or with "
+                       "outpaint_video_audio_mode='regenerate' to accept a video-only pin.",
+            )
+        # Past the overlap the window is edge-padded material this run never
+        # pins; silence it so the audio VAE sees the track end rather than a
+        # held DC level bleeding into the boundary latent.
+        overlap_samples = int(round(
+            overlap_frames / float(frame_rate or model_fps)
+            * int(components.get("audio_sample_rate", 32000))))
+        if 0 < overlap_samples < waveform.shape[-1]:
+            waveform[:, overlap_samples:] = 0.0
+        return waveform, pinned
 
     def _minimax_h3_outpaint_audio(
         self,
@@ -1744,6 +1947,8 @@ class MiniMaxH3Mixin:
         frame_rate: float,
         warn: Callable[[str, str], None],
         mode: str = "preserve_input",
+        source_start_frame: int = 0,
+        fallback_clause: Optional[str] = None,
     ):
         """The clip's own track as the ia2v condition, or None to fall back.
 
@@ -1760,15 +1965,22 @@ class MiniMaxH3Mixin:
         come out of this one waveform, so the longer of the two is what has to
         be filled.
 
-        ``mode`` names the caller (``"preserve_input"`` or
-        ``"regenerate_range"``) so the warnings below neither hardcode a mode
-        the caller may not have selected nor claim the same fallback for both:
-        on ``preserve_input`` a failure here means the WHOLE clip's soundtrack
-        is generated (there is no splice afterward); on ``regenerate_range``
-        only the conditioning PIN is dropped -- the regenerate range's audio
-        generates unconditioned, but the preserved spans are still spliced
-        back from the input track after generation
-        (``_minimax_h3_splice_inpaint_range_audio`` runs regardless).
+        ``mode`` names the caller (``"preserve_input"``, ``"regenerate_range"``
+        or the outpaint chain's ``"pinned_tail"``) so the warnings below neither
+        hardcode a mode the caller may not have selected nor claim the same
+        fallback for all of them: on ``preserve_input`` a failure here means the
+        WHOLE clip's soundtrack is generated (there is no splice afterward); on
+        ``regenerate_range`` only the conditioning PIN is dropped -- the
+        regenerate range's audio generates unconditioned, but the preserved
+        spans are still spliced back from the input track after generation
+        (``_minimax_h3_splice_inpaint_range_audio`` runs regardless). A caller
+        whose failure mode is neither of those states its own
+        ``fallback_clause``.
+
+        ``source_start_frame`` is where in the (trimmed) SOURCE clip the window
+        starts, in that clip's own pixel frames. 0 -- the inpaint callers' case
+        -- is the clip's start, i.e. the whole clip's own track; the chain's
+        ``pinned_tail`` uses it to cut the tail the continuation pins.
 
         Returns None -- with a warning -- for every recoverable failure, and the
         caller then generates the audio instead of pinning it.
@@ -1776,7 +1988,7 @@ class MiniMaxH3Mixin:
         from core.models.minimax_h3 import h3_references as refs
         from utils.video_utils import extract_audio_window
 
-        fallback_clause = (
+        fallback_clause = fallback_clause or (
             "the soundtrack is generated instead" if mode == "preserve_input" else
             "the regenerate range's audio is generated unconditioned (the preserved spans are "
             "still spliced back from the input track after generation)"
@@ -1805,7 +2017,8 @@ class MiniMaxH3Mixin:
                  code="inpaint_video_audio_stretched")
         try:
             window = extract_audio_window(
-                input_audio, trim_start / source_fps, src_dur_sec, target_dur_sec,
+                input_audio, (trim_start + max(0, int(source_start_frame))) / source_fps,
+                src_dur_sec, target_dur_sec,
                 sample_rate=sample_rate, channels=2,
             )
         except Exception as exc:

@@ -2,12 +2,16 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  ArchCapabilities,
+  VideoChainContinuationMode,
   VideoChainIssue,
   VideoChainManifest,
   VideoChainPlan,
   VideoChainPlanRequest,
   VideoChainPlanRequestSeedPolicy,
   VideoChainReferenceInput,
+  chainContextCapability,
+  chainContinuationOverlapLengths,
   planVideoChainRequest,
   validateVideoChainManifest,
 } from "@/utils/api";
@@ -66,6 +70,14 @@ export interface VideoChainConfirmDialogProps {
    * other reference tracks exist, so it is the panel that sets this.
    */
   requireSegmentZeroReference?: boolean;
+  /**
+   * The capability matrix, so the continuation-mode control offers exactly what
+   * the loaded arch/variant advertises (`chain_context`) and exactly the
+   * overlap lengths its video VAE can address (`latent_chunk_pattern`). Omit it
+   * and the control is not rendered at all -- the plan then uses the default
+   * `boundary_frame`, which is what every chain did before this control existed.
+   */
+  archCapabilities?: ArchCapabilities | null;
   onCancel: () => void;
   /** Default action: generate once, at the cap (snapped). */
   onGenerateAtCap: () => void;
@@ -122,6 +134,7 @@ export default function VideoChainConfirmDialog({
   planInput,
   notes,
   requireSegmentZeroReference,
+  archCapabilities,
   onCancel,
   onGenerateAtCap,
   onStartChain,
@@ -138,6 +151,29 @@ export default function VideoChainConfirmDialog({
   const [dirty, setDirty] = useState(false);
   const [validating, setValidating] = useState(false);
   const [attempt, setAttempt] = useState(0);
+  // What each continuation is conditioned on. The DEFAULT stays
+  // `boundary_frame` -- the richer modes are unmeasured, and this dialog is not
+  // where an unmeasured default gets introduced.
+  const [continuationMode, setContinuationMode] =
+    useState<VideoChainContinuationMode>("boundary_frame");
+  const [overlapFrames, setOverlapFrames] = useState<number>(0);
+
+  // Offered modes and overlap lengths come from the backend's own tables, never
+  // from a list in this file.
+  const continuationModes =
+    chainContextCapability(archCapabilities, planInput?.architecture, planInput?.variant)
+      ?.chain_continuation_modes ?? [];
+  const overlapLengths = chainContinuationOverlapLengths(
+    archCapabilities, planInput?.architecture, planInput?.variant
+  );
+  const showContinuationControl = continuationModes.length > 1 && overlapLengths.length > 0;
+  const effectiveMode = continuationModes.includes(continuationMode)
+    ? continuationMode
+    : "boundary_frame";
+  const effectiveOverlap =
+    effectiveMode === "pinned_tail"
+      ? (overlapLengths.includes(overlapFrames) ? overlapFrames : overlapLengths[0] ?? 0)
+      : 0;
 
   const planRequest: VideoChainPlanRequest | null = useMemo(() => {
     if (!planInput) return null;
@@ -152,10 +188,11 @@ export default function VideoChainConfirmDialog({
       context_mode: "timeline",
       seed_policy: planInput.seedPolicy ?? "fixed",
       root_seed: planInput.rootSeed ?? -1,
-      continuation_mode: "boundary_frame",
+      continuation_mode: effectiveMode,
+      requested_overlap_frames: effectiveOverlap,
       references: planInput.references ?? [],
     };
-  }, [planInput]);
+  }, [planInput, effectiveMode, effectiveOverlap]);
   const planRequestKey = planRequest ? JSON.stringify(planRequest) : null;
 
   useEffect(() => {
@@ -348,6 +385,46 @@ export default function VideoChainConfirmDialog({
           {notes != null && notes.map((note, index) => (
             <p key={index} className="text-sm text-gray-400">{note}</p>
           ))}
+
+          {showContinuationControl && (
+            <div className="flex flex-wrap items-center gap-3 rounded border border-gray-700 bg-gray-900/40 p-3">
+              <label className="text-xs text-gray-300">
+                Continuation context
+                <select
+                  value={effectiveMode}
+                  onChange={(e) =>
+                    setContinuationMode(e.target.value as VideoChainContinuationMode)
+                  }
+                  className="ml-2 bg-gray-800 border border-gray-600 rounded px-2 py-1 text-xs text-white"
+                >
+                  {continuationModes.map((mode) => (
+                    <option key={mode} value={mode}>
+                      {mode === "boundary_frame" ? "Boundary frame (1 frame)" : mode}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {effectiveMode === "pinned_tail" && (
+                <label className="text-xs text-gray-300">
+                  Pinned frames
+                  <select
+                    value={effectiveOverlap}
+                    onChange={(e) => setOverlapFrames(Number(e.target.value))}
+                    className="ml-2 bg-gray-800 border border-gray-600 rounded px-2 py-1 text-xs text-white"
+                  >
+                    {overlapLengths.map((frames) => (
+                      <option key={frames} value={frames}>{frames}</option>
+                    ))}
+                  </select>
+                </label>
+              )}
+              <p className="w-full text-xs text-gray-400">
+                {effectiveMode === "pinned_tail"
+                  ? `Each continuation is conditioned on the last ${effectiveOverlap} frame(s) of the previous segment (and, when the input audio is preserved, that span's soundtrack) instead of on its final frame alone. Those frames are re-rendered and discarded, so the previous segment's pixels are unchanged; the generated span grows by the same amount and is rounded up to the model's frame grid.`
+                  : "Each continuation is conditioned on the previous segment's final frame alone."}
+              </p>
+            </div>
+          )}
 
           {phase === "planning" && (
             <p className="text-sm text-gray-400">Planning the chain…</p>

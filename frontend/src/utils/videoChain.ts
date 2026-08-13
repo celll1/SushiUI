@@ -224,6 +224,24 @@ export const segmentChainSeed = (
 ): number | undefined =>
   manifest?.segments.find((s) => s.index === segmentIndex)?.seed ?? fallback;
 
+// What THIS continuation is conditioned on, from the manifest. Emitted only
+// for a mode that asks for more than the shared anchor frame, so a
+// `boundary_frame` chain (the default) sends exactly the request it always
+// sent. The overlap is the segment's own planned value; the backend refuses an
+// unaligned one and reports the effective one in `warnings[]`, so nothing here
+// tries to snap it.
+export const segmentChainContinuation = (
+  manifest: VideoChainManifest | null | undefined,
+  segmentIndex: number
+): Pick<OutpaintVideoParams, "continuation_mode" | "continuation_overlap_frames"> => {
+  if (!manifest || manifest.continuation_mode === "boundary_frame") return {};
+  const segment = manifest.segments.find((s) => s.index === segmentIndex);
+  return {
+    continuation_mode: manifest.continuation_mode,
+    continuation_overlap_frames: segment?.requested_overlap_frames ?? 0,
+  };
+};
+
 // The Txt2VidParams/Img2VidParams/Ref2VidParams -> OutpaintVideoParams
 // mapping a continuation segment sends, in ONE place (previously duplicated,
 // near-verbatim, in both Txt2ImgPanel and Img2ImgPanel). `total_frames`, the
@@ -262,9 +280,10 @@ export const segmentChainSeed = (
 //   - img2vid's ia2v `input_audio` track: no equivalent field exists on this
 //     endpoint; it conditions segment 1 only.
 //   - Keyframe anchors: this endpoint has no `keyframes` field; a
-//     continuation is conditioned only on the boundary frame the placed clip
-//     itself provides via `extend_forward`, not on any anchor from the
-//     original request.
+//     continuation is conditioned on what the placed clip itself provides via
+//     `extend_forward` -- the boundary frame, or under the manifest's
+//     `pinned_tail` mode the preserved tail (`segmentChainContinuation`) --
+//     never on an anchor from the original request.
 //
 // The prompt is NOT taken from `base`: a chain manifest compiles one prompt
 // per segment (events assigned to exactly one owner, timestamps rebased onto
@@ -284,10 +303,14 @@ export function buildChainContinuationParams(
   provenance?: VideoChainProvenance,
   // This segment's frozen seed (`segmentChainSeed`). Undefined on the legacy
   // path, where `base.seed` is sent exactly as it was before manifests existed.
-  segmentSeed?: number
+  segmentSeed?: number,
+  // This segment's continuation context (`segmentChainContinuation`). Empty for
+  // `boundary_frame` and for the legacy path.
+  continuation?: Pick<OutpaintVideoParams, "continuation_mode" | "continuation_overlap_frames">
 ): OutpaintVideoParams {
   return {
     ...provenance,
+    ...continuation,
     prompt: text.prompt,
     negative_prompt: text.negative_prompt ?? base.negative_prompt,
     width: base.width,
@@ -442,7 +465,8 @@ export function buildChainContinuationQueueItems(args: {
         text,
         args.referenceImageSize,
         chainSegmentProvenance(args.manifest, segmentIndex),
-        segmentChainSeed(args.manifest, segmentIndex, args.continuationBase.seed)
+        segmentChainSeed(args.manifest, segmentIndex, args.continuationBase.seed),
+        segmentChainContinuation(args.manifest, segmentIndex)
       ),
       referenceImages: segmentChainReferenceImages(
         args.manifest,

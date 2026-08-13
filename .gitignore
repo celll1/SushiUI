@@ -112,6 +112,10 @@ cache/previews/
 
 # Per-machine model component registry cache (RP1) — machine-local paths/hashes
 cache/model_component_registry.json
+
+# Per-installation MiniMax-H3 text-encoder agreement store: reference banks
+# (~39 MB each) and measurement records. Safe to delete; rebuilt on request.
+cache/minimax_h3_te_agreement/
 backend/model_hash_cache.json
 *.npz
 

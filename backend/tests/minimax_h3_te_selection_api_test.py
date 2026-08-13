@@ -35,8 +35,8 @@ from core.models.minimax_h3 import loader as h3_loader  # noqa: E402
 from core.models.minimax_h3.loader import MINIMAX_H3_TE_PATTERNS  # noqa: E402
 
 RELEASED_NAME = MINIMAX_H3_TE_PATTERNS[1]
-# The exact basenames MEASURED_TE_SUBSTITUTIONS is keyed by; the dims below are
-# toy, the names are what makes the recorded agreement resolvable.
+# The exact basenames PUBLISHED_TE_SUBSTITUTIONS is keyed by; the dims below are
+# toy, the names are what makes the fallback agreement resolvable.
 CONVERTED_NAME = "qwen3vl_4b_heretic_tap24_bf16.safetensors"
 PROJECTION_NAME = "mmh3-4b-clipproj-celeb-mlp.safetensors"
 
@@ -186,6 +186,7 @@ def test_listing_reports_the_default_selection_and_both_kinds_of_file(tmp_path):
     assert converted["num_hidden_layers"] == CONVERTED_TAP
     assert converted["requires_projection"] is True
     assert converted["agreement"]["cosine"] == 0.826
+    assert converted["agreement"]["source"] == "published"
     assert converted["agreement"]["projection"] == PROJECTION_NAME
 
     projections = choices["clip_projections"]
@@ -195,7 +196,7 @@ def test_listing_reports_the_default_selection_and_both_kinds_of_file(tmp_path):
 
 
 def test_listing_reports_no_agreement_for_an_unmeasured_pairing(tmp_path):
-    """A pairing absent from MEASURED_TE_SUBSTITUTIONS must not borrow a number."""
+    """A pairing with no local measurement and no fallback must borrow nothing."""
     root = _tree(tmp_path, projection=False)
     (root / "clip_projections").mkdir()
     _projection(root / "clip_projections" / "some-other-projection.safetensors")

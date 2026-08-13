@@ -2941,10 +2941,11 @@ paths:
                   type: string
                   nullable: true
                   description: |
-                    **MiniMax-H3 only.** Absolute path to the `.safetensors` text
-                    encoder to build, inside this model's tree. Omitted/null uses
-                    the loader's own preference order — which never auto-selects a
-                    converted small Qwen3-VL, so reaching one takes this field.
+                    **MiniMax-H3 only.** Absolute path to the `.safetensors` or
+                    `.gguf` text encoder to build, inside this model's tree.
+                    Omitted/null uses the loader's own preference order — which
+                    never auto-selects a small stand-in Qwen3-VL (converted or
+                    GGUF), so reaching one takes this field.
                     List the choices with
                     `GET /models/minimax-h3/text-encoders`.
 
@@ -2957,9 +2958,11 @@ paths:
                   description: |
                     **MiniMax-H3 only.** Absolute path to the trained projection to
                     pair with `text_encoder_file`. Omitted/null discovers it in
-                    `clip_projections/` by matching declared widths. Only the
-                    converted small encoders need one; naming a projection for an
-                    encoder that does not is refused, not ignored.
+                    `clip_projections/` by matching declared widths. Only the small
+                    stand-in encoders need one; naming a projection for an encoder
+                    that does not is refused, not ignored. For a `.gguf` the
+                    projection's `tap` also decides how many of the file's decoder
+                    blocks are read.
                   example: "M:/model/minimax_h3/clip_projections/mmh3-4b-clipproj-celeb-mlp.safetensors"
       responses:
         '200':
@@ -13209,7 +13212,10 @@ components:
           example: true
         variant:
           type: string
-          description: "`bf16`, `int8_convrot`, `nvfp4_awq`, `converted_small`, or `unknown`."
+          description: |
+            `bf16`, `int8_convrot`, `nvfp4_awq`, `converted_small`, `gguf_q8_0`,
+            `gguf_unsupported` (a GGUF carrying a GGML type this build cannot
+            dequantize), or `unknown`.
           example: converted_small
         reason:
           type: string
@@ -13229,8 +13235,17 @@ components:
         num_hidden_layers:
           type: integer
           nullable: true
-          description: The file's own declared block count (the projection's tap).
+          description: |
+            The file's own declared block count (the projection's tap). Null for a
+            `.gguf`, which is not truncated — see `block_count`.
           example: 24
+        block_count:
+          type: integer
+          nullable: true
+          description: |
+            `.gguf` only: how many decoder blocks the file carries. It is read to
+            the paired projection's `tap`, which must not exceed this.
+          example: 36
         projection:
           type: string
           nullable: true
@@ -13429,8 +13444,9 @@ components:
         requires_projection:
           type: boolean
           description: |
-            MiniMax-H3 text encoders only: true when the file is a converted
-            small encoder, usable only through a trained projection.
+            MiniMax-H3 text encoders only: true when the file is a small stand-in
+            encoder (converted or `.gguf`), usable only through a trained
+            projection.
           example: true
         projection:
           type: string

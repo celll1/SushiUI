@@ -20,7 +20,6 @@ won it before the two DiT files under `diffusion_models/` were ever reached
 -- leaving only "official" (a config-only, non-loadable tree) selectable.
 """
 
-import asyncio
 import json
 import os
 import struct
@@ -94,7 +93,10 @@ def _scan(model_dirs, monkeypatch, tmp_path):
     monkeypatch.setattr(routes.settings, "models_dir", str(tmp_path / "empty_default"))
     monkeypatch.setattr(routes, "_models_cache", None)
     monkeypatch.setattr(routes, "_models_cache_timestamp", None)
-    result = asyncio.run(routes.get_models(db=_FakeDB(model_dirs), force_rescan=True))
+    # `get_models` is a plain `def` -- 0a57444a made it sync on purpose so its
+    # in-process caller could call it directly -- so this must NOT be wrapped in
+    # `asyncio.run`, which raises "a coroutine was expected".
+    result = routes.get_models(db=_FakeDB(model_dirs), force_rescan=True)
     return result["models"]
 
 

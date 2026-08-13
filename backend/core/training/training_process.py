@@ -109,6 +109,12 @@ class TrainingProcess:
         self.current_lr: Optional[float] = None
         self._lifecycle_activity = f"training run {run_id}"
         self._lifecycle_activity_active = False
+        # The monitor task owns the lifecycle-activity release once it is
+        # spawned. asyncio only holds a weak reference to a running task, so
+        # dropping this handle lets the GC collect it mid-run -- which would
+        # skip its finally: and leak the activity, blocking every model load
+        # until the backend restarts.
+        self._monitor_task: Optional[asyncio.Task] = None
 
     async def start(
         self,
@@ -129,6 +135,26 @@ class TrainingProcess:
         model_state_coordinator.begin_activity(self._lifecycle_activity)
         self._lifecycle_activity_active = True
 
+        # Everything from here to the monitor-task handoff must release the
+        # activity on failure. The activity gates model loads process-wide, so
+        # any escape that skips the release blocks loading until restart.
+        try:
+            await self._spawn(progress_callback, log_callback)
+        except Exception:
+            model_state_coordinator.end_activity(self._lifecycle_activity)
+            self._lifecycle_activity_active = False
+            raise
+
+    async def _spawn(
+        self,
+        progress_callback: Optional[Callable[[int, float, float], None]],
+        log_callback: Optional[Callable[[str], None]],
+    ) -> None:
+        """Build the command and hand ownership to the log monitor.
+
+        Split out of start() so a single try there covers every failure path
+        between begin_activity and the monitor task taking over the release.
+        """
         # Construct SushiUI training command
         # Run as script directly instead of module
         backend_dir = Path(__file__).parent.parent.parent
@@ -167,24 +193,20 @@ class TrainingProcess:
 
         # Start asyncio subprocess (non-blocking)
         # Increase buffer limit to handle long tqdm progress bars (default is 64KB)
-        try:
-            self.process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-                env=env,
-                cwd=str(backend_dir),
-                limit=1024 * 1024,  # 1MB buffer to handle long progress bars
-            )
-        except Exception:
-            model_state_coordinator.end_activity(self._lifecycle_activity)
-            self._lifecycle_activity_active = False
-            raise
+        self.process = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            env=env,
+            cwd=str(backend_dir),
+            limit=1024 * 1024,  # 1MB buffer to handle long progress bars
+        )
 
         self.is_running = True
 
-        # Monitor logs in background
-        asyncio.create_task(self._monitor_logs(progress_callback, log_callback))
+        # Monitor logs in background. Keep the handle: see _monitor_task.
+        self._monitor_task = asyncio.create_task(
+            self._monitor_logs(progress_callback, log_callback))
 
     async def _monitor_logs(
         self,

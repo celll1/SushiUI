@@ -1673,11 +1673,84 @@ def video_continuation_overlap_lengths(
                  if int(min_frames) <= end <= max_frames)
 
 
+def _plan_motion_preroll_context(
+    capability: Dict[str, Any],
+    preroll_frames: int,
+    anchor_count: int,
+    arch: Optional[str],
+) -> Dict[str, Any]:
+    """The ``motion_preroll`` half of :func:`plan_video_continuation_context`.
+
+    The pre-roll is the shared region, so it uses the same
+    ``continuation_overlap_frames`` field the pin does -- but it is REGENERATED
+    and dropped rather than pinned, and the model reads it through anchors, so
+    the bounds are the architecture's own `chain_motion_preroll_*` and NOT the
+    pin's. In particular there is no VAE-group alignment to satisfy: an anchor
+    addresses a pixel frame directly.
+    """
+    from api.error_handlers import ValidationError
+    from core.inference.video_chain_context import (
+        VideoChainPlanError, motion_preroll_anchor_frames,
+    )
+
+    floor = capability.get("chain_motion_preroll_min_frames")
+    ceiling = capability.get("chain_motion_preroll_max_frames")
+    min_anchors = capability.get("chain_motion_preroll_min_anchors")
+    max_anchors = capability.get("chain_motion_preroll_max_anchors")
+    if not capability.get("chain_supports_sparse_motion_anchors") or None in (
+            floor, ceiling, min_anchors, max_anchors):
+        raise ValidationError(
+            f"'{arch or 'the loaded model'}' cannot place sparse motion anchors",
+            detail="continuation_mode 'motion_preroll' places several of the preceding "
+                   "segment's frames inside the span it generates, which needs "
+                   "index-addressable keyframe conditioning and a bounded pre-roll length; this "
+                   "architecture/variant advertises neither "
+                   "(GET /schema/arch-capabilities -> chain_context).",
+        )
+    floor, ceiling = int(floor), int(ceiling)
+    min_anchors, max_anchors = int(min_anchors), int(max_anchors)
+
+    if not floor <= preroll_frames <= ceiling:
+        raise ValidationError(
+            "continuation_overlap_frames is not a pre-roll length this model serves",
+            detail=f"Got {preroll_frames}; continuation_mode 'motion_preroll' takes a pre-roll of "
+                   f"{floor}..{ceiling} frame(s). Unlike a pinned tail it needs no video-VAE group "
+                   f"alignment (an anchor addresses a pixel frame directly), but it is bounded: "
+                   f"below {floor} there are not enough distinct frames for {min_anchors} anchors, "
+                   f"and above {ceiling} is unmeasured. The value is refused rather than clamped.",
+        )
+    if not min_anchors <= anchor_count <= max_anchors:
+        raise ValidationError(
+            "continuation_anchor_count is outside the range this model serves",
+            detail=f"Got {anchor_count}; continuation_mode 'motion_preroll' places "
+                   f"{min_anchors}..{max_anchors} anchors. Fewer than {min_anchors} carries no "
+                   f"direction or speed (that request is continuation_mode 'boundary_frame' plus "
+                   f"discarded frames), and each anchor adds conditioning rows to every denoise "
+                   f"step, so more is refused rather than accepted untested.",
+        )
+    try:
+        anchors = motion_preroll_anchor_frames(preroll_frames, anchor_count)
+    except VideoChainPlanError as exc:
+        raise ValidationError(
+            "the pre-roll cannot hold that many anchors",
+            detail=f"{exc} Raise continuation_overlap_frames or lower continuation_anchor_count.",
+        )
+    return {
+        "mode": "motion_preroll",
+        "overlap_frames": int(preroll_frames),
+        "anchor_count": int(anchor_count),
+        # LOCAL to the generated span: index 0 is the pre-roll's oldest frame
+        # and `preroll - 1` is the boundary frame itself.
+        "anchor_local_frames": anchors,
+    }
+
+
 def plan_video_continuation_context(
     mode: Optional[str],
     overlap_frames: Optional[int],
     arch: Optional[str],
     variant: Optional[str] = None,
+    anchor_count: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Resolve a chain continuation's conditioning mode against the arch's capability.
 
@@ -1687,8 +1760,17 @@ def plan_video_continuation_context(
     defensive re-check for a caller that bypasses the route.
 
     Returns ``{"mode": str, "overlap_frames": int}``, where ``overlap_frames`` is
-    1 for ``boundary_frame`` (the single shared anchor) and the validated,
-    VAE-aligned pin length for ``pinned_tail``.
+    1 for ``boundary_frame`` (the single shared anchor), the validated,
+    VAE-aligned pin length for ``pinned_tail``, and the pre-roll length for
+    ``motion_preroll`` -- which additionally returns ``anchor_count`` and the
+    ``anchor_local_frames`` those anchors sit on inside the generated span.
+
+    ``motion_preroll`` and ``pinned_tail`` are one field's two values and can
+    never both be asked for; what CAN be asked for is a pin with an anchor
+    count, and that is refused here rather than by dropping the anchors. The two
+    mechanisms are mutually exclusive in the layout itself -- an anchor reserves
+    conditioning rows ahead of the clip and a pin re-uses that same prefix for
+    rows OF the clip (``h3_pipeline_ops._validated_pinned_frames``).
 
     Every refusal is a refusal: an unadvertised mode is never downgraded to
     ``boundary_frame`` and an unaligned overlap is never snapped to a nearby
@@ -1702,6 +1784,18 @@ def plan_video_continuation_context(
 
     mode = (mode or VIDEO_CHAIN_DEFAULTS["continuation_mode"]).strip().lower()
     requested = int(overlap_frames or 0)
+    requested_anchors = int(anchor_count or 0)
+
+    if requested_anchors > 0 and mode != "motion_preroll":
+        raise ValidationError(
+            "continuation_anchor_count needs continuation_mode 'motion_preroll'",
+            detail=f"continuation_mode '{mode}' places no keyframe anchors on the generated "
+                   f"span, so continuation_anchor_count={requested_anchors} cannot be honoured. "
+                   f"A pinned overlap and a sparse anchor set are mutually exclusive -- the "
+                   f"anchor reserves conditioning rows ahead of the clip and the pin re-uses that "
+                   f"same prefix for rows of the clip itself -- so the request is refused rather "
+                   f"than run with one of them dropped.",
+        )
 
     capability = chain_context_for(arch, variant)
     supported = list(capability["chain_continuation_modes"]) if capability else []
@@ -1734,6 +1828,9 @@ def plan_video_continuation_context(
                        f"field.",
             )
         return {"mode": mode, "overlap_frames": 1}
+
+    if mode == "motion_preroll":
+        return _plan_motion_preroll_context(capability, requested, requested_anchors, arch)
 
     ceiling = capability.get("chain_context_max_frames")
     floor = int(capability.get("chain_context_min_frames") or 1)

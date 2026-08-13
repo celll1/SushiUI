@@ -87,7 +87,13 @@ SHOT_ALIGNED_MAX_STATES = 100_000
 # be promised before it exists. `openapi.yaml`'s `continuation_mode` enum is
 # wider still: it names the unimplemented candidates so they can be refused by
 # name rather than as an unknown string.
-CONTINUATION_MODES = ("boundary_frame", "pinned_tail")
+CONTINUATION_MODES = ("boundary_frame", "pinned_tail", "motion_preroll")
+
+# The continuation modes whose shared region is REGENERATED and then dropped,
+# rather than pinned. The frame arithmetic is the same either way (the shared
+# frames come off the generated span and the preserved prefix is concatenated
+# untouched); what differs is what the model is given for them.
+REGENERATED_OVERLAP_MODES = ("motion_preroll",)
 
 EVENT_KINDS = (
     "shot",
@@ -381,6 +387,40 @@ def accumulated_after(
     overlap_frames: int = VIDEO_CHAIN_ANCHOR_FRAMES,
 ) -> int:
     return accumulated_before + new_output_frames(generated_span_frames, overlap_frames)
+
+
+def motion_preroll_anchor_frames(preroll_frames: int, anchor_count: int) -> Tuple[int, ...]:
+    """Where a `motion_preroll` continuation's anchors sit, LOCAL to its span.
+
+    Design §7.3: several frames of the predecessor placed inside the pre-roll --
+    the part of the generated span that is regenerated and then discarded -- so
+    the model reads direction and speed off them rather than off a single
+    boundary frame. THE ONE definition of the spacing, called by the planner and
+    by the generation so a manifest and the request it produces cannot disagree.
+
+    Uniform sampling, which is the baseline arm (§17-7); a motion-magnitude
+    selection would be a different arm and is not this function. The positions
+    span the whole pre-roll: index 0 is its oldest frame and `preroll - 1` is
+    the boundary frame itself, i.e. the same instant `boundary_frame` anchors.
+
+    Integer arithmetic on purpose: with `preroll >= anchor_count` consecutive
+    positions differ by at least ``(preroll - 1) // (anchor_count - 1) >= 1``,
+    so the anchors are distinct by construction rather than by luck of a
+    floating-point round (two anchors on one frame is a refusal downstream --
+    `generation_utils.plan_keyframe_placements`).
+    """
+    preroll = int(preroll_frames)
+    count = int(anchor_count)
+    if count < 2:
+        raise VideoChainPlanError(
+            "a motion pre-roll needs at least two anchors; one anchor carries no motion"
+        )
+    if preroll < count:
+        raise VideoChainPlanError(
+            f"a {preroll}-frame pre-roll cannot hold {count} anchors on distinct frames"
+        )
+    half = (count - 1) // 2
+    return tuple((j * (preroll - 1) + half) // (count - 1) for j in range(count))
 
 
 @dataclass(frozen=True)
@@ -1776,6 +1816,10 @@ class SegmentPlan:
     requested_overlap_frames: int = 0
     effective_overlap_frames: int = 0
     effective_overlap_samples: int = 0
+    # `motion_preroll` only: how many anchors were ASKED for. Where they landed
+    # is `visual_context["anchor_local_frames"]`, derived from the pre-roll
+    # length and this count.
+    requested_anchor_count: int = 0
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -1798,6 +1842,7 @@ class SegmentPlan:
             "requested_overlap_frames": self.requested_overlap_frames,
             "effective_overlap_frames": self.effective_overlap_frames,
             "effective_overlap_samples": self.effective_overlap_samples,
+            "requested_anchor_count": self.requested_anchor_count,
         }
 
 
@@ -1891,6 +1936,10 @@ class ChainPlanRequest:
     # only puts it into the frame arithmetic.
     continuation_mode: str = "boundary_frame"
     overlap_frames: int = VIDEO_CHAIN_ANCHOR_FRAMES
+    # `motion_preroll`: the anchor positions inside the pre-roll, already
+    # resolved by the caller through the same resolver the generation runs
+    # (`plan_video_continuation_context`). Empty for every other mode.
+    anchor_local_frames: Tuple[int, ...] = ()
     seed_policy: str = "fixed"
     root_seed: int = -1
     explicit_seeds: Optional[List[int]] = None
@@ -2024,22 +2073,33 @@ def plan_video_chain_manifest(request: ChainPlanRequest) -> ChainManifest:
 
 
 def _visual_context_for(
-    span: SegmentSpan, continuation_mode: str = "boundary_frame"
+    span: SegmentSpan,
+    continuation_mode: str = "boundary_frame",
+    anchor_local_frames: Sequence[int] = (),
 ) -> Dict[str, Any]:
     if span.index == 0:
         return {"mode": "initial"}
-    return {
+    context: Dict[str, Any] = {
         "mode": continuation_mode,
         "shared_context_frames": span.shared_overlap_frames,
     }
+    if continuation_mode == "motion_preroll":
+        # The pre-roll length is `shared_context_frames`; these are where the
+        # anchors sit inside it. Both are FIXED here (design §7.3) so a retry
+        # conditions on the same frames, and both are part of `plan_hash`.
+        context["anchor_local_frames"] = [int(f) for f in anchor_local_frames]
+        context["anchor_count"] = len(context["anchor_local_frames"])
+    return context
 
 
 def _effective_overlap_for(request: ChainPlanRequest, span: SegmentSpan) -> int:
-    """The pin the manifest records for this segment; 0 = nothing is pinned.
+    """The overlap the manifest records for this segment; 0 = none was asked for.
 
-    `boundary_frame` shares an anchor frame rather than pinning an overlap, so
-    it records 0 whatever the geometry shares -- the same distinction the
-    capability's min/max makes.
+    `boundary_frame` shares an anchor frame rather than requesting an overlap,
+    so it records 0 whatever the geometry shares -- the same distinction the
+    capability's min/max makes. Both `pinned_tail` (the overlap is pinned) and
+    `motion_preroll` (it is regenerated and discarded) record the real length,
+    because it is what the frame ranges were computed from either way.
     """
     if span.index == 0 or request.continuation_mode == "boundary_frame":
         return 0
@@ -2064,8 +2124,11 @@ def _legacy_repeat_segments(
             prompt=request.root_prompt,
             negative_prompt=request.negative_prompt,
             reference_ids=segment_reference_ids(references, span.index),
-            visual_context=_visual_context_for(span, request.continuation_mode),
+            visual_context=_visual_context_for(
+                span, request.continuation_mode, request.anchor_local_frames),
             effective_overlap_frames=_effective_overlap_for(request, span),
+            requested_anchor_count=(
+                len(request.anchor_local_frames) if span.index > 0 else 0),
         )
         for span in spans
     ]
@@ -2197,8 +2260,11 @@ def _compile_segments(
                 outgoing_state=list(ctx.outgoing_state),
                 owned_event_ids=[event.id for event in ctx.owned_events],
                 reference_ids=segment_reference_ids(references, span.index),
-                visual_context=_visual_context_for(span, request.continuation_mode),
+                visual_context=_visual_context_for(
+                    span, request.continuation_mode, request.anchor_local_frames),
                 effective_overlap_frames=_effective_overlap_for(request, span),
+                requested_anchor_count=(
+                    len(request.anchor_local_frames) if span.index > 0 else 0),
             )
         )
     return segments, list(references)
@@ -2215,6 +2281,7 @@ def plan_h3_chain_from_prompt(
     negative_prompt: str = "",
     continuation_mode: str = "boundary_frame",
     overlap_frames: int = VIDEO_CHAIN_ANCHOR_FRAMES,
+    anchor_local_frames: Sequence[int] = (),
     seed_policy: str = "fixed",
     root_seed: int = -1,
     explicit_seeds: Optional[List[int]] = None,
@@ -2280,6 +2347,7 @@ def plan_h3_chain_from_prompt(
         segment_length_mode=segment_length_mode,
         continuation_mode=continuation_mode,
         overlap_frames=overlap_frames,
+        anchor_local_frames=tuple(int(f) for f in anchor_local_frames),
         seed_policy=seed_policy,
         root_seed=root_seed,
         explicit_seeds=explicit_seeds,

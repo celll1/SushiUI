@@ -249,13 +249,27 @@ export const segmentChainSeed = (
 export const segmentChainContinuation = (
   manifest: VideoChainManifest | null | undefined,
   segmentIndex: number
-): Pick<OutpaintVideoParams, "continuation_mode" | "continuation_overlap_frames"> => {
+): Pick<
+  OutpaintVideoParams,
+  "continuation_mode" | "continuation_overlap_frames" | "continuation_anchor_count"
+> => {
   if (!manifest || manifest.continuation_mode === "boundary_frame") return {};
   const segment = manifest.segments.find((s) => s.index === segmentIndex);
   return {
     continuation_mode: manifest.continuation_mode,
     continuation_overlap_frames:
       segment?.effective_overlap_frames || segment?.requested_overlap_frames || 0,
+    // The anchor COUNT is what the request carries; where the anchors land
+    // follows from it and the pre-roll length, and the backend derives it
+    // through the same function the plan did.
+    ...(manifest.continuation_mode === "motion_preroll"
+      ? {
+          continuation_anchor_count:
+            segment?.visual_context?.anchor_count ??
+            segment?.requested_anchor_count ??
+            0,
+        }
+      : {}),
   };
 };
 
@@ -323,7 +337,10 @@ export function buildChainContinuationParams(
   segmentSeed?: number,
   // This segment's continuation context (`segmentChainContinuation`). Empty for
   // `boundary_frame` and for the legacy path.
-  continuation?: Pick<OutpaintVideoParams, "continuation_mode" | "continuation_overlap_frames">
+  continuation?: Pick<
+    OutpaintVideoParams,
+    "continuation_mode" | "continuation_overlap_frames" | "continuation_anchor_count"
+  >
 ): OutpaintVideoParams {
   return {
     ...provenance,

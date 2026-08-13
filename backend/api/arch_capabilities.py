@@ -486,6 +486,38 @@ MINIMAX_H3_PINNED_TAIL_MIN_FRAMES = 5
 # a pin can never claim the whole clip.
 MINIMAX_H3_PINNED_TAIL_MAX_FRAMES = 17
 
+# --- `motion_preroll` (design §7.3) -----------------------------------------
+# The pre-roll is REGENERATED and discarded, and the model reads it through
+# sparse keyframe ANCHORS rather than through pinned rows, so none of the
+# pinned-tail numbers above transfer to it and it carries its own bounds.
+#
+# The pre-roll needs no VAE-group alignment: an anchor addresses a pixel frame
+# directly (`h3_pipeline_ops._anchor_rotary_time`: "There is no grid to snap an
+# anchor to"), unlike a pin, which conditions a latent frame whole.
+#
+# FLOOR 2, and it is STRUCTURAL, not the measured 5 above: two anchors need two
+# distinct frames (`generation_utils.plan_keyframe_placements` refuses two
+# anchors on one frame). The 5-frame pin floor is a property of PINNING -- the
+# same P-VC-1 run is what showed a 1-frame pin is not an anchor -- so importing
+# it here would be borrowing a measurement made about the other mechanism.
+MINIMAX_H3_MOTION_PREROLL_MIN_FRAMES = 2
+# CEILING 17: a REFUSAL bound. It matches `pinned_tail`'s top so the two
+# comparison arms can be run over the same context lengths, and it keeps the
+# discarded pre-roll under 17 of the shortest generated span this arch has
+# (`MINIMAX_H3_TEMPORAL.min_frames` = 124). Longer is unmeasured.
+MINIMAX_H3_MOTION_PREROLL_MAX_FRAMES = 17
+# Two anchors is the point of the mode: one anchor carries no direction, and a
+# request for one is `boundary_frame` plus frames thrown away.
+MINIMAX_H3_MOTION_PREROLL_MIN_ANCHORS = 2
+# Four is where this integration stops. Each anchor reserves `rows_per_frame`
+# conditioning rows carried on EVERY denoise step
+# (`h3_pipeline_ops.build_packed_layout`: `num_condition_rows =
+# len(keyframe_anchors) * rows_per_frame`), so the cost is linear in the count,
+# and the model card documents at most two anchors -- `plan_keyframe_placements`
+# already reports anything above 2 as an undocumented shape. More than 4 is
+# refused rather than accepted untested.
+MINIMAX_H3_MOTION_PREROLL_MAX_ANCHORS = 4
+
 CHAIN_CONTEXT: Dict[str, Dict[str, Any]] = {
     # MiniMax-H3: a continuation is POST /generate/outpaint/video with
     # `extend_forward`, which hands the model the preserved clip's last frame as
@@ -501,17 +533,31 @@ CHAIN_CONTEXT: Dict[str, Dict[str, Any]] = {
     # same conditioning prefix, so it is fl2va's and not ref2va's. Its min/max
     # bound the pin, not the anchor: `boundary_frame` is a separate mode and
     # keeps its single anchor frame whatever these say.
+    #
+    # `motion_preroll` shares the same overlap arithmetic but conditions on it
+    # differently: the overlap is regenerated with several of the predecessor's
+    # frames placed on it as keyframe anchors, and then discarded. It rides the
+    # arch-level entry for the same reason `pinned_tail` does -- an anchor and a
+    # reference block claim the same conditioning prefix.
     "minimax_h3": {
-        "chain_continuation_modes": ["boundary_frame", "pinned_tail"],
+        "chain_continuation_modes": ["boundary_frame", "pinned_tail", "motion_preroll"],
         "chain_context_min_frames": MINIMAX_H3_PINNED_TAIL_MIN_FRAMES,
         "chain_context_max_frames": MINIMAX_H3_PINNED_TAIL_MAX_FRAMES,
-        # The outpaint route places only the boundary anchor(s); it carries no
-        # keyframe fields at all. The index-addressable keyframe conditioning
-        # this WOULD need exists on /generate/img2vid (`keyframe_placement`
-        # above), which is why this is a Phase-B wiring gap rather than an
-        # architectural limit -- design §7.3's motion pre-roll is the arm that
-        # would flip it, and it is unmeasured.
-        "chain_supports_sparse_motion_anchors": False,
+        # TRUE since the outpaint route gained `continuation_mode:
+        # motion_preroll`, which places the anchors through the same
+        # index-addressable keyframe conditioning /generate/img2vid uses
+        # (`keyframe_placement` above). The mode is unmeasured and opt-in; this
+        # flag says the placement EXISTS here, not that it is better.
+        "chain_supports_sparse_motion_anchors": True,
+        # The pre-roll's own bounds. Separate from `chain_context_min/max_frames`
+        # because a pre-roll is not a pin: it needs no VAE-group alignment (any
+        # integer in range is addressable) and its floor is structural rather
+        # than measured. Null on an architecture/variant that does not advertise
+        # the mode.
+        "chain_motion_preroll_min_frames": MINIMAX_H3_MOTION_PREROLL_MIN_FRAMES,
+        "chain_motion_preroll_max_frames": MINIMAX_H3_MOTION_PREROLL_MAX_FRAMES,
+        "chain_motion_preroll_min_anchors": MINIMAX_H3_MOTION_PREROLL_MIN_ANCHORS,
+        "chain_motion_preroll_max_anchors": MINIMAX_H3_MOTION_PREROLL_MAX_ANCHORS,
         "chain_supports_reference_video": False,
         "chain_supports_exact_prefix": True,
         "variants": {
@@ -526,12 +572,20 @@ CHAIN_CONTEXT: Dict[str, Dict[str, Any]] = {
             # No `pinned_tail` here: `build_ref2va_packed_layout` returns no
             # video row permutation at all (h3_pipeline_ops.py:895-901), so this
             # partition has no opening for a pin, and the reference block
-            # already occupies the prefix a pin would take.
+            # already occupies the prefix a pin would take. No `motion_preroll`
+            # either, for the second half of that reason: this partition's
+            # continuation already spends its conditioning prefix on the
+            # automatic tail reference (`build_outpaint_references`), and a
+            # pre-roll's anchors on top of it is a shape nothing has measured.
             "ref2va": {
                 "chain_continuation_modes": ["boundary_frame"],
                 "chain_context_min_frames": 1,
                 "chain_context_max_frames": 1,
                 "chain_supports_sparse_motion_anchors": False,
+                "chain_motion_preroll_min_frames": None,
+                "chain_motion_preroll_max_frames": None,
+                "chain_motion_preroll_min_anchors": None,
+                "chain_motion_preroll_max_anchors": None,
                 "chain_supports_reference_video": True,
                 "chain_supports_exact_prefix": True,
             },
@@ -550,6 +604,10 @@ CHAIN_CONTEXT: Dict[str, Dict[str, Any]] = {
         "chain_context_min_frames": 1,
         "chain_context_max_frames": None,
         "chain_supports_sparse_motion_anchors": False,
+        "chain_motion_preroll_min_frames": None,
+        "chain_motion_preroll_max_frames": None,
+        "chain_motion_preroll_min_anchors": None,
+        "chain_motion_preroll_max_anchors": None,
         "chain_supports_reference_video": False,
         "chain_supports_exact_prefix": True,
         "variants": {},

@@ -46,7 +46,7 @@ same reason LTX-2.3 is, and there is no configuration in which the text encoder
 and the DiT are both wanted at once.
 """
 
-from typing import Any, Callable, Dict, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 import os
 import random
 import time
@@ -964,8 +964,10 @@ class MiniMaxH3Mixin:
             params.get("continuation_mode"), params.get("continuation_overlap_frames"),
             arch or "minimax_h3",
             (self.minimax_h3_components.get("variant") or "") or None,
+            params.get("continuation_anchor_count"),
         )
         overlap_frames = int(continuation["overlap_frames"])
+        motion_anchor_frames = tuple(continuation.get("anchor_local_frames") or ())
         plan = plan_video_outpaint_placement(
             params, arch or "minimax_h3",
             head_frames=int(head.shape[0]),
@@ -1004,10 +1006,19 @@ class MiniMaxH3Mixin:
         # clip(s), in PACKED order (first, then last). `pinned_tail` takes none
         # of them: its overlap already includes the boundary frame (latent frame
         # 0 covers exactly it), and an anchor would claim the same conditioning
-        # prefix the pin needs. ----
+        # prefix the pin needs.
+        #
+        # `motion_preroll` takes the OPPOSITE branch of that same exclusivity:
+        # it pins nothing and instead places several of the preserved clip's
+        # tail frames as anchors ON the overlap, which it then regenerates and
+        # discards (design §7.3). ----
         keyframes = []
         if continuation["mode"] == "pinned_tail":
             pass
+        elif continuation["mode"] == "motion_preroll":
+            keyframes = self._minimax_h3_motion_preroll_keyframes(
+                head, generated_frames=generated_frames, overlap_frames=overlap_frames,
+                anchor_local_frames=motion_anchor_frames)
         elif placement == "extend_forward":
             keyframes.append(("first", Image.fromarray(head[-1])))
         elif placement == "extend_backward":
@@ -1061,6 +1072,31 @@ class MiniMaxH3Mixin:
                 + f"). {MINIMAX_H3_DOCUMENTED_ANCHOR_SCOPE}; the same pinning mechanism as "
                   "/generate/inpaint/video is used here at the head of the span.",
                 code="minimax_h3_undocumented_conditioning",
+            )
+        elif continuation["mode"] == "motion_preroll":
+            warn(
+                "This request conditions MiniMax-H3 outside the documented shape "
+                f"(continuation_mode 'motion_preroll': {len(keyframes)} anchors on frames "
+                f"{', '.join(str(f) for f in motion_anchor_frames)} of the generated span, taken "
+                f"from the preserved clip's last {overlap_frames} frame(s)). "
+                f"{MINIMAX_H3_DOCUMENTED_ANCHOR_SCOPE}",
+                code="minimax_h3_undocumented_conditioning",
+            )
+            warn(
+                f"continuation_mode 'motion_preroll' generates {overlap_frames} frame(s) that are "
+                f"then discarded: of the {generated_frames} frames sampled, "
+                f"{generated_frames - overlap_frames} reach the output. The preserved clip is "
+                f"concatenated over that span unchanged, and the anchors add "
+                f"{len(keyframes)} frame(s) worth of conditioning rows to every denoise step.",
+                code="minimax_h3_motion_preroll_discarded_frames",
+            )
+
+        if keyframes and pinned_video_frames:  # pragma: no cover - the resolver refuses it first
+            raise ValidationError(
+                "a continuation cannot both pin its overlap and anchor it",
+                detail="An anchor reserves conditioning rows ahead of the clip and a pin re-uses "
+                       "that same prefix for rows of the clip itself, so continuation_mode "
+                       "'pinned_tail' and 'motion_preroll' are mutually exclusive.",
             )
 
         # Only the generated span is sampled; everything else about the run is
@@ -1129,8 +1165,14 @@ class MiniMaxH3Mixin:
         # to pin -- a warning above says so rather than this number implying it.
         params["continuation_mode"] = continuation["mode"]
         params["continuation_overlap_frames"] = overlap_frames
+        # Non-zero for every mode that takes an overlap OF the predecessor,
+        # whether it pins it (`pinned_tail`) or regenerates and drops it
+        # (`motion_preroll`): it is the length the output arithmetic used.
         params["continuation_effective_overlap_frames"] = (
-            overlap_frames if continuation["mode"] == "pinned_tail" else 0)
+            0 if continuation["mode"] == "boundary_frame" else overlap_frames)
+        params["continuation_anchor_count"] = (
+            len(keyframes) if continuation["mode"] == "motion_preroll" else 0)
+        params["continuation_anchor_frames"] = list(motion_anchor_frames)
         params["continuation_effective_overlap_samples"] = int(
             len(pinned_audio_latents)
             * int(self.minimax_h3_components.get("audio_sample_rate", 32000))
@@ -1147,6 +1189,59 @@ class MiniMaxH3Mixin:
             )
 
         return frames_out, audio_out, audio_sample_rate, seed
+
+    def _minimax_h3_motion_preroll_keyframes(
+        self,
+        head: np.ndarray,
+        *,
+        generated_frames: int,
+        overlap_frames: int,
+        anchor_local_frames: Sequence[int],
+    ) -> List[Tuple[Any, Image.Image]]:
+        """`motion_preroll`'s anchors: ``(anchor, image)`` in PACKED order.
+
+        The generated span opens on the overlap, so its local frame ``k < m``
+        is the same instant as the preserved clip's frame ``len(head) - m + k``
+        -- and local ``m - 1`` is the boundary frame, the one instant a
+        `boundary_frame` continuation anchors. Those frames are handed to the
+        model at their own indices and then regenerated; the caller keeps the
+        preserved pixels by concatenation, exactly as it does for every other
+        mode, so nothing here is load-bearing for exactness.
+
+        The index resolution, the ends -> ``"first"``/``"last"`` mapping and the
+        duplicate/range refusals are ``plan_keyframe_placements``', shared with
+        /generate/img2vid rather than repeated. The images are already exactly
+        ``width x height`` (`center_crop_resize_frames` ran on the whole clip),
+        so `_minimax_h3_fit_keyframe`'s stretch/cover branches are both the
+        identity here.
+        """
+        from api.error_handlers import ValidationError
+        from api.generation_utils import plan_keyframe_placements
+
+        head_frames = int(head.shape[0])
+        if not anchor_local_frames:  # pragma: no cover - the resolver fills them
+            raise ValidationError(
+                "continuation_mode 'motion_preroll' has no anchors to place",
+                detail="The anchor positions are resolved from the pre-roll length and the "
+                       "anchor count before this point.",
+            )
+        if overlap_frames >= generated_frames:
+            raise ValidationError(
+                "the motion pre-roll leaves nothing to generate",
+                detail=f"A {overlap_frames}-frame pre-roll covers the whole "
+                       f"{generated_frames}-frame generated span, so the continuation would add "
+                       f"no new frames.",
+            )
+        plan = plan_keyframe_placements(
+            [(f"motion_preroll[{position}]", int(frame))
+             for position, frame in enumerate(anchor_local_frames)],
+            generated_frames,
+        )
+        return [
+            (entry["anchor"],
+             Image.fromarray(head[head_frames - overlap_frames + int(entry["frame"])]))
+            for entry in plan["anchors"]
+        ]
 
     def _minimax_h3_pinned_tail_video(
         self,

@@ -180,8 +180,7 @@ def _plan_body(**overrides):
     return body
 
 
-@pytest.mark.parametrize("mode", ["motion_preroll", "tail_reference_video",
-                                  "sampler_state", "not_a_mode"])
+@pytest.mark.parametrize("mode", ["tail_reference_video", "sampler_state", "not_a_mode"])
 @pytest.mark.parametrize("variant", [None, "ref2va"])
 def test_unadvertised_mode_is_refused(mode, variant):
     body = _plan_body(continuation_mode=mode)
@@ -191,6 +190,22 @@ def test_unadvertised_mode_is_refused(mode, variant):
     assert status == 400, payload
     # The refusal names the capability it came from, so the client knows where
     # to read the answer instead of guessing another mode.
+    assert "chain_context" in payload["detail"]
+
+
+def test_a_mode_one_variant_advertises_is_refused_on_the_variant_that_does_not():
+    """`motion_preroll` is fl2va's (the arch-level entry) and not ref2va's.
+
+    It moved out of the list above when it was implemented; the per-variant half
+    of that refusal is what still has to hold, and it is the half a second
+    hardcoded list at the route would get wrong.
+    """
+    assert "motion_preroll" in chain_context_for("minimax_h3", "fl2va")["chain_continuation_modes"]
+    assert "motion_preroll" not in chain_context_for(
+        "minimax_h3", "ref2va")["chain_continuation_modes"]
+    status, payload = _post(_plan_body(continuation_mode="motion_preroll", variant="ref2va",
+                                       requested_overlap_frames=9, requested_anchor_count=3))
+    assert status == 400, payload
     assert "chain_context" in payload["detail"]
 
 

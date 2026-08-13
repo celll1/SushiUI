@@ -862,6 +862,10 @@ export interface OutpaintVideoParams extends VideoChainProvenance {
   // neither is snapped or downgraded server-side.
   continuation_mode?: VideoChainContinuationMode;
   continuation_overlap_frames?: number;
+  // `motion_preroll` only: how many of the pre-roll's frames are placed as
+  // anchors. Sending it with another mode is a 400 -- a pin and an anchor set
+  // claim the same conditioning prefix, so neither is dropped silently.
+  continuation_anchor_count?: number;
 }
 
 // Video TEMPORAL inpaint (POST /generate/inpaint/video, MiniMax-H3 fl2va):
@@ -1516,9 +1520,18 @@ export interface ChainContextVariantCapability {
   // (LTX-2.3 places the whole accumulated clip as one video condition).
   chain_context_max_frames: number | null;
   // Several frames of the predecessor placed at chosen positions inside the
-  // generated span. False everywhere today (the outpaint endpoint a chain
-  // continues through carries no keyframe fields).
+  // generated span (`continuation_mode: motion_preroll`). True for MiniMax-H3
+  // `fl2va`; it says the placement exists, not that it is better -- the arm is
+  // unmeasured and opt-in.
   chain_supports_sparse_motion_anchors: boolean;
+  // The pre-roll bounds of `motion_preroll`, null when it is not advertised.
+  // NOT `chain_context_min/max_frames`: a pre-roll needs no VAE-group
+  // alignment (an anchor names a pixel frame directly), so any integer in
+  // range is valid, and its floor is structural rather than measured.
+  chain_motion_preroll_min_frames: number | null;
+  chain_motion_preroll_max_frames: number | null;
+  chain_motion_preroll_min_anchors: number | null;
+  chain_motion_preroll_max_anchors: number | null;
   // Part of the preceding clip carried as a REFERENCE video, a separate channel
   // from the boundary anchor. MiniMax-H3 `ref2va` only.
   chain_supports_reference_video: boolean;
@@ -2063,6 +2076,12 @@ export interface VideoChainVisualContext {
   // `boundary_frame`, null for `initial`. `segments[].effective_overlap_frames`
   // stays the authoritative value used in frame arithmetic.
   shared_context_frames?: number | null;
+  // `motion_preroll` only: the frames of THIS segment's generated span the
+  // anchors sit on (0 = the pre-roll's oldest frame, `shared_context_frames - 1`
+  // = the boundary frame), and how many there are. Fixed by the plan so a retry
+  // conditions on the same frames.
+  anchor_local_frames?: number[] | null;
+  anchor_count?: number | null;
 }
 
 export interface VideoChainSegment {
@@ -2094,6 +2113,7 @@ export interface VideoChainSegment {
   requested_overlap_frames?: number;
   effective_overlap_frames?: number;
   effective_overlap_samples?: number;
+  requested_anchor_count?: number;
 }
 
 export interface VideoChainManifest {
@@ -2140,6 +2160,8 @@ export interface VideoChainPlanRequest {
   root_seed?: number;
   continuation_mode?: VideoChainContinuationMode;
   requested_overlap_frames?: number;
+  // `motion_preroll` only; a non-zero value with any other mode is a 400.
+  requested_anchor_count?: number;
   chain_drift_tolerance_frames?: number;
   references?: VideoChainReferenceInput[];
   canonical_timeline?: {
@@ -4323,6 +4345,14 @@ export const generateOutpaintVideo = async (
       "continuation_overlap_frames",
       String(params.continuation_overlap_frames ?? 0)
     );
+    // Only for the mode that places anchors: sending a count with any other
+    // one is a 400 by design, so it is not appended unconditionally.
+    if (params.continuation_mode === "motion_preroll") {
+      formData.append(
+        "continuation_anchor_count",
+        String(params.continuation_anchor_count ?? 0)
+      );
+    }
   }
   // Chain provenance (design §13). This endpoint runs every CONTINUATION
   // segment, so a chained request always carries it here; a plain video

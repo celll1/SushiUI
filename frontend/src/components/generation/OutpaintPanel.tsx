@@ -608,9 +608,10 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
   const [isInitialLoad, setIsInitialLoad] = useState(true);
   const [currentModelInfo, setCurrentModelInfo] = useState<any>(null);
   // Keep this panel's copy of GET /models/current in step with the shared one.
-  // modelInfoVersion only changes when the loaded model's identity actually
-  // changes, so this costs one request per model change -- including changes
-  // this page did not make (API, backend restart, another tab).
+  // modelInfoVersion changes only when the loaded checkpoint or one of its
+  // components actually changes, not on every background poll, so this costs
+  // one request per such change -- including changes this page did not make
+  // (a component switch, the API, a backend restart, another tab).
   useEffect(() => {
     if (modelInfoVersion === 0) return; // initial fetch happens on mount below
     getCurrentModel()

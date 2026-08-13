@@ -589,14 +589,31 @@ def record_model_variant(params: Dict[str, Any], pipeline_manager) -> Optional[s
     Writes ``params["model_variant"]`` only when a MiniMax-H3 model is loaded
     and its variant is known; a no-op (and no key written) for every other
     architecture. Never raises.
+
+    A merged (``"hybrid"``) DiT additionally records which pair and which recipe
+    produced it -- design doc section 5.4. Basenames and the compatibility
+    digest, never absolute paths, matching how the loader sanitises provenance.
     """
     try:
         if not getattr(pipeline_manager, "is_minimax_h3_model", False):
             return None
-        variant = (pipeline_manager.current_model_info or {}).get("variant")
+        info = pipeline_manager.current_model_info or {}
+        variant = info.get("variant")
         if not variant:
             return None
         params["model_variant"] = variant
+        hybrid = info.get("hybrid")
+        if isinstance(hybrid, dict) and hybrid:
+            recipe = hybrid.get("hybrid_recipe") or {}
+            params["model_hybrid_base"] = hybrid.get("base_file")
+            params["model_hybrid_overlay"] = hybrid.get("overlay_file")
+            params["model_hybrid_preset"] = recipe.get("preset")
+            params["model_hybrid_block_range"] = (
+                f"{recipe.get('block_range_start')}..{recipe.get('block_range_end')}")
+            params["model_hybrid_final_adaln_from_overlay"] = bool(
+                recipe.get("final_adaln_from_overlay"))
+            params["model_hybrid_digest"] = hybrid.get("compatibility_digest")
+            params["model_hybrid_quantization"] = hybrid.get("quantization_format")
         return variant
     except Exception:
         return None

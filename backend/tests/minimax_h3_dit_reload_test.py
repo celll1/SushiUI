@@ -110,6 +110,49 @@ def test_failed_transformer_build_leaves_current_components_untouched(monkeypatc
     assert current["transformer"] is old_transformer
 
 
+def test_a_failed_hybrid_build_leaves_current_components_untouched(monkeypatch, tmp_path):
+    """The same guarantee as the test above, for a merged DiT.
+
+    A hybrid changes only WHICH tensors the replacement is built from, so the
+    build-then-swap order that protects a base-only reload has to keep
+    protecting this one. The recipe/identity side is in
+    `minimax_h3_hybrid_lifecycle_test.py`; this file owns the atomicity.
+    """
+    root = str(tmp_path / "h3")
+    base = os.path.join(root, "diffusion_models", "minimax_h3_fl2va.safetensors")
+    layouts = {base: _layout(root, base, "fl2va")}
+    hybrid = SimpleNamespace(spec=SimpleNamespace(base_dit_path=base))
+    monkeypatch.setattr(h3_reload, "detect_minimax_h3_layout", layouts.get)
+
+    def fail(*_args, **_kwargs):
+        raise RuntimeError("bad merge")
+
+    monkeypatch.setattr(h3_reload, "_build_transformer", fail)
+    current = _components()
+    before = dict(current)
+
+    with pytest.raises(RuntimeError, match="bad merge"):
+        h3_reload.build_dit_only_reload(current, base, base, hybrid=hybrid)
+    assert current == before
+
+
+def test_a_hybrid_whose_base_is_not_the_validated_one_refuses(monkeypatch, tmp_path):
+    """Falling back to the full loader here would serve a hybrid request as a
+    base-only load of the same file and report success."""
+    root = str(tmp_path / "h3")
+    base = os.path.join(root, "diffusion_models", "minimax_h3_fl2va.safetensors")
+    other = os.path.join(root, "diffusion_models", "minimax_h3_ref2va.safetensors")
+    layouts = {base: _layout(root, base, "fl2va"), other: _layout(root, other, "ref2va")}
+    monkeypatch.setattr(h3_reload, "detect_minimax_h3_layout", layouts.get)
+    monkeypatch.setattr(
+        h3_reload, "_build_transformer",
+        lambda *args, **kwargs: pytest.fail("nothing may be built for a mismatched base"))
+
+    hybrid = SimpleNamespace(spec=SimpleNamespace(base_dit_path=base))
+    with pytest.raises(ValueError, match="validated"):
+        h3_reload.build_dit_only_reload(_components(), base, other, hybrid=hybrid)
+
+
 def _health_probe(existing_info, failure_leaves):
     """Run load_model with a failing _load_model_locked and report the health.
 

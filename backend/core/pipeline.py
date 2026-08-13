@@ -224,7 +224,16 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                         clip_projection_file=clip_projection_file, **kwargs)
         except Exception:
             if mutation_started:
-                self.component_health = "degraded" if previous_info is not None else "unloaded"
+                # Degraded means "the live components are not trustworthy", so
+                # decide it from what the failure actually left behind, not from
+                # whether a model was loaded beforehand. The H3 DiT-only path
+                # builds the replacement before it swaps and keeps the current
+                # model on failure (_reload_minimax_h3_dit_only); calling that
+                # degraded would disable generation on a model that is fine.
+                if self.current_model_info is None:
+                    self.component_health = "unloaded"
+                elif self.current_model_info is not previous_info:
+                    self.component_health = "degraded"
             raise
 
         if self.current_model_info is not None and self.current_model_info is not previous_info:
@@ -268,7 +277,14 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         h3_te_selection_changed = self._minimax_h3_te_selection_differs(
             text_encoder_file, clip_projection_file)
 
-        if self.current_model == model_id and not force_reload and not h3_te_selection_changed:
+        # Degraded means a component switch or a failed load left a hole in the
+        # live components. Re-selecting the same checkpoint is then a repair
+        # request, not a no-op, and it is the obvious thing a user reaches for:
+        # returning early would leave generation disabled with no way out of the
+        # UI short of loading some other model first.
+        if (self.current_model == model_id and not force_reload
+                and not h3_te_selection_changed
+                and self.component_health != "degraded"):
             return
 
         # MiniMax-H3's selectable files differ only in the DiT. Rebuilding its
@@ -276,8 +292,12 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         # switch can terminate a Windows process inside torch_cpu.dll before
         # Python can report an allocation error. Build the new DiT first and
         # retain the current model if that build fails; only then swap it in.
+        # Not while degraded: this path carries the existing text encoder over
+        # untouched, and a failed TE switch is exactly what leaves that slot
+        # empty. Repairing through it would report success over the same hole.
         if (self.is_minimax_h3_model and source_type in ("safetensors", "diffusers")
-                and not h3_te_selection_changed):
+                and not h3_te_selection_changed
+                and self.component_health != "degraded"):
             current_source = (self.current_model_info or {}).get("source")
             if current_source and self._reload_minimax_h3_dit_only(
                     source_type, source, current_source, pipeline_type, model_id):

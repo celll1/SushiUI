@@ -186,9 +186,23 @@ def discard_resident(manager, component_name: str) -> None:
     state["resident"].discard(component_name)
 
 
+def resident_components(manager) -> set:
+    """Names currently tracked as GPU-resident.
+
+    For a caller that has to free the VRAM itself: ``clear_resident`` drops the
+    bookkeeping only, and the resident set is the record of which components
+    the last generation deliberately left on the GPU.
+    """
+    return set(_ensure_state(manager)["resident"])
+
+
 def clear_resident(manager) -> None:
     """Drop all tracked residency (e.g. on exception, on keep_models_hot=False
     queue-end cleanup, or on model load/unload).
+
+    Bookkeeping only: the components stay on whatever device they are on. A
+    caller that needs the memory back must offload first and clear after, the
+    way ``invalidate_if_model_changed`` does.
     """
     state = _ensure_state(manager)
     state["model_key"] = None

@@ -56,6 +56,57 @@ def _release_device_cache() -> None:
         pass
 
 
+# Names keep-hot tracks, and where each one lives. A component-dict
+# architecture keeps its modules in `<arch>_components`; SD1.5/SDXL keep theirs
+# on the pipeline. Checking both covers every architecture without asking which
+# one is loaded.
+_RESIDENT_ATTRS = {
+    "text_encoder": ("text_encoder", "text_encoder_2"),
+    "unet": ("unet",),
+    "transformer": ("transformer", "dit"),
+    "vae": ("vae", "audio_vae"),
+}
+
+
+def _resident_modules(manager: Any, name: str):
+    from core.models.components.component_catalog import _COMPONENT_DICTS
+
+    containers = [getattr(manager, "txt2img_pipeline", None)]
+    containers.extend(getattr(manager, attr, None) for attr in _COMPONENT_DICTS.values())
+    for key in _RESIDENT_ATTRS.get(name, (name,)):
+        for container in containers:
+            if isinstance(container, dict):
+                module = container.get(key)
+            elif container is not None:
+                module = getattr(container, key, None)
+            else:
+                continue
+            if module is not None and hasattr(module, "to"):
+                yield module
+
+
+def _offload_resident_components(manager: Any) -> None:
+    """Actually free what keep-hot left on the GPU, before mapping a
+    replacement.
+
+    clear_resident forgets the bookkeeping; it does not move a byte. The point
+    of switching unload-first is to have the memory back before the new file is
+    mapped, and the components this switch is not touching can be the larger
+    share of it -- H3's text encoder alone is tens of GiB, and it is mapped
+    while the DiT may still be resident.
+    """
+    from core.keep_hot import resident_components
+
+    for name in sorted(resident_components(manager)):
+        for module in _resident_modules(manager, name):
+            try:
+                module.to("cpu")
+            except Exception as exc:
+                # Best effort: a component that will not move is a reason to
+                # have less memory, not a reason to abandon the switch.
+                print(f"[ComponentSwitch] Could not offload {name}: {exc}")
+
+
 def _switch_vision_encoder(manager: Any, candidate: Dict[str, Any]) -> None:
     manager.unload_vision_encoder()
     _release_device_cache()
@@ -212,6 +263,11 @@ def _switch_anima_component(manager: Any, slot: str, candidate: Dict[str, Any]) 
     new_vae = selected if slot == "vae" else old_vae
 
     def reload(text_encoder_path: Optional[str], vae_path: Optional[str]) -> None:
+        # _load_model_locked, not load_model. The public entry point takes the
+        # lifecycle mutation and _load_model_lock, both of which this switch is
+        # already holding, and neither is re-entrant: the mutation refuses a
+        # second holder outright, and _load_model_lock is a plain Lock, so
+        # "tidying" this into load_model() deadlocks the request thread.
         manager._load_model_locked(
             source_type,
             source,
@@ -288,7 +344,9 @@ def switch_component(
                 manager.component_health = "mutating"
                 _set_operation(state="running", phase="releasing_old")
                 from core.keep_hot import clear_resident
+                _offload_resident_components(manager)
                 clear_resident(manager)
+                _release_device_cache()
                 _set_operation(phase="loading_new")
                 adapter()
                 manager.component_revision += 1

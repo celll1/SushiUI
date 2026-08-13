@@ -196,8 +196,14 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         clip_projection_file: Optional[str] = None,
         **kwargs
     ):
-        """Load a model, serialized against concurrent loads (boot auto-load vs a
-        manual /models/load) via ``_load_model_lock`` so state stays consistent.
+        """Load a model, holding the lifecycle gate for the duration.
+
+        Concurrent loads no longer queue behind each other: the gate refuses
+        the second one with ModelStateBusyError (409) rather than serializing
+        it, so a manual /models/load arriving during the boot auto-load is
+        rejected and retried by the caller instead of silently applying after
+        it. ``_load_model_lock`` is still taken inside the gate, as the
+        in-process mutual exclusion the component switcher also relies on.
 
         ``force_reload`` bypasses the same-model early return below. It exists
         because that early return made "reload the model" -- the documented (and

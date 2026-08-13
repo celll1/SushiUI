@@ -348,7 +348,10 @@ def test_h3_te_switch_detaches_before_build_and_keeps_other_components(monkeypat
 
     switch_component(manager, "text_encoder", candidate, 4, 7)
 
-    assert events == ["clear_keep_hot", "release", "assert_detached", "build_new"]
+    # The first release empties the allocator cache once keep-hot's residents
+    # have been offloaded; the second is the adapter proving the old mapping is
+    # gone before it maps the new file.
+    assert events == ["clear_keep_hot", "release", "release", "assert_detached", "build_new"]
     assert manager.minimax_h3_components["text_encoder"] is replacement
     assert manager.minimax_h3_components["text_encoder_path"] == "C:/h3/new.safetensors"
     assert manager.minimax_h3_components["text_encoder_origin"] == "selected_external"
@@ -537,6 +540,43 @@ def test_h3_te_failure_serially_reloads_old_without_revision(monkeypatch):
     assert manager.minimax_h3_components["text_encoder_path"] == "C:/h3/old.safetensors"
     assert manager.component_health == "ready"
     assert manager.component_revision == 7
+
+
+def test_switch_offloads_the_components_it_is_not_replacing():
+    """Unload-first has to free the memory, not just forget who held it.
+
+    clear_resident is bookkeeping. The components this switch leaves alone are
+    often the larger share of the VRAM -- H3 maps a text encoder of tens of
+    GiB while the DiT may still be GPU-resident from the last generation.
+    """
+    from core import keep_hot
+
+    class _Module:
+        def __init__(self):
+            self.device = "cuda"
+
+        def to(self, device):
+            self.device = device
+            return self
+
+    manager = _Manager("minimax_h3")
+    manager.txt2img_pipeline = None
+    transformer, vae, old_te = _Module(), _Module(), _Module()
+    manager.minimax_h3_components = {
+        "transformer": transformer, "vae": vae, "text_encoder": old_te,
+        "text_encoder_config": {}, "text_encoder_path": "C:/h3/old.safetensors",
+        "official_dir": "C:/h3/official",
+    }
+    keep_hot.mark_resident(manager, "transformer", "key")
+    keep_hot.mark_resident(manager, "vae", "key")
+
+    component_switcher._offload_resident_components(manager)
+
+    assert transformer.device == "cpu"
+    assert vae.device == "cpu"
+    # Untracked components are left alone: the adapter owns the slot it is
+    # replacing, and moving it here would only touch it before it is released.
+    assert old_te.device == "cuda"
 
 
 def test_scanned_current_component_does_not_become_a_second_option():

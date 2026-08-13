@@ -485,6 +485,29 @@ def build_catalog(
             path=path, size_bytes=_gb_bytes(entry.get("size_gb")),
             load_strategy="unsupported",
         ))
+
+    # candidate_id is the option's identity in the UI: the value the <select>
+    # submits and the key find_candidate resolves. The scans legitimately turn
+    # up the file that is already loaded -- more so since they descend into the
+    # text_encoders/ and vae/ subdirectories a model tree keeps its components
+    # in -- and that row's id equals the current row's, since both hash the
+    # same path. Two rows sharing one id makes the second unselectable (the
+    # change handler compares against the current id and sees no change) and,
+    # if it is reached another way, resolves to the current selection, which
+    # refuses the switch. The first row wins: it is the current one, which the
+    # UI positions and labels as such.
+    for slot, entries in catalog.items():
+        if len(entries) < 2:
+            continue
+        seen = set()
+        unique = []
+        for entry in entries:
+            candidate_id = entry.get("candidate_id")
+            if candidate_id in seen:
+                continue
+            seen.add(candidate_id)
+            unique.append(entry)
+        catalog[slot] = unique
     return catalog
 
 

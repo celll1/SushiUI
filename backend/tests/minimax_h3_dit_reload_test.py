@@ -123,6 +123,9 @@ def test_pipeline_swap_updates_model_state_after_success(monkeypatch):
     manager = SimpleNamespace(
         minimax_h3_components=current,
         _save_last_model=lambda *args: None,
+        # The load-time TE/projection request this bundle came from; a DiT-only
+        # reload replays it so `last_model.json` keeps naming the same pairing.
+        _minimax_h3_te_request=(None, None),
     )
 
     reloaded = pipeline_module.DiffusionPipelineManager._reload_minimax_h3_dit_only(

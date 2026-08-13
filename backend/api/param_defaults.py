@@ -206,6 +206,9 @@ GENERATION_DEFAULTS: Dict[str, Any] = {
     # Per-generation component overrides (RP2b). Both default to None = use the
     # loaded model's own component. VAE override supported on all image archs
     # except ltx2/minit2i; TE override supported on sd15/sdxl only.
+    # NOT the same thing as POST /models/load's text_encoder_file /
+    # clip_projection_file, which choose which encoder is BUILT at load time
+    # (MiniMax-H3) and therefore have no entry here.
     "vae_path": None,
     "text_encoder_path": None,
     # PiD (Pixel Diffusion Decoder) VAE-override options — only consulted when
@@ -944,6 +947,9 @@ VIDEO_GEN_DEFAULTS: Dict[str, Any] = {
     # Per-generation component overrides (RP2b). Both unsupported on the LTX-2.3
     # video arch (accepted-but-ignored with a warning); kept here so the video
     # request schema carries the same keys as the image routes.
+    # NOT the same thing as POST /models/load's text_encoder_file /
+    # clip_projection_file, which choose which encoder is BUILT at load time
+    # (MiniMax-H3) and therefore have no entry here.
     "vae_path": None,
     "text_encoder_path": None,
     # Transformer quantization. LTX-2.3 is in RUNTIME_INT8_ARCHS, so "int8"

@@ -13,7 +13,8 @@ from .loader import _build_transformer, detect_minimax_h3_layout
 _SHARED_LAYOUT_KEYS = ("root", "official", "vae", "audio_vae", "text_encoder")
 
 
-def _same_path(left: Optional[str], right: Optional[str]) -> bool:
+def same_path(left: Optional[str], right: Optional[str]) -> bool:
+    """Whether two optional paths name the same file (case- and link-folded)."""
     if left is None or right is None:
         return left is right
     return os.path.normcase(os.path.realpath(left)) == os.path.normcase(os.path.realpath(right))
@@ -37,7 +38,7 @@ def build_dit_only_reload(
     new_layout = detect_minimax_h3_layout(new_source)
     if current_layout is None or new_layout is None:
         return None
-    if not all(_same_path(current_layout.get(key), new_layout.get(key))
+    if not all(same_path(current_layout.get(key), new_layout.get(key))
                for key in _SHARED_LAYOUT_KEYS):
         return None
 

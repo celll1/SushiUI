@@ -470,6 +470,8 @@ def _inspect_converted_te_candidate(
     size = declared.get("source_size_label") or "small"
     result["compatible"] = True
     result["variant"] = "converted_small"
+    result["hidden_size"] = int(hidden)
+    result["num_hidden_layers"] = int(tap)
     result["reason"] = (
         f"Converted {size} Qwen3-VL ({tap} blocks, hidden {hidden}), text-only. Never the "
         f"architecture default; usable only with the trained d_in={hidden} projection from "
@@ -491,6 +493,10 @@ def inspect_minimax_h3_text_encoder_candidate(path: str) -> Dict[str, Any]:
         "variant": "unknown",
         "reason": "Not an implemented MiniMax-H3 text-encoder format.",
         "size_bytes": None,
+        # The file's OWN declaration; the released 32B files declare neither and
+        # take their geometry from official/text_encoder/config.json.
+        "hidden_size": None,
+        "num_hidden_layers": None,
     }
     try:
         result["size_bytes"] = os.path.getsize(path)
@@ -635,6 +641,77 @@ def list_minimax_h3_text_encoder_candidates(model_path: str) -> List[Dict[str, A
         inspect_minimax_h3_text_encoder_candidate(str(path))
         for path in sorted(directory.glob("*.safetensors"), key=lambda item: item.name.lower())
     ]
+
+
+def list_minimax_h3_te_projection_candidates(model_path: str) -> List[Dict[str, Any]]:
+    """Every parseable ``clip_projections/`` spec in this tree, header-only.
+
+    A file that fails to parse is skipped, matching ``discover_te_projections``:
+    listing is not the place a malformed projection is reported, pairing is.
+    """
+    from core.models.minimax_h3.te_projection import projection_dir, read_te_projection_spec
+
+    layout = detect_minimax_h3_layout(model_path)
+    if layout is None or not layout.get("root"):
+        return []
+    directory = projection_dir(str(layout["root"]))
+    if not directory.is_dir():
+        return []
+    found: List[Dict[str, Any]] = []
+    for path in sorted(directory.glob("*.safetensors"), key=lambda item: item.name.lower()):
+        try:
+            spec = read_te_projection_spec(str(path))
+        except Exception as exc:
+            print(f"[MiniMaxH3Loader] skipping projection {path.name}: {exc}")
+            continue
+        try:
+            spec["size_bytes"] = os.path.getsize(path)
+        except OSError:
+            spec["size_bytes"] = None
+        found.append(spec)
+    return found
+
+
+def describe_minimax_h3_text_encoder_choices(model_path: str) -> Dict[str, Any]:
+    """The load-time text-encoder choices for this tree, for the API.
+
+    ``requires_projection`` is decided the same way ``load_minimax_h3_from_path``
+    decides it -- the file's declared width against the DiT's ``condition_proj``
+    -- rather than from "declares its own dims", so the listing cannot say a
+    file needs a projection that the loader would then not ask for.
+
+    ``agreement`` is the measurement recorded for the pairing THIS listing would
+    form: the encoder plus the single matching projection. Two matching
+    projections is what the loader refuses to guess between, so it reports no
+    number rather than one of them.
+    """
+    from core.models.minimax_h3.te_projection import measured_te_substitution
+
+    layout = detect_minimax_h3_layout(model_path)
+    if layout is None:
+        raise ValueError(f"{model_path!r} does not resolve to a MiniMax-H3 model tree.")
+
+    text_dim = dit_text_dim(layout["dit"]) if layout.get("dit") else None
+    projections = list_minimax_h3_te_projection_candidates(model_path)
+    encoders = list_minimax_h3_text_encoder_candidates(model_path)
+    for entry in encoders:
+        hidden = entry.get("hidden_size")
+        entry["requires_projection"] = bool(
+            hidden is not None and text_dim is not None and hidden != text_dim)
+        entry["agreement"] = None
+        if entry["requires_projection"]:
+            matching = [spec for spec in projections if spec["d_in"] == hidden]
+            if len(matching) == 1:
+                measured = measured_te_substitution(entry["path"], matching[0]["path"])
+                if measured is not None:
+                    entry["agreement"] = dict(
+                        measured, projection=os.path.basename(matching[0]["path"]))
+    return {
+        "selected": layout.get("text_encoder"),
+        "selected_reason": layout.get("text_encoder_reason"),
+        "text_encoders": encoders,
+        "clip_projections": projections,
+    }
 
 
 def assert_no_live_text_encoder() -> None:
@@ -2740,8 +2817,17 @@ def resolve_minimax_h3_te_projection(
 
     dims = _te_declared_dims(declared)
     hidden_size = int(dims["hidden_size"]) if dims else text_dim
-    if override is None and hidden_size == text_dim:
-        return None
+    if hidden_size == text_dim:
+        if override is None:
+            return None
+        # Refused HERE rather than left to the d_in check below, which would
+        # report a width mismatch for what is really "this encoder takes no
+        # projection at all".
+        raise ValueError(
+            f"a text-encoder projection ({os.path.basename(override)}) was named for "
+            f"{os.path.basename(te_path)}, whose hidden state is already the DiT's "
+            f"{text_dim}-wide conditioning. That encoder is used directly; only a narrower "
+            f"converted encoder is projected.")
 
     spec = resolve_te_projection(
         root=root, te_path=te_path, hidden_size=hidden_size,

@@ -110,6 +110,10 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         # `torch.func.functional_call` streaming Phase 2 uses).
         self.minimax_h3_components: Optional[Dict[str, Any]] = None
         self.is_minimax_h3_model: bool = False
+        # The (text_encoder_file, clip_projection_file) the loaded H3 pairing was
+        # requested with, so `last_model.json` can replay the same choice and the
+        # DiT-only reload (which rebuilds nothing but the DiT) does not erase it.
+        self._minimax_h3_te_request: tuple = (None, None)
 
         # SigLIP2 Vision Encoder (optional, for SD/SDXL vision-conditioned generation)
         self.vision_encoder: Optional[Any] = None
@@ -188,6 +192,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         source: str,
         pipeline_type: str = "txt2img",
         force_reload: bool = False,
+        text_encoder_file: Optional[str] = None,
+        clip_projection_file: Optional[str] = None,
         **kwargs
     ):
         """Load a model, serialized against concurrent loads (boot auto-load vs a
@@ -197,7 +203,14 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         because that early return made "reload the model" -- the documented (and
         only) way to undo an in-place runtime INT8 conversion, a VAE/TE override,
         or any other per-session mutation of the loaded components -- a silent
-        no-op when the user re-selected the SAME checkpoint."""
+        no-op when the user re-selected the SAME checkpoint.
+
+        ``text_encoder_file``/``clip_projection_file`` choose MiniMax-H3's
+        load-time text encoder and its trained projection. Naming an encoder
+        other than the loaded one reloads on its own: the model id does not
+        change with the encoder, so depending on the caller to send
+        ``force_reload`` would make an ignored request look like a successful
+        one."""
         from core.model_state_coordinator import model_state_coordinator
         previous_info = self.current_model_info
         mutation_started = False
@@ -206,7 +219,9 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                 mutation_started = True
                 with self._load_model_lock:
                     result = self._load_model_locked(
-                        source_type, source, pipeline_type, force_reload=force_reload, **kwargs)
+                        source_type, source, pipeline_type, force_reload=force_reload,
+                        text_encoder_file=text_encoder_file,
+                        clip_projection_file=clip_projection_file, **kwargs)
         except Exception:
             if mutation_started:
                 self.component_health = "degraded" if previous_info is not None else "unloaded"
@@ -238,12 +253,22 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         source: str,
         pipeline_type: str = "txt2img",
         force_reload: bool = False,
+        text_encoder_file: Optional[str] = None,
+        clip_projection_file: Optional[str] = None,
         **kwargs
     ):
         """Load a Stable Diffusion model from various sources"""
         model_id = f"{source_type}:{source}"
 
-        if self.current_model == model_id and not force_reload:
+        # A different H3 text encoder or projection is a different set of loaded
+        # components under the SAME model id, so neither the same-model early
+        # return nor the DiT-only fast path below may fire for it. The fast path
+        # in particular recomputes both layouts without the override, so the
+        # encoder would compare equal and the request would vanish silently.
+        h3_te_selection_changed = self._minimax_h3_te_selection_differs(
+            text_encoder_file, clip_projection_file)
+
+        if self.current_model == model_id and not force_reload and not h3_te_selection_changed:
             return
 
         # MiniMax-H3's selectable files differ only in the DiT. Rebuilding its
@@ -251,11 +276,14 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         # switch can terminate a Windows process inside torch_cpu.dll before
         # Python can report an allocation error. Build the new DiT first and
         # retain the current model if that build fails; only then swap it in.
-        if self.is_minimax_h3_model and source_type in ("safetensors", "diffusers"):
+        if (self.is_minimax_h3_model and source_type in ("safetensors", "diffusers")
+                and not h3_te_selection_changed):
             current_source = (self.current_model_info or {}).get("source")
             if current_source and self._reload_minimax_h3_dit_only(
                     source_type, source, current_source, pipeline_type, model_id):
                 return
+
+        self._minimax_h3_te_request = (text_encoder_file, clip_projection_file)
 
         # A model (re)load invalidates any keep-models-hot resident set from the
         # previous model — the components about to be freed/replaced are exactly
@@ -497,6 +525,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                 source=source,
                 device=self.device,
                 torch_dtype=torch_dtype,
+                text_encoder_file=text_encoder_file,
+                clip_projection_file=clip_projection_file,
                 **kwargs
             )
 
@@ -948,7 +978,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                             or "")) or None,
                     "te_text_only": bool(self.minimax_h3_components.get("te_text_only")),
                 }
-                self._save_last_model(source_type, source, pipeline_type)
+                self._save_last_model(source_type, source, pipeline_type,
+                                      *self._minimax_h3_te_request)
                 print("[Pipeline] MiniMax-H3 model loaded successfully")
                 return
 
@@ -1158,6 +1189,29 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         except Exception as e:
             raise RuntimeError(f"Failed to load model: {str(e)}")
 
+    def _minimax_h3_te_selection_differs(
+        self,
+        text_encoder_file: Optional[str],
+        clip_projection_file: Optional[str],
+    ) -> bool:
+        """Whether a requested H3 encoder/projection is not the loaded one.
+
+        Compared against the LOADED component paths, not against what the last
+        request asked for: a request that names the file already in use must
+        stay a no-op, and one that names any other file must reload.
+        """
+        if text_encoder_file is None and clip_projection_file is None:
+            return False
+        from core.models.minimax_h3.reload import same_path
+
+        components = self.minimax_h3_components or {}
+        loaded_te = components.get("text_encoder_path")
+        loaded_projection = (components.get("te_projection") or {}).get("path")
+        if text_encoder_file is not None and not same_path(text_encoder_file, loaded_te):
+            return True
+        return (clip_projection_file is not None
+                and not same_path(clip_projection_file, loaded_projection))
+
     def _reload_minimax_h3_dit_only(
         self,
         source_type: str,
@@ -1218,7 +1272,10 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                 str((replacement.get("te_projection") or {}).get("path") or "")) or None,
             "te_text_only": bool(replacement.get("te_text_only")),
         }
-        self._save_last_model(source_type, source, pipeline_type)
+        # This path rebuilt only the DiT, so the encoder/projection request the
+        # retained bundle came from still describes it.
+        self._save_last_model(source_type, source, pipeline_type,
+                              *self._minimax_h3_te_request)
 
         # The replacement dict shares every ancillary object but not the old
         # transformer. Collect after the attribute swap so its large CPU storage
@@ -2036,14 +2093,25 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
 
         print()
 
-    def _save_last_model(self, source_type: str, source: str, pipeline_type: str):
-        """Save the last loaded model configuration to file"""
+    def _save_last_model(self, source_type: str, source: str, pipeline_type: str,
+                         text_encoder_file: Optional[str] = None,
+                         clip_projection_file: Optional[str] = None):
+        """Save the last loaded model configuration to file.
+
+        The two H3 fields are written only when they were requested, so a file
+        written before they existed and one written by a default load look the
+        same.
+        """
         try:
             config = {
                 "source_type": source_type,
                 "source": source,
                 "pipeline_type": pipeline_type
             }
+            if text_encoder_file is not None:
+                config["text_encoder_file"] = text_encoder_file
+            if clip_projection_file is not None:
+                config["clip_projection_file"] = clip_projection_file
             with open(LAST_MODEL_CONFIG_FILE, 'w') as f:
                 json.dump(config, f, indent=2)
         except Exception as e:
@@ -2062,13 +2130,19 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             source_type = config.get("source_type")
             source = config.get("source")
             pipeline_type = config.get("pipeline_type", "txt2img")
+            # Absent in a file written before these existed, and in one written
+            # by a load that made no explicit choice.
+            text_encoder_file = config.get("text_encoder_file")
+            clip_projection_file = config.get("clip_projection_file")
 
             if source_type and source:
                 print(f"Auto-loading last model: {source_type}:{source}")
                 self.load_model(
                     source_type=source_type,
                     source=source,
-                    pipeline_type=pipeline_type
+                    pipeline_type=pipeline_type,
+                    text_encoder_file=text_encoder_file,
+                    clip_projection_file=clip_projection_file,
                 )
                 print(f"Successfully loaded last model: {source}")
         except Exception as e:

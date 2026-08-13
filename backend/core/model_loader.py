@@ -2099,7 +2099,10 @@ class ModelLoader:
     def load_from_safetensors(
         file_path: str,
         device: str = "cuda",
-        torch_dtype: torch.dtype = torch.float16
+        torch_dtype: torch.dtype = torch.float16,
+        *,
+        text_encoder_file: Optional[str] = None,
+        clip_projection_file: Optional[str] = None,
     ) -> Union[StableDiffusionPipeline, Dict[str, Any]]:
         """Load model from .safetensors file
 
@@ -2112,6 +2115,8 @@ class ModelLoader:
 
         model_type = ModelLoader.detect_model_type(file_path)
         print(f"[ModelLoader] Detected model type: {model_type}")
+        ModelLoader._refuse_load_time_te_choice(
+            model_type, text_encoder_file, clip_projection_file)
 
         # FLUX.2 format
         if model_type == "flux2":
@@ -2164,7 +2169,10 @@ class ModelLoader:
         # takes the remaining components from it.
         if model_type == "minimax_h3":
             print(f"[ModelLoader] Loading as MiniMax-H3 (DiT single file; variant selected by file)")
-            return ModelLoader.load_minimax_h3_from_path(file_path, torch.bfloat16)
+            return ModelLoader.load_minimax_h3_from_path(
+                file_path, torch.bfloat16,
+                text_encoder_file=text_encoder_file,
+                clip_projection_file=clip_projection_file)
 
         is_v_prediction = ModelLoader.detect_v_prediction(file_path)
 
@@ -2489,7 +2497,10 @@ class ModelLoader:
     def load_from_diffusers(
         model_path: str,
         device: str = "cuda",
-        torch_dtype: torch.dtype = torch.float16
+        torch_dtype: torch.dtype = torch.float16,
+        *,
+        text_encoder_file: Optional[str] = None,
+        clip_projection_file: Optional[str] = None,
     ) -> Union[StableDiffusionPipeline, Dict[str, Any]]:
         """Load model from diffusers format directory
 
@@ -2501,6 +2512,8 @@ class ModelLoader:
             raise FileNotFoundError(f"Model directory not found: {model_path}")
 
         model_type = ModelLoader.detect_model_type(model_path)
+        ModelLoader._refuse_load_time_te_choice(
+            model_type, text_encoder_file, clip_projection_file)
 
         # DEUS support removed - architecture no longer maintained
         # if model_type == "deus":
@@ -2554,7 +2567,10 @@ class ModelLoader:
         # Qwen3-VL text encoder + video and audio VAEs)
         if model_type == "minimax_h3":
             print(f"[ModelLoader] Loading as MiniMax-H3 (flat model tree)")
-            return ModelLoader.load_minimax_h3_from_path(model_path, torch.bfloat16)
+            return ModelLoader.load_minimax_h3_from_path(
+                model_path, torch.bfloat16,
+                text_encoder_file=text_encoder_file,
+                clip_projection_file=clip_projection_file)
 
         is_v_prediction = ModelLoader.detect_v_prediction(model_path)
 
@@ -2684,14 +2700,48 @@ class ModelLoader:
         return pipeline
 
     @staticmethod
+    def _refuse_load_time_te_choice(
+        model_type: Optional[str],
+        text_encoder_file: Optional[str],
+        clip_projection_file: Optional[str],
+    ) -> None:
+        """Refuse ``POST /models/load``'s H3 fields on any other architecture.
+
+        Dropping them instead would load that architecture's default components
+        and report success, which is exactly the failure these two fields exist
+        to make impossible.
+        """
+        if text_encoder_file is None and clip_projection_file is None:
+            return
+        if model_type == "minimax_h3":
+            return
+        named = ", ".join(
+            name for name, value in (("text_encoder_file", text_encoder_file),
+                                     ("clip_projection_file", clip_projection_file))
+            if value is not None)
+        raise ValueError(
+            f"{named} selects the text encoder built at load time and is implemented for "
+            f"minimax_h3 only; this model detects as {model_type!r}. Per-generation text-encoder "
+            f"swapping is a different parameter (text_encoder_path) on the generation routes.")
+
+    @staticmethod
     def load_model(
         source_type: ModelSource,
         source: str,
         device: str = "cuda",
         torch_dtype: torch.dtype = torch.float16,
+        text_encoder_file: Optional[str] = None,
+        clip_projection_file: Optional[str] = None,
         **kwargs
     ) -> Union[StableDiffusionPipeline, Dict[str, Any]]:
         """Universal model loading method
+
+        ``text_encoder_file``/``clip_projection_file`` are MiniMax-H3's
+        load-time encoder and projection choice. They are named parameters
+        rather than ``**kwargs`` entries all the way down to
+        ``load_minimax_h3_from_path``, because a key this function did not
+        recognise would be dropped here and the default encoder loaded with no
+        error at all.
 
         Returns:
             - StableDiffusionPipeline for SD1.5/SDXL
@@ -2702,6 +2752,8 @@ class ModelLoader:
         if (kwargs.get("text_encoder_path") is not None or kwargs.get("vae_path") is not None):
             if ModelLoader.detect_model_type(source) != "anima":
                 raise ValueError("Explicit text_encoder_path/vae_path model reload is supported only for Anima")
+            ModelLoader._refuse_load_time_te_choice(
+                "anima", text_encoder_file, clip_projection_file)
             return ModelLoader.load_anima_from_files(
                 source,
                 device,
@@ -2710,10 +2762,21 @@ class ModelLoader:
                 vae_path=kwargs.get("vae_path"),
             )
         if source_type == "safetensors":
-            return ModelLoader.load_from_safetensors(source, device, torch_dtype)
+            return ModelLoader.load_from_safetensors(
+                source, device, torch_dtype,
+                text_encoder_file=text_encoder_file,
+                clip_projection_file=clip_projection_file)
         elif source_type == "diffusers":
-            return ModelLoader.load_from_diffusers(source, device, torch_dtype)
+            return ModelLoader.load_from_diffusers(
+                source, device, torch_dtype,
+                text_encoder_file=text_encoder_file,
+                clip_projection_file=clip_projection_file)
         elif source_type == "huggingface":
+            if text_encoder_file is not None or clip_projection_file is not None:
+                # No local tree to name an encoder file in, and no H3 hub path.
+                raise ValueError(
+                    "text_encoder_file/clip_projection_file name files in a local MiniMax-H3 "
+                    "model tree and cannot be used with a huggingface source.")
             return ModelLoader.load_from_huggingface(
                 source,
                 device,
@@ -2889,6 +2952,9 @@ class ModelLoader:
     def load_minimax_h3_from_path(
         path: str,
         torch_dtype: torch.dtype = torch.bfloat16,
+        *,
+        text_encoder_file: Optional[str] = None,
+        clip_projection_file: Optional[str] = None,
     ) -> dict:
         """Load MiniMax-H3 from its flat ComfyUI-style model tree
         (diffusion_models/ + vae/ + text_encoders/ + MiniMax's config-only
@@ -2901,6 +2967,13 @@ class ModelLoader:
         AdaLN curve, fp8 codes left quantized, fp16 video VAE, float32 audio
         VAE, and the text encoder left at the file's bf16 so its CPU weights
         stay memory-mapped).
+
+        ``text_encoder_file``/``clip_projection_file`` are the load-time encoder
+        and projection choice from ``POST /models/load``. Named parameters, not
+        ``**kwargs``: a dropped key here would load the default encoder and
+        report success.
         """
         from core.models.minimax_h3.loader import load_minimax_h3_from_path as _load_h3
-        return _load_h3(model_path=path, torch_dtype=torch_dtype)
+        return _load_h3(model_path=path, torch_dtype=torch_dtype,
+                        te_override=text_encoder_file,
+                        te_projection_override=clip_projection_file)

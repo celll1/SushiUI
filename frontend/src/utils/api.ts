@@ -3240,6 +3240,65 @@ export const fetchTextEncoders = async (): Promise<{ text_encoders: TextEncoderE
   return response.data;
 };
 
+// A recorded measurement of one (text encoder, projection) pairing against a
+// released encoder. Absent from the listing (null) means unmeasured, which is
+// not the same as measured-and-equal.
+export interface MiniMaxH3TeAgreement {
+  reference: string;
+  cosine: number;
+  rel_rms: number;
+  rel_rms_floor: number;
+  presentations: number;
+  /**
+   * The projection this was measured WITH. The record is keyed by the
+   * (encoder, projection) pair, so a number measured for one projection says
+   * nothing about the encoder driven through another -- callers must check
+   * this against the projection actually selected before presenting it.
+   */
+  projection: string;
+}
+
+export interface MiniMaxH3TextEncoderEntry {
+  path: string;
+  name: string;
+  size_bytes: number;
+  compatible: boolean;
+  variant: string | null;
+  reason: string;
+  // Null for the released 32B encoders, which carry no converted-encoder metadata.
+  requires_projection: boolean | null;
+  hidden_size: number | null;
+  num_hidden_layers: number | null;
+  agreement: MiniMaxH3TeAgreement | null;
+}
+
+export interface MiniMaxH3ClipProjectionEntry {
+  path: string;
+  name: string;
+  size_bytes: number;
+  d_in: number;
+  d_out: number;
+  tap: number;
+}
+
+export interface MiniMaxH3TextEncodersResponse {
+  // What the loader would pick if no text_encoder_file is sent, and why.
+  selected: string | null;
+  selected_reason: string;
+  text_encoders: MiniMaxH3TextEncoderEntry[];
+  clip_projections: MiniMaxH3ClipProjectionEntry[];
+}
+
+// modelPath is either the DiT file or the model tree root.
+export const fetchMiniMaxH3TextEncoders = async (
+  modelPath: string
+): Promise<MiniMaxH3TextEncodersResponse> => {
+  const response = await api.get("/models/minimax-h3/text-encoders", {
+    params: { model_path: modelPath },
+  });
+  return response.data;
+};
+
 // ---------------------------------------------------------------------------
 // Video generation (LTX-2.3)
 // ---------------------------------------------------------------------------
@@ -4450,7 +4509,17 @@ export const switchCurrentModelComponent = async (
 // backend early-returns, so nothing per-session is reset — which is what makes
 // "load the model again" the working recovery for the one-way in-place INT8
 // conversion (unet_quantization="int8" on anima/krea2/flux2/ideogram4).
-export const loadModel = async (sourceType: string, source: string, revision?: string, force?: boolean) => {
+//
+// `textEncoderFile`/`clipProjectionFile` (MiniMax-H3 only, absolute paths): omit
+// both to get the loader's preference order and its projection auto-discovery.
+export const loadModel = async (
+  sourceType: string,
+  source: string,
+  revision?: string,
+  force?: boolean,
+  textEncoderFile?: string | null,
+  clipProjectionFile?: string | null
+) => {
   const formData = new FormData();
   formData.append("source_type", sourceType);
   formData.append("source", source);
@@ -4459,6 +4528,12 @@ export const loadModel = async (sourceType: string, source: string, revision?: s
   }
   if (force) {
     formData.append("force", "true");
+  }
+  if (textEncoderFile) {
+    formData.append("text_encoder_file", textEncoderFile);
+  }
+  if (clipProjectionFile) {
+    formData.append("clip_projection_file", clipProjectionFile);
   }
 
   const response = await api.post("/models/load", formData, {

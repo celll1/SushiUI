@@ -67,6 +67,13 @@ DEFAULT_CHAIN_DRIFT_TOLERANCE_FRAMES = 12
 
 CONTEXT_MODES = ("timeline", "manual", "legacy_repeat")
 SEED_POLICIES = ("fixed", "explicit", "derived")
+# The continuation contexts that are IMPLEMENTED. WHICH of them a given
+# architecture/variant offers is `api.arch_capabilities.CHAIN_CONTEXT` (served
+# as `chain_context`, and what the plan/validate routes refuse against); this
+# tuple is the ceiling that table may advertise from, so a Phase-B mode cannot
+# be promised before it exists. `openapi.yaml`'s `continuation_mode` enum is
+# wider still: it names the unimplemented candidates so they can be refused by
+# name rather than as an unknown string.
 CONTINUATION_MODES = ("boundary_frame",)
 
 EVENT_KINDS = (

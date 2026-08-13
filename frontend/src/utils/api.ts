@@ -1473,7 +1473,67 @@ export interface ArchCapabilities {
   // reason shown to the user all come from one source. Optional so an older
   // backend without the key still type-checks.
   training_unsupported?: Record<string, Record<string, string>>;
+  // arch -> what a long-form video CHAIN's continuation segments receive from
+  // their predecessor there (design §7.1). The backend's loaded variant plus
+  // this table is the authority on which continuation modes exist — a client
+  // must not branch on a checkpoint name. Optional so an older backend without
+  // the key still type-checks. Present only for video architectures.
+  chain_context?: Record<string, ChainContextCapability>;
 }
+
+// One architecture's (or one loaded transformer variant's) chain-context
+// capability, straight from `CHAIN_CONTEXT` in
+// backend/api/arch_capabilities.py. Served by GET /schema/arch-capabilities and
+// used by POST /video-chain/plan|validate to refuse an unadvertised
+// `continuation_mode` with a 400 — so a mode offered in the UI must come from
+// `chain_context_modes`, never from a hardcoded list here.
+export interface ChainContextVariantCapability {
+  // Only IMPLEMENTED modes appear. `VideoChainContinuationMode` is the wider
+  // wire vocabulary (it names the not-yet-built candidates so they can be
+  // refused by name).
+  chain_context_modes: VideoChainContinuationMode[];
+  chain_default_context_mode: VideoChainContinuationMode;
+  // Pixel frames of the preceding segment the model is conditioned on. Not a
+  // knob today: a statement of what the continuation actually gets. Valid
+  // lengths sit on video-VAE group boundaries, i.e. the cumulative sums of
+  // `video_constraints[arch].latent_chunk_pattern` (MiniMax-H3: 1, 5, 9, 13,
+  // 17, 18, ...), which is why no second enumeration is served here.
+  chain_context_min_frames: number;
+  // null = unbounded: the architecture takes whatever the preserved prefix is
+  // (LTX-2.3 places the whole accumulated clip as one video condition).
+  chain_context_max_frames: number | null;
+  // Several frames of the predecessor placed at chosen positions inside the
+  // generated span. False everywhere today (the outpaint endpoint a chain
+  // continues through carries no keyframe fields).
+  chain_supports_sparse_motion_anchors: boolean;
+  // Part of the preceding clip carried as a REFERENCE video, a separate channel
+  // from the boundary anchor. MiniMax-H3 `ref2va` only.
+  chain_supports_reference_video: boolean;
+  // Earlier segments' frames survive the continuation pixel-exact.
+  chain_supports_exact_prefix: boolean;
+}
+
+export interface ChainContextCapability extends ChainContextVariantCapability {
+  // Loaded transformer variant -> its own capability, for the variants that
+  // differ from the architecture-level entry. An absent variant answers with
+  // the architecture-level entry (the conservative one).
+  variants?: Record<string, ChainContextVariantCapability>;
+}
+
+// The chain-context capability for the LOADED arch/variant pair, or undefined
+// when the architecture cannot be chained (or the matrix is not loaded). The
+// variant is the one the backend reports for the loaded checkpoint
+// (`currentModelInfo.model_info.variant`), never a file name.
+export const chainContextCapability = (
+  caps: ArchCapabilities | null | undefined,
+  arch: string | null | undefined,
+  variant?: string | null
+): ChainContextVariantCapability | undefined => {
+  const entry = arch ? caps?.chain_context?.[arch] : undefined;
+  if (!entry) return undefined;
+  const key = (variant || "").trim().toLowerCase();
+  return entry.variants?.[key] ?? entry;
+};
 
 // The reason `method` is refused for `arch`, or undefined when it is offered.
 // Used to disable a training-method control AND to title it with the backend's

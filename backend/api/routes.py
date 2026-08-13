@@ -795,11 +795,17 @@ async def get_arch_capabilities():
     lengths, production bounds, fixed fps, canvas envelope) that the video
     routes validate against, so a client can build a valid clip-length list
     instead of hardcoding one.
+
+    `chain_context` is what a long-form video CHAIN's continuation segments
+    receive from their predecessor on that architecture (and, under `variants`,
+    on the loaded transformer variant). It is the source
+    `/video-chain/plan|validate` refuse an unadvertised `continuation_mode`
+    from, so a client picks a mode from here rather than from a checkpoint name.
     """
     from api.arch_capabilities import (
         ARCH_SUPPORTED_VALUES, ARCH_UNSUPPORTED, FEATURE_PARAMS, FEATURE_LABELS,
         QUANTIZED_LINEAR_ARCHS, RUNTIME_INT8_ARCHS, TRAINING_UNSUPPORTED,
-        video_constraints_payload,
+        chain_context_payload, video_constraints_payload,
     )
     return {
         "unsupported": ARCH_UNSUPPORTED,
@@ -808,6 +814,7 @@ async def get_arch_capabilities():
         "feature_labels": FEATURE_LABELS,
         "training_unsupported": TRAINING_UNSUPPORTED,
         "video_constraints": video_constraints_payload(),
+        "chain_context": chain_context_payload(),
         "runtime_int8_archs": list(RUNTIME_INT8_ARCHS),
         "quantized_linear_archs": list(QUANTIZED_LINEAR_ARCHS),
     }
@@ -17658,7 +17665,6 @@ def preview_tagger_vocabulary(
 
 from core.inference.video_chain_context import (
     CONTEXT_MODES as VIDEO_CHAIN_CONTEXT_MODES,
-    CONTINUATION_MODES as VIDEO_CHAIN_CONTINUATION_MODES,
     MANIFEST_VERSION as VIDEO_CHAIN_MANIFEST_VERSION,
     SEED_POLICIES as VIDEO_CHAIN_SEED_POLICIES,
     VIDEO_CHAIN_ANCHOR_FRAMES,
@@ -18164,7 +18170,8 @@ def _video_chain_manifest_from_wire(model: VideoChainManifestModel) -> ChainMani
             "Unknown seed_policy in manifest",
             detail=f"Expected one of {', '.join(VIDEO_CHAIN_SEED_POLICIES)}; got '{model.seed_policy}'",
         )
-    _video_chain_require_continuation_mode(model.continuation_mode, model.architecture)
+    _video_chain_require_continuation_mode(model.continuation_mode, model.architecture,
+                                           model.variant)
     if model.fps <= 0:
         raise CustomValidationError("Manifest fps must be positive", detail=f"fps={model.fps}")
 
@@ -18215,20 +18222,30 @@ def _video_chain_grid(architecture: str) -> VideoGridSpec:
     return VideoGridSpec.from_video_constraints(constraints)
 
 
-def _video_chain_require_continuation_mode(mode: str, architecture: str) -> None:
+def _video_chain_require_continuation_mode(mode: str, architecture: str,
+                                           variant: Optional[str] = None) -> None:
     """Design §7.7: a mode the architecture does not advertise is a 400.
 
-    Phase A implements exactly one continuation context (the shared boundary
-    frame). The richer modes in the schema are per-architecture capabilities
-    that no architecture advertises yet, so they are refused here rather than
-    quietly downgraded to `boundary_frame`.
+    The advertised list comes from `arch_capabilities.chain_context_for`, i.e.
+    from the same table `GET /schema/arch-capabilities` serves as
+    `chain_context` -- a client can therefore only ever be refused for a mode it
+    could have seen was unavailable. The richer schema modes (`motion_preroll`,
+    `tail_reference_video`, `sampler_state`) are named in the wire enum so they
+    can be refused BY NAME; none is implemented, so none is advertised, and a
+    request for one is refused rather than quietly downgraded.
     """
-    if mode not in VIDEO_CHAIN_CONTINUATION_MODES:
+    from api.arch_capabilities import chain_context_for
+
+    capability = chain_context_for(architecture, variant)
+    supported = capability["chain_context_modes"] if capability else []
+    if mode not in supported:
         raise CustomValidationError(
             "Unsupported continuation_mode",
             detail=(
-                f"'{architecture}' does not advertise continuation_mode '{mode}'. "
-                f"Supported: {', '.join(VIDEO_CHAIN_CONTINUATION_MODES)}. "
+                f"'{architecture}'"
+                f"{f' ({variant})' if variant else ''} does not advertise continuation_mode "
+                f"'{mode}'. Supported: {', '.join(supported) or '(none)'} "
+                "(GET /schema/arch-capabilities -> chain_context). "
                 "The request is refused rather than downgraded."
             ),
         )
@@ -18566,7 +18583,8 @@ async def plan_video_chain_route(request: VideoChainPlanRequestModel):
                 "then set the seeds on the manifest and re-validate."
             ),
         )
-    _video_chain_require_continuation_mode(request.continuation_mode, architecture)
+    _video_chain_require_continuation_mode(request.continuation_mode, architecture,
+                                           request.variant)
 
     grid = _video_chain_grid(architecture)
     mode = _video_chain_h3_mode(architecture, request.variant, request.workflow)

@@ -166,6 +166,12 @@ MINIMAX_H3_TE_PATTERNS: List[str] = [
     "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
 ]
 
+# Text-encoder file spellings this loader can build from. A ``.gguf`` is
+# reachable ONLY as an explicit override: nothing globs for it and
+# ``_te_capability_accept`` refuses it, for the same reason a converted file is
+# refused there -- a small stand-in encoder must never be auto-selected.
+_TE_SUFFIXES = frozenset({".safetensors", ".gguf"})
+
 # ``.comfy_quant`` "format" strings (see ``quantized_checkpoint_guard.py``)
 # whose TEXT ENCODER weights ``_build_text_encoder`` can actually install.
 # ``int8_tensorwise`` (the co-distributed ConvRot file, groupsize 256) is
@@ -335,10 +341,10 @@ def detect_minimax_h3_layout(
     te_override_path: Optional[Path] = None
     if te_override is not None:
         te_override_path = Path(te_override)
-        if not te_override_path.is_file() or te_override_path.suffix != ".safetensors":
+        if not te_override_path.is_file() or te_override_path.suffix.lower() not in _TE_SUFFIXES:
             raise FileNotFoundError(
                 f"MiniMax-H3 text_encoder override {te_override!r} is not an existing "
-                f".safetensors file")
+                f"{' or '.join(sorted(_TE_SUFFIXES))} file")
 
     if not path:
         return None
@@ -399,9 +405,21 @@ def _te_declared_dims(declared: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 def _te_file_declaration(te_path: str) -> Dict[str, Any]:
     """Header-only ``minimax_h3_te`` block of ``te_path``; ``{}`` if unreadable.
 
+    A raw GGUF has no such block; its KV metadata is read into the same shape
+    (``te_gguf_native.read_gguf_te_declaration``), minus ``num_hidden_layers``
+    -- an unconverted file carries every block, so the depth is the trained
+    projection's ``tap`` rather than the file's.
+
     Unreadable is not fatal here: every caller goes on to build the encoder from
     the same file and fails there with its own message.
     """
+    from core.models.minimax_h3.te_gguf_native import is_gguf_path, read_gguf_te_declaration
+
+    if is_gguf_path(te_path):
+        try:
+            return read_gguf_te_declaration(te_path)
+        except Exception:
+            return {}
     try:
         header = read_safetensors_header(te_path)
     except Exception:
@@ -430,7 +448,14 @@ def _te_capability_accept(path: Path) -> bool:
     is a non-empty ``MINIMAX_H3_TE_LOADABLE_QUANT_FORMATS`` -- consulted here,
     the single named place -- which is empty until a TE quant decode path
     exists.
+
+    A ``.gguf`` is refused on the same terms as a converted file, belt and
+    braces: nothing globs for that suffix either.
     """
+    from core.models.minimax_h3.te_gguf_native import is_gguf_path
+
+    if is_gguf_path(str(path)):
+        return False
     header = read_safetensors_header(str(path))
     metadata = header.pop("__metadata__", None)
     if _te_declared_dims(_te_declaration(metadata)) is not None:
@@ -480,6 +505,47 @@ def _inspect_converted_te_candidate(
     return result
 
 
+def _inspect_gguf_te_candidate(result: Dict[str, Any], path: str) -> Dict[str, Any]:
+    """Listing entry for a raw Qwen3-VL GGUF: KV metadata only, no tensor bytes.
+
+    ``num_hidden_layers`` stays ``None`` -- the file carries every block and the
+    trained projection's ``tap`` decides how many are mapped -- so the depth is
+    reported as ``block_count`` instead.
+    """
+    from core.models.minimax_h3.te_gguf_native import (
+        SUPPORTED_GGML_TYPES, read_gguf_te_declaration,
+    )
+
+    try:
+        declared = read_gguf_te_declaration(path)
+    except Exception as exc:
+        result["reason"] = f"GGUF metadata inspection failed: {exc}"
+        return result
+
+    unsupported = sorted(set(declared.get("ggml_types") or ()) - set(SUPPORTED_GGML_TYPES))
+    if unsupported:
+        result["variant"] = "gguf_unsupported"
+        result["reason"] = (
+            f"Carries GGML type(s) {', '.join(unsupported)}; native loading implements "
+            f"{', '.join(SUPPORTED_GGML_TYPES)} only. Convert the file with "
+            f"core.models.minimax_h3.te_gguf_convert first.")
+        return result
+
+    hidden = int(declared["hidden_size"])
+    blocks = int(declared["block_count"])
+    size = declared.get("source_size_label") or "small"
+    result["compatible"] = True
+    result["variant"] = "gguf_q8_0"
+    result["hidden_size"] = hidden
+    result["block_count"] = blocks
+    result["reason"] = (
+        f"Q8_0 GGUF, {size} Qwen3-VL ({blocks} blocks, hidden {hidden}), text-only, loaded "
+        f"without conversion. Never the architecture default; usable only with a trained "
+        f"d_in={hidden} projection from clip_projections/, whose tap selects how many of those "
+        f"blocks are run.")
+    return result
+
+
 def inspect_minimax_h3_text_encoder_candidate(path: str) -> Dict[str, Any]:
     """Header-only compatibility result for the dedicated H3 TE loader.
 
@@ -498,9 +564,22 @@ def inspect_minimax_h3_text_encoder_candidate(path: str) -> Dict[str, Any]:
         # take their geometry from official/text_encoder/config.json.
         "hidden_size": None,
         "num_hidden_layers": None,
+        # Only a raw GGUF sets this: it carries every block, and the projection
+        # picks the depth (see ``_inspect_gguf_te_candidate``).
+        "block_count": None,
     }
     try:
         result["size_bytes"] = os.path.getsize(path)
+    except Exception as exc:
+        result["reason"] = f"Header inspection failed: {exc}"
+        return result
+
+    from core.models.minimax_h3.te_gguf_native import is_gguf_path
+
+    if is_gguf_path(path):
+        return _inspect_gguf_te_candidate(result, path)
+
+    try:
         header = read_safetensors_header(path)
     except Exception as exc:
         result["reason"] = f"Header inspection failed: {exc}"
@@ -631,16 +710,21 @@ def _read_comfy_quant_markers(path: str, header: Dict[str, Any]) -> Dict[str, to
 
 
 def list_minimax_h3_text_encoder_candidates(model_path: str) -> List[Dict[str, Any]]:
-    """List every H3-tree safetensors TE, including disabled unknown files."""
+    """List every H3-tree TE file, including disabled unknown ones.
+
+    ``.gguf`` files are listed (they are selectable as an explicit override)
+    even though nothing auto-selects one.
+    """
     layout = detect_minimax_h3_layout(model_path)
     if layout is None or not layout.get("root"):
         return []
     directory = Path(str(layout["root"])) / "text_encoders"
     if not directory.is_dir():
         return []
+    found = [path for suffix in sorted(_TE_SUFFIXES) for path in directory.glob(f"*{suffix}")]
     return [
         inspect_minimax_h3_text_encoder_candidate(str(path))
-        for path in sorted(directory.glob("*.safetensors"), key=lambda item: item.name.lower())
+        for path in sorted(found, key=lambda item: item.name.lower())
     ]
 
 
@@ -690,13 +774,15 @@ def _te_projection_candidates(
 
     hidden = int(entry["hidden_size"])
     tap = int(entry.get("num_hidden_layers") or 0)
+    blocks = entry.get("block_count")
     candidates: List[Dict[str, Any]] = []
     for spec in discover_te_projections(root, d_in=hidden):
         reason = None
         try:
             resolve_te_projection(
                 root=root, te_path=entry["path"], hidden_size=hidden,
-                num_hidden_layers=tap, text_dim=text_dim, override=spec["path"])
+                num_hidden_layers=tap, text_dim=text_dim, override=spec["path"],
+                available_blocks=int(blocks) if blocks else None)
         except Exception as exc:
             reason = str(exc)
         candidates.append({
@@ -752,6 +838,8 @@ def describe_minimax_h3_text_encoder_choices(model_path: str) -> Dict[str, Any]:
                     root=str(layout["root"]), te_path=entry["path"], hidden_size=int(hidden),
                     num_hidden_layers=int(entry.get("num_hidden_layers") or 0),
                     text_dim=int(text_dim),
+                    available_blocks=(int(entry["block_count"])
+                                      if entry.get("block_count") else None),
                 )
             except Exception as exc:
                 entry["projection_reason"] = str(exc)
@@ -787,16 +875,39 @@ def assert_no_live_text_encoder() -> None:
         )
 
 
+def _projection_tap(projection: Optional[Dict[str, Any]]) -> Optional[int]:
+    """The depth a resolved projection was trained on, for the GGUF builder."""
+    tap = ((projection or {}).get("spec") or {}).get("tap")
+    return int(tap) if tap else None
+
+
+def _build_text_encoder_for(te_path: str, official_dir: Optional[str],
+                            projection: Optional[Dict[str, Any]]):
+    """``_build_text_encoder``, with the ``tap`` only the GGUF path needs.
+
+    Any other file is built through the ORIGINAL two-argument call, so a caller
+    (or a test) that replaces ``_build_text_encoder`` with a two-parameter stub
+    keeps working -- the same reason ``load_minimax_h3_from_path`` calls
+    ``detect_minimax_h3_layout`` both ways.
+    """
+    from core.models.minimax_h3.te_gguf_native import is_gguf_path
+
+    if is_gguf_path(te_path):
+        return _build_text_encoder(te_path, official_dir, tap=_projection_tap(projection))
+    return _build_text_encoder(te_path, official_dir)
+
+
 def build_minimax_h3_text_encoder(te_path: str, official_dir: Optional[str]):
     """Projection-free TE entry point; intentionally performs no device move.
 
-    A converted small encoder is refused here because ``(model, config)`` has
-    nowhere to put the projection its hidden state is only valid through; such a
-    file goes through ``build_minimax_h3_text_encoder_bundle``.
+    A small stand-in encoder (converted, or a raw GGUF) is refused here because
+    ``(model, config)`` has nowhere to put the projection its hidden state is
+    only valid through; such a file goes through
+    ``build_minimax_h3_text_encoder_bundle``.
     """
     if _te_declared_dims(_te_file_declaration(te_path)) is not None:
         raise ValueError(
-            f"{os.path.basename(te_path)} is a converted small text encoder and is usable only "
+            f"{os.path.basename(te_path)} is a small stand-in text encoder and is usable only "
             f"with its trained projection, which this two-value entry point cannot carry. Build "
             f"it through build_minimax_h3_text_encoder_bundle, which resolves the pairing.")
     bundle = build_minimax_h3_text_encoder_bundle(
@@ -841,7 +952,7 @@ def build_minimax_h3_text_encoder_bundle(
         )
 
     assert_no_live_text_encoder()
-    model, config = _build_text_encoder(te_path, official_dir)
+    model, config = _build_text_encoder_for(te_path, official_dir, projection)
     return {
         "text_encoder": model,
         "text_encoder_config": config,
@@ -875,12 +986,14 @@ def _te_selection_reason(directory: Path, selected: Optional[Path]) -> Optional[
     of having to diff directory listings against ``MINIMAX_H3_TE_PATTERNS``.
     """
     if selected is None:
-        converted = sorted(
-            path.name for path in (directory.glob("*.safetensors") if directory.is_dir() else ())
+        stand_ins = sorted(
+            path.name
+            for suffix in _TE_SUFFIXES
+            for path in (directory.glob(f"*{suffix}") if directory.is_dir() else ())
             if _te_declared_dims(_te_file_declaration(str(path))) is not None
         )
-        if converted:
-            return (f"no text encoder file found ({', '.join(converted)} are converted small "
+        if stand_ins:
+            return (f"no text encoder file found ({', '.join(stand_ins)} are small stand-in "
                     f"encoders, reachable only as an explicit override)")
         return "no text encoder file found"
     for idx, pattern in enumerate(MINIMAX_H3_TE_PATTERNS):
@@ -2495,8 +2608,12 @@ def _te_guard_state_dict(
     }
 
 
-def _build_text_encoder(te_path: str, official_dir: Optional[str]):
+def _build_text_encoder(te_path: str, official_dir: Optional[str], *, tap: Optional[int] = None):
     """Build the truncated Qwen3-VL and install the file's tensors BY REFERENCE.
+
+    ``tap`` is used by the ``.gguf`` path only, where the file carries every
+    block and the trained projection's tap decides the depth; a safetensors file
+    declares its own and ignores it.
 
     Three properties are load-bearing and each is measured (K0.7):
 
@@ -2524,8 +2641,6 @@ def _build_text_encoder(te_path: str, official_dir: Optional[str]):
     inference is that comfy-kitchen's kernel consumes the codes and the scale
     directly (see ``ConvRotInt8Linear.forward``).
     """
-    import weakref
-
     from accelerate import init_empty_weights
     from safetensors import safe_open
     from transformers import Qwen3VLConfig, Qwen3VLForConditionalGeneration
@@ -2533,6 +2648,10 @@ def _build_text_encoder(te_path: str, official_dir: Optional[str]):
     from core.models.common.quantized_checkpoint_guard import (
         quantized_state_dict_report, scaled_quantization_report, verify_quantized_swap,
     )
+    from core.models.minimax_h3.te_gguf_native import is_gguf_path
+
+    if is_gguf_path(te_path):
+        return _build_text_encoder_from_gguf(te_path, official_dir, tap)
 
     # THE GUARD FIRST -- ahead of the double-mapping check and both config reads.
     # The co-distributed `qwen3vl_32b_minimax_h3_int8_convrot` / `_nvfp4_awq`
@@ -2783,6 +2902,103 @@ def _build_text_encoder(te_path: str, official_dir: Optional[str]):
         result = model.load_state_dict(state_dict, strict=False, assign=True)
         del state_dict
 
+    _finalize_text_encoder(model, result, te_path, text_only)
+    return model, config
+
+
+def _build_text_encoder_from_gguf(te_path: str, official_dir: Optional[str], tap: Optional[int]):
+    """Build the truncated Qwen3-VL over the GGUF's own memory-mapped blocks.
+
+    Same mapping discipline as ``_build_text_encoder``: nothing here copies or
+    casts a CPU weight, the Q8_0 blocks stay packed as module buffers and are
+    dequantized on the GPU inside ``functional_call``.
+
+    The depth is the projection's ``tap``, because an unconverted file carries
+    every block; tensors of blocks at or beyond it are never mapped, so their
+    bytes are never touched. There is no ``_guard_component_file`` call: a GGUF
+    declares its quantization in its own type tags, and ``plan_gguf_text_encoder``
+    refuses every type this loader has no dequantizer for.
+    """
+    from accelerate import init_empty_weights
+    from transformers import Qwen3VLConfig, Qwen3VLForConditionalGeneration
+
+    from core.models.minimax_h3.te_gguf_native import (
+        open_gguf, plan_gguf_text_encoder, read_gguf_te_declaration, swap_modules_to_gguf_q8,
+    )
+
+    if not tap:
+        raise ValueError(
+            f"{os.path.basename(te_path)} is an unconverted GGUF and carries every decoder "
+            f"block, so the depth to read comes from the trained projection's tap -- and none "
+            f"was resolved for this load. Build it through "
+            f"build_minimax_h3_text_encoder_bundle or load_minimax_h3_from_path, which pair the "
+            f"projection first.")
+    _refuse_double_mapping(te_path)
+
+    if not official_dir:
+        raise FileNotFoundError(
+            f"MiniMax-H3 needs text_encoder/config.json to build the Qwen3-VL text encoder for "
+            f"{te_path}; no config-only tree was found beside the weights.")
+    cfg_path = os.path.join(official_dir, "text_encoder", "config.json")
+    if not os.path.isfile(cfg_path):
+        raise FileNotFoundError(f"missing {cfg_path}")
+    with open(cfg_path, encoding="utf-8") as fh:
+        raw_config = {k: v for k, v in json.load(fh).items() if k != "architectures"}
+
+    declared = read_gguf_te_declaration(te_path)
+    dims = _te_declared_dims(declared)
+    if dims is None:
+        raise ValueError(f"{te_path} does not declare a complete Qwen3-VL text geometry")
+    raw_config["text_config"] = _te_text_config_from_dims(raw_config.get("text_config"), dims)
+    print(f"[MiniMaxH3Loader] text encoder: geometry from the GGUF's own KV metadata (hidden "
+          f"{dims['hidden_size']}, {dims['num_attention_heads']} heads / "
+          f"{dims['num_key_value_heads']} kv, head_dim {dims['head_dim']}, ffn "
+          f"{dims['intermediate_size']}, vocab {dims['vocab_size']}) -- the 32B "
+          f"text_encoder/config.json is NOT applied")
+
+    config = Qwen3VLConfig(**raw_config)
+    config.text_config.num_hidden_layers = int(tap)
+    print(f"[MiniMaxH3Loader] text encoder: Qwen3-VL read to decoder layer {tap} of the GGUF's "
+          f"{declared['block_count']} (the projection's tap; deeper blocks are never mapped)")
+
+    with init_empty_weights():
+        model = Qwen3VLForConditionalGeneration(config)
+
+    reader = open_gguf(te_path)
+    try:
+        plan = plan_gguf_text_encoder(reader, int(tap), te_path, _rewrite_te_key)
+        linears, embeddings = swap_modules_to_gguf_q8(
+            model, plan["linear_configs"], plan["embedding_configs"], torch.bfloat16)
+        if (linears, embeddings) != (len(plan["linear_configs"]), len(plan["embedding_configs"])):
+            raise RuntimeError(
+                f"the MiniMax-H3 text encoder ({te_path}) maps {len(plan['linear_configs'])} "
+                f"Q8_0 Linear(s) and {len(plan['embedding_configs'])} embedding(s), but "
+                f"{linears}/{embeddings} module(s) were replaced -- the GGUF's tensor names and "
+                f"the built Qwen3-VL model disagree")
+        result = model.load_state_dict(plan["state_dict"], strict=False, assign=True)
+        print(f"[MiniMaxH3Loader] text encoder: {linears} Q8_0 Linear(s) + {embeddings} Q8_0 "
+              f"embedding(s) kept packed (dequantized per layer on the GPU), "
+              f"{plan['skipped']} tensor(s) never mapped")
+        del plan
+    finally:
+        # The reader itself must not outlive this call: the tensors installed
+        # above hold their own views of the same mmap, and that is what the
+        # weakref assertion tracks.
+        del reader
+
+    _finalize_text_encoder(model, result, te_path, text_only=True)
+    return model, config
+
+
+def _finalize_text_encoder(model, result, te_path: str, text_only: bool) -> None:
+    """The post-load assertions and the two deliberately-absent modules.
+
+    Shared by both builders so a GGUF-backed encoder is held to the same
+    contract -- including the weakref registry ``assert_no_live_text_encoder``
+    reads, which is what proves the previous file's mapping was released.
+    """
+    import weakref
+
     unexpected = sorted(result.unexpected_keys)
     missing = sorted(result.missing_keys)
     if unexpected:
@@ -2825,11 +3041,12 @@ def _build_text_encoder(te_path: str, official_dir: Optional[str]):
 
     model.eval().requires_grad_(False)
     _LIVE_TEXT_ENCODER[te_path] = weakref.ref(model)
+    # Buffers are included, which is what makes this cover a GGUF-backed
+    # encoder: its mapped bytes are Q8_0 buffers, not parameters.
     _LIVE_TEXT_ENCODER_TENSORS[te_path] = tuple(
         weakref.ref(tensor)
         for tensor in list(model.parameters()) + list(model.buffers())
     )
-    return model, config
 
 
 def _load_tokenizer_and_processor(official_dir: Optional[str]):
@@ -2921,10 +3138,14 @@ def resolve_minimax_h3_te_projection(
 ) -> Optional[Dict[str, Any]]:
     """The loaded projection this text encoder needs, or ``None`` if it needs none.
 
-    A file that declares its own dims (a converted small encoder) and whose
-    ``hidden_size`` is not the DiT's ``text_dim`` MUST be paired: there is no
-    fallback to unprojected conditioning, because that is a wrong encode rather
-    than a cheaper one.
+    A file that declares its own dims (a converted small encoder, or a raw
+    GGUF) and whose ``hidden_size`` is not the DiT's ``text_dim`` MUST be
+    paired: there is no fallback to unprojected conditioning, because that is a
+    wrong encode rather than a cheaper one.
+
+    For a raw GGUF the declaration carries ``block_count`` instead of
+    ``num_hidden_layers``, and the resolved projection's ``tap`` is what the
+    builder then maps -- see ``resolve_te_projection``'s ``available_blocks``.
     """
     from core.models.minimax_h3.te_projection import (
         describe_te_substitution, load_te_projection, resolve_te_projection,
@@ -2944,10 +3165,12 @@ def resolve_minimax_h3_te_projection(
             f"{text_dim}-wide conditioning. That encoder is used directly; only a narrower "
             f"converted encoder is projected.")
 
+    blocks = declared.get("block_count")
     spec = resolve_te_projection(
         root=root, te_path=te_path, hidden_size=hidden_size,
         num_hidden_layers=int(declared.get("num_hidden_layers") or 0),
         text_dim=text_dim, override=override,
+        available_blocks=int(blocks) if blocks else None,
     )
     projection = load_te_projection(spec)
     print(f"[MiniMaxH3Loader] TE projection: {spec['path']} "
@@ -3070,7 +3293,8 @@ def load_minimax_h3_from_path(
     # doing this last can access-violate inside safetensors/torch storage.
     text_encoder = text_encoder_config = None
     if load_text_encoder:
-        text_encoder, text_encoder_config = _build_text_encoder(layout["text_encoder"], official)
+        text_encoder, text_encoder_config = _build_text_encoder_for(
+            layout["text_encoder"], official, te_projection)
 
     transformer, transformer_config = _build_transformer(layout["dit"], torch_dtype, official)
     # fp16 for the video VAE (see MINIMAX_H3_VIDEO_VAE_DTYPE), float32 for the

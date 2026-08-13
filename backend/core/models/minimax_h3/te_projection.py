@@ -1,7 +1,7 @@
 """Trained hidden-state projection pairing a small Qwen3-VL with MiniMax-H3.
 
-A converted small encoder (``te_gguf_convert``) is 2560- (4B) or 4096-wide
-(8B) where the DiT's ``condition_proj`` takes 5120, so it is usable only
+A small Qwen3-VL encoder -- converted by ``te_gguf_convert`` or mapped straight
+from its GGUF by ``te_gguf_native`` -- is 2560- (4B) or 4096-wide (8B) where the DiT's ``condition_proj`` takes 5120, so it is usable only
 together with a projection trained for that exact (encoder, tap) pair. Running
 the small encoder without one, or with the other size's one, is not a degraded
 encode -- it is a wrong one, which is why every pairing check in
@@ -213,12 +213,19 @@ def resolve_te_projection(
     num_hidden_layers: int,
     text_dim: int,
     override: Optional[str] = None,
+    available_blocks: Optional[int] = None,
 ) -> Dict[str, Any]:
     """The projection spec for this encoder, or raise naming both numbers.
 
     ``override`` names a file explicitly and skips discovery; it is still put
     through every pairing gate, because naming a file is a decision about WHICH
     projection, not about whether it fits.
+
+    ``available_blocks`` switches the depth gate for an encoder file that was
+    NOT truncated at write time -- a raw GGUF, which carries every block. There
+    the projection's ``tap`` DEFINES how many blocks to run, so it must only fit
+    (``tap <= available_blocks``); ``num_hidden_layers`` is unknown and ignored.
+    A converted file declares its own depth and keeps the equality gate.
     """
     if override is not None:
         if not os.path.isfile(override):
@@ -257,7 +264,14 @@ def resolve_te_projection(
             f"MiniMax-H3 text-encoder projection {spec['path']} produces d_out={spec['d_out']} but "
             f"the DiT's condition_proj takes text_dim={text_dim}. The projected conditioning would "
             f"not fit the checkpoint.")
-    if spec["tap"] != num_hidden_layers:
+    if available_blocks is not None:
+        if spec["tap"] < 1 or spec["tap"] > available_blocks:
+            raise ValueError(
+                f"MiniMax-H3 text-encoder projection {spec['path']} was trained on tap="
+                f"{spec['tap']} but the text encoder {te_path} carries {available_blocks} "
+                f"block(s). The projection is fitted to one specific layer's hidden state, and "
+                f"this file cannot produce it.")
+    elif spec["tap"] != num_hidden_layers:
         raise ValueError(
             f"MiniMax-H3 text-encoder projection {spec['path']} was trained on tap={spec['tap']} "
             f"but the text encoder {te_path} declares num_hidden_layers={num_hidden_layers}. The "

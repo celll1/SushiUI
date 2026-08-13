@@ -38,7 +38,6 @@ interface ModelLoadSectionProps {
   onModelLoad?: (modelInfo: any) => void;
 
   // Vision encoder override (SDXL/SD1.5 reference conditioning).
-  showVisionEncoder?: boolean;
   visionEncoderPath?: string | null;
   onVisionEncoderChange?: (path: string | null) => void;
 

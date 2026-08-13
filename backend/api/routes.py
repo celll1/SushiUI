@@ -8484,6 +8484,52 @@ def _training_vae_export_dirs() -> List[str]:
     return out
 
 
+_COMPONENT_SUBDIRS = ("vae", "text_encoders")
+
+
+def _offer_component_dir(item_path: str, consider) -> None:
+    """Offer a directory, and the component files one and two levels inside it.
+
+    A model tree keeps its components in ``vae/`` and ``text_encoders/``, and a
+    tree can itself sit inside a collection directory, so both depths have to
+    be walked to reach a standalone component either way.
+
+    Only directories and model files are offered. Handing the classifier a
+    stray file -- the sample .png images a training run leaves next to its
+    exports, say -- makes it attempt a safetensors header read on each and fail
+    noisily.
+    """
+    consider(item_path)
+    try:
+        children = os.listdir(item_path)
+    except OSError:
+        return
+    for sub in children:
+        sub_path = os.path.join(item_path, sub)
+        is_dir = os.path.isdir(sub_path)
+        if not (is_dir or sub.endswith(".safetensors")
+                or (sub.startswith("PiD_") and sub.endswith(".pth"))):
+            continue
+        consider(sub_path)
+        if not is_dir:
+            continue
+        try:
+            if sub in _COMPONENT_SUBDIRS:
+                for nested in os.listdir(sub_path):
+                    if nested.endswith(".safetensors"):
+                        consider(os.path.join(sub_path, nested))
+            else:
+                for nested in _COMPONENT_SUBDIRS:
+                    nested_dir = os.path.join(sub_path, nested)
+                    if not os.path.isdir(nested_dir):
+                        continue
+                    for filename in os.listdir(nested_dir):
+                        if filename.endswith(".safetensors"):
+                            consider(os.path.join(nested_dir, filename))
+        except OSError:
+            continue
+
+
 @router.get("/models/vaes")
 def list_vaes(db: Session = Depends(get_gallery_db)):
     """List standalone VAE candidates usable as a per-generation VAE override.
@@ -8551,39 +8597,7 @@ def list_vaes(db: Session = Depends(get_gallery_db)):
             item_path = os.path.join(scan_dir, name)
             if os.path.isdir(item_path):
                 # a diffusers model dir OR a standalone VAE dir; classifier decides
-                _consider(item_path)
-                # one level of nesting (e.g. models_dir/vae/<subdir>)
-                try:
-                    for sub in os.listdir(item_path):
-                        _sub_path = os.path.join(item_path, sub)
-                        # Only descend into nested dirs or model/VAE files — never
-                        # pass stray non-model files (e.g. sample .png images in a
-                        # training run's folder) to the classifier, which would try
-                        # a safetensors header read on each and fail noisily.
-                        if os.path.isdir(_sub_path) or sub.endswith(".safetensors") or (
-                            sub.startswith("PiD_") and sub.endswith(".pth")
-                        ):
-                            _consider(_sub_path)
-                            if os.path.isdir(_sub_path) and sub in ("vae", "text_encoders"):
-                                try:
-                                    for nested in os.listdir(_sub_path):
-                                        if nested.endswith(".safetensors"):
-                                            _consider(os.path.join(_sub_path, nested))
-                                except OSError:
-                                    pass
-                            elif os.path.isdir(_sub_path):
-                                try:
-                                    for nested in os.listdir(_sub_path):
-                                        nested_dir = os.path.join(_sub_path, nested)
-                                        if nested not in ("vae", "text_encoders") or not os.path.isdir(nested_dir):
-                                            continue
-                                        for filename in os.listdir(nested_dir):
-                                            if filename.endswith(".safetensors"):
-                                                _consider(os.path.join(nested_dir, filename))
-                                except OSError:
-                                    pass
-                except OSError:
-                    pass
+                _offer_component_dir(item_path, _consider)
             elif name.endswith(".safetensors") or (name.startswith("PiD_") and name.endswith(".pth")):
                 # A bare .safetensors VAE, or a PiD (Pixel Diffusion Decoder)
                 # checkpoint — classify_vae_candidate recognizes the latter via
@@ -8649,38 +8663,7 @@ def list_text_encoders(db: Session = Depends(get_gallery_db)):
         for name in entries:
             item_path = os.path.join(scan_dir, name)
             if os.path.isdir(item_path):
-                _consider(item_path)
-                try:
-                    for sub in os.listdir(item_path):
-                        _sub_path = os.path.join(item_path, sub)
-                        # Only descend into nested dirs or model/VAE files — never
-                        # pass stray non-model files (e.g. sample .png images in a
-                        # training run's folder) to the classifier, which would try
-                        # a safetensors header read on each and fail noisily.
-                        if os.path.isdir(_sub_path) or sub.endswith(".safetensors") or (
-                            sub.startswith("PiD_") and sub.endswith(".pth")
-                        ):
-                            _consider(_sub_path)
-                            if os.path.isdir(_sub_path) and sub in ("vae", "text_encoders"):
-                                try:
-                                    for nested in os.listdir(_sub_path):
-                                        if nested.endswith(".safetensors"):
-                                            _consider(os.path.join(_sub_path, nested))
-                                except OSError:
-                                    pass
-                            elif os.path.isdir(_sub_path):
-                                try:
-                                    for nested in os.listdir(_sub_path):
-                                        nested_dir = os.path.join(_sub_path, nested)
-                                        if nested not in ("vae", "text_encoders") or not os.path.isdir(nested_dir):
-                                            continue
-                                        for filename in os.listdir(nested_dir):
-                                            if filename.endswith(".safetensors"):
-                                                _consider(os.path.join(nested_dir, filename))
-                                except OSError:
-                                    pass
-                except OSError:
-                    pass
+                _offer_component_dir(item_path, _consider)
             elif name.endswith(".safetensors"):
                 _consider(item_path)
 

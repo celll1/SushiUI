@@ -12,6 +12,11 @@ from utils.path_redaction import display_name_for_path
 
 SLOTS = ("text_encoder", "vision_encoder", "backbone", "vae", "audio_vae")
 _UNET_ARCHS = {"sd15", "sdxl"}
+# Anima switches by reloading the whole model, so the candidate is read while
+# the outgoing components are still resident. Past this size that peak is what
+# decides whether the switch survives, and a candidate this large is not an
+# Anima companion anyway -- its text encoder and VAE are single-digit GiB.
+# Fail-closed rather than discover the ceiling by hitting it.
 _ANIMA_SWITCH_MAX_BYTES = 32 * 1024 ** 3
 _COMPONENT_DICTS = {
     "zimage": "zimage_components",
@@ -427,11 +432,23 @@ def build_catalog(
                 "Candidate size is unknown; fail-closed."
                 if arch == "anima" and size_bytes is None else None
             )
+            if anima_switchable:
+                switch_reason = None
+            elif size_reason:
+                switch_reason = size_reason
+            elif arch == "anima":
+                # Anima does have an adapter, so this candidate is refused on
+                # its own merits -- report those. The UI shows switch_reason in
+                # preference to compatibility_reason, so the generic line here
+                # would replace the real reason with a false one.
+                switch_reason = reason
+            else:
+                switch_reason = disabled_reason
             catalog[slot].append(_candidate(
                 slot, arch, path, str(entry.get("name") or _display(path, slot)),
                 origin="selected_external", compatibility=compatibility,
                 compatibility_reason=reason, switchable=anima_switchable,
-                switch_reason=(size_reason or None) if anima_switchable or size_reason else disabled_reason,
+                switch_reason=switch_reason,
                 path=path, size_bytes=size_bytes,
                 load_strategy="architecture_resolved" if anima_switchable else "standalone",
             ))
@@ -571,9 +588,19 @@ def build_response(manager: Any, catalog: Dict[str, List[Dict[str, Any]]], opera
             reason = "No verified unload-first adapter is available."
         else:
             reason = None
+        if slot == "audio_vae":
+            # Only the architectures that have one.
+            visible = arch in ("ltx2", "minimax_h3")
+        elif slot == "vision_encoder":
+            # Reference conditioning is a UNet-only feature. Elsewhere the slot
+            # is a dropdown whose every entry is incompatible and which cannot
+            # even be set back to None, so it is noise rather than information.
+            visible = arch in _UNET_ARCHS
+        else:
+            visible = True
         slots.append({
             "slot": slot,
-            "visible": slot != "audio_vae" or arch in ("ltx2", "minimax_h3"),
+            "visible": visible,
             "current": current,
             "runtime_override": _runtime_override(manager, arch, slot) if info else None,
             "switchable": switchable,

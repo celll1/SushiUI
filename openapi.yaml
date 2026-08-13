@@ -13499,7 +13499,12 @@ components:
           type: string
         residency:
           type: string
-          enum: [resident, configured, unloaded, unavailable]
+          description: >-
+            Where the component is right now. `resident` is on the GPU,
+            `configured` is a known path that is not currently loaded, and
+            `unloaded` is neither. Provenance, which can be unknown, is
+            reported by `origin` instead.
+          enum: [resident, configured, unloaded]
         embedded:
           type: boolean
         path_display:
@@ -13517,6 +13522,12 @@ components:
           $ref: '#/components/schemas/ComponentSlotId'
         visible:
           type: boolean
+          description: >-
+            Whether the loaded architecture has this slot at all. `audio_vae`
+            is shown only for LTX-2.3 and MiniMax-H3, and `vision_encoder` only
+            for SD1.5/SDXL, which are the architectures with reference
+            conditioning. A hidden slot still carries its state; it just has
+            nothing to offer.
         current:
           allOf:
             - $ref: '#/components/schemas/EffectiveComponent'
@@ -13555,6 +13566,13 @@ components:
           type: object
           nullable: true
           additionalProperties: true
+          description: >-
+            The most recent component switch, or null if none has run. Carries
+            `id`, `slot`, `state` (waiting/running/succeeded/failed), `phase`,
+            `started_at`/`finished_at`, and `error` when it failed.
+            `discarded_overrides` lists the per-generation overrides an Anima
+            switch dropped, since reloading the model releases the components
+            those overrides referred to.
         slots:
           type: array
           items:

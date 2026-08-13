@@ -337,6 +337,53 @@ def test_h3_te_failure_serially_reloads_old_without_revision(monkeypatch):
     assert manager.component_revision == 7
 
 
+def test_scanned_current_component_does_not_become_a_second_option():
+    """The scans surface the loaded file too; it must not appear twice.
+
+    Both rows hash the same path into the same candidate_id, and the UI uses
+    that id as the option's value. The duplicate is unselectable -- the change
+    handler compares it against the current id and sees no change -- and
+    find_candidate resolves it to the current row, which refuses to switch.
+    """
+    manager = _Manager("anima")
+    manager.txt2img_pipeline = None
+    current_te = "C:/anima/text_encoders/te.safetensors"
+    current_vae = "C:/anima/vae/vae.safetensors"
+    manager.anima_components = {
+        "transformer": object(), "text_encoder": object(), "vae": object(),
+        "paths": {"text_encoder": current_te, "vae": current_vae},
+        "vae_source": "external",
+    }
+
+    catalog = build_catalog(
+        manager,
+        text_encoders=[
+            {"name": "te", "path": current_te, "arch": "anima", "out_dim": 1024,
+             "anima_compatible": True, "anima_compatibility_reason": "verified", "size_gb": 1.0},
+            {"name": "other-te", "path": "C:/anima/text_encoders/other.safetensors",
+             "arch": "anima", "out_dim": 1024,
+             "anima_compatible": True, "anima_compatibility_reason": "verified", "size_gb": 1.0},
+        ],
+        vaes=[
+            {"name": "vae", "path": current_vae, "arch": "anima", "latent_channels": 16,
+             "anima_compatible": True, "anima_compatibility_reason": "verified", "size_gb": 0.3},
+        ],
+    )
+
+    for slot in ("text_encoder", "vae"):
+        ids = [item["candidate_id"] for item in catalog[slot]]
+        assert len(ids) == len(set(ids)), f"{slot} has duplicate candidate_id values"
+        current_rows = [item for item in catalog[slot] if item.get("is_current")]
+        assert len(current_rows) == 1
+    # The row that survived is the current one, and it is still not offered as
+    # something to switch to.
+    assert catalog["vae"][0]["is_current"] is True
+    assert catalog["vae"][0]["switchable"] is False
+    # A genuinely different file is untouched by the dedup.
+    assert any(item["_path"] == "C:/anima/text_encoders/other.safetensors"
+               and item["switchable"] for item in catalog["text_encoder"])
+
+
 def test_h3_te_switch_detachment_failure_leaves_health_degraded(monkeypatch):
     """A live owner of the old TE must disable generation, not re-enable it.
 

@@ -480,6 +480,23 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: >-
+            A model load or component switch is changing the loaded model.
+            Generation is refused while the components are being replaced;
+            retry once the switch completes.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: >-
+            The loaded model is degraded: a component switch or a failed load
+            left the live components incomplete. Reload the model to recover.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: Generation failed
           content:
@@ -567,6 +584,23 @@ paths:
           description: >-
             Invalid parameters, or no video model loaded (neither LTX-2.3 nor
             MiniMax-H3).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: >-
+            A model load or component switch is changing the loaded model.
+            Generation is refused while the components are being replaced;
+            retry once the switch completes.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: >-
+            The loaded model is degraded: a component switch or a failed load
+            left the live components incomplete. Reload the model to recover.
           content:
             application/json:
               schema:
@@ -711,6 +745,23 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: >-
+            A model load or component switch is changing the loaded model.
+            Generation is refused while the components are being replaced;
+            retry once the switch completes.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: >-
+            The loaded model is degraded: a component switch or a failed load
+            left the live components incomplete. Reload the model to recover.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: Generation failed
           content:
@@ -834,6 +885,23 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: >-
+            A model load or component switch is changing the loaded model.
+            Generation is refused while the components are being replaced;
+            retry once the switch completes.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: >-
+            The loaded model is degraded: a component switch or a failed load
+            left the live components incomplete. Reload the model to recover.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: Generation failed
           content:
@@ -886,6 +954,23 @@ paths:
             Invalid parameters, or no ACE-Step model loaded. A loaded MiniMax-H3
             model is refused here with its own reason: it generates audio only
             jointly with video, so its audio is not separately addressable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: >-
+            A model load or component switch is changing the loaded model.
+            Generation is refused while the components are being replaced;
+            retry once the switch completes.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: >-
+            The loaded model is degraded: a component switch or a failed load
+            left the live components incomplete. Reload the model to recover.
           content:
             application/json:
               schema:
@@ -967,6 +1052,23 @@ paths:
             Invalid parameters, or no ACE-Step model loaded. A loaded MiniMax-H3
             model is refused here with its own reason: it generates audio only
             jointly with video, so its audio is not separately addressable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: >-
+            A model load or component switch is changing the loaded model.
+            Generation is refused while the components are being replaced;
+            retry once the switch completes.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: >-
+            The loaded model is degraded: a component switch or a failed load
+            left the live components incomplete. Reload the model to recover.
           content:
             application/json:
               schema:
@@ -1064,6 +1166,23 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: >-
+            A model load or component switch is changing the loaded model.
+            Generation is refused while the components are being replaced;
+            retry once the switch completes.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: >-
+            The loaded model is degraded: a component switch or a failed load
+            left the live components incomplete. Reload the model to recover.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: Generation failed
           content:
@@ -1113,6 +1232,23 @@ paths:
             or /generate/aud2aud, inpaint -> /generate/inpaint/video on MiniMax-H3
             or /generate/aud2aud, outpaint -> /generate/outpaint/video or
             /generate/outpaint/audio), not always the text-only one.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: >-
+            A model load or component switch is changing the loaded model.
+            Generation is refused while the components are being replaced;
+            retry once the switch completes.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: >-
+            The loaded model is degraded: a component switch or a failed load
+            left the live components incomplete. Reload the model to recover.
           content:
             application/json:
               schema:
@@ -1168,6 +1304,23 @@ paths:
             or /generate/aud2aud, inpaint -> /generate/inpaint/video on MiniMax-H3
             or /generate/aud2aud, outpaint -> /generate/outpaint/video or
             /generate/outpaint/audio), not always the text-only one.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: >-
+            A model load or component switch is changing the loaded model.
+            Generation is refused while the components are being replaced;
+            retry once the switch completes.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: >-
+            The loaded model is degraded: a component switch or a failed load
+            left the live components incomplete. Reload the model to recover.
           content:
             application/json:
               schema:
@@ -1350,6 +1503,23 @@ paths:
             output canvas, a malformed or empty mask PNG, and any mismatch or
             duplicate in the repeated `spatial_mask_ids`/`spatial_mask_files`
             mapping.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: >-
+            A model load or component switch is changing the loaded model.
+            Generation is refused while the components are being replaced;
+            retry once the switch completes.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: >-
+            The loaded model is degraded: a component switch or a failed load
+            left the live components incomplete. Reload the model to recover.
           content:
             application/json:
               schema:
@@ -1592,6 +1762,23 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: >-
+            A model load or component switch is changing the loaded model.
+            Generation is refused while the components are being replaced;
+            retry once the switch completes.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: >-
+            The loaded model is degraded: a component switch or a failed load
+            left the live components incomplete. Reload the model to recover.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: Generation failed
           content:
@@ -1791,6 +1978,23 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: >-
+            A model load or component switch is changing the loaded model.
+            Generation is refused while the components are being replaced;
+            retry once the switch completes.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: >-
+            The loaded model is degraded: a component switch or a failed load
+            left the live components incomplete. Reload the model to recover.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: Generation failed
           content:
@@ -1832,6 +2036,23 @@ paths:
                 actual_seed: 0
         '400':
           description: Invalid parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: >-
+            A model load or component switch is changing the loaded model.
+            Generation is refused while the components are being replaced;
+            retry once the switch completes.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: >-
+            The loaded model is degraded: a component switch or a failed load
+            left the live components incomplete. Reload the model to recover.
           content:
             application/json:
               schema:
@@ -2749,6 +2970,14 @@ paths:
                     additionalProperties: true
                     description: Same payload as `GET /models/current`'s `model_info`.
 
+        '409':
+          description: >-
+            Another model load, a component switch, an in-flight generation, or
+            a training run is holding the model lifecycle gate.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /models/minimax-h3/text-encoders:
     get:
       tags: [models]
@@ -3007,6 +3236,15 @@ paths:
         '422':
           description: Candidate is incompatible or the slot has no safe adapter
 
+        '500':
+          description: >-
+            The switch failed after releasing the old component. The response
+            says whether the previous component was reloaded serially or the
+            model is left degraded.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /loras:
     get:
       tags: [models]
@@ -4285,6 +4523,14 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: >-
+            A model load or component switch is changing the loaded model, so
+            the run cannot claim the lifecycle gate yet.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /training/runs/{run_id}/stop:
     post:
       tags: [training]
@@ -5025,6 +5271,14 @@ paths:
                 additionalProperties: true
         '404':
           description: Tagger training run not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: >-
+            A model load or component switch is changing the loaded model, so
+            the run cannot claim the lifecycle gate yet.
           content:
             application/json:
               schema:

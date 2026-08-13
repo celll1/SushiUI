@@ -227,9 +227,10 @@ export const segmentChainSeed = (
 // What THIS continuation is conditioned on, from the manifest. Emitted only
 // for a mode that asks for more than the shared anchor frame, so a
 // `boundary_frame` chain (the default) sends exactly the request it always
-// sent. The overlap is the segment's own planned value; the backend refuses an
-// unaligned one and reports the effective one in `warnings[]`, so nothing here
-// tries to snap it.
+// sent. `effective_overlap_frames` is the value the plan's frame ranges were
+// computed with, so it — not the raw request — is what the segment must run
+// with, or the clip comes back a different length than the plan states. The
+// backend refuses an unaligned or too-short one; nothing here snaps it.
 export const segmentChainContinuation = (
   manifest: VideoChainManifest | null | undefined,
   segmentIndex: number
@@ -238,7 +239,8 @@ export const segmentChainContinuation = (
   const segment = manifest.segments.find((s) => s.index === segmentIndex);
   return {
     continuation_mode: manifest.continuation_mode,
-    continuation_overlap_frames: segment?.requested_overlap_frames ?? 0,
+    continuation_overlap_frames:
+      segment?.effective_overlap_frames || segment?.requested_overlap_frames || 0,
   };
 };
 
@@ -428,15 +430,25 @@ export function buildChainContinuationQueueItems(args: {
 }): Array<Omit<QueueItem, "id" | "status" | "addedAt">> {
   const plannedTotals =
     planVideoChainSegments(args.caps, args.arch, args.targetFrames, args.segmentFrames) ?? [];
-  // With a manifest, its own geometry is the authority: a continuation's
-  // `total_frames` is the accumulated length it ends at, i.e. its
-  // `owned_end_frame`. The frontend planner still runs so a divergence
+  // With a manifest, its own geometry is the authority: a continuation asks for
+  // its `requested_total_frames`. That equals `owned_end_frame` under
+  // `boundary_frame`, but a mode that pins a wider overlap rounds the generated
+  // span up onto the frame grid, so the request and the length it comes back
+  // with are two different numbers -- and the REQUEST is what the plan's
+  // arithmetic was built from. The frontend planner still runs so a divergence
   // between the two implementations is visible while both exist (design §12);
-  // it is reported, not silently preferred either way.
-  const manifestTotals = args.manifest
-    ? args.manifest.segments.filter((s) => s.index > 0).map((s) => s.owned_end_frame)
+  // it is reported, not silently preferred either way, and only for
+  // `boundary_frame`, the one mode that planner knows about.
+  const manifestSegments = args.manifest
+    ? args.manifest.segments.filter((s) => s.index > 0)
     : null;
-  if (manifestTotals && manifestTotals.join(",") !== plannedTotals.join(",")) {
+  const manifestTotals =
+    manifestSegments?.map((s) => s.requested_total_frames ?? s.owned_end_frame) ?? null;
+  if (
+    manifestTotals &&
+    args.manifest?.continuation_mode === "boundary_frame" &&
+    manifestTotals.join(",") !== plannedTotals.join(",")
+  ) {
     console.warn(
       "[videoChain] plan parity: backend manifest totals",
       manifestTotals,
@@ -483,15 +495,18 @@ export function buildChainContinuationQueueItems(args: {
       chainManifestId: args.manifest?.chain_id,
       chainPlanHash: args.manifest?.plan_hash,
       chainSegmentIndex: segmentIndex,
-      // Design §4.1: `total` IS `owned_end_frame` when a manifest drove this
-      // total (see `manifestTotals` above), so this is the manifest's own
-      // planned accumulated frame count for this segment, not a re-derivation.
-      // Absent with no manifest (legacy repeat), which is how `advanceVideoChain`
-      // knows to skip the drift check on that path.
-      chainPlannedAccumulatedFrames: args.manifest ? total : undefined,
+      // Design §4.1: the manifest's own planned accumulated frame count for
+      // this segment -- `owned_end_frame`, which is the length the segment
+      // comes back with, NOT the `total_frames` it requests (the two differ
+      // once an overlap is pinned). Absent with no manifest (legacy repeat),
+      // which is how `advanceVideoChain` knows to skip the drift check there.
+      chainPlannedAccumulatedFrames:
+        manifestSegments?.[index]?.owned_end_frame ?? undefined,
       chainDriftToleranceFrames: args.manifest?.chain_drift_tolerance_frames,
     });
-    previous = total;
+    // The length the NEXT segment continues from: what this one ends at, not
+    // what it asked for.
+    previous = manifestSegments?.[index]?.owned_end_frame ?? total;
   });
   return items;
 }

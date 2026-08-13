@@ -115,7 +115,7 @@ class FrontendApiTest(unittest.TestCase):
 
     def test_txt2vidparams_declares_every_acceleration_field(self):
         match = re.search(
-            r"export interface Txt2VidParams \{(.*?)\n\}", self.source, re.DOTALL)
+            r"export interface Txt2VidParams[^{\n]*\{(.*?)\n\}", self.source, re.DOTALL)
         self.assertIsNotNone(match)
         for field in _ACCEL_FIELDS:
             with self.subTest(field=field):

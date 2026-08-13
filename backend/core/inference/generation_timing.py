@@ -20,6 +20,12 @@ The phase keys the pipelines use map to metadata keys as:
     "text_encode" -> time_text_encode
     "denoise"     -> time_denoise
     "vae_decode"  -> time_vae_decode
+
+The same singleton carries the generation's PEAK VRAM, for the same reason it
+carries the wall time: it is measured around one generation and belongs in the
+same metadata. ``reset()`` arms it, a backend that resets the CUDA peak counter
+for its own per-phase logging folds the old peak in first
+(``note_peak_vram()``), and ``peak_vram_dict()`` reports the maximum.
 """
 
 import time
@@ -38,14 +44,57 @@ _PHASE_KEYS = {
 
 
 class GenerationTimer:
-    """Process-wide accumulator for generation phase durations."""
+    """Process-wide accumulator for generation phase durations (and peak VRAM)."""
 
     def __init__(self) -> None:
         self._phases: Dict[str, float] = {}
+        self._peak_vram_bytes: int = 0
+        self._peak_armed: bool = False
 
     def reset(self) -> None:
-        """Clear all recorded phases. Call once before a generation begins."""
+        """Clear all recorded phases. Call once before a generation begins.
+
+        Also arms peak-VRAM tracking: the CUDA peak counter is zeroed here, so
+        what `peak_vram_dict()` reports afterwards belongs to THIS generation.
+        An endpoint that does not call `reset()` reports no peak at all rather
+        than the previous generation's.
+        """
         self._phases = {}
+        self._peak_vram_bytes = 0
+        self._peak_armed = False
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                torch.cuda.reset_peak_memory_stats()
+                self._peak_armed = True
+        except Exception:
+            # Measurement must never be the reason a generation fails.
+            pass
+
+    def note_peak_vram(self) -> None:
+        """Fold the CUDA peak counter into this generation's maximum.
+
+        Called by any code that is about to `reset_peak_memory_stats()` for its
+        own per-phase reporting -- otherwise that reset would silently truncate
+        the generation-level peak to whatever happened after the last phase.
+        """
+        if not self._peak_armed:
+            return
+        try:
+            import torch
+
+            self._peak_vram_bytes = max(self._peak_vram_bytes,
+                                        int(torch.cuda.max_memory_allocated()))
+        except Exception:
+            pass
+
+    def peak_vram_dict(self) -> Dict[str, float]:
+        """`{"peak_vram_gb": GiB}`, or empty when nothing armed the tracking."""
+        if not self._peak_armed:
+            return {}
+        self.note_peak_vram()
+        return {"peak_vram_gb": round(self._peak_vram_bytes / (1024 ** 3), 3)}
 
     @contextmanager
     def phase(self, name: str):

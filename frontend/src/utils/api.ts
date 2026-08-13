@@ -1502,11 +1502,15 @@ export interface ChainContextVariantCapability {
   // refused by name).
   chain_continuation_modes: VideoChainContinuationMode[];
   chain_default_continuation_mode: VideoChainContinuationMode;
-  // Pixel frames of the preceding segment the model is conditioned on. Not a
-  // knob today: a statement of what the continuation actually gets. Valid
-  // lengths sit on video-VAE group boundaries, i.e. the cumulative sums of
+  // The `continuation_overlap_frames` range a mode that PINS an overlap
+  // accepts — NOT a description of `boundary_frame`, whose shared anchor is
+  // first-frame conditioning and takes no length. Valid lengths sit on
+  // video-VAE group boundaries, i.e. the cumulative sums of
   // `video_constraints[arch].latent_chunk_pattern` (MiniMax-H3: 1, 5, 9, 13,
   // 17, 18, ...), which is why no second enumeration is served here.
+  // The floor is measured (MiniMax-H3: 5 — a 1-frame pin is a motionless still
+  // the model can continue as a static scene), so it filters the list rather
+  // than snapping a request up to it.
   chain_context_min_frames: number;
   // null = unbounded: the architecture takes whatever the preserved prefix is
   // (LTX-2.3 places the whole accumulated clip as one video condition).
@@ -1546,22 +1550,27 @@ export const chainContextCapability = (
 
 // The `continuation_overlap_frames` values a `pinned_tail` continuation can be
 // given on this arch/variant, ascending. A latent frame is conditioned or
-// generated whole, so the valid lengths are the cumulative sums of the arch's
-// `latent_chunk_pattern` up to `chain_context_max_frames` — derived from the
-// served pattern through the SAME `latentGroupSpans` the inpaint range uses,
-// never a second hardcoded list (the pattern CYCLES: MiniMax-H3's [1,4,4,4,4]
-// gives 1, 5, 9, 13, 17, 18, ... — 17 is followed by 18, not 33).
+// generated whole, so the candidate lengths are the cumulative sums of the
+// arch's `latent_chunk_pattern` — derived from the served pattern through the
+// SAME `latentGroupSpans` the inpaint range uses, never a second hardcoded list
+// (the pattern CYCLES: MiniMax-H3's [1,4,4,4,4] gives 1, 5, 9, 13, 17, 18, ...
+// — 17 is followed by 18, not 33) — kept inside the served
+// [min, max] window. Both bounds come from the backend, including the measured
+// floor that keeps a one-frame pin off the list; a client that offered a
+// shorter one would only earn a 400.
 export const chainContinuationOverlapLengths = (
   caps: ArchCapabilities | null | undefined,
   arch: string | null | undefined,
   variant?: string | null
 ): number[] => {
-  const max = chainContextCapability(caps, arch, variant)?.chain_context_max_frames ?? 0;
+  const capability = chainContextCapability(caps, arch, variant);
+  const max = capability?.chain_context_max_frames ?? 0;
+  const min = capability?.chain_context_min_frames ?? 1;
   const pattern = arch ? caps?.video_constraints?.[arch]?.latent_chunk_pattern : undefined;
   if (!max || !pattern?.length) return [];
   return latentGroupSpans(pattern, max)
     .map(([, end]) => end)
-    .filter((end) => end <= max);
+    .filter((end) => end >= min && end <= max);
 };
 
 // The reason `method` is refused for `arch`, or undefined when it is offered.
@@ -2054,12 +2063,15 @@ export interface VideoChainSegment {
   anchor_global_frame: number | null;
   owned_start_frame: number;
   owned_end_frame: number;
-  // Includes the shared anchor frame, so this segment ADDS
-  // `generated_span_frames - 1` new frames (0 excepted).
+  // Includes the shared region, so this segment ADDS `generated_span_frames -
+  // effective_overlap_frames` new frames (1 under `boundary_frame`).
   generated_span_frames: number;
-  // The `total_frames` this segment's generation request asks for (the
-  // accumulated clip length after it runs). Equals `owned_end_frame`. Omit
-  // it in an edited manifest and the server derives it from `owned_end_frame`.
+  // The `total_frames` this segment's generation request asks for. Equals
+  // `owned_end_frame` under `boundary_frame`; under a mode that pins a wider
+  // overlap the span is rounded up onto the frame grid, so the request asks
+  // for one length and `owned_end_frame` states the (longer) one it comes back
+  // with. SEND THIS ONE: it is what the plan's arithmetic assumed. Omit it in
+  // an edited manifest and the server derives it from `owned_end_frame`.
   requested_total_frames?: number | null;
   prompt: string;
   negative_prompt?: string;

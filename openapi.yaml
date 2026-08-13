@@ -8329,7 +8329,7 @@ components:
             minimax_h3:
               chain_continuation_modes: [boundary_frame, pinned_tail]
               chain_default_continuation_mode: boundary_frame
-              chain_context_min_frames: 1
+              chain_context_min_frames: 5
               chain_context_max_frames: 17
               chain_supports_sparse_motion_anchors: false
               chain_supports_reference_video: false
@@ -8432,22 +8432,32 @@ components:
           type: integer
           minimum: 1
           description: |
-            The FEWEST pixel frames of the preceding segment the advertised
-            modes condition the model on. It is the bottom of a settable range
-            only where `pinned_tail` is advertised (the knob is that mode's
-            `continuation_overlap_frames`); for `boundary_frame` it is a
-            statement of fact.
+            The FEWEST pixel frames of the preceding segment a mode that PINS an
+            overlap accepts, i.e. the bottom of the `continuation_overlap_frames`
+            range. It does not describe `boundary_frame`: that mode's shared
+            anchor is first-frame conditioning rather than an overlap request,
+            and it takes no length at all.
 
             A context length is only meaningful on a video-VAE temporal group
             boundary, because a latent frame is conditioned or generated as a
             whole. The valid lengths are therefore the cumulative sums of
             `video_constraints[arch].latent_chunk_pattern`, served next to this
             block: for MiniMax-H3's `[1, 4, 4, 4, 4]` they are 1, 5, 9, 13, 17,
-            18, 22, ... and the value 1 is exactly latent frame 0's coverage.
-            That pattern is the one enumerator; this schema does not restate the
-            list, and a client that offers a context-length control derives it
-            from the pattern the same way it derives a temporal-inpaint range.
-          example: 1
+            18, 22, ... That pattern is the one enumerator; this schema does not
+            restate the list, and a client that offers a context-length control
+            derives it from the pattern the same way it derives a
+            temporal-inpaint range, then keeps the lengths within
+            `[chain_context_min_frames, chain_context_max_frames]`.
+
+            MiniMax-H3 `fl2va` is `5`, which is a MEASURED floor rather than an
+            alignment one: a 1-frame pin hands the model a motionless still as
+            observed video and it can continue that as a static scene (the
+            generated span froze outright on one seed in four, and moved
+            systematically less than the boundary anchor even when it did not).
+            The effect is gone at 5. A shorter pin is refused with a 400, never
+            snapped up — and `boundary_frame` remains available for one frame of
+            context, since the two are not equivalent conditionings.
+          example: 5
         chain_context_max_frames:
           type: integer
           nullable: true
@@ -8461,7 +8471,7 @@ components:
 
             MiniMax-H3 `fl2va` is `17`: the longest `pinned_tail` overlap this
             integration serves, one full cycle of its `[1, 4, 4, 4, 4]` chunk
-            pattern and the top of the 1/5/17 comparison the mode was built for
+            pattern and the top of the 5/17 comparison the mode was built for
             — a longer pin is refused rather than accepted untested. Its
             `ref2va` variant is `1` (boundary anchor only, since references
             claim the same conditioning prefix a pin would). LTX-2.3 is `null`:
@@ -10393,21 +10403,33 @@ components:
           description: |
             PIXEL frames of the preserved clip that `continuation_mode:
             pinned_tail` pins. Ignored by `boundary_frame` (which always shares
-            exactly one anchor frame), REQUIRED (>= 1) by `pinned_tail`.
+            exactly one anchor frame), REQUIRED by `pinned_tail`.
 
             Only a length that lands on a video-VAE temporal group boundary can
             be pinned, because a latent frame is conditioned or generated whole:
-            the valid values are the cumulative sums of
+            the candidate values are the cumulative sums of
             `video_constraints[arch].latent_chunk_pattern`, which for
             MiniMax-H3's `[1, 4, 4, 4, 4]` are 1, 5, 9, 13, 17, 18, 22, ... —
             note that the pattern CYCLES, so 17 is followed by 18 and not by 33.
             An unaligned value is a 400 listing the ones that work; it is never
-            snapped silently. The ceiling is
-            `chain_context[arch].chain_context_max_frames`.
+            snapped silently.
+
+            The accepted values are additionally bounded by
+            `chain_context[arch].chain_context_min_frames` and
+            `chain_context_max_frames` — for MiniMax-H3 `fl2va` that leaves
+            5, 9, 13, 17. The FLOOR is measured, not arithmetic: a 1-frame pin
+            is a motionless still, which the model can read as a static scene
+            and continue as one, so it is refused with its own 400 rather than
+            offered as a cheap `boundary_frame`. Those two are different
+            conditionings, not two sizes of the same one.
 
             The generated span grows by this many frames (the overlap is
-            re-rendered and thrown away), so the effective output length is
-            reported in `warnings[]` exactly as it is for `total_frames`.
+            re-rendered and thrown away) and is then rounded up onto the arch's
+            frame grid, so a continuation can add more frames than the
+            one-frame-anchor arithmetic would: `POST /video-chain/plan` computes
+            the plan's frame ranges with the overlap it was given, and the
+            effective output length of a single request is reported in
+            `warnings[]` exactly as it is for `total_frames`.
           example: 0
         chain_id:
           type: string
@@ -12585,7 +12607,18 @@ components:
           type: object
           nullable: true
           additionalProperties: true
-          description: Full generation parameters as stored on the row. Uploaded images are replaced by their SHA256 hashes before storage. Omitted from `GeneratedImageSummary`.
+          description: |
+            Full generation parameters as stored on the row. Uploaded images are
+            replaced by their SHA256 hashes before storage. Omitted from
+            `GeneratedImageSummary`.
+
+            It also carries what the generation COST, measured around this
+            request: `generation_time` (total wall seconds) plus the
+            `time_text_encode` / `time_denoise` / `time_vae_decode` breakdown on
+            instrumented architectures, and `peak_vram_gb` (peak CUDA
+            allocation, GiB) on the endpoints that arm the measurement. Both are
+            informational — they do not affect reproducibility — and
+            `peak_vram_gb` is absent rather than stale when it was not measured.
         created_at:
           type: string
           format: date-time
@@ -13856,9 +13889,11 @@ components:
           type: integer
           minimum: 0
           description: >-
-            Authoritative overlap after snapping to the video VAE's temporal
-            group. This value, not the requested one, is used in frame
-            arithmetic.
+            The overlap the plan's frame arithmetic actually used: 0 for
+            `boundary_frame` (an anchor is shared, but nothing is pinned) and
+            the resolved, VAE-group-aligned pin length for a pinning mode. This
+            value, not the requested one, is what
+            `anchor_global_frame` / `owned_end_frame` were computed from.
           example: 0
         effective_overlap_samples:
           type: integer
@@ -14144,9 +14179,18 @@ components:
           minimum: 0
           default: 0
           description: >-
-            Requested shared frames between neighbouring segments. 0 = the
-            single shared anchor frame. The response's
-            `effective_overlap_frames` is authoritative.
+            Requested shared frames between neighbouring segments, and the
+            `continuation_overlap_frames` every continuation of this plan will
+            be sent. 0 = the single shared anchor frame, which is what
+            `continuation_mode: boundary_frame` shares; a mode that PINS an
+            overlap requires a value inside
+            `chain_context[architecture].chain_context_min_frames` ..
+            `chain_context_max_frames` and on the VAE group grid, and refuses
+            anything else with a 400 (the same refusal
+            `POST /generate/outpaint/video` gives) rather than snapping it. The
+            plan's frame ranges are computed WITH this overlap, so
+            `segments[].owned_end_frame` is the length the chain actually
+            reaches, not the length a 1-frame anchor would have reached.
           example: 0
         chain_drift_tolerance_frames:
           type: integer

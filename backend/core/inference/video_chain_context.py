@@ -201,26 +201,62 @@ def next_chain_total_frames(
     return accumulated_frames + generated_span - VIDEO_CHAIN_ANCHOR_FRAMES
 
 
+def continuation_generated_span(
+    spec: VideoGridSpec,
+    accumulated_frames: int,
+    requested_total_frames: int,
+    overlap_frames: int = VIDEO_CHAIN_ANCHOR_FRAMES,
+) -> int:
+    """The span the BACKEND will actually generate for that continuation request.
+
+    The mirror of `plan_video_outpaint_placement` (api/generation_utils.py) for
+    the extend-forward shape a chain uses: the request names a `total_frames`,
+    the shared region takes `overlap_frames` of it back, and what is left is
+    rounded UP onto the arch's grid. With the default 1-frame anchor the request
+    total is already a grid point plus the anchor, so this returns exactly the
+    span the request asked for; a wider pin makes it round up, and the extra
+    frames land in the OUTPUT (design §7.2b defect 2).
+    """
+    overlap = max(1, int(overlap_frames))
+    return spec.snap_up(max(1, int(requested_total_frames) - int(accumulated_frames) + overlap))
+
+
 @dataclass(frozen=True)
 class ChainLengthPlan:
-    """`VideoChainPlan` (api.ts:1613) plus the continuation totals list."""
+    """`VideoChainPlan` (api.ts:1613) plus the per-continuation lengths.
+
+    `continuation_totals` are the `total_frames` REQUESTS (what the queue sends,
+    and what the anchor-only frontend planner computes); `continuation_spans`
+    and `continuation_accumulated` are what those requests actually produce
+    under `overlap_frames`. All three coincide at the 1-frame anchor.
+    """
 
     cap_frames: int
     segments: int  # total requests, INCLUDING segment 1
     final_frames: int
     continuation_totals: Tuple[int, ...]  # `planVideoChainSegments` (api.ts:1654)
+    continuation_spans: Tuple[int, ...] = ()
+    continuation_accumulated: Tuple[int, ...] = ()
+    overlap_frames: int = VIDEO_CHAIN_ANCHOR_FRAMES
 
 
 def plan_chain_lengths(
     spec: VideoGridSpec,
     target_frames: int,
     segment_frames: Optional[int] = None,
+    overlap_frames: int = VIDEO_CHAIN_ANCHOR_FRAMES,
 ) -> Optional[ChainLengthPlan]:
     """Both frontend planners in one pass; they share one loop by construction.
 
     Returns None for the same three "nothing to plan" reasons the frontend keeps
     as separate early-returns (api.ts:1599-1612): uncapped arch, or a target that
     already fits in one segment.
+
+    Each iteration simulates one real continuation: the request total comes from
+    `next_chain_total_frames` (which is what the queue sends, unchanged by the
+    overlap) and the accumulated length that request comes back with comes from
+    `continuation_generated_span`. At `overlap_frames == 1` the two are equal and
+    this is value-identical to the shipped frontend planner.
 
     NOTE (kept deliberately): segment 1 starts at the RAW cap, not `snap_up(cap)`.
     That is what api.ts:1631 does, so a plan built here matches what the queue
@@ -234,36 +270,53 @@ def plan_chain_lengths(
     if target_frames <= cap:
         return None
 
+    overlap = max(1, int(overlap_frames))
     accumulated = cap
     totals: List[int] = []
+    spans: List[int] = []
+    reached: List[int] = []
     for _ in range(CHAIN_PLAN_SEGMENT_GUARD):
         if accumulated >= target_frames:
             break
         nxt = next_chain_total_frames(spec, accumulated, target_frames, segment_frames)
         if nxt is None:
             break
+        span = continuation_generated_span(spec, accumulated, nxt, overlap)
+        if span <= overlap:
+            break
         totals.append(nxt)
-        accumulated = nxt
+        spans.append(span)
+        accumulated = accumulated + span - overlap
+        reached.append(accumulated)
     return ChainLengthPlan(
         cap_frames=cap,
         segments=1 + len(totals),
         final_frames=accumulated,
         continuation_totals=tuple(totals),
+        continuation_spans=tuple(spans),
+        continuation_accumulated=tuple(reached),
+        overlap_frames=overlap,
     )
 
 
 def plan_video_chain(
-    spec: VideoGridSpec, target_frames: int, segment_frames: Optional[int] = None
+    spec: VideoGridSpec,
+    target_frames: int,
+    segment_frames: Optional[int] = None,
+    overlap_frames: int = VIDEO_CHAIN_ANCHOR_FRAMES,
 ) -> Optional[ChainLengthPlan]:
     """Name-parity wrapper for `planVideoChain` (api.ts:1619)."""
-    return plan_chain_lengths(spec, target_frames, segment_frames)
+    return plan_chain_lengths(spec, target_frames, segment_frames, overlap_frames)
 
 
 def plan_video_chain_segments(
-    spec: VideoGridSpec, target_frames: int, segment_frames: Optional[int] = None
+    spec: VideoGridSpec,
+    target_frames: int,
+    segment_frames: Optional[int] = None,
+    overlap_frames: int = VIDEO_CHAIN_ANCHOR_FRAMES,
 ) -> Optional[List[int]]:
     """Name-parity wrapper for `planVideoChainSegments` (api.ts:1654)."""
-    plan = plan_chain_lengths(spec, target_frames, segment_frames)
+    plan = plan_chain_lengths(spec, target_frames, segment_frames, overlap_frames)
     return None if plan is None else list(plan.continuation_totals)
 
 
@@ -282,9 +335,15 @@ def effective_segment_frames(
 # ---------------------------------------------------------------------------
 
 
-def anchor_global_frame(accumulated_before: int) -> int:
-    """`anchor_global_frame = accumulated_frames_before - 1` (design §4)."""
-    return accumulated_before - 1
+def anchor_global_frame(
+    accumulated_before: int, overlap_frames: int = VIDEO_CHAIN_ANCHOR_FRAMES
+) -> int:
+    """`anchor_global_frame = accumulated_frames_before - overlap` (design §4).
+
+    The generated span's local index 0 is the FIRST shared frame, which is the
+    single anchor at `overlap == 1` and the start of the pinned tail above it.
+    """
+    return accumulated_before - max(1, int(overlap_frames))
 
 
 def global_frame(anchor: int, k: int) -> int:
@@ -297,12 +356,18 @@ def local_frame(anchor: int, g: int) -> int:
     return g - anchor
 
 
-def new_output_frames(generated_span_frames: int) -> int:
-    return generated_span_frames - VIDEO_CHAIN_ANCHOR_FRAMES
+def new_output_frames(
+    generated_span_frames: int, overlap_frames: int = VIDEO_CHAIN_ANCHOR_FRAMES
+) -> int:
+    return generated_span_frames - max(1, int(overlap_frames))
 
 
-def accumulated_after(accumulated_before: int, generated_span_frames: int) -> int:
-    return accumulated_before + generated_span_frames - VIDEO_CHAIN_ANCHOR_FRAMES
+def accumulated_after(
+    accumulated_before: int,
+    generated_span_frames: int,
+    overlap_frames: int = VIDEO_CHAIN_ANCHOR_FRAMES,
+) -> int:
+    return accumulated_before + new_output_frames(generated_span_frames, overlap_frames)
 
 
 @dataclass(frozen=True)
@@ -316,6 +381,9 @@ class SegmentSpan:
     owned_start_frame: int
     owned_end_frame: int
     requested_total_frames: int
+    # Frames this span SHARES with its predecessor: 1 for the anchor, the pin
+    # length under `pinned_tail`. 0 on segment 0, which shares nothing.
+    shared_overlap_frames: int = VIDEO_CHAIN_ANCHOR_FRAMES
 
     @property
     def owned_frames(self) -> int:
@@ -363,6 +431,7 @@ class SegmentSpan:
             "owned_start_frame": self.owned_start_frame,
             "owned_end_frame": self.owned_end_frame,
             "requested_total_frames": self.requested_total_frames,
+            "shared_overlap_frames": self.shared_overlap_frames,
         }
 
 
@@ -371,24 +440,32 @@ def build_segment_spans(
     target_frames: int,
     segment_frames: Optional[int] = None,
     warnings: Optional[List[str]] = None,
+    overlap_frames: int = VIDEO_CHAIN_ANCHOR_FRAMES,
 ) -> List[SegmentSpan]:
     """The full segment geometry of a chain, segment 0 included.
 
     Built on top of the frontend-parity length planner so the manifest describes
-    exactly the requests the existing queue makes.
+    exactly the requests the existing queue makes -- `requested_total_frames` is
+    the request, and `owned_end_frame` is the length that request comes back
+    with under `overlap_frames`. The two differ only above the 1-frame anchor,
+    and keeping both is what stops a plan from stating a frame count the chain
+    will not reach (design §7.2b defect 2).
     """
     if target_frames <= 0:
         raise VideoChainPlanError("target_frames must be positive")
 
+    overlap = max(1, int(overlap_frames))
     sink = warnings if warnings is not None else []
-    plan = plan_chain_lengths(spec, target_frames, segment_frames)
+    plan = plan_chain_lengths(spec, target_frames, segment_frames, overlap)
     if plan is None:
         span = effective_segment_frames(spec, target_frames, segment_frames)
         first_totals: List[int] = []
+        first_spans: List[int] = []
         first_span = span
     else:
         first_span = plan.cap_frames
         first_totals = list(plan.continuation_totals)
+        first_spans = list(plan.continuation_spans)
 
     if first_span <= VIDEO_CHAIN_ANCHOR_FRAMES:
         raise VideoChainPlanError("the first segment must be longer than the shared anchor")
@@ -408,24 +485,24 @@ def build_segment_spans(
             owned_start_frame=0,
             owned_end_frame=first_span,
             requested_total_frames=first_span,
+            shared_overlap_frames=0,
         )
     ]
     accumulated = first_span
-    for i, total in enumerate(first_totals, start=1):
-        span_frames = total - accumulated + VIDEO_CHAIN_ANCHOR_FRAMES
-        anchor = anchor_global_frame(accumulated)
+    for i, (total, span_frames) in enumerate(zip(first_totals, first_spans), start=1):
         spans.append(
             SegmentSpan(
                 index=i,
                 accumulated_before=accumulated,
                 generated_span_frames=span_frames,
-                anchor_global_frame=anchor,
+                anchor_global_frame=anchor_global_frame(accumulated, overlap),
                 owned_start_frame=accumulated,
-                owned_end_frame=accumulated_after(accumulated, span_frames),
+                owned_end_frame=accumulated_after(accumulated, span_frames, overlap),
                 requested_total_frames=total,
+                shared_overlap_frames=overlap,
             )
         )
-        accumulated = total
+        accumulated = spans[-1].owned_end_frame
     return spans
 
 
@@ -1511,6 +1588,13 @@ class ChainPlanRequest:
     negative_prompt: str = ""
     segment_frames: Optional[int] = None
     context_mode: str = "timeline"
+    # What each continuation is conditioned on, and (for a mode that pins one)
+    # how many frames it shares with its predecessor. The overlap is ALREADY
+    # resolved against the arch capability by the caller
+    # (`plan_video_continuation_context`); this module does not re-derive it, it
+    # only puts it into the frame arithmetic.
+    continuation_mode: str = "boundary_frame"
+    overlap_frames: int = VIDEO_CHAIN_ANCHOR_FRAMES
     seed_policy: str = "fixed"
     root_seed: int = -1
     explicit_seeds: Optional[List[int]] = None
@@ -1537,9 +1621,13 @@ def plan_video_chain_manifest(request: ChainPlanRequest) -> ChainManifest:
     if request.fps <= 0:
         raise VideoChainPlanError("fps must be positive")
 
+    if request.continuation_mode not in CONTINUATION_MODES:
+        raise VideoChainPlanError(f"unknown continuation mode: {request.continuation_mode}")
+
     warnings: List[str] = []
+    overlap = max(1, int(request.overlap_frames))
     spans = build_segment_spans(
-        request.grid, request.target_frames, request.segment_frames, warnings
+        request.grid, request.target_frames, request.segment_frames, warnings, overlap
     )
     segment_count = len(spans)
     final_frames = spans[-1].owned_end_frame
@@ -1585,6 +1673,7 @@ def plan_video_chain_manifest(request: ChainPlanRequest) -> ChainManifest:
         target_frames=int(request.target_frames),
         expected_final_frames=final_frames,
         context_mode=request.context_mode,
+        continuation_mode=request.continuation_mode,
         seed_policy=request.seed_policy,
         root_seed=root_seed,
         persistent_context=persistent,
@@ -1609,10 +1698,27 @@ def plan_video_chain_manifest(request: ChainPlanRequest) -> ChainManifest:
     return manifest
 
 
-def _visual_context_for(span: SegmentSpan) -> Dict[str, Any]:
+def _visual_context_for(
+    span: SegmentSpan, continuation_mode: str = "boundary_frame"
+) -> Dict[str, Any]:
     if span.index == 0:
         return {"mode": "initial"}
-    return {"mode": "boundary_frame", "shared_context_frames": VIDEO_CHAIN_ANCHOR_FRAMES}
+    return {
+        "mode": continuation_mode,
+        "shared_context_frames": span.shared_overlap_frames,
+    }
+
+
+def _effective_overlap_for(request: ChainPlanRequest, span: SegmentSpan) -> int:
+    """The pin the manifest records for this segment; 0 = nothing is pinned.
+
+    `boundary_frame` shares an anchor frame rather than pinning an overlap, so
+    it records 0 whatever the geometry shares -- the same distinction the
+    capability's min/max makes.
+    """
+    if span.index == 0 or request.continuation_mode == "boundary_frame":
+        return 0
+    return span.shared_overlap_frames
 
 
 def _legacy_repeat_segments(
@@ -1633,7 +1739,8 @@ def _legacy_repeat_segments(
             prompt=request.root_prompt,
             negative_prompt=request.negative_prompt,
             reference_ids=segment_reference_ids(references, span.index),
-            visual_context=_visual_context_for(span),
+            visual_context=_visual_context_for(span, request.continuation_mode),
+            effective_overlap_frames=_effective_overlap_for(request, span),
         )
         for span in spans
     ]
@@ -1765,7 +1872,8 @@ def _compile_segments(
                 outgoing_state=list(ctx.outgoing_state),
                 owned_event_ids=[event.id for event in ctx.owned_events],
                 reference_ids=segment_reference_ids(references, span.index),
-                visual_context=_visual_context_for(span),
+                visual_context=_visual_context_for(span, request.continuation_mode),
+                effective_overlap_frames=_effective_overlap_for(request, span),
             )
         )
     return segments, list(references)
@@ -1780,6 +1888,8 @@ def plan_h3_chain_from_prompt(
     segment_frames: Optional[int] = None,
     references: Optional[Sequence[ChainReference]] = None,
     negative_prompt: str = "",
+    continuation_mode: str = "boundary_frame",
+    overlap_frames: int = VIDEO_CHAIN_ANCHOR_FRAMES,
     seed_policy: str = "fixed",
     root_seed: int = -1,
     explicit_seeds: Optional[List[int]] = None,
@@ -1799,7 +1909,9 @@ def plan_h3_chain_from_prompt(
     part of an ambience belongs to which segment, and dropping it would silence
     later segments. Splitting them is a plan-editor decision.
     """
-    spans = build_segment_spans(grid, target_frames, segment_frames)
+    spans = build_segment_spans(
+        grid, target_frames, segment_frames, None, max(1, int(overlap_frames))
+    )
     final_frames = spans[-1].owned_end_frame
 
     reference_inventory = [
@@ -1831,6 +1943,8 @@ def plan_h3_chain_from_prompt(
         target_frames=target_frames,
         segment_frames=segment_frames,
         context_mode="timeline",
+        continuation_mode=continuation_mode,
+        overlap_frames=overlap_frames,
         seed_policy=seed_policy,
         root_seed=root_seed,
         explicit_seeds=explicit_seeds,
@@ -1867,6 +1981,12 @@ def validate_manifest(manifest: ChainManifest) -> None:
             owned_start_frame=s.owned_start_frame,
             owned_end_frame=s.owned_end_frame,
             requested_total_frames=s.requested_total_frames,
+            # Derived from the pair the manifest already carries rather than
+            # re-planned, so an edited manifest is checked as it stands.
+            shared_overlap_frames=(
+                0 if s.anchor_global_frame is None
+                else s.owned_start_frame - s.anchor_global_frame
+            ),
         )
         for s in manifest.segments
     ]

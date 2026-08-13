@@ -337,6 +337,10 @@ def save_video_with_metadata(
         "audio_sample_rate": audio_sample_rate if audio_written else None,
         "duration": duration_s,
         "lossless": bool(lossless),
+        # What it cost, measured around this generation (`apply_generation_timings`).
+        # Absent keys mean "not measured on this path", never zero.
+        **{key: params[key] for key in ("generation_time", "peak_vram_gb")
+           if params.get(key) is not None},
         **chain_meta,
     }
     try:

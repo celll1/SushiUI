@@ -202,7 +202,7 @@ class FrontendApiTest(unittest.TestCase):
 
     def test_txt2vidparams_declares_blocks_to_swap(self):
         match = re.search(
-            r"export interface Txt2VidParams \{(.*?)\n\}", self.source, re.DOTALL)
+            r"export interface Txt2VidParams[^{\n]*\{(.*?)\n\}", self.source, re.DOTALL)
         self.assertIsNotNone(match)
         self.assertIn("blocks_to_swap?: number;", match.group(1))
 

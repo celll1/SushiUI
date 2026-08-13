@@ -151,7 +151,7 @@ class FrontendApiTest(unittest.TestCase):
 
     def test_txt2vidparams_declares_the_field(self):
         match = re.search(
-            r"export interface Txt2VidParams \{(.*?)\n\}", self.source, re.DOTALL)
+            r"export interface Txt2VidParams[^{\n]*\{(.*?)\n\}", self.source, re.DOTALL)
         self.assertIsNotNone(match)
         self.assertIn(f"{_FIELD}?:", match.group(1))
 
@@ -159,7 +159,7 @@ class FrontendApiTest(unittest.TestCase):
         for iface in ("OutpaintVideoParams", "InpaintVideoParams"):
             with self.subTest(interface=iface):
                 match = re.search(
-                    r"export interface %s \{(.*?)\n\}" % iface, self.source, re.DOTALL)
+                    r"export interface %s[^{\n]*\{(.*?)\n\}" % iface, self.source, re.DOTALL)
                 self.assertIsNotNone(match)
                 self.assertIn(f"{_FIELD}?:", match.group(1))
 

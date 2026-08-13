@@ -18086,8 +18086,9 @@ def _video_chain_segment_to_wire(segment: SegmentPlan) -> Dict[str, Any]:
         "owned_end_frame": segment.owned_end_frame,
         "generated_span_frames": segment.generated_span_frames,
         # The `total_frames` this segment's request asks for. Equal to
-        # `owned_end_frame`, but stated so a client never has to re-derive a
-        # request parameter.
+        # `owned_end_frame` under `boundary_frame`; a wider pinned overlap makes
+        # the generated span round up onto the frame grid, so the request and
+        # the length it comes back with are two numbers and BOTH are stated.
         "requested_total_frames": segment.requested_total_frames,
         "prompt": segment.prompt,
         "negative_prompt": segment.negative_prompt,
@@ -18121,8 +18122,9 @@ def _video_chain_segment_from_wire(model: VideoChainSegmentModel) -> SegmentPlan
         owned_start_frame=model.owned_start_frame,
         owned_end_frame=model.owned_end_frame,
         generated_span_frames=model.generated_span_frames,
-        # `accumulated_after == owned_end_frame` for every segment, including
-        # segment 0, so an omitted value is derived rather than defaulted.
+        # An omitted value is derived rather than defaulted. It is exact for a
+        # `boundary_frame` manifest and an approximation for a pinned one, which
+        # is why the planner always states it and a client should send it back.
         requested_total_frames=(
             model.owned_end_frame
             if model.requested_total_frames is None
@@ -18381,48 +18383,58 @@ def _video_chain_restore_alignment_instructions(
     return True
 
 
-def _video_chain_apply_requested_overlap(
-    manifest: ChainManifest,
-    requested_overlap_frames: int,
-    architecture: str,
-    variant: Optional[str] = None,
-) -> bool:
-    """Record the requested overlap and disclose the effective one.
+def _video_chain_plan_overlap(request: VideoChainPlanRequestModel, architecture: str) -> int:
+    """Frames every continuation shares with its predecessor, resolved ONCE.
 
-    `boundary_frame` shares exactly the anchor frame, so
-    `effective_overlap_frames` stays 0 whatever is requested; that is stated as
-    a warning rather than absorbed silently. `pinned_tail` honours the overlap
-    (refusing an unaddressable one through the same resolver the generation
-    route uses), and the sample count is left to the generation, which is the
-    only layer that knows the loaded audio VAE's rate.
+    `boundary_frame` shares the single anchor. A mode that PINS an overlap
+    resolves it through the same resolver `/generate/outpaint/video` uses, so an
+    unaddressable or too-short pin is refused here exactly as it would be at
+    generation time -- a plan must not promise a geometry the generation refuses.
     """
     from api.generation_utils import plan_video_continuation_context
 
-    if requested_overlap_frames <= 0:
+    if request.continuation_mode == "boundary_frame":
+        return VIDEO_CHAIN_ANCHOR_FRAMES
+    return int(plan_video_continuation_context(
+        request.continuation_mode, request.requested_overlap_frames,
+        architecture, request.variant,
+    )["overlap_frames"])
+
+
+def _video_chain_record_overlap(
+    manifest: ChainManifest, requested_overlap_frames: int
+) -> bool:
+    """Record what was ASKED for, and say what the geometry did with it.
+
+    The planner has already built the frame ranges with the resolved overlap and
+    written `effective_overlap_frames`; this only adds the request value and the
+    disclosure. `boundary_frame` shares an anchor rather than pinning an
+    overlap, so a value sent with it is stated as unhonoured rather than
+    absorbed silently. `effective_overlap_samples` is left to the generation,
+    the only layer that knows the loaded audio VAE's rate.
+    """
+    pinned = manifest.continuation_mode != "boundary_frame"
+    if requested_overlap_frames <= 0 and not pinned:
         return False
-    pinned = manifest.continuation_mode == "pinned_tail"
-    resolved = (
-        plan_video_continuation_context(
-            manifest.continuation_mode, requested_overlap_frames, architecture, variant
-        )["overlap_frames"]
-        if pinned
-        else 0
-    )
     for segment in manifest.segments:
         if segment.index == 0:
             continue
         segment.requested_overlap_frames = int(requested_overlap_frames)
-        segment.effective_overlap_frames = int(resolved)
-    if pinned:
+    continuations = [s for s in manifest.segments if s.index > 0]
+    if pinned and continuations:
+        gains = sorted({s.owned_end_frame - s.owned_start_frame for s in continuations})
         manifest.warnings.append(
-            f"continuation_mode 'pinned_tail' pins {resolved} frame(s) of each segment's "
-            f"predecessor. The generated span grows by that much and is rounded up to the "
-            f"architecture's grid, so a segment's accumulated length can land past the planned "
-            f"one; the drift check reports it rather than the plan hiding it. "
-            f"effective_overlap_samples is reported by each generation, which is where the "
+            f"continuation_mode '{manifest.continuation_mode}' pins "
+            f"{continuations[0].effective_overlap_frames} frame(s) of each segment's "
+            f"predecessor. The generated span grows by that much and is then rounded up to the "
+            f"architecture's grid, so a continuation adds "
+            f"{', '.join(str(g) for g in gains)} frame(s) rather than the "
+            f"{VIDEO_CHAIN_ANCHOR_FRAMES}-frame-anchor arithmetic's count. The frame ranges and "
+            f"expected_final_frames below are those lengths, so the plan and the finished clip "
+            f"agree. effective_overlap_samples is reported by each generation, which is where the "
             f"loaded audio VAE's rate is known."
         )
-    else:
+    elif not pinned:
         manifest.warnings.append(
             f"requested_overlap_frames={requested_overlap_frames} is recorded but not honoured: "
             f"continuation_mode '{manifest.continuation_mode}' shares exactly "
@@ -18469,6 +18481,7 @@ def _video_chain_geometry_only_manifest(
     references: Sequence[ChainReference],
     errors: List[Dict[str, Any]],
     warnings: List[str],
+    overlap_frames: int = VIDEO_CHAIN_ANCHOR_FRAMES,
 ) -> ChainManifest:
     """The manifest returned when compiling the prompts failed.
 
@@ -18477,7 +18490,8 @@ def _video_chain_geometry_only_manifest(
     computed before any prompt work and did succeed) is returned with empty
     prompts.
     """
-    spans = build_segment_spans(grid, request.target_frames, request.requested_segment_frames, warnings)
+    spans = build_segment_spans(grid, request.target_frames, request.requested_segment_frames,
+                                warnings, overlap_frames)
     try:
         bound = resolve_reference_bindings(references, len(spans), warnings)
     except VideoChainPlanError as exc:
@@ -18504,7 +18518,11 @@ def _video_chain_geometry_only_manifest(
                 prompt="",
                 negative_prompt=request.negative_prompt,
                 reference_ids=segment_reference_ids(bound, span.index),
-                visual_context=video_chain_visual_context(span),
+                visual_context=video_chain_visual_context(span, request.continuation_mode),
+                effective_overlap_frames=(
+                    0 if span.index == 0 or request.continuation_mode == "boundary_frame"
+                    else span.shared_overlap_frames
+                ),
             )
             for span in spans
         ],
@@ -18644,6 +18662,9 @@ async def plan_video_chain_route(request: VideoChainPlanRequestModel):
         )
     _video_chain_require_continuation_mode(request.continuation_mode, architecture,
                                            request.variant)
+    # Resolved BEFORE any geometry: the overlap is an input to the frame
+    # arithmetic, not a note added to a plan that was built without it.
+    _chain_overlap = _video_chain_plan_overlap(request, architecture)
 
     grid = _video_chain_grid(architecture)
     mode = _video_chain_h3_mode(architecture, request.variant, request.workflow)
@@ -18711,6 +18732,8 @@ async def plan_video_chain_route(request: VideoChainPlanRequestModel):
                 segment_frames=request.requested_segment_frames,
                 references=references,
                 negative_prompt=request.negative_prompt,
+                continuation_mode=request.continuation_mode,
+                overlap_frames=_chain_overlap,
                 seed_policy=request.seed_policy,
                 root_seed=request.root_seed,
             )
@@ -18736,6 +18759,8 @@ async def plan_video_chain_route(request: VideoChainPlanRequestModel):
                     negative_prompt=request.negative_prompt,
                     segment_frames=request.requested_segment_frames,
                     context_mode=context_mode,
+                    continuation_mode=request.continuation_mode,
+                    overlap_frames=_chain_overlap,
                     seed_policy=request.seed_policy,
                     root_seed=request.root_seed,
                     references=references,
@@ -18749,7 +18774,7 @@ async def plan_video_chain_route(request: VideoChainPlanRequestModel):
     if manifest is None:
         try:
             manifest = _video_chain_geometry_only_manifest(
-                request, grid, context_mode, references, errors, warnings
+                request, grid, context_mode, references, errors, warnings, _chain_overlap
             )
         except VideoChainPlanError as exc:
             raise CustomValidationError("This chain cannot be planned", detail=str(exc))
@@ -18757,8 +18782,7 @@ async def plan_video_chain_route(request: VideoChainPlanRequestModel):
         manifest.continuation_mode = request.continuation_mode
         manifest.warnings.extend(warnings)
 
-    changed = _video_chain_apply_requested_overlap(
-        manifest, request.requested_overlap_frames, architecture, request.variant)
+    changed = _video_chain_record_overlap(manifest, request.requested_overlap_frames)
     changed = _video_chain_restore_alignment_instructions(manifest, mode) or changed
     if changed:
         _video_chain_refreeze(manifest)

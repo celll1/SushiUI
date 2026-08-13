@@ -291,7 +291,7 @@ class FrontendVideoLoraSenderTest(unittest.TestCase):
         for name in ("Txt2VidParams", "OutpaintVideoParams", "InpaintVideoParams"):
             with self.subTest(interface=name):
                 match = re.search(
-                    rf"export interface {name} \{{(.*?)\n\}}", self.source, re.DOTALL)
+                    rf"export interface {name}[^{{\n]*\{{(.*?)\n\}}", self.source, re.DOTALL)
                 self.assertIsNotNone(match, f"interface {name} not found")
                 self.assertIn("loras?: LoRAConfig[];", match.group(1))
 

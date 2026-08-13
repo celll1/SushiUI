@@ -210,6 +210,21 @@ export const segmentChainText = (
   };
 };
 
+// How long segment 1's own (non-continuation) request is. A fixed-length plan
+// makes it the segment cap, which is what the panel already computed and what
+// every chain sent before manifests existed -- so that path is left exactly as
+// it was, cap snapping included. A shot-aligned plan (design §7.2c) may make
+// segment 1 SHORTER than the cap, to put the first boundary near a shot
+// boundary; then the manifest's own span is the only correct length, and
+// sending the cap instead would desynchronise every following segment.
+export const segmentChainFirstFrames = (
+  manifest: VideoChainManifest | null | undefined,
+  capFrames: number
+): number => {
+  if (manifest?.segment_length_mode !== "shot_aligned") return capFrames;
+  return manifest.segments.find((s) => s.index === 0)?.generated_span_frames ?? capFrames;
+};
+
 // The seed THIS segment runs with. A manifest resolves `root_seed: -1` to a
 // concrete value once, at plan time, and freezes one seed per segment
 // (`resolve_segment_seeds`, design §8) -- so sending the panel's raw seed
@@ -444,8 +459,12 @@ export function buildChainContinuationQueueItems(args: {
     : null;
   const manifestTotals =
     manifestSegments?.map((s) => s.requested_total_frames ?? s.owned_end_frame) ?? null;
+  // Variable segment lengths are exactly what a shot-aligned plan produces, so
+  // there is nothing to compare against the fixed-length frontend planner there.
+  const shotAligned = args.manifest?.segment_length_mode === "shot_aligned";
   if (
     manifestTotals &&
+    !shotAligned &&
     args.manifest?.continuation_mode === "boundary_frame" &&
     manifestTotals.join(",") !== plannedTotals.join(",")
   ) {
@@ -463,11 +482,17 @@ export function buildChainContinuationQueueItems(args: {
     negative_prompt: args.continuationBase.negative_prompt,
   };
   const items: Array<Omit<QueueItem, "id" | "status" | "addedAt">> = [];
-  let previous = args.capFrames;
+  // What segment 1 ends at, which is what the first continuation's
+  // no-forward-progress guard compares against. Same reasoning as
+  // `segmentChainFirstFrames`: only a shot-aligned plan can move it off the cap.
+  let previous = shotAligned
+    ? args.manifest?.segments.find((s) => s.index === 0)?.owned_end_frame ?? args.capFrames
+    : args.capFrames;
   totals.forEach((total, index) => {
     // Loop step `index` is manifest segment `index + 1`: segment 0 is the
     // main item the caller enqueues itself at loopStepIndex -1.
     const segmentIndex = index + 1;
+    const plannedSegment = manifestSegments?.[index];
     const text = segmentChainText(args.manifest, segmentIndex, rootText);
     items.push({
       type: "chain_vid",
@@ -500,13 +525,21 @@ export function buildChainContinuationQueueItems(args: {
       // comes back with, NOT the `total_frames` it requests (the two differ
       // once an overlap is pinned). Absent with no manifest (legacy repeat),
       // which is how `advanceVideoChain` knows to skip the drift check there.
-      chainPlannedAccumulatedFrames:
-        manifestSegments?.[index]?.owned_end_frame ?? undefined,
+      chainPlannedAccumulatedFrames: plannedSegment?.owned_end_frame ?? undefined,
       chainDriftToleranceFrames: args.manifest?.chain_drift_tolerance_frames,
+      // Design §7.2c: how many frames THIS segment was planned to add. Only
+      // under `shot_aligned`, where the lengths vary per segment and cannot be
+      // re-derived from the cap -- `advanceVideoChain` re-derives them the old
+      // way whenever this is absent, which is every fixed-length and legacy
+      // chain.
+      chainPlannedNewOutputFrames:
+        shotAligned && plannedSegment != null
+          ? plannedSegment.owned_end_frame - plannedSegment.owned_start_frame
+          : undefined,
     });
     // The length the NEXT segment continues from: what this one ends at, not
     // what it asked for.
-    previous = manifestSegments?.[index]?.owned_end_frame ?? total;
+    previous = plannedSegment?.owned_end_frame ?? total;
   });
   return items;
 }
@@ -619,14 +652,29 @@ export async function advanceVideoChain(args: {
   );
   if (!nextChainItem || args.resultFrames == null) return {};
 
-  // `item.chainSegmentFrames` is the segment length the chain was BUILT with
-  // (frozen onto every item at enqueue time by `buildChainContinuationQueueItems`
-  // / the panel's main-segment `addToQueue` call), not whatever the panel's
-  // live control holds now -- a chain already running must not be retargeted
-  // by a later change to that control.
-  const nextTotal = nextVideoChainTotalFrames(
-    args.caps, args.arch, args.resultFrames, target, item.chainSegmentFrames
-  );
+  // How long the NEXT segment is. Two sources, and which one applies is fixed
+  // at enqueue time, not decided here:
+  //
+  //  * a shot-aligned plan (design §7.2c) has a different length per segment,
+  //    chosen around the shots -- no cap-based formula can reproduce it, so the
+  //    planned number of NEW frames is carried on the item itself and simply
+  //    rebased onto the length the previous segment actually reported (that
+  //    rebasing is what keeps this drift-tolerant, exactly as before);
+  //  * every fixed-length and legacy chain re-derives it from the cap, as it
+  //    always has. `item.chainSegmentFrames` is the segment length the chain
+  //    was BUILT with (frozen onto every item at enqueue time by
+  //    `buildChainContinuationQueueItems` / the panel's main-segment
+  //    `addToQueue` call), not whatever the panel's live control holds now -- a
+  //    chain already running must not be retargeted by a later change to it.
+  const plannedNewFrames = nextChainItem.chainPlannedNewOutputFrames;
+  const nextTotal =
+    plannedNewFrames != null && plannedNewFrames > 0
+      ? args.resultFrames >= target
+        ? null
+        : args.resultFrames + plannedNewFrames
+      : nextVideoChainTotalFrames(
+          args.caps, args.arch, args.resultFrames, target, item.chainSegmentFrames
+        );
   if (nextTotal == null) {
     // Reached target (normal) or the architecture cannot produce a further
     // continuation (stuck) -- either way nothing more should run; drop any

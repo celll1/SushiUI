@@ -1589,6 +1589,20 @@ VIDEO_CHAIN_DEFAULTS: Dict[str, Any] = {
     # one: it returns a hard error asking the caller to choose a mode. Reading
     # this key does not authorize a silent fallback to it.
     "context_mode": "timeline",
+    # How segment boundaries are chosen:
+    #   "fixed"        - every segment is `requested_segment_frames` (or the
+    #                    architecture's own maximum), the last one is whatever
+    #                    is left. Today's behaviour, and the default: it is what
+    #                    every already-planned chain was built with.
+    #   "shot_aligned" - `requested_segment_frames` becomes an UPPER BOUND and
+    #                    the planner picks boundaries that split as few shots as
+    #                    possible, merging shots shorter than one segment and
+    #                    disclosing shots longer than one. Opt-in: it changes the
+    #                    segment count and lengths, which are a transfer/decode
+    #                    cost the user is the one to weigh (design §7.2c).
+    # Free-form prompts have no shot structure to align to and stay fixed-length
+    # whichever value is sent.
+    "segment_length_mode": "fixed",
     # Per-segment noise seeding. "fixed" (every segment reuses the root seed)
     # is today's behaviour and keeps a text-only A/B honest by holding noise
     # constant. "derived" (stable hash of root_seed + plan_hash + segment index)

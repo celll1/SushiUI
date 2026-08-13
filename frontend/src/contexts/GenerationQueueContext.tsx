@@ -101,6 +101,13 @@ export interface QueueItem {
   // the next continuation.
   chainPlannedAccumulatedFrames?: number;
   chainDriftToleranceFrames?: number;
+  // Design §7.2c: the frames THIS item's own segment was planned to add
+  // (`owned_end_frame - owned_start_frame`). Set only for a `shot_aligned`
+  // manifest, whose per-segment lengths vary and therefore cannot be re-derived
+  // from `chainSegmentFrames`; `advanceVideoChain` rebases it onto the previous
+  // segment's actual length. Absent for every fixed-length and legacy chain,
+  // which is how that path keeps its existing arithmetic.
+  chainPlannedNewOutputFrames?: number;
   // The |actual - planned| drift measured when THIS item's own segment
   // finished, recorded (never used to gate anything) once the chain
   // continues past it within tolerance -- design §4.1 "許容内: そのまま続行

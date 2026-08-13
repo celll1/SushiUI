@@ -13995,6 +13995,20 @@ components:
           default: timeline
           description: How segment prompts were produced.
           example: "timeline"
+        segment_length_mode:
+          type: string
+          enum: [fixed, shot_aligned]
+          default: fixed
+          description: >-
+            How the segment boundaries in `segments[]` were chosen. This is the
+            mode that was APPLIED, which is not always the one requested:
+            `shot_aligned` falls back to `fixed` when the prompt has no shot
+            boundary inside the clip, and says so in `warnings`. Under `fixed`
+            every segment is the same length (bar the last), so a client may
+            re-derive a continuation's length from the cap; under
+            `shot_aligned` the lengths differ per segment and the per-segment
+            values here are the only source for them.
+          example: "fixed"
         continuation_mode:
           type: string
           enum: [boundary_frame, pinned_tail, motion_preroll, tail_reference_video, sampler_state]
@@ -14121,7 +14135,27 @@ components:
           description: >-
             Preferred per-invocation span, including the shared anchor. Null
             uses the architecture's own maximum. Snapped up to the frame grid.
+            Under `segment_length_mode: shot_aligned` this is an UPPER BOUND
+            rather than the length of every segment.
           example: 362
+        segment_length_mode:
+          type: string
+          enum: [fixed, shot_aligned]
+          default: fixed
+          description: >-
+            How to choose the segment boundaries. `fixed` (default) gives every
+            segment `requested_segment_frames`, with whatever is left in the
+            last one — the shipped behaviour, and the only one that keeps an
+            explicitly requested segment length as the length of every segment.
+            `shot_aligned` treats `requested_segment_frames` as an upper bound
+            and picks boundaries that split as few shots as possible: shots
+            shorter than one segment share a segment, shots longer than one
+            segment are split and disclosed in `warnings`, and the user's shot
+            timestamps are never moved. Opt-in, because it changes the segment
+            count and lengths — each extra segment is another upload, decode
+            and segment boundary. A prompt with no shot structure is planned at
+            fixed lengths whichever value is sent, with a warning.
+          example: "fixed"
         context_mode:
           type: string
           enum: [timeline, manual, legacy_repeat]
@@ -14308,6 +14342,30 @@ components:
             minimum: 1
           description: Per-segment `generated_span_frames`, in order.
           example: [362, 362, 294]
+        segment_count:
+          type: integer
+          minimum: 1
+          description: >-
+            Number of generation requests this plan makes. Shown alongside the
+            per-segment lengths because the two are the trade-off a
+            shot-aligned plan asks the user to weigh: each segment is one more
+            upload, decode and segment boundary.
+          example: 3
+        segment_new_output_frames:
+          type: array
+          items:
+            type: integer
+            minimum: 0
+          description: >-
+            Frames each segment ADDS to the clip, in order
+            (`owned_end_frame - owned_start_frame`). Differs from
+            `segment_frames` by the shared region of each continuation.
+          example: [362, 361, 293]
+        segment_length_mode:
+          type: string
+          enum: [fixed, shot_aligned]
+          description: The mode that produced these lengths (the manifest's applied value).
+          example: "fixed"
         frame_grid:
           type: string
           nullable: true

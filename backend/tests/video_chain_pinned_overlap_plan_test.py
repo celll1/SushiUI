@@ -245,4 +245,7 @@ def test_the_queue_asks_for_requested_total_frames_and_drifts_against_the_range(
     generation solve a span the plan never planned."""
     source = _videochain_ts()
     assert "s.requested_total_frames ?? s.owned_end_frame" in source
-    assert "chainPlannedAccumulatedFrames:\n        manifestSegments?.[index]?.owned_end_frame" in source
+    # `plannedSegment` is `manifestSegments[index]`, i.e. THIS continuation's
+    # own manifest row.
+    assert "const plannedSegment = manifestSegments?.[index];" in source
+    assert "chainPlannedAccumulatedFrames: plannedSegment?.owned_end_frame" in source

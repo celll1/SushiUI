@@ -13650,13 +13650,18 @@ components:
         chain_id:
           type: string
           format: uuid
-          description: Identifier for this chain, recorded on every generated segment.
+          description: >-
+            Identifier for this chain, recorded on every generated segment. A
+            fresh one is issued per plan call and it is excluded from
+            `plan_hash`: it identifies the run, not the content.
           example: "1f0d2a6e-9a1b-4f0e-9f2c-2a7f0f1c33b4"
         plan_hash:
           type: string
           description: >-
             sha256 over the canonical form of this manifest, excluding
-            `plan_hash`, `warnings` and run-time-written fields. Computed by one
+            `plan_hash`, `warnings`, `chain_id` and run-time-written fields.
+            Two plans with identical content therefore share a hash, which is
+            what makes `seed_policy: derived` reproducible. Computed by one
             backend function; clients display it and never recompute it.
           example: "8f14e45fceea167a5a36dedd4bea2543f1c1b7c8f1d1a0e4c1a0b7f3d2e5a6b7"
         architecture:
@@ -13676,7 +13681,10 @@ components:
           example: "A woman stands up, walks to the window, opens it and looks outside..."
         root_prompt_hash:
           type: string
-          description: sha256 of `root_prompt`, so gallery rows can reference it without copying it.
+          description: >-
+            sha256 of `root_prompt`, so gallery rows can reference it without
+            copying it. Always present, including on the geometry-only manifest
+            a failed plan returns.
           example: "c2b7d0f1a3e4c5b6a7981f0e2d3c4b5a69788796a5b4c3d2e1f0a9b8c7d6e5f4"
         fps:
           type: number

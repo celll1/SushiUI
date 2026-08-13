@@ -1110,7 +1110,7 @@ def calculate_generation_metadata(
 
 
 def apply_generation_timings(params: Dict[str, Any], total_seconds: float) -> None:
-    """Merge generation timing (total wall time + recorded phases) into ``params``.
+    """Merge generation cost (wall time, phases, peak VRAM) into ``params``.
 
     Records the total wall time measured around the generation call plus whatever
     phase breakdown the pipeline layer populated in the process-wide
@@ -1120,13 +1120,18 @@ def apply_generation_timings(params: Dict[str, Any], total_seconds: float) -> No
 
     Timing is informational (not reproducibility-affecting); values are seconds
     rounded to 3 decimals. Phases are only present for architectures/paths that
-    instrument them — total is always recorded.
+    instrument them — total is always recorded. ``peak_vram_gb`` is present only
+    where the endpoint armed the tracking by calling ``generation_timer.reset()``
+    before the generation; an endpoint that did not reports nothing rather than
+    the previous generation's peak.
     """
     from core.inference.generation_timing import generation_timer
 
     params["generation_time"] = round(float(total_seconds), 3)
     # Phase keys already come back as time_text_encode / time_denoise / time_vae_decode.
     for key, value in generation_timer.phases_dict().items():
+        params[key] = value
+    for key, value in generation_timer.peak_vram_dict().items():
         params[key] = value
 
 
@@ -1644,8 +1649,10 @@ def plan_video_outpaint_placement(
     }
 
 
-def video_continuation_overlap_lengths(spec, max_frames: int) -> Tuple[int, ...]:
-    """The overlap lengths a continuation can pin, ascending, up to ``max_frames``.
+def video_continuation_overlap_lengths(
+    spec, max_frames: int, min_frames: int = 1
+) -> Tuple[int, ...]:
+    """The overlap lengths a continuation can pin, ascending, within the bounds.
 
     A latent frame is conditioned or generated whole, so an overlap is only
     addressable where it lands on a video-VAE temporal group boundary. Those
@@ -1653,13 +1660,17 @@ def video_continuation_overlap_lengths(spec, max_frames: int) -> Tuple[int, ...]
     :func:`latent_frame_spans` is the ONE enumerator of them (the pattern
     CYCLES: MiniMax-H3's ``(1, 4, 4, 4, 4)`` gives 1, 5, 9, 13, 17, 18, 22, ...,
     not 1, 5, 17, 33). Empty for an architecture that declares no chunking.
+
+    ``min_frames`` is the arch's ``chain_context_min_frames``: a MEASURED floor
+    (see `arch_capabilities.MINIMAX_H3_PINNED_TAIL_MIN_FRAMES`), not an
+    alignment fact, which is why it filters rather than snaps.
     """
     if spec is None or not getattr(spec, "latent_chunk_pattern", ()) or max_frames < 1:
         return ()
     # `max_frames` latent frames cover at least `max_frames` pixel frames (every
     # chunk is >= 1 wide), so this enumerates past the cap and then cuts.
     return tuple(end for _start, end in latent_frame_spans(spec, int(max_frames))
-                 if end <= max_frames)
+                 if int(min_frames) <= end <= max_frames)
 
 
 def plan_video_continuation_context(
@@ -1725,14 +1736,27 @@ def plan_video_continuation_context(
         return {"mode": mode, "overlap_frames": 1}
 
     ceiling = capability.get("chain_context_max_frames")
+    floor = int(capability.get("chain_context_min_frames") or 1)
     spec = temporal_spec_for_arch(arch)
     valid = video_continuation_overlap_lengths(
-        spec, int(ceiling) if ceiling is not None else 0)
+        spec, int(ceiling) if ceiling is not None else 0, floor)
     if not valid:
         raise ValidationError(
             f"'{arch or 'the loaded model'}' cannot pin a continuation overlap",
             detail="Pinning the preceding segment's tail needs the architecture's video-VAE "
                    "temporal chunking and a bounded context length; this one declares neither.",
+        )
+    if 0 < requested < floor:
+        # Distinct from "off the grid": this length is addressable, and it is
+        # refused on a MEASURED quality result rather than on arithmetic.
+        raise ValidationError(
+            "continuation_overlap_frames is shorter than the shortest pin this model serves",
+            detail=f"Got {requested}; the shortest pinned tail is {floor} frame(s) "
+                   f"({', '.join(str(v) for v in valid)}). A pin that short hands the model a "
+                   f"motionless still as observed video, which it can continue as a static "
+                   f"scene. Use continuation_mode 'boundary_frame' for one frame of context: "
+                   f"that is first-frame conditioning, not a one-frame pin, and the two are not "
+                   f"equivalent. The value is refused rather than snapped up.",
         )
     if requested not in valid:
         raise ValidationError(

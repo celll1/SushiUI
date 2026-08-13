@@ -304,7 +304,8 @@ def save_image_with_metadata(
     # Generation timing (informational, not reproducibility-affecting). Written
     # whenever present — total wall time is always recorded by the endpoint; the
     # phase breakdown is present only for instrumented architectures/paths.
-    for _tkey in ("generation_time", "time_text_encode", "time_denoise", "time_vae_decode"):
+    for _tkey in ("generation_time", "time_text_encode", "time_denoise", "time_vae_decode",
+                  "peak_vram_gb"):
         if params.get(_tkey) is not None:
             metadata.add_text(_tkey, str(params[_tkey]))
 

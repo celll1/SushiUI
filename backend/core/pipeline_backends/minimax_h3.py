@@ -277,6 +277,12 @@ class MiniMaxH3Mixin:
         )
 
     def _minimax_h3_reset_peak_vram(self) -> None:
+        # Fold first: this reset exists for the per-phase logging below, and
+        # without the fold it would also truncate the GENERATION-level peak the
+        # route reports (generation_timing.peak_vram_dict).
+        from core.inference.generation_timing import generation_timer
+
+        generation_timer.note_peak_vram()
         if torch.cuda.is_available():
             torch.cuda.reset_peak_memory_stats()
 

@@ -420,7 +420,7 @@ export default function VideoChainConfirmDialog({
               )}
               <p className="w-full text-xs text-gray-400">
                 {effectiveMode === "pinned_tail"
-                  ? `Each continuation is conditioned on the last ${effectiveOverlap} frame(s) of the previous segment (and, when the input audio is preserved, that span's soundtrack) instead of on its final frame alone. Those frames are re-rendered and discarded, so the previous segment's pixels are unchanged; the generated span grows by the same amount and is rounded up to the model's frame grid.`
+                  ? `Each continuation is conditioned on the last ${effectiveOverlap} frame(s) of the previous segment (and, when the input audio is preserved, that span's soundtrack) instead of on its final frame alone. Those frames are re-rendered and discarded, so the previous segment's pixels are unchanged; the generated span grows by the same amount and is rounded up to the model's frame grid, which is why the segment ranges below can add more frames per segment than the boundary-frame plan. Shorter pins are not offered: a single pinned frame is a motionless still, which the model can continue as a static scene — boundary frame is the one-frame option, and it is a different kind of conditioning rather than a smaller pin.`
                   : "Each continuation is conditioned on the previous segment's final frame alone."}
               </p>
             </div>

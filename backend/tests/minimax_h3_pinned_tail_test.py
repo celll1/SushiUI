@@ -82,16 +82,48 @@ def test_the_overlap_lengths_are_the_cycling_cumulative_sums():
 def test_an_unaligned_or_oversized_overlap_is_refused_not_snapped():
     from api.error_handlers import ValidationError
 
-    for bad in (0, 2, 4, 16, 33, 18):
+    for bad in (0, 4, 16, 33, 18):
         with pytest.raises(ValidationError) as error:
             plan_video_continuation_context("pinned_tail", bad, "minimax_h3", "fl2va")
         # The refusal names the lengths that work, so the caller is not left
         # guessing which nearby value would have been snapped to.
-        assert "1, 5, 9, 13, 17" in str(error.value.detail)
+        assert "5, 9, 13, 17" in str(error.value.detail)
     # NEGATIVE CONTROL: every advertised length is accepted at the same call.
-    for good in (1, 5, 9, 13, 17):
+    for good in (5, 9, 13, 17):
         assert plan_video_continuation_context(
             "pinned_tail", good, "minimax_h3", "fl2va")["overlap_frames"] == good
+
+
+@pytest.mark.parametrize("short", [1, 2, 4])
+def test_a_pin_shorter_than_the_measured_floor_is_refused_by_name(short):
+    """P-VC-1 (design §7.2b): a 1-frame pin can freeze the generated span.
+
+    It is addressable -- 1 IS a VAE group boundary -- so it is refused on the
+    MEASURED result, with its own message, and the caller is pointed at
+    `boundary_frame` rather than at a snapped-up length. The two are different
+    conditionings (first-frame vs observed video), not two sizes of one.
+    """
+    from api.error_handlers import ValidationError
+    from api.arch_capabilities import (
+        MINIMAX_H3_PINNED_TAIL_MIN_FRAMES,
+        chain_context_for,
+    )
+
+    assert chain_context_for("minimax_h3", "fl2va")["chain_context_min_frames"] == (
+        MINIMAX_H3_PINNED_TAIL_MIN_FRAMES)
+    assert MINIMAX_H3_PINNED_TAIL_MIN_FRAMES not in (0, 1)
+    assert 1 not in video_continuation_overlap_lengths(
+        SPEC, 17, MINIMAX_H3_PINNED_TAIL_MIN_FRAMES)
+
+    with pytest.raises(ValidationError) as error:
+        plan_video_continuation_context("pinned_tail", short, "minimax_h3", "fl2va")
+    detail = str(error.value.detail)
+    assert "boundary_frame" in detail and "not equivalent" in detail
+    assert "refused rather than snapped" in detail
+    # ... while `boundary_frame` itself keeps working, unchanged.
+    assert plan_video_continuation_context(
+        "boundary_frame", 0, "minimax_h3", "fl2va") == {
+            "mode": "boundary_frame", "overlap_frames": 1}
 
 
 @pytest.mark.parametrize("arch,variant", [
@@ -479,13 +511,23 @@ def _post(monkeypatch, manager, **fields):
     return asyncio.run(run())
 
 
-@pytest.mark.parametrize("overlap", [0, 2, 16, 33])
+@pytest.mark.parametrize("overlap", [0, 16, 33])
 def test_the_route_refuses_an_unaligned_overlap_before_decoding(monkeypatch, overlap):
     status, payload = _post(monkeypatch, _StubPipelineManager(),
                             continuation_mode="pinned_tail",
                             continuation_overlap_frames=overlap)
     assert status == 400, payload
-    assert "1, 5, 9, 13, 17" in payload["detail"]
+    assert "5, 9, 13, 17" in payload["detail"]
+
+
+@pytest.mark.parametrize("overlap", [1, 2])
+def test_the_route_refuses_a_pin_below_the_measured_floor(monkeypatch, overlap):
+    """The floor is enforced at the endpoint too, before the clip is decoded."""
+    status, payload = _post(monkeypatch, _StubPipelineManager(),
+                            continuation_mode="pinned_tail",
+                            continuation_overlap_frames=overlap)
+    assert status == 400, payload
+    assert "boundary_frame" in payload["detail"]
 
 
 @pytest.mark.parametrize("arch,variant", [("minimax_h3", "ref2va"), ("ltx2", None)])

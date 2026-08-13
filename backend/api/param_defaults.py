@@ -1614,10 +1614,13 @@ VIDEO_CHAIN_DEFAULTS: Dict[str, Any] = {
     "chain_drift_tolerance_frames": 12,
     # Requested shared frames between neighbouring segments, and the
     # `continuation_overlap_frames` default of /generate/outpaint/video. 0 = the
-    # single shared anchor frame of a boundary-frame continuation; `pinned_tail`
-    # requires >= 1 and refuses a length that is not on the video VAE's temporal
-    # group grid rather than snapping it. The authoritative value is the
-    # generation's effective_overlap_frames/_samples, never this request value.
+    # single shared anchor frame of a boundary-frame continuation; a pinning
+    # mode requires a length on the video VAE's temporal group grid AND inside
+    # the arch's advertised [chain_context_min_frames, chain_context_max_frames]
+    # (MiniMax-H3: 5, 9, 13, 17 -- the floor is measured, see
+    # arch_capabilities.MINIMAX_H3_PINNED_TAIL_MIN_FRAMES), and refuses anything
+    # else rather than snapping it. The authoritative value is the generation's
+    # effective_overlap_frames/_samples, never this request value.
     "requested_overlap_frames": 0,
     # Reference binding for a reference whose segment set is not stated
     # explicitly: apply it to every segment, which is today's carry-to-all

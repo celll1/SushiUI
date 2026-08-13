@@ -460,15 +460,27 @@ _add_training_unsupported(
 # transformer and false for `fl2va` with the same `TemporalSpec`.
 #
 # `chain_context_min_frames`/`chain_context_max_frames` count PIXEL frames of
-# the preceding segment that the advertised modes condition on. A value is only
-# meaningful on a video-VAE group boundary, i.e. it must be a cumulative sum of
-# `video_constraints[arch].latent_chunk_pattern` -- for MiniMax-H3's
+# the preceding segment that the advertised modes condition on, and they bound
+# the `continuation_overlap_frames` a mode that PINS an overlap accepts. They do
+# not describe `boundary_frame`: its shared anchor is a first-frame
+# conditioning, not an overlap request, and it takes no length at all. A value
+# is only meaningful on a video-VAE group boundary, i.e. it must be a cumulative
+# sum of `video_constraints[arch].latent_chunk_pattern` -- for MiniMax-H3's
 # (1, 4, 4, 4, 4) those are 1, 5, 9, 13, 17, 18, 22, ... (the pattern CYCLES).
 # The pattern is already served next to this block and is the ONE enumerator;
 # this module does not restate the list.
 
+# The shortest `pinned_tail` overlap MiniMax-H3 serves. MEASURED (P-VC-1,
+# design §7.2b): a 1-frame pin hands the model a motionless still as "observed
+# video", and it can read that as a static scene -- the generated span froze
+# outright on 1 seed in 4, and diverged systematically less than the anchor even
+# when it did not (24.1 vs 31.0). The collapse is gone by 5 (32.1) and 17 (29.6).
+# A 1-frame pin is therefore NOT a cheap equivalent of `boundary_frame`, which
+# stays its own mode; asking for one is refused rather than snapped up.
+MINIMAX_H3_PINNED_TAIL_MIN_FRAMES = 5
+
 # The longest `pinned_tail` overlap MiniMax-H3 serves: one full cycle of its
-# chunk pattern, and the top of the 1/5/17 comparison the mode exists to make.
+# chunk pattern, and the top of the 5/17 comparison the mode exists to make.
 # It is a REFUSAL bound, not a clamp -- a longer pin is unmeasured, and it also
 # keeps every advertised overlap far below the shortest generated span (124), so
 # a pin can never claim the whole clip.
@@ -486,10 +498,12 @@ CHAIN_CONTEXT: Dict[str, Dict[str, Any]] = {
     # pinning the preserved tail as the generated clip's own leading latent
     # frames -- the temporal-inpaint mechanism, reused rather than rebuilt. It
     # rides the arch-level entry because the pin and a reference block claim the
-    # same conditioning prefix, so it is fl2va's and not ref2va's.
+    # same conditioning prefix, so it is fl2va's and not ref2va's. Its min/max
+    # bound the pin, not the anchor: `boundary_frame` is a separate mode and
+    # keeps its single anchor frame whatever these say.
     "minimax_h3": {
         "chain_continuation_modes": ["boundary_frame", "pinned_tail"],
-        "chain_context_min_frames": 1,
+        "chain_context_min_frames": MINIMAX_H3_PINNED_TAIL_MIN_FRAMES,
         "chain_context_max_frames": MINIMAX_H3_PINNED_TAIL_MAX_FRAMES,
         # The outpaint route places only the boundary anchor(s); it carries no
         # keyframe fields at all. The index-addressable keyframe conditioning

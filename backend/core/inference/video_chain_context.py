@@ -70,10 +70,21 @@ CONTEXT_MODES = ("timeline", "manual", "legacy_repeat")
 SEED_POLICIES = ("fixed", "explicit", "derived")
 # How the planner picks segment boundaries (design §7.2c).
 #   "fixed"        - every segment is the cap, the last one is what is left.
-#                    The shipped behaviour, and the default.
 #   "shot_aligned" - the boundaries are chosen so that as few shots as possible
 #                    are cut in two, on the same frame grid.
+# Which one an unset request gets is `resolve_segment_length_mode`.
 SEGMENT_LENGTH_MODES = ("fixed", "shot_aligned")
+
+# What to do with an event whose frame range crosses a segment boundary
+# (design §6.2: "一方の segment にまとめるか validation warning で停止する").
+#   "refuse"                    - hard error, the shipped behaviour and default.
+#   "assign_to_earlier_segment" - the earlier segment owns the whole event; the
+#                                 crossing is disclosed as a warning naming the
+#                                 event and the frames.
+# Nothing is ever cut in two: the choice is between refusing and merging, which
+# is why the API vocabulary says "assign" where the internal flag (kept for its
+# call sites) still says "split".
+BOUNDARY_CROSSING_POLICIES = ("refuse", "assign_to_earlier_segment")
 
 # Ceiling on the shot-aligned search's state space. Reaching it means the
 # target is long enough that the search is no longer cheap; the planner then
@@ -665,7 +676,7 @@ def plan_shot_aligned_spans(
     if cap is None or target_frames <= cap:
         # Nothing to chain, or it fits in one request: identical to fixed.
         return None
-    boundaries = sorted({int(b) for b in (shot_start_frames or []) if 0 < int(b) < target_frames})
+    boundaries = shot_boundaries_inside(shot_start_frames, target_frames)
     if not boundaries:
         sink.append(
             "Shot-aligned segment lengths were requested, but this prompt has no shot boundary "
@@ -727,18 +738,59 @@ class SegmentGeometry:
     segment_length_mode: str
 
 
+def shot_boundaries_inside(
+    shot_start_frames: Optional[Sequence[int]], target_frames: int
+) -> List[int]:
+    """The shot starts a segment boundary could align to: strictly inside the clip.
+
+    Frame 0 is where segment 0 begins whatever the mode, and the end of the clip
+    is not a boundary between two segments.
+    """
+    return sorted(
+        {int(f) for f in (shot_start_frames or []) if 0 < int(f) < int(target_frames)}
+    )
+
+
+def resolve_segment_length_mode(
+    segment_length_mode: Optional[str],
+    shot_start_frames: Optional[Sequence[int]],
+    target_frames: int,
+) -> str:
+    """Which length mode applies when the caller named none (design §7.2d).
+
+    A canonical timeline is the thing shot alignment aligns to, so it is what
+    decides: with a shot boundary inside the clip the boundaries follow the
+    shots, and a prompt with no shot structure keeps fixed lengths because there
+    is nothing to align to. Not conditioned on `segment_frames`, which on an
+    architecture with no single-inference maximum is also what decides whether
+    there is a chain at all -- there the caller always sends one, so a rule
+    keyed on it would never fire.
+
+    An explicit value wins in both directions: `fixed` still means uniform
+    segments, which is what a chain planned before this default was.
+    """
+    if segment_length_mode is not None:
+        if segment_length_mode not in SEGMENT_LENGTH_MODES:
+            raise VideoChainPlanError(
+                f"unknown segment length mode: {segment_length_mode}"
+            )
+        return segment_length_mode
+    return "shot_aligned" if shot_boundaries_inside(shot_start_frames, target_frames) else "fixed"
+
+
 def build_segment_geometry(
     spec: VideoGridSpec,
     target_frames: int,
     segment_frames: Optional[int] = None,
     warnings: Optional[List[str]] = None,
     overlap_frames: int = VIDEO_CHAIN_ANCHOR_FRAMES,
-    segment_length_mode: str = "fixed",
+    segment_length_mode: Optional[str] = None,
     shot_start_frames: Optional[Sequence[int]] = None,
 ) -> SegmentGeometry:
     """`build_segment_spans` plus the mode that produced the spans."""
-    if segment_length_mode not in SEGMENT_LENGTH_MODES:
-        raise VideoChainPlanError(f"unknown segment length mode: {segment_length_mode}")
+    segment_length_mode = resolve_segment_length_mode(
+        segment_length_mode, shot_start_frames, target_frames
+    )
     if segment_length_mode == "shot_aligned":
         spans = plan_shot_aligned_spans(
             spec, target_frames, shot_start_frames or [], segment_frames, warnings, overlap_frames
@@ -930,6 +982,17 @@ def validate_timeline(events: Sequence[TimelineEvent], total_frames: int) -> Non
         )
 
 
+def boundary_crossing_allows_ownership(policy: str) -> bool:
+    """`BOUNDARY_CROSSING_POLICIES` value -> the `allow_boundary_split` flag.
+
+    The one place the wire vocabulary and the internal flag meet, so a route
+    cannot invent a third spelling of the same choice.
+    """
+    if policy not in BOUNDARY_CROSSING_POLICIES:
+        raise VideoChainPlanError(f"unknown boundary crossing policy: {policy}")
+    return policy == "assign_to_earlier_segment"
+
+
 def assign_event_owners(
     events: Sequence[TimelineEvent],
     spans: Sequence[SegmentSpan],
@@ -963,16 +1026,27 @@ def assign_event_owners(
                 f"planned {last_frame} frames"
             )
         if event.end_frame > owner.owned_end_frame:
+            label = (
+                f"shot {event.shot_number}"
+                if event.kind == "shot" and event.shot_number is not None
+                else f"event {event.id}"
+            )
             message = (
-                f"event {event.id} crosses the boundary between segment "
-                f"{owner.index + 1} and {owner.index + 2}"
+                f"Segment {owner.index + 1}: {label} (frames {event.start_frame}-"
+                f"{event.end_frame}) crosses the boundary into segment "
+                f"{owner.index + 2} at frame {owner.owned_end_frame}"
             )
             if not allow_boundary_split:
                 raise VideoChainPlanError(
                     message
-                    + "; split it in the plan editor or choose which segment owns it"
+                    + "; split it in the plan editor, choose which segment owns it, or plan "
+                    "with boundary_crossing_policy 'assign_to_earlier_segment'"
                 )
-            sink.append(message + "; it is kept whole in the earlier segment")
+            sink.append(
+                message
+                + f"; segment {owner.index + 1} owns it whole and describes it in full, and "
+                f"segment {owner.index + 2} does not restate it"
+            )
         owners[event.id] = owner.index
     return owners
 
@@ -1925,10 +1999,11 @@ class ChainPlanRequest:
     negative_prompt: str = ""
     segment_frames: Optional[int] = None
     context_mode: str = "timeline"
-    # `fixed` (default) keeps `segment_frames` as the length of EVERY segment.
+    # `fixed` keeps `segment_frames` as the length of EVERY segment;
     # `shot_aligned` turns it into an upper bound and lets the planner choose
-    # boundaries around the shots (design §7.2c).
-    segment_length_mode: str = "fixed"
+    # boundaries around the shots (design §7.2c). None = unset, resolved by
+    # `resolve_segment_length_mode` from the timeline.
+    segment_length_mode: Optional[str] = None
     # What each continuation is conditioned on, and (for a mode that pins one)
     # how many frames it shares with its predecessor. The overlap is ALREADY
     # resolved against the arch capability by the caller
@@ -1969,11 +2044,6 @@ def plan_video_chain_manifest(request: ChainPlanRequest) -> ChainManifest:
     if request.continuation_mode not in CONTINUATION_MODES:
         raise VideoChainPlanError(f"unknown continuation mode: {request.continuation_mode}")
 
-    if request.segment_length_mode not in SEGMENT_LENGTH_MODES:
-        raise VideoChainPlanError(
-            f"unknown segment length mode: {request.segment_length_mode}"
-        )
-
     warnings: List[str] = []
     overlap = max(1, int(request.overlap_frames))
     # The shot boundaries the geometry aligns to are the timeline's own shot
@@ -1987,7 +2057,9 @@ def plan_video_chain_manifest(request: ChainPlanRequest) -> ChainManifest:
         request.segment_frames,
         warnings,
         overlap,
-        request.segment_length_mode,
+        resolve_segment_length_mode(
+            request.segment_length_mode, shot_starts, request.target_frames
+        ),
         shot_starts,
     )
     spans = geometry.spans
@@ -2288,7 +2360,7 @@ def plan_h3_chain_from_prompt(
     allow_boundary_split: bool = False,
     chain_id: Optional[str] = None,
     rng: Optional[random.Random] = None,
-    segment_length_mode: str = "fixed",
+    segment_length_mode: Optional[str] = None,
 ) -> ChainManifest:
     """The deterministic path of design §6.2: a structured H3 prompt -> a manifest.
 
@@ -2309,8 +2381,15 @@ def plan_h3_chain_from_prompt(
         prompt, mode, target_frames / fps, reference_inventory or None
     )
     # Parsed BEFORE the geometry: shot alignment needs the boundaries to choose
-    # the segment lengths from. `plan_video_chain_manifest` re-derives the same
-    # boundaries from the events built here, so the two agree by construction.
+    # the segment lengths from, and they are also what an unset mode resolves
+    # against. `plan_video_chain_manifest` re-derives the same boundaries from
+    # the events built here, so the two agree by construction; the mode is
+    # resolved once here and passed on as a concrete value so they cannot
+    # disagree even if that stopped being true.
+    shot_starts = parse_shot_start_frames(parsed.shots, fps)
+    segment_length_mode = resolve_segment_length_mode(
+        segment_length_mode, shot_starts, target_frames
+    )
     spans = build_segment_geometry(
         grid,
         target_frames,
@@ -2318,7 +2397,7 @@ def plan_h3_chain_from_prompt(
         None,
         max(1, int(overlap_frames)),
         segment_length_mode,
-        parse_shot_start_frames(parsed.shots, fps),
+        shot_starts,
     ).spans
     final_frames = spans[-1].owned_end_frame
     events = shots_to_events(parsed.shots, fps, final_frames)

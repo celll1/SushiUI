@@ -7427,6 +7427,25 @@ paths:
         - `requested_segment_frames`: per-invocation span. `null` uses the
           architecture's own maximum. Snapped up to the model's frame grid,
           which is why `expected_final_frames` may overshoot `target_frames`.
+        - `segment_length_mode`: where the segment boundaries fall. It has no
+          schema default: omitted, the planner resolves it from the canonical
+          timeline, so a prompt whose shots parse (or a supplied
+          `canonical_timeline`) gets boundaries chosen around the shots, and a
+          free-form prompt with nothing to align to gets fixed lengths. Send
+          `fixed` to keep `requested_segment_frames` as the length of every
+          segment; under shot alignment it is an upper bound instead. What was
+          applied is `manifest.segment_length_mode`, and the resulting segment
+          count and per-segment lengths are in `frame_plan`.
+        - `boundary_crossing_policy`: what to do with a shot whose frames cross
+          a segment boundary. `refuse` (default) reports it as a plan error
+          naming the shot, its frame range and the cut frame, and no other
+          behaviour changes. `assign_to_earlier_segment` gives the whole shot to
+          the earlier segment and lists every such shot in `warnings`. It only
+          decides anything for a fixed-length plan, where the boundaries come
+          from the frame arithmetic and a caller cannot choose timestamps that
+          avoid them before planning — which is why the second option exists at
+          all. A shot-aligned plan places the boundaries around the shots and
+          discloses the ones it could not fit as warnings either way.
         - `context_mode`: `timeline` (compile per-segment prompts), `manual`
           (caller supplies `canonical_timeline`), or `legacy_repeat` (copy the
           root prompt verbatim — explicit opt-in, always warned about). It has
@@ -7489,8 +7508,9 @@ paths:
             `context_mode` choice, `seed_policy: explicit` (no per-segment
             seeds can be sent here), a `requested_segment_frames` no longer
             than the shared anchor, a negative `requested_overlap_frames` or
-            `chain_drift_tolerance_frames`, or a non-positive `target_frames`
-            or `fps`.
+            `chain_drift_tolerance_frames`, an unknown `segment_length_mode` or
+            `boundary_crossing_policy`, or a non-positive `target_frames` or
+            `fps`.
           content:
             application/json:
               schema:
@@ -14286,7 +14306,12 @@ components:
             How the segment boundaries in `segments[]` were chosen. This is the
             mode that was APPLIED, which is not always the one requested:
             `shot_aligned` falls back to `fixed` when the prompt has no shot
-            boundary inside the clip, and says so in `warnings`. Under `fixed`
+            boundary inside the clip, and says so in `warnings` when it was
+            requested by name. A request that names no mode is resolved from the
+            timeline, so this field is where a client reads what happened. The
+            `default` here is what a manifest that does not carry the field is
+            read as — everything planned before shot alignment existed was
+            fixed-length. Under `fixed`
             every segment is the same length (bar the last), so a client may
             re-derive a continuation's length from the cap; under
             `shot_aligned` the lengths differ per segment and the per-segment
@@ -14424,21 +14449,57 @@ components:
         segment_length_mode:
           type: string
           enum: [fixed, shot_aligned]
-          default: fixed
+          nullable: true
           description: >-
-            How to choose the segment boundaries. `fixed` (default) gives every
-            segment `requested_segment_frames`, with whatever is left in the
-            last one — the shipped behaviour, and the only one that keeps an
-            explicitly requested segment length as the length of every segment.
-            `shot_aligned` treats `requested_segment_frames` as an upper bound
-            and picks boundaries that split as few shots as possible: shots
-            shorter than one segment share a segment, shots longer than one
-            segment are split and disclosed in `warnings`, and the user's shot
-            timestamps are never moved. Opt-in, because it changes the segment
-            count and lengths — each extra segment is another upload, decode
-            and segment boundary. A prompt with no shot structure is planned at
-            fixed lengths whichever value is sent, with a warning.
+            How to choose the segment boundaries. **Deliberately has no schema
+            default**: omitted or null means "the caller did not choose" and the
+            planner resolves it from the canonical timeline — `shot_aligned`
+            when the clip contains a shot boundary to align to, `fixed`
+            otherwise. The condition is the timeline, not
+            `requested_segment_frames`: on an architecture with no
+            single-inference maximum a plan without a requested segment length
+            is a single segment, so a rule keyed on that field would never
+            apply there. `fixed` gives every segment
+            `requested_segment_frames`, with whatever is left in the last one,
+            and is the only value that keeps an explicitly requested segment
+            length as the length of every segment. `shot_aligned` treats
+            `requested_segment_frames` as an upper bound and picks boundaries
+            that split as few shots as possible: shots shorter than one segment
+            share a segment, shots longer than one segment are split and
+            disclosed in `warnings`, and the user's shot timestamps are never
+            moved. It changes the segment count and lengths — each extra
+            segment is another upload, decode and segment boundary — which
+            `frame_plan.segment_count` and `frame_plan.segment_new_output_frames`
+            report. A prompt with no shot structure is planned at fixed lengths
+            whichever value is sent (with a warning when `shot_aligned` was
+            asked for by name). The mode that was APPLIED is
+            `manifest.segment_length_mode`.
           example: "fixed"
+        boundary_crossing_policy:
+          type: string
+          enum: [refuse, assign_to_earlier_segment]
+          default: refuse
+          description: >-
+            What to do with a shot (or any timeline event) whose frames cross a
+            segment boundary. `refuse` (default) answers with a plan error
+            naming the shot, its frame range and the frame it is cut at, and
+            plans nothing — the shipped behaviour. `assign_to_earlier_segment`
+            gives the whole shot to the earlier segment, which describes it in
+            full while the later segment does not restate it; every crossing is
+            then reported in `warnings` with the same shot number, frame range
+            and cut frame. Nothing is ever cut in two, and the shot timestamps
+            are not moved either way. Applies to both `segment_length_mode`
+            values, but only decides anything under `fixed`: there the
+            boundaries follow from the frame arithmetic, so a caller cannot
+            place timestamps on them before planning. Under `shot_aligned` the
+            planner chose the boundaries itself and already keeps whole the
+            shots it could fit, so the shots it could not fit on the frame grid
+            are disclosed as warnings whichever policy is sent — which is also
+            what a request naming no `segment_length_mode` gets whenever the
+            timeline has a shot boundary to align to. It is not part of
+            `plan_hash`: it decides whether a plan is produced, not what the
+            produced plan contains.
+          example: "refuse"
         context_mode:
           type: string
           enum: [timeline, manual, legacy_repeat]

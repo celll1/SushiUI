@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ArchCapabilities,
+  VideoChainBoundaryCrossingPolicy,
   VideoChainContinuationMode,
   VideoChainIssue,
   VideoChainManifest,
@@ -104,6 +105,14 @@ const normalizeIssues = (issues: VideoChainIssue[] | null | undefined): VideoCha
 const issueText = (issue: VideoChainIssue) =>
   issue.code && issue.code !== "warning" ? `${issue.message} (${issue.code})` : issue.message;
 
+// The backend recovers `segment_index` FROM a `Segment N` prefix the planner
+// already wrote into the message, so re-adding it would print it twice.
+const SEGMENT_PREFIXED = /^Segment\s+\d+\b/;
+const issuePrefix = (issue: VideoChainIssue) =>
+  issue.segment_index != null && !SEGMENT_PREFIXED.test(issue.message ?? "")
+    ? `Segment ${issue.segment_index + 1}: `
+    : "";
+
 /**
  * The choice CLAUDE.md's opt-in-chaining requirement mandates: a value held
  * in a video length control above the loaded architecture's single-inference
@@ -164,12 +173,16 @@ export default function VideoChainConfirmDialog({
   // alignment and has its own range.
   const [prerollFrames, setPrerollFrames] = useState<number>(0);
   const [anchorCount, setAnchorCount] = useState<number>(0);
-  // How the segment boundaries are chosen (design §7.2c). The DEFAULT stays
-  // `fixed`: shot alignment changes the segment count and lengths, which is a
-  // transfer/decode cost the user is the one to weigh, and its effect on prompt
-  // adherence is unmeasured.
+  // How the segment boundaries are chosen (design §7.2c). "auto" sends no mode
+  // and lets the planner resolve it from the timeline, which is the default;
+  // naming a mode here overrides that in either direction.
   const [segmentLengthMode, setSegmentLengthMode] =
-    useState<VideoChainSegmentLengthMode>("fixed");
+    useState<VideoChainSegmentLengthMode | "auto">("auto");
+  // What happens to a shot that crosses a segment boundary. The DEFAULT stays
+  // `refuse`: the planner reports which shot is cut and where, and the user
+  // decides -- it never resolves the crossing on its own.
+  const [boundaryCrossingPolicy, setBoundaryCrossingPolicy] =
+    useState<VideoChainBoundaryCrossingPolicy>("refuse");
 
   // Offered modes and overlap lengths come from the backend's own tables, never
   // from a list in this file.
@@ -214,7 +227,8 @@ export default function VideoChainConfirmDialog({
       target_frames: planInput.targetFrames,
       fps: planInput.fps,
       requested_segment_frames: planInput.requestedSegmentFrames ?? null,
-      segment_length_mode: segmentLengthMode,
+      segment_length_mode: segmentLengthMode === "auto" ? null : segmentLengthMode,
+      boundary_crossing_policy: boundaryCrossingPolicy,
       context_mode: "timeline",
       seed_policy: planInput.seedPolicy ?? "fixed",
       root_seed: planInput.rootSeed ?? -1,
@@ -223,7 +237,14 @@ export default function VideoChainConfirmDialog({
       requested_anchor_count: effectiveAnchors,
       references: planInput.references ?? [],
     };
-  }, [planInput, effectiveMode, effectiveOverlap, effectiveAnchors, segmentLengthMode]);
+  }, [
+    planInput,
+    effectiveMode,
+    effectiveOverlap,
+    effectiveAnchors,
+    segmentLengthMode,
+    boundaryCrossingPolicy,
+  ]);
   const planRequestKey = planRequest ? JSON.stringify(planRequest) : null;
 
   useEffect(() => {
@@ -503,19 +524,63 @@ export default function VideoChainConfirmDialog({
               <select
                 value={segmentLengthMode}
                 onChange={(e) =>
-                  setSegmentLengthMode(e.target.value as VideoChainSegmentLengthMode)
+                  setSegmentLengthMode(
+                    e.target.value as VideoChainSegmentLengthMode | "auto"
+                  )
                 }
                 className="ml-2 bg-gray-800 border border-gray-600 rounded px-2 py-1 text-xs text-white"
               >
+                <option value="auto">Aligned to shots when the prompt has them</option>
                 <option value="fixed">Fixed length</option>
                 <option value="shot_aligned">Aligned to shots</option>
               </select>
             </label>
+            <label className="text-xs text-gray-300">
+              Shot crossing a boundary
+              <select
+                value={boundaryCrossingPolicy}
+                onChange={(e) =>
+                  setBoundaryCrossingPolicy(e.target.value as VideoChainBoundaryCrossingPolicy)
+                }
+                className="ml-2 bg-gray-800 border border-gray-600 rounded px-2 py-1 text-xs text-white"
+              >
+                <option value="refuse">Stop and report</option>
+                <option value="assign_to_earlier_segment">Give it to the earlier segment</option>
+              </select>
+            </label>
             <p className="w-full text-xs text-gray-400">
-              {segmentLengthMode === "shot_aligned"
-                ? `The segment length above becomes an upper bound and the planner picks boundaries that split as few shots as possible: shots shorter than one segment share a segment, shots longer than one segment are split and listed below. Your shot timestamps are not moved. The segment count and the per-segment lengths below change with this setting — each segment is one more upload, one more decode and one more segment boundary.`
-                : "Every segment is the segment length above, with whatever is left in the last one. Segment boundaries fall wherever that arithmetic puts them, regardless of where the shots are."}
+              {segmentLengthMode === "fixed"
+                ? "Every segment is the segment length above, with whatever is left in the last one. Segment boundaries fall wherever that arithmetic puts them, regardless of where the shots are."
+                : `${
+                    segmentLengthMode === "auto"
+                      ? "When this prompt has a shot boundary inside the clip, the"
+                      : "The"
+                  } segment length above becomes an upper bound and the planner picks boundaries that split as few shots as possible: shots shorter than one segment share a segment, shots longer than one segment are split and listed below. Your shot timestamps are not moved. The segment count and the per-segment lengths below change with this setting — each segment is one more upload, one more decode and one more segment boundary.${
+                    segmentLengthMode === "auto"
+                      ? " A prompt with no shot boundary to align to is planned at fixed lengths. Which one was used is shown with the plan below."
+                      : ""
+                  }`}
             </p>
+            <p className="w-full text-xs text-gray-400">
+              {boundaryCrossingPolicy === "assign_to_earlier_segment"
+                ? "A shot whose frames run past a segment boundary is described in full by the earlier segment, and the later segment does not restate it. Each one is listed below with its shot number, frame range and the frame it crosses at. Nothing is cut in two and your timestamps are not moved."
+                : "A shot whose frames run past a segment boundary stops the plan, and the shot number, its frame range and the frame it crosses at are reported below. That applies to a fixed-length plan, whose boundaries follow from the segment length and are not known until the plan is made; when the boundaries are aligned to the shots the planner placed them itself, and any shot too long to fit in one segment is reported as a warning instead."}
+            </p>
+            {/* Design §7.2c: which accumulated lengths a boundary can land on
+                is fixed by the model's frame grid AND the number of shared
+                frames, so the two controls above interact. Stated here, before
+                the plan is made, not only in the plan's warnings. */}
+            {segmentLengthMode !== "fixed" && effectiveMode !== "boundary_frame" && (
+              <p className="w-full text-xs text-amber-300">
+                Shot alignment and the continuation context above interact: a segment boundary can
+                only fall on a total length the model&apos;s frame grid allows, and that set of
+                lengths changes with the number of frames each continuation shares with its
+                predecessor. With a continuation context other than the boundary frame, fewer shot
+                starts are reachable, so some boundaries below will not land on a shot start. The
+                plan lists which boundaries landed on a shot start and which shots it had to keep
+                across two segments.
+              </p>
+            )}
           </div>
 
           {phase === "planning" && (
@@ -581,7 +646,7 @@ export default function VideoChainConfirmDialog({
                 <ul className="rounded border border-red-700 bg-red-950/40 p-3 space-y-1">
                   {errors.map((issue, index) => (
                     <li key={index} className="text-xs text-red-300">
-                      {issue.segment_index != null ? `Segment ${issue.segment_index + 1}: ` : ""}
+                      {issuePrefix(issue)}
                       {issueText(issue)}
                     </li>
                   ))}
@@ -591,7 +656,7 @@ export default function VideoChainConfirmDialog({
                 <ul className="rounded border border-amber-700 bg-amber-950/30 p-3 space-y-1">
                   {warnings.map((issue, index) => (
                     <li key={index} className="text-xs text-amber-300">
-                      {issue.segment_index != null ? `Segment ${issue.segment_index + 1}: ` : ""}
+                      {issuePrefix(issue)}
                       {issueText(issue)}
                     </li>
                   ))}

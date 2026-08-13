@@ -332,11 +332,16 @@ class TimelineValidationTest(unittest.TestCase):
                           end_frame=PLANNED_FINAL_FRAMES,
                           description="the second take"),
         ]
+        # `fixed` by name: with the boundaries resolved from the timeline the
+        # planner would place one at 400 and there would be no crossing at all.
         with self.assertRaises(VideoChainPlanError):
-            plan_video_chain_manifest(_plan_request(events=events))
+            plan_video_chain_manifest(
+                _plan_request(events=events, segment_length_mode="fixed")
+            )
         # ... but the caller may opt in, and then it is a warning, not a split.
         manifest = plan_video_chain_manifest(
-            _plan_request(events=events, allow_boundary_split=True)
+            _plan_request(events=events, segment_length_mode="fixed",
+                          allow_boundary_split=True)
         )
         self.assertTrue(any("crosses the boundary" in w for w in manifest.warnings))
         self.assertEqual(manifest.segments[0].owned_event_ids, ["a"])
@@ -773,10 +778,12 @@ class MiniMaxH3DeterministicPathTest(unittest.TestCase):
             shots_to_events(parsed.shots, 24.0, 300)
 
     def test_end_to_end_plan_rebases_local_shot_numbers_and_timestamps(self):
+        # Fixed lengths by name: this checks the re-basing of a segment that does
+        # NOT start on a shot, which is what a fixed-length cut produces.
         manifest = plan_h3_chain_from_prompt(
             H3_PROMPT, "t2va", H3_GRID, 24.0, target_frames=700,
             segment_frames=362, root_seed=1234, chain_id="h3-chain",
-            allow_boundary_split=True,
+            allow_boundary_split=True, segment_length_mode="fixed",
         )
         self.assertEqual(len(manifest.segments), 2)
         first, second = manifest.segments
@@ -840,6 +847,7 @@ class MiniMaxH3DeterministicPathTest(unittest.TestCase):
         manifest = plan_h3_chain_from_prompt(
             H3_PROMPT, "fl2va", H3_GRID, 24.0, target_frames=700,
             segment_frames=362, allow_boundary_split=True,
+            segment_length_mode="fixed",
         )
         # Segment 2 generates 345 frames = 14.375 s, not the whole 700-frame clip.
         self.assertIn("14.38-second mark", manifest.segments[1].prompt)

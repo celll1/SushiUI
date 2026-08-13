@@ -110,6 +110,108 @@ def test_failed_transformer_build_leaves_current_components_untouched(monkeypatc
     assert current["transformer"] is old_transformer
 
 
+def _health_probe(existing_info, failure_leaves):
+    """Run load_model with a failing _load_model_locked and report the health.
+
+    failure_leaves is what current_model_info holds once the load has failed:
+    the same object (the live model survived), a different one (a partial
+    state), or None (nothing loaded).
+    """
+    import threading
+    from core import pipeline as pipeline_module
+
+    manager = SimpleNamespace(
+        current_model_info=existing_info,
+        current_model="safetensors:old.safetensors",
+        component_health="ready",
+        model_revision=3,
+        component_revision=9,
+        _load_model_lock=threading.Lock(),
+    )
+
+    def failing_load(*args, **kwargs):
+        manager.current_model_info = failure_leaves
+        raise RuntimeError("build failed")
+
+    manager._load_model_locked = failing_load
+    with pytest.raises(RuntimeError, match="build failed"):
+        pipeline_module.DiffusionPipelineManager.load_model(
+            manager, "safetensors", "new.safetensors", "txt2img")
+    return manager.component_health
+
+
+def test_failed_load_that_keeps_the_live_model_stays_ready():
+    """The DiT-only path retains the current model when its build fails.
+
+    Marking that degraded would 503 every generation against a model that is
+    still fully loaded, and re-selecting it could not clear the flag.
+    """
+    live = {"source": "old.safetensors"}
+    assert _health_probe(live, failure_leaves=live) == "ready"
+
+
+def test_failed_load_that_replaced_the_model_is_degraded():
+    live = {"source": "old.safetensors"}
+    assert _health_probe(live, failure_leaves={"source": "half.safetensors"}) == "degraded"
+
+
+def test_failed_load_that_unloaded_everything_reports_unloaded():
+    live = {"source": "old.safetensors"}
+    assert _health_probe(live, failure_leaves=None) == "unloaded"
+
+
+class _ReachedFullReload(Exception):
+    """Raised from the first step past both same-model shortcuts."""
+
+
+def _same_model_reload(monkeypatch, health):
+    """Re-select the already-loaded checkpoint and report where it got to."""
+    from core import pipeline as pipeline_module
+    import core.keep_hot as keep_hot
+
+    calls = []
+
+    def dit_only(*_args, **_kwargs):
+        calls.append("dit_only")
+        return True
+
+    manager = SimpleNamespace(
+        current_model="safetensors:same.safetensors",
+        current_model_info={"source": "same.safetensors"},
+        component_health=health,
+        is_minimax_h3_model=True,
+        minimax_h3_components={},
+        _minimax_h3_te_selection_differs=lambda *_a: False,
+        _reload_minimax_h3_dit_only=dit_only,
+    )
+
+    def stop(_manager):
+        calls.append("full_reload")
+        raise _ReachedFullReload()
+
+    monkeypatch.setattr(keep_hot, "clear_resident", stop)
+    try:
+        pipeline_module.DiffusionPipelineManager._load_model_locked(
+            manager, "safetensors", "same.safetensors", "txt2img")
+    except _ReachedFullReload:
+        pass
+    return calls
+
+
+def test_same_model_reload_is_a_no_op_when_healthy(monkeypatch):
+    assert _same_model_reload(monkeypatch, "ready") == []
+
+
+def test_degraded_model_reloads_fully_instead_of_returning_early(monkeypatch):
+    """Re-selecting the same checkpoint while degraded is a repair request.
+
+    Neither shortcut may serve it: the early return does nothing at all, and
+    the DiT-only path carries the existing text encoder over untouched -- which
+    is the very slot a failed switch leaves empty.
+    """
+    assert _same_model_reload(monkeypatch, "degraded") == ["full_reload"]
+
+
 def test_pipeline_swap_updates_model_state_after_success(monkeypatch):
     from core import pipeline as pipeline_module
 

@@ -337,6 +337,81 @@ def test_h3_te_failure_serially_reloads_old_without_revision(monkeypatch):
     assert manager.component_revision == 7
 
 
+def test_h3_te_switch_detachment_failure_leaves_health_degraded(monkeypatch):
+    """A live owner of the old TE must disable generation, not re-enable it.
+
+    The detachment assertion fires exactly when something still holds the old
+    mapping. The slot is already empty by then, so reporting the model ready
+    would send the next request into a text_encoder of None.
+    """
+    import core.keep_hot as keep_hot
+
+    manager = _Manager("minimax_h3")
+    manager.txt2img_pipeline = None
+    manager.minimax_h3_components = {
+        "text_encoder": object(), "text_encoder_config": {},
+        "text_encoder_path": "C:/h3/old.safetensors", "official_dir": "C:/h3/official",
+    }
+    monkeypatch.setattr(keep_hot, "clear_resident", lambda _manager: None)
+    monkeypatch.setattr(component_switcher, "_release_device_cache", lambda: None)
+
+    def still_live():
+        raise RuntimeError("a live text encoder reference survived")
+
+    def build(path, _official):
+        raise AssertionError("must not map a new file while an owner survives")
+
+    monkeypatch.setattr(h3_loader, "assert_no_live_text_encoder", still_live)
+    monkeypatch.setattr(h3_loader, "build_minimax_h3_text_encoder", build)
+    candidate = {
+        "compatibility": "compatible", "switchable": True,
+        "_path": "C:/h3/new.safetensors",
+    }
+
+    with pytest.raises(ComponentSwitchFailed):
+        switch_component(manager, "text_encoder", candidate, 4, 7)
+
+    assert manager.minimax_h3_components["text_encoder"] is None
+    assert manager.component_health == "degraded"
+    assert manager.component_revision == 7
+
+
+def test_h3_te_restore_detachment_failure_stays_degraded(monkeypatch):
+    """If the restore cannot prove detachment either, stay degraded."""
+    import core.keep_hot as keep_hot
+
+    manager = _Manager("minimax_h3")
+    manager.txt2img_pipeline = None
+    manager.minimax_h3_components = {
+        "text_encoder": object(), "text_encoder_config": {},
+        "text_encoder_path": "C:/h3/old.safetensors", "official_dir": "C:/h3/official",
+    }
+    monkeypatch.setattr(keep_hot, "clear_resident", lambda _manager: None)
+    monkeypatch.setattr(component_switcher, "_release_device_cache", lambda: None)
+
+    calls = []
+
+    def assert_detached():
+        calls.append("assert")
+        if len(calls) > 1:
+            raise RuntimeError("owner appeared during the failed build")
+
+    def build(path, _official):
+        raise RuntimeError("new failed")
+
+    monkeypatch.setattr(h3_loader, "assert_no_live_text_encoder", assert_detached)
+    monkeypatch.setattr(h3_loader, "build_minimax_h3_text_encoder", build)
+    candidate = {
+        "compatibility": "compatible", "switchable": True,
+        "_path": "C:/h3/new.safetensors",
+    }
+
+    with pytest.raises(ComponentSwitchFailed):
+        switch_component(manager, "text_encoder", candidate, 4, 7)
+
+    assert manager.component_health == "degraded"
+
+
 def _write_header(path, header):
     payload = json.dumps(header, separators=(",", ":")).encode("utf-8")
     path.write_bytes(struct.pack("<Q", len(payload)) + payload)

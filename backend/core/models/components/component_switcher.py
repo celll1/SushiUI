@@ -88,19 +88,30 @@ def _switch_minimax_h3_text_encoder(manager: Any, candidate: Dict[str, Any]) -> 
 
     # The component dict is the production owner. Keep-hot is cleared by the
     # caller before this function; no local variable ever captures the module.
+    #
+    # Health goes to degraded before the slot is emptied and only comes back
+    # once something valid is in it again. The caller's failure handler can
+    # only tell "the adapter never started" from "the adapter left a hole" by
+    # this marker, and calling the hole ready re-enables generation against a
+    # model whose text encoder is None.
+    manager.component_health = "degraded"
     components["text_encoder"] = None
     components["text_encoder_config"] = None
     components["text_encoder_path"] = None
     components["text_encoder_origin"] = "unavailable"
-    _release_device_cache()
-    assert_no_live_text_encoder()
 
     try:
-        replacement, config = build_minimax_h3_text_encoder(new_path, official)
-    except Exception as switch_error:
+        # The detachment assertion belongs inside the try: it is the check most
+        # likely to fire here, and it fires precisely when a stale owner still
+        # holds the old mapping -- exactly the state the restore path exists to
+        # recover from.
         _release_device_cache()
         assert_no_live_text_encoder()
+        replacement, config = build_minimax_h3_text_encoder(new_path, official)
+    except Exception as switch_error:
         try:
+            _release_device_cache()
+            assert_no_live_text_encoder()
             restored, restored_config = build_minimax_h3_text_encoder(old_path, official)
             components["text_encoder"] = restored
             components["text_encoder_config"] = restored_config

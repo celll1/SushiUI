@@ -456,6 +456,7 @@ def build_catalog(
                 row["variant"] = entry.get("variant")
                 row["requires_projection"] = bool(entry.get("requires_projection"))
                 row["projection"] = loaded
+                row["projection_candidates"] = entry.get("projection_candidates") or []
                 row["agreement"] = (
                     agreement if isinstance(agreement, dict) and loaded is not None
                     and str(agreement.get("projection") or "").lower() == loaded.lower()
@@ -464,15 +465,23 @@ def build_catalog(
             compatible = entry.get("compatible") is True
             reason = str(entry.get("reason") or "H3 loader compatibility is unknown.")
             switch_reason = None if compatible else "The H3-specific loader rejected this candidate."
+            projection_candidates = entry.get("projection_candidates") or []
+            usable_projections = [c for c in projection_candidates if c.get("usable")]
             # A converted encoder is switchable only together with the trained
-            # projection its hidden state is valid through. Offering one whose
-            # projection does not resolve would be offering a refusal.
+            # projection its hidden state is valid through. With several usable
+            # ones the switch stays open but the caller must name which, since
+            # auto-resolution refuses; with none it is offering a refusal.
             if compatible and entry.get("requires_projection") and not entry.get("projection"):
-                compatible = False
-                reason = switch_reason = str(
-                    entry.get("projection_reason")
-                    or "This encoder needs a trained projection and none resolves in "
-                       "clip_projections/.")
+                if usable_projections:
+                    switch_reason = (
+                        f"{len(usable_projections)} projections declare this encoder's width; "
+                        f"send projection_path naming one.")
+                else:
+                    compatible = False
+                    reason = switch_reason = str(
+                        entry.get("projection_reason")
+                        or "This encoder needs a trained projection and none resolves in "
+                           "clip_projections/.")
             candidate = _candidate(
                 "text_encoder", arch, path,
                 str(entry.get("name") or _display(path, "H3 Text Encoder")),
@@ -489,6 +498,7 @@ def build_catalog(
             candidate["requires_projection"] = bool(entry.get("requires_projection"))
             candidate["projection"] = (
                 os.path.basename(str(entry["projection"])) if entry.get("projection") else None)
+            candidate["projection_candidates"] = projection_candidates
             candidate["agreement"] = entry.get("agreement")
             catalog["text_encoder"].append(candidate)
 

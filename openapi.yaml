@@ -3007,6 +3007,9 @@ paths:
         `projection` is the `clip_projections/` file such a load would pair,
         resolved through the same width/tap gates the load path runs, and
         `projection_reason` says why none resolved.
+        `projection_candidates` is every file declaring that encoder's width,
+        each with the verdict of those same gates, so a client can name one with
+        `clip_projection_file` when several match and auto-resolution refuses.
 
         `agreement` is the recorded measurement for that resolved pairing, and
         is null for a released 32B encoder and for an unmeasured pairing. No
@@ -3228,6 +3231,11 @@ paths:
         Switches only slots with an architecture adapter that guarantees the old
         component is detached and released before the new weights are read.
         Unsupported and unsafe slots are rejected with 422.
+
+        `projection_path` (MiniMax-H3 text encoders) names the trained
+        projection to install with the encoder; it goes through the same pairing
+        gates as a discovered one, and the encoder and its projection are
+        installed — or restored on failure — as one pair.
       operationId: switchCurrentModelComponent
       requestBody:
         required: true
@@ -13217,6 +13225,13 @@ components:
           description: |
             Why no projection resolved for an encoder that requires one (no
             matching `d_in`, several matching, or a failed pairing gate).
+        projection_candidates:
+          type: array
+          description: |
+            Every `clip_projections/` file declaring this encoder's width, in
+            filename order. Empty for an encoder that needs no projection.
+          items:
+            $ref: '#/components/schemas/MiniMaxH3ProjectionChoice'
         agreement:
           allOf:
             - $ref: '#/components/schemas/MiniMaxH3TextEncoderAgreement'
@@ -13278,6 +13293,40 @@ components:
           type: integer
           description: Encoder block count it was trained against.
           example: 24
+
+    MiniMaxH3ProjectionChoice:
+      type: object
+      required: [path, name, d_in, d_out, tap, usable, reason]
+      description: |
+        One projection offered for a specific text encoder. `usable` is the
+        load path's own pairing gates run with this file named, so an entry
+        matching `d_in` but failing the `d_out` or `tap` gate is listed as
+        unusable with its reason rather than omitted.
+      properties:
+        path:
+          type: string
+          description: Absolute path; this is what `clip_projection_file` and `projection_path` take.
+          example: "M:/model/minimax_h3/clip_projections/mmh3-4b-clipproj-celeb-mlp.safetensors"
+        name:
+          type: string
+          example: mmh3-4b-clipproj-celeb-mlp
+        d_in:
+          type: integer
+          example: 2560
+        d_out:
+          type: integer
+          example: 5120
+        tap:
+          type: integer
+          example: 24
+        usable:
+          type: boolean
+          description: Whether every pairing gate passes for this (encoder, projection) pair.
+          example: true
+        reason:
+          type: string
+          nullable: true
+          description: The refusal when `usable` is false; null otherwise.
 
     MiniMaxH3TextEncoderListResponse:
       type: object
@@ -13369,10 +13418,19 @@ components:
           description: |
             MiniMax-H3 text encoders only: the `clip_projections/` file this
             candidate would be paired with (the loaded one, on the current row),
-            or null when the encoder needs none. A candidate that needs one and
-            has none resolvable is reported incompatible, with the reason in
+            or null when the encoder needs none, when several declare its width,
+            or when none resolves. A candidate that needs one and has no usable
+            one is reported incompatible, with the reason in
             `compatibility_reason`.
           example: mmh3-4b-clipproj-celeb-mlp.safetensors
+        projection_candidates:
+          type: array
+          description: |
+            MiniMax-H3 text encoders only: the projections declaring this
+            encoder's width. When more than one is usable, `projection` is null
+            and the switch request must name one in `projection_path`.
+          items:
+            $ref: '#/components/schemas/MiniMaxH3ProjectionChoice'
         agreement:
           allOf:
             - $ref: '#/components/schemas/MiniMaxH3TextEncoderAgreement'
@@ -13478,6 +13536,16 @@ components:
           type: integer
         expected_component_revision:
           type: integer
+        projection_path:
+          type: string
+          nullable: true
+          description: |
+            MiniMax-H3 text-encoder switches only: absolute path of the
+            projection to pair with the new encoder, from the candidate's
+            `projection_candidates`. Required when several declare that
+            encoder's width, since auto-discovery refuses to choose. Sending it
+            for any other architecture or slot is rejected with 422.
+          example: "M:/model/minimax_h3/clip_projections/mmh3-4b-clipproj-celeb-mlp.safetensors"
 
     ComponentSwitchResponse:
       type: object

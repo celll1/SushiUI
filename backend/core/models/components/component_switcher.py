@@ -92,12 +92,21 @@ def _install_minimax_h3_text_encoder(
         info.update(minimax_h3_te_model_info_fields(components))
 
 
-def _switch_minimax_h3_text_encoder(manager: Any, candidate: Dict[str, Any]) -> None:
+def _switch_minimax_h3_text_encoder(
+    manager: Any,
+    candidate: Dict[str, Any],
+    projection_path: Optional[str] = None,
+) -> None:
     """Detach every H3 TE owner before mapping the replacement.
 
     There is deliberately no ``.to()`` call in this function. Destruction of
     the assign=True storages closes the old file mapping; the loader weakref
     assertion proves no Python owner survived before another file is mapped.
+
+    ``projection_path`` names the projection to pair, for an encoder whose width
+    several files in ``clip_projections/`` declare and which auto-discovery
+    therefore refuses. It goes through the same pairing gates as a discovered
+    one.
     """
     components = getattr(manager, "minimax_h3_components", None)
     if not isinstance(components, dict):
@@ -153,7 +162,8 @@ def _switch_minimax_h3_text_encoder(manager: Any, candidate: Dict[str, Any]) -> 
         _release_device_cache()
         assert_no_live_text_encoder()
         bundle = build_minimax_h3_text_encoder_bundle(
-            new_path, official, root=root, dit_path=dit_path)
+            new_path, official, root=root, dit_path=dit_path,
+            projection_override=projection_path)
     except Exception as switch_error:
         try:
             _release_device_cache()
@@ -235,6 +245,7 @@ def switch_component(
     candidate: Dict[str, Any],
     expected_model_revision: int,
     expected_component_revision: int,
+    projection_path: Optional[str] = None,
 ) -> Dict[str, Any]:
     global _operation
     arch = str((getattr(manager, "current_model_info", None) or {}).get("type") or "").lower()
@@ -242,11 +253,16 @@ def switch_component(
     if slot == "vision_encoder":
         adapter = lambda: _switch_vision_encoder(manager, candidate)
     elif arch == "minimax_h3" and slot == "text_encoder":
-        adapter = lambda: _switch_minimax_h3_text_encoder(manager, candidate)
+        adapter = lambda: _switch_minimax_h3_text_encoder(manager, candidate, projection_path)
     elif arch == "anima" and slot in ("text_encoder", "vae"):
         adapter = lambda: _switch_anima_component(manager, slot, candidate)
     if adapter is None:
         raise ComponentSwitchError("This component slot has no verified unload-first adapter.")
+    if projection_path and not (arch == "minimax_h3" and slot == "text_encoder"):
+        # Refused rather than ignored: silently dropping it would install the
+        # encoder through some other projection than the one named.
+        raise ComponentSwitchError(
+            "projection_path applies only to a MiniMax-H3 text-encoder switch.")
     if candidate.get("compatibility") != "compatible" or not candidate.get("switchable"):
         raise ComponentSwitchError(candidate.get("switch_reason") or "Candidate is not switchable.")
     if getattr(manager, "model_revision", 0) != expected_model_revision or getattr(manager, "component_revision", 0) != expected_component_revision:

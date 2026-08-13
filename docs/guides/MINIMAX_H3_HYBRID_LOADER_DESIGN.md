@@ -373,6 +373,10 @@ model identity に含めるもの:
 - compatibility digest
 - TE/projection selection
 
+**variant はファイル名由来にしてはならない（C4 の必須要件）**: `loader.py:1045` の variant 判定は**部分文字列マッチ**である（`"ref2va" if "ref2va" in name else ("fl2va" if "fl2va" in name else None)`）。したがって base パスに `fl2va` を含む hybrid は、何もしなければ `fl2va` とラベルされ、C1 で閉じたゲートを**すべて通過する**。C4 は merged component に対して `variant="hybrid"` を**明示的に設定**しなければならず、`layout["variant"]` を継承してはならない。
+
+**variant のラベル形式**: C1 の txt2vid ゲートは「released partition のいずれでもないもの」を拒否する形にしてあるため、`hybrid_25_49` のような recipe 込みラベルを採用しても素通りしない。ただし img2vid / temporal inpaint の allowlist も同じ性質を持つことを C4 で再確認すること。
+
 **修正が必要な具体箇所**: 現在の same-model 判定は `model_id = f"{source_type}:{source}"` の単純な文字列比較であり、`h3_te_selection_changed` と `component_health` によってのみ carve-out されている。**同じ base で overlay/range だけを変えた要求は、この文字列比較で early return され、再構築されない**。DiT-only fast path の同一性判定も同様に hybrid recipe を含める必要がある。`h3_te_selection_changed` が、そのまま真似すべき既存の前例である。
 
 `last_model` の復元は現在 `(source_type, source, pipeline_type, te, projection)` しか渡さないため、HybridSpec の永続化は新規配線となる。
@@ -529,6 +533,8 @@ MVP で扱わないもの:
 - **reload リスク**: overlay recipe を model identity に含めないと、別 recipe の要求が same-model early return（単純な文字列比較）で消える。
 - **LoRA リスク**: variant が同じでも AdaLN recipe が違うため、既存 LoRA を無条件に適用できない。`check_variant_compatibility` に `base_variant` を渡すと既存の保護が消える。
 - **TE 置換との交差**: text-only TE gate による小型 TE 変換と hybrid を同時に使うと、2 つの実験的置換が重なる。capability の判定はこの組み合わせを別扱いにする。
+- **variant のファイル名由来リスク**: 上記 §7 参照。C1 のゲートは variant 文字列を信頼しており、その文字列がファイル名から推測されている以上、C4 が明示設定を怠るとゲートは無力化される。
+- **`chain_supports_exact_prefix`**: C1 が追加した hybrid の CHAIN_CONTEXT entry で、このフィールドだけは能力を「保留」ではなく「主張」している。route が拒否している間は不活性だが、C7 で hybrid の生成を解禁する際は継承せず再導出すること。
 
 ### 代替案
 

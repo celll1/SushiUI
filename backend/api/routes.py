@@ -17716,6 +17716,7 @@ def preview_tagger_vocabulary(
 #   3. supplying every default from `api/param_defaults.py::VIDEO_CHAIN_DEFAULTS`.
 
 from core.inference.video_chain_context import (
+    BOUNDARY_CROSSING_POLICIES as VIDEO_CHAIN_BOUNDARY_CROSSING_POLICIES,
     CONTEXT_MODES as VIDEO_CHAIN_CONTEXT_MODES,
     MANIFEST_VERSION as VIDEO_CHAIN_MANIFEST_VERSION,
     SEED_POLICIES as VIDEO_CHAIN_SEED_POLICIES,
@@ -17729,6 +17730,7 @@ from core.inference.video_chain_context import (
     TimelineEvent,
     VideoChainPlanError,
     VideoGridSpec,
+    boundary_crossing_allows_ownership,
     build_segment_geometry,
     build_segment_spans,
     chain_segment_cap,
@@ -17875,7 +17877,9 @@ class VideoChainManifestModel(BaseModel):
     target_frames: int
     expected_final_frames: int
     context_mode: str = VIDEO_CHAIN_DEFAULTS["context_mode"]
-    segment_length_mode: str = VIDEO_CHAIN_DEFAULTS["segment_length_mode"]
+    # The mode this manifest's spans were built under. A manifest that does not
+    # state one predates shot alignment and was fixed-length.
+    segment_length_mode: str = VIDEO_CHAIN_DEFAULTS["manifest_segment_length_mode"]
     continuation_mode: str = VIDEO_CHAIN_DEFAULTS["continuation_mode"]
     seed_policy: str = VIDEO_CHAIN_DEFAULTS["seed_policy"]
     root_seed: int = VIDEO_CHAIN_DEFAULTS["root_seed"]
@@ -17901,7 +17905,14 @@ class VideoChainPlanRequestModel(BaseModel):
     target_frames: int
     fps: float = VIDEO_CHAIN_DEFAULTS["fps"]
     requested_segment_frames: Optional[int] = VIDEO_CHAIN_DEFAULTS["requested_segment_frames"]
-    segment_length_mode: str = VIDEO_CHAIN_DEFAULTS["segment_length_mode"]
+    # None = "the caller did not choose". Resolved against the canonical
+    # timeline (`resolve_segment_length_mode`), not silently defaulted here, so
+    # an explicit `fixed` stays distinguishable from an omitted field.
+    segment_length_mode: Optional[str] = VIDEO_CHAIN_DEFAULTS["segment_length_mode"]
+    # What to do with a shot that crosses a segment boundary. Defaults to
+    # refusing, which is what this route has always done; the alternative has to
+    # be asked for by name (design §6.2, §10.3).
+    boundary_crossing_policy: str = VIDEO_CHAIN_DEFAULTS["boundary_crossing_policy"]
     # NOT `VIDEO_CHAIN_DEFAULTS["context_mode"]`: the default only applies to a
     # prompt the planner can parse structurally. `None` means "the caller did
     # not choose", which for free-form prose is a hard error asking for a
@@ -18731,12 +18742,23 @@ async def plan_video_chain_route(request: VideoChainPlanRequestModel):
             "Unknown seed_policy",
             detail=f"Expected one of {', '.join(VIDEO_CHAIN_SEED_POLICIES)}; got '{request.seed_policy}'",
         )
-    if request.segment_length_mode not in VIDEO_CHAIN_SEGMENT_LENGTH_MODES:
+    if (
+        request.segment_length_mode is not None
+        and request.segment_length_mode not in VIDEO_CHAIN_SEGMENT_LENGTH_MODES
+    ):
         raise CustomValidationError(
             "Unknown segment_length_mode",
             detail=(
-                f"Expected one of {', '.join(VIDEO_CHAIN_SEGMENT_LENGTH_MODES)}; "
-                f"got '{request.segment_length_mode}'"
+                f"Expected one of {', '.join(VIDEO_CHAIN_SEGMENT_LENGTH_MODES)}, or null to "
+                f"let the timeline decide; got '{request.segment_length_mode}'"
+            ),
+        )
+    if request.boundary_crossing_policy not in VIDEO_CHAIN_BOUNDARY_CROSSING_POLICIES:
+        raise CustomValidationError(
+            "Unknown boundary_crossing_policy",
+            detail=(
+                f"Expected one of {', '.join(VIDEO_CHAIN_BOUNDARY_CROSSING_POLICIES)}; "
+                f"got '{request.boundary_crossing_policy}'"
             ),
         )
     if request.seed_policy == "explicit":
@@ -18815,6 +18837,7 @@ async def plan_video_chain_route(request: VideoChainPlanRequestModel):
     errors: List[Dict[str, Any]] = []
     warnings: List[str] = []
     manifest: Optional[ChainManifest] = None
+    allow_boundary_split = boundary_crossing_allows_ownership(request.boundary_crossing_policy)
     try:
         if context_mode == "timeline" and timeline is None:
             manifest = plan_h3_chain_from_prompt(
@@ -18832,6 +18855,7 @@ async def plan_video_chain_route(request: VideoChainPlanRequestModel):
                 anchor_local_frames=_chain_anchors,
                 seed_policy=request.seed_policy,
                 root_seed=request.root_seed,
+                allow_boundary_split=allow_boundary_split,
             )
         else:
             events = (
@@ -18864,6 +18888,7 @@ async def plan_video_chain_route(request: VideoChainPlanRequestModel):
                     references=references,
                     persistent_context=persistent,
                     events=events,
+                    allow_boundary_split=allow_boundary_split,
                 )
             )
     except VideoChainPlanError as exc:

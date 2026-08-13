@@ -2070,6 +2070,12 @@ export type VideoChainPlanRequestSeedPolicy = "fixed" | "derived";
 // `advanceVideoChain` in videoChain.ts). On a manifest this is the mode that
 // was APPLIED, which is `fixed` when there was nothing to align to.
 export type VideoChainSegmentLengthMode = "fixed" | "shot_aligned";
+// What the planner does with a shot whose frames cross a segment boundary.
+// `refuse` is the shipped behaviour and the default: the plan comes back with
+// an error naming the shot and the frame it is cut at.
+// `assign_to_earlier_segment` gives the whole shot to the earlier segment and
+// reports every crossing as a warning.
+export type VideoChainBoundaryCrossingPolicy = "refuse" | "assign_to_earlier_segment";
 export type VideoChainContinuationMode =
   | "boundary_frame"
   | "pinned_tail"
@@ -2158,9 +2164,16 @@ export interface VideoChainPlanRequest {
   target_frames: number;
   fps?: number;
   requested_segment_frames?: number | null;
-  // Opt-in (default `fixed`). Under `shot_aligned`, `requested_segment_frames`
-  // is an upper bound rather than every segment's length.
-  segment_length_mode?: VideoChainSegmentLengthMode;
+  // Deliberately has no schema default and is nullable: omitted/null lets the
+  // planner resolve it from the canonical timeline (shot-aligned when there is
+  // a shot boundary to align to, fixed otherwise). Under `shot_aligned`,
+  // `requested_segment_frames` is an upper bound rather than every segment's
+  // length. What was applied is `manifest.segment_length_mode`.
+  segment_length_mode?: VideoChainSegmentLengthMode | null;
+  // Opt-in (default `refuse`). Only ever widens what plans: it decides whether
+  // a boundary-crossing shot is an error or a warning, not where the boundaries
+  // fall, and it is not part of `plan_hash`.
+  boundary_crossing_policy?: VideoChainBoundaryCrossingPolicy;
   // Deliberately has no schema default and is nullable: the server must be
   // able to tell "the caller chose `timeline`" from "the caller chose
   // nothing" -- an omitted/null value is not the same request as `timeline`.

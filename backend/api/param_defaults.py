@@ -1592,17 +1592,41 @@ VIDEO_CHAIN_DEFAULTS: Dict[str, Any] = {
     # How segment boundaries are chosen:
     #   "fixed"        - every segment is `requested_segment_frames` (or the
     #                    architecture's own maximum), the last one is whatever
-    #                    is left. Today's behaviour, and the default: it is what
-    #                    every already-planned chain was built with.
+    #                    is left.
     #   "shot_aligned" - `requested_segment_frames` becomes an UPPER BOUND and
     #                    the planner picks boundaries that split as few shots as
     #                    possible, merging shots shorter than one segment and
-    #                    disclosing shots longer than one. Opt-in: it changes the
-    #                    segment count and lengths, which are a transfer/decode
-    #                    cost the user is the one to weigh (design §7.2c).
-    # Free-form prompts have no shot structure to align to and stay fixed-length
-    # whichever value is sent.
-    "segment_length_mode": "fixed",
+    #                    disclosing shots longer than one (design §7.2c).
+    # None = the caller did not choose, and the planner resolves it from the
+    # canonical timeline: shot-aligned when the clip contains a shot boundary to
+    # align to, fixed otherwise (`resolve_segment_length_mode`, which owns that
+    # rule). The condition is the TIMELINE, not whether a segment length was
+    # requested: on an architecture with no single-inference maximum
+    # (MiniMax-H3) a plan without `requested_segment_frames` is a single
+    # segment, so a "default only when no length was asked for" rule would never
+    # apply there (design §7.2d). An explicit `fixed` still gives uniform
+    # segments.
+    "segment_length_mode": None,
+    # What a manifest that carries no mode is read as: everything planned before
+    # shot alignment existed was fixed-length.
+    "manifest_segment_length_mode": "fixed",
+    # What happens to a shot/event whose frames cross a segment boundary:
+    #   "refuse"                    - hard error naming the shot and the frame
+    #                                 it is cut at. The shipped behaviour, and
+    #                                 the default: a boundary-crossing shot is
+    #                                 never resolved for the user silently.
+    #   "assign_to_earlier_segment" - the earlier segment owns the whole shot
+    #                                 and describes it in full; the later one
+    #                                 does not restate it. Every crossing is
+    #                                 disclosed as a warning with the shot
+    #                                 number and its frame range.
+    # Opt-in either way: with `segment_length_mode: fixed` the boundaries fall
+    # where the frame arithmetic puts them, which the user cannot predict before
+    # planning, so refusing without offering the choice leaves no route at all
+    # for a timeline whose shots do not happen to land on them (design §6.2,
+    # §10.3). `shot_aligned` already keeps whole the shots it could not fit,
+    # since there the planner chose the boundaries itself.
+    "boundary_crossing_policy": "refuse",
     # Per-segment noise seeding. "fixed" (every segment reuses the root seed)
     # is today's behaviour and keeps a text-only A/B honest by holding noise
     # constant. "derived" (stable hash of root_seed + plan_hash + segment index)

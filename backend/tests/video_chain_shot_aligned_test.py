@@ -338,7 +338,7 @@ def _plan(**overrides):
 
 def test_the_reported_request_now_plans_over_the_wire():
     """The exact shape the user hit: timestamps that miss 124 / 247 / 370."""
-    status, fixed = _plan()
+    status, fixed = _plan(segment_length_mode="fixed")
     assert status == 200, fixed
     assert fixed["success"] is False
     assert any("crosses the boundary" in issue["message"] for issue in fixed["errors"])

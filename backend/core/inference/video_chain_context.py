@@ -1027,8 +1027,10 @@ def resolve_segment_seeds(
 # only written at RUN time (design §5.1). `seed` is excluded because the
 # `derived` policy computes it FROM the hash -- including it would be circular;
 # the inputs that determine it (`seed_policy`, `root_seed`, `explicit_seeds`)
-# are hashed instead.
-_HASH_EXCLUDED_TOP_LEVEL = frozenset({"plan_hash", "warnings"})
+# are hashed instead. `chain_id` is a fresh uuid per plan call, so hashing it
+# made two identical plans hash differently and broke `derived` reproducibility:
+# the id identifies the RUN, `plan_hash` identifies the CONTENT.
+_HASH_EXCLUDED_TOP_LEVEL = frozenset({"plan_hash", "warnings", "chain_id"})
 _HASH_EXCLUDED_SEGMENT_FIELDS = frozenset(
     {
         "seed",
@@ -1447,6 +1449,14 @@ class ChainManifest:
     references: List[ChainReference] = field(default_factory=list)
     events: List[TimelineEvent] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        # Derived here so EVERY construction site has it, including the
+        # geometry-only manifest a failed plan returns. An explicitly supplied
+        # value is kept as-is so a submitted manifest still hashes byte-for-byte
+        # as it arrived.
+        if not self.root_prompt_hash:
+            self.root_prompt_hash = sha256_text(self.root_prompt)
 
     def to_dict(self) -> Dict[str, Any]:
         return {

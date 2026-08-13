@@ -7472,7 +7472,7 @@ paths:
             Request rejected before planning: unknown architecture/variant, a
             `continuation_mode` the architecture/variant does not advertise in
             `GET /schema/arch-capabilities`'s
-            `chain_context[arch].chain_context_modes` (never silently
+            `chain_context[arch].chain_continuation_modes` (never silently
             downgraded), `context_mode: manual` without a
             `canonical_timeline`, a free-form root prompt with no explicit
             `context_mode` choice, `seed_policy: explicit` (no per-segment
@@ -8327,8 +8327,8 @@ components:
             $ref: '#/components/schemas/ChainContextCapability'
           example:
             minimax_h3:
-              chain_context_modes: [boundary_frame]
-              chain_default_context_mode: boundary_frame
+              chain_continuation_modes: [boundary_frame]
+              chain_default_continuation_mode: boundary_frame
               chain_context_min_frames: 1
               chain_context_max_frames: 1
               chain_supports_sparse_motion_anchors: false
@@ -8336,8 +8336,8 @@ components:
               chain_supports_exact_prefix: true
               variants:
                 ref2va:
-                  chain_context_modes: [boundary_frame]
-                  chain_default_context_mode: boundary_frame
+                  chain_continuation_modes: [boundary_frame]
+                  chain_default_continuation_mode: boundary_frame
                   chain_context_min_frames: 1
                   chain_context_max_frames: 1
                   chain_supports_sparse_motion_anchors: false
@@ -8374,8 +8374,8 @@ components:
     ChainContextVariantCapability:
       type: object
       required:
-        - chain_context_modes
-        - chain_default_context_mode
+        - chain_continuation_modes
+        - chain_default_continuation_mode
         - chain_context_min_frames
         - chain_context_max_frames
         - chain_supports_sparse_motion_anchors
@@ -8392,7 +8392,7 @@ components:
         far. These fields say what that continuation can be given, and are the
         authority a client plans against — never the checkpoint's file name.
       properties:
-        chain_context_modes:
+        chain_continuation_modes:
           type: array
           items:
             type: string
@@ -8413,14 +8413,14 @@ components:
             differs per architecture and is reported by
             `chain_context_min_frames`/`chain_context_max_frames`.
           example: [boundary_frame]
-        chain_default_context_mode:
+        chain_default_continuation_mode:
           type: string
           description: |
             The mode to use when the client has no reason to choose. It is
             `VIDEO_CHAIN_DEFAULTS["continuation_mode"]` when this
             architecture advertises it, and this architecture's first
             advertised mode otherwise — so it is always a member of
-            `chain_context_modes`.
+            `chain_continuation_modes`.
           example: boundary_frame
         chain_context_min_frames:
           type: integer
@@ -14067,7 +14067,7 @@ components:
           description: >-
             Requested continuation context. A mode absent from
             `GET /schema/arch-capabilities`'s
-            `chain_context[architecture].chain_context_modes` (or from the
+            `chain_context[architecture].chain_continuation_modes` (or from the
             `variants[variant]` entry when one exists) is a 400, never a
             downgrade. The enum here is the wire vocabulary, which is wider than
             what any architecture advertises: the unimplemented candidates are

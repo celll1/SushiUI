@@ -475,7 +475,7 @@ CHAIN_CONTEXT: Dict[str, Dict[str, Any]] = {
     # is exactly one frame of visual context, and one frame is latent frame 0's
     # whole coverage, so it is VAE-aligned by construction.
     "minimax_h3": {
-        "chain_context_modes": ["boundary_frame"],
+        "chain_continuation_modes": ["boundary_frame"],
         "chain_context_min_frames": 1,
         "chain_context_max_frames": 1,
         # The outpaint route places only the boundary anchor(s); it carries no
@@ -496,7 +496,7 @@ CHAIN_CONTEXT: Dict[str, Dict[str, Any]] = {
             # floor). fl2va was never trained to read reference rows
             # (routes.py:4815-4822), so it stays on the arch-level entry.
             "ref2va": {
-                "chain_context_modes": ["boundary_frame"],
+                "chain_continuation_modes": ["boundary_frame"],
                 "chain_context_min_frames": 1,
                 "chain_context_max_frames": 1,
                 "chain_supports_sparse_motion_anchors": False,
@@ -514,7 +514,7 @@ CHAIN_CONTEXT: Dict[str, Dict[str, Any]] = {
     # unbounded `chain_context_max_frames` records. It is not selectable: this
     # architecture has no way to hand it less.
     "ltx2": {
-        "chain_context_modes": ["boundary_frame"],
+        "chain_continuation_modes": ["boundary_frame"],
         "chain_context_min_frames": 1,
         "chain_context_max_frames": None,
         "chain_supports_sparse_motion_anchors": False,
@@ -528,8 +528,8 @@ CHAIN_CONTEXT: Dict[str, Dict[str, Any]] = {
 def chain_context_payload() -> Dict[str, Dict[str, Any]]:
     """The `chain_context` block of GET /schema/arch-capabilities.
 
-    `chain_default_context_mode` is filled in here rather than written into the
-    table: the default lives in `VIDEO_CHAIN_DEFAULTS["continuation_mode"]`
+    `chain_default_continuation_mode` is filled in here rather than written into
+    the table: the default lives in `VIDEO_CHAIN_DEFAULTS["continuation_mode"]`
     (the single source of truth for API defaults), and an architecture that does
     not advertise it falls back to its own first advertised mode.
     """
@@ -544,15 +544,15 @@ def chain_context_payload() -> Dict[str, Dict[str, Any]]:
     requested_default = VIDEO_CHAIN_DEFAULTS["continuation_mode"]
 
     def _entry(spec: Dict[str, Any]) -> Dict[str, Any]:
-        modes = [m for m in spec["chain_context_modes"] if m in CONTINUATION_MODES]
+        modes = [m for m in spec["chain_continuation_modes"] if m in CONTINUATION_MODES]
         if not modes:
             raise RuntimeError(
                 "chain_context advertises no implemented continuation mode; "
-                f"CHAIN_CONTEXT lists {spec['chain_context_modes']}, implemented: {CONTINUATION_MODES}"
+                f"CHAIN_CONTEXT lists {spec['chain_continuation_modes']}, implemented: {CONTINUATION_MODES}"
             )
         out = {k: v for k, v in spec.items() if k != "variants"}
-        out["chain_context_modes"] = modes
-        out["chain_default_context_mode"] = (
+        out["chain_continuation_modes"] = modes
+        out["chain_default_continuation_mode"] = (
             requested_default if requested_default in modes else modes[0]
         )
         return out

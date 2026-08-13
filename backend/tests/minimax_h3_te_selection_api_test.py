@@ -19,14 +19,15 @@ Everything here is header-only: no tensor bytes are read and no component is
 built, so nothing loads a 5-48 GiB encoder.
 """
 
-import asyncio
 import inspect
 import json
 import os
 import struct
 import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+_TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, _TESTS_DIR)
+sys.path.insert(0, os.path.dirname(_TESTS_DIR))
 
 import pytest  # noqa: E402
 
@@ -451,34 +452,45 @@ def test_a_last_model_file_without_the_two_keys_still_auto_loads(h3_manager, mon
 # The route itself
 # ---------------------------------------------------------------------------
 
+# Posted as a real multipart form, never as `await routes.load_model(...)`:
+# called directly, every unsent field is its `Form(...)` sentinel rather than
+# its default, and a truthy sentinel in a later-added field (`overlay_file`)
+# silently turns a base-only load into a garbage hybrid request. Resolving the
+# defaults is the framework's job.
+from minimax_h3_hybrid_api_test import _StubPipelineManager, _post  # noqa: E402
+
+
 def test_post_models_load_forwards_both_fields(monkeypatch):
-    from api import routes
-
-    seen = {}
-    monkeypatch.setattr(routes.pipeline_manager, "load_model",
-                        lambda **kwargs: seen.update(kwargs))
-    response = asyncio.run(routes.load_model(
-        source_type="diffusers", source="M:/model/minimax_h3", revision=None, force=False,
+    manager = _StubPipelineManager()
+    status, _payload = _post(
+        monkeypatch, manager, source_type="diffusers", source="M:/model/minimax_h3",
         text_encoder_file="M:/model/minimax_h3/text_encoders/" + CONVERTED_NAME,
-        clip_projection_file="M:/model/minimax_h3/clip_projections/" + PROJECTION_NAME))
+        clip_projection_file="M:/model/minimax_h3/clip_projections/" + PROJECTION_NAME)
 
-    assert response["success"] is True
+    assert status == 200
+    seen = manager.seen
     assert seen["text_encoder_file"].endswith(CONVERTED_NAME)
     assert seen["clip_projection_file"].endswith(PROJECTION_NAME)
     assert seen["force_reload"] is False
+    assert "hybrid" not in seen
 
 
 def test_post_models_load_sends_none_when_the_fields_are_absent(monkeypatch):
-    """An omitted multipart field arrives as "" from some clients, not as None."""
-    from api import routes
+    """An omitted multipart field arrives as "" from some clients, not as None.
 
-    seen = {}
-    monkeypatch.setattr(routes.pipeline_manager, "load_model",
-                        lambda **kwargs: seen.update(kwargs))
-    asyncio.run(routes.load_model(source_type="safetensors", source="M:/model/sdxl/x.safetensors",
-                                  revision=None, force=False,
-                                  text_encoder_file="", clip_projection_file=None))
+    And an absent field of ANY later addition must reach the pipeline as the
+    argument it was before that addition -- `hybrid` is checked here because it
+    is the one that would otherwise arrive as a merge nobody asked for.
+    """
+    manager = _StubPipelineManager()
+    status, _payload = _post(
+        monkeypatch, manager, source_type="safetensors",
+        source="M:/model/sdxl/x.safetensors", text_encoder_file="")
+
+    assert status == 200
+    seen = manager.seen
     assert seen["text_encoder_file"] is None and seen["clip_projection_file"] is None
+    assert "hybrid" not in seen
 
 
 @pytest.mark.parametrize("field", ["text_encoder_file", "clip_projection_file"])

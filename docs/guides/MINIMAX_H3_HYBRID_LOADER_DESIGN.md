@@ -314,6 +314,8 @@ MVP で新たに必要なのは次の点のみ。
 
 絶対パスや機密情報をそのまま gallery metadata に書かず、既存 metadata の sanitization 方針に合わせる。再現性のための内部 `last_model` 保存には、同じ HybridSpec を復元できる情報を残す。
 
+**gallery 行への露出は C6（C5 では行わない）**: C4 の `model_hybrid_*` キーは DB の `parameters` JSON に入るが、`backend/database/models.py` の `to_dict()` は `model_variant` だけを whitelist しているため、gallery API のレスポンスには出ない。露出させる変更は、それを表示する `ImageGrid.tsx` と同じコミットで行う。バックエンドだけ先に開けると、どのキーをどう表示するか未定のまま API 契約が増える。PNG メタデータと `/models/current` は C4/C5 の時点で既に provenance を持っているため、情報自体は失われていない。
+
 ## 6. API、OpenAPI、defaults、frontend
 
 ### 6.1 API
@@ -343,6 +345,10 @@ API 変更時は必ず次を同一変更に含める。
 5. header 不一致、異形式混在、overlay missing、未検証 capability の error code を定義する。
 
 **未解決事項（実装時に決定すること）**: `/models/load` には現在 defaults を配信する経路がない（既存の Form default はリテラルの `None`/`False`）。block range の既定値 25/49 をフロントエンドへ届ける方法として、(a) overlay 候補 API のレスポンスに含める、(b) 新しい `/schema/model-load-defaults` を追加する、のどちらかを選ぶ。(a) の方が変更が小さい。
+
+**決定（C5）**: (a) を採用。`GET /models/minimax-h3/hybrid-overlays` のレスポンスに `defaults` オブジェクトを載せる。block range は、同じレスポンスが同じ header から読む `base.num_blocks` と並んで初めて意味を持つため、別エンドポイントに分離すると 2 回のフェッチが必要になる。値は `H3_HYBRID_LOAD_DEFAULTS` を経由せず `hybrid_spec` の定数から直接返す（`param_defaults.py` も同じ定数を import する）。
+
+**model_hash の既知の限界（C4 監査）**: hybrid の `model_hash` は base ファイル単体のハッシュであり、同じ base 上の異なる hybrid は `/models/current` でも gallery でも同じ値を報告する。hybrid の同一性判定には `hybrid.compatibility_digest`（および recipe）を使い、`model_hash` に何かを紐付けてはならない。OpenAPI の `LoadedModelInfo.hybrid` にもこの注意を記載済み。
 
 `openapi.yaml` の編集時は、他エージェントの同時編集による重複キー（YAML の last-key-wins）を避けるため、コミット前に重複キー走査を行う。
 

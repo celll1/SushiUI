@@ -2712,10 +2712,21 @@ class ModelLoader:
         Same reason as ``_refuse_load_time_te_choice``: dropping it would load
         the base checkpoint alone and report success for a merge that never
         happened.
+
+        A CODED refusal, like every other hybrid refusal: ``POST /models/load``
+        answers those with a 400 and a ``[code] message`` body, and a bare
+        ``ValueError`` here would be the one path that arrives without a code
+        (and, before that distinction existed, the reason the route had to
+        broaden its 400 to every ValueError). Unreachable from that route today
+        -- the preflight resolves the H3 layout first and refuses
+        ``not_an_h3_tree`` -- so this is the guard for any other caller.
         """
+        from core.models.minimax_h3.hybrid_spec import MiniMaxH3HybridRefusal
+
         if hybrid is None or model_type == "minimax_h3":
             return
-        raise ValueError(
+        raise MiniMaxH3HybridRefusal(
+            "hybrid_wrong_architecture",
             f"a MiniMax-H3 hybrid (base + overlay DiT) was requested, but this model detects "
             f"as {model_type!r}. The hybrid loader is implemented for minimax_h3 only.")
 

@@ -7,6 +7,17 @@ Frontend fetches these via /schema/* endpoints, eliminating manual sync.
 
 from typing import Any, Dict, Optional
 
+# The only core import in this module. The hybrid block range is a CHECKPOINT
+# fact the loader validates against (hybrid_spec.py:71), so the API default is
+# imported rather than re-typed: two copies could disagree and the request would
+# still load.
+from core.models.minimax_h3.hybrid_spec import (
+    DEFAULT_BLOCK_RANGE_END,
+    DEFAULT_BLOCK_RANGE_START,
+    DEFAULT_FINAL_ADALN_FROM_OVERLAY,
+    PRESET_BLOCK_RANGE_ADALN,
+)
+
 # ---------------------------------------------------------------------------
 # MiniMax-H3 prompt assistant
 # ---------------------------------------------------------------------------
@@ -28,6 +39,29 @@ PROMPT_ASSIST_DEFAULTS: Dict[str, Any] = {
     "force_refresh": False,
     "cache_max_entries": 256,
     "auto_on_generate": False,
+}
+
+# ---------------------------------------------------------------------------
+# MiniMax-H3 hybrid DiT load (POST /models/load)
+# ---------------------------------------------------------------------------
+# Not generation parameters: these are load-time inputs, so they have their own
+# bundle rather than keys in GENERATION_DEFAULTS (same separation as
+# VIDEO_CHAIN_DEFAULTS). The keys are the loader's REQUEST field names
+# (hybrid_spec.HYBRID_REQUEST_KEYS); the route spells them `hybrid_*` because
+# `preset` alone would not say what it presets.
+#
+# Frontend delivery is `GET /models/minimax-h3/hybrid-overlays`, whose
+# `defaults` object carries these values, rather than a `/schema/*` endpoint:
+# the range is only meaningful next to the tree's block count, which that
+# endpoint reads from the same headers (design doc section 6.2, option (a)).
+
+H3_HYBRID_LOAD_DEFAULTS: Dict[str, Any] = {
+    # No overlay = an ordinary single-checkpoint load, byte for byte.
+    "overlay_file": None,
+    "preset": PRESET_BLOCK_RANGE_ADALN,
+    "block_range_start": DEFAULT_BLOCK_RANGE_START,
+    "block_range_end": DEFAULT_BLOCK_RANGE_END,
+    "final_adaln_from_overlay": DEFAULT_FINAL_ADALN_FROM_OVERLAY,
 }
 
 # ---------------------------------------------------------------------------

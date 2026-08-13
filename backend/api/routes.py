@@ -54,7 +54,7 @@ from api.param_defaults import (
     VIDEO_GEN_ARCH_OVERLAYS,
     OUTPAINT_VIDEO_ARCH_OVERLAYS,
     INPAINT_VIDEO_ARCH_OVERLAYS,
-    PROMPT_ASSIST_DEFAULTS, STUDIO_RENDER_DEFAULTS,
+    PROMPT_ASSIST_DEFAULTS, STUDIO_RENDER_DEFAULTS, H3_HYBRID_LOAD_DEFAULTS,
     VIDEO_CHAIN_DEFAULTS,
     VIDEO_CHAIN_PROVENANCE_DEFAULTS,
     PARAM_BOUNDS,
@@ -8786,6 +8786,12 @@ async def load_model(
     force: bool = Form(False),
     text_encoder_file: Optional[str] = Form(None),
     clip_projection_file: Optional[str] = Form(None),
+    overlay_file: Optional[str] = Form(H3_HYBRID_LOAD_DEFAULTS["overlay_file"]),
+    hybrid_preset: str = Form(H3_HYBRID_LOAD_DEFAULTS["preset"]),
+    hybrid_block_range_start: int = Form(H3_HYBRID_LOAD_DEFAULTS["block_range_start"]),
+    hybrid_block_range_end: int = Form(H3_HYBRID_LOAD_DEFAULTS["block_range_end"]),
+    hybrid_final_adaln_from_overlay: bool = Form(
+        H3_HYBRID_LOAD_DEFAULTS["final_adaln_from_overlay"]),
 ):
     """Load a model from various sources (fp16 by default).
 
@@ -8798,11 +8804,31 @@ async def load_model(
     text encoder built at load time and the trained projection paired with it;
     see ``GET /models/minimax-h3/text-encoders``. They do not need ``force``:
     naming an encoder other than the loaded one reloads by itself.
+
+    ``overlay_file`` (MiniMax-H3 only) merges a second DiT's per-block AdaLN
+    projection into ``source`` over ``hybrid_block_range_start..end``; see
+    ``GET /models/minimax-h3/hybrid-overlays``. Without it the load is the
+    single-checkpoint one it has always been -- no hybrid argument is passed at
+    all. With it, the recipe is part of the model identity, so a changed range
+    reloads without ``force``. The pair is validated by the loader's own
+    header-only preflight, which is the ONLY validator: this route does not
+    second-guess it, and each refusal arrives here as a 400 naming its code.
     """
     try:
         kwargs = {}
         if revision:
             kwargs["revision"] = revision
+        if overlay_file:
+            # HYBRID_REQUEST_KEYS, assembled and not validated here. An empty
+            # overlay is "no hybrid": some clients send an omitted multipart
+            # field as "".
+            kwargs["hybrid"] = {
+                "overlay_file": overlay_file,
+                "preset": hybrid_preset,
+                "block_range_start": hybrid_block_range_start,
+                "block_range_end": hybrid_block_range_end,
+                "final_adaln_from_overlay": bool(hybrid_final_adaln_from_overlay),
+            }
 
         # Run the (blocking, ~20s) load in the executor so it never blocks the event
         # loop -- important now that load_model serializes on a lock: if the boot
@@ -8833,7 +8859,52 @@ async def load_model(
         import traceback
         error_detail = f"{str(e)}\n\nTraceback:\n{traceback.format_exc()}"
         print(f"Error loading model: {error_detail}")
+        # A hybrid pair is refused by the loader, never by this route, so its
+        # refusals arrive here as exceptions and would otherwise read as 500s.
+        # The test is the refusal TYPE, not "the request named an overlay": a
+        # plain ValueError raised while merging is a fault to debug with the
+        # traceback above, not a 400 telling the caller their request was bad.
+        from core.models.minimax_h3.hybrid_spec import MiniMaxH3HybridRefusal
+        if isinstance(e, MiniMaxH3HybridRefusal):
+            raise HTTPException(status_code=400, detail=str(e)) from e
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/models/minimax-h3/hybrid-overlays")
+async def list_minimax_h3_hybrid_overlays(model_path: str):
+    """The overlay checkpoints ``model_path`` can be hybridised with.
+
+    The sibling of ``GET /models/minimax-h3/text-encoders``: header-only, so it
+    is safe to call while a model is loaded, and each candidate's verdict comes
+    from the loader's own preflight rather than from a second rule set here.
+    ``defaults`` carries the block range ``POST /models/load`` applies when the
+    caller sends none, from this API's own defaults module.
+    """
+    from core.models.minimax_h3.hybrid_spec import (
+        SUPPORTED_PRESETS, MiniMaxH3HybridRefusal,
+        describe_minimax_h3_hybrid_overlay_choices,
+    )
+
+    try:
+        choices = await asyncio.get_event_loop().run_in_executor(
+            executor, describe_minimax_h3_hybrid_overlay_choices, model_path)
+    except (MiniMaxH3HybridRefusal, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    # Assembled HERE, from param_defaults, so that an override placed in the
+    # module that owns API defaults reaches the endpoint the frontend reads.
+    # `presets` is the loader's implemented set, which is not a default.
+    choices["defaults"] = {
+        "preset": H3_HYBRID_LOAD_DEFAULTS["preset"],
+        "presets": list(SUPPORTED_PRESETS),
+        "block_range_start": H3_HYBRID_LOAD_DEFAULTS["block_range_start"],
+        "block_range_end": H3_HYBRID_LOAD_DEFAULTS["block_range_end"],
+        "final_adaln_from_overlay": H3_HYBRID_LOAD_DEFAULTS["final_adaln_from_overlay"],
+    }
+    return choices
+
 
 @router.get("/models/minimax-h3/text-encoders")
 async def list_minimax_h3_text_encoders(model_path: str):

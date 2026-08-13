@@ -176,6 +176,16 @@ paths:
           list, a valid step count, a valid temporal-outpaint placement and a
           valid temporal-inpaint range instead of hardcoding them.
           Absent for non-video architectures.
+        * `chain_context` — architecture name (and, under `variants`, loaded
+          transformer variant) -> what a long-form video CHAIN's continuation
+          segments receive from their predecessor: the `continuation_mode`s
+          advertised, the default one, how many pixel frames of the preceding
+          segment the model is conditioned on, and whether sparse motion
+          anchors, a reference video or a pixel-exact preserved prefix are
+          available. `POST /video-chain/plan` and `POST /video-chain/validate`
+          refuse an unadvertised mode with a 400 against this same table, so a
+          client chooses a mode from here rather than from a checkpoint name.
+          Absent for non-video architectures.
       tags: [Schema]
       responses:
         '200':
@@ -7398,7 +7408,9 @@ paths:
         **Key parameters:**
         - `architecture` / `variant`: the loaded model. Frame grid, maximum
           segment length and available `continuation_mode`s come from the
-          backend's capabilities for this pair, never from a checkpoint name.
+          backend's capabilities for this pair, never from a checkpoint name
+          (`GET /schema/arch-capabilities` -> `video_constraints` and
+          `chain_context`).
         - `target_frames` / `fps`: the desired final length. Frames are the
           authoritative unit; seconds are a display-only derivation.
         - `requested_segment_frames`: per-invocation span. `null` uses the
@@ -7458,8 +7470,10 @@ paths:
         '400':
           description: >-
             Request rejected before planning: unknown architecture/variant, a
-            `continuation_mode` the architecture does not advertise (never
-            silently downgraded), `context_mode: manual` without a
+            `continuation_mode` the architecture/variant does not advertise in
+            `GET /schema/arch-capabilities`'s
+            `chain_context[arch].chain_context_modes` (never silently
+            downgraded), `context_mode: manual` without a
             `canonical_timeline`, a free-form root prompt with no explicit
             `context_mode` choice, `seed_policy: explicit` (no per-segment
             seeds can be sent here), a `requested_segment_frames` no longer
@@ -8299,6 +8313,36 @@ components:
               steps_are_sigma_grid_points: true
               outpaint_placements: [extend_forward, extend_backward, bridge]
               latent_chunk_pattern: [1, 4, 4, 4, 4]
+        chain_context:
+          type: object
+          description: |
+            Architecture name -> what a long-form video CHAIN's continuation
+            segments receive from their predecessor there. Mirrors
+            `CHAIN_CONTEXT` in `backend/api/arch_capabilities.py`, which is what
+            `POST /video-chain/plan` and `POST /video-chain/validate` refuse an
+            unadvertised `continuation_mode` against, so a client picks a mode
+            from here instead of branching on a checkpoint name. Non-video
+            architectures are absent.
+          additionalProperties:
+            $ref: '#/components/schemas/ChainContextCapability'
+          example:
+            minimax_h3:
+              chain_context_modes: [boundary_frame]
+              chain_default_context_mode: boundary_frame
+              chain_context_min_frames: 1
+              chain_context_max_frames: 1
+              chain_supports_sparse_motion_anchors: false
+              chain_supports_reference_video: false
+              chain_supports_exact_prefix: true
+              variants:
+                ref2va:
+                  chain_context_modes: [boundary_frame]
+                  chain_default_context_mode: boundary_frame
+                  chain_context_min_frames: 1
+                  chain_context_max_frames: 1
+                  chain_supports_sparse_motion_anchors: false
+                  chain_supports_reference_video: true
+                  chain_supports_exact_prefix: true
         runtime_int8_archs:
           type: array
           description: |
@@ -8327,6 +8371,146 @@ components:
           items:
             type: string
           example: [acestep, anima, flux2, ideogram4, krea2, ltx2, minimax_h3, zimage]
+    ChainContextVariantCapability:
+      type: object
+      required:
+        - chain_context_modes
+        - chain_default_context_mode
+        - chain_context_min_frames
+        - chain_context_max_frames
+        - chain_supports_sparse_motion_anchors
+        - chain_supports_reference_video
+        - chain_supports_exact_prefix
+      description: |
+        The long-form video chain's continuation capability for ONE
+        architecture (or one loaded transformer variant of it). Design §7.1 of
+        the video chain context design; served inside
+        `GET /schema/arch-capabilities`'s `chain_context`.
+
+        A chain is several `/generate/*` requests where every continuation is a
+        `POST /generate/outpaint/video` `extend_forward` on the clip produced so
+        far. These fields say what that continuation can be given, and are the
+        authority a client plans against — never the checkpoint's file name.
+      properties:
+        chain_context_modes:
+          type: array
+          items:
+            type: string
+            enum: [boundary_frame, motion_preroll, tail_reference_video, sampler_state]
+          description: |
+            The `continuation_mode` values this architecture/variant advertises.
+            ONLY IMPLEMENTED MODES APPEAR HERE: the `continuation_mode` enum
+            elsewhere in this document is the wider wire vocabulary, so that a
+            Phase-B candidate can be refused by name rather than as an unknown
+            string. Sending a mode that is not in this list is a 400 from
+            `/video-chain/plan` and `/video-chain/validate`; it is never
+            downgraded to a mode that is (design §7.7).
+
+            `boundary_frame` — the continuation shares exactly one frame with
+            the preserved prefix (the chain's shared anchor) and asks for no
+            additional pinned context beyond what the architecture's own
+            temporal-outpaint conditioning already provides. How much that is
+            differs per architecture and is reported by
+            `chain_context_min_frames`/`chain_context_max_frames`.
+          example: [boundary_frame]
+        chain_default_context_mode:
+          type: string
+          description: |
+            The mode to use when the client has no reason to choose. It is
+            `VIDEO_CHAIN_DEFAULTS["continuation_mode"]` when this
+            architecture advertises it, and this architecture's first
+            advertised mode otherwise — so it is always a member of
+            `chain_context_modes`.
+          example: boundary_frame
+        chain_context_min_frames:
+          type: integer
+          minimum: 1
+          description: |
+            The FEWEST pixel frames of the preceding segment the advertised
+            modes condition the model on. Phase A exposes no knob, so this is a
+            statement of fact rather than the bottom of a settable range.
+
+            A context length is only meaningful on a video-VAE temporal group
+            boundary, because a latent frame is conditioned or generated as a
+            whole. The valid lengths are therefore the cumulative sums of
+            `video_constraints[arch].latent_chunk_pattern`, served next to this
+            block: for MiniMax-H3's `[1, 4, 4, 4, 4]` they are 1, 5, 9, 13, 17,
+            18, 22, ... and the value 1 is exactly latent frame 0's coverage.
+            That pattern is the one enumerator; this schema does not restate the
+            list, and a client that offers a context-length control derives it
+            from the pattern the same way it derives a temporal-inpaint range.
+          example: 1
+        chain_context_max_frames:
+          type: integer
+          nullable: true
+          minimum: 1
+          description: |
+            The MOST pixel frames of the preceding segment the advertised modes
+            condition the model on, on the same VAE-group grid as
+            `chain_context_min_frames`. `null` = not bounded by a number the
+            client can reason about: the architecture's own conditioning decides
+            and it takes whatever the preserved prefix is.
+
+            MiniMax-H3 is `1` (its outpaint continuation hands the model the
+            preserved clip's last frame as the generated span's anchor and
+            nothing else). LTX-2.3 is `null`: its continuation places the whole
+            accumulated clip as one video condition, so the context grows with
+            the chain and cannot be made smaller.
+          example: 1
+        chain_supports_sparse_motion_anchors:
+          type: boolean
+          description: |
+            Whether a continuation can be given SEVERAL frames of the preceding
+            segment at chosen positions inside the span it generates (design
+            §7.3's motion pre-roll), as opposed to the single boundary anchor.
+            False everywhere today: the temporal-outpaint endpoint a chain
+            continues through carries no keyframe fields, so nothing can place
+            them, and the arm that would use them is unmeasured. Distinct from
+            the `keyframe_placement` feature in `unsupported`, which is about
+            `POST /generate/img2vid`.
+          example: false
+        chain_supports_reference_video:
+          type: boolean
+          description: |
+            Whether a continuation additionally receives part of the preceding
+            clip as a REFERENCE video (whole-clip content conditioning, a
+            separate channel from the boundary anchor). True only for
+            MiniMax-H3's `ref2va` transformer, where the preserved clip's own
+            trailing frames become an automatic video reference; `fl2va` was
+            never trained to read reference rows and LTX-2.3 has no reference
+            channel at all. Its window length is not client-settable yet.
+          example: false
+        chain_supports_exact_prefix:
+          type: boolean
+          description: |
+            Whether the frames produced by earlier segments survive the
+            continuation pixel-exact. True for both video architectures, by
+            different mechanisms: MiniMax-H3 does not generate the preserved
+            frames at all (it generates the missing span and concatenates),
+            while LTX-2.3 generates the whole timeline and pastes the input back
+            frame-exact. A client can therefore treat a chain's earlier output
+            as final on both.
+          example: true
+    ChainContextCapability:
+      allOf:
+        - $ref: '#/components/schemas/ChainContextVariantCapability'
+        - type: object
+          description: |
+            One architecture's chain-context capability, plus the per-variant
+            entries that differ from it.
+          properties:
+            variants:
+              type: object
+              description: |
+                Loaded transformer variant -> its own capability, for the
+                variants whose answer differs from the architecture-level one.
+                A variant that is absent answers with the architecture-level
+                entry, which is always the conservative one (MiniMax-H3 lists
+                only `ref2va`, the variant that adds the automatic video
+                reference). The key is the variant the backend reports for the
+                loaded checkpoint, not a file name.
+              additionalProperties:
+                $ref: '#/components/schemas/ChainContextVariantCapability'
     Fp8ScaledMmState:
       type: object
       required: [enabled, origin, resolved_modes]
@@ -13881,8 +14065,13 @@ components:
           enum: [boundary_frame, motion_preroll, tail_reference_video, sampler_state]
           default: boundary_frame
           description: >-
-            Requested continuation context. A mode the architecture does not
-            advertise is a 400, never a downgrade.
+            Requested continuation context. A mode absent from
+            `GET /schema/arch-capabilities`'s
+            `chain_context[architecture].chain_context_modes` (or from the
+            `variants[variant]` entry when one exists) is a 400, never a
+            downgrade. The enum here is the wire vocabulary, which is wider than
+            what any architecture advertises: the unimplemented candidates are
+            named so they can be refused by name.
           example: "boundary_frame"
         requested_overlap_frames:
           type: integer

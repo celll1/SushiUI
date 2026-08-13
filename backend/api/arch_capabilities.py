@@ -447,6 +447,141 @@ _add_training_unsupported(
     "MiniMax-H3 ReLoRA is not implemented; the supported training bases use weight-only FP8 or packed W4A8 Linears, which cannot accept dense LoRA merges without format-specific requantization. Use LoRA instead")
 
 
+# ---------------------------------------------------------------------------
+# CHAIN_CONTEXT[arch] = what a long-form video CHAIN's continuation segments can
+# receive from their predecessor on that architecture (design §7.1), plus a
+# `variants` map for the facts that differ per loaded transformer variant.
+#
+# Served as `chain_context` by GET /schema/arch-capabilities and used by
+# POST /video-chain/plan|validate to refuse an unadvertised mode with a 400
+# (design §7.7). It is deliberately NOT part of `video_constraints`: that block
+# is a verbatim serialisation of `TemporalSpec`, which has no variant dimension,
+# while `chain_supports_reference_video` is true for MiniMax-H3's `ref2va`
+# transformer and false for `fl2va` with the same `TemporalSpec`.
+#
+# `chain_context_min_frames`/`chain_context_max_frames` count PIXEL frames of
+# the preceding segment that the advertised modes condition on. They are not a
+# knob today (Phase A has none); they say what the continuation actually gets.
+# A value is only meaningful on a video-VAE group boundary, i.e. it must be a
+# cumulative sum of `video_constraints[arch].latent_chunk_pattern` -- for
+# MiniMax-H3's (1, 4, 4, 4, 4) those are 1, 5, 9, 13, 17, 18, 22, ... The
+# pattern is already served next to this block and is the ONE enumerator; this
+# module does not restate the list.
+CHAIN_CONTEXT: Dict[str, Dict[str, Any]] = {
+    # MiniMax-H3: a continuation is POST /generate/outpaint/video with
+    # `extend_forward`, which hands the model the preserved clip's last frame as
+    # the generated span's first-frame anchor and concatenates the preserved
+    # frames back untouched (core/pipeline_backends/minimax_h3.py:866-876). That
+    # is exactly one frame of visual context, and one frame is latent frame 0's
+    # whole coverage, so it is VAE-aligned by construction.
+    "minimax_h3": {
+        "chain_context_modes": ["boundary_frame"],
+        "chain_context_min_frames": 1,
+        "chain_context_max_frames": 1,
+        # The outpaint route places only the boundary anchor(s); it carries no
+        # keyframe fields at all. The index-addressable keyframe conditioning
+        # this WOULD need exists on /generate/img2vid (`keyframe_placement`
+        # above), which is why this is a Phase-B wiring gap rather than an
+        # architectural limit -- design §7.3's motion pre-roll is the arm that
+        # would flip it, and it is unmeasured.
+        "chain_supports_sparse_motion_anchors": False,
+        "chain_supports_reference_video": False,
+        "chain_supports_exact_prefix": True,
+        "variants": {
+            # ref2va only: the preserved clip's own trailing
+            # min(preserved, generated_span) frames become an automatic video
+            # reference on top of the boundary anchor
+            # (`build_outpaint_references`, core/pipeline_backends/
+            # minimax_h3.py:88-147; the route forces the 22-frame reference
+            # floor). fl2va was never trained to read reference rows
+            # (routes.py:4815-4822), so it stays on the arch-level entry.
+            "ref2va": {
+                "chain_context_modes": ["boundary_frame"],
+                "chain_context_min_frames": 1,
+                "chain_context_max_frames": 1,
+                "chain_supports_sparse_motion_anchors": False,
+                "chain_supports_reference_video": True,
+                "chain_supports_exact_prefix": True,
+            },
+        },
+    },
+    # LTX-2.3: a continuation places the whole accumulated clip as one
+    # `LTX2VideoCondition` (core/pipeline_backends/ltx2.py:1151) and pastes the
+    # input back frame-exact afterwards (:1250). The chain's shared-anchor
+    # arithmetic still subtracts one frame per segment, so `boundary_frame` is
+    # the mode the manifest is planned under, but the model is conditioned on
+    # the ENTIRE preserved prefix rather than on one frame -- which is what the
+    # unbounded `chain_context_max_frames` records. It is not selectable: this
+    # architecture has no way to hand it less.
+    "ltx2": {
+        "chain_context_modes": ["boundary_frame"],
+        "chain_context_min_frames": 1,
+        "chain_context_max_frames": None,
+        "chain_supports_sparse_motion_anchors": False,
+        "chain_supports_reference_video": False,
+        "chain_supports_exact_prefix": True,
+        "variants": {},
+    },
+}
+
+
+def chain_context_payload() -> Dict[str, Dict[str, Any]]:
+    """The `chain_context` block of GET /schema/arch-capabilities.
+
+    `chain_default_context_mode` is filled in here rather than written into the
+    table: the default lives in `VIDEO_CHAIN_DEFAULTS["continuation_mode"]`
+    (the single source of truth for API defaults), and an architecture that does
+    not advertise it falls back to its own first advertised mode.
+    """
+    from api.param_defaults import VIDEO_CHAIN_DEFAULTS
+    # The set of modes that EXIST. An architecture may advertise a subset of it
+    # and never a value outside it -- `openapi.yaml`'s `continuation_mode` enum
+    # is the wider wire vocabulary (it names the Phase-B candidates so they can
+    # be refused by name), and advertising one of those here would be promising
+    # a mode no code implements.
+    from core.inference.video_chain_context import CONTINUATION_MODES
+
+    requested_default = VIDEO_CHAIN_DEFAULTS["continuation_mode"]
+
+    def _entry(spec: Dict[str, Any]) -> Dict[str, Any]:
+        modes = [m for m in spec["chain_context_modes"] if m in CONTINUATION_MODES]
+        if not modes:
+            raise RuntimeError(
+                "chain_context advertises no implemented continuation mode; "
+                f"CHAIN_CONTEXT lists {spec['chain_context_modes']}, implemented: {CONTINUATION_MODES}"
+            )
+        out = {k: v for k, v in spec.items() if k != "variants"}
+        out["chain_context_modes"] = modes
+        out["chain_default_context_mode"] = (
+            requested_default if requested_default in modes else modes[0]
+        )
+        return out
+
+    payload: Dict[str, Dict[str, Any]] = {}
+    for arch, spec in CHAIN_CONTEXT.items():
+        entry = _entry(spec)
+        entry["variants"] = {
+            name: _entry(vspec) for name, vspec in (spec.get("variants") or {}).items()
+        }
+        payload[arch] = entry
+    return payload
+
+
+def chain_context_for(arch: Optional[str],
+                      variant: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """The chain-context capability of ``arch`` (``variant`` where it differs).
+
+    None for an architecture that cannot be chained at all. A variant with no
+    entry of its own answers with the architecture-level entry, which is the
+    conservative one.
+    """
+    entry = chain_context_payload().get(arch or "")
+    if entry is None:
+        return None
+    key = (variant or "").strip().lower()
+    return entry["variants"].get(key, entry)
+
+
 def video_constraints_payload() -> Dict[str, Dict[str, Any]]:
     """The `video_constraints` block of GET /schema/arch-capabilities.
 

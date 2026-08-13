@@ -3481,6 +3481,107 @@ export const fetchMiniMaxH3TextEncoders = async (
   return response.data;
 };
 
+/**
+ * Reference-bank job document. Before the first build of a backend process it
+ * is just `{ state: "idle" }`.
+ */
+export interface MiniMaxH3ReferenceBankJob {
+  job_id?: string;
+  state: "idle" | "running" | "completed" | "cancelled" | "failed";
+  reference?: string | null;
+  /** Presentations encoded so far, and the suite corpus size (0 until the first). */
+  processed?: number;
+  total?: number;
+  message?: string;
+  error?: string | null;
+  result?: Record<string, any> | null;
+  started_at?: number;
+  finished_at?: number | null;
+}
+
+export interface MiniMaxH3ReferenceBankSummary {
+  reference: string;
+  suite_version: string;
+  presentations: number;
+  token_total?: number;
+  hidden_size?: number;
+  built_at?: string | null;
+  /** A bank built from another released encoder does not answer for this one. */
+  is_loaded_encoder: boolean;
+}
+
+export interface MiniMaxH3StoredMeasurement {
+  encoder: string | null;
+  projection: string | null;
+  reference: string | null;
+  cosine: number | null;
+  cosine_baseline: number | null;
+  rel_rms: number | null;
+  rel_rms_baseline: number | null;
+  presentations: number | null;
+  /** `token_refiner` is the view the packed sequence actually contains. */
+  stage: "token_refiner" | "raw";
+  suite_version?: string;
+  measured_at?: string | null;
+}
+
+export interface MiniMaxH3TeAgreementStatus {
+  supported: boolean;
+  can_build: boolean;
+  reason: string | null;
+  model_path: string | null;
+  loaded: {
+    text_encoder: string | null;
+    text_encoder_path: string | null;
+    projection: string | null;
+    is_substitute: boolean;
+    /** The backend's one wording for a substituted pairing; null for a released encoder. */
+    substitution: string | null;
+  } | null;
+  suite: { version: string | null; prompts: number; digest: string | null };
+  /** Measured cost of one build, for the suite version named here. */
+  cost: {
+    suite_version: string;
+    seconds: number;
+    host_ram_gib_min: number;
+    host_ram_gib_max: number;
+    stored_mb: number;
+  };
+  bank: MiniMaxH3ReferenceBankSummary | null;
+  banks: MiniMaxH3ReferenceBankSummary[];
+  measurements: MiniMaxH3StoredMeasurement[];
+  measurements_reason: string | null;
+  job: MiniMaxH3ReferenceBankJob;
+}
+
+export const getMiniMaxH3TeAgreement = async (
+  modelPath?: string
+): Promise<MiniMaxH3TeAgreementStatus> => {
+  const response = await api.get("/models/minimax-h3/te-agreement", {
+    params: modelPath ? { model_path: modelPath } : undefined,
+  });
+  return response.data;
+};
+
+/**
+ * Start the bank build. Throws on 409 while a generation, a training run, a
+ * model-state mutation or another build is in flight, and on 400 when the
+ * loaded encoder is a substitute or is not the one named here.
+ */
+export const startMiniMaxH3ReferenceBank = async (
+  textEncoderPath: string
+): Promise<MiniMaxH3ReferenceBankJob> => {
+  const response = await api.post("/models/minimax-h3/te-agreement/reference-bank", {
+    text_encoder_path: textEncoderPath,
+  });
+  return response.data;
+};
+
+export const cancelMiniMaxH3ReferenceBank = async (): Promise<MiniMaxH3ReferenceBankJob> => {
+  const response = await api.delete("/models/minimax-h3/te-agreement/reference-bank");
+  return response.data;
+};
+
 // ---------------------------------------------------------------------------
 // Video generation (LTX-2.3)
 // ---------------------------------------------------------------------------

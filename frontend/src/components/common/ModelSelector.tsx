@@ -5,6 +5,7 @@ import Card from "./Card";
 import Button from "./Button";
 import Select from "./Select";
 import MiniMaxH3TextEncoderSelector from "./MiniMaxH3TextEncoderSelector";
+import MiniMaxH3ReferenceBankPanel from "./MiniMaxH3ReferenceBankPanel";
 import { ChevronDown, ChevronUp, Folder } from "lucide-react";
 import { useStartup } from "@/contexts/StartupContext";
 import { getCurrentModel, getModels, loadModel } from "@/utils/api";
@@ -280,6 +281,12 @@ export default function ModelSelector({ onModelLoad, embedded = false }: ModelSe
                   onChange={handleH3Change}
                   disabled={loading}
                 />
+              )}
+
+              {/* The reference bank is about the encoder that is LOADED, not the
+                  one selected above, so it follows currentModel. */}
+              {currentModel?.type === "minimax_h3" && (
+                <MiniMaxH3ReferenceBankPanel className="sm:col-span-2" modelVersion={modelInfoVersion} />
               )}
 
               {/* Model Details */}

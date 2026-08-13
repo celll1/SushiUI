@@ -609,6 +609,41 @@ def _is_substitute(components: Dict[str, Any]) -> bool:
     return bool(components.get("te_projection"))
 
 
+# What one build costs, from gate G0c on the 25 GB released encoder. Surfaced by
+# the API so a caller can state the price before committing to it; tied to the
+# suite version it was measured on, since the corpus sets all three figures.
+BUILD_COST = {
+    "suite_version": "h3-te-suite-v1",
+    "seconds": 300,
+    "host_ram_gib_min": 14,
+    "host_ram_gib_max": 24,
+    "stored_mb": 39,
+}
+
+
+def reference_bank_refusal(components: Dict[str, Any], *,
+                           reference_basename: str) -> Optional[str]:
+    """Why ``build_reference_bank`` would refuse, or ``None``.
+
+    Split out so a caller that spends five minutes and 24 GiB on the build can
+    refuse in the request that asked for it, against the same wording.
+    """
+    te_path = str(components.get("text_encoder_path") or "")
+    if components.get("text_encoder") is None or components.get("tokenizer") is None:
+        return ("building a MiniMax-H3 reference bank needs the released text encoder and its "
+                "tokenizer loaded; this model has no text encoder installed.")
+    if _is_substitute(components):
+        return (f"{os.path.basename(te_path)} is a substituted text encoder (it is paired with the "
+                f"projection {os.path.basename(str((components['te_projection'] or {}).get('path')))}). "
+                f"A substitute is what agreement is measured AGAINST a reference; it cannot be one.")
+    if not te_path or not os.path.isfile(te_path):
+        return f"the loaded MiniMax-H3 text encoder path {te_path!r} is not a file."
+    if os.path.basename(te_path) != reference_basename:
+        return (f"a reference bank was requested for {reference_basename!r} but the loaded text "
+                f"encoder is {os.path.basename(te_path)!r}. Load the encoder you are naming.")
+    return None
+
+
 def build_reference_bank(
     components: Dict[str, Any],
     *,
@@ -629,24 +664,12 @@ def build_reference_bank(
     overwrites it; the key already pins the content, so this only happens when
     the suite or the file changed.
     """
-    text_encoder = components.get("text_encoder")
-    tokenizer = components.get("tokenizer")
-    te_path = str(components.get("text_encoder_path") or "")
-    if text_encoder is None or tokenizer is None:
-        raise ValueError(
-            "building a MiniMax-H3 reference bank needs the released text encoder and its "
-            "tokenizer loaded; this model has no text encoder installed.")
-    if _is_substitute(components):
-        raise ValueError(
-            f"{os.path.basename(te_path)} is a substituted text encoder (it is paired with the "
-            f"projection {os.path.basename(str((components['te_projection'] or {}).get('path')))}). "
-            f"A substitute is what agreement is measured AGAINST a reference; it cannot be one.")
-    if not te_path or not os.path.isfile(te_path):
-        raise ValueError(f"the loaded MiniMax-H3 text encoder path {te_path!r} is not a file.")
-    if os.path.basename(te_path) != reference_basename:
-        raise ValueError(
-            f"a reference bank was requested for {reference_basename!r} but the loaded text "
-            f"encoder is {os.path.basename(te_path)!r}. Load the encoder you are naming.")
+    refusal = reference_bank_refusal(components, reference_basename=reference_basename)
+    if refusal is not None:
+        raise ValueError(refusal)
+    text_encoder = components["text_encoder"]
+    tokenizer = components["tokenizer"]
+    te_path = str(components["text_encoder_path"])
 
     from core.models.minimax_h3 import h3_pipeline_ops as ops
 

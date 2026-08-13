@@ -17700,6 +17700,7 @@ from core.inference.video_chain_context import (
     CONTEXT_MODES as VIDEO_CHAIN_CONTEXT_MODES,
     MANIFEST_VERSION as VIDEO_CHAIN_MANIFEST_VERSION,
     SEED_POLICIES as VIDEO_CHAIN_SEED_POLICIES,
+    SEGMENT_LENGTH_MODES as VIDEO_CHAIN_SEGMENT_LENGTH_MODES,
     VIDEO_CHAIN_ANCHOR_FRAMES,
     ChainManifest,
     ChainPlanRequest,
@@ -17709,6 +17710,7 @@ from core.inference.video_chain_context import (
     TimelineEvent,
     VideoChainPlanError,
     VideoGridSpec,
+    build_segment_geometry,
     build_segment_spans,
     chain_segment_cap,
     compute_plan_hash,
@@ -17848,6 +17850,7 @@ class VideoChainManifestModel(BaseModel):
     target_frames: int
     expected_final_frames: int
     context_mode: str = VIDEO_CHAIN_DEFAULTS["context_mode"]
+    segment_length_mode: str = VIDEO_CHAIN_DEFAULTS["segment_length_mode"]
     continuation_mode: str = VIDEO_CHAIN_DEFAULTS["continuation_mode"]
     seed_policy: str = VIDEO_CHAIN_DEFAULTS["seed_policy"]
     root_seed: int = VIDEO_CHAIN_DEFAULTS["root_seed"]
@@ -17873,6 +17876,7 @@ class VideoChainPlanRequestModel(BaseModel):
     target_frames: int
     fps: float = VIDEO_CHAIN_DEFAULTS["fps"]
     requested_segment_frames: Optional[int] = VIDEO_CHAIN_DEFAULTS["requested_segment_frames"]
+    segment_length_mode: str = VIDEO_CHAIN_DEFAULTS["segment_length_mode"]
     # NOT `VIDEO_CHAIN_DEFAULTS["context_mode"]`: the default only applies to a
     # prompt the planner can parse structurally. `None` means "the caller did
     # not choose", which for free-form prose is a hard error asking for a
@@ -18163,6 +18167,7 @@ def _video_chain_manifest_to_wire(
         "target_frames": manifest.target_frames,
         "expected_final_frames": manifest.expected_final_frames,
         "context_mode": manifest.context_mode,
+        "segment_length_mode": manifest.segment_length_mode,
         "continuation_mode": manifest.continuation_mode,
         "seed_policy": manifest.seed_policy,
         "root_seed": manifest.root_seed,
@@ -18205,6 +18210,14 @@ def _video_chain_manifest_from_wire(model: VideoChainManifestModel) -> ChainMani
             "Unknown seed_policy in manifest",
             detail=f"Expected one of {', '.join(VIDEO_CHAIN_SEED_POLICIES)}; got '{model.seed_policy}'",
         )
+    if model.segment_length_mode not in VIDEO_CHAIN_SEGMENT_LENGTH_MODES:
+        raise CustomValidationError(
+            "Unknown segment_length_mode in manifest",
+            detail=(
+                f"Expected one of {', '.join(VIDEO_CHAIN_SEGMENT_LENGTH_MODES)}; "
+                f"got '{model.segment_length_mode}'"
+            ),
+        )
     _video_chain_require_continuation_mode(model.continuation_mode, model.architecture,
                                            model.variant)
     if model.fps <= 0:
@@ -18219,6 +18232,7 @@ def _video_chain_manifest_from_wire(model: VideoChainManifestModel) -> ChainMani
         target_frames=int(model.target_frames),
         expected_final_frames=int(model.expected_final_frames),
         context_mode=model.context_mode,
+        segment_length_mode=model.segment_length_mode,
         segments=[_video_chain_segment_from_wire(s) for s in model.segments],
         manifest_version=int(model.manifest_version),
         plan_hash=model.plan_hash,
@@ -18490,8 +18504,13 @@ def _video_chain_geometry_only_manifest(
     computed before any prompt work and did succeed) is returned with empty
     prompts.
     """
-    spans = build_segment_spans(grid, request.target_frames, request.requested_segment_frames,
-                                warnings, overlap_frames)
+    # Fixed lengths whatever was requested: this path runs when the prompt could
+    # not be compiled, so there are no shot boundaries to align to, and the mode
+    # recorded on the manifest has to be the one that produced these spans.
+    geometry = build_segment_geometry(grid, request.target_frames,
+                                      request.requested_segment_frames, warnings,
+                                      overlap_frames, "fixed", None)
+    spans = geometry.spans
     try:
         bound = resolve_reference_bindings(references, len(spans), warnings)
     except VideoChainPlanError as exc:
@@ -18507,6 +18526,7 @@ def _video_chain_geometry_only_manifest(
         target_frames=int(request.target_frames),
         expected_final_frames=spans[-1].owned_end_frame,
         context_mode=context_mode,
+        segment_length_mode=geometry.segment_length_mode,
         segments=[
             SegmentPlan(
                 index=span.index,
@@ -18647,6 +18667,14 @@ async def plan_video_chain_route(request: VideoChainPlanRequestModel):
             "Unknown seed_policy",
             detail=f"Expected one of {', '.join(VIDEO_CHAIN_SEED_POLICIES)}; got '{request.seed_policy}'",
         )
+    if request.segment_length_mode not in VIDEO_CHAIN_SEGMENT_LENGTH_MODES:
+        raise CustomValidationError(
+            "Unknown segment_length_mode",
+            detail=(
+                f"Expected one of {', '.join(VIDEO_CHAIN_SEGMENT_LENGTH_MODES)}; "
+                f"got '{request.segment_length_mode}'"
+            ),
+        )
     if request.seed_policy == "explicit":
         # `explicit` means per-segment values chosen in the plan editor, and the
         # plan request has no field to carry them. Planning with `fixed` or
@@ -18730,6 +18758,7 @@ async def plan_video_chain_route(request: VideoChainPlanRequestModel):
                 fps=request.fps,
                 target_frames=request.target_frames,
                 segment_frames=request.requested_segment_frames,
+                segment_length_mode=request.segment_length_mode,
                 references=references,
                 negative_prompt=request.negative_prompt,
                 continuation_mode=request.continuation_mode,
@@ -18758,6 +18787,7 @@ async def plan_video_chain_route(request: VideoChainPlanRequestModel):
                     variant=(mode or request.variant or ""),
                     negative_prompt=request.negative_prompt,
                     segment_frames=request.requested_segment_frames,
+                    segment_length_mode=request.segment_length_mode,
                     context_mode=context_mode,
                     continuation_mode=request.continuation_mode,
                     overlap_frames=_chain_overlap,
@@ -18814,6 +18844,13 @@ async def plan_video_chain_route(request: VideoChainPlanRequestModel):
             "expected_final_frames": manifest.expected_final_frames,
             "overshoot_frames": manifest.expected_final_frames - manifest.target_frames,
             "segment_frames": [s.generated_span_frames for s in manifest.segments],
+            # The trade-off a shot-aligned plan asks the user to weigh: how many
+            # requests, and how much each one adds (design §7.2c).
+            "segment_count": len(manifest.segments),
+            "segment_new_output_frames": [
+                s.owned_end_frame - s.owned_start_frame for s in manifest.segments
+            ],
+            "segment_length_mode": manifest.segment_length_mode,
             "frame_grid": _video_chain_frame_grid_text(grid, cap),
         },
         "errors": errors,

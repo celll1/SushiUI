@@ -49,6 +49,7 @@ import {
   segmentChainReferenceImages,
   segmentChainText,
   segmentChainSeed,
+  segmentChainFirstFrames,
   chainSegmentProvenance,
   advanceVideoChain,
   ChainAdvanceResult,
@@ -2065,7 +2066,9 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
     });
     const cappedParams: Txt2VidParams = {
       ...videoParams,
-      num_frames: capFrames,
+      // Design §7.2c: the cap, unless a shot-aligned plan made segment 1
+      // shorter to land its boundary near a shot boundary.
+      num_frames: segmentChainFirstFrames(manifest, capFrames),
       prompt: mainText.prompt,
       negative_prompt: mainText.negative_prompt,
       // Design §8: the manifest froze this segment's seed at plan time (a

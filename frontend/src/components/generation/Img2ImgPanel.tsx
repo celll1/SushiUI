@@ -50,6 +50,7 @@ import {
   segmentChainReferenceImages,
   segmentChainText,
   segmentChainSeed,
+  segmentChainFirstFrames,
   chainSegmentProvenance,
   advanceVideoChain,
   ChainAdvanceResult,
@@ -2710,6 +2711,9 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
     // redraw a different random seed per segment. `base` is the very params
     // object each branch below spreads, so this is that branch's own fallback.
     const mainSeed = segmentChainSeed(manifest, 0, base.seed);
+    // Design §7.2c: the cap, unless a shot-aligned plan made segment 1 shorter
+    // to land its boundary near a shot boundary.
+    const mainFrames = segmentChainFirstFrames(manifest, capFrames);
     const chainProvenance = {
       chainTargetFrames: targetFrames,
       chainSegmentFrames: segmentFrames,
@@ -2737,7 +2741,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         type: "ref2vid",
         params: {
           ...refParams,
-          num_frames: capFrames,
+          num_frames: mainFrames,
           prompt: mainText.prompt,
           negative_prompt: mainText.negative_prompt,
           seed: mainSeed,
@@ -2755,7 +2759,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         type: "img2vid",
         params: {
           ...img2vidParams,
-          num_frames: capFrames,
+          num_frames: mainFrames,
           prompt: mainText.prompt,
           negative_prompt: mainText.negative_prompt,
           seed: mainSeed,

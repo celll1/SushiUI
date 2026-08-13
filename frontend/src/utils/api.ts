@@ -2040,6 +2040,14 @@ export type VideoChainSeedPolicy = "fixed" | "derived" | "explicit";
 // Reach `explicit` by planning with `fixed`/`derived`, then setting
 // `segments[].seed` in the editor and re-validating.
 export type VideoChainPlanRequestSeedPolicy = "fixed" | "derived";
+// How the planner chose the segment boundaries. `fixed` is the shipped
+// behaviour: every segment is the cap, the last one is what is left, so a
+// client can re-derive a continuation's length from the cap alone.
+// `shot_aligned` picks boundaries around the shots, so the lengths differ per
+// segment and the manifest is the ONLY source for them (see
+// `advanceVideoChain` in videoChain.ts). On a manifest this is the mode that
+// was APPLIED, which is `fixed` when there was nothing to align to.
+export type VideoChainSegmentLengthMode = "fixed" | "shot_aligned";
 export type VideoChainContinuationMode =
   | "boundary_frame"
   | "pinned_tail"
@@ -2100,6 +2108,7 @@ export interface VideoChainManifest {
   target_frames: number;
   expected_final_frames: number;
   context_mode: VideoChainContextMode;
+  segment_length_mode?: VideoChainSegmentLengthMode;
   continuation_mode: VideoChainContinuationMode;
   seed_policy: VideoChainSeedPolicy;
   root_seed?: number;
@@ -2120,6 +2129,9 @@ export interface VideoChainPlanRequest {
   target_frames: number;
   fps?: number;
   requested_segment_frames?: number | null;
+  // Opt-in (default `fixed`). Under `shot_aligned`, `requested_segment_frames`
+  // is an upper bound rather than every segment's length.
+  segment_length_mode?: VideoChainSegmentLengthMode;
   // Deliberately has no schema default and is nullable: the server must be
   // able to tell "the caller chose `timeline`" from "the caller chose
   // nothing" -- an omitted/null value is not the same request as `timeline`.
@@ -2155,6 +2167,11 @@ export interface VideoChainFramePlan {
   expected_final_frames: number;
   overshoot_frames: number;
   segment_frames: number[];
+  // The cost side of a shot-aligned plan: how many requests, and how much each
+  // one adds to the clip.
+  segment_count?: number;
+  segment_new_output_frames?: number[];
+  segment_length_mode?: VideoChainSegmentLengthMode;
   frame_grid?: string | null;
 }
 

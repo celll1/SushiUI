@@ -10,6 +10,7 @@ import {
   VideoChainPlanRequest,
   VideoChainPlanRequestSeedPolicy,
   VideoChainReferenceInput,
+  VideoChainSegmentLengthMode,
   chainContextCapability,
   chainContinuationOverlapLengths,
   planVideoChainRequest,
@@ -157,6 +158,12 @@ export default function VideoChainConfirmDialog({
   const [continuationMode, setContinuationMode] =
     useState<VideoChainContinuationMode>("boundary_frame");
   const [overlapFrames, setOverlapFrames] = useState<number>(0);
+  // How the segment boundaries are chosen (design §7.2c). The DEFAULT stays
+  // `fixed`: shot alignment changes the segment count and lengths, which is a
+  // transfer/decode cost the user is the one to weigh, and its effect on prompt
+  // adherence is unmeasured.
+  const [segmentLengthMode, setSegmentLengthMode] =
+    useState<VideoChainSegmentLengthMode>("fixed");
 
   // Offered modes and overlap lengths come from the backend's own tables, never
   // from a list in this file.
@@ -185,6 +192,7 @@ export default function VideoChainConfirmDialog({
       target_frames: planInput.targetFrames,
       fps: planInput.fps,
       requested_segment_frames: planInput.requestedSegmentFrames ?? null,
+      segment_length_mode: segmentLengthMode,
       context_mode: "timeline",
       seed_policy: planInput.seedPolicy ?? "fixed",
       root_seed: planInput.rootSeed ?? -1,
@@ -192,7 +200,7 @@ export default function VideoChainConfirmDialog({
       requested_overlap_frames: effectiveOverlap,
       references: planInput.references ?? [],
     };
-  }, [planInput, effectiveMode, effectiveOverlap]);
+  }, [planInput, effectiveMode, effectiveOverlap, segmentLengthMode]);
   const planRequestKey = planRequest ? JSON.stringify(planRequest) : null;
 
   useEffect(() => {
@@ -344,8 +352,14 @@ export default function VideoChainConfirmDialog({
 
   if (!isOpen) return null;
 
-  const overshoot = plan != null ? plan.finalFrames - requestedFrames : 0;
   const segmentCount = manifest?.segments.length ?? 0;
+  // The manifest is the plan that will actually run once it exists; the panel's
+  // own pre-flight `plan` is a fixed-length estimate and stops matching as soon
+  // as the boundaries are shot-aligned.
+  const plannedSegments = manifest != null ? segmentCount : plan?.segments ?? 0;
+  const plannedFinalFrames =
+    manifest != null ? manifest.expected_final_frames : plan?.finalFrames ?? 0;
+  const overshoot = plan != null ? plannedFinalFrames - requestedFrames : 0;
   // An ABSENT `reference_ids` is the manifest's `default_all` binding (every
   // reference carries); an EMPTY one is an explicit "none", which for a
   // reference-only request leaves segment 1 with nothing to condition on.
@@ -373,9 +387,9 @@ export default function VideoChainConfirmDialog({
           </p>
           {plan != null && (
             <p className="text-sm text-gray-300">
-              Reaching {requestedFrames} frames takes {plan.segments} generation requests, chained via temporal
-              outpaint. The chain actually reaches {plan.finalFrames} frames
-              {finalSeconds != null ? ` (${finalSeconds}s)` : ""}
+              Reaching {requestedFrames} frames takes {plannedSegments} generation requests, chained via temporal
+              outpaint. The chain actually reaches {plannedFinalFrames} frames
+              {finalSeconds != null && plannedFinalFrames === plan.finalFrames ? ` (${finalSeconds}s)` : ""}
               {overshoot > 0 ? `, ${overshoot} more than requested (the arithmetic that lands each segment on the model's frame grid does not land exactly on the requested total)` : ""}.
               Segments after the first are conditioned on the boundary frame of the previous segment (and, for
               ref2va/ia2v, the image references bound to that segment and an automatic video reference derived
@@ -426,6 +440,27 @@ export default function VideoChainConfirmDialog({
             </div>
           )}
 
+          <div className="flex flex-wrap items-center gap-3 rounded border border-gray-700 bg-gray-900/40 p-3">
+            <label className="text-xs text-gray-300">
+              Segment boundaries
+              <select
+                value={segmentLengthMode}
+                onChange={(e) =>
+                  setSegmentLengthMode(e.target.value as VideoChainSegmentLengthMode)
+                }
+                className="ml-2 bg-gray-800 border border-gray-600 rounded px-2 py-1 text-xs text-white"
+              >
+                <option value="fixed">Fixed length</option>
+                <option value="shot_aligned">Aligned to shots</option>
+              </select>
+            </label>
+            <p className="w-full text-xs text-gray-400">
+              {segmentLengthMode === "shot_aligned"
+                ? `The segment length above becomes an upper bound and the planner picks boundaries that split as few shots as possible: shots shorter than one segment share a segment, shots longer than one segment are split and listed below. Your shot timestamps are not moved. The segment count and the per-segment lengths below change with this setting — each segment is one more upload, one more decode and one more segment boundary.`
+                : "Every segment is the segment length above, with whatever is left in the last one. Segment boundaries fall wherever that arithmetic puts them, regardless of where the shots are."}
+            </p>
+          </div>
+
           {phase === "planning" && (
             <p className="text-sm text-gray-400">Planning the chain…</p>
           )}
@@ -454,10 +489,22 @@ export default function VideoChainConfirmDialog({
               <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-gray-400">
                 <span>Segments: {segmentCount}</span>
                 <span>Final length: {manifest.expected_final_frames} frames</span>
+                <span>Boundaries: {manifest.segment_length_mode ?? "fixed"}</span>
                 <span>Mode: {manifest.context_mode}</span>
                 <span>Seeds: {manifest.seed_policy}</span>
                 <span className="font-mono">plan {manifest.plan_hash?.slice(0, 12) ?? "unknown"}</span>
               </div>
+
+              {/* The cost side of the boundary choice, per design §7.2c: how
+                  many requests this plan makes and how much each one adds. */}
+              <p className="text-xs text-gray-400">
+                Frames added per segment:{" "}
+                {manifest.segments
+                  .map((segment) => segment.owned_end_frame - segment.owned_start_frame)
+                  .join(", ")}
+                {" "}({segmentCount} generation request{segmentCount === 1 ? "" : "s"}, each one an
+                upload, a decode and a segment boundary)
+              </p>
 
               {manifest.context_mode === "legacy_repeat" && (
                 <p className="text-xs text-amber-400">

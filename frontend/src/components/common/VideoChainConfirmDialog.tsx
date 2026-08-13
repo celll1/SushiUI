@@ -158,6 +158,12 @@ export default function VideoChainConfirmDialog({
   const [continuationMode, setContinuationMode] =
     useState<VideoChainContinuationMode>("boundary_frame");
   const [overlapFrames, setOverlapFrames] = useState<number>(0);
+  // `motion_preroll`'s pre-roll length and anchor count. Kept separate from
+  // `overlapFrames` because the two modes bound the same request field
+  // differently: a pin must land on a VAE group boundary, a pre-roll needs no
+  // alignment and has its own range.
+  const [prerollFrames, setPrerollFrames] = useState<number>(0);
+  const [anchorCount, setAnchorCount] = useState<number>(0);
   // How the segment boundaries are chosen (design §7.2c). The DEFAULT stays
   // `fixed`: shot alignment changes the segment count and lengths, which is a
   // transfer/decode cost the user is the one to weigh, and its effect on prompt
@@ -167,9 +173,10 @@ export default function VideoChainConfirmDialog({
 
   // Offered modes and overlap lengths come from the backend's own tables, never
   // from a list in this file.
-  const continuationModes =
-    chainContextCapability(archCapabilities, planInput?.architecture, planInput?.variant)
-      ?.chain_continuation_modes ?? [];
+  const chainCapability = chainContextCapability(
+    archCapabilities, planInput?.architecture, planInput?.variant
+  );
+  const continuationModes = chainCapability?.chain_continuation_modes ?? [];
   const overlapLengths = chainContinuationOverlapLengths(
     archCapabilities, planInput?.architecture, planInput?.variant
   );
@@ -177,10 +184,25 @@ export default function VideoChainConfirmDialog({
   const effectiveMode = continuationModes.includes(continuationMode)
     ? continuationMode
     : "boundary_frame";
+  // A pre-roll is any integer in the served range (no VAE alignment), so this
+  // is a span, not the pin's enumerated list.
+  const prerollMin = chainCapability?.chain_motion_preroll_min_frames ?? 0;
+  const prerollMax = chainCapability?.chain_motion_preroll_max_frames ?? 0;
+  const anchorMin = chainCapability?.chain_motion_preroll_min_anchors ?? 0;
+  const anchorMax = chainCapability?.chain_motion_preroll_max_anchors ?? 0;
+  const clamp = (value: number, low: number, high: number) =>
+    Math.min(Math.max(value || low, low), high);
+  const effectivePreroll =
+    effectiveMode === "motion_preroll" ? clamp(prerollFrames, prerollMin, prerollMax) : 0;
+  // An anchor per frame at most: two anchors cannot share a frame.
+  const effectiveAnchors =
+    effectiveMode === "motion_preroll"
+      ? clamp(anchorCount, anchorMin, Math.min(anchorMax, effectivePreroll || anchorMax))
+      : 0;
   const effectiveOverlap =
     effectiveMode === "pinned_tail"
       ? (overlapLengths.includes(overlapFrames) ? overlapFrames : overlapLengths[0] ?? 0)
-      : 0;
+      : effectivePreroll;
 
   const planRequest: VideoChainPlanRequest | null = useMemo(() => {
     if (!planInput) return null;
@@ -198,9 +220,10 @@ export default function VideoChainConfirmDialog({
       root_seed: planInput.rootSeed ?? -1,
       continuation_mode: effectiveMode,
       requested_overlap_frames: effectiveOverlap,
+      requested_anchor_count: effectiveAnchors,
       references: planInput.references ?? [],
     };
-  }, [planInput, effectiveMode, effectiveOverlap, segmentLengthMode]);
+  }, [planInput, effectiveMode, effectiveOverlap, effectiveAnchors, segmentLengthMode]);
   const planRequestKey = planRequest ? JSON.stringify(planRequest) : null;
 
   useEffect(() => {
@@ -413,7 +436,13 @@ export default function VideoChainConfirmDialog({
                 >
                   {continuationModes.map((mode) => (
                     <option key={mode} value={mode}>
-                      {mode === "boundary_frame" ? "Boundary frame (1 frame)" : mode}
+                      {mode === "boundary_frame"
+                        ? "Boundary frame (1 frame)"
+                        : mode === "pinned_tail"
+                        ? "Pinned tail"
+                        : mode === "motion_preroll"
+                        ? "Motion pre-roll (anchors, discarded)"
+                        : mode}
                     </option>
                   ))}
                 </select>
@@ -432,9 +461,37 @@ export default function VideoChainConfirmDialog({
                   </select>
                 </label>
               )}
+              {effectiveMode === "motion_preroll" && (
+                <>
+                  <label className="text-xs text-gray-300">
+                    Pre-roll frames
+                    <input
+                      type="number"
+                      min={prerollMin}
+                      max={prerollMax}
+                      value={effectivePreroll}
+                      onChange={(e) => setPrerollFrames(Number(e.target.value))}
+                      className="ml-2 w-16 bg-gray-800 border border-gray-600 rounded px-2 py-1 text-xs text-white"
+                    />
+                  </label>
+                  <label className="text-xs text-gray-300">
+                    Anchors
+                    <input
+                      type="number"
+                      min={anchorMin}
+                      max={anchorMax}
+                      value={effectiveAnchors}
+                      onChange={(e) => setAnchorCount(Number(e.target.value))}
+                      className="ml-2 w-16 bg-gray-800 border border-gray-600 rounded px-2 py-1 text-xs text-white"
+                    />
+                  </label>
+                </>
+              )}
               <p className="w-full text-xs text-gray-400">
                 {effectiveMode === "pinned_tail"
                   ? `Each continuation is conditioned on the last ${effectiveOverlap} frame(s) of the previous segment (and, when the input audio is preserved, that span's soundtrack) instead of on its final frame alone. Those frames are re-rendered and discarded, so the previous segment's pixels are unchanged; the generated span grows by the same amount and is rounded up to the model's frame grid, which is why the segment ranges below can add more frames per segment than the boundary-frame plan. Shorter pins are not offered: a single pinned frame is a motionless still, which the model can continue as a static scene — boundary frame is the one-frame option, and it is a different kind of conditioning rather than a smaller pin.`
+                  : effectiveMode === "motion_preroll"
+                  ? `Each continuation re-generates the previous segment's last ${effectivePreroll} frame(s) with ${effectiveAnchors} of them placed as anchors inside its own span, then discards them and appends only the new frames. The previous segment's pixels are unchanged, the generated span grows by the pre-roll and is rounded up to the model's frame grid, and the pre-roll is compute the output does not keep: ${effectivePreroll} generated frame(s) per continuation are thrown away, and every anchor adds conditioning rows to every step. The anchors are spread evenly from the oldest pre-roll frame to the boundary frame.`
                   : "Each continuation is conditioned on the previous segment's final frame alone."}
               </p>
             </div>

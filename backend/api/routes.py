@@ -4741,6 +4741,10 @@ async def generate_outpaint_video(
     # so the two share one default rather than one each.
     continuation_mode: str = Form(VIDEO_CHAIN_DEFAULTS["continuation_mode"]),
     continuation_overlap_frames: int = Form(VIDEO_CHAIN_DEFAULTS["requested_overlap_frames"]),
+    # `motion_preroll` only: how many of the preserved tail's frames are placed
+    # as anchors on the pre-roll. Sending it with any other mode is a 400 --
+    # a pinned overlap and an anchor set claim the same conditioning prefix.
+    continuation_anchor_count: int = Form(VIDEO_CHAIN_DEFAULTS["requested_anchor_count"]),
     # Video chain provenance (design sec.13). This is the endpoint every chain
     # CONTINUATION runs on, so a chained request carries the whole set here; see
     # Txt2VidRequest's fields of the same names for the segment-0 side.
@@ -4874,13 +4878,14 @@ async def generate_outpaint_video(
         continuation_mode, continuation_overlap_frames,
         (pipeline_manager.current_model_info or {}).get("type"),
         _h3_variant or None,
+        continuation_anchor_count,
     )
     if _continuation["mode"] != "boundary_frame" and _ref_image_files:
         raise CustomValidationError(
             f"continuation_mode '{_continuation['mode']}' cannot be combined with reference_images",
-            detail="A pinned tail and a reference block both claim the packed sequence's "
-                   "conditioning prefix, so only one of them can have it. Drop the reference "
-                   "images, or use continuation_mode 'boundary_frame'.",
+            detail="A pinned tail (or a pre-roll's anchors) and a reference block both claim the "
+                   "packed sequence's conditioning prefix, so only one of them can have it. Drop "
+                   "the reference images, or use continuation_mode 'boundary_frame'.",
         )
 
     # Per-architecture defaults FIRST: the decode bound and every geometry check
@@ -5086,6 +5091,11 @@ async def generate_outpaint_video(
         # records what actually conditioned the segment.
         "continuation_mode": _continuation["mode"],
         "continuation_overlap_frames": _continuation["overlap_frames"],
+        # `motion_preroll` only, and already resolved: the count and the frames
+        # of the generated span the anchors sit on (uniform spacing over the
+        # pre-roll). Empty/zero for every other mode.
+        "continuation_anchor_count": int(_continuation.get("anchor_count") or 0),
+        "continuation_anchor_frames": list(_continuation.get("anchor_local_frames") or ()),
         # Validated against the attention registry's vocabulary, same
         # 400-before-start_generation contract as every other route that takes
         # it (`attention_type_validation_test` is the forcing function).
@@ -17799,6 +17809,11 @@ class VideoChainVisualContextModel(BaseModel):
     frames: Optional[int] = None
     source_segment_index: Optional[int] = None
     shared_context_frames: Optional[int] = None
+    # `motion_preroll`: where the anchors sit inside the pre-roll, local to the
+    # generated span, and how many there are. Both are part of the plan, so an
+    # edited manifest must send them back or its `plan_hash` changes.
+    anchor_local_frames: Optional[List[int]] = None
+    anchor_count: Optional[int] = None
 
 
 class VideoChainReferenceInputModel(BaseModel):
@@ -17836,6 +17851,7 @@ class VideoChainSegmentModel(BaseModel):
     requested_overlap_frames: int = VIDEO_CHAIN_DEFAULTS["requested_overlap_frames"]
     effective_overlap_frames: int = 0
     effective_overlap_samples: int = 0
+    requested_anchor_count: int = VIDEO_CHAIN_DEFAULTS["requested_anchor_count"]
 
 
 class VideoChainManifestModel(BaseModel):
@@ -17887,6 +17903,7 @@ class VideoChainPlanRequestModel(BaseModel):
     root_seed: int = VIDEO_CHAIN_DEFAULTS["root_seed"]
     continuation_mode: str = VIDEO_CHAIN_DEFAULTS["continuation_mode"]
     requested_overlap_frames: int = VIDEO_CHAIN_DEFAULTS["requested_overlap_frames"]
+    requested_anchor_count: int = VIDEO_CHAIN_DEFAULTS["requested_anchor_count"]
     chain_drift_tolerance_frames: int = VIDEO_CHAIN_DEFAULTS["chain_drift_tolerance_frames"]
     references: List[VideoChainReferenceInputModel] = Field(default_factory=list)
     canonical_timeline: Optional[VideoChainCanonicalTimelineModel] = None
@@ -18082,6 +18099,8 @@ def _video_chain_segment_to_wire(segment: SegmentPlan) -> Dict[str, Any]:
         "frames": visual.get("frames"),
         "source_segment_index": None if segment.index == 0 else segment.index - 1,
         "shared_context_frames": visual.get("shared_context_frames"),
+        "anchor_local_frames": visual.get("anchor_local_frames"),
+        "anchor_count": visual.get("anchor_count"),
     }
     return {
         "index": segment.index,
@@ -18107,6 +18126,7 @@ def _video_chain_segment_to_wire(segment: SegmentPlan) -> Dict[str, Any]:
         "requested_overlap_frames": segment.requested_overlap_frames,
         "effective_overlap_frames": segment.effective_overlap_frames,
         "effective_overlap_samples": segment.effective_overlap_samples,
+        "requested_anchor_count": segment.requested_anchor_count,
     }
 
 
@@ -18120,6 +18140,10 @@ def _video_chain_segment_from_wire(model: VideoChainSegmentModel) -> SegmentPlan
             visual["shared_context_frames"] = VIDEO_CHAIN_ANCHOR_FRAMES
         if model.visual_context.frames is not None:
             visual["frames"] = int(model.visual_context.frames)
+        if model.visual_context.anchor_local_frames is not None:
+            frames = [int(f) for f in model.visual_context.anchor_local_frames]
+            visual["anchor_local_frames"] = frames
+            visual["anchor_count"] = len(frames)
     return SegmentPlan(
         index=model.index,
         anchor_global_frame=model.anchor_global_frame,
@@ -18147,6 +18171,7 @@ def _video_chain_segment_from_wire(model: VideoChainSegmentModel) -> SegmentPlan
         requested_overlap_frames=model.requested_overlap_frames,
         effective_overlap_frames=model.effective_overlap_frames,
         effective_overlap_samples=model.effective_overlap_samples,
+        requested_anchor_count=model.requested_anchor_count,
     )
 
 
@@ -18278,10 +18303,10 @@ def _video_chain_require_continuation_mode(mode: str, architecture: str,
     The advertised list comes from `arch_capabilities.chain_context_for`, i.e.
     from the same table `GET /schema/arch-capabilities` serves as
     `chain_context` -- a client can therefore only ever be refused for a mode it
-    could have seen was unavailable. The richer schema modes (`motion_preroll`,
-    `tail_reference_video`, `sampler_state`) are named in the wire enum so they
-    can be refused BY NAME; none is implemented, so none is advertised, and a
-    request for one is refused rather than quietly downgraded.
+    could have seen was unavailable. The remaining schema modes
+    (`tail_reference_video`, `sampler_state`) are named in the wire enum so they
+    can be refused BY NAME; neither is implemented, so neither is advertised,
+    and a request for one is refused rather than quietly downgraded.
     """
     from api.arch_capabilities import chain_context_for
 
@@ -18397,32 +18422,37 @@ def _video_chain_restore_alignment_instructions(
     return True
 
 
-def _video_chain_plan_overlap(request: VideoChainPlanRequestModel, architecture: str) -> int:
-    """Frames every continuation shares with its predecessor, resolved ONCE.
+def _video_chain_plan_continuation(
+    request: VideoChainPlanRequestModel, architecture: str
+) -> Dict[str, Any]:
+    """What every continuation of this plan shares/receives, resolved ONCE.
 
-    `boundary_frame` shares the single anchor. A mode that PINS an overlap
+    `boundary_frame` shares the single anchor. A mode that takes an overlap --
+    pinned (`pinned_tail`) or regenerated-and-discarded (`motion_preroll`) --
     resolves it through the same resolver `/generate/outpaint/video` uses, so an
-    unaddressable or too-short pin is refused here exactly as it would be at
+    unaddressable overlap, an out-of-range pre-roll or an anchor count this
+    architecture does not serve is refused here exactly as it would be at
     generation time -- a plan must not promise a geometry the generation refuses.
     """
     from api.generation_utils import plan_video_continuation_context
 
-    if request.continuation_mode == "boundary_frame":
-        return VIDEO_CHAIN_ANCHOR_FRAMES
-    return int(plan_video_continuation_context(
+    if request.continuation_mode == "boundary_frame" and not request.requested_anchor_count:
+        return {"mode": "boundary_frame", "overlap_frames": VIDEO_CHAIN_ANCHOR_FRAMES}
+    return plan_video_continuation_context(
         request.continuation_mode, request.requested_overlap_frames,
-        architecture, request.variant,
-    )["overlap_frames"])
+        architecture, request.variant, request.requested_anchor_count,
+    )
 
 
 def _video_chain_record_overlap(
-    manifest: ChainManifest, requested_overlap_frames: int
+    manifest: ChainManifest, requested_overlap_frames: int,
+    requested_anchor_count: int = 0,
 ) -> bool:
     """Record what was ASKED for, and say what the geometry did with it.
 
     The planner has already built the frame ranges with the resolved overlap and
     written `effective_overlap_frames`; this only adds the request value and the
-    disclosure. `boundary_frame` shares an anchor rather than pinning an
+    disclosure. `boundary_frame` shares an anchor rather than taking an
     overlap, so a value sent with it is stated as unhonoured rather than
     absorbed silently. `effective_overlap_samples` is left to the generation,
     the only layer that knows the loaded audio VAE's rate.
@@ -18434,8 +18464,24 @@ def _video_chain_record_overlap(
         if segment.index == 0:
             continue
         segment.requested_overlap_frames = int(requested_overlap_frames)
+        if manifest.continuation_mode == "motion_preroll":
+            segment.requested_anchor_count = int(requested_anchor_count)
     continuations = [s for s in manifest.segments if s.index > 0]
-    if pinned and continuations:
+    if manifest.continuation_mode == "motion_preroll" and continuations:
+        overlap = continuations[0].effective_overlap_frames
+        spans = sorted({s.generated_span_frames for s in continuations})
+        anchors = continuations[0].visual_context.get("anchor_local_frames") or []
+        manifest.warnings.append(
+            f"continuation_mode 'motion_preroll' places {len(anchors)} anchor(s) on frames "
+            f"{', '.join(str(f) for f in anchors)} of each continuation's generated span, taken "
+            f"from the last {overlap} frame(s) of its predecessor. Those {overlap} frame(s) are "
+            f"GENERATED and then discarded -- the preserved segment is concatenated over them "
+            f"unchanged -- so each continuation samples {', '.join(str(s) for s in spans)} "
+            f"frame(s) to add {overlap} fewer, and every anchor adds conditioning rows to every "
+            f"denoise step. The frame ranges and expected_final_frames below are the lengths "
+            f"after that discard."
+        )
+    elif pinned and continuations:
         gains = sorted({s.owned_end_frame - s.owned_start_frame for s in continuations})
         manifest.warnings.append(
             f"continuation_mode '{manifest.continuation_mode}' pins "
@@ -18496,6 +18542,7 @@ def _video_chain_geometry_only_manifest(
     errors: List[Dict[str, Any]],
     warnings: List[str],
     overlap_frames: int = VIDEO_CHAIN_ANCHOR_FRAMES,
+    anchor_local_frames: Sequence[int] = (),
 ) -> ChainManifest:
     """The manifest returned when compiling the prompts failed.
 
@@ -18538,11 +18585,14 @@ def _video_chain_geometry_only_manifest(
                 prompt="",
                 negative_prompt=request.negative_prompt,
                 reference_ids=segment_reference_ids(bound, span.index),
-                visual_context=video_chain_visual_context(span, request.continuation_mode),
+                visual_context=video_chain_visual_context(
+                    span, request.continuation_mode, anchor_local_frames),
                 effective_overlap_frames=(
                     0 if span.index == 0 or request.continuation_mode == "boundary_frame"
                     else span.shared_overlap_frames
                 ),
+                requested_anchor_count=(
+                    len(anchor_local_frames) if span.index > 0 else 0),
             )
             for span in spans
         ],
@@ -18662,6 +18712,11 @@ async def plan_video_chain_route(request: VideoChainPlanRequestModel):
             "requested_overlap_frames cannot be negative",
             detail=f"requested_overlap_frames={request.requested_overlap_frames}",
         )
+    if request.requested_anchor_count < 0:
+        raise CustomValidationError(
+            "requested_anchor_count cannot be negative",
+            detail=f"requested_anchor_count={request.requested_anchor_count}",
+        )
     if request.seed_policy not in VIDEO_CHAIN_SEED_POLICIES:
         raise CustomValidationError(
             "Unknown seed_policy",
@@ -18692,7 +18747,9 @@ async def plan_video_chain_route(request: VideoChainPlanRequestModel):
                                            request.variant)
     # Resolved BEFORE any geometry: the overlap is an input to the frame
     # arithmetic, not a note added to a plan that was built without it.
-    _chain_overlap = _video_chain_plan_overlap(request, architecture)
+    _chain_continuation = _video_chain_plan_continuation(request, architecture)
+    _chain_overlap = int(_chain_continuation["overlap_frames"])
+    _chain_anchors = tuple(_chain_continuation.get("anchor_local_frames") or ())
 
     grid = _video_chain_grid(architecture)
     mode = _video_chain_h3_mode(architecture, request.variant, request.workflow)
@@ -18763,6 +18820,7 @@ async def plan_video_chain_route(request: VideoChainPlanRequestModel):
                 negative_prompt=request.negative_prompt,
                 continuation_mode=request.continuation_mode,
                 overlap_frames=_chain_overlap,
+                anchor_local_frames=_chain_anchors,
                 seed_policy=request.seed_policy,
                 root_seed=request.root_seed,
             )
@@ -18791,6 +18849,7 @@ async def plan_video_chain_route(request: VideoChainPlanRequestModel):
                     context_mode=context_mode,
                     continuation_mode=request.continuation_mode,
                     overlap_frames=_chain_overlap,
+                    anchor_local_frames=_chain_anchors,
                     seed_policy=request.seed_policy,
                     root_seed=request.root_seed,
                     references=references,
@@ -18804,7 +18863,8 @@ async def plan_video_chain_route(request: VideoChainPlanRequestModel):
     if manifest is None:
         try:
             manifest = _video_chain_geometry_only_manifest(
-                request, grid, context_mode, references, errors, warnings, _chain_overlap
+                request, grid, context_mode, references, errors, warnings, _chain_overlap,
+                _chain_anchors,
             )
         except VideoChainPlanError as exc:
             raise CustomValidationError("This chain cannot be planned", detail=str(exc))
@@ -18812,7 +18872,8 @@ async def plan_video_chain_route(request: VideoChainPlanRequestModel):
         manifest.continuation_mode = request.continuation_mode
         manifest.warnings.extend(warnings)
 
-    changed = _video_chain_record_overlap(manifest, request.requested_overlap_frames)
+    changed = _video_chain_record_overlap(
+        manifest, request.requested_overlap_frames, request.requested_anchor_count)
     changed = _video_chain_restore_alignment_instructions(manifest, mode) or changed
     if changed:
         _video_chain_refreeze(manifest)

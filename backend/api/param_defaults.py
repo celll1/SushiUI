@@ -1636,6 +1636,17 @@ VIDEO_CHAIN_DEFAULTS: Dict[str, Any] = {
     # else rather than snapping it. The authoritative value is the generation's
     # effective_overlap_frames/_samples, never this request value.
     "requested_overlap_frames": 0,
+    # How many of the predecessor's frames a `motion_preroll` continuation
+    # places on its pre-roll as keyframe anchors, and the
+    # `continuation_anchor_count` default of /generate/outpaint/video. 0 = none
+    # requested, which is the only valid value for every other continuation
+    # mode: sending a count with a mode that places no anchors is a 400, not a
+    # silently dropped field. `motion_preroll` requires one inside the arch's
+    # advertised [chain_motion_preroll_min_anchors, ..._max_anchors] and no
+    # larger than the pre-roll itself. Where the anchors land follows from the
+    # count and the pre-roll length (uniform spacing) and is fixed in the
+    # manifest.
+    "requested_anchor_count": 0,
     # Reference binding for a reference whose segment set is not stated
     # explicitly: apply it to every segment, which is today's carry-to-all
     # behaviour.

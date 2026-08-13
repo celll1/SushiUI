@@ -8327,11 +8327,15 @@ components:
             $ref: '#/components/schemas/ChainContextCapability'
           example:
             minimax_h3:
-              chain_continuation_modes: [boundary_frame, pinned_tail]
+              chain_continuation_modes: [boundary_frame, pinned_tail, motion_preroll]
               chain_default_continuation_mode: boundary_frame
               chain_context_min_frames: 5
               chain_context_max_frames: 17
-              chain_supports_sparse_motion_anchors: false
+              chain_supports_sparse_motion_anchors: true
+              chain_motion_preroll_min_frames: 2
+              chain_motion_preroll_max_frames: 17
+              chain_motion_preroll_min_anchors: 2
+              chain_motion_preroll_max_anchors: 4
               chain_supports_reference_video: false
               chain_supports_exact_prefix: true
               variants:
@@ -8341,6 +8345,10 @@ components:
                   chain_context_min_frames: 1
                   chain_context_max_frames: 1
                   chain_supports_sparse_motion_anchors: false
+                  chain_motion_preroll_min_frames: null
+                  chain_motion_preroll_max_frames: null
+                  chain_motion_preroll_min_anchors: null
+                  chain_motion_preroll_max_anchors: null
                   chain_supports_reference_video: true
                   chain_supports_exact_prefix: true
         runtime_int8_archs:
@@ -8379,6 +8387,10 @@ components:
         - chain_context_min_frames
         - chain_context_max_frames
         - chain_supports_sparse_motion_anchors
+        - chain_motion_preroll_min_frames
+        - chain_motion_preroll_max_frames
+        - chain_motion_preroll_min_anchors
+        - chain_motion_preroll_max_anchors
         - chain_supports_reference_video
         - chain_supports_exact_prefix
       description: |
@@ -8418,7 +8430,16 @@ components:
             own leading latent frames (and, with `preserve_input` audio, the
             audio latents of the same physical time). Advertised by MiniMax-H3
             `fl2va` only.
-          example: [boundary_frame, pinned_tail]
+
+            `motion_preroll` — the same shared region, but REGENERATED with
+            `continuation_anchor_count` of the predecessor's frames placed on it
+            as keyframe anchors, and then discarded. Advertised by MiniMax-H3
+            `fl2va` only, and mutually exclusive with `pinned_tail` (they are
+            two values of one field, and the two mechanisms claim the same
+            conditioning prefix). Its lengths come from the
+            `chain_motion_preroll_*` fields, NOT from
+            `chain_context_min/max_frames`.
+          example: [boundary_frame, pinned_tail, motion_preroll]
         chain_default_continuation_mode:
           type: string
           description: |
@@ -8485,12 +8506,68 @@ components:
             Whether a continuation can be given SEVERAL frames of the preceding
             segment at chosen positions inside the span it generates (design
             §7.3's motion pre-roll), as opposed to the single boundary anchor.
-            False everywhere today: the temporal-outpaint endpoint a chain
-            continues through carries no keyframe fields, so nothing can place
-            them, and the arm that would use them is unmeasured. Distinct from
+            True for MiniMax-H3 `fl2va`, whose temporal-outpaint continuation
+            takes `continuation_mode: motion_preroll` and places the anchors
+            through the same index-addressable conditioning
+            `POST /generate/img2vid` uses; false elsewhere, including `ref2va`
+            (its reference block already occupies the conditioning prefix the
+            anchors would need). The flag says the placement EXISTS, not that it
+            improves anything: the arm is unmeasured and opt-in. Distinct from
             the `keyframe_placement` feature in `unsupported`, which is about
-            `POST /generate/img2vid`.
-          example: false
+            `POST /generate/img2vid` itself.
+          example: true
+        chain_motion_preroll_min_frames:
+          type: integer
+          nullable: true
+          minimum: 1
+          description: |
+            The SHORTEST pre-roll `continuation_mode: motion_preroll` accepts,
+            in pixel frames of the preceding segment. `null` when the
+            architecture/variant does not advertise the mode.
+
+            Separate from `chain_context_min_frames` because a pre-roll is not a
+            pin: it needs no video-VAE group alignment (any integer in range is
+            addressable, since an anchor names a pixel frame directly), and its
+            floor is STRUCTURAL rather than measured — MiniMax-H3 `fl2va` is
+            `2`, which is simply the fewest distinct frames two anchors can sit
+            on. The pinned tail's measured 5-frame floor is a property of
+            pinning and deliberately does not carry over.
+          example: 2
+        chain_motion_preroll_max_frames:
+          type: integer
+          nullable: true
+          minimum: 1
+          description: |
+            The LONGEST pre-roll the mode accepts. `null` when the mode is not
+            advertised. MiniMax-H3 `fl2va` is `17`: a refusal bound rather than
+            a clamp, chosen to match `chain_context_max_frames` so the two
+            continuation arms can be compared over the same context lengths, and
+            small next to the shortest span this architecture generates (124),
+            since every pre-roll frame is generated and thrown away.
+          example: 17
+        chain_motion_preroll_min_anchors:
+          type: integer
+          nullable: true
+          minimum: 2
+          description: |
+            The FEWEST anchors `continuation_anchor_count` may name. `null` when
+            the mode is not advertised. Never below 2: one anchor carries no
+            direction or speed, which makes that request `boundary_frame` plus
+            discarded frames.
+          example: 2
+        chain_motion_preroll_max_anchors:
+          type: integer
+          nullable: true
+          minimum: 2
+          description: |
+            The MOST anchors `continuation_anchor_count` may name, and never
+            more than the pre-roll has frames. `null` when the mode is not
+            advertised. MiniMax-H3 `fl2va` is `4`: each anchor reserves
+            conditioning rows carried on every denoise step, so the cost is
+            linear in the count, and the model card documents at most two
+            anchors — beyond that the request is already outside it, and this is
+            where the refusal is drawn rather than accepting an untested count.
+          example: 4
         chain_supports_reference_video:
           type: boolean
           description: |
@@ -10395,15 +10472,33 @@ components:
             The preserved frames stay pixel-exact either way (they are
             concatenated, never sampled), and the overlap frames the model
             re-renders are discarded.
+
+            `motion_preroll`: the same overlap, conditioned the other way
+            round. Nothing is pinned; instead `continuation_anchor_count` of the
+            preserved clip's last `continuation_overlap_frames` frames are
+            placed as keyframe anchors at their own positions inside the
+            generated span (the index-addressable conditioning
+            `/generate/img2vid`'s keyframe placement uses), so the model reads
+            direction and speed off several frames rather than one. That
+            pre-roll is generated and then DISCARDED — the preserved clip is
+            concatenated over it unchanged — so the request pays for frames it
+            does not keep. MiniMax-H3 `fl2va` only, for the same prefix-conflict
+            reason `pinned_tail` is, and mutually exclusive with it: an anchor
+            reserves conditioning rows ahead of the clip and a pin re-uses that
+            same prefix for rows of the clip itself. Opt-in and unmeasured.
           example: boundary_frame
         continuation_overlap_frames:
           type: integer
           minimum: 0
           default: 0
           description: |
-            PIXEL frames of the preserved clip that `continuation_mode:
-            pinned_tail` pins. Ignored by `boundary_frame` (which always shares
-            exactly one anchor frame), REQUIRED by `pinned_tail`.
+            PIXEL frames of the preserved clip shared with the generated span:
+            what `continuation_mode: pinned_tail` pins, and what
+            `motion_preroll` uses as its pre-roll. Ignored by `boundary_frame`
+            (which always shares exactly one anchor frame), REQUIRED by the
+            other two.
+
+            **`pinned_tail`:**
 
             Only a length that lands on a video-VAE temporal group boundary can
             be pinned, because a latent frame is conditioned or generated whole:
@@ -10430,6 +10525,39 @@ components:
             the plan's frame ranges with the overlap it was given, and the
             effective output length of a single request is reported in
             `warnings[]` exactly as it is for `total_frames`.
+
+            **`motion_preroll`:** the pre-roll needs NO video-VAE alignment — an
+            anchor addresses a pixel frame directly, unlike a pin, which
+            conditions a latent frame whole — so any integer inside
+            `chain_context[arch].chain_motion_preroll_min_frames` ..
+            `chain_motion_preroll_max_frames` is accepted (MiniMax-H3 `fl2va`:
+            2..17) and anything outside is a 400 rather than a clamp. The span
+            grows and is rounded onto the frame grid exactly as above.
+          example: 0
+        continuation_anchor_count:
+          type: integer
+          minimum: 0
+          default: 0
+          description: |
+            How many of the pre-roll's frames `continuation_mode:
+            motion_preroll` places as keyframe anchors. REQUIRED by that mode
+            and a 400 with any other one: a mode that places no anchors cannot
+            honour a count, and the field is refused rather than dropped
+            silently.
+
+            Bounded by `chain_context[arch].chain_motion_preroll_min_anchors` ..
+            `chain_motion_preroll_max_anchors` (MiniMax-H3 `fl2va`: 2..4) and by
+            the pre-roll itself, since two anchors cannot share a frame. Fewer
+            than the minimum carries no direction or speed — that request is
+            `boundary_frame` plus discarded frames — and each anchor adds
+            conditioning rows to every denoise step, which is why the top is a
+            refusal rather than an accepted-but-untested value.
+
+            WHERE the anchors land is not sent: they are spread uniformly over
+            the pre-roll, from its oldest frame to the boundary frame, so the
+            positions are a function of the count and the pre-roll length alone
+            and a chain manifest can fix them
+            (`VideoChainVisualContext.anchor_local_frames`).
           example: 0
         chain_id:
           type: string
@@ -13706,15 +13834,20 @@ components:
       type: object
       description: >-
         What pixel-side context a segment actually receives from its
-        predecessor. Only `initial` and `boundary_frame` are produced today.
+        predecessor. `initial`, `boundary_frame`, `pinned_tail` and
+        `motion_preroll` are produced today.
       required: [mode]
       properties:
         mode:
           type: string
-          enum: [initial, boundary_frame, motion_preroll, tail_reference_video, sampler_state]
+          enum: [initial, boundary_frame, pinned_tail, motion_preroll, tail_reference_video, sampler_state]
           description: >-
             `initial` — the first segment, which has no predecessor.
             `boundary_frame` — the predecessor's final frame as the anchor.
+            `pinned_tail` — its last `shared_context_frames` frames pinned as
+            this segment's leading latent frames.
+            `motion_preroll` — those same frames regenerated with
+            `anchor_count` anchors on them and then discarded.
             The remaining modes are per-architecture capabilities and are only
             valid when the architecture advertises them.
           example: "boundary_frame"
@@ -13723,8 +13856,33 @@ components:
           nullable: true
           minimum: 0
           description: >-
-            Context length in frames for modes that take one (pre-roll length,
-            tail reference-video window). Null for `initial`/`boundary_frame`.
+            Context length in frames for modes that take one (tail
+            reference-video window). Null for `initial`/`boundary_frame`; a
+            pinned tail and a motion pre-roll state their length in
+            `shared_context_frames`, which is the number the frame arithmetic
+            used.
+          example: null
+        anchor_local_frames:
+          type: array
+          nullable: true
+          items:
+            type: integer
+            minimum: 0
+          description: >-
+            `motion_preroll` only: the frames of THIS segment's generated span
+            the anchors sit on, ascending. Local indices — 0 is the pre-roll's
+            oldest frame and `shared_context_frames - 1` is the boundary frame.
+            Spread uniformly, and therefore a function of the pre-roll length
+            and `anchor_count` alone; fixed here so a retry conditions on the
+            same frames. Null for every other mode.
+          example: null
+        anchor_count:
+          type: integer
+          nullable: true
+          minimum: 0
+          description: >-
+            `motion_preroll` only: how many anchors were placed, i.e. the length
+            of `anchor_local_frames`. Null for every other mode.
           example: null
         source_segment_index:
           type: integer
@@ -13901,7 +14059,18 @@ components:
           description: >-
             Authoritative audio overlap in samples, matching
             `effective_overlap_frames` in physical time so rounding does not
-            accumulate across segments.
+            accumulate across segments. 0 under `motion_preroll`, which pins
+            nothing: its pre-roll's audio is generated and discarded with its
+            video.
+          example: 0
+        requested_anchor_count:
+          type: integer
+          minimum: 0
+          default: 0
+          description: >-
+            Anchors requested on this segment's pre-roll (`motion_preroll`
+            only); 0 for every other mode. Where they landed is
+            `visual_context.anchor_local_frames`.
           example: 0
 
     VideoChainManifest:
@@ -14221,10 +14390,29 @@ components:
             `chain_context[architecture].chain_context_min_frames` ..
             `chain_context_max_frames` and on the VAE group grid, and refuses
             anything else with a 400 (the same refusal
-            `POST /generate/outpaint/video` gives) rather than snapping it. The
+            `POST /generate/outpaint/video` gives) rather than snapping it.
+            `motion_preroll` uses the same field for its PRE-ROLL length, with
+            its own bounds (`chain_motion_preroll_min_frames` ..
+            `chain_motion_preroll_max_frames`) and no alignment requirement. The
             plan's frame ranges are computed WITH this overlap, so
             `segments[].owned_end_frame` is the length the chain actually
             reaches, not the length a 1-frame anchor would have reached.
+          example: 0
+        requested_anchor_count:
+          type: integer
+          minimum: 0
+          default: 0
+          description: >-
+            Anchors every `motion_preroll` continuation of this plan places on
+            its pre-roll, and the `continuation_anchor_count` each one is sent.
+            Required by that mode, inside
+            `chain_context[architecture].chain_motion_preroll_min_anchors` ..
+            `chain_motion_preroll_max_anchors`; a non-zero value with any other
+            continuation mode is a 400, since that mode places no anchors and
+            the field would otherwise be dropped silently. The resolved
+            positions are fixed in the manifest
+            (`segments[].visual_context.anchor_local_frames`), and the plan
+            discloses that the pre-roll is generated and thrown away.
           example: 0
         chain_drift_tolerance_frames:
           type: integer

@@ -340,8 +340,12 @@ def test_listing_refuses_a_file_that_contradicts_its_own_declaration(tmp_path):
     assert "its embedding is" in entry["reason"]
 
 
-def test_switching_to_a_converted_encoder_is_refused_not_silently_unprojected(tmp_path):
-    """The component-switch entry point cannot carry a projection (P3)."""
+def test_the_projection_free_entry_point_is_refused_not_silently_unprojected(tmp_path):
+    """``(model, config)`` cannot carry a projection, so it refuses to build one.
+
+    Switching reaches a converted encoder through
+    ``build_minimax_h3_text_encoder_bundle`` instead.
+    """
     path = tmp_path / CONVERTED_NAME
     _converted_header_only(str(path))
     with pytest.raises(ValueError, match=r"usable only with its trained projection"):

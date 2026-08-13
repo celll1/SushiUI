@@ -66,7 +66,8 @@ WHAT THIS LOADER HAS TO GET RIGHT (all measured in Phase 0 / K0; see
    a smaller Qwen3-VL (``te_gguf_convert``) declares its own dims and is built
    from THEM, is text-only, and is refused unless a projection trained for that
    exact (width, tap) pair resolves -- see ``te_projection.py``. Such a file is
-   never auto-selected; only an explicit override reaches it.
+   never auto-selected; a load-time override or a component switch reaches it,
+   both through ``build_minimax_h3_text_encoder_bundle``.
 7. **The TE's CPU weights must stay MEMORY-MAPPED.** ``load_state_dict(assign=True)``
    installs the ``safe_open`` tensors directly and nothing here writes them back
    or casts them. K0.7 measured the alternative: moving each layer with
@@ -475,7 +476,7 @@ def _inspect_converted_te_candidate(
     result["reason"] = (
         f"Converted {size} Qwen3-VL ({tap} blocks, hidden {hidden}), text-only. Never the "
         f"architecture default; usable only with the trained d_in={hidden} projection from "
-        f"clip_projections/, which is paired at model load and not by a component switch.")
+        f"clip_projections/, which is paired with it whenever it is selected.")
     return result
 
 
@@ -680,12 +681,16 @@ def describe_minimax_h3_text_encoder_choices(model_path: str) -> Dict[str, Any]:
     -- rather than from "declares its own dims", so the listing cannot say a
     file needs a projection that the loader would then not ask for.
 
-    ``agreement`` is the measurement recorded for the pairing THIS listing would
-    form: the encoder plus the single matching projection. Two matching
-    projections is what the loader refuses to guess between, so it reports no
-    number rather than one of them.
+    ``projection`` is the file a load would actually pair, resolved through the
+    same ``resolve_te_projection`` gates (header-only, no tensor bytes), so this
+    listing cannot offer a pairing the load path would then refuse;
+    ``projection_reason`` carries that refusal when none resolves.
+
+    ``agreement`` is the measurement recorded for that resolved pairing.
     """
-    from core.models.minimax_h3.te_projection import measured_te_substitution
+    from core.models.minimax_h3.te_projection import (
+        measured_te_substitution, resolve_te_projection,
+    )
 
     layout = detect_minimax_h3_layout(model_path)
     if layout is None:
@@ -698,14 +703,24 @@ def describe_minimax_h3_text_encoder_choices(model_path: str) -> Dict[str, Any]:
         hidden = entry.get("hidden_size")
         entry["requires_projection"] = bool(
             hidden is not None and text_dim is not None and hidden != text_dim)
+        entry["projection"] = None
+        entry["projection_reason"] = None
         entry["agreement"] = None
         if entry["requires_projection"]:
-            matching = [spec for spec in projections if spec["d_in"] == hidden]
-            if len(matching) == 1:
-                measured = measured_te_substitution(entry["path"], matching[0]["path"])
-                if measured is not None:
-                    entry["agreement"] = dict(
-                        measured, projection=os.path.basename(matching[0]["path"]))
+            try:
+                spec = resolve_te_projection(
+                    root=str(layout["root"]), te_path=entry["path"], hidden_size=int(hidden),
+                    num_hidden_layers=int(entry.get("num_hidden_layers") or 0),
+                    text_dim=int(text_dim),
+                )
+            except Exception as exc:
+                entry["projection_reason"] = str(exc)
+                continue
+            entry["projection"] = spec["path"]
+            measured = measured_te_substitution(entry["path"], spec["path"])
+            if measured is not None:
+                entry["agreement"] = dict(
+                    measured, projection=os.path.basename(spec["path"]))
     return {
         "selected": layout.get("text_encoder"),
         "selected_reason": layout.get("text_encoder_reason"),
@@ -733,21 +748,81 @@ def assert_no_live_text_encoder() -> None:
 
 
 def build_minimax_h3_text_encoder(te_path: str, official_dir: Optional[str]):
-    """Dedicated TE-only entry point; intentionally performs no device move."""
+    """Projection-free TE entry point; intentionally performs no device move.
+
+    A converted small encoder is refused here because ``(model, config)`` has
+    nowhere to put the projection its hidden state is only valid through; such a
+    file goes through ``build_minimax_h3_text_encoder_bundle``.
+    """
+    if _te_declared_dims(_te_file_declaration(te_path)) is not None:
+        raise ValueError(
+            f"{os.path.basename(te_path)} is a converted small text encoder and is usable only "
+            f"with its trained projection, which this two-value entry point cannot carry. Build "
+            f"it through build_minimax_h3_text_encoder_bundle, which resolves the pairing.")
+    bundle = build_minimax_h3_text_encoder_bundle(
+        te_path, official_dir, root=None, dit_path=None)
+    return bundle["text_encoder"], bundle["text_encoder_config"]
+
+
+def build_minimax_h3_text_encoder_bundle(
+    te_path: str,
+    official_dir: Optional[str],
+    *,
+    root: Optional[str],
+    dit_path: Optional[str],
+    projection_override: Optional[str] = None,
+) -> Dict[str, Any]:
+    """The encoder plus everything its conditioning is only valid together with.
+
+    Returns the four component-dict entries a caller must install as one unit:
+    ``text_encoder``, ``text_encoder_config``, ``te_projection`` (``None`` for a
+    released 32B encoder) and ``te_text_only``.
+
+    The pairing runs through the same ``resolve_minimax_h3_te_projection`` the
+    load path uses, against the DiT at ``dit_path``, and it runs BEFORE the
+    encoder is mapped: a pairing a load would refuse cannot be installed by a
+    component switch, and a failed resolve cannot leave an unprojected encoder
+    behind. No device move happens here.
+    """
     inspected = inspect_minimax_h3_text_encoder_candidate(te_path)
     if not inspected["compatible"]:
         raise ValueError(inspected["reason"])
-    if _te_declared_dims(_te_file_declaration(te_path)) is not None:
-        # This entry point returns (model, config) and has nowhere to put the
-        # paired projection, so it would install a narrower encoder whose
-        # hidden state nothing would project. Refused until the component-switch
-        # path carries a projection alongside the encoder.
-        raise ValueError(
-            f"{os.path.basename(te_path)} is a converted small text encoder and is usable only "
-            f"with its trained projection, which component switching does not carry yet. Load the "
-            f"model with this encoder selected instead.")
+
+    declaration = _te_file_declaration(te_path)
+    projection = None
+    if _te_declared_dims(declaration) is not None or projection_override is not None:
+        if not dit_path:
+            raise ValueError(
+                f"{os.path.basename(te_path)} needs a trained projection to the DiT's "
+                f"conditioning, but no DiT was named to check its width against.")
+        projection = resolve_minimax_h3_te_projection(
+            te_path=te_path, declared=declaration, root=root,
+            text_dim=dit_text_dim(dit_path), override=projection_override,
+        )
+
     assert_no_live_text_encoder()
-    return _build_text_encoder(te_path, official_dir)
+    model, config = _build_text_encoder(te_path, official_dir)
+    return {
+        "text_encoder": model,
+        "text_encoder_config": config,
+        "te_projection": projection,
+        "te_text_only": str(declaration.get("modalities") or "") == "text",
+    }
+
+
+def minimax_h3_te_model_info_fields(components: Dict[str, Any]) -> Dict[str, Any]:
+    """The encoder/projection identity ``current_model_info`` reports.
+
+    One place, so a full load, a DiT-only reload and a component switch cannot
+    describe the same component dict differently.
+    """
+    return {
+        "text_encoder_file": os.path.basename(
+            str(components.get("text_encoder_path") or "")) or None,
+        "clip_projection_file": os.path.basename(
+            str((components.get("te_projection") or {}).get("path") or "")) or None,
+        "te_text_only": bool(components.get("te_text_only")),
+    }
 
 
 def _te_selection_reason(directory: Path, selected: Optional[Path]) -> Optional[str]:

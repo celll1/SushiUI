@@ -243,6 +243,12 @@ export interface ComponentCandidate {
   is_current: boolean;
   load_strategy: "none" | "standalone" | "embedded_extract" | "architecture_resolved" | "unsupported";
   variant?: string | null;
+  // MiniMax-H3 text encoders: a converted small encoder conditions only through
+  // the trained projection named here. `agreement` is recorded for that exact
+  // (encoder, projection) pair, so it is never carried over to another one.
+  requires_projection?: boolean;
+  projection?: string | null;
+  agreement?: MiniMaxH3TeAgreement | null;
 }
 
 export interface EffectiveComponent {

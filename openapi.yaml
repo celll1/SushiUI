@@ -3001,13 +3001,16 @@ paths:
         `selected` / `selected_reason` are what a load with neither field set
         would pick, straight from the loader's own selection. A converted small
         Qwen3-VL is never selected that way; it is listed as compatible with
-        `requires_projection: true` and can only be reached by naming it.
+        `requires_projection: true` and is reached by naming it here or by
+        switching to it through `POST /models/current/components/switch`.
 
-        `agreement` is the recorded measurement for the pairing this listing
-        would actually form (the encoder plus the single `clip_projections/`
-        file matching its width), and is null for a released 32B encoder, for an
-        unmeasured pairing and where the projection is ambiguous. No pairing
-        borrows another pairing's number.
+        `projection` is the `clip_projections/` file such a load would pair,
+        resolved through the same width/tap gates the load path runs, and
+        `projection_reason` says why none resolved.
+
+        `agreement` is the recorded measurement for that resolved pairing, and
+        is null for a released 32B encoder and for an unmeasured pairing. No
+        pairing borrows another pairing's number.
       operationId: listMiniMaxH3TextEncoders
       parameters:
         - name: model_path
@@ -13200,34 +13203,53 @@ components:
           nullable: true
           description: The file's own declared block count (the projection's tap).
           example: 24
-        agreement:
-          type: object
+        projection:
+          type: string
           nullable: true
-          additionalProperties: true
+          description: |
+            Absolute path of the projection a load would pair with this encoder,
+            resolved through the same gates the load path runs. Null when the
+            encoder needs none, or when none resolves.
+          example: "M:/model/minimax_h3/clip_projections/mmh3-4b-clipproj-celeb-mlp.safetensors"
+        projection_reason:
+          type: string
+          nullable: true
+          description: |
+            Why no projection resolved for an encoder that requires one (no
+            matching `d_in`, several matching, or a failed pairing gate).
+        agreement:
+          allOf:
+            - $ref: '#/components/schemas/MiniMaxH3TextEncoderAgreement'
+          nullable: true
           description: |
             Recorded agreement of this pairing with a released encoder, or null.
-          properties:
-            reference:
-              type: string
-              example: qwen3vl_32b_minimax_h3_int8_convrot.safetensors
-            projection:
-              type: string
-              description: The projection basename this measurement was taken on.
-              example: mmh3-4b-clipproj-celeb-mlp.safetensors
-            cosine:
-              type: number
-              description: Mean-removed cosine, post-`token_refiner`.
-              example: 0.826
-            rel_rms:
-              type: number
-              example: 0.214
-            rel_rms_floor:
-              type: number
-              description: The same encoder in another quantization, i.e. the rounding floor.
-              example: 0.048
-            presentations:
-              type: integer
-              example: 111
+
+    MiniMaxH3TextEncoderAgreement:
+      type: object
+      additionalProperties: true
+      description: Measured agreement of one (encoder, projection) pair.
+      properties:
+        reference:
+          type: string
+          example: qwen3vl_32b_minimax_h3_int8_convrot.safetensors
+        projection:
+          type: string
+          description: The projection basename this measurement was taken on.
+          example: mmh3-4b-clipproj-celeb-mlp.safetensors
+        cosine:
+          type: number
+          description: Mean-removed cosine, post-`token_refiner`.
+          example: 0.826
+        rel_rms:
+          type: number
+          example: 0.214
+        rel_rms_floor:
+          type: number
+          description: The same encoder in another quantization, i.e. the rounding floor.
+          example: 0.048
+        presentations:
+          type: integer
+          example: 111
 
     MiniMaxH3ClipProjectionCandidate:
       type: object
@@ -13335,6 +13357,30 @@ components:
         variant:
           type: string
           nullable: true
+        requires_projection:
+          type: boolean
+          description: |
+            MiniMax-H3 text encoders only: true when the file is a converted
+            small encoder, usable only through a trained projection.
+          example: true
+        projection:
+          type: string
+          nullable: true
+          description: |
+            MiniMax-H3 text encoders only: the `clip_projections/` file this
+            candidate would be paired with (the loaded one, on the current row),
+            or null when the encoder needs none. A candidate that needs one and
+            has none resolvable is reported incompatible, with the reason in
+            `compatibility_reason`.
+          example: mmh3-4b-clipproj-celeb-mlp.safetensors
+        agreement:
+          allOf:
+            - $ref: '#/components/schemas/MiniMaxH3TextEncoderAgreement'
+          nullable: true
+          description: |
+            MiniMax-H3 text encoders only: recorded agreement of this
+            (encoder, projection) pair with a released encoder, or null when the
+            pair is unmeasured.
 
     EffectiveComponent:
       type: object

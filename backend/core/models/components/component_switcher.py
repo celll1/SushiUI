@@ -64,6 +64,34 @@ def _switch_vision_encoder(manager: Any, candidate: Dict[str, Any]) -> None:
         manager.load_vision_encoder(path)
 
 
+def _install_minimax_h3_text_encoder(
+    manager: Any,
+    components: Dict[str, Any],
+    bundle: Dict[str, Any],
+    path: str,
+    origin: str,
+) -> None:
+    """Install encoder, projection and text-only flag as one unit.
+
+    All three come from one ``build_minimax_h3_text_encoder_bundle`` call, so a
+    released encoder always clears the converted encoder's projection and its
+    text-only flag rather than inheriting them.
+    """
+    components["text_encoder"] = bundle["text_encoder"]
+    components["text_encoder_config"] = bundle["text_encoder_config"]
+    components["te_projection"] = bundle["te_projection"]
+    components["te_text_only"] = bundle["te_text_only"]
+    components["text_encoder_path"] = path
+    components["text_encoder_origin"] = origin
+
+    # current_model_info is written at load time and is the only place a client
+    # reads which encoder/projection produced the conditioning.
+    info = getattr(manager, "current_model_info", None)
+    if isinstance(info, dict):
+        from core.models.minimax_h3.loader import minimax_h3_te_model_info_fields
+        info.update(minimax_h3_te_model_info_fields(components))
+
+
 def _switch_minimax_h3_text_encoder(manager: Any, candidate: Dict[str, Any]) -> None:
     """Detach every H3 TE owner before mapping the replacement.
 
@@ -76,15 +104,28 @@ def _switch_minimax_h3_text_encoder(manager: Any, candidate: Dict[str, Any]) -> 
         raise ComponentSwitchError("MiniMax-H3 components are not loaded.")
     old_path = components.get("text_encoder_path")
     old_origin = components.get("text_encoder_origin")
+    old_projection = (components.get("te_projection") or {}).get("path") or None
     new_path = candidate.get("_path")
     official = components.get("official_dir")
+    dit_path = components.get("dit_path")
     if not isinstance(old_path, str) or not isinstance(new_path, str):
         raise ComponentSwitchError("H3 text-encoder path provenance is unavailable.")
+    if not isinstance(dit_path, str) or not dit_path:
+        # Refused before the slot is emptied: without the loaded DiT there is no
+        # width to check a converted encoder's projection against.
+        raise ComponentSwitchError(
+            "The loaded MiniMax-H3 DiT path is unavailable, so a text-encoder projection "
+            "cannot be checked against the conditioning width it must produce.")
 
     from core.models.minimax_h3.loader import (
         assert_no_live_text_encoder,
-        build_minimax_h3_text_encoder,
+        build_minimax_h3_text_encoder_bundle,
+        detect_minimax_h3_layout,
     )
+
+    source = (getattr(manager, "current_model_info", None) or {}).get("source")
+    layout = detect_minimax_h3_layout(source) if isinstance(source, str) else None
+    root = (layout or {}).get("root")
 
     # The component dict is the production owner. Keep-hot is cleared by the
     # caller before this function; no local variable ever captures the module.
@@ -99,6 +140,10 @@ def _switch_minimax_h3_text_encoder(manager: Any, candidate: Dict[str, Any]) -> 
     components["text_encoder_config"] = None
     components["text_encoder_path"] = None
     components["text_encoder_origin"] = "unavailable"
+    # Emptied with the encoder: a projection or a text-only flag outliving the
+    # encoder it was resolved for is the failure this adapter must not have.
+    components["te_projection"] = None
+    components["te_text_only"] = False
 
     try:
         # The detachment assertion belongs inside the try: it is the check most
@@ -107,16 +152,21 @@ def _switch_minimax_h3_text_encoder(manager: Any, candidate: Dict[str, Any]) -> 
         # recover from.
         _release_device_cache()
         assert_no_live_text_encoder()
-        replacement, config = build_minimax_h3_text_encoder(new_path, official)
+        bundle = build_minimax_h3_text_encoder_bundle(
+            new_path, official, root=root, dit_path=dit_path)
     except Exception as switch_error:
         try:
             _release_device_cache()
             assert_no_live_text_encoder()
-            restored, restored_config = build_minimax_h3_text_encoder(old_path, official)
-            components["text_encoder"] = restored
-            components["text_encoder_config"] = restored_config
-            components["text_encoder_path"] = old_path
-            components["text_encoder_origin"] = old_origin or "architecture_default"
+            # The previous projection is named explicitly: the restore must put
+            # back the pair that was running, not whatever discovery would find
+            # now, and naming it still puts it through every pairing gate.
+            restored = build_minimax_h3_text_encoder_bundle(
+                old_path, official, root=root, dit_path=dit_path,
+                projection_override=old_projection)
+            _install_minimax_h3_text_encoder(
+                manager, components, restored, old_path,
+                old_origin or "architecture_default")
             manager.component_health = "ready"
         except Exception as restore_error:
             manager.component_health = "degraded"
@@ -128,10 +178,8 @@ def _switch_minimax_h3_text_encoder(manager: Any, candidate: Dict[str, Any]) -> 
             f"H3 TE switch failed and the previous TE was reloaded serially: {switch_error}"
         ) from switch_error
 
-    components["text_encoder"] = replacement
-    components["text_encoder_config"] = config
-    components["text_encoder_path"] = new_path
-    components["text_encoder_origin"] = "selected_external"
+    _install_minimax_h3_text_encoder(
+        manager, components, bundle, new_path, "selected_external")
 
 
 def _switch_anima_component(manager: Any, slot: str, candidate: Dict[str, Any]) -> None:

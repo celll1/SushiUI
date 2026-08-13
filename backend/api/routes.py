@@ -8957,9 +8957,12 @@ async def _current_component_catalog(db: Session):
     h3_text_encoders = []
     info = pipeline_manager.current_model_info or {}
     if str(info.get("type") or "").lower() == "minimax_h3" and info.get("source"):
-        from core.models.minimax_h3.loader import list_minimax_h3_text_encoder_candidates
+        # The same description GET /models/minimax-h3/text-encoders serves, so a
+        # converted encoder is offered here on the same resolved-pairing terms.
+        from core.models.minimax_h3.loader import describe_minimax_h3_text_encoder_choices
         try:
-            h3_text_encoders = list_minimax_h3_text_encoder_candidates(str(info["source"]))
+            h3_text_encoders = describe_minimax_h3_text_encoder_choices(
+                str(info["source"]))["text_encoders"]
         except Exception as exc:
             print(f"[Components] H3 text-encoder candidate scan failed: {exc}")
             h3_text_encoders = []

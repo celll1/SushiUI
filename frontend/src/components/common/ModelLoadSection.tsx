@@ -391,92 +391,92 @@ export default function ModelLoadSection({
                 loadedArch={loadedArch}
               />
 
-          <VaeOverrideSelector
-            value={vaePath}
-            onChange={onVaePathChange}
-            onKindChange={setSelectedVaeKind}
-            compatibleOnly={compatibleOnly}
-            loadedArch={loadedArch}
-            loadedLatentChannels={loadedLatentChannels}
-          />
-          {isPidDecoder && (
-            <div className="space-y-2 pl-2 border-l-2 border-gray-700">
-              <Select
-                label="PiD Output Size"
-                value={pidSrOutput}
-                onChange={(e) => onPidSrOutputChange?.(e.target.value)}
-                options={[
-                  { value: "4x", label: "4x super-resolution (native)" },
-                  { value: "original", label: "Original size (downscale)" },
-                ]}
+              <VaeOverrideSelector
+                value={vaePath}
+                onChange={onVaePathChange}
+                onKindChange={setSelectedVaeKind}
+                compatibleOnly={compatibleOnly}
+                loadedArch={loadedArch}
+                loadedLatentChannels={loadedLatentChannels}
               />
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={pidUseGemma}
-                  onChange={(e) => onPidUseGemmaChange?.(e.target.checked)}
-                  className="w-4 h-4 rounded border-gray-600 bg-gray-700 text-blue-500 focus:ring-2 focus:ring-blue-500"
-                />
-                <span className="text-sm text-gray-300">PiD: use prompt captioning (Gemma)</span>
-              </label>
-              <p className="text-xs text-gray-500">
-                Loads a text encoder (Gemma) on first use to condition the PiD decode on your prompt. Opt-in.
-              </p>
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={pidLowVram}
-                  onChange={(e) => onPidLowVramChange?.(e.target.checked)}
-                  className="w-4 h-4 rounded border-gray-600 bg-gray-700 text-blue-500 focus:ring-2 focus:ring-blue-500"
-                />
-                <span className="text-sm text-gray-300">PiD: low VRAM decode</span>
-              </label>
-              <p className="text-xs text-gray-500">
-                Row-chunks the PiD decode to cut peak VRAM at high resolution (~42% less at 4096px, measured). Not bit-identical to the unchunked decode, but visually indistinguishable.
-              </p>
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={pidFastLargeDecode}
-                  onChange={(e) => onPidFastLargeDecodeChange?.(e.target.checked)}
-                  className="w-4 h-4 rounded border-gray-600 bg-gray-700 text-blue-500 focus:ring-2 focus:ring-blue-500"
-                />
-                <span className="text-sm text-gray-300">PiD: fast large-decode (lower quality, cap+bicubic)</span>
-              </label>
-              <p className="text-xs text-gray-500">
-                Default off = tiled true super-resolution for &gt;4096px outputs; on = faster but softer.
-              </p>
-              <details className="text-xs text-gray-500">
-                <summary className="cursor-pointer select-none">PiD large-decode tiling (advanced)</summary>
-                <div className="flex items-center gap-3 mt-2">
-                  <label className="flex items-center gap-2">
-                    <span>Tile size</span>
-                    <NumberInput
-                      value={pidTileNative}
-                      onCommit={(v) => onPidTileNativeChange?.(v)}
-                      min={64}
-                      max={2048}
-                      step={64}
-                      parse="int"
-                      className="w-20"
+              {isPidDecoder && (
+                <div className="space-y-2 pl-2 border-l-2 border-gray-700">
+                  <Select
+                    label="PiD Output Size"
+                    value={pidSrOutput}
+                    onChange={(e) => onPidSrOutputChange?.(e.target.value)}
+                    options={[
+                      { value: "4x", label: "4x super-resolution (native)" },
+                      { value: "original", label: "Original size (downscale)" },
+                    ]}
+                  />
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={pidUseGemma}
+                      onChange={(e) => onPidUseGemmaChange?.(e.target.checked)}
+                      className="w-4 h-4 rounded border-gray-600 bg-gray-700 text-blue-500 focus:ring-2 focus:ring-blue-500"
                     />
+                    <span className="text-sm text-gray-300">PiD: use prompt captioning (Gemma)</span>
                   </label>
-                  <label className="flex items-center gap-2">
-                    <span>Overlap ratio</span>
-                    <NumberInput
-                      value={pidTileOverlapRatio}
-                      onCommit={(v) => onPidTileOverlapRatioChange?.(v)}
-                      min={0}
-                      max={0.9}
-                      step={0.05}
-                      parse="float"
-                      className="w-20"
+                  <p className="text-xs text-gray-500">
+                    Loads a text encoder (Gemma) on first use to condition the PiD decode on your prompt. Opt-in.
+                  </p>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={pidLowVram}
+                      onChange={(e) => onPidLowVramChange?.(e.target.checked)}
+                      className="w-4 h-4 rounded border-gray-600 bg-gray-700 text-blue-500 focus:ring-2 focus:ring-blue-500"
                     />
+                    <span className="text-sm text-gray-300">PiD: low VRAM decode</span>
                   </label>
+                  <p className="text-xs text-gray-500">
+                    Row-chunks the PiD decode to cut peak VRAM at high resolution (~42% less at 4096px, measured). Not bit-identical to the unchunked decode, but visually indistinguishable.
+                  </p>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={pidFastLargeDecode}
+                      onChange={(e) => onPidFastLargeDecodeChange?.(e.target.checked)}
+                      className="w-4 h-4 rounded border-gray-600 bg-gray-700 text-blue-500 focus:ring-2 focus:ring-blue-500"
+                    />
+                    <span className="text-sm text-gray-300">PiD: fast large-decode (lower quality, cap+bicubic)</span>
+                  </label>
+                  <p className="text-xs text-gray-500">
+                    Default off = tiled true super-resolution for &gt;4096px outputs; on = faster but softer.
+                  </p>
+                  <details className="text-xs text-gray-500">
+                    <summary className="cursor-pointer select-none">PiD large-decode tiling (advanced)</summary>
+                    <div className="flex items-center gap-3 mt-2">
+                      <label className="flex items-center gap-2">
+                        <span>Tile size</span>
+                        <NumberInput
+                          value={pidTileNative}
+                          onCommit={(v) => onPidTileNativeChange?.(v)}
+                          min={64}
+                          max={2048}
+                          step={64}
+                          parse="int"
+                          className="w-20"
+                        />
+                      </label>
+                      <label className="flex items-center gap-2">
+                        <span>Overlap ratio</span>
+                        <NumberInput
+                          value={pidTileOverlapRatio}
+                          onCommit={(v) => onPidTileOverlapRatioChange?.(v)}
+                          min={0}
+                          max={0.9}
+                          step={0.05}
+                          parse="float"
+                          className="w-20"
+                        />
+                      </label>
+                    </div>
+                  </details>
                 </div>
-              </details>
-            </div>
-          )}
+              )}
             </div>
           </details>
         </div>

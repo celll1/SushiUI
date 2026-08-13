@@ -446,22 +446,51 @@ def build_catalog(
                 continue
             candidate_id = _candidate_id("text_encoder", path)
             if candidate_id == current["text_encoder"]["candidate_id"]:
-                catalog["text_encoder"][0]["variant"] = entry.get("variant")
+                # The current row reports the LOADED pairing, so a measurement is
+                # attached only when it was taken on the projection in use.
+                loaded = os.path.basename(str(
+                    ((_component_dict(manager, arch) or {}).get("te_projection") or {}).get("path")
+                    or "")) or None
+                agreement = entry.get("agreement")
+                row = catalog["text_encoder"][0]
+                row["variant"] = entry.get("variant")
+                row["requires_projection"] = bool(entry.get("requires_projection"))
+                row["projection"] = loaded
+                row["agreement"] = (
+                    agreement if isinstance(agreement, dict) and loaded is not None
+                    and str(agreement.get("projection") or "").lower() == loaded.lower()
+                    else None)
                 continue
             compatible = entry.get("compatible") is True
-            catalog["text_encoder"].append(_candidate(
+            reason = str(entry.get("reason") or "H3 loader compatibility is unknown.")
+            switch_reason = None if compatible else "The H3-specific loader rejected this candidate."
+            # A converted encoder is switchable only together with the trained
+            # projection its hidden state is valid through. Offering one whose
+            # projection does not resolve would be offering a refusal.
+            if compatible and entry.get("requires_projection") and not entry.get("projection"):
+                compatible = False
+                reason = switch_reason = str(
+                    entry.get("projection_reason")
+                    or "This encoder needs a trained projection and none resolves in "
+                       "clip_projections/.")
+            candidate = _candidate(
                 "text_encoder", arch, path,
                 str(entry.get("name") or _display(path, "H3 Text Encoder")),
                 origin="selected_external",
                 compatibility="compatible" if compatible else "incompatible",
-                compatibility_reason=str(entry.get("reason") or "H3 loader compatibility is unknown."),
+                compatibility_reason=reason,
                 switchable=compatible,
-                switch_reason=None if compatible else "The H3-specific loader rejected this candidate.",
+                switch_reason=switch_reason,
                 path=path,
                 size_bytes=entry.get("size_bytes"),
                 load_strategy="architecture_resolved" if compatible else "unsupported",
                 variant=entry.get("variant"),
-            ))
+            )
+            candidate["requires_projection"] = bool(entry.get("requires_projection"))
+            candidate["projection"] = (
+                os.path.basename(str(entry["projection"])) if entry.get("projection") else None)
+            candidate["agreement"] = entry.get("agreement")
+            catalog["text_encoder"].append(candidate)
 
     for entry in models:
         path = entry.get("path")

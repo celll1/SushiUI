@@ -269,15 +269,15 @@ def test_the_encode_phase_lets_a_prompt_only_request_through(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# 4. Component switching: the refusal, and the stale-projection failure mode
+# 4. Entry points: a projection-free one cannot build a converted encoder
 # ---------------------------------------------------------------------------
 
-def test_switching_to_a_converted_encoder_is_still_refused(tmp_path):
-    """P2's refusal, re-run here because P3 is what would have relaxed it.
+def test_the_projection_free_entry_point_refuses_a_converted_encoder(tmp_path):
+    """``(model, config)`` has nowhere to put a projection, so it refuses.
 
-    The switch entry point returns ``(model, config)`` and has nowhere to put a
-    projection, so it must refuse rather than install an encoder whose hidden
-    state nothing would map.
+    The switch path builds through ``build_minimax_h3_text_encoder_bundle``
+    instead (``minimax_h3_te_switch_gates_test``); this two-value entry point
+    must not become a way to install an encoder whose hidden state nothing maps.
     """
     import json
     import struct
@@ -311,16 +311,16 @@ def test_switching_to_a_converted_encoder_is_still_refused(tmp_path):
         loader.build_minimax_h3_text_encoder(str(path), None)
     message = str(excinfo.value)
     assert ENCODER_4B in message
-    assert "trained projection" in message and "component switching does not carry" in message
+    assert "trained projection" in message and "cannot carry" in message
 
 
-def test_a_stale_projection_is_refused_after_a_switch_back(tmp_path):
-    """Switching converted -> released leaves `te_projection` behind.
+def test_a_projection_that_outlived_its_encoder_is_refused_at_the_encode_seam(tmp_path):
+    """The second line behind the switcher, which clears the pair together.
 
-    The switcher replaces the encoder in place and does not clear the paired
-    projection, so the released encoder's 5120-wide hidden state would meet a
-    projection expecting the converted width. `apply_te_projection`'s `d_in`
-    guard fails closed rather than projecting garbage.
+    Should an encoder ever be replaced without its projection, the released
+    encoder's 5120-wide hidden state meets a projection expecting the converted
+    width; the seam names the cause and `apply_te_projection`'s own `d_in` guard
+    fails closed regardless of the caller.
     """
     projection = _projection(tmp_path)
     components = _components(tmp_path, projection=projection, text_only=True)

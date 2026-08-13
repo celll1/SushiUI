@@ -693,9 +693,10 @@ class MiniMaxH3Mixin:
 
         te_path = str(components.get("text_encoder_path") or "")
         projection_path = str(projection.get("path") or "")
-        # A component switch replaces the encoder in the same dict and leaves
-        # `te_projection` behind; `apply_te_projection`'s own d_in guard would
-        # catch that, but it cannot name the cause.
+        # A component switch installs encoder and projection together, so this
+        # fires only if some other path desynchronises them.
+        # `apply_te_projection`'s own d_in guard would catch it too, but it
+        # cannot name the cause.
         d_in = int(projection["spec"]["d_in"])
         if prompt_embeds_cpu.shape[-1] != d_in:
             raise RuntimeError(

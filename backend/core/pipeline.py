@@ -974,6 +974,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     except Exception as e:
                         print(f"[Pipeline] Hash compute skipped: {e}")
 
+                from core.models.minimax_h3.loader import minimax_h3_te_model_info_fields
                 self.current_model_info = {
                     "source_type": source_type,
                     "source": source,
@@ -991,12 +992,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     # is a converted small one) the projection it is only usable
                     # through -- a client cannot tell a substitution apart from
                     # the released encoder otherwise.
-                    "text_encoder_file": os.path.basename(
-                        str(self.minimax_h3_components.get("text_encoder_path") or "")) or None,
-                    "clip_projection_file": os.path.basename(
-                        str((self.minimax_h3_components.get("te_projection") or {}).get("path")
-                            or "")) or None,
-                    "te_text_only": bool(self.minimax_h3_components.get("te_text_only")),
+                    **minimax_h3_te_model_info_fields(self.minimax_h3_components),
                 }
                 self._save_last_model(source_type, source, pipeline_type,
                                       *self._minimax_h3_te_request)
@@ -1241,6 +1237,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         model_id: str,
     ) -> bool:
         """Atomically replace only the DiT for two checkpoints in one H3 tree."""
+        from core.models.minimax_h3.loader import minimax_h3_te_model_info_fields
         from core.models.minimax_h3.reload import build_dit_only_reload
 
         replacement = build_dit_only_reload(
@@ -1286,11 +1283,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             "vae_scale_factor_temporal": replacement.get("vae_scale_factor_temporal", 4),
             # The DiT-only reload keeps the mapped text encoder, so this reports
             # the same encoder/projection the full load did.
-            "text_encoder_file": os.path.basename(
-                str(replacement.get("text_encoder_path") or "")) or None,
-            "clip_projection_file": os.path.basename(
-                str((replacement.get("te_projection") or {}).get("path") or "")) or None,
-            "te_text_only": bool(replacement.get("te_text_only")),
+            **minimax_h3_te_model_info_fields(replacement),
         }
         # This path rebuilt only the DiT, so the encoder/projection request the
         # retained bundle came from still describes it.

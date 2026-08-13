@@ -139,6 +139,49 @@ def test_minimax_h3_three_verified_te_variants_switchable_other_slots_disabled()
         switch_component(manager, "backbone", {"switchable": True, "compatibility": "compatible"}, 4, 7)
 
 
+def test_h3_converted_encoder_is_offered_only_when_its_projection_resolves():
+    manager = _Manager("minimax_h3")
+    manager.txt2img_pipeline = None
+    manager.minimax_h3_components = {
+        "text_encoder": object(), "transformer": object(), "vae": object(), "audio_vae": object(),
+        "text_encoder_path": "C:/h3/text_encoders/te_bf16.safetensors",
+        "dit_path": "C:/h3/dit.safetensors",
+    }
+    agreement = {"reference": "qwen3vl_32b_minimax_h3_int8_convrot.safetensors",
+                 "projection": "mmh3-4b-clipproj-celeb-mlp.safetensors", "cosine": 0.826,
+                 "rel_rms": 0.214, "rel_rms_floor": 0.048, "presentations": 111}
+    catalog = build_catalog(manager, h3_text_encoders=[
+        {"name": "te_bf16", "path": "C:/h3/text_encoders/te_bf16.safetensors", "compatible": True,
+         "variant": "bf16", "reason": "verified", "size_bytes": 51_000_000_000,
+         "requires_projection": False, "projection": None, "projection_reason": None,
+         "agreement": None},
+        {"name": "qwen3vl_4b", "path": "C:/h3/text_encoders/qwen3vl_4b.safetensors",
+         "compatible": True, "variant": "converted_small", "reason": "Converted 4B Qwen3-VL",
+         "size_bytes": 5_624_901_632, "requires_projection": True,
+         "projection": "C:/h3/clip_projections/mmh3-4b-clipproj-celeb-mlp.safetensors",
+         "projection_reason": None, "agreement": agreement},
+        {"name": "qwen3vl_8b", "path": "C:/h3/text_encoders/qwen3vl_8b.safetensors",
+         "compatible": True, "variant": "converted_small", "reason": "Converted 8B Qwen3-VL",
+         "size_bytes": 9_000_000_000, "requires_projection": True, "projection": None,
+         "projection_reason": "no file in clip_projections/ declares d_in=4096",
+         "agreement": None},
+    ])
+    rows = {item["display_name"]: item for item in catalog["text_encoder"]}
+
+    paired = rows["qwen3vl_4b"]
+    assert paired["switchable"] is True
+    assert paired["compatibility"] == "compatible"
+    assert paired["requires_projection"] is True
+    assert paired["projection"] == "mmh3-4b-clipproj-celeb-mlp.safetensors"
+    assert paired["agreement"]["cosine"] == 0.826
+
+    unpaired = rows["qwen3vl_8b"]
+    assert unpaired["switchable"] is False
+    assert unpaired["compatibility"] == "incompatible"
+    assert "d_in=4096" in unpaired["switch_reason"]
+    assert unpaired["projection"] is None
+
+
 _H3_DENSE_SHAPES = {
     "self_attn.q_proj": [8192, 5120],
     "self_attn.k_proj": [1024, 5120],
@@ -256,19 +299,28 @@ def test_h3_candidate_discovery_uses_resolved_tree_fixture(monkeypatch, tmp_path
     assert all(Path(item["path"]).parent == directory for item in discovered)
 
 
+def _h3_manager(monkeypatch, **components):
+    """An H3 manager whose tree resolution is fixed, with no filesystem behind it."""
+    manager = _Manager("minimax_h3")
+    manager.txt2img_pipeline = None
+    manager.current_model_info["source"] = "C:/h3/diffusion_models/dit.safetensors"
+    manager.minimax_h3_components = {
+        "text_encoder": object(),
+        "text_encoder_config": {},
+        "text_encoder_path": "C:/h3/old.safetensors",
+        "official_dir": "C:/h3/official",
+        "dit_path": "C:/h3/diffusion_models/dit.safetensors",
+        **components,
+    }
+    monkeypatch.setattr(h3_loader, "detect_minimax_h3_layout", lambda _path: {"root": "C:/h3"})
+    return manager
+
+
 def test_h3_te_switch_detaches_before_build_and_keeps_other_components(monkeypatch):
     import core.keep_hot as keep_hot
 
-    manager = _Manager("minimax_h3")
-    manager.txt2img_pipeline = None
     shared = {name: object() for name in ("transformer", "vae", "audio_vae", "tokenizer", "processor")}
-    manager.minimax_h3_components = {
-        **shared,
-        "text_encoder": object(),
-        "text_encoder_config": object(),
-        "text_encoder_path": "C:/h3/old.safetensors",
-        "official_dir": "C:/h3/official",
-    }
+    manager = _h3_manager(monkeypatch, **shared, text_encoder_config=object())
     events = []
     replacement = object()
     monkeypatch.setattr(keep_hot, "clear_resident", lambda _manager: events.append("clear_keep_hot"))
@@ -279,14 +331,16 @@ def test_h3_te_switch_detaches_before_build_and_keeps_other_components(monkeypat
         assert manager.minimax_h3_components["text_encoder_path"] is None
         events.append("assert_detached")
 
-    def build(path, official):
+    def build(path, official, *, root, dit_path, projection_override=None):
         assert path == "C:/h3/new.safetensors"
         assert official == "C:/h3/official"
+        assert (root, dit_path) == ("C:/h3", "C:/h3/diffusion_models/dit.safetensors")
         events.append("build_new")
-        return replacement, {"variant": "int8_convrot"}
+        return {"text_encoder": replacement, "text_encoder_config": {"variant": "int8_convrot"},
+                "te_projection": None, "te_text_only": False}
 
     monkeypatch.setattr(h3_loader, "assert_no_live_text_encoder", assert_detached)
-    monkeypatch.setattr(h3_loader, "build_minimax_h3_text_encoder", build)
+    monkeypatch.setattr(h3_loader, "build_minimax_h3_text_encoder_bundle", build)
     candidate = {
         "compatibility": "compatible", "switchable": True,
         "_path": "C:/h3/new.safetensors",
@@ -302,27 +356,175 @@ def test_h3_te_switch_detaches_before_build_and_keeps_other_components(monkeypat
     assert manager.component_revision == 8
 
 
+def _bundle(projection=None, text_only=False, encoder=None):
+    return {
+        "text_encoder": encoder if encoder is not None else object(),
+        "text_encoder_config": {},
+        "te_projection": projection,
+        "te_text_only": text_only,
+    }
+
+
+def test_h3_switch_to_converted_encoder_installs_its_projection_and_refreshes_model_info(monkeypatch):
+    import core.keep_hot as keep_hot
+
+    manager = _h3_manager(monkeypatch)
+    manager.current_model_info.update({
+        "text_encoder_file": "old.safetensors", "clip_projection_file": None,
+        "te_text_only": False,
+    })
+    projection = {"path": "C:/h3/clip_projections/mmh3-4b.safetensors",
+                  "spec": {"d_in": 2560, "d_out": 5120, "tap": 24}, "tensors": {}}
+    monkeypatch.setattr(keep_hot, "clear_resident", lambda _manager: None)
+    monkeypatch.setattr(component_switcher, "_release_device_cache", lambda: None)
+    monkeypatch.setattr(h3_loader, "assert_no_live_text_encoder", lambda: None)
+    monkeypatch.setattr(
+        h3_loader, "build_minimax_h3_text_encoder_bundle",
+        lambda *args, **kwargs: _bundle(projection=projection, text_only=True))
+
+    switch_component(manager, "text_encoder", {
+        "compatibility": "compatible", "switchable": True,
+        "_path": "C:/h3/text_encoders/qwen3vl_4b_heretic_tap24_bf16.safetensors",
+    }, 4, 7)
+
+    components = manager.minimax_h3_components
+    assert components["te_projection"] is projection
+    assert components["te_text_only"] is True
+    assert manager.current_model_info["text_encoder_file"] == "qwen3vl_4b_heretic_tap24_bf16.safetensors"
+    assert manager.current_model_info["clip_projection_file"] == "mmh3-4b.safetensors"
+    assert manager.current_model_info["te_text_only"] is True
+
+
+def test_h3_switch_back_to_a_released_encoder_clears_projection_and_text_only(monkeypatch):
+    """Both the emptied slot and the installed one must be projection-free.
+
+    The in-build assertion fails if the slot stops being emptied; the trailing
+    assertions fail if the install stops writing the released encoder's own
+    (None, False). Either alone would leave the released 32B encoder's
+    5120-wide hidden state paired with a 2560-wide projection.
+    """
+    import core.keep_hot as keep_hot
+
+    converted = {"path": "C:/h3/clip_projections/mmh3-4b.safetensors",
+                 "spec": {"d_in": 2560, "d_out": 5120, "tap": 24}, "tensors": {}}
+    manager = _h3_manager(
+        monkeypatch,
+        text_encoder_path="C:/h3/text_encoders/qwen3vl_4b_heretic_tap24_bf16.safetensors",
+        te_projection=converted, te_text_only=True,
+    )
+    manager.current_model_info.update({
+        "text_encoder_file": "qwen3vl_4b_heretic_tap24_bf16.safetensors",
+        "clip_projection_file": "mmh3-4b.safetensors", "te_text_only": True,
+    })
+    monkeypatch.setattr(keep_hot, "clear_resident", lambda _manager: None)
+    monkeypatch.setattr(component_switcher, "_release_device_cache", lambda: None)
+    monkeypatch.setattr(h3_loader, "assert_no_live_text_encoder", lambda: None)
+
+    def build(*_args, **_kwargs):
+        assert manager.minimax_h3_components["te_projection"] is None
+        assert manager.minimax_h3_components["te_text_only"] is False
+        return _bundle()
+
+    monkeypatch.setattr(h3_loader, "build_minimax_h3_text_encoder_bundle", build)
+
+    switch_component(manager, "text_encoder", {
+        "compatibility": "compatible", "switchable": True,
+        "_path": "C:/h3/text_encoders/qwen3vl_32b_minimax_h3_int8_convrot.safetensors",
+    }, 4, 7)
+
+    components = manager.minimax_h3_components
+    assert components["te_projection"] is None
+    assert components["te_text_only"] is False
+    assert manager.current_model_info["clip_projection_file"] is None
+    assert manager.current_model_info["te_text_only"] is False
+
+
+def test_h3_switch_failure_restores_the_previous_encoder_and_its_projection_together(monkeypatch):
+    import core.keep_hot as keep_hot
+
+    old_projection = {"path": "C:/h3/clip_projections/mmh3-4b.safetensors",
+                      "spec": {"d_in": 2560, "d_out": 5120, "tap": 24}, "tensors": {}}
+    old_encoder = object()
+    manager = _h3_manager(
+        monkeypatch,
+        text_encoder=old_encoder,
+        text_encoder_path="C:/h3/text_encoders/qwen3vl_4b_heretic_tap24_bf16.safetensors",
+        te_projection=old_projection, te_text_only=True,
+    )
+    manager.current_model_info.update({
+        "text_encoder_file": "qwen3vl_4b_heretic_tap24_bf16.safetensors",
+        "clip_projection_file": "mmh3-4b.safetensors", "te_text_only": True,
+    })
+    monkeypatch.setattr(keep_hot, "clear_resident", lambda _manager: None)
+    monkeypatch.setattr(component_switcher, "_release_device_cache", lambda: None)
+    monkeypatch.setattr(h3_loader, "assert_no_live_text_encoder", lambda: None)
+    calls = []
+
+    def build(path, _official, *, root, dit_path, projection_override=None):
+        calls.append((path, projection_override))
+        if "32b" in path.lower():
+            raise RuntimeError("replacement failed")
+        return _bundle(projection=old_projection, text_only=True)
+
+    monkeypatch.setattr(h3_loader, "build_minimax_h3_text_encoder_bundle", build)
+
+    with pytest.raises(ComponentSwitchFailed):
+        switch_component(manager, "text_encoder", {
+            "compatibility": "compatible", "switchable": True,
+            "_path": "C:/h3/text_encoders/qwen3vl_32b_minimax_h3_int8_convrot.safetensors",
+        }, 4, 7)
+
+    # The restore names the projection that was running rather than re-deriving
+    # it, and reinstalls encoder and projection as one pair.
+    assert calls[1] == ("C:/h3/text_encoders/qwen3vl_4b_heretic_tap24_bf16.safetensors",
+                        "C:/h3/clip_projections/mmh3-4b.safetensors")
+    components = manager.minimax_h3_components
+    assert components["te_projection"] is old_projection
+    assert components["te_text_only"] is True
+    assert components["text_encoder_path"].endswith("qwen3vl_4b_heretic_tap24_bf16.safetensors")
+    assert manager.current_model_info["clip_projection_file"] == "mmh3-4b.safetensors"
+    assert manager.component_health == "ready"
+    assert manager.component_revision == 7
+
+
+def test_h3_switch_without_a_known_dit_is_refused_before_the_slot_is_emptied(monkeypatch):
+    import core.keep_hot as keep_hot
+
+    manager = _h3_manager(monkeypatch, dit_path=None)
+    encoder = manager.minimax_h3_components["text_encoder"]
+    monkeypatch.setattr(keep_hot, "clear_resident", lambda _manager: None)
+    monkeypatch.setattr(h3_loader, "assert_no_live_text_encoder", lambda: None)
+    monkeypatch.setattr(
+        h3_loader, "build_minimax_h3_text_encoder_bundle",
+        lambda *args, **kwargs: pytest.fail("must not build without a DiT to gate against"))
+
+    with pytest.raises(ComponentSwitchError):
+        switch_component(manager, "text_encoder", {
+            "compatibility": "compatible", "switchable": True,
+            "_path": "C:/h3/text_encoders/other.safetensors",
+        }, 4, 7)
+
+    assert manager.minimax_h3_components["text_encoder"] is encoder
+    assert manager.minimax_h3_components["text_encoder_path"] == "C:/h3/old.safetensors"
+    assert manager.component_revision == 7
+
+
 def test_h3_te_failure_serially_reloads_old_without_revision(monkeypatch):
     import core.keep_hot as keep_hot
 
-    manager = _Manager("minimax_h3")
-    manager.txt2img_pipeline = None
-    manager.minimax_h3_components = {
-        "text_encoder": object(), "text_encoder_config": {},
-        "text_encoder_path": "C:/h3/old.safetensors", "official_dir": "C:/h3/official",
-    }
+    manager = _h3_manager(monkeypatch)
     loads = []
     monkeypatch.setattr(keep_hot, "clear_resident", lambda _manager: None)
     monkeypatch.setattr(component_switcher, "_release_device_cache", lambda: None)
     monkeypatch.setattr(h3_loader, "assert_no_live_text_encoder", lambda: None)
 
-    def build(path, _official):
+    def build(path, _official, **_kwargs):
         loads.append(path)
         if path.endswith("new.safetensors"):
             raise RuntimeError("new failed")
-        return object(), {"variant": "bf16"}
+        return _bundle()
 
-    monkeypatch.setattr(h3_loader, "build_minimax_h3_text_encoder", build)
+    monkeypatch.setattr(h3_loader, "build_minimax_h3_text_encoder_bundle", build)
     candidate = {
         "compatibility": "compatible", "switchable": True,
         "_path": "C:/h3/new.safetensors",
@@ -393,23 +595,18 @@ def test_h3_te_switch_detachment_failure_leaves_health_degraded(monkeypatch):
     """
     import core.keep_hot as keep_hot
 
-    manager = _Manager("minimax_h3")
-    manager.txt2img_pipeline = None
-    manager.minimax_h3_components = {
-        "text_encoder": object(), "text_encoder_config": {},
-        "text_encoder_path": "C:/h3/old.safetensors", "official_dir": "C:/h3/official",
-    }
+    manager = _h3_manager(monkeypatch)
     monkeypatch.setattr(keep_hot, "clear_resident", lambda _manager: None)
     monkeypatch.setattr(component_switcher, "_release_device_cache", lambda: None)
 
     def still_live():
         raise RuntimeError("a live text encoder reference survived")
 
-    def build(path, _official):
+    def build(path, _official, **_kwargs):
         raise AssertionError("must not map a new file while an owner survives")
 
     monkeypatch.setattr(h3_loader, "assert_no_live_text_encoder", still_live)
-    monkeypatch.setattr(h3_loader, "build_minimax_h3_text_encoder", build)
+    monkeypatch.setattr(h3_loader, "build_minimax_h3_text_encoder_bundle", build)
     candidate = {
         "compatibility": "compatible", "switchable": True,
         "_path": "C:/h3/new.safetensors",
@@ -427,12 +624,7 @@ def test_h3_te_restore_detachment_failure_stays_degraded(monkeypatch):
     """If the restore cannot prove detachment either, stay degraded."""
     import core.keep_hot as keep_hot
 
-    manager = _Manager("minimax_h3")
-    manager.txt2img_pipeline = None
-    manager.minimax_h3_components = {
-        "text_encoder": object(), "text_encoder_config": {},
-        "text_encoder_path": "C:/h3/old.safetensors", "official_dir": "C:/h3/official",
-    }
+    manager = _h3_manager(monkeypatch)
     monkeypatch.setattr(keep_hot, "clear_resident", lambda _manager: None)
     monkeypatch.setattr(component_switcher, "_release_device_cache", lambda: None)
 
@@ -443,11 +635,11 @@ def test_h3_te_restore_detachment_failure_stays_degraded(monkeypatch):
         if len(calls) > 1:
             raise RuntimeError("owner appeared during the failed build")
 
-    def build(path, _official):
+    def build(path, _official, **_kwargs):
         raise RuntimeError("new failed")
 
     monkeypatch.setattr(h3_loader, "assert_no_live_text_encoder", assert_detached)
-    monkeypatch.setattr(h3_loader, "build_minimax_h3_text_encoder", build)
+    monkeypatch.setattr(h3_loader, "build_minimax_h3_text_encoder_bundle", build)
     candidate = {
         "compatibility": "compatible", "switchable": True,
         "_path": "C:/h3/new.safetensors",

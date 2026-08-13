@@ -132,8 +132,8 @@ def test_variant_lookup_falls_back_to_the_architecture_entry():
     # fl2va has no entry of its own, so it answers with the arch-level one.
     assert chain_context_for("minimax_h3", "fl2va") == arch
     assert chain_context_for("minimax_h3", "REF2VA") == arch["variants"]["ref2va"]
-    # ref2va is the one variant with an entry of its own: the preserved clip's
-    # tail becomes an automatic video reference there (build_outpaint_references).
+    # ref2va carries an entry of its own because the preserved clip's tail
+    # becomes an automatic video reference there (build_outpaint_references).
     assert chain_context_for("minimax_h3", "ref2va")["chain_supports_reference_video"] is True
     assert chain_context_for("minimax_h3")["chain_supports_reference_video"] is False
     assert chain_context_for("sdxl") is None

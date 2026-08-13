@@ -589,6 +589,26 @@ CHAIN_CONTEXT: Dict[str, Dict[str, Any]] = {
                 "chain_supports_reference_video": True,
                 "chain_supports_exact_prefix": True,
             },
+            # hybrid: an fl2va base carrying ref2va AdaLN blocks. It generates
+            # on no endpoint (the route gates refuse it), so nothing about
+            # chaining it is measured either. It needs an entry of its own
+            # BECAUSE the fallback in `chain_context_for` is the arch-level
+            # entry, which would advertise fl2va's `pinned_tail` and
+            # `motion_preroll` to it. `boundary_frame` is the floor of what an
+            # entry can say -- `chain_context_payload` refuses an entry that
+            # advertises no implemented mode -- not a claim that a chain works.
+            "hybrid": {
+                "chain_continuation_modes": ["boundary_frame"],
+                "chain_context_min_frames": 1,
+                "chain_context_max_frames": 1,
+                "chain_supports_sparse_motion_anchors": False,
+                "chain_motion_preroll_min_frames": None,
+                "chain_motion_preroll_max_frames": None,
+                "chain_motion_preroll_min_anchors": None,
+                "chain_motion_preroll_max_anchors": None,
+                "chain_supports_reference_video": False,
+                "chain_supports_exact_prefix": True,
+            },
         },
     },
     # LTX-2.3: a continuation places the whole accumulated clip as one
@@ -662,8 +682,11 @@ def chain_context_for(arch: Optional[str],
     """The chain-context capability of ``arch`` (``variant`` where it differs).
 
     None for an architecture that cannot be chained at all. A variant with no
-    entry of its own answers with the architecture-level entry, which is the
-    conservative one.
+    entry of its own answers with the ARCHITECTURE-LEVEL entry -- which is the
+    widest one this architecture advertises, not a conservative default. A
+    variant that serves less than the architecture (MiniMax-H3's `ref2va` and
+    `hybrid`) must therefore carry its own entry; leaving it out advertises
+    capabilities it does not have.
     """
     entry = chain_context_payload().get(arch or "")
     if entry is None:

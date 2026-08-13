@@ -2762,6 +2762,24 @@ async def generate_txt2vid(
             "No video model loaded",
             detail="Load an LTX-2.3 or MiniMax-H3 video model before calling /generate/txt2vid.",
         )
+    # ---- Partition gate. An allowlist over NAMED variants, as /generate/img2vid
+    # and /generate/inpaint/video are, except that BOTH released partitions serve
+    # a prompt-only request here. An unidentified variant keeps passing (see
+    # those gates). This endpoint had no variant gate at all, which would let a
+    # variant added later reach generation with nothing measured about it. ----
+    if getattr(pipeline_manager, "is_minimax_h3_model", False):
+        _h3_variant = ((pipeline_manager.current_model_info or {}).get("variant") or "").lower()
+        if _h3_variant not in ("", "fl2va", "ref2va"):
+            raise CustomValidationError(
+                f"The loaded MiniMax-H3 transformer is the {_h3_variant} variant",
+                detail=f"The two released partitions, `fl2va` and `ref2va`, both serve a "
+                       f"prompt-only request. Nothing has been measured about what the "
+                       f"{_h3_variant} variant generates -- a hybrid transformer, for instance, is "
+                       f"an fl2va base carrying ref2va AdaLN blocks, which is loadable and "
+                       f"inspectable but generates on no endpoint. Load "
+                       f"diffusion_models/minimax_h3_fl2va_pruned_fp8_scaled.safetensors or "
+                       f"diffusion_models/minimax_h3_ref2va_pruned_fp8_scaled.safetensors.",
+            )
 
     # Per-architecture defaults, THEN spec-driven geometry validation. Order
     # matters: a field the client omitted must be filled from the loaded arch's
@@ -3808,22 +3826,36 @@ async def generate_img2vid(
     # ---- Partition gate (the mirror of /generate/ref2vid's, in the other
     # direction). This endpoint's whole request is keyframe conditioning, which
     # is a trained behaviour of MiniMax-H3's `fl2va` partition; the `ref2va` one
-    # was trained to read reference blocks instead. Until this phase the
-    # direction was unguarded and such a request simply ran. ----
+    # was trained to read reference blocks instead. Written as an allowlist over
+    # NAMED variants, so a variant added later is refused until it is measured
+    # here rather than admitted by a `== "ref2va"` denylist. An unidentified
+    # variant (a renamed checkpoint) still passes -- refusing it would refuse
+    # ordinary fl2va-shaped requests whenever detection fails, the same carve-out
+    # `resolve_minimax_h3_outpaint_reference_gate` documents. ----
     if getattr(pipeline_manager, "is_minimax_h3_model", False):
         _h3_variant = ((pipeline_manager.current_model_info or {}).get("variant") or "").lower()
-        if _h3_variant == "ref2va":
+        if _h3_variant and _h3_variant != "fl2va":
             raise CustomValidationError(
-                "The loaded MiniMax-H3 transformer is the ref2va variant, not fl2va",
-                detail="Keyframe conditioning through this endpoint is offered on the `fl2va` "
-                       "partition, which serves /generate/txt2vid, /generate/img2vid and "
-                       "/generate/outpaint/video. Anchors do bind on the ref2va partition when "
-                       "they are laid out from its post-reference rotary origin (measured), but "
-                       "this endpoint carries no references to lay them out after -- that "
-                       "combination is /generate/ref2vid's `keyframe_images`/"
-                       "`keyframe_frame_indices` fields, not this endpoint's. Load "
-                       "diffusion_models/minimax_h3_fl2va_pruned_fp8_scaled.safetensors, or send "
-                       "the request to /generate/ref2vid with the loaded checkpoint.",
+                f"The loaded MiniMax-H3 transformer is the {_h3_variant} variant, not fl2va",
+                detail=(
+                    "Keyframe conditioning through this endpoint is offered on the `fl2va` "
+                    "partition, which serves /generate/txt2vid, /generate/img2vid and "
+                    "/generate/outpaint/video. Anchors do bind on the ref2va partition when "
+                    "they are laid out from its post-reference rotary origin (measured), but "
+                    "this endpoint carries no references to lay them out after -- that "
+                    "combination is /generate/ref2vid's `keyframe_images`/"
+                    "`keyframe_frame_indices` fields, not this endpoint's. Load "
+                    "diffusion_models/minimax_h3_fl2va_pruned_fp8_scaled.safetensors, or send "
+                    "the request to /generate/ref2vid with the loaded checkpoint."
+                ) if _h3_variant == "ref2va" else (
+                    f"Keyframe conditioning through this endpoint is offered on the `fl2va` "
+                    f"partition. Nothing has been measured about how the {_h3_variant} variant "
+                    f"reads a keyframe anchor -- a hybrid transformer, for instance, is an fl2va "
+                    f"base carrying ref2va AdaLN blocks, which is loadable and inspectable but "
+                    f"generates on no endpoint -- and the partitions are otherwise "
+                    f"indistinguishable, so this request is refused rather than run. Load "
+                    f"diffusion_models/minimax_h3_fl2va_pruned_fp8_scaled.safetensors."
+                ),
             )
         # A converted text-only encoder serves prompt-only requests only.
         from api.generation_utils import resolve_minimax_h3_text_only_te_gate
@@ -4829,6 +4861,16 @@ async def generate_outpaint_video(
     _h3_variant = ""
     if getattr(pipeline_manager, "is_minimax_h3_model", False):
         _h3_variant = ((pipeline_manager.current_model_info or {}).get("variant") or "").lower()
+        # The hybrid row of the shared gate below, hoisted here: it refuses on
+        # every placement and needs neither the decoded clip nor the plan, so
+        # leaving it below made a refused request pay for the whole upload decode
+        # first. Through the same function, not a copy of its message; the
+        # `placement` it is handed is unused on this row.
+        if _h3_variant == "hybrid":
+            from api.generation_utils import resolve_minimax_h3_outpaint_reference_gate
+            resolve_minimax_h3_outpaint_reference_gate(
+                _h3_variant, has_reference_images=bool(_ref_image_files),
+                placement="extend_forward")
         if _h3_variant == "fl2va" and _ref_image_files:
             raise CustomValidationError(
                 "reference_images requires the MiniMax-H3 ref2va transformer, not fl2va",
@@ -5530,17 +5572,27 @@ async def generate_inpaint_video(
                    "sequence, which is a MiniMax-H3 mechanism; LTX-2.3 has no equivalent. Load a "
                    "MiniMax-H3 fl2va model, or use /generate/outpaint/video to extend a clip.",
         )
-    # The partition gate, worded as /generate/img2vid's is: the mid-clip pin was
-    # measured on the fl2va weights, and ref2va reads reference blocks instead.
+    # The partition gate, worded and scoped as /generate/img2vid's is: the
+    # mid-clip pin was measured on the fl2va weights alone, so every other NAMED
+    # variant is refused (an unidentified one keeps passing -- see that gate).
     _h3_variant = ((pipeline_manager.current_model_info or {}).get("variant") or "").lower()
-    if _h3_variant == "ref2va":
+    if _h3_variant and _h3_variant != "fl2va":
         raise CustomValidationError(
-            "The loaded MiniMax-H3 transformer is the ref2va variant, not fl2va",
-            detail="Temporal inpaint is offered on the `fl2va` partition, which serves "
-                   "/generate/txt2vid, /generate/img2vid and /generate/outpaint/video: the "
-                   "mid-clip pin is measured there and nowhere else, and combining it with "
-                   "reference conditioning is not implemented on any endpoint. Load "
-                   "diffusion_models/minimax_h3_fl2va_pruned_fp8_scaled.safetensors.",
+            f"The loaded MiniMax-H3 transformer is the {_h3_variant} variant, not fl2va",
+            detail=(
+                "Temporal inpaint is offered on the `fl2va` partition, which serves "
+                "/generate/txt2vid, /generate/img2vid and /generate/outpaint/video: the "
+                "mid-clip pin is measured there and nowhere else, and combining it with "
+                "reference conditioning is not implemented on any endpoint. Load "
+                "diffusion_models/minimax_h3_fl2va_pruned_fp8_scaled.safetensors."
+            ) if _h3_variant == "ref2va" else (
+                f"Temporal inpaint is offered on the `fl2va` partition: the mid-clip pin is "
+                f"measured there and nowhere else, and nothing has been measured about how the "
+                f"{_h3_variant} variant holds a pinned prefix -- a hybrid transformer, for "
+                f"instance, is an fl2va base carrying ref2va AdaLN blocks, which is loadable and "
+                f"inspectable but generates on no endpoint. Load "
+                f"diffusion_models/minimax_h3_fl2va_pruned_fp8_scaled.safetensors."
+            ),
         )
     # A converted text-only encoder serves prompt-only requests only.
     from api.generation_utils import resolve_minimax_h3_text_only_te_gate

@@ -1314,6 +1314,160 @@ def resolve_video_defaults(params: Dict[str, Any], provided_keys, arch: Optional
     return resolved
 
 
+# ---------------------------------------------------------------------------
+# Per-architecture audio request resolution
+# ---------------------------------------------------------------------------
+
+def resolve_audio_defaults(params: Dict[str, Any], provided_keys, arch: Optional[str],
+                           base: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Fill every OMITTED audio field from the loaded arch's audio defaults.
+
+    The audio counterpart of `resolve_video_defaults` above -- same contract,
+    same reason (`AUDIO_GEN_DEFAULTS` is ACE-Step-shaped, so a second audio
+    architecture, MiniMax Music 3, needs different values for some keys and
+    two keys ACE-Step has no equivalent of at all: `num_inference_steps`,
+    `flow_guidance_scale`). `/generate/txt2aud`'s `Txt2AudRequest` declares
+    both as `Optional[...] = None` (there is no defensible ACE-Step-shaped
+    default for them, mirroring `INPAINT_VIDEO_DEFAULTS`'s
+    `regenerate_start_frame: None`), so on an ACE-Step request they simply stay
+    `None` -- this function's per-arch resolved map has no entry for them under
+    `"acestep"`, so the `key in params and key not in provided` guard below
+    never touches them, and ACE-Step's own consumer
+    (`AceStepMixin._generate_txt2aud_acestep`) reads `inference_steps`/
+    `guidance_scale` under different names and never looks at them either.
+
+    Args:
+        params: the request dict, MUTATED in place.
+        provided_keys: the keys the client actually sent — Pydantic's
+            ``model_fields_set`` on `Txt2AudRequest` (a JSON body; there is no
+            multipart audio route today).
+        arch: the loaded architecture (``pipeline_manager.current_model_info``'s
+            ``type``). Unknown/None resolves to the base defaults.
+        base: the base default map, default ``AUDIO_GEN_DEFAULTS``.
+
+    Returns:
+        The RESOLVED default map — passed on to
+        ``check_arch_capabilities(..., defaults=...)`` for the same reason
+        `resolve_video_defaults`'s return value is.
+
+    Container values (e.g. ``AUDIO_GEN_DEFAULTS["loras"]``, a list) are
+    DEEP-COPIED before being written into ``params`` (audit finding F7):
+    without this, ``params[key] is AUDIO_GEN_DEFAULTS[key]`` for any
+    mutable-default field an omitted request resolves, so anything that
+    later appended to that list (nothing does today, but a future caller
+    might) would corrupt the process-lifetime SSOT dict and every
+    subsequent ``/schema/generation-defaults`` response along with it.
+    Pydantic normally hands each request a FRESH list for a mutable field
+    default; this restores that guarantee for the values this function
+    substitutes in. ``resolve_video_defaults`` above has the identical
+    latent hazard and has NOT been changed here (out of this function's
+    scope; flagged for a separate decision).
+    """
+    import copy
+
+    from api.param_defaults import audio_defaults_for_arch
+
+    resolved = audio_defaults_for_arch(arch, base)
+    provided = set(provided_keys or ())
+    for key, value in resolved.items():
+        if key in params and key not in provided:
+            params[key] = copy.deepcopy(value) if isinstance(value, (list, dict)) else value
+    return resolved
+
+
+# Architecture -> enforced `audio_duration` ceiling, in seconds. `None`/no
+# entry means "no enforced ceiling declared here" (ACE-Step: no established
+# bound). MiniMax Music 3's 360s is `MAX_AUDIO_FRAMES / FALLBACK_FRAME_RATE`
+# (9000 / 25, `core.models.minimax_music3.defaults`) -- the point past which
+# `MiniMaxMusic3Mixin._generate_txt2aud_minimax_music3` already silently
+# clamps `max_frames` today; this is that same clamp, moved to the request
+# boundary and made LOUD (audit finding F4, matching how the video routes
+# warn on a frame-count snap rather than truncating without comment).
+_AUDIO_DURATION_MAX_SECONDS: Dict[str, float] = {
+    "minimax_music3": 360.0,
+}
+
+# Architecture -> minimum accepted `num_inference_steps`. MiniMax Music 3's
+# flow-matching scheduler builds
+# `np.linspace(1.0, 1.0 / num_inference_steps, num_inference_steps)`
+# (`FlowMatchEulerDiscreteScheduler.set_timesteps`, `invert_sigmas=true`);
+# 0 divides by zero and a negative count is invalid, and BOTH would
+# otherwise only surface AFTER the entire autoregressive stage has already
+# run (minutes of GPU time before a 500) -- see `Txt2AudRequest.
+# num_inference_steps`'s `ge=1` Pydantic constraint, which is this same
+# bound enforced one layer earlier for the common case (an explicit request
+# value); this dict is what a RESOLVED value (e.g. a future architecture's
+# overlay default) is checked against too.
+_AUDIO_MIN_INFERENCE_STEPS: Dict[str, int] = {
+    "minimax_music3": 1,
+}
+
+
+def validate_audio_params(params: Dict[str, Any], arch: Optional[str]) -> List[str]:
+    """Refuse/clamp an audio request's arch-specific bounds BEFORE any GPU
+    work -- the audio counterpart of `validate_video_steps`/
+    `validate_video_geometry`. Call AFTER `resolve_audio_defaults` (so
+    `params` already carries the loaded arch's resolved values for any field
+    the client omitted) and before the GPU coordinator's `generation_slot`.
+
+    Two checks, both arch-gated via the module-level dicts above so an
+    architecture with no entry (ACE-Step today) is left completely alone:
+
+    - `audio_duration` over the arch's ceiling is CLAMPED, with a
+      `warnings[]` entry naming both the requested and the clamped value
+      (mirrors `resolve_video_defaults`'s snap-and-warn pattern, not a
+      silent truncation).
+    - `num_inference_steps` below the arch's minimum RAISES a 400
+      (`ValidationError`) rather than clamping -- unlike a duration ceiling,
+      there is no sensible "closest valid step count" to silently substitute,
+      and the whole point is to fail BEFORE the autoregressive stage runs.
+
+    Returns the warning messages, already emitted through `add_warning` (so
+    they reach the response's `warnings[]`), for the caller to log or assert
+    on -- same return contract as `resolve_video_defaults`'s warning-emitting
+    sibling `validate_video_geometry`.
+    """
+    from api.error_handlers import ValidationError
+
+    warnings: List[str] = []
+    if not arch:
+        return warnings
+
+    try:
+        from api.generation_status import add_warning
+    except ImportError:  # pragma: no cover - status module always present in-process
+        add_warning = None
+
+    def warn(message: str) -> None:
+        warnings.append(message)
+        if add_warning is not None:
+            add_warning(message, code="audio_constraint")
+
+    max_duration = _AUDIO_DURATION_MAX_SECONDS.get(arch)
+    if max_duration is not None and "audio_duration" in params and params["audio_duration"] is not None:
+        requested = float(params["audio_duration"])
+        if requested > max_duration:
+            params["audio_duration"] = max_duration
+            warn(
+                f"audio_duration={requested} exceeds this model's {max_duration}s ceiling; "
+                f"using {max_duration}."
+            )
+
+    min_steps = _AUDIO_MIN_INFERENCE_STEPS.get(arch)
+    if (min_steps is not None and "num_inference_steps" in params
+            and params["num_inference_steps"] is not None):
+        steps = int(params["num_inference_steps"])
+        if steps < min_steps:
+            raise ValidationError(
+                "num_inference_steps is too small",
+                detail=f"Got num_inference_steps={steps}. This model's flow-matching scheduler "
+                       f"needs at least {min_steps} (a value below 1 divides by zero deep inside "
+                       f"the scheduler, only after the whole autoregressive stage has already run).",
+            )
+
+    return warnings
+
+
 def validate_video_steps(params: Dict[str, Any], arch: Optional[str],
                          *, steps_key: str = "num_inference_steps") -> None:
     """Refuse a step count the arch's SCHEDULER cannot build a schedule from.

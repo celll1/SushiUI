@@ -579,7 +579,12 @@ paths:
           synchronisation with the video was not measured. Every such
           generation returns a `warnings[]` entry with code
           `minimax_h3_hybrid_experimental` stating the recipe the model was
-          built from and that scope.
+          built from and that scope. `loras` is APPLIED on a merged checkpoint
+          and adds a `minimax_h3_lora_hybrid_unmeasured` entry: no LoRA
+          metadata names an AdaLN recipe, so none can state which merge it was
+          trained for, and none was measured on one. A LoRA whose
+          `base_model` names `fl2va`/`ref2va` is still refused (skipped, with
+          `minimax_h3_lora_load_failed`).
       operationId: generateTxt2Vid
       requestBody:
         required: true

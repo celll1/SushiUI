@@ -2012,9 +2012,10 @@ def minimax_h3_hybrid_release_warning(model_info: Optional[Mapping[str, Any]]) -
         f"{built} Text-to-video is the only workflow released for a merged checkpoint. The "
         f"comparison it was released on covered plain text-to-video at 672x384, 124 frames, 20 "
         f"steps, one prompt and one seed, and nothing else: keyframe conditioning, temporal "
-        f"inpaint, reference rows, reference outpaint, chained continuation and every LoRA are "
-        f"refused on this checkpoint (no LoRA metadata names an AdaLN recipe, so none can state "
-        f"it was trained for this merge). The audio track was checked for finite values, shape "
+        f"inpaint, reference rows, reference outpaint and chained continuation are refused on "
+        f"this checkpoint. A LoRA is applied if one is sent, and nothing about a LoRA on a merged "
+        f"checkpoint was measured -- no LoRA metadata names an AdaLN recipe, so none can state "
+        f"which merge it was trained for. The audio track was checked for finite values, shape "
         f"and a non-silent envelope; its synchronisation with the video was not measured."
     )
 

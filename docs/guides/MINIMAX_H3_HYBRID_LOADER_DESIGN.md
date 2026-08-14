@@ -344,7 +344,8 @@ chain（`CHAIN_CONTEXT["minimax_h3"]["variants"]["hybrid"]`）も未測定であ
 MVP で新たに必要なのは次の点のみ。
 
 - metadata に variant 宣言が**ない** LoRA は現在 warning のみで通過する。hybrid では hard refusal、または明示的な experimental override + warning にする。
-  **実装済み（C7）**: hard refusal を選択した。`check_variant_compatibility` の先頭に `current == "hybrid"` の分岐を置き、宣言の有無にかかわらず**全 LoRA を拒否**する。C7 以前はこの経路自体が到達不能（生成が閉じていた）であり、hybrid は新しい variant なので既存ワークフローは壊れない。拒否は既存の declared-mismatch と同じ機構（`ValueError` → 当該 LoRA をスキップし `minimax_h3_lora_load_failed` warning）に乗る。recipe fingerprint が入るまで、「この merge 向けに学習した」と宣言する手段が LoRA metadata に存在しないため。
+  **実装済み（C7）**: 2 択のうち**warning を選択**した（**判断はリポジトリオーナー**。C7 の当初実装は hard refusal だったが、オーナーの指示で warning に変更した）。`check_variant_compatibility` の先頭に `current == "hybrid"` の分岐を置き、`warn` コールバック（`print` + `add_warning` の両方を行うため、生成レスポンスの `warnings[]` に載る）で `minimax_h3_lora_hybrid_unmeasured` を出したうえで**LoRA をロードして適用する**。C7 以前はこの経路自体が到達不能（生成が閉じていた）。
+  ただし `base_model` が `fl2va`/`ref2va` を**宣言している** LoRA は、従来どおり hard refusal のまま（この guard は hybrid 以前からあるもので、緩めていない）。recipe fingerprint が入るまで、「この merge 向けに学習した」と宣言する手段が LoRA metadata に存在しない点は変わらないため、warning はその事実だけを述べ、出力の良し悪しには言及しない。
 - hybrid 用の recipe fingerprint を持つ LoRA metadata を将来追加する。
 - LoRA の QKV/SwiGLU 変換は既存の `minimax_h3_lora.py` を再利用し、hybrid reader の責務に混ぜない。
 - **禁止事項**: `check_variant_compatibility` に `base_variant`（= `fl2va`）を渡してはならない。渡すと宣言済み LoRA への既存の保護が黙って無効化される。
@@ -573,7 +574,7 @@ MVP で扱わないもの:
 - **audio と video の同期**。audio については finite 値・shape・非無音・envelope しか見ていない。
 - 672×384 / 124 frames / 20 steps 以外の解像度・長さ・step 数
 - int8_convrot と w4a8_mixed での再現性
-- LoRA との併用。§5.3 のとおり C7 で**全 LoRA を hard refusal** にした（`Txt2VidRequest` は `loras` を受け取り、H3 backend はそれを適用するため、txt2vid を開けた時点でこの経路が初めて到達可能になった）。release warning にも LoRA を明記している。
+- LoRA との併用。`Txt2VidRequest` は `loras` を受け取り、H3 backend はそれを適用するため、txt2vid を開けた時点でこの経路が初めて到達可能になった。§5.3 のとおり**リポジトリオーナーの判断で refusal ではなく warning** とし、LoRA は**適用される**（`minimax_h3_lora_hybrid_unmeasured`）。未測定であることに変わりはないため、この行に残す。release warning にも「LoRA は適用されるが未測定」と明記している。
 
 C7 で解禁したのは `/generate/txt2vid` のみで、生成ごとに `minimax_h3_hybrid_experimental` の `warnings[]` エントリが付き、recipe とこの測定範囲を述べる。
 

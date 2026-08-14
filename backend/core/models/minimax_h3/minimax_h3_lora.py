@@ -306,28 +306,31 @@ def check_variant_compatibility(
     back to a filename substring check and only WARN -- a filename is not
     proof, but it is the only signal left.
 
-    A ``hybrid`` checkpoint refuses EVERY LoRA (design section 5.3). The
-    declared case is already a mismatch; the undeclared one would otherwise
-    fall through to a warning, and there is nothing it could have declared --
-    no LoRA metadata names an AdaLN recipe, so "trained for this merge" is
-    unstatable. C7 released text-to-video on the merge itself and measured no
-    LoRA on top of it.
+    On a ``hybrid`` checkpoint a LoRA WARNS and loads (design section 5.3
+    allowed either; the repo owner chose warn-over-refuse). What it cannot do
+    is state which merge it was trained for, so the caveat is surfaced through
+    ``warn`` -- the same channel as the undeclared case, which reaches the
+    generation's ``warnings[]`` and not only the console. A LoRA that DECLARES
+    ``fl2va``/``ref2va`` is still refused below: that guard predates the merge.
     """
     current = (current_variant or "").lower()
     base_model = str(metadata.get("base_model", "") or "")
     name = Path(lora_path).name
 
     if current == "hybrid":
-        raise ValueError(
-            f"LoRA '{lora_path}'"
-            + (f" declares base_model={base_model!r} and" if base_model else "")
-            + f" is being applied to a merged (hybrid) MiniMax-H3 checkpoint. A hybrid is an "
-              f"fl2va base carrying ref2va AdaLN blocks over a block range; no LoRA metadata "
-              f"names an AdaLN recipe, so no LoRA can state it was trained for this merge, and "
-              f"the weights cannot show it either -- every H3 partition shares its keys and "
-              f"shapes. Only text-to-video is released on a merged checkpoint, without a LoRA. "
-              f"Refusing to load this LoRA."
+        warn(
+            f"LoRA '{lora_path}' is being applied to a merged (hybrid) MiniMax-H3 checkpoint. A "
+            f"hybrid is an fl2va base carrying ref2va AdaLN blocks over a block range; no LoRA "
+            f"metadata names an AdaLN recipe, and every MiniMax-H3 partition shares its keys and "
+            f"shapes, so no LoRA can state which merge it was trained for and its weights cannot "
+            f"reveal one. Nothing about a LoRA on a merged checkpoint was measured.",
+            "minimax_h3_lora_hybrid_unmeasured",
         )
+        # Fall through ONLY for a LoRA that names a partition: that declaration
+        # contradicts the merge it is being applied to, and refusing it is the
+        # pre-existing guard, not this one. Everything else is warned and loads.
+        if not (base_model and _detect_variant_token(base_model)):
+            return
 
     if base_model:
         declared = _detect_variant_token(base_model)

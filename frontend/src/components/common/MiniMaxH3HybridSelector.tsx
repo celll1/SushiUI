@@ -351,8 +351,10 @@ export default function MiniMaxH3HybridSelector({
           </details>
 
           <p className="text-[11px] leading-relaxed text-amber-300">
-            A merged checkpoint loads and can be inspected, and every generation endpoint refuses
-            it. The A/B measurement that would release generation for it has not been run.
+            Text-to-video is the only workflow released for a merged checkpoint. The comparison it
+            was released on covered plain text-to-video at 672x384, 124 frames, 20 steps; keyframe
+            conditioning, temporal inpaint, reference rows, reference outpaint and chained
+            continuation are refused, and audio-to-video synchronisation was not measured.
           </p>
         </div>
       )}

@@ -958,9 +958,9 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
   // refused if a reference is actually attached, which the References card
   // never renders for it in the first place.
   const h3TemporalInpaintReason =
-    "The loaded MiniMax-H3 transformer is the hybrid variant. A merged checkpoint "
-    + "loads and can be inspected, but it does not generate on any endpoint, "
-    + "including temporal inpaint.";
+    "The loaded MiniMax-H3 transformer is the hybrid variant. A merged checkpoint is "
+    + "released for text-to-video only; temporal inpaint was not part of the comparison "
+    + "that released it and is refused.";
   const temporalInpaintReason = !archSupportsTemporalInpaint
     ? (loadedArchType ? archCapabilities?.unsupported?.[loadedArchType]?.temporal_inpaint : undefined)
     : (h3TemporalInpaintRefused ? h3TemporalInpaintReason : undefined);
@@ -3270,7 +3270,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
     const modality = await resolveModality();
     if (modality.isVideo) {
       if (modality.modelInfo?.type === "minimax_h3" && modality.modelInfo?.variant === "hybrid") {
-        alert("A merged MiniMax-H3 checkpoint loads and can be inspected, but every generation endpoint refuses it: the A/B measurement that would release generation for it has not been run.");
+        alert("A merged MiniMax-H3 checkpoint is released for text-to-video only, which is the Txt2Img tab with this model loaded. Temporal inpaint is refused: it was not part of the comparison that released the merge.");
         return;
       }
       // fl2va and ref2va both serve this endpoint now; only hybrid is refused

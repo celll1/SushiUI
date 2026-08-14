@@ -1935,7 +1935,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
     const audioMode = modality.isAudio;
 
     if (videoMode && modality.modelInfo?.type === "minimax_h3" && modality.modelInfo?.variant === "hybrid") {
-      alert("A merged MiniMax-H3 checkpoint loads and can be inspected, but every generation endpoint refuses it: the A/B measurement that would release generation for it has not been run.");
+      alert("A merged MiniMax-H3 checkpoint is released for text-to-video only, which is the Txt2Img tab with this model loaded. Extending a clip is refused: it was not part of the comparison that released the merge.");
       return;
     }
 

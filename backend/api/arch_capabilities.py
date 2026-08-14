@@ -604,8 +604,9 @@ CHAIN_CONTEXT: Dict[str, Dict[str, Any]] = {
                 "chain_supports_exact_prefix": True,
             },
             # hybrid: an fl2va base carrying ref2va AdaLN blocks. It generates
-            # on no endpoint (the route gates refuse it), so nothing about
-            # chaining it is measured either. It needs an entry of its own
+            # on /generate/txt2vid and nowhere else -- the A/B that released it
+            # compared single prompt-only clips -- so nothing about chaining it
+            # is measured. It needs an entry of its own
             # BECAUSE the fallback in `chain_context_for` is the arch-level
             # entry, which would advertise fl2va's `pinned_tail` and
             # `motion_preroll` to it. `boundary_frame` is the floor of what an

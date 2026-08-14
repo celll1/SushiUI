@@ -2423,10 +2423,6 @@ export default function StudioWorkspace() {
       setNotice("The loaded model changed. Studio refreshed its capability defaults; review them and generate again.");
       return;
     }
-    if (modality.isVideo && modality.modelInfo?.type === "minimax_h3" && modality.modelInfo?.variant === "hybrid") {
-      setNotice("A merged MiniMax-H3 checkpoint loads and can be inspected, but every generation endpoint refuses it: the A/B measurement that would release generation for it has not been run.");
-      return;
-    }
     if (!form.prompt.trim() || !form.width || !form.height || form.steps == null || form.guidance == null || form.seed == null) {
       setNotice("Prompt and generation schema values are required.");
       return;
@@ -2469,6 +2465,15 @@ export default function StudioWorkspace() {
     const planMode: StudioGenerationMode = modality.isVideo && modelInfo?.variant === "ref2va" && referenceIds.length && !outpaintTakesReferences
       ? "ref2v"
       : inferredMode;
+    // A merged MiniMax-H3 checkpoint is released for text-to-video only, which
+    // is the branch this submit takes when the plan is none of these four. The
+    // notice waits for `planMode` because the same submit serves both.
+    if (modality.isVideo && modality.modelInfo?.type === "minimax_h3"
+      && modality.modelInfo?.variant === "hybrid"
+      && ["i2v", "ref2v", "inpaint", "outpaint"].includes(planMode)) {
+      setNotice("A merged MiniMax-H3 checkpoint is released for text-to-video only. Drop the image keyframe, references, inpaint range and clip selection to generate a fresh clip from the prompt.");
+      return;
+    }
     if (modality.isVideo && referenceIds.length && modelInfo?.variant !== "ref2va") {
       setNotice("Explicit references require the MiniMax-H3 ref2va model; they are not inferred for fl2va or LTX.");
       return;

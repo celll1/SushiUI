@@ -364,9 +364,15 @@ def test_the_same_base_loaded_base_only_still_reports_fl2va(monkeypatch, tmp_pat
     assert not any(key in replacement for key in HYBRID_COMPONENT_KEYS)
 
 
-def test_the_c1_gates_refuse_that_hybrid(monkeypatch, tmp_path):
+def test_the_gates_answer_that_hybrid_as_c7_released_it(monkeypatch, tmp_path):
     """End to end: the variant a merged DiT reports reaches the route gates as
-    `hybrid` and every one of them refuses it."""
+    `hybrid`, and they answer it the way C7 released it -- text-to-video runs,
+    everything else refuses.
+
+    The txt2vid half INVERTED at C7 (it asserted a 400 here). It is asserted by
+    reaching `pipeline_manager.generate_txt2vid`, i.e. past every gate and
+    validation, rather than by a 200 no stub can produce.
+    """
     from api.arch_capabilities import chain_context_for
     from api.error_handlers import ValidationError
     from api.generation_utils import resolve_minimax_h3_outpaint_reference_gate
@@ -377,11 +383,18 @@ def test_the_c1_gates_refuse_that_hybrid(monkeypatch, tmp_path):
     variant = h3_reload.build_dit_only_reload(
         _components(), base, base, hybrid=_preflight(base, overlay))["variant"]
 
-    app = _app(monkeypatch, _StubPipelineManager(variant=variant),
-               "/generate/txt2vid", "generate_txt2vid")
-    status, payload = _post(app, "/generate/txt2vid", json={"prompt": "a cat"})
-    assert status == 400, payload
-    assert "hybrid" in payload["error"]
+    manager = _StubPipelineManager(variant=variant)
+
+    def _reached(*_args, **_kwargs):
+        raise RuntimeError("REACHED GENERATION")
+
+    manager.generate_txt2vid = _reached
+    app = _app(monkeypatch, manager, "/generate/txt2vid", "generate_txt2vid")
+    status, payload = _post(app, "/generate/txt2vid",
+                            json={"prompt": "a cat", "width": 672, "height": 384,
+                                  "num_frames": 124})
+    assert status == 500, payload
+    assert "REACHED GENERATION" in payload["detail"]
 
     with pytest.raises(ValidationError):
         resolve_minimax_h3_outpaint_reference_gate(

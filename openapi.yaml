@@ -569,6 +569,17 @@ paths:
           the video through self-attention.
         - There is no official step count for this model. The shipped default
           of 20 is a community baseline.
+        - A MERGED checkpoint (`variant: "hybrid"`, an `fl2va` base carrying
+          `ref2va` AdaLN blocks over a block range) is served HERE and on no
+          other endpoint: keyframe conditioning, temporal inpaint, reference
+          rows, reference outpaint and chained continuation all answer 400. The
+          comparison behind that covered plain text-to-video at 672x384, 124
+          frames, 20 steps, one prompt and one seed; audio was checked for
+          finite values, shape and a non-silent envelope, and its
+          synchronisation with the video was not measured. Every such
+          generation returns a `warnings[]` entry with code
+          `minimax_h3_hybrid_experimental` stating the recipe the model was
+          built from and that scope.
       operationId: generateTxt2Vid
       requestBody:
         required: true
@@ -594,9 +605,11 @@ paths:
           description: >-
             Invalid parameters; no video model loaded (neither LTX-2.3 nor
             MiniMax-H3); or a loaded MiniMax-H3 transformer whose variant is
-            named and is neither `fl2va` nor `ref2va` (both released partitions
-            serve a prompt-only request; the `hybrid` variant — an `fl2va` base
-            carrying `ref2va` AdaLN blocks — generates on no endpoint).
+            named and is none of `fl2va`, `ref2va` and `hybrid` (both released
+            partitions serve a prompt-only request, and so does a merged
+            checkpoint — see the `hybrid` note in the description; a
+            recipe-shaped variant label names a merge that was not compared,
+            and is refused).
           content:
             application/json:
               schema:
@@ -684,8 +697,10 @@ paths:
         - This endpoint serves the `fl2va` transformer partition. Every other
           NAMED variant answers 400: with `ref2va` loaded, keyframe
           conditioning combined with reference conditioning is not offered here
-          (see `/generate/ref2vid`); a `hybrid` transformer generates on no
-          endpoint at all.
+          (see `/generate/ref2vid`); a `hybrid` transformer is served on
+          `/generate/txt2vid` and nowhere else, because the comparison that
+          released it covered plain text-to-video alone and says nothing about
+          how it reads a keyframe anchor.
         - MiniMax's model card documents this workflow for first- and
           last-frame conditioning with up to two images. A request that places
           an anchor at an intermediate frame, or sends more than two anchors,
@@ -756,7 +771,7 @@ paths:
             Invalid parameters; no video model loaded (neither LTX-2.3 nor
             MiniMax-H3); or a loaded MiniMax-H3 transformer whose variant is
             named and is not `fl2va` (`ref2va`, or the `hybrid` variant, which
-            generates on no endpoint).
+            is served on `/generate/txt2vid` and nowhere else).
           content:
             application/json:
               schema:
@@ -1480,8 +1495,9 @@ paths:
           `ref2va` model with or without `reference_*` uploads, is what this
           endpoint serves. Any `reference_*` upload on `fl2va` is refused
           (400), and `hybrid` is refused (400) for every request, with or
-          without references (a `hybrid` transformer generates on no
-          endpoint). Any other architecture is refused -- LTX-2.3's
+          without references (a `hybrid` transformer is served on
+          `/generate/txt2vid` and nowhere else; the mid-clip pin is unmeasured
+          on it). Any other architecture is refused -- LTX-2.3's
           conditions carry whole clips at latent indices rather than pinning
           frames of the target itself. A spatial mask cannot be combined with
           any `reference_*` upload (400).
@@ -1974,8 +1990,9 @@ paths:
           `extend_backward` and `bridge` are refused on `ref2va` (400,
           unmeasured shape), as is a generated span shorter than 22 frames
           (the reference video floor). A `hybrid` transformer is refused on
-          every placement, with or without `reference_images` (it generates on
-          no endpoint). No configuration on this endpoint
+          every placement, with or without `reference_images` (it is served on
+          `/generate/txt2vid` and nowhere else; extending a clip is unmeasured
+          on it). No configuration on this endpoint
           regenerates the input; a refused request is never rerouted to
           `/generate/ref2vid`.
       operationId: generateOutpaintVideo
@@ -3014,10 +3031,11 @@ paths:
                     preflight for each, with
                     `GET /models/minimax-h3/hybrid-overlays`.
 
-                    The merged model reports `variant: "hybrid"`, which every
-                    `/generate/*` route refuses until the measurements in the
-                    design document are in. Loading and inspecting it is what
-                    this field currently reaches.
+                    The merged model reports `variant: "hybrid"`, which
+                    `/generate/txt2vid` serves (with a
+                    `minimax_h3_hybrid_experimental` warning) and every other
+                    `/generate/*` route refuses until the corresponding
+                    measurement is in.
 
                     Not needed with `force`: the overlay and the recipe are part
                     of the model identity, so changing either reloads.
@@ -8876,7 +8894,8 @@ components:
             — a longer pin is refused rather than accepted untested. Its
             `ref2va` and `hybrid` variants are both `1` (boundary anchor only:
             on `ref2va` because references claim the same conditioning prefix a
-            pin would, on `hybrid` because nothing about it is measured).
+            pin would, on `hybrid` because only single text-to-video clips were
+            compared, so nothing about chaining it is measured).
             LTX-2.3 is `null`:
             its continuation places the whole accumulated clip as one video
             condition, so the context grows with the chain and cannot be made
@@ -8991,7 +9010,9 @@ components:
                 its architecture carries an entry here. MiniMax-H3 lists
                 `ref2va` (which adds the automatic video reference and drops
                 `pinned_tail`/`motion_preroll`) and `hybrid` (an `fl2va` base
-                carrying `ref2va` AdaLN blocks, which generates on no endpoint).
+                carrying `ref2va` AdaLN blocks, measured on single
+                text-to-video clips only, so nothing about chaining it is
+                measured).
                 The key is the variant the backend reports for the loaded
                 checkpoint, not a file name.
               additionalProperties:

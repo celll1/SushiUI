@@ -40,6 +40,7 @@ try:
         IDEOGRAM4_WIRING, MINIT2I_WIRING, KREA2_WIRING, FLUX2_WIRING, LTX2_WIRING,
         ACESTEP_WIRING,
         MINIMAX_H3_WIRING,
+        MINIMAX_MUSIC3_WIRING,
     )
     _WIRING_BY_ARCH: Dict[str, ComponentWiringSpec] = {
         "sd15": SD15_WIRING,
@@ -57,6 +58,10 @@ try:
         # even before its `audio_vae` component is seen (the flat ComfyUI tree
         # has no `audio_vae/` subfolder for `_scan_diffusers` to find).
         "minimax_h3": MINIMAX_H3_WIRING,
+        # 3-D [B, T, 128] latents, same shape family as ACE-Step -- see
+        # MINIMAX_MUSIC3_WIRING's own comment for why latent_ndim=3 (not 5)
+        # keeps this arch OUT of the is_video=True fold below.
+        "minimax_music3": MINIMAX_MUSIC3_WIRING,
     }
 except Exception as _e:  # pragma: no cover - wiring is a hard dependency
     _WIRING_BY_ARCH = {}
@@ -720,6 +725,13 @@ def scan_model(path: str, source_type: Optional[str] = None) -> Dict[str, Any]:
 #     of every other model's headers to fix records that are already right. If
 #     an H3 record ever does turn up carrying arch "sd15", `invalidate(path)` is
 #     the targeted fix.
+# NOT bumped for the minimax_music3 wiring entry either, same argument -- but
+#     its pre-change misdetection was "anima" (a directory holding official/ +
+#     diffusion_models/ read as an Anima split-files layout), which is a
+#     plausible-looking arch label, not an obviously-wrong one like "sd15". A
+#     stale cached "anima" record for a Music3 path would be easy to miss; if
+#     one turns up, `invalidate(path)` is still the fix. The live cache has no
+#     minimax_music3 entries as of this commit, so nothing to invalidate yet.
 _REGISTRY_SCHEMA_VERSION = 5
 
 

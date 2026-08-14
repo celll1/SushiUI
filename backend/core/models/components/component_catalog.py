@@ -29,6 +29,7 @@ _COMPONENT_DICTS = {
     "ltx2": "ltx2_components",
     "acestep": "acestep_components",
     "minimax_h3": "minimax_h3_components",
+    "minimax_music3": "minimax_music3_components",
 }
 
 
@@ -63,9 +64,18 @@ def _component_object(manager: Any, arch: Optional[str], slot: str) -> Any:
         return getattr(manager, "vision_encoder", None)
     components = _component_dict(manager, arch)
     if components is not None:
-        key = "dit" if arch == "acestep" and slot == "backbone" else (
-            "transformer" if slot == "backbone" else slot
-        )
+        if arch == "minimax_music3":
+            # Music3's dict has no "text_encoder"/"vae" keys at all -- its
+            # analogous components are named for what they ARE
+            # (language_model, vocoder), not for the generic catalog slot.
+            # Aliased here rather than renamed in the loader, so the loader's
+            # own dict stays self-describing.
+            key = {"text_encoder": "language_model", "vae": "vocoder",
+                   "backbone": "transformer"}.get(slot, slot)
+        else:
+            key = "dit" if arch == "acestep" and slot == "backbone" else (
+                "transformer" if slot == "backbone" else slot
+            )
         return components.get(key)
     pipeline = getattr(manager, "txt2img_pipeline", None)
     if pipeline is None:

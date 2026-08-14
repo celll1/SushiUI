@@ -524,6 +524,21 @@ def _reject_if_video_model_on_audio_route(endpoint: str):
         )
 
 
+def _reject_if_music3_model_not_yet_wired(endpoint: str):
+    """MiniMax Music 3 IS an audio model, but generation is not shipped yet.
+
+    Without this, an audio route falls through to "No ACE-Step model loaded"
+    while a Music3 model is actually loaded -- true only in the narrow sense
+    that it isn't ACE-Step, and misleading about why.
+    """
+    if getattr(pipeline_manager, "is_minimax_music3_model", False):
+        raise CustomValidationError(
+            "MiniMax Music 3 generation is not implemented yet",
+            detail=f"The loaded model is MiniMax Music 3, but {endpoint}'s generation entry "
+                   f"point has not shipped yet.",
+        )
+
+
 # NOTE: `_reject_if_video_arch_unwired` lived here. It refused a video endpoint
 # that dispatched only to LTX-2.3 while a MiniMax-H3 model was loaded, with that
 # reason rather than "no LTX-2.3 model loaded". Every video endpoint --
@@ -532,11 +547,14 @@ def _reject_if_video_model_on_audio_route(endpoint: str):
 
 
 def _reject_if_audio_model(endpoint: str = "/generate/txt2img"):
-    """Reject an image-generation request when an audio model (ACE-Step) is loaded.
+    """Reject an image-generation request when an audio model is loaded.
 
     `endpoint` is the image route the caller hit; the refusal names the audio
     route with the same request shape (img2img -> aud2aud, outpaint ->
-    outpaint/audio) rather than always pointing at txt2aud.
+    outpaint/audio) rather than always pointing at txt2aud. Without this,
+    e.g. an audio model loaded and /generate/txt2img hit falls through to
+    "txt2img pipeline not loaded" -- a 500 that contradicts
+    /models/current, which does report a loaded model.
 
     Raised before the executor so it surfaces as a 4xx ValidationError instead of
     being re-wrapped as a 500 GenerationError by the route's broad except.
@@ -547,6 +565,13 @@ def _reject_if_audio_model(endpoint: str = "/generate/txt2img"):
             f"The loaded model is an audio model (ACE-Step); use {replacement}",
             detail=f"ACE-Step produces audio, not still images, so {endpoint} cannot serve it. "
                    "Load an image model for txt2img/img2img/inpaint/outpaint.",
+        )
+    if getattr(pipeline_manager, "is_minimax_music3_model", False):
+        replacement = _AUDIO_ROUTE_FOR_IMAGE_ROUTE.get(endpoint, "/generate/txt2aud")
+        raise CustomValidationError(
+            f"The loaded model is an audio model (MiniMax Music 3); use {replacement}",
+            detail=f"MiniMax Music 3 produces music, not still images, so {endpoint} cannot serve "
+                   f"it. Load an image model for txt2img/img2img/inpaint/outpaint.",
         )
 
 
@@ -840,6 +865,7 @@ _PEAK_VRAM_GB_BY_KIND = {
     "krea2": 26.0,     # ~12.9B bf16 MMDiT staged on GPU + Qwen3-VL TE + Qwen-Image VAE
     "ltx2": 40.0,      # ~19B bf16 video MM-DiT + Gemma-3 TE + LTX2 VAEs, cpu-offload staged
     "acestep": 8.0,    # 2B DiT + Oobleck VAE + Qwen3-Embedding-0.6B TE, sequential CPU/GPU staging
+    "minimax_music3": 24.0,  # model card: <24GB bf16 w/ auto CPU offload; LM+depth decoder co-resident for the AR stage
     "unknown": 14.0,   # safe default
 }
 
@@ -3014,6 +3040,7 @@ async def generate_txt2aud(
     # MiniMax-H3 first: it DOES generate audio, but only jointly with video, so
     # the generic "no ACE-Step model" message below would misdescribe it.
     _reject_if_video_model_on_audio_route("/generate/txt2aud")
+    _reject_if_music3_model_not_yet_wired("/generate/txt2aud")
     if not getattr(pipeline_manager, "is_acestep_model", False):
         raise CustomValidationError(
             "No ACE-Step model loaded",
@@ -3199,6 +3226,7 @@ async def generate_aud2aud(
     # MiniMax-H3 first: it DOES generate audio, but only jointly with video, so
     # the generic "no ACE-Step model" message below would misdescribe it.
     _reject_if_video_model_on_audio_route("/generate/aud2aud")
+    _reject_if_music3_model_not_yet_wired("/generate/aud2aud")
     if not getattr(pipeline_manager, "is_acestep_model", False):
         raise CustomValidationError(
             "No ACE-Step model loaded",
@@ -3416,6 +3444,7 @@ async def generate_outpaint_audio(
     # MiniMax-H3 first: it DOES generate audio, but only jointly with video, so
     # the generic "no ACE-Step model" message below would misdescribe it.
     _reject_if_video_model_on_audio_route("/generate/outpaint/audio")
+    _reject_if_music3_model_not_yet_wired("/generate/outpaint/audio")
     if not getattr(pipeline_manager, "is_acestep_model", False):
         raise CustomValidationError(
             "No ACE-Step model loaded",
@@ -8488,9 +8517,11 @@ def get_models(db: Session = Depends(get_gallery_db), force_rescan: bool = False
                         models.extend(_h3_dits)
                         continue
 
-                # Allow Anima split-files layouts even when there's no model_index.json
+                # Allow Anima split-files layouts even when there's no model_index.json.
+                # Music3's official/ tree uses modular_model_index.json, not
+                # model_index.json, so it fails this check too.
                 is_valid = ModelLoader.is_valid_diffusers_directory(item_path)
-                if not is_valid and architecture not in ("anima", "lens", "krea2"):
+                if not is_valid and architecture not in ("anima", "lens", "krea2", "minimax_music3"):
                     continue
                 models.append({
                     "name": item,

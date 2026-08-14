@@ -106,11 +106,15 @@ import {
 import { clipEnd, frameDuration, frameIndexAt, maxTimelineDuration, planStudioGeneration } from "./studioTimeline";
 import {
   frameTimeForClip,
+  outpaintReadsReferences,
   sourceTrimFrames,
   studioAssetFromGeneration,
   videoInpaintFrames,
   videoOutpaintPlacement,
 } from "./studioGeneration";
+// The endpoint's image-reference limit, shared with the panels' own selector
+// rather than restated here.
+import { MAX_IMAGES as MAX_H3_REFERENCE_IMAGES } from "@/components/common/MiniMaxH3ReferenceSelector";
 import { createH3ReferenceInventory, maybeTransformH3PromptForGeneration } from "@/utils/h3PromptAssist";
 import {
   parseStudioProjectFile,
@@ -315,9 +319,14 @@ const defaultClipDurationForAsset = (
   return Math.min(remaining, Math.max(frameDuration, sourceDuration));
 };
 
-function h3PromptModeForStudio(mode: StudioGenerationMode): H3PromptMode {
+function h3PromptModeForStudio(mode: StudioGenerationMode, variant?: string): H3PromptMode {
   if (mode === "ref2v") return "ref2va";
   if (mode === "i2v") return "i2va";
+  // An outpaint on the ref2va partition is presented as a reference request:
+  // that endpoint always references the preserved clip, so the prompt is
+  // written against references rather than against a boundary anchor. Mirrors
+  // OutpaintPanel's own suggestedMode.
+  if (mode === "outpaint" && variant === "ref2va") return "ref2va";
   if (mode === "inpaint" || mode === "outpaint") return "fl2va";
   return "t2va";
 }
@@ -2447,15 +2456,36 @@ export default function StudioWorkspace() {
       && (selectedAsset?.kind === "image" || (!plan.hasVideoInput && plan.hasImageInput))
       ? "i2v"
       : plan.mode;
-    const planMode: StudioGenerationMode = modality.isVideo && modelInfo?.variant === "ref2va" && referenceIds.length
+    // ref2va with references means "ref2v" -- a fresh clip composed from them
+    // -- EXCEPT on the one outpaint row that reads references itself, where
+    // forcing ref2v would drop the placement and generate a new clip instead
+    // of extending the selected one. Same predicate on the render side, so the
+    // resolved-workflow card cannot disagree with what runs.
+    const referenceKinds = referenceIds
+      .map((assetId) => allAssets.find((item) => item.id === assetId)?.kind);
+    const outpaintTakesReferences = outpaintReadsReferences(
+      inferredMode, plan.videoClip, range || plan.outputRange,
+      form.frameRate || project.fps, referenceKinds);
+    const planMode: StudioGenerationMode = modality.isVideo && modelInfo?.variant === "ref2va" && referenceIds.length && !outpaintTakesReferences
       ? "ref2v"
       : inferredMode;
     if (modality.isVideo && referenceIds.length && modelInfo?.variant !== "ref2va") {
       setNotice("Explicit references require the MiniMax-H3 ref2va model; they are not inferred for fl2va or LTX.");
       return;
     }
-    if (modality.isVideo && modelInfo?.variant === "ref2va" && !referenceIds.length) {
+    // An outpaint is the one ref2va row that needs no explicit reference: the
+    // endpoint always references the preserved clip itself (build_outpaint_
+    // references in pipeline_backends/minimax_h3.py), and image references are
+    // optional on top of it.
+    if (modality.isVideo && modelInfo?.variant === "ref2va" && !referenceIds.length
+      && planMode !== "outpaint") {
       setNotice("MiniMax-H3 ref2va requires at least one explicit image or video reference.");
+      return;
+    }
+    // The endpoint's own image-reference limit, checked before the clip is
+    // uploaded rather than after (routes.py answers 400 on the same number).
+    if (outpaintTakesReferences && referenceIds.length > MAX_H3_REFERENCE_IMAGES) {
+      setNotice(`MiniMax-H3 accepts at most ${MAX_H3_REFERENCE_IMAGES} image references on an extend; ${referenceIds.length} are selected.`);
       return;
     }
     const videoFrameRate = form.frameRate || project.fps;
@@ -2489,7 +2519,7 @@ export default function StudioWorkspace() {
       try {
         const assisted = await maybeTransformH3PromptForGeneration({
           prompt: generationPrompt,
-          mode: h3PromptModeForStudio(planMode),
+          mode: h3PromptModeForStudio(planMode, modality.modelInfo?.variant as string | undefined),
           durationSeconds: Math.max(frameDuration(project.fps), plan.outputRange.end - plan.outputRange.start),
           references: studioH3References,
         });
@@ -2640,13 +2670,28 @@ export default function StudioWorkspace() {
         const output = range || plan.outputRange;
         const sourceDuration = sourceDurationForAsset(videoInput) || videoInput.duration;
         const placement = videoOutpaintPlacement(plan.videoClip, output, sourceDuration, form.frameRate || project.fps);
+        // The same right-pane selection ref2v uses. `outpaintTakesReferences`
+        // already established the row the backend reads them on (ref2va,
+        // extend_forward, images only); `placement.inputOffsetFrames` is the
+        // authoritative offset, so it decides here rather than the predicate's
+        // own copy of the arithmetic.
+        const isRef2VaOutpaint = loadedArch === "minimax_h3" && modelInfo?.variant === "ref2va"
+          && placement.inputOffsetFrames === 0 && outpaintTakesReferences;
+        let outpaintReferenceImages: File[] | undefined;
+        if (isRef2VaOutpaint && referenceIds.length) {
+          const imageAssets = referenceIds
+            .map((assetId) => allAssets.find((item) => item.id === assetId))
+            .filter((asset): asset is StudioAsset => asset?.kind === "image");
+          const imageFiles = await Promise.all(imageAssets.map((asset) => mediaFileForUpload(asset)));
+          outpaintReferenceImages = imageFiles.length ? imageFiles : undefined;
+        }
         result = await generateOutpaintVideo({
           ...baseVideoParameters,
           total_frames: placement.totalFrames,
           input_offset_frames: placement.inputOffsetFrames,
           input_trim_start_frames: placement.inputTrimStartFrames,
           input_trim_end_frames: placement.inputTrimEndFrames,
-        } as OutpaintVideoParams, videoInput.masterUrl || videoInput.url);
+        } as OutpaintVideoParams, videoInput.masterUrl || videoInput.url, undefined, outpaintReferenceImages);
       } else {
         result = planMode === "i2v"
           ? await generateImg2Vid({ ...baseVideoParameters, keyframes, input_image_frame_index: firstKeyframe?.frame_index ?? 0 }, firstKeyframe?.image || imageInput?.url || null)
@@ -3136,7 +3181,15 @@ export default function StudioWorkspace() {
     assets: allAssets,
   }), [activeClips, allAssets, form.frameRate, inpaintRange, isVideoModel, playhead, project.duration, project.fps, range, selectedClipId]);
   const hasReferenceInput = referenceAssetIds.length > 0;
+  // Render-side mirror of generateClip's planMode: same predicate, so the
+  // resolved-workflow card and Prompt Assist describe the request that runs.
+  const resolvedReferenceKinds = referenceAssetIds
+    .map((assetId) => allAssets.find((item) => item.id === assetId)?.kind);
+  const resolvedOutpaintTakesReferences = outpaintReadsReferences(
+    resolvedPlan.mode, resolvedPlan.videoClip, range || resolvedPlan.outputRange,
+    form.frameRate || project.fps, resolvedReferenceKinds);
   const resolvedMode: StudioGenerationMode = isVideoModel && modelInfo?.variant === "ref2va" && hasReferenceInput
+    && !resolvedOutpaintTakesReferences
     ? "ref2v"
     : !isVideoModel && selectedAsset?.kind === "image"
       ? (imageInputMode === "inpaint" || !!selectedAsset?.maskUrl || inpaintRange ? "image-inpaint" : "i2i")
@@ -3153,7 +3206,7 @@ export default function StudioWorkspace() {
     i2i: "I2I · image to image",
     "image-inpaint": "Image inpaint",
   };
-  const studioH3Mode = h3PromptModeForStudio(resolvedMode);
+  const studioH3Mode = h3PromptModeForStudio(resolvedMode, modelInfo?.variant as string | undefined);
   const studioH3References = useMemo(() => {
     let pictures = 0;
     let videos = 0;
@@ -3168,8 +3221,16 @@ export default function StudioWorkspace() {
       .filter((clip) => clip.inputRoles?.includes("keyframe"))
       .forEach((clip) => countAsset(clip.assetId));
     referenceAssetIds.forEach(countAsset);
+    if (resolvedOutpaintTakesReferences) {
+      // What that request actually carries: the selected images, plus the
+      // preserved clip the endpoint always references itself. Counting the
+      // rest would have Prompt Assist write <Video>/<Audio> labels for
+      // references the request does not send.
+      videos = 1;
+      audios = 0;
+    }
     return createH3ReferenceInventory({ pictures, videos, audios });
-  }, [activeClips, allAssets, referenceAssetIds]);
+  }, [activeClips, allAssets, referenceAssetIds, resolvedOutpaintTakesReferences]);
   const studioH3Duration = Math.max(frameDuration(project.fps), outputDuration || project.duration);
 
   const activateTake = (clipId: string): boolean => {

@@ -26,6 +26,26 @@ export const videoInpaintFrames = (
   end: frameIndexAt(Math.max(0, inpaintRange.end - clip.start), fps),
 });
 
+/** Whether an outpaint plan is the one row `/generate/outpaint/video` reads
+ * explicit references on, so a ref2va request that has them stays an extend
+ * instead of becoming a fresh reference-composed clip. The endpoint takes
+ * image references only, and ref2va serves only extend_forward -- offset 0 in
+ * `videoOutpaintPlacement`'s own frame arithmetic, mirrored here so the two
+ * cannot drift (backend: resolve_minimax_h3_outpaint_reference_gate). Any
+ * other placement, or any non-image reference, keeps ref2v, where the
+ * reference is actually honoured.
+ */
+export const outpaintReadsReferences = (
+  mode: string,
+  clip: StudioClip | null | undefined,
+  outputRange: StudioRange,
+  fps: number,
+  referenceKinds: Array<StudioAsset["kind"] | undefined>,
+): boolean =>
+  mode === "outpaint" && !!clip
+  && Math.max(0, frameIndexAt(clip.start - outputRange.start, fps)) === 0
+  && referenceKinds.every((kind) => kind === "image");
+
 export const videoOutpaintPlacement = (
   clip: StudioClip,
   outputRange: StudioRange,

@@ -13289,8 +13289,45 @@ components:
             distinguished only by which file was loaded; this records the
             resolved value from the loader rather than anything derived from
             the request, so the row stays readable if either file is renamed.
-            Emitted only on MiniMax-H3 rows.
+            Emitted only on MiniMax-H3 rows. A row produced by a merged pair
+            reports `hybrid`, and only such a row carries the
+            `model_hybrid_*` keys below.
           example: fl2va
+        model_hybrid_base:
+          type: string
+          description: |
+            File name of the base checkpoint of a merged MiniMax-H3 DiT,
+            extension included and never a path. Note that
+            `GET /models/minimax-h3/hybrid-overlays` reports the same files
+            with the extension stripped, so the two surfaces differ.
+          example: minimax_h3_fl2va_pruned_fp8_scaled.safetensors
+        model_hybrid_overlay:
+          type: string
+          description: File name of the overlay checkpoint the AdaLN projections were read from, extension included.
+          example: minimax_h3_ref2va_pruned_fp8_scaled.safetensors
+        model_hybrid_preset:
+          type: string
+          description: Which overlay recipe was applied.
+          example: block_range_adaln
+        model_hybrid_block_range:
+          type: string
+          description: The overlaid block range, both ends inclusive, as `start..end`.
+          example: 25..49
+        model_hybrid_final_adaln_from_overlay:
+          type: boolean
+          description: Whether the final layer's AdaLN projection was also read from the overlay.
+          example: false
+        model_hybrid_digest:
+          type: string
+          description: |
+            The pair's header compatibility digest. This, not `model_hash`, is
+            what tells two hybrids apart: `model_hash` is the base file's alone,
+            so every hybrid built on one base reports the same one.
+          example: 3f8c1d2b9a4e7605c1f0ab3d5e627948bc0d1e2f3a4b5c6d7e8f9012a3b4c5d6
+        model_hybrid_quantization:
+          type: string
+          description: The quantization format both checkpoints of the pair carry.
+          example: fp8_scaled
 
         # --- Conditional: audio (emitted only when parameters.is_audio is truthy) ---
         is_audio:

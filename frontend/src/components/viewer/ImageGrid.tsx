@@ -1468,6 +1468,37 @@ export default function ImageGrid() {
                       <span className="text-gray-400">Variant:</span> {selectedImage.model_variant}
                     </div>
                   )}
+                  {/* The merged pair behind a "hybrid" variant. Model Hash above
+                      is the base file's, so it repeats across every hybrid on
+                      one base; the digest is what separates them. */}
+                  {selectedImage.model_hybrid_overlay && (
+                    <div>
+                      <span className="text-gray-400">Merged from:</span>{' '}
+                      {selectedImage.model_hybrid_base} + {selectedImage.model_hybrid_overlay}
+                    </div>
+                  )}
+                  {selectedImage.model_hybrid_block_range && (
+                    <div>
+                      <span className="text-gray-400">Overlay:</span>{' '}
+                      {selectedImage.model_hybrid_preset} · blocks{' '}
+                      {selectedImage.model_hybrid_block_range}
+                      {selectedImage.model_hybrid_final_adaln_from_overlay ? ' + final AdaLN' : ''}
+                      {selectedImage.model_hybrid_quantization
+                        ? ` · ${selectedImage.model_hybrid_quantization}`
+                        : ''}
+                    </div>
+                  )}
+                  {selectedImage.model_hybrid_digest && (
+                    <div>
+                      <span className="text-gray-400">Merge Digest:</span>{' '}
+                      <span
+                        className="text-xs text-gray-100 font-mono"
+                        title={selectedImage.model_hybrid_digest}
+                      >
+                        {selectedImage.model_hybrid_digest.substring(0, 16)}...
+                      </span>
+                    </div>
+                  )}
                   {selectedImage.vision_encoder_name && (
                     <div>
                       <span className="text-gray-400">Vision Encoder:</span>{' '}

@@ -364,6 +364,19 @@ class GeneratedImage(GalleryBase):
             if "model_variant" in self.parameters:
                 result["model_variant"] = self.parameters["model_variant"]
 
+            # A merged ("hybrid") MiniMax-H3 DiT: which pair and which recipe
+            # produced the row. `model_variant` alone says "hybrid" and nothing
+            # more, and `model_hash` is the BASE file's, so every hybrid on one
+            # base carries the same one -- these keys are the only thing that
+            # tells two of them apart. Basenames and a digest, never paths
+            # (record_model_variant sanitises them at the producer).
+            for key in ("model_hybrid_base", "model_hybrid_overlay",
+                        "model_hybrid_preset", "model_hybrid_block_range",
+                        "model_hybrid_final_adaln_from_overlay",
+                        "model_hybrid_digest", "model_hybrid_quantization"):
+                if key in self.parameters:
+                    result[key] = self.parameters[key]
+
             # Quantized-Linear GEMM path. Present only on rows produced by a
             # weight-only FP8 checkpoint (Ideogram 4 / Krea 2) or a weight-only
             # INT8 checkpoint (Krea 2 only, today); surfaced

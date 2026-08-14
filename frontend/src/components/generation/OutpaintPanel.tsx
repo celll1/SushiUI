@@ -3723,6 +3723,25 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
           </p>
         )}
 
+        {/* No ref2va transformer loaded: explain the absent References card
+            rather than leaving it silently missing (mirror of the backend's
+            own reference_images gate in generation_utils.py). A hybrid
+            checkpoint is excluded: references are not what stops it -- that
+            gate refuses every outpaint row for it, with or without them, and
+            this panel already refuses to enqueue one. */}
+        {isVideo && loadedArchType === "minimax_h3" && !isRef2Va
+          && (currentModelInfo?.model_info?.variant as string | undefined) !== "hybrid" && (
+          <p className="text-xs text-gray-500 -mt-2">
+            Reference images need the MiniMax-H3 ref2va transformer -- fl2va
+            was never trained to read reference rows.
+            {!(currentModelInfo?.model_info?.variant as string | undefined) && (
+              " The variant is read off the DiT filename, so a renamed "
+              + "checkpoint reads as unidentified and is treated the same as "
+              + "fl2va here."
+            )}
+          </p>
+        )}
+
         {isAudio && (
         <Card title="Temporal Placement">
           <OutpaintTimeline

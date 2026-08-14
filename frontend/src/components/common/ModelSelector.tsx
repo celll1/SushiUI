@@ -4,17 +4,11 @@ import { useState, useEffect } from "react";
 import Card from "./Card";
 import Button from "./Button";
 import Select from "./Select";
-import MiniMaxH3TextEncoderSelector from "./MiniMaxH3TextEncoderSelector";
-import MiniMaxH3HybridSelector, { HYBRID_CHECK_PENDING } from "./MiniMaxH3HybridSelector";
 import MiniMaxH3ReferenceBankPanel from "./MiniMaxH3ReferenceBankPanel";
 import { ChevronDown, ChevronUp, Folder } from "lucide-react";
 import { useStartup } from "@/contexts/StartupContext";
-import {
-  getCurrentModel,
-  getModels,
-  loadModel,
-  MiniMaxH3HybridLoadRequest,
-} from "@/utils/api";
+import { getCurrentModel, getModels, loadModel } from "@/utils/api";
+import type { MiniMaxH3LoadOptions } from "./MiniMaxH3LoadOptions";
 
 interface Model {
   name: string;
@@ -32,6 +26,13 @@ interface Model {
 interface ModelSelectorProps {
   onModelLoad?: (modelInfo: any) => void;
   embedded?: boolean;
+  // MiniMax-H3 load-time choices. Owned by the host because their controls
+  // render in the Components tab while the Load button below sends them.
+  h3LoadOptions: MiniMaxH3LoadOptions;
+  // Which checkpoint the Load button would load; path is "" when none is picked.
+  onSelectionChange: (path: string, isMiniMaxH3: boolean) => void;
+  // True while a load is in flight.
+  onLoadingChange?: (loading: boolean) => void;
 }
 
 // The merged pair a LOADED MiniMax-H3 DiT was built from, read from
@@ -48,7 +49,13 @@ const hybridSummary = (modelInfo: any): string | null => {
   return `${base} + ${overlay} / ${range}${final}`;
 };
 
-export default function ModelSelector({ onModelLoad, embedded = false }: ModelSelectorProps) {
+export default function ModelSelector({
+  onModelLoad,
+  embedded = false,
+  h3LoadOptions,
+  onSelectionChange,
+  onLoadingChange,
+}: ModelSelectorProps) {
   const { modelInfoVersion, refreshModelInfo } = useStartup();
   const [models, setModels] = useState<Model[]>([]);
   const [currentModel, setCurrentModel] = useState<any>(null);
@@ -58,84 +65,6 @@ export default function ModelSelector({ onModelLoad, embedded = false }: ModelSe
   const [selectedSourceDir, setSelectedSourceDir] = useState<string>("all");
   const [showDirectoryFilter, setShowDirectoryFilter] = useState(false);
   const [loadError, setLoadError] = useState("");
-  // MiniMax-H3 only: the load-time text encoder / projection choice, remembered
-  // per model path. null on either means "let the loader decide".
-  const [h3TextEncoder, setH3TextEncoder] = useState<string | null>(null);
-  const [h3ClipProjection, setH3ClipProjection] = useState<string | null>(null);
-  // MiniMax-H3 only: the overlay checkpoint and recipe merged into the selected
-  // base, remembered per base path. null means the single-checkpoint load.
-  const [h3Hybrid, setH3Hybrid] = useState<MiniMaxH3HybridLoadRequest | null>(null);
-  // Why the current hybrid selection must not be sent, or null when it may be.
-  const [h3HybridBlocked, setH3HybridBlocked] = useState<string | null>(null);
-
-  const h3StorageKey = selectedModelPath ? `minimax_h3_te_choice_${selectedModelPath}` : "";
-  const h3HybridStorageKey = selectedModelPath
-    ? `minimax_h3_hybrid_choice_${selectedModelPath}`
-    : "";
-
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    const saved = h3StorageKey ? localStorage.getItem(h3StorageKey) : null;
-    if (!saved) {
-      setH3TextEncoder(null);
-      setH3ClipProjection(null);
-      return;
-    }
-    try {
-      const parsed = JSON.parse(saved);
-      setH3TextEncoder(typeof parsed?.text_encoder === "string" ? parsed.text_encoder : null);
-      setH3ClipProjection(typeof parsed?.clip_projection === "string" ? parsed.clip_projection : null);
-    } catch {
-      setH3TextEncoder(null);
-      setH3ClipProjection(null);
-    }
-  }, [h3StorageKey]);
-
-  // Written here rather than in an effect: an effect would fire once with the
-  // previous model's choice already under the new model's key.
-  const handleH3Change = (textEncoder: string | null, clipProjection: string | null) => {
-    setH3TextEncoder(textEncoder);
-    setH3ClipProjection(clipProjection);
-    if (typeof window === "undefined" || !h3StorageKey) return;
-    if (!textEncoder && !clipProjection) {
-      localStorage.removeItem(h3StorageKey);
-    } else {
-      localStorage.setItem(
-        h3StorageKey,
-        JSON.stringify({ text_encoder: textEncoder, clip_projection: clipProjection })
-      );
-    }
-  };
-
-  // A restored overlay starts BLOCKED: the selector has not answered for it
-  // yet, and until it does the load button must not offer an unchecked pair.
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    const saved = h3HybridStorageKey ? localStorage.getItem(h3HybridStorageKey) : null;
-    let restored: MiniMaxH3HybridLoadRequest | null = null;
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved);
-        if (typeof parsed?.overlay_file === "string" && parsed.overlay_file) {
-          restored = parsed as MiniMaxH3HybridLoadRequest;
-        }
-      } catch {
-        restored = null;
-      }
-    }
-    setH3Hybrid(restored);
-    setH3HybridBlocked(restored ? HYBRID_CHECK_PENDING : null);
-  }, [h3HybridStorageKey]);
-
-  const handleH3HybridChange = (next: MiniMaxH3HybridLoadRequest | null) => {
-    setH3Hybrid(next);
-    if (typeof window === "undefined" || !h3HybridStorageKey) return;
-    if (!next?.overlay_file) {
-      localStorage.removeItem(h3HybridStorageKey);
-    } else {
-      localStorage.setItem(h3HybridStorageKey, JSON.stringify(next));
-    }
-  };
 
   useEffect(() => {
     loadModels();
@@ -195,9 +124,9 @@ export default function ModelSelector({ onModelLoad, embedded = false }: ModelSe
         source,
         undefined,
         isReload,
-        isMiniMaxH3 ? h3TextEncoder : null,
-        isMiniMaxH3 ? h3ClipProjection : null,
-        isMiniMaxH3 ? h3Hybrid : null
+        isMiniMaxH3 ? h3LoadOptions.textEncoderFile : null,
+        isMiniMaxH3 ? h3LoadOptions.clipProjectionFile : null,
+        isMiniMaxH3 ? h3LoadOptions.hybrid : null
       );
       if (!data.success) {
         throw new Error(data.detail || data.message || "The model could not be loaded.");
@@ -244,11 +173,27 @@ export default function ModelSelector({ onModelLoad, embedded = false }: ModelSe
   );
   const selectedModel = models.find(m => m.path === selectedModelPath);
   const selectedIsMiniMaxH3 = !!selectedModel && archOf(selectedModel) === "minimax_h3";
-  // Only a chosen overlay can block: without one the request is the
-  // single-checkpoint load, which no compatibility check applies to.
-  const hybridLoadBlocked =
-    selectedIsMiniMaxH3 && !!h3Hybrid?.overlay_file ? h3HybridBlocked : null;
+  // Both terms of the gate are computed in the render that draws the button.
+  // The load-time state reaches its host through an effect, so it can still be
+  // keyed to the previously selected base; an overlay checked against THAT base
+  // says nothing about this one, and on a two-base tree it is plausibly this one.
+  const hybridLoadBlocked = !selectedIsMiniMaxH3
+    ? null
+    : h3LoadOptions.keyedPath !== selectedModelPath
+      ? "The load-time options are still catching up with this checkpoint."
+      : h3LoadOptions.loadBlockedReason;
   const loadedHybridSummary = hybridSummary(currentModel);
+
+  // The load-time selectors render in the host's Components tab, so the host
+  // needs both the base path they list against and the load-in-flight state.
+  useEffect(() => {
+    onSelectionChange(selectedModelPath, selectedIsMiniMaxH3);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedModelPath, selectedIsMiniMaxH3]);
+  useEffect(() => {
+    onLoadingChange?.(loading);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading]);
 
   const content = (
     <div
@@ -358,29 +303,16 @@ export default function ModelSelector({ onModelLoad, embedded = false }: ModelSe
                 </div>
               )}
 
-              {/* Load-time text encoder choice (MiniMax-H3 only) */}
+              {/* The load-time text encoder, projection and overlay selectors
+                  for a selected MiniMax-H3 checkpoint live in the host's
+                  Components tab (MiniMaxH3LoadOptionsGroup); this component
+                  only sends their values with the load request. */}
               {selectedModel && selectedIsMiniMaxH3 && (
-                <MiniMaxH3TextEncoderSelector
-                  className="sm:col-span-2"
-                  modelPath={selectedModel.path}
-                  textEncoderPath={h3TextEncoder}
-                  clipProjectionPath={h3ClipProjection}
-                  onChange={handleH3Change}
-                  disabled={loading}
-                />
-              )}
-
-              {/* Load-time overlay merge (MiniMax-H3 only). The model dropdown
-                  above picks the base; this picks the second checkpoint. */}
-              {selectedModel && selectedIsMiniMaxH3 && (
-                <MiniMaxH3HybridSelector
-                  className="sm:col-span-2"
-                  modelPath={selectedModel.path}
-                  value={h3Hybrid}
-                  onChange={handleH3HybridChange}
-                  onBlockedChange={setH3HybridBlocked}
-                  disabled={loading}
-                />
+                <p className="text-[11px] leading-relaxed text-gray-500 sm:col-span-2">
+                  MiniMax-H3 text encoder, hidden-state projection and overlay checkpoint are on the
+                  Components tab, under Load-time components. Their current values are sent with
+                  this load.
+                </p>
               )}
 
               {/* The reference bank is about the encoder that is LOADED, not the
@@ -420,6 +352,9 @@ export default function ModelSelector({ onModelLoad, embedded = false }: ModelSe
                     {hybridLoadBlocked && (
                       <p className="mt-1.5 text-[11px] leading-relaxed text-amber-300">
                         {hybridLoadBlocked}
+                        {h3LoadOptions.keyedPath === selectedModelPath
+                          ? " The overlay selector is on the Components tab, under Load-time components."
+                          : ""}
                       </p>
                     )}
                   </div>

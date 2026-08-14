@@ -1,8 +1,9 @@
 "use client";
 
-import { useCallback, useState, useEffect, type KeyboardEvent } from "react";
+import { useCallback, useRef, useState, useEffect, type KeyboardEvent } from "react";
 import Card from "./Card";
 import ModelSelector from "./ModelSelector";
+import MiniMaxH3LoadOptionsGroup, { useMiniMaxH3LoadOptions } from "./MiniMaxH3LoadOptions";
 import VaeOverrideSelector from "./VaeOverrideSelector";
 import QuantizedExportSection from "./QuantizedExportSection";
 import TextEncoderOverrideSelector from "./TextEncoderOverrideSelector";
@@ -117,6 +118,23 @@ export default function ModelLoadSection({
   const [tabStateMounted, setTabStateMounted] = useState(false);
   const [modelLoadRevision, setModelLoadRevision] = useState(0);
   const isPidDecoder = selectedVaeKind === "pid_decoder";
+  // Which checkpoint ModelSelector's Load button would load, reported by it so
+  // the load-time selectors below can list against the same base.
+  const [selectedModelPath, setSelectedModelPath] = useState("");
+  const [selectedIsMiniMaxH3, setSelectedIsMiniMaxH3] = useState(false);
+  const [modelLoading, setModelLoading] = useState(false);
+  // Keyed by path only: the architecture term of the load gate is computed in
+  // ModelSelector's own render, where it cannot be stale.
+  const h3LoadOptions = useMiniMaxH3LoadOptions(selectedModelPath);
+  const handleSelectionChange = useCallback((path: string, isMiniMaxH3: boolean) => {
+    setSelectedModelPath(path);
+    setSelectedIsMiniMaxH3(isMiniMaxH3);
+  }, []);
+  // Measured for "Fit to content". It wraps the tabpanels INSIDE the scroll box
+  // rather than being the scroll box: that box's height is pinned inline, so its
+  // own scrollHeight can never fall below the current height and a fit could
+  // only ever grow the panel.
+  const contentRef = useRef<HTMLDivElement | null>(null);
 
   // TE override is sound only for SD1.5/SDXL server-side; disable (do not
   // block) for other archs as a cosmetic hint. Unknown type stays enabled.
@@ -294,13 +312,27 @@ export default function ModelLoadSection({
         className="overflow-y-auto overscroll-contain pr-1"
         style={{ height: panelHeight.height }}
       >
+       <div ref={contentRef}>
+        {/* All three tabpanels stay MOUNTED and are hidden with display:none.
+            That is load-bearing, not cosmetic: MiniMaxH3HybridSelector below
+            runs the compatibility check that clears a restored overlay's
+            HYBRID_CHECK_PENDING. Render these conditionally and a restored
+            overlay blocks Load forever, with the Select that could clear it
+            unmounted. It is also what makes contentRef's scrollHeight the
+            ACTIVE tab's height. */}
         <div
           id={panelId("model")}
           role="tabpanel"
           aria-labelledby={tabId("model")}
           className={activeTab === "model" ? "" : "hidden"}
         >
-          <ModelSelector embedded onModelLoad={handleModelLoad} />
+          <ModelSelector
+            embedded
+            onModelLoad={handleModelLoad}
+            h3LoadOptions={h3LoadOptions}
+            onSelectionChange={handleSelectionChange}
+            onLoadingChange={setModelLoading}
+          />
         </div>
 
         <div
@@ -318,6 +350,13 @@ export default function ModelLoadSection({
           {componentsLoading && !componentSnapshot && (
             <p className="text-xs text-gray-500">Loading effective component state…</p>
           )}
+
+          <div>
+            <p className="text-xs font-medium text-gray-400">Resident components</p>
+            <p className="text-[11px] text-gray-500">
+              Selecting one of these swaps the component in the model that is loaded now.
+            </p>
+          </div>
 
           <LoadedComponentSelector
             label="Text Encoder"
@@ -374,6 +413,14 @@ export default function ModelLoadSection({
               Show only compatible scanned candidates
             </span>
           </label>
+
+          {selectedIsMiniMaxH3 && selectedModelPath && (
+            <MiniMaxH3LoadOptionsGroup
+              modelPath={selectedModelPath}
+              options={h3LoadOptions}
+              disabled={modelLoading}
+            />
+          )}
 
           <details className="rounded-md border border-gray-800 p-2">
             <summary className="cursor-pointer select-none text-xs font-medium text-gray-400">
@@ -499,6 +546,7 @@ export default function ModelLoadSection({
             onAvailabilityChange={handleQuantizationAvailability}
           />
         </div>
+       </div>
       </div>
       <div className="mt-1 flex items-center gap-2">
         <div
@@ -515,6 +563,27 @@ export default function ModelLoadSection({
         >
           <span className="h-0.5 w-12 rounded bg-gray-700 transition-colors group-hover:bg-violet-500 group-focus:bg-violet-500" />
         </div>
+        <button
+          type="button"
+          onClick={() => panelHeight.fitToContent(contentRef.current?.scrollHeight ?? 0)}
+          className="text-[10px] text-gray-500 hover:text-gray-300"
+          title={`Size the panel to the ${activeTab} tab's content, up to ${panelHeight.maxHeight}px`}
+        >
+          Fit to content
+        </button>
+        <button
+          type="button"
+          onClick={panelHeight.restoreUserHeight}
+          disabled={panelHeight.userHeight === null}
+          className="text-[10px] text-gray-500 hover:text-gray-300 disabled:opacity-40 disabled:hover:text-gray-500"
+          title={
+            panelHeight.userHeight === null
+              ? "Nothing to go back to yet; Fit to content remembers the height it replaces"
+              : `Go back to ${panelHeight.userHeight}px`
+          }
+        >
+          Restore my height
+        </button>
         <button
           type="button"
           onClick={panelHeight.reset}

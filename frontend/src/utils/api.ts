@@ -5600,6 +5600,65 @@ export const clearPromptAssistCache = async (): Promise<number> => {
   return response.data.deleted;
 };
 
+// MiniMax Music 3 Caption Rewriter API
+//
+// Sibling of the MiniMax-H3 prompt assist API above: same provider/model
+// listing endpoint and settings shape, different transform contract (no
+// mode/duration/references — a music caption has none of those concepts).
+//
+// Deliberately no lm_studio_base_url/ollama_base_url here: the server's
+// `_prompt_assist_base_url()` resolves an empty base_url from H3's
+// PROMPT_ASSIST_DEFAULTS regardless of which rewriter is calling it (one
+// local LM Studio/Ollama server serves both), so a second, music-only copy
+// of those two keys would only be able to drift from what the server
+// actually uses. Read them from `getPromptAssistDefaults()` instead.
+export interface MusicPromptAssistDefaults {
+  provider: PromptAssistProvider;
+  temperature: number;
+  top_p: number;
+  max_output_tokens: number;
+  context_length: number;
+  timeout_seconds: number;
+}
+
+export interface MusicPromptAssistSettings {
+  provider: PromptAssistProvider;
+  base_url: string;
+  model: string;
+  api_key?: string;
+  temperature: number;
+  top_p: number;
+  max_output_tokens: number;
+  context_length: number;
+  timeout_seconds: number;
+}
+
+export interface MusicPromptAssistTransformRequest extends MusicPromptAssistSettings {
+  caption: string;
+  lyrics?: string;
+  constraints?: string;
+  force_refresh?: boolean;
+}
+
+export const getMusicPromptAssistDefaults = async (): Promise<MusicPromptAssistDefaults> => {
+  const response = await api.get("/schema/prompt-assist-music-defaults");
+  return response.data;
+};
+
+export const transformMusic3Caption = async (
+  request: MusicPromptAssistTransformRequest,
+): Promise<PromptAssistResponse> => {
+  const response = await api.post("/prompt-assist/music/transform", request, {
+    timeout: Math.max(1000, request.timeout_seconds * 1000 + 5000),
+  });
+  return response.data;
+};
+
+export const clearMusicPromptAssistCache = async (): Promise<number> => {
+  const response = await api.post("/prompt-assist/music/cache/clear");
+  return response.data.deleted;
+};
+
 // TIPO API
 export interface TIPOGenerateRequest {
   input_prompt: string;

@@ -264,7 +264,23 @@ overlay 対象の weight に対して sidecar が存在する場合、sidecar �
 - **overlay の RSS コストはゼロ**。両形式とも hybrid の peak RSS は base-only と一致する（差は測定ノイズの範囲）。overlay から読むのは 50 テンソルのみで、そのうち実際に常駐するのは選択された AdaLN 重みだけである。
 - **overlay のコストはマッピング 1 本と仮想アドレス空間**。同時マッピング数は +1。w4a8 では VMS が +11.7 GB 増える（2 本目のファイルのアドレス空間）が、これは commit ではない。pagefile 使用量は 4 アームとも 0.8 GB で不変。
 - **`os error 1455` は再現しない**（DiT 2 本の同時マッピングについて）。`loader.py` の不変条件注記が警告していた失敗は、この構成では起きなかった。
-- **未測定**: TE 48 GiB のマッピングと DiT 2 本が同時に生存する本番のフルロード経路。上記は DiT のみである。§4.6 の懸念のうちこの部分は未解決のまま。
+### 4.6.2 実測結果（フルロード、TE 込み、2026-08-14）
+
+`load_minimax_h3_from_path(..., load_text_encoder=True)` による本番のロード経路。TE は既定選択の `qwen3vl_32b_minimax_h3_int8_convrot.safetensors`（27 GB）が選ばれた。DiT は fp8_scaled。
+
+| arm | peak RSS | peak VMS | 同時マッピング | ホスト空き最小 | pagefile | 秒 |
+|---|---|---|---|---|---|---|
+| base-only | **24.36 GB** | 81.23 GB | 3183 | 28.38 GB | 0.79 GB | 29.7 |
+| hybrid 25..49 | **24.33 GB** | 100.79 GB | **3183** | 28.10 GB | 0.79 GB | 28.5 |
+
+結論:
+
+- **TE がマップされた状態でも overlay の RSS コストはゼロ**。peak RSS は base-only と一致する。
+- **同時マッピング数は増えなかった**（両者 3183）。overlay のマッピングは、TE と DiT が既に開いている総数の中で相殺される程度の位置づけであり、DiT-only probe で見えた +1 はここでは観測されない。
+- VMS のみ +19.5 GB（overlay のアドレス空間）。pagefile 使用量は不変。
+- **`os error 1455` は本番のフルロード経路でも再現しない**。§4.6 の懸念は解消した。`loader.py` の不変条件注記が hybrid path を例外として記述している状態は正しいが、実測では失敗しない。
+
+**ファイル名トラップの実データ検証**: この arm の base は `minimax_h3_fl2va_pruned_fp8_scaled.safetensors`（ファイル名に `fl2va` を含む）であり、ロードされた component dict の `variant` は **`hybrid`** だった。C1 で閉じたゲートが実データに対して機能することが確認された。
 
 **副次的な発見（設計書の未確認事項が解決した）**: block 25..49 に対して overlay から読まれたテンソルは **50 個**（25 ブロック × 2）だった。したがって `blocks.N.adaln_proj.linear.bias` は**出荷済みチェックポイントに実在する**。§4.2 check 9 の「bias の存在は前提としない」という設計判断は、結果的に不要な保守性ではあったが誤りではない。
 

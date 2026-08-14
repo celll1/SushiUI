@@ -42,7 +42,10 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from api.error_handlers import ValidationError  # noqa: E402
-from api.generation_utils import resolve_minimax_h3_inpaint_reference_gate  # noqa: E402
+from api.generation_utils import (  # noqa: E402
+    minimax_h3_inpaint_reference_row_count_warning,
+    resolve_minimax_h3_inpaint_reference_gate,
+)
 from core.models.minimax_h3 import h3_pipeline_ops as ops  # noqa: E402
 
 
@@ -613,3 +616,250 @@ def test_an_image_reference_lands_outside_the_earliest_pinned_frames_binding_rad
         f"image reference at t={image_time} is within the pinned frame's own binding radius "
         f"({binding_radius}) of frame 0 at t={frame0_time} -- it will compete with the pin for "
         f"the target origin instead of conditioning the whole span")
+
+
+# ---------------------------------------------------------------------------
+# B-2a: the decode-side permutation offset (`num_pinned_video_rows` /
+# `num_pinned_audio_rows`, `minimax_h3.py`'s un-permute at the video/audio
+# decode sites). The permutations this builder returns are TARGET-BLOCK-
+# RELATIVE (this file's docstring above); a decode site that un-permutes in
+# FULL-row space without first skipping the reference/anchor prefix would
+# silently read a reference row as if it were a clip row. These tests
+# reproduce the decode-site formula directly against fabricated "denoised
+# rows" tensors, without a model, and fail if the offset is dropped.
+# ---------------------------------------------------------------------------
+
+def _decode_unpermute(full_rows, layout, *, modality):
+    """A COPY of the formula `minimax_h3.py`'s decode phase uses (NOT the
+    shipped code -- this reimplements it against a fabricated tensor so the
+    arithmetic can be checked without a GPU/loaded model). `full_rows` is
+    FULL-row space: [reference/anchor rows | possibly-pinned target rows],
+    the shape `video_rows`/`audio_rows` has after the draw-time
+    reference/anchor prefix is concatenated onto the (already permuted)
+    target block.
+
+    Being a copy, this cannot by itself catch the shipped site drifting from
+    it -- `test_decode_unpermute_formula_matches_the_shipped_source` below
+    provides that coupling by asserting the real source contains the same
+    subtraction/slice pattern.
+    """
+    n_cond = int(layout[f"num_condition_{modality}_rows"])
+    num_pinned = int(layout.get(f"num_pinned_{modality}_rows", 0) or 0)
+    order = layout[f"{modality}_row_order"]
+    if order is None:
+        return full_rows[n_cond:]
+    n_cond_reference = n_cond - num_pinned
+    return full_rows[n_cond_reference:][order]
+
+
+def test_decode_unpermute_formula_matches_the_shipped_source():
+    """Coupling for `_decode_unpermute` above: it is a copy of the formula,
+    not a call into the shipped site, so this asserts the real source
+    (`MiniMaxH3Mixin._generate_minimax_h3`) still uses the identical
+    subtraction-then-slice-then-permute pattern on both the video and audio
+    decode branches -- catching the class of drift a pure copy cannot.
+    """
+    import inspect
+    from core.pipeline_backends.minimax_h3 import MiniMaxH3Mixin
+
+    source = inspect.getsource(MiniMaxH3Mixin._generate_minimax_h3)
+    video_branch = source[source.index("video_row_order = layout[\"video_row_order\"]"):]
+    video_branch = video_branch[:video_branch.index("decode_start")]
+    assert "n_cond_video - int(layout.get(\"num_pinned_video_rows\"" in video_branch
+    assert "][video_row_order" in video_branch
+
+    audio_branch = source[source.index("audio_row_order = layout[\"audio_row_order\"]"):]
+    audio_branch = audio_branch[:audio_branch.index("audio_latents = ops.unpack_audio_rows")]
+    assert "n_cond_audio - int(layout.get(\"num_pinned_audio_rows\"" in audio_branch
+    assert "][audio_row_order" in audio_branch
+
+
+def test_decode_unpermute_recovers_frame_major_order_past_the_reference_prefix():
+    """A ref2va layout with ONE image reference (4 rows) plus a video pin on
+    frames (0, 2) of a 6-frame target. Fabricate `full_rows` as
+    [reference sentinel rows | pinned-permuted target rows] and assert the
+    decode formula recovers ascending (frame-major) target values -- and,
+    separately, that skipping the offset (the bug this test guards against)
+    would NOT.
+    """
+    layout = _build(pinned_video_frames=(0, 2))
+    rows_per_frame = layout["rows_per_frame"]
+    num_target_video_rows = _TARGET_FRAMES * rows_per_frame
+    num_reference_video_rows = rows_per_frame  # the one image reference's own rows
+
+    # Reference rows: sentinel values far outside the target value range, so
+    # any leak into the "clip" slice is unmistakable.
+    reference_rows = torch.full((num_reference_video_rows, 1), -999.0)
+    # Target rows in TRUE frame-major order (what the VAE must decode).
+    frame_major_target = torch.arange(num_target_video_rows, dtype=torch.float32).unsqueeze(1)
+    # The draw applies `video_row_permutation` to the frame-major block
+    # before it is written by the denoise loop -- reproduce that.
+    permuted_target = frame_major_target[layout["video_row_permutation"]]
+    full_rows = torch.cat([reference_rows, permuted_target], dim=0)
+
+    recovered = _decode_unpermute(full_rows, layout, modality="video")
+    assert torch.equal(recovered, frame_major_target), (
+        "decode-site un-permute did not recover frame-major target order -- the "
+        "reference/anchor prefix offset is wrong")
+    assert not torch.any(recovered == -999.0), (
+        "a reference row leaked into the decoded clip -- the offset was not applied")
+
+    # The regression this test exists to catch: un-permuting in FULL-row space
+    # WITHOUT the reference-prefix offset (the pre-fix bug) reads a reference
+    # row as if it were a clip row for the first `num_reference_video_rows`
+    # positions of the un-permuted result.
+    buggy = full_rows[layout["video_row_order"]]
+    assert not torch.equal(buggy, frame_major_target), (
+        "the offset-less formula accidentally matches the correct one on this "
+        "fixture -- the fixture no longer exercises the bug this test guards "
+        "against")
+    assert torch.any(buggy == -999.0), (
+        "the offset-less formula was expected to leak a reference sentinel row")
+
+
+def test_decode_unpermute_audio_recovers_channel_major_order_past_the_reference_prefix():
+    """Mirrored on the audio side: a reference AUDIO block (4 rows) plus an
+    audio pin on latent 1 of a 3-latent target.
+    """
+    audio_ref_latents = 2
+    audio_ref_rows = audio_ref_latents * ops.AUDIO_CHANNELS  # 4 rows
+    layout = ops.build_ref2va_packed_layout(
+        text_token_tags=[1] * _NUM_TEXT_TOKENS,
+        reference_blocks=[("audio", True)],
+        condition_latent_shapes=[],
+        reference_audio_row_counts=[audio_ref_rows],
+        num_latent_frames=_TARGET_FRAMES,
+        latent_height=_LAT_H, latent_width=_LAT_W,
+        num_audio_latents=_NUM_AUDIO_LATENTS,
+        pinned_audio_latents=(1,),
+    )
+    num_target_audio_rows = _NUM_AUDIO_LATENTS * ops.AUDIO_CHANNELS
+
+    reference_rows = torch.full((audio_ref_rows, 1), -999.0)
+    channel_major_target = torch.arange(num_target_audio_rows, dtype=torch.float32).unsqueeze(1)
+    permuted_target = channel_major_target[layout["audio_row_permutation"]]
+    full_rows = torch.cat([reference_rows, permuted_target], dim=0)
+
+    recovered = _decode_unpermute(full_rows, layout, modality="audio")
+    assert torch.equal(recovered, channel_major_target)
+    assert not torch.any(recovered == -999.0)
+
+    buggy = full_rows[layout["audio_row_order"]]
+    assert not torch.equal(buggy, channel_major_target)
+    assert torch.any(buggy == -999.0)
+
+
+def test_num_pinned_video_rows_is_zero_without_a_pin_and_equal_to_the_condition_count_on_fl2va():
+    """`num_pinned_video_rows` is the new key both builders return. On
+    `build_packed_layout` (fl2va) a pin always REPLACES the anchor count
+    (mutual exclusion), so it equals `num_condition_video_rows` whenever a pin
+    is present, and both builders agree it is 0 when nothing is pinned --
+    which is exactly what makes today's fl2va/no-reference decode paths
+    unaffected by this change.
+    """
+    unpinned_ref2va = _build()
+    assert int(unpinned_ref2va["num_pinned_video_rows"]) == 0
+    assert int(unpinned_ref2va["num_pinned_audio_rows"]) == 0
+
+    pinned_ref2va = _build(pinned_video_frames=(0,), pinned_audio_latents=(1,))
+    # ref2va: the pin's share is a SUBSET of the (reference + pin) total.
+    assert int(pinned_ref2va["num_pinned_video_rows"]) < int(pinned_ref2va["num_condition_video_rows"])
+
+    unpinned_fl2va = ops.build_packed_layout(
+        _NUM_TEXT_TOKENS, _TARGET_FRAMES, _LAT_H, _LAT_W, _NUM_AUDIO_LATENTS,
+    )
+    assert int(unpinned_fl2va["num_pinned_video_rows"]) == 0
+    assert int(unpinned_fl2va["num_pinned_audio_rows"]) == 0
+
+    pinned_fl2va = ops.build_packed_layout(
+        _NUM_TEXT_TOKENS, _TARGET_FRAMES, _LAT_H, _LAT_W, _NUM_AUDIO_LATENTS,
+        pinned_video_frames=(0, 2), pinned_audio_latents=(1,),
+    )
+    # fl2va: the pin's share equals the WHOLE condition count -- no reference
+    # prefix exists there, so the decode offset is always 0 on this builder.
+    assert int(pinned_fl2va["num_pinned_video_rows"]) == int(pinned_fl2va["num_condition_video_rows"])
+    assert int(pinned_fl2va["num_pinned_audio_rows"]) == int(pinned_fl2va["num_condition_audio_rows"])
+
+
+# ---------------------------------------------------------------------------
+# B-2: the row-count WARNING (owner correction, design doc §6) -- never a
+# refusal. `minimax_h3_inpaint_reference_row_count_warning` is the pure
+# formatter `_generate_minimax_h3` calls once the layout (and therefore
+# `ops.packed_row_counts`) is known, before the DiT is staged.
+# ---------------------------------------------------------------------------
+
+def test_row_count_warning_reports_the_computed_numbers():
+    """Against a REAL built layout (one image reference, a 6-frame target,
+    frames 0 and 2 pinned): `condition_video` (12) is the reference's own 4
+    rows PLUS the pin's 8, not the reference's alone, and the free
+    `target_video` (16) is not "every frame of the clip" -- the pinned 8 are
+    also the clip's own rows. The message must report the clip's total
+    (pinned + free = 24 video + 6 audio = 30) and the reference's own share
+    (12 + 0 condition - 8 pinned = 4, the image reference's actual
+    `rows_per_frame`), not the raw, uncorrected `row_counts` fields.
+    """
+    layout = _build(pinned_video_frames=(0, 2))
+    row_counts = ops.packed_row_counts(layout)
+    num_pinned_video_rows = int(layout["num_pinned_video_rows"])
+    num_pinned_audio_rows = int(layout["num_pinned_audio_rows"])
+
+    # Pin the raw shape this test's correctness depends on, so a fixture
+    # change fails loudly here rather than silently changing what is
+    # asserted below.
+    assert row_counts == {
+        "text": 5, "condition_video": 12, "target_video": 16,
+        "condition_audio": 0, "target_audio": 6, "total": 39,
+    }
+    assert num_pinned_video_rows == 8
+    assert num_pinned_audio_rows == 0
+
+    message, code = minimax_h3_inpaint_reference_row_count_warning(
+        row_counts, num_references=1,
+        num_pinned_video_rows=num_pinned_video_rows,
+        num_pinned_audio_rows=num_pinned_audio_rows,
+    )
+
+    assert code == "minimax_h3_inpaint_reference_row_count"
+    assert "39 row" in message
+    assert "30 row" in message  # the CLIP's own rows: pinned (8) + free (16+6)
+    assert "4 row" in message   # the REFERENCE's own rows: 12 condition - 8 pinned
+    assert "1 reference" in message
+    # The numbers that would be wrong under the pre-fix formula (target_video
+    # alone as "the clip", condition_video+condition_audio alone as "the
+    # references") must not appear as the reported clip/reference counts.
+    assert "16 row" not in message
+    assert "12 row" not in message
+    # Factual only -- no threshold language.
+    for banned in ("recommended", "should", "limit of", "maximum of"):
+        assert banned not in message.lower()
+
+
+def test_row_count_warning_never_raises_on_a_well_formed_row_counts_dict():
+    """The correction this function exists to satisfy: sequence length is
+    NEVER a refusal. This only covers WELL-FORMED input (every key
+    `packed_row_counts` produces present) -- an incomplete `row_counts` dict
+    still raises `KeyError`, which is a caller bug, not a refusal.
+    """
+    for row_counts, num_references in (
+        (ops.packed_row_counts(_build()), 1),
+        (ops.packed_row_counts(_build(pinned_video_frames=(0, 1, 2, 3, 4, 5))), 3),
+        ({"text": 0, "condition_video": 0, "target_video": 0,
+          "condition_audio": 0, "target_audio": 0, "total": 0}, 0),
+    ):
+        message, code = minimax_h3_inpaint_reference_row_count_warning(
+            row_counts, num_references=num_references)
+        assert isinstance(message, str) and message
+        assert code == "minimax_h3_inpaint_reference_row_count"
+
+
+def test_row_count_warning_names_the_outpaint_contrast():
+    """The design's specific factual claim (§3 Option B "Costs/risks"): this
+    layout carries every clip frame, unlike outpaint's generated-span-only
+    layout -- named so a reader does not assume inpaint is cheap the way
+    outpaint's partial span is.
+    """
+    layout = _build(pinned_video_frames=(0,))
+    row_counts = ops.packed_row_counts(layout)
+    message, _code = minimax_h3_inpaint_reference_row_count_warning(row_counts, num_references=2)
+    assert "outpaint" in message.lower()
+    assert "every frame" in message.lower()

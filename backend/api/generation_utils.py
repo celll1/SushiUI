@@ -1980,13 +1980,15 @@ def resolve_minimax_h3_inpaint_reference_gate(
     has_reference_audios: bool,
     has_vision_conditioning: bool = False,
 ) -> None:
-    """The ``ref2va`` reference gate on ``/generate/inpaint/video`` -- PHASE
-    B-1, the CLOSED state ``minimax_h3_inpaint_refs_design.md`` Gate
-    registration (B) registers. PURE (raises or returns None), not yet wired
-    to any route (unlike ``resolve_minimax_h3_outpaint_reference_gate``, whose
-    twin this is). ``has_reference_images/videos/audios`` are required
-    keyword-only args (no default) so a caller cannot silently land on the
-    most permissive row by forgetting one.
+    """The ``ref2va`` reference gate on ``/generate/inpaint/video``
+    (``minimax_h3_inpaint_refs_design.md``, Gate registration (B)). PURE
+    (raises or returns None). Wired at both the route
+    (``routes.py``'s ``generate_inpaint_video``) and the backend
+    (``_generate_vidinpaint_minimax_h3``'s defensive re-check), the same
+    two-layer pattern ``resolve_minimax_h3_outpaint_reference_gate`` uses.
+    ``has_reference_images/videos/audios`` are required keyword-only args (no
+    default) so a caller cannot silently land on the most permissive row by
+    forgetting one.
 
     Unlike the outpaint gate, ``ref2va`` refuses UNCONDITIONALLY here -- with
     or without any reference -- because temporal inpaint's interior pin is
@@ -2002,15 +2004,17 @@ def resolve_minimax_h3_inpaint_reference_gate(
     * An audio-only reference set is refused unless ``has_vision_conditioning``
       -- a temporal-inpaint pin or keyframe anchor already supplying vision
       conditioning through a different door. Mirrors
-      ``h3_references.py``'s ``validate_references`` (``:169-175``) and its
-      own ``has_vision_conditioning`` flag; this rule is now duplicated in
-      THREE places (``routes.py``'s ``/generate/ref2vid`` inline check,
+      ``h3_references.py``'s ``validate_references`` and its own
+      ``has_vision_conditioning`` flag; this rule is duplicated in THREE
+      places (``routes.py``'s ``/generate/ref2vid`` inline check,
       ``h3_references.py``, and here) rather than shared -- a follow-up, not
       claimed otherwise here.
 
     Sequence length / row budget is deliberately absent (owner correction):
-    no row count refuses a request; that risk becomes a warning once B-2
-    wires a call site, not a threshold here.
+    no row count refuses a request. That risk is a WARNING instead
+    (``minimax_h3_inpaint_reference_row_count_warning``, called from
+    ``_generate_minimax_h3``), unreachable until this gate's ``ref2va`` row
+    opens.
 
     No row of this table ever reroutes to ``/generate/ref2vid``.
     """
@@ -2041,6 +2045,10 @@ def resolve_minimax_h3_inpaint_reference_gate(
             )
         return
     if variant == "ref2va":
+        # THE ONE-PLACE SWITCH (design doc §5/§6): replacing this `raise`
+        # with `return`, once P/C/P-seam are adjudicated a PASS, is the only
+        # code change needed to open this endpoint. Do not add an env var, a
+        # request parameter, or any other way to reach that `return`.
         raise ValidationError(
             "MiniMax-H3 ref2va temporal inpaint is not open on this endpoint yet",
             detail="Temporal inpaint's interior pin is measured on fl2va (preserved-span RMS "
@@ -2067,6 +2075,40 @@ def resolve_minimax_h3_inpaint_reference_gate(
                    "produce a bad video rather than fail. (Moot in phase B-1 regardless: the "
                    "ref2va row above refuses every reference request on this endpoint anyway.)",
         )
+
+
+def minimax_h3_inpaint_reference_row_count_warning(
+    row_counts: Dict[str, int],
+    *,
+    num_references: int,
+    num_pinned_video_rows: int = 0,
+    num_pinned_audio_rows: int = 0,
+) -> Tuple[str, str]:
+    """The B-2 row-count WARNING (never a refusal -- owner correction, design
+    doc §6). PURE (no side effect, no exception raised on a well-formed
+    input): the caller passes the message/code to ``add_warning``.
+    ``row_counts`` is ``h3_pipeline_ops.packed_row_counts``'s return dict;
+    ``num_pinned_*_rows`` is the same layout's key of that name (0 when
+    nothing is pinned).
+
+    ``row_counts["condition_*"]`` is reference/anchor rows PLUS the pin's own
+    rows on this builder (``h3_pipeline_ops.build_ref2va_packed_layout``), so
+    the reference-only row count is ``condition_* - num_pinned_*_rows``, and
+    the clip's own row count (pinned + free) is
+    ``target_* + num_pinned_*_rows``. ``total`` needs no correction.
+    """
+    pinned_rows = num_pinned_video_rows + num_pinned_audio_rows
+    clip_rows = row_counts["target_video"] + row_counts["target_audio"] + pinned_rows
+    reference_rows = row_counts["condition_video"] + row_counts["condition_audio"] - pinned_rows
+    message = (
+        f"This ref2va temporal-inpaint request packs {row_counts['total']} row(s) into one "
+        f"sequence: {clip_rows} row(s) for the clip itself (every frame, not just the regenerated "
+        f"range) plus {reference_rows} row(s) from {num_references} reference(s). Unlike "
+        f"/generate/outpaint/video, this layout always carries the whole clip's rows, so this "
+        f"sequence is longer than an outpaint request of the same reference set would be, and a "
+        f"long sequence can exhaust available VRAM."
+    )
+    return message, "minimax_h3_inpaint_reference_row_count"
 
 
 def resolve_minimax_h3_text_only_te_gate(

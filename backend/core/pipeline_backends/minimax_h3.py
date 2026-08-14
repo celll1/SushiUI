@@ -1517,6 +1517,7 @@ class MiniMaxH3Mixin:
         step_callback: Optional[Callable] = None,
         spatial_mask_timeline=None,
         spatial_mask_arrays=None,
+        references: Sequence[Any] = (),
     ):
         """Temporal inpaint with MiniMax-H3: regenerate one time range in place.
 
@@ -1553,6 +1554,11 @@ class MiniMaxH3Mixin:
             fps: the clip's own probed frame rate, used only to cut its original
                 audio track for ``preserve_input``.
             input_audio: WAV bytes of the clip's original audio, or None.
+            references: a ``ref2va`` reference list (``h3_references.
+                MiniMaxH3Reference`` objects, packed order), same convention
+                as ``_generate_ref2vid_minimax_h3``. Refused by
+                ``resolve_minimax_h3_inpaint_reference_gate`` in the
+                committed state (see that function's docstring).
 
         Returns:
             ``(frames, audio, audio_sample_rate, actual_seed)`` -- the same
@@ -1564,6 +1570,7 @@ class MiniMaxH3Mixin:
             latent_frame_spans,
             plan_audio_pin_latents,
             plan_video_inpaint_span,
+            resolve_minimax_h3_inpaint_reference_gate,
         )
         from core.inference.outpaint_utils import center_crop_resize_frames
         from core.models.minimax_h3 import h3_pipeline_ops as ops
@@ -1572,6 +1579,34 @@ class MiniMaxH3Mixin:
             raise RuntimeError("MiniMax-H3 components are not loaded. Load a MiniMax-H3 model first.")
         if video_frames is None or len(video_frames) == 0:
             raise RuntimeError("vid_inpaint requires a decoded input video clip")
+
+        references = tuple(references or ())
+        # Defensive re-check of the route's gate (mirroring
+        # `_generate_vidoutpaint_minimax_h3`'s own re-check), run before any
+        # VAE/DiT work even when `references` is empty -- ref2va is refused
+        # here unconditionally. `has_vision_conditioning=True`: this endpoint
+        # always pins the frames outside the regenerate range, so an
+        # audio-only reference set is never refused by the pairing rule
+        # alone here.
+        _variant = ((getattr(self, "minimax_h3_components", None) or {}).get("variant") or "").lower()
+        resolve_minimax_h3_inpaint_reference_gate(
+            _variant,
+            has_reference_images=any(getattr(r, "kind", "") == "image" for r in references),
+            has_reference_videos=any(getattr(r, "kind", "") == "video" for r in references),
+            has_reference_audios=any(getattr(r, "kind", "") == "audio" for r in references),
+            has_vision_conditioning=True,
+        )
+        if references and (spatial_mask_timeline is not None or spatial_mask_arrays is not None):
+            # `build_ref2va_packed_layout`'s pin extension (B-1) only carries
+            # `pinned_video_frames` (a whole-frame pin), not
+            # `pinned_video_row_indices` (spatial inpaint's row-level pin) --
+            # unreachable while the gate above stays closed, but stated
+            # explicitly rather than left to a builder-level TypeError once
+            # it opens.
+            raise RuntimeError(
+                "MiniMax-H3 cannot combine a spatial mask with reference conditioning: the "
+                "extended ref2va layout builder only carries a frame-level temporal-inpaint pin "
+                "alongside references, not a row-level spatial-mask pin.")
 
         width = int(params.get("width", 960))
         height = int(params.get("height", 544))
@@ -1870,7 +1905,8 @@ class MiniMaxH3Mixin:
                 sub_params,
                 pinned_video_frames=plan["pinned_latent_frames"],
                 pinned_video_source=clip, input_audio=pinned_audio,
-                pinned_audio_latents=pinned_audio_latents, label="vid_inpaint",
+                pinned_audio_latents=pinned_audio_latents, references=references,
+                label="vid_inpaint",
                 progress_callback=progress_callback, step_callback=step_callback,
             )
         if frames_gen.shape[0] != clip_frames:  # pragma: no cover - decode guarantees it
@@ -2240,17 +2276,50 @@ class MiniMaxH3Mixin:
             raise RuntimeError(
                 "MiniMax-H3 cannot combine pinned video frames with pinned video row indices: "
                 "pass one video pinning scheme only.")
-        if (pinned_video_frames or pinned_video_row_indices) and (keyframes or references):
+        if (pinned_video_frames or pinned_video_row_indices) and keyframes:
             raise RuntimeError(
-                "MiniMax-H3 cannot combine pinned video pins with keyframes or references: the "
-                "pin re-uses the video block's conditioning prefix for rows of the clip itself, "
-                "and an anchor or a reference reserves that same prefix for rows of its own.")
+                "MiniMax-H3 cannot combine pinned video pins with keyframes: the pin re-uses the "
+                "video block's conditioning prefix for rows of the clip itself, and an anchor "
+                "reserves that same prefix for rows of its own.")
+        if pinned_video_row_indices and references:
+            raise RuntimeError(
+                "MiniMax-H3 cannot combine spatial-mask row pins with references: the extended "
+                "ref2va layout builder (h3_pipeline_ops.build_ref2va_packed_layout) only carries a "
+                "frame-level pin (pinned_video_frames) alongside references, not a row-level one.")
+        # B-2 (minimax_h3_inpaint_refs_design.md, Option B): a frame-level pin
+        # and references can now share the conditioning prefix, but ONLY for
+        # `_generate_vidinpaint_minimax_h3`'s own pin (`label == "vid_inpaint"`)
+        # on the ref2va partition -- `build_ref2va_packed_layout` (h3_pipeline_
+        # ops.py) lays out [reference/anchor rows | pinned target rows | free
+        # target rows] for that request shape specifically. Scoped to `label`
+        # rather than to `variant` alone so `_generate_vidoutpaint_minimax_h3`'s
+        # OWN pin (`continuation_mode="pinned_tail"`) cannot silently reuse
+        # this relaxation if its own (currently exhaustive, but independent)
+        # refusals ever change -- that combination has never been gated,
+        # measured, or requested, and stays refused regardless of variant.
+        if pinned_video_frames and references and not (
+                label == "vid_inpaint" and (components.get("variant") or "").lower() == "ref2va"):
+            raise RuntimeError(
+                "MiniMax-H3 cannot combine pinned video pins with references on this request: "
+                "the pin and a reference share the same conditioning-prefix mechanism, and only "
+                "temporal inpaint's own pin (label='vid_inpaint') on the ref2va partition's "
+                "layout builder carries both at once.")
         if (pinned_video_frames or pinned_video_row_indices) and pinned_video_source is None:
             raise RuntimeError(
                 "MiniMax-H3 temporal inpaint needs the source clip the pinned content is taken "
                 "from: pinned video frames/rows name conditioning content, and "
                 "pinned_video_source supplies the pixels they are encoded from.")
-        if input_audio is not None and references:
+        # `label == "vid_inpaint"` is temporal inpaint's OWN audio pin
+        # (preserve_input/regenerate_range, `_generate_vidinpaint_minimax_h3`)
+        # reusing this same `input_audio` parameter for a different reason
+        # than img2vid's ia2v: it preserves the CLIP's OWN track outside the
+        # regenerate range, not an externally supplied steering track, and it
+        # is the design's arm P shape (Gate registration (B) §6.2) -- so it
+        # stays allowed alongside references. Every other caller of
+        # `input_audio` (img2vid's true ia2v) keeps the original exclusion:
+        # a reference soundtrack already occupies its own block, ia2v pins
+        # the TARGET's audio rows, and the two would collide.
+        if input_audio is not None and references and label != "vid_inpaint":
             raise RuntimeError(
                 "MiniMax-H3 cannot pin an input audio track on a ref2va request: a reference "
                 "soundtrack already occupies its own block at its own rotary offset, while ia2v "
@@ -2567,6 +2636,13 @@ class MiniMaxH3Mixin:
                 # C5: anchors placed after the reference blocks. Empty when
                 # `keyframes` is empty, which reproduces the pre-C5 layout.
                 keyframe_anchors=anchors,
+                # The temporal-inpaint pin, carried through unchanged from the
+                # caller -- empty on every request `resolve_minimax_h3_inpaint_
+                # reference_gate` lets reach here today (its `ref2va` row is
+                # still closed), so this is bit-identical to the pre-B-2 call
+                # until that gate opens.
+                pinned_video_frames=tuple(pinned_video_frames),
+                pinned_audio_latents=tuple(pinned_audio_latents),
                 device=torch_device,
             )
         else:
@@ -2605,6 +2681,18 @@ class MiniMaxH3Mixin:
             f"audio={row_counts['target_audio']} target + {row_counts['condition_audio']} condition, "
             f"total={row_counts['total']} ({expansion:.2f}x target-only sequence)"
         )
+        # Sequence length is a WARNING, never a refusal (owner correction,
+        # design doc §6). See `minimax_h3_inpaint_reference_row_count_warning`
+        # for what the numbers mean.
+        if normalized_references and label == "vid_inpaint":
+            from api.generation_status import add_warning
+            from api.generation_utils import minimax_h3_inpaint_reference_row_count_warning
+            _message, _code = minimax_h3_inpaint_reference_row_count_warning(
+                row_counts, num_references=len(normalized_references),
+                num_pinned_video_rows=int(layout.get("num_pinned_video_rows", 0) or 0),
+                num_pinned_audio_rows=int(layout.get("num_pinned_audio_rows", 0) or 0),
+            )
+            add_warning(_message, code=_code)
         generator = torch.Generator(device=device).manual_seed(seed)
         # ONE draw per visual condition FIRST, at that condition's own latent
         # shape (they do NOT share one on ref2va), then the video noise, then
@@ -2707,7 +2795,12 @@ class MiniMaxH3Mixin:
                 components["scheduler"], condition_latents, condition_noises,
                 patch_size=patch_size,
             ).to(video_rows.device, video_rows.dtype)
-            expected_rows = int(layout["num_condition_video_rows"])
+            # `num_condition_video_rows` also counts the pin's own rows on
+            # this builder (B-2), which `condition_rows` never includes -- the
+            # pin substitutes into `video_rows` itself, above, not through
+            # `condition_latents`.
+            expected_rows = (int(layout["num_condition_video_rows"])
+                             - int(layout.get("num_pinned_video_rows", 0) or 0))
             if condition_rows.shape[0] != expected_rows:
                 raise RuntimeError(
                     f"MiniMax-H3 conditioning produced {condition_rows.shape[0]} row(s) where the "
@@ -2720,7 +2813,9 @@ class MiniMaxH3Mixin:
         if audio_condition_rows:
             reference_audio_rows = torch.cat(
                 [rows.to(audio_rows.device, audio_rows.dtype) for rows in audio_condition_rows])
-            expected_audio_rows = int(layout["num_condition_audio_rows"])
+            # Same pin-share correction as the video branch above.
+            expected_audio_rows = (int(layout["num_condition_audio_rows"])
+                                   - int(layout.get("num_pinned_audio_rows", 0) or 0))
             if reference_audio_rows.shape[0] != expected_audio_rows:
                 raise RuntimeError(
                     f"MiniMax-H3 reference soundtracks pack into {reference_audio_rows.shape[0]} "
@@ -2813,13 +2908,22 @@ class MiniMaxH3Mixin:
         n_cond_video = layout["num_condition_video_rows"]
         n_cond_audio = layout["num_condition_audio_rows"]
         video_row_order = layout["video_row_order"]
+        # `num_condition_video_rows` is reference/anchor rows PLUS a pin's own
+        # rows (ref2va's extended builder ADDS them; fl2va's builder REPLACES
+        # them with the pin, so this is 0 there); `num_pinned_video_rows` is
+        # the pin's share alone, so the difference is the reference/anchor
+        # prefix that leads the (possibly permuted) target block in this
+        # FULL-row-space tensor -- 0 on fl2va and on any reference-only ref2va
+        # request today, nonzero only once B-2's builder call actually passes
+        # a pin alongside references (still gate-refused at the route).
+        n_cond_reference_video_rows = n_cond_video - int(layout.get("num_pinned_video_rows", 0) or 0)
         # With pinned frames the conditioning rows are rows of THIS clip, so the
         # decode takes every video row and restores frame-major order; with
         # anchors or references they are separate content and the tail is the
         # clip. `video_row_order` is None in the second case, which is the same
         # test the preview makes.
         clip_rows = (video_rows[n_cond_video:] if video_row_order is None
-                     else video_rows[video_row_order.to(video_rows.device)])
+                     else video_rows[n_cond_reference_video_rows:][video_row_order.to(video_rows.device)])
         latents = ops.unpatchify_video_rows(
             clip_rows, latent_frames, latent_height, latent_width,
             latent_channels=int(components.get("latent_channels", 24)),
@@ -2898,7 +3002,10 @@ class MiniMaxH3Mixin:
             # through here and silently decode a VAE round trip of the pinned
             # rows instead of returning the uploaded samples verbatim.
             audio_row_order = layout["audio_row_order"]
-            full_audio_rows = (audio_rows[audio_row_order.to(audio_rows.device)]
+            # Same reference/anchor-prefix offset as the video branch above,
+            # mirrored on the audio index list.
+            n_cond_reference_audio_rows = n_cond_audio - int(layout.get("num_pinned_audio_rows", 0) or 0)
+            full_audio_rows = (audio_rows[n_cond_reference_audio_rows:][audio_row_order.to(audio_rows.device)]
                                if audio_row_order is not None else audio_rows[n_cond_audio:])
             audio_latents = ops.unpack_audio_rows(full_audio_rows, num_audio_latents)
             self._minimax_h3_reset_peak_vram()

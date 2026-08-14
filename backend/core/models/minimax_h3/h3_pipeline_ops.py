@@ -691,6 +691,17 @@ def build_packed_layout(
         "text_indices": text_indices,
         "num_condition_video_rows": num_condition_video_rows,
         "num_condition_audio_rows": num_condition_audio_rows,
+        # The PIN's own share of the two counts above -- 0 unless
+        # `pinned_video_frames`/`pinned_video_row_indices`/`pinned_audio_latents`
+        # was given. On this builder a pin always REPLACES the anchor block's
+        # count (mutual exclusion enforced above), so this equals
+        # `num_condition_*_rows` whenever it is nonzero; ref2va's extended
+        # builder is where the two diverge (references ADD to it). Decode-site
+        # consumers use `num_condition_*_rows - num_pinned_*_rows` to find the
+        # reference/anchor prefix size ahead of a pinned target block, a
+        # difference that is always 0 here but not on ref2va.
+        "num_pinned_video_rows": num_condition_video_rows if (video_row_permutation is not None) else 0,
+        "num_pinned_audio_rows": num_condition_audio_rows if (audio_row_permutation is not None) else 0,
         "rows_per_frame": rows_per_frame,
         # frame-major rows -> packed rows, and back.
         "video_row_permutation": video_row_permutation,
@@ -792,24 +803,25 @@ def build_ref2va_packed_layout(
 
             RETURNED PERMUTATION IS TARGET-BLOCK-RELATIVE, a deliberate
             divergence from the design's "offset by the ref-block row counts"
-            (§3 Option B): it matches the draw-time caller's contract
-            (``minimax_h3.py:2655``/``:2690``, which index a target-only noise
-            tensor before the reference prefix is prepended). The DECODE-time
-            consumers are in FULL-row space (reference rows prepended) and are
-            NOT updated by this change -- ``minimax_h3.py:2821`` and ``:2901``
-            would index a reference row as if it were a clip row. Nothing
-            reaches them today (the 2243 refusal + the still-closed gate);
-            whoever wires B-2 must offset there:
-            ``video_rows[n_cond_reference_rows:][video_row_order]`` (or
-            equivalently ``video_rows[n_cond_reference_rows + video_row_order]``),
-            not ``video_rows[video_row_order]``.
+            (§3 Option B): it matches the DRAW-time caller's contract
+            (``minimax_h3.py``, where the permutation is applied to a
+            target-only noise tensor BEFORE the reference prefix is
+            concatenated onto it). The DECODE-time consumers are in FULL-row
+            space (reference rows already prepended), which is why this
+            builder also returns ``num_pinned_video_rows`` --
+            ``num_condition_video_rows - num_pinned_video_rows`` is the
+            reference/anchor prefix size the decode site must skip before
+            applying ``video_row_order``; indexing ``video_rows[video_row_
+            order]`` directly, without that offset, would read a reference
+            row as if it were a clip row.
         pinned_audio_latents: the mirrored audio pin, permuted only within the
             TARGET audio block (``[audio_start, video_start)``), same channel-
             major addressing as :func:`build_packed_layout`
             (:func:`audio_pin_row_indices`). A reference's own audio rows
             (``reference_audio_row_counts``) are a disjoint, always-clean block
-            this parameter never touches. Also unmeasured; same decode-site
-            caveat as above applies to ``minimax_h3.py:2901``.
+            this parameter never touches. Also unmeasured; the decode site
+            uses the same ``num_condition_audio_rows - num_pinned_audio_rows``
+            offset before ``audio_row_order``.
 
     Bit-identity: both new parameters empty (the default) reproduces the
     pre-extension output row for row --
@@ -970,6 +982,14 @@ def build_ref2va_packed_layout(
         "text_indices": text_indices,
         "num_condition_video_rows": num_condition_video_rows,
         "num_condition_audio_rows": num_condition_audio_rows,
+        # Unlike `build_packed_layout`, a pin here ADDS to the reference/anchor
+        # rows already counted above rather than replacing them (`+=` above),
+        # so this is the pin's OWN share -- decode-site consumers subtract it
+        # from `num_condition_*_rows` to find the reference/anchor prefix size
+        # that leads the (possibly pin-permuted) target block in full-row
+        # space. 0 whenever nothing is pinned, same as `build_packed_layout`.
+        "num_pinned_video_rows": num_pinned_video_rows,
+        "num_pinned_audio_rows": num_pinned_audio_rows,
         "rows_per_frame": rows_per_frame,
         # None unless a pin was passed -- ref2va's reference-only path pins
         # nothing (a reference soundtrack conditions through its own leading
@@ -1597,10 +1617,23 @@ def denoise(
         raise ValueError(
             "denoise(step_callback=...) also needs preview_latent_shape=(T_lat, H_lat, W_lat): the "
             "preview estimate is handed over as latents, not as packed rows.")
-    if video_row_order is not None and video_row_order.numel() != video_rows.shape[0]:
+    n_cond_video = layout["num_condition_video_rows"]
+    n_cond_audio = layout["num_condition_audio_rows"]
+    # `video_row_order` is TARGET-BLOCK-RELATIVE (h3_pipeline_ops.build_ref2va_
+    # packed_layout's own docstring): its length is the target block alone,
+    # not the full `video_rows` -- which also carries any reference/anchor
+    # prefix ahead of it. `n_cond_reference_video_rows` is that prefix's size
+    # (0 on `build_packed_layout`, since a pin there replaces the anchor
+    # count rather than adding to it).
+    num_pinned_video_rows = int(layout.get("num_pinned_video_rows", 0) or 0)
+    n_cond_reference_video_rows = n_cond_video - num_pinned_video_rows
+    target_video_rows = video_rows.shape[0] - n_cond_reference_video_rows
+    if video_row_order is not None and video_row_order.numel() != target_video_rows:
         raise ValueError(
-            f"denoise(video_row_order=...) orders {video_row_order.numel()} row(s) but was given "
-            f"{video_rows.shape[0]} video row(s); it must be the layout's own permutation.")
+            f"denoise(video_row_order=...) orders {video_row_order.numel()} row(s) but the target "
+            f"video block is {target_video_rows} row(s) ({video_rows.shape[0]} total minus "
+            f"{n_cond_reference_video_rows} reference/anchor row(s)); it must be the layout's own "
+            f"permutation.")
 
     torch_device = torch.device(device)
     scheduler.set_shift(SHIFT_VIDEO)
@@ -1660,8 +1693,6 @@ def denoise(
                     tail_steps=1,
                 )
 
-    n_cond_video = layout["num_condition_video_rows"]
-    n_cond_audio = layout["num_condition_audio_rows"]
     layout_kwargs = dict(
         token_tags=layout["token_tags"],
         position_ids=layout["position_ids"],
@@ -1723,9 +1754,13 @@ def denoise(
                             + sigma * video_velocity[0, n_cond_video:].float())
             if video_row_order is not None:
                 # A pinned row is already (near) x0 and is never stepped, so it
-                # previews as itself; an anchor row is not clip content at all
-                # and stays out of the preview.
-                pred_x0_rows = torch.cat([video_rows[:n_cond_video].float(), pred_x0_rows])
+                # previews as itself; a REFERENCE/anchor row is not clip
+                # content at all and stays out of the preview -- only the
+                # pin's own share of the conditioning prefix
+                # (`video_rows[n_cond_reference_video_rows:n_cond_video]`) is
+                # clip content, not the whole prefix.
+                pinned_target_rows = video_rows[n_cond_reference_video_rows:n_cond_video].float()
+                pred_x0_rows = torch.cat([pinned_target_rows, pred_x0_rows])
 
         # Only the GENERATED rows are ever written, so any conditioning anchor
         # survives the whole loop by construction rather than by re-imposition.
@@ -1748,7 +1783,11 @@ def denoise(
                     rows if video_row_order is None else rows[video_row_order],
                     latent_frames, latent_height, latent_width,
                     latent_channels=latent_channels, patch_size=patch_size)
-                clip = video_rows if video_row_order is not None else video_rows[n_cond_video:]
+                # Same reference/anchor-prefix offset as `pred_x0_rows` above
+                # -- `video_row_order` is target-block-relative, so it must
+                # never be applied to the reference/anchor rows ahead of it.
+                clip = (video_rows[n_cond_reference_video_rows:] if video_row_order is not None
+                       else video_rows[n_cond_video:])
                 step_callback(i, total_steps, unpack(clip), None, unpack(pred_x0_rows))
             except Exception as exc:
                 print(f"[{label}] step_callback raised: {exc}")

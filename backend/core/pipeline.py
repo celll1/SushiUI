@@ -3215,6 +3215,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         step_callback=None,
         spatial_mask_timeline=None,
         spatial_mask_arrays=None,
+        references=(),
     ):
         """Video temporal inpaint: regenerate one time range of a clip in place.
 
@@ -3234,6 +3235,12 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             step_callback: Per-step latent preview hook.
             spatial_mask_timeline: Optional spatial mask timeline for H3 inpaint.
             spatial_mask_arrays: Optional decoded spatial mask arrays for H3 inpaint.
+            references: PHASE B-2a (`minimax_h3_inpaint_refs_design.md`,
+                Option B): a `ref2va` reference list, same convention as
+                `generate_ref2vid`'s. Threaded straight through; refused
+                unconditionally by `resolve_minimax_h3_inpaint_reference_gate`
+                in the committed state (see `_generate_vidinpaint_minimax_h3`'s
+                own docstring).
 
         Returns:
             tuple: (frames, audio, audio_sample_rate, actual_seed) -- identical
@@ -3244,11 +3251,13 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         if self.is_minimax_h3_model:
             if spatial_mask_timeline is None and spatial_mask_arrays is None:
                 return self._generate_vidinpaint_minimax_h3(
-                    params, video_frames, fps, input_audio, progress_callback, step_callback)
+                    params, video_frames, fps, input_audio, progress_callback, step_callback,
+                    references=references)
             return self._generate_vidinpaint_minimax_h3(
                 params, video_frames, fps, input_audio, progress_callback, step_callback,
                 spatial_mask_timeline=spatial_mask_timeline,
                 spatial_mask_arrays=spatial_mask_arrays,
+                references=references,
             )
 
         raise ValidationError(

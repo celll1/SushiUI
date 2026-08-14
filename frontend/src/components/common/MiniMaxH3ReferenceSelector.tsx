@@ -44,6 +44,13 @@ interface MiniMaxH3ReferenceSelectorProps {
   // reference_videos/reference_audios field. Hides those two sections and
   // the title/copy that would otherwise describe them.
   imagesOnly?: boolean;
+  // Temporal inpaint's ref2va surface only: the preserved frames outside the
+  // regenerate range already condition the vision stream, so an audio-only
+  // reference set is not refused there (unlike /generate/ref2vid and video
+  // outpaint, where it is). Suppresses the "cannot be the only kind sent"
+  // notice below, which would otherwise describe a restriction this endpoint
+  // does not have.
+  allowAudioAlone?: boolean;
 }
 
 export const EMPTY_MINIMAX_H3_REFERENCES: MiniMaxH3References = {
@@ -68,6 +75,7 @@ export default function MiniMaxH3ReferenceSelector({
   onReferenceImageSizeChange,
   disabled = false,
   imagesOnly = false,
+  allowAudioAlone = false,
 }: MiniMaxH3ReferenceSelectorProps) {
   const imageInput = useRef<HTMLInputElement>(null);
   const videoInput = useRef<HTMLInputElement>(null);
@@ -413,7 +421,7 @@ export default function MiniMaxH3ReferenceSelector({
             }}
           />
           {value.audios.map((file, index) => row(`Audio ${index + 1}`, "audios", index, file))}
-          {value.audios.length > 0 && value.images.length === 0 && value.videos.length === 0 && (
+          {!allowAudioAlone && value.audios.length > 0 && value.images.length === 0 && value.videos.length === 0 && (
             <p className="text-xs text-amber-400 mt-1">
               An audio reference cannot be the only kind sent: it never reaches
               the conditioner, so the vision stream would be conditioned on

@@ -279,6 +279,27 @@ Two facts must be respected by any local conversion:
 `auto_map` targets `modeling_abab.py` and `configuration_abab.py`, neither of
 which is in the snapshot, and its 48-shard index is missing a shard.
 
+## Which tree the loader reads
+
+The snapshot offers the same model twice: the seven-component `official/` tree,
+and the flat ComfyUI-style repack in `diffusion_models/`, `text_encoders/` and
+`vae/`. They are **not the same tensors**, so a loader has to commit to one.
+
+Phase 2 reads `official/` and refuses the flat files with a message naming the
+reason. That inverts what an H3-shaped design would do — H3 takes weights from
+the flat files and completes the rest from `official/` — and the inversion is
+deliberate: Music3's flat DiT fuses QKV, folds the condition encoder in, and
+renames norms to `.gamma`/`.beta`, while its flat text encoder merges the
+language model with the depth decoder. Every one of those needs a key remap that
+`official/` does not, and `official/` was verified to load key-for-key with no
+remap at all (441/441, 4/4, 47/47, 121/121).
+
+The cost, which the refusal message states: until item 9 lands, the only
+available precision is the `official/` FP32 transformer cast at load time. The
+flat tree's FP16 and INT8 variants are unreachable, which is why the remap is
+grouped with INT8 ConvRot rather than done here — the same key mapping serves
+both, and neither is needed to get generation working.
+
 ## Memory
 
 Reported by the model card: under 24 GB in bf16 with automatic CPU offload
@@ -306,9 +327,9 @@ Each numbered item is one commit, independently verifiable.
    SushiUI conduit, plus the ported plain pipeline class. Standalone smoke script;
    host-RAM budget announced before it runs.
 2. **Loader and registry.** `ModelType`, directory detection, load dispatch,
-   component wiring, flat-tree completion by sibling-probe into `official/`
-   (the tokenizer and scheduler exist only there). Verify detection on the real
-   checkpoint before anything downstream.
+   component wiring. Loads the `official/` tree only — see
+   [Which tree the loader reads](#which-tree-the-loader-reads). Verify detection
+   on the real checkpoint before anything downstream.
 3. **Pipeline backend: txt2aud.** `pipeline_backends/minimax_music3.py`, staged
    offload, AR + flow progress, cancellation, **frame-code sidecar**.
 4. **API.** Routes accepting the new arch, `param_defaults.py` with the table
@@ -319,7 +340,9 @@ Each numbered item is one commit, independently verifiable.
 6. **Caption rewriter.** Backend music mode plus validator, and its UI.
 7. **Extend.** AR resume from the sidecar; `outpaint/audio`; frontend branch.
 8. **Repaint.** Both modes above; `aud2aud`; frontend branch.
-9. **INT8 ConvRot.** Load path plus BF16 A/B.
+9. **INT8 ConvRot, and the flat tree with it.** The flat-file key remap plus the
+   load path and a BF16 A/B. These belong in one commit because the flat files
+   are the only place the fp16 and int8 precisions exist.
 10. **Docs.** `MODEL_FACTS.md` row with measured numbers, architecture counts in
     `AGENTS.md` / `ADD_A_MODEL_ARCHITECTURE.md` / `ARCHITECTURE_MAP.md`,
     `REQUEST_LIFECYCLE.md`, and a `DOC_MAP.md` row for this document.

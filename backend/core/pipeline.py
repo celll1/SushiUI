@@ -3443,8 +3443,13 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                 trims the UPLOADED clip itself before placement). MiniMax
                 Music 3 -- `placement` (required, only `"extend_forward"`),
                 `extend_duration_sec`/`num_inference_steps`/
-                `flow_guidance_scale` (required, no fallback), `seed`,
-                `content_hash` (optional).
+                `flow_guidance_scale` (required, no fallback), `seed`. NOTE:
+                no `content_hash` key -- `_generate_audoutpaint_minimax_
+                music3` always computes the source hash itself, server-side,
+                from `reference_audio` (the file on disk); a caller-suppliable
+                hash would be an opt-out from the identity check that
+                mechanism exists to enforce, so it is never read from
+                `params` even if present.
             reference_audio: ACE-Step -- a file path (str) or raw audio
                 bytes for the input clip to place. MiniMax Music 3 -- a
                 server-side file PATH (str) ONLY (the sidecar must already

@@ -389,10 +389,15 @@ class MiniMaxMusic3Pipeline:
         return embeds * self.num_codebooks**-0.5
 
     def _generate_depth_codes(self, last_hidden: torch.Tensor, semantic_code: torch.Tensor, generator):
-        """Sample the residual codes c1..c7 for one frame. Verbatim upstream `encoders.py::_generate_depth_codes`."""
-        sequence = [self.rvq_depth_decoder.projection(last_hidden).unsqueeze(1)]
+        """Sample the residual codes c1..c7 for one frame. Verbatim upstream `encoders.py::_generate_depth_codes`,
+        plus explicit dtype casts at the two points where an LM-dtype tensor (`last_hidden`, the embedding of
+        `semantic_code`) crosses into `rvq_depth_decoder.projection` -- see `_embed_audio_frame`'s `extra.to(embeds
+        .dtype)` for the same crossing already guarded elsewhere in this file; this mirrors it rather than relying
+        on the loader happening to hand both models the same `torch_dtype` today."""
+        rvq_dtype = self.rvq_depth_decoder.dtype
+        sequence = [self.rvq_depth_decoder.projection(last_hidden.to(rvq_dtype)).unsqueeze(1)]
         code_embed = self.language_model.model.embed_tokens(semantic_code + AUDIO_CODE_OFFSET)
-        sequence.append(self.rvq_depth_decoder.projection(code_embed).unsqueeze(1))
+        sequence.append(self.rvq_depth_decoder.projection(code_embed.to(rvq_dtype)).unsqueeze(1))
         codes = [semantic_code]
         hidden_parts = []
         for index in range(1, self.num_codebooks):
@@ -576,7 +581,10 @@ class MiniMaxMusic3Pipeline:
             is_warmup_step = (not resuming) and frame_index == 0
             emit_this_frame = not is_warmup_step
             if emit_this_frame:
-                frame_hiddens.append(torch.cat((last_hidden[:1], depth_hidden), dim=-1))
+                # `depth_hidden` carries the RVQ depth decoder's dtype, `last_hidden` the language model's --
+                # `torch.cat` requires an exact dtype match between operands, same crossing as
+                # `_generate_depth_codes`'s two casts above.
+                frame_hiddens.append(torch.cat((last_hidden[:1], depth_hidden.to(last_hidden.dtype)), dim=-1))
                 frame_codes_out.append(frame_codes[0].clone())
                 if progress_callback:
                     try:
@@ -657,7 +665,15 @@ class MiniMaxMusic3Pipeline:
         for k, chunk_start in enumerate(chunk_starts):
             raise_if_cancelled()
             chunk_end = min(chunk_start + CHUNK_FRAMES, frame_hiddens.shape[1])
-            condition = self.condition_encoder(frame_hiddens[:, chunk_start:chunk_end].to(device))
+            # `frame_hiddens` carries the language model's dtype; the loader pins
+            # `condition_encoder` to float32 regardless of `torch_dtype`. `nn.Conv1d`
+            # requires its input to match its weight/bias dtype exactly, so the cast
+            # has to happen on the way IN, not only on the way out (`.to(self.transformer
+            # .dtype)` below only fixes the output).
+            condition_encoder_dtype = next(self.condition_encoder.parameters()).dtype
+            condition = self.condition_encoder(
+                frame_hiddens[:, chunk_start:chunk_end].to(device=device, dtype=condition_encoder_dtype)
+            )
             condition = condition.to(self.transformer.dtype)
 
             overlap = 0

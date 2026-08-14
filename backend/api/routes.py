@@ -530,6 +530,14 @@ def _reject_if_music3_model_not_yet_wired(endpoint: str):
     Without this, an audio route falls through to "No ACE-Step model loaded"
     while a Music3 model is actually loaded -- true only in the narrow sense
     that it isn't ACE-Step, and misleading about why.
+
+    NOTE for whoever removes this gate: every audio route below reserves
+    `_PEAK_VRAM_GB_BY_KIND["acestep"]` (8.0) from the GPU coordinator
+    regardless of which audio architecture is loaded. MiniMax Music 3's
+    actual peak (~18-24 GB across its two co-residency pairs) needs its own
+    entry in `_PEAK_VRAM_GB_BY_KIND`, added and read at every one of this
+    gate's call sites, BEFORE this function stops raising -- otherwise the
+    coordinator under-reserves by roughly 2-3x for every Music 3 generation.
     """
     if getattr(pipeline_manager, "is_minimax_music3_model", False):
         raise CustomValidationError(

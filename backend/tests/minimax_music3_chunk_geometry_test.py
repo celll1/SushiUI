@@ -15,6 +15,7 @@ refactor of the loop in ``denoise_chunks``/``decode``.
 import os
 import sys
 
+import pytest
 import torch
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -77,7 +78,13 @@ def test_prepare_chunks_hop_arithmetic_pinned():
 # ---------------------------------------------------------------------------
 # Full chunk -> denoise -> decode stitching on a tiny synthetic pipeline.
 # ---------------------------------------------------------------------------
-def _build_tiny_flow_pipeline():
+def _build_tiny_flow_pipeline(transformer_dtype=torch.float32):
+    """`transformer_dtype` mirrors the loader's `torch_dtype` (the language
+    model / transformer share it); `condition_encoder`/`vocoder` are PINNED
+    to float32 here exactly as `core.models.minimax_music3.loader` pins them
+    regardless of `torch_dtype` -- see `denoise_chunks`'s dtype cast this
+    fixture exists to exercise under a non-default `transformer_dtype`.
+    """
     condition_hidden_dim = 8
     num_condition_layers = 8
     out_dim = 4
@@ -94,7 +101,7 @@ def _build_tiny_flow_pipeline():
         input_hop_length=960,
         output_sampling_rate=44100,
         output_hop_length=4,
-    ).eval()
+    ).eval().to(torch.float32)
     transformer = MiniMaxMusic3Transformer1DModel(
         in_channels=in_channels,
         condition_dim=out_dim,
@@ -104,14 +111,14 @@ def _build_tiny_flow_pipeline():
         ff_inner_dim=8,
         rotary_dim=4,
         fourier_embedding_dim=8,
-    ).eval()
+    ).eval().to(transformer_dtype)
     vocoder = MiniMaxMusic3Vocoder(
         latent_channels=in_channels,
         decoder_input_dim=4,
         decoder_hidden_dim=4,
         upsampling_ratios=(2, 2),
         sampling_rate=44100,
-    ).eval()
+    ).eval().to(torch.float32)
     scheduler = FlowMatchEulerDiscreteScheduler(invert_sigmas=True)
 
     pipeline = MiniMaxMusic3Pipeline(
@@ -127,13 +134,17 @@ def _build_tiny_flow_pipeline():
     return pipeline, condition_hidden_dim, num_condition_layers
 
 
-def test_multi_chunk_denoise_and_decode_stitches_to_the_expected_sample_count():
+@pytest.mark.parametrize("transformer_dtype", [torch.float32, torch.bfloat16, torch.float16])
+def test_multi_chunk_denoise_and_decode_stitches_to_the_expected_sample_count(transformer_dtype):
     torch.manual_seed(0)
-    pipeline, condition_hidden_dim, num_condition_layers = _build_tiny_flow_pipeline()
+    pipeline, condition_hidden_dim, num_condition_layers = _build_tiny_flow_pipeline(transformer_dtype)
 
-    # A song long enough to force multiple flow-matching windows (> CHUNK_FRAMES AR frames).
+    # A song long enough to force multiple flow-matching windows (> CHUNK_FRAMES AR frames). `frame_hiddens` carries
+    # the language model's dtype on a real checkpoint (== `transformer_dtype` here, matching the loader's shared
+    # `torch_dtype`) -- NOT `condition_encoder`'s pinned float32, which is exactly the mismatch `denoise_chunks`
+    # must cast across (see its dtype-cast comment).
     num_ar_frames = CHUNK_FRAMES + CHUNK_HOP + 5
-    frame_hiddens = torch.randn(1, num_ar_frames, num_condition_layers * condition_hidden_dim)
+    frame_hiddens = torch.randn(1, num_ar_frames, num_condition_layers * condition_hidden_dim).to(transformer_dtype)
 
     chunk_starts = pipeline.prepare_chunks(frame_hiddens)
     assert len(chunk_starts) >= 2, "this test requires the multi-window path to actually engage"

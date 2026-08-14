@@ -965,6 +965,11 @@ export interface InpaintVideoParams {
   attention_type?: string;
   // Generation-time LoRA (see Txt2VidParams.loras).
   loras?: LoRAConfig[];
+  // MiniMax-H3 ref2va only: how a reference IMAGE is sized before it is
+  // packed onto the sequence. Same two values, same meaning, as
+  // Ref2VidParams.reference_image_size. Read only when `generateInpaintVideo`
+  // is actually given references; harmless to send on fl2va (unread there).
+  reference_image_size?: "max" | "match";
 }
 
 export interface UpscaleParams {
@@ -4619,15 +4624,24 @@ function sanitizeMaskAssetFilename(id: string): string {
   return `${safe || "mask"}.png`;
 }
 
-// Video temporal inpaint (MiniMax-H3 fl2va): multipart POST
+// Video temporal inpaint (MiniMax-H3 fl2va/ref2va): multipart POST
 // /generate/inpaint/video with an uploaded `video` clip. Same explicit-append
 // shape as generateOutpaintVideo, matching the Form parameter names of
 // routes.py's generate_inpaint_video 1:1. No clip-length field exists: the
 // output is as long as the trimmed input.
+//
+// `references` is optional and carries the SAME field set as
+// generateRef2Vid's (reference_images/reference_videos/reference_video_audios
+// /reference_audios) -- this endpoint mirrors /generate/ref2vid's reference
+// surface, not video outpaint's images-only one. fl2va and an unidentified
+// variant refuse a reference-carrying request server-side; the caller is
+// expected to have gated the UI on a confirmed ref2va checkpoint before
+// populating `references` (see InpaintPanel's isH3Ref2VaInpaint).
 export const generateInpaintVideo = async (
   params: InpaintVideoParams,
   video: File | string,
   spatialMaskParts?: Array<{ id: string; file: File }>,
+  references?: MiniMaxH3References,
 ) => {
   const formData = new FormData();
 
@@ -4733,6 +4747,28 @@ export const generateInpaintVideo = async (
 
   formData.append("video_lossless", String(params.video_lossless ?? false));
   formData.append("loras", JSON.stringify(params.loras || []));
+
+  // The reference files, in upload order -- same convention as
+  // generateRef2Vid's own append (order is semantic: it fixes the
+  // <Picture i>/<Video k>/<Audio j> labels and the packed sequence's shared
+  // rotary clock). Only appended when the caller actually has references, so
+  // a plain fl2va temporal-inpaint request is byte-identical to what it was
+  // before this field set existed.
+  if (references) {
+    formData.append("reference_image_size", params.reference_image_size ?? "max");
+    (references.images || []).forEach((file) => formData.append("reference_images", file));
+    (references.videos || []).forEach((file) => formData.append("reference_videos", file));
+    if ((references.videoAudios || []).some((file) => file)) {
+      (references.videos || []).forEach((_video, index) => {
+        const soundtrack = (references.videoAudios || [])[index];
+        formData.append(
+          "reference_video_audios",
+          soundtrack ?? new File([], ""),
+        );
+      });
+    }
+    (references.audios || []).forEach((file) => formData.append("reference_audios", file));
+  }
 
   const response = await postGenerationRequest("/generate/inpaint/video", formData, {
     headers: { "Content-Type": "multipart/form-data" },

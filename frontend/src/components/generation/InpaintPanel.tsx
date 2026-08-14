@@ -43,7 +43,8 @@ import {
   MASK_WHITE_LUMINANCE_THRESHOLD,
 } from "@/utils/maskConventions";
 import { migrateLoopGenerationConfig, computeLoopDecodeDirective } from "@/utils/loopGenerationInheritance";
-import { getSamplers, getScheduleTypes, generateInpaint, generateInpaintVideo, generateInpaintTrainingPreview, toBase64, InpaintParams as ApiInpaintParams, InpaintVideoParams, LoRAConfig, ControlNetConfig, generateTIPOPrompt, cancelGeneration, getCurrentModel, getResultFilename, getResultPlaybackFilename, getResultSeed, getResultAncestralSeed, isLatentOnlyResult, unetQuantizationOptions, normalizeUnetQuantization, transformerQuantizationLabel, archSupportsFeature, archDisplayName, inpaintVideoDefaultsForArch, fitVideoCanvas, videoCanvasRule, videoCanvasAxisBounds, videoCanvasExceedsEnvelope, largestValidVideoFrameCount, isValidVideoFrameCount, latentGroupSpans, snapRangeToLatentGroups, isGenerationStalledError, VIDEO_BLOCK_SWAP_MAX } from "@/utils/api";
+import { getSamplers, getScheduleTypes, generateInpaint, generateInpaintVideo, generateInpaintTrainingPreview, toBase64, InpaintParams as ApiInpaintParams, InpaintVideoParams, LoRAConfig, ControlNetConfig, MiniMaxH3References, generateTIPOPrompt, cancelGeneration, getCurrentModel, getResultFilename, getResultPlaybackFilename, getResultSeed, getResultAncestralSeed, isLatentOnlyResult, unetQuantizationOptions, normalizeUnetQuantization, transformerQuantizationLabel, archSupportsFeature, archDisplayName, inpaintVideoDefaultsForArch, fitVideoCanvas, videoCanvasRule, videoCanvasAxisBounds, videoCanvasExceedsEnvelope, largestValidVideoFrameCount, isValidVideoFrameCount, latentGroupSpans, snapRangeToLatentGroups, isGenerationStalledError, VIDEO_BLOCK_SWAP_MAX } from "@/utils/api";
+import MiniMaxH3ReferenceSelector, { EMPTY_MINIMAX_H3_REFERENCES, countMiniMaxH3References } from "../common/MiniMaxH3ReferenceSelector";
 import VideoInpaintTimeline from "./VideoInpaintTimeline";
 import VideoMaskPreviewOverlay from "./VideoMaskPreviewOverlay";
 import VideoMaskFrameEditor from "./VideoMaskFrameEditor";
@@ -675,6 +676,14 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
   // The input File is persisted in IndexedDB so it survives panel navigation
   // and browser reloads. The result remains a URL in preview storage.
   const [videoFile, setVideoFile] = useState<File | null>(null);
+  // MiniMax-H3 ref2va temporal-inpaint references (images/videos/audios),
+  // same shape and ordering rules as /generate/ref2vid's own h3References.
+  // Only reachable when the loaded transformer is confirmed ref2va
+  // (isH3Ref2VaInpaint below); fl2va and hybrid never render the control.
+  const [h3References, setH3References] = useState<MiniMaxH3References>(
+    EMPTY_MINIMAX_H3_REFERENCES,
+  );
+  const [h3ReferenceImageSize, setH3ReferenceImageSize] = useState<"max" | "match">("max");
   const [videoPreviewUrl, setVideoPreviewUrl] = useState<string | null>(null);
   const [videoDurationSec, setVideoDurationSec] = useState<number | null>(null);
   const [inputVideoSize, setInputVideoSize] = useState<{ width: number; height: number } | null>(null);
@@ -900,17 +909,36 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
   const archSupportsTemporalInpaint = archSupportsFeature(archCapabilities, loadedArchType, "temporal_inpaint");
   // MiniMax-H3's gate is per-PARTITION, and archSupportsFeature cannot express
   // it: it is keyed on architecture, not on the loaded transformer file.
-  // `/generate/inpaint/video` refuses every NAMED variant other than fl2va and
-  // lets an UNIDENTIFIED one (a renamed DiT -- the variant is read off the
-  // filename) through (routes.py, the `if _h3_variant and _h3_variant !=
-  // "fl2va"` gate). Both halves are mirrored here, so the render-time banner
-  // explains a refusal the route would answer 400 with, and a request the
-  // route would accept is never hidden.
+  // `/generate/inpaint/video` now serves fl2va (no references) AND ref2va
+  // (references optional, including audio-only -- the interior pin already
+  // supplies vision conditioning), refuses `hybrid` unconditionally, and
+  // refuses an UNIDENTIFIED variant only when a reference is attached
+  // (generation_utils.resolve_minimax_h3_inpaint_reference_gate). Only
+  // `hybrid` hides the whole surface here; ref2va's own reference limits are
+  // enforced by the selector/route, not by hiding the tab.
   const h3Variant = loadedArchType === "minimax_h3"
     ? (currentModelInfo?.model_info?.variant as string | undefined)
     : undefined;
-  const h3TemporalInpaintRefused = Boolean(h3Variant) && h3Variant !== "fl2va";
+  const h3TemporalInpaintRefused = h3Variant === "hybrid";
   const supportsTemporalInpaint = archSupportsTemporalInpaint && !h3TemporalInpaintRefused;
+  // Renders the References card only for a confirmed ref2va checkpoint --
+  // fl2va was never trained to read reference rows (fl2va + a reference is a
+  // 400), and an unidentified variant's reference support cannot be told
+  // apart from fl2va's absence of it.
+  const isH3Ref2VaInpaint = h3Variant === "ref2va";
+  // M3 fix: the References card only exists while isH3Ref2VaInpaint is true.
+  // Without this, attaching references then switching to an fl2va checkpoint
+  // unmounted the card but left h3References populated, so every later
+  // Generate click hit the freshH3Variant guard below and alerted "clear the
+  // references" while pointing at a control no longer on screen. Clearing
+  // the state the moment the surface goes away keeps state and UI in sync
+  // (the request itself was already safe either way -- hasH3References at
+  // enqueue time already dropped them when !isH3Ref2VaInpaint).
+  useEffect(() => {
+    if (!isH3Ref2VaInpaint) {
+      setH3References(EMPTY_MINIMAX_H3_REFERENCES);
+    }
+  }, [isH3Ref2VaInpaint]);
   const supportsNegativePrompt = archSupportsFeature(archCapabilities, loadedArchType, "negative_prompt");
   // Hide Spectrum/FBCache when the loaded sampler does not consume them; H3 now
   // supports both. This matches the other panels' leaf-control convention.
@@ -923,25 +951,16 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
   const videoBlocksToSwapEnabledDefault =
     (generationDefaults?.inpaint_vid as Record<string, unknown> | undefined)
       ?.blocks_to_swap_enabled_default as number ?? 40;
-  // Mirrors the substance of the route's own 400 text for each named variant,
-  // so the banner below states the same thing the Generate click would
-  // otherwise fail with. Only reached for a named non-fl2va variant -- an
-  // unidentified one is not refused, here or at the route.
-  const h3TemporalInpaintReason = h3Variant === "ref2va"
-    ? "Temporal inpaint is served by the fl2va partition, not ref2va: load an "
-      + "fl2va MiniMax-H3 checkpoint (e.g. "
-      + "diffusion_models/minimax_h3_fl2va_pruned_fp8_scaled.safetensors). This is why no "
-      + "\"References (MiniMax-H3 ref2va)\" control is offered here -- reference "
-      + "conditioning combined with the mid-clip pin is not implemented on any endpoint. "
-      + "References ARE offered on the Outpaint tab's video extend-forward placement, "
-      + "with this same checkpoint."
-    : h3Variant === "hybrid"
-    ? "The loaded MiniMax-H3 transformer is the hybrid variant. A merged checkpoint "
-      + "loads and can be inspected, but it does not generate on any endpoint, "
-      + "including temporal inpaint."
-    : `The loaded MiniMax-H3 transformer is the ${h3Variant} variant, not fl2va. Temporal `
-      + "inpaint is offered on the fl2va partition: the mid-clip pin is measured there and "
-      + "nowhere else.";
+  // Mirrors the substance of the route's own 400 text for the one variant
+  // this endpoint still refuses outright. Only reached when h3Variant ===
+  // "hybrid" -- fl2va and ref2va both serve this endpoint now (fl2va without
+  // references, ref2va with or without), and an unidentified variant is only
+  // refused if a reference is actually attached, which the References card
+  // never renders for it in the first place.
+  const h3TemporalInpaintReason =
+    "The loaded MiniMax-H3 transformer is the hybrid variant. A merged checkpoint "
+    + "loads and can be inspected, but it does not generate on any endpoint, "
+    + "including temporal inpaint.";
   const temporalInpaintReason = !archSupportsTemporalInpaint
     ? (loadedArchType ? archCapabilities?.unsupported?.[loadedArchType]?.temporal_inpaint : undefined)
     : (h3TemporalInpaintRefused ? h3TemporalInpaintReason : undefined);
@@ -3254,16 +3273,21 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         alert("A merged MiniMax-H3 checkpoint loads and can be inspected, but every generation endpoint refuses it: the A/B measurement that would release generation for it has not been run.");
         return;
       }
-      // The partition half of this check comes from the SAME fresh read as the
-      // hybrid one above: the variant changes on a backbone component switch,
-      // which the cached `supportsTemporalInpaint` can lag behind. Named
-      // non-fl2va only -- an unidentified variant is accepted by the route.
+      // fl2va and ref2va both serve this endpoint now; only hybrid is refused
+      // outright, and that was already caught by the fresh read above. A
+      // reference attached to a non-ref2va variant is refused by the route
+      // (fl2va: "never trained to read reference rows"; unidentified: cannot
+      // be told apart from fl2va's absence of it) -- checked just below, from
+      // the SAME fresh variant read, since the References card is built off
+      // the cached `currentModelInfo` and a backbone switch under an open
+      // page could otherwise let a stale reference set reach the route.
       const freshH3Variant = modality.modelInfo?.type === "minimax_h3"
         ? (modality.modelInfo?.variant as string | undefined) : undefined;
-      if (freshH3Variant && freshH3Variant !== "fl2va") {
-        alert(`The loaded MiniMax-H3 transformer is the ${freshH3Variant} variant, not fl2va. `
-          + "Temporal inpaint is offered on the fl2va partition; load an fl2va checkpoint, or "
-          + "use the Outpaint tab to extend a clip.");
+      if (freshH3Variant !== "ref2va" && countMiniMaxH3References(h3References) > 0) {
+        alert(`The loaded MiniMax-H3 transformer is the ${freshH3Variant || "unidentified"} `
+          + "variant. Reference conditioning on temporal inpaint requires the ref2va "
+          + "checkpoint (e.g. diffusion_models/minimax_h3_ref2va_pruned_fp8_scaled.safetensors); "
+          + "clear the references, or load that checkpoint.");
         return;
       }
       if (!supportsTemporalInpaint) {
@@ -3288,12 +3312,22 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
       let videoPrompt = await replaceWildcardsInPrompt(params.prompt);
       if (modality.modelInfo?.type === "minimax_h3") {
         try {
+          // The inventory has to describe the ACTUAL request's reference
+          // rows -- the input clip being inpainted is a pin, not a
+          // reference, and gets no <Video k> label of its own, so it must
+          // not be counted here (M5 fix: this used to hardcode `videos: 1`
+          // for the pinned clip, which could point the assisted prompt at
+          // a <Video 1> that is absent or is someone else's reference).
           const assisted = await maybeTransformH3PromptForGeneration({
             prompt: videoPrompt,
-            mode: modality.modelInfo?.variant === "ref2va" ? "ref2va" : "t2va",
+            mode: modality.modelInfo?.variant === "ref2va" && countMiniMaxH3References(h3References) > 0
+              ? "ref2va"
+              : "t2va",
             durationSeconds: videoDurationSec ?? Math.max(1, estimatedRawFrames) / clipFrameRate,
             references: createH3ReferenceInventory({
-              videos: 1,
+              pictures: h3References.images.length,
+              videos: h3References.videos.length,
+              audios: h3References.audios.length + h3References.videoAudios.filter(Boolean).length,
             }),
           });
           videoPrompt = assisted.prompt;
@@ -3419,12 +3453,24 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         // Applied by MiniMax-H3 (the only architecture this endpoint serves).
         // Same selector/list as image generation's `params.loras`.
         loras: params.loras,
+        // ref2va only: harmless to send on fl2va too (the References card
+        // never populates h3References there, so this stays "max" unread).
+        reference_image_size: h3ReferenceImageSize,
       };
+      const hasH3References = isH3Ref2VaInpaint && countMiniMaxH3References(h3References) > 0;
+      if (hasH3References && spatialMaskManifest) {
+        alert("A spatial mask timeline cannot be combined with reference conditioning: the "
+          + "ref2va layout builder carries a frame-level temporal-inpaint pin alongside "
+          + "references, not a row-level spatial-mask pin. Drop the spatial mask, or clear "
+          + "the references.");
+        return;
+      }
       addToQueue({
         type: "inpaint_vid",
         params: videoParams as any,
         inputVideo: videoFile,
         ...(spatialMaskFiles ? { spatialMaskFiles } : {}),
+        ...(hasH3References ? { references: h3References } : {}),
         prompt: videoParams.prompt,
       });
       return;
@@ -3848,7 +3894,8 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
       try {
         const clip = nextItem.inputVideo;
         if (!clip) throw new Error("No input video available for video inpaint generation");
-        const result = await generateInpaintVideo(videoParams, clip, nextItem.spatialMaskFiles);
+        const result = await generateInpaintVideo(
+          videoParams, clip, nextItem.spatialMaskFiles, nextItem.references);
         const videoUrl = `/outputs/${getResultFilename(result)}`;
         const videoPlaybackUrl = `/outputs/${getResultPlaybackFilename(result)}`;
         const playbackUrl = videoPlaybackUrl !== videoUrl ? videoPlaybackUrl : undefined;
@@ -5423,9 +5470,17 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         <H3PromptAssist
           prompt={params.prompt}
           onApply={(prompt) => setParams((previous) => ({ ...previous, prompt }))}
-          suggestedMode={currentModelInfo?.model_info?.variant === "ref2va" ? "ref2va" : "t2va"}
+          suggestedMode={
+            isH3Ref2VaInpaint && countMiniMaxH3References(h3References) > 0 ? "ref2va" : "t2va"
+          }
           durationSeconds={videoDurationSec ?? Math.max(1, estimatedRawFrames) / clipFrameRate}
-          references={createH3ReferenceInventory({ videos: 1 })}
+          // Built from the actual reference set (M5 fix): the input clip is a
+          // pin, not a labeled reference, so it must not be counted here.
+          references={createH3ReferenceInventory({
+            pictures: h3References.images.length,
+            videos: h3References.videos.length,
+            audios: h3References.audios.length + h3References.videoAudios.filter(Boolean).length,
+          })}
         />
       )}
       {!isVideo && (
@@ -5545,6 +5600,34 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
               To extend a clip instead of regenerating part of it, use the Outpaint tab.
             </p>
           </Card>
+        )}
+
+        {isVideo && supportsTemporalInpaint && isH3Ref2VaInpaint && (
+          <>
+            <details className="group -mb-1 rounded-md border border-gray-800/80 bg-gray-900/35 px-3 py-1.5 text-xs text-gray-500">
+              <summary className="cursor-pointer select-none text-gray-400 marker:text-gray-600 hover:text-gray-300">
+                MiniMax reference behavior on temporal inpaint
+              </summary>
+              <p className="mt-2 leading-relaxed">
+                The preserved frames outside the regenerate range already
+                condition the vision stream, so a reference set can be
+                audio only here (unlike /generate/ref2vid, where an audio
+                reference has to be paired with an image or video
+                reference). An audio reference contributes audio rows to the
+                packed sequence ahead of the generated span; whether the
+                model reads them while the clip&apos;s frames are pinned has
+                not been measured. The response carries a warning saying so.
+              </p>
+            </details>
+            <MiniMaxH3ReferenceSelector
+              value={h3References}
+              onChange={setH3References}
+              referenceImageSize={h3ReferenceImageSize}
+              onReferenceImageSizeChange={setH3ReferenceImageSize}
+              disabled={isGenerating}
+              allowAudioAlone
+            />
+          </>
         )}
 
         {isVideo && supportsTemporalInpaint && (

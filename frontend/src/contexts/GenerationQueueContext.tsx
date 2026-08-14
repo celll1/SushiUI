@@ -51,10 +51,14 @@ export interface QueueItem {
   // (MiniMax-H3, which conditions on boundary frames and can anchor both ends
   // of a gap) accepts it; the backend refuses it on any other.
   bridgeVideo?: File;
-  // For ref2vid (MiniMax-H3 ref2va) only: the reference uploads, IN THE ORDER
-  // THE MODEL READS THEM. They ride on the item -- like inputAudio/inputVideo,
-  // and unlike inputImage's base64 string -- so a queued request keeps the
-  // references it was built with even after the panel's inputs change.
+  // For ref2vid (MiniMax-H3 ref2va) and inpaint_vid (MiniMax-H3 ref2va only)
+  // the reference uploads, IN THE ORDER THE MODEL READS THEM. They ride on
+  // the item -- like inputAudio/inputVideo, and unlike inputImage's base64
+  // string -- so a queued request keeps the references it was built with
+  // even after the panel's inputs change. On inpaint_vid this is set only
+  // when the loaded transformer was a confirmed ref2va checkpoint at
+  // enqueue time (InpaintPanel's isH3Ref2VaInpaint); fl2va and hybrid never
+  // populate it.
   references?: MiniMaxH3References;
   // For outpaint_vid (MiniMax-H3 ref2va, extend_forward only): optional
   // image references on top of the automatic source-clip video reference.

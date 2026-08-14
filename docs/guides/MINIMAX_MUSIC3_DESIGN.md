@@ -279,6 +279,60 @@ Two facts must be respected by any local conversion:
 `auto_map` targets `modeling_abab.py` and `configuration_abab.py`, neither of
 which is in the snapshot, and its 48-shard index is missing a shard.
 
+## GGUF weights
+
+A third distribution exists:
+[molbal/Minimax-Music3-GGUF](https://huggingface.co/molbal/Minimax-Music3-GGUF)
+(`d6ab7b87`, 2026-08-13), published for ComfyUI-GGUF. Two files are staged:
+`diffusion_models/minimax_music3_dit_BF16.gguf` (4.98 GB) and
+`text_encoders/minimax_music3_text_encoder_pruned_Q8_0.gguf` (9.59 GB). The repo
+also carries Q8_0 / Q8_CR / Q4_0 DiTs and Q8_CR / Q4_0 text encoders.
+
+Read directly from the GGUF headers, because it decides the work:
+
+- **The tensor names are the flat ComfyUI layout, exactly.** The DiT is the same
+  374 tensors as the flat safetensors — `diffusion_transformer.*`, fused
+  `to_qkv`, `.gamma`/`.beta` norms, plus `latent_conditioners.*`,
+  `cond_layer_logits`, `cond_layer_scale`. The text encoder is the same 328
+  tensors as the flat pruned repack — `model.embed_tokens_prefill`,
+  `model.embed_tokens_audio`, `model.lm_head_pruned`, `model.audio_decoder.*`.
+  So **GGUF and the flat safetensors need one key remap, not two**, which is why
+  they belong in the same phase.
+- **The files carry no architecture configuration.** Only three metadata keys
+  exist: `general.architecture = minimax_music3`, `general.quantization_version`,
+  `general.file_type`. There are no dimensions, no layer counts, no sample rate.
+  Every config must still come from `official/`, so the sibling probe is a
+  requirement for the GGUF path rather than a convenience.
+- **`general.architecture` is `minimax_music3`, not a llama.cpp architecture.**
+  These are ComfyUI-convention GGUF containers, so no llama.cpp loader applies
+  and none should be reached for.
+- **The declared precision is not the whole story.** The "BF16" DiT is
+  F32 + F16 on disk (226 F32 / 148 F16 tensors, `file_type=1`). The Q8_0 text
+  encoder is 169 Q8_0 + 155 F32 + 4 BF16.
+
+Two consequences worth deciding deliberately rather than drifting into:
+
+**The pruned vocabulary is an architecture change, not a size change.** The
+vendored `Qwen3ForCausalLM` path indexes `embed_tokens` at
+`code + AUDIO_CODE_OFFSET` over a 200,000-entry table and masks the logits down
+to the audio range. The pruned layout instead splits the table into
+`embed_tokens_prefill` [151,675] for text and `embed_tokens_audio` [16,384] for
+semantic codes, with `lm_head_pruned` [16,385] (the audio codes plus
+end-of-audio). Adopting it means changing the offset arithmetic and the vocab
+mask in the AR loop, which is checkpoint-contract code. That is the substance of
+the work; the container format is the easy part.
+
+**Dequantise-on-load would be a hollow feature.** Expanding Q8_0 to bf16 at load
+yields a resident text encoder no smaller than the bf16 file already staged —
+the only gain would be a smaller download. The reason to want Q8_0 is residency,
+so the target is packed weights with dequantisation at use, in the shape the
+existing `convrot_int8_linear.py` runtime already establishes for this repo.
+Q8_0 is block-wise: 32 values per block with one fp16 scale.
+
+No new pip dependency should be taken for this. The GGUF container is a short
+header plus tensor records and is read here directly; the `gguf` package would
+add a supply-chain dependency for a format this repo can parse in one file.
+
 ## Which tree the loader reads
 
 The snapshot offers the same model twice: the seven-component `official/` tree,
@@ -340,10 +394,22 @@ Each numbered item is one commit, independently verifiable.
 6. **Caption rewriter.** Backend music mode plus validator, and its UI.
 7. **Extend.** AR resume from the sidecar; `outpaint/audio`; frontend branch.
 8. **Repaint.** Both modes above; `aud2aud`; frontend branch.
-9. **INT8 ConvRot, and the flat tree with it.** The flat-file key remap plus the
-   load path and a BF16 A/B. These belong in one commit because the flat files
-   are the only place the fp16 and int8 precisions exist.
-10. **Docs.** `MODEL_FACTS.md` row with measured numbers, architecture counts in
+9. **The flat key remap.** One remap serving the flat safetensors *and* GGUF,
+   since their tensor names are identical: split the fused QKV, rename the
+   `.gamma`/`.beta` norms, unfold the condition encoder out of the DiT file, and
+   split the merged language model and depth decoder. Configs continue to come
+   from `official/`.
+10. **The pruned vocabulary.** The offset arithmetic and vocab mask in the AR
+    loop, against `embed_tokens_prefill` / `embed_tokens_audio` /
+    `lm_head_pruned`. Checkpoint-contract code — verify against the full-vocab
+    path by generating the same seed both ways and comparing codes.
+11. **GGUF containers.** A reader in-repo (no new dependency), wired to item 9's
+    remap, F32/F16/BF16 tensors first.
+12. **Q8_0 residency.** Packed weights with dequantisation at use, following
+    `convrot_int8_linear.py`. A dequantise-on-load shortcut is not worth
+    shipping — see the GGUF section. Then a BF16 A/B on output.
+13. **INT8 ConvRot**, which item 9 has by then unblocked, plus its own A/B.
+14. **Docs.** `MODEL_FACTS.md` row with measured numbers, architecture counts in
     `AGENTS.md` / `ADD_A_MODEL_ARCHITECTURE.md` / `ARCHITECTURE_MAP.md`,
     `REQUEST_LIFECYCLE.md`, and a `DOC_MAP.md` row for this document.
 

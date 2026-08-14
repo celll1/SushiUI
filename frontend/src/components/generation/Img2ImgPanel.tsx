@@ -5258,6 +5258,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
               referenceImageSize={h3ReferenceImageSize}
               onReferenceImageSizeChange={setH3ReferenceImageSize}
               disabled={isGenerating}
+              storageKey="img2img_h3_references"
             />
           </>
         )}

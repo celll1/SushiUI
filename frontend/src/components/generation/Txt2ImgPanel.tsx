@@ -4289,6 +4289,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
               referenceImageSize={h3ReferenceImageSize}
               onReferenceImageSizeChange={setH3ReferenceImageSize}
               disabled={isGenerating}
+              storageKey="txt2img_h3_references"
             />
           </>
         )}

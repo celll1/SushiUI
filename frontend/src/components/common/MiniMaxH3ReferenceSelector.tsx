@@ -1,10 +1,11 @@
 "use client";
 
-import { ReactNode, useRef, useState } from "react";
+import { ReactNode, useEffect, useRef, useState } from "react";
 import Card from "./Card";
 import Button from "./Button";
 import Select from "./Select";
 import { MiniMaxH3References } from "@/utils/api";
+import { persistH3References, restoreH3References } from "@/utils/h3ReferenceStorage";
 
 /**
  * Reference inputs for MiniMax-H3's `ref2va` (omni-reference) workflow.
@@ -51,6 +52,9 @@ interface MiniMaxH3ReferenceSelectorProps {
   // notice below, which would otherwise describe a restriction this endpoint
   // does not have.
   allowAudioAlone?: boolean;
+  // Stable per-panel key for persisting File-backed references across panel
+  // unmounts and browser reloads.
+  storageKey?: string;
 }
 
 export const EMPTY_MINIMAX_H3_REFERENCES: MiniMaxH3References = {
@@ -76,17 +80,57 @@ export default function MiniMaxH3ReferenceSelector({
   disabled = false,
   imagesOnly = false,
   allowAudioAlone = false,
+  storageKey,
 }: MiniMaxH3ReferenceSelectorProps) {
   const imageInput = useRef<HTMLInputElement>(null);
   const videoInput = useRef<HTMLInputElement>(null);
   const audioInput = useRef<HTMLInputElement>(null);
   const soundtrackInput = useRef<HTMLInputElement>(null);
   const soundtrackTarget = useRef<number>(-1);
+  const onChangeRef = useRef(onChange);
+  const onReferenceImageSizeChangeRef = useRef(onReferenceImageSizeChange);
   const [isDragging, setIsDragging] = useState(false);
+  const [isRestoring, setIsRestoring] = useState(Boolean(storageKey));
   // Reports what a drop skipped and why. Cleared on the next successful
   // add (button or drop) rather than on a timer, so it stays visible until
   // the user has done something that could have addressed it.
   const [dropNotice, setDropNotice] = useState<string | null>(null);
+
+  useEffect(() => {
+    onChangeRef.current = onChange;
+    onReferenceImageSizeChangeRef.current = onReferenceImageSizeChange;
+  }, [onChange, onReferenceImageSizeChange]);
+
+  useEffect(() => {
+    if (!storageKey) {
+      setIsRestoring(false);
+      return;
+    }
+    let cancelled = false;
+    setIsRestoring(true);
+    void restoreH3References(storageKey)
+      .then((stored) => {
+        if (cancelled || !stored) return;
+        onChangeRef.current(stored.references);
+        onReferenceImageSizeChangeRef.current(stored.referenceImageSize);
+      })
+      .catch((error) => {
+        console.error("Failed to restore MiniMax-H3 references:", error);
+      })
+      .finally(() => {
+        if (!cancelled) setIsRestoring(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [storageKey]);
+
+  useEffect(() => {
+    if (!storageKey || isRestoring) return;
+    void persistH3References(storageKey, value, referenceImageSize).catch((error) => {
+      console.error("Failed to persist MiniMax-H3 references:", error);
+    });
+  }, [storageKey, value, referenceImageSize, isRestoring]);
 
   const total = countMiniMaxH3References(value);
   const remaining = (imagesOnly ? MAX_IMAGES : MAX_TOTAL) - total;
@@ -94,6 +138,7 @@ export default function MiniMaxH3ReferenceSelector({
     kind === "images" ? "image" : kind === "videos" ? "video" : "audio";
   const kindMax = (kind: "images" | "videos" | "audios") =>
     kind === "images" ? MAX_IMAGES : kind === "videos" ? MAX_VIDEOS : MAX_AUDIOS;
+  const inputDisabled = disabled || isRestoring;
 
   // Routes a drop by MIME type into the matching bucket (images/videos/
   // audios), each capped at its own max and at the shared total. A file
@@ -102,7 +147,7 @@ export default function MiniMaxH3ReferenceSelector({
   // and any cap truncation are reported in dropNotice, since a drop that
   // silently does less than it looks like reads as broken.
   const addDropped = (files: FileList | null) => {
-    if (disabled || !files || files.length === 0) return;
+    if (inputDisabled || !files || files.length === 0) return;
     const buckets: { images: File[]; videos: File[]; audios: File[] } = {
       images: [],
       videos: [],
@@ -162,7 +207,7 @@ export default function MiniMaxH3ReferenceSelector({
 
   const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
-    if (!disabled) setIsDragging(true);
+    if (!inputDisabled) setIsDragging(true);
   };
 
   const handleDragLeave = (e: React.DragEvent<HTMLDivElement>) => {
@@ -177,7 +222,7 @@ export default function MiniMaxH3ReferenceSelector({
   };
 
   const add = (kind: "images" | "videos" | "audios", files: FileList | null) => {
-    if (!files || files.length === 0) return;
+    if (inputDisabled || !files || files.length === 0) return;
     const perKindMax = kind === "images" ? MAX_IMAGES : kind === "videos" ? MAX_VIDEOS : MAX_AUDIOS;
     const room = Math.min(perKindMax - value[kind].length, remaining);
     const added = Array.from(files).slice(0, Math.max(0, room));
@@ -237,7 +282,7 @@ export default function MiniMaxH3ReferenceSelector({
       <button
         type="button"
         className="text-gray-500 hover:text-gray-200 px-1"
-        disabled={disabled || index === 0}
+        disabled={inputDisabled || index === 0}
         onClick={() => move(kind, index, -1)}
         title="Move earlier (the order is part of the request)"
       >
@@ -246,7 +291,7 @@ export default function MiniMaxH3ReferenceSelector({
       <button
         type="button"
         className="text-gray-500 hover:text-gray-200 px-1"
-        disabled={disabled || index === value[kind].length - 1}
+        disabled={inputDisabled || index === value[kind].length - 1}
         onClick={() => move(kind, index, 1)}
         title="Move later (the order is part of the request)"
       >
@@ -255,7 +300,7 @@ export default function MiniMaxH3ReferenceSelector({
       <button
         type="button"
         className="text-red-400 hover:text-red-300 px-1"
-        disabled={disabled}
+        disabled={inputDisabled}
         onClick={() => remove(kind, index)}
         title="Remove"
       >
@@ -312,7 +357,7 @@ export default function MiniMaxH3ReferenceSelector({
               variant="secondary"
               size="xs"
               onClick={() => imageInput.current?.click()}
-              disabled={disabled || value.images.length >= MAX_IMAGES || remaining <= 0}
+              disabled={inputDisabled || value.images.length >= MAX_IMAGES || remaining <= 0}
             >
               Add
             </Button>
@@ -342,7 +387,7 @@ export default function MiniMaxH3ReferenceSelector({
               variant="secondary"
               size="xs"
               onClick={() => videoInput.current?.click()}
-              disabled={disabled || value.videos.length >= MAX_VIDEOS || remaining <= 0}
+              disabled={inputDisabled || value.videos.length >= MAX_VIDEOS || remaining <= 0}
             >
               Add
             </Button>
@@ -379,7 +424,7 @@ export default function MiniMaxH3ReferenceSelector({
               <button
                 type="button"
                 className="text-gray-400 hover:text-gray-200 px-1 whitespace-nowrap"
-                disabled={disabled}
+                disabled={inputDisabled}
                 onClick={() => {
                   soundtrackTarget.current = index;
                   soundtrackInput.current?.click();
@@ -404,7 +449,7 @@ export default function MiniMaxH3ReferenceSelector({
               variant="secondary"
               size="xs"
               onClick={() => audioInput.current?.click()}
-              disabled={disabled || value.audios.length >= MAX_AUDIOS || remaining <= 0}
+              disabled={inputDisabled || value.audios.length >= MAX_AUDIOS || remaining <= 0}
             >
               Add
             </Button>
@@ -439,7 +484,7 @@ export default function MiniMaxH3ReferenceSelector({
             { value: "max", label: "max — 2048px short edge (the released recipe)" },
             { value: "match", label: "match — scale down to the generation's pixel area" },
           ]}
-          disabled={disabled}
+          disabled={inputDisabled}
         />
         <details className="text-xs text-gray-500">
           <summary className="cursor-pointer select-none text-gray-400">Reference performance note</summary>

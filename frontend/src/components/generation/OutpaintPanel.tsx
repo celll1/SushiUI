@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { usePathname, useSearchParams } from "next/navigation";
 import { ChevronLeft, ChevronRight, X, RotateCcw } from "lucide-react";
 import Card from "../common/Card";
@@ -562,6 +562,10 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
   // field (the preserved clip IS the video reference).
   const [h3ReferenceImages, setH3ReferenceImages] = useState<File[]>([]);
   const [h3ReferenceImageSize, setH3ReferenceImageSize] = useState<"max" | "match">("max");
+  const h3ReferenceValue = useMemo(
+    () => ({ images: h3ReferenceImages, videos: [], videoAudios: [], audios: [] }),
+    [h3ReferenceImages],
+  );
   const [generatedVideo, setGeneratedVideo] = useState<string | null>(null);
   // Playback source for the <video> element, when it differs from
   // generatedVideo (a video_lossless FFV1-in-mkv master no browser can
@@ -3707,11 +3711,12 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
             no claim of it is made here. */}
         {isVideo && isRef2Va && videoPlacement === "extend_forward" && (
           <MiniMaxH3ReferenceSelector
-            value={{ images: h3ReferenceImages, videos: [], videoAudios: [], audios: [] }}
+            value={h3ReferenceValue}
             onChange={(next) => setH3ReferenceImages(next.images)}
             referenceImageSize={h3ReferenceImageSize}
             onReferenceImageSizeChange={setH3ReferenceImageSize}
             disabled={isGenerating}
+            storageKey="outpaint_h3_reference_images"
             imagesOnly
           />
         )}

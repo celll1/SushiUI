@@ -2414,6 +2414,10 @@ export default function StudioWorkspace() {
       setNotice("The loaded model changed. Studio refreshed its capability defaults; review them and generate again.");
       return;
     }
+    if (modality.isVideo && modality.modelInfo?.type === "minimax_h3" && modality.modelInfo?.variant === "hybrid") {
+      setNotice("A merged MiniMax-H3 checkpoint loads and can be inspected, but every generation endpoint refuses it: the A/B measurement that would release generation for it has not been run.");
+      return;
+    }
     if (!form.prompt.trim() || !form.width || !form.height || form.steps == null || form.guidance == null || form.seed == null) {
       setNotice("Prompt and generation schema values are required.");
       return;

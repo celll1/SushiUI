@@ -3218,6 +3218,10 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
     // wrong thing. The cached flag stays the render-time hint.
     const modality = await resolveModality();
     if (modality.isVideo) {
+      if (modality.modelInfo?.type === "minimax_h3" && modality.modelInfo?.variant === "hybrid") {
+        alert("A merged MiniMax-H3 checkpoint loads and can be inspected, but every generation endpoint refuses it: the A/B measurement that would release generation for it has not been run.");
+        return;
+      }
       if (!supportsTemporalInpaint) {
         alert(temporalInpaintReason
           || `${loadedArchName} has no temporal inpaint; load a MiniMax-H3 fl2va model.`);

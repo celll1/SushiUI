@@ -239,7 +239,7 @@ export interface MiniMaxH3HybridProvenance {
 export interface ModelInfo {
   source_type: string;
   source: string;
-  type: "sd15" | "sdxl" | "zimage" | "flux2" | "anima" | "lens" | "ideogram4" | "minit2i" | "krea2" | "ltx2" | "acestep" | "minimax_h3";
+  type: "sd15" | "sdxl" | "zimage" | "flux2" | "anima" | "lens" | "ideogram4" | "minit2i" | "krea2" | "ltx2" | "acestep" | "minimax_h3" | "minimax_music3";
   is_v_prediction: boolean;
   model_hash: string;
   // Model-list entry fields (from GET /models)
@@ -538,11 +538,32 @@ export interface GenerationParams {
   // the panel maps these into Txt2AudParams for txt2aud requests). `prompt`
   // above doubles as the caption text.
   lyrics?: string;
-  audio_duration?: number;          // seconds, default 30.0
-  inference_steps?: number;         // ACE-Step sampler steps (default 8, turbo distilled)
-  shift?: number;                   // default 3.0
-  sampler_mode?: string;            // accepted for forward-compat; currently a no-op
-  vocal_language?: string;          // default "en"
+  audio_duration?: number;          // seconds. ACE-Step default 30.0; MiniMax Music 3 default 60.0 (an
+                                     // UPPER BOUND -- the model may stop earlier -- ceiling 360s).
+  inference_steps?: number;         // ACE-Step ONLY sampler steps (default 8, turbo distilled, per-song).
+  shift?: number;                   // ACE-Step ONLY; default 3.0.
+  sampler_mode?: string;            // ACE-Step ONLY; accepted for forward-compat, currently a no-op.
+  vocal_language?: string;          // ACE-Step ONLY; default "en".
+  // MiniMax Music 3 ONLY. Deliberately NOT named `num_inference_steps` --
+  // that name is already taken by the video fields above (per-song step count
+  // there; per-CHUNK, 200-frame-window step count here). The two are
+  // mutually exclusive at runtime (only one modality is loaded at a time),
+  // but sharing the name would carry the wrong architecture's default across
+  // a model switch. Default 30 (design doc "Generation parameter contract"),
+  // resolved per-arch via `audioDefaultsForArch`, not hardcoded here.
+  music3_num_inference_steps?: number;
+  // MiniMax Music 3 ONLY. Flow-stage CFG, distinct from `guidance_scale`
+  // above (which video/ACE-Step already share) for the same reason as
+  // `music3_num_inference_steps`: the two archs' defaults (1.0 vs 1.7) must
+  // not bleed into each other across a model switch. Default 1.7, resolved
+  // per-arch via `audioDefaultsForArch`.
+  flow_guidance_scale?: number;
+  // Tracks which loaded architecture `audio_duration` /
+  // `music3_num_inference_steps` / `flow_guidance_scale` were last resolved
+  // for (Txt2ImgPanel's arch-aware audio-defaults effect). Not sent to the
+  // backend -- purely a UI bookkeeping field, same pattern as
+  // OutpaintParams.outpaint_video_audio_mode_arch.
+  audio_defaults_arch?: string;
   // Keep model components GPU-resident between back-to-back generations
   // (queue sets this automatically based on whether a next item is queued)
   keep_models_hot?: boolean;
@@ -1279,15 +1300,30 @@ export interface MiniMaxH3References {
 // ---------------------------------------------------------------------------
 
 export interface Txt2AudParams {
-  prompt: string;             // caption text
-  lyrics?: string;
-  audio_duration?: number;    // seconds, default 30.0
+  prompt: string;             // caption text (also the MUSIC DESCRIPTION for MiniMax Music 3 -- distinct from lyrics)
+  lyrics?: string;             // ACE-Step: optional. MiniMax Music 3: REQUIRED non-empty (checkpoint contract).
+  audio_duration?: number;    // seconds. ACE-Step default 30.0; MiniMax Music 3 default 60.0 -- an UPPER BOUND
+                               // (the autoregressive stage may stop earlier), ceiling 360s.
   seed?: number;               // default -1
-  inference_steps?: number;   // turbo distilled default 8
-  guidance_scale?: number;    // turbo is CFG-distilled; default 1.0
-  shift?: number;              // default 3.0
-  sampler_mode?: string;       // accepted for forward-compat; currently a no-op
-  vocal_language?: string;     // default "en"
+  inference_steps?: number;   // ACE-Step ONLY (turbo distilled default 8, per-song). MiniMax Music 3 does not
+                               // read this field -- see num_inference_steps below.
+  guidance_scale?: number;    // ACE-Step ONLY (turbo is CFG-distilled; default 1.0). MiniMax Music 3 does not
+                               // read this field -- see flow_guidance_scale below.
+  shift?: number;              // ACE-Step ONLY; default 3.0. No MiniMax Music 3 equivalent.
+  sampler_mode?: string;       // ACE-Step ONLY; accepted for forward-compat, currently a no-op.
+  vocal_language?: string;     // ACE-Step ONLY; default "en". Not a MiniMax Music 3 parameter.
+  // MiniMax Music 3 ONLY. Per CHUNK (the flow-matching DiT's 200-frame windows),
+  // NOT per song -- distinct from ACE-Step's per-song `inference_steps` above,
+  // which is why this is a separate field rather than a shared name. Default 30
+  // (design doc "Generation parameter contract"); `undefined` on this field lets
+  // the backend resolve MiniMax Music 3's own default from
+  // `audio_defaults_for_arch` when omitted.
+  num_inference_steps?: number;
+  // MiniMax Music 3 ONLY. Flow-stage CFG, distinct from ACE-Step's
+  // `guidance_scale` above (autoregressive-stage CFG (1.5) and top-k (50) are
+  // fixed by the reference recipe and are not exposed as request parameters at
+  // all). Default 1.7.
+  flow_guidance_scale?: number;
   loras?: LoRAConfig[];
   // Weight-only quantization of the ACE-Step DiT. Only "int8" is applied on
   // this architecture (a one-time in-place conversion of the audio DiT -- NOT
@@ -1394,6 +1430,15 @@ export interface GenerationDefaultsResponse {
   // Same thing for the keys that exist only on /generate/inpaint/video
   // (currently `inpaint_video_audio_mode`).
   inpaint_video_arch_overlays?: Record<string, Record<string, unknown>>;
+  // Per-architecture audio overrides (backend AUDIO_GEN_ARCH_OVERLAYS /
+  // param_defaults.audio_defaults_for_arch), the audio equivalent of
+  // `video_arch_overlays`. A txt2aud default resolves as
+  // `base | audio_arch_overlays[arch]` -- `txt2aud` above is ACE-Step-shaped
+  // (audio_duration 30.0, no num_inference_steps/flow_guidance_scale keys at
+  // all), and MiniMax Music 3 overlays its own audio_duration (60.0),
+  // num_inference_steps (30) and flow_guidance_scale (1.7) on top of it.
+  // Optional so an older backend without the key still type-checks.
+  audio_arch_overlays?: Record<string, Record<string, unknown>>;
   // User-overridable slider/number-input UPPER BOUNDS registry (backend
   // PARAM_BOUNDS). Optional so an older backend without the key still
   // type-checks. See frontend/src/utils/paramBounds.ts's resolveBound().
@@ -1422,6 +1467,19 @@ export const outpaintVideoDefaultsForArch = (
   ...(defaults?.outpaint_vid || {}),
   ...((arch && defaults?.video_arch_overlays?.[arch]) || {}),
   ...((arch && defaults?.outpaint_video_arch_overlays?.[arch]) || {}),
+});
+
+// The txt2aud defaults for one architecture, resolved from the SAME two
+// layers `param_defaults.audio_defaults_for_arch` resolves them from: the
+// ACE-Step-shaped base (`txt2aud`) with `audio_arch_overlays[arch]` on top.
+// An arch with no overlay (ACE-Step, or an unrecognized/unloaded arch)
+// resolves to the base unchanged.
+export const audioDefaultsForArch = (
+  defaults: GenerationDefaultsResponse | null | undefined,
+  arch: string | null | undefined
+): Record<string, unknown> => ({
+  ...(defaults?.txt2aud || {}),
+  ...((arch && defaults?.audio_arch_overlays?.[arch]) || {}),
 });
 
 // The inpaint-video defaults for one architecture, same three layers in the
@@ -2679,6 +2737,7 @@ const ARCH_DISPLAY_NAMES: Record<string, string> = {
   ltx2: "LTX-2.3",
   acestep: "ACE-Step 1.5",
   minimax_h3: "MiniMax H3",
+  minimax_music3: "MiniMax Music 3",
 };
 
 export const archDisplayName = (arch: string | null | undefined): string =>
@@ -3982,6 +4041,21 @@ export const generateTxt2Aud = async (params: Txt2AudParams) => {
     shift: params.shift ?? 3.0,
     sampler_mode: params.sampler_mode ?? "euler",
     vocal_language: params.vocal_language ?? "en",
+    // MiniMax Music 3 ONLY. `?? undefined`, NOT `?? null`: JSON.stringify
+    // drops an `undefined`-valued key entirely, so an omitted value here
+    // reaches the backend as an OMITTED field, letting `Txt2AudRequest`'s
+    // `model_fields_set` (and therefore `resolve_audio_defaults`) fill it
+    // from MiniMax Music 3's own overlay (30 / 1.7) exactly as designed.
+    // Sending an explicit `null` would do the opposite of "harmless": it
+    // would count as the client having PROVIDED the field (Pydantic still
+    // marks an explicit `null` as set), permanently defeating that
+    // resolution, AND -- because MiniMax Music 3's pipeline backend raises a
+    // ValidationError on either of these being `None` -- would turn a
+    // pre-update queued item with no value here (e.g. one persisted across
+    // this exact update, before these fields existed) into a hard 400
+    // instead of a working generation at the arch's own defaults.
+    num_inference_steps: params.num_inference_steps ?? undefined,
+    flow_guidance_scale: params.flow_guidance_scale ?? undefined,
     loras: params.loras || [],
     // `=== "none" -> null` mirrors every other sender: "none" is the UI's
     // spelling of "no quantization", and sending it as a value would come back

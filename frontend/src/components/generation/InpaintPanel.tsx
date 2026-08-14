@@ -5625,6 +5625,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
               referenceImageSize={h3ReferenceImageSize}
               onReferenceImageSizeChange={setH3ReferenceImageSize}
               disabled={isGenerating}
+              storageKey="inpaint_h3_references"
               allowAudioAlone
             />
           </>

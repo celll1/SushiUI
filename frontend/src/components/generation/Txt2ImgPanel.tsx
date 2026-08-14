@@ -55,7 +55,7 @@ import {
   ChainAdvanceResult,
 } from "@/utils/videoChain";
 import { migrateLoopGenerationConfig, computeLoopDecodeDirective } from "@/utils/loopGenerationInheritance";
-import { generateTxt2Img, generateImg2Img, generateTxt2Vid, Txt2VidParams, generateRef2Vid, Ref2VidParams, generateOutpaintVideo, OutpaintVideoParams, MiniMaxH3References, MiniMaxH3Keyframe, generateTxt2Aud, Txt2AudParams, generateTxt2ImgTrainingPreview, GenerationParams, getSamplers, getScheduleTypes, tokenizePrompt, generateTIPOPrompt, cancelGeneration, getCurrentModel, isLatentOnlyResult, getResultFilename, getResultPlaybackFilename, getResultSeed, getResultAncestralSeed, unetQuantizationOptions, normalizeUnetQuantization, transformerQuantizationLabel, archSupportsFeature, archDisplayName, normalizeVideoFrames, videoCanvasRule, videoCanvasAxisBounds, videoMinInferenceSteps, videoCanvasExceedsEnvelope, isGenerationStalledError, planVideoChain, snapUpValidVideoFrameCount, effectiveSegmentFrames, VideoChainManifest, VIDEO_BLOCK_SWAP_MAX } from "@/utils/api";
+import { generateTxt2Img, generateImg2Img, generateTxt2Vid, Txt2VidParams, generateRef2Vid, Ref2VidParams, generateOutpaintVideo, OutpaintVideoParams, MiniMaxH3References, MiniMaxH3Keyframe, generateTxt2Aud, Txt2AudParams, generateTxt2ImgTrainingPreview, GenerationParams, getSamplers, getScheduleTypes, tokenizePrompt, generateTIPOPrompt, cancelGeneration, getCurrentModel, isLatentOnlyResult, getResultFilename, getResultPlaybackFilename, getResultSeed, getResultAncestralSeed, unetQuantizationOptions, normalizeUnetQuantization, transformerQuantizationLabel, archSupportsFeature, archDisplayName, normalizeVideoFrames, videoCanvasRule, videoCanvasAxisBounds, videoMinInferenceSteps, videoCanvasExceedsEnvelope, isGenerationStalledError, planVideoChain, snapUpValidVideoFrameCount, effectiveSegmentFrames, VideoChainManifest, VIDEO_BLOCK_SWAP_MAX, audioDefaultsForArch } from "@/utils/api";
 import { useActiveTraining } from "@/hooks/useActiveTraining";
 import { useSmoothProgress } from "@/hooks/useSmoothProgress";
 import { wsClient, CFGMetrics } from "@/utils/websocket";
@@ -162,14 +162,23 @@ const DEFAULT_PARAMS: GenerationParams = {
   // 0 = disabled, this endpoint's own default (opt-in).
   video_blocks_to_swap: 0,
   fuse_output_proj: false,
-  // Music generation fields (used when an audio model (ACE-Step) is loaded;
-  // the panel maps these into Txt2AudParams for txt2aud requests).
+  // Music generation fields (used when an audio model (ACE-Step or MiniMax
+  // Music 3) is loaded; the panel maps these into Txt2AudParams for txt2aud
+  // requests). These literals are ACE-Step-shaped and are only the
+  // pre-startup-fetch fallback (CLAUDE.md SSOT rule); the arch-aware audio-
+  // defaults effect below re-resolves them from the schema API on a MiniMax
+  // Music 3 load.
   lyrics: "",
   audio_duration: 30.0,
   inference_steps: 8,
   shift: 3.0,
   sampler_mode: "euler",
   vocal_language: "en",
+  // MiniMax Music 3 ONLY (see GenerationParams). Literals here match
+  // param_defaults.py's AUDIO_GEN_ARCH_OVERLAYS["minimax_music3"] as the
+  // pre-startup-fetch fallback.
+  music3_num_inference_steps: 30,
+  flow_guidance_scale: 1.7,
 };
 
 // The valid clip lengths differ per video architecture (LTX-2.3: 8k+1;
@@ -410,6 +419,12 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
   const [generatedAudio, setGeneratedAudio] = useState<string | null>(null);
   const [generatedAudioInfo, setGeneratedAudioInfo] = useState<{ duration?: number; sample_rate?: number } | null>(null);
   const [generatedAudioParams, setGeneratedAudioParams] = useState<GenerationParams | null>(null);
+  // A txt2aud result's `warnings[]`, rendered under the player -- the audio
+  // counterpart of `generatedVideoWarnings`. MiniMax Music 3 now returns real
+  // warnings on this path (clamped audio_duration, a dropped LoRA selection,
+  // a failed frame-code sidecar write), and this panel discarded them
+  // entirely before this existed.
+  const [generatedAudioWarnings, setGeneratedAudioWarnings] = useState<string[]>([]);
   const [generatedImageSeed, setGeneratedImageSeed] = useState<number | null>(null);
   const [generatedImageAncestralSeed, setGeneratedImageAncestralSeed] = useState<number | null>(null);
   const [generatedImageParams, setGeneratedImageParams] = useState<GenerationParams | null>(null);
@@ -492,6 +507,11 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
   // hidden merely because the matrix was unavailable.
   const loadedArch = currentModelInfo?.model_info?.type as string | undefined;
   const loadedArchName = archDisplayName(loadedArch);
+  // MiniMax Music 3 is the second audio architecture (ACE-Step is the
+  // first); its controls (duration-as-upper-bound, per-CHUNK steps, flow
+  // guidance) replace ACE-Step's (shift, per-song steps, vocal language) in
+  // the Audio Settings card below, and it has no LoRA path at all.
+  const isMusic3 = loadedArch === "minimax_music3";
   // Applies a LoRA's own declared recommended settings (from its file
   // metadata) to params, like any ordinary user edit -- writes through the
   // normal params state so it flows through the same request/DB/metadata
@@ -541,6 +561,48 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
   const videoBlocksToSwapEnabledDefault =
     (generationDefaults?.txt2vid as Record<string, unknown> | undefined)
       ?.blocks_to_swap_enabled_default as number ?? 40;
+  // Re-resolve `audio_duration` / `music3_num_inference_steps` /
+  // `flow_guidance_scale` from the schema API's per-arch audio OVERLAY
+  // (backend AUDIO_GEN_ARCH_OVERLAYS -- NOT the merged `audioDefaultsForArch`
+  // base) whenever the LOADED ARCHITECTURE changes -- not whenever the value
+  // changes, mirroring OutpaintPanel's `outpaint_video_audio_mode_arch`
+  // pattern: a value the user is actively editing is never clobbered
+  // mid-edit. Deliberately reading the RAW overlay rather than the resolved
+  // base+overlay map: an architecture with NO overlay entry (ACE-Step) must
+  // write NOTHING here, or a persisted ACE-Step `audio_duration` (e.g. a
+  // user's saved 180s) gets silently reset to the ACE-Step base default
+  // (30.0) on this effect's very first run, where `audio_defaults_arch` is
+  // still `undefined` and therefore never equal to `loadedArch` -- there is
+  // no way to distinguish "first mount, arch unchanged" from "a genuine arch
+  // switch" other than by only ever touching keys the CURRENT arch actually
+  // overlays. MiniMax Music 3 overlays all three keys, so loading it always
+  // resolves its own audio_duration/num_inference_steps/flow_guidance_scale;
+  // ACE-Step overlays none, so switching to (or starting on) it leaves
+  // whatever value was already in `params` untouched, including one carried
+  // over from a prior Music 3 session -- an accepted trade-off (there is no
+  // "ACE-Step default" to revert to without an overlay entry saying so). No
+  // hardcoded fallback numbers here (CLAUDE.md SSOT rule) -- DEFAULT_PARAMS
+  // above is the only fallback, used before /schema/generation-defaults
+  // answers.
+  //
+  // `params.audio_defaults_arch` is in the dependency list (in addition to
+  // being read inside the updater) so "Reset to Default" -- which replaces
+  // `params` wholesale with `DEFAULT_PARAMS`, whose `audio_defaults_arch` is
+  // `undefined` -- re-fires this effect on a still-loaded Music 3 model
+  // instead of leaving it permanently stranded on DEFAULT_PARAMS' ACE-Step-
+  // shaped literals until the next model switch or reload.
+  useEffect(() => {
+    if (!isAudio || !loadedArch || !generationDefaults) return;
+    setParams((prev) => {
+      if (prev.audio_defaults_arch === loadedArch) return prev;
+      const overlay = (generationDefaults.audio_arch_overlays?.[loadedArch] || {}) as Record<string, unknown>;
+      const next: GenerationParams = { ...prev, audio_defaults_arch: loadedArch };
+      if ("audio_duration" in overlay) next.audio_duration = overlay.audio_duration as number;
+      if ("num_inference_steps" in overlay) next.music3_num_inference_steps = overlay.num_inference_steps as number;
+      if ("flow_guidance_scale" in overlay) next.flow_guidance_scale = overlay.flow_guidance_scale as number;
+      return next;
+    });
+  }, [isAudio, loadedArch, generationDefaults, params.audio_defaults_arch]);
   // Snap a persisted clip length the LOADED video architecture does not accept
   // (LTX-2.3's 121 carried onto MiniMax-H3, whose grid starts at 124). Same
   // shape and same reason as the unet_quantization normaliser above: otherwise
@@ -1009,6 +1071,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
           clearAudioPreview(PREVIEW_KEYS);
           setGeneratedAudio(null);
           setGeneratedAudioInfo(null);
+          setGeneratedAudioWarnings([]);
         }
       });
     }
@@ -1622,6 +1685,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
       setGeneratedImageParams(result.params as GenerationParams);
       setGeneratedVideo(null);
       setGeneratedAudio(null);
+      setGeneratedAudioWarnings([]);
     } else if (result.kind === "video") {
       setGeneratedVideo(result.url);
       setGeneratedVideoInfo(result.info as typeof generatedVideoInfo);
@@ -1629,10 +1693,15 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
       setGeneratedVideoParams(result.params as GenerationParams);
       setGeneratedImage(null);
       setGeneratedAudio(null);
+      setGeneratedAudioWarnings([]);
     } else {
       setGeneratedAudio(result.url);
       setGeneratedAudioInfo(result.info as typeof generatedAudioInfo);
       setGeneratedAudioParams(result.params as GenerationParams);
+      // GenerationResultSnapshot (this cross-panel published-result path)
+      // carries no warnings[] field, so a STALE list from a previous,
+      // unrelated audio run must not linger under this new result.
+      setGeneratedAudioWarnings([]);
       setGeneratedImage(null);
       setGeneratedVideo(null);
     }
@@ -1842,25 +1911,100 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
       supportsLatentPassthrough: true,
     });
 
-    // Audio mode: an audio model (ACE-Step) is loaded -> enqueue a txt2aud item
-    // built from the shared params. Audio loop-generation is out of scope;
-    // enqueue one item. Checked before the video branch (mutually exclusive).
+    // Audio mode: an audio model (ACE-Step or MiniMax Music 3) is loaded ->
+    // enqueue a txt2aud item built from the shared params. Audio
+    // loop-generation is out of scope; enqueue one item. Checked before the
+    // video branch (mutually exclusive).
     if (audioMode) {
+      // Resolve the ARCHITECTURE from `modality` -- the fresh read this
+      // function already took above via `resolveModality()` -- rather than
+      // the render-time `isMusic3`/`loadedArch`. Those come from
+      // `currentModelInfo`, which only catches up to an out-of-band model
+      // switch (another tab, the API, a backend restart) after its own
+      // modelInfoVersion -> getCurrentModel -> effect chain finishes; hitting
+      // Generate inside that window must not dispatch a Music 3 request
+      // still carrying `params` resolved for the PREVIOUS architecture.
+      const freshAudioArch = modality.modelInfo?.type as string | undefined;
+      const freshIsMusic3 = freshAudioArch === "minimax_music3";
+      // `params.audio_defaults_arch` is the marker the arch-overlay effect
+      // (above, near `loadedArch`) writes once it has resolved `params` for
+      // an architecture. If it does not match the FRESH arch, `params` may
+      // still hold values resolved for whatever was loaded before -- pull
+      // the fresh arch's own overlay values for exactly the keys that
+      // overlay declares (an arch's own overlay is the ONLY thing allowed to
+      // substitute here; a user's in-progress edit is never involved because
+      // the marker already matches once the effect has run for this arch,
+      // which is the overwhelmingly common case -- this branch only matters
+      // for the out-of-band-switch race).
+      const audioParamsStale = params.audio_defaults_arch !== freshAudioArch;
+      const freshAudioOverlay = (freshAudioArch && generationDefaults?.audio_arch_overlays?.[freshAudioArch]) as
+        Record<string, unknown> | undefined;
+      const resolvedAudioDuration = (audioParamsStale && freshAudioOverlay && "audio_duration" in freshAudioOverlay)
+        ? (freshAudioOverlay.audio_duration as number)
+        : params.audio_duration;
+      const resolvedMusic3Steps =
+        (audioParamsStale && freshAudioOverlay && "num_inference_steps" in freshAudioOverlay)
+          ? (freshAudioOverlay.num_inference_steps as number)
+          : params.music3_num_inference_steps;
+      const resolvedFlowGuidance =
+        (audioParamsStale && freshAudioOverlay && "flow_guidance_scale" in freshAudioOverlay)
+          ? (freshAudioOverlay.flow_guidance_scale as number)
+          : params.flow_guidance_scale;
+
+      // MiniMax Music 3 requires non-empty lyrics (checkpoint contract,
+      // design doc "Generation parameter contract"; instrumental tracks are
+      // expressed through Caption/structure tags, not by leaving Lyrics
+      // empty). Same precedent as this function's own `!params.prompt` guard
+      // above -- refuse before enqueueing a request that is guaranteed a 400.
+      if (freshIsMusic3 && !(params.lyrics ?? "").trim()) {
+        alert("MiniMax Music 3 requires non-empty Lyrics. For an instrumental track, describe that in Caption instead.");
+        return;
+      }
+
       const audioParams: Txt2AudParams = {
         prompt: processedPrompt,
         lyrics: params.lyrics,
-        audio_duration: params.audio_duration,
+        audio_duration: resolvedAudioDuration,
         seed: params.seed,
-        inference_steps: params.inference_steps,
-        guidance_scale: params.guidance_scale,
-        shift: params.shift,
-        sampler_mode: params.sampler_mode,
-        vocal_language: params.vocal_language,
+        // ACE-Step ONLY. Omitted entirely on a MiniMax Music 3 request:
+        // `generateTxt2Aud()`'s own `?? 8`/`?? 1.0`/`?? 3.0`/`?? "euler"`/
+        // `?? "en"` fallbacks (api.ts) then send ACE-Step's clean baseline
+        // values instead of whatever this panel's shared `params` state
+        // happens to hold for a field Music 3's pipeline backend never
+        // reads -- otherwise a later inspection of that song's saved
+        // parameters (params_for_db / the FLAC sidecar) reads e.g.
+        // `guidance_scale: 7.0` as if it had influenced audio it had no
+        // part in.
+        ...(freshIsMusic3 ? {} : {
+          inference_steps: params.inference_steps,
+          guidance_scale: params.guidance_scale,
+          shift: params.shift,
+          sampler_mode: params.sampler_mode,
+          vocal_language: params.vocal_language,
+        }),
+        // MiniMax Music 3 ONLY -- unread by ACE-Step's pipeline backend, so
+        // omitted there for the same reason as above. Must be threaded
+        // through here when Music 3 IS loaded (this is the one and only
+        // enqueue path for txt2aud; there is no separate loop-generation
+        // stepParams construction for audio) or they silently become
+        // undefined on every queued/looped generation even though the first
+        // generation from a fresh panel state works (CLAUDE.md "Loop
+        // Generation" failure pattern).
+        ...(freshIsMusic3 ? {
+          num_inference_steps: resolvedMusic3Steps,
+          flow_guidance_scale: resolvedFlowGuidance,
+        } : {}),
+        // LoRA is not applied on MiniMax Music 3 (arch_capabilities "lora";
+        // the UI hides the selector for it below), but the field is still
+        // carried through unconditionally: on ACE-Step it is the real
+        // generation-time LoRA list, and on Music 3 an empty/hidden selector
+        // means `params.loras` is always [] there anyway.
         loras: params.loras,
         // Weight-only quantization (both axes). The panel controls are rendered
         // from arch capabilities, and `acestep` is now in runtime_int8_archs +
         // quantized_linear_archs, so these must be carried into the audio
-        // params or the UI value is silently dropped.
+        // params or the UI value is silently dropped. MiniMax Music 3 does not
+        // honor either (phase 1 loads BF16/FP16 only; arch_capabilities warns).
         unet_quantization: params.unet_quantization,
         quantized_gemm_mode: params.quantized_gemm_mode,
       };
@@ -2527,13 +2671,17 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
       setIsGenerating(true);
       setProgress(0);
       setProgressMessage("");
-      setTotalSteps((nextItem.params as any).inference_steps || 8);
+      // MiniMax Music 3's Txt2AudParams carries its per-CHUNK step count under
+      // `num_inference_steps` (ACE-Step's is `inference_steps`; see api.ts) --
+      // prefer whichever the queued item actually set.
+      setTotalSteps((nextItem.params as any).num_inference_steps || (nextItem.params as any).inference_steps || 8);
       setPreviewImage(null);
       setGeneratedImage(null);
       // An audio run supersedes any image/video result still on screen; the
       // stored preview is only replaced once this run actually succeeds.
       setGeneratedAudio(null);
       setGeneratedAudioInfo(null);
+      setGeneratedAudioWarnings([]);
       setGeneratedVideo(null);
       setGeneratedVideoInfo(null);
       try {
@@ -2550,6 +2698,8 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         setGeneratedAudio(audioUrl);
         setGeneratedAudioInfo(audioInfo);
         setGeneratedAudioParams(audioParams);
+        setGeneratedAudioWarnings(
+          (result.warnings || []).map((w: any) => (typeof w === "string" ? w : w?.message)).filter(Boolean));
         publishCompletedResult({ panel: "txt2img", kind: "audio", url: audioUrl, info: audioInfo, params: audioParams });
         if (onImageGenerated) onImageGenerated(audioUrl, { kind: "audio" });
         isGeneratingRef.current = false;
@@ -2572,7 +2722,13 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         setTimeout(() => {
           if (processQueueRef.current) processQueueRef.current();
         }, 100);
-        alert(isGenerationStalledError(error) ? error.message : "txt2aud generation failed. Please check console for details.");
+        // Surface the backend's own refusal text (e.g. MiniMax Music 3's
+        // "lyrics must not be empty" / audio_duration validation 400s)
+        // instead of a generic "check console" -- same fallback chain as the
+        // video branch below.
+        alert(isGenerationStalledError(error)
+          ? error.message
+          : `txt2aud generation failed: ${error?.response?.data?.detail || error?.response?.data?.error || "see the console for details."}`);
       }
       return;
     }
@@ -2594,6 +2750,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
       setGeneratedVideoWarnings([]);
       setGeneratedAudio(null);
       setGeneratedAudioInfo(null);
+      setGeneratedAudioWarnings([]);
       try {
         const result = nextItem.type === "ref2vid"
           ? await generateRef2Vid(
@@ -2719,6 +2876,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
       setGeneratedVideoWarnings([]);
       setGeneratedAudio(null);
       setGeneratedAudioInfo(null);
+      setGeneratedAudioWarnings([]);
       try {
         const clip = nextItem.inputVideo;
         if (!clip) {
@@ -2829,6 +2987,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
     setGeneratedVideoInfo(null);
     setGeneratedAudio(null);
     setGeneratedAudioInfo(null);
+    setGeneratedAudioWarnings([]);
     setCfgMetrics([]); // Clear previous metrics
 
     try {
@@ -4064,23 +4223,36 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
       />
       <Textarea
         label="Lyrics"
-        placeholder="Enter lyrics (optional)..."
+        placeholder={isMusic3 ? "Required. Instrumental tracks: describe them in Caption instead." : "Enter lyrics (optional)..."}
         rows={3}
         resizeStorageKey={GENERATION_LYRICS_HEIGHT_KEY}
         value={params.lyrics ?? ""}
         onChange={(e) => setParams({ ...params, lyrics: e.target.value })}
       />
-      <Textarea
-        label="Negative Prompt"
-        placeholder="Negative prompting is unavailable for this model"
-        rows={2}
-        resizeStorageKey={GENERATION_NEGATIVE_PROMPT_HEIGHT_KEY}
-        value={params.negative_prompt}
-        onChange={(e) => setParams({ ...params, negative_prompt: e.target.value })}
-        disabled
-        title="Audio generation does not accept negative-prompt conditioning."
-      />
-      <p className="text-xs text-gray-500">Unavailable for audio generation; the saved value is preserved.</p>
+      {isMusic3 && (
+        <p className="text-xs text-amber-400">
+          Required and must not be empty. Structure tags such as [verse] or [chorus] must each be on
+          their own line — text sharing a line with a leading tag is silently dropped. For an
+          instrumental track, describe that in Caption above rather than leaving Lyrics empty.
+        </p>
+      )}
+      {!isMusic3 && (
+        <Textarea
+          label="Negative Prompt"
+          placeholder="Negative prompting is unavailable for this model"
+          rows={2}
+          resizeStorageKey={GENERATION_NEGATIVE_PROMPT_HEIGHT_KEY}
+          value={params.negative_prompt}
+          onChange={(e) => setParams({ ...params, negative_prompt: e.target.value })}
+          disabled
+          title="Audio generation does not accept negative-prompt conditioning."
+        />
+      )}
+      <p className="text-xs text-gray-500">
+        {isMusic3
+          ? "No negative-prompt conditioning exists for this model (the flow stage's unconditional branch is zeros)."
+          : "Unavailable for audio generation; the saved value is preserved."}
+      </p>
     </Card>
   ) : (
     <Card title="Prompt">
@@ -4423,7 +4595,86 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
           primaryDetails={(isVideo || isAudio) ? (
             <>
 
-        {isAudio && (
+        {isAudio && isMusic3 && (
+          <Card title={`Audio Settings${loadedArchName ? ` (${loadedArchName})` : ""}`}>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-2">
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-1">Duration upper bound (seconds)</label>
+                {/* max=360 (MAX_AUDIO_FRAMES / FALLBACK_FRAME_RATE = 9000 / 25) is the
+                    checkpoint's own ceiling (design doc "Generation parameter contract"),
+                    enforced server-side by validate_audio_params's per-arch clamp -- not
+                    exposed via the schema API today, so this is the one bound in this
+                    card that is a literal rather than a fetched value. */}
+                <NumberInput
+                  label="Duration upper bound (seconds)"
+                  // `?? DEFAULT_PARAMS.audio_duration` (NOT a fresh literal): the
+                  // key is never actually undefined once DEFAULT_PARAMS has run
+                  // (and the arch-overlay effect above keeps it resolved to this
+                  // architecture's own default), so this only satisfies
+                  // NumberInput's non-optional `value: number` prop -- and doing
+                  // it by reference, rather than a second literal, is what keeps
+                  // this from becoming a THIRD number to keep in sync with
+                  // DEFAULT_PARAMS and api.ts's own fallback (CLAUDE.md SSOT rule).
+                  value={params.audio_duration ?? DEFAULT_PARAMS.audio_duration!}
+                  onCommit={(v) => setParams({ ...params, audio_duration: v })}
+                  min={1}
+                  max={360}
+                  step={1}
+                  parse="float"
+                  className="w-full"
+                />
+                <p className="text-xs text-gray-500 mt-1">
+                  An upper bound, not a target — the autoregressive stage may emit its end-of-audio
+                  token before this is reached, so the result can be shorter.
+                </p>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-1">Steps (per chunk)</label>
+                <NumberInput
+                  label="Steps (per chunk)"
+                  value={params.music3_num_inference_steps ?? DEFAULT_PARAMS.music3_num_inference_steps!}
+                  onCommit={(v) => setParams({ ...params, music3_num_inference_steps: v })}
+                  min={1}
+                  max={100}
+                  step={1}
+                  parse="int"
+                  className="w-full"
+                />
+                <p className="text-xs text-gray-500 mt-1">
+                  Flow-matching steps per 200-frame window, not per song.
+                </p>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-2">
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-1">Flow Guidance Scale</label>
+                <NumberInput
+                  label="Flow Guidance Scale"
+                  value={params.flow_guidance_scale ?? DEFAULT_PARAMS.flow_guidance_scale!}
+                  onCommit={(v) => setParams({ ...params, flow_guidance_scale: v })}
+                  min={0.01}
+                  max={20}
+                  step={0.1}
+                  parse="float"
+                  className="w-full"
+                />
+              </div>
+              <Input
+                type="number"
+                label="Seed"
+                value={params.seed ?? -1}
+                onChange={(e) => {
+                  const parsed = parseInt(e.target.value);
+                  setParams({ ...params, seed: Number.isNaN(parsed) ? -1 : parsed });
+                }}
+              />
+            </div>
+          </Card>
+        )}
+
+        {isAudio && !isMusic3 && (
           <Card title="Audio Settings">
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-2">
@@ -4515,7 +4766,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
           </Card>
         )}
 
-        {isAudio && visibility.lora && (
+        {isAudio && !isMusic3 && visibility.lora && (
           <LoRASelector
             value={params.loras || []}
             onChange={(loras) => {
@@ -4528,6 +4779,15 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
             loadedArch={loadedArch}
             onApplyRecommended={applyLoraRecommended}
           />
+        )}
+
+        {isAudio && isMusic3 && visibility.lora && (
+          <Card title="LoRA">
+            <p className="text-xs text-gray-400">
+              {archCapabilities?.unsupported?.[loadedArch as string]?.lora
+                ?? "generation-time LoRA is not implemented for MiniMax Music 3."}
+            </p>
+          </Card>
         )}
 
         {isVideo && (
@@ -5410,6 +5670,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                       clearAudioPreview(PREVIEW_KEYS);
                       setGeneratedAudio(null);
                       setGeneratedAudioInfo(null);
+                      setGeneratedAudioWarnings([]);
                     }}
                   />
                   {generatedAudioInfo && (
@@ -5417,6 +5678,11 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                       {generatedAudioInfo.duration != null && Number.isFinite(Number(generatedAudioInfo.duration)) && <span>{Number(generatedAudioInfo.duration).toFixed(2)}s</span>}
                       {generatedAudioInfo.sample_rate != null && <span> · {generatedAudioInfo.sample_rate} Hz</span>}
                     </div>
+                  )}
+                  {generatedAudioWarnings.length > 0 && (
+                    <ul className="text-xs text-amber-400 list-disc pl-4 space-y-1">
+                      {generatedAudioWarnings.map((w, i) => <li key={i}>{w}</li>)}
+                    </ul>
                   )}
                 </div>
               ) : generatedImage ? (

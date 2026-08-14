@@ -721,6 +721,8 @@ def build_ref2va_packed_layout(
     *,
     patch_size: Tuple[int, int, int] = (1, 2, 2),
     keyframe_anchors: Sequence["int | str"] = (),
+    pinned_video_frames: Sequence[int] = (),
+    pinned_audio_latents: Sequence[int] = (),
     device: Optional[torch.device | str] = None,
 ) -> Dict[str, Any]:
     """The ``[text | reference blocks | keyframe anchors | target audio | target video]`` layout.
@@ -775,6 +777,43 @@ def build_ref2va_packed_layout(
             advance the clock themselves, matching :func:`build_packed_layout`,
             where a keyframe never shifts the generated video's own origin.
             Empty by default, which reproduces the pre-C5 layout bitwise.
+        pinned_video_frames: temporal-inpaint pin (``minimax_h3_inpaint_refs_
+            design.md``, Option B), the same LATENT-frame indices
+            :func:`build_packed_layout` accepts, but permuted only within the
+            TARGET video block (``[video_start, sequence_length)``) --
+            reference/anchor rows already lead ``video_indices``
+            unconditionally. ``position_ids`` is untouched, same no-op-
+            permutation property :func:`build_packed_layout` documents
+            (``:556-559``). Mutually exclusive with ``keyframe_anchors``, same
+            rule :func:`build_packed_layout` enforces. UNMEASURED on this
+            partition (fl2va's own pin: 3.12 RMS; see the design's Gate
+            registration (B)) -- this parameter exists for that gate, not
+            because the combination is validated.
+
+            RETURNED PERMUTATION IS TARGET-BLOCK-RELATIVE, a deliberate
+            divergence from the design's "offset by the ref-block row counts"
+            (§3 Option B): it matches the draw-time caller's contract
+            (``minimax_h3.py:2655``/``:2690``, which index a target-only noise
+            tensor before the reference prefix is prepended). The DECODE-time
+            consumers are in FULL-row space (reference rows prepended) and are
+            NOT updated by this change -- ``minimax_h3.py:2821`` and ``:2901``
+            would index a reference row as if it were a clip row. Nothing
+            reaches them today (the 2243 refusal + the still-closed gate);
+            whoever wires B-2 must offset there:
+            ``video_rows[n_cond_reference_rows:][video_row_order]`` (or
+            equivalently ``video_rows[n_cond_reference_rows + video_row_order]``),
+            not ``video_rows[video_row_order]``.
+        pinned_audio_latents: the mirrored audio pin, permuted only within the
+            TARGET audio block (``[audio_start, video_start)``), same channel-
+            major addressing as :func:`build_packed_layout`
+            (:func:`audio_pin_row_indices`). A reference's own audio rows
+            (``reference_audio_row_counts``) are a disjoint, always-clean block
+            this parameter never touches. Also unmeasured; same decode-site
+            caveat as above applies to ``minimax_h3.py:2901``.
+
+    Bit-identity: both new parameters empty (the default) reproduces the
+    pre-extension output row for row --
+    ``backend/tests/minimax_h3_inpaint_reference_layout_test.py`` pins that.
     """
     _, patch_h, patch_w = patch_size
     text_tags = torch.as_tensor(list(text_token_tags), dtype=torch.long)
@@ -873,9 +912,49 @@ def build_ref2va_packed_layout(
     position_ids[video_start:, 0] = frame_time.repeat_interleave(target_frame_grid.shape[0])
     position_ids[video_start:, 1:] = target_frame_grid.repeat(num_latent_frames, 1)
 
-    video_indices = torch.cat(video_index_blocks + [torch.arange(video_start, sequence_length)])
-    audio_indices = torch.cat(audio_index_blocks + [torch.arange(audio_start, video_start)])
+    # A target-block pin (B) permutes ONLY the target rows' membership in
+    # `video_indices` / `audio_indices` -- never `position_ids` -- exactly the
+    # no-op property `build_packed_layout` documents. The reference (and
+    # anchor) blocks above already lead both index lists unconditionally, so
+    # the pin never needs to reorder anything outside `[video_start,
+    # sequence_length)` / `[audio_start, video_start)`.
+    target_video_indices = torch.arange(video_start, sequence_length)
+    video_row_permutation: Optional[torch.Tensor] = None
+    video_row_order: Optional[torch.Tensor] = None
+    num_pinned_video_rows = 0
+    if len(pinned_video_frames):
+        pinned = _validated_pinned_frames(pinned_video_frames, num_latent_frames, keyframe_anchors)
+        free = [frame for frame in range(num_latent_frames) if frame not in set(pinned)]
+        video_row_permutation = torch.cat([
+            torch.arange(frame * rows_per_frame, (frame + 1) * rows_per_frame)
+            for frame in (*pinned, *free)])
+        video_row_order = torch.argsort(video_row_permutation)
+        target_video_indices = target_video_indices[video_row_permutation]
+        num_pinned_video_rows = len(pinned) * rows_per_frame
+
+    target_audio_indices = torch.arange(audio_start, video_start)
+    audio_row_permutation: Optional[torch.Tensor] = None
+    audio_row_order: Optional[torch.Tensor] = None
+    num_pinned_audio_rows = 0
+    if len(pinned_audio_latents):
+        pinned_latents = _validated_pinned_audio_latents(pinned_audio_latents, num_audio_latents)
+        pinned_latent_set = set(pinned_latents)
+        free_latents = tuple(t for t in range(num_audio_latents) if t not in pinned_latent_set)
+        pinned_rows = audio_pin_row_indices(pinned_latents, num_audio_latents)
+        free_rows = audio_pin_row_indices(free_latents, num_audio_latents)
+        audio_row_permutation = torch.tensor((*pinned_rows, *free_rows), dtype=torch.long)
+        audio_row_order = torch.argsort(audio_row_permutation)
+        target_audio_indices = target_audio_indices[audio_row_permutation]
+        num_pinned_audio_rows = len(pinned_rows)
+
+    video_indices = torch.cat(video_index_blocks + [target_video_indices])
+    audio_indices = torch.cat(audio_index_blocks + [target_audio_indices])
     text_indices = torch.arange(num_text_tokens)
+
+    # The per-modality COUNT contract (`build_row_timesteps`): the pin's rows
+    # join the reference/anchor rows already counted above as conditioning.
+    num_condition_video_rows += num_pinned_video_rows
+    num_condition_audio_rows += num_pinned_audio_rows
 
     token_tags = torch.empty(sequence_length, dtype=torch.long)
     token_tags[text_indices] = text_tags
@@ -892,17 +971,22 @@ def build_ref2va_packed_layout(
         "num_condition_video_rows": num_condition_video_rows,
         "num_condition_audio_rows": num_condition_audio_rows,
         "rows_per_frame": rows_per_frame,
-        # Same dict shape as `build_packed_layout`; ref2va pins nothing -- a
-        # reference soundtrack conditions through its own leading block
-        # (`reference_audio_row_counts`), never through this permutation pair.
-        "video_row_permutation": None,
-        "video_row_order": None,
-        "audio_row_permutation": None,
-        "audio_row_order": None,
+        # None unless a pin was passed -- ref2va's reference-only path pins
+        # nothing (a reference soundtrack conditions through its own leading
+        # block, `reference_audio_row_counts`, never through this pair), so
+        # the reference-only shape keeps returning None/None exactly as before
+        # this parameter pair existed.
+        "video_row_permutation": video_row_permutation,
+        "video_row_order": video_row_order,
+        "audio_row_permutation": audio_row_permutation,
+        "audio_row_order": audio_row_order,
     }
     if device is not None:
-        for key in ("position_ids", "token_tags", "video_indices", "audio_indices", "text_indices"):
-            layout[key] = layout[key].to(device)
+        for key in ("position_ids", "token_tags", "video_indices", "audio_indices", "text_indices",
+                    "video_row_permutation", "video_row_order",
+                    "audio_row_permutation", "audio_row_order"):
+            if layout[key] is not None:
+                layout[key] = layout[key].to(device)
     return layout
 
 

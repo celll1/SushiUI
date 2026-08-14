@@ -125,12 +125,34 @@ class MiniMaxH3Reference:
 # Validation
 # ---------------------------------------------------------------------------
 
-def validate_references(references: Sequence[MiniMaxH3Reference]) -> None:
+def validate_references(
+    references: Sequence[MiniMaxH3Reference],
+    *,
+    has_vision_conditioning: bool = False,
+) -> None:
     """Refuse a reference list the released checkpoint cannot serve.
 
     Raises ``ValueError`` with the limit that was exceeded. These are the
     model's limits, not this repo's, and they are validated server-side rather
     than trusted from the client.
+
+    This function has NO production caller today -- ``/generate/ref2vid``
+    enforces the same limits with its own inline copy (``routes.py:4360-
+    4389``), not by calling here. (The audio-pairing rule is consequently
+    duplicated in three places: that inline copy, this function, and
+    ``resolve_minimax_h3_inpaint_reference_gate`` in ``api/generation_utils.py``
+    -- a follow-up to share it, not done here.)
+
+    ``has_vision_conditioning`` (default ``False``): whether THIS request
+    already carries real vision conditioning through a door other than the
+    reference list -- a temporal-inpaint pin. Where there is no such door
+    (``routes.py``'s ``/generate/ref2vid`` copy), an audio-only reference set
+    genuinely "conditions the vision stream on nothing". Where a pin already
+    supplies vision conditioning inside the same packed sequence, that
+    premise no longer holds, so an audio-only EXPLICIT reference set is
+    allowed. THIS IS REASONING FROM THE RULE'S OWN STATED PREMISE, NOT A
+    MEASURED RESULT -- see ``minimax_h3_inpaint_refs_design.md``'s Gate
+    registration (B), arm P-audio-only.
     """
     if not references:
         raise ValueError(
@@ -145,11 +167,13 @@ def validate_references(references: Sequence[MiniMaxH3Reference]) -> None:
     if len(kinds) > MAX_REFERENCES:
         raise ValueError(
             f"MiniMax-H3 accepts at most {MAX_REFERENCES} references in total, got {len(kinds)}.")
-    if set(kinds) == {"audio"}:
+    if set(kinds) == {"audio"} and not has_vision_conditioning:
         raise ValueError(
             "An audio reference has to be paired with at least one image or video reference and "
             "cannot be used on its own: a standalone soundtrack never reaches the conditioner, so a "
-            "request built from audio alone conditions the vision stream on nothing.")
+            "request built from audio alone conditions the vision stream on nothing. (This request "
+            "carries no pinned/anchored vision conditioning either -- were it a temporal-inpaint "
+            "pin or a keyframe anchor, the audio-only set would be allowed.)")
 
 
 # ---------------------------------------------------------------------------

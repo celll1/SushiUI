@@ -144,6 +144,59 @@ def _normalize_lyrics(lyrics: str) -> str:
     return f"[start]\n{text}"
 
 
+def check_ar_resume_budget(
+    prompt_tokens: int,
+    total_frames_so_far: int,
+    max_frames: int,
+    max_position_embeddings: Optional[int],
+    *,
+    duration_param_name: str = "audio_duration",
+    prompt_is_adjustable: bool = True,
+) -> None:
+    """Pure pre-flight form of `generate_ar`'s own two hard-limit guards (`MAX_AUDIO_FRAMES` total frames, the
+    language model's `max_position_embeddings` total context length) -- see `generate_ar`'s docstring for the exact
+    contract these enforce. Free function (no model/tensor access beyond plain ints) SO A CALLER CAN RUN IT BEFORE
+    STAGING THE ~18 GB LANGUAGE MODEL + DEPTH DECODER ONTO THE ACCELERATOR (design doc phase plan item 7, "extend"):
+    without this, an over-budget extend request would only be discovered after paying for that move, inside
+    `generate_ar` itself, which duplicates this exact check against the SAME two numbers once the models (and a real
+    `text_ids` tensor) are already resident. `generate_ar` calls this too, so the two call sites can never drift
+    apart. Raises `ValueError` (never returns a bool) so a caller gets the same descriptive message either way,
+    whether it is this pre-flight call or `generate_ar`'s own.
+
+    `duration_param_name`/`prompt_is_adjustable` exist because this ONE function serves TWO callers with different
+    vocabularies (audit finding F2): `generate_ar` itself, whose caller-facing duration knob is `audio_duration` and
+    whose prompt IS whatever the caller just supplied, vs the extend path (`MiniMaxMusic3Mixin.
+    _generate_audoutpaint_minimax_music3`), whose knob is `extend_duration_sec` and whose prompt is FORCED to the
+    sidecar's own (never caller-adjustable -- see that method's docstring). Naming the wrong parameter, or telling a
+    caller to shorten a prompt it does not control, is worse than a generic message: it points at a fix that does
+    not exist for that caller. Defaults reproduce `generate_ar`'s original wording exactly, so its own (un-keyword)
+    call site is unaffected by this addition.
+    """
+    if total_frames_so_far + max_frames > MAX_AUDIO_FRAMES:
+        raise ValueError(
+            f"This call would bring the song to {total_frames_so_far + max_frames} frames "
+            f"({total_frames_so_far} previously generated + up to {max_frames} new), exceeding the checkpoint's "
+            f"{MAX_AUDIO_FRAMES}-frame (six-minute) range. Shorten `{duration_param_name}`."
+        )
+    if max_position_embeddings is not None:
+        # prompt tokens + the one ever-present warm-up token + every previous frame's feedback token + up to
+        # `max_frames` new feedback tokens -- see `generate_ar`'s docstring.
+        projected_positions = prompt_tokens + 1 + total_frames_so_far + max_frames
+        if projected_positions > max_position_embeddings:
+            if prompt_is_adjustable:
+                advice = f"Shorten the prompt or the requested duration (`{duration_param_name}`)."
+            else:
+                advice = (
+                    f"Shorten the requested duration (`{duration_param_name}`); the prompt is fixed to the "
+                    f"original song's stored prompt/lyrics here and cannot be shortened for this call."
+                )
+            raise ValueError(
+                f"This call would put {projected_positions} positions in the language model's context "
+                f"(prompt {prompt_tokens} + warm-up 1 + {total_frames_so_far} previous frames + up to "
+                f"{max_frames} new frames), exceeding its {max_position_embeddings}-position budget. {advice}"
+            )
+
+
 def _sample_top_k(logits: torch.Tensor, generator: Optional[torch.Generator]) -> torch.Tensor:
     """Top-k sampling (upstream `encoders.py::_sample_top_k`)."""
     values = torch.nan_to_num(logits.float(), nan=-1e9, posinf=1e9, neginf=-1e9)
@@ -485,24 +538,13 @@ class MiniMaxMusic3Pipeline:
         else:
             total_frames_so_far = 0
 
-        if total_frames_so_far + max_frames > MAX_AUDIO_FRAMES:
-            raise ValueError(
-                f"This call would bring the song to {total_frames_so_far + max_frames} frames "
-                f"({total_frames_so_far} previously generated + up to {max_frames} new), exceeding the checkpoint's "
-                f"{MAX_AUDIO_FRAMES}-frame (six-minute) range. Shorten `audio_duration`."
-            )
         max_position_embeddings = getattr(self.language_model.config, "max_position_embeddings", None)
-        if max_position_embeddings is not None:
-            # prompt tokens + the one ever-present warm-up token + every previous frame's feedback token + up to
-            # `max_frames` new feedback tokens -- see this method's docstring.
-            projected_positions = text_ids.shape[1] + 1 + total_frames_so_far + max_frames
-            if projected_positions > max_position_embeddings:
-                raise ValueError(
-                    f"This call would put {projected_positions} positions in the language model's context "
-                    f"(prompt {text_ids.shape[1]} + warm-up 1 + {total_frames_so_far} previous frames + up to "
-                    f"{max_frames} new frames), exceeding its {max_position_embeddings}-position budget. Shorten "
-                    f"the prompt or the requested duration."
-                )
+        check_ar_resume_budget(
+            prompt_tokens=int(text_ids.shape[1]),
+            total_frames_so_far=total_frames_so_far,
+            max_frames=max_frames,
+            max_position_embeddings=max_position_embeddings,
+        )
 
         language_model = self.language_model
         # Trigger CPU-offload hooks by hand (same workaround as minimax_h3/acestep): the autoregressive loop calls

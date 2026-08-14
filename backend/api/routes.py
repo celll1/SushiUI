@@ -584,28 +584,32 @@ def _reject_if_video_model_on_audio_route(endpoint: str):
         )
 
 
-def _reject_if_music3_extend_repaint_not_yet_wired(endpoint: str):
-    """MiniMax Music 3 text-to-music generation IS shipped (/generate/txt2aud,
-    design doc phase plan item 4); extend and repaint are not (items 7-8).
+def _reject_if_music3_repaint_not_yet_wired(endpoint: str):
+    """MiniMax Music 3 text-to-music generation (/generate/txt2aud, design doc
+    phase plan item 4) and extend (/generate/outpaint/audio, item 7) are both
+    shipped; repaint/cover (/generate/aud2aud, item 8) is not.
 
-    Both mechanisms need the frame-code sidecar's AR-resume replay
-    (design doc "Per-generation state contract" /
-    `core.models.minimax_music3.frame_codes`), which txt2aud writes but no
-    route yet reads back. Without this gate, `/generate/outpaint/audio`
-    (extend) and `/generate/aud2aud` (repaint/cover) would fall through to
-    "No ACE-Step model loaded" while a Music3 model is actually loaded --
-    true only in the narrow sense that it isn't ACE-Step, and misleading
-    about why, and it would also misdescribe a working feature (txt2aud) as
-    unimplemented.
+    Repaint needs the frame-code sidecar's AR-resume replay for its
+    "regenerate from T onward" mode (design doc "Per-generation state
+    contract" / `core.models.minimax_music3.frame_codes`) plus a re-render
+    mode with no AR-resume mechanism at all yet. Without this gate,
+    `/generate/aud2aud` would fall through to "No ACE-Step model loaded"
+    while a Music3 model is actually loaded -- true only in the narrow sense
+    that it isn't ACE-Step, and misleading about why, and it would also
+    misdescribe two working features (txt2aud, extend) as unimplemented.
+
+    The single remaining caller is `/generate/aud2aud`; `endpoint` is kept as
+    a parameter (rather than hardcoding the string) only so the message names
+    whichever route actually called this.
     """
     if getattr(pipeline_manager, "is_minimax_music3_model", False):
-        _feature = "extend" if "outpaint" in endpoint else "repaint/cover"
         raise CustomValidationError(
-            f"MiniMax Music 3 {_feature} is not implemented yet",
-            detail=f"The loaded model is MiniMax Music 3. Its text-to-music generation is "
-                   f"implemented (/generate/txt2aud), but {endpoint}'s {_feature} mechanism -- "
-                   f"resuming the autoregressive stage from the saved frame-code sidecar -- has "
-                   f"not shipped yet.",
+            "MiniMax Music 3 repaint/cover is not implemented yet",
+            detail=f"The loaded model is MiniMax Music 3. Its text-to-music generation "
+                   f"(/generate/txt2aud) and extend (/generate/outpaint/audio) are implemented, but "
+                   f"{endpoint}'s repaint/cover mechanism -- resuming the autoregressive stage from "
+                   f"the saved frame-code sidecar, or re-rendering the flow stage over a fixed "
+                   f"window -- has not shipped yet.",
         )
 
 
@@ -911,10 +915,18 @@ async def get_arch_capabilities():
     on the loaded transformer variant). It is the source
     `/video-chain/plan|validate` refuse an unadvertised `continuation_mode`
     from, so a client picks a mode from here rather than from a checkpoint name.
+
+    `audio_outpaint_placements` is the audio equivalent of
+    `video_constraints[...].outpaint_placements`: which `placement` values
+    `POST /generate/outpaint/audio` accepts for a given architecture.
+    MiniMax Music 3 lists only `["extend_forward"]` (its autoregressive stage
+    is a causal language model); ACE-Step has no entry at all, since its own
+    placement is a continuous timeline offset, not an enumerated set.
     """
     from api.arch_capabilities import (
         ARCH_SUPPORTED_VALUES, ARCH_UNSUPPORTED, FEATURE_PARAMS, FEATURE_LABELS,
         QUANTIZED_LINEAR_ARCHS, RUNTIME_INT8_ARCHS, TRAINING_UNSUPPORTED,
+        AUDIO_OUTPAINT_PLACEMENTS,
         chain_context_payload, video_constraints_payload,
     )
     return {
@@ -927,6 +939,7 @@ async def get_arch_capabilities():
         "chain_context": chain_context_payload(),
         "runtime_int8_archs": list(RUNTIME_INT8_ARCHS),
         "quantized_linear_archs": list(QUANTIZED_LINEAR_ARCHS),
+        "audio_outpaint_placements": {k: list(v) for k, v in AUDIO_OUTPAINT_PLACEMENTS.items()},
     }
 
 
@@ -3381,7 +3394,7 @@ async def generate_aud2aud(
     # MiniMax-H3 first: it DOES generate audio, but only jointly with video, so
     # the generic "no ACE-Step model" message below would misdescribe it.
     _reject_if_video_model_on_audio_route("/generate/aud2aud")
-    _reject_if_music3_extend_repaint_not_yet_wired("/generate/aud2aud")
+    _reject_if_music3_repaint_not_yet_wired("/generate/aud2aud")
     if not getattr(pipeline_manager, "is_acestep_model", False):
         raise CustomValidationError(
             "No ACE-Step model loaded",
@@ -3528,11 +3541,36 @@ async def generate_outpaint_audio(
     guidance_scale: float = Form(OUTPAINT_AUDIO_DEFAULTS["guidance_scale"]),
     shift: float = Form(OUTPAINT_AUDIO_DEFAULTS["shift"]),
     vocal_language: str = Form(OUTPAINT_AUDIO_DEFAULTS["vocal_language"]),
-    # Placement (new for audio outpaint). All in SECONDS.
+    # Placement (ACE-Step). All in SECONDS.
     total_duration: float = Form(OUTPAINT_AUDIO_DEFAULTS["total_duration"]),
     input_offset_sec: float = Form(OUTPAINT_AUDIO_DEFAULTS["input_offset_sec"]),
     input_trim_start_sec: float = Form(OUTPAINT_AUDIO_DEFAULTS["input_trim_start_sec"]),
     input_trim_end_sec: float = Form(OUTPAINT_AUDIO_DEFAULTS["input_trim_end_sec"]),
+    # MiniMax Music 3 extend. `placement` has NO default anywhere in this repo
+    # (see OUTPAINT_AUDIO_ARCH_OVERLAYS's comment) -- the only value the
+    # causal autoregressive stage can ever honor is 'extend_forward', so an
+    # omitted field is passed through as `None` rather than silently filled,
+    # and `_generate_audoutpaint_minimax_music3` itself refuses a `None`/
+    # unsupported value with the causal-LM reason. `extend_duration_sec`/
+    # `num_inference_steps`/`flow_guidance_scale` ARE `Form(None)` sentinels
+    # resolved from `outpaint_audio_defaults_for_arch`'s "minimax_music3"
+    # overlay below when omitted -- same convention as
+    # `/generate/outpaint/video`'s six geometry sentinels. ACE-Step has no
+    # equivalent keys and never reads any of these four fields.
+    placement: Optional[str] = Form(None),
+    extend_duration_sec: Optional[float] = Form(None),
+    # `ge=1`/`gt=0`: same bounds, and the same reason, as `Txt2AudRequest`'s
+    # identical two fields -- a value below 1 (`num_inference_steps`) reaches
+    # `np.linspace(1.0, 1.0 / num_inference_steps, num_inference_steps)`
+    # inside `FlowMatchEulerDiscreteScheduler.set_timesteps` (0 raises
+    # ZeroDivisionError, negative raises inside numpy), and only AFTER the
+    # entire autoregressive-stage resume replay has already run -- minutes of
+    # GPU time spent before what would otherwise be a 500 (the same audit
+    # finding F4 the txt2aud route was fixed for, re-opened here because this
+    # route's own two flow-stage fields were declared with no bound at all).
+    # Rejected here at the request boundary instead.
+    num_inference_steps: Optional[int] = Form(None, ge=1),
+    flow_guidance_scale: Optional[float] = Form(None, gt=0),
     loras: str = Form("[]"),  # JSON string of LoRA configs
     # Weight-only quantization; see the Txt2AudRequest fields for both axes.
     unet_quantization: Optional[str] = Form(OUTPAINT_AUDIO_DEFAULTS["unet_quantization"]),
@@ -3540,22 +3578,30 @@ async def generate_outpaint_audio(
     reference_audio: UploadFile = File(...),
     db: Session = Depends(get_gallery_db)
 ):
-    """Audio temporal outpaint (extend, ACE-Step 1.5): place a (optionally
+    """Audio temporal outpaint (extend): ACE-Step 1.5 places a (optionally
     trimmed) input clip at a time offset inside a LONGER `total_duration`
-    output timeline and generate the audio before and/or after it.
+    output timeline and generates the audio before and/or after it. MiniMax
+    Music 3 instead forward-extends a SushiUI-generated song by resuming its
+    autoregressive stage from a frame-code sidecar stored next to the
+    original file (design doc "Per-generation state contract") -- see
+    `core.pipeline_backends.minimax_music3.MiniMaxMusic3Mixin.
+    _generate_audoutpaint_minimax_music3` for the full mechanism, including
+    why backward extension and mid-song infill are refused (the autoregressive
+    stage is a causal language model).
 
-    Multipart form: an uploaded `reference_audio` clip (the input to place)
-    plus the placement/generation parameters below. Structurally the INVERSE
-    of `/generate/aud2aud`'s `mode=repaint`: repaint holds everything
-    OUTSIDE a window and generates INSIDE it; outpaint holds the placed
-    input window itself and generates OUTSIDE it (before and/or after) --
-    see `core.pipeline_backends.acestep.AceStepMixin._generate_audoutpaint_acestep`
+    Multipart form: an uploaded `reference_audio` clip plus the
+    placement/generation parameters below. On ACE-Step this is structurally
+    the INVERSE of `/generate/aud2aud`'s `mode=repaint`: repaint holds
+    everything OUTSIDE a window and generates INSIDE it; outpaint holds the
+    placed input window itself and generates OUTSIDE it (before and/or
+    after) -- see
+    `core.pipeline_backends.acestep.AceStepMixin._generate_audoutpaint_acestep`
     for the full mechanism (inverted latent-domain repaint hold + boundary
     blend, plus a post-decode waveform splice).
 
-    **Strict preservation guarantee:** the placed input span in the returned
-    audio is sample-exact to the decoded 48kHz/16-bit representation of the
-    (trimmed, stereo/48kHz-normalized) input clip, regardless of
+    **ACE-Step strict preservation guarantee:** the placed input span in the
+    returned audio is sample-exact to the decoded 48kHz/16-bit representation
+    of the (trimmed, stereo/48kHz-normalized) input clip, regardless of
     `total_duration`/`input_offset_sec`. This is enforced by an
     unconditional post-decode waveform splice performed AFTER generation
     (`_acestep_apply_outpaint_waveform_splice`, which splices the FULL
@@ -3569,45 +3615,82 @@ async def generate_outpaint_audio(
     stereo is faithfully resampled/requantized once during normalization,
     not byte-identical to the original file.
 
+    **MiniMax Music 3 preservation guarantee:** the ORIGINAL waveform, read
+    verbatim from the resolved source file, is returned UNMODIFIED for its
+    own span; only the newly generated tail is appended (a 10ms declick ramp
+    lives entirely within the new tail). `reference_audio` must be an
+    UNMODIFIED copy of a song this server already generated (matched by
+    content hash against the gallery) -- extend needs the frame-code sidecar
+    stored next to that song's OWN file on disk, so an arbitrary upload (or
+    an edited/re-encoded copy) is refused with that reason rather than a
+    generic "sidecar not found" error.
+
     **Requirements:**
-    - An ACE-Step model must be loaded (otherwise 400).
-    - `total_duration` in (0, 240] seconds.
-    - The (trimmed) input clip must fit inside `total_duration`; if
-      `input_offset_sec` would push it out of bounds it is CLAMPED (with a
-      warning) rather than rejected, but a trimmed input longer than
-      `total_duration` itself is rejected (400).
+    - An ACE-Step 1.5 or MiniMax Music 3 model must be loaded (otherwise 400).
+    - ACE-Step: `total_duration` in (0, 240] seconds; the (trimmed) input clip
+      must fit inside `total_duration` -- if `input_offset_sec` would push it
+      out of bounds it is CLAMPED (with a warning) rather than rejected, but a
+      trimmed input longer than `total_duration` itself is rejected (400).
+    - MiniMax Music 3: `placement` must be `"extend_forward"` (required, no
+      default); `extend_duration_sec` must be positive.
     """
-    from api.generation_status import start_generation, complete_generation, fail_generation, get_warnings
+    from api.generation_status import start_generation, complete_generation, fail_generation, get_warnings, add_warning
     from utils.audio_utils import save_audio_with_metadata
 
     # Parse LoRA configs (same JSON-string-of-configs convention as txt2aud/aud2aud)
     lora_configs = json.loads(loras) if loras else []
 
-    if total_duration <= 0 or total_duration > 240.0:
+    # MiniMax-H3 first: it DOES generate audio, but only jointly with video, so
+    # the generic "no ACE-Step/Music3 model" message below would misdescribe it.
+    _reject_if_video_model_on_audio_route("/generate/outpaint/audio")
+    _aud_arch = (pipeline_manager.current_model_info or {}).get("type")
+    _is_music3 = getattr(pipeline_manager, "is_minimax_music3_model", False)
+    if not (getattr(pipeline_manager, "is_acestep_model", False) or _is_music3):
         raise CustomValidationError(
-            "Invalid total_duration",
-            detail=f"total_duration must be in (0, 240] seconds, got {total_duration}.",
-        )
-    if input_offset_sec < 0:
-        raise CustomValidationError(
-            "Invalid input_offset_sec",
-            detail=f"input_offset_sec must be >= 0, got {input_offset_sec}.",
-        )
-    if input_trim_start_sec < 0 or input_trim_end_sec < 0:
-        raise CustomValidationError(
-            "Invalid input trim",
-            detail=f"input_trim_start_sec/input_trim_end_sec must be >= 0, got "
-                   f"{input_trim_start_sec}/{input_trim_end_sec}.",
+            "No ACE-Step or MiniMax Music 3 model loaded",
+            detail="Load an ACE-Step 1.5 or MiniMax Music 3 audio model before calling "
+                   "/generate/outpaint/audio.",
         )
 
-    # MiniMax-H3 first: it DOES generate audio, but only jointly with video, so
-    # the generic "no ACE-Step model" message below would misdescribe it.
-    _reject_if_video_model_on_audio_route("/generate/outpaint/audio")
-    _reject_if_music3_extend_repaint_not_yet_wired("/generate/outpaint/audio")
-    if not getattr(pipeline_manager, "is_acestep_model", False):
+    # ACE-Step-shaped placement geometry: meaningless for MiniMax Music 3
+    # (which places nothing on a fixed timeline -- it only ever appends), so
+    # these checks are skipped entirely for that architecture rather than
+    # validated against fields it never reads.
+    if not _is_music3:
+        if total_duration <= 0 or total_duration > 240.0:
+            raise CustomValidationError(
+                "Invalid total_duration",
+                detail=f"total_duration must be in (0, 240] seconds, got {total_duration}.",
+            )
+        if input_offset_sec < 0:
+            raise CustomValidationError(
+                "Invalid input_offset_sec",
+                detail=f"input_offset_sec must be >= 0, got {input_offset_sec}.",
+            )
+        if input_trim_start_sec < 0 or input_trim_end_sec < 0:
+            raise CustomValidationError(
+                "Invalid input trim",
+                detail=f"input_trim_start_sec/input_trim_end_sec must be >= 0, got "
+                       f"{input_trim_start_sec}/{input_trim_end_sec}.",
+            )
+
+    # MiniMax Music 3: resolve the omitted `Form(None)` sentinels from the
+    # per-arch overlay -- mirrors /generate/outpaint/video's identical
+    # resolution of its own six geometry sentinels. ACE-Step has no overlay
+    # entry, so these three keys stay whatever the client sent (`None` if
+    # omitted; harmless, since AceStepMixin never reads them).
+    from api.param_defaults import outpaint_audio_defaults_for_arch
+    _resolved_aud = outpaint_audio_defaults_for_arch(_aud_arch)
+    if extend_duration_sec is None and "extend_duration_sec" in _resolved_aud:
+        extend_duration_sec = float(_resolved_aud["extend_duration_sec"])
+    if num_inference_steps is None and "num_inference_steps" in _resolved_aud:
+        num_inference_steps = int(_resolved_aud["num_inference_steps"])
+    if flow_guidance_scale is None and "flow_guidance_scale" in _resolved_aud:
+        flow_guidance_scale = float(_resolved_aud["flow_guidance_scale"])
+    if _is_music3 and extend_duration_sec is not None and extend_duration_sec <= 0:
         raise CustomValidationError(
-            "No ACE-Step model loaded",
-            detail="Load an ACE-Step 1.5 audio model before calling /generate/outpaint/audio.",
+            "Invalid extend_duration_sec",
+            detail=f"extend_duration_sec must be positive, got {extend_duration_sec}.",
         )
 
     # Read the uploaded input clip.
@@ -3621,36 +3704,77 @@ async def generate_outpaint_audio(
             detail=str(e),
         )
 
+    if _is_music3:
+        # MiniMax Music 3's extend mechanism needs a server-side file PATH,
+        # not raw bytes (`_generate_audoutpaint_minimax_music3`'s "Args"
+        # docstring): the frame-code sidecar lives next to a specific file on
+        # this server's disk, so this route resolves the UPLOADED bytes back
+        # to that file by CONTENT HASH against the gallery, rather than
+        # trusting a client-supplied path (which would be a path-traversal
+        # surface for no benefit -- the browser already has the exact bytes
+        # of any song it fetched from this server's own /outputs/, via
+        # `sendAudioToOutpaint`). A hash match therefore also means "this is
+        # byte-identical to a file already on this server", which is exactly
+        # the identity check the mechanism needs.
+        _src_hash = calculate_bytes_hash(reference_audio_bytes)
+        _src_row = (
+            db.query(GeneratedImage)
+            .filter(GeneratedImage.image_hash == _src_hash)
+            # txt2aud and a previous extend are the two generation types that
+            # can produce a MiniMax-Music3 song with a frame-code sidecar
+            # today; phase 8 (repaint) adds "aud2aud" to this list once it
+            # ships its own AR-resume/re-render path.
+            .filter(GeneratedImage.generation_type.in_(["txt2aud", "outpaint_aud"]))
+            .order_by(GeneratedImage.created_at.asc())
+            .first()
+        )
+        if _src_row is None or not _src_row.filename:
+            raise CustomValidationError(
+                "MiniMax Music 3 audio extend requires a song already in this gallery",
+                detail="Extend resumes the autoregressive stage from a frame-code sidecar stored "
+                       "next to the original audio file on this server; an arbitrary upload (or an "
+                       "edited/re-encoded copy) has no such sidecar and cannot be matched to one. Use "
+                       "\"Send to Outpaint\" on a MiniMax Music 3 song already in the gallery, rather "
+                       "than uploading a new file.",
+            )
+        reference_audio_source = os.path.join(settings.outputs_dir, _src_row.filename)
+    else:
+        reference_audio_source = reference_audio_bytes
+
     # Cheap, header-only duration probe (soundfile -- no full decode) so an
     # impossible trim/placement surfaces as a 400 BEFORE a GPU slot is
     # reserved, mirroring /generate/outpaint/video's up-front trimmed_len
-    # check. The backend re-validates against the ACTUAL trimmed + VAE-
-    # encoded length (authoritative -- see
-    # AceStepMixin._generate_audoutpaint_acestep); this is a best-effort
-    # early-reject only and is skipped (falls through to the backend) if the
-    # header can't be read this way.
-    try:
-        import soundfile as sf
-        import io as _io
-        _info = sf.info(_io.BytesIO(reference_audio_bytes))
-        _src_duration = (float(_info.frames) / float(_info.samplerate)) if _info.samplerate else None
-    except Exception:
-        _src_duration = None
+    # check. ACE-Step ONLY -- MiniMax Music 3's placement geometry has
+    # nothing analogous to trim/total_duration to pre-check here; its own
+    # budget guard (`check_ar_resume_budget`) runs server-side, before GPU
+    # staging, inside `_generate_audoutpaint_minimax_music3`. The backend
+    # re-validates against the ACTUAL trimmed + VAE-encoded length
+    # (authoritative -- see AceStepMixin._generate_audoutpaint_acestep); this
+    # is a best-effort early-reject only and is skipped (falls through to the
+    # backend) if the header can't be read this way.
+    if not _is_music3:
+        try:
+            import soundfile as sf
+            import io as _io
+            _info = sf.info(_io.BytesIO(reference_audio_bytes))
+            _src_duration = (float(_info.frames) / float(_info.samplerate)) if _info.samplerate else None
+        except Exception:
+            _src_duration = None
 
-    if _src_duration is not None:
-        _trimmed_duration = _src_duration - input_trim_start_sec - input_trim_end_sec
-        if _trimmed_duration <= 0:
-            raise CustomValidationError(
-                "Audio outpaint input trim leaves no audio",
-                detail=f"Uploaded clip is ~{_src_duration:.3f}s; "
-                       f"input_trim_start_sec={input_trim_start_sec}, input_trim_end_sec={input_trim_end_sec}.",
-            )
-        if _trimmed_duration > total_duration:
-            raise CustomValidationError(
-                "Input audio (after trim) does not fit inside total_duration",
-                detail=f"Trimmed input is ~{_trimmed_duration:.3f}s; total_duration is {total_duration:.3f}s. "
-                       f"Either trim the input further or increase total_duration.",
-            )
+        if _src_duration is not None:
+            _trimmed_duration = _src_duration - input_trim_start_sec - input_trim_end_sec
+            if _trimmed_duration <= 0:
+                raise CustomValidationError(
+                    "Audio outpaint input trim leaves no audio",
+                    detail=f"Uploaded clip is ~{_src_duration:.3f}s; "
+                           f"input_trim_start_sec={input_trim_start_sec}, input_trim_end_sec={input_trim_end_sec}.",
+                )
+            if _trimmed_duration > total_duration:
+                raise CustomValidationError(
+                    "Input audio (after trim) does not fit inside total_duration",
+                    detail=f"Trimmed input is ~{_trimmed_duration:.3f}s; total_duration is {total_duration:.3f}s. "
+                           f"Either trim the input further or increase total_duration.",
+                )
 
     params = {
         "prompt": prompt,
@@ -3664,6 +3788,12 @@ async def generate_outpaint_audio(
         "input_offset_sec": input_offset_sec,
         "input_trim_start_sec": input_trim_start_sec,
         "input_trim_end_sec": input_trim_end_sec,
+        # MiniMax Music 3 extend only; AceStepMixin never reads these keys
+        # (mirrors OUTPAINT_AUDIO_DEFAULTS' inherited-but-unused fields note).
+        "placement": placement,
+        "extend_duration_sec": extend_duration_sec,
+        "num_inference_steps": num_inference_steps,
+        "flow_guidance_scale": flow_guidance_scale,
         "loras": lora_configs,
         "unet_quantization": unet_quantization,
         # Normalized here (not after start_generation) so an invalid value is a
@@ -3676,8 +3806,7 @@ async def generate_outpaint_audio(
         pipeline_manager.reset_cancel_flag()
 
         from api.arch_capabilities import check_arch_capabilities
-        _acestep_arch = (pipeline_manager.current_model_info or {}).get("type")
-        check_arch_capabilities(params, _acestep_arch)
+        check_arch_capabilities(params, _aud_arch)
 
         print(f"outpaint_aud generation params: {sanitize_params_for_logging(params)}")
 
@@ -3692,25 +3821,42 @@ async def generate_outpaint_audio(
         from core.gpu_coordinator import gpu_coordinator
         loop = asyncio.get_event_loop()
         _gen_start = time.perf_counter()
-        # Arch-dependent (see /generate/txt2aud's identical lookup): still
-        # always resolves to "acestep" today, since MiniMax Music 3 is
-        # refused above, but this stays correct once that gate lifts.
+        # Arch-dependent: MiniMax Music 3's language model + depth decoder
+        # (AR stage) and transformer + condition encoder (flow stage) peak far
+        # above ACE-Step's DiT+VAE+TE footprint (_PEAK_VRAM_GB_BY_KIND), same
+        # lookup /generate/txt2aud uses.
         _peak_gb = _PEAK_VRAM_GB_BY_KIND.get(pipeline_manager.current_pipeline_kind, _PEAK_VRAM_GB_BY_KIND["acestep"])
         async with gpu_coordinator.generation_slot(estimated_peak_gb=_peak_gb, timeout=120.0):
             # GEMM flags are process-wide; keep selection and probing in this slot.
             from api.quantized_gemm import apply_quantized_gemm_mode
             apply_quantized_gemm_mode(params.get("quantized_gemm_mode"))
-            waveform, sample_rate, actual_seed = await _run_generation_in_executor(
+            _gen_result = await _run_generation_in_executor(
                 loop, executor,
-                lambda: pipeline_manager.generate_aud_outpaint(params, reference_audio_bytes, progress_callback=progress_callback)
+                lambda: pipeline_manager.generate_aud_outpaint(params, reference_audio_source, progress_callback=progress_callback)
             )
             fp8_gemm = extract_fp8_gemm_info(pipeline_manager)
         apply_generation_timings(params, time.perf_counter() - _gen_start)
-        _record_media_gemm_outcome(params, fp8_gemm, _acestep_arch)
+        _record_media_gemm_outcome(params, fp8_gemm, _aud_arch)
+
+        # ACE-Step returns a plain (waveform, sample_rate, actual_seed) tuple;
+        # MiniMax Music 3 returns `MiniMaxMusic3ExtendResult`, which also
+        # carries the FULL (preserved + new) frame codes the sidecar below
+        # needs -- see that result type's own docstring.
+        if _is_music3:
+            waveform = _gen_result.waveform
+            sample_rate = _gen_result.sample_rate
+            actual_seed = _gen_result.actual_seed
+        else:
+            waveform, sample_rate, actual_seed = _gen_result
 
         params["seed"] = actual_seed
 
-        # Hash the input clip (mirrors aud2aud's source_audio_hash).
+        # Hash the input clip (mirrors aud2aud's source_audio_hash). For
+        # MiniMax Music 3 this is the hash of the ORIGINAL (pre-extend) song,
+        # since `reference_audio_bytes` is the exact bytes matched against the
+        # gallery above -- the same "what was this generated from" semantics
+        # as ACE-Step's, just resolved through a gallery row instead of an
+        # arbitrary upload.
         params["source_audio_hash"] = calculate_bytes_hash(reference_audio_bytes)
 
         # Encode FLAC, waveform PNG (thumbnail seed), and sidecar JSON.
@@ -3734,7 +3880,58 @@ async def generate_outpaint_audio(
         # Record audio-specific fields into parameters JSON for the gallery.
         num_samples = int(waveform.shape[-1])
         duration_s = (num_samples / sample_rate) if sample_rate else 0.0
+
+        model_name, model_hash = extract_model_info(pipeline_manager)
+
+        # MiniMax Music 3's per-generation state contract, extended: the NEW
+        # sidecar carries the FULL (preserved + newly generated) code
+        # sequence, so extending this file again replays the whole history --
+        # mirrors /generate/txt2aud's identical write, same best-effort (a
+        # write failure must not fail an already-succeeded generation) but
+        # surfaced as a warning rather than only a console print (audit
+        # finding F3 there applies identically here: this is the one signal
+        # that the just-saved song can never be extended further).
+        if _is_music3:
+            from core.models.minimax_music3.frame_codes import write_frame_codes_sidecar
+            try:
+                write_frame_codes_sidecar(
+                    os.path.join(settings.outputs_dir, filename),
+                    _gen_result.frame_codes,
+                    _gen_result.prefix_codes,
+                    sample_rate=sample_rate,
+                    frame_rate=_gen_result.frame_rate,
+                    prompt=_gen_result.prompt,
+                    lyrics=_gen_result.lyrics,
+                    seed=actual_seed,
+                    num_samples=num_samples,
+                    content_hash=_media_hash,
+                    model_hash=model_hash,
+                )
+            except Exception as exc:
+                _sidecar_error_msg = (
+                    f"Failed to write the frame-code sidecar for {filename!r} ({exc!r}); "
+                    f"this song cannot be extended further."
+                )
+                print(f"[MiniMaxMusic3] WARNING: {_sidecar_error_msg}")
+                add_warning(_sidecar_error_msg, code="sidecar_write_failed")
+
         params_for_db = {k: v for k, v in params.items() if not k.startswith("_")}
+        # Cross-arch keys never applied to the OTHER architecture's request
+        # are dropped rather than persisted as a null/inert value -- the same
+        # class of problem as the phase-5 finding: a user reading gallery
+        # parameters back would otherwise see e.g. ACE-Step's `shift`/
+        # `vocal_language` on a Music 3 row, or Music 3's `placement`/
+        # `extend_duration_sec` (always None) on an ACE-Step row, none of
+        # which ever had any effect on that generation.
+        if _is_music3:
+            for _key in ("total_duration", "input_offset_sec", "input_trim_start_sec",
+                         "input_trim_end_sec", "inference_steps", "guidance_scale",
+                         "shift", "vocal_language"):
+                params_for_db.pop(_key, None)
+        else:
+            for _key in ("placement", "extend_duration_sec", "num_inference_steps",
+                         "flow_guidance_scale"):
+                params_for_db.pop(_key, None)
         # Audio has no visual dimensions; do not let create_db_image_record's
         # width/height fallback (512) fabricate a fake resolution.
         params_for_db["width"] = 0
@@ -3743,11 +3940,15 @@ async def generate_outpaint_audio(
         params_for_db["sample_rate"] = sample_rate
         params_for_db["is_audio"] = True
         params_for_db["hash_kind"] = "file_bytes"
+        if _is_music3:
+            # Diagnostic/gallery-metadata surface for how many of `num_frames`
+            # this call actually appended -- see MiniMaxMusic3ExtendResult's
+            # docstring (`extend_duration_sec` is an upper bound; the AR stage
+            # may stop earlier).
+            params_for_db["appended_num_frames"] = _gen_result.appended_num_frames
         _effective_warnings = get_warnings(_gen_id)
         if _effective_warnings:
             params_for_db["effective_warnings"] = _effective_warnings
-
-        model_name, model_hash = extract_model_info(pipeline_manager)
 
         db_image = create_db_image_record(
             GeneratedImage,

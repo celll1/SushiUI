@@ -1638,14 +1638,16 @@ AUD2AUD_DEFAULTS: Dict[str, Any] = {
 
 # Per-architecture overlay twin of `AUDIO_GEN_ARCH_OVERLAYS`, for
 # `/generate/aud2aud`'s own key set. Empty for now: MiniMax Music 3's
-# repaint/cover mechanism (design doc phase plan item 8) resumes the
-# autoregressive stage from the frame-code sidecar `/generate/txt2aud`
-# writes (design doc "Per-generation state contract"), and no route reads
-# that sidecar back yet -- `/generate/aud2aud` refuses a MiniMax Music 3
-# model outright
-# (`routes._reject_if_music3_extend_repaint_not_yet_wired`) until it does.
-# The mechanism is introduced now, empty, so item 8 adds an overlay entry
-# rather than inventing this file's second half of the pattern from scratch.
+# repaint/cover mechanism (design doc phase plan item 8) needs its own two
+# AR-resume/re-render paths over the frame-code sidecar
+# `/generate/txt2aud` writes (design doc "Per-generation state contract");
+# `/generate/outpaint/audio`'s extend mechanism (item 7,
+# `OUTPAINT_AUDIO_ARCH_OVERLAYS` below) already reads that same sidecar
+# back, but `/generate/aud2aud` still refuses a MiniMax Music 3 model
+# outright (`routes._reject_if_music3_repaint_not_yet_wired`) until item 8
+# ships. The mechanism is introduced now, empty, so item 8 adds an overlay
+# entry rather than inventing this file's second half of the pattern from
+# scratch.
 AUD2AUD_GEN_ARCH_OVERLAYS: Dict[str, Dict[str, Any]] = {}
 
 
@@ -1713,11 +1715,40 @@ OUTPAINT_AUDIO_DEFAULTS: Dict[str, Any] = {
 # Per-architecture overlay twin of `AUDIO_GEN_ARCH_OVERLAYS`/
 # `AUD2AUD_GEN_ARCH_OVERLAYS`, for `/generate/outpaint/audio`'s own key set
 # (`total_duration`/`input_offset_sec`/`input_trim_start_sec`/
-# `input_trim_end_sec`). Empty for now, for the same reason
-# `AUD2AUD_GEN_ARCH_OVERLAYS` is: MiniMax Music 3's extend mechanism (design
-# doc phase plan item 7) is what would populate it, and that route still
-# refuses a MiniMax Music 3 model outright.
-OUTPAINT_AUDIO_ARCH_OVERLAYS: Dict[str, Dict[str, Any]] = {}
+# `input_trim_end_sec`). Design doc phase plan item 7 ("Extend"): MiniMax
+# Music 3 resumes the autoregressive stage from the frame-code sidecar rather
+# than placing a clip on a fixed timeline, so it needs three keys ACE-Step has
+# no equivalent of at all -- `extend_duration_sec` (an upper bound on how much
+# MORE audio to add, distinct from ACE-Step's `total_duration`, which is the
+# whole OUTPUT timeline length), `num_inference_steps` and
+# `flow_guidance_scale` (the same flow-stage keys `AUDIO_GEN_ARCH_OVERLAYS`
+# overlays for txt2aud). Deliberately NOT declared here: a default for
+# `placement` -- `_generate_audoutpaint_minimax_music3`'s docstring
+# ("Placement") requires it to be supplied explicitly with no fallback, since
+# the only value the causal autoregressive stage can ever honor is
+# 'extend_forward' and silently defaulting to it would hide that this is a
+# structural limit, not an arbitrary starting choice.
+OUTPAINT_AUDIO_ARCH_OVERLAYS: Dict[str, Dict[str, Any]] = {
+    "minimax_music3": {
+        # An UPPER BOUND, not a target -- same "duration is an upper bound"
+        # semantics as `audio_duration`/`AUDIO_GEN_ARCH_OVERLAYS` above (the
+        # autoregressive stage may emit its end-of-audio token earlier).
+        # Smaller than txt2aud's 60s `audio_duration` default on purpose:
+        # extend adds an INCREMENT onto an already-generated song rather than
+        # a whole new one, and a smaller default keeps
+        # `core.models.minimax_music3.pipeline.check_ar_resume_budget`'s
+        # position-budget check comfortably inside the checkpoint's 10,240
+        # position budget for a song that has already consumed part of it.
+        "extend_duration_sec": 30.0,
+        # Per CHUNK (the flow-matching DiT's 200-frame windows), matching
+        # `AUDIO_GEN_ARCH_OVERLAYS["minimax_music3"]`'s txt2aud default --
+        # extend's flow stage denoises the same window geometry.
+        "num_inference_steps": 30,
+        # Flow-stage CFG; AR CFG (1.5) and top-k (50) stay fixed by the
+        # reference recipe, same as txt2aud.
+        "flow_guidance_scale": 1.7,
+    },
+}
 
 
 def outpaint_audio_defaults_for_arch(arch: Optional[str]) -> Dict[str, Any]:
@@ -1726,7 +1757,11 @@ def outpaint_audio_defaults_for_arch(arch: Optional[str]) -> Dict[str, Any]:
     Two overlays, in order -- the shared aud2aud one (prompt/lyrics/seed/
     inference params) and then the outpaint-only one -- mirroring
     `outpaint_video_defaults_for_arch`'s two-overlay composition. Same no-op
-    contract: every arch today resolves to `OUTPAINT_AUDIO_DEFAULTS` unchanged.
+    contract for an architecture with no entry (ACE-Step): resolves to
+    `OUTPAINT_AUDIO_DEFAULTS` unchanged, with no
+    `extend_duration_sec`/`num_inference_steps`/`flow_guidance_scale` keys at
+    all (ACE-Step's backend never reads them, mirroring how those same two
+    keys stay absent from `audio_defaults_for_arch("acestep")`).
     """
     resolved = aud2aud_defaults_for_arch(arch, OUTPAINT_AUDIO_DEFAULTS)
     resolved.update(OUTPAINT_AUDIO_ARCH_OVERLAYS.get(arch or "", {}))

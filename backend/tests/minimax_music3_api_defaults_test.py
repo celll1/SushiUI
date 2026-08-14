@@ -91,25 +91,50 @@ def test_minimax_music3_is_the_only_overlay_entry_today():
     assert set(AUDIO_GEN_ARCH_OVERLAYS.keys()) == {"minimax_music3"}
 
 
-def test_aud2aud_and_outpaint_audio_twins_are_currently_a_noop_for_every_arch():
-    """Design doc phase plan items 7-8 (extend/repaint) populate these
-    overlays; until then every arch, including "minimax_music3", resolves
-    unchanged -- the routes still hard-refuse a MiniMax Music 3 model on
-    these two endpoints regardless of what a resolved default would say.
+def test_aud2aud_twin_is_still_a_noop_for_every_arch():
+    """Design doc phase plan item 8 (repaint/cover) is what populates
+    `AUD2AUD_GEN_ARCH_OVERLAYS`; until then every arch, including
+    "minimax_music3", resolves unchanged -- `/generate/aud2aud` still
+    hard-refuses a loaded MiniMax Music 3 model regardless of what a
+    resolved default would say.
     """
     assert AUD2AUD_GEN_ARCH_OVERLAYS == {}
-    assert OUTPAINT_AUDIO_ARCH_OVERLAYS == {}
     for arch in ("acestep", "minimax_music3", None, "unknown"):
         assert aud2aud_defaults_for_arch(arch) == AUD2AUD_DEFAULTS
+
+
+def test_outpaint_audio_twin_is_populated_only_for_minimax_music3():
+    """Design doc phase plan item 7 ("Extend") populates
+    `OUTPAINT_AUDIO_ARCH_OVERLAYS` with a "minimax_music3" entry
+    (`extend_duration_sec`/`num_inference_steps`/`flow_guidance_scale`) now
+    that `/generate/outpaint/audio` resumes the autoregressive stage from
+    the frame-code sidecar. ACE-Step and any unrecognized/absent arch still
+    resolve to `OUTPAINT_AUDIO_DEFAULTS` unchanged -- the no-op contract
+    this overlay mechanism was introduced to preserve for every arch that
+    has nothing to add.
+    """
+    assert set(OUTPAINT_AUDIO_ARCH_OVERLAYS.keys()) == {"minimax_music3"}
+    for arch in ("acestep", None, "unknown"):
         assert outpaint_audio_defaults_for_arch(arch) == OUTPAINT_AUDIO_DEFAULTS
+    _music3_resolved = outpaint_audio_defaults_for_arch("minimax_music3")
+    assert _music3_resolved["extend_duration_sec"] == 30.0
+    assert _music3_resolved["num_inference_steps"] == 30
+    assert _music3_resolved["flow_guidance_scale"] == 1.7
+    # Every base ACE-Step-shaped key is still present and unchanged for
+    # "minimax_music3" -- the overlay adds keys, it does not replace the base.
+    for key in OUTPAINT_AUDIO_DEFAULTS:
+        assert _music3_resolved[key] == OUTPAINT_AUDIO_DEFAULTS[key]
 
 
 def test_outpaint_audio_defaults_compose_the_aud2aud_overlay_first():
     """`outpaint_audio_defaults_for_arch` mirrors
     `outpaint_video_defaults_for_arch`'s two-overlay composition (shared
-    audio overlay, then the outpaint-only one) -- verified structurally here
-    since both overlays are empty today and the composition itself is what
-    would otherwise go untested until item 7/8 populates them.
+    audio overlay, then the outpaint-only one). Exercised against "acestep"
+    here, whose `AUD2AUD_GEN_ARCH_OVERLAYS` entry is still empty (item 8,
+    repaint/cover, has not populated it) -- `test_outpaint_audio_twin_is_
+    populated_only_for_minimax_music3` above covers the composed result for
+    the one arch (`minimax_music3`) that DOES have a populated
+    `OUTPAINT_AUDIO_ARCH_OVERLAYS` entry today (item 7, extend).
     """
     resolved = outpaint_audio_defaults_for_arch("acestep")
     for key in ("prompt", "lyrics", "seed", "inference_steps", "guidance_scale", "shift", "vocal_language"):

@@ -148,7 +148,7 @@ def test_check_arch_capabilities_warns_on_reference_audio_conditioning_when_forc
     it today (pinned by the test above); its real future surface is an
     aud2aud "cover" request, which this architecture's `/generate/aud2aud`
     route refuses outright regardless
-    (`routes._reject_if_music3_extend_repaint_not_yet_wired`).
+    (`routes._reject_if_music3_repaint_not_yet_wired`).
     """
     params = dict(_defaults())
     params["is_cover"] = True

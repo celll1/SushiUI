@@ -1185,12 +1185,13 @@ paths:
             Invalid parameters, or no ACE-Step model loaded. A loaded MiniMax-H3
             model is refused here with its own reason: it generates audio only
             jointly with video, so its audio is not separately addressable. A
-            loaded MiniMax Music 3 model is refused too, though it IS an audio
-            model and its text-to-music generation works
-            (`POST /generate/txt2aud`): its repaint/cover mechanism needs to
-            resume the autoregressive stage from the frame-code sidecar
-            `/generate/txt2aud` writes, and this endpoint does not read that
-            sidecar back yet.
+            loaded MiniMax Music 3 model is refused too, though its
+            text-to-music generation (`POST /generate/txt2aud`) and extend
+            (`POST /generate/outpaint/audio`) both work: its repaint/cover
+            mechanism needs to either resume the autoregressive stage from the
+            frame-code sidecar with a new tail, or re-render the flow stage
+            over a fixed window with a new seed, and neither path has shipped
+            yet.
           content:
             application/json:
               schema:
@@ -1222,21 +1223,34 @@ paths:
   /generate/outpaint/audio:
     post:
       tags: [generation]
-      summary: Audio temporal outpaint (extend) from a placed input clip (ACE-Step 1.5)
+      summary: Audio temporal outpaint (extend) from a placed input clip (ACE-Step 1.5, MiniMax Music 3)
       description: |
-        Places a (optionally trimmed) input `reference_audio` clip at a time
-        offset inside a LONGER `total_duration` output timeline and
-        generates the audio before and/or after it. Structurally the
-        INVERSE of `/generate/aud2aud`'s `mode=repaint`: repaint holds
-        everything OUTSIDE a window and generates INSIDE it; outpaint holds
-        the placed input window itself and generates OUTSIDE it (before
-        and/or after) -- see
+        ACE-Step 1.5 places a (optionally trimmed) input `reference_audio`
+        clip at a time offset inside a LONGER `total_duration` output
+        timeline and generates the audio before and/or after it.
+        Structurally the INVERSE of `/generate/aud2aud`'s `mode=repaint`:
+        repaint holds everything OUTSIDE a window and generates INSIDE it;
+        outpaint holds the placed input window itself and generates OUTSIDE
+        it (before and/or after) -- see
         `core.pipeline_backends.acestep.AceStepMixin._generate_audoutpaint_acestep`
         for the full mechanism (inverted latent-domain repaint hold +
         boundary blend, plus a post-decode waveform splice).
 
-        **Strict preservation guarantee:** the placed input span in the
-        returned audio is sample-exact to the decoded 48kHz/16-bit
+        MiniMax Music 3 instead forward-extends a SushiUI-generated song by
+        resuming its autoregressive stage from a frame-code sidecar stored
+        next to the original file (design doc "Per-generation state
+        contract") -- see
+        `core.pipeline_backends.minimax_music3.MiniMaxMusic3Mixin._generate_audoutpaint_minimax_music3`
+        for the full mechanism. `reference_audio` must be an UNMODIFIED copy
+        of a song this server already generated (matched by content hash
+        against the gallery); an arbitrary upload has no sidecar to find and
+        is refused with that reason. Only `placement: "extend_forward"` is
+        supported -- the autoregressive stage is a causal language model, so
+        backward extension and mid-song infill are refused with that same
+        reason, not silently approximated.
+
+        **ACE-Step strict preservation guarantee:** the placed input span in
+        the returned audio is sample-exact to the decoded 48kHz/16-bit
         representation of the (trimmed, stereo/48kHz-normalized) input
         clip, regardless of `total_duration`/`input_offset_sec`. This is
         enforced by an unconditional post-decode waveform splice performed
@@ -1251,29 +1265,43 @@ paths:
         faithfully resampled/requantized once during normalization, not
         byte-identical to the original file.
 
-        Produces a lossless FLAC file and a gallery row.
+        **MiniMax Music 3 preservation guarantee:** the ORIGINAL waveform,
+        read verbatim from the resolved source file, is returned UNMODIFIED
+        for its own span; only the newly generated tail is appended (a 10ms
+        declick ramp lives entirely within the new tail, never touching the
+        preserved span).
+
+        Produces a lossless FLAC file and a gallery row. On MiniMax Music 3
+        this also writes a NEW frame-code sidecar for the extended file
+        carrying the full (preserved + new) code sequence, so the result can
+        itself be extended again.
 
         **Requirements:**
-        - An ACE-Step model must be loaded (otherwise 400).
+        - An ACE-Step 1.5 or MiniMax Music 3 model must be loaded (otherwise
+          400).
         - Sent as multipart/form-data with the `reference_audio` file plus
           the placement/generation parameters as form fields.
-        - `total_duration` must be in (0, 240] seconds.
-        - The (trimmed) input clip must fit inside `total_duration`; if
+        - ACE-Step: `total_duration` must be in (0, 240] seconds; the
+          (trimmed) input clip must fit inside `total_duration` -- if
           `input_offset_sec` would push it out of bounds it is CLAMPED (with
           a warning) rather than rejected, but a trimmed input longer than
           `total_duration` itself is rejected (400).
+        - MiniMax Music 3: `placement` must be `"extend_forward"` (required,
+          no default assumed); `extend_duration_sec` must be positive.
 
         **Key parameters:**
-        - `reference_audio`: the input clip to place (multipart file upload).
-        - `total_duration`: length of the OUTPUT timeline, in seconds.
-        - `input_offset_sec`: where the (trimmed) input clip is placed
-          within that timeline, in seconds.
-        - `input_trim_start_sec` / `input_trim_end_sec`: trim applied to the
-          UPLOADED clip itself before placement, in seconds.
+        - `reference_audio`: ACE-Step -- the input clip to place (multipart
+          file upload). MiniMax Music 3 -- an unmodified copy of a song
+          already in this server's gallery.
+        - `total_duration` / `input_offset_sec` / `input_trim_start_sec` /
+          `input_trim_end_sec`: ACE-Step ONLY -- see `OutpaintAudioRequest`.
+        - `placement` / `extend_duration_sec` / `num_inference_steps` /
+          `flow_guidance_scale`: MiniMax Music 3 ONLY -- see
+          `OutpaintAudioRequest`.
 
-        **Distilled defaults:** inference_steps=8, guidance_scale=1.0 (turbo
-        is CFG-distilled; a non-default value is overridden back to 1.0),
-        shift=3.0.
+        **Distilled defaults (ACE-Step):** inference_steps=8,
+        guidance_scale=1.0 (turbo is CFG-distilled; a non-default value is
+        overridden back to 1.0), shift=3.0.
       operationId: generateOutpaintAudio
       requestBody:
         required: true
@@ -1298,14 +1326,14 @@ paths:
         '400':
           description: >-
             Invalid parameters (including a placement that cannot fit), or no
-            ACE-Step model loaded. A loaded MiniMax-H3 model is refused here with
-            its own reason: it generates audio only jointly with video, so its
-            audio is not separately addressable. A loaded MiniMax Music 3 model
-            is refused too, though it IS an audio model and its text-to-music
-            generation works (`POST /generate/txt2aud`): its extend mechanism
-            needs to resume the autoregressive stage from the frame-code
-            sidecar `/generate/txt2aud` writes, and this endpoint does not read
-            that sidecar back yet.
+            ACE-Step/MiniMax Music 3 model loaded. A loaded MiniMax-H3 model
+            is refused here with its own reason: it generates audio only
+            jointly with video, so its audio is not separately addressable.
+            On MiniMax Music 3: an omitted or unsupported `placement` (only
+            `extend_forward` is accepted -- the autoregressive stage is
+            causal), or a `reference_audio` upload that does not match a song
+            already in this server's gallery by content hash (no frame-code
+            sidecar to resume from).
           content:
             application/json:
               schema:
@@ -9006,6 +9034,27 @@ components:
           items:
             type: string
           example: [acestep, anima, flux2, ideogram4, krea2, ltx2, minimax_h3, zimage]
+        audio_outpaint_placements:
+          type: object
+          description: |
+            Architecture name -> which `placement` values
+            `POST /generate/outpaint/audio` accepts there. Audio equivalent
+            of `video_constraints[...].outpaint_placements`, but declared
+            directly (`backend/api/arch_capabilities.AUDIO_OUTPAINT_PLACEMENTS`)
+            rather than through the video-only `TemporalSpec` registry.
+            MiniMax Music 3 lists only `["extend_forward"]` -- its
+            autoregressive stage is a causal language model, so backward
+            extension and mid-song infill are structurally impossible, not
+            merely unimplemented. ACE-Step is ABSENT from this map: its own
+            placement is a continuous `total_duration`/`input_offset_sec`
+            timeline offset, not a value from an enumerated set, so a
+            single-entry tuple here would misrepresent it.
+          additionalProperties:
+            type: array
+            items:
+              type: string
+          example:
+            minimax_music3: [extend_forward]
     ChainContextVariantCapability:
       type: object
       required:
@@ -12014,23 +12063,35 @@ components:
       required:
         - reference_audio
       description: |
-        Audio temporal outpaint (extend). Structurally the INVERSE of
-        `Aud2AudRequest`'s `mode=repaint`: repaint holds everything OUTSIDE
-        a window and generates INSIDE it; outpaint holds the placed input
-        window itself and generates OUTSIDE it (before and/or after).
-        Shares prompt/lyrics/seed/inference_steps/guidance_scale/shift/
-        vocal_language/loras with `Aud2AudRequest` -- see there for details
-        on each.
+        Audio temporal outpaint (extend). On ACE-Step this is structurally
+        the INVERSE of `Aud2AudRequest`'s `mode=repaint`: repaint holds
+        everything OUTSIDE a window and generates INSIDE it; outpaint holds
+        the placed input window itself and generates OUTSIDE it (before
+        and/or after). Shares prompt/lyrics/seed/inference_steps/
+        guidance_scale/shift/vocal_language/loras with `Aud2AudRequest` --
+        see there for details on each. On MiniMax Music 3, `prompt`/`lyrics`
+        are IGNORED (the sidecar's own stored values are always reused --
+        see `placement` below) and the `placement`/`extend_duration_sec`/
+        `num_inference_steps`/`flow_guidance_scale` fields near the bottom of
+        this schema apply instead.
       properties:
         prompt:
           type: string
           default: ""
-          description: "Caption text describing the generated (non-preserved) portion of the timeline (also accepted server-side as `caption`)."
+          description: |
+            ACE-Step: caption text describing the generated (non-preserved)
+            portion of the timeline (also accepted server-side as
+            `caption`). MiniMax Music 3: IGNORED -- the original song's own
+            stored caption is always reused for the continuation (a
+            non-empty, differing value here is surfaced as a warning rather
+            than silently dropped); see `placement` below.
           example: "lo-fi hip hop, chill, jazzy piano"
         lyrics:
           type: string
           default: ""
-          description: "Lyrics text. Empty for instrumental generation."
+          description: |
+            ACE-Step: lyrics text, empty for instrumental generation.
+            MiniMax Music 3: IGNORED for the same reason as `prompt` above.
           example: ""
         seed:
           type: integer
@@ -12088,6 +12149,63 @@ components:
           minimum: 0.0
           description: "Trim this many seconds off the END of the uploaded clip before placement."
           example: 0.0
+        placement:
+          type: string
+          nullable: true
+          enum: [extend_forward]
+          default: null
+          description: |
+            MiniMax Music 3 ONLY, REQUIRED when this architecture is loaded
+            -- NO default is assumed (an omitted value is a 400, not a
+            silent fallback). The only supported value is
+            `"extend_forward"`: the autoregressive stage is a causal
+            language model, so it can only continue a song forward from its
+            existing end -- backward extension and mid-song infill are
+            refused with that same reason, not silently approximated by
+            this one value. No effect on ACE-Step.
+          example: "extend_forward"
+        extend_duration_sec:
+          type: number
+          nullable: true
+          default: null
+          exclusiveMinimum: true
+          minimum: 0
+          description: |
+            MiniMax Music 3 ONLY. How much MORE audio to generate, in
+            seconds -- an UPPER BOUND, not a target (the autoregressive
+            stage may emit its end-of-audio token earlier, same semantics as
+            `Txt2AudRequest.audio_duration`). Distinct from ACE-Step's
+            `total_duration` above, which is the whole OUTPUT timeline
+            length rather than an increment; no effect on ACE-Step. `null`
+            (the default here) resolves to that architecture's own default
+            (30.0s) at request time (see `GET /schema/generation-defaults`'s
+            `outpaint_audio_arch_overlays`).
+          example: 30.0
+        num_inference_steps:
+          type: integer
+          nullable: true
+          default: null
+          minimum: 1
+          description: |
+            MiniMax Music 3 ONLY. Number of flow-matching denoising steps
+            PER CHUNK (its 200-frame sliding windows) for the newly
+            generated tail -- same field and semantics as
+            `Txt2AudRequest.num_inference_steps`; no effect on ACE-Step.
+            `null` (the default here) resolves to that architecture's own
+            default (30) at request time.
+          example: 30
+        flow_guidance_scale:
+          type: number
+          nullable: true
+          default: null
+          exclusiveMinimum: true
+          minimum: 0
+          description: |
+            MiniMax Music 3 ONLY. Flow-stage classifier-free guidance scale
+            for the newly generated tail -- same field and semantics as
+            `Txt2AudRequest.flow_guidance_scale`; no effect on ACE-Step.
+            `null` (the default here) resolves to 1.7 at request time.
+          example: 1.7
         loras:
           type: string
           default: "[]"
@@ -12128,7 +12246,20 @@ components:
         reference_audio:
           type: string
           format: binary
-          description: "The input audio clip to place inside the longer output timeline (multipart file upload). Its (trimmed) waveform samples, normalized to stereo/48kHz, are re-spliced verbatim into the output over its placed span -- sample-exact preservation to that decoded 48kHz/16-bit representation, independent of the surrounding generated audio."
+          description: |
+            ACE-Step: the input audio clip to place inside the longer output
+            timeline (multipart file upload). Its (trimmed) waveform
+            samples, normalized to stereo/48kHz, are re-spliced verbatim
+            into the output over its placed span -- sample-exact
+            preservation to that decoded 48kHz/16-bit representation,
+            independent of the surrounding generated audio.
+
+            MiniMax Music 3: an UNMODIFIED copy of a song this server
+            already generated -- matched server-side by content hash
+            against the gallery (needed to locate the frame-code sidecar
+            stored next to the original file). An arbitrary upload, or an
+            edited/re-encoded copy, has no matching sidecar and is refused
+            (400) with that reason.
 
     Img2ImgRequest:
       allOf:

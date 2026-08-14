@@ -60,6 +60,7 @@ import {
   normalizeUnetQuantization,
   transformerQuantizationLabel,
   videoOutpaintPlacements,
+  audioOutpaintPlacements,
   outpaintVideoDefaultsForArch,
   fitVideoCanvas,
   videoCanvasRule,
@@ -141,6 +142,14 @@ interface OutpaintPanelParams extends ApiOutpaintParams {
   input_offset_sec?: number;
   input_trim_start_sec?: number;
   input_trim_end_sec?: number;
+  // --- Audio temporal outpaint, MiniMax Music 3 extend only ---
+  // `music3_num_inference_steps`/`flow_guidance_scale` are already declared
+  // on `GenerationParams` (inherited via `ApiOutpaintParams`) -- the same
+  // fields Txt2ImgPanel's txt2aud branch uses, reused here rather than
+  // duplicated. `extend_duration_sec` has no GenerationParams equivalent
+  // (txt2aud's `audio_duration` means something different -- a whole new
+  // song's length, not an increment), so it is declared fresh here.
+  extend_duration_sec?: number;
   // FBCache / Spectrum forecasting. Declared here because the panel reads and
   // writes them; they were used without being declared, which the LoRA
   // "apply recommended settings" path (which assigns fbcache_enable /
@@ -344,6 +353,13 @@ const DEFAULT_PARAMS: OutpaintPanelParams = {
   input_offset_sec: 0.0,
   input_trim_start_sec: 0.0,
   input_trim_end_sec: 0.0,
+  // --- Audio temporal outpaint, MiniMax Music 3 extend only ---
+  // Mirrors param_defaults.py's OUTPAINT_AUDIO_ARCH_OVERLAYS["minimax_music3"]
+  // as the fallback before GET /schema/generation-defaults answers (see the
+  // resolution effect below, mirroring Txt2ImgPanel's identical pattern).
+  extend_duration_sec: 30.0,
+  music3_num_inference_steps: 30,
+  flow_guidance_scale: 1.7,
 };
 
 // Image-tab outpaint options are grouped into a single-open tabbed accordion
@@ -1181,6 +1197,38 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
     }
   }, [generationDefaults]);
 
+  // Re-resolve `extend_duration_sec`/`music3_num_inference_steps`/
+  // `flow_guidance_scale` from the schema API's `outpaint_audio_arch_overlays`
+  // OVERLAY whenever the LOADED ARCHITECTURE changes -- mirrors Txt2ImgPanel's
+  // identical txt2aud effect verbatim (see its comment for the full
+  // rationale: reading the raw overlay directly (not a merged helper) is
+  // what lets ACE-Step (no overlay entry) leave a persisted value untouched
+  // instead of resetting it, and
+  // `audio_defaults_arch` in the dependency list is what makes "Reset to
+  // Default" re-resolve on a still-loaded Music 3 model rather than getting
+  // stuck on DEFAULT_PARAMS' literals).
+  //
+  // Reads the architecture from `currentModelInfo` directly (not the
+  // `loadedArchType` const) -- `loadedArchType` is declared further below in
+  // this component, and a dependency ARRAY is evaluated during RENDER (not
+  // deferred like the effect callback), so referencing it here would be a
+  // temporal-dead-zone access on every render of this tab (`ReferenceError:
+  // Cannot access 'loadedArchType' before initialization`), regardless of
+  // modality or whether a model is loaded at all.
+  useEffect(() => {
+    const _arch = currentModelInfo?.model_info?.type as string | undefined;
+    if (!isAudio || !_arch || !generationDefaults) return;
+    setParams((prev) => {
+      if (prev.audio_defaults_arch === _arch) return prev;
+      const overlay = (generationDefaults.outpaint_audio_arch_overlays?.[_arch] || {}) as Record<string, unknown>;
+      const next: OutpaintPanelParams = { ...prev, audio_defaults_arch: _arch };
+      if ("extend_duration_sec" in overlay) next.extend_duration_sec = overlay.extend_duration_sec as number;
+      if ("num_inference_steps" in overlay) next.music3_num_inference_steps = overlay.num_inference_steps as number;
+      if ("flow_guidance_scale" in overlay) next.flow_guidance_scale = overlay.flow_guidance_scale as number;
+      return next;
+    });
+  }, [isAudio, currentModelInfo, generationDefaults, params.audio_defaults_arch]);
+
   // Reload params/preview when navigating to /generate?tab=outpaint
   useEffect(() => {
     if (pathname === "/generate" && searchParams.get('tab') === 'outpaint' && isMounted) {
@@ -1427,6 +1475,13 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
   // and/or last frame of the span it generates) lists only the placements it
   // can anchor. No arch name appears here.
   const loadedArchType = currentModelInfo?.model_info?.type as string | undefined;
+  // Audio-arch dispatch, same convention as Txt2ImgPanel's `isMusic3`: MiniMax
+  // Music 3's extend mechanism (placement/extend_duration_sec/
+  // music3_num_inference_steps/flow_guidance_scale) is a materially
+  // different request shape from ACE-Step's timeline-placement outpaint, so
+  // every audio-branch render/queue site below distinguishes the two rather
+  // than assuming ACE-Step's shape whenever `isAudio` is true.
+  const isMusic3 = loadedArchType === "minimax_music3";
   // Applies a LoRA's own declared recommended settings (from its file
   // metadata) to params, like any ordinary user edit -- see Txt2ImgPanel's
   // twin of this function for the full rationale.
@@ -1464,6 +1519,10 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
     && archSupportsFeature(archCapabilities, loadedArchType, "negative_prompt");
   const outpaintPlacements = videoOutpaintPlacements(archCapabilities, loadedArchType);
   const boundaryPlacementOnly = !outpaintPlacements.includes("free");
+  // The audio equivalent, for MiniMax Music 3's "Extend" card below. Empty
+  // for ACE-Step (no enumerated placement at all -- see
+  // `audioOutpaintPlacements`'s own doc comment).
+  const musicOutpaintPlacements = audioOutpaintPlacements(archCapabilities, loadedArchType);
   // MiniMax-H3 ref2va: direct variant check, matching Txt2ImgPanel/Img2ImgPanel
   // (there is no per-variant capability key). Reference conditioning on this
   // panel is offered only on extend_forward -- the ONLY row the backend's
@@ -2052,18 +2111,29 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
       return;
     }
 
-    // Audio mode: an audio model (ACE-Step 1.5) is loaded -> enqueue an
-    // outpaint_aud item using the uploaded reference clip. No loop-generation
-    // (matches Upscale + the video/audio branches of the merged txt2img/img2img
-    // panels). No negative_prompt (the audio route has no such field).
+    // Audio mode: an audio model (ACE-Step 1.5 or MiniMax Music 3) is loaded
+    // -> enqueue an outpaint_aud item using the uploaded/selected reference
+    // clip. No loop-generation (matches Upscale + the video/audio branches of
+    // the merged txt2img/img2img panels). No negative_prompt (the audio
+    // route has no such field).
     if (audioMode) {
       if (!audioFile) {
-        alert("Please upload a reference audio clip");
+        alert(isMusic3
+          ? "Please select a MiniMax Music 3 song from the gallery (\"Send to Outpaint\") to extend"
+          : "Please upload a reference audio clip");
         return;
       }
       const audioParams: OutpaintAudioParams = {
-        prompt: processedPrompt,
-        lyrics: params.lyrics,
+        // MiniMax Music 3: ALWAYS sent empty, never `processedPrompt`/
+        // `params.lyrics` -- the backend warns whenever a supplied non-empty
+        // prompt/lyrics differs from the sidecar's own stored value (it is
+        // always ignored either way), and since these fields are rendered
+        // disabled on this architecture there would be no way to clear that
+        // warning short of typing into a field the UI itself refuses to let
+        // the user edit. ACE-Step is unaffected: it still gets the real
+        // caption/lyrics text.
+        prompt: isMusic3 ? "" : processedPrompt,
+        lyrics: isMusic3 ? "" : params.lyrics,
         seed: params.seed,
         inference_steps: params.inference_steps,
         guidance_scale: params.guidance_scale,
@@ -2074,6 +2144,17 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
         input_offset_sec: params.input_offset_sec,
         input_trim_start_sec: params.input_trim_start_sec,
         input_trim_end_sec: params.input_trim_end_sec,
+        // MiniMax Music 3 extend only. `placement` is REQUIRED with no
+        // default (see OutpaintAudioParams's own field docstring) -- omitted
+        // entirely, not sent as undefined/null, when this architecture is
+        // not loaded, so ACE-Step's request is byte-for-byte what it always
+        // was.
+        ...(isMusic3 ? {
+          placement: "extend_forward" as const,
+          extend_duration_sec: params.extend_duration_sec,
+          num_inference_steps: params.music3_num_inference_steps,
+          flow_guidance_scale: params.flow_guidance_scale,
+        } : {}),
         // Weight-only quantization (both axes). The panel controls are rendered
         // from arch capabilities, and `acestep` is now in runtime_int8_archs +
         // quantized_linear_archs, so these must be carried into the audio
@@ -2196,7 +2277,12 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
       setIsGenerating(true);
       setProgress(0);
       setProgressMessage("");
-      setTotalSteps((nextItem.params as OutpaintAudioParams).inference_steps || 8);
+      // MiniMax Music 3 items carry `num_inference_steps` (per-chunk flow
+      // steps, distinct from ACE-Step's per-song `inference_steps`); either
+      // field name works here since only one is ever set per item, mirroring
+      // Txt2ImgPanel's identical txt2aud dispatch.
+      setTotalSteps((nextItem.params as OutpaintAudioParams).num_inference_steps
+        || (nextItem.params as OutpaintAudioParams).inference_steps || 8);
       setPreviewImage(null);
       setGeneratedImage(null);
       // An audio run supersedes any image/video result still on screen; the
@@ -3212,19 +3298,23 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
     <Card title="Prompt">
       <Textarea
         label="Caption"
-        placeholder="Describe the music (genre, mood, instruments)..."
+        placeholder={isMusic3 ? "Reused from the extended song's own sidecar; not sent here" : "Describe the music (genre, mood, instruments)..."}
         rows={3}
         resizeStorageKey={GENERATION_PROMPT_HEIGHT_KEY}
         value={params.prompt}
         onChange={(e) => setParams({ ...params, prompt: e.target.value })}
+        disabled={isMusic3}
+        title={isMusic3 ? "MiniMax Music 3 extend always reuses the original song's own caption; this field has no effect." : undefined}
       />
       <Textarea
         label="Lyrics"
-        placeholder="Enter lyrics (optional)..."
+        placeholder={isMusic3 ? "Reused from the extended song's own sidecar; not sent here" : "Enter lyrics (optional)..."}
         rows={3}
         resizeStorageKey={GENERATION_LYRICS_HEIGHT_KEY}
         value={params.lyrics ?? ""}
         onChange={(e) => setParams({ ...params, lyrics: e.target.value })}
+        disabled={isMusic3}
+        title={isMusic3 ? "MiniMax Music 3 extend always reuses the original song's own lyrics; this field has no effect." : undefined}
       />
       <Textarea
         label="Negative Prompt"
@@ -3236,7 +3326,16 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
         disabled
         title="Audio generation does not accept negative-prompt conditioning."
       />
-      <p className="text-xs text-gray-500">Unavailable for audio generation; the saved value is preserved.</p>
+      {isMusic3 ? (
+        <p className="text-xs text-gray-500">
+          Caption and lyrics are always the original song's own, read from its frame-code sidecar -- the
+          checkpoint was trained to condition a whole song on one caption/lyrics pair, so switching them
+          mid-song is not offered. Negative prompt is unavailable for audio generation; the saved value is
+          preserved.
+        </p>
+      ) : (
+        <p className="text-xs text-gray-500">Unavailable for audio generation; the saved value is preserved.</p>
+      )}
     </Card>
   ) : (
     <Card title="Prompt">
@@ -3527,14 +3626,25 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
             ) : (
               <div className="bg-gray-800 rounded-lg border-2 border-dashed border-gray-600 py-6">
                 <p className="text-gray-500 text-center text-sm px-4">
-                  Use the file picker above to select an audio clip to extend
+                  {isMusic3
+                    ? "Use \"Send to Outpaint\" on a MiniMax Music 3 song from the gallery, or the file picker above to select an unmodified copy of one"
+                    : "Use the file picker above to select an audio clip to extend"}
                 </p>
               </div>
             )}
-            {audioDurationSec != null && (
+            {audioDurationSec != null && !isMusic3 && (
               <p className="text-xs text-gray-500">
                 Clip length: {audioDurationSec.toFixed(2)}s. Uploads not already 48kHz/16-bit stereo are
                 resampled/requantized once during normalization; the placed span is otherwise sample-exact.
+              </p>
+            )}
+            {isMusic3 && (
+              <p className="text-xs text-gray-500">
+                Only a song this server already generated (MiniMax Music 3 txt2aud, or a previous extend) can
+                be extended: the server matches the file by content against the gallery to find the frame-code
+                sidecar saved next to it, so an edited/re-encoded copy or an unrelated upload is refused. A song
+                generated before this feature existed has no sidecar and cannot be extended either. The
+                original audio is preserved exactly; only newly generated material is appended after it.
               </p>
             )}
           </div>
@@ -3747,7 +3857,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
           </p>
         )}
 
-        {isAudio && (
+        {isAudio && !isMusic3 && (
         <Card title="Temporal Placement">
           <OutpaintTimeline
             totalUnits={params.total_duration ?? 60.0}
@@ -3772,6 +3882,45 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
           <p className="text-xs text-gray-500 mt-2">
             Offset/trim are snapped to the ACE-Step VAE's latent frame rate (1/25s); the backend re-snaps and clamps regardless.
           </p>
+        </Card>
+        )}
+
+        {isAudio && isMusic3 && (
+        <Card title="Extend">
+          <div className="space-y-3">
+            {musicOutpaintPlacements.length > 0 && (
+              <Select
+                label="Placement"
+                value="extend_forward"
+                onChange={() => {}}
+                disabled
+                options={musicOutpaintPlacements.map((p) => ({
+                  value: p,
+                  label: p === "extend_forward" ? "Extend forward (append after the song's current end)" : p,
+                }))}
+              />
+            )}
+            <div>
+              <label className="block text-sm font-medium text-gray-300 mb-1">Extend duration upper bound (seconds)</label>
+              <NumberInput
+                label="Extend duration upper bound (seconds)"
+                value={params.extend_duration_sec ?? DEFAULT_PARAMS.extend_duration_sec!}
+                onCommit={(v) => setParams({ ...params, extend_duration_sec: v })}
+                min={1}
+                max={360}
+                step={1}
+                parse="float"
+                className="w-full"
+              />
+            </div>
+            <p className="text-xs text-gray-500">
+              Only forward extension is possible: MiniMax Music 3's autoregressive stage is a causal language
+              model, so it can only continue a song forward from its own end -- backward extension and
+              regenerating a span in the middle are not possible. The extend duration above is an upper
+              bound, not a target; the model may stop generating before it is reached. The original audio is
+              preserved exactly, sample for sample; only the newly generated tail is appended after it.
+            </p>
+          </div>
         </Card>
         )}
 
@@ -4624,7 +4773,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
           />
         )}
 
-        {isAudio && (
+        {isAudio && !isMusic3 && (
         <Card title="Audio Settings">
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-2">
@@ -4725,6 +4874,83 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
               { value: "pt", label: "Portuguese" },
             ]}
           />
+        </Card>
+        )}
+
+        {isAudio && isMusic3 && (
+        <Card title="Audio Settings">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-2">
+            <div>
+              <label className="block text-sm font-medium text-gray-300 mb-1">Steps (per chunk)</label>
+              <NumberInput
+                label="Steps (per chunk)"
+                value={params.music3_num_inference_steps ?? DEFAULT_PARAMS.music3_num_inference_steps!}
+                onCommit={(v) => setParams({ ...params, music3_num_inference_steps: v })}
+                min={1}
+                max={100}
+                step={1}
+                parse="int"
+                className="w-full"
+              />
+              <p className="text-xs text-gray-500 mt-1">
+                Flow-matching steps per 200-frame window of the newly generated tail, not per song.
+              </p>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-300 mb-1">Flow Guidance Scale</label>
+              <NumberInput
+                label="Flow Guidance Scale"
+                value={params.flow_guidance_scale ?? DEFAULT_PARAMS.flow_guidance_scale!}
+                onCommit={(v) => setParams({ ...params, flow_guidance_scale: v })}
+                min={0.01}
+                max={20}
+                step={0.1}
+                parse="float"
+                className="w-full"
+              />
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-xs text-gray-400 mb-1">Seed</label>
+            <div className="flex gap-1">
+              <NumberInput
+                value={params.seed ?? -1}
+                onCommit={(v) => setParams({ ...params, seed: v })}
+                parse="int"
+                className="flex-1 min-w-0"
+              />
+              <Button
+                onClick={() => setParams({ ...params, seed: Math.floor(Math.random() * 2147483647) })}
+                variant="secondary"
+                size="sm"
+                title="Random seed"
+              >
+                🎲
+              </Button>
+              <Button
+                onClick={() => setParams({ ...params, seed: -1 })}
+                variant="secondary"
+                size="sm"
+                title="Reset to random (-1)"
+              >
+                -1
+              </Button>
+              <Button
+                onClick={() => generatedAudioSeed !== null && setParams({ ...params, seed: generatedAudioSeed })}
+                variant="secondary"
+                size="sm"
+                title="Use seed from result audio"
+                disabled={generatedAudioSeed === null}
+              >
+                ♻️
+              </Button>
+            </div>
+          </div>
+          <p className="text-xs text-gray-500 mt-2">
+            The extended song's caption and lyrics are always the original song's own -- they are read from
+            the frame-code sidecar saved next to it, not from the Prompt/Lyrics fields above.
+          </p>
         </Card>
         )}
 

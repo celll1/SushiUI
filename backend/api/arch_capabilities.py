@@ -16,7 +16,7 @@ factual explanation of why the parameter has no effect on that arch.
 ignores, it emits ONE ``add_warning`` when the user set a related parameter
 to a non-default value (compared against ``GENERATION_DEFAULTS``).
 """
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from api.param_defaults import GENERATION_DEFAULTS
 # Re-exported (and served by GET /schema/arch-capabilities) so the generation
@@ -303,7 +303,7 @@ _add("acestep", "controlnets", "ControlNet is not supported for the ACE-Step aud
 #     `/generate/txt2aud` today (neither is a `Txt2AudRequest` field; the
 #     latter's real surface, an aud2aud "cover" request, is hard-gated off
 #     for this architecture entirely -- see
-#     `routes._reject_if_music3_extend_repaint_not_yet_wired`). Both are
+#     `routes._reject_if_music3_repaint_not_yet_wired`). Both are
 #     properties of the RELEASED MODEL, not unimplemented features -- design
 #     doc "Capability verdict", first three rows -- kept for documentation
 #     and ready the moment either surface exists.
@@ -841,6 +841,43 @@ def video_constraints_payload() -> Dict[str, Dict[str, Any]]:
             "latent_chunk_pattern": list(spec.latent_chunk_pattern),
         }
     return payload
+
+
+# ---------------------------------------------------------------------------
+# Audio temporal-outpaint placements (POST /generate/outpaint/audio, design
+# doc phase plan item 7 "Extend"). Mirrors video's
+# `TEMPORAL_SPECS[...].outpaint_placements` (served via
+# `video_constraints_payload`), but audio has no per-architecture
+# `TemporalSpec` registry of its own -- only two audio architectures exist,
+# and ACE-Step's placement is a continuous `total_duration`/`input_offset_sec`
+# timeline offset, not an enumerated set at all -- so this is declared
+# directly here rather than growing a second wiring registry for one entry.
+# ---------------------------------------------------------------------------
+AUDIO_OUTPAINT_PLACEMENTS: Dict[str, Tuple[str, ...]] = {
+    # MiniMax Music 3's autoregressive stage is a causal language model: it
+    # can only continue a song forward from its existing end
+    # (`core.pipeline_backends.minimax_music3.MiniMaxMusic3Mixin.
+    # _generate_audoutpaint_minimax_music3`'s "Placement" docstring). Backward
+    # extension and mid-song infill are refused as a property of the released
+    # model, not an unimplemented feature -- design doc
+    # (docs/guides/MINIMAX_MUSIC3_DESIGN.md) "Capability verdict": "Mid-song
+    # infill with a preserved tail -- No -- the global LM is causal; there is
+    # no infilling contract."
+    "minimax_music3": ("extend_forward",),
+    # ACE-Step has no entry: its placement is a continuous offset a client
+    # picks freely inside `total_duration`, not a value from an enumerated
+    # set, so a single-entry tuple here would misrepresent it as one.
+}
+
+
+def audio_outpaint_placements(arch: Optional[str]) -> Tuple[str, ...]:
+    """Placements `/generate/outpaint/audio`'s mechanism can serve for `arch`.
+
+    Empty for an architecture with no entry (ACE-Step: a continuous offset,
+    not an enum) or an unrecognized/None arch -- a client sees "no enumerated
+    placement" and falls back to whatever free-offset UI it already has.
+    """
+    return AUDIO_OUTPAINT_PLACEMENTS.get(arch or "", ())
 
 
 def arch_supports_feature(arch: Optional[str], feature: str,

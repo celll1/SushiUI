@@ -1377,19 +1377,39 @@ export interface Aud2AudParams {
 // OUTSIDE it. No mode/cover_strength/repaint_start/repaint_end -- outpaint
 // has no cover/repaint sub-mode, it always holds the placed span.
 export interface OutpaintAudioParams {
-  prompt: string;              // caption text (also accepted as "caption")
-  lyrics?: string;
+  prompt: string;              // caption text (also accepted as "caption"). MiniMax Music 3: IGNORED (sidecar's own is always reused)
+  lyrics?: string;              // MiniMax Music 3: IGNORED, same reason as prompt
   seed?: number;                // default -1
-  inference_steps?: number;    // turbo distilled default 8
-  guidance_scale?: number;     // turbo is CFG-distilled; default 1.0
-  shift?: number;               // default 3.0
-  vocal_language?: string;      // default "en"
+  inference_steps?: number;    // ACE-Step ONLY; turbo distilled default 8
+  guidance_scale?: number;     // ACE-Step ONLY; turbo is CFG-distilled; default 1.0
+  shift?: number;               // ACE-Step ONLY; default 3.0
+  vocal_language?: string;      // ACE-Step ONLY; default "en"
   loras?: LoRAConfig[];
-  // --- Placement (outpaint-only), all in SECONDS ---
+  // --- Placement (ACE-Step ONLY), all in SECONDS ---
   total_duration?: number;         // output timeline length; (0, 240], default 60.0
   input_offset_sec?: number;       // where the (trimmed) clip lands, snapped server-side to 1/25s
   input_trim_start_sec?: number;   // trim applied to the UPLOADED clip before placement
   input_trim_end_sec?: number;
+  // --- MiniMax Music 3 extend ONLY ---
+  // Required when this architecture is loaded -- NO default anywhere in this
+  // repo (backend/api/param_defaults.py's OUTPAINT_AUDIO_ARCH_OVERLAYS
+  // deliberately omits one). The only value the causal autoregressive stage
+  // can ever honor is "extend_forward"; omitting this field is a 400, not a
+  // silent fallback -- see `audioOutpaintPlacements()`.
+  placement?: "extend_forward";
+  // How much MORE audio to generate, in seconds -- an UPPER BOUND, not a
+  // target (same "duration is an upper bound" semantics as txt2aud's
+  // audio_duration). `undefined` lets the backend resolve MiniMax Music 3's
+  // own default (30.0) server-side, from `outpaint_audio_defaults_for_arch`.
+  extend_duration_sec?: number;
+  // Flow-matching steps PER CHUNK for the new tail (distinct from ACE-Step's
+  // per-song `inference_steps` above; same field/semantics as
+  // Txt2AudParams.num_inference_steps). `undefined` resolves to 30.
+  num_inference_steps?: number;
+  // Flow-stage CFG for the new tail (distinct from ACE-Step's
+  // `guidance_scale` above; same field/semantics as
+  // Txt2AudParams.flow_guidance_scale). `undefined` resolves to 1.7.
+  flow_guidance_scale?: number;
   // Weight-only quantization of the ACE-Step DiT. Only "int8" is applied on
   // this architecture (a one-time in-place conversion of the audio DiT -- NOT
   // the Oobleck VAE or the Qwen3-Embedding text encoder); the FP8 values warn
@@ -1439,6 +1459,20 @@ export interface GenerationDefaultsResponse {
   // num_inference_steps (30) and flow_guidance_scale (1.7) on top of it.
   // Optional so an older backend without the key still type-checks.
   audio_arch_overlays?: Record<string, Record<string, unknown>>;
+  // Per-architecture overrides for `aud2aud` (backend AUD2AUD_GEN_ARCH_OVERLAYS,
+  // empty until MiniMax Music 3 repaint/cover lands) and for the KEYS UNIQUE
+  // to `outpaint_aud` (backend OUTPAINT_AUDIO_ARCH_OVERLAYS -- populated by
+  // MiniMax Music 3 extend: extend_duration_sec/num_inference_steps/
+  // flow_guidance_scale). An `outpaint_aud` default resolves as
+  // `base | aud2aud_arch_overlays[arch] | outpaint_audio_arch_overlays[arch]`,
+  // the same two-layer composition `outpaint_audio_defaults_for_arch` does
+  // server-side -- see `OutpaintPanel.tsx`'s per-arch overlay effect, which
+  // reads these two maps directly rather than through a merged helper (so
+  // it can tell "this key has no arch-specific default" apart from "this
+  // key's default is the base value"). Optional so an older backend without
+  // the keys still type-checks.
+  aud2aud_arch_overlays?: Record<string, Record<string, unknown>>;
+  outpaint_audio_arch_overlays?: Record<string, Record<string, unknown>>;
   // User-overridable slider/number-input UPPER BOUNDS registry (backend
   // PARAM_BOUNDS). Optional so an older backend without the key still
   // type-checks. See frontend/src/utils/paramBounds.ts's resolveBound().
@@ -1606,6 +1640,13 @@ export interface ArchCapabilities {
   // must not branch on a checkpoint name. Optional so an older backend without
   // the key still type-checks. Present only for video architectures.
   chain_context?: Record<string, ChainContextCapability>;
+  // Audio equivalent of `video_constraints[arch].outpaint_placements`: which
+  // `placement` values POST /generate/outpaint/audio accepts for `arch`.
+  // MiniMax Music 3: `["extend_forward"]` (its autoregressive stage is a
+  // causal language model). ACE-Step is ABSENT -- its placement is a
+  // continuous total_duration/input_offset_sec offset, not an enumerated
+  // set. Optional so an older backend without the key still type-checks.
+  audio_outpaint_placements?: Record<string, string[]>;
 }
 
 // One architecture's (or one loaded transformer variant's) chain-context
@@ -2375,6 +2416,19 @@ export const videoOutpaintPlacements = (
   const placements = c?.outpaint_placements;
   return placements && placements.length ? placements : ["free"];
 };
+
+// The audio temporal-outpaint placements the loaded arch can serve
+// (POST /generate/outpaint/audio's `placement` field), from the backend's
+// own table. UNLIKE `videoOutpaintPlacements`, an unknown/absent arch (e.g.
+// ACE-Step, which has no entry at all) returns an EMPTY array rather than a
+// fallback placeholder: ACE-Step's placement is a continuous offset, not a
+// value from an enumerated set, so there is no "unconstrained enum value" to
+// name -- a caller should read an empty array as "no placement selector;
+// use the continuous offset/trim controls instead", not as an error.
+export const audioOutpaintPlacements = (
+  caps: ArchCapabilities | null | undefined,
+  arch: string | null | undefined
+): string[] => (arch && caps?.audio_outpaint_placements?.[arch]) || [];
 
 export const fetchArchCapabilities = async (): Promise<ArchCapabilities> =>
   (await api.get("/schema/arch-capabilities")).data;
@@ -4876,11 +4930,31 @@ export const generateOutpaintAudio = async (params: OutpaintAudioParams, referen
   formData.append("vocal_language", params.vocal_language ?? "en");
   formData.append("loras", JSON.stringify(params.loras || []));
 
-  // Placement (outpaint-only), all in seconds.
+  // Placement (ACE-Step only), all in seconds.
   formData.append("total_duration", String(params.total_duration ?? 60.0));
   formData.append("input_offset_sec", String(params.input_offset_sec ?? 0.0));
   formData.append("input_trim_start_sec", String(params.input_trim_start_sec ?? 0.0));
   formData.append("input_trim_end_sec", String(params.input_trim_end_sec ?? 0.0));
+
+  // MiniMax Music 3 extend only. Appended ONLY when set, mirroring the
+  // quantization fields' "unset leaves the backend default untouched"
+  // convention below -- and deliberately NOT `?? "extend_forward"` for
+  // `placement`: a key the client always sends lands in FastAPI's bound
+  // value regardless of what the user picked, defeating the backend's own
+  // "no default assumed" refusal for an actually-omitted placement (the same
+  // `?? null` mistake CLAUDE.md's per-arch-default guidance calls out).
+  if (params.placement) {
+    formData.append("placement", params.placement);
+  }
+  if (params.extend_duration_sec !== undefined) {
+    formData.append("extend_duration_sec", String(params.extend_duration_sec));
+  }
+  if (params.num_inference_steps !== undefined) {
+    formData.append("num_inference_steps", String(params.num_inference_steps));
+  }
+  if (params.flow_guidance_scale !== undefined) {
+    formData.append("flow_guidance_scale", String(params.flow_guidance_scale));
+  }
 
   // Weight-only quantization (both axes). Appended only when set, so an unset
   // field leaves the backend default (and the process GEMM flags) untouched.

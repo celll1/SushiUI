@@ -896,9 +896,21 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
   };
   // The capability the video surface is gated on. `archSupportsFeature` treats
   // an unknown arch (or a matrix that has not loaded) as supporting it, so the
-  // surface is never hidden merely because the matrix was unavailable; the
-  // route re-validates and answers 400 regardless.
-  const supportsTemporalInpaint = archSupportsFeature(archCapabilities, loadedArchType, "temporal_inpaint");
+  // surface is never hidden merely because the matrix was unavailable.
+  const archSupportsTemporalInpaint = archSupportsFeature(archCapabilities, loadedArchType, "temporal_inpaint");
+  // MiniMax-H3's gate is per-PARTITION, and archSupportsFeature cannot express
+  // it: it is keyed on architecture, not on the loaded transformer file.
+  // `/generate/inpaint/video` refuses every NAMED variant other than fl2va and
+  // lets an UNIDENTIFIED one (a renamed DiT -- the variant is read off the
+  // filename) through (routes.py, the `if _h3_variant and _h3_variant !=
+  // "fl2va"` gate). Both halves are mirrored here, so the render-time banner
+  // explains a refusal the route would answer 400 with, and a request the
+  // route would accept is never hidden.
+  const h3Variant = loadedArchType === "minimax_h3"
+    ? (currentModelInfo?.model_info?.variant as string | undefined)
+    : undefined;
+  const h3TemporalInpaintRefused = Boolean(h3Variant) && h3Variant !== "fl2va";
+  const supportsTemporalInpaint = archSupportsTemporalInpaint && !h3TemporalInpaintRefused;
   const supportsNegativePrompt = archSupportsFeature(archCapabilities, loadedArchType, "negative_prompt");
   // Hide Spectrum/FBCache when the loaded sampler does not consume them; H3 now
   // supports both. This matches the other panels' leaf-control convention.
@@ -911,8 +923,28 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
   const videoBlocksToSwapEnabledDefault =
     (generationDefaults?.inpaint_vid as Record<string, unknown> | undefined)
       ?.blocks_to_swap_enabled_default as number ?? 40;
-  const temporalInpaintReason =
-    loadedArchType ? archCapabilities?.unsupported?.[loadedArchType]?.temporal_inpaint : undefined;
+  // Mirrors the substance of the route's own 400 text for each named variant,
+  // so the banner below states the same thing the Generate click would
+  // otherwise fail with. Only reached for a named non-fl2va variant -- an
+  // unidentified one is not refused, here or at the route.
+  const h3TemporalInpaintReason = h3Variant === "ref2va"
+    ? "Temporal inpaint is served by the fl2va partition, not ref2va: load an "
+      + "fl2va MiniMax-H3 checkpoint (e.g. "
+      + "diffusion_models/minimax_h3_fl2va_pruned_fp8_scaled.safetensors). This is why no "
+      + "\"References (MiniMax-H3 ref2va)\" control is offered here -- reference "
+      + "conditioning combined with the mid-clip pin is not implemented on any endpoint. "
+      + "References ARE offered on the Outpaint tab's video extend-forward placement, "
+      + "with this same checkpoint."
+    : h3Variant === "hybrid"
+    ? "The loaded MiniMax-H3 transformer is the hybrid variant. A merged checkpoint "
+      + "loads and can be inspected, but it does not generate on any endpoint, "
+      + "including temporal inpaint."
+    : `The loaded MiniMax-H3 transformer is the ${h3Variant} variant, not fl2va. Temporal `
+      + "inpaint is offered on the fl2va partition: the mid-clip pin is measured there and "
+      + "nowhere else.";
+  const temporalInpaintReason = !archSupportsTemporalInpaint
+    ? (loadedArchType ? archCapabilities?.unsupported?.[loadedArchType]?.temporal_inpaint : undefined)
+    : (h3TemporalInpaintRefused ? h3TemporalInpaintReason : undefined);
   const videoConstraints = loadedArchType ? archCapabilities?.video_constraints?.[loadedArchType] : undefined;
   const latentChunkPattern = videoConstraints?.latent_chunk_pattern ?? [];
   // Frames of the upload. The browser exposes duration, not a frame count, so
@@ -3220,6 +3252,18 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
     if (modality.isVideo) {
       if (modality.modelInfo?.type === "minimax_h3" && modality.modelInfo?.variant === "hybrid") {
         alert("A merged MiniMax-H3 checkpoint loads and can be inspected, but every generation endpoint refuses it: the A/B measurement that would release generation for it has not been run.");
+        return;
+      }
+      // The partition half of this check comes from the SAME fresh read as the
+      // hybrid one above: the variant changes on a backbone component switch,
+      // which the cached `supportsTemporalInpaint` can lag behind. Named
+      // non-fl2va only -- an unidentified variant is accepted by the route.
+      const freshH3Variant = modality.modelInfo?.type === "minimax_h3"
+        ? (modality.modelInfo?.variant as string | undefined) : undefined;
+      if (freshH3Variant && freshH3Variant !== "fl2va") {
+        alert(`The loaded MiniMax-H3 transformer is the ${freshH3Variant} variant, not fl2va. `
+          + "Temporal inpaint is offered on the fl2va partition; load an fl2va checkpoint, or "
+          + "use the Outpaint tab to extend a clip.");
         return;
       }
       if (!supportsTemporalInpaint) {

@@ -1990,15 +1990,20 @@ def resolve_minimax_h3_inpaint_reference_gate(
     default) so a caller cannot silently land on the most permissive row by
     forgetting one.
 
-    Unlike the outpaint gate, ``ref2va`` refuses UNCONDITIONALLY here -- with
-    or without any reference -- because temporal inpaint's interior pin is
-    measured on ``fl2va`` only (preserved-span RMS 3.12, floor 3.15, control
-    75.69, ``minimax_h3_ti_probe_results.md``) and unmeasured on ``ref2va``;
-    see the design's Gate registration (B) for the still-unrun GPU arms.
+    ``ref2va`` was OPENED at the repo owner's explicit instruction, ahead of
+    Gate registration (B)'s §6.2 GPU arms (P/C/P-seam), which have NOT been
+    run. Temporal inpaint's interior pin is measured on ``fl2va`` only
+    (preserved-span RMS 3.12, floor 3.15, control 75.69,
+    ``minimax_h3_ti_probe_results.md``) and remains UNMEASURED on ``ref2va``;
+    opening this row makes the path reachable for hands-on verification, it
+    does not assert the shape works. Every generation on this path emits the
+    ``minimax_h3_undocumented_conditioning`` warning family stating exactly
+    that. See the design's Gate registration (B) §6.2 note recording that the
+    gate was opened ahead of the probe.
 
     * ``fl2va`` serves every request; refuses any reference outright.
-    * ``ref2va`` refuses every request, with or without references, until
-      Gate registration (B) is adjudicated a PASS.
+    * ``ref2va`` serves every request, with or without references -- the
+      shape is unmeasured, not refused.
     * ``hybrid`` refuses every request -- ungenerated on any endpoint.
     * An unidentified variant refuses only when a reference is present.
     * An audio-only reference set is refused unless ``has_vision_conditioning``
@@ -2013,8 +2018,8 @@ def resolve_minimax_h3_inpaint_reference_gate(
     Sequence length / row budget is deliberately absent (owner correction):
     no row count refuses a request. That risk is a WARNING instead
     (``minimax_h3_inpaint_reference_row_count_warning``, called from
-    ``_generate_minimax_h3``), unreachable until this gate's ``ref2va`` row
-    opens.
+    ``_generate_minimax_h3``), now reachable since this gate's ``ref2va`` row
+    is open.
 
     No row of this table ever reroutes to ``/generate/ref2vid``.
     """
@@ -2045,19 +2050,19 @@ def resolve_minimax_h3_inpaint_reference_gate(
             )
         return
     if variant == "ref2va":
-        # THE ONE-PLACE SWITCH (design doc §5/§6): replacing this `raise`
-        # with `return`, once P/C/P-seam are adjudicated a PASS, is the only
-        # code change needed to open this endpoint. Do not add an env var, a
-        # request parameter, or any other way to reach that `return`.
-        raise ValidationError(
-            "MiniMax-H3 ref2va temporal inpaint is not open on this endpoint yet",
-            detail="Temporal inpaint's interior pin is measured on fl2va (preserved-span RMS "
-                   "3.12, floor 3.15, control 75.69) and unmeasured on ref2va; combining it with "
-                   "reference conditioning is the gated design in minimax_h3_inpaint_refs_design.md "
-                   "(Gate registration (B)) and has not been adjudicated. This row refuses whether "
-                   "or not reference_images/videos/audios are present. Load the fl2va checkpoint "
-                   "for temporal inpaint.",
-        )
+        # THE ONE-PLACE SWITCH (design doc §5/§6) IS NOW OPEN. This was
+        # written as a switch awaiting P/C/P-seam adjudication (Gate
+        # registration (B), §6.2); it was opened instead at the repo owner's
+        # explicit instruction, ahead of that GPU probe, so the endpoint is
+        # reachable for the owner's own hands-on verification through the
+        # real UI. The §6.2 arms were NOT run and have NOT passed -- opening
+        # this row is not a claim that they did. Every caller on this path
+        # (`_generate_vidinpaint_minimax_h3` / `_generate_minimax_h3`) emits
+        # `minimax_h3_undocumented_conditioning` stating the shape is
+        # unmeasured on these weights; that warning is the honest state of
+        # this row, not this comment alone. See the design doc's §6.2 note
+        # recording that the gate was opened ahead of the probe.
+        return
     if variant == "hybrid":
         raise ValidationError(
             "The loaded MiniMax-H3 transformer is the hybrid variant",
@@ -2072,8 +2077,7 @@ def resolve_minimax_h3_inpaint_reference_gate(
             f"transformer, not {variant or 'an unidentified variant'}",
             detail="The two released MiniMax-H3 files are otherwise indistinguishable, so a "
                    "mismatch cannot be detected from the weights and running this would silently "
-                   "produce a bad video rather than fail. (Moot in phase B-1 regardless: the "
-                   "ref2va row above refuses every reference request on this endpoint anyway.)",
+                   "produce a bad video rather than fail.",
         )
 
 

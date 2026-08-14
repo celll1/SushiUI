@@ -1,32 +1,42 @@
 """ref2va references x temporal-inpaint pins: the extended builder and the
-still-closed decision table.
+decision table, OPENED (phase B-3-open).
 
 Run with:
     venv/Scripts/python.exe -m pytest backend/tests/minimax_h3_inpaint_reference_layout_test.py -v
 
 WHY THIS FILE EXISTS
 --------------------
-`minimax_h3_inpaint_refs_design.md` (Option B, Gate registration (B)) fixes a
-layout extension and a decision table BEFORE any GPU probe runs -- this is
-PHASE B-1 only. Both halves are pure arithmetic (no model, no GPU), pinned
-here exactly the way `minimax_h3_outpaint_reference_gate_test.py` pins the
-outpaint equivalents:
+`minimax_h3_inpaint_refs_design.md` (Option B, Gate registration (B)) fixed a
+layout extension and a decision table BEFORE any GPU probe ran (phase B-1),
+then wired the whole path end to end while keeping the gate shut (phase
+B-2a). Phase B-3-open flips the ONE switch the gate function names: the
+`ref2va` row now serves every request, opened at the repo owner's explicit
+instruction so the endpoint is reachable for hands-on verification through
+the real UI, NOT because the design's §6.2 GPU arms (P/C/P-seam) were run --
+they were not, and every generation on this path still carries a
+`minimax_h3_undocumented_conditioning` warning saying so. Both halves below
+remain pure arithmetic (no model, no GPU), pinned here exactly the way
+`minimax_h3_outpaint_reference_gate_test.py` pins the outpaint equivalents:
 
 * `resolve_minimax_h3_inpaint_reference_gate` (api.generation_utils) is the
-  refusal table this phase ships -- CLOSED on ref2va unconditionally, because
-  the interior pin this endpoint needs is measured on fl2va only
-  (`minimax_h3_ti_probe_results.md`: pinned 3.12 RMS, floor 3.15, control
-  75.69) and unmeasured on ref2va. No row of this table is wired to any route
-  in this phase; the route stays closed.
-* `build_ref2va_packed_layout`'s new `pinned_video_frames` /
-  `pinned_audio_latents` parameters (core.models.minimax_h3.h3_pipeline_ops)
-  extend the reference builder with the same permutation mechanism
-  `build_packed_layout` already uses for fl2va's temporal inpaint, restricted
-  to the TARGET block -- reference (and anchor) rows already lead both index
-  lists unconditionally, so the pin only ever reorders rows at or past
-  `video_start`/`audio_start`. `position_ids` is untouched: the permutation
-  only changes which physical rows the index lists call "conditioning", never
-  the rotary time any physical row carries.
+  refusal table -- `ref2va` now returns `None` (allow) unconditionally, the
+  same shape as `fl2va`'s no-references row. The interior pin this endpoint
+  needs is STILL measured on fl2va only (`minimax_h3_ti_probe_results.md`:
+  pinned 3.12 RMS, floor 3.15, control 75.69) and STILL unmeasured on ref2va
+  -- opening the gate did not change that fact, only whether the path is
+  reachable.
+* `build_ref2va_packed_layout`'s `pinned_video_frames` / `pinned_audio_latents`
+  parameters (core.models.minimax_h3.h3_pipeline_ops) extend the reference
+  builder with the same permutation mechanism `build_packed_layout` already
+  uses for fl2va's temporal inpaint, restricted to the TARGET block --
+  reference (and anchor) rows already lead both index lists unconditionally,
+  so the pin only ever reorders rows at or past `video_start`/`audio_start`.
+  `position_ids` is untouched: the permutation only changes which physical
+  rows the index lists call "conditioning", never the rotary time any
+  physical row carries. This builder-level arithmetic was already reachable
+  in phase B-1/B-2a directly against the builder; opening the gate makes it
+  reachable through the route/backend as well, which is what this file's
+  gate-table tests now assert.
 
 Sequence length / row budget is DELIBERATELY absent from both the layout
 tests and the refusal table (owner correction, recorded in the design doc's
@@ -73,17 +83,15 @@ def test_fl2va_with_any_reference_kind_is_refused():
         _gate("fl2va", has_audios=True, has_images=True)  # paired, still refused on fl2va
 
 
-def test_ref2va_is_refused_regardless_of_references():
-    """Unlike outpaint, ref2va refuses even a reference-less request: the
-    interior pin is what is unmeasured, and an ordinary reference-less
-    request would still exercise it if it reached these weights.
+def test_ref2va_is_allowed_regardless_of_references():
+    """Phase B-3-open: ref2va serves every request, with or without
+    references -- the interior pin is still unmeasured on these weights, but
+    that is now stated by a `warnings[]` entry at generation time, not by a
+    refusal here.
     """
-    with pytest.raises(ValidationError, match="not open"):
-        _gate("ref2va")
-    with pytest.raises(ValidationError, match="not open"):
-        _gate("ref2va", has_images=True)
-    with pytest.raises(ValidationError, match="not open"):
-        _gate("ref2va", has_videos=True, has_audios=True)
+    assert _gate("ref2va") is None
+    assert _gate("ref2va", has_images=True) is None
+    assert _gate("ref2va", has_videos=True, has_audios=True) is None
 
 
 def test_hybrid_is_refused_regardless_of_references():
@@ -115,32 +123,28 @@ def test_audio_only_reference_set_is_refused_with_the_pairing_rule():
         _gate("fl2va", has_audios=True)
 
 
-def test_audio_paired_with_a_vision_reference_does_not_trip_the_pairing_rule():
-    """A paired audio reference is not refused BY THE PAIRING RULE -- it is
-    still refused by the partition rows above it (fl2va: any reference;
-    ref2va: unconditionally, this phase), just for a different, distinct
-    reason. This test only isolates the pairing message.
+def test_audio_paired_with_a_vision_reference_passes_on_ref2va():
+    """Phase B-3-open: a paired audio+image reference set is refused by
+    NEITHER the pairing rule NOR the (now-open) ref2va partition row -- the
+    gate returns `None`. Before B-3-open this was refused by the partition
+    row alone (the pairing rule never fires when a vision reference is
+    paired); now nothing refuses it.
     """
-    with pytest.raises(ValidationError) as excinfo:
-        _gate("ref2va", has_audios=True, has_images=True)
-    assert "on its own" not in str(excinfo.value)
-    assert "not open" in str(excinfo.value)
+    assert _gate("ref2va", has_audios=True, has_images=True) is None
 
 
-def test_audio_only_with_vision_conditioning_from_a_pin_does_not_trip_the_pairing_rule():
+def test_audio_only_with_vision_conditioning_from_a_pin_passes_on_ref2va():
     """SECOND owner correction: `has_vision_conditioning=True` (a temporal-
     inpaint pin or a keyframe anchor already supplying real vision
     conditioning) satisfies the pairing rule's own premise the same way a
     paired image/video reference would -- so an audio-only reference set is
-    NOT refused by the pairing check here either. It is still refused by the
-    ref2va partition row (unconditional, this phase), which is the point:
-    the pairing rule's relaxation only changes the SPECIFIC message, not
-    whether the request runs in phase B-1.
+    NOT refused by the pairing check here. Phase B-3-open: it is also not
+    refused by the ref2va partition row anymore, so the gate returns `None`
+    outright -- this endpoint always passes `has_vision_conditioning=True`
+    (it always pins the frames outside the regenerate range), which is
+    exactly the shape this test names.
     """
-    with pytest.raises(ValidationError) as excinfo:
-        _gate("ref2va", has_audios=True, has_vision_conditioning=True)
-    assert "on its own" not in str(excinfo.value)
-    assert "not open" in str(excinfo.value)
+    assert _gate("ref2va", has_audios=True, has_vision_conditioning=True) is None
 
 
 def test_audio_only_without_vision_conditioning_still_trips_the_pairing_rule():
@@ -181,16 +185,16 @@ def test_the_gate_never_names_ref2vid_as_a_destination():
     """
     refusals = []
     for kwargs in (
-        {"has_images": True},                       # fl2va, ref2va, hybrid all refuse: 3
-        {"has_videos": True, "has_audios": True},    # paired audio, all 3 variants refuse: 3
-        {},                                          # only ref2va/hybrid refuse a plain request: 2
+        {"has_images": True},                       # fl2va, hybrid refuse; ref2va allows: 2
+        {"has_videos": True, "has_audios": True},    # paired audio: fl2va, hybrid refuse; ref2va allows: 2
+        {},                                          # plain request: only hybrid refuses: 1
     ):
         for variant in ("fl2va", "ref2va", "hybrid"):
             try:
                 _gate(variant, **kwargs)
             except ValidationError as exc:
                 refusals.append(str(exc))
-    assert len(refusals) == 8
+    assert len(refusals) == 5
     assert not any("ref2vid" in message.lower() for message in refusals)
 
 
@@ -863,3 +867,99 @@ def test_row_count_warning_names_the_outpaint_contrast():
     message, _code = minimax_h3_inpaint_reference_row_count_warning(row_counts, num_references=2)
     assert "outpaint" in message.lower()
     assert "every frame" in message.lower()
+
+
+# ---------------------------------------------------------------------------
+# PHASE B-3-open: the SAMPLING LOOP's own un-permute (ops.denoise()'s preview
+# path), on a ref2va reference+pin layout -- reachable through the route only
+# now that the gate is open. The decode-side offset arithmetic is already
+# pinned numerically above (test_decode_unpermute_recovers_frame_major_order_
+# past_the_reference_prefix); this is its twin inside the loop, which
+# `_generate_minimax_h3` feeds `video_row_order` into via `ops.denoise()`.
+# ---------------------------------------------------------------------------
+
+class _StubScheduler:
+    """Same fixed-step stub `minimax_h3_temporal_inpaint_test.py` uses."""
+
+    def __init__(self, timesteps):
+        self.timesteps = torch.tensor(timesteps, dtype=torch.float32)
+
+    def set_shift(self, shift):
+        pass
+
+    def set_timesteps(self, steps, device=None):
+        pass
+
+    def set_begin_index(self, index):
+        pass
+
+    def step(self, velocity, timestep, sample, return_dict=False):
+        return (sample - 0.25 * velocity,)
+
+
+def test_the_sampling_loop_preview_un_permutes_past_a_reference_prefix():
+    """A ref2va layout with ONE image reference (4 rows) plus a video pin on
+    frames (0, 2) of the same 6-frame target the decode-side test above uses
+    -- run through `ops.denoise()` itself (not just the offset formula in
+    isolation), asserting the preview latents come back frame-major and the
+    reference's own 4 rows never leak into them.
+
+    This is the loop-internal twin of the decode fix: `denoise()` computes
+    its own `n_cond_reference_video_rows` (h3_pipeline_ops.py, `denoise`'s
+    docstring) independently of the decode site in `_generate_minimax_h3`,
+    so a regression in one does not fail a test of the other.
+    """
+    layout = _build(pinned_video_frames=(0, 2))
+    rows_per_frame = layout["rows_per_frame"]
+    num_reference_video_rows = rows_per_frame  # the one image reference's own rows
+    num_target_video_rows = _TARGET_FRAMES * rows_per_frame
+    channels = 24
+    row_width = channels * 4  # patch (1, 2, 2) -> patch volume 4, the default `denoise()` uses
+
+    # Reference rows: sentinel values far outside the target value range.
+    reference_rows = torch.full((num_reference_video_rows, row_width), -999.0)
+    frame_major_target = torch.arange(
+        num_target_video_rows, dtype=torch.float32).unsqueeze(1).expand(-1, row_width).clone()
+    for frame in range(_TARGET_FRAMES):
+        frame_major_target[frame * rows_per_frame:(frame + 1) * rows_per_frame] += 1000.0 * frame
+    permuted_target = frame_major_target[layout["video_row_permutation"]]
+    packed = torch.cat([reference_rows, permuted_target], dim=0).clone()
+    before = packed.clone()
+
+    n_audio = layout["audio_indices"].numel()
+    velocity = torch.full((1, packed.shape[0], packed.shape[1]), 2.0)
+    seen = []
+    ops.denoise(
+        lambda **kw: (velocity, torch.zeros(1, n_audio, 32)),
+        _StubScheduler([0.75]), _StubScheduler([0.75]),
+        prompt_embeds=torch.zeros(1, 3, 8), layout=layout,
+        video_rows=packed, audio_rows=torch.zeros(n_audio, 32),
+        num_inference_steps=1, device="cpu",
+        step_callback=lambda *a: seen.append(a),
+        preview_latent_shape=(_TARGET_FRAMES, _LAT_H, _LAT_W),
+        video_row_order=layout["video_row_order"],
+        latent_channels=channels,
+    )
+    _index, _total, latents, _extra, pred_x0 = seen[0]
+    assert latents.shape == (1, channels, _TARGET_FRAMES, _LAT_H, _LAT_W) == pred_x0.shape
+
+    n_cond = layout["num_condition_video_rows"]
+    n_cond_reference = n_cond - int(layout["num_pinned_video_rows"])  # the offset itself
+    assert n_cond_reference == num_reference_video_rows
+    stepped = before.clone()
+    stepped[n_cond:] = before[n_cond:] - 0.25 * velocity[0, n_cond:]
+    expected_latents = ops.unpatchify_video_rows(
+        stepped[n_cond_reference:][layout["video_row_order"]],
+        _TARGET_FRAMES, _LAT_H, _LAT_W, latent_channels=channels)
+    assert torch.equal(latents, expected_latents), (
+        "the sampling loop's own preview un-permute did not recover frame-major "
+        "order past the reference prefix")
+
+    # Negative control: skipping the reference-prefix offset -- indexing the
+    # FULL packed rows (reference block included) by video_row_order, which
+    # is target-block-relative -- must leak a reference sentinel into the
+    # result the way the pre-fix bug did, proving this fixture still
+    # exercises the offset rather than passing by coincidence.
+    buggy = stepped[layout["video_row_order"]]
+    assert torch.any(buggy == -999.0), (
+        "the fixture no longer exercises the missing-offset bug this test guards against")

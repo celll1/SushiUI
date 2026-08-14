@@ -468,6 +468,26 @@ def test_the_route_bounds_each_mask_upload_read_by_the_manifest_canvas():
     assert "await mask_file.read()" not in source
 
 
+def test_the_route_refuses_spatial_mask_with_references_as_a_400_before_the_gate():
+    """L8 (audit): the route's own spatial-mask x references check must be a
+    `CustomValidationError` (400), and must run BEFORE the reference/pin
+    partition gate below it -- so a request that trips BOTH rules gets the
+    cheaper, upload-free 400 rather than reaching the gate (which needs the
+    loaded model's variant) or any GPU work.
+    """
+    from api.routes import generate_inpaint_video
+
+    source = inspect.getsource(generate_inpaint_video)
+    mask_check_pos = source.index("spatial_mask_manifest is incompatible with reference conditioning")
+    gate_call_pos = source.index("resolve_minimax_h3_inpaint_reference_gate(\n        _h3_variant,")
+    assert mask_check_pos < gate_call_pos
+    # The exception actually raised for this rule must be the 400 one.
+    branch = source[source.index("_has_any_reference and (spatial_mask_manifest"):]
+    branch = branch[:branch.index("resolve_minimax_h3_inpaint_reference_gate")]
+    assert "raise CustomValidationError(" in branch
+    assert "raise RuntimeError(" not in branch
+
+
 def test_ltx2_declares_temporal_inpaint_unsupported():
     from api.arch_capabilities import arch_supports_feature
 
@@ -512,12 +532,11 @@ def test_fl2va_with_no_references_passes_the_full_pre_b2a_kwarg_set_unchanged():
     assert captured["step_callback"] is None
 
 
-def test_ref2va_inpaint_is_refused_before_any_generation_work():
-    """The defensive re-check (mirroring the outpaint path's own) must fire
-    BEFORE `_generate_minimax_h3` is ever called -- `captured` staying empty
-    is the proof, not just that a ValidationError was raised.
+def test_ref2va_inpaint_without_references_reaches_generation():
+    """PHASE B-3-open: the gate's `ref2va` row no longer refuses a plain
+    (reference-less) request -- it must reach `_generate_minimax_h3` exactly
+    the way `fl2va` does, `captured` proving the call happened.
     """
-    from api.error_handlers import ValidationError
     from core.pipeline_backends.minimax_h3 import MiniMaxH3Mixin
 
     captured = {}
@@ -527,15 +546,143 @@ def test_ref2va_inpaint_is_refused_before_any_generation_work():
         current_model_info = {"type": "minimax_h3", "variant": "ref2va"}
 
         def _generate_minimax_h3(self, params, **kwargs):
-            captured["called"] = True
-            raise AssertionError("must not reach generation on a closed gate")
+            captured.update(kwargs)
+            captured["params"] = params
+            frames = np.full((int(params["num_frames"]), 32, 64, 3), 7, dtype=np.uint8)
+            return frames, None, None, 4242
 
     clip = _source_clip()
     params = {"width": 64, "height": 32, "frame_rate": 24.0,
               "regenerate_start_frame": 40, "regenerate_end_frame": 85,
               "inpaint_video_audio_mode": "regenerate"}
-    with pytest.raises(ValidationError, match="not open"):
-        Runner()._generate_vidinpaint_minimax_h3(params, clip, 24.0, None)
+    frames, _audio, _rate, seed = Runner()._generate_vidinpaint_minimax_h3(params, clip, 24.0, None)
+    assert seed == 4242 and frames.shape == clip.shape
+    assert captured["label"] == "vid_inpaint"
+    assert captured["references"] == ()
+
+
+def test_ref2va_inpaint_without_references_still_carries_the_unmeasured_pin_warning():
+    """M2 (audit): the interior pin is unmeasured on ref2va with ZERO
+    references too -- the resolver's ref2va row is open unconditionally, not
+    only when a reference is present -- so a reference-less ref2va request
+    must still carry a ref2va-specific `minimax_h3_undocumented_conditioning`
+    warning naming fl2va/ref2va/3.12, and it must NOT claim a reference
+    combination that this request does not have.
+    """
+    from api import generation_status as gs
+    from core.pipeline_backends.minimax_h3 import MiniMaxH3Mixin
+
+    class Runner(MiniMaxH3Mixin):
+        minimax_h3_components = {"variant": "ref2va", "audio_sample_rate": 32000}
+        current_model_info = {"type": "minimax_h3", "variant": "ref2va"}
+
+        def _generate_minimax_h3(self, params, **kwargs):
+            frames = np.full((int(params["num_frames"]), 32, 64, 3), 7, dtype=np.uint8)
+            return frames, None, None, 4242
+
+    clip = _source_clip()
+    params = {"width": 64, "height": 32, "frame_rate": 24.0,
+              "regenerate_start_frame": 40, "regenerate_end_frame": 85,
+              "inpaint_video_audio_mode": "regenerate"}
+
+    gid = gs.start_generation("inpaint_vid")
+    Runner()._generate_vidinpaint_minimax_h3(params, clip, 24.0, None)
+    warnings = gs.get_warnings(gid)
+    gs.complete_generation(generation_id=gid)
+
+    undocumented = [w for w in warnings if w.get("code") == "minimax_h3_undocumented_conditioning"]
+    # The generic pin warning every temporal-inpaint request gets, PLUS the
+    # ref2va-partition-specific one -- both fire even with no reference.
+    assert len(undocumented) == 2
+    partition_messages = [w["message"] for w in undocumented if "ref2va transformer" in w["message"]]
+    assert len(partition_messages) == 1
+    message = partition_messages[0]
+    assert "fl2va" in message and "ref2va" in message and "3.12" in message
+    assert "has not been measured" in message
+    assert "reference conditioning" not in message, (
+        "a reference-less request must not carry the reference-combination clause")
+
+
+def test_ref2va_inpaint_with_references_reaches_generation_and_carries_the_warning():
+    """PHASE B-3-open: `ref2va` + `reference_images` must reach
+    `_generate_minimax_h3` (proving the gate no longer blocks it), AND the
+    request must carry the reference-specific `minimax_h3_undocumented_
+    conditioning` warning stating the mid-clip pin is measured on fl2va and
+    unmeasured on ref2va, and that the combination has not been measured --
+    not just the generic 'outside the documented shape' warning every
+    temporal-inpaint request already gets.
+    """
+    from api import generation_status as gs
+    from core.models.minimax_h3 import h3_references as h3refs
+    from core.pipeline_backends.minimax_h3 import MiniMaxH3Mixin
+    from PIL import Image
+
+    captured = {}
+
+    class Runner(MiniMaxH3Mixin):
+        minimax_h3_components = {"variant": "ref2va", "audio_sample_rate": 32000}
+        current_model_info = {"type": "minimax_h3", "variant": "ref2va"}
+
+        def _generate_minimax_h3(self, params, **kwargs):
+            captured.update(kwargs)
+            captured["params"] = params
+            frames = np.full((int(params["num_frames"]), 32, 64, 3), 7, dtype=np.uint8)
+            return frames, None, None, 4242
+
+    clip = _source_clip()
+    params = {"width": 64, "height": 32, "frame_rate": 24.0,
+              "regenerate_start_frame": 40, "regenerate_end_frame": 85,
+              "inpaint_video_audio_mode": "regenerate"}
+    reference = h3refs.MiniMaxH3Reference(kind="image", image=Image.new("RGB", (8, 8)))
+
+    gid = gs.start_generation("inpaint_vid")
+    frames, _audio, _rate, seed = Runner()._generate_vidinpaint_minimax_h3(
+        params, clip, 24.0, None, references=(reference,))
+    warnings = gs.get_warnings(gid)
+    gs.complete_generation(generation_id=gid)
+
+    assert seed == 4242 and frames.shape == clip.shape
+    assert captured["label"] == "vid_inpaint"
+    assert captured["references"] == (reference,)
+
+    undocumented = [w for w in warnings if w.get("code") == "minimax_h3_undocumented_conditioning"]
+    assert len(undocumented) == 2, "the generic pin warning AND the ref2va-specific one, both"
+    messages = " ".join(w["message"] for w in undocumented)
+    assert "fl2va" in messages and "ref2va" in messages
+    assert "3.12" in messages
+    assert "has not been measured" in messages
+
+
+def test_ref2va_inpaint_with_a_spatial_mask_and_references_is_a_400_not_a_500():
+    """L8 (audit): now that ref2va + references reaches this far (the gate no
+    longer refuses it first), the spatial-mask x references re-check must
+    still be reachable and must still raise a client error (400), not a
+    RuntimeError (500) -- and must fire BEFORE `_generate_minimax_h3` runs.
+    """
+    from api.error_handlers import ValidationError
+    from core.models.minimax_h3 import h3_references as h3refs
+    from core.pipeline_backends.minimax_h3 import MiniMaxH3Mixin
+    from PIL import Image
+
+    captured = {}
+
+    class Runner(MiniMaxH3Mixin):
+        minimax_h3_components = {"variant": "ref2va", "audio_sample_rate": 32000}
+        current_model_info = {"type": "minimax_h3", "variant": "ref2va"}
+
+        def _generate_minimax_h3(self, params, **kwargs):
+            captured["called"] = True
+            raise AssertionError("must not reach generation past the spatial-mask x references refusal")
+
+    clip = _source_clip()
+    params = {"width": 64, "height": 32, "frame_rate": 24.0,
+              "regenerate_start_frame": 40, "regenerate_end_frame": 85,
+              "inpaint_video_audio_mode": "regenerate"}
+    reference = h3refs.MiniMaxH3Reference(kind="image", image=Image.new("RGB", (8, 8)))
+    with pytest.raises(ValidationError, match="spatial mask"):
+        Runner()._generate_vidinpaint_minimax_h3(
+            params, clip, 24.0, None, references=(reference,),
+            spatial_mask_timeline="not-a-real-timeline-but-not-None")
     assert "called" not in captured
 
 

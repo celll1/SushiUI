@@ -1085,6 +1085,48 @@ def test_ref2va_layout_matches_the_t2va_builder_with_no_references():
         assert torch.equal(empty[key], plain[key]), key
 
 
+def test_ref2va_presentation_with_only_audio_references_needs_no_processor():
+    """L9 (audit): the Qwen3-VL processor is only ever touched to turn an
+    IMAGE or VIDEO reference into vision tensors -- an audio-only reference
+    set (the owner's own use case: a reference audio clip steering the
+    regenerated span, always paired with vision conditioning through a pin
+    rather than a reference row on this endpoint) never reaches either call,
+    so it must not require `official/processor/` to be loaded. A missing
+    processor tree turned a legal request into a 500 before this fix.
+    """
+    from core.models.minimax_h3.h3_references import MiniMaxH3Reference, build_ref2va_presentation
+
+    class _FakeTokenizer:
+        def __call__(self, text, add_special_tokens=False):
+            return {"input_ids": [ord(c) for c in text]}
+
+        def convert_tokens_to_ids(self, token):
+            raise AssertionError("an audio-only presentation must never emit a vision block")
+
+    audio_only = [MiniMaxH3Reference(kind="audio", audio=torch.zeros(2, 10), sample_rate=32000)]
+    token_ids, token_tags, vision_inputs = build_ref2va_presentation(
+        _FakeTokenizer(), None, "a prompt", audio_only)
+    assert vision_inputs == {}
+    assert len(token_ids) == len(token_tags)
+    assert token_ids  # "<Audio 1>: " plus the prompt, at minimum
+
+
+def test_ref2va_presentation_with_an_image_reference_still_needs_the_processor():
+    """NEGATIVE CONTROL for the above: an actual image/video reference still
+    needs the processor -- L9 narrows the guard, it does not remove it.
+    """
+    from PIL import Image
+    from core.models.minimax_h3.h3_references import MiniMaxH3Reference, build_ref2va_presentation
+
+    class _FakeTokenizer:
+        def __call__(self, text, add_special_tokens=False):
+            return {"input_ids": [ord(c) for c in text]}
+
+    image_reference = [MiniMaxH3Reference(kind="image", image=Image.new("RGB", (8, 8)))]
+    with pytest.raises(RuntimeError, match="Qwen3-VL processor"):
+        build_ref2va_presentation(_FakeTokenizer(), None, "a prompt", image_reference)
+
+
 def test_packed_row_counts_separate_target_and_conditioning_rows():
     layout = ops.build_ref2va_packed_layout(
         [ops.TEXT_TAG] * 10,

@@ -108,6 +108,8 @@ def _source_root(arch: str, source: Optional[str]) -> Optional[str]:
       the same consequence -- ``official/`` in particular is where the loader
       reads every config and both tokenizers from, so an export that junctioned
       from ``diffusion_models/`` would produce a tree with no geometry at all.
+    * MiniMax Music 3: resolves any of its three accepted spellings to
+      ``official/``, the only tree its loader reads (see that module).
 
     Each is asked THEIR OWN detector rather than having the walk re-implemented
     here, so a layout change moves one file.
@@ -118,6 +120,7 @@ def _source_root(arch: str, source: Optional[str]) -> Optional[str]:
         "anima": ("core.models.anima.anima_loader", "detect_anima_split_layout"),
         "acestep": ("core.models.acestep.loader", "detect_acestep_layout"),
         "minimax_h3": ("core.models.minimax_h3.loader", "detect_minimax_h3_layout"),
+        "minimax_music3": ("core.models.minimax_music3.loader", "detect_minimax_music3_layout"),
     }
     if arch in detectors:
         module_name, func_name = detectors[arch]

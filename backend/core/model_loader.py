@@ -10,7 +10,7 @@ from pathlib import Path
 ModelSource = Literal["safetensors", "diffusers", "huggingface"]
 # DEUS support removed - architecture no longer maintained
 # ModelType = Literal["sd15", "sdxl", "zimage", "deus", "flux2"]
-ModelType = Literal["sd15", "sdxl", "zimage", "flux2", "anima", "lens", "ideogram4", "minit2i", "krea2", "ltx2", "acestep", "minimax_h3"]
+ModelType = Literal["sd15", "sdxl", "zimage", "flux2", "anima", "lens", "ideogram4", "minit2i", "krea2", "ltx2", "acestep", "minimax_h3", "minimax_music3"]
 
 class ModelLoader:
     """Handles loading models from various sources"""
@@ -148,7 +148,7 @@ class ModelLoader:
             # default noise_process by architecture family (ddpm for SD/SDXL).
             if "modelspec.prediction_type" in metadata:
                 pred_target = str(metadata["modelspec.prediction_type"]).strip().lower()
-                default_np = "flow" if model_type in ("zimage", "flux2", "minit2i", "krea2", "anima", "lens", "ltx2", "minimax_h3") else "ddpm"
+                default_np = "flow" if model_type in ("zimage", "flux2", "minit2i", "krea2", "anima", "lens", "ltx2", "minimax_h3", "minimax_music3") else "ddpm"
                 print(f"[ModelLoader] Detected prediction_type from ModelSpec metadata: {pred_target}")
                 return {
                     "noise_process": metadata.get("modelspec.noise_process", default_np),
@@ -229,6 +229,17 @@ class ModelLoader:
                 # OPPOSITE sign convention to diffusers' own flow schedulers --
                 # that belongs to the Phase-2 loop, not to this label.
                 print(f"[ModelLoader] Inferred prediction config from MiniMax-H3 architecture")
+                return {
+                    "noise_process": "flow",
+                    "prediction_target": "velocity",
+                    "source": "inferred"
+                }
+            elif model_type == "minimax_music3":
+                # MiniMax Music 3's flow-matching (DiT) stage: velocity prediction,
+                # FlowMatchEulerDiscreteScheduler with invert_sigmas=True (design
+                # doc, "Architecture, as verified"). The autoregressive stage has
+                # no diffusion objective at all and is not described by this label.
+                print(f"[ModelLoader] Inferred prediction config from MiniMax Music 3 architecture")
                 return {
                     "noise_process": "flow",
                     "prediction_target": "velocity",
@@ -526,6 +537,27 @@ class ModelLoader:
             return False
 
     @staticmethod
+    def _looks_like_minimax_music3(model_path: str) -> bool:
+        """MiniMax Music 3: a directory (modular_model_index.json, distinct
+        filename from H3's model_index.json) or a flat DiT .safetensors (key
+        signature; identified even though the loader refuses to load it).
+        Delegates to the loader package, mirroring ``_looks_like_minimax_h3``.
+        """
+        try:
+            from core.models.minimax_music3.loader import (
+                detect_minimax_music3_layout, is_minimax_music3_safetensors,
+            )
+
+            if os.path.isdir(model_path):
+                return detect_minimax_music3_layout(model_path) is not None
+            if isinstance(model_path, str) and model_path.endswith(".safetensors") \
+                    and os.path.isfile(model_path):
+                return is_minimax_music3_safetensors(model_path)
+            return False
+        except Exception:
+            return False
+
+    @staticmethod
     def _is_krea2_safetensors(model_path: str) -> bool:
         """Open a .safetensors file and check for the Krea 2 key signature."""
         try:
@@ -648,6 +680,14 @@ class ModelLoader:
             if ModelLoader._looks_like_minimax_h3(model_path):
                 return "minimax_h3"
 
+            # MiniMax Music 3 (official/'s modular_model_index.json, or a root
+            # holding it). official/transformer/config.json is also read by the
+            # Lens probe above and the Krea2/Ideogram4/MiniT2I probes below;
+            # none collide because Music3's transformer config carries neither
+            # an "architectures" key nor any of their signature keys.
+            if ModelLoader._looks_like_minimax_music3(model_path):
+                return "minimax_music3"
+
             # LTX-2.3 detection (diffusers directory only: model_index.json with
             # _class_name == "LTX2Pipeline"). Unique class name, so it cannot
             # collide with the other archs' diffusers-dir signatures. Base repo
@@ -724,6 +764,13 @@ class ModelLoader:
         if isinstance(model_path, str) and model_path.endswith(".safetensors") \
                 and os.path.isfile(model_path) and ModelLoader._looks_like_minimax_h3(model_path):
             return "minimax_h3"
+
+        # MiniMax Music 3's flat DiT (`diffusion_transformer.*` + `latent_conditioners.*`
+        # + `cond_layer_logits`). Same ordering reason as the H3 block above.
+        # Identified even though the loader refuses to load it (see loader.py).
+        if isinstance(model_path, str) and model_path.endswith(".safetensors") \
+                and os.path.isfile(model_path) and ModelLoader._looks_like_minimax_music3(model_path):
+            return "minimax_music3"
 
         # Lens single-file detection (full-FT save: net.* DiT). Metadata-first,
         # with a net.* key-signature fallback. Runs BEFORE the Anima net.* probe;
@@ -2177,6 +2224,13 @@ class ModelLoader:
                 clip_projection_file=clip_projection_file,
                 hybrid=hybrid)
 
+        # MiniMax Music 3 flat DiT: dispatch here (not into
+        # reconstruct_sd_sdxl_pipeline) so the loader's own refusal message
+        # reaches the user instead of a confusing diffusers error.
+        if model_type == "minimax_music3":
+            print(f"[ModelLoader] MiniMax Music 3 flat DiT selected; refusing (official/ tree only)")
+            return ModelLoader.load_minimax_music3_from_path(file_path, torch.bfloat16)
+
         is_v_prediction = ModelLoader.detect_v_prediction(file_path)
 
         # Reconstruct the SD1.5 / SDXL pipeline (custom-arch aware). Shared with the
@@ -2577,6 +2631,11 @@ class ModelLoader:
                 text_encoder_file=text_encoder_file,
                 clip_projection_file=clip_projection_file,
                 hybrid=hybrid)
+
+        # MiniMax Music 3 (root directory holding official/, or official/ itself).
+        if model_type == "minimax_music3":
+            print(f"[ModelLoader] Loading as MiniMax Music 3 (official/ config-and-weight tree)")
+            return ModelLoader.load_minimax_music3_from_path(model_path, torch.bfloat16)
 
         is_v_prediction = ModelLoader.detect_v_prediction(model_path)
 
@@ -3025,3 +3084,19 @@ class ModelLoader:
                         te_override=text_encoder_file,
                         te_projection_override=clip_projection_file,
                         **({} if hybrid is None else {"hybrid": hybrid}))
+
+    @staticmethod
+    def load_minimax_music3_from_path(
+        path: str,
+        torch_dtype: torch.dtype = torch.bfloat16,
+    ) -> dict:
+        """Load MiniMax Music 3 from its ``official/`` tree (or a root holding
+        one). Returns a component dict for ``PipelineManager.load_model()``
+        (``type == "minimax_music3"``); the flat repacked tree is refused --
+        see ``core.models.minimax_music3.loader``'s docstring.
+        """
+        from core.models.minimax_music3.loader import (
+            load_minimax_music3_from_path as _load_music3,
+        )
+
+        return _load_music3(model_path=path, torch_dtype=torch_dtype)

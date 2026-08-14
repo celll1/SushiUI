@@ -115,6 +115,13 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         # DiT-only reload (which rebuilds nothing but the DiT) does not erase it.
         self._minimax_h3_te_request: tuple = (None, None)
 
+        # MiniMax Music 3 components (2.4B flow-matching DiT + 8B Qwen3
+        # language model + 0.6B RVQ depth decoder + condition encoder +
+        # vocoder). Loadable/slot-switchable only; generation is
+        # pipeline_backends/minimax_music3.py (a later commit).
+        self.minimax_music3_components: Optional[Dict[str, Any]] = None
+        self.is_minimax_music3_model: bool = False
+
         # SigLIP2 Vision Encoder (optional, for SD/SDXL vision-conditioned generation)
         self.vision_encoder: Optional[Any] = None
         self._vision_encoder_path: Optional[str] = None
@@ -174,6 +181,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             return "acestep"
         if self.is_minimax_h3_model:
             return "minimax_h3"
+        if self.is_minimax_music3_model:
+            return "minimax_music3"
         # Detect SDXL vs SD1.5 by inspecting the loaded pipeline class
         pipe = self.txt2img_pipeline
         if pipe is not None:
@@ -556,6 +565,18 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     del comp
                 self.minimax_h3_components = None
                 self.is_minimax_h3_model = False
+
+            # Clean up MiniMax Music 3 components
+            if self.minimax_music3_components is not None:
+                print("[Pipeline] Cleaning up MiniMax Music 3 components...")
+                for comp_name, comp in self.minimax_music3_components.items():
+                    # No `comp.to('cpu')`: every component is already CPU-resident
+                    # (the loader never stages to GPU), so it is a no-op, not a
+                    # safety requirement -- unlike MiniMax-H3's text encoder, this
+                    # loader's components are not memory-mapped.
+                    del comp
+                self.minimax_music3_components = None
+                self.is_minimax_music3_model = False
 
             # Force garbage collection
             gc.collect()
@@ -1047,6 +1068,73 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     **({} if hybrid_preflight is None
                        else {"hybrid": self.minimax_h3_components.get("hybrid_request")}))
                 print("[Pipeline] MiniMax-H3 model loaded successfully")
+                return
+
+            # Check if MiniMax Music 3 (2.4B flow-matching DiT + 8B Qwen3
+            # language model + 0.6B RVQ depth decoder + condition encoder +
+            # vocoder). MUST be before the generic Z-Image check below, which
+            # matches any dict carrying a "transformer" key -- Music 3's does.
+            # Design doc phase 2: loadable/slot-switchable only; generation is
+            # a later commit (pipeline_backends/minimax_music3.py).
+            if isinstance(model_result, dict) and model_result.get("type") == "minimax_music3":
+                print("[Pipeline] MiniMax Music 3 audio model detected (component-based dict returned)")
+                self.minimax_music3_components = model_result
+                self.is_minimax_music3_model = True
+                self.is_minimax_h3_model = False
+                self.is_acestep_model = False
+                self.is_ltx2_model = False
+                self.is_krea2_model = False
+                self.is_minit2i_model = False
+                self.is_ideogram4_model = False
+                self.is_lens_model = False
+                self.is_anima_model = False
+                self.is_zimage_model = False
+                self.is_flux2_model = False
+                self.current_model = model_id
+                self.current_attention_type = "normal"
+
+                # The loader already leaves every component on the CPU, so this is a
+                # no-op today; language_model is skipped only because it is large and
+                # moving it here buys nothing that being already-CPU does not.
+                for comp_name in ("transformer", "condition_encoder", "rvq_depth_decoder", "vocoder"):
+                    comp = self.minimax_music3_components.get(comp_name)
+                    if comp is not None and hasattr(comp, "to"):
+                        try:
+                            comp.to("cpu")
+                        except Exception:
+                            pass
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                print("[VRAM] MiniMax Music 3 components on CPU. GPU staging happens at "
+                      "generate time (a later commit); the language model and depth decoder "
+                      "must be resident together for the autoregressive stage.")
+
+                model_hash = ""
+                if source_type in ["safetensors", "diffusers"] and os.path.exists(source):
+                    try:
+                        from utils.hash_cache import get_cached_file_hash
+                        model_hash = get_cached_file_hash(source)
+                    except Exception as e:
+                        print(f"[Pipeline] Hash compute skipped: {e}")
+
+                from core.models.minimax_music3.defaults import (
+                    FALLBACK_FRAME_RATE, FALLBACK_NUM_CHANNELS_LATENTS, FALLBACK_SAMPLING_RATE,
+                )
+
+                self.current_model_info = {
+                    "source_type": source_type,
+                    "source": source,
+                    "type": "minimax_music3",
+                    "is_v_prediction": False,  # flow matching, velocity prediction (flow stage only)
+                    "model_hash": model_hash,
+                    "is_audio": True,
+                    "sample_rate": self.minimax_music3_components.get("sample_rate", FALLBACK_SAMPLING_RATE),
+                    "frame_rate": self.minimax_music3_components.get("frame_rate", FALLBACK_FRAME_RATE),
+                    "latent_channels": self.minimax_music3_components.get(
+                        "latent_channels", FALLBACK_NUM_CHANNELS_LATENTS),
+                }
+                self._save_last_model(source_type, source, pipeline_type)
+                print("[Pipeline] MiniMax Music 3 model loaded successfully")
                 return
 
             # Check if Z-Image

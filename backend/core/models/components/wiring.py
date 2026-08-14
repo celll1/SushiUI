@@ -155,6 +155,21 @@ MINIMAX_H3_WIRING = ComponentWiringSpec(
     vae_scale_factor=16, vae_norm="shift_scale",
 )
 
+# MiniMax Music 3: [B, T, 128] 1D flow-matching latents at 86.13 Hz, decoded to
+# 44.1 kHz stereo by a folded-stereo vocoder. ``latent_ndim=3`` mirrors
+# ACE-Step (no spatial axis), which is what keeps this out of
+# ``component_registry``'s ``is_video=True`` fold.
+# ``te_out_dim=2048`` is the CONDITION ENCODER's output (what the DiT's
+# ``encoder_hidden_states`` actually receives), not the 32768-wide raw
+# ``frame_hiddens`` the AR stage emits -- see ``minimax_music3.loader``.
+# ``vae_scale_factor=512`` = 8*8*4*2, the vocoder's ``upsampling_ratios``
+# product; ``vae_norm="identity"`` (latents are not renormalized before decode).
+MINIMAX_MUSIC3_WIRING = ComponentWiringSpec(
+    te_out_dim=2048, te_pooled_dim=None, te_seq_packing="llm", added_cond=None,
+    latent_channels=128, latent_ndim=3, latent_packing="none",
+    vae_scale_factor=512, vae_norm="identity",
+)
+
 
 # ---------------------------------------------------------------------------
 # TemporalSpec — the per-arch clip-length / frame-rate / canvas contract of a

@@ -1556,9 +1556,10 @@ class MiniMaxH3Mixin:
             input_audio: WAV bytes of the clip's original audio, or None.
             references: a ``ref2va`` reference list (``h3_references.
                 MiniMaxH3Reference`` objects, packed order), same convention
-                as ``_generate_ref2vid_minimax_h3``. Refused by
-                ``resolve_minimax_h3_inpaint_reference_gate`` in the
-                committed state (see that function's docstring).
+                as ``_generate_ref2vid_minimax_h3``. Refused on ``fl2va``/
+                ``hybrid`` by ``resolve_minimax_h3_inpaint_reference_gate``;
+                allowed on ``ref2va`` (see that function's docstring for the
+                unmeasured-shape caveat).
 
         Returns:
             ``(frames, audio, audio_sample_rate, actual_seed)`` -- the same
@@ -1583,11 +1584,12 @@ class MiniMaxH3Mixin:
         references = tuple(references or ())
         # Defensive re-check of the route's gate (mirroring
         # `_generate_vidoutpaint_minimax_h3`'s own re-check), run before any
-        # VAE/DiT work even when `references` is empty -- ref2va is refused
-        # here unconditionally. `has_vision_conditioning=True`: this endpoint
-        # always pins the frames outside the regenerate range, so an
-        # audio-only reference set is never refused by the pairing rule
-        # alone here.
+        # VAE/DiT work even when `references` is empty. PHASE B-3-open:
+        # `ref2va` now passes -- fl2va still refuses any reference, and
+        # hybrid still refuses every request. `has_vision_conditioning=True`:
+        # this endpoint always pins the frames outside the regenerate range,
+        # so an audio-only reference set is never refused by the pairing
+        # rule alone here.
         _variant = ((getattr(self, "minimax_h3_components", None) or {}).get("variant") or "").lower()
         resolve_minimax_h3_inpaint_reference_gate(
             _variant,
@@ -1599,11 +1601,14 @@ class MiniMaxH3Mixin:
         if references and (spatial_mask_timeline is not None or spatial_mask_arrays is not None):
             # `build_ref2va_packed_layout`'s pin extension (B-1) only carries
             # `pinned_video_frames` (a whole-frame pin), not
-            # `pinned_video_row_indices` (spatial inpaint's row-level pin) --
-            # unreachable while the gate above stays closed, but stated
-            # explicitly rather than left to a builder-level TypeError once
-            # it opens.
-            raise RuntimeError(
+            # `pinned_video_row_indices` (spatial inpaint's row-level pin).
+            # The route already refuses this combination as a 400
+            # (`generate_inpaint_video`'s own check); this is the defensive
+            # re-check for a caller that bypasses the route, kept as a
+            # ValidationError (400) rather than a RuntimeError (500) now that
+            # the ref2va gate is open and this branch is reachable in
+            # practice, not just in theory.
+            raise ValidationError(
                 "MiniMax-H3 cannot combine a spatial mask with reference conditioning: the "
                 "extended ref2va layout builder only carries a frame-level temporal-inpaint pin "
                 "alongside references, not a row-level spatial-mask pin.")
@@ -1779,6 +1784,29 @@ class MiniMaxH3Mixin:
             "other positions.",
             code="minimax_h3_undocumented_conditioning",
         )
+        if _variant == "ref2va":
+            # Phase B-3-open (audit M2): §6.2 arm P says the INTERIOR PIN is
+            # unmeasured on ref2va -- that is true with zero references too
+            # (the resolver's ref2va row is open unconditionally, not only
+            # when a reference is present), so this sentence must not be
+            # gated on `references`. The reference clause is appended only
+            # when one is actually present, since that is a SECOND, distinct
+            # unmeasured fact (arm P-ref), not a restatement of the first.
+            message = (
+                "This request conditions MiniMax-H3 outside the documented shape on the ref2va "
+                "transformer (a mid-clip pin, generation-only). The mid-clip pin is measured on the "
+                "fl2va partition (preserved-span RMS 3.12, floor 3.15, control 75.69) and unmeasured "
+                "on ref2va; whether ref2va holds an interior pin the way fl2va does has not been "
+                "measured."
+            )
+            if references:
+                message += (
+                    " This request also combines the pin with reference conditioning: reading "
+                    "reference rows is a trained behaviour of ref2va, not of fl2va, and whether "
+                    "ref2va reads a reference while pinned has not been measured either -- this "
+                    "combination has not been measured at all."
+                )
+            warn(message, code="minimax_h3_undocumented_conditioning")
 
         # ---- Audio. `preserve_input` pins the clip's own track across the WHOLE
         # clip through the shipped ia2v machinery and muxes it back verbatim, so
@@ -2282,6 +2310,15 @@ class MiniMaxH3Mixin:
                 "video block's conditioning prefix for rows of the clip itself, and an anchor "
                 "reserves that same prefix for rows of its own.")
         if pinned_video_row_indices and references:
+            # L8 (audit): deliberately still a RuntimeError (500), unlike the
+            # `pinned_video_frames`+references check the route/backend both
+            # already turn into a 400 before this function is ever reached --
+            # `pinned_video_row_indices` is never built from a raw request
+            # directly (it only exists after spatial-mask processing, which
+            # the route and `_generate_vidinpaint_minimax_h3`'s own re-check
+            # both already refuse alongside references), so hitting this line
+            # means an internal caller bypassed BOTH of those layers, which is
+            # a programming error, not a request a user can construct.
             raise RuntimeError(
                 "MiniMax-H3 cannot combine spatial-mask row pins with references: the extended "
                 "ref2va layout builder (h3_pipeline_ops.build_ref2va_packed_layout) only carries a "
@@ -2637,11 +2674,20 @@ class MiniMaxH3Mixin:
                 # `keyframes` is empty, which reproduces the pre-C5 layout.
                 keyframe_anchors=anchors,
                 # The temporal-inpaint pin, carried through unchanged from the
-                # caller -- empty on every request `resolve_minimax_h3_inpaint_
-                # reference_gate` lets reach here today (its `ref2va` row is
-                # still closed), so this is bit-identical to the pre-B-2 call
-                # until that gate opens.
+                # caller -- opened for `label == "vid_inpaint"` on this
+                # partition (`resolve_minimax_h3_inpaint_reference_gate`'s
+                # `ref2va` row).
                 pinned_video_frames=tuple(pinned_video_frames),
+                # Same whole-track shorthand as the fl2va branch below, and
+                # for the SAME reason: `preserve_input`'s whole-track pin
+                # must actually be counted as conditioning here too, or the
+                # clean re-encoded track substituted in below (`pinned_audio_
+                # rows`) gets read as noise at t=T by a layout that thinks
+                # every target audio row is still free (H1: this was missing
+                # entirely -- ref2va had no `pin_target_audio` at all, so
+                # `preserve_input` silently corrupted the audio conditioning
+                # on this partition with no crash and no warning).
+                pin_target_audio=pinned_audio_rows is not None and not pinned_audio_latents,
                 pinned_audio_latents=tuple(pinned_audio_latents),
                 device=torch_device,
             )
@@ -2914,8 +2960,9 @@ class MiniMaxH3Mixin:
         # the pin's share alone, so the difference is the reference/anchor
         # prefix that leads the (possibly permuted) target block in this
         # FULL-row-space tensor -- 0 on fl2va and on any reference-only ref2va
-        # request today, nonzero only once B-2's builder call actually passes
-        # a pin alongside references (still gate-refused at the route).
+        # request, nonzero on temporal inpaint's own pin (`label ==
+        # "vid_inpaint"`) alongside references on ref2va, which reaches the
+        # route as of phase B-3-open (`resolve_minimax_h3_inpaint_reference_gate`).
         n_cond_reference_video_rows = n_cond_video - int(layout.get("num_pinned_video_rows", 0) or 0)
         # With pinned frames the conditioning rows are rows of THIS clip, so the
         # decode takes every video row and restores frame-major order; with

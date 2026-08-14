@@ -573,19 +573,24 @@ CHAIN_CONTEXT: Dict[str, Dict[str, Any]] = {
             # a pin -- `build_ref2va_packed_layout` gained `pinned_video_frames`
             # / `pinned_audio_latents` (h3_pipeline_ops.py, MiniMax-H3 inpaint x
             # reference design, Option B) and does return a permutation for
-            # them now. The reason is that this partition's interior-pin hold
-            # is UNMEASURED (fl2va's own pin is measured: preserved-span RMS
-            # 3.12, VAE floor 3.15, control 75.69,
-            # `minimax_h3_ti_probe_results.md`; ref2va's is not) and
-            # `resolve_minimax_h3_inpaint_reference_gate` (api/
-            # generation_utils.py) refuses every ref2va temporal-inpaint
-            # request unconditionally until that is adjudicated a PASS
-            # (`minimax_h3_inpaint_refs_design.md`, Gate registration (B)). No
-            # `pinned_tail` until that gate passes. No `motion_preroll` either,
-            # for the same reason as before: this partition's continuation
-            # already spends its conditioning prefix on the automatic tail
-            # reference (`build_outpaint_references`), and a pre-roll's anchors
-            # on top of it is a shape nothing has measured.
+            # them now, AND `resolve_minimax_h3_inpaint_reference_gate`'s
+            # `ref2va` row is OPEN as of phase B-3-open (opened at the repo
+            # owner's instruction ahead of Gate registration (B)'s §6.2 GPU
+            # arms, which have not run) -- so `/generate/inpaint/video` itself
+            # no longer refuses this partition. What remains true, and what
+            # actually keeps `pinned_tail` off this list, is that this
+            # partition's interior-pin hold is UNMEASURED (fl2va's own pin is
+            # measured: preserved-span RMS 3.12, VAE floor 3.15, control 75.69,
+            # `minimax_h3_ti_probe_results.md`; ref2va's is not, and every
+            # generation that reaches it carries a
+            # `minimax_h3_undocumented_conditioning` warning saying so) AND no
+            # chaining wiring for it exists on this outpaint continuation path
+            # regardless -- the open endpoint is `/generate/inpaint/video`
+            # directly, not this chain mode. No `motion_preroll` either, for
+            # the same reason as before: this partition's continuation already
+            # spends its conditioning prefix on the automatic tail reference
+            # (`build_outpaint_references`), and a pre-roll's anchors on top
+            # of it is a shape nothing has measured.
             "ref2va": {
                 "chain_continuation_modes": ["boundary_frame"],
                 "chain_context_min_frames": 1,

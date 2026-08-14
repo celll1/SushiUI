@@ -1463,24 +1463,28 @@ paths:
         **References (`reference_images`/`reference_videos`/
         `reference_video_audios`/`reference_audios`/`reference_image_size`,
         same field set and packed-order semantics as `/generate/ref2vid`).**
-        Accepted by this route's multipart form, but a request that sends one
-        is refused today (400): reference conditioning is a trained behaviour
-        of the `ref2va` transformer partition, and the mid-clip pin this
-        endpoint needs is measured on `fl2va` and unmeasured on `ref2va`. This
-        is an unmeasured combination that has not yet been gated open, not a
-        structural impossibility -- see
-        `resolve_minimax_h3_inpaint_reference_gate`
+        Accepted by this route's multipart form on a `ref2va` transformer
+        (400 on `fl2va` -- reference conditioning is a trained behaviour of
+        the `ref2va` partition alone). The mid-clip pin this endpoint needs
+        is measured on `fl2va` and UNMEASURED on `ref2va`; combining it with
+        references is an open but unmeasured combination, not a structural
+        impossibility -- opened at the repo owner's instruction ahead of the
+        design's GPU adjudication arms, not because they passed. Every
+        generation that combines the pin with references on `ref2va` carries
+        an additional `minimax_h3_undocumented_conditioning` `warnings[]`
+        entry stating exactly that. See `resolve_minimax_h3_inpaint_reference_gate`
         (`minimax_h3_inpaint_refs_design.md`).
 
         **Requirements:**
-        - A MiniMax-H3 `fl2va` model with no `reference_*` upload is what
-          this endpoint serves today. Any `reference_*` upload is refused
-          (400) regardless of the loaded variant, and `ref2va`/`hybrid` are
-          refused (400) even for a plain, reference-less request in the
-          current phase (the mid-clip pin itself is unmeasured on `ref2va`,
-          and a `hybrid` transformer generates on no endpoint). Any other
-          architecture is refused -- LTX-2.3's conditions carry whole clips
-          at latent indices rather than pinning frames of the target itself.
+        - A MiniMax-H3 `fl2va` model with no `reference_*` upload, or a
+          `ref2va` model with or without `reference_*` uploads, is what this
+          endpoint serves. Any `reference_*` upload on `fl2va` is refused
+          (400), and `hybrid` is refused (400) for every request, with or
+          without references (a `hybrid` transformer generates on no
+          endpoint). Any other architecture is refused -- LTX-2.3's
+          conditions carry whole clips at latent indices rather than pinning
+          frames of the target itself. A spatial mask cannot be combined with
+          any `reference_*` upload (400).
         - `width`/`height` divisible by 32 and inside the model's envelope
           (short edge ≤ 768, long edge ≤ 1344).
         - Without a spatial mask, the range must leave something preserved. A
@@ -1534,12 +1538,13 @@ paths:
             manifest, a manifest canvas that does not match the resolved
             output canvas, a malformed or empty mask PNG, and any mismatch or
             duplicate in the repeated `spatial_mask_ids`/`spatial_mask_files`
-            mapping. Also returned when any `reference_*` field is sent (every
-            variant refuses a reference-carrying request in the current
-            phase), when the loaded variant is `ref2va` or `hybrid` (refused
-            even without references), when a reference count exceeds the
-            checkpoint's per-kind or total limit, or when `reference_image_size`
-            is not `max`/`match`.
+            mapping. Also returned when any `reference_*` field is sent while
+            the loaded variant is `fl2va` or unidentified, when the loaded
+            variant is `hybrid` (refused even without references), when a
+            `reference_*` field is combined with a spatial mask on any
+            variant, when a reference count exceeds the checkpoint's per-kind
+            or total limit, or when `reference_image_size` is not
+            `max`/`match`.
           content:
             application/json:
               schema:
@@ -11285,13 +11290,16 @@ components:
             type: string
             format: binary
           description: >-
-            PHASE B-2a (`minimax_h3_inpaint_refs_design.md`, Option B): same
-            field semantics as `Ref2VidRequest.reference_images`. Accepted by
-            this route's multipart form, but a request that sends any
-            `reference_*` file is refused (400) in the current phase --
-            reference conditioning is a trained behaviour of the `ref2va`
-            transformer partition, and the mid-clip pin this endpoint needs
-            is unmeasured there.
+            PHASE B-3-open (`minimax_h3_inpaint_refs_design.md`, Option B):
+            same field semantics as `Ref2VidRequest.reference_images`.
+            Accepted by this route's multipart form when the loaded
+            transformer is `ref2va` (400 on `fl2va` -- reference conditioning
+            is a trained behaviour of the `ref2va` partition alone). The
+            mid-clip pin this endpoint needs is unmeasured on `ref2va`; this
+            row was opened at the repo owner's instruction ahead of the
+            design's GPU adjudication arms, not because they passed, and
+            every generation that reaches this combination carries a
+            `minimax_h3_undocumented_conditioning` warning saying so.
         reference_videos:
           type: array
           maxItems: 3
@@ -11300,8 +11308,8 @@ components:
             format: binary
           description: >-
             Same field semantics as `Ref2VidRequest.reference_videos`. See
-            `reference_images` for why a request that sends one is refused
-            today.
+            `reference_images` for the partition requirement and the
+            unmeasured-combination warning.
         reference_video_audios:
           type: array
           maxItems: 3
@@ -11311,8 +11319,8 @@ components:
           description: >-
             Same field semantics as `Ref2VidRequest.reference_video_audios`
             (soundtrack of the same-position `reference_videos` entry). See
-            `reference_images` for why a request that sends one is refused
-            today.
+            `reference_images` for the partition requirement and the
+            unmeasured-combination warning.
         reference_audios:
           type: array
           maxItems: 3
@@ -11324,7 +11332,7 @@ components:
             endpoint always pins the frames outside the regenerate range, so
             an audio-only reference set is never refused by the standalone-
             audio pairing rule alone here -- only by the variant gate
-            (`reference_images` above) in the current phase.
+            (`reference_images` above).
         reference_image_size:
           type: string
           enum: [max, match]

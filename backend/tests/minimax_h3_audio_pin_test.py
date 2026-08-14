@@ -489,3 +489,175 @@ def test_plain_regenerate_pins_no_audio_at_all():
     assert captured.get("pinned_audio_prepared") is None
     assert captured["input_audio"] is None
     assert captured["pinned_audio_latents"] == ()
+
+
+# --------------------------------------------------------------------------
+# PHASE B-3-open: every `inpaint_video_audio_mode` composes with references
+# on ref2va -- the owner's actual use case is a reference AUDIO clip steering
+# the audio generated inside a `regenerate_range` span. These assert the
+# audio-mode wiring runs unchanged with `references` present (the pin and a
+# reference occupy independent conditioning-prefix mechanisms -- video's own
+# frame pin vs. the audio track's `input_audio`/`pinned_audio_latents` pin --
+# and the backend's own exclusion (`minimax_h3.py`, `label != "vid_inpaint"`)
+# explicitly carves this endpoint out of the ia2v-vs-references exclusion).
+# --------------------------------------------------------------------------
+
+def _ref2va_audio_runner(width=64, height=32, *, pinned_audio_return=None):
+    """`_audio_runner`, on the `ref2va` partition."""
+    from core.pipeline_backends.minimax_h3 import MiniMaxH3Mixin
+
+    captured = {}
+
+    class Runner(MiniMaxH3Mixin):
+        minimax_h3_components = {
+            "variant": "ref2va", "audio_sample_rate": 32000,
+            "fps": 24.0, "audio_latent_rate": 40.0,
+        }
+        current_model_info = {"type": "minimax_h3", "variant": "ref2va"}
+
+        def _generate_minimax_h3(self, params, **kwargs):
+            captured.update(kwargs)
+            captured["params"] = params
+            frames = np.full((int(params["num_frames"]), height, width, 3),
+                             GENERATED_VALUE, dtype=np.uint8)
+            return frames, None, None, 4242
+
+        def _minimax_h3_inpaint_pinned_audio(self, *args, **kwargs):
+            captured["pinned_audio_prepared"] = True
+            return pinned_audio_return
+
+    return Runner(), captured
+
+
+def _one_image_reference():
+    from core.models.minimax_h3 import h3_references as h3refs
+    from PIL import Image
+    return h3refs.MiniMaxH3Reference(kind="image", image=Image.new("RGB", (8, 8)))
+
+
+@pytest.mark.parametrize("audio_mode", ["regenerate", "preserve_input", "regenerate_range"])
+def test_every_audio_mode_composes_with_references_on_ref2va(audio_mode):
+    """Each of the three `inpaint_video_audio_mode` values must reach
+    `_generate_minimax_h3` with BOTH `references` and the mode's own audio
+    pin wiring intact -- none of them refuses the combination."""
+    runner, captured = _ref2va_audio_runner(pinned_audio_return=torch.zeros(2, 10))
+    clip = _source_clip()
+    params = {"width": 64, "height": 32, "frame_rate": 24.0,
+              "regenerate_start_frame": 40, "regenerate_end_frame": 85,
+              "inpaint_video_audio_mode": audio_mode}
+    reference = _one_image_reference()
+
+    input_audio = None if audio_mode == "regenerate" else b"fake-wav-bytes"
+    frames, _audio, _rate, seed = runner._generate_vidinpaint_minimax_h3(
+        params, clip, 24.0, input_audio, references=(reference,))
+
+    assert seed == 4242 and frames.shape == clip.shape
+    assert captured["references"] == (reference,)
+    assert captured["label"] == "vid_inpaint"
+    if audio_mode == "regenerate":
+        assert captured["input_audio"] is None
+    else:
+        assert captured.get("pinned_audio_prepared") is True
+        assert captured["input_audio"] is not None
+    if audio_mode == "regenerate_range":
+        assert len(captured["pinned_audio_latents"]) > 0
+    else:
+        assert captured["pinned_audio_latents"] == ()
+
+
+@pytest.mark.parametrize("audio_mode", ["regenerate", "preserve_input", "regenerate_range"])
+def test_every_audio_mode_actually_conditions_the_target_audio_rows_on_ref2va(audio_mode):
+    """H1 (audit): `_generate_vidinpaint_minimax_h3` reaching `_generate_minimax_h3`
+    with the right kwargs is NOT enough -- `preserve_input` was previously
+    losing the whole-track pin ONE LAYER DOWN, inside `build_ref2va_packed_
+    layout`, which had no `pin_target_audio` parameter at all. The layout
+    counted only the reference's own audio rows as conditioning, every
+    target audio row stayed FREE, and the clean VAE-encoded track was still
+    substituted into those free rows at the draw site -- so denoise treated
+    a clean encode as noise at t=T, with no crash and no warning.
+
+    This test builds the REAL `build_ref2va_packed_layout` with the SAME
+    `pin_target_audio` / `pinned_audio_latents` values `_generate_minimax_h3`
+    derives from `_generate_vidinpaint_minimax_h3`'s own output
+    (`pin_target_audio = input_audio is not None and not pinned_audio_latents`,
+    mirroring the fl2va call site verbatim, `minimax_h3.py`) and asserts
+    `num_condition_audio_rows` against the TARGET audio grid, not just that
+    some kwarg is non-empty one layer up.
+    """
+    from core.models.minimax_h3 import h3_pipeline_ops as ops
+
+    runner, captured = _ref2va_audio_runner(pinned_audio_return=torch.zeros(2, 10))
+    clip = _source_clip()
+    params = {"width": 64, "height": 32, "frame_rate": 24.0,
+              "regenerate_start_frame": 40, "regenerate_end_frame": 85,
+              "inpaint_video_audio_mode": audio_mode}
+    reference = _one_image_reference()
+    input_audio = None if audio_mode == "regenerate" else b"fake-wav-bytes"
+    runner._generate_vidinpaint_minimax_h3(
+        params, clip, 24.0, input_audio, references=(reference,))
+
+    # The SAME expression `_generate_minimax_h3` uses at both the fl2va and
+    # (post-H1-fix) ref2va call sites.
+    pinned_audio_latents = captured["pinned_audio_latents"]
+    pin_target_audio = captured["input_audio"] is not None and not pinned_audio_latents
+
+    # A small, independent geometry -- num_audio_latents matches the REAL
+    # 124-frame clip's grid (207, MEASURED) so `pinned_audio_latents` indices
+    # from `regenerate_range` (computed against that same grid) stay valid;
+    # the video/image-reference geometry is arbitrary, since this test is
+    # about the AUDIO conditioning count only.
+    num_audio_latents = ops.audio_latent_frames(CLIP, fps=24.0, latents_per_second=40.0)
+    num_target_audio_rows = num_audio_latents * ops.AUDIO_CHANNELS
+
+    layout = ops.build_ref2va_packed_layout(
+        text_token_tags=[1] * 5,
+        reference_blocks=[("image", False)],
+        condition_latent_shapes=[(1, 4, 4)],
+        reference_audio_row_counts=[],
+        num_latent_frames=1, latent_height=4, latent_width=4,
+        num_audio_latents=num_audio_latents,
+        pin_target_audio=pin_target_audio,
+        pinned_audio_latents=tuple(pinned_audio_latents),
+    )
+    num_condition_audio_rows = int(layout["num_condition_audio_rows"])
+
+    if audio_mode == "regenerate":
+        # No pin at all: the image reference has no audio rows of its own,
+        # so nothing conditions the target audio block.
+        assert num_condition_audio_rows == 0
+    elif audio_mode == "preserve_input":
+        # THE BUG: this must cover EVERY target audio row, not 0 of them.
+        assert num_condition_audio_rows == num_target_audio_rows, (
+            "preserve_input's whole-track pin is not counted as conditioning on ref2va -- "
+            "the clean re-encoded track will be substituted into rows the layout still "
+            "calls FREE, which the denoise loop then treats as noise at t=T"
+        )
+    else:  # regenerate_range
+        # A partial pin: strictly between "nothing" and "everything".
+        assert 0 < num_condition_audio_rows < num_target_audio_rows
+        assert num_condition_audio_rows == len(pinned_audio_latents) * ops.AUDIO_CHANNELS
+
+
+def test_regenerate_range_with_references_pins_the_same_preserved_spans():
+    """The `regenerate_range` arithmetic itself (which audio latents get
+    pinned) must be unaffected by references being present -- video
+    references occupy the VIDEO index list's own conditioning prefix, never
+    the audio one, so the audio-pin span computation transfers verbatim from
+    `test_regenerate_range_pins_the_preserved_spans_as_conditioning`."""
+    runner, captured = _ref2va_audio_runner(pinned_audio_return=torch.zeros(2, 10))
+    clip = _source_clip()
+    params = {"width": 64, "height": 32, "frame_rate": 24.0,
+              "regenerate_start_frame": 40, "regenerate_end_frame": 85,
+              "inpaint_video_audio_mode": "regenerate_range"}
+    reference = _one_image_reference()
+
+    runner._generate_vidinpaint_minimax_h3(
+        params, clip, 24.0, b"fake-wav-bytes", references=(reference,))
+
+    plan = _plan(40, 85)
+    num_audio_latents = ops.audio_latent_frames(CLIP, fps=24.0, latents_per_second=40.0)
+    _free, expected_pinned = plan_audio_pin_latents(
+        plan["start_frame"], plan["end_frame"], num_audio_latents,
+        fps=24.0, latents_per_second=40.0)
+    assert tuple(sorted(captured["pinned_audio_latents"])) == expected_pinned
+    assert captured["references"] == (reference,)

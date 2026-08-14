@@ -1425,8 +1425,9 @@ INPAINT_VIDEO_DEFAULTS: Dict[str, Any] = {
     # what carries that exactness into the FILE.
     "video_lossless": False,
     # Mirrors /generate/ref2vid's reference keys verbatim (same "max"/"match"
-    # meaning, same filename-recording convention). A request that actually
-    # sends one is refused -- see `resolve_minimax_h3_inpaint_reference_gate`.
+    # meaning, same filename-recording convention). Allowed on `ref2va`,
+    # refused on `fl2va`/`hybrid` -- see
+    # `resolve_minimax_h3_inpaint_reference_gate`.
     "reference_image_size": "max",
     "reference_images": None,
     "reference_videos": None,

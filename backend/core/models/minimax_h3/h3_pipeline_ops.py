@@ -733,6 +733,7 @@ def build_ref2va_packed_layout(
     patch_size: Tuple[int, int, int] = (1, 2, 2),
     keyframe_anchors: Sequence["int | str"] = (),
     pinned_video_frames: Sequence[int] = (),
+    pin_target_audio: bool = False,
     pinned_audio_latents: Sequence[int] = (),
     device: Optional[torch.device | str] = None,
 ) -> Dict[str, Any]:
@@ -814,18 +815,34 @@ def build_ref2va_packed_layout(
             applying ``video_row_order``; indexing ``video_rows[video_row_
             order]`` directly, without that offset, would read a reference
             row as if it were a clip row.
-        pinned_audio_latents: the mirrored audio pin, permuted only within the
-            TARGET audio block (``[audio_start, video_start)``), same channel-
-            major addressing as :func:`build_packed_layout`
+        pin_target_audio: the WHOLE-TRACK special case, same flag and same
+            semantics as :func:`build_packed_layout`'s own ``pin_target_audio``
+            (``/generate/inpaint/video``'s ``preserve_input`` mode): every
+            latent of the TARGET audio block named, in order, so the clip's
+            own re-encoded track becomes clean conditioning instead of a free
+            row the loop denoises. Implemented by expanding to
+            ``pinned_audio_latents = range(num_audio_latents)`` before that
+            parameter's own branch runs -- so it goes through the identical
+            permutation/count machinery a partial pin does (an identity
+            permutation of an already-ascending block), not a second code
+            path. Mutually exclusive with ``pinned_audio_latents`` (passing
+            both raises, same rule as :func:`build_packed_layout`). A
+            reference's own audio rows (``reference_audio_row_counts``) are
+            untouched either way -- this flag only ever reaches the TARGET
+            block.
+        pinned_audio_latents: the mirrored PARTIAL audio pin, permuted only
+            within the TARGET audio block (``[audio_start, video_start)``),
+            same channel- major addressing as :func:`build_packed_layout`
             (:func:`audio_pin_row_indices`). A reference's own audio rows
             (``reference_audio_row_counts``) are a disjoint, always-clean block
             this parameter never touches. Also unmeasured; the decode site
             uses the same ``num_condition_audio_rows - num_pinned_audio_rows``
             offset before ``audio_row_order``.
 
-    Bit-identity: both new parameters empty (the default) reproduces the
-    pre-extension output row for row --
-    ``backend/tests/minimax_h3_inpaint_reference_layout_test.py`` pins that.
+    Bit-identity: every new parameter at its default (including
+    ``pin_target_audio=False``) reproduces the pre-extension output row for
+    row -- ``backend/tests/minimax_h3_inpaint_reference_layout_test.py`` pins
+    that.
     """
     _, patch_h, patch_w = patch_size
     text_tags = torch.as_tensor(list(text_token_tags), dtype=torch.long)
@@ -943,6 +960,18 @@ def build_ref2va_packed_layout(
         video_row_order = torch.argsort(video_row_permutation)
         target_video_indices = target_video_indices[video_row_permutation]
         num_pinned_video_rows = len(pinned) * rows_per_frame
+
+    if pin_target_audio and len(pinned_audio_latents):
+        raise ValueError(
+            "MiniMax-H3 cannot combine pin_target_audio with pinned_audio_latents: pass the "
+            "whole-track pin via pin_target_audio=True, or a subset via pinned_audio_latents, "
+            "not both.")
+    if pin_target_audio:
+        # Same whole-track special case as build_packed_layout: every latent
+        # named, ascending -- an IDENTITY permutation of an already-ascending
+        # `target_audio_indices`, so this goes through the exact same branch
+        # below rather than a second code path.
+        pinned_audio_latents = tuple(range(num_audio_latents))
 
     target_audio_indices = torch.arange(audio_start, video_start)
     audio_row_permutation: Optional[torch.Tensor] = None

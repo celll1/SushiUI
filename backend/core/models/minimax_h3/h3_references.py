@@ -701,17 +701,24 @@ def build_ref2va_presentation(
     relative order within each modality and Qwen3-VL fills the n-th pad RUN of a
     modality with the n-th entry of that modality's batch.
     """
-    if processor is None:
+    # L9 (audit): the processor is only ever touched below to turn an IMAGE
+    # or VIDEO reference into vision tensors (`image_processor`/
+    # `video_processor`) -- an audio-only reference set never reaches either
+    # call, so requiring the processor for it turns a legal audio-only
+    # request (the owner's own use case: a reference audio clip steering the
+    # regenerated span) into a 500 whenever `official/processor/` happens to
+    # be missing, for a tree this request never needed.
+    if processor is None and any(reference.kind in ("image", "video") for reference in references):
         raise RuntimeError(
             "MiniMax-H3 ref2va needs the Qwen3-VL processor (official/processor/): it is what turns "
             "a reference image or video into the vision tensors the conditioner reads.")
 
-    merge_size = processor.image_processor.merge_size ** 2
     vision_inputs: Dict[str, torch.Tensor] = {}
 
     image_token_counts: List[int] = []
     images = [reference.image for reference in references if reference.kind == "image"]
     if images:
+        merge_size = processor.image_processor.merge_size ** 2
         features = processor.image_processor(images=images, return_tensors="pt")
         vision_inputs["pixel_values"] = features["pixel_values"]
         vision_inputs["image_grid_thw"] = features["image_grid_thw"]
@@ -721,6 +728,11 @@ def build_ref2va_presentation(
     video_timestamps: List[List[float]] = []
     videos = [reference for reference in references if reference.kind == "video"]
     if videos:
+        # Same `image_processor.merge_size` the image branch reads -- Qwen3-VL
+        # exposes one merge size shared by both towers, so this is not a
+        # second value, only a second read of it for a branch that may run
+        # without the image branch above it.
+        merge_size = processor.image_processor.merge_size ** 2
         temporal_patch = processor.video_processor.temporal_patch_size
         sampled = [
             sample_reference_video_blocks(

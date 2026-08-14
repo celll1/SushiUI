@@ -4,7 +4,7 @@ Generation endpoint shared utilities
 
 このモジュールは、txt2img/img2img/inpaintエンドポイント間のコード重複を削減します。
 """
-from typing import List, Dict, Any, Optional, Callable, Tuple
+from typing import List, Dict, Any, Callable, Mapping, Optional, Tuple
 from PIL import Image
 import base64
 from io import BytesIO
@@ -1908,7 +1908,7 @@ def resolve_minimax_h3_outpaint_reference_gate(
       layout places every reference before the target span on the rotary
       clock, which is a continuation order a backward extend contradicts).
     * ``hybrid`` (an fl2va base carrying ref2va AdaLN blocks) refuses every
-      row, with or without ``reference_images``: nothing about its generation
+      row, with or without ``reference_images``: only its text-to-video
       behaviour is measured. Named here rather than left to the clause below,
       which would stop refusing it the moment variant strings are normalised
       differently.
@@ -1956,11 +1956,11 @@ def resolve_minimax_h3_outpaint_reference_gate(
     if variant == "hybrid":
         raise ValidationError(
             "The loaded MiniMax-H3 transformer is the hybrid variant",
-            detail="A hybrid transformer is an fl2va base carrying ref2va AdaLN blocks. No "
-                   "generation on any endpoint has been measured on that combination, so it is "
-                   "loadable and inspectable but does not generate -- including the extend this "
-                   "endpoint performs, with or without reference_images. Load the fl2va or "
-                   "ref2va checkpoint.",
+            detail="A hybrid transformer is an fl2va base carrying ref2va AdaLN blocks. It was "
+                   "compared against both partitions on a prompt-only request alone, so it "
+                   "generates on /generate/txt2vid and nowhere else -- the extend this endpoint "
+                   "performs, with or without reference_images, is unmeasured on it. Load the "
+                   "fl2va or ref2va checkpoint.",
         )
     if has_reference_images:
         raise ValidationError(
@@ -1970,6 +1970,53 @@ def resolve_minimax_h3_outpaint_reference_gate(
                    "mismatch cannot be detected from the weights and running this would silently "
                    "produce a bad video rather than fail.",
         )
+
+
+MINIMAX_H3_HYBRID_WARNING_CODE = "minimax_h3_hybrid_experimental"
+
+
+def minimax_h3_hybrid_release_warning(model_info: Optional[Mapping[str, Any]]) -> Optional[str]:
+    """The ``warnings[]`` text a hybrid text-to-video generation carries.
+
+    None unless the loaded transformer is a merged one. Text-to-video is the
+    only workflow released for a hybrid (design section 5.2); every other
+    surface still refuses it, so this states the recipe that produced the model
+    and the exact scope of the comparison that released this one -- section 9.3
+    records the arms and the numbers.
+
+    Never raises and never prints a ``None``: it runs inside the generation's
+    ``try``, so a provenance dict of an unexpected shape must degrade to the
+    generic sentence rather than turn a valid request into a 500. The recipe
+    sentence is written for ``block_range_adaln``, the only preset that exists;
+    a second preset gets the generic sentence until someone writes its own.
+    """
+    info = model_info or {}
+    if str(info.get("variant") or "").lower() != "hybrid":
+        return None
+    built = "This transformer is merged from two checkpoints."
+    provenance = info.get("hybrid")
+    if isinstance(provenance, Mapping) and provenance:
+        recipe = provenance.get("hybrid_recipe")
+        recipe = recipe if isinstance(recipe, Mapping) else {}
+        start, end = recipe.get("block_range_start"), recipe.get("block_range_end")
+        base_file, overlay_file = provenance.get("base_file"), provenance.get("overlay_file")
+        if (recipe.get("preset") == "block_range_adaln"
+                and None not in (start, end, base_file, overlay_file)):
+            final_adaln = (" The final-layer AdaLN projection is taken from the overlay too."
+                           if recipe.get("final_adaln_from_overlay") else "")
+            built = (f"Blocks {start}..{end} of {base_file} take their AdaLN projection from "
+                     f"{overlay_file}; every other tensor is the base's.{final_adaln}")
+        elif base_file and overlay_file:
+            built = f"This transformer is {base_file} merged with {overlay_file}."
+    return (
+        f"{built} Text-to-video is the only workflow released for a merged checkpoint. The "
+        f"comparison it was released on covered plain text-to-video at 672x384, 124 frames, 20 "
+        f"steps, one prompt and one seed, and nothing else: keyframe conditioning, temporal "
+        f"inpaint, reference rows, reference outpaint, chained continuation and every LoRA are "
+        f"refused on this checkpoint (no LoRA metadata names an AdaLN recipe, so none can state "
+        f"it was trained for this merge). The audio track was checked for finite values, shape "
+        f"and a non-silent envelope; its synchronisation with the video was not measured."
+    )
 
 
 def resolve_minimax_h3_inpaint_reference_gate(
@@ -2004,7 +2051,8 @@ def resolve_minimax_h3_inpaint_reference_gate(
     * ``fl2va`` serves every request; refuses any reference outright.
     * ``ref2va`` serves every request, with or without references -- the
       shape is unmeasured, not refused.
-    * ``hybrid`` refuses every request -- ungenerated on any endpoint.
+    * ``hybrid`` refuses every request -- text-to-video is the only workflow
+      released for a merged checkpoint.
     * An unidentified variant refuses only when a reference is present.
     * An audio-only reference set is refused unless ``has_vision_conditioning``
       -- a temporal-inpaint pin or keyframe anchor already supplying vision
@@ -2066,10 +2114,11 @@ def resolve_minimax_h3_inpaint_reference_gate(
     if variant == "hybrid":
         raise ValidationError(
             "The loaded MiniMax-H3 transformer is the hybrid variant",
-            detail="A hybrid transformer is an fl2va base carrying ref2va AdaLN blocks. No "
-                   "generation on any endpoint has been measured on that combination, so it is "
-                   "loadable and inspectable but does not generate -- including temporal inpaint, "
-                   "with or without references. Load the fl2va checkpoint for temporal inpaint.",
+            detail="A hybrid transformer is an fl2va base carrying ref2va AdaLN blocks. It was "
+                   "compared against both partitions on a prompt-only request alone, so it "
+                   "generates on /generate/txt2vid and nowhere else -- temporal inpaint, with or "
+                   "without references, is unmeasured on it. Load the fl2va checkpoint for "
+                   "temporal inpaint.",
         )
     if has_references:
         raise ValidationError(

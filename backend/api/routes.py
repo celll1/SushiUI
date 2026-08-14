@@ -2764,19 +2764,22 @@ async def generate_txt2vid(
         )
     # ---- Partition gate. An allowlist over NAMED variants, as /generate/img2vid
     # and /generate/inpaint/video are, except that BOTH released partitions serve
-    # a prompt-only request here. An unidentified variant keeps passing (see
-    # those gates). This endpoint had no variant gate at all, which would let a
-    # variant added later reach generation with nothing measured about it. ----
+    # a prompt-only request here, and so does `hybrid`: this is the one workflow
+    # the A/B of design section 9.3 covered, and the only one released for a
+    # merged checkpoint. An unidentified variant keeps passing (see those
+    # gates). A recipe-shaped label is NOT in the allowlist -- it would name a
+    # merge this comparison did not run. ----
+    _h3_hybrid = False
     if getattr(pipeline_manager, "is_minimax_h3_model", False):
         _h3_variant = ((pipeline_manager.current_model_info or {}).get("variant") or "").lower()
-        if _h3_variant not in ("", "fl2va", "ref2va"):
+        _h3_hybrid = _h3_variant == "hybrid"
+        if _h3_variant not in ("", "fl2va", "ref2va", "hybrid"):
             raise CustomValidationError(
                 f"The loaded MiniMax-H3 transformer is the {_h3_variant} variant",
                 detail=f"The two released partitions, `fl2va` and `ref2va`, both serve a "
-                       f"prompt-only request. Nothing has been measured about what the "
-                       f"{_h3_variant} variant generates -- a hybrid transformer, for instance, is "
-                       f"an fl2va base carrying ref2va AdaLN blocks, which is loadable and "
-                       f"inspectable but generates on no endpoint. Load "
+                       f"prompt-only request, and so does a `hybrid` transformer (an fl2va base "
+                       f"carrying ref2va AdaLN blocks over a block range). Nothing has been "
+                       f"measured about what the {_h3_variant} variant generates. Load "
                        f"diffusion_models/minimax_h3_fl2va_pruned_fp8_scaled.safetensors or "
                        f"diffusion_models/minimax_h3_ref2va_pruned_fp8_scaled.safetensors.",
             )
@@ -2807,6 +2810,18 @@ async def generate_txt2vid(
     _gen_id = start_generation("txt2vid")
     try:
         pipeline_manager.reset_cancel_flag()
+
+        # Experimental tier (design section 5.1): the merged checkpoint passes
+        # the gate above, and the request says on what evidence. Inside the run
+        # because `add_warning` needs the generation context.
+        if _h3_hybrid:
+            from api.generation_status import add_warning
+            from api.generation_utils import (
+                MINIMAX_H3_HYBRID_WARNING_CODE, minimax_h3_hybrid_release_warning)
+            _hybrid_warning = minimax_h3_hybrid_release_warning(
+                pipeline_manager.current_model_info)
+            if _hybrid_warning:
+                add_warning(_hybrid_warning, code=MINIMAX_H3_HYBRID_WARNING_CODE)
 
         # Spec-driven geometry validation (TemporalSpec): a hard 400 for the
         # canvas and, on an arch whose spec says so, a snap-with-warning for the
@@ -3851,8 +3866,9 @@ async def generate_img2vid(
                     f"Keyframe conditioning through this endpoint is offered on the `fl2va` "
                     f"partition. Nothing has been measured about how the {_h3_variant} variant "
                     f"reads a keyframe anchor -- a hybrid transformer, for instance, is an fl2va "
-                    f"base carrying ref2va AdaLN blocks, which is loadable and inspectable but "
-                    f"generates on no endpoint -- and the partitions are otherwise "
+                    f"base carrying ref2va AdaLN blocks, and was compared against both partitions "
+                    f"on a prompt-only request alone, so it generates on /generate/txt2vid and "
+                    f"nowhere else -- and the partitions are otherwise "
                     f"indistinguishable, so this request is refused rather than run. Load "
                     f"diffusion_models/minimax_h3_fl2va_pruned_fp8_scaled.safetensors."
                 ),

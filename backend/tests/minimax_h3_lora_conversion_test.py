@@ -381,6 +381,38 @@ def test_variant_guard_warns_on_ambiguous_filename_fallback():
     assert warnings and warnings[0][1] == "minimax_h3_lora_variant_ambiguous"
 
 
+def test_variant_guard_refuses_every_lora_on_a_merged_checkpoint():
+    """Design section 5.3. C7 released text-to-video on a merged checkpoint,
+    which made this path reachable for the first time; a LoRA on top of it is a
+    second unmeasured variable, and no LoRA metadata names an AdaLN recipe, so
+    none can declare it was trained for this merge.
+
+    THE MUTANT THIS EXISTS FOR: relying on the declared-mismatch branch alone.
+    That one already refuses a LoRA tagged `fl2va`; the UNTAGGED case (the
+    common one) fell through to a warning and loaded.
+    """
+    warnings = []
+
+    def warn(message, code):
+        warnings.append((message, code))
+
+    for metadata, name in (
+        ({}, "some_lora.safetensors"),                                   # untagged
+        ({}, "minimax_h3_fl2va_style.safetensors"),                      # filename only
+        ({"base_model": "minimax_h3_fl2va_pruned_bf16"}, "l.safetensors"),   # declared fl2va
+        ({"base_model": "minimax_h3_ref2va_pruned_bf16"}, "l.safetensors"),  # declared ref2va
+        ({"base_model": "something_unrecognised"}, "l.safetensors"),     # declared, no token
+    ):
+        with pytest.raises(ValueError, match="hybrid"):
+            lora_mod.check_variant_compatibility(metadata, name, "hybrid", warn)
+    assert not warnings, "a refusal is a raise, not a warning"
+
+    # NEGATIVE CONTROL: the released partitions keep the pre-C7 behaviour --
+    # an untagged LoRA still loads there, with a warning, and is not refused.
+    lora_mod.check_variant_compatibility({}, "some_lora.safetensors", "fl2va", warn)
+    assert [code for _message, code in warnings] == ["minimax_h3_lora_variant_unknown"]
+
+
 # ---------------------------------------------------------------------------
 # 6. Rank variation across blocks (block-swap warning trigger)
 # ---------------------------------------------------------------------------

@@ -324,6 +324,17 @@ hybrid_recipe: {
 - **H3**: reference rows、`ref2vid`、reference outpaint を専用の実測基準に通過した後に解禁。
 - temporal inpaint、chain、outpaint の各組み合わせは、既存の `fl2va`/`ref2va` の測定結果を自動継承せず、必要な shape ごとに判定する。
 
+**実際に出荷した範囲（C7、2026-08-14）**: H1 の行より**狭い**。§9.3.1 の A/B は plain text-to-video だけを走らせたため、解禁したのも `/generate/txt2vid` だけである。keyframe は H1 の文面に含まれているが**測定していないので解禁していない**。
+
+| tier | 文面 | C7 で出荷したもの |
+|---|---|---|
+| H0 | load/inspect のみ | 完了（C1） |
+| H1 | standard prompt **/ keyframe**、`warnings[]` 付き | **txt2vid のみ**。keyframe は img2vid ゲートで拒否のまま。`warnings[]` は `minimax_h3_hybrid_experimental` |
+| H2 | keyframe / audio conditioning、量子化形式ごとの再現性 | 未着手。fp8_scaled の再現性のみ確認（§9.3.1 G3）。int8_convrot / w4a8_mixed は未測定 |
+| H3 | reference rows / `ref2vid` / reference outpaint | 未着手。拒否のまま |
+
+chain（`CHAIN_CONTEXT["minimax_h3"]["variants"]["hybrid"]`）も未測定であり、continuation segment は `/generate/outpaint/video` に行くため、そのゲートで拒否される。§11 の `chain_supports_exact_prefix` に関する注意はそのまま有効である。
+
 ### 5.3 LoRA
 
 `fl2va` と `ref2va` は key/shape が同じため、LoRA の内容だけでは wrong-variant を検出できない。hybrid ではさらにどの AdaLN recipe を前提にしたかが問題になる。
@@ -333,6 +344,7 @@ hybrid_recipe: {
 MVP で新たに必要なのは次の点のみ。
 
 - metadata に variant 宣言が**ない** LoRA は現在 warning のみで通過する。hybrid では hard refusal、または明示的な experimental override + warning にする。
+  **実装済み（C7）**: hard refusal を選択した。`check_variant_compatibility` の先頭に `current == "hybrid"` の分岐を置き、宣言の有無にかかわらず**全 LoRA を拒否**する。C7 以前はこの経路自体が到達不能（生成が閉じていた）であり、hybrid は新しい variant なので既存ワークフローは壊れない。拒否は既存の declared-mismatch と同じ機構（`ValueError` → 当該 LoRA をスキップし `minimax_h3_lora_load_failed` warning）に乗る。recipe fingerprint が入るまで、「この merge 向けに学習した」と宣言する手段が LoRA metadata に存在しないため。
 - hybrid 用の recipe fingerprint を持つ LoRA metadata を将来追加する。
 - LoRA の QKV/SwiGLU 変換は既存の `minimax_h3_lora.py` を再利用し、hybrid reader の責務に混ぜない。
 - **禁止事項**: `check_variant_compatibility` に `base_variant`（= `fl2va`）を渡してはならない。渡すと宣言済み LoRA への既存の保護が黙って無効化される。
@@ -529,6 +541,41 @@ MVP で扱わないもの:
 - LoRA なし/明示的に許可した LoRA の挙動
 
 受入基準は実測前に固定する。少なくとも「既存 base-only の standard workflow を壊さない」「hybrid load が quantization guard を迂回しない」「失敗時に旧 model を保持する」「未検証 reference workflow が route gate をすり抜けない」を必須とする。reference capability の解禁基準は、upstream の主観評価をそのまま採用せず、SushiUI の実機 A/B 結果で決める。
+
+### 9.3.1 実測結果（2026-08-14、txt2vid のみ）
+
+実チェックポイント、fp8_scaled、seed 1234、672×384、124 frames、20 steps、同一プロンプト（blacksmith / anvil / sparks + bellows）。TE は既定の `qwen3vl_32b_minimax_h3_int8_convrot.safetensors`。生成物とメタデータは `tmp/h3_hybrid_ab/`（arm ごとの `.json` / `.mp4` / `.wav` / 抜き出しフレーム）。
+
+| arm | variant / recipe | gen 秒 | denoise peak VRAM | peak host RSS | frames sha256 (先頭) | audio RMS |
+|---|---|---|---|---|---|---|
+| 1 | `fl2va` base-only | 182.7 | 21.25 GB | 59.21 GB | `21187f82` | 0.0206 |
+| 2 | `ref2va` base-only | 187.4 | 21.25 GB | 58.81 GB | `1c40f3d5` | 0.0399 |
+| 3 | hybrid `25..49` | 187.5 | 21.25 GB | 58.61 GB | `3988d90d` | 0.0221 |
+| 3b | hybrid `25..49`（arm 3 の再実行） | 184.5 | 21.25 GB | 57.75 GB | `3988d90d` | 0.0221 |
+| 4 | hybrid `0..49` | 183.2 | 21.25 GB | 58.76 GB | `464a325c` | 0.0287 |
+| 5 | hybrid `25..49` + final AdaLN | 183.3 | 21.25 GB | 57.98 GB | `725f2862` | 0.0176 |
+
+事前登録した 4 つのゲートの判定:
+
+- **G1（生成が成立する）合格**: 6 arm すべてで frames `(124, 384, 672, 3) uint8`、audio `(2, 165333) float32 @ 32 kHz`、全値有限、decode 成功。
+- **G2（hybrid が base-only を超えない）合格**: denoise の peak VRAM は 6 arm すべて **21.25 GB で同一**。peak host RSS は hybrid 57.75〜58.76 GB に対し base-only 58.81〜59.21 GB で、hybrid が上回った arm はない。§4.6.1/§4.6.2 の「overlay の RSS コストはゼロ」が生成経路でも保たれた。
+- **G3（再現性）合格**: arm 3b は arm 3 と **bitwise 同一**。frames の max abs diff は 95,993,856 値すべてで 0、audio の max abs diff は 0.0（sha256 も一致）。ただしこれは **fp8_scaled のみ**の結果であり、int8_convrot と w4a8_mixed では測っていない。
+- **G4（degeneracy なし）合格**: NaN/Inf なし、all-black frame 0、フレーム間差分は 4.84〜5.74（静止していない）、audio は非無音で per-second RMS も全区間で 0 でない。
+
+**品質判定**: ユーザーが 6 本すべてを視聴し、「いずれにも顕著な破綻はない」と判断した。これは人間の判断であり、スカラー指標ではない。指標で hybrid の品質を主張してはならない。
+
+**測定していないもの（したがって拒否のまま）**:
+
+- keyframe binding（img2vid / `/generate/img2vid`）
+- reference rows（`/generate/ref2vid`）と reference outpaint
+- temporal inpaint
+- chain continuation（segment 2 以降は `/generate/outpaint/video`）
+- **audio と video の同期**。audio については finite 値・shape・非無音・envelope しか見ていない。
+- 672×384 / 124 frames / 20 steps 以外の解像度・長さ・step 数
+- int8_convrot と w4a8_mixed での再現性
+- LoRA との併用。§5.3 のとおり C7 で**全 LoRA を hard refusal** にした（`Txt2VidRequest` は `loras` を受け取り、H3 backend はそれを適用するため、txt2vid を開けた時点でこの経路が初めて到達可能になった）。release warning にも LoRA を明記している。
+
+C7 で解禁したのは `/generate/txt2vid` のみで、生成ごとに `minimax_h3_hybrid_experimental` の `warnings[]` エントリが付き、recipe とこの測定範囲を述べる。
 
 ## 10. 段階的な実装手順（コミット単位）
 

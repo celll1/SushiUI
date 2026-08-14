@@ -1764,10 +1764,9 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
     const videoMode = modality.isVideo;
     const audioMode = modality.isAudio;
 
-    if (videoMode && modality.modelInfo?.type === "minimax_h3" && modality.modelInfo?.variant === "hybrid") {
-      alert("A merged MiniMax-H3 checkpoint loads and can be inspected, but every generation endpoint refuses it: the A/B measurement that would release generation for it has not been run.");
-      return;
-    }
+    // No hybrid guard here: text-to-video is the one workflow released for a
+    // merged MiniMax-H3 checkpoint, and this panel's video mode is that
+    // request. The chain continuation is not -- see handleVideoChainStart.
 
     // Import wildcard replacement function dynamically
     const { replaceWildcardsInPrompt } = await import("@/utils/wildcardStorage");
@@ -1956,6 +1955,17 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         ? (snapUpValidVideoFrameCount(archCapabilities, loadedArch, chainSegmentFrames) ?? chainSegmentFrames)
         : null;
       const chainPlan = planVideoChain(archCapabilities, loadedArch, params.num_frames ?? 0, snappedSegmentFrames);
+      // A merged checkpoint is released for ONE text-to-video request. Refused
+      // before the dialog opens, not inside it: every continuation segment goes
+      // to /generate/outpaint/video, which refuses a hybrid, and the planner
+      // this dialog calls answers with a variant list that no longer describes
+      // the model.
+      if (chainPlan != null && modality.modelInfo?.variant === "hybrid") {
+        const hybridCap = snapUpValidVideoFrameCount(archCapabilities, loadedArch, chainPlan.capFrames)
+          ?? chainPlan.capFrames;
+        alert(`A merged MiniMax-H3 checkpoint is released for a single text-to-video request, and chained continuation is refused. Set the frame count to ${hybridCap} or fewer.`);
+        return;
+      }
       if (chainPlan != null) {
         setVideoChainPrompt({
           videoParams: fullVideoParams,

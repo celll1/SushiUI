@@ -140,8 +140,9 @@ export default function ModelSelector({
       alert(
         (isReload ? "Model reloaded successfully!" : "Model loaded successfully!") +
           (merged
-            ? `\n\nMerged checkpoint: ${merged}\nEvery generation endpoint refuses a merged ` +
-              "checkpoint; it can be loaded and inspected only."
+            ? `\n\nMerged checkpoint: ${merged}\nText-to-video is the only workflow released ` +
+              "for a merged checkpoint. Keyframe conditioning, temporal inpaint, reference " +
+              "rows, reference outpaint and chained continuation are refused."
             : "")
       );
     } catch (error: any) {
@@ -224,9 +225,10 @@ export default function ModelSelector({
               <div className="mt-1.5 space-y-1 text-[11px] leading-relaxed">
                 <p className="text-gray-300">{loadedHybridSummary}</p>
                 <p className="text-amber-300">
-                  Every generation endpoint refuses a merged checkpoint, so a generation request
-                  from any panel returns an error until the A/B measurement releases it. Loading
-                  and inspecting the model works.
+                  Text-to-video is the only workflow released for a merged checkpoint, and every
+                  such generation carries a warning naming the recipe and what the comparison
+                  covered. Keyframe conditioning, temporal inpaint, reference rows, reference
+                  outpaint and chained continuation return an error until each is measured.
                 </p>
               </div>
             )}
@@ -393,7 +395,7 @@ export default function ModelSelector({
             </div>
             {loadedHybridSummary && (
               <p className="mt-1 text-right text-[11px] text-amber-300">
-                merged: {loadedHybridSummary} — generation endpoints refuse it
+                merged: {loadedHybridSummary} — text-to-video only
               </p>
             )}
           </div>

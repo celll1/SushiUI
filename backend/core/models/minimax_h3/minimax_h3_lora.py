@@ -305,10 +305,29 @@ def check_variant_compatibility(
     hard refusal. When metadata carries no variant (real ``F1``'s case), fall
     back to a filename substring check and only WARN -- a filename is not
     proof, but it is the only signal left.
+
+    A ``hybrid`` checkpoint refuses EVERY LoRA (design section 5.3). The
+    declared case is already a mismatch; the undeclared one would otherwise
+    fall through to a warning, and there is nothing it could have declared --
+    no LoRA metadata names an AdaLN recipe, so "trained for this merge" is
+    unstatable. C7 released text-to-video on the merge itself and measured no
+    LoRA on top of it.
     """
     current = (current_variant or "").lower()
     base_model = str(metadata.get("base_model", "") or "")
     name = Path(lora_path).name
+
+    if current == "hybrid":
+        raise ValueError(
+            f"LoRA '{lora_path}'"
+            + (f" declares base_model={base_model!r} and" if base_model else "")
+            + f" is being applied to a merged (hybrid) MiniMax-H3 checkpoint. A hybrid is an "
+              f"fl2va base carrying ref2va AdaLN blocks over a block range; no LoRA metadata "
+              f"names an AdaLN recipe, so no LoRA can state it was trained for this merge, and "
+              f"the weights cannot show it either -- every H3 partition shares its keys and "
+              f"shapes. Only text-to-video is released on a merged checkpoint, without a LoRA. "
+              f"Refusing to load this LoRA."
+        )
 
     if base_model:
         declared = _detect_variant_token(base_model)

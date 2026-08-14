@@ -84,8 +84,12 @@ Two load-time gates, both cheap and both required because the configs were
 written by newer libraries:
 
 - `language_model/config.json` was written by `transformers 5.13.0.dev0` and uses
-  the `rope_parameters` form. After load, assert `config.rope_theta == 1e6`; a
-  silent rope fallback degrades output without erroring.
+  the `rope_parameters` form. Measured on the installed `transformers 5.1.0`: the
+  config parses correctly and the rotary base comes out at 1e6 (recovered
+  999997.4 from the fp32 `inv_freq`), so there is no silent fallback — but
+  `config.rope_theta` is **`None`**, because the value now lives in
+  `config.rope_parameters["rope_theta"]`. The load gate must read that field;
+  a gate written against `rope_theta` would misfire on a healthy load.
 - Assert the component class/shape census matches the tables below rather than
   trusting `from_pretrained` to have populated everything.
 
@@ -350,7 +354,8 @@ from phase 1 doubles as a training-data artifact for the flow stage.
 - Snapshot revision matches `manifest.json`; every LFS file's size and SHA-256
   match; no pointer files remain. *(Met.)*
 - Vendored code carries its Apache-2.0 header and records the upstream commit.
-- `config.rope_theta == 1e6` after loading the language model.
+- `config.rope_parameters["rope_theta"] == 1e6` after loading the language model
+  (not `config.rope_theta`, which is `None` on transformers 5.1).
 - Component class and tensor-shape census matches the table above.
 - Loading Music3 does not select the ACE-Step or H3 path, and vice versa.
 - A short deterministic smoke generation (10–15 s) produces finite, non-silent

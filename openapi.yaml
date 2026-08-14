@@ -419,6 +419,19 @@ paths:
               schema:
                 type: object
                 additionalProperties: true
+  /schema/prompt-assist-music-defaults:
+    get:
+      tags: [Schema]
+      summary: Get MiniMax Music 3 caption-rewriter defaults
+      operationId: getPromptAssistMusicDefaults
+      responses:
+        '200':
+          description: Provider, inference, and cache defaults for the caption rewriter
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
   /schema/training-defaults:
     get:
       summary: Get default parameter values for LoRA / Full-FT training
@@ -4178,6 +4191,56 @@ paths:
       tags: [prompt-assist]
       summary: Clear the MiniMax-H3 prompt rewrite cache
       operationId: clearPromptAssistCache
+      responses:
+        '200':
+          description: Cache cleared
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  deleted:
+                    type: integer
+
+  /prompt-assist/music/transform:
+    post:
+      tags: [prompt-assist]
+      summary: Rewrite a caption for MiniMax Music 3 with a local LLM
+      description: |
+        Expands a short music caption into a Structured Caption with exactly
+        three headings, in order: Global Metadata, Vocal Details, Arrangement.
+        Lyrics are context only and are never rewritten or quoted. This is a
+        sibling of `/prompt-assist/transform` (MiniMax-H3): it shares the same
+        local-LLM provider/cache/transport layer but a different contract, so
+        it has its own cache and its own validator. Model listing is shared
+        unchanged — use `POST /prompt-assist/models` for both. Checks the
+        persistent cache before contacting the provider; a cache miss loads
+        the selected local model for this request and releases it in a
+        finally block.
+      operationId: transformMiniMaxMusic3Caption
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MusicPromptAssistTransformRequest'
+      responses:
+        '200':
+          description: Rewritten Structured Caption, validation warnings, and cache status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PromptAssistResponse'
+        '400':
+          description: Invalid request, provider failure, or invalid LLM response
+
+  /prompt-assist/music/cache/clear:
+    post:
+      tags: [prompt-assist]
+      summary: Clear the MiniMax Music 3 caption rewrite cache
+      operationId: clearMusicPromptAssistCache
       responses:
         '200':
           description: Cache cleared
@@ -8429,6 +8492,72 @@ components:
           type: string
         model:
           type: string
+
+    MusicPromptAssistTransformRequest:
+      type: object
+      required: [caption]
+      description: |
+        Sibling of PromptAssistTransformRequest for the MiniMax Music 3
+        caption rewriter. No mode, duration, or reference tokens — a music
+        caption has none of those concepts. `caption` is the short input
+        description; the response's `prompt` field is the rewritten
+        Structured Caption, meant to replace the Music 3 `prompt` (caption)
+        field on txt2aud, not the `lyrics` field.
+      properties:
+        caption:
+          type: string
+          example: a dreamy synth pop track
+        lyrics:
+          type: string
+          default: ""
+          description: Context only. Never rewritten, never quoted in the output.
+        constraints:
+          type: string
+          default: ""
+          example: "no drums"
+        provider:
+          type: string
+          enum: [lm_studio, ollama]
+          default: lm_studio
+        base_url:
+          type: string
+          default: ""
+          description: Empty selects the provider default; only loopback URLs are accepted.
+        model:
+          type: string
+          default: ""
+        api_key:
+          type: string
+          default: ""
+          writeOnly: true
+        temperature:
+          type: number
+          minimum: 0
+          maximum: 1
+          default: 0.2
+        top_p:
+          type: number
+          exclusiveMinimum: 0
+          maximum: 1
+          default: 0.9
+        max_output_tokens:
+          type: integer
+          minimum: 128
+          maximum: 8192
+          default: 3072
+        context_length:
+          type: integer
+          minimum: 1024
+          maximum: 262144
+          default: 8192
+        timeout_seconds:
+          type: integer
+          minimum: 10
+          maximum: 1800
+          default: 300
+        force_refresh:
+          type: boolean
+          default: false
 
     QuantizedExportRequest:
       type: object

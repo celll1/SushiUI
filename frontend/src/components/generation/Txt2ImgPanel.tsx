@@ -33,6 +33,7 @@ import GenerationQueue from "../common/GenerationQueue";
 import GenerationLeadGrid from "../common/GenerationLeadGrid";
 import InlineHelp from "../common/InlineHelp";
 import H3PromptAssist from "../common/H3PromptAssist";
+import MusicCaptionAssist from "../common/MusicCaptionAssist";
 import SendToStudioButton from "../studio/SendToStudioButton";
 import ResizableColumns, {
   GENERATION_PREVIEW_QUEUE_SPLIT_KEY,
@@ -4221,6 +4222,13 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         value={params.prompt}
         onChange={(e) => setParams({ ...params, prompt: e.target.value })}
       />
+      {isMusic3 && (
+        <MusicCaptionAssist
+          caption={params.prompt}
+          lyrics={params.lyrics ?? ""}
+          onApply={(caption) => setParams((previous) => ({ ...previous, prompt: caption }))}
+        />
+      )}
       <Textarea
         label="Lyrics"
         placeholder={isMusic3 ? "Required. Instrumental tracks: describe them in Caption instead." : "Enter lyrics (optional)..."}

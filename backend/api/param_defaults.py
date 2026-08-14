@@ -42,6 +42,42 @@ PROMPT_ASSIST_DEFAULTS: Dict[str, Any] = {
 }
 
 # ---------------------------------------------------------------------------
+# MiniMax Music 3 caption rewriter (AI rewrite) — /prompt-assist/music/*
+# ---------------------------------------------------------------------------
+# Sibling of PROMPT_ASSIST_DEFAULTS above, not an extension of it: the two
+# domains share the local-LLM provider/cache layer in
+# backend/core/extensions/minimax_h3_prompt_assistant.py (loopback URL
+# enforcement, SQLite result cache, one self-repair retry) but the wire
+# contract differs completely — a music caption has no mode, duration, or
+# reference tokens, and its output is a fixed three-heading Structured
+# Caption, not a shot-numbered video prompt. See
+# docs/guides/MINIMAX_MUSIC3_DESIGN.md, "Caption rewriter (AI rewrite)".
+# Provider base URLs and model listing reuse H3's keys/route unchanged — the
+# same local LM Studio/Ollama server serves both rewriters. Deliberately NOT
+# duplicated here: `lm_studio_base_url`/`ollama_base_url` live only in
+# PROMPT_ASSIST_DEFAULTS above, and both `_prompt_assist_base_url()` (server)
+# and the frontend's provider switch (client) read them from there. A second
+# copy of those two keys here previously drifted from what the server
+# actually used to resolve an empty base_url, silently, the moment someone
+# repointed one but not the other.
+
+MUSIC_PROMPT_ASSIST_DEFAULTS: Dict[str, Any] = {
+    "provider": "lm_studio",
+    "base_url": "",
+    "model": "",
+    "api_key": "",
+    "lyrics": "",
+    "constraints": "",
+    "temperature": 0.2,
+    "top_p": 0.9,
+    "max_output_tokens": 3072,
+    "context_length": 8192,
+    "timeout_seconds": 300,
+    "force_refresh": False,
+    "cache_max_entries": 256,
+}
+
+# ---------------------------------------------------------------------------
 # MiniMax-H3 hybrid DiT load (POST /models/load)
 # ---------------------------------------------------------------------------
 # Not generation parameters: these are load-time inputs, so they have their own

@@ -57,7 +57,8 @@ from api.param_defaults import (
     AUDIO_GEN_ARCH_OVERLAYS,
     AUD2AUD_GEN_ARCH_OVERLAYS,
     OUTPAINT_AUDIO_ARCH_OVERLAYS,
-    PROMPT_ASSIST_DEFAULTS, STUDIO_RENDER_DEFAULTS, H3_HYBRID_LOAD_DEFAULTS,
+    PROMPT_ASSIST_DEFAULTS, MUSIC_PROMPT_ASSIST_DEFAULTS,
+    STUDIO_RENDER_DEFAULTS, H3_HYBRID_LOAD_DEFAULTS,
     VIDEO_CHAIN_DEFAULTS,
     VIDEO_CHAIN_PROVENANCE_DEFAULTS,
     PARAM_BOUNDS,
@@ -109,6 +110,10 @@ from core.extensions.minimax_h3_prompt_assistant import (
     MiniMaxH3PromptAssistant,
     validate_prompt as validate_h3_prompt,
 )
+from core.extensions.minimax_music3_caption_rewriter import (
+    MiniMaxMusic3CaptionRewriter,
+    MusicCaptionAssistOptions,
+)
 from api.studio_render_jobs import (
     StudioRenderValidationError,
     get_render_job,
@@ -123,6 +128,9 @@ router = APIRouter()
 
 minimax_h3_prompt_assistant = MiniMaxH3PromptAssistant(
     PROMPT_ASSIST_DEFAULTS["cache_max_entries"]
+)
+minimax_music3_caption_rewriter = MiniMaxMusic3CaptionRewriter(
+    MUSIC_PROMPT_ASSIST_DEFAULTS["cache_max_entries"]
 )
 
 # Single source of truth for the API version, also used by main.py when
@@ -803,6 +811,11 @@ async def cancel_studio_render_job(job_id: str):
 async def get_prompt_assist_defaults():
     """Return MiniMax-H3 prompt-assistant defaults."""
     return PROMPT_ASSIST_DEFAULTS
+
+@router.get("/schema/prompt-assist-music-defaults")
+async def get_prompt_assist_music_defaults():
+    """Return MiniMax Music 3 caption-rewriter defaults."""
+    return MUSIC_PROMPT_ASSIST_DEFAULTS
 
 @router.get("/schema/training-defaults")
 async def get_training_defaults():
@@ -10718,6 +10731,64 @@ async def transform_h3_prompt(request: PromptAssistTransformRequest):
 @router.post("/prompt-assist/cache/clear", tags=["prompt-assist"])
 async def clear_prompt_assist_cache():
     deleted = await asyncio.to_thread(minimax_h3_prompt_assistant.cache.clear)
+    return {"status": "success", "deleted": deleted}
+
+
+# ============================================================================
+# MiniMax Music 3 Caption Rewriter ("AI rewrite")
+#
+# Sibling of the MiniMax-H3 prompt assistant above, not an extension of it —
+# see core/extensions/minimax_music3_caption_rewriter.py for why. Model
+# listing and provider base URLs are not domain-specific, so this reuses
+# POST /prompt-assist/models and _prompt_assist_base_url() unchanged rather
+# than duplicating them; only the transform contract and its cache are new.
+# ============================================================================
+
+class MusicPromptAssistTransformRequest(BaseModel):
+    caption: str
+    lyrics: str = MUSIC_PROMPT_ASSIST_DEFAULTS["lyrics"]
+    constraints: str = MUSIC_PROMPT_ASSIST_DEFAULTS["constraints"]
+    provider: Literal["lm_studio", "ollama"] = MUSIC_PROMPT_ASSIST_DEFAULTS["provider"]
+    base_url: str = MUSIC_PROMPT_ASSIST_DEFAULTS["base_url"]
+    model: str = MUSIC_PROMPT_ASSIST_DEFAULTS["model"]
+    api_key: str = Field(
+        MUSIC_PROMPT_ASSIST_DEFAULTS["api_key"], json_schema_extra={"writeOnly": True}
+    )
+    temperature: float = Field(MUSIC_PROMPT_ASSIST_DEFAULTS["temperature"], ge=0, le=1)
+    top_p: float = Field(MUSIC_PROMPT_ASSIST_DEFAULTS["top_p"], gt=0, le=1)
+    max_output_tokens: int = Field(MUSIC_PROMPT_ASSIST_DEFAULTS["max_output_tokens"], ge=128, le=8192)
+    context_length: int = Field(MUSIC_PROMPT_ASSIST_DEFAULTS["context_length"], ge=1024, le=262144)
+    timeout_seconds: int = Field(MUSIC_PROMPT_ASSIST_DEFAULTS["timeout_seconds"], ge=10, le=1800)
+    force_refresh: bool = MUSIC_PROMPT_ASSIST_DEFAULTS["force_refresh"]
+
+
+@router.post("/prompt-assist/music/transform", tags=["prompt-assist"])
+async def transform_music3_caption(request: MusicPromptAssistTransformRequest):
+    options = MusicCaptionAssistOptions(
+        caption=request.caption,
+        lyrics=request.lyrics,
+        constraints=request.constraints,
+        provider=request.provider,
+        base_url=_prompt_assist_base_url(request.provider, request.base_url),
+        model=request.model,
+        temperature=request.temperature,
+        top_p=request.top_p,
+        max_output_tokens=request.max_output_tokens,
+        context_length=request.context_length,
+        timeout_seconds=request.timeout_seconds,
+        force_refresh=request.force_refresh,
+    )
+    try:
+        return await asyncio.to_thread(
+            minimax_music3_caption_rewriter.transform, options, request.api_key
+        )
+    except PromptAssistError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/prompt-assist/music/cache/clear", tags=["prompt-assist"])
+async def clear_music3_caption_cache():
+    deleted = await asyncio.to_thread(minimax_music3_caption_rewriter.cache.clear)
     return {"status": "success", "deleted": deleted}
 
 

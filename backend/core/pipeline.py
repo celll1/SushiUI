@@ -3422,36 +3422,52 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         )
 
     def generate_aud_outpaint(self, params: Dict[str, Any], reference_audio, progress_callback=None, step_callback=None):
-        """Audio temporal outpaint (extend): place a (trimmed) input clip at
-        a time offset inside a LONGER output timeline and generate the audio
-        before/and-or after it (ACE-Step 1.5 only). See
-        `AceStepMixin._generate_audoutpaint_acestep` docstring for the full
-        mechanism -- the structural inverse of `generate_aud2aud`'s
-        `mode="repaint"`.
+        """Audio temporal outpaint (extend): ACE-Step 1.5 places a (trimmed)
+        input clip at a time offset inside a LONGER output timeline and
+        generates the audio before/and-or after it (see
+        `AceStepMixin._generate_audoutpaint_acestep` -- the structural
+        inverse of `generate_aud2aud`'s `mode="repaint"`). MiniMax Music 3
+        instead forward-extends a SushiUI-generated song by resuming its
+        autoregressive stage from a stored frame-code sidecar -- backward
+        extension and mid-song infill are refused (causal LM); see
+        `MiniMaxMusic3Mixin._generate_audoutpaint_minimax_music3`'s
+        docstring for the full mechanism and its `MiniMaxMusic3ExtendResult`
+        return shape (NOT the plain 3-tuple below).
 
         Args:
-            params: see `OUTPAINT_AUDIO_DEFAULTS` -- prompt/lyrics, seed,
-                inference_steps, guidance_scale, shift, vocal_language,
+            params: ACE-Step -- see `OUTPAINT_AUDIO_DEFAULTS`: prompt/lyrics,
+                seed, inference_steps, guidance_scale, shift, vocal_language,
                 loras, total_duration (seconds, output timeline length),
                 input_offset_sec (seconds, where the trimmed input is
                 placed), input_trim_start_sec/input_trim_end_sec (seconds,
-                trims the UPLOADED clip itself before placement).
-            reference_audio: a file path (str) or raw audio bytes for the
-                input clip to place.
+                trims the UPLOADED clip itself before placement). MiniMax
+                Music 3 -- `placement` (required, only `"extend_forward"`),
+                `extend_duration_sec`/`num_inference_steps`/
+                `flow_guidance_scale` (required, no fallback), `seed`,
+                `content_hash` (optional).
+            reference_audio: ACE-Step -- a file path (str) or raw audio
+                bytes for the input clip to place. MiniMax Music 3 -- a
+                server-side file PATH (str) ONLY (the sidecar must already
+                sit next to it; raw upload bytes are refused).
             progress_callback: Called as (step, total_steps).
-            step_callback: Reserved (unused for ACE-Step audio outpaint).
+            step_callback: Reserved (unused on either architecture).
 
         Returns:
-            tuple: (waveform, sample_rate, actual_seed) -- identical contract
-            to generate_txt2aud/generate_aud2aud.
+            ACE-Step: (waveform, sample_rate, actual_seed) tuple -- identical
+            contract to generate_txt2aud/generate_aud2aud. MiniMax Music 3:
+            `MiniMaxMusic3ExtendResult` (see its own docstring for why this
+            is not the plain 3-tuple).
         """
         if self.is_acestep_model:
             return self._generate_audoutpaint_acestep(params, reference_audio, progress_callback, step_callback)
+        if self.is_minimax_music3_model:
+            return self._generate_audoutpaint_minimax_music3(params, reference_audio, progress_callback, step_callback)
 
         from api.error_handlers import ValidationError
         raise ValidationError(
-            "Audio outpaint requires an ACE-Step model",
-            detail="The currently loaded model is not an audio model. Load an ACE-Step model to use /generate/outpaint/audio.",
+            "Audio outpaint requires an ACE-Step or MiniMax Music 3 model",
+            detail="The currently loaded model is not an audio model. Load an ACE-Step or MiniMax Music 3 model "
+                   "to use /generate/outpaint/audio.",
         )
 
     def generate_txt2img(self, params: Dict[str, Any], progress_callback=None, step_callback=None) -> tuple[Union[Image.Image, torch.Tensor], int, int]:

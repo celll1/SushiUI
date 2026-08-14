@@ -1972,6 +1972,103 @@ def resolve_minimax_h3_outpaint_reference_gate(
         )
 
 
+def resolve_minimax_h3_inpaint_reference_gate(
+    variant: Optional[str],
+    *,
+    has_reference_images: bool,
+    has_reference_videos: bool,
+    has_reference_audios: bool,
+    has_vision_conditioning: bool = False,
+) -> None:
+    """The ``ref2va`` reference gate on ``/generate/inpaint/video`` -- PHASE
+    B-1, the CLOSED state ``minimax_h3_inpaint_refs_design.md`` Gate
+    registration (B) registers. PURE (raises or returns None), not yet wired
+    to any route (unlike ``resolve_minimax_h3_outpaint_reference_gate``, whose
+    twin this is). ``has_reference_images/videos/audios`` are required
+    keyword-only args (no default) so a caller cannot silently land on the
+    most permissive row by forgetting one.
+
+    Unlike the outpaint gate, ``ref2va`` refuses UNCONDITIONALLY here -- with
+    or without any reference -- because temporal inpaint's interior pin is
+    measured on ``fl2va`` only (preserved-span RMS 3.12, floor 3.15, control
+    75.69, ``minimax_h3_ti_probe_results.md``) and unmeasured on ``ref2va``;
+    see the design's Gate registration (B) for the still-unrun GPU arms.
+
+    * ``fl2va`` serves every request; refuses any reference outright.
+    * ``ref2va`` refuses every request, with or without references, until
+      Gate registration (B) is adjudicated a PASS.
+    * ``hybrid`` refuses every request -- ungenerated on any endpoint.
+    * An unidentified variant refuses only when a reference is present.
+    * An audio-only reference set is refused unless ``has_vision_conditioning``
+      -- a temporal-inpaint pin or keyframe anchor already supplying vision
+      conditioning through a different door. Mirrors
+      ``h3_references.py``'s ``validate_references`` (``:169-175``) and its
+      own ``has_vision_conditioning`` flag; this rule is now duplicated in
+      THREE places (``routes.py``'s ``/generate/ref2vid`` inline check,
+      ``h3_references.py``, and here) rather than shared -- a follow-up, not
+      claimed otherwise here.
+
+    Sequence length / row budget is deliberately absent (owner correction):
+    no row count refuses a request; that risk becomes a warning once B-2
+    wires a call site, not a threshold here.
+
+    No row of this table ever reroutes to ``/generate/ref2vid``.
+    """
+    from api.error_handlers import ValidationError
+
+    has_references = has_reference_images or has_reference_videos or has_reference_audios
+    if (has_reference_audios and not (has_reference_images or has_reference_videos)
+            and not has_vision_conditioning):
+        raise ValidationError(
+            "An audio reference cannot be used on its own",
+            detail="An audio reference has to be paired with at least one image or video "
+                   "reference, OR this request must already carry vision conditioning through a "
+                   "pin or a keyframe anchor: a standalone soundtrack never reaches the "
+                   "conditioner -- the model's own limit (h3_references.py's validate_references), "
+                   "not this endpoint's. This request has neither.",
+        )
+
+    variant = (variant or "").lower()
+    if variant == "fl2va":
+        if has_references:
+            raise ValidationError(
+                "reference_images/reference_videos/reference_audios require the MiniMax-H3 "
+                "ref2va transformer, not fl2va",
+                detail="fl2va was never trained to read reference rows (mirror of "
+                       "/generate/ref2vid's and /generate/outpaint/video's own partition gates). "
+                       "Load diffusion_models/minimax_h3_ref2va_pruned_fp8_scaled.safetensors, or "
+                       "omit every reference field to keep using fl2va's temporal inpaint.",
+            )
+        return
+    if variant == "ref2va":
+        raise ValidationError(
+            "MiniMax-H3 ref2va temporal inpaint is not open on this endpoint yet",
+            detail="Temporal inpaint's interior pin is measured on fl2va (preserved-span RMS "
+                   "3.12, floor 3.15, control 75.69) and unmeasured on ref2va; combining it with "
+                   "reference conditioning is the gated design in minimax_h3_inpaint_refs_design.md "
+                   "(Gate registration (B)) and has not been adjudicated. This row refuses whether "
+                   "or not reference_images/videos/audios are present. Load the fl2va checkpoint "
+                   "for temporal inpaint.",
+        )
+    if variant == "hybrid":
+        raise ValidationError(
+            "The loaded MiniMax-H3 transformer is the hybrid variant",
+            detail="A hybrid transformer is an fl2va base carrying ref2va AdaLN blocks. No "
+                   "generation on any endpoint has been measured on that combination, so it is "
+                   "loadable and inspectable but does not generate -- including temporal inpaint, "
+                   "with or without references. Load the fl2va checkpoint for temporal inpaint.",
+        )
+    if has_references:
+        raise ValidationError(
+            f"reference_images/reference_videos/reference_audios need the MiniMax-H3 ref2va "
+            f"transformer, not {variant or 'an unidentified variant'}",
+            detail="The two released MiniMax-H3 files are otherwise indistinguishable, so a "
+                   "mismatch cannot be detected from the weights and running this would silently "
+                   "produce a bad video rather than fail. (Moot in phase B-1 regardless: the "
+                   "ref2va row above refuses every reference request on this endpoint anyway.)",
+        )
+
+
 def resolve_minimax_h3_text_only_te_gate(
     components: Optional[Dict[str, Any]],
     *,

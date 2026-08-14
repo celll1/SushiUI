@@ -569,14 +569,23 @@ CHAIN_CONTEXT: Dict[str, Dict[str, Any]] = {
             # floor). fl2va was never trained to read reference rows
             # (routes.py:4815-4822), so it stays on the arch-level entry.
             #
-            # No `pinned_tail` here: `build_ref2va_packed_layout` returns no
-            # video row permutation at all (h3_pipeline_ops.py:895-901), so this
-            # partition has no opening for a pin, and the reference block
-            # already occupies the prefix a pin would take. No `motion_preroll`
-            # either, for the second half of that reason: this partition's
-            # continuation already spends its conditioning prefix on the
-            # automatic tail reference (`build_outpaint_references`), and a
-            # pre-roll's anchors on top of it is a shape nothing has measured.
+            # No `pinned_tail` here: NOT because the builder has no opening for
+            # a pin -- `build_ref2va_packed_layout` gained `pinned_video_frames`
+            # / `pinned_audio_latents` (h3_pipeline_ops.py, MiniMax-H3 inpaint x
+            # reference design, Option B) and does return a permutation for
+            # them now. The reason is that this partition's interior-pin hold
+            # is UNMEASURED (fl2va's own pin is measured: preserved-span RMS
+            # 3.12, VAE floor 3.15, control 75.69,
+            # `minimax_h3_ti_probe_results.md`; ref2va's is not) and
+            # `resolve_minimax_h3_inpaint_reference_gate` (api/
+            # generation_utils.py) refuses every ref2va temporal-inpaint
+            # request unconditionally until that is adjudicated a PASS
+            # (`minimax_h3_inpaint_refs_design.md`, Gate registration (B)). No
+            # `pinned_tail` until that gate passes. No `motion_preroll` either,
+            # for the same reason as before: this partition's continuation
+            # already spends its conditioning prefix on the automatic tail
+            # reference (`build_outpaint_references`), and a pre-roll's anchors
+            # on top of it is a shape nothing has measured.
             "ref2va": {
                 "chain_continuation_modes": ["boundary_frame"],
                 "chain_context_min_frames": 1,

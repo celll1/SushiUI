@@ -43,7 +43,17 @@ class _FakeTokenizer:
         return {"input_ids": torch.tensor([[1, 2, 3, 4, 5]])}
 
 
-def _build_tiny_pipeline(max_position_embeddings: int = 4096) -> MiniMaxMusic3Pipeline:
+def _build_tiny_pipeline(
+    max_position_embeddings: int = 4096,
+    lm_dtype: torch.dtype = torch.float32,
+    depth_dtype: torch.dtype = torch.float32,
+) -> MiniMaxMusic3Pipeline:
+    """`lm_dtype`/`depth_dtype` default to float32 (every EXISTING test in this file relies on that default and is
+    unaffected). Passing them apart -- something the loader never currently does, since it drives both from one
+    shared `torch_dtype`, but a future per-component quantization pass (design doc phase plan item 9) could -- is
+    what the dtype-matrix tests below use to exercise the three LM<->depth-decoder dtype crossings in
+    `_generate_depth_codes`/`generate_ar` (`pipeline.py`'s casts at the `rvq_depth_decoder.projection` calls and the
+    `frame_hiddens` concatenation)."""
     torch.manual_seed(1234)  # fixed init: both pipelines built from this function are numerically identical
 
     vocab = AUDIO_CODE_OFFSET + SEMANTIC_VOCAB_SIZE + 1  # covers AUDIO_END_TOKEN_ID and every audio code id used
@@ -58,12 +68,12 @@ def _build_tiny_pipeline(max_position_embeddings: int = 4096) -> MiniMaxMusic3Pi
         max_position_embeddings=max_position_embeddings,
         tie_word_embeddings=False,
     )
-    language_model = Qwen3ForCausalLM(lm_config).eval()
+    language_model = Qwen3ForCausalLM(lm_config).eval().to(lm_dtype)
 
     rvq_depth_decoder = MiniMaxMusic3RVQDepthDecoder(
         hidden_size=_HIDDEN, num_layers=2, num_attention_heads=2, intermediate_size=32,
         audio_vocab_size=17, num_codebooks=8, max_position_embeddings=16,
-    ).eval()
+    ).eval().to(depth_dtype)
     condition_encoder = MiniMaxMusic3ConditionEncoder(
         condition_hidden_dim=_HIDDEN, num_condition_layers=8, out_dim=8,
         input_sampling_rate=24000, input_hop_length=960, output_sampling_rate=44100, output_hop_length=512,
@@ -260,3 +270,35 @@ def test_fresh_generation_within_budget_is_not_rejected():
     generator = torch.Generator().manual_seed(0)
     result = pipeline.generate_ar(text_ids, audio_duration=_frames_worth(pipeline, 3), generator=generator)
     assert result.frame_codes.shape[0] >= 1
+
+
+# ---------------------------------------------------------------------------
+# Dtype matrix (F2/F3): the language model and RVQ depth decoder cross
+# dtypes at three points in `_generate_depth_codes`/`generate_ar`
+# (`rvq_depth_decoder.projection(last_hidden)`, `...projection(code_embed)`,
+# and the `frame_hiddens` concatenation). The loader currently always hands
+# both the SAME `torch_dtype`, so these three sites are unexercised by every
+# OTHER test in this file (all float32) and would stay unexercised by a
+# regression that reintroduced the crossing -- exactly the gap a real-weight
+# run (not this suite) caught once already. bf16/fp16 matmul has no
+# optimized CPU kernel, so this stays to the smallest matrix that still
+# exercises every crossing: same-dtype (the loader's actual configuration,
+# at two different dtypes) and two mismatched pairs (the case the loader
+# does not build today but a future per-component quantization pass could).
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize(
+    "lm_dtype,depth_dtype",
+    [
+        (torch.float32, torch.float32),
+        (torch.bfloat16, torch.bfloat16),
+        (torch.bfloat16, torch.float16),  # mismatched -- the case F2 fixes
+        (torch.float32, torch.bfloat16),  # mismatched
+    ],
+)
+def test_generate_ar_runs_under_every_lm_depth_dtype_combination(lm_dtype, depth_dtype):
+    pipeline = _build_tiny_pipeline(lm_dtype=lm_dtype, depth_dtype=depth_dtype)
+    text_ids = pipeline.encode_text("a caption", "[verse]\nhello world")
+    generator = torch.Generator().manual_seed(0)
+    result = pipeline.generate_ar(text_ids, audio_duration=_frames_worth(pipeline, 2), generator=generator)
+    assert result.frame_codes.shape[0] >= 1
+    assert torch.isfinite(result.frame_hiddens.float()).all()

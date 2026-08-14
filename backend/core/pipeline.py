@@ -27,11 +27,11 @@ from core.prompts.processors import PromptEditingProcessor
 from core.inference.schedulers import get_scheduler
 from core.inference.custom_sampling import custom_sampling_loop, custom_img2img_sampling_loop, custom_inpaint_sampling_loop
 from core.inference.generation_timing import generation_timer
-from core.pipeline_backends import ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, Ideogram4Mixin, MiniT2IMixin, Krea2Mixin, LTX2Mixin, AceStepMixin, MiniMaxH3Mixin
+from core.pipeline_backends import ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, Ideogram4Mixin, MiniT2IMixin, Krea2Mixin, LTX2Mixin, AceStepMixin, MiniMaxH3Mixin, MiniMaxMusic3Mixin
 
 LAST_MODEL_CONFIG_FILE = Path("last_model.json")
 
-class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, Ideogram4Mixin, MiniT2IMixin, Krea2Mixin, LTX2Mixin, AceStepMixin, MiniMaxH3Mixin):
+class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, Ideogram4Mixin, MiniT2IMixin, Krea2Mixin, LTX2Mixin, AceStepMixin, MiniMaxH3Mixin, MiniMaxMusic3Mixin):
     def __init__(self):
         self.txt2img_pipeline: Optional[StableDiffusionPipeline] = None
         self.img2img_pipeline: Optional[StableDiffusionImg2ImgPipeline] = None
@@ -3359,26 +3359,36 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         )
 
     def generate_txt2aud(self, params: Dict[str, Any], progress_callback=None, step_callback=None):
-        """Generate music/audio from text (ACE-Step 1.5 only).
+        """Generate music/audio from text (ACE-Step 1.5 or MiniMax Music 3).
 
         Args:
-            params: Generation parameters -- caption/prompt, lyrics,
+            params: Generation parameters. ACE-Step: caption/prompt, lyrics,
                 audio_duration, seed, inference_steps, guidance_scale, shift,
                 sampler_mode, bpm, key_scale, time_signature, vocal_language.
+                MiniMax Music 3: prompt, lyrics, seed, audio_duration,
+                num_inference_steps, flow_guidance_scale (all three required,
+                no default -- see `MiniMaxMusic3Mixin._generate_txt2aud_minimax_music3`).
             progress_callback: Called as (step, total_steps).
-            step_callback: Reserved (unused for ACE-Step txt2aud).
+            step_callback: Reserved (unused for txt2aud on either arch).
 
         Returns:
-            tuple: (waveform, sample_rate, actual_seed) where waveform is a
-            torch.FloatTensor [2, samples] on CPU and sample_rate is 48000.
+            ACE-Step: (waveform, sample_rate, actual_seed) tuple, waveform a
+            torch.FloatTensor [2, samples] on CPU, sample_rate 48000.
+            MiniMax Music 3: `MiniMaxMusic3Txt2AudResult` (NOT the same
+            3-tuple shape -- see its own docstring for why: the design doc's
+            per-generation frame-code state contract must survive this call
+            for a later commit's route to persist).
         """
         if self.is_acestep_model:
             return self._generate_txt2aud_acestep(params, progress_callback, step_callback)
+        if self.is_minimax_music3_model:
+            return self._generate_txt2aud_minimax_music3(params, progress_callback, step_callback)
 
         from api.error_handlers import ValidationError
         raise ValidationError(
-            "Text-to-audio generation requires an ACE-Step model",
-            detail="The currently loaded model is not an audio model. Load an ACE-Step model to use /generate/txt2aud.",
+            "Text-to-audio generation requires an ACE-Step or MiniMax Music 3 model",
+            detail="The currently loaded model is not an audio model. Load an ACE-Step or MiniMax "
+                   "Music 3 model to use /generate/txt2aud.",
         )
 
     def generate_aud2aud(self, params: Dict[str, Any], reference_audio, progress_callback=None, step_callback=None):

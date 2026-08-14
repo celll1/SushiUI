@@ -5,6 +5,10 @@ import { useCallback, useEffect, useRef, useState, type KeyboardEvent, type Poin
 const MIN_HEIGHT = 112;
 const DEFAULT_HEIGHT = 144;
 const MAX_HEIGHT = 560;
+// Tolerance for fit-to-content: absorbs a fractional content height that would
+// otherwise round down into a clipped last row, and keeps a repeated fit from
+// walking the panel upwards two pixels at a time.
+const FIT_SLACK = 2;
 
 function clamp(value: number): number {
   return Math.max(MIN_HEIGHT, Math.min(MAX_HEIGHT, Math.round(value)));
@@ -12,22 +16,67 @@ function clamp(value: number): number {
 
 export function useResizablePanelHeight(storageKey: string) {
   const [height, setHeight] = useState(DEFAULT_HEIGHT);
+  // The height in force before a fit-to-content, kept so it can be restored.
+  // null = nothing to go back to.
+  const [userHeight, setUserHeight] = useState<number | null>(null);
   const [mounted, setMounted] = useState(false);
   const dragStart = useRef<{ y: number; height: number } | null>(null);
+  // Written after commit, not during render: a render that is discarded must
+  // not leave fitToContent reading a height that never reached the DOM.
+  const heightRef = useRef(height);
+  useEffect(() => {
+    heightRef.current = height;
+  }, [height]);
+  const userHeightKey = `${storageKey}_user`;
 
   useEffect(() => {
     const saved = Number(localStorage.getItem(storageKey));
     if (Number.isFinite(saved) && saved > 0) setHeight(clamp(saved));
+    const savedUser = Number(localStorage.getItem(userHeightKey));
+    setUserHeight(Number.isFinite(savedUser) && savedUser > 0 ? clamp(savedUser) : null);
     setMounted(true);
-  }, [storageKey]);
+  }, [storageKey, userHeightKey]);
 
   useEffect(() => {
     if (!mounted) return;
     localStorage.setItem(storageKey, String(clamp(height)));
   }, [height, mounted, storageKey]);
 
-  const reset = useCallback(() => setHeight(clamp(DEFAULT_HEIGHT)), []);
-  const setClampedHeight = useCallback((value: number) => setHeight(clamp(value)), []);
+  // Persisted next to the height itself, so a fit survives a reload with its
+  // restore target intact.
+  useEffect(() => {
+    if (!mounted) return;
+    if (userHeight === null) localStorage.removeItem(userHeightKey);
+    else localStorage.setItem(userHeightKey, String(userHeight));
+  }, [userHeight, mounted, userHeightKey]);
+
+  const reset = useCallback(() => {
+    setUserHeight(null);
+    setHeight(clamp(DEFAULT_HEIGHT));
+  }, []);
+  // A hand-set height is the new size to keep, so it replaces whatever a
+  // restore would have gone back to.
+  const setClampedHeight = useCallback((value: number) => {
+    setUserHeight(null);
+    setHeight(clamp(value));
+  }, []);
+
+  // Sizes the panel to the measured content, shrinking as well as growing, and
+  // remembers the height it replaced. Clamped, so content taller than
+  // MAX_HEIGHT still scrolls. The restore target is only taken when there is
+  // none: a second fit must not overwrite the size the user set by hand.
+  const fitToContent = useCallback((contentHeight: number) => {
+    const target = clamp(contentHeight + FIT_SLACK);
+    const previous = heightRef.current;
+    if (Math.abs(target - previous) <= FIT_SLACK) return;
+    setUserHeight((remembered) => (remembered === null ? previous : remembered));
+    setHeight(target);
+  }, []);
+  const restoreUserHeight = useCallback(() => {
+    if (userHeight === null) return;
+    setHeight(clamp(userHeight));
+    setUserHeight(null);
+  }, [userHeight]);
 
   const onPointerDown = useCallback((event: PointerEvent<HTMLDivElement>) => {
     dragStart.current = { y: event.clientY, height };
@@ -59,7 +108,10 @@ export function useResizablePanelHeight(storageKey: string) {
     height,
     minHeight: MIN_HEIGHT,
     maxHeight: MAX_HEIGHT,
+    userHeight,
     reset,
+    fitToContent,
+    restoreUserHeight,
     separatorProps: {
       onPointerDown,
       onPointerMove,

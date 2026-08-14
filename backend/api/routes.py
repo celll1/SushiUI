@@ -5479,6 +5479,16 @@ async def generate_inpaint_video(
     quantized_gemm_mode: Optional[str] = Form(INPAINT_VIDEO_DEFAULTS["quantized_gemm_mode"]),
     video_lossless: bool = Form(INPAINT_VIDEO_DEFAULTS["video_lossless"]),
     video: UploadFile = File(...),
+    # PHASE B-2a (minimax_h3_inpaint_refs_design.md, Option B): the same
+    # reference field set /generate/ref2vid takes, in the same UPLOAD-ORDER-
+    # is-semantic convention. Plumbing only -- see
+    # `resolve_minimax_h3_inpaint_reference_gate` for why a request that
+    # actually sends one is refused in the committed state.
+    reference_image_size: str = Form(INPAINT_VIDEO_DEFAULTS["reference_image_size"]),
+    reference_images: List[UploadFile] = File([]),
+    reference_videos: List[UploadFile] = File([]),
+    reference_video_audios: List[UploadFile] = File([]),
+    reference_audios: List[UploadFile] = File([]),
     # Generation-time LoRA. See Txt2VidRequest.loras.
     loras: str = Form("[]"),
     db: Session = Depends(get_gallery_db)
@@ -5544,6 +5554,16 @@ async def generate_inpaint_video(
     must leave something preserved; with a spatial mask, a full-clip range is
     allowed only when the mask both generates and preserves at least one video
     token.
+
+    **References (`reference_images`/`reference_videos`/`reference_video_audios`/
+    `reference_audios`/`reference_image_size`, same field set and packed-order
+    semantics as `/generate/ref2vid`).** Accepted by this route, but a request
+    that sends one is refused today: reference conditioning is a trained
+    behaviour of the `ref2va` transformer partition, and the mid-clip pin this
+    endpoint needs is measured on `fl2va` and unmeasured on `ref2va` -- not a
+    structural impossibility, an unmeasured combination that is not yet
+    gated open (`resolve_minimax_h3_inpaint_reference_gate`,
+    `minimax_h3_inpaint_refs_design.md`).
     """
     from api.generation_status import start_generation, complete_generation, fail_generation, get_warnings
     from utils.video_utils import save_video_with_metadata, load_video_frames, extract_audio_stream, probe_upload_clip
@@ -5565,6 +5585,8 @@ async def generate_inpaint_video(
         validate_spatial_mask_plan_cheap,
     )
 
+    from core.models.minimax_h3 import h3_references as h3refs
+
     if not getattr(pipeline_manager, "is_minimax_h3_model", False):
         raise CustomValidationError(
             "No MiniMax-H3 model loaded",
@@ -5572,33 +5594,97 @@ async def generate_inpaint_video(
                    "sequence, which is a MiniMax-H3 mechanism; LTX-2.3 has no equivalent. Load a "
                    "MiniMax-H3 fl2va model, or use /generate/outpaint/video to extend a clip.",
         )
-    # The partition gate, worded and scoped as /generate/img2vid's is: the
-    # mid-clip pin was measured on the fl2va weights alone, so every other NAMED
-    # variant is refused (an unidentified one keeps passing -- see that gate).
-    _h3_variant = ((pipeline_manager.current_model_info or {}).get("variant") or "").lower()
-    if _h3_variant and _h3_variant != "fl2va":
+
+    # ---- The reference files, in upload order -- same convention as
+    # /generate/ref2vid's own reads. An empty multipart part (no filename)
+    # counts as absent. ----
+    def _present(files) -> List[UploadFile]:
+        return [f for f in (files or []) if f is not None and f.filename]
+
+    _ref_image_files = _present(reference_images)
+    _ref_video_files = _present(reference_videos)
+    _ref_video_audio_files = list(reference_video_audios or [])
+    _ref_audio_files = _present(reference_audios)
+    _has_any_reference = bool(_ref_image_files or _ref_video_files or _ref_audio_files)
+
+    # The client-error twin of the backend's own defensive RuntimeError
+    # (`_generate_vidinpaint_minimax_h3`/`_generate_minimax_h3`): the extended
+    # ref2va layout builder only carries a frame-level temporal-inpaint pin
+    # alongside references, not a row-level spatial-mask pin. Checked here so
+    # this is a 400, not a 500, once the gate below ever opens.
+    if _has_any_reference and (spatial_mask_manifest is not None
+                                or spatial_mask_files or spatial_mask_ids):
         raise CustomValidationError(
-            f"The loaded MiniMax-H3 transformer is the {_h3_variant} variant, not fl2va",
-            detail=(
-                "Temporal inpaint is offered on the `fl2va` partition, which serves "
-                "/generate/txt2vid, /generate/img2vid and /generate/outpaint/video: the "
-                "mid-clip pin is measured there and nowhere else, and combining it with "
-                "reference conditioning is not implemented on any endpoint. Load "
-                "diffusion_models/minimax_h3_fl2va_pruned_fp8_scaled.safetensors."
-            ) if _h3_variant == "ref2va" else (
-                f"Temporal inpaint is offered on the `fl2va` partition: the mid-clip pin is "
-                f"measured there and nowhere else, and nothing has been measured about how the "
-                f"{_h3_variant} variant holds a pinned prefix -- a hybrid transformer, for "
-                f"instance, is an fl2va base carrying ref2va AdaLN blocks, which is loadable and "
-                f"inspectable but generates on no endpoint. Load "
-                f"diffusion_models/minimax_h3_fl2va_pruned_fp8_scaled.safetensors."
-            ),
+            "spatial_mask_manifest is incompatible with reference conditioning",
+            detail="The extended ref2va layout builder only carries a frame-level "
+                   "temporal-inpaint pin alongside references, not a row-level spatial-mask pin. "
+                   "Drop the spatial mask, or omit every reference field.",
         )
-    # A converted text-only encoder serves prompt-only requests only.
+
+    # PHASE B-2a (minimax_h3_inpaint_refs_design.md, Option B): the decision
+    # table replaces the old hardcoded fl2va-only refusal. `fl2va` + no refs
+    # is today's behaviour, unchanged; `fl2va` + any reference and `hybrid`
+    # (with or without references) are 400; `ref2va` is refused
+    # UNCONDITIONALLY -- with or without references -- until Gate
+    # registration (B) is adjudicated a PASS, which is the ONE named
+    # constant/branch inside the gate function itself, not here. An
+    # unidentified variant behaves like /generate/img2vid's own gate: a plain
+    # request passes, a reference-carrying one is refused. `has_vision_
+    # conditioning=True` unconditionally: this endpoint always pins the
+    # frames outside the regenerate range, which is real vision conditioning
+    # through a door other than the reference list, so an audio-only
+    # reference set is never refused by the pairing rule alone here.
+    _h3_variant = ((pipeline_manager.current_model_info or {}).get("variant") or "").lower()
+    from api.generation_utils import resolve_minimax_h3_inpaint_reference_gate
+    resolve_minimax_h3_inpaint_reference_gate(
+        _h3_variant,
+        has_reference_images=bool(_ref_image_files),
+        has_reference_videos=bool(_ref_video_files),
+        has_reference_audios=bool(_ref_audio_files),
+        has_vision_conditioning=True,
+    )
+
+    # Counts are validated before anything is read: these are the model's
+    # limits, the same ones /generate/ref2vid enforces on the same field set.
+    _total_references = len(_ref_image_files) + len(_ref_video_files) + len(_ref_audio_files)
+    for _kind, _count, _limit in (("image", len(_ref_image_files), h3refs.MAX_REFERENCE_IMAGES),
+                                  ("video", len(_ref_video_files), h3refs.MAX_REFERENCE_VIDEOS),
+                                  ("audio", len(_ref_audio_files), h3refs.MAX_REFERENCE_AUDIOS)):
+        if _count > _limit:
+            raise CustomValidationError(
+                f"MiniMax-H3 accepts at most {_limit} {_kind} reference(s)",
+                detail=f"Got {_count}. The limit is the released checkpoint's, not SushiUI's.",
+            )
+    if _total_references > h3refs.MAX_REFERENCES:
+        raise CustomValidationError(
+            f"MiniMax-H3 accepts at most {h3refs.MAX_REFERENCES} references in total",
+            detail=f"Got {_total_references} ({len(_ref_image_files)} image, "
+                   f"{len(_ref_video_files)} video, {len(_ref_audio_files)} audio). The limit is "
+                   f"the released checkpoint's, not SushiUI's.",
+        )
+    if len(_ref_video_audio_files) > len(_ref_video_files):
+        raise CustomValidationError(
+            "More reference_video_audios than reference_videos",
+            detail=f"Got {len(_ref_video_audio_files)} soundtrack(s) for {len(_ref_video_files)} "
+                   f"reference video(s). Entry n is the soundtrack of reference video n; send an "
+                   f"empty part to skip one.",
+        )
+    if reference_image_size not in ("max", "match"):
+        raise CustomValidationError(
+            "Invalid reference_image_size",
+            detail=f"Must be 'max' (the released 2048-pixel short edge) or 'match' (scale down to "
+                   f"the generation's pixel area), got {reference_image_size!r}.",
+        )
+
+    # A converted text-only encoder serves prompt-only requests only (and has
+    # no vision tower to read an image/video reference with -- moot while the
+    # gate above refuses every reference request on this endpoint, kept for
+    # parity with /generate/ref2vid's own call).
     from api.generation_utils import resolve_minimax_h3_text_only_te_gate
     resolve_minimax_h3_text_only_te_gate(
         getattr(pipeline_manager, "minimax_h3_components", None),
         workflow="temporal inpaint (/generate/inpaint/video)",
+        has_vision_references=bool(_ref_image_files or _ref_video_files),
     )
     if inpaint_video_audio_mode is not None and inpaint_video_audio_mode not in (
             "regenerate", "preserve_input", "regenerate_range"):
@@ -5959,6 +6045,13 @@ async def generate_inpaint_video(
         "unet_quantization": unet_quantization,
         "quantized_gemm_mode": _normalize_media_qgm(quantized_gemm_mode),
         "video_lossless": video_lossless,
+        "reference_image_size": reference_image_size,
+        # The uploaded FILENAMES, in packed order -- same convention
+        # /generate/ref2vid records its own reference fields with. The bytes
+        # never reach the database.
+        "reference_images": [recover_upload_filename(f.filename) for f in _ref_image_files] or None,
+        "reference_videos": [recover_upload_filename(f.filename) for f in _ref_video_files] or None,
+        "reference_audios": [recover_upload_filename(f.filename) for f in _ref_audio_files] or None,
     }
 
     # Generation-time LoRA (JSON string). See Txt2VidRequest.loras.
@@ -6041,6 +6134,43 @@ async def generate_inpaint_video(
                 detail=str(exc),
             ) from exc
 
+    # ---- Decode the references, same read order and per-modality shape as
+    # /generate/ref2vid's own block (images, then videos with their own
+    # soundtracks, then standalone audio). PHASE B-2a: reachable only when a
+    # future PASS of Gate registration (B) opens `resolve_minimax_h3_inpaint_
+    # reference_gate`'s ref2va row -- the gate above already refused every
+    # other combination that includes a reference, so this decodes an empty
+    # list on every request that reaches here today. ----
+    references: List[h3refs.MiniMaxH3Reference] = []
+    try:
+        for upload in _ref_image_files:
+            data = await upload.read()
+            references.append(h3refs.MiniMaxH3Reference(
+                kind="image", image=Image.open(io.BytesIO(data)).convert("RGB"),
+                label=upload.filename))
+        for index, upload in enumerate(_ref_video_files):
+            data = await upload.read()
+            frames, source_fps = load_video_frames(data, max_frames=max(1, int(trimmed_len) * 4))
+            soundtrack = None
+            sample_rate = None
+            audio_upload = _ref_video_audio_files[index] if index < len(_ref_video_audio_files) else None
+            if audio_upload is not None and audio_upload.filename:
+                soundtrack, sample_rate = h3refs.decode_audio_bytes(await audio_upload.read())
+            references.append(h3refs.MiniMaxH3Reference(
+                kind="video", frames=frames, fps=source_fps, audio=soundtrack,
+                sample_rate=sample_rate, label=upload.filename))
+        for upload in _ref_audio_files:
+            waveform, sample_rate = h3refs.decode_audio_bytes(await upload.read())
+            references.append(h3refs.MiniMaxH3Reference(
+                kind="audio", audio=waveform, sample_rate=sample_rate, label=upload.filename))
+    except CustomValidationError:
+        raise
+    except Exception as e:
+        raise CustomValidationError(
+            "Failed to read an uploaded reference",
+            detail=str(e),
+        )
+
     _gen_id = start_generation("inpaint_vid")
     try:
         pipeline_manager.reset_cancel_flag()
@@ -6088,11 +6218,13 @@ async def generate_inpaint_video(
                         progress_callback=progress_callback,
                         spatial_mask_timeline=spatial_mask_timeline,
                         spatial_mask_arrays=spatial_mask_arrays,
+                        references=references,
                     )
                     if spatial_mask_timeline is not None
                     else pipeline_manager.generate_vid_inpaint(
                         params, video_frames, source_fps, input_audio,
                         progress_callback=progress_callback,
+                        references=references,
                     )
                 )
             )

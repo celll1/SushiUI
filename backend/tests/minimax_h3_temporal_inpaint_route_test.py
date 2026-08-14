@@ -355,14 +355,22 @@ def test_the_pin_substitution_follows_the_draw():
 
 
 def test_the_decode_takes_every_video_row_when_the_layout_permuted_them():
-    """With pinned frames the conditioning prefix IS clip content."""
+    """With pinned frames the conditioning prefix IS clip content.
+
+    B-2a (minimax_h3_inpaint_refs_design.md): the pinned path now slices off
+    a reference/anchor prefix (`n_cond_reference_video_rows`, 0 on fl2va)
+    BEFORE applying `video_row_order` -- the offset the ref2va reference
+    builder's target-block-relative permutation needs. The substring check
+    below follows that change; the unpinned path is untouched.
+    """
     from core.pipeline_backends.minimax_h3 import MiniMaxH3Mixin
 
     source = inspect.getsource(MiniMaxH3Mixin._generate_minimax_h3)
     branch = source[source.index("video_row_order = layout[\"video_row_order\"]"):]
     branch = branch[:branch.index("decode_start")]
     assert "video_rows[n_cond_video:]" in branch, "the unpinned path must be unchanged"
-    assert "video_rows[video_row_order" in branch, "the pinned path must un-permute"
+    assert "n_cond_reference_video_rows" in branch, "the pinned path must skip the reference/anchor prefix"
+    assert "][video_row_order" in branch, "the pinned path must un-permute after that offset"
 
 
 # --------------------------------------------------------------------------
@@ -465,3 +473,93 @@ def test_ltx2_declares_temporal_inpaint_unsupported():
 
     assert arch_supports_feature("minimax_h3", "temporal_inpaint")
     assert not arch_supports_feature("ltx2", "temporal_inpaint")
+
+
+# --------------------------------------------------------------------------
+# B-2a (minimax_h3_inpaint_refs_design.md, Option B): a reference-less fl2va
+# request must stay byte-identical, and a reference-carrying/ref2va request
+# must be refused BEFORE any generation work runs.
+# --------------------------------------------------------------------------
+
+def test_fl2va_with_no_references_passes_the_full_pre_b2a_kwarg_set_unchanged():
+    """The defensive gate call and the `references` parameter are new; on a
+    plain fl2va request their effect must be exactly nothing. Asserts the
+    WHOLE captured `_generate_minimax_h3` kwarg set -- not a substring of
+    it -- against literal expected values, so an accidental extra/renamed/
+    reordered argument would fail this test even if `references` alone still
+    looked right.
+    """
+    runner, captured = _runner()
+    clip = _source_clip()
+    params = {"width": 64, "height": 32, "frame_rate": 24.0,
+              "regenerate_start_frame": 40, "regenerate_end_frame": 85,
+              "inpaint_video_audio_mode": "regenerate"}
+    runner._generate_vidinpaint_minimax_h3(params, clip, 24.0, None)
+
+    plan = _plan(40, 85)
+    assert set(captured) == {
+        "pinned_video_frames", "pinned_video_source", "input_audio",
+        "pinned_audio_latents", "references", "label",
+        "progress_callback", "step_callback", "params",
+    }
+    assert captured["pinned_video_frames"] == plan["pinned_latent_frames"]
+    assert np.array_equal(captured["pinned_video_source"], clip)
+    assert captured["input_audio"] is None
+    assert captured["pinned_audio_latents"] == ()
+    assert captured["references"] == ()
+    assert captured["label"] == "vid_inpaint"
+    assert captured["progress_callback"] is None
+    assert captured["step_callback"] is None
+
+
+def test_ref2va_inpaint_is_refused_before_any_generation_work():
+    """The defensive re-check (mirroring the outpaint path's own) must fire
+    BEFORE `_generate_minimax_h3` is ever called -- `captured` staying empty
+    is the proof, not just that a ValidationError was raised.
+    """
+    from api.error_handlers import ValidationError
+    from core.pipeline_backends.minimax_h3 import MiniMaxH3Mixin
+
+    captured = {}
+
+    class Runner(MiniMaxH3Mixin):
+        minimax_h3_components = {"variant": "ref2va", "audio_sample_rate": 32000}
+        current_model_info = {"type": "minimax_h3", "variant": "ref2va"}
+
+        def _generate_minimax_h3(self, params, **kwargs):
+            captured["called"] = True
+            raise AssertionError("must not reach generation on a closed gate")
+
+    clip = _source_clip()
+    params = {"width": 64, "height": 32, "frame_rate": 24.0,
+              "regenerate_start_frame": 40, "regenerate_end_frame": 85,
+              "inpaint_video_audio_mode": "regenerate"}
+    with pytest.raises(ValidationError, match="not open"):
+        Runner()._generate_vidinpaint_minimax_h3(params, clip, 24.0, None)
+    assert "called" not in captured
+
+
+def test_fl2va_inpaint_with_a_reference_is_refused_before_generation():
+    from api.error_handlers import ValidationError
+    from core.models.minimax_h3 import h3_references as h3refs
+    from core.pipeline_backends.minimax_h3 import MiniMaxH3Mixin
+
+    captured = {}
+
+    class Runner(MiniMaxH3Mixin):
+        minimax_h3_components = {"variant": "fl2va", "audio_sample_rate": 32000}
+        current_model_info = {"type": "minimax_h3", "variant": "fl2va"}
+
+        def _generate_minimax_h3(self, params, **kwargs):
+            captured["called"] = True
+            raise AssertionError("must not reach generation on a closed gate")
+
+    clip = _source_clip()
+    params = {"width": 64, "height": 32, "frame_rate": 24.0,
+              "regenerate_start_frame": 40, "regenerate_end_frame": 85,
+              "inpaint_video_audio_mode": "regenerate"}
+    from PIL import Image
+    reference = h3refs.MiniMaxH3Reference(kind="image", image=Image.new("RGB", (8, 8)))
+    with pytest.raises(ValidationError, match="fl2va"):
+        Runner()._generate_vidinpaint_minimax_h3(params, clip, 24.0, None, references=(reference,))
+    assert "called" not in captured

@@ -54,6 +54,9 @@ from api.param_defaults import (
     VIDEO_GEN_ARCH_OVERLAYS,
     OUTPAINT_VIDEO_ARCH_OVERLAYS,
     INPAINT_VIDEO_ARCH_OVERLAYS,
+    AUDIO_GEN_ARCH_OVERLAYS,
+    AUD2AUD_GEN_ARCH_OVERLAYS,
+    OUTPAINT_AUDIO_ARCH_OVERLAYS,
     PROMPT_ASSIST_DEFAULTS, STUDIO_RENDER_DEFAULTS, H3_HYBRID_LOAD_DEFAULTS,
     VIDEO_CHAIN_DEFAULTS,
     VIDEO_CHAIN_PROVENANCE_DEFAULTS,
@@ -307,18 +310,43 @@ class Txt2VidRequest(BaseModel):
 
 
 class Txt2AudRequest(BaseModel):
-    """Text-to-audio (music) generation request (ACE-Step 1.5 turbo).
+    """Text-to-audio (music) generation request (ACE-Step 1.5 turbo or
+    MiniMax Music 3).
 
     Standalone request model (does not extend GenerationParams -- audio has
-    no width/height/steps/cfg_scale/sampler concept). See
+    no width/height/steps/cfg_scale/sampler concept). Field defaults below
+    are ACE-Step-shaped (`TXT2AUD_DEFAULTS`); a MiniMax Music 3 request that
+    omits a field is resolved against that architecture's OWN defaults
+    server-side, via `generation_utils.resolve_audio_defaults` /
+    `param_defaults.audio_defaults_for_arch` -- see
     `core.pipeline_backends.acestep.AceStepMixin._generate_txt2aud_acestep`
-    for how each field is consumed.
+    and `core.pipeline_backends.minimax_music3.MiniMaxMusic3Mixin.
+    _generate_txt2aud_minimax_music3` for how each field is consumed per
+    architecture.
     """
     prompt: str = TXT2AUD_DEFAULTS["prompt"]
+    # ACE-Step: optional. MiniMax Music 3: REQUIRED non-empty -- the
+    # checkpoint's input contract demands it; instrumental tracks are
+    # expressed through caption/structure tags in `prompt`, not by omitting
+    # `lyrics` (design doc "Generation parameter contract"). Structure tags
+    # such as `[verse]` must each own their own line: text sharing a line
+    # with a leading tag is silently dropped by the checkpoint.
     lyrics: Optional[str] = TXT2AUD_DEFAULTS["lyrics"]
-    audio_duration: float = TXT2AUD_DEFAULTS["audio_duration"]
+    # `gt=0` only -- always true regardless of architecture. The MiniMax
+    # Music 3-specific ceiling (360s, design doc "Generation parameter
+    # contract") is NOT declared here: it is arch-specific (ACE-Step has no
+    # established upper bound), so it is enforced server-side by
+    # `generation_utils.validate_audio_params` instead (audit finding F4),
+    # which CLAMPS an over-ceiling request and records a `warnings[]` entry
+    # naming the clamp, mirroring how the video routes warn on a frame-count
+    # snap rather than silently truncating.
+    audio_duration: float = Field(TXT2AUD_DEFAULTS["audio_duration"], gt=0)
     seed: int = TXT2AUD_DEFAULTS["seed"]
+    # ACE-Step only (per-song step count for its turbo sampler). MiniMax
+    # Music 3 uses `num_inference_steps` below instead (per CHUNK).
     inference_steps: int = TXT2AUD_DEFAULTS["inference_steps"]
+    # ACE-Step only (its turbo sampler is CFG-distilled). MiniMax Music 3
+    # uses `flow_guidance_scale` below instead.
     guidance_scale: float = TXT2AUD_DEFAULTS["guidance_scale"]
     shift: float = TXT2AUD_DEFAULTS["shift"]
     sampler_mode: str = TXT2AUD_DEFAULTS["sampler_mode"]
@@ -326,11 +354,35 @@ class Txt2AudRequest(BaseModel):
     loras: Optional[List[LoRAConfig]] = TXT2AUD_DEFAULTS["loras"]
     # Weight-only quantization. "int8" converts the ACE-Step DiT in place once
     # per model load (`AceStepMixin._acestep_runtime_int8`, RUNTIME_INT8_ARCHS);
-    # the FP8 values are not implemented for this architecture.
+    # the FP8 values are not implemented for this architecture. Not applied
+    # for MiniMax Music 3 at all (see `arch_capabilities`'s "minimax_music3"
+    # entry): phase 1 loads BF16/FP16 only.
     unet_quantization: Optional[str] = TXT2AUD_DEFAULTS["unet_quantization"]
     # Which GEMM an already-quantized Linear runs (`acestep` is in
-    # QUANTIZED_LINEAR_ARCHS). None leaves the process flags untouched.
+    # QUANTIZED_LINEAR_ARCHS). None leaves the process flags untouched. Not
+    # applied for MiniMax Music 3 (it holds plain floating-point Linears).
     quantized_gemm_mode: Optional[str] = TXT2AUD_DEFAULTS["quantized_gemm_mode"]
+    # MiniMax Music 3 ONLY. `None` (the base default here) has no defensible
+    # ACE-Step-shaped value -- ACE-Step has no per-CHUNK step concept at all
+    # -- so an omitted field is resolved from `audio_defaults_for_arch`'s
+    # "minimax_music3" overlay (default 30) at request time, exactly like
+    # `INPAINT_VIDEO_DEFAULTS`'s `regenerate_start_frame: None`. Per CHUNK
+    # (the flow-matching DiT's 200-frame windows), not per song. `ge=1`: a
+    # value below 1 reaches
+    # `np.linspace(1.0, 1.0 / num_inference_steps, num_inference_steps)`
+    # inside `FlowMatchEulerDiscreteScheduler.set_timesteps` (0 raises
+    # ZeroDivisionError, a negative count raises inside numpy) -- and only
+    # AFTER the entire autoregressive stage has already run, i.e. minutes of
+    # GPU time spent before what would otherwise be a 500 (audit finding
+    # F4). Rejected here at the request boundary instead.
+    num_inference_steps: Optional[int] = Field(None, ge=1)
+    # MiniMax Music 3 ONLY. Same `None`-sentinel contract as
+    # `num_inference_steps` above; resolved to 1.7 by the "minimax_music3"
+    # overlay when omitted. Flow-stage CFG; the autoregressive stage's CFG
+    # (1.5) and top-k (50) are fixed by the reference recipe and are not
+    # exposed as request parameters at all. `gt=0`: matches the design doc's
+    # stated bound.
+    flow_guidance_scale: Optional[float] = Field(None, gt=0)
 
 
 class GenerationParams(BaseModel):
@@ -524,26 +576,28 @@ def _reject_if_video_model_on_audio_route(endpoint: str):
         )
 
 
-def _reject_if_music3_model_not_yet_wired(endpoint: str):
-    """MiniMax Music 3 IS an audio model, but generation is not shipped yet.
+def _reject_if_music3_extend_repaint_not_yet_wired(endpoint: str):
+    """MiniMax Music 3 text-to-music generation IS shipped (/generate/txt2aud,
+    design doc phase plan item 4); extend and repaint are not (items 7-8).
 
-    Without this, an audio route falls through to "No ACE-Step model loaded"
-    while a Music3 model is actually loaded -- true only in the narrow sense
-    that it isn't ACE-Step, and misleading about why.
-
-    NOTE for whoever removes this gate: every audio route below reserves
-    `_PEAK_VRAM_GB_BY_KIND["acestep"]` (8.0) from the GPU coordinator
-    regardless of which audio architecture is loaded. MiniMax Music 3's
-    actual peak (~18-24 GB across its two co-residency pairs) needs its own
-    entry in `_PEAK_VRAM_GB_BY_KIND`, added and read at every one of this
-    gate's call sites, BEFORE this function stops raising -- otherwise the
-    coordinator under-reserves by roughly 2-3x for every Music 3 generation.
+    Both mechanisms need the frame-code sidecar's AR-resume replay
+    (design doc "Per-generation state contract" /
+    `core.models.minimax_music3.frame_codes`), which txt2aud writes but no
+    route yet reads back. Without this gate, `/generate/outpaint/audio`
+    (extend) and `/generate/aud2aud` (repaint/cover) would fall through to
+    "No ACE-Step model loaded" while a Music3 model is actually loaded --
+    true only in the narrow sense that it isn't ACE-Step, and misleading
+    about why, and it would also misdescribe a working feature (txt2aud) as
+    unimplemented.
     """
     if getattr(pipeline_manager, "is_minimax_music3_model", False):
+        _feature = "extend" if "outpaint" in endpoint else "repaint/cover"
         raise CustomValidationError(
-            "MiniMax Music 3 generation is not implemented yet",
-            detail=f"The loaded model is MiniMax Music 3, but {endpoint}'s generation entry "
-                   f"point has not shipped yet.",
+            f"MiniMax Music 3 {_feature} is not implemented yet",
+            detail=f"The loaded model is MiniMax Music 3. Its text-to-music generation is "
+                   f"implemented (/generate/txt2aud), but {endpoint}'s {_feature} mechanism -- "
+                   f"resuming the autoregressive stage from the saved frame-code sidecar -- has "
+                   f"not shipped yet.",
         )
 
 
@@ -594,11 +648,21 @@ async def get_generation_defaults():
     only on `/generate/outpaint/video` (chiefly `total_frames`, whose base value
     is on LTX-2.3's grid), applied on top of the video overlay, and
     ``inpaint_video_arch_overlays`` for `/generate/inpaint/video`'s own keys.
+
+    ``audio_arch_overlays`` / ``aud2aud_arch_overlays`` / ``outpaint_audio_arch_overlays``
+    are the audio equivalent (``param_defaults.audio_defaults_for_arch`` and its
+    aud2aud/outpaint twins), introduced alongside MiniMax Music 3: ``txt2aud``
+    above is ACE-Step-shaped, and Music 3 overlays its own ``audio_duration``/
+    ``num_inference_steps``/``flow_guidance_scale`` on top of it, exactly as
+    MiniMax-H3 overlays video geometry on top of LTX-2.3's shape.
     """
     return {
         "video_arch_overlays": VIDEO_GEN_ARCH_OVERLAYS,
         "outpaint_video_arch_overlays": OUTPAINT_VIDEO_ARCH_OVERLAYS,
         "inpaint_video_arch_overlays": INPAINT_VIDEO_ARCH_OVERLAYS,
+        "audio_arch_overlays": AUDIO_GEN_ARCH_OVERLAYS,
+        "aud2aud_arch_overlays": AUD2AUD_GEN_ARCH_OVERLAYS,
+        "outpaint_audio_arch_overlays": OUTPAINT_AUDIO_ARCH_OVERLAYS,
         "txt2img": TXT2IMG_DEFAULTS,
         "img2img": IMG2IMG_DEFAULTS,
         "inpaint":  INPAINT_DEFAULTS,
@@ -3031,12 +3095,20 @@ async def generate_txt2aud(
     db: Session = Depends(get_gallery_db)
 ):
     """Generate music/audio from a text caption + lyrics using the loaded
-    ACE-Step 1.5 model.
+    ACE-Step 1.5 or MiniMax Music 3 model.
 
-    Produces a lossless FLAC file and a gallery row. Requires an ACE-Step
-    model to be loaded.
+    Produces a lossless FLAC file and a gallery row. Requires an ACE-Step or
+    MiniMax Music 3 model to be loaded. Any field the client omits is filled
+    from the LOADED ARCHITECTURE's audio defaults
+    (`param_defaults.audio_defaults_for_arch`) -- the same per-arch overlay
+    mechanism the video routes use, so `audio_duration`/`num_inference_steps`/
+    `flow_guidance_scale` resolve to MiniMax Music 3's own defaults on that
+    architecture without a route-level branch. MiniMax Music 3 additionally
+    writes a frame-code sidecar next to the saved audio file (design doc "Per-
+    generation state contract") so a later commit's extend/repaint can resume
+    the autoregressive stage from it.
     """
-    from api.generation_status import start_generation, complete_generation, fail_generation, get_warnings
+    from api.generation_status import start_generation, complete_generation, fail_generation, get_warnings, add_warning
     from utils.audio_utils import save_audio_with_metadata
 
     params = request.dict()
@@ -3046,13 +3118,13 @@ async def generate_txt2aud(
     params["quantized_gemm_mode"] = _normalize_media_qgm(params.get("quantized_gemm_mode"))
 
     # MiniMax-H3 first: it DOES generate audio, but only jointly with video, so
-    # the generic "no ACE-Step model" message below would misdescribe it.
+    # the generic "no audio model" message below would misdescribe it.
     _reject_if_video_model_on_audio_route("/generate/txt2aud")
-    _reject_if_music3_model_not_yet_wired("/generate/txt2aud")
-    if not getattr(pipeline_manager, "is_acestep_model", False):
+    _is_music3 = getattr(pipeline_manager, "is_minimax_music3_model", False)
+    if not (getattr(pipeline_manager, "is_acestep_model", False) or _is_music3):
         raise CustomValidationError(
-            "No ACE-Step model loaded",
-            detail="Load an ACE-Step 1.5 audio model before calling /generate/txt2aud.",
+            "No ACE-Step or MiniMax Music 3 model loaded",
+            detail="Load an ACE-Step 1.5 or MiniMax Music 3 audio model before calling /generate/txt2aud.",
         )
 
     _gen_id = start_generation("txt2aud")
@@ -3060,8 +3132,15 @@ async def generate_txt2aud(
         pipeline_manager.reset_cancel_flag()
 
         from api.arch_capabilities import check_arch_capabilities
-        _acestep_arch = (pipeline_manager.current_model_info or {}).get("type")
-        check_arch_capabilities(params, _acestep_arch)
+        from api.generation_utils import resolve_audio_defaults, validate_audio_params
+        _aud_arch = (pipeline_manager.current_model_info or {}).get("type")
+        _aud_defaults = resolve_audio_defaults(params, request.model_fields_set, _aud_arch)
+        # Arch-specific bounds (audio_duration ceiling, num_inference_steps
+        # floor) -- BEFORE the GPU coordinator reserves a slot below, so an
+        # out-of-range step count is a fast 400 rather than a 500 minutes
+        # into the autoregressive stage (audit finding F4).
+        validate_audio_params(params, _aud_arch)
+        check_arch_capabilities(params, _aud_arch, defaults=_aud_defaults)
 
         print(f"txt2aud generation params: {sanitize_params_for_logging(params)}")
 
@@ -3077,17 +3156,32 @@ async def generate_txt2aud(
         from core.gpu_coordinator import gpu_coordinator
         loop = asyncio.get_event_loop()
         _gen_start = time.perf_counter()
-        async with gpu_coordinator.generation_slot(estimated_peak_gb=_PEAK_VRAM_GB_BY_KIND["acestep"], timeout=120.0):
+        # Arch-dependent: MiniMax Music 3's language model + depth decoder
+        # (AR stage) and transformer + condition encoder (flow stage) peak at
+        # roughly 3x ACE-Step's DiT+VAE+TE footprint (_PEAK_VRAM_GB_BY_KIND).
+        _peak_gb = _PEAK_VRAM_GB_BY_KIND.get(pipeline_manager.current_pipeline_kind, _PEAK_VRAM_GB_BY_KIND["acestep"])
+        async with gpu_coordinator.generation_slot(estimated_peak_gb=_peak_gb, timeout=120.0):
             # GEMM flags are process-wide; keep selection and probing in this slot.
             from api.quantized_gemm import apply_quantized_gemm_mode
             apply_quantized_gemm_mode(params.get("quantized_gemm_mode"))
-            waveform, sample_rate, actual_seed = await _run_generation_in_executor(
+            _gen_result = await _run_generation_in_executor(
                 loop, executor,
                 lambda: pipeline_manager.generate_txt2aud(params, progress_callback=progress_callback)
             )
             fp8_gemm = extract_fp8_gemm_info(pipeline_manager)
         apply_generation_timings(params, time.perf_counter() - _gen_start)
-        _record_media_gemm_outcome(params, fp8_gemm, _acestep_arch)
+        _record_media_gemm_outcome(params, fp8_gemm, _aud_arch)
+
+        # ACE-Step returns a plain (waveform, sample_rate, actual_seed) tuple;
+        # MiniMax Music 3 returns `MiniMaxMusic3Txt2AudResult`, which also
+        # carries the frame codes the sidecar below needs (see that result
+        # type's own docstring for why this is not unified into one shape).
+        if _is_music3:
+            waveform = _gen_result.waveform
+            sample_rate = _gen_result.sample_rate
+            actual_seed = _gen_result.actual_seed
+        else:
+            waveform, sample_rate, actual_seed = _gen_result
 
         params["seed"] = actual_seed
 
@@ -3112,6 +3206,48 @@ async def generate_txt2aud(
         # Record audio-specific fields into parameters JSON for the gallery.
         num_samples = int(waveform.shape[-1])
         duration_s = (num_samples / sample_rate) if sample_rate else 0.0
+
+        model_name, model_hash = extract_model_info(pipeline_manager)
+
+        # MiniMax Music 3's per-generation state contract (design doc "Per-
+        # generation state contract"): the frame codes MUST ship in the same
+        # commit/request as the audio itself -- a song saved without this
+        # sidecar can never be extended or repainted (design doc phase plan
+        # item 3's note, and item 4's "Persist the frame-code sidecar").
+        # Best-effort for the GENERATION itself (a write failure must not
+        # fail an already-succeeded audio generation, so this is not
+        # raised) -- but NOT silent: this is the one signal that the song
+        # just saved can never be extended or repainted (design doc "Per-
+        # generation state contract"), so a failure here is surfaced as an
+        # ordinary generation warning (audit finding F3) rather than only a
+        # backend-console `print`. `add_warning` is called BEFORE
+        # `get_warnings(_gen_id)` is read into `params_for_db` below, so the
+        # failure also lands on the saved gallery row's
+        # `effective_warnings`, not only in the HTTP response.
+        if _is_music3:
+            from core.models.minimax_music3.frame_codes import write_frame_codes_sidecar
+            try:
+                write_frame_codes_sidecar(
+                    os.path.join(settings.outputs_dir, filename),
+                    _gen_result.frame_codes,
+                    _gen_result.prefix_codes,
+                    sample_rate=sample_rate,
+                    frame_rate=_gen_result.frame_rate,
+                    prompt=_gen_result.prompt,
+                    lyrics=_gen_result.lyrics,
+                    seed=actual_seed,
+                    num_samples=num_samples,
+                    content_hash=_media_hash,
+                    model_hash=model_hash,
+                )
+            except Exception as exc:
+                _sidecar_error_msg = (
+                    f"Failed to write the frame-code sidecar for {filename!r} ({exc!r}); "
+                    f"this song cannot be extended or repainted."
+                )
+                print(f"[MiniMaxMusic3] WARNING: {_sidecar_error_msg}")
+                add_warning(_sidecar_error_msg, code="sidecar_write_failed")
+
         params_for_db = {k: v for k, v in params.items() if not k.startswith("_")}
         # Audio has no visual dimensions; do not let create_db_image_record's
         # width/height fallback (512) fabricate a fake resolution.
@@ -3124,8 +3260,6 @@ async def generate_txt2aud(
         _effective_warnings = get_warnings(_gen_id)
         if _effective_warnings:
             params_for_db["effective_warnings"] = _effective_warnings
-
-        model_name, model_hash = extract_model_info(pipeline_manager)
 
         db_image = create_db_image_record(
             GeneratedImage,
@@ -3234,7 +3368,7 @@ async def generate_aud2aud(
     # MiniMax-H3 first: it DOES generate audio, but only jointly with video, so
     # the generic "no ACE-Step model" message below would misdescribe it.
     _reject_if_video_model_on_audio_route("/generate/aud2aud")
-    _reject_if_music3_model_not_yet_wired("/generate/aud2aud")
+    _reject_if_music3_extend_repaint_not_yet_wired("/generate/aud2aud")
     if not getattr(pipeline_manager, "is_acestep_model", False):
         raise CustomValidationError(
             "No ACE-Step model loaded",
@@ -3283,7 +3417,11 @@ async def generate_aud2aud(
         from core.gpu_coordinator import gpu_coordinator
         loop = asyncio.get_event_loop()
         _gen_start = time.perf_counter()
-        async with gpu_coordinator.generation_slot(estimated_peak_gb=_PEAK_VRAM_GB_BY_KIND["acestep"], timeout=120.0):
+        # Arch-dependent (see /generate/txt2aud's identical lookup): still
+        # always resolves to "acestep" today, since MiniMax Music 3 is
+        # refused above, but this stays correct once that gate lifts.
+        _peak_gb = _PEAK_VRAM_GB_BY_KIND.get(pipeline_manager.current_pipeline_kind, _PEAK_VRAM_GB_BY_KIND["acestep"])
+        async with gpu_coordinator.generation_slot(estimated_peak_gb=_peak_gb, timeout=120.0):
             # GEMM flags are process-wide; keep selection and probing in this slot.
             from api.quantized_gemm import apply_quantized_gemm_mode
             apply_quantized_gemm_mode(params.get("quantized_gemm_mode"))
@@ -3452,7 +3590,7 @@ async def generate_outpaint_audio(
     # MiniMax-H3 first: it DOES generate audio, but only jointly with video, so
     # the generic "no ACE-Step model" message below would misdescribe it.
     _reject_if_video_model_on_audio_route("/generate/outpaint/audio")
-    _reject_if_music3_model_not_yet_wired("/generate/outpaint/audio")
+    _reject_if_music3_extend_repaint_not_yet_wired("/generate/outpaint/audio")
     if not getattr(pipeline_manager, "is_acestep_model", False):
         raise CustomValidationError(
             "No ACE-Step model loaded",
@@ -3541,7 +3679,11 @@ async def generate_outpaint_audio(
         from core.gpu_coordinator import gpu_coordinator
         loop = asyncio.get_event_loop()
         _gen_start = time.perf_counter()
-        async with gpu_coordinator.generation_slot(estimated_peak_gb=_PEAK_VRAM_GB_BY_KIND["acestep"], timeout=120.0):
+        # Arch-dependent (see /generate/txt2aud's identical lookup): still
+        # always resolves to "acestep" today, since MiniMax Music 3 is
+        # refused above, but this stays correct once that gate lifts.
+        _peak_gb = _PEAK_VRAM_GB_BY_KIND.get(pipeline_manager.current_pipeline_kind, _PEAK_VRAM_GB_BY_KIND["acestep"])
+        async with gpu_coordinator.generation_slot(estimated_peak_gb=_peak_gb, timeout=120.0):
             # GEMM flags are process-wide; keep selection and probing in this slot.
             from api.quantized_gemm import apply_quantized_gemm_mode
             apply_quantized_gemm_mode(params.get("quantized_gemm_mode"))
@@ -8307,6 +8449,19 @@ def _generated_image_file_paths(image: "GeneratedImage") -> Dict[str, str]:
     if _is_safe_output_name(preview_filename):
         paths["preview_proxy"] = os.path.join(settings.outputs_dir, preview_filename)
 
+    # MiniMax Music 3's frame-code sidecar (design doc "Per-generation state
+    # contract") -- a SEPARATE file from the generic `sidecar` above (see
+    # `core.models.minimax_music3.frame_codes` module docstring for why).
+    # Added unconditionally for every row, not gated on `is_audio`/model
+    # type: the loop below only removes a path that `os.path.exists`, so
+    # this is harmless for a row that never had one (ACE-Step, or any row
+    # predating this key), and matching on the actual file's presence is
+    # simpler and safer than trusting stored parameters to say which
+    # architecture produced it (audit finding F5 -- without this key,
+    # deleting a Music3 song left ~144 KB of dead JSON in outputs/ forever).
+    from core.models.minimax_music3.frame_codes import sidecar_path_for_audio
+    paths["frame_codes_sidecar"] = sidecar_path_for_audio(media_path)
+
     paths["media"] = media_path
     return paths
 
@@ -8321,9 +8476,10 @@ async def delete_image(
 
     `delete_files=true` (default): removes the DB row AND every artefact it
     owns (media, sidecar JSON, poster/waveform PNG, both thumbnail variants,
-    and the lossless proxy when present). Files are removed in an order that
-    leaves `media` for last, so if a later file fails the row (left intact,
-    see the 500 response) still points at a file that still exists on retry.
+    the lossless proxy when present, and MiniMax Music 3's frame-code sidecar
+    when present). Files are removed in an order that leaves `media` for
+    last, so if a later file fails the row (left intact, see the 500
+    response) still points at a file that still exists on retry.
 
     `delete_files=false`: removes only the DB row; every file on disk is
     left untouched (they become invisible to the gallery but stay on disk).
@@ -9513,7 +9669,7 @@ async def get_schedule_types():
 async def get_loras():
     """Get available LoRA files"""
     try:
-        loras = lora_manager.get_available_loras()
+        loras = await asyncio.to_thread(lora_manager.get_available_loras)
         print(f"[DEBUG] get_loras: Found {len(loras)} LoRA files")
         if len(loras) > 0:
             print(f"[DEBUG] First LoRA: {loras[0]}")
@@ -9531,7 +9687,7 @@ async def get_loras():
 async def get_lora_info(lora_name: str):
     """Get information about a specific LoRA"""
     try:
-        info = lora_manager.get_lora_info(lora_name)
+        info = await asyncio.to_thread(lora_manager.get_lora_info, lora_name)
     except LoRAAmbiguousIdentifierError as e:
         # The identifier resolves to different files across more than one
         # registered directory -- refuse to guess which one the caller means
@@ -9572,7 +9728,7 @@ async def tokenize_prompt(prompt: str = Form(...)):
 async def get_controlnets():
     """Get available ControlNet models"""
     try:
-        controlnets = controlnet_manager.get_available_controlnets()
+        controlnets = await asyncio.to_thread(controlnet_manager.get_available_controlnets)
         print(f"[DEBUG] get_controlnets: Found {len(controlnets)} ControlNet models")
         if len(controlnets) > 0:
             print(f"[DEBUG] First ControlNet: {controlnets[0]}")
@@ -9594,8 +9750,12 @@ async def get_controlnets():
 async def get_controlnet_info(controlnet_path: str):
     """Get information about a specific ControlNet model"""
     try:
-        is_lllite = controlnet_manager.is_lllite_model(controlnet_path)
-        layers = controlnet_manager.get_controlnet_layers(controlnet_path) if not is_lllite else []
+        def inspect_controlnet():
+            is_lllite = controlnet_manager.is_lllite_model(controlnet_path)
+            layers = controlnet_manager.get_controlnet_layers(controlnet_path) if not is_lllite else []
+            return is_lllite, layers
+
+        is_lllite, layers = await asyncio.to_thread(inspect_controlnet)
         return {
             "name": os.path.basename(controlnet_path),
             "path": controlnet_path,

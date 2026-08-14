@@ -197,8 +197,24 @@ def save_audio_with_metadata(
         "sample_rate": sample_rate,
         "channels": num_channels,
         "duration": duration_s,
-        "inference_steps": params.get("inference_steps"),
-        "guidance_scale": params.get("guidance_scale"),
+        # MiniMax Music 3's differently-named equivalents (per-CHUNK
+        # `num_inference_steps`, flow-stage `flow_guidance_scale`) are
+        # checked FIRST and preferred when present -- `Txt2AudRequest`
+        # declares `inference_steps: int = 8`/`guidance_scale: float = 1.0`
+        # unconditionally, so `params["inference_steps"]` is NEVER absent and
+        # a `dict.get(key, fallback)` keyed on ACE-Step's field would never
+        # reach the fallback arm (a bug an earlier version of this file had:
+        # a Music3 request with steps=50/scale=3.0 recorded ACE-Step's inert
+        # 8/1.0 here instead). `is not None` (not truthiness) so a real
+        # ACE-Step value of 0 is never treated as "absent".
+        "inference_steps": (
+            params["num_inference_steps"] if params.get("num_inference_steps") is not None
+            else params.get("inference_steps")
+        ),
+        "guidance_scale": (
+            params["flow_guidance_scale"] if params.get("flow_guidance_scale") is not None
+            else params.get("guidance_scale")
+        ),
         "shift": params.get("shift"),
         "sampler_mode": params.get("sampler_mode"),
         "vocal_language": params.get("vocal_language"),

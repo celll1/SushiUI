@@ -246,6 +246,21 @@ paths:
         so MiniMax-H3 overlays `preserve_input`. `inpaint_vid` carries no
         clip-length key at all — that endpoint's output is as long as the
         trimmed input.
+
+        `audio_arch_overlays` (`AUDIO_GEN_ARCH_OVERLAYS`) is the AUDIO
+        equivalent, introduced alongside MiniMax Music 3: the base `txt2aud`
+        defaults are ACE-Step-shaped (`audio_duration: 30.0`,
+        `inference_steps`/`guidance_scale`-driven turbo sampler), and MiniMax
+        Music 3 overlays its own `audio_duration` (60.0, an upper bound —
+        see `Txt2AudRequest.audio_duration`), `num_inference_steps` (30, per
+        CHUNK) and `flow_guidance_scale` (1.7) — two of which ACE-Step has no
+        equivalent field for at all. A client resolves an audio default as
+        `txt2aud | audio_arch_overlays[arch]`, exactly like the video case.
+        `aud2aud_arch_overlays` / `outpaint_audio_arch_overlays` are the same
+        mechanism's twins for `POST /generate/aud2aud` and
+        `POST /generate/outpaint/audio`; both are currently EMPTY for every
+        architecture, because those two endpoints still refuse a MiniMax
+        Music 3 model outright pending their own extend/repaint mechanism.
       tags: [Schema]
       responses:
         '200':
@@ -325,6 +340,41 @@ paths:
                     example:
                       minimax_h3:
                         inpaint_video_audio_mode: preserve_input
+                  audio_arch_overlays:
+                    type: object
+                    description: >-
+                      Architecture name -> the audio default keys that differ
+                      from the base `txt2aud` defaults on that architecture.
+                    additionalProperties:
+                      type: object
+                      additionalProperties: true
+                    example:
+                      minimax_music3:
+                        audio_duration: 60.0
+                        num_inference_steps: 30
+                        flow_guidance_scale: 1.7
+                  aud2aud_arch_overlays:
+                    type: object
+                    description: >-
+                      Architecture name -> the `aud2aud`-only default keys
+                      that differ from the base ones on that architecture.
+                      Empty today for every architecture — see this
+                      endpoint's own description.
+                    additionalProperties:
+                      type: object
+                      additionalProperties: true
+                    example: {}
+                  outpaint_audio_arch_overlays:
+                    type: object
+                    description: >-
+                      Architecture name -> the outpaint-audio-only default
+                      keys that differ from the base ones on that
+                      architecture, applied on top of `aud2aud_arch_overlays`.
+                      Empty today for every architecture.
+                    additionalProperties:
+                      type: object
+                      additionalProperties: true
+                    example: {}
                   param_bounds:
                     type: object
                     description: >-
@@ -948,22 +998,54 @@ paths:
   /generate/txt2aud:
     post:
       tags: [generation]
-      summary: Generate music/audio from a text caption (ACE-Step 1.5)
+      summary: Generate music/audio from a text caption (ACE-Step 1.5 or MiniMax Music 3)
       description: |
         Text-to-audio (music) generation using a loaded ACE-Step 1.5 (turbo)
-        model. Produces a lossless FLAC file and a gallery row.
+        model OR a loaded MiniMax Music 3 model. Produces a lossless FLAC
+        file and a gallery row.
 
         **Requirements:**
-        - An ACE-Step model must be loaded (otherwise 400).
+        - An ACE-Step or MiniMax Music 3 model must be loaded (otherwise 400).
 
-        **Key parameters:**
+        **Key parameters (ACE-Step):**
         - `prompt`: caption text describing the desired music.
         - `lyrics`: optional lyrics text; empty for instrumental.
         - `audio_duration`: target length in seconds.
 
-        **Distilled defaults:** inference_steps=8, guidance_scale=1.0 (turbo
-        is CFG-distilled; a non-default value is overridden back to 1.0),
+        **Distilled defaults (ACE-Step):** inference_steps=8, guidance_scale=1.0
+        (turbo is CFG-distilled; a non-default value is overridden back to 1.0),
         shift=3.0.
+
+        **Key parameters (MiniMax Music 3):**
+        - `prompt`: the music description/caption (not the lyrics).
+        - `lyrics`: REQUIRED, non-empty -- see `Txt2AudRequest.lyrics` for the
+          structure-tag line rule.
+        - `audio_duration`: an UPPER BOUND (default 60s, capped at 360s), not
+          a target -- the autoregressive stage may stop earlier.
+        - `num_inference_steps` (default 30, per chunk) and
+          `flow_guidance_scale` (default 1.7) replace ACE-Step's
+          `inference_steps`/`guidance_scale` for this architecture.
+        - There is no `negative_prompt` parameter on this endpoint for either
+          architecture; on MiniMax Music 3 this is a property of the released
+          model (the flow-stage unconditional branch conditions on zeros),
+          not a missing feature.
+        - `loras` has no effect on MiniMax Music 3 (its pipeline backend
+          never reads it); a warning is added when set.
+        - Output is 44.1 kHz stereo (the vocoder component's own config).
+          This is NOT the 32 kHz figure on the model card, which describes a
+          separate SGLang serving path this integration does not use;
+          SushiUI writes what the vendored vocoder produces, unresampled.
+
+        Any field the client omits is filled from the LOADED architecture's
+        own audio defaults (`GET /schema/generation-defaults`'s
+        `audio_arch_overlays`), so the two architectures' different defaults
+        never require a client-side branch.
+
+        MiniMax Music 3 additionally writes a per-generation frame-code
+        sidecar next to the saved FLAC file (not exposed through this
+        response), which a later `/generate/outpaint/audio` (extend) or
+        `/generate/aud2aud` (repaint/cover) request will read back once those
+        endpoints support this architecture.
       operationId: generateTxt2Aud
       requestBody:
         required: true
@@ -987,9 +1069,11 @@ paths:
                   generation_type: "txt2aud"
         '400':
           description: >-
-            Invalid parameters, or no ACE-Step model loaded. A loaded MiniMax-H3
-            model is refused here with its own reason: it generates audio only
-            jointly with video, so its audio is not separately addressable.
+            Invalid parameters (e.g. an empty `lyrics` on a MiniMax Music 3
+            request), or no ACE-Step/MiniMax Music 3 model loaded. A loaded
+            MiniMax-H3 model is refused here with its own reason: it
+            generates audio only jointly with video, so its audio is not
+            separately addressable.
           content:
             application/json:
               schema:
@@ -1087,7 +1171,13 @@ paths:
           description: >-
             Invalid parameters, or no ACE-Step model loaded. A loaded MiniMax-H3
             model is refused here with its own reason: it generates audio only
-            jointly with video, so its audio is not separately addressable.
+            jointly with video, so its audio is not separately addressable. A
+            loaded MiniMax Music 3 model is refused too, though it IS an audio
+            model and its text-to-music generation works
+            (`POST /generate/txt2aud`): its repaint/cover mechanism needs to
+            resume the autoregressive stage from the frame-code sidecar
+            `/generate/txt2aud` writes, and this endpoint does not read that
+            sidecar back yet.
           content:
             application/json:
               schema:
@@ -1197,7 +1287,12 @@ paths:
             Invalid parameters (including a placement that cannot fit), or no
             ACE-Step model loaded. A loaded MiniMax-H3 model is refused here with
             its own reason: it generates audio only jointly with video, so its
-            audio is not separately addressable.
+            audio is not separately addressable. A loaded MiniMax Music 3 model
+            is refused too, though it IS an audio model and its text-to-music
+            generation works (`POST /generate/txt2aud`): its extend mechanism
+            needs to resume the autoregressive stage from the frame-code
+            sidecar `/generate/txt2aud` writes, and this endpoint does not read
+            that sidecar back yet.
           content:
             application/json:
               schema:
@@ -11512,17 +11607,42 @@ components:
         prompt:
           type: string
           default: ""
-          description: "Caption text describing the desired music (also accepted server-side as `caption`)."
+          description: |
+            Caption text describing the desired music (also accepted
+            server-side as `caption`). On MiniMax Music 3 this is the music
+            DESCRIPTION, not the lyrics -- see `lyrics` below.
           example: "upbeat synthpop, driving bassline, female vocals"
         lyrics:
           type: string
           default: ""
-          description: "Lyrics text. Empty for instrumental generation."
+          description: |
+            Lyrics text. ACE-Step: optional, empty for instrumental
+            generation. MiniMax Music 3: REQUIRED and must be non-empty (400
+            if blank) -- the checkpoint's input contract demands it;
+            instrumental tracks are expressed through caption/structure tags
+            in `prompt` instead of omitting `lyrics`. Structure tags such as
+            `[verse]` or `[chorus]` must each be on their OWN line -- text
+            sharing a line with a leading tag is silently dropped by the
+            checkpoint, not an error.
           example: ""
         audio_duration:
           type: number
           default: 30.0
-          description: "Target audio length in seconds."
+          exclusiveMinimum: true
+          minimum: 0
+          description: |
+            ACE-Step: the generated length in seconds (a target). MiniMax
+            Music 3: an UPPER BOUND, not a target -- its autoregressive
+            language model may emit its own end-of-audio token before this
+            length is reached, so the returned audio can be shorter. Omitted
+            on a MiniMax Music 3 request, this resolves to that
+            architecture's own default (60.0s, capped at 360s), not the
+            30.0s shown here (see `GET /schema/generation-defaults`'s
+            `audio_arch_overlays`). MUST be > 0 for either architecture. The
+            360s ceiling is MiniMax Music 3-specific (ACE-Step has no
+            established one) and is not a schema `maximum` for that reason
+            -- an over-ceiling value on that architecture is CLAMPED
+            server-side with a `warnings[]` entry, not rejected.
           example: 30.0
         seed:
           type: integer
@@ -11532,28 +11652,71 @@ components:
         inference_steps:
           type: integer
           default: 8
-          description: "Number of denoising steps (turbo distilled default: 8)."
+          description: |
+            ACE-Step ONLY: number of denoising steps for its turbo sampler
+            (turbo distilled default: 8), per SONG. MiniMax Music 3 uses
+            `num_inference_steps` below instead (a different parameter, per
+            CHUNK); this field has no effect on that architecture.
           example: 8
         guidance_scale:
           type: number
           default: 1.0
-          description: "Classifier-free guidance scale. Turbo is CFG-distilled (no twin forward pass); a non-1.0 value is overridden back to 1.0."
+          description: |
+            ACE-Step ONLY: classifier-free guidance scale. Turbo is
+            CFG-distilled (no twin forward pass); a non-1.0 value is
+            overridden back to 1.0. MiniMax Music 3 uses
+            `flow_guidance_scale` below instead; this field has no effect on
+            that architecture.
           example: 1.0
         shift:
           type: number
           default: 3.0
-          description: "Flow-matching timestep shift used to select the distilled step schedule."
+          description: "ACE-Step ONLY: flow-matching timestep shift used to select the distilled step schedule. No effect on MiniMax Music 3."
           example: 3.0
         sampler_mode:
           type: string
           default: "euler"
-          description: "Accepted for forward-compatibility. The vendored generate_audio has no sampler_mode knob (Euler-only ODE/SDE integration); a non-default value is logged and ignored."
+          description: "ACE-Step ONLY. Accepted for forward-compatibility. The vendored generate_audio has no sampler_mode knob (Euler-only ODE/SDE integration); a non-default value is logged and ignored. No effect on MiniMax Music 3."
           example: "euler"
         vocal_language:
           type: string
           default: "en"
-          description: "Language folded into the lyrics/metas conditioning text."
+          description: "ACE-Step ONLY: language folded into the lyrics/metas conditioning text. No effect on MiniMax Music 3, which has no separate language conditioning input."
           example: "en"
+        num_inference_steps:
+          type: integer
+          nullable: true
+          default: null
+          minimum: 1
+          description: |
+            MiniMax Music 3 ONLY. Number of flow-matching denoising steps
+            PER CHUNK (its 200-frame sliding windows), not per song --
+            different from ACE-Step's per-song `inference_steps` above, and
+            no effect on ACE-Step. `null` (the default here) resolves to
+            that architecture's own default (30) at request time, since
+            ACE-Step has no per-chunk concept for this field to inherit a
+            value from (see `GET /schema/generation-defaults`'s
+            `audio_arch_overlays`). MUST be >= 1 when set: a value below 1
+            reaches the flow-matching scheduler's `linspace` call only AFTER
+            the entire autoregressive stage has already run (0 divides by
+            zero there), so this is rejected at the request boundary
+            (400) rather than surfacing as a 500 minutes later.
+          example: null
+        flow_guidance_scale:
+          type: number
+          nullable: true
+          default: null
+          exclusiveMinimum: true
+          minimum: 0
+          description: |
+            MiniMax Music 3 ONLY. Flow-stage classifier-free guidance scale
+            -- different from ACE-Step's `guidance_scale` above, and no
+            effect on ACE-Step. `null` (the default here) resolves to 1.7 at
+            request time. The autoregressive stage's own guidance (fixed at
+            1.5) and its top-k sampling (fixed at 50) are hard-coded by the
+            reference recipe and are NOT exposed as request parameters at
+            all.
+          example: null
         unet_quantization:
           type: string
           nullable: true
@@ -11567,7 +11730,9 @@ components:
             values are not implemented here and are reported through the
             generation's `warnings[]`. Only the DiT is converted -- not the
             Oobleck VAE (which holds no 2-D Linear weight at all) and not the
-            Qwen3-Embedding text encoder.
+            Qwen3-Embedding text encoder. No per-generation value is
+            implemented for MiniMax Music 3 at all; phase 1 loads BF16/FP16
+            weights only.
           example: null
         quantized_gemm_mode:
           type: string
@@ -11581,7 +11746,8 @@ components:
             it selects a real path here because `acestep` is one of the
             `quantized_linear_archs` of `GET /schema/arch-capabilities` (its
             loader swaps in `Int8Linear`/`Fp8Linear`, and the runtime `int8`
-            conversion above produces the same classes).
+            conversion above produces the same classes). No effect on MiniMax
+            Music 3, which holds plain floating-point Linear weights.
           example: null
         loras:
           type: array
@@ -11593,7 +11759,8 @@ components:
             Matches the ACE-Step LoRA training scope: decoder attention
             Linears only (`decoder.layers.{i}.{self_attn,cross_attn}.{q,k,v,o}_proj}`).
             A LoRA trained for a different architecture (mismatched keys) is
-            skipped with a server-side warning, not an error.
+            skipped with a server-side warning, not an error. Not applied on
+            MiniMax Music 3 requests.
           items:
             type: object
             properties:

@@ -96,6 +96,14 @@ FEATURE_PARAMS: Dict[str, List[str]] = {
     # Output-tail head fusion (AP3). MiniMax-H3 only -- see
     # `core.models.minimax_h3.adaln_chunking`'s "Head fusion" note.
     "fuse_output_proj": ["fuse_output_proj"],
+    # Reference audio conditioning the autoregressive stage (voice/timbre/
+    # instrument), i.e. an aud2aud "cover" request. The AUDIO_GEN_DEFAULTS
+    # stub keys below predate any route that sends them (aud2aud instead
+    # takes an uploaded reference clip, not a JSON path/flag), so this is
+    # defensive/documentation only today -- same status as the ACE-Step
+    # entries just below, which are unreachable because their routes reject
+    # ACE-Step on the image endpoints outright.
+    "audio_reference_conditioning": ["reference_audio_path", "reference_audio_enable", "is_cover"],
 }
 
 # Human-readable label used in the warning message for each feature.
@@ -124,6 +132,7 @@ FEATURE_LABELS: Dict[str, str] = {
     "temporal_inpaint": "regenerate_start_frame/regenerate_end_frame (temporal inpaint)",
     "lora": "loras (LoRA)",
     "fuse_output_proj": "fuse_output_proj (output-tail head fusion)",
+    "audio_reference_conditioning": "reference_audio_path/reference_audio_enable/is_cover (reference-audio conditioning)",
 }
 
 # ---------------------------------------------------------------------------
@@ -131,18 +140,18 @@ FEATURE_LABELS: Dict[str, str] = {
 # effect on that architecture.
 # ---------------------------------------------------------------------------
 _DIT_ARCHS = ["zimage", "flux2", "ideogram4", "lens", "minit2i", "anima", "krea2", "ltx2", "acestep",
-              "minimax_h3"]
+              "minimax_h3", "minimax_music3"]
 # Both Spectrum and FBCache are wired for every image DiT arch through the
 # same shared pattern (spectrum_params=params -> build_output_forecaster() /
 # fbcache_active()+build_fbcache() inside each arch's *_pipeline_ops.py denoise
 # loop): zimage, flux2, ideogram4, lens, minit2i, anima all genuinely consume
 # spectrum_enable/fbcache_enable. ltx2 was wired in 444ebde5
 # (_ltx2_build_spectrum / _ltx2_build_fbcache in
-# core/pipeline_backends/ltx2.py). Only krea2 and acestep have no such
-# codepath at all. MiniMax-H3 implements paired video/audio final-output
-# forecasting and guarded whole-state FBCache.
-_SPECTRUM_UNSUPPORTED = ["krea2", "acestep"]
-_FBCACHE_UNSUPPORTED = ["krea2", "acestep"]
+# core/pipeline_backends/ltx2.py). Only krea2, acestep and minimax_music3
+# have no such codepath at all. MiniMax-H3 implements paired video/audio
+# final-output forecasting and guarded whole-state FBCache.
+_SPECTRUM_UNSUPPORTED = ["krea2", "acestep", "minimax_music3"]
+_FBCACHE_UNSUPPORTED = ["krea2", "acestep", "minimax_music3"]
 
 ARCH_UNSUPPORTED: Dict[str, Dict[str, str]] = {}
 
@@ -266,6 +275,52 @@ _add("acestep", "advanced_cfg",
 _add("acestep", "nag", "Normalized Attention Guidance is not implemented for the ACE-Step audio model")
 _add("acestep", "controlnets", "ControlNet is not supported for the ACE-Step audio model")
 
+# ---------------------------------------------------------------------------
+# MiniMax Music 3 (lyrics- and caption-conditioned music generation, driven
+# through /generate/txt2aud alongside ACE-Step; see
+# docs/guides/MINIMAX_MUSIC3_DESIGN.md "Capability verdict"). Image endpoints
+# reject a MiniMax Music 3 model outright (see _reject_if_audio_model).
+#
+# REACHABILITY, entry by entry (audit finding F6): `check_arch_capabilities`
+# only warns when one of a feature's TRIGGER PARAMS (`FEATURE_PARAMS`) is a
+# key `params` actually carries with a non-default value, and the only route
+# reachable for this architecture is `/generate/txt2aud`
+# (`Txt2AudRequest`'s declared fields) -- so an entry's status depends on
+# whether that model declares the trigger key at all:
+#   - `advanced_cfg`/`nag`/`controlnets` are UNREACHABLE today:
+#     `Txt2AudRequest` has no `cfg_schedule_type`/`nag_enable`/`controlnets`
+#     field (same status as ACE-Step's identical three entries just above).
+#     Kept for documentation and so the warning fires the moment any future
+#     shared-audio-endpoint change adds one of those fields.
+#   - `lora` IS REACHABLE: `Txt2AudRequest.loras` is a real, live field this
+#     architecture's backend
+#     (`core.pipeline_backends.minimax_music3.MiniMaxMusic3Mixin.
+#     _generate_txt2aud_minimax_music3`) never reads at all -- so a request
+#     that selects a LoRA got a clean 200 with an empty `warnings[]` before
+#     this entry existed (audit finding F2), which reads as "the LoRA had no
+#     audible effect" rather than "it was never loaded".
+#   - `negative_prompt`/`audio_reference_conditioning` are UNREACHABLE on
+#     `/generate/txt2aud` today (neither is a `Txt2AudRequest` field; the
+#     latter's real surface, an aud2aud "cover" request, is hard-gated off
+#     for this architecture entirely -- see
+#     `routes._reject_if_music3_extend_repaint_not_yet_wired`). Both are
+#     properties of the RELEASED MODEL, not unimplemented features -- design
+#     doc "Capability verdict", first three rows -- kept for documentation
+#     and ready the moment either surface exists.
+# ---------------------------------------------------------------------------
+_add("minimax_music3", "advanced_cfg",
+     "CFG scheduling / dynamic thresholding / CFG-rescale run only in the U-Net sampling loop, not in MiniMax Music 3's autoregressive + flow-matching samplers")
+_add("minimax_music3", "nag",
+     "Normalized Attention Guidance is not implemented for MiniMax Music 3")
+_add("minimax_music3", "controlnets",
+     "ControlNet is not supported for MiniMax Music 3")
+_add("minimax_music3", "lora",
+     "generation-time LoRA is not implemented for MiniMax Music 3's pipeline backend (core.pipeline_backends.minimax_music3.MiniMaxMusic3Mixin._generate_txt2aud_minimax_music3 never reads params['loras']); a LoRA selected for this generation has no effect")
+_add("minimax_music3", "negative_prompt",
+     "the flow-stage unconditional branch conditions on zeros and the autoregressive stage's unconditional branch is the token-masked prompt itself, so there is no negative prompt anywhere in this model")
+_add("minimax_music3", "audio_reference_conditioning",
+     "the RVQ tokenizer's encoder is not published in this release, so no audio can be turned into the semantic codes needed to condition the autoregressive stage, and the flow-stage DiT conditions on the language model's hidden states rather than on audio directly")
+
 # U-Net/transformer quantization (per-generation unet_quantization parameter):
 # not consumed by these architectures' pipeline backends. sd15/sdxl consume it
 # via move_unet_to_gpu(); zimage/flux2/anima/lens consume it via their own
@@ -295,6 +350,10 @@ _add("acestep", "unet_quantization",
      "2-D Linear weight at all, and not the Qwen3-Embedding text encoder) in place once "
      "per model load")
 _add_supported_values("acestep", "unet_quantization", ["int8"])
+_add("minimax_music3", "unet_quantization",
+     "no per-generation unet_quantization value is implemented for MiniMax Music 3; phase 1 "
+     "loads the official/ tree's BF16/FP16 weights only -- INT8 ConvRot on the flat tree's "
+     "staged artifacts is a later phase (docs/guides/MINIMAX_MUSIC3_DESIGN.md \"Quantization\")")
 
 # Quantized GEMM path (per-generation quantized_gemm_mode): only the
 # architectures whose loaders swap in the weight-only quantized Linear classes
@@ -324,19 +383,20 @@ for _a in [a for a in _ALL_ARCHS if a not in _QUANTIZED_GEMM_SUPPORTED]:
          f"layers used by {arch_names(QUANTIZED_LINEAR_ARCHS)}")
 
 # Text-encoder quantization: not applied on these architectures' text-encoder paths.
-for _a in ["sd15", "sdxl", "ideogram4", "minit2i", "krea2", "ltx2", "acestep"]:
+for _a in ["sd15", "sdxl", "ideogram4", "minit2i", "krea2", "ltx2", "acestep", "minimax_music3"]:
     _add(_a, "text_encoder_quantization",
          "text-encoder quantization is not applied on this architecture's text-encoder path")
 
 # CPU text encoding: not honored by these architectures' encode paths.
-for _a in ["zimage", "flux2", "ideogram4", "minit2i", "krea2", "ltx2", "acestep"]:
+for _a in ["zimage", "flux2", "ideogram4", "minit2i", "krea2", "ltx2", "acestep", "minimax_music3"]:
     _add(_a, "cpu_text_encoding",
          "CPU text encoding is not honored by this architecture's encode path")
 
 # attention_impl (generation side): only the FLUX.2 inference path consumes it;
 # every other arch is conduit-only or ignores the selector.
 # "deus" is intentionally omitted: model_loader never assigns arch type "deus".
-for _a in ["sd15", "sdxl", "zimage", "ideogram4", "lens", "minit2i", "anima", "krea2", "ltx2", "acestep"]:
+for _a in ["sd15", "sdxl", "zimage", "ideogram4", "lens", "minit2i", "anima", "krea2", "ltx2", "acestep",
+           "minimax_music3"]:
     _add(_a, "attention_impl",
          "attention_impl is only consumed by the FLUX.2 inference path; this architecture is conduit-only or ignores it")
 
@@ -367,13 +427,16 @@ for _a in _DIT_ARCHS:
 
 # VAE override: unsupported on LTX-2.3 (a component swap invalidates the cpu-offload
 # hook chain and there is no compatible 5D VAE), on MiniT2I (pixel-space, no VAE),
-# and on ACE-Step (audio Oobleck VAE, not an image/video component override target).
+# and on ACE-Step / MiniMax Music 3 (audio-specific autoencoders, not an image/video
+# component override target).
 _add("ltx2", "vae_override",
      "VAE override is not supported on the LTX-2.3 video model: a component swap invalidates the cpu-offload hook chain and there is no compatible 5D VAE")
 _add("minit2i", "vae_override",
      "VAE override is not supported on this pixel-space architecture, which has no VAE")
 _add("acestep", "vae_override",
      "VAE override is not supported on the ACE-Step audio model: its Oobleck VAE is audio-specific and not a per-generation image/video override target")
+_add("minimax_music3", "vae_override",
+     "VAE override is not supported on MiniMax Music 3: its vocoder is the decoder half of a music-specific autoencoder (the DAV), not a per-generation image/video override target")
 
 # ---------------------------------------------------------------------------
 # MiniMax-H3 (joint video + audio DiT, driven through /generate/txt2vid).

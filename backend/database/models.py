@@ -259,6 +259,16 @@ class GeneratedImage(GalleryBase):
                     result["inference_steps"] = str(self.parameters["inference_steps"])
                 if "guidance_scale" in self.parameters:
                     result["guidance_scale"] = str(self.parameters["guidance_scale"])
+                # MiniMax Music 3's differently-named equivalents (per-chunk
+                # step count, flow-stage CFG) -- ACE-Step's `inference_steps`/
+                # `guidance_scale` above are the ACE-Step turbo sampler's OWN
+                # fields and are never populated for a Music3 row, so both
+                # pairs are surfaced independently rather than one overwriting
+                # the other.
+                if "num_inference_steps" in self.parameters:
+                    result["num_inference_steps"] = str(self.parameters["num_inference_steps"])
+                if "flow_guidance_scale" in self.parameters:
+                    result["flow_guidance_scale"] = str(self.parameters["flow_guidance_scale"])
 
             # Advanced CFG parameters (can coexist with NAG)
             if "cfg_schedule_type" in self.parameters:

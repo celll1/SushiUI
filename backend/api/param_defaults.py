@@ -1503,6 +1503,60 @@ AUDIO_GEN_DEFAULTS: Dict[str, Any] = {
 TXT2AUD_DEFAULTS: Dict[str, Any] = dict(AUDIO_GEN_DEFAULTS)
 
 # ---------------------------------------------------------------------------
+# Per-architecture audio defaults (SSOT)
+# ---------------------------------------------------------------------------
+# `AUDIO_GEN_DEFAULTS`/`TXT2AUD_DEFAULTS` above are ACE-Step-shaped (30s,
+# 8-step turbo sampler, `inference_steps`/`guidance_scale`/`shift`/
+# `sampler_mode`). MiniMax Music 3 (design doc "Generation parameter
+# contract") needs different values for the keys the two architectures share
+# (`audio_duration`) and two keys ACE-Step has no equivalent of at all
+# (`num_inference_steps`, a per-CHUNK flow-matching step count, not
+# ACE-Step's per-song `inference_steps`; `flow_guidance_scale`, distinct from
+# ACE-Step's `guidance_scale`). A route-level `if arch == ...` is exactly
+# what this file exists to prevent, so the difference is declared here as an
+# OVERLAY and resolved by `audio_defaults_for_arch` -- the audio equivalent
+# of `VIDEO_GEN_ARCH_OVERLAYS`/`video_defaults_for_arch`.
+#
+# The overlay is the whole mechanism: an architecture with no entry (ACE-Step)
+# resolves to `AUDIO_GEN_DEFAULTS` unchanged, so its behaviour is bit-identical
+# to what it was before this overlay existed. `/generate/txt2aud` applies the
+# resolved defaults to the fields a request OMITS (Pydantic's
+# `model_fields_set`), mirroring exactly how the video routes apply
+# `video_defaults_for_arch`.
+AUDIO_GEN_ARCH_OVERLAYS: Dict[str, Dict[str, Any]] = {
+    "minimax_music3": {
+        # An UPPER BOUND, not a target: the autoregressive stage's language
+        # model may emit its end-of-audio token before this is reached
+        # (design doc "Generation parameter contract" / "AR early stop").
+        "audio_duration": 60.0,
+        # Per CHUNK (the flow-matching DiT's 200-frame windows), not per
+        # song -- design doc's parameter table.
+        "num_inference_steps": 30,
+        # Flow-stage CFG. AR CFG (1.5) and top-k (50) are fixed by the
+        # reference recipe and are deliberately NOT exposed here (design
+        # doc's parameter table).
+        "flow_guidance_scale": 1.7,
+    },
+}
+
+
+def audio_defaults_for_arch(arch: Optional[str],
+                            base: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """`base` (default `AUDIO_GEN_DEFAULTS`) with ``arch``'s overlay applied.
+
+    The single resolver behind `/generate/txt2aud`'s omitted-field handling and
+    behind the `audio_arch_overlays` block of `/schema/generation-defaults`, so
+    the frontend and the backend resolve a per-arch audio default the same way.
+    Same no-op contract as `video_defaults_for_arch`: an unknown or missing arch
+    (including "acestep", which has no overlay entry) returns `base` unchanged
+    (a copy).
+    """
+    resolved = dict(base if base is not None else AUDIO_GEN_DEFAULTS)
+    resolved.update(AUDIO_GEN_ARCH_OVERLAYS.get(arch or "", {}))
+    return resolved
+
+
+# ---------------------------------------------------------------------------
 # Audio-to-audio COVER (POST /generate/aud2aud — ACE-Step 1.5 turbo, img2img
 # analog). Repaint (inpaint analog) is out of scope -- the vendored
 # generate_audio has no repaint kwargs (see
@@ -1545,6 +1599,32 @@ AUD2AUD_DEFAULTS: Dict[str, Any] = {
     "unet_quantization": GENERATION_DEFAULTS["unet_quantization"],
     "quantized_gemm_mode": GENERATION_DEFAULTS["quantized_gemm_mode"],
 }
+
+# Per-architecture overlay twin of `AUDIO_GEN_ARCH_OVERLAYS`, for
+# `/generate/aud2aud`'s own key set. Empty for now: MiniMax Music 3's
+# repaint/cover mechanism (design doc phase plan item 8) resumes the
+# autoregressive stage from the frame-code sidecar `/generate/txt2aud`
+# writes (design doc "Per-generation state contract"), and no route reads
+# that sidecar back yet -- `/generate/aud2aud` refuses a MiniMax Music 3
+# model outright
+# (`routes._reject_if_music3_extend_repaint_not_yet_wired`) until it does.
+# The mechanism is introduced now, empty, so item 8 adds an overlay entry
+# rather than inventing this file's second half of the pattern from scratch.
+AUD2AUD_GEN_ARCH_OVERLAYS: Dict[str, Dict[str, Any]] = {}
+
+
+def aud2aud_defaults_for_arch(arch: Optional[str],
+                              base: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """`base` (default `AUD2AUD_DEFAULTS`) with ``arch``'s overlay applied.
+
+    Same no-op contract as `audio_defaults_for_arch`/`video_defaults_for_arch`:
+    an unknown or missing arch (every arch today, since
+    `AUD2AUD_GEN_ARCH_OVERLAYS` is empty) returns `base` unchanged (a copy).
+    """
+    resolved = dict(base if base is not None else AUD2AUD_DEFAULTS)
+    resolved.update(AUD2AUD_GEN_ARCH_OVERLAYS.get(arch or "", {}))
+    return resolved
+
 
 # ---------------------------------------------------------------------------
 # Audio temporal outpaint (POST /generate/outpaint/audio — ACE-Step 1.5)
@@ -1593,6 +1673,29 @@ OUTPAINT_AUDIO_DEFAULTS: Dict[str, Any] = {
     "input_trim_start_sec": 0.0,
     "input_trim_end_sec": 0.0,
 }
+
+# Per-architecture overlay twin of `AUDIO_GEN_ARCH_OVERLAYS`/
+# `AUD2AUD_GEN_ARCH_OVERLAYS`, for `/generate/outpaint/audio`'s own key set
+# (`total_duration`/`input_offset_sec`/`input_trim_start_sec`/
+# `input_trim_end_sec`). Empty for now, for the same reason
+# `AUD2AUD_GEN_ARCH_OVERLAYS` is: MiniMax Music 3's extend mechanism (design
+# doc phase plan item 7) is what would populate it, and that route still
+# refuses a MiniMax Music 3 model outright.
+OUTPAINT_AUDIO_ARCH_OVERLAYS: Dict[str, Dict[str, Any]] = {}
+
+
+def outpaint_audio_defaults_for_arch(arch: Optional[str]) -> Dict[str, Any]:
+    """`OUTPAINT_AUDIO_DEFAULTS` resolved for ``arch``.
+
+    Two overlays, in order -- the shared aud2aud one (prompt/lyrics/seed/
+    inference params) and then the outpaint-only one -- mirroring
+    `outpaint_video_defaults_for_arch`'s two-overlay composition. Same no-op
+    contract: every arch today resolves to `OUTPAINT_AUDIO_DEFAULTS` unchanged.
+    """
+    resolved = aud2aud_defaults_for_arch(arch, OUTPAINT_AUDIO_DEFAULTS)
+    resolved.update(OUTPAINT_AUDIO_ARCH_OVERLAYS.get(arch or "", {}))
+    return resolved
+
 
 # ---------------------------------------------------------------------------
 # Video chain planning (POST /video-chain/plan, POST /video-chain/validate)

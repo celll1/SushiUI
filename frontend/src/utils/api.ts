@@ -1034,6 +1034,17 @@ export interface GeneratedImage {
   // other architecture. The filename alone can't distinguish them once either
   // file is renamed.
   model_variant?: string;
+  // Present only when model_variant === "hybrid": which MiniMax-H3 pair and
+  // recipe produced the row. Read model_hybrid_digest, not model_hash, to tell
+  // two hybrids apart -- the hash is the base file's alone.
+  model_hybrid_base?: string;
+  model_hybrid_overlay?: string;
+  model_hybrid_preset?: string;
+  /** Inclusive, formatted "start..end". */
+  model_hybrid_block_range?: string;
+  model_hybrid_final_adaln_from_overlay?: boolean;
+  model_hybrid_digest?: string;
+  model_hybrid_quantization?: string;
   unet_quantization?: string;
   // What the request asked for on the quantized-GEMM axis; absent when the
   // generation forced nothing. The path that actually ran is `fp8_gemm`.

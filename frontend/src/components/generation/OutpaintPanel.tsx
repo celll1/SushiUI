@@ -1934,6 +1934,11 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
     const videoMode = modality.isVideo;
     const audioMode = modality.isAudio;
 
+    if (videoMode && modality.modelInfo?.type === "minimax_h3" && modality.modelInfo?.variant === "hybrid") {
+      alert("A merged MiniMax-H3 checkpoint loads and can be inspected, but every generation endpoint refuses it: the A/B measurement that would release generation for it has not been run.");
+      return;
+    }
+
     const { replaceWildcardsInPrompt } = await import("@/utils/wildcardStorage");
     let processedPrompt = await replaceWildcardsInPrompt(params.prompt);
     const processedNegativePrompt = supportsNegativePrompt

@@ -1764,6 +1764,11 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
     const videoMode = modality.isVideo;
     const audioMode = modality.isAudio;
 
+    if (videoMode && modality.modelInfo?.type === "minimax_h3" && modality.modelInfo?.variant === "hybrid") {
+      alert("A merged MiniMax-H3 checkpoint loads and can be inspected, but every generation endpoint refuses it: the A/B measurement that would release generation for it has not been run.");
+      return;
+    }
+
     // Import wildcard replacement function dynamically
     const { replaceWildcardsInPrompt } = await import("@/utils/wildcardStorage");
 

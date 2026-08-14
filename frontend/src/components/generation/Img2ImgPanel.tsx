@@ -2287,6 +2287,11 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
     const videoMode = modality.isVideo;
     const audioMode = modality.isAudio;
 
+    if (videoMode && modality.modelInfo?.type === "minimax_h3" && modality.modelInfo?.variant === "hybrid") {
+      alert("A merged MiniMax-H3 checkpoint loads and can be inspected, but every generation endpoint refuses it: the A/B measurement that would release generation for it has not been run.");
+      return;
+    }
+
     // Audio mode (ACE-Step) uses an uploaded reference clip instead of an
     // input image; skip the image-required check and base64 conversion below.
     if (audioMode) {

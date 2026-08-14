@@ -147,10 +147,11 @@ def test_a_hybrid_txt2vid_request_carries_the_experimental_warning(monkeypatch):
     # The scope of what was measured, and the one audio property that was not.
     assert "672x384" in message and "124 frames" in message
     assert "synchronisation with the video was not measured" in message
-    # LoRA is named: `loras` rides this very request, and the enumeration would
-    # otherwise read as exhaustive while leaving out the one thing the request
-    # itself can still carry.
-    assert "LoRA" in message
+    # LoRA is named, on the PERMITTED-but-unmeasured side: `loras` rides this
+    # very request and takes effect, so the refusal list would otherwise read as
+    # exhaustive while leaving out the one thing the request still carries.
+    assert "A LoRA is applied if one is sent" in message
+    assert "nothing about a LoRA on a merged checkpoint was measured" in message
 
 
 def test_txt2vid_refuses_every_variant_that_is_not_a_released_or_merged_one(monkeypatch):

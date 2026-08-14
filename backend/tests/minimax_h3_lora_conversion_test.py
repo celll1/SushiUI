@@ -381,15 +381,14 @@ def test_variant_guard_warns_on_ambiguous_filename_fallback():
     assert warnings and warnings[0][1] == "minimax_h3_lora_variant_ambiguous"
 
 
-def test_variant_guard_refuses_every_lora_on_a_merged_checkpoint():
-    """Design section 5.3. C7 released text-to-video on a merged checkpoint,
-    which made this path reachable for the first time; a LoRA on top of it is a
-    second unmeasured variable, and no LoRA metadata names an AdaLN recipe, so
-    none can declare it was trained for this merge.
+def test_a_lora_on_a_merged_checkpoint_warns_and_loads():
+    """Design section 5.3 allowed a refusal OR a warning; the repo owner chose
+    the warning, so a LoRA on a hybrid takes effect and the caveat is surfaced.
 
-    THE MUTANT THIS EXISTS FOR: relying on the declared-mismatch branch alone.
-    That one already refuses a LoRA tagged `fl2va`; the UNTAGGED case (the
-    common one) fell through to a warning and loaded.
+    THE MUTANT THIS EXISTS FOR: warning only to the console. `warn` is the
+    channel that also reaches the generation's `warnings[]` (the caller pairs
+    `print` with `add_warning`), so a caveat that merely printed would be
+    invisible to the client that asked for the generation.
     """
     warnings = []
 
@@ -397,18 +396,44 @@ def test_variant_guard_refuses_every_lora_on_a_merged_checkpoint():
         warnings.append((message, code))
 
     for metadata, name in (
-        ({}, "some_lora.safetensors"),                                   # untagged
-        ({}, "minimax_h3_fl2va_style.safetensors"),                      # filename only
-        ({"base_model": "minimax_h3_fl2va_pruned_bf16"}, "l.safetensors"),   # declared fl2va
-        ({"base_model": "minimax_h3_ref2va_pruned_bf16"}, "l.safetensors"),  # declared ref2va
-        ({"base_model": "something_unrecognised"}, "l.safetensors"),     # declared, no token
+        ({}, "some_lora.safetensors"),                                # untagged
+        ({}, "minimax_h3_fl2va_style.safetensors"),                   # filename names a partition
+        ({"base_model": "something_unrecognised"}, "l.safetensors"),  # declared, no token
     ):
-        with pytest.raises(ValueError, match="hybrid"):
-            lora_mod.check_variant_compatibility(metadata, name, "hybrid", warn)
-    assert not warnings, "a refusal is a raise, not a warning"
+        warnings.clear()
+        lora_mod.check_variant_compatibility(metadata, name, "hybrid", warn)  # no raise
+        assert [code for _m, code in warnings] == ["minimax_h3_lora_hybrid_unmeasured"], warnings
+        message = warnings[0][0]
+        assert "no LoRA can state which merge it was trained for" in message
+        assert "Nothing about a LoRA on a merged checkpoint was measured." in message
+        # No verdict on the output, only on what is known about it.
+        assert "silently wrong" not in message and "Refusing" not in message
 
-    # NEGATIVE CONTROL: the released partitions keep the pre-C7 behaviour --
-    # an untagged LoRA still loads there, with a warning, and is not refused.
+
+@pytest.mark.parametrize("declared", ["fl2va", "ref2va"])
+def test_a_lora_declaring_a_partition_is_still_refused_on_a_merged_checkpoint(declared):
+    """The older guard is not relaxed by the warn-over-refuse decision: a LoRA
+    whose metadata NAMES a partition contradicts the merge it is applied to."""
+    warnings = []
+
+    def warn(message, code):
+        warnings.append((message, code))
+
+    with pytest.raises(ValueError, match="Refusing to load this LoRA"):
+        lora_mod.check_variant_compatibility(
+            {"base_model": f"minimax_h3_{declared}_pruned_bf16"}, "l.safetensors", "hybrid", warn)
+    # The caveat is still surfaced before the refusal decides.
+    assert [code for _m, code in warnings] == ["minimax_h3_lora_hybrid_unmeasured"]
+
+
+def test_the_released_partitions_keep_their_pre_c7_lora_behaviour():
+    """NEGATIVE CONTROL: an untagged LoRA still loads on `fl2va` with the
+    warning it always had, and picks up no hybrid caveat."""
+    warnings = []
+
+    def warn(message, code):
+        warnings.append((message, code))
+
     lora_mod.check_variant_compatibility({}, "some_lora.safetensors", "fl2va", warn)
     assert [code for _message, code in warnings] == ["minimax_h3_lora_variant_unknown"]
 

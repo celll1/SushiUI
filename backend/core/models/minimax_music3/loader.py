@@ -1,49 +1,33 @@
-"""MiniMax Music 3 loader: detection + component build (design doc phase 2).
+"""MiniMax Music 3 loader: detection + component build (design doc phases 2 + 9).
 
-Supported load path -- decided, not deferred by omission
-==========================================================
+The released snapshot ships the model twice: ``official/`` (MiniMax's own
+config-and-weight tree, loads into the vendored classes key-for-key, no
+remap) and a flat ComfyUI-style repack under ``diffusion_models/`` +
+``text_encoders/`` + ``vae/`` (different key names and a fused-QKV /
+folded-in-condition-encoder DiT; a merged LM+depth-decoder text encoder with
+a pruned-vocabulary variant on top). ``official/`` is the SHIPPED DEFAULT --
+every load that does not name a flat file explicitly goes through it
+unchanged, key-for-key. See ``docs/guides/MINIMAX_MUSIC3_DESIGN.md``, "Which
+tree the loader reads" / "GGUF weights" for the full investigation this
+module and ``core.models.minimax_music3.flat_remap`` were written against.
 
-The released snapshot ships the SAME model twice, in two different shapes:
+What this loader reads from the flat tree, briefly:
 
-* MiniMax's own config-and-weight tree, ``official/`` (``transformer/``,
-  ``condition_encoder/``, ``rvq_depth_decoder/``, ``vocoder/``,
-  ``language_model/``, ``tokenizer/``, ``scheduler/``), where every
-  component's ``config.json`` names the exact vendored class
-  (``core.models.minimax_music3.vendor``) and every weight key matches that
-  class's ``state_dict`` VERBATIM -- verified against the real files (see
-  ``docs/guides/MINIMAX_MUSIC3_DESIGN.md`` for the audit this loader was
-  written against). No remap of any kind is needed;
-* the flat, ComfyUI-style repack under ``diffusion_models/`` +
-  ``text_encoders/`` + ``vae/``, which is NOT a re-export of the same
-  tensors under different names: the flat DiT folds the condition encoder
-  in (``latent_conditioners.{0,1}``, ``cond_layer_logits``,
-  ``cond_layer_scale``), fuses QKV into one ``to_qkv`` per layer, and uses
-  ``.gamma``/``.beta`` norm names instead of ``nn.LayerNorm``'s
-  ``.weight``/``.bias``; the flat text encoder merges the language model AND
-  the RVQ depth decoder into one file with a pruned-vocabulary variant on
-  top. Reading either correctly means writing and proving a key-remap, which
-  this commit does not do.
-
-THIS LOADER SUPPORTS ONLY THE FIRST SHAPE. Detection (below) still
-recognizes all three spellings the design doc's phase-plan item 2 asks
-for -- the flat root, a lone DiT ``.safetensors`` inside
-``diffusion_models/``, and the ``official/`` directory itself -- because
-telling MiniMax Music 3 apart from every other architecture must not
-depend on which of the two shapes a user happened to point at. But
-``load_minimax_music3_from_path`` refuses the flat shape outright, with a
-message naming exactly what would have to be built, rather than attempting
-a partial remap that could silently produce a wrong model. A future commit
-that proves the remap against the real flat files may add it; this one
-does not half-wire it.
-
-The flat tree's quantized (``int8_convrot``) files are consequently never
-read by this loader at all -- they live under the shape this loader
-refuses -- but ``refuse_quantized_state_dict`` is still called on every
-component state dict this loader DOES read, immediately after it is read
-and before that component is built, as a defensive load-time gate matching
-the design doc's "Phase 1 is BF16/FP16 only" rule (see
-"Dependency gate" / "Quantization" in the design doc) in case a future
-snapshot ever ships a quantized variant under ``official/``.
+* a NON-quantized flat DiT file (FP32 or FP16) with a reachable ``official/``
+  beside it now LOADS: transformer + condition encoder come from the flat
+  file via ``flat_remap``, every other component still comes from
+  ``official/`` -- pointing at a flat DiT file selects only the DiT's
+  SOURCE, not a different model;
+* the flat NON-pruned text encoder is readable by
+  ``build_language_model_and_depth_decoder_from_flat_text_encoder`` below,
+  but nothing in this loader's directory detection points AT a text-encoder
+  file (detection keys off the DiT's tensor signature only), so that builder
+  is not wired into ``load_minimax_music3_from_path``'s dispatch;
+* ``int8_convrot`` (either file) and the pruned-vocabulary text encoder are
+  refused, HEADER-ONLY, with reasons naming design doc phases 13 and 10;
+* GGUF containers (phase 11) are not read here -- ``flat_remap`` is written
+  so that reader can reuse the same remap, but no GGUF parsing happens in
+  this module.
 """
 
 from __future__ import annotations
@@ -123,8 +107,9 @@ def read_safetensors_header(path: str) -> Dict[str, Any]:
 
 # Key-signature of the FLAT (ComfyUI-repack) DiT, per the design doc's
 # "Quantization" section census: 370 `diffusion_transformer.*` tensors plus
-# `latent_conditioners.{0,1}`, `cond_layer_logits`, `cond_layer_scale` (374
-# total) -- the condition encoder folded into the same file. Verified against
+# `latent_conditioners.0.{weight,bias}`, `cond_layer_logits`,
+# `cond_layer_scale` (374 total) -- the condition encoder folded into the
+# same file. Verified against
 # `M:/model/minimax-music3/diffusion_models/minimax_music3_dit_fp16.safetensors`.
 def keys_look_like_flat_minimax_music3_dit(keys) -> bool:
     keys = list(keys)
@@ -184,13 +169,15 @@ def detect_minimax_music3_layout(path: str) -> Optional[Dict[str, Optional[str]]
       whose ``modular_model_index.json`` declares
       ``MiniMaxMusic3ModularPipeline``.
 
-    ``official`` is the ONLY component tree this module's loader reads (see
-    the module docstring). ``flat_dit`` is populated -- to a non-``None``
-    path -- exactly when the caller pointed at a lone DiT file rather than at
-    the root or at ``official/`` directly: `load_minimax_music3_from_path`
-    uses its presence to refuse with a message that says what was pointed at,
-    distinct from "the official/ tree is missing" when there is no
-    ``official/`` at all.
+    ``official`` is required either way -- CONFIGS always come from it, and
+    it is the only source for every component except a flat DiT file named
+    explicitly (see the module docstring). ``flat_dit`` is populated -- to a
+    non-``None`` path -- exactly when the caller pointed at a lone DiT file
+    rather than at the root or at ``official/`` directly:
+    `load_minimax_music3_from_path` uses its presence to source the
+    transformer + condition encoder from that file (via ``flat_remap``) when
+    ``official`` is also reachable, and to raise a distinct "no reachable
+    official/" message when it is not.
     """
     if not path:
         return None
@@ -292,10 +279,7 @@ def _build_diffusers_component(
         model = cls.from_config(config)
     model.load_state_dict(state_dict, strict=True, assign=True)
 
-    stranded = [
-        n for n, t in list(model.named_parameters()) + list(model.named_buffers())
-        if getattr(t, "is_meta", False)
-    ]
+    stranded = _stranded_meta_tensors(model)
     if stranded:
         raise RuntimeError(
             f"MiniMax Music 3's {subdir} from {comp_dir} still holds {len(stranded)} meta "
@@ -305,6 +289,233 @@ def _build_diffusers_component(
     model.eval()
     model.requires_grad_(False)
     return model, config
+
+
+# ---------------------------------------------------------------------------
+# Flat (ComfyUI-repack) safetensors -- design doc phase 9. Configs still come
+# from `official/`; only the WEIGHTS for the components named below come from
+# the flat file. See `core.models.minimax_music3.flat_remap` for the key
+# remap itself and the module docstring above for what is and is not wired.
+# ---------------------------------------------------------------------------
+
+def _stranded_meta_tensors(model) -> List[str]:
+    return [
+        n for n, t in list(model.named_parameters()) + list(model.named_buffers())
+        if getattr(t, "is_meta", False)
+    ]
+
+
+def _build_module_from_remapped_state_dict(cls, config: Dict[str, Any], state_dict, torch_dtype: torch.dtype, *, label: str):
+    """``init_empty_weights()`` + ``from_config`` + strict ``assign=True`` load.
+
+    Shared by the flat DiT and flat text-encoder builders below; identical in
+    shape to ``_build_diffusers_component``'s own pattern, just parameterized
+    over an already-remapped state dict instead of one read straight off
+    disk.
+    """
+    from accelerate import init_empty_weights
+
+    from core.models.minimax_music3.flat_remap import (
+        assert_state_dict_matches_module_keys,
+        expected_module_state_dict_keys,
+    )
+
+    with init_empty_weights():
+        model = cls.from_config(config)
+
+    cast_state_dict = {
+        k: (v.to(dtype=torch_dtype) if v.is_floating_point() else v)
+        for k, v in state_dict.items()
+    }
+    assert_state_dict_matches_module_keys(
+        cast_state_dict.keys(), expected_module_state_dict_keys(model), component=label,
+    )
+    model.load_state_dict(cast_state_dict, strict=True, assign=True)
+
+    stranded = _stranded_meta_tensors(model)
+    if stranded:
+        raise RuntimeError(
+            f"MiniMax Music 3's {label} (flat safetensors source) still holds "
+            f"{len(stranded)} meta tensor(s) after loading (first 5: {stranded[:5]}); it "
+            f"would fail at the first forward."
+        )
+    model.eval()
+    model.requires_grad_(False)
+    return model
+
+
+def _header_looks_quantized(header_keys) -> bool:
+    """HEADER-ONLY pre-check: a key suffix alone declaring weight-only
+    quantization or AWQ input smoothing. Not a replacement for
+    ``refuse_quantized_state_dict`` (still run afterward, unconditionally,
+    on the file's real state dict) -- a fast path so an obviously-quantized
+    multi-GB file is never read just to be refused.
+    """
+    from core.models.common.quantized_checkpoint_guard import (
+        COMFY_QUANT_MARKER_SUFFIX,
+        PRE_QUANT_SCALE_SUFFIX,
+        QUANT_SCALE_SUFFIX,
+    )
+
+    return any(
+        k.endswith(QUANT_SCALE_SUFFIX) or k.endswith(COMFY_QUANT_MARKER_SUFFIX)
+        or k.endswith(PRE_QUANT_SCALE_SUFFIX)
+        for k in header_keys
+    )
+
+
+def build_transformer_and_condition_encoder_from_flat_dit(
+    flat_dit_path: str,
+    official: str,
+    torch_dtype: torch.dtype,
+) -> tuple:
+    """The flow-matching transformer + condition encoder from a flat DiT file.
+
+    ``flat_dit_path`` is a NON-quantized flat DiT safetensors file
+    (``minimax_music3_dit_{fp32,fp16}.safetensors``); the ``int8_convrot``
+    variant is refused here by ``refuse_quantized_state_dict``, the same
+    guard every ``official/`` component load runs (design doc phase 13 is
+    what would replace this refusal with a swap-in quantized Linear). Configs
+    for BOTH components come from ``official/`` -- the flat file carries only
+    weights, no config.json -- matching every other component this loader
+    builds.
+
+    Returns ``(transformer, transformer_config, condition_encoder,
+    condition_encoder_config)``. The condition encoder is built in float32
+    regardless of ``torch_dtype``, matching ``_build_diffusers_component``'s
+    judgment for the ``official/`` path (tiny, 4 tensors, sits directly on the
+    conditioning precision path).
+    """
+    from core.models.common.quantized_checkpoint_guard import refuse_quantized_state_dict
+    from core.models.common.single_file_format import read_state_dict
+    from core.models.minimax_music3.flat_remap import apply_flat_dit_state_dict
+    from core.models.minimax_music3.vendor import (
+        MiniMaxMusic3ConditionEncoder,
+        MiniMaxMusic3Transformer1DModel,
+    )
+
+    # Header-only fast path: refuse an obviously-quantized file (e.g.
+    # minimax_music3_dit_int8_convrot.safetensors) before reading a single
+    # tensor byte of it.
+    if _header_looks_quantized(read_safetensors_header(flat_dit_path).keys()):
+        raise RuntimeError(
+            f"the MiniMax Music 3 flat DiT checkpoint ({flat_dit_path}) declares weight-only "
+            f"quantization in its header (a '.weight_scale' or '.comfy_quant' key), and the "
+            f"MiniMax Music 3 loader does not support quantized flat checkpoints (design doc "
+            f"phase 13, 'INT8 ConvRot'). Load an unquantized flat DiT "
+            f"(minimax_music3_dit_{{fp32,fp16}}.safetensors) instead."
+        )
+
+    flat_state_dict, _metadata = read_state_dict(flat_dit_path)
+    refuse_quantized_state_dict(
+        flat_state_dict, arch="MiniMax Music 3", path=flat_dit_path, label="flat DiT",
+    )
+
+    remapped = apply_flat_dit_state_dict(flat_state_dict)
+    del flat_state_dict
+
+    transformer_config = _read_component_config(official, "transformer", "MiniMaxMusic3Transformer1DModel")
+    condition_encoder_config = _read_component_config(official, "condition_encoder", "MiniMaxMusic3ConditionEncoder")
+
+    transformer = _build_module_from_remapped_state_dict(
+        MiniMaxMusic3Transformer1DModel, transformer_config, remapped["transformer"], torch_dtype,
+        label="transformer",
+    )
+    condition_encoder = _build_module_from_remapped_state_dict(
+        MiniMaxMusic3ConditionEncoder, condition_encoder_config, remapped["condition_encoder"], torch.float32,
+        label="condition_encoder",
+    )
+    return transformer, transformer_config, condition_encoder, condition_encoder_config
+
+
+def build_language_model_and_depth_decoder_from_flat_text_encoder(
+    flat_text_encoder_path: str,
+    official: str,
+    torch_dtype: torch.dtype,
+):
+    """The ``Qwen3ForCausalLM`` + RVQ depth decoder from a flat, NON-pruned text encoder file.
+
+    Not wired into ``load_minimax_music3_from_path``'s dispatch -- see the
+    module docstring for why. Tested with a tiny real Qwen3 + RVQ depth
+    decoder round-trip in ``backend/tests/minimax_music3_loader_test.py``
+    (``test_flat_text_encoder_builder_round_trip``).
+
+    Raises ``core.models.minimax_music3.flat_remap.PrunedTextEncoderNotSupported``
+    for the pruned-vocabulary variant (design doc phase 10) and
+    ``RuntimeError`` (via ``refuse_quantized_state_dict``) for the
+    ``int8_convrot`` variant (design doc phase 13).
+
+    ``Qwen3ForCausalLM`` is built via ``AutoModelForCausalLM.from_config`` +
+    meta + strict ``assign=True`` load, mirroring the diffusers-class
+    components rather than ``_build_language_model``'s ``from_pretrained``
+    path -- there is no sharded file on disk for THIS source; the state dict
+    is already in memory, remapped from the flat file.
+    """
+    from transformers import AutoConfig, AutoModelForCausalLM
+
+    from core.models.common.quantized_checkpoint_guard import refuse_quantized_state_dict
+    from core.models.common.single_file_format import read_state_dict
+    from core.models.minimax_music3.flat_remap import (
+        apply_flat_text_encoder_state_dict,
+        raise_if_pruned_flat_text_encoder,
+    )
+    from core.models.minimax_music3.vendor import MiniMaxMusic3RVQDepthDecoder
+
+    # Header-only fast path, in the order a caller would want to know about
+    # them: pruned-vocabulary first (the more informative refusal -- it names
+    # the phase that would fix it), then quantization. Neither reads a single
+    # tensor byte of what can be an 18 GB file.
+    header_keys = list(read_safetensors_header(flat_text_encoder_path).keys())
+    raise_if_pruned_flat_text_encoder(header_keys)
+    if _header_looks_quantized(header_keys):
+        raise RuntimeError(
+            f"the MiniMax Music 3 flat text encoder checkpoint ({flat_text_encoder_path}) "
+            f"declares weight-only quantization in its header (a '.weight_scale' or "
+            f"'.comfy_quant' key), and the MiniMax Music 3 loader does not support quantized "
+            f"flat checkpoints (design doc phase 13, 'INT8 ConvRot'). Load an unquantized, "
+            f"non-pruned flat text encoder (minimax_music3_text_encoder_bf16.safetensors) "
+            f"instead."
+        )
+
+    # Cheap config reads + the rope-theta gate BEFORE the heavy read -- same
+    # ordering rule `_build_language_model` follows (fail on a JSON read, not
+    # after an 18 GB load): `config.rope_theta` is None on transformers 5.1
+    # for this config form, so `rope_parameters['rope_theta']` is what must be
+    # checked -- see `_assert_language_model_rope_theta`'s docstring.
+    lm_config = AutoConfig.from_pretrained(os.path.join(official, "language_model"))
+    rope_parameters = getattr(lm_config, "rope_parameters", None)
+    theta = rope_parameters.get("rope_theta") if isinstance(rope_parameters, dict) else None
+    if theta is None or abs(float(theta) - EXPECTED_LANGUAGE_MODEL_ROPE_THETA) > _ROPE_THETA_TOLERANCE:
+        raise ValueError(
+            f"MiniMax Music 3's language_model config.rope_parameters['rope_theta'] is "
+            f"{theta!r}, expected {EXPECTED_LANGUAGE_MODEL_ROPE_THETA}. Checked from "
+            f"official/language_model/config.json BEFORE reading the flat text encoder's "
+            f"multi-GB weights."
+        )
+    depth_config = _read_component_config(official, "rvq_depth_decoder", "MiniMaxMusic3RVQDepthDecoder")
+
+    flat_state_dict, _metadata = read_state_dict(flat_text_encoder_path)
+    refuse_quantized_state_dict(
+        flat_state_dict, arch="MiniMax Music 3", path=flat_text_encoder_path, label="flat text encoder",
+    )
+
+    remapped = apply_flat_text_encoder_state_dict(flat_state_dict)  # raises PrunedTextEncoderNotSupported
+    del flat_state_dict
+
+    language_model = _build_module_from_remapped_state_dict(
+        AutoModelForCausalLM, lm_config, remapped["language_model"], torch_dtype,
+        label="language_model",
+    )
+    # Defense in depth, same as `_build_language_model`'s own post-load
+    # re-assert: against the LOADED model's own config object, not just the
+    # pre-load JSON read above.
+    _assert_language_model_rope_theta(language_model)
+
+    rvq_depth_decoder = _build_module_from_remapped_state_dict(
+        MiniMaxMusic3RVQDepthDecoder, depth_config, remapped["rvq_depth_decoder"], torch_dtype,
+        label="rvq_depth_decoder",
+    )
+    return language_model, rvq_depth_decoder, depth_config
 
 
 def _assert_language_model_rope_theta(language_model) -> None:
@@ -400,13 +611,12 @@ def load_minimax_music3_from_path(
     *,
     load_language_model: bool = True,
 ) -> dict:
-    """Load MiniMax Music 3 from its ``official/`` config-and-weight tree.
-
-    See the module docstring for why the flat (ComfyUI-repack) tree is
-    refused rather than half-remapped. ``load_language_model=False`` skips
-    the ~17 GiB Qwen3-8B load -- for a probe or a test that only needs the
-    flow-matching side's geometry; it is NOT a memory optimization for
-    generation (the AR stage needs the language model resident).
+    """Load MiniMax Music 3, reading ``official/`` and (if pointed at a flat DiT
+    file) the transformer + condition encoder from it instead -- see the
+    module docstring. ``load_language_model=False`` skips the ~17 GiB
+    Qwen3-8B load -- for a probe or a test that only needs the flow-matching
+    side's geometry; it is NOT a memory optimization for generation (the AR
+    stage needs the language model resident).
 
     Returns the component dict ``PipelineManager.load_model()`` consumes,
     with ``type == "minimax_music3"``. Every component stays CPU-resident;
@@ -423,39 +633,35 @@ def load_minimax_music3_from_path(
         )
 
     if layout.get("flat_dit") is not None and layout.get("official") is None:
-        # A lone flat DiT file with no official/ tree reachable beside it: there
-        # is nothing this loader can build from (see module docstring), and
-        # unlike the "official present but flat file named explicitly" case
-        # below, there is no config tree to point the user at either.
+        # A lone flat DiT file with no official/ tree reachable beside it:
+        # `core.models.minimax_music3.flat_remap` CAN remap its weights, but
+        # this loader still reads every component's CONFIG from official/
+        # (the flat file carries no config.json of its own), so there is
+        # nothing to build against without it.
         raise NotImplementedError(
             f"MiniMax Music 3's flat repacked DiT ({layout['flat_dit']}) has no reachable "
-            f"official/ config-and-weight tree beside it, and this loader does not read the "
-            f"flat tree directly (see docs/guides/MINIMAX_MUSIC3_DESIGN.md, 'Quantization': "
-            f"the flat DiT folds the condition encoder in, fuses QKV, and uses .gamma/.beta "
-            f"norm names, none of which is remapped in this commit). Point the model path at "
+            f"official/ config-and-weight tree beside it. Its weights ARE remappable "
+            f"(core.models.minimax_music3.flat_remap), but this loader still reads every "
+            f"component's config -- including the transformer's and condition encoder's -- "
+            f"from official/, which the flat file does not carry. Point the model path at "
             f"the model's root directory, which must contain an official/ tree."
         )
-    if layout.get("flat_dit") is not None:
-        # official/ IS reachable -- the user pointed at the flat file specifically
-        # (e.g. to select a precision/quantization variant this loader does not
-        # support choosing). Refuse rather than silently substituting official/'s
-        # transformer for the file the caller named.
-        raise NotImplementedError(
-            f"MiniMax Music 3's flat repacked DiT ({layout['flat_dit']}) is not loadable by "
-            f"this loader (see docs/guides/MINIMAX_MUSIC3_DESIGN.md, 'Quantization': fused "
-            f"QKV, folded-in condition encoder, .gamma/.beta norm names -- none remapped in "
-            f"this commit). Point the model path at the root directory or at "
-            f"{layout['official']!r} directly; both load the full-precision official/ "
-            f"transformer instead."
-        )
+    # official/ IS reachable and a flat DiT file was named explicitly: read the
+    # transformer + condition encoder from THAT file (design doc phase 9),
+    # via `core.models.minimax_music3.flat_remap`. `int8_convrot` and any
+    # other quantized flat DiT is still refused, inside the builder itself
+    # (`refuse_quantized_state_dict`, same guard every official/ component
+    # load runs) -- design doc phase 13. Configs still come from official/;
+    # only the transformer's WEIGHTS are sourced from the flat file.
+    use_flat_dit = layout.get("flat_dit") is not None
 
     official = layout["official"]
     if official is None:
         raise FileNotFoundError(
             f"MiniMax Music 3 at {layout.get('root')!r} has no official/ config-and-weight "
-            f"tree (modular_model_index.json declaring {MINIMAX_MUSIC3_PIPELINE_CLASS}). This "
-            f"loader reads every component from that tree; see the module docstring for why "
-            f"the flat repacked tree is not an alternative in this commit."
+            f"tree (modular_model_index.json declaring {MINIMAX_MUSIC3_PIPELINE_CLASS}). Every "
+            f"component's CONFIG comes from that tree regardless of which file the WEIGHTS come "
+            f"from (see the module docstring); without it, nothing can be built."
         )
 
     # List ALL missing weight/config slots at once, before anything is built --
@@ -464,6 +670,11 @@ def load_minimax_music3_from_path(
     for subdir, _expected_class in _DIFFUSERS_COMPONENTS:
         if not os.path.isfile(os.path.join(official, subdir, "config.json")):
             missing.append(f"{subdir}/config.json")
+        if subdir in ("transformer", "condition_encoder") and use_flat_dit:
+            # Both components' WEIGHTS come from the flat file instead (see
+            # `build_transformer_and_condition_encoder_from_flat_dit`); only
+            # the CONFIG (checked above) is still read from official/<subdir>/.
+            continue
         if not _component_weight_present(official, subdir):
             missing.append(f"{subdir}/{_WEIGHT_BASENAME}.safetensors")
     if load_language_model:
@@ -495,6 +706,9 @@ def load_minimax_music3_from_path(
     print(f"[MiniMaxMusic3Loader] root:            {layout.get('root')}")
     print(f"[MiniMaxMusic3Loader] official tree:    {official}")
     for subdir, _ in _DIFFUSERS_COMPONENTS:
+        if subdir in ("transformer", "condition_encoder") and use_flat_dit:
+            print(f"[MiniMaxMusic3Loader] {subdir}:{' ' * max(1, 17 - len(subdir))}{layout['flat_dit']} (flat, remapped)")
+            continue
         print(f"[MiniMaxMusic3Loader] {subdir}:{' ' * max(1, 17 - len(subdir))}{os.path.join(official, subdir)}")
     if load_language_model:
         print(f"[MiniMaxMusic3Loader] language_model:  {os.path.join(official, 'language_model')}")
@@ -516,19 +730,26 @@ def load_minimax_music3_from_path(
     # (much larger) text encoder.
     language_model = _build_language_model(official, torch_dtype) if load_language_model else None
 
-    transformer, transformer_config = _build_diffusers_component(
-        official, "transformer", MiniMaxMusic3Transformer1DModel,
-        "MiniMaxMusic3Transformer1DModel", torch_dtype,
-    )
-    # condition_encoder and vocoder are tiny (4 and 121 tensors respectively)
-    # and both sit directly on the conditioning/waveform precision path, so
-    # they are kept at float32 regardless of `torch_dtype` -- mirroring
-    # `minimax_h3.loader`'s judgment for its own small audio VAE ("0.6 GB,
-    # decoded once per generation, nothing to buy" by quantizing it).
-    condition_encoder, condition_encoder_config = _build_diffusers_component(
-        official, "condition_encoder", MiniMaxMusic3ConditionEncoder,
-        "MiniMaxMusic3ConditionEncoder", torch.float32,
-    )
+    if use_flat_dit:
+        transformer, transformer_config, condition_encoder, condition_encoder_config = (
+            build_transformer_and_condition_encoder_from_flat_dit(
+                layout["flat_dit"], official, torch_dtype,
+            )
+        )
+    else:
+        transformer, transformer_config = _build_diffusers_component(
+            official, "transformer", MiniMaxMusic3Transformer1DModel,
+            "MiniMaxMusic3Transformer1DModel", torch_dtype,
+        )
+        # condition_encoder and vocoder are tiny (4 and 121 tensors respectively)
+        # and both sit directly on the conditioning/waveform precision path, so
+        # they are kept at float32 regardless of `torch_dtype` -- mirroring
+        # `minimax_h3.loader`'s judgment for its own small audio VAE ("0.6 GB,
+        # decoded once per generation, nothing to buy" by quantizing it).
+        condition_encoder, condition_encoder_config = _build_diffusers_component(
+            official, "condition_encoder", MiniMaxMusic3ConditionEncoder,
+            "MiniMaxMusic3ConditionEncoder", torch.float32,
+        )
     rvq_depth_decoder, rvq_depth_decoder_config = _build_diffusers_component(
         official, "rvq_depth_decoder", MiniMaxMusic3RVQDepthDecoder,
         "MiniMaxMusic3RVQDepthDecoder", torch_dtype,
@@ -580,7 +801,7 @@ def load_minimax_music3_from_path(
         # catalog's generic slots -- see `_component_object`'s arch alias for
         # why those two slot NAMES, not the components' own dict keys, are
         # what the catalog reads by default.
-        "dit_path": os.path.join(official, "transformer"),
+        "dit_path": layout["flat_dit"] if use_flat_dit else os.path.join(official, "transformer"),
         "text_encoder_path": os.path.join(official, "language_model"),
         "vae_path": os.path.join(official, "vocoder"),
         "official_dir": official,

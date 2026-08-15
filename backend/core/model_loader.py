@@ -3134,9 +3134,11 @@ class ModelLoader:
         one), optionally sourcing the DiT's weights from a flat safetensors or
         GGUF file (design doc phases 9 + 11) when ``path`` names one directly.
         Returns a component dict for ``PipelineManager.load_model()``
-        (``type == "minimax_music3"``); ``int8_convrot`` and any GGML type
-        this reader does not materialize (Q8_0 above all) are still refused --
-        see ``core.models.minimax_music3.loader``'s docstring.
+        (``type == "minimax_music3"``); INT8 ConvRot is readable for the flat
+        DiT and the pruned text encoder (design doc phase 13), any OTHER
+        declared quantization semantic is still refused, and any GGML type
+        this reader does not materialize (Q8_0's own sibling types) is still
+        refused too -- see ``core.models.minimax_music3.loader``'s docstring.
 
         ``text_encoder_file``, when given, names the exact language-model +
         RVQ-depth-decoder source file to build from instead of

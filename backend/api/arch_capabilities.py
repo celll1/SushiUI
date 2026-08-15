@@ -353,9 +353,11 @@ _add("acestep", "unet_quantization",
      "per model load")
 _add_supported_values("acestep", "unet_quantization", ["int8"])
 _add("minimax_music3", "unet_quantization",
-     "no per-generation unet_quantization value is implemented for MiniMax Music 3; phase 1 "
-     "loads the official/ tree's BF16/FP16 weights only -- INT8 ConvRot on the flat tree's "
-     "staged artifacts is a later phase (docs/guides/MINIMAX_MUSIC3_DESIGN.md \"Quantization\")")
+     "no per-generation unet_quantization value is implemented for MiniMax Music 3 -- there is "
+     "no runtime converter that quantizes an unquantized load. The co-distributed INT8 ConvRot "
+     "flat DiT and pruned text encoder are separate files the loader selects and loads "
+     "pre-quantized (ConvRot INT8, comfy-kitchen), same as their BF16/FP16 siblings "
+     "(docs/guides/MINIMAX_MUSIC3_DESIGN.md \"Quantization\")")
 
 # Quantized GEMM path (per-generation quantized_gemm_mode): only the
 # architectures whose loaders swap in the weight-only quantized Linear classes

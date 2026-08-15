@@ -252,13 +252,30 @@ def _resolve_attr(module_name, dotted):
     return obj
 
 
-def _return_dict_key_sets(fn):
-    """The string keys of every ``return {...}`` literal in `fn`'s OWN body.
+def _dict_literal_keys(node):
+    return {k.value for k in node.keys
+            if isinstance(k, ast.Constant) and isinstance(k.value, str)}
 
-    Nested functions are excluded (a closure's dict is not what the loader
-    hands back), and a `return` of anything other than a dict DISPLAY yields no
-    entry -- so a loader that builds its dict incrementally produces an empty
-    list here and is reported as un-anchorable rather than silently passing.
+
+def _return_dict_key_sets(fn):
+    """The string keys of the dict literal `fn`'s OWN body returns.
+
+    Two shapes count: ``return {...}`` directly, and ``name = {...}`` followed
+    by ``return name``, which is what a loader writes when it has to touch the
+    dict (a conditional `update`, a call taking it) before handing it back.
+    Following the name keeps the anchor honest rather than convenient: the keys
+    still come from the loader's own literal, which shares no source with the
+    layout table.
+
+    Keys added after the literal -- `update`, `d[k] = v` -- are NOT seen, so the
+    set read here is a subset of what the loader really returns. That direction
+    is safe: a declared component name missing from the literal fails the anchor
+    and is investigated, where the reverse would pass silently.
+
+    Nested functions are excluded (a closure's dict is not what the loader hands
+    back), and anything else -- a returned call, a name with no literal, a
+    ``name = {}`` filled in incrementally -- yields an empty key set, which the
+    un-anchorable check reports with the arch named rather than skipping it.
     """
     source = textwrap.dedent(inspect.getsource(fn))
     tree = ast.parse(source)
@@ -268,13 +285,24 @@ def _return_dict_key_sets(fn):
               for f in ast.walk(func)
               if isinstance(f, (ast.FunctionDef, ast.AsyncFunctionDef)) and f is not func
               for n in ast.walk(f)}
+    literals_by_name = {}
+    for node in ast.walk(func):
+        if id(node) in nested or not isinstance(node, ast.Assign):
+            continue
+        if not isinstance(node.value, ast.Dict):
+            continue
+        for target in node.targets:
+            if isinstance(target, ast.Name):
+                literals_by_name.setdefault(target.id, []).append(node.value)
     key_sets = []
     for node in ast.walk(func):
         if id(node) in nested or not isinstance(node, ast.Return):
             continue
         if isinstance(node.value, ast.Dict):
-            key_sets.append({k.value for k in node.value.keys
-                             if isinstance(k, ast.Constant) and isinstance(k.value, str)})
+            key_sets.append(_dict_literal_keys(node.value))
+        elif isinstance(node.value, ast.Name):
+            for literal in literals_by_name.get(node.value.id, ()):
+                key_sets.append(_dict_literal_keys(literal))
     return key_sets
 
 
@@ -295,8 +323,10 @@ class LoaderComponentNameAnchorTest(unittest.TestCase):
     The third source is the LOADER: the dict literal it returns IS the component
     dict `pipeline.py` stores as ``<arch>_components``, and it shares no source
     with the layout table or with the reporter. Every arch here returns one that
-    can be read statically; if a future loader builds its dict incrementally, the
-    first test below fails with that arch named rather than skipping it.
+    can be read statically -- either directly or as a name assigned the literal
+    (see `_return_dict_key_sets`) -- and if a future loader builds its dict
+    incrementally, the first test below fails with that arch named rather than
+    skipping it.
     """
 
     def _key_sets(self, arch):

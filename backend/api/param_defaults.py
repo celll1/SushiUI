@@ -78,6 +78,46 @@ MUSIC_PROMPT_ASSIST_DEFAULTS: Dict[str, Any] = {
 }
 
 # ---------------------------------------------------------------------------
+# MiniMax Music 3 lyrics assistant — /prompt-assist/music/lyrics/*
+# ---------------------------------------------------------------------------
+# Sibling of MUSIC_PROMPT_ASSIST_DEFAULTS above (the caption rewriter), not
+# an extension of it: separate cache, separate GUIDE_VERSION, separate wire
+# contract (`mode` + `theme` + `lyrics`, no `constraints`-only shape). See
+# backend/core/extensions/minimax_music3_lyrics_assistant.py and
+# docs/guides/MINIMAX_MUSIC3_DESIGN.md.
+#
+# `mode` here is a UI-ONLY initial-tab default (which of the three mode
+# buttons `MusicLyricsAssist.tsx` starts on), NOT a request default: the two
+# LLM-driven modes are a REQUIRED field on `MusicLyricsAssistTransformRequest`
+# (no Pydantic default at all -- `structure`/`complete` must always be sent
+# explicitly), and `format` is served by a wholly separate endpoint
+# (`POST /prompt-assist/music/lyrics/format`) that has no `mode` field to
+# default in the first place. The frontend reads this key via
+# `GET /schema/prompt-assist-music-lyrics-defaults` to pick its initial tab
+# rather than hardcoding the same literal a second time. `provider`/
+# `base_url`/`model` below only matter for `structure`/`complete` (`format`
+# needs no LLM fields at all). Provider base URLs are read from
+# PROMPT_ASSIST_DEFAULTS (H3's), same reasoning as MUSIC_PROMPT_ASSIST_DEFAULTS.
+
+MUSIC_LYRICS_ASSIST_DEFAULTS: Dict[str, Any] = {
+    "mode": "format",
+    "theme": "",
+    "lyrics": "",
+    "constraints": "",
+    "provider": "lm_studio",
+    "base_url": "",
+    "model": "",
+    "api_key": "",
+    "temperature": 0.2,
+    "top_p": 0.9,
+    "max_output_tokens": 3072,
+    "context_length": 8192,
+    "timeout_seconds": 300,
+    "force_refresh": False,
+    "cache_max_entries": 256,
+}
+
+# ---------------------------------------------------------------------------
 # MiniMax-H3 hybrid DiT load (POST /models/load)
 # ---------------------------------------------------------------------------
 # Not generation parameters: these are load-time inputs, so they have their own

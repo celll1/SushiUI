@@ -437,6 +437,19 @@ paths:
               schema:
                 type: object
                 additionalProperties: true
+  /schema/prompt-assist-music-lyrics-defaults:
+    get:
+      tags: [Schema]
+      summary: Get MiniMax Music 3 lyrics-assistant defaults
+      operationId: getPromptAssistMusicLyricsDefaults
+      responses:
+        '200':
+          description: Mode, provider, inference, and cache defaults for the lyrics assistant
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
   /schema/training-defaults:
     get:
       summary: Get default parameter values for LoRA / Full-FT training
@@ -4324,6 +4337,93 @@ paths:
       tags: [prompt-assist]
       summary: Clear the MiniMax Music 3 caption rewrite cache
       operationId: clearMusicPromptAssistCache
+      responses:
+        '200':
+          description: Cache cleared
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  deleted:
+                    type: integer
+
+  /prompt-assist/music/lyrics/format:
+    post:
+      tags: [prompt-assist]
+      summary: Deterministically fix MiniMax Music 3 lyrics layout (no LLM)
+      description: |
+        Pure, synchronous, NO-NETWORK endpoint. Moves any text sharing a
+        line with a structure tag onto its own line (the checkpoint's own
+        `_normalize_lyrics` instead silently DROPS that text), puts one tag
+        per line, lowercases tag case, and drops blank lines. Guaranteed to
+        preserve every word of the input exactly — the ordered sequence of
+        non-tag word tokens is identical before and after, enforced
+        internally rather than merely claimed.
+      operationId: formatMusic3Lyrics
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MusicLyricsFormatRequest'
+      responses:
+        '200':
+          description: Layout-fixed lyrics and any undocumented-tag warnings
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MusicLyricsFormatResponse'
+        '500':
+          description: Internal invariant failure (the function's own preserved-words guarantee did not hold)
+
+  /prompt-assist/music/lyrics/transform:
+    post:
+      tags: [prompt-assist]
+      summary: Write or complete MiniMax Music 3 lyrics with a local LLM
+      description: |
+        Sibling of `/prompt-assist/music/transform` (the caption rewriter):
+        shares the same local-LLM provider/cache/transport layer but a
+        different contract and its own cache, so a caption-rewrite cache
+        entry and a lyrics-assist entry can never collide. Two LLM-driven
+        modes:
+
+        - `structure` — the LLM emits ONLY structure tags, one per line, no
+          prose; the control surface for a purely instrumental piece.
+        - `complete` — the user supplies a `theme` and/or partial `lyrics`;
+          the LLM writes or finishes the words. Any lyric line the user
+          actually supplied is validated to survive verbatim in the output.
+
+        The deterministic layout fix (`/prompt-assist/music/lyrics/format`)
+        is always run as the final pass over the LLM's raw output before
+        validation, so the returned `lyrics` is contract-clean by
+        construction. Checks the persistent cache before contacting the
+        provider; a cache miss loads the selected local model for this
+        request and releases it in a finally block.
+      operationId: transformMusic3Lyrics
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MusicLyricsAssistTransformRequest'
+      responses:
+        '200':
+          description: Written/completed lyrics, validation warnings, and cache status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MusicLyricsAssistResponse'
+        '400':
+          description: Invalid request, provider failure, or invalid LLM response
+
+  /prompt-assist/music/lyrics/cache/clear:
+    post:
+      tags: [prompt-assist]
+      summary: Clear the MiniMax Music 3 lyrics-assistant cache
+      operationId: clearMusicLyricsAssistCache
       responses:
         '200':
           description: Cache cleared
@@ -8641,6 +8741,143 @@ components:
         force_refresh:
           type: boolean
           default: false
+
+    MusicLyricsAssistTransformRequest:
+      type: object
+      required: [mode]
+      description: |
+        Sibling of MusicPromptAssistTransformRequest (the caption rewriter)
+        for the MiniMax Music 3 lyrics assistant — its own cache, its own
+        GUIDE_VERSION, so a caption-rewrite cache entry and a lyrics-assist
+        entry can never collide. `mode` selects between the two LLM-driven
+        modes; the deterministic layout-only mode has no LLM fields and is
+        served by POST /prompt-assist/music/lyrics/format instead.
+      properties:
+        mode:
+          type: string
+          enum: [structure, complete]
+          description: |
+            `structure` — the LLM emits ONLY structure tags, one per line,
+            no prose (the arrangement plan for an instrumental piece).
+            `complete` — the user supplies `theme` and/or partial `lyrics`;
+            the LLM writes or finishes the words, preserving any supplied
+            lyric line verbatim.
+        theme:
+          type: string
+          default: ""
+          description: |
+            `structure` mode: the section/arrangement description (mood,
+            instrumentation, build/drop structure). `complete` mode: the
+            song's theme/subject matter. At least one of `theme`/`lyrics`
+            is required for `complete` mode; `theme` is required for
+            `structure` mode.
+          example: a bittersweet farewell under city lights
+        lyrics:
+          type: string
+          default: ""
+          description: |
+            `complete` mode only: partial lyrics to preserve verbatim and
+            complete around. Ignored in `structure` mode.
+        constraints:
+          type: string
+          default: ""
+          example: "no explicit language"
+        provider:
+          type: string
+          enum: [lm_studio, ollama]
+          default: lm_studio
+        base_url:
+          type: string
+          default: ""
+          description: Empty selects the provider default; only loopback URLs are accepted.
+        model:
+          type: string
+          default: ""
+        api_key:
+          type: string
+          default: ""
+          writeOnly: true
+        temperature:
+          type: number
+          minimum: 0
+          maximum: 1
+          default: 0.2
+        top_p:
+          type: number
+          exclusiveMinimum: 0
+          maximum: 1
+          default: 0.9
+        max_output_tokens:
+          type: integer
+          minimum: 128
+          maximum: 8192
+          default: 3072
+        context_length:
+          type: integer
+          minimum: 1024
+          maximum: 262144
+          default: 8192
+        timeout_seconds:
+          type: integer
+          minimum: 10
+          maximum: 1800
+          default: 300
+        force_refresh:
+          type: boolean
+          default: false
+
+    MusicLyricsAssistResponse:
+      type: object
+      required: [lyrics, warnings, valid]
+      properties:
+        lyrics:
+          type: string
+        warnings:
+          type: array
+          items:
+            type: string
+        valid:
+          type: boolean
+        cached:
+          type: boolean
+          default: false
+        cache_key:
+          type: string
+        provider:
+          type: string
+        model:
+          type: string
+        mode:
+          type: string
+          enum: [structure, complete]
+
+    MusicLyricsFormatRequest:
+      type: object
+      required: [lyrics]
+      description: |
+        Mirrors the Pydantic `MusicLyricsFormatRequest` model in
+        `backend/api/routes.py` exactly — the deterministic, no-LLM
+        layout-fix endpoint's only input.
+      properties:
+        lyrics:
+          type: string
+          example: "[Verse] The morning light"
+
+    MusicLyricsFormatResponse:
+      type: object
+      required: [lyrics, warnings]
+      description: |
+        `lyrics` preserves every word of the request's `lyrics` exactly —
+        see `format_lyrics`'s own enforced invariant. `warnings` lists any
+        tag outside the documented vocabulary (never a refusal).
+      properties:
+        lyrics:
+          type: string
+          example: "[verse]\nThe morning light"
+        warnings:
+          type: array
+          items:
+            type: string
 
     QuantizedExportRequest:
       type: object

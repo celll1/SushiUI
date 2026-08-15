@@ -5801,6 +5801,86 @@ export const clearMusicPromptAssistCache = async (): Promise<number> => {
   return response.data.deleted;
 };
 
+// MiniMax Music 3 Lyrics Assistant API
+//
+// Sibling of the caption rewriter above, not an extension of it: its own
+// cache, its own defaults endpoint. Three modes (design doc, "Three
+// user-selected modes"):
+//   - "format" — deterministic, no LLM, no network settings needed.
+//   - "structure" / "complete" — LLM-driven, share the caption rewriter's
+//     provider/model shape.
+export type MusicLyricsAssistMode = "format" | "structure" | "complete";
+
+export interface MusicLyricsAssistDefaults {
+  mode: MusicLyricsAssistMode;
+  provider: PromptAssistProvider;
+  temperature: number;
+  top_p: number;
+  max_output_tokens: number;
+  context_length: number;
+  timeout_seconds: number;
+}
+
+export interface MusicLyricsAssistSettings {
+  provider: PromptAssistProvider;
+  base_url: string;
+  model: string;
+  api_key?: string;
+  temperature: number;
+  top_p: number;
+  max_output_tokens: number;
+  context_length: number;
+  timeout_seconds: number;
+}
+
+export interface MusicLyricsAssistTransformRequest extends MusicLyricsAssistSettings {
+  mode: "structure" | "complete";
+  theme?: string;
+  lyrics?: string;
+  constraints?: string;
+  force_refresh?: boolean;
+}
+
+export interface MusicLyricsAssistResponse {
+  lyrics: string;
+  warnings: string[];
+  valid: boolean;
+  cached?: boolean;
+  cache_key?: string;
+  provider?: string;
+  model?: string;
+  mode?: string;
+}
+
+export interface MusicLyricsFormatResponse {
+  lyrics: string;
+  warnings: string[];
+}
+
+export const getMusicLyricsAssistDefaults = async (): Promise<MusicLyricsAssistDefaults> => {
+  const response = await api.get("/schema/prompt-assist-music-lyrics-defaults");
+  return response.data;
+};
+
+export const formatMusic3Lyrics = async (lyrics: string): Promise<MusicLyricsFormatResponse> => {
+  const response = await api.post("/prompt-assist/music/lyrics/format", { lyrics });
+  return response.data;
+};
+
+export const transformMusic3Lyrics = async (
+  request: MusicLyricsAssistTransformRequest,
+): Promise<MusicLyricsAssistResponse> => {
+  const response = await api.post("/prompt-assist/music/lyrics/transform", request, {
+    timeout: Math.max(1000, request.timeout_seconds * 1000 + 5000),
+  });
+  return response.data;
+};
+
+export const clearMusicLyricsAssistCache = async (): Promise<number> => {
+  const response = await api.post("/prompt-assist/music/lyrics/cache/clear");
+  return response.data.deleted;
+};
+
 // TIPO API
 export interface TIPOGenerateRequest {
   input_prompt: string;

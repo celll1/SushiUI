@@ -34,6 +34,7 @@ import GenerationLeadGrid from "../common/GenerationLeadGrid";
 import InlineHelp from "../common/InlineHelp";
 import H3PromptAssist from "../common/H3PromptAssist";
 import MusicCaptionAssist from "../common/MusicCaptionAssist";
+import MusicLyricsAssist from "../common/MusicLyricsAssist";
 import SendToStudioButton from "../studio/SendToStudioButton";
 import ResizableColumns, {
   GENERATION_PREVIEW_QUEUE_SPLIT_KEY,
@@ -4243,6 +4244,12 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
           their own line — text sharing a line with a leading tag is silently dropped. For an
           instrumental track, describe that in Caption above rather than leaving Lyrics empty.
         </p>
+      )}
+      {isMusic3 && (
+        <MusicLyricsAssist
+          lyrics={params.lyrics ?? ""}
+          onApply={(lyrics) => setParams((previous) => ({ ...previous, lyrics }))}
+        />
       )}
       {!isMusic3 && (
         <Textarea

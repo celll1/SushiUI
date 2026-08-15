@@ -1,11 +1,15 @@
 # Architecture Map
 
-The backend drives **12 architectures**: 9 image (SD1.5, SDXL, Z-Image, Flux2,
+The backend drives **13 architectures**: 9 image (SD1.5, SDXL, Z-Image, Flux2,
 Anima, Lens, Krea2, Ideogram4, MiniT2I), 2 video that also generate audio
-jointly (LTX-2.3, MiniMax-H3) and 1 audio (ACE-Step 1.5). `ARCH_REGISTRY` in
-`backend/core/training/arch/__init__.py` is the authoritative list (a
-module-level assertion pins it against the trainer's cache-namespace keys);
-`docs/guides/MODEL_FACTS.md` holds the per-architecture facts.
+jointly (LTX-2.3, MiniMax-H3) and 2 audio (ACE-Step 1.5, MiniMax Music 3).
+`ModelType` in `backend/core/model_loader.py` is the authoritative generation
+list. `ARCH_REGISTRY` in `backend/core/training/arch/__init__.py` is the
+authoritative *training-capable* list (a module-level assertion pins it
+against the trainer's cache-namespace keys) — it has only 12 entries, because
+MiniMax Music 3's training is out of scope (see
+`docs/guides/MINIMAX_MUSIC3_DESIGN.md`). `docs/guides/MODEL_FACTS.md` holds
+the per-architecture facts.
 
 ## Directory tree (top 2 levels + key `backend/core` modules)
 
@@ -47,11 +51,13 @@ webui_cl/
 | `backend/core/inference/style_flux2.py` | FLUX.2-specific style-transfer attention processors (dual-stream `transformer_blocks` + single-stream `single_transformer_blocks`); mutually exclusive with FLUX.2 Image-Edit `ref_images` and with NAG/NegPip. |
 | `backend/core/model_loader.py` | Detects model type/architecture from a checkpoint (single-file signature heuristics, e.g. `_keys_look_krea2`), builds and returns the loaded pipeline. |
 | `backend/core/attention/` | The attention conduit: `registry.py` (per-backend capability descriptors: native/flash/sage/tq), `dispatch.py` (routes a call to the resolved backend), `config.py` (capability-based downgrade rules), `backends.py` (kernel callables). Adding a backend is a one-entry change here — see `docs/guides/ADD_A_MODEL_ARCHITECTURE.md`. |
-| `backend/core/pipeline_backends/` | One file per architecture (`zimage.py`, `flux2.py`, `anima.py`, `lens.py`, `krea2.py`, `ideogram4.py`, `minit2i.py`, plus the non-image `ltx2.py`, `minimax_h3.py`, `acestep.py`; SD1.5/SDXL are handled by the base `pipeline.py` path) — architecture-specific generation logic as mixins. |
-| `backend/core/models/<arch>/` | Per-architecture component loaders and vendored model classes (e.g. `minimax_h3/loader.py` + `h3_pipeline_ops.py` + `h3_references.py` + `vendor/`, `ltx2/loader.py`, `acestep/`). A vendored architecture owns its denoise loop here when upstream ships no usable `DiffusionPipeline`. |
+| `backend/core/pipeline_backends/` | One file per architecture (`zimage.py`, `flux2.py`, `anima.py`, `lens.py`, `krea2.py`, `ideogram4.py`, `minit2i.py`, plus the non-image `ltx2.py`, `minimax_h3.py`, `acestep.py`, `minimax_music3.py`; SD1.5/SDXL are handled by the base `pipeline.py` path) — architecture-specific generation logic as mixins. |
+| `backend/core/models/<arch>/` | Per-architecture component loaders and vendored model classes (e.g. `minimax_h3/loader.py` + `h3_pipeline_ops.py` + `h3_references.py` + `vendor/`, `ltx2/loader.py`, `acestep/`, `minimax_music3/`). A vendored architecture owns its denoise loop here when upstream ships no usable `DiffusionPipeline`. |
+| `backend/core/models/minimax_music3/` | MiniMax Music 3 (autoregressive LM + flow-matching DiT + vocoder): `loader.py` (directory/file detection, `official/`-tree load, flat/GGUF DiT and text-encoder dispatch), `vendor/` (the ported diffusers-PR model classes, attention re-pointed at the shared conduit), `flat_remap.py` / `pruned_text_encoder_remap.py` / `convrot_remap.py` (checkpoint-key remaps for the flat safetensors and INT8 ConvRot artifacts), `vocab_view.py` (full-vocabulary vs. pruned-vocabulary AR dispatch). See `docs/guides/MINIMAX_MUSIC3_DESIGN.md` for why the code is vendored and what each remap does. |
+| `backend/core/models/common/gguf_container.py`, `gguf_q8_0_linear.py` | A native GGUF v3 reader (no `gguf` pip dependency) shared by any architecture that ships GGUF weights, and a packed Q8_0 `nn.Linear` that dequantizes once per device move rather than once per forward. Currently consumed only by MiniMax Music 3's text-encoder path. |
 | `backend/core/models/<arch>_block_loop_wrapper.py` | Re-owns a transformer's block loop so block swap, gradient checkpointing and (where measured worthwhile) cache/forecast features can attach to it — `ltx2_block_loop_wrapper.py`, `minimax_h3_block_loop_wrapper.py`. |
 | `backend/core/models/components/wiring.py` | `ComponentWiringSpec` (latent channels/ndim/packing, VAE scale factor and normalization, text-encoder output shape) and `TemporalSpec`/`TEMPORAL_SPECS` — the per-video-arch clip-length grid, frame-rate and canvas contract read by route validation, bucketing, the video loader, the clip-cache key and the capabilities payload. |
-| `backend/core/keep_hot.py` | Arch-agnostic `keep_models_hot` state (model_key computation, VRAM guard, resident-set tracking); wired into `pipeline.py` (SD1.5/SDXL) and all 7 DiT image `pipeline_backends/*.py` files. Not wired into `ltx2.py`, `minimax_h3.py` or `acestep.py`. |
+| `backend/core/keep_hot.py` | Arch-agnostic `keep_models_hot` state (model_key computation, VRAM guard, resident-set tracking); wired into `pipeline.py` (SD1.5/SDXL) and all 7 DiT image `pipeline_backends/*.py` files. Not wired into `ltx2.py`, `minimax_h3.py`, `acestep.py`, or `minimax_music3.py`. |
 | `backend/core/training/` | `base_trainer.py` (shared loop, block-swap, optimizer wiring), `lora_trainer.py` / `full_parameter_trainer.py`, `adapters/` (per-architecture training adapters — text encoding, conditioning, time-ids), `optimizers/`, `losses/`, `bucketing.py`, `latent_cache.py`. |
 | `backend/core/training/vae/` | Decoder-only VAE fine-tuning (`network.type: vae_decoder`), reached from `train_runner.py`. Standalone — does **not** subclass `BaseTrainer` (that class is a diffusion spine, and its `encode_image` wraps the VAE forward in `no_grad`). See `docs/guides/VAE_TRAINING.md`. |
 | `backend/core/inference/video_mask_timeline.py` | Pure-Python spatial-mask timeline for `/generate/inpaint/video`: manifest validation, keyframe interpolation (`hold`/`affine`/`sdf`), rasterization to soft per-frame masks, max-pooling onto the latent token grid to decide pinned rows, and pixel-exact-at-mask==0.0 compositing. No model/server/GPU dependency. |

@@ -9069,6 +9069,26 @@ def get_models(db: Session = Depends(get_gallery_db), force_rescan: bool = False
                     "source_dir": models_dir,
                     "architecture": architecture
                 })
+            elif item.lower().endswith('.gguf'):
+                # GGUF DiT (design doc phase 11, MiniMax Music 3 only so far --
+                # no other arch in this repo reads a top-level GGUF checkpoint,
+                # so an unrecognized .gguf is left off the list rather than
+                # listed with an architecture nothing here can load). A
+                # Q8_0-bearing GGUF is still listed here even though loading it
+                # will be refused (header-only) -- same convention the flat
+                # safetensors DiT already follows for its own quantized sibling.
+                if architecture != "minimax_music3":
+                    continue
+                file_size = os.path.getsize(item_path) / (1024**3)  # GB
+                models.append({
+                    "name": item[: -len('.gguf')],
+                    "path": item_path,
+                    "type": "gguf",
+                    "source_type": "gguf",
+                    "size_gb": round(file_size, 2),
+                    "source_dir": models_dir,
+                    "architecture": architecture
+                })
 
     # Enrich each entry with component-registry data (lazy + persistently cached;
     # header/config-only reads, no weight load). Failures are swallowed per-model

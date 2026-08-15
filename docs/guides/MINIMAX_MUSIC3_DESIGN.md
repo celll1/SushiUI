@@ -562,9 +562,74 @@ from phase 1 doubles as a training-data artifact for the flow stage.
   reproducible by their stored frame codes (the sidecar) regardless of which
   text encoder generated them.
 
-  Items 11-14 (GGUF containers, Q8_0 residency, INT8 ConvRot, docs) are not
-  yet done; `int8_convrot` (either flat file) is refused (header-only, no
-  multi-GB read) with a reason naming phase 13.
+  **Item 11 (GGUF containers) has landed.** `core.models.common.gguf_container`
+  is a native GGUF v3 reader (magic/version/metadata/tensor-info parsing, all
+  13 metadata value types including nested arrays, memory-mapped lazy tensor
+  access) with NO `gguf` pip dependency, per this section's own decision --
+  deliberate even though `gguf` is already a dependency for MiniMax-H3's text
+  encoder (`core.models.minimax_h3.te_gguf_native`), because this format is
+  small enough to read in one file and the dependency buys nothing here.
+  Materializes F32/F16/BF16 tensors only; any other GGML type (Q8_0 above
+  all) is refused HEADER-ONLY (`gguf_container.refuse_unsupported_tensor_types`,
+  no tensor byte read) with a reason naming item 12. The dim-order convention
+  (GGUF's `ne[]` is `reversed(torch_shape)`) was verified against the real
+  staged DiT's fused `to_qkv.weight` -- `[2048, 6144]` on disk, `[6144, 2048]`
+  in torch, a deliberately non-square shape -- and cross-checked against the
+  installed `gguf` package's own `GGUFReader` (dev-time verification only;
+  production code never imports it). `core.models.minimax_music3.loader` now
+  accepts a `.gguf` DiT file everywhere a flat `.safetensors` DiT file already
+  was (`is_minimax_music3_gguf_dit`, extended `detect_minimax_music3_layout`,
+  `build_transformer_and_condition_encoder_from_gguf_dit`), routing through
+  item 9's `flat_remap.apply_flat_dit_state_dict` UNCHANGED -- proven against
+  the real `M:/model/minimax-music3/diffusion_models/minimax_music3_dit_BF16.gguf`
+  (374 tensors, F32×226 + F16×148, header parse ~5 ms, no out-of-range
+  tensors) end to end into the vendored `MiniMaxMusic3Transformer1DModel` /
+  `MiniMaxMusic3ConditionEncoder`, with per-tensor bit-exactness checks
+  against `official/`.
+
+  **What the "BF16" GGUF DiT actually equals was determined, not assumed.**
+  Per tensor: a GGML-F32 tensor (226/374) is bit-identical to `official/`'s
+  true FP32 weight; a GGML-F16 tensor (148/374, including the fused
+  `to_qkv`) is bit-identical to `official.half()` taken DIRECTLY from the
+  FP32 weight -- NOT via a bf16 detour, unlike the flat "fp16" safetensors
+  DiT (this section's own earlier finding), which IS
+  `official.bfloat16().half()`, a bf16-rounded value losslessly repacked
+  into an fp16 container. Consequence: loading the GGUF file at this
+  loader's bf16 default does NOT reproduce `official.bfloat16()`
+  bit-exactly for the 148 GGML-F16 tensors -- casting an already
+  fp16-rounded value to bf16 is a double rounding, measured exactly:
+  0.00390625 (2⁻⁸) max abs diff on `proj_in.weight`, a GGML-F16 tensor,
+  against 0.0 on `time_proj.weight`, a GGML-F32 tensor. The flat "fp16"
+  safetensors DiT's own residual against `official.bfloat16()`, measured the
+  same way on the same tensor, is 2.98e-08 -- four orders of magnitude
+  closer, i.e. exact for any practical purpose. **At this loader's bf16
+  default, the GGUF file is therefore the WORSE of the two sources, not a
+  wash**: a user picking it for the smaller download is trading that for up
+  to 2⁻⁸ of extra rounding on roughly 40% of the DiT's tensors. The loader's
+  `(GGUF, remapped)` / `(flat, remapped)` log line states this fact at load
+  time (`load_minimax_music3_from_path`), not only here.
+
+  The pruned-vocabulary GGUF text encoder is readable by
+  `build_language_model_and_depth_decoder_from_pruned_gguf_text_encoder`
+  (mirroring the safetensors pruned builder from item 10 exactly, down to
+  its representation choice and gate ordering; NOT wired into directory
+  detection, same status as every other text-encoder builder in this
+  module) -- but the real staged
+  `text_encoders/minimax_music3_text_encoder_pruned_Q8_0.gguf` (328 tensors:
+  Q8_0×169 + F32×155 + BF16×4, matching this section's own census) is
+  ALWAYS refused by this builder today, header-only, in ~2 ms, naming item
+  12 -- proven against the real file, not a fixture. The 4 real BF16
+  tensors it does carry were independently verified bit-identical (in bf16)
+  to `official/rvq_depth_decoder`'s `audio_embeddings.weight` and
+  `pos_embedding.weight`, confirming this reader's BF16 bit-reinterpret path
+  against real (not only synthetic) data. A future all-F32/F16/BF16 pruned
+  GGUF text encoder would load through this same builder unchanged, past
+  the refusal gate -- proven with a tiny all-F32 fixture exercising the full
+  `pruned_text_encoder_remap` path end to end.
+
+  Items 12-14 (Q8_0 residency, INT8 ConvRot, docs) are not yet done;
+  `int8_convrot` (either flat safetensors file) is still refused
+  (header-only, no multi-GB read) with a reason naming phase 13.
 - Frontend: txt2aud/extend UI shipped; repaint's UI branch is BLOCKED on a
   shared-worktree conflict (`frontend/src/components/generation/Img2ImgPanel.tsx`
   was dirty under another session's edits when this phase landed) -- not

@@ -37,11 +37,24 @@ What this loader reads from the flat tree, briefly:
   NON-pruned builder) still raises ``PrunedTextEncoderNotSupported``, because
   that specific function's remap genuinely cannot read the pruned layout
   (see ``flat_remap.PrunedTextEncoderNotSupported``'s docstring);
-* GGUF containers (phase 11) are not read here -- ``flat_remap`` and
-  ``pruned_text_encoder_remap`` are both written so that reader can reuse the
-  same remaps (the pruned GGUF text encoder carries the identical 328 tensor
-  names as the pruned flat safetensors -- design doc, "GGUF weights"), but no
-  GGUF parsing happens in this module.
+* GGUF containers (design doc phase 11) ARE read here now, via
+  ``core.models.common.gguf_container`` (a native reader, no ``gguf`` pip
+  dependency -- see that module's docstring). A GGUF DiT file
+  (``general.architecture = "minimax_music3"`` metadata plus the flat DiT's
+  own tensor-name signature) is accepted at directory-detection time exactly
+  where a flat safetensors DiT file already is, and
+  ``build_transformer_and_condition_encoder_from_gguf_dit`` routes its
+  tensors through ``flat_remap.apply_flat_dit_state_dict`` UNCHANGED -- the
+  GGUF DiT's tensor names are identical to the flat safetensors' own. The
+  staged ``minimax_music3_dit_BF16.gguf`` (F32 + F16 on disk, no Q8_0) loads;
+  any Q8_0 (or other GGML type this reader does not materialize) is refused
+  HEADER-ONLY, naming design doc phase 12/13. A GGUF PRUNED text encoder is
+  readable by ``build_language_model_and_depth_decoder_from_pruned_gguf_text_
+  encoder`` (mirroring the safetensors pruned builder, same "not wired into
+  directory-detection dispatch" status as every other text-encoder builder in
+  this module) -- the staged
+  ``minimax_music3_text_encoder_pruned_Q8_0.gguf`` carries 169 Q8_0 tensors
+  and is therefore ALWAYS refused today by that same header-only gate.
 """
 
 from __future__ import annotations
@@ -54,6 +67,7 @@ from typing import Any, Dict, List, Optional
 
 import torch
 
+from core.models.common import gguf_container
 from core.models.minimax_music3.defaults import (
     EXPECTED_LANGUAGE_MODEL_ROPE_THETA,
     FALLBACK_FRAME_RATE,
@@ -143,6 +157,37 @@ def is_minimax_music3_safetensors(path: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# GGUF header reading (design doc phase 11) -- also header-only, via
+# ``core.models.common.gguf_container``. ``general.architecture`` is the
+# STRONG signal (a GGUF for another model must be refused, not mis-claimed);
+# the tensor-name signature additionally tells the DiT file apart from the
+# (also ``minimax_music3``-declaring) text-encoder GGUF.
+# ---------------------------------------------------------------------------
+
+GGUF_ARCHITECTURE_METADATA_KEY = "general.architecture"
+GGUF_EXPECTED_ARCHITECTURE = "minimax_music3"
+
+
+def is_minimax_music3_gguf_dit(path: str) -> bool:
+    """True iff ``path`` is a GGUF container declaring
+    ``general.architecture = "minimax_music3"`` AND carrying the flat DiT's
+    own tensor-name signature (``keys_look_like_flat_minimax_music3_dit``,
+    reused UNCHANGED -- the GGUF DiT's tensor names are identical to the flat
+    safetensors DiT's, see ``flat_remap``'s module docstring and the design
+    doc's "GGUF weights" section). Never raises -- mirrors
+    ``is_minimax_music3_safetensors``'s "probe, don't raise" contract for
+    this same detection call site.
+    """
+    try:
+        header = gguf_container.parse_gguf_header(path)
+        if header.metadata.get(GGUF_ARCHITECTURE_METADATA_KEY) != GGUF_EXPECTED_ARCHITECTURE:
+            return False
+        return keys_look_like_flat_minimax_music3_dit(header.tensor_names())
+    except Exception:
+        return False
+
+
+# ---------------------------------------------------------------------------
 # Detection
 # ---------------------------------------------------------------------------
 
@@ -171,14 +216,19 @@ def _resolve_official_dir(root: Path) -> Optional[str]:
 def detect_minimax_music3_layout(path: str) -> Optional[Dict[str, Optional[str]]]:
     """``{root, official, flat_dit}`` or ``None``.
 
-    Accepts three spellings of the same model, matching the design doc's
+    Accepts four spellings of the same model, matching the design doc's
     phase-plan item 2 ("directory detection... flat-tree completion by
-    sibling-probe into official/"):
+    sibling-probe into official/") plus item 11's GGUF extension:
 
     * the flat root (``<root>/diffusion_models/`` + ``vae/`` +
       ``text_encoders/``, with ``official/`` beside it);
     * a DiT ``.safetensors`` inside such a ``diffusion_models/`` (walks up to
       find the root, then the sibling ``official/``);
+    * a DiT ``.gguf`` in the same place, detected by
+      ``is_minimax_music3_gguf_dit`` instead of
+      ``is_minimax_music3_safetensors`` -- same walk-up, same downstream
+      handling (``load_minimax_music3_from_path`` picks the GGUF builder over
+      the safetensors one by the path's own suffix);
     * MiniMax's config-and-weight ``official/`` directory itself, i.e. one
       whose ``modular_model_index.json`` declares
       ``MiniMaxMusic3ModularPipeline``.
@@ -197,8 +247,13 @@ def detect_minimax_music3_layout(path: str) -> Optional[Dict[str, Optional[str]]
         return None
     p = Path(path)
 
-    if p.is_file() and p.suffix == ".safetensors":
-        if not is_minimax_music3_safetensors(str(p)):
+    p_suffix_lower = p.suffix.lower()
+    if p.is_file() and (p.suffix == ".safetensors" or p_suffix_lower == ".gguf"):
+        is_dit = (
+            is_minimax_music3_safetensors(str(p)) if p.suffix == ".safetensors"
+            else is_minimax_music3_gguf_dit(str(p))
+        )
+        if not is_dit:
             return None
         for parent in p.parents:
             if (parent / "diffusion_models").is_dir():
@@ -427,6 +482,66 @@ def build_transformer_and_condition_encoder_from_flat_dit(
 
     remapped = apply_flat_dit_state_dict(flat_state_dict)
     del flat_state_dict
+
+    transformer_config = _read_component_config(official, "transformer", "MiniMaxMusic3Transformer1DModel")
+    condition_encoder_config = _read_component_config(official, "condition_encoder", "MiniMaxMusic3ConditionEncoder")
+
+    transformer = _build_module_from_remapped_state_dict(
+        MiniMaxMusic3Transformer1DModel, transformer_config, remapped["transformer"], torch_dtype,
+        label="transformer",
+    )
+    condition_encoder = _build_module_from_remapped_state_dict(
+        MiniMaxMusic3ConditionEncoder, condition_encoder_config, remapped["condition_encoder"], torch.float32,
+        label="condition_encoder",
+    )
+    return transformer, transformer_config, condition_encoder, condition_encoder_config
+
+
+def build_transformer_and_condition_encoder_from_gguf_dit(
+    gguf_dit_path: str,
+    official: str,
+    torch_dtype: torch.dtype,
+) -> tuple:
+    """The flow-matching transformer + condition encoder from a GGUF DiT file
+    (design doc phase 11).
+
+    Mirrors ``build_transformer_and_condition_encoder_from_flat_dit`` -- same
+    remap (``flat_remap.apply_flat_dit_state_dict``, UNCHANGED: the GGUF
+    DiT's tensor names are identical to the flat safetensors' own), same
+    "configs from ``official/``, weights from this file" contract, same
+    return shape. What differs is the state-dict SOURCE (a lazy
+    ``gguf_container.GGUFStateDict`` instead of an eagerly-read safetensors
+    dict) and the quantization gate (this file's own declared GGML tensor
+    TYPES, via ``gguf_container.refuse_unsupported_tensor_types``, HEADER-ONLY
+    before any tensor byte is read -- GGUF has no ``.weight_scale`` sibling
+    convention). The staged ``minimax_music3_dit_BF16.gguf`` is F32 + F16 on
+    disk (no Q8_0) and loads.
+
+    What the "BF16" label actually means for THIS file's precision -- and why
+    it is, per-tensor, NOT the same rounding as the flat "fp16" safetensors
+    DiT -- is investigated and stated once, in
+    ``docs/guides/MINIMAX_MUSIC3_DESIGN.md``, "GGUF weights" (item 11's
+    status entry); this docstring does not repeat that argument.
+
+    Returns ``(transformer, transformer_config, condition_encoder,
+    condition_encoder_config)``, same as the safetensors builder.
+    """
+    from core.models.minimax_music3.flat_remap import apply_flat_dit_state_dict
+    from core.models.minimax_music3.vendor import (
+        MiniMaxMusic3ConditionEncoder,
+        MiniMaxMusic3Transformer1DModel,
+    )
+
+    header = gguf_container.parse_gguf_header(gguf_dit_path)
+    # Header-only fast path, same ordering rule as the safetensors builder's
+    # `_header_looks_quantized` gate: refuse before opening the data section.
+    gguf_container.refuse_unsupported_tensor_types(header, arch="MiniMax Music 3", label="flat DiT")
+
+    state = gguf_container.GGUFStateDict(header, arch="MiniMax Music 3", label="flat DiT")
+    try:
+        remapped = apply_flat_dit_state_dict(state)
+    finally:
+        state.close()
 
     transformer_config = _read_component_config(official, "transformer", "MiniMaxMusic3Transformer1DModel")
     condition_encoder_config = _read_component_config(official, "condition_encoder", "MiniMaxMusic3ConditionEncoder")
@@ -697,6 +812,162 @@ def build_language_model_and_depth_decoder_from_pruned_flat_text_encoder(
     return language_model, rvq_depth_decoder, depth_config
 
 
+def build_language_model_and_depth_decoder_from_pruned_gguf_text_encoder(
+    gguf_text_encoder_path: str,
+    official: str,
+    torch_dtype: torch.dtype,
+):
+    """The PRUNED-vocabulary flat text encoder (design doc phase 10's remap),
+    read from a GGUF container (design doc phase 11) instead of safetensors.
+
+    Mirrors ``build_language_model_and_depth_decoder_from_pruned_flat_text_
+    encoder``'s shape, gate ordering and representation choice (a real
+    ``Qwen3ForCausalLM``, ``lm_head`` removed, ``lm_head_pruned`` /
+    ``model.embed_tokens_audio`` attached) exactly; NOT wired into
+    ``load_minimax_music3_from_path``'s directory-detection dispatch, same
+    status as every other text-encoder builder in this module -- see the
+    module docstring.
+
+    Refuses HEADER-ONLY (``gguf_container.refuse_unsupported_tensor_types``,
+    no tensor byte read) for any GGML type this reader does not materialize,
+    checked BEFORE the rope-theta config gate and before the data section is
+    opened at all. The staged ``minimax_music3_text_encoder_pruned_Q8_0.gguf``
+    carries 169 Q8_0 tensors (of 328 total; plus 155 F32 + 4 BF16) and is
+    therefore ALWAYS refused today by this gate -- Q8_0 residency is design
+    doc phase 12. A future all-F32/F16/BF16 pruned GGUF text encoder would
+    proceed past this gate and load through the exact same
+    ``pruned_text_encoder_remap.apply_pruned_text_encoder_state_dict`` the
+    safetensors path uses, unchanged -- kept implemented and tested here
+    (a tiny all-unquantized fixture) rather than stopping at the refusal, so
+    item 12 needs no new code in THIS function, only Q8_0 support in
+    ``gguf_container``.
+    """
+    from accelerate import init_empty_weights
+    from transformers import AutoConfig, AutoModelForCausalLM
+
+    from core.models.minimax_music3.defaults import AUDIO_CODE_OFFSET
+    from core.models.minimax_music3.flat_remap import (
+        _PRUNED_TELLS,
+        assert_state_dict_matches_module_keys,
+        expected_module_state_dict_keys,
+        is_pruned_flat_text_encoder,
+    )
+    from core.models.minimax_music3.pruned_text_encoder_remap import (
+        AUDIO_HEAD_VOCAB_SIZE,
+        SEMANTIC_VOCAB_SIZE,
+        apply_pruned_text_encoder_state_dict,
+    )
+    from core.models.minimax_music3.vendor import MiniMaxMusic3RVQDepthDecoder
+
+    header = gguf_container.parse_gguf_header(gguf_text_encoder_path)
+    if header.metadata.get(GGUF_ARCHITECTURE_METADATA_KEY) != GGUF_EXPECTED_ARCHITECTURE:
+        raise ValueError(
+            f"{gguf_text_encoder_path!r} does not declare "
+            f"{GGUF_ARCHITECTURE_METADATA_KEY}={GGUF_EXPECTED_ARCHITECTURE!r} in its GGUF "
+            f"metadata (found {header.metadata.get(GGUF_ARCHITECTURE_METADATA_KEY)!r}) -- "
+            f"refusing to guess this is a MiniMax Music 3 checkpoint."
+        )
+    header_keys = header.tensor_names()
+    if not is_pruned_flat_text_encoder(header_keys):
+        raise ValueError(
+            f"{gguf_text_encoder_path!r} does not carry any of the pruned-vocabulary tells "
+            f"({sorted(_PRUNED_TELLS)}) in its tensor names -- this builder reads only the "
+            f"pruned-vocabulary GGUF layout; no non-pruned GGUF text-encoder builder exists "
+            f"(design doc phase 11 covers the pruned distribution's own tensor names only)."
+        )
+    # HEADER-ONLY refusal, before the rope-theta config read below and before
+    # opening the data section at all -- proves the file's 9.59 GB / 169
+    # Q8_0-of-328 tensors are never touched.
+    gguf_container.refuse_unsupported_tensor_types(
+        header, arch="MiniMax Music 3", label="pruned text encoder",
+    )
+
+    # Cheap config read + the rope-theta gate BEFORE the heavy read -- same
+    # ordering rule the safetensors pruned builder follows.
+    lm_config_path = os.path.join(official, "language_model", "config.json")
+    if not os.path.isfile(lm_config_path):
+        raise FileNotFoundError(
+            f"MiniMax Music 3's config tree at {official!r} is missing language_model/config.json."
+        )
+    with open(lm_config_path, encoding="utf-8") as fh:
+        lm_config_dict = json.load(fh)
+    rope_parameters = lm_config_dict.get("rope_parameters")
+    theta = rope_parameters.get("rope_theta") if isinstance(rope_parameters, dict) else None
+    if theta is None or abs(float(theta) - EXPECTED_LANGUAGE_MODEL_ROPE_THETA) > _ROPE_THETA_TOLERANCE:
+        raise ValueError(
+            f"MiniMax Music 3's language_model config.rope_parameters['rope_theta'] is "
+            f"{theta!r}, expected {EXPECTED_LANGUAGE_MODEL_ROPE_THETA}. Checked from "
+            f"official/language_model/config.json BEFORE reading the pruned GGUF text "
+            f"encoder's tensor data."
+        )
+    depth_config = _read_component_config(official, "rvq_depth_decoder", "MiniMaxMusic3RVQDepthDecoder")
+
+    state = gguf_container.GGUFStateDict(header, arch="MiniMax Music 3", label="pruned text encoder")
+    try:
+        # Shape census BEFORE remapping, same cross-check the safetensors
+        # pruned builder runs against `AUDIO_CODE_OFFSET` -- see that
+        # function's comment for why a mismatch here means a stale constant,
+        # not a checkpoint bug.
+        hidden_size = int(lm_config_dict["hidden_size"])
+        prefill_rows = int(state["model.embed_tokens_prefill.weight"].shape[0])
+        if prefill_rows != AUDIO_CODE_OFFSET:
+            raise ValueError(
+                f"MiniMax Music 3 pruned GGUF text encoder: model.embed_tokens_prefill has "
+                f"{prefill_rows} rows, expected AUDIO_CODE_OFFSET ({AUDIO_CODE_OFFSET})."
+            )
+        audio_rows = int(state["model.embed_tokens_audio.weight"].shape[0])
+        if audio_rows != SEMANTIC_VOCAB_SIZE:
+            raise ValueError(
+                f"MiniMax Music 3 pruned GGUF text encoder: model.embed_tokens_audio has "
+                f"{audio_rows} rows, expected SEMANTIC_VOCAB_SIZE ({SEMANTIC_VOCAB_SIZE})."
+            )
+        head_rows = int(state["model.lm_head_pruned.weight"].shape[0])
+        if head_rows != AUDIO_HEAD_VOCAB_SIZE:
+            raise ValueError(
+                f"MiniMax Music 3 pruned GGUF text encoder: model.lm_head_pruned has "
+                f"{head_rows} rows, expected SEMANTIC_VOCAB_SIZE + 1 ({AUDIO_HEAD_VOCAB_SIZE})."
+            )
+
+        remapped = apply_pruned_text_encoder_state_dict(state, lm_config_dict)
+    finally:
+        state.close()
+
+    lm_hf_config = AutoConfig.from_pretrained(os.path.join(official, "language_model"))
+    lm_hf_config.vocab_size = prefill_rows
+
+    with init_empty_weights():
+        language_model = AutoModelForCausalLM.from_config(lm_hf_config)
+        del language_model.lm_head
+        language_model.lm_head_pruned = torch.nn.Linear(hidden_size, AUDIO_HEAD_VOCAB_SIZE, bias=False)
+        language_model.model.embed_tokens_audio = torch.nn.Embedding(SEMANTIC_VOCAB_SIZE, hidden_size)
+
+    lm_cast_state_dict = {
+        k: (v.to(dtype=torch_dtype) if v.is_floating_point() else v)
+        for k, v in remapped["language_model"].items()
+    }
+    assert_state_dict_matches_module_keys(
+        lm_cast_state_dict.keys(), expected_module_state_dict_keys(language_model),
+        component="language_model (pruned GGUF)",
+    )
+    language_model.load_state_dict(lm_cast_state_dict, strict=True, assign=True)
+    stranded = _stranded_meta_tensors(language_model)
+    if stranded:
+        raise RuntimeError(
+            f"MiniMax Music 3's language_model (pruned GGUF text encoder source) still holds "
+            f"{len(stranded)} meta tensor(s) after loading (first 5: {stranded[:5]}); it would "
+            f"fail at the first forward."
+        )
+    language_model.eval()
+    language_model.requires_grad_(False)
+    _assert_language_model_rope_theta(language_model)
+
+    rvq_depth_decoder = _build_module_from_remapped_state_dict(
+        MiniMaxMusic3RVQDepthDecoder, depth_config, remapped["rvq_depth_decoder"], torch_dtype,
+        label="rvq_depth_decoder (pruned GGUF)",
+    )
+    return language_model, rvq_depth_decoder, depth_config
+
+
 def _assert_language_model_rope_theta(language_model) -> None:
     """Load-time gate: ``config.rope_parameters["rope_theta"] == 1e6``.
 
@@ -833,6 +1104,10 @@ def load_minimax_music3_from_path(
     # load runs) -- design doc phase 13. Configs still come from official/;
     # only the transformer's WEIGHTS are sourced from the flat file.
     use_flat_dit = layout.get("flat_dit") is not None
+    # Which builder: the file's own suffix decides (design doc phase 11) --
+    # `detect_minimax_music3_layout` already proved it is a MiniMax Music 3
+    # DiT of ONE of these two formats before `flat_dit` was ever populated.
+    use_gguf_dit = use_flat_dit and str(layout["flat_dit"]).lower().endswith(".gguf")
 
     official = layout["official"]
     if official is None:
@@ -886,9 +1161,20 @@ def load_minimax_music3_from_path(
     print(f"[MiniMaxMusic3Loader] official tree:    {official}")
     for subdir, _ in _DIFFUSERS_COMPONENTS:
         if subdir in ("transformer", "condition_encoder") and use_flat_dit:
-            print(f"[MiniMaxMusic3Loader] {subdir}:{' ' * max(1, 17 - len(subdir))}{layout['flat_dit']} (flat, remapped)")
+            source_label = "GGUF, remapped" if use_gguf_dit else "flat, remapped"
+            print(f"[MiniMaxMusic3Loader] {subdir}:{' ' * max(1, 17 - len(subdir))}{layout['flat_dit']} ({source_label})")
             continue
         print(f"[MiniMaxMusic3Loader] {subdir}:{' ' * max(1, 17 - len(subdir))}{os.path.join(official, subdir)}")
+    if use_gguf_dit and torch_dtype == torch.bfloat16:
+        # Design doc "GGUF weights": at this dtype, the GGUF DiT's own
+        # GGML-F16 tensors (~40% of the file) are `official.half()` cast
+        # AGAIN to bf16 -- a double rounding, up to 2**-8 max abs diff from
+        # `official.bfloat16()` -- while the flat fp16 safetensors DiT's
+        # equivalent residual is ~2.98e-08 (four orders of magnitude
+        # closer). Stated here, at load time, not only in the design doc.
+        print(f"[MiniMaxMusic3Loader] note: this GGUF DiT's GGML-F16 tensors are "
+              f"official.half() cast again to bf16 here -- up to 2**-8 EXTRA rounding "
+              f"vs. the flat fp16/fp32 safetensors DiT on those tensors, not a wash.")
     if load_language_model:
         print(f"[MiniMaxMusic3Loader] language_model:  {os.path.join(official, 'language_model')}")
     print(f"[MiniMaxMusic3Loader] tokenizer:       {os.path.join(official, 'tokenizer')}")
@@ -909,7 +1195,13 @@ def load_minimax_music3_from_path(
     # (much larger) text encoder.
     language_model = _build_language_model(official, torch_dtype) if load_language_model else None
 
-    if use_flat_dit:
+    if use_gguf_dit:
+        transformer, transformer_config, condition_encoder, condition_encoder_config = (
+            build_transformer_and_condition_encoder_from_gguf_dit(
+                layout["flat_dit"], official, torch_dtype,
+            )
+        )
+    elif use_flat_dit:
         transformer, transformer_config, condition_encoder, condition_encoder_config = (
             build_transformer_and_condition_encoder_from_flat_dit(
                 layout["flat_dit"], official, torch_dtype,

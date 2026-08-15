@@ -126,6 +126,12 @@ def _infer_source_type(path: str) -> str:
         return "sharded"
     if isinstance(path, str) and path.endswith(".safetensors") and os.path.isfile(path):
         return "safetensors"
+    # GGUF (design doc phase 11, MiniMax Music 3's DiT so far): a distinct
+    # source_type, NOT folded into "safetensors" -- its header is a different
+    # format entirely (see `compute_content_hash`'s own "gguf" branch), and
+    # mislabeling it would make `_read_safetensors_header` fail on every scan.
+    if isinstance(path, str) and path.lower().endswith(".gguf") and os.path.isfile(path):
+        return "gguf"
     if os.path.isdir(path):
         return "diffusers"
     # sentinel / unknown
@@ -134,9 +140,9 @@ def _infer_source_type(path: str) -> str:
 
 def _normalize_source_type(source_type: Optional[str], path: str) -> str:
     st = (source_type or "").strip().lower()
-    if st in ("sharded", "safetensors", "diffusers"):
+    if st in ("sharded", "safetensors", "diffusers", "gguf"):
         # honor the explicit choice, but repair the common "safetensors" label on
-        # a sharded index or a directory
+        # a sharded index, a directory, or a GGUF file
         if st == "safetensors":
             return _infer_source_type(path)
         return st
@@ -150,7 +156,7 @@ def _constituent_files(path: str, source_type: str) -> List[str]:
     """
     files: List[str] = []
     try:
-        if source_type == "safetensors":
+        if source_type in ("safetensors", "gguf"):
             if os.path.isfile(path):
                 files.append(path)
         elif source_type == "sharded":
@@ -252,6 +258,22 @@ def compute_content_hash(path: str, source_type: str) -> str:
                 parts.append(f"size={os.path.getsize(path)}")
             except OSError:
                 pass
+
+        elif source_type == "gguf":
+            # Header-only identity (design doc phase 11) -- the same
+            # {name:[shape,dtype]} shape `_header_identity` builds for a
+            # safetensors header, so this hash reacts to the same class of
+            # change (a different tensor set/shape/dtype), not to a byte of
+            # tensor DATA. `core.models.common.gguf_container.parse_gguf_header`
+            # reads only the header, matching this module's own "CHEAP" contract.
+            from core.models.common.gguf_container import parse_gguf_header
+            gguf_header = parse_gguf_header(path)
+            items = [
+                f"{t.name}:{list(t.torch_shape)}:{t.ggml_type_name}"
+                for t in sorted(gguf_header.tensors, key=lambda t: t.name)
+            ]
+            parts.append("|".join(items))
+            parts.append(f"size={gguf_header.file_size}")
 
         elif source_type == "sharded":
             base = os.path.dirname(path)
@@ -627,7 +649,7 @@ def scan_model(path: str, source_type: Optional[str] = None) -> Dict[str, Any]:
         isinstance(path, str)
         and os.path.isfile(path)
         and not path.endswith(".safetensors.index.json")
-        and not path.lower().endswith((".safetensors", ".ckpt", ".pt", ".pth", ".bin"))
+        and not path.lower().endswith((".safetensors", ".ckpt", ".pt", ".pth", ".bin", ".gguf"))
     ):
         return {
             "content_hash": _hash_parts([f"nonmodel={path}"]),

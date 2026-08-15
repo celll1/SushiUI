@@ -7,7 +7,7 @@ from diffusers import StableDiffusionPipeline, StableDiffusionXLPipeline, Autoen
 from safetensors.torch import load_file
 from pathlib import Path
 
-ModelSource = Literal["safetensors", "diffusers", "huggingface"]
+ModelSource = Literal["safetensors", "diffusers", "huggingface", "gguf"]
 # DEUS support removed - architecture no longer maintained
 # ModelType = Literal["sd15", "sdxl", "zimage", "deus", "flux2"]
 ModelType = Literal["sd15", "sdxl", "zimage", "flux2", "anima", "lens", "ideogram4", "minit2i", "krea2", "ltx2", "acestep", "minimax_h3", "minimax_music3"]
@@ -539,20 +539,25 @@ class ModelLoader:
     @staticmethod
     def _looks_like_minimax_music3(model_path: str) -> bool:
         """MiniMax Music 3: a directory (modular_model_index.json, distinct
-        filename from H3's model_index.json) or a flat DiT .safetensors (key
-        signature; identified even though the loader refuses to load it).
+        filename from H3's model_index.json), a flat DiT .safetensors, or a
+        GGUF DiT (design doc phase 11; key/architecture signature --
+        identified even though the loader refuses a Q8_0-bearing GGUF).
         Delegates to the loader package, mirroring ``_looks_like_minimax_h3``.
         """
         try:
             from core.models.minimax_music3.loader import (
-                detect_minimax_music3_layout, is_minimax_music3_safetensors,
+                detect_minimax_music3_layout, is_minimax_music3_gguf_dit,
+                is_minimax_music3_safetensors,
             )
 
             if os.path.isdir(model_path):
                 return detect_minimax_music3_layout(model_path) is not None
-            if isinstance(model_path, str) and model_path.endswith(".safetensors") \
-                    and os.path.isfile(model_path):
-                return is_minimax_music3_safetensors(model_path)
+            if isinstance(model_path, str) and os.path.isfile(model_path):
+                lower = model_path.lower()
+                if lower.endswith(".safetensors"):
+                    return is_minimax_music3_safetensors(model_path)
+                if lower.endswith(".gguf"):
+                    return is_minimax_music3_gguf_dit(model_path)
             return False
         except Exception:
             return False
@@ -766,10 +771,14 @@ class ModelLoader:
             return "minimax_h3"
 
         # MiniMax Music 3's flat DiT (`diffusion_transformer.*` + `latent_conditioners.*`
-        # + `cond_layer_logits`). Same ordering reason as the H3 block above.
-        # Identified even though the loader refuses to load it (see loader.py).
-        if isinstance(model_path, str) and model_path.endswith(".safetensors") \
-                and os.path.isfile(model_path) and ModelLoader._looks_like_minimax_music3(model_path):
+        # + `cond_layer_logits`), safetensors OR GGUF (design doc phase 11 --
+        # same tensor-name signature, plus `general.architecture` for the
+        # GGUF case). Same ordering reason as the H3 block above. A
+        # Q8_0-bearing GGUF is still identified here even though the loader
+        # refuses to load it (see loader.py's header-only gate).
+        if isinstance(model_path, str) and os.path.isfile(model_path) \
+                and model_path.lower().endswith((".safetensors", ".gguf")) \
+                and ModelLoader._looks_like_minimax_music3(model_path):
             return "minimax_music3"
 
         # Lens single-file detection (full-FT save: net.* DiT). Metadata-first,
@@ -2224,11 +2233,13 @@ class ModelLoader:
                 clip_projection_file=clip_projection_file,
                 hybrid=hybrid)
 
-        # MiniMax Music 3 flat DiT: dispatch here (not into
-        # reconstruct_sd_sdxl_pipeline) so the loader's own refusal message
-        # reaches the user instead of a confusing diffusers error.
+        # MiniMax Music 3 flat DiT (safetensors or, since design doc phase 11,
+        # GGUF): dispatch here (not into reconstruct_sd_sdxl_pipeline) so the
+        # loader's own message -- a real load when official/ is reachable, a
+        # refusal naming the reason otherwise -- reaches the user instead of a
+        # confusing diffusers error.
         if model_type == "minimax_music3":
-            print(f"[ModelLoader] MiniMax Music 3 flat DiT selected; refusing (official/ tree only)")
+            print(f"[ModelLoader] MiniMax Music 3 DiT file selected ({file_path})")
             return ModelLoader.load_minimax_music3_from_path(file_path, torch.bfloat16)
 
         is_v_prediction = ModelLoader.detect_v_prediction(file_path)
@@ -2854,7 +2865,14 @@ class ModelLoader:
                 text_encoder_path=kwargs.get("text_encoder_path"),
                 vae_path=kwargs.get("vae_path"),
             )
-        if source_type == "safetensors":
+        if source_type == "safetensors" or source_type == "gguf":
+            # `load_from_safetensors` is a "single file, dispatch by detected
+            # architecture" entry point despite its name -- it already serves
+            # Lens/Anima/MiniT2I/Ideogram4's own non-safetensors-named single
+            # files the same way. GGUF (design doc phase 11, MiniMax Music 3's
+            # DiT so far) reuses it unchanged: `ModelLoader.detect_model_type`
+            # and `load_minimax_music3_from_path` both already accept a
+            # `.gguf` path directly.
             return ModelLoader.load_from_safetensors(
                 source, device, torch_dtype,
                 text_encoder_file=text_encoder_file,
@@ -3091,8 +3109,11 @@ class ModelLoader:
         torch_dtype: torch.dtype = torch.bfloat16,
     ) -> dict:
         """Load MiniMax Music 3 from its ``official/`` tree (or a root holding
-        one). Returns a component dict for ``PipelineManager.load_model()``
-        (``type == "minimax_music3"``); the flat repacked tree is refused --
+        one), optionally sourcing the DiT's weights from a flat safetensors or
+        GGUF file (design doc phases 9 + 11) when ``path`` names one directly.
+        Returns a component dict for ``PipelineManager.load_model()``
+        (``type == "minimax_music3"``); ``int8_convrot`` and any GGML type
+        this reader does not materialize (Q8_0 above all) are still refused --
         see ``core.models.minimax_music3.loader``'s docstring.
         """
         from core.models.minimax_music3.loader import (

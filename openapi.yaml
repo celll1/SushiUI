@@ -8651,6 +8651,26 @@ components:
               minimum: 10
               maximum: 1800
               default: 300
+            instruction:
+              type: string
+              default: ""
+              description: |
+                What to change THIS TIME (e.g. "make the drop harder"), used
+                only when `revise` is true. Sent to the LLM as a field
+                separate from `prompt`, never appended into it -- folding an
+                instruction into the prompt text lets the LLM read it as more
+                content to describe instead of a directive to apply.
+              example: make the drop harder and add a key change before the last chorus
+            revise:
+              type: boolean
+              default: false
+              description: |
+                False (default): `prompt` is freeform intent to expand into a
+                new, structured MiniMax-H3 prompt, exactly as this endpoint
+                has always behaved. True: `prompt` is instead the CURRENT,
+                already-structured MiniMax-H3 prompt -- the base text to
+                preserve -- and `instruction` (required when true) is the
+                edit to apply to it.
             force_refresh:
               type: boolean
               default: false
@@ -8675,6 +8695,20 @@ components:
           type: string
         model:
           type: string
+        revise:
+          type: boolean
+          description: Echoes the request's `revise` flag.
+        diff_summary:
+          type: string
+          nullable: true
+          description: |
+            A unified line diff between the revise-mode base text and the
+            returned `prompt`, present only when the request had `revise`
+            true (null otherwise). A claim of "only the parts the
+            instruction named changed" is not machine-checkable, but a diff
+            against the base is -- this is what a caller shows the user to
+            judge whether a revise made a targeted edit or quietly rewrote
+            the whole piece.
 
     MusicPromptAssistTransformRequest:
       type: object
@@ -8690,6 +8724,10 @@ components:
         caption:
           type: string
           example: a dreamy synth pop track
+          description: |
+            A short caption to expand (default mode), or — when `revise` is
+            true — the CURRENT, already-expanded Structured Caption, treated
+            as the base text to preserve.
         lyrics:
           type: string
           default: ""
@@ -8698,6 +8736,28 @@ components:
           type: string
           default: ""
           example: "no drums"
+          description: |
+            Standing rules that hold for the piece regardless of pass (e.g.
+            "keep it instrumental"). Distinct from `instruction`, which is
+            what to change this time.
+        instruction:
+          type: string
+          default: ""
+          description: |
+            What to change THIS TIME (e.g. "make the drop harder"), used
+            only when `revise` is true. Sent as its own field, never
+            appended into `caption` -- folding an instruction into the
+            caption text lets the LLM read it as more content to describe
+            instead of a directive to apply.
+          example: make the drop harder and add a key change before the last chorus
+        revise:
+          type: boolean
+          default: false
+          description: |
+            False (default): `caption` is a short caption to expand, exactly
+            as this endpoint has always behaved. True: `caption` is the
+            CURRENT Structured Caption -- the base text to preserve -- and
+            `instruction` (required when true) is the edit to apply to it.
         provider:
           type: string
           enum: [lm_studio, ollama]
@@ -8770,18 +8830,44 @@ components:
             instrumentation, build/drop structure). `complete` mode: the
             song's theme/subject matter. At least one of `theme`/`lyrics`
             is required for `complete` mode; `theme` is required for
-            `structure` mode.
+            `structure` mode. When `revise` is true, `theme` is optional
+            additional direction alongside `instruction` in either mode.
           example: a bittersweet farewell under city lights
         lyrics:
           type: string
           default: ""
           description: |
-            `complete` mode only: partial lyrics to preserve verbatim and
-            complete around. Ignored in `structure` mode.
+            Non-revise `complete` mode: partial lyrics to preserve verbatim
+            and complete around. Ignored in non-revise `structure` mode.
+            When `revise` is true (either mode): the CURRENT lyrics or
+            structure/tag map — required, and treated as the base text to
+            preserve rather than a fragment to complete around.
         constraints:
           type: string
           default: ""
           example: "no explicit language"
+          description: |
+            Standing rules that hold for the piece regardless of pass.
+            Distinct from `instruction`, which is what to change this time.
+        instruction:
+          type: string
+          default: ""
+          description: |
+            What to change THIS TIME (e.g. "drop the bridge"), required and
+            used only when `revise` is true. Sent as its own field, never
+            appended into `lyrics` -- folding an instruction into the lyrics
+            text lets the LLM read it as more content to write instead of a
+            directive to apply.
+          example: drop the bridge and make verse two darker
+        revise:
+          type: boolean
+          default: false
+          description: |
+            False (default): behaves exactly as this endpoint always has for
+            `mode`. True: `lyrics` is the base text to preserve (see above)
+            and `instruction` (required) is the edit to apply to it — for
+            `structure`, an edit to the tag sequence itself; for `complete`,
+            an edit to the written words.
         provider:
           type: string
           enum: [lm_studio, ollama]
@@ -8850,6 +8936,18 @@ components:
         mode:
           type: string
           enum: [structure, complete]
+        revise:
+          type: boolean
+          description: Echoes the request's `revise` flag.
+        diff_summary:
+          type: string
+          nullable: true
+          description: |
+            A unified line diff between the revise-mode base `lyrics` and
+            the returned `lyrics`, present only when the request had
+            `revise` true (null otherwise). See `PromptAssistResponse.
+            diff_summary` for why a diff, not a "only the named parts
+            changed" claim, is what is returned.
 
     MusicLyricsFormatRequest:
       type: object

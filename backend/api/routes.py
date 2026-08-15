@@ -11047,6 +11047,12 @@ class PromptAssistTransformRequest(PromptAssistTemplateRequest):
     max_output_tokens: int = Field(PROMPT_ASSIST_DEFAULTS["max_output_tokens"], ge=128, le=8192)
     context_length: int = Field(PROMPT_ASSIST_DEFAULTS["context_length"], ge=1024, le=262144)
     timeout_seconds: int = Field(PROMPT_ASSIST_DEFAULTS["timeout_seconds"], ge=10, le=1800)
+    # See PROMPT_ASSIST_DEFAULTS's own comment for the instruction/constraints
+    # split. `instruction` is separate from `prompt` deliberately -- folding
+    # it into the prompt text is the actual reported failure this exists to
+    # fix (see minimax_h3_prompt_assistant.py's `revise` field).
+    instruction: str = PROMPT_ASSIST_DEFAULTS["instruction"]
+    revise: bool = PROMPT_ASSIST_DEFAULTS["revise"]
     force_refresh: bool = PROMPT_ASSIST_DEFAULTS["force_refresh"]
 
 
@@ -11100,6 +11106,8 @@ async def transform_h3_prompt(request: PromptAssistTransformRequest):
         max_output_tokens=request.max_output_tokens,
         context_length=request.context_length,
         timeout_seconds=request.timeout_seconds,
+        instruction=request.instruction,
+        revise=request.revise,
         force_refresh=request.force_refresh,
     )
     try:
@@ -11141,6 +11149,10 @@ class MusicPromptAssistTransformRequest(BaseModel):
     max_output_tokens: int = Field(MUSIC_PROMPT_ASSIST_DEFAULTS["max_output_tokens"], ge=128, le=8192)
     context_length: int = Field(MUSIC_PROMPT_ASSIST_DEFAULTS["context_length"], ge=1024, le=262144)
     timeout_seconds: int = Field(MUSIC_PROMPT_ASSIST_DEFAULTS["timeout_seconds"], ge=10, le=1800)
+    # See MUSIC_PROMPT_ASSIST_DEFAULTS's own comment for the
+    # instruction/constraints split.
+    instruction: str = MUSIC_PROMPT_ASSIST_DEFAULTS["instruction"]
+    revise: bool = MUSIC_PROMPT_ASSIST_DEFAULTS["revise"]
     force_refresh: bool = MUSIC_PROMPT_ASSIST_DEFAULTS["force_refresh"]
 
 
@@ -11158,6 +11170,8 @@ async def transform_music3_caption(request: MusicPromptAssistTransformRequest):
         max_output_tokens=request.max_output_tokens,
         context_length=request.context_length,
         timeout_seconds=request.timeout_seconds,
+        instruction=request.instruction,
+        revise=request.revise,
         force_refresh=request.force_refresh,
     )
     try:
@@ -11220,6 +11234,11 @@ class MusicLyricsAssistTransformRequest(BaseModel):
     max_output_tokens: int = Field(MUSIC_LYRICS_ASSIST_DEFAULTS["max_output_tokens"], ge=128, le=8192)
     context_length: int = Field(MUSIC_LYRICS_ASSIST_DEFAULTS["context_length"], ge=1024, le=262144)
     timeout_seconds: int = Field(MUSIC_LYRICS_ASSIST_DEFAULTS["timeout_seconds"], ge=10, le=1800)
+    # See MUSIC_LYRICS_ASSIST_DEFAULTS's own comment for the
+    # instruction/constraints split. Applies to both `structure` and
+    # `complete`; `format` has its own request model with no such field.
+    instruction: str = MUSIC_LYRICS_ASSIST_DEFAULTS["instruction"]
+    revise: bool = MUSIC_LYRICS_ASSIST_DEFAULTS["revise"]
     force_refresh: bool = MUSIC_LYRICS_ASSIST_DEFAULTS["force_refresh"]
 
 
@@ -11238,6 +11257,8 @@ async def transform_music3_lyrics(request: MusicLyricsAssistTransformRequest):
         max_output_tokens=request.max_output_tokens,
         context_length=request.context_length,
         timeout_seconds=request.timeout_seconds,
+        instruction=request.instruction,
+        revise=request.revise,
         force_refresh=request.force_refresh,
     )
     try:

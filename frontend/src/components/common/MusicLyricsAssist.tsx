@@ -85,6 +85,15 @@ export default function MusicLyricsAssist({ lyrics, onApply }: MusicLyricsAssist
   const [modelBusy, setModelBusy] = useState(false);
   const [error, setError] = useState("");
   const [lastAppliedSource, setLastAppliedSource] = useState<string | null>(null);
+  // Revise, orthogonal to `mode`: what to change THIS TIME, e.g. "drop the
+  // bridge" -- a directive applied to the CURRENT Lyrics field content
+  // (the base text to preserve), distinct from `constraints` above (a
+  // standing rule). Sent as its own field so the LLM never reads it as
+  // more lyric content to write. `lastWasRevise` remembers which action
+  // produced the current preview, so Retry repeats the same kind of call.
+  const [instruction, setInstruction] = useState("");
+  const [lastWasRevise, setLastWasRevise] = useState(false);
+  const [diffSummary, setDiffSummary] = useState<string | null>(null);
 
   const needsModel = mode !== "format";
 
@@ -160,6 +169,7 @@ export default function MusicLyricsAssist({ lyrics, onApply }: MusicLyricsAssist
       setWarnings(response.warnings);
       setValid(true);
       setCached(false);
+      setDiffSummary(null);
     } catch (reason) {
       setError(errorMessage(reason));
     } finally {
@@ -167,12 +177,22 @@ export default function MusicLyricsAssist({ lyrics, onApply }: MusicLyricsAssist
     }
   };
 
-  const runTransform = async (forceRefresh = false) => {
+  const runTransform = async (options: { forceRefresh?: boolean; revise?: boolean } = {}) => {
+    const forceRefresh = options.forceRefresh ?? false;
+    const revise = options.revise ?? false;
     if (!settings?.model) {
       setError("Select a local LLM model first.");
       return;
     }
     if (mode !== "structure" && mode !== "complete") return;
+    if (revise && !instruction.trim()) {
+      setError("Enter a revision instruction first.");
+      return;
+    }
+    if (revise && !lyrics.trim()) {
+      setError("Enter the current lyrics or structure map in Lyrics first, then describe the revision.");
+      return;
+    }
     setBusy(true);
     setError("");
     try {
@@ -181,14 +201,18 @@ export default function MusicLyricsAssist({ lyrics, onApply }: MusicLyricsAssist
         api_key: "",
         mode,
         theme,
-        lyrics: mode === "complete" ? lyrics : "",
+        lyrics: (mode === "complete" || revise) ? lyrics : "",
         constraints,
+        instruction: revise ? instruction : "",
+        revise,
         force_refresh: forceRefresh,
       });
       setResult(response.lyrics);
       setWarnings(response.warnings);
       setValid(response.valid);
       setCached(!!response.cached);
+      setDiffSummary(typeof response.diff_summary === "string" ? response.diff_summary : null);
+      setLastWasRevise(revise);
     } catch (reason) {
       setError(errorMessage(reason));
     } finally {
@@ -196,11 +220,11 @@ export default function MusicLyricsAssist({ lyrics, onApply }: MusicLyricsAssist
     }
   };
 
-  const run = (forceRefresh = false) => {
+  const run = (options: { forceRefresh?: boolean; revise?: boolean } = {}) => {
     if (mode === "format") {
       runFormat();
     } else {
-      runTransform(forceRefresh);
+      runTransform(options);
     }
   };
 
@@ -213,6 +237,8 @@ export default function MusicLyricsAssist({ lyrics, onApply }: MusicLyricsAssist
   const canRun = mode === "format"
     ? !busy && !!lyrics.trim()
     : !busy && !!settings?.model && (mode === "structure" ? !!theme.trim() : !!(theme.trim() || lyrics.trim()));
+  const canRevise = mode !== "format"
+    && !busy && !!settings?.model && !!lyrics.trim() && !!instruction.trim();
 
   return (
     <div className="rounded border border-violet-500/30 bg-gray-900/70">
@@ -240,6 +266,7 @@ export default function MusicLyricsAssist({ lyrics, onApply }: MusicLyricsAssist
                   setResult("");
                   setWarnings([]);
                   setError("");
+                  setDiffSummary(null);
                 }}
                 className={`rounded px-2.5 py-1 text-xs ${
                   mode === candidate
@@ -332,22 +359,53 @@ export default function MusicLyricsAssist({ lyrics, onApply }: MusicLyricsAssist
                   write from the theme alone.
                 </p>
               )}
+              <Textarea
+                label="Revision instruction (optional — leave empty to write/generate as above)"
+                placeholder={
+                  mode === "structure"
+                    ? 'e.g. "drop the bridge", "add a breakdown before the final chorus"'
+                    : 'e.g. "make verse two darker", "drop the last chorus"'
+                }
+                rows={2}
+                value={instruction}
+                onChange={(e) => setInstruction(e.target.value)}
+              />
+              <p className="text-xs text-gray-500">
+                Revise applies the instruction to the CURRENT Lyrics field content as an edit —
+                {mode === "structure"
+                  ? " the current tag sequence — "
+                  : " the current lyrics — "}
+                preserving everything the instruction does not mention. {MODE_LABELS[mode]}{" "}
+                ignores the instruction field and {mode === "structure" ? "writes a new tag map" : "writes or completes lyrics"}{" "}
+                as above.
+              </p>
             </>
           )}
 
           <div className="flex flex-wrap gap-1.5">
             <button
               type="button"
-              onClick={() => run(false)}
+              onClick={() => run({ revise: false })}
               className="rounded bg-violet-600 px-2.5 py-1.5 text-xs font-medium hover:bg-violet-500 disabled:opacity-50"
               disabled={!canRun}
             >
-              {busy ? "Working…" : MODE_LABELS[mode]}
+              {busy && !lastWasRevise ? "Working…" : MODE_LABELS[mode]}
             </button>
+            {mode !== "format" && (
+              <button
+                type="button"
+                onClick={() => run({ revise: true })}
+                className="rounded bg-amber-700 px-2.5 py-1.5 text-xs font-medium hover:bg-amber-600 disabled:opacity-50"
+                disabled={!canRevise}
+                title="Apply the revision instruction to the current Lyrics field content, preserving everything it does not mention"
+              >
+                {busy && lastWasRevise ? "Revising…" : "Revise"}
+              </button>
+            )}
             {result && mode !== "format" && (
               <button
                 type="button"
-                onClick={() => run(true)}
+                onClick={() => run({ forceRefresh: true, revise: lastWasRevise })}
                 className="flex items-center gap-1 rounded bg-gray-700 px-2.5 py-1.5 text-xs hover:bg-gray-600 disabled:opacity-50"
                 disabled={busy || !settings?.model}
                 title="Ignore the cached result and run the LLM again"
@@ -372,6 +430,20 @@ export default function MusicLyricsAssist({ lyrics, onApply }: MusicLyricsAssist
                 <ul className="space-y-0.5 rounded bg-amber-950/30 px-2 py-1.5 text-xs text-amber-200">
                   {warnings.map((warning, index) => <li key={`${warning}-${index}`}>• {warning}</li>)}
                 </ul>
+              )}
+              {diffSummary !== null && (
+                <div className="space-y-1">
+                  <p className="text-xs text-gray-400">What changed from the Lyrics field above</p>
+                  {diffSummary.trim() ? (
+                    <pre className="max-h-40 overflow-auto rounded bg-gray-950/60 px-2 py-1.5 text-[11px] leading-relaxed text-gray-300">
+                      {diffSummary}
+                    </pre>
+                  ) : (
+                    <p className="rounded bg-gray-950/60 px-2 py-1.5 text-[11px] text-gray-400">
+                      No line changes.
+                    </p>
+                  )}
+                </div>
               )}
               <div className="flex flex-wrap items-center gap-1.5">
                 <button
@@ -400,6 +472,7 @@ export default function MusicLyricsAssist({ lyrics, onApply }: MusicLyricsAssist
                     setResult("");
                     setWarnings([]);
                     setCached(false);
+                    setDiffSummary(null);
                   }}
                   className="ml-auto flex items-center gap-1 rounded px-2 py-1.5 text-xs text-gray-400 hover:bg-gray-800"
                 >

@@ -56,7 +56,7 @@ import {
   ChainAdvanceResult,
 } from "@/utils/videoChain";
 import { migrateLoopGenerationConfig, computeLoopDecodeDirective } from "@/utils/loopGenerationInheritance";
-import { getSamplers, getScheduleTypes, generateImg2Img, generateImg2Vid, Img2VidParams, Txt2VidParams, MiniMaxH3Keyframe, MiniMaxH3References, generateRef2Vid, Ref2VidParams, generateOutpaintVideo, OutpaintVideoParams, generateAud2Aud, Aud2AudParams, generateImg2ImgTrainingPreview, toBase64, LoRAConfig, ControlNetConfig, generateTIPOPrompt, cancelGeneration, getCurrentModel, isLatentOnlyResult, getResultFilename, getResultPlaybackFilename, getResultSeed, getResultAncestralSeed, unetQuantizationOptions, normalizeUnetQuantization, transformerQuantizationLabel, archSupportsFeature, archDisplayName, normalizeVideoFrames, fitVideoCanvas, videoCanvasRule, videoCanvasAxisBounds, videoMinInferenceSteps, videoCanvasExceedsEnvelope, isGenerationStalledError, planVideoChain, snapUpValidVideoFrameCount, effectiveSegmentFrames, VideoChainManifest, VIDEO_BLOCK_SWAP_MAX } from "@/utils/api";
+import { getSamplers, getScheduleTypes, generateImg2Img, generateImg2Vid, Img2VidParams, Txt2VidParams, MiniMaxH3Keyframe, MiniMaxH3References, generateRef2Vid, Ref2VidParams, generateOutpaintVideo, OutpaintVideoParams, generateAud2Aud, Aud2AudParams, generateImg2ImgTrainingPreview, toBase64, LoRAConfig, ControlNetConfig, generateTIPOPrompt, cancelGeneration, isLatentOnlyResult, getResultFilename, getResultPlaybackFilename, getResultSeed, getResultAncestralSeed, unetQuantizationOptions, normalizeUnetQuantization, transformerQuantizationLabel, archSupportsFeature, archDisplayName, normalizeVideoFrames, fitVideoCanvas, videoCanvasRule, videoCanvasAxisBounds, videoMinInferenceSteps, videoCanvasExceedsEnvelope, isGenerationStalledError, planVideoChain, snapUpValidVideoFrameCount, effectiveSegmentFrames, VideoChainManifest, VIDEO_BLOCK_SWAP_MAX } from "@/utils/api";
 import { useActiveTraining } from "@/hooks/useActiveTraining";
 import { useSmoothProgress } from "@/hooks/useSmoothProgress";
 import { wsClient, CFGMetrics } from "@/utils/websocket";
@@ -500,7 +500,7 @@ interface Img2ImgPanelProps {
 }
 
 export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgPanelProps = {}) {
-  const { modelLoaded, isBackendReady, generationDefaults, isVideo, isAudio, archCapabilities, resolveModality, modelInfoVersion, videoFrameSliderMax, sliderBounds } = useStartup();
+  const { modelLoaded, modelInfo, isBackendReady, generationDefaults, isVideo, isAudio, archCapabilities, resolveModality, videoFrameSliderMax, sliderBounds } = useStartup();
   const [params, setParams] = useState<Img2ImgParams>(DEFAULT_PARAMS);
   const [isGenerating, setIsGenerating] = useState(false);
   const [generatedImage, setGeneratedImage] = useState<string | null>(null);
@@ -602,18 +602,9 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
   const [samplers, setSamplers] = useState<Array<{ id: string; name: string }>>([]);
   const [scheduleTypes, setScheduleTypes] = useState<Array<{ id: string; name: string }>>([]);
   const [isMounted, setIsMounted] = useState(false);
-  const [currentModelInfo, setCurrentModelInfo] = useState<any>(null);
-  // Keep this panel's copy of GET /models/current in step with the shared one.
-  // modelInfoVersion changes only when the loaded checkpoint or one of its
-  // components actually changes, not on every background poll, so this costs
-  // one request per such change -- including changes this page did not make
-  // (a component switch, the API, a backend restart, another tab).
-  useEffect(() => {
-    if (modelInfoVersion === 0) return; // initial fetch is done in loadInitialData
-    getCurrentModel()
-      .then(setCurrentModelInfo)
-      .catch((error) => console.warn("[Img2Img] Failed to refresh model info", error));
-  }, [modelInfoVersion]);
+  // Keep the legacy response shape locally while reading the shared SSOT. This
+  // panel no longer issues its own GET /models/current on mount or model change.
+  const currentModelInfo = modelInfo ? { loaded: true, model_info: modelInfo } : null;
   // Drop a persisted unet_quantization the loaded architecture does not offer
   // (e.g. fp8_e4m3fn carried over onto a krea2 model): otherwise the <select>
   // holds a value absent from its options and renders blank, while the panel
@@ -884,20 +875,12 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
 
   // Load from localStorage after component mounts (client-side only)
   useEffect(() => {
+    let cancelled = false;
     // console.clear(); // Temporarily disabled for debugging
     console.log("=== Img2ImgPanel mounted ===");
     setIsMounted(true);
 
     const loadInitialData = async () => {
-      // Load current model info
-      try {
-        const modelInfo = await getCurrentModel();
-        setCurrentModelInfo(modelInfo);
-        console.log("[Img2Img] Current model info:", modelInfo);
-      } catch (error) {
-        console.error("Failed to load model info:", error);
-      }
-
       // Load params
       const saved = localStorage.getItem(STORAGE_KEY);
       if (saved) {
@@ -974,6 +957,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         // } else if (savedInputRef.startsWith('temp_img://') || savedInputRef.startsWith('data:')) {
         try {
           const imageData = await loadTempImage(savedInputRef);
+          if (cancelled) return;
           console.log("[Img2Img] Input image loaded successfully:", imageData ? "yes" : "no");
           if (imageData) {
             setInputImagePreview(imageData);
@@ -1068,17 +1052,17 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
           const refRefs: string[] = JSON.parse(savedRefImageRefs);
           console.log(`[Img2Img] Loading ${refRefs.length} reference images from storage`);
 
-          const loadedPreviews: string[] = [];
-          for (const ref of refRefs) {
+          const restored = await Promise.all(refRefs.map(async (ref) => {
             try {
               const imageData = await loadTempImage(ref);
-              if (imageData) {
-                loadedPreviews.push(imageData);
-              }
+              return imageData || null;
             } catch (error) {
               console.error(`[Img2Img] Failed to load reference image ${ref}:`, error);
+              return null;
             }
-          }
+          }));
+          if (cancelled) return;
+          const loadedPreviews = restored.filter((value): value is string => value !== null);
 
           if (loadedPreviews.length > 0) {
             setRefImagePreviews(loadedPreviews);
@@ -1090,16 +1074,20 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
       }
 
       // Mark initial load as complete
-      setIsInitialLoad(false);
+      if (!cancelled) setIsInitialLoad(false);
       console.log("[Img2Img] Initial load complete");
     };
 
-    loadInitialData();
+    void loadInitialData();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   // Reload images when backend becomes ready
   useEffect(() => {
     if (!isBackendReady) return;
+    let cancelled = false;
 
     const reloadImages = async () => {
       console.log("[Img2Img] Backend ready, reloading images if needed");
@@ -1115,6 +1103,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
       if (savedPreview && savedPreview.startsWith('/outputs/')) {
         const previewPath = stripCacheBuster(savedPreview);
         const previewStillThere = await outputExists(previewPath);
+        if (cancelled) return;
         if (!previewStillThere) {
           console.log("[Img2Img] Stored preview image is gone, clearing:", previewPath);
           clearImagePreview(PREVIEW_KEYS);
@@ -1131,6 +1120,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
       const savedVideo = loadVideoPreview(PREVIEW_KEYS);
       if (savedVideo) {
         const exists = await outputExists(savedVideo.url);
+        if (cancelled) return;
         if (!exists) {
           console.log("[Img2Img] Stored preview video is gone, clearing:", savedVideo.url);
           clearVideoPreview(PREVIEW_KEYS);
@@ -1144,6 +1134,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
       const savedAudio = loadAudioPreview(PREVIEW_KEYS);
       if (savedAudio) {
         const exists = await outputExists(savedAudio.url);
+        if (cancelled) return;
         if (!exists) {
           console.log("[Img2Img] Stored preview audio is gone, clearing:", savedAudio.url);
           clearAudioPreview(PREVIEW_KEYS);
@@ -1157,6 +1148,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
       if (savedInputRef) {
         try {
           const imageData = await loadTempImage(savedInputRef);
+          if (cancelled) return;
           if (imageData) {
             setInputImagePreview(imageData);
             // Update dimensions
@@ -1172,7 +1164,10 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
       }
     };
 
-    reloadImages();
+    void reloadImages();
+    return () => {
+      cancelled = true;
+    };
   }, [isBackendReady]);
 
   // Reset torch.compile when developer mode is disabled
@@ -1192,32 +1187,6 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
     loadSamplers();
     loadScheduleTypes();
   }, []); // Empty deps - load once on mount
-
-  // When backend becomes ready, reload temp image if not already loaded
-  useEffect(() => {
-    if (isBackendReady && !inputImagePreview) {
-      const reloadImage = async () => {
-        const savedInputRef = localStorage.getItem(INPUT_IMAGE_STORAGE_KEY);
-        if (savedInputRef) {
-          try {
-            const imageData = await loadTempImage(savedInputRef);
-            if (imageData) {
-              setInputImagePreview(imageData);
-              const img = new Image();
-              img.onload = () => {
-                setInputImageSize({ width: img.width, height: img.height });
-              };
-              img.src = imageData;
-            }
-          } catch (error) {
-            console.error("[Img2Img] Failed to reload input image after backend ready:", error);
-          }
-        }
-      };
-
-      reloadImage();
-    }
-  }, [isBackendReady]);
 
   useEffect(() => {
     // Listen for input image updates from txt2img or gallery
@@ -5028,14 +4997,9 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
       {/* Parameters Panel */}
       <div className="generation-settings space-y-2">
         <ModelLoadSection
-          onModelLoad={async () => {
-            // Reload model info when model changes
-            const modelInfo = await getCurrentModel();
-            setCurrentModelInfo(modelInfo);
-            console.log("[Img2Img] Model changed, updated currentModelInfo:", modelInfo);
-
+          onModelLoad={(loadedModelInfo) => {
             // Auto-adjust sampler/schedule for Flow Matching models (Z-Image, FLUX.2)
-            const modelType = modelInfo?.model_info?.type;
+            const modelType = loadedModelInfo?.type;
             if (modelType === "zimage" || modelType === "flux2" || modelType === "anima") {
               // Flow Matching models: use Euler with flow schedule
               setParams(prev => ({

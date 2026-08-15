@@ -22,24 +22,27 @@ export default function GeneratePage() {
   );
 }
 
+type GenerateTab = "txt2img" | "img2img" | "inpaint" | "outpaint" | "upscale";
+
+function tabFromParam(value: string | null): GenerateTab {
+  return value === "img2img" || value === "inpaint" || value === "outpaint" || value === "upscale"
+    ? value
+    : "txt2img";
+}
+
 function GeneratePageContent() {
   const searchParams = useSearchParams();
   const tabParam = searchParams.get("tab");
-  const [activeTab, setActiveTab] = useState<"txt2img" | "img2img" | "inpaint" | "outpaint" | "upscale">("txt2img");
+  // Honour a deep-linked tab on the first render. Initialising to txt2img and
+  // correcting it in an effect mounted the wrong generation panel for one
+  // commit, starting its model/candidate requests before immediately unmounting it.
+  const [activeTab, setActiveTab] = useState<GenerateTab>(() => tabFromParam(tabParam));
   const [galleryImages, setGalleryImages] = useState<GalleryEntry[]>([]);
   const [maxGalleryImages, setMaxGalleryImages] = useState(30);
   const { setGenerateForever } = useGenerationQueue();
 
   useEffect(() => {
-    if (tabParam === "img2img") {
-      setActiveTab("img2img");
-    } else if (tabParam === "inpaint") {
-      setActiveTab("inpaint");
-    } else if (tabParam === "outpaint") {
-      setActiveTab("outpaint");
-    } else if (tabParam === "upscale") {
-      setActiveTab("upscale");
-    }
+    if (tabParam !== null) setActiveTab(tabFromParam(tabParam));
   }, [tabParam]);
 
   useEffect(() => {

@@ -1,20 +1,19 @@
 "use client";
 
-import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import {
   ComponentSlotId,
   CurrentComponentsResponse,
   getCurrentModelComponents,
   switchCurrentModelComponent,
 } from "@/utils/api";
-import { useStartup } from "@/contexts/StartupContext";
 
 interface ModelComponentsContextValue {
   snapshot: CurrentComponentsResponse | null;
   loading: boolean;
   switchingSlot: ComponentSlotId | null;
   error: string | null;
-  refresh: () => Promise<void>;
+  refresh: (expectedModelRevision?: number) => Promise<void>;
   // projectionPath: MiniMax-H3 text encoders only (see switchCurrentModelComponent).
   switchComponent: (slot: ComponentSlotId, candidateId: string, projectionPath?: string | null) => Promise<void>;
   clearError: () => void;
@@ -28,30 +27,51 @@ function errorMessage(error: unknown): string {
 }
 
 export function ModelComponentsProvider({ children }: { children: React.ReactNode }) {
-  const { modelInfoVersion } = useStartup();
   const [snapshot, setSnapshot] = useState<CurrentComponentsResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [switchingSlot, setSwitchingSlot] = useState<ComponentSlotId | null>(null);
   const [error, setError] = useState<string | null>(null);
-
-  const refresh = useCallback(async () => {
-    setLoading(true);
-    try {
-      setSnapshot(await getCurrentModelComponents());
-      // A successful fetch retires whatever the last failure said. Without
-      // this the banner from one backend restart stays up for the rest of the
-      // session, until someone closes it by hand.
-      setError(null);
-    } catch (nextError) {
-      setError(errorMessage(nextError));
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+  const requestIdRef = useRef(0);
+  const mountedRef = useRef(true);
+  const refreshInFlightRef = useRef<{ key: string; promise: Promise<void> } | null>(null);
 
   useEffect(() => {
-    void refresh();
-  }, [modelInfoVersion, refresh]);
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  const refresh = useCallback((expectedModelRevision?: number) => {
+    const key = expectedModelRevision == null ? "current" : String(expectedModelRevision);
+    const existing = refreshInFlightRef.current;
+    if (existing?.key === key) return existing.promise;
+
+    const requestId = ++requestIdRef.current;
+    setLoading(true);
+    const promise = (async () => {
+      try {
+        const next = await getCurrentModelComponents();
+        if (!mountedRef.current || requestId !== requestIdRef.current) return;
+        setSnapshot(next);
+        // A successful fetch retires whatever the last failure said. Without
+        // this the banner from one backend restart stays up for the rest of the
+        // session, until someone closes it by hand.
+        setError(null);
+      } catch (nextError) {
+        if (!mountedRef.current || requestId !== requestIdRef.current) return;
+        setError(errorMessage(nextError));
+      } finally {
+        if (mountedRef.current && requestId === requestIdRef.current) setLoading(false);
+      }
+    })();
+    const record = { key, promise };
+    refreshInFlightRef.current = record;
+    void promise.finally(() => {
+      if (refreshInFlightRef.current === record) refreshInFlightRef.current = null;
+    });
+    return promise;
+  }, []);
 
   const switchComponent = useCallback(async (
     slot: ComponentSlotId,
@@ -59,6 +79,7 @@ export function ModelComponentsProvider({ children }: { children: React.ReactNod
     projectionPath?: string | null,
   ) => {
     if (!snapshot) return;
+    const requestId = ++requestIdRef.current;
     setSwitchingSlot(slot);
     setError(null);
     try {
@@ -69,13 +90,15 @@ export function ModelComponentsProvider({ children }: { children: React.ReactNod
         snapshot.component_revision,
         projectionPath,
       );
-      setSnapshot(result.components);
+      if (mountedRef.current && requestId === requestIdRef.current) setSnapshot(result.components);
     } catch (nextError) {
-      setError(errorMessage(nextError));
-      await refresh();
+      if (mountedRef.current && requestId === requestIdRef.current) {
+        setError(errorMessage(nextError));
+        await refresh();
+      }
       throw nextError;
     } finally {
-      setSwitchingSlot(null);
+      if (mountedRef.current) setSwitchingSlot(null);
     }
   }, [refresh, snapshot]);
 

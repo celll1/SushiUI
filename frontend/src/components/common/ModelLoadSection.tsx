@@ -100,12 +100,13 @@ export default function ModelLoadSection({
   onPidFastLargeDecodeChange,
   storageKeyPrefix = "model_load",
 }: ModelLoadSectionProps) {
-  const { modelInfo, modelInfoVersion, refreshModelInfo } = useStartup();
+  const { modelInfo, modelInfoVersion } = useStartup();
   const {
     snapshot: componentSnapshot,
     loading: componentsLoading,
     switchingSlot,
     error: componentError,
+    refresh: refreshComponents,
     switchComponent,
     clearError: clearComponentError,
   } = useModelComponents();
@@ -117,6 +118,7 @@ export default function ModelLoadSection({
   const [quantizationResolved, setQuantizationResolved] = useState(false);
   const [tabStateMounted, setTabStateMounted] = useState(false);
   const [modelLoadRevision, setModelLoadRevision] = useState(0);
+  const [quantizationProbeEnabled, setQuantizationProbeEnabled] = useState(false);
   const isPidDecoder = selectedVaeKind === "pid_decoder";
   // Which checkpoint ModelSelector's Load button would load, reported by it so
   // the load-time selectors below can list against the same base.
@@ -174,6 +176,21 @@ export default function ModelLoadSection({
     }
   }, [activeTab, quantizationAvailable, quantizationResolved]);
 
+  useEffect(() => {
+    if (activeTab === "components") void refreshComponents(modelInfo?.model_revision);
+  }, [activeTab, modelInfo?.model_revision, modelInfoVersion, refreshComponents]);
+
+  useEffect(() => {
+    if (modelInfoVersion === 0) return;
+    if (activeTab === "quantization") {
+      setQuantizationProbeEnabled(true);
+      return;
+    }
+    setQuantizationProbeEnabled(false);
+    const timer = window.setTimeout(() => setQuantizationProbeEnabled(true), 1500);
+    return () => window.clearTimeout(timer);
+  }, [activeTab, modelInfoVersion]);
+
   const loadedArch = modelType ?? null;
   // modelInfo doesn't carry latent_channels today (see ARCH_LATENT_CHANNELS
   // comment above) — fall back to the arch map when it's missing.
@@ -181,11 +198,15 @@ export default function ModelLoadSection({
     (modelInfo?.latent_channels as number | undefined) ??
     (loadedArch != null ? ARCH_LATENT_CHANNELS[loadedArch] : undefined) ??
     null;
+  const visibleComponentSnapshot =
+    typeof modelInfo?.model_revision === "number" &&
+    componentSnapshot?.model_revision !== modelInfo.model_revision
+      ? null
+      : componentSnapshot;
 
   const handleModelLoad = async (mi: any) => {
-    // Keep the shared model-info source in sync on every (re)load.
+    // ModelSelector refreshes StartupContext before invoking this callback.
     setModelLoadRevision((revision) => revision + 1);
-    await refreshModelInfo();
     onModelLoad?.(mi);
   };
 
@@ -247,7 +268,7 @@ export default function ModelLoadSection({
     setQuantizationAvailable(available);
     setQuantizationResolved(resolved);
   }, []);
-  const componentState = (slot: ComponentSlotId) => componentSnapshot?.slots.find((item) => item.slot === slot);
+  const componentState = (slot: ComponentSlotId) => visibleComponentSnapshot?.slots.find((item) => item.slot === slot);
   const switchLoadedComponent = (
     slot: ComponentSlotId,
     candidateId: string,
@@ -313,13 +334,10 @@ export default function ModelLoadSection({
         style={{ height: panelHeight.height }}
       >
        <div ref={contentRef}>
-        {/* All three tabpanels stay MOUNTED and are hidden with display:none.
-            That is load-bearing, not cosmetic: MiniMaxH3HybridSelector below
-            runs the compatibility check that clears a restored overlay's
-            HYBRID_CHECK_PENDING. Render these conditionally and a restored
-            overlay blocks Load forever, with the Select that could clear it
-            unmounted. It is also what makes contentRef's scrollHeight the
-            ACTIVE tab's height. */}
+        {/* The model selector stays mounted so its selection survives tab
+            changes. Candidate-heavy tabs mount only when visible. A restored
+            MiniMax-H3 overlay remains safely blocked until Components is opened
+            and its compatibility check completes. */}
         <div
           id={panelId("model")}
           role="tabpanel"
@@ -335,11 +353,11 @@ export default function ModelLoadSection({
           />
         </div>
 
-        <div
+        {activeTab === "components" && <div
           id={panelId("components")}
           role="tabpanel"
           aria-labelledby={tabId("components")}
-          className={activeTab === "components" ? "space-y-2" : "hidden"}
+          className="space-y-2"
         >
           {componentError && (
             <div role="alert" className="flex items-start justify-between gap-2 rounded border border-red-800 bg-red-950/40 p-2 text-xs text-red-300">
@@ -347,7 +365,7 @@ export default function ModelLoadSection({
               <button type="button" onClick={clearComponentError} aria-label="Dismiss component error">Close</button>
             </div>
           )}
-          {componentsLoading && !componentSnapshot && (
+          {componentsLoading && !visibleComponentSnapshot && (
             <p className="text-xs text-gray-500">Loading effective component state…</p>
           )}
 
@@ -526,7 +544,7 @@ export default function ModelLoadSection({
               )}
             </div>
           </details>
-        </div>
+        </div>}
 
         <div
           id={panelId("quantization")}
@@ -537,14 +555,16 @@ export default function ModelLoadSection({
           {!quantizationResolved && (
             <p className="text-xs text-gray-500">Checking quantization status…</p>
           )}
-          <QuantizedExportSection
-            embedded
-            arch={modelType ?? null}
-            modelInfoVersion={modelInfoVersion}
-            modelLoadRevision={modelLoadRevision}
-            storageKeyPrefix={storageKeyPrefix}
-            onAvailabilityChange={handleQuantizationAvailability}
-          />
+          {quantizationProbeEnabled && (
+            <QuantizedExportSection
+              embedded
+              arch={modelType ?? null}
+              modelInfoVersion={modelInfoVersion}
+              modelLoadRevision={modelLoadRevision}
+              storageKeyPrefix={storageKeyPrefix}
+              onAvailabilityChange={handleQuantizationAvailability}
+            />
+          )}
         </div>
        </div>
       </div>

@@ -17,11 +17,21 @@ and the flat NON-PRUNED text encoder (``model.layers.*`` /
 ``Qwen3ForCausalLM``, plus ``model.audio_decoder.*`` /
 ``model.audio_extra_embedding`` -> ``MiniMaxMusic3RVQDepthDecoder``).
 
-Refused, not half-remapped: the pruned text encoder's vocabulary split (design
-doc phase 10 -- an AR-loop offset/mask change, not a rename), the GGUF
-container format itself (phase 11), and ``int8_convrot`` on either file
-(phase 13, guarded by ``core.models.common.quantized_checkpoint_guard`` at the
-call site, not duplicated here).
+Refused, not half-remapped, BY THIS MODULE: the pruned text encoder's
+vocabulary split (design doc phase 10 -- an AR-loop offset/mask change, not a
+rename; handled by the dedicated ``pruned_text_encoder_remap`` module
+instead) and the GGUF container format itself (phase 11; handled by
+``core.models.common.gguf_container``). ``int8_convrot`` on either file is
+now READABLE (design doc phase 13), but not by this module directly: this
+module's ``plan_*``/``apply_*`` functions still operate on DENSE keys only
+(a ``.weight_scale``/``.comfy_quant`` sidecar handed to them lands in
+``unrecognized`` and refuses the remap) -- ``core.models.minimax_music3.
+convrot_remap`` calls them UNCHANGED for every dense tensor (including a
+quantized layer's own int8 ``.weight``, whose row-wise split this module
+already performs is exact for ConvRot codes too) and places the ConvRot
+sidecars at the destinations this module's plan already computed. Guarded at
+the loader call site by ``core.models.common.quantized_checkpoint_guard``,
+not duplicated here.
 
 Three findings that are not obvious from either file alone:
 

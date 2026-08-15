@@ -1,4 +1,4 @@
-"""MiniMax Music 3 loader: detection + component build (design doc phases 2, 9 + 10).
+"""MiniMax Music 3 loader: detection + component build (design doc phases 2, 9, 10 + 13).
 
 The released snapshot ships the model twice: ``official/`` (MiniMax's own
 config-and-weight tree, loads into the vendored classes key-for-key, no
@@ -37,10 +37,25 @@ What this loader reads from the flat tree, briefly:
   tensor signature only -- the text-encoder source is a caller-supplied
   override, not something a bare directory scan discovers on its own, same
   division of labor as the DiT file's own explicit-path spelling;
-* ``int8_convrot`` (either the flat DiT or either text encoder) is refused,
-  HEADER-ONLY, naming design doc phase 13. The pruned-vocabulary text encoder
-  is NO LONGER refused (design doc phase 10 landed) -- only its own dedicated
-  builder reads it; handing a pruned file to
+* ``int8_convrot`` for the flat DiT and for the PRUNED text encoder are BOTH
+  readable now (design doc phase 13, "INT8 ConvRot") -- the only two
+  distributions Comfy-Org actually staged this format for.
+  ``build_transformer_and_condition_encoder_from_flat_dit`` and
+  ``build_language_model_and_depth_decoder_from_pruned_flat_text_encoder``
+  each run a header-only census first (``_int8_convrot_source_layers``, real
+  bytes read only for the tiny ``.comfy_quant`` markers) and, when it finds
+  the validated ConvRot contract, swap those Linears to
+  ``core.models.common.convrot_int8_linear.ConvRotInt8Linear`` via
+  ``core.models.minimax_music3.convrot_remap`` instead of refusing; see that
+  module's docstring for why the SAME dim-0 row split the dense remap already
+  performs for a fused ``qkv``/``gate_up`` projection is exact for its
+  ConvRot codes and per-row scale too. A NON-pruned quantized text encoder,
+  or any file declaring a quantization semantic OTHER than this one validated
+  ConvRot contract, is still refused, HEADER-ONLY where the marker itself is
+  the evidence. The pruned-vocabulary text encoder's DENSE variant is
+  unaffected (design doc phase 10 landed first) -- only its own dedicated
+  builder reads either the dense or the ConvRot pruned layout; handing a
+  pruned file to
   ``build_language_model_and_depth_decoder_from_flat_text_encoder`` (the
   NON-pruned builder) still raises ``PrunedTextEncoderNotSupported``, because
   that specific function's remap genuinely cannot read the pruned layout
@@ -410,13 +425,28 @@ def _stranded_meta_tensors(model) -> List[str]:
     ]
 
 
-def _build_module_from_remapped_state_dict(cls, config: Dict[str, Any], state_dict, torch_dtype: torch.dtype, *, label: str):
+def _build_module_from_remapped_state_dict(
+    cls, config: Dict[str, Any], state_dict, torch_dtype: torch.dtype, *, label: str,
+    convrot_layer_configs: Optional[Dict[str, Dict[str, int]]] = None,
+):
     """``init_empty_weights()`` + ``from_config`` + strict ``assign=True`` load.
 
     Shared by the flat DiT and flat text-encoder builders below; identical in
     shape to ``_build_diffusers_component``'s own pattern, just parameterized
     over an already-remapped state dict instead of one read straight off
     disk.
+
+    ``convrot_layer_configs`` (design doc phase 13), when non-empty, swaps the
+    named ``nn.Linear`` submodules to ``ConvRotInt8Linear`` -- via
+    ``core.models.common.convrot_int8_linear.swap_linears_to_convrot_int8`` --
+    BEFORE the key-set assertion and the load: a swapped module's own
+    ``state_dict()`` carries ``.weight_scale`` / ``.comfy_quant`` buffers a
+    plain ``nn.Linear`` does not, so the swap has to happen first or the
+    totality check below would see a mismatch that is not actually one. A
+    ``.weight_scale`` entry is never cast to ``torch_dtype`` (it stays the
+    float32 ``ConvRotInt8Linear``/``Int8Linear`` requires); a ``.comfy_quant``
+    marker is never floating-point to begin with, so the existing
+    ``is_floating_point()`` gate already leaves it untouched.
     """
     from accelerate import init_empty_weights
 
@@ -429,9 +459,24 @@ def _build_module_from_remapped_state_dict(cls, config: Dict[str, Any], state_di
         model = cls.from_config(config)
 
     cast_state_dict = {
-        k: (v.to(dtype=torch_dtype) if v.is_floating_point() else v)
+        k: (
+            v if k.endswith(".weight_scale")
+            else (v.to(dtype=torch_dtype) if v.is_floating_point() else v)
+        )
         for k, v in state_dict.items()
     }
+
+    if convrot_layer_configs:
+        from core.models.common.convrot_int8_linear import swap_linears_to_convrot_int8
+
+        swapped = swap_linears_to_convrot_int8(model, cast_state_dict, convrot_layer_configs, torch_dtype)
+        if swapped != len(convrot_layer_configs):
+            raise RuntimeError(
+                f"MiniMax Music 3's {label}: ConvRot metadata mapped "
+                f"{len(convrot_layer_configs)} Linear(s), but only {swapped} module(s) were "
+                f"replaced"
+            )
+
     assert_state_dict_matches_module_keys(
         cast_state_dict.keys(), expected_module_state_dict_keys(model), component=label,
     )
@@ -469,6 +514,56 @@ def _header_looks_quantized(header_keys) -> bool:
     )
 
 
+def _int8_convrot_source_layers(path: str, *, label: str) -> Dict[str, Dict[str, int]]:
+    """HEADER-ONLY census of validated INT8 ConvRot layers in a flat
+    safetensors file (design doc phase 13) -- shared by the flat DiT and the
+    pruned flat text encoder, since both distribute the identical ConvRot
+    contract (``core.models.minimax_music3.convrot_remap.
+    supported_int8_convrot_marker``, a deliberate per-arch duplicate of
+    ``core.models.minimax_h3.loader._supported_int8_convrot_marker`` -- see
+    that module's docstring).
+
+    Reads real tensor BYTES only for the ``.comfy_quant`` marker tensors
+    themselves (tens of bytes each -- the marker's VALUE, not its shape, is
+    what decides whether it is this contract), never for a ``.weight`` or
+    ``.weight_scale``. Every OTHER declared quantization semantic (an unknown
+    format, an unread field, an undecodable marker, an AWQ
+    ``.pre_quant_scale``) still raises here --
+    ``quantized_checkpoint_guard.refuse_unsupported_quant_semantics`` runs on
+    every ``.comfy_quant`` marker this function does NOT recognize as the
+    validated ConvRot contract -- mirroring
+    ``minimax_h3.loader._guard_component_file``'s "ahead of the census, ahead
+    of any shape adaptation" ordering. Returns ``{}`` for a plain
+    (unquantized) file with no ``.comfy_quant`` marker at all.
+    """
+    from core.models.common.quantized_checkpoint_guard import (
+        refuse_unsupported_quant_semantics,
+    )
+    from core.models.minimax_music3.convrot_remap import supported_int8_convrot_marker
+
+    header = read_safetensors_header(path)
+    header.pop("__metadata__", None)
+    marker_keys = [k for k in header if k.endswith(".comfy_quant")]
+    if not marker_keys:
+        return {}
+
+    from safetensors import safe_open
+
+    layers: Dict[str, Dict[str, int]] = {}
+    probe: Dict[str, torch.Tensor] = {}
+    with safe_open(path, framework="pt", device="cpu") as handle:
+        for key in marker_keys:
+            marker = handle.get_tensor(key)
+            config = supported_int8_convrot_marker(key, marker, header, path=path)
+            if config is not None:
+                layers[key[: -len(".comfy_quant")]] = config
+            else:
+                probe[key] = marker
+    if probe:
+        refuse_unsupported_quant_semantics(probe, arch="MiniMax Music 3", path=path, label=label)
+    return layers
+
+
 def build_transformer_and_condition_encoder_from_flat_dit(
     flat_dit_path: str,
     official: str,
@@ -476,11 +571,21 @@ def build_transformer_and_condition_encoder_from_flat_dit(
 ) -> tuple:
     """The flow-matching transformer + condition encoder from a flat DiT file.
 
-    ``flat_dit_path`` is a NON-quantized flat DiT safetensors file
-    (``minimax_music3_dit_{fp32,fp16}.safetensors``); the ``int8_convrot``
-    variant is refused here by ``refuse_quantized_state_dict``, the same
-    guard every ``official/`` component load runs (design doc phase 13 is
-    what would replace this refusal with a swap-in quantized Linear). Configs
+    ``flat_dit_path`` is either a NON-quantized flat DiT safetensors file
+    (``minimax_music3_dit_{fp32,fp16}.safetensors``) or the INT8 ConvRot
+    variant (``minimax_music3_dit_int8_convrot.safetensors``, design doc phase
+    13): ``_int8_convrot_source_layers`` census's the header first (real bytes
+    read only for the tiny ``.comfy_quant`` markers) and, when it finds the
+    validated ConvRot contract, this function swaps those Linears to
+    ``ConvRotInt8Linear`` (via ``_build_module_from_remapped_state_dict``'s
+    ``convrot_layer_configs``) instead of refusing. Any OTHER declared
+    quantization semantic is still refused HEADER-ONLY, before the full
+    ``read_state_dict`` -- a file whose header looks quantized (a
+    ``.weight_scale``/``.pre_quant_scale`` key) but whose census finds no
+    validated ConvRot layer at all is refused right there, mirroring the
+    pruned text encoder builder's own gate below (and the DiT's OWN gate
+    before this phase, ``_header_looks_quantized`` + an immediate raise, which
+    this restores rather than lets fall through to a multi-GB read). Configs
     for BOTH components come from ``official/`` -- the flat file carries only
     weights, no config.json -- matching every other component this loader
     builds.
@@ -493,30 +598,54 @@ def build_transformer_and_condition_encoder_from_flat_dit(
     """
     from core.models.common.quantized_checkpoint_guard import refuse_quantized_state_dict
     from core.models.common.single_file_format import read_state_dict
+    from core.models.minimax_music3.convrot_remap import apply_flat_dit_state_dict_with_convrot
     from core.models.minimax_music3.flat_remap import apply_flat_dit_state_dict
     from core.models.minimax_music3.vendor import (
         MiniMaxMusic3ConditionEncoder,
         MiniMaxMusic3Transformer1DModel,
     )
 
-    # Header-only fast path: refuse an obviously-quantized file (e.g.
-    # minimax_music3_dit_int8_convrot.safetensors) before reading a single
-    # tensor byte of it.
-    if _header_looks_quantized(_safetensors_tensor_keys(flat_dit_path)):
-        raise RuntimeError(
-            f"the MiniMax Music 3 flat DiT checkpoint ({flat_dit_path}) declares weight-only "
-            f"quantization in its header (a '.weight_scale' or '.comfy_quant' key), and the "
-            f"MiniMax Music 3 loader does not support quantized flat checkpoints (design doc "
-            f"phase 13, 'INT8 ConvRot'). Load an unquantized flat DiT "
-            f"(minimax_music3_dit_{{fp32,fp16}}.safetensors) instead."
-        )
+    header_keys = _safetensors_tensor_keys(flat_dit_path)
+    convrot_source_layers: Dict[str, Dict[str, int]] = {}
+    if _header_looks_quantized(header_keys):
+        # HEADER-ONLY, before a single multi-GB tensor byte is read -- mirrors
+        # the pruned text encoder builder's identical gate below. A marker
+        # this loader does not recognize raises inside
+        # `_int8_convrot_source_layers` itself; an EMPTY census on a header
+        # that nonetheless looks quantized (a scaled file with no marker at
+        # all) is refused explicitly, right here, rather than falling through
+        # to a full `read_state_dict` of what can be a 5-10 GB file.
+        convrot_source_layers = _int8_convrot_source_layers(flat_dit_path, label="flat DiT")
+        if not convrot_source_layers:
+            raise RuntimeError(
+                f"the MiniMax Music 3 flat DiT checkpoint ({flat_dit_path}) declares "
+                f"weight-only quantization in its header (a '.weight_scale' key with no "
+                f"valid ConvRot '.comfy_quant' marker), and the MiniMax Music 3 loader "
+                f"supports only the validated INT8 ConvRot contract for this file. Load an "
+                f"unquantized flat DiT (minimax_music3_dit_{{fp32,fp16}}.safetensors) or the "
+                f"INT8 ConvRot variant (minimax_music3_dit_int8_convrot.safetensors) instead."
+            )
 
     flat_state_dict, _metadata = read_state_dict(flat_dit_path)
-    refuse_quantized_state_dict(
-        flat_state_dict, arch="MiniMax Music 3", path=flat_dit_path, label="flat DiT",
-    )
+    if convrot_source_layers:
+        from core.models.common.convrot_int8_linear import require_convrot_int8_runtime
 
-    remapped = apply_flat_dit_state_dict(flat_state_dict)
+        require_convrot_int8_runtime()
+        remapped, dit_convrot_layer_configs = apply_flat_dit_state_dict_with_convrot(
+            flat_state_dict, convrot_source_layers,
+        )
+    else:
+        # Defense in depth: `_header_looks_quantized` already refused above
+        # whenever the header itself carried the tell. This still runs
+        # unconditionally, same as every other component load in this
+        # module, so a state dict that looks quantized only after real
+        # tensor bytes are read (not by any header key this loader checks)
+        # is not silently accepted.
+        refuse_quantized_state_dict(
+            flat_state_dict, arch="MiniMax Music 3", path=flat_dit_path, label="flat DiT",
+        )
+        remapped = apply_flat_dit_state_dict(flat_state_dict)
+        dit_convrot_layer_configs = {}
     del flat_state_dict
 
     transformer_config = _read_component_config(official, "transformer", "MiniMaxMusic3Transformer1DModel")
@@ -524,7 +653,7 @@ def build_transformer_and_condition_encoder_from_flat_dit(
 
     transformer = _build_module_from_remapped_state_dict(
         MiniMaxMusic3Transformer1DModel, transformer_config, remapped["transformer"], torch_dtype,
-        label="transformer",
+        label="transformer", convrot_layer_configs=dit_convrot_layer_configs,
     )
     condition_encoder = _build_module_from_remapped_state_dict(
         MiniMaxMusic3ConditionEncoder, condition_encoder_config, remapped["condition_encoder"], torch.float32,
@@ -706,12 +835,28 @@ def build_language_model_and_depth_decoder_from_pruned_flat_text_encoder(
     Mirrors ``build_language_model_and_depth_decoder_from_flat_text_encoder``'s shape;
     reachable from ``load_minimax_music3_from_path``'s ``text_encoder_file`` parameter, same
     as that function -- see the module docstring.
+
+    ``flat_text_encoder_path`` may ALSO be the INT8 ConvRot variant
+    (``minimax_music3_text_encoder_pruned_int8_convrot.safetensors``, design
+    doc phase 13): this one file composes TWO independent transformations --
+    the pruned vocabulary (this function's own substance, above) AND ConvRot
+    quantization -- and both are applied here, in that order (the vocabulary
+    split via ``convrot_remap.apply_pruned_text_encoder_state_dict_with_
+    convrot``, which itself defers to the unchanged
+    ``pruned_text_encoder_remap.apply_pruned_text_encoder_state_dict`` for
+    every dense tensor, then the ConvRot sidecar placement and the
+    ``ConvRotInt8Linear`` swap for BOTH the language model's and the RVQ
+    depth decoder's quantized Linears). See ``_int8_convrot_source_layers``
+    for the header-only census that decides which path runs.
     """
     from accelerate import init_empty_weights
     from transformers import AutoConfig, AutoModelForCausalLM
 
     from core.models.common.quantized_checkpoint_guard import refuse_quantized_state_dict
     from core.models.common.single_file_format import read_state_dict
+    from core.models.minimax_music3.convrot_remap import (
+        apply_pruned_text_encoder_state_dict_with_convrot,
+    )
     from core.models.minimax_music3.defaults import AUDIO_CODE_OFFSET
     from core.models.minimax_music3.flat_remap import (
         _PRUNED_TELLS,
@@ -721,6 +866,8 @@ def build_language_model_and_depth_decoder_from_pruned_flat_text_encoder(
     )
     from core.models.minimax_music3.pruned_text_encoder_remap import (
         AUDIO_HEAD_VOCAB_SIZE,
+        LANGUAGE_MODEL_COMPONENT,
+        RVQ_DEPTH_DECODER_COMPONENT,
         SEMANTIC_VOCAB_SIZE,
         apply_pruned_text_encoder_state_dict,
     )
@@ -738,14 +885,28 @@ def build_language_model_and_depth_decoder_from_pruned_flat_text_encoder(
             f"encoder. Use build_language_model_and_depth_decoder_from_flat_text_encoder for that "
             f"file instead."
         )
+    convrot_source_layers: Dict[str, Dict[str, int]] = {}
     if _header_looks_quantized(header_keys):
-        raise RuntimeError(
-            f"the MiniMax Music 3 pruned flat text encoder checkpoint ({flat_text_encoder_path}) "
-            f"declares weight-only quantization in its header (a '.weight_scale' or "
-            f"'.comfy_quant' key), and the MiniMax Music 3 loader does not support quantized "
-            f"flat checkpoints (design doc phase 13, 'INT8 ConvRot'). Load the unquantized pruned "
-            f"flat text encoder (minimax_music3_text_encoder_pruned_bf16.safetensors) instead."
+        # Design doc phase 13: the ConvRot contract is now readable. Anything
+        # ELSE declaring quantization (an unrecognized marker, or a scaled
+        # file with no marker at all) still refuses -- the census inside
+        # `_int8_convrot_source_layers` raises for the former; the latter
+        # (empty census on a header that nonetheless looks quantized) is
+        # caught explicitly below, since there is no marker for it to refuse
+        # header-only against.
+        convrot_source_layers = _int8_convrot_source_layers(
+            flat_text_encoder_path, label="pruned text encoder",
         )
+        if not convrot_source_layers:
+            raise RuntimeError(
+                f"the MiniMax Music 3 pruned flat text encoder checkpoint "
+                f"({flat_text_encoder_path}) declares weight-only quantization in its header "
+                f"(a '.weight_scale' key with no valid ConvRot '.comfy_quant' marker), and the "
+                f"MiniMax Music 3 loader supports only the validated INT8 ConvRot contract for "
+                f"this file. Load the unquantized pruned flat text encoder "
+                f"(minimax_music3_text_encoder_pruned_bf16.safetensors) or the INT8 ConvRot "
+                f"variant (minimax_music3_text_encoder_pruned_int8_convrot.safetensors) instead."
+            )
 
     # Cheap config reads + the rope-theta gate BEFORE the heavy read -- same ordering rule
     # `_build_language_model` and the non-pruned builder above follow.
@@ -768,9 +929,14 @@ def build_language_model_and_depth_decoder_from_pruned_flat_text_encoder(
     depth_config = _read_component_config(official, "rvq_depth_decoder", "MiniMaxMusic3RVQDepthDecoder")
 
     flat_state_dict, _metadata = read_state_dict(flat_text_encoder_path)
-    refuse_quantized_state_dict(
-        flat_state_dict, arch="MiniMax Music 3", path=flat_text_encoder_path, label="pruned flat text encoder",
-    )
+    if convrot_source_layers:
+        from core.models.common.convrot_int8_linear import require_convrot_int8_runtime
+
+        require_convrot_int8_runtime()
+    else:
+        refuse_quantized_state_dict(
+            flat_state_dict, arch="MiniMax Music 3", path=flat_text_encoder_path, label="pruned flat text encoder",
+        )
 
     # Shape census BEFORE remapping -- measured from the checkpoint's own tensors, not assumed
     # (see the module-level docstring's "verify from evidence" convention). `prefill_rows` is
@@ -802,8 +968,18 @@ def build_language_model_and_depth_decoder_from_pruned_flat_text_encoder(
             f"expected SEMANTIC_VOCAB_SIZE + 1 ({AUDIO_HEAD_VOCAB_SIZE})."
         )
 
-    remapped = apply_pruned_text_encoder_state_dict(flat_state_dict, lm_config_dict)
+    if convrot_source_layers:
+        remapped, convrot_layer_configs_by_component = apply_pruned_text_encoder_state_dict_with_convrot(
+            flat_state_dict, lm_config_dict, convrot_source_layers,
+        )
+    else:
+        remapped = apply_pruned_text_encoder_state_dict(flat_state_dict, lm_config_dict)
+        convrot_layer_configs_by_component = {
+            LANGUAGE_MODEL_COMPONENT: {}, RVQ_DEPTH_DECODER_COMPONENT: {},
+        }
     del flat_state_dict
+    lm_convrot_layer_configs = convrot_layer_configs_by_component[LANGUAGE_MODEL_COMPONENT]
+    depth_convrot_layer_configs = convrot_layer_configs_by_component[RVQ_DEPTH_DECODER_COMPONENT]
 
     lm_hf_config = AutoConfig.from_pretrained(os.path.join(official, "language_model"))
     # See this function's docstring: the checkpoint's OWN embed_tokens size, not official/'s
@@ -818,10 +994,29 @@ def build_language_model_and_depth_decoder_from_pruned_flat_text_encoder(
         language_model.lm_head_pruned = torch.nn.Linear(hidden_size, AUDIO_HEAD_VOCAB_SIZE, bias=False)
         language_model.model.embed_tokens_audio = torch.nn.Embedding(SEMANTIC_VOCAB_SIZE, hidden_size)
 
+    # `.weight_scale` never casts to `torch_dtype` (stays the float32
+    # `ConvRotInt8Linear` requires) -- see `_build_module_from_remapped_state_dict`'s
+    # docstring for why; `.comfy_quant` is not floating-point, so the existing
+    # `is_floating_point()` gate already leaves it untouched.
     lm_cast_state_dict = {
-        k: (v.to(dtype=torch_dtype) if v.is_floating_point() else v)
+        k: (
+            v if k.endswith(".weight_scale")
+            else (v.to(dtype=torch_dtype) if v.is_floating_point() else v)
+        )
         for k, v in remapped["language_model"].items()
     }
+    if lm_convrot_layer_configs:
+        from core.models.common.convrot_int8_linear import swap_linears_to_convrot_int8
+
+        lm_swapped = swap_linears_to_convrot_int8(
+            language_model, lm_cast_state_dict, lm_convrot_layer_configs, torch_dtype,
+        )
+        if lm_swapped != len(lm_convrot_layer_configs):
+            raise RuntimeError(
+                f"MiniMax Music 3's language_model (pruned): ConvRot metadata mapped "
+                f"{len(lm_convrot_layer_configs)} Linear(s), but only {lm_swapped} module(s) "
+                f"were replaced"
+            )
     assert_state_dict_matches_module_keys(
         lm_cast_state_dict.keys(), expected_module_state_dict_keys(language_model),
         component="language_model (pruned)",
@@ -843,7 +1038,7 @@ def build_language_model_and_depth_decoder_from_pruned_flat_text_encoder(
 
     rvq_depth_decoder = _build_module_from_remapped_state_dict(
         MiniMaxMusic3RVQDepthDecoder, depth_config, remapped["rvq_depth_decoder"], torch_dtype,
-        label="rvq_depth_decoder (pruned)",
+        label="rvq_depth_decoder (pruned)", convrot_layer_configs=depth_convrot_layer_configs,
     )
     return language_model, rvq_depth_decoder, depth_config
 
@@ -1300,25 +1495,57 @@ def detect_minimax_music3_text_encoder_source(path: str) -> str:
                 f"(diffusion_transformer.* + cond_layer_logits + latent_conditioners.*), not a "
                 f"text encoder's. Select the DiT through the model path, not text_encoder_file."
             )
-        # HEADER-ONLY, and checked BEFORE this function commits to a kind
-        # string: `int8_convrot` (either pruned or non-pruned) is refused by
-        # the builders themselves (`refuse_quantized_state_dict` /
-        # `_header_looks_quantized`), but that refusal fires deep inside
-        # `load_minimax_music3_from_path`, reached only AFTER the F3 preflight
-        # in `_load_model_locked` has already let the request through and the
-        # live model has been torn down. Detecting it HERE closes that gap:
-        # an int8_convrot `text_encoder_file` is refused pre-teardown, same
-        # as every other refusal this function raises.
+        if is_pruned_flat_text_encoder(keys):
+            # design doc phase 13: the pruned layout's INT8 ConvRot variant is
+            # now a real, reachable "flat_pruned" file -- the ConvRot vs.
+            # dense split happens INSIDE the builder (`build_language_model_
+            # and_depth_decoder_from_pruned_flat_text_encoder`), which reads
+            # this SAME kind string either way. What must still be refused
+            # HERE, pre-teardown, is quantized-but-NOT-the-validated-ConvRot-
+            # contract: that refusal fires deep inside the builder otherwise,
+            # reached only AFTER the F3 preflight in `_load_model_locked` has
+            # already let the request through and the live model has been
+            # torn down (the exact hole the F3 fix closed for every other
+            # refusal this function raises). `_int8_convrot_source_layers`
+            # itself raises `UnsupportedQuantSemanticsError` for an
+            # unrecognized `.comfy_quant` marker -- caught and re-raised as
+            # this function's own refusal type -- and an EMPTY census on a
+            # header that nonetheless looks quantized (a scaled file with no
+            # marker at all) is refused explicitly, same as the builder does.
+            if _header_looks_quantized(keys):
+                try:
+                    convrot_layers = _int8_convrot_source_layers(path, label="pruned text encoder")
+                except Exception as exc:
+                    raise MiniMaxMusic3TextEncoderRefusal(
+                        f"the MiniMax Music 3 pruned flat text encoder checkpoint ({path}) "
+                        f"declares weight-only quantization that is not the supported INT8 "
+                        f"ConvRot contract ({exc}). Load the unquantized pruned flat text "
+                        f"encoder (minimax_music3_text_encoder_pruned_bf16.safetensors) or the "
+                        f"INT8 ConvRot variant instead."
+                    ) from exc
+                if not convrot_layers:
+                    raise MiniMaxMusic3TextEncoderRefusal(
+                        f"the MiniMax Music 3 pruned flat text encoder checkpoint ({path}) "
+                        f"declares weight-only quantization in its header (a '.weight_scale' "
+                        f"key with no valid ConvRot '.comfy_quant' marker), and the MiniMax "
+                        f"Music 3 loader supports only the validated INT8 ConvRot contract for "
+                        f"this file. Load the unquantized pruned flat text encoder "
+                        f"(minimax_music3_text_encoder_pruned_bf16.safetensors) instead."
+                    )
+            return "flat_pruned"
+        # HEADER-ONLY, and checked BEFORE this function commits to
+        # "flat_non_pruned": `int8_convrot` is supported ONLY for the pruned
+        # layout above (the one staged distribution), so a NON-pruned
+        # quantized file is still refused here, pre-teardown, same as it
+        # always was.
         if _header_looks_quantized(keys):
             raise MiniMaxMusic3TextEncoderRefusal(
                 f"the MiniMax Music 3 flat text encoder checkpoint ({path}) declares "
                 f"weight-only quantization in its header (a '.weight_scale' or '.comfy_quant' "
-                f"key), and the MiniMax Music 3 loader does not support quantized flat "
-                f"checkpoints (design doc phase 13, 'INT8 ConvRot'). Load an unquantized flat "
-                f"text encoder instead."
+                f"key), and the MiniMax Music 3 loader supports INT8 ConvRot only for the "
+                f"pruned-vocabulary flat text encoder (design doc phase 13). Load an "
+                f"unquantized flat text encoder instead."
             )
-        if is_pruned_flat_text_encoder(keys):
-            return "flat_pruned"
         # F4: everything that reaches here must ALSO look like a plausible
         # non-pruned Music3 text encoder before this function commits to
         # "flat_non_pruned" -- HEADER-ONLY, via the exact same key plan
@@ -1574,11 +1801,14 @@ def load_minimax_music3_from_path(
         )
     # official/ IS reachable and a flat DiT file was named explicitly: read the
     # transformer + condition encoder from THAT file (design doc phase 9),
-    # via `core.models.minimax_music3.flat_remap`. `int8_convrot` and any
-    # other quantized flat DiT is still refused, inside the builder itself
-    # (`refuse_quantized_state_dict`, same guard every official/ component
-    # load runs) -- design doc phase 13. Configs still come from official/;
-    # only the transformer's WEIGHTS are sourced from the flat file.
+    # via `core.models.minimax_music3.flat_remap`. `int8_convrot` is readable
+    # now (design doc phase 13) -- the builder swaps its Linears to
+    # `ConvRotInt8Linear` instead of refusing; any OTHER quantization semantic
+    # is still refused, inside the builder itself, header-only where the
+    # marker is the evidence (`_int8_convrot_source_layers`) or via
+    # `refuse_quantized_state_dict` as defense in depth otherwise. Configs
+    # still come from official/; only the transformer's WEIGHTS are sourced
+    # from the flat file.
     use_flat_dit = layout.get("flat_dit") is not None
     # Which builder: the file's own suffix decides (design doc phase 11) --
     # `detect_minimax_music3_layout` already proved it is a MiniMax Music 3

@@ -815,9 +815,11 @@ from phase 1 doubles as a training-data artifact for the flow stage.
   discipline as the paragraph above, recorded so a later phase does not add
   the entry reflexively when wiring the dispatch.
 
-  Item 13 (INT8 ConvRot, plus its own A/B) and item 14 (docs) remain not
-  done; `int8_convrot` (either flat safetensors file) is still refused
-  (header-only, no multi-GB read) with a reason naming phase 13.
+  Item 13 (INT8 ConvRot, plus its own A/B) was not done AT THE TIME this
+  paragraph was written; `int8_convrot` (either flat safetensors file) was
+  then still refused (header-only, no multi-GB read) with a reason naming
+  phase 13. **Item 13 has since landed -- see its own status entry below.**
+  Item 14 (docs) remains not done.
 
   **The wiring above was closed in a follow-up commit.** The mechanism
   chosen is a load-time file selection, not a post-load hot-swap: it mirrors
@@ -937,6 +939,220 @@ from phase 1 doubles as a training-data artifact for the flow stage.
   (skipped cleanly, matching `minimax_h3_te_int8_convrot_test.py`'s own
   convention, when `M:/model/minimax-music3` is not present) specifically so
   an accept-path regression like this one cannot pass unnoticed again.
+- **Item 13, INT8 ConvRot, is DONE.** Both staged ConvRot artifacts load: the
+  flat DiT (`minimax_music3_dit_int8_convrot.safetensors`, 2.50 GB) and the
+  pruned text encoder (`minimax_music3_text_encoder_pruned_int8_convrot.
+  safetensors`, 9.20 GB, which composes the pruned vocabulary AND ConvRot
+  together). Almost entirely wiring: `core.models.common.convrot_int8_linear`
+  (`ConvRotInt8Linear`, `swap_linears_to_convrot_int8`,
+  `require_convrot_int8_runtime`) is reused UNCHANGED from MiniMax-H3's own
+  ConvRot support, and the new `core.models.minimax_music3.convrot_remap`
+  module places the ConvRot sidecars (`.weight_scale`, `.comfy_quant`) at the
+  SAME destinations item 9's `flat_remap.plan_flat_dit_keys` /
+  `apply_flat_dit_state_dict` and item 10's `pruned_text_encoder_remap.
+  plan_pruned_text_encoder_keys` / `apply_pruned_text_encoder_state_dict`
+  already compute for the corresponding dense `.weight` -- those two
+  functions are called UNCHANGED for every dense tensor, including the
+  quantized `.weight` tensors themselves (a row-wise split of int8 codes by
+  a fused projection's OUTPUT rows is exact, because ConvRot's groups run
+  along the K/`in_features` dimension, never across output rows -- the same
+  argument item 12 makes for Q8_0). The one new per-arch artifact is
+  `_int8_convrot_source_layers` (`core.models.minimax_music3.loader`), a
+  header-only census that reads real bytes only for the tiny `.comfy_quant`
+  marker tensors and validates them against the ONE ConvRot contract this
+  loader implements (a deliberate duplicate of `minimax_h3.loader._supported_
+  int8_convrot_marker`, not an import -- each architecture owns its own
+  quantization CONTRACT validator in this repo, by existing convention).
+
+  **Census, against the real files, header-only:** the flat DiT carries the
+  SAME 374 dense (non-sidecar) tensor names item 9 already established, with
+  144 of the `.weight` entries (36 layers x 4 quantized module kinds:
+  `self_attn.to_qkv`, `self_attn.to_out`, `ff.ff.0.proj`, `ff.ff.2`) also
+  carrying a validated ConvRot marker -- 662 total tensors (374 + 144
+  `.weight_scale` + 144 `.comfy_quant`). The pruned text encoder carries the
+  SAME 328 dense tensor names item 10 already established, with 160 `.weight`
+  entries quantized (144 in the language model's 36 layers + 16 in the depth
+  decoder's 4 layers, 4 quantized module kinds each: `self_attn.qkv_proj`,
+  `self_attn.o_proj`, `mlp.gate_up_proj`, `mlp.down_proj`) -- 648 total
+  tensors. Both `plan_flat_dit_keys` and `plan_pruned_text_encoder_keys`
+  report ZERO unrecognized keys against these dense sets, unchanged from
+  their item-9/10 behavior on the non-ConvRot siblings.
+
+  **A real load, not only a structural assertion:** `build_transformer_and_
+  condition_encoder_from_flat_dit` against the real ConvRot DiT produces 216
+  `ConvRotInt8Linear` modules (144 source layers; the 36 fused `to_qkv` each
+  expand to 3 destination Linears, so 108 non-fused + 108 fused-expanded =
+  216), with no stranded meta tensor. `build_language_model_and_depth_
+  decoder_from_pruned_flat_text_encoder` against the real ConvRot text
+  encoder produces 252 `ConvRotInt8Linear` in the language model (36 layers x
+  7: o_proj + 3-way qkv split + 2-way gate_up split + down_proj) and 28 in the
+  RVQ depth decoder (4 layers x 7), resolves `PrunedVocabView` (not
+  `FullVocabView`), and again leaves no stranded meta tensor. A full
+  `load_minimax_music3_from_path` call with the ConvRot DiT as `model_path`
+  AND the ConvRot text encoder as `text_encoder_file` composes both in one
+  load, proving the DiT's ordinary model-path selection and the `text_
+  encoder_file` override reach the SAME two files this status entry
+  describes, together.
+
+  **The BF16 A/B.** Chosen at the DEQUANTIZED-WEIGHT level, not a full
+  generation: the AR stage the design doc's own "Progress and cancellation"
+  section describes (7,500 sequential language-model steps for a 300-second
+  song, each with 7 depth-decoder sub-steps) makes a full real generation
+  prohibitively slow for a per-commit verification, and the two sampler
+  widths (BF16 vs. a ConvRot-quantized run) are not directly comparable frame
+  code as sequences for the SAME reason item 12's own A/B section states for
+  Q8_0 -- codes diverge with the RNG path and the quantization noise floor
+  the moment they diverge at all, so a meaningful A/B has to compare
+  something that has ONE well-defined ground truth per layer: the
+  dequantized weight against its BF16/FP16 sibling. `torch.ops.comfy_kitchen.
+  dequantize_int8_convrot_weight_dtype` (the same op `ConvRotInt8Linear.
+  _dequant_forward` calls) recovers each ConvRot layer's weight in its
+  ORIGINAL (un-rotated) basis, directly comparable to the plain weight the
+  flat FP16 DiT / BF16 text encoder store for the identical layer. Measured
+  on sampled layers from both real files (relative RMS error,
+  `((dequantized - reference)**2).mean().sqrt() / (reference**2).mean().sqrt()`):
+  **~0.82-0.94% across the DiT's `to_qkv`/`to_out`/`ff.ff.0.proj`/`ff.ff.2`**
+  and **~0.87-0.99% across the text encoder's language-model and depth-
+  decoder `qkv_proj`/`o_proj`/`gate_up_proj`/`down_proj`** -- consistent with
+  an 8-bit per-row-scaled quantization noise floor (in the same neighborhood
+  as, though somewhat higher than, item 12's ~0.5% Q8_0 figure, which blocks
+  4x narrower along K and so has a finer noise floor). `backend/tests/
+  minimax_music3_int8_convrot_test.py` pins this at a generous 2% ceiling
+  (not the measured figure, so the test does not silently drift) against
+  BOTH real files, alongside the census and structural-build proofs above.
+  Both the census figures and the error figures were reproduced
+  INDEPENDENTLY (an audit pass, on layers this repo's own test suite does
+  not sample), and the composition claim was attacked directly: dequantizing
+  each split piece with ITS OWN split scale is bitwise equal to slicing the
+  full-tensor dequant, while deliberately shifting one split's scale by a
+  single row inflates the error from 0.87% to 26.5% -- proving a scale that
+  failed to follow its rows through the split would be loud, not silently
+  plausible, and that it does in fact follow them. The marker validator
+  itself was also compared line-for-line against MiniMax-H3's
+  `_supported_int8_convrot_marker` and found to be the same contract, not a
+  looser copy.
+
+  **The honest residency statement, stated plainly because item 12's own
+  history shows this is the question that is easy to answer wrongly, and now
+  MEASURED, not only argued from structure (independent audit).** ConvRot
+  weights stay PACKED (int8 codes + a float32 per-row scale) from disk
+  through GPU residency -- `ConvRotInt8Linear.forward` calls comfy-kitchen's
+  CUDA path, which quantizes the ACTIVATION and runs an int8 GEMM directly on
+  the packed codes (traced in source, not inferred: `dequantize_int8_linear`
+  there is the int32-accumulator-to-output epilogue, not a weight dequant),
+  when autograd is off -- the inference path, since both builders end in
+  `requires_grad_(False)`. On a real 4096x4096 layer, two separate
+  processes, bf16 activation, `torch.no_grad()`: resident weight 16.794 MB
+  (ConvRot) vs. 33.554 MB (bf16), a 50.05% reduction, and the forward-call
+  peak-memory DELTA 23.088 MB vs. 46.268 MB -- BELOW a single dense bf16
+  weight's own size, so no dense mirror is materialized at any point during
+  the call either. This is a genuine difference from item 12's Q8_0 finding,
+  not the same result restated: Q8_0 residency (`GGUFQ8_0Linear`) keeps a
+  DENSE MIRROR co-resident once a layer is touched (the AR loop's per-step
+  cost otherwise being an unacceptable per-forward dequant of an
+  8B-parameter stack), so its VRAM saving is zero during the AR stage by
+  construction -- see item 12's own status entry. ConvRot has no such
+  mirror. The phase-12 trap (a missing runtime silently falling back to
+  dense residency) is structurally impossible here: `require_convrot_int8_
+  runtime()` hard-fails at LOAD time if comfy-kitchen or its custom op is
+  absent, before any packed weight is installed, rather than degrading.
+
+  **Scope, honestly.** The 50.05%/measured-below-dense-weight numbers above
+  are LAYER-LOCAL (one Linear, one forward call) -- they scale by
+  construction to the whole DiT/text-encoder stack because every quantized
+  Linear behaves identically and independently, but the AR stage's KV cache
+  and activation memory were NOT measured and are NOT claimed to shrink by
+  this factor (nothing about ConvRot touches either). Header-only tensor-byte
+  arithmetic on the real files gives the disk/host-RAM figure directly (no
+  process-RSS load-path artifact to correct for, per item 12's own
+  methodology lesson): the ConvRot DiT is 2.50 GB against the flat FP16
+  DiT's ~4.98 GB -- ~50% -- and the ConvRot pruned text encoder is 9.20 GB
+  against the pruned BF16 text encoder's 16.71 GB, ~44.9% (slightly under
+  half because the three vocabulary tables, the norms and `tokenizer_json`
+  stay dense BF16, unquantized, in both files). **The one condition where the
+  VRAM saving does NOT hold:** `ConvRotInt8Linear._dequant_forward` --
+  reached when grad is enabled AND the input requires grad -- materializes a
+  dense weight for that one call. The inference path never reaches it (both
+  builders freeze every parameter), but a future training use of this
+  checkpoint would need to account for it explicitly rather than assume the
+  inference-path number.
+
+  What is still refused: any quantization semantic other than this ONE
+  validated ConvRot contract -- an unrecognized `.comfy_quant` marker (a
+  different format, an unread field, an undecodable marker), a scaled file
+  with NO marker at all, or a NON-pruned text encoder that is also quantized
+  (no such distribution is staged; the pruned layout is the only one Comfy-
+  Org published ConvRot for). `MiniMax Music 3` is still NOT added to `core.
+  models.common.int8_runtime_quantize.QUANTIZED_LINEAR_ARCHS` -- that table
+  governs the PER-GENERATION `unet_quantization` runtime converter, a
+  different feature from loading a pre-quantized checkpoint, and this phase
+  adds no such converter (see `backend/api/arch_capabilities.py`'s
+  `unet_quantization` refusal message, updated in this phase to state that
+  distinction rather than point at "a later phase" now that ConvRot LOADING
+  has landed).
+
+  **An independent audit of this phase found five fixes, all closed.** (F2,
+  medium, a real regression) The DiT builder had LOST the header-only refusal
+  for a quantized-but-unmarked file: `_int8_convrot_source_layers` returning
+  `{}` for a header with a `.weight_scale` but no `.comfy_quant` marker fell
+  through to a full multi-GB `read_state_dict` before being refused, while
+  the pruned text encoder builder kept its own equivalent gate. Fixed by
+  mirroring the TE builder's gate in the DiT builder exactly: a header that
+  `_header_looks_quantized` flags is censused immediately, and an EMPTY
+  census raises right there, before `read_state_dict`. The deleted fixture
+  this regressed (`_write_quantized_flat_dit_header`, a scale-with-no-marker
+  file) is restored as `_write_flat_dit_with_scale_and_no_marker` /
+  `test_flat_dit_scale_with_no_marker_is_refused_header_only`, alongside the
+  unrecognized-marker case that had replaced it. (F1, medium) A stale comment
+  in `loader.py` (near `load_minimax_music3_from_path`'s flat-DiT branch)
+  still said int8_convrot "is still refused, inside the builder itself...
+  design doc phase 13" -- the exact claim this phase reverses; corrected.
+  (F3, low) The same claim in `flat_remap.py`'s module docstring ("refused,
+  not half-remapped" naming int8_convrot on either file); corrected to state
+  what IS and is not handled by that module specifically (dense remap only;
+  the sidecars are placed by `convrot_remap.py`, which calls this module's
+  functions unchanged). (F4, low, latent) `_split_convrot_sidecar` reused the
+  SAME marker tensor object across every split destination while cloning the
+  scale chunks -- the sibling `pruned_text_encoder_remap._apply_splits`
+  clones every split piece explicitly, for the stated reason that a future
+  `safetensors.save_file` of a split-loaded module would otherwise refuse
+  with "tensors share memory". No music3 export path exists today (latent,
+  not live), but the sibling had already decided the question; the marker is
+  now cloned too, pinned by `test_split_convrot_sidecar_equal_three_way`.
+  (F7, style) The comment budget was trimmed: the "why a dim-0 row split is
+  exact for ConvRot codes" argument, which appeared verbatim in this file's
+  module docstring, in `_split_convrot_sidecar`'s docstring, AND in this
+  design doc, now lives only here (a sentence plus a pointer remains at each
+  code site).
+
+  **Measured, not only argued from structure, by the same audit** (see the
+  "honest residency statement" above, now updated with real numbers): a
+  real 4096x4096 ConvRot layer resident at 16.794 MB against a dense bf16
+  layer's 33.554 MB (50.05%), with the forward-call peak-memory delta
+  (23.088 MB vs. 46.268 MB) measured BELOW a single dense weight's own size
+  -- proving no dense mirror is ever materialized, not merely arguing it from
+  the module tree. The mechanism was traced in comfy-kitchen's own source
+  (an installed, already-pinned dependency -- nothing new was added): the
+  CUDA path quantizes the activation and runs an int8 GEMM, and
+  `dequantize_int8_linear` there is the int32-to-output epilogue, not a
+  weight dequant. And the composition proof (dequantizing a split piece with
+  its OWN split scale is bitwise equal to slicing the full-tensor dequant)
+  was attacked directly by shifting a split's scale by one row, which
+  inflated the error from 0.87% to 26.5% -- proving a misaligned scale would
+  be loud, not silently plausible.
+
+  **Two things recorded rather than fixed, per the audit's own
+  instruction:** the VRAM numbers above are LAYER-LOCAL and scale by
+  construction, but the AR stage's KV cache and activation memory were not
+  measured, and `_dequant_forward` (reached only when grad is enabled and
+  the input requires grad -- never on the inference path, since both
+  builders freeze every parameter) DOES materialize a dense weight for that
+  one call; a future training use of this checkpoint must account for that
+  explicitly. Separately, `backend/tests/quantized_capability_parity_test.
+  py::LoaderComponentNameAnchorTest` was found already failing on
+  `['minimax_h3']` in the tree BEFORE this phase's diff -- unrelated to
+  MiniMax Music 3 or to INT8 ConvRot, not touched or fixed here, flagged for
+  separate attention.
 - Frontend: txt2aud/extend UI shipped; repaint's UI branch is BLOCKED on a
   shared-worktree conflict (`frontend/src/components/generation/Img2ImgPanel.tsx`
   was dirty under another session's edits when this phase landed) -- not

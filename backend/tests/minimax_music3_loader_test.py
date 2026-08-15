@@ -63,26 +63,6 @@ def _write_flat_dit_header(path):
         fh.write(raw)
 
 
-def _write_quantized_flat_dit_header(path):
-    """A flat-DiT-shaped header that ALSO carries a ``.weight_scale`` sibling --
-    the ``int8_convrot`` tell ``loader._header_looks_quantized`` reads. 0-byte
-    placeholder tensors: this must be refused before any tensor byte is read,
-    so a real read would raise (offsets point past a near-empty file)."""
-    import struct
-
-    header = {
-        "diffusion_transformer.proj_in.weight": {"dtype": "F16", "shape": [0], "data_offsets": [0, 0]},
-        "diffusion_transformer.proj_in.weight_scale": {"dtype": "F32", "shape": [0], "data_offsets": [0, 0]},
-        "latent_conditioners.0.weight": {"dtype": "F16", "shape": [0], "data_offsets": [0, 0]},
-        "cond_layer_logits": {"dtype": "F16", "shape": [8], "data_offsets": [0, 0]},
-    }
-    raw = json.dumps(header).encode("utf-8")
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "wb") as fh:
-        fh.write(struct.pack("<Q", len(raw)))
-        fh.write(raw)
-
-
 # ---------------------------------------------------------------------------
 # Detection: all three accepted spellings
 # ---------------------------------------------------------------------------
@@ -394,19 +374,104 @@ def test_non_pruned_builder_still_refuses_a_pruned_file(tmp_path):
         )
 
 
-def test_flat_dit_int8_convrot_is_refused_header_only(tmp_path):
-    """The quantized flat DiT variant stays refused (design doc phase 13),
-    and the refusal fires from the HEADER alone (no tensor bytes read) --
-    this test's placeholder tensors are 0-byte, so a real-byte read would
-    error, not just be slow."""
+def _write_flat_dit_with_unsupported_quant_marker(path):
+    """A flat-DiT-shaped file (REAL safetensors, via ``save_file`` -- not the
+    zero-byte header trick the other fixtures in this file use, because this
+    one's ``.comfy_quant`` marker must hold real, decodable JSON bytes for
+    ``supported_int8_convrot_marker`` to read) whose ONE quantized layer
+    declares a marker this loader does not implement (``"nvfp4"`` -- the
+    format MiniMax-H3's text encoder uses, not the ConvRot contract design
+    doc phase 13 implements for MiniMax Music 3). Proves the "supported
+    ConvRot vs. everything else" distinction still refuses the "everything
+    else" side, HEADER-ONLY: the marker is the only tensor with real
+    content-derived meaning here, and every other tensor (including the
+    quantized layer's own ``.weight``/``.weight_scale``) is a 1-element
+    placeholder that a real read would still succeed on (unlike the old
+    0-byte fixture this replaces) -- so a failure here is the semantics
+    guard, not an incidental read error.
+    """
+    import json as _json
+
+    from safetensors.torch import save_file
+
+    marker = torch.frombuffer(
+        bytearray(_json.dumps({"format": "nvfp4", "full_precision_matrix_mult": True}).encode("utf-8")),
+        dtype=torch.uint8,
+    ).clone()
+    state_dict = {
+        "diffusion_transformer.proj_in.weight": torch.zeros(1),
+        "diffusion_transformer.proj_in.weight_scale": torch.ones(1, dtype=torch.float32),
+        "diffusion_transformer.proj_in.comfy_quant": marker,
+        "latent_conditioners.0.weight": torch.zeros(1),
+        "cond_layer_logits": torch.zeros(8),
+    }
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    save_file(state_dict, path)
+
+
+def test_flat_dit_unsupported_quant_marker_is_refused_header_only(tmp_path):
+    """A quantized flat DiT whose marker is NOT the validated ConvRot
+    contract still refuses -- design doc phase 13 widens what is accepted,
+    it does not remove the declared-semantics guard for everything else."""
     _make_official_tree(str(tmp_path))
     dit_path = os.path.join(str(tmp_path), "diffusion_models", "minimax_music3_dit_int8_convrot.safetensors")
-    _write_quantized_flat_dit_header(dit_path)
+    _write_flat_dit_with_unsupported_quant_marker(dit_path)
 
-    with pytest.raises(RuntimeError, match="quantiz"):
+    from core.models.common.quantized_checkpoint_guard import UnsupportedQuantSemanticsError
+
+    with pytest.raises(UnsupportedQuantSemanticsError):
         loader.build_transformer_and_condition_encoder_from_flat_dit(
             dit_path, os.path.join(str(tmp_path), "official"), torch.bfloat16,
         )
+
+
+def _write_flat_dit_with_scale_and_no_marker(path):
+    """A flat-DiT-shaped file (REAL safetensors) whose ONE ``.weight`` carries
+    a ``.weight_scale`` sibling but NO ``.comfy_quant`` marker at all -- the
+    exact case the pre-phase-13 loader's ``_header_looks_quantized`` refused
+    unconditionally, and this restores coverage for after the F2 fix: a
+    scaled-but-unmarked file is refused HEADER-ONLY, before the full
+    ``read_state_dict`` of what can be a 5-10 GB file, same as the
+    unrecognized-marker case above.
+    """
+    from safetensors.torch import save_file
+
+    state_dict = {
+        "diffusion_transformer.proj_in.weight": torch.zeros(1),
+        "diffusion_transformer.proj_in.weight_scale": torch.ones(1, dtype=torch.float32),
+        "latent_conditioners.0.weight": torch.zeros(1),
+        "cond_layer_logits": torch.zeros(8),
+    }
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    save_file(state_dict, path)
+
+
+def test_flat_dit_scale_with_no_marker_is_refused_header_only(tmp_path):
+    """F2: the DiT builder must refuse a scaled-but-unmarked file HEADER-ONLY,
+    the same guarantee the pruned text encoder builder already has -- proven
+    here by making the file's tensors big enough that a real
+    ``read_state_dict`` would succeed (unlike the deleted 0-byte fixture this
+    restores coverage for), so a pass here is the header-only gate, not an
+    incidental read failure that happens to raise first.
+    """
+    _make_official_tree(str(tmp_path))
+    dit_path = os.path.join(str(tmp_path), "diffusion_models", "minimax_music3_dit_int8_convrot.safetensors")
+    _write_flat_dit_with_scale_and_no_marker(dit_path)
+
+    with pytest.raises(RuntimeError, match="ConvRot"):
+        loader.build_transformer_and_condition_encoder_from_flat_dit(
+            dit_path, os.path.join(str(tmp_path), "official"), torch.bfloat16,
+        )
+
+
+def test_int8_convrot_source_layers_is_empty_for_a_plain_file(tmp_path):
+    """``_int8_convrot_source_layers`` (the header-only census design doc
+    phase 13 introduced) returns ``{}`` -- not an error -- for a file with no
+    ``.comfy_quant`` marker at all, matching every unquantized flat DiT this
+    loader already reads."""
+    dit_path = os.path.join(str(tmp_path), "diffusion_models", "minimax_music3_dit_fp16.safetensors")
+    _write_flat_dit_header(dit_path)
+    assert loader._int8_convrot_source_layers(dit_path, label="flat DiT") == {}
 
 
 def test_flat_dit_with_no_official_tree_is_refused_with_a_distinct_reason(tmp_path):

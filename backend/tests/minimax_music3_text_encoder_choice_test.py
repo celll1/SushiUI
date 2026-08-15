@@ -445,19 +445,22 @@ def test_real_pruned_q8_0_gguf_encoder_is_accepted():
     assert detect_minimax_music3_text_encoder_source(path) == "gguf_pruned_q8_0"
 
 
-def test_real_pruned_int8_convrot_encoder_is_refused_at_detection_not_only_in_the_builder():
-    """Item 1 from the coordinator's second-pass audit: this file used to
-    detect as `flat_pruned` (a truthful kind, since the vocabulary IS pruned)
-    and only get refused later, inside the builder, deep inside `load_
-    minimax_music3_from_path` -- reached AFTER `_load_model_locked`'s F3
-    preflight had already let the request through and torn the live model
-    down. The detector must refuse it directly, so the F3 preflight (which
-    calls only the detector, not the builder) catches it BEFORE teardown."""
+def test_real_pruned_int8_convrot_encoder_is_accepted_as_flat_pruned():
+    """Design doc phase 13: this file's ConvRot contract is now validated and
+    accepted, detecting as the SAME `"flat_pruned"` kind its dense sibling
+    does -- the ConvRot-vs-dense split happens INSIDE the builder, not in the
+    kind string (see `loader.build_language_model_and_depth_decoder_from_
+    pruned_flat_text_encoder`'s docstring). This replaces this test's former
+    "refused at detection" assertion (item 1 from the coordinator's
+    second-pass audit, when phase 13 had not landed yet): the detector still
+    validates the ConvRot marker itself HEADER-ONLY before returning (so a
+    file that merely LOOKED quantized but declared an unsupported marker
+    would still be caught pre-teardown, per that same audit finding) -- this
+    test pins the ACCEPT side of that same code path."""
     path = os.path.join(_REAL_TEXT_ENCODERS_ROOT, "minimax_music3_text_encoder_pruned_int8_convrot.safetensors")
     if not os.path.isfile(path):
         pytest.skip(f"{path} not present on this machine")
-    with pytest.raises(MiniMaxMusic3TextEncoderRefusal, match="INT8 ConvRot"):
-        detect_minimax_music3_text_encoder_source(path)
+    assert detect_minimax_music3_text_encoder_source(path) == "flat_pruned"
 
 
 def test_real_flat_dit_is_still_refused_as_a_text_encoder():

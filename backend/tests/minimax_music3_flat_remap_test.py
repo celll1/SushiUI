@@ -195,7 +195,11 @@ def test_is_pruned_detects_any_single_tell():
 
 
 def test_plan_text_encoder_raises_pruned_not_supported():
-    with pytest.raises(fr.PrunedTextEncoderNotSupported, match="phase-plan item 10"):
+    """Design doc phase 10: this specific function (the NON-pruned remap) still refuses a
+    pruned file, and its message now points at the DEDICATED pruned remap module rather than
+    claiming the layout is unsupported outright -- see pruned_text_encoder_remap_test.py for
+    that module's own (passing) coverage."""
+    with pytest.raises(fr.PrunedTextEncoderNotSupported, match="pruned_text_encoder_remap"):
         fr.plan_flat_text_encoder_keys(["model.embed_tokens_prefill.weight", "model.lm_head_pruned.weight"])
 
 

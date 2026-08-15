@@ -65,10 +65,9 @@ from diffusers.hooks.group_offloading import _is_group_offload_enabled
 from diffusers.utils.torch_utils import randn_tensor
 
 from core.inference.cancellation import raise_if_cancelled
+from core.models.minimax_music3.vocab_view import resolve_vocab_view
 from core.models.minimax_music3.defaults import (
     AUDIO_CFG_TOKEN_ID,
-    AUDIO_CODE_OFFSET,
-    AUDIO_END_TOKEN_ID,
     AUDIO_START,
     AR_CFG_SCALE,
     AR_CFG_TOP_K,
@@ -93,7 +92,6 @@ from core.models.minimax_music3.defaults import (
     MAX_AUDIO_FRAMES,
     MAX_PROMPT_TOKENS,
     OVERLAP_LATENT_LENGTH,
-    SEMANTIC_VOCAB_SIZE,
 )
 
 _SPECIAL_TAG_RE = re.compile(r"<\|([^|]*)\|>")
@@ -270,6 +268,14 @@ class MiniMaxMusic3Pipeline:
         self.scheduler = scheduler
         self.vocoder = vocoder
         self._execution_device = execution_device
+        # Resolved ONCE here (design doc phase 10, "The pruned vocabulary"): which
+        # checkpoint layout `language_model` is, decided from the loaded module's own
+        # shape -- see `resolve_vocab_view`'s docstring. Every AR-loop text/semantic-code
+        # embedding and every audio-logit computation below goes through this instead of
+        # `language_model.model.embed_tokens`/`language_model.lm_head` directly, so the
+        # checkpoint-contract offset/mask difference between the two layouts lives in ONE
+        # place (`core.models.minimax_music3.vocab_view`) rather than at every call site.
+        self._vocab = resolve_vocab_view(language_model)
 
     # ------------------------------------------------------------------
     # Component-derived properties. The six read-only properties below
@@ -419,9 +425,12 @@ class MiniMaxMusic3Pipeline:
     # sequential generation loop keeps calling the single-frame form so its numerics are byte-for-byte upstream's.
     # ------------------------------------------------------------------
     def _embed_audio_frame(self, frame_codes: torch.Tensor) -> torch.Tensor:
-        """frame_codes: `[2, num_codebooks]` -> `[2, 1, hidden_size]`. Verbatim upstream `_embed_audio_frame`."""
-        embed_tokens = self.language_model.model.embed_tokens
-        embeds = embed_tokens(frame_codes[:, :1] + AUDIO_CODE_OFFSET)
+        """frame_codes: `[2, num_codebooks]` -> `[2, 1, hidden_size]`. Verbatim upstream `_embed_audio_frame`,
+        the semantic-code embedding routed through `self._vocab` (design doc phase 10) instead of
+        `language_model.model.embed_tokens(... + AUDIO_CODE_OFFSET)` directly -- see `vocab_view`'s module
+        docstring; numerically identical on the full-vocab path (`FullVocabView.embed_semantic_code` performs
+        the exact same lookup)."""
+        embeds = self._vocab.embed_semantic_code(frame_codes[:, :1])
         offsets = (torch.arange(self.num_codebooks - 1, device=frame_codes.device) * self.audio_vocab_size).unsqueeze(0)
         extra = self.rvq_depth_decoder.audio_embeddings(frame_codes[:, 1:] + offsets).sum(dim=1, keepdim=True)
         embeds = embeds + extra.to(embeds.dtype)
@@ -434,8 +443,7 @@ class MiniMaxMusic3Pipeline:
         `_embed_audio_frame` once per frame and concatenating along the frame axis (same embedding lookups, same
         sum, same scale); the only difference is one batched matmul/embedding pass instead of F sequential ones.
         """
-        embed_tokens = self.language_model.model.embed_tokens
-        embeds = embed_tokens(frame_codes[..., 0] + AUDIO_CODE_OFFSET)
+        embeds = self._vocab.embed_semantic_code(frame_codes[..., 0])
         offsets = torch.arange(self.num_codebooks - 1, device=frame_codes.device) * self.audio_vocab_size
         extra = self.rvq_depth_decoder.audio_embeddings(frame_codes[..., 1:] + offsets).sum(dim=-2)
         embeds = embeds + extra.to(embeds.dtype)
@@ -449,7 +457,7 @@ class MiniMaxMusic3Pipeline:
         on the loader happening to hand both models the same `torch_dtype` today."""
         rvq_dtype = self.rvq_depth_decoder.dtype
         sequence = [self.rvq_depth_decoder.projection(last_hidden.to(rvq_dtype)).unsqueeze(1)]
-        code_embed = self.language_model.model.embed_tokens(semantic_code + AUDIO_CODE_OFFSET)
+        code_embed = self._vocab.embed_semantic_code(semantic_code)
         sequence.append(self.rvq_depth_decoder.projection(code_embed.to(rvq_dtype)).unsqueeze(1))
         codes = [semantic_code]
         hidden_parts = []
@@ -562,7 +570,7 @@ class MiniMaxMusic3Pipeline:
             )
 
         device = text_ids.device
-        text_embeds = language_model.model.embed_tokens(text_ids)
+        text_embeds = self._vocab.embed_text(text_ids)
         output = language_model.model(inputs_embeds=text_embeds, use_cache=True)
         past_key_values = output.past_key_values
         last_hidden = output.last_hidden_state[:, -1]
@@ -594,10 +602,6 @@ class MiniMaxMusic3Pipeline:
                 past_key_values = output.past_key_values
                 last_hidden = output.last_hidden_state[:, -1]
 
-        vocab_mask = torch.ones(language_model.config.vocab_size, dtype=torch.bool, device=device)
-        vocab_mask[AUDIO_CODE_OFFSET : AUDIO_CODE_OFFSET + SEMANTIC_VOCAB_SIZE] = False
-        vocab_mask[AUDIO_END_TOKEN_ID] = False
-
         frame_hiddens: List[torch.Tensor] = []
         frame_codes_out: List[torch.Tensor] = []
         captured_prefix_codes: Optional[torch.Tensor] = resume_prefix_codes
@@ -606,18 +610,17 @@ class MiniMaxMusic3Pipeline:
         # entirely -- the replay above already consumed it) and is not an emitted frame.
         for frame_index in range(max_frames + 1):
             raise_if_cancelled()
-            logits = language_model.lm_head(last_hidden).float()
-            logits = logits.masked_fill(vocab_mask, -float("inf"))
+            logits = self._vocab.audio_logits(last_hidden)
             conditional, unconditional = logits[0:1], logits[1:2]
             guided = unconditional + (conditional - unconditional) * AR_CFG_SCALE
             threshold = torch.topk(conditional, AR_CFG_TOP_K, dim=-1).values[..., -1, None]
             guided = guided.masked_fill(conditional < threshold, -float("inf"))
-            guided = guided.masked_fill(vocab_mask.unsqueeze(0), -float("inf"))
+            guided = self._vocab.mask_logits(guided)
             sampled = _sample_top_k(guided, generator)
-            if int(sampled.item()) == AUDIO_END_TOKEN_ID:
+            is_end_of_audio, semantic_code = self._vocab.decode_sample(sampled)
+            if is_end_of_audio:
                 break
 
-            semantic_code = sampled - AUDIO_CODE_OFFSET
             frame_codes, depth_hidden = self._generate_depth_codes(last_hidden, semantic_code.repeat(2), generator)
 
             is_warmup_step = (not resuming) and frame_index == 0
@@ -699,7 +702,7 @@ class MiniMaxMusic3Pipeline:
         rvq_dtype = self.rvq_depth_decoder.dtype
         semantic_code = frame_codes_row[0:1]
         sequence = [self.rvq_depth_decoder.projection(last_hidden.to(rvq_dtype)).unsqueeze(1)]
-        code_embed = self.language_model.model.embed_tokens(semantic_code + AUDIO_CODE_OFFSET)
+        code_embed = self._vocab.embed_semantic_code(semantic_code)
         sequence.append(self.rvq_depth_decoder.projection(code_embed.to(rvq_dtype)).unsqueeze(1))
         hidden_parts = []
         for index in range(1, self.num_codebooks):
@@ -775,7 +778,7 @@ class MiniMaxMusic3Pipeline:
         prefix_codes = prefix_codes.to(device=device, dtype=torch.long)
 
         language_model = self.language_model
-        text_embeds = language_model.model.embed_tokens(text_ids)
+        text_embeds = self._vocab.embed_text(text_ids)
         output = language_model.model(inputs_embeds=text_embeds, use_cache=True)
         past_key_values = output.past_key_values
         last_hidden = output.last_hidden_state[:, -1]  # predicts frame 0 (the warm-up code)

@@ -271,6 +271,129 @@ def test_flat_text_encoder_builder_gates_on_rope_theta_before_reading_weights(tm
         )
 
 
+def test_pruned_flat_text_encoder_builder_round_trip(tmp_path):
+    """Design doc phase 10: ``build_language_model_and_depth_decoder_from_pruned_flat_
+    text_encoder`` builds a real (patched) ``Qwen3ForCausalLM`` -- ``lm_head`` removed,
+    ``lm_head_pruned`` and ``model.embed_tokens_audio`` attached -- and a real
+    ``MiniMaxMusic3RVQDepthDecoder``, from a tiny real pruned flat file whose per-layer
+    projections are FUSED (unlike the non-pruned fixture's), proving the GQA-uneven qkv
+    split and the equal gate_up split both land correctly through the loader, not just
+    through the pure-function remap tests."""
+    from tests.minimax_music3_pruned_text_encoder_fixture import (
+        write_tiny_pruned_text_encoder_and_official_tree,
+    )
+
+    fixture = write_tiny_pruned_text_encoder_and_official_tree(tmp_path)
+    language_model, rvq_depth_decoder, depth_config = (
+        loader.build_language_model_and_depth_decoder_from_pruned_flat_text_encoder(
+            fixture["text_encoder_path"], fixture["official"], torch.float32,
+        )
+    )
+    assert type(language_model).__name__ == "Qwen3ForCausalLM"
+    assert type(rvq_depth_decoder).__name__ == "MiniMaxMusic3RVQDepthDecoder"
+
+    # The representation choice (this function's docstring): patched attributes, not a
+    # subclass -- `lm_head` removed, two new leaf modules attached.
+    assert not hasattr(language_model, "lm_head")
+    assert hasattr(language_model, "lm_head_pruned")
+    assert hasattr(language_model.model, "embed_tokens_audio")
+    assert language_model.config.vocab_size == language_model.model.embed_tokens.weight.shape[0]
+
+    got_lm_head_pruned = language_model.lm_head_pruned.weight.to(torch.float32)
+    assert torch.allclose(got_lm_head_pruned, fixture["expected_lm_head_pruned_weight"])
+    got_embed_tokens_audio = language_model.model.embed_tokens_audio.weight.to(torch.float32)
+    assert torch.allclose(got_embed_tokens_audio, fixture["expected_embed_tokens_audio_weight"])
+    got_audio_embeddings = rvq_depth_decoder.audio_embeddings.weight.to(torch.float32)
+    assert torch.allclose(got_audio_embeddings, fixture["expected_audio_embeddings_weight"])
+
+    # F11-equivalent: pin the q/k/v split order (GQA-uneven: 8/4/4) through the round trip.
+    from tests.minimax_music3_pruned_text_encoder_fixture import HEAD_DIM, KV_DIM, Q_DIM
+
+    fused_qkv = fixture["expected_fused_qkv"]
+    layer0 = language_model.model.layers[0]
+    tol = dict(atol=1e-5, rtol=1e-4)
+    assert torch.allclose(layer0.self_attn.q_proj.weight.to(torch.float32), fused_qkv[0:Q_DIM], **tol)
+    assert torch.allclose(layer0.self_attn.k_proj.weight.to(torch.float32), fused_qkv[Q_DIM:Q_DIM + KV_DIM], **tol)
+    assert torch.allclose(layer0.self_attn.v_proj.weight.to(torch.float32), fused_qkv[Q_DIM + KV_DIM:Q_DIM + 2 * KV_DIM], **tol)
+
+    fused_gate_up = fixture["expected_fused_gate_up"]
+    half = fused_gate_up.shape[0] // 2
+    assert torch.allclose(layer0.mlp.gate_proj.weight.to(torch.float32), fused_gate_up[:half], **tol)
+    assert torch.allclose(layer0.mlp.up_proj.weight.to(torch.float32), fused_gate_up[half:], **tol)
+
+    depth_layer0 = rvq_depth_decoder.layers[0]
+    depth_fused_qkv = fixture["expected_depth_fused_qkv_by_layer"][0]
+    third = depth_fused_qkv.shape[0] // 3
+    assert torch.allclose(depth_layer0.attn.to_q.weight.to(torch.float32), depth_fused_qkv[0:third], **tol)
+    assert torch.allclose(depth_layer0.attn.to_k.weight.to(torch.float32), depth_fused_qkv[third:2 * third], **tol)
+    assert torch.allclose(depth_layer0.attn.to_v.weight.to(torch.float32), depth_fused_qkv[2 * third:3 * third], **tol)
+
+
+def test_pruned_flat_text_encoder_builder_gates_on_rope_theta_before_reading_weights(tmp_path):
+    """Mirrors the non-pruned builder's F3 regression coverage: a wrong
+    ``rope_parameters.rope_theta`` must be refused BEFORE ``read_state_dict`` opens the
+    (potentially 16.7 GB) pruned file."""
+    from tests.minimax_music3_pruned_text_encoder_fixture import (
+        write_tiny_pruned_text_encoder_and_official_tree,
+    )
+
+    fixture = write_tiny_pruned_text_encoder_and_official_tree(tmp_path)
+    lm_config_path = os.path.join(fixture["official"], "language_model", "config.json")
+    with open(lm_config_path, encoding="utf-8") as fh:
+        bad_config = json.load(fh)
+    bad_config["rope_parameters"]["rope_theta"] = 10_000.0
+    with open(lm_config_path, "w", encoding="utf-8") as fh:
+        json.dump(bad_config, fh)
+    with open(fixture["text_encoder_path"], "r+b") as fh:
+        fh.seek(-16, os.SEEK_END)
+        fh.write(b"\xff" * 16)
+
+    with pytest.raises(ValueError, match="rope_parameters"):
+        loader.build_language_model_and_depth_decoder_from_pruned_flat_text_encoder(
+            fixture["text_encoder_path"], fixture["official"], torch.float32,
+        )
+
+
+def test_pruned_builder_refuses_a_non_pruned_file_by_name():
+    """The pruned builder is not a silent fallback for the non-pruned file -- a header
+    that carries none of the pruned tells is refused with a message naming the OTHER
+    builder, before any tensor byte is read (this uses a header-only 0-byte fixture, so a
+    real read would raise a decode error, not just be slow)."""
+    import struct
+    import tempfile
+
+    header = {
+        "model.embed_tokens.weight": {"dtype": "F32", "shape": [0], "data_offsets": [0, 0]},
+        "model.lm_head.weight": {"dtype": "F32", "shape": [0], "data_offsets": [0, 0]},
+    }
+    raw = json.dumps(header).encode("utf-8")
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "minimax_music3_text_encoder_bf16.safetensors")
+        with open(path, "wb") as fh:
+            fh.write(struct.pack("<Q", len(raw)))
+            fh.write(raw)
+        with pytest.raises(ValueError, match="build_language_model_and_depth_decoder_from_flat_text_encoder"):
+            loader.build_language_model_and_depth_decoder_from_pruned_flat_text_encoder(
+                path, tmp, torch.float32,
+            )
+
+
+def test_non_pruned_builder_still_refuses_a_pruned_file(tmp_path):
+    """The other direction: handing the PRUNED file to the NON-pruned builder still raises
+    ``PrunedTextEncoderNotSupported`` -- design doc phase 10 adds a supported path, it does
+    not change this specific function's own refusal."""
+    from core.models.minimax_music3.flat_remap import PrunedTextEncoderNotSupported
+    from tests.minimax_music3_pruned_text_encoder_fixture import (
+        write_tiny_pruned_text_encoder_and_official_tree,
+    )
+
+    fixture = write_tiny_pruned_text_encoder_and_official_tree(tmp_path)
+    with pytest.raises(PrunedTextEncoderNotSupported):
+        loader.build_language_model_and_depth_decoder_from_flat_text_encoder(
+            fixture["text_encoder_path"], fixture["official"], torch.float32,
+        )
+
+
 def test_flat_dit_int8_convrot_is_refused_header_only(tmp_path):
     """The quantized flat DiT variant stays refused (design doc phase 13),
     and the refusal fires from the HEADER alone (no tensor bytes read) --

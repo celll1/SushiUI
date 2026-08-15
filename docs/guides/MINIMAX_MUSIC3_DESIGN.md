@@ -477,26 +477,94 @@ from phase 1 doubles as a training-data artifact for the flow stage.
 - Official snapshot and flat artifacts: staged and verified under
   `M:/model/minimax-music3/`, provenance in `manifest.json`.
 - Upstream pipeline code: vendored and ported (phase plan item 1).
-- Backend: phases 1-9 of the phase plan are implemented -- vendor/port,
+- Backend: phases 1-10 of the phase plan are implemented -- vendor/port,
   loader/registry, txt2aud, API/`param_defaults.py`/`arch_capabilities.py`
   wiring, extend (`/generate/outpaint/audio`), repaint
   (`/generate/aud2aud` with `mode="repaint"`, both the "regenerate" and
-  "rerender" sub-modes), and the flat key remap
-  (`core.models.minimax_music3.flat_remap`). The remap covers the flat DiT
-  (QKV split, `.gamma`/`.beta` norm rename, condition encoder unfolded out)
-  and the flat NON-pruned text encoder (language model + RVQ depth decoder
-  split apart, including the `model.audio_extra_embedding` ->
-  `audio_embeddings` cross-component rename); both are proven total against
-  the vendored classes' own `state_dict()` keys and numerically verified
-  against the real snapshot. `load_minimax_music3_from_path` now loads a
-  flat, non-quantized DiT file (`minimax_music3_dit_{fp32,fp16}.safetensors`)
-  when pointed at one directly, with every other component still sourced
-  from `official/`; the flat text-encoder builder is implemented and tested
-  but not wired into that dispatch (no existing detection hook selects a
-  text-encoder source the way the DiT file already does). Items 10-14
-  (pruned vocabulary, GGUF containers, Q8_0 residency, INT8 ConvRot, docs)
-  are not yet done; `int8_convrot` and the pruned text-encoder variant are
-  refused (header-only, no multi-GB read) with reasons naming those phases.
+  "rerender" sub-modes), the flat key remap
+  (`core.models.minimax_music3.flat_remap`), and the pruned-vocabulary remap
+  (`core.models.minimax_music3.pruned_text_encoder_remap`). The flat remap
+  covers the flat DiT (QKV split, `.gamma`/`.beta` norm rename, condition
+  encoder unfolded out) and the flat NON-pruned text encoder (language model
+  + RVQ depth decoder split apart, including the `model.audio_extra_embedding`
+  -> `audio_embeddings` cross-component rename); both are proven total
+  against the vendored classes' own `state_dict()` keys and numerically
+  verified against the real snapshot. `load_minimax_music3_from_path` now
+  loads a flat, non-quantized DiT file
+  (`minimax_music3_dit_{fp32,fp16}.safetensors`) when pointed at one
+  directly, with every other component still sourced from `official/`; the
+  NON-pruned flat text-encoder builder is implemented and tested but not
+  wired into that dispatch (no existing detection hook selects a
+  text-encoder source the way the DiT file already does), same status as the
+  PRUNED builder (item 10) below.
+
+  **Item 10 (the pruned vocabulary) has landed.** The pruned flat text
+  encoder (`minimax_music3_text_encoder_pruned_bf16.safetensors`) fuses each
+  layer's `self_attn.qkv_proj` / `mlp.gate_up_proj` (GQA-uneven for the
+  language model, equal thirds for the RVQ depth decoder) ON TOP OF the
+  vocabulary split this section of the doc already described --
+  `pruned_text_encoder_remap` unfuses both and splits the vocabulary into a
+  real `Qwen3ForCausalLM`, PATCHED (its default `lm_head` removed,
+  `lm_head_pruned` [16385, hidden] and `model.embed_tokens_audio` [16384,
+  hidden] attached as new leaf modules; `config.vocab_size` set to the
+  checkpoint's own 151,675 text rows). `core.models.minimax_music3.vocab_view`
+  resolves which layout a loaded `language_model` is (by attribute presence)
+  and routes the AR loop's three checkpoint-contract operations (embed text,
+  embed a semantic code, compute audio logits) through it; the full-vocabulary
+  path is untouched numerically (verified: 233 pre-existing MiniMax Music 3
+  tests still pass, including every AR-loop/resume/frame-code test).
+  `build_language_model_and_depth_decoder_from_pruned_flat_text_encoder` is
+  implemented and tested (tiny real round-trip) but, like the non-pruned
+  builder, not wired into `load_minimax_music3_from_path`'s directory
+  detection.
+
+  Which `lm_head_pruned` row is end-of-audio was DETERMINED, not assumed: row
+  0 is bit-identical (bf16, 0.0 max abs diff) to `official/language_model`'s
+  `lm_head.weight[AUDIO_END_TOKEN_ID]`, and rows 1..16384 are bit-identical to
+  `lm_head.weight[AUDIO_CODE_OFFSET:AUDIO_CODE_OFFSET+16384]` -- semantic code
+  `c` lives at row `c + 1`. Every weight this phase touches (the fused
+  per-layer projections' unfused pieces, both vocab tables, the pruned
+  variant's shared body layers) was verified bit-identical, in bf16, to
+  `official/`'s corresponding tensor, against the real snapshot -- not merely
+  "close".
+
+  **The verification gate found a real, non-fixable divergence, and the
+  primary cause is the sampler, not the GEMM.** Generating the same seed
+  through the full-vocab path and the pruned path produces DIFFERENT sampled
+  frame codes from the first decode step onward, despite `text_ids`,
+  `text_embeds`, `last_hidden` (all 36 layers), and (on CPU) the restricted
+  logits themselves being proven BIT-IDENTICAL. The PRIMARY mechanism is
+  `_sample_top_k`'s `torch.multinomial`: its RNG consumption depends on the
+  category count, so a 200,000-wide call and a 16,385-wide call advance a
+  identically-seeded generator differently and pick a different class even
+  when fed bit-identical restricted logits (measured: 152/200 GPU trials and
+  200/200 CPU trials mismatched). A SECONDARY, smaller effect is that the
+  restricted logits are not always bit-identical between the two paths ON
+  GPU -- `lm_head_pruned(last_hidden)` vs. `lm_head(last_hidden)` sliced to
+  the same 16,385 rows differ by GEMM output-shape-dependent bf16 rounding
+  (up to 0.03125 in bf16, ~3.8e-6 in fp32; CPU is exactly bit-identical, 0 of
+  32,770 positions differ in both dtypes) -- but this is not the dominant
+  cause: bit-identical restricted logits already fail to reproduce the same
+  sample most of the time. The gate that IS meetable, and stronger than
+  originally claimed: feeding ONE sampler the SAME restricted logit vector
+  from both paths agrees -- this is what the argmax and top-50-by-
+  conditional-logit-set check already established. Every alternative
+  hypothesis for the divergence (EOA row position, code-offset arithmetic,
+  the GQA-uneven LM split, the depth decoder's equal-thirds split, dropping
+  the mask) was falsified against the real snapshot. Full account in
+  `core.models.minimax_music3.vocab_view.PrunedVocabView`'s docstring.
+
+  **Design consequence:** a seed does not reproduce the same song across the
+  two text encoders. Making seeds portable would require sampling over the
+  restricted 16,385-wide vector on BOTH paths -- deliberately not done here,
+  because it would change the full-vocab path's output, and that path is the
+  shipped reference existing songs were generated with. Songs remain
+  reproducible by their stored frame codes (the sidecar) regardless of which
+  text encoder generated them.
+
+  Items 11-14 (GGUF containers, Q8_0 residency, INT8 ConvRot, docs) are not
+  yet done; `int8_convrot` (either flat file) is refused (header-only, no
+  multi-GB read) with a reason naming phase 13.
 - Frontend: txt2aud/extend UI shipped; repaint's UI branch is BLOCKED on a
   shared-worktree conflict (`frontend/src/components/generation/Img2ImgPanel.tsx`
   was dirty under another session's edits when this phase landed) -- not

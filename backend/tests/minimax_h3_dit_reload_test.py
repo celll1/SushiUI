@@ -2,7 +2,7 @@
 
 import os
 import sys
-from types import SimpleNamespace
+from types import MethodType, SimpleNamespace
 
 import pytest
 
@@ -226,7 +226,18 @@ def _same_model_reload(monkeypatch, health):
         minimax_h3_components={},
         _minimax_h3_te_selection_differs=lambda *_a: False,
         _reload_minimax_h3_dit_only=dit_only,
+        # See minimax_h3_hybrid_lifecycle_test.py's matching fixture comment:
+        # `_load_model_locked` also gates on the MiniMax Music 3 selection,
+        # and this bare SimpleNamespace has no real class to inherit it from.
+        is_minimax_music3_model=False,
+        minimax_music3_components={},
     )
+    # The REAL implementation, bound via `types.MethodType`, not a stub
+    # (audit F5) -- see minimax_h3_hybrid_lifecycle_test.py's matching
+    # comment for why a stub here would hide the `is_minimax_music3_model`
+    # guard from every test using this fixture.
+    manager._minimax_music3_te_selection_differs = MethodType(
+        pipeline_module.DiffusionPipelineManager._minimax_music3_te_selection_differs, manager)
 
     def stop(_manager):
         calls.append("full_reload")

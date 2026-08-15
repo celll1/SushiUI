@@ -9504,10 +9504,14 @@ async def load_model(
     every per-session component mutation -- above all the one-way in-place
     runtime INT8 conversion -- do nothing at all.
 
-    ``text_encoder_file``/``clip_projection_file`` (MiniMax-H3 only) choose the
-    text encoder built at load time and the trained projection paired with it;
-    see ``GET /models/minimax-h3/text-encoders``. They do not need ``force``:
-    naming an encoder other than the loaded one reloads by itself.
+    ``text_encoder_file`` chooses the text encoder built at load time, for
+    MiniMax-H3 (paired with ``clip_projection_file``, the trained projection
+    to go with it -- see ``GET /models/minimax-h3/text-encoders``) or for
+    MiniMax Music 3 (the language model + RVQ depth decoder source; no
+    projection concept, so ``clip_projection_file`` is refused for it). Sent
+    for any other architecture, either field is refused rather than silently
+    ignored. Neither field needs ``force``: naming an encoder other than the
+    loaded one reloads by itself.
 
     ``overlay_file`` (MiniMax-H3 only) merges a second DiT's per-block AdaLN
     projection into ``source`` over ``hybrid_block_range_start..end``; see
@@ -9570,6 +9574,14 @@ async def load_model(
         # traceback above, not a 400 telling the caller their request was bad.
         from core.models.minimax_h3.hybrid_spec import MiniMaxH3HybridRefusal
         if isinstance(e, MiniMaxH3HybridRefusal):
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        # Same reasoning, one architecture over (audit F3): a text_encoder_file
+        # that MiniMax Music 3's own content-based detection refuses is
+        # preflighted HEADER-ONLY before the live model is torn down (see
+        # `DiffusionPipelineManager._load_model_locked`), so it always arrives
+        # here as this specific refusal type, never a generic 500.
+        from core.models.minimax_music3.loader import MiniMaxMusic3TextEncoderRefusal
+        if isinstance(e, MiniMaxMusic3TextEncoderRefusal):
             raise HTTPException(status_code=400, detail=str(e)) from e
         raise HTTPException(status_code=500, detail=str(e))
 

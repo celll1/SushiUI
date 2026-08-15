@@ -39,6 +39,15 @@ rewriter (AI rewrite)"):
 - Never invents a BPM or musical key the user did not supply.
 - Preserves explicit exclusions the user stated (e.g. "no drums").
 
+`constraints` vs `instruction`: `constraints` are standing rules that hold
+for the piece regardless of pass ("no drums", "keep it instrumental").
+`instruction`, added for revise mode, is what to change THIS TIME ("make
+the drop harder", "add a key change before the last chorus") -- an edit to
+apply to an already-expanded Structured Caption, not a rule to hold. In
+revise mode `caption` itself is repurposed as the BASE TEXT (the current,
+already-expanded Structured Caption) rather than a short caption to
+expand; see `MusicCaptionAssistOptions.revise` and `_revise_mode_block`.
+
 Music 3 strips Markdown from the caption at generation time
 (`_clean_caption` in the vendored pipeline), so the headings above are
 structural markers for the validator, not formatting the model will see —
@@ -65,14 +74,18 @@ from core.extensions.minimax_h3_prompt_assistant import (
     _extract_json,
     _headers,
     _normalise_url,
+    _summarize_diff,
 )
 
 logger = logging.getLogger(__name__)
 
-# Bumped from v1 after the fidelity-rule audit below fixed false accepts and
-# false rejects in the key/BPM/exclusion checks: a cached v1 result could
-# have been produced by a rule that no longer exists.
-GUIDE_VERSION = "minimax-music3-caption-rewriter-2026-08-14-v2"
+# Bumped from v2 for revise mode: the system prompt gained a REVISE MODE
+# block, `known_text` (the BPM/key/exclusion allow-set) now also includes
+# `instruction`, and the cache-key material gained `instruction`/`revise` --
+# a v2 cache entry predates all three and must not be served for a
+# revise-mode request or reused as evidence the allow-set was ever correct
+# for one.
+GUIDE_VERSION = "minimax-music3-caption-rewriter-2026-08-16-v3"
 
 SECTION_NAMES = ["Global Metadata", "Vocal Details", "Arrangement"]
 
@@ -211,8 +224,27 @@ def _normalize_music_token(text: str) -> str:
 # recognised as compliant even though the negation word follows the noun.
 # The negation vocabulary covers more than "no/without/exclude": "absent",
 # "omit(s)", "lack(s)", "avoid(s)", "devoid", "free of", "minus", "not".
+#
+# The capture group and its terminator are DELIBERATELY restricted to
+# horizontal whitespace (`[ \t]`, not `\s`) with `\n` added to the
+# terminator lookahead. `known_text` below joins caption/constraints/
+# instruction with `\n` precisely so they DON'T run together into one
+# sentence -- but `\s` matches `\n` too, and the old terminator was only
+# `[,.;:!?]|$` with no MULTILINE, so `$` meant end of the WHOLE string, not
+# end of line. A phrase like "no drums" with nothing but blank fields after
+# it would previously run on past the field boundary and swallow whatever
+# came next, and since only the LAST word of the captured phrase becomes
+# the exclusion stem, that silently replaced the real exclusion ("drum")
+# with a nonsense one taken from the next field's last word (e.g. "half"
+# from constraints/instruction text "...in the second half"). Measured
+# before this fix: known_text "...no drums\n\nadd drums back in the second
+# half" produced phrase "drums\n\nadd drums back in the second half" ->
+# stem "half", not "drum" -- the real exclusion stopped being enforced
+# while a meaningless one was reported instead. A phrase can still span
+# multiple WORDS on one line ("no heavy distorted electric guitars"); it
+# just cannot cross a line break, which is exactly the field boundary.
 _EXCLUSION_PHRASE_RE = re.compile(
-    r"\b(?:no|without|exclud(?:e|es|ed|ing))\s+([a-zA-Z][a-zA-Z\s]*?)(?=[,.;:!?]|$)",
+    r"\b(?:no|without|exclud(?:e|es|ed|ing))[ \t]+([a-zA-Z][a-zA-Z \t]*?)(?=[,.;:!?\n]|$)",
     re.IGNORECASE,
 )
 _NEGATION_WORDS_RE = re.compile(
@@ -223,10 +255,77 @@ _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+|\n+")
 
 
 def _stem_noun(word: str) -> str:
+    # NOT a typo: "brass" -> "bras" is a side effect of the blunt trailing-
+    # "s" strip (len>3 and ends in "s"), same as "drums" -> "drum". It only
+    # "works" because BOTH sides of every comparison in this module go
+    # through this exact function -- the target caption's "brass" is
+    # stemmed to "bras" too, so the comparison is still stem-to-stem
+    # consistent, not a real linguistic stem. Do not "fix" this in
+    # isolation; it is a shared, deterministic transform, not English
+    # morphology.
     word = word.strip().lower()
     if len(word) > 3 and word.endswith("s"):
         return word[:-1]
     return word
+
+
+# Trailing filler that free-prose instructions routinely append after the
+# real excluded noun -- "no brass AT ALL", "no drums WHATSOEVER" -- and
+# which the LAST-WORD rule below would otherwise take AS the noun. Ordered
+# longest-first (checked as an ordered list, not a set) so "at any point"
+# is stripped as one unit rather than leaving a dangling "point" behind
+# after a shorter, wrong sub-match. Matched case-insensitively against the
+# phrase's own trailing tokens, tried repeatedly (a phrase could in theory
+# carry more than one filler in sequence) until nothing more strips or the
+# phrase is exhausted.
+_TRAILING_EXCLUSION_FILLER = (
+    ("at", "any", "point"),
+    ("at", "all"),
+    ("whatsoever",),
+    ("anywhere",),
+    ("please",),
+    ("ever",),
+    ("any",),
+    ("all",),
+)
+
+
+def _strip_trailing_exclusion_filler(words: List[str]) -> List[str]:
+    """Strip trailing filler tokens/phrases from an exclusion phrase's word
+    list, repeatedly, so the LAST-WORD rule in `_extract_exclusion_stems`
+    lands on the actual excluded noun ("brass") instead of an intensifier
+    ("all", "whatsoever") that happened to be the last word typed. Returns
+    a possibly-empty list; an empty result means the phrase was ALL
+    filler (degenerate, e.g. "no ... whatsoever" with nothing else
+    captured) and must be treated as no exclusion, not as inventing one
+    from what is left."""
+    words = list(words)
+    stripped = True
+    while stripped and words:
+        stripped = False
+        lowered = [word.lower() for word in words]
+        for filler in _TRAILING_EXCLUSION_FILLER:
+            count = len(filler)
+            if len(lowered) >= count and tuple(lowered[-count:]) == filler:
+                words = words[:-count]
+                stripped = True
+                break
+    return words
+
+
+def _extract_exclusion_stems(text: str) -> set:
+    """All stemmed excluded-noun stems from every "no X" style phrase in
+    `text` -- see `_EXCLUSION_PHRASE_RE`'s own comment for the phrase-
+    boundary rule this relies on, and `_strip_trailing_exclusion_filler`
+    for why the phrase's trailing words are filtered before the last one
+    is taken as the noun."""
+    stems = set()
+    for phrase in _EXCLUSION_PHRASE_RE.findall(text):
+        words = _strip_trailing_exclusion_filler(phrase.strip().split())
+        if words:
+            stems.add(_stem_noun(words[-1]))
+    stems.discard("")
+    return stems
 
 
 def _sentences(text: str) -> List[str]:
@@ -255,6 +354,9 @@ def _normalize_for_lyric_compare(text: str) -> str:
 class MusicCaptionAssistOptions:
     caption: str
     lyrics: str
+    # Standing rules that hold for the piece regardless of which pass this
+    # is ("no drums", "keep it instrumental") -- unlike `instruction` below,
+    # `constraints` is not itself an edit to apply.
     constraints: str
     provider: str
     base_url: str
@@ -264,6 +366,17 @@ class MusicCaptionAssistOptions:
     max_output_tokens: int
     context_length: int
     timeout_seconds: int
+    # What to change THIS TIME, distinct from `constraints` above -- a
+    # standing rule and a one-off directive are different things, and
+    # folding the latter into the former (or into `caption` itself) is
+    # exactly the failure this feature exists to avoid: see `revise` below
+    # and `_system_prompt`'s REVISE MODE block.
+    instruction: str = ""
+    # False (the default): `caption` is a short caption to expand, and this
+    # call behaves exactly as it always has. True: `caption` is instead the
+    # CURRENT, already-expanded Structured Caption, treated as the base
+    # text to preserve, and `instruction` is the edit to apply to it.
+    revise: bool = False
     force_refresh: bool = False
 
 
@@ -280,12 +393,42 @@ def validate_caption(
     lyrics: str = "",
     constraints: str = "",
     source_caption: str = "",
+    instruction: str = "",
+    revise: bool = False,
 ) -> List[str]:
     """Check the five contract properties. Returns warnings; empty = valid.
 
     Mirrors `minimax_h3_prompt_assistant.validate_prompt` in style
     (structural regex checks that drive the one self-repair retry) but
     against the music contract instead of the video one.
+
+    `instruction` (revise mode only, "" otherwise) MUST be folded into
+    `known_text` below alongside `source_caption`/`constraints`, not left
+    out: if a user's revision instruction says "take it to 128 bpm" or "in
+    D minor" or "no drums", and the model complies, the BPM/key/exclusion
+    checks below would otherwise see that value stated nowhere in the
+    caption or standing constraints and reject the caller's own request as
+    an invented fact -- burning the one self-repair round-trip on a
+    phantom violation and telling the user they invented a key they
+    explicitly asked for.
+
+    Exclusion-reversal rule (revise mode only, gated on `revise`, NOT
+    merely on `instruction` being non-empty -- a caller must not get this
+    behavior by accident): an exclusion stated in the BASE text
+    (`source_caption`/`constraints`) is NOT enforced if the instruction
+    mentions that stem AT ALL, anywhere, in any form -- not only as a fresh
+    "no X" phrase. "Add drums back in the second half" mentions "drums"
+    without itself excluding anything, and must still lift a base "no
+    drums". This deliberately does not try to infer whether the user meant
+    to add the element back, reinforce the exclusion, or just discuss it:
+    once the instruction is plainly talking about that stem, this
+    validator stops policing it and lets the model's own judgement (and
+    the user's own read of the result) stand. An exclusion the instruction
+    states FRESH ("no drums this time") is added back afterward, so an
+    instruction can still introduce or reinforce an exclusion even though
+    mentioning the stem also lifted whatever the base said about it.
+    Non-revise mode is unaffected: `revise=False` (the default) runs the
+    exact same base-only exclusion check this validator has always run.
     """
     warnings: List[str] = []
     text = normalize_caption(prompt)
@@ -337,7 +480,13 @@ def validate_caption(
     # not raw substrings -- see `_extract_bpms` for why a substring check on
     # digits is unsound (a source mentioning "1992" would legitimise an
     # invented "92 bpm").
-    known_text = f"{source_caption}\n{constraints}"
+    #
+    # `instruction` is folded in only when `revise` is true, matching every
+    # other place this validator treats `instruction` as meaningful only in
+    # revise mode (see the exclusion rule below, and the docstring): a
+    # caller that sends a stray `instruction` alongside `revise=False` must
+    # not have it silently expand the allow-set anyway.
+    known_text = f"{source_caption}\n{constraints}\n{instruction if revise else ''}"
     target_bpms = _extract_bpms(text)
     known_bpms = _extract_bpms(known_text)
     if target_bpms - known_bpms:
@@ -354,12 +503,24 @@ def validate_caption(
     #    "drum kit" or "drumming", and negation is checked per sentence
     #    (order-independent) so "drums are absent from the mix" is
     #    recognised as compliant even though "absent" follows "drums".
-    exclusion_stems = set()
-    for phrase in _EXCLUSION_PHRASE_RE.findall(known_text):
-        words = phrase.strip().split()
-        if words:
-            exclusion_stems.add(_stem_noun(words[-1]))
-    exclusion_stems.discard("")
+    #
+    #    Base exclusions come from source_caption/constraints only, NOT
+    #    known_text (which also has instruction folded in for BPM/key
+    #    above) -- exclusions need the separate, asymmetric revise-mode
+    #    handling below, they cannot just reuse known_text's uniform union.
+    exclusion_stems = _extract_exclusion_stems(f"{source_caption}\n{constraints}")
+    if revise and instruction.strip():
+        # See the docstring's "Exclusion-reversal rule". Mention-based, not
+        # phrase-based: any word in the instruction that stems to a base
+        # exclusion's stem lifts that exclusion, regardless of whether the
+        # instruction's own sentence is itself an exclusion phrase.
+        mentioned_stems = {
+            _stem_noun(word) for word in re.findall(r"[A-Za-z]+", instruction)
+        }
+        exclusion_stems -= mentioned_stems
+        # An exclusion the instruction states FRESH stays enforced even
+        # though mentioning its stem also lifted the base's version of it.
+        exclusion_stems |= _extract_exclusion_stems(instruction)
     if exclusion_stems:
         sentences = _sentences(text)
         for stem in exclusion_stems:
@@ -377,7 +538,34 @@ def validate_caption(
     return warnings
 
 
-def _system_prompt(lyrics_supplied: bool) -> str:
+def _revise_mode_block(instruction: str) -> str:
+    """The REVISE MODE addendum, appended only when `revise` is True -- see
+    `minimax_h3_prompt_assistant._revise_mode_block` for the full wording
+    rationale (naive "Instruction: ..." phrasing gets summarized into new
+    prose instead of applied as an edit). Reworded for the caption's own
+    section vocabulary rather than copied verbatim: the base text here has
+    three named sections the instruction must be able to target ("harder
+    drop" means the Arrangement section, not the whole caption), and the
+    structural contract above (three headings, word count, no invented
+    BPM/key, preserved exclusions) must still hold on the revised output,
+    so the block says so explicitly rather than leaving it implied."""
+    return (
+        "\n\nREVISE MODE: the caption supplied to you is not a short caption to expand -- "
+        "it is the CURRENT, already-expanded Structured Caption, and it is the BASE TEXT to "
+        "preserve. A separate revision instruction is supplied as part of the user message; "
+        "APPLY it as a set of edits to the base text. Never restate, quote, or narrate the "
+        "instruction back as new caption prose -- \"make the drop harder\" is a directive "
+        "about the existing Arrangement section, not a sentence to add to it. Anything in "
+        "the base text the instruction does not address must reach your output unchanged, "
+        "in its original section. The revised output must still obey every rule above: "
+        "exactly the three headings in order, the word count, no invented BPM/key beyond "
+        f"what the caption, constraints, or this instruction state, and every preserved "
+        "exclusion.\n\n"
+        f"Revision instruction: {instruction.strip()}"
+    )
+
+
+def _system_prompt(lyrics_supplied: bool, revise: bool = False, instruction: str = "") -> str:
     lyrics_note = (
         "Lyrics are supplied only as context for mood, structure and vocal "
         "style. Never quote or reproduce any lyric line, verbatim or closely "
@@ -386,6 +574,7 @@ def _system_prompt(lyrics_supplied: bool) -> str:
         else "No lyrics were supplied; do not invent any."
     )
     headings = ", ".join(SECTION_NAMES)
+    revise_block = _revise_mode_block(instruction) if revise else ""
     return f"""You expand a short music caption into a Structured Caption for the MiniMax Music 3 model.
 Return exactly one JSON object: {{"prompt":"...","warnings":["..."]}}.
 The JSON prompt value must be the complete Structured Caption text, not a summary or a plain sentence.
@@ -398,14 +587,14 @@ Structure rules:
 
 Fidelity rules:
 - {lyrics_note}
-- Never invent a BPM number or a musical key name (e.g. "128 bpm", "A minor"). State one only if the user's caption or constraints already state it; otherwise describe tempo and tonal character in words.
+- Never invent a BPM number or a musical key name (e.g. "128 bpm", "A minor"). State one only if the user's caption, constraints, or revision instruction already state it; otherwise describe tempo and tonal character in words.
 - Preserve every explicit exclusion the user stated (for example "no drums" or "without vocals"): the Structured Caption must not describe the excluded element as present.
 - Preserve every other user-stated genre, instrument, mood, and vocal characteristic; do not silently drop or contradict them.
 
 Section content:
 - Global Metadata: genre, mood, tempo character, and production style.
 - Vocal Details: voice type, delivery, and vocal presence — write "instrumental, no vocals" if the user asked for no vocals.
-- Arrangement: structure, instrumentation, and dynamics across the track."""
+- Arrangement: structure, instrumentation, and dynamics across the track.{revise_block}"""
 
 
 class MiniMaxMusic3CaptionRewriter:
@@ -433,6 +622,11 @@ class MiniMaxMusic3CaptionRewriter:
             "top_p": options.top_p,
             "max_output_tokens": options.max_output_tokens,
             "context_length": options.context_length,
+            # Both required: a revise=True request must never be served the
+            # expand-mode (or a different instruction's) cached answer for
+            # the same caption/lyrics/constraints.
+            "instruction": options.instruction.strip().replace("\r\n", "\n"),
+            "revise": options.revise,
         }
         encoded = json.dumps(material, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
@@ -440,6 +634,8 @@ class MiniMaxMusic3CaptionRewriter:
     def transform(self, options: MusicCaptionAssistOptions, api_key: str = "") -> Dict[str, Any]:
         if not options.caption.strip():
             raise PromptAssistError("Caption cannot be empty")
+        if options.revise and not options.instruction.strip():
+            raise PromptAssistError("Revise mode requires a revision instruction")
         if not options.model:
             raise PromptAssistError("Select a local LLM model first")
         base_url = _normalise_url(options.base_url)
@@ -456,7 +652,9 @@ class MiniMaxMusic3CaptionRewriter:
                 cached = self.cache.get(cache_key)
                 if cached is not None:
                     return {**cached, "cached": True, "cache_key": cache_key}
-            system_prompt = _system_prompt(bool(options.lyrics.strip()))
+            system_prompt = _system_prompt(
+                bool(options.lyrics.strip()), options.revise, options.instruction
+            )
             user_message = self._user_message(options)
             if options.provider == "lm_studio":
                 result, lifecycle_warnings = self._lm_studio(options, system_prompt, user_message, api_key)
@@ -471,7 +669,8 @@ class MiniMaxMusic3CaptionRewriter:
                 if str(item).strip().lower() not in {"", "none", "n/a"}
             ]
             structural_warnings = validate_caption(
-                prompt, options.lyrics, options.constraints, options.caption
+                prompt, options.lyrics, options.constraints, options.caption,
+                options.instruction, options.revise,
             )
             warnings.extend(structural_warnings)
             warnings.extend(lifecycle_warnings)
@@ -482,6 +681,11 @@ class MiniMaxMusic3CaptionRewriter:
                 "provider": options.provider,
                 "model": options.model,
                 "cached": False,
+                "revise": options.revise,
+                "diff_summary": (
+                    _summarize_diff(normalize_caption(options.caption), prompt)
+                    if options.revise else None
+                ),
             }
             if response["valid"]:
                 self.cache.put(cache_key, response)
@@ -489,11 +693,19 @@ class MiniMaxMusic3CaptionRewriter:
 
     @staticmethod
     def _user_message(options: MusicCaptionAssistOptions) -> str:
-        parts = [f"Caption: {options.caption.strip()}"]
+        caption_label = (
+            "Current Structured Caption (base text to preserve)" if options.revise else "Caption"
+        )
+        parts = [f"{caption_label}: {options.caption.strip()}"]
         if options.lyrics.strip():
             parts.append(f"Lyrics (context only, never quote):\n{options.lyrics.strip()}")
         if options.constraints.strip():
             parts.append(f"Additional constraints: {options.constraints.strip()}")
+        if options.revise and options.instruction.strip():
+            parts.append(
+                "Revision instruction (apply this as an edit; do not describe it): "
+                f"{options.instruction.strip()}"
+            )
         return "\n\n".join(parts)
 
     def _repair_message(self, warnings: List[str], user_message: str, previous_answer: str) -> str:
@@ -510,7 +722,10 @@ class MiniMaxMusic3CaptionRewriter:
     ) -> List[str]:
         try:
             first_prompt = normalize_caption(_extract_json(output_text)["prompt"])
-            return validate_caption(first_prompt, options.lyrics, options.constraints, options.caption)
+            return validate_caption(
+                first_prompt, options.lyrics, options.constraints, options.caption,
+                options.instruction, options.revise,
+            )
         except PromptAssistError as exc:
             return [str(exc)]
 

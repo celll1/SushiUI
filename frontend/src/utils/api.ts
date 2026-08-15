@@ -5685,6 +5685,16 @@ export interface PromptAssistTransformRequest extends Omit<PromptAssistSettings,
   mode: H3PromptMode;
   duration_seconds: number;
   references: PromptAssistReference[];
+  // What to change THIS TIME (e.g. "make the drop harder"), used only when
+  // `revise` is true. Sent as its own field, never appended into `prompt`
+  // -- folding an instruction into the prompt text lets the LLM read it as
+  // more content to describe instead of a directive to apply.
+  instruction?: string;
+  // False (default): `prompt` is freeform intent to expand, exactly as
+  // this has always behaved. True: `prompt` is the CURRENT, already-
+  // structured prompt -- the base text to preserve -- and `instruction`
+  // (required when true) is the edit to apply to it.
+  revise?: boolean;
   force_refresh?: boolean;
 }
 
@@ -5696,6 +5706,13 @@ export interface PromptAssistResponse {
   cache_key?: string;
   provider?: string;
   model?: string;
+  revise?: boolean;
+  // A unified line diff between the revise-mode base text and `prompt`,
+  // present only when the request had `revise` true. Lets a caller show
+  // the user whether a revise made a targeted edit or rewrote the whole
+  // piece -- "only the named parts changed" is not machine-checkable, a
+  // diff against the base is.
+  diff_summary?: string | null;
 }
 
 export interface PromptAssistModel {
@@ -5776,9 +5793,23 @@ export interface MusicPromptAssistSettings {
 }
 
 export interface MusicPromptAssistTransformRequest extends MusicPromptAssistSettings {
+  // A short caption to expand (default), or -- when `revise` is true --
+  // the CURRENT, already-expanded Structured Caption, treated as the base
+  // text to preserve.
   caption: string;
   lyrics?: string;
+  // Standing rules that hold for the piece regardless of pass. Distinct
+  // from `instruction`, which is what to change this time.
   constraints?: string;
+  // What to change THIS TIME, used only when `revise` is true. Sent as its
+  // own field, never appended into `caption` -- see the same rationale on
+  // `PromptAssistTransformRequest.instruction`.
+  instruction?: string;
+  // False (default): `caption` is a short caption to expand. True:
+  // `caption` is the CURRENT Structured Caption -- the base text to
+  // preserve -- and `instruction` (required when true) is the edit to
+  // apply to it.
+  revise?: boolean;
   force_refresh?: boolean;
 }
 
@@ -5835,9 +5866,27 @@ export interface MusicLyricsAssistSettings {
 
 export interface MusicLyricsAssistTransformRequest extends MusicLyricsAssistSettings {
   mode: "structure" | "complete";
+  // Non-revise "complete" mode: optional creative direction. When `revise`
+  // is true (either mode): optional additional direction alongside
+  // `instruction`.
   theme?: string;
+  // Non-revise "complete" mode: partial lyrics to preserve and complete
+  // around. Ignored in non-revise "structure" mode. When `revise` is true
+  // (either mode): the CURRENT lyrics or structure/tag map, REQUIRED --
+  // the base text to preserve, not a fragment to complete around.
   lyrics?: string;
+  // Standing rules that hold for the piece regardless of pass. Distinct
+  // from `instruction`, which is what to change this time.
   constraints?: string;
+  // What to change THIS TIME, required and used only when `revise` is
+  // true. Sent as its own field, never appended into `lyrics` -- see the
+  // same rationale on `PromptAssistTransformRequest.instruction`.
+  instruction?: string;
+  // False (default): behaves exactly as this has always behaved for
+  // `mode`. True: `lyrics` is the base text to preserve and `instruction`
+  // is the edit to apply -- for "structure", an edit to the tag sequence
+  // itself; for "complete", an edit to the written words.
+  revise?: boolean;
   force_refresh?: boolean;
 }
 
@@ -5850,6 +5899,10 @@ export interface MusicLyricsAssistResponse {
   provider?: string;
   model?: string;
   mode?: string;
+  revise?: boolean;
+  // A unified line diff between the revise-mode base `lyrics` and the
+  // returned `lyrics`, present only when the request had `revise` true.
+  diff_summary?: string | null;
 }
 
 export interface MusicLyricsFormatResponse {

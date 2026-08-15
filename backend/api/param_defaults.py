@@ -36,6 +36,13 @@ PROMPT_ASSIST_DEFAULTS: Dict[str, Any] = {
     "max_output_tokens": 3072,
     "context_length": 8192,
     "timeout_seconds": 300,
+    # `instruction` is what to change THIS TIME ("make the drop harder"),
+    # sent as its own field rather than appended into `prompt` -- see
+    # `core/extensions/minimax_h3_prompt_assistant.py`'s `revise` field for
+    # why that separation matters. `revise` selects between the existing
+    # expand behavior (default) and revise mode.
+    "instruction": "",
+    "revise": False,
     "force_refresh": False,
     "cache_max_entries": 256,
     "auto_on_generate": False,
@@ -68,6 +75,14 @@ MUSIC_PROMPT_ASSIST_DEFAULTS: Dict[str, Any] = {
     "api_key": "",
     "lyrics": "",
     "constraints": "",
+    # `instruction`/`revise`: same split as PROMPT_ASSIST_DEFAULTS above --
+    # `constraints` is a standing rule for the piece; `instruction` is a
+    # one-off edit, applied only when `revise` is True (in which case
+    # `caption` itself is treated as the base text to preserve rather than
+    # a short caption to expand). See
+    # core/extensions/minimax_music3_caption_rewriter.py.
+    "instruction": "",
+    "revise": False,
     "temperature": 0.2,
     "top_p": 0.9,
     "max_output_tokens": 3072,
@@ -104,6 +119,12 @@ MUSIC_LYRICS_ASSIST_DEFAULTS: Dict[str, Any] = {
     "theme": "",
     "lyrics": "",
     "constraints": "",
+    # `instruction`/`revise`: same split as the two DEFAULTS above. Applies
+    # only to the two LLM-driven modes (`structure`/`complete`); `format`
+    # is deterministic and has no revise concept at all. See
+    # core/extensions/minimax_music3_lyrics_assistant.py.
+    "instruction": "",
+    "revise": False,
     "provider": "lm_studio",
     "base_url": "",
     "model": "",

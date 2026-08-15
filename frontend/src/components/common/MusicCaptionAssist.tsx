@@ -70,6 +70,14 @@ export default function MusicCaptionAssist({
   const [modelBusy, setModelBusy] = useState(false);
   const [error, setError] = useState("");
   const [lastAppliedSource, setLastAppliedSource] = useState<string | null>(null);
+  // Revise mode: `instruction` is what to change THIS TIME ("make the drop
+  // harder"), distinct from `constraints` above (a standing rule, e.g. "no
+  // drums"). Sent as its own field so the LLM never reads it as more
+  // caption content to describe. `lastWasRevise` remembers which action
+  // produced the current preview, so Retry repeats the same kind of call.
+  const [instruction, setInstruction] = useState("");
+  const [lastWasRevise, setLastWasRevise] = useState(false);
+  const [diffSummary, setDiffSummary] = useState<string | null>(null);
 
   useEffect(() => {
     resolveMusicPromptAssistSettings().then(setSettings).catch((reason) => setError(errorMessage(reason)));
@@ -122,9 +130,15 @@ export default function MusicCaptionAssist({
     setModels([]);
   };
 
-  const rewrite = async (forceRefresh = false) => {
+  const rewrite = async (options: { forceRefresh?: boolean; revise?: boolean } = {}) => {
+    const forceRefresh = options.forceRefresh ?? false;
+    const revise = options.revise ?? false;
     if (!settings?.model) {
       setError("Select a local LLM model first.");
+      return;
+    }
+    if (revise && !instruction.trim()) {
+      setError("Enter a revision instruction first.");
       return;
     }
     setBusy(true);
@@ -136,12 +150,16 @@ export default function MusicCaptionAssist({
         caption,
         lyrics,
         constraints,
+        instruction: revise ? instruction : "",
+        revise,
         force_refresh: forceRefresh,
       });
       setResult(response.prompt);
       setWarnings(response.warnings);
       setValid(response.valid);
       setCached(!!response.cached);
+      setDiffSummary(typeof response.diff_summary === "string" ? response.diff_summary : null);
+      setLastWasRevise(revise);
     } catch (reason) {
       setError(errorMessage(reason));
     } finally {
@@ -217,28 +235,47 @@ export default function MusicCaptionAssist({
             value={constraints}
             onChange={(e) => setConstraints(e.target.value)}
           />
+          <Textarea
+            label="Revision instruction (optional — leave empty for a normal AI rewrite)"
+            placeholder='e.g. "make the drop harder", "take it to 128 bpm"'
+            rows={2}
+            value={instruction}
+            onChange={(e) => setInstruction(e.target.value)}
+          />
           <p className="text-xs text-gray-500">
             Expands Caption into a Structured Caption (Global Metadata / Vocal Details /
             Arrangement, 250-450 words). Lyrics are read for context only and are never
-            rewritten or quoted. Cache is checked before model load; an LLM loaded for a
-            rewrite is unloaded afterward. An LM Studio server with authentication enabled
-            is not supported from this panel; the provider must accept unauthenticated
-            local requests.
+            rewritten or quoted. Revise applies the revision instruction to the Caption above
+            as an edit, treating it as an already-expanded Structured Caption and preserving
+            everything the instruction does not mention; AI rewrite ignores the instruction
+            field and expands the Caption above as a new short caption, exactly as before.
+            Cache is checked before model load; an LLM loaded for a rewrite is unloaded
+            afterward. An LM Studio server with authentication enabled is not supported from
+            this panel; the provider must accept unauthenticated local requests.
           </p>
 
           <div className="flex flex-wrap gap-1.5">
             <button
               type="button"
-              onClick={() => rewrite(false)}
+              onClick={() => rewrite({ revise: false })}
               className="rounded bg-violet-600 px-2.5 py-1.5 text-xs font-medium hover:bg-violet-500 disabled:opacity-50"
               disabled={busy || !caption.trim() || !settings?.model}
             >
-              {busy ? "Rewriting…" : "AI rewrite"}
+              {busy && !lastWasRevise ? "Rewriting…" : "AI rewrite"}
+            </button>
+            <button
+              type="button"
+              onClick={() => rewrite({ revise: true })}
+              className="rounded bg-amber-700 px-2.5 py-1.5 text-xs font-medium hover:bg-amber-600 disabled:opacity-50"
+              disabled={busy || !caption.trim() || !instruction.trim() || !settings?.model}
+              title="Apply the revision instruction to the Caption above, preserving everything it does not mention"
+            >
+              {busy && lastWasRevise ? "Revising…" : "Revise"}
             </button>
             {result && (
               <button
                 type="button"
-                onClick={() => rewrite(true)}
+                onClick={() => rewrite({ forceRefresh: true, revise: lastWasRevise })}
                 className="flex items-center gap-1 rounded bg-gray-700 px-2.5 py-1.5 text-xs hover:bg-gray-600 disabled:opacity-50"
                 disabled={busy || !settings?.model}
                 title="Ignore the cached result and run the LLM again"
@@ -263,6 +300,20 @@ export default function MusicCaptionAssist({
                 <ul className="space-y-0.5 rounded bg-amber-950/30 px-2 py-1.5 text-xs text-amber-200">
                   {warnings.map((warning, index) => <li key={`${warning}-${index}`}>• {warning}</li>)}
                 </ul>
+              )}
+              {diffSummary !== null && (
+                <div className="space-y-1">
+                  <p className="text-xs text-gray-400">What changed from the Caption above</p>
+                  {diffSummary.trim() ? (
+                    <pre className="max-h-40 overflow-auto rounded bg-gray-950/60 px-2 py-1.5 text-[11px] leading-relaxed text-gray-300">
+                      {diffSummary}
+                    </pre>
+                  ) : (
+                    <p className="rounded bg-gray-950/60 px-2 py-1.5 text-[11px] text-gray-400">
+                      No line changes.
+                    </p>
+                  )}
+                </div>
               )}
               <div className="flex flex-wrap items-center gap-1.5">
                 <button
@@ -291,6 +342,7 @@ export default function MusicCaptionAssist({
                     setResult("");
                     setWarnings([]);
                     setCached(false);
+                    setDiffSummary(null);
                   }}
                   className="ml-auto flex items-center gap-1 rounded px-2 py-1.5 text-xs text-gray-400 hover:bg-gray-800"
                 >

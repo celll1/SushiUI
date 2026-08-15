@@ -31,6 +31,15 @@ fix that, in three modes the user picks explicitly (design doc,
 `structure` and `complete` too, so whatever `transform()` returns is
 contract-clean by construction, before validation even runs.
 
+`structure` and `complete` each additionally support a `revise=True`
+sub-mode, orthogonal to the mode itself: `lyrics` becomes the CURRENT
+tag map or CURRENT lyrics (the base text to preserve, not a fragment to
+complete around), and `instruction` is what to change this time — distinct
+from `constraints`, which stays a standing rule that holds regardless of
+pass. `format` has no revise concept: it is deterministic and has nothing
+for an instruction to direct. See `MusicLyricsAssistOptions.revise` and
+`_revise_mode_block`.
+
 This is a SIBLING of `minimax_music3_caption_rewriter.py` (the caption "AI
 rewrite" assistant) and, like it, a sibling of `minimax_h3_prompt_assistant.py`
 rather than an extension of either: it shares the provider/cache/transport
@@ -61,13 +70,17 @@ from core.extensions.minimax_h3_prompt_assistant import (
     _extract_json,
     _headers,
     _normalise_url,
+    _summarize_diff,
 )
 
 logger = logging.getLogger(__name__)
 
 # Own version line, own cache file (below) — see the module docstring's last
 # paragraph for why this must never share either with the caption rewriter.
-GUIDE_VERSION = "minimax-music3-lyrics-assistant-2026-08-15-v1"
+# Bumped from v1 for revise mode: new system-prompt block, new cache-key
+# material (instruction/revise), and a validator dispatch change for
+# mode="complete" revisions -- see `MusicLyricsAssistOptions.revise`.
+GUIDE_VERSION = "minimax-music3-lyrics-assistant-2026-08-16-v2"
 
 MODES = ("structure", "complete")
 
@@ -299,7 +312,16 @@ def validate_complete_lyrics(supplied_lyrics: str, output_text: str) -> List[str
 class MusicLyricsAssistOptions:
     mode: str  # "structure" | "complete"
     theme: str
+    # Dual purpose, matching the caption rewriter's `caption` field: in the
+    # non-revise "complete" mode this is partial lyrics to preserve and
+    # complete around; in EITHER LLM-driven mode with `revise` True, it is
+    # instead the CURRENT lyrics or tag map -- the base text to preserve.
+    # `format` mode (a separate, deterministic endpoint -- see this
+    # module's docstring) has no `revise` concept at all.
     lyrics: str
+    # Standing rules that hold regardless of pass ("no explicit language").
+    # Distinct from `instruction` below the same way the caption rewriter's
+    # `constraints`/`instruction` split is distinct -- see that module.
     constraints: str
     provider: str
     base_url: str
@@ -309,10 +331,57 @@ class MusicLyricsAssistOptions:
     max_output_tokens: int
     context_length: int
     timeout_seconds: int
+    # What to change THIS TIME ("drop the bridge", "make verse two darker"),
+    # required and used only when `revise` is True.
+    instruction: str = ""
+    # False (the default): behaves exactly as it always has for `mode`.
+    # True: `lyrics` is the base text to preserve (see above) and
+    # `instruction` is the edit to apply to it -- for "structure", this
+    # means editing the tag sequence itself; for "complete", the written
+    # words. See `_system_prompt`'s REVISE MODE block.
+    revise: bool = False
     force_refresh: bool = False
 
 
-def _system_prompt(mode: str, theme_supplied: bool, lyrics_supplied: bool) -> str:
+def _revise_mode_block(mode: str, instruction: str) -> str:
+    """The REVISE MODE addendum, appended only when `revise` is True -- same
+    wording rationale as `minimax_h3_prompt_assistant._revise_mode_block`
+    and `minimax_music3_caption_rewriter._revise_mode_block` (naive
+    "Instruction: ..." phrasing gets summarized into new prose instead of
+    applied as an edit), reworded per mode: "structure" mode has no prose
+    at all, so the edit target named here is the tag SEQUENCE itself
+    (which tags, their order, their repetition) rather than words; a
+    revision instruction phrased as prose ("add a key change before the
+    last chorus") must still land as a tag-sequence edit, not a sentence
+    written into the output, which is why that distinction is spelled out
+    explicitly rather than left for the model to infer from the base
+    system prompt's existing "no prose" rule alone."""
+    if mode == "structure":
+        base_kind = "tag/structure map"
+        edit_target = "the tag sequence itself: which tags you choose, their order, and their repetition"
+    else:
+        base_kind = "lyrics"
+        edit_target = "the words and section layout"
+    return (
+        f"\n\nREVISE MODE: the {base_kind} supplied to you below is not a starting point to "
+        f"write from scratch -- it is the CURRENT {base_kind}, and it is the BASE TEXT to "
+        f"preserve. A separate revision instruction is supplied as part of the user message; "
+        f"APPLY it as a set of edits to {edit_target}. Never restate, describe, or narrate the "
+        "instruction as if it were new content -- a request like \"add a key change before the "
+        "last chorus\" is a directive about the existing structure, not a line to write out. "
+        "Anything the instruction does not address must reach your output unchanged, in its "
+        "original position.\n\n"
+        f"Revision instruction: {instruction.strip()}"
+    )
+
+
+def _system_prompt(
+    mode: str,
+    theme_supplied: bool,
+    lyrics_supplied: bool,
+    revise: bool = False,
+    instruction: str = "",
+) -> str:
     tag_list = ", ".join(f"[{tag}]" for tag in sorted(DOCUMENTED_TAGS))
     # The JSON key is "prompt", not "lyrics": `_extract_json` is shared,
     # unmodified transport code from the H3 module (see this module's own
@@ -328,6 +397,8 @@ Structure-tag rules (apply to every mode):
 - Prefer the documented tags where they fit: {tag_list}. A freeform, descriptive tag is allowed when nothing documented fits, but never put ordinary words on the same line as a tag.
 - Every tag is lowercase."""
 
+    revise_block = _revise_mode_block(mode, instruction) if revise else ""
+
     if mode == "structure":
         return f"""You write the section/structure map for a MiniMax Music 3 instrumental track. There are no words — lyrics is the only control surface for the arrangement, so this output IS the arrangement plan.
 {common_rules}
@@ -335,21 +406,41 @@ Structure-tag rules (apply to every mode):
 Output rules for this mode:
 - Output ONLY tags, one per line. No prose, no descriptions, no words of any kind outside the brackets.
 - The section description the user gives you (mood, arrangement, instrumentation) should be reflected in WHICH tags you choose and their order and repetition, not written out as text.
-"""
+{revise_block}"""
 
-    lyrics_note = (
-        "The user supplied partial lyrics below. Every line of those partial lyrics that is not "
-        "itself a bare tag line MUST appear again in your output, VERBATIM, word for word, in the "
-        "same order relative to the rest of your output — do not paraphrase, trim, or reorder it. "
-        "Write new sections around it to complete the song."
-        if lyrics_supplied
-        else "No partial lyrics were supplied; write the full lyrics from the theme alone."
-    )
-    theme_note = (
-        "Follow the user's theme for subject matter, mood and tone."
-        if theme_supplied
-        else "No theme was supplied; take the tone from the partial lyrics alone."
-    )
+    # In revise mode `lyrics` holds the CURRENT full lyrics (the base text
+    # to preserve), not partial lyrics to complete around -- the standard
+    # "MUST appear again VERBATIM" framing below is written for the
+    # opposite situation (a caller supplying a fragment to keep while new
+    # material is written around it) and would contradict a revision
+    # instruction that legitimately changes some lines, so it is replaced
+    # rather than reused for revise mode. See `_revise_mode_block` for how
+    # the base text is actually described in that case.
+    if revise:
+        lyrics_note = (
+            "The lyrics below are the CURRENT full lyrics, not a fragment to complete around -- "
+            "see the REVISE MODE instructions below for exactly how to treat them."
+        )
+        theme_note = (
+            "Treat the theme as additional creative direction alongside the revision instruction "
+            "below, if a theme was supplied; the instruction is the primary directive."
+            if theme_supplied
+            else "No additional theme was supplied; follow the revision instruction below."
+        )
+    else:
+        lyrics_note = (
+            "The user supplied partial lyrics below. Every line of those partial lyrics that is not "
+            "itself a bare tag line MUST appear again in your output, VERBATIM, word for word, in the "
+            "same order relative to the rest of your output — do not paraphrase, trim, or reorder it. "
+            "Write new sections around it to complete the song."
+            if lyrics_supplied
+            else "No partial lyrics were supplied; write the full lyrics from the theme alone."
+        )
+        theme_note = (
+            "Follow the user's theme for subject matter, mood and tone."
+            if theme_supplied
+            else "No theme was supplied; take the tone from the partial lyrics alone."
+        )
     return f"""You write or complete lyrics for a MiniMax Music 3 track.
 {common_rules}
 
@@ -357,7 +448,7 @@ Output rules for this mode:
 - {theme_note}
 - {lyrics_note}
 - Between tag lines, write the actual lyric words as plain text lines — never on the same line as a tag.
-"""
+{revise_block}"""
 
 
 class MiniMaxMusic3LyricsAssistant:
@@ -386,22 +477,51 @@ class MiniMaxMusic3LyricsAssistant:
             "top_p": options.top_p,
             "max_output_tokens": options.max_output_tokens,
             "context_length": options.context_length,
+            # Both required: a revise=True request must never be served the
+            # non-revise (or a different instruction's) cached answer for
+            # the same mode/theme/lyrics/constraints.
+            "instruction": options.instruction.strip().replace("\r\n", "\n"),
+            "revise": options.revise,
         }
         encoded = json.dumps(material, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
     def _validate(self, options: MusicLyricsAssistOptions, text: str) -> List[str]:
         if options.mode == "structure":
+            # No trap here: `validate_structure_lyrics` never checks the
+            # output against `options.lyrics`/theme content -- it is a pure
+            # tags-only-per-line contract check, identical whether this is
+            # an initial structure map or a revision of one.
             return validate_structure_lyrics(text)
+        if options.revise:
+            # NOT `validate_complete_lyrics(options.lyrics, text)` here: in
+            # revise mode `options.lyrics` is the FULL base text, and that
+            # validator's job is "every line supplied must survive
+            # verbatim" -- run against the whole base it would reject the
+            # very edit the instruction asked for, exactly the same trap
+            # class as validate_caption's BPM/key allow-set (see that
+            # module). Revise output must still satisfy the layout contract
+            # (tags alone on their own line, nothing sharing a line with a
+            # tag) and get the same unknown-tag warnings, so those two
+            # pieces are reused directly rather than skipped or reimplemented.
+            return _layout_warnings(text) + unknown_tag_warnings(text)
         return validate_complete_lyrics(options.lyrics, text)
 
     def transform(self, options: MusicLyricsAssistOptions, api_key: str = "") -> Dict[str, Any]:
         if options.mode not in MODES:
             raise PromptAssistError(f"Unsupported mode: {options.mode}")
-        if options.mode == "structure" and not options.theme.strip():
-            raise PromptAssistError("Describe the arrangement/section structure first")
-        if options.mode == "complete" and not options.theme.strip() and not options.lyrics.strip():
-            raise PromptAssistError("Supply a theme or some partial lyrics first")
+        if options.revise:
+            if not options.instruction.strip():
+                raise PromptAssistError("Revise mode requires a revision instruction")
+            if not options.lyrics.strip():
+                raise PromptAssistError(
+                    "Revise mode requires the current lyrics/structure map as the base to preserve"
+                )
+        else:
+            if options.mode == "structure" and not options.theme.strip():
+                raise PromptAssistError("Describe the arrangement/section structure first")
+            if options.mode == "complete" and not options.theme.strip() and not options.lyrics.strip():
+                raise PromptAssistError("Supply a theme or some partial lyrics first")
         if not options.model:
             raise PromptAssistError("Select a local LLM model first")
         base_url = _normalise_url(options.base_url)
@@ -419,7 +539,8 @@ class MiniMaxMusic3LyricsAssistant:
                 if cached is not None:
                     return {**cached, "cached": True, "cache_key": cache_key}
             system_prompt = _system_prompt(
-                options.mode, bool(options.theme.strip()), bool(options.lyrics.strip())
+                options.mode, bool(options.theme.strip()), bool(options.lyrics.strip()),
+                options.revise, options.instruction,
             )
             user_message = self._user_message(options)
             if options.provider == "lm_studio":
@@ -460,6 +581,11 @@ class MiniMaxMusic3LyricsAssistant:
                 "model": options.model,
                 "mode": options.mode,
                 "cached": False,
+                "revise": options.revise,
+                "diff_summary": (
+                    _summarize_diff(normalize_lyrics_text(options.lyrics), lyrics_out)
+                    if options.revise else None
+                ),
             }
             if response["valid"]:
                 self.cache.put(cache_key, response)
@@ -468,11 +594,26 @@ class MiniMaxMusic3LyricsAssistant:
     @staticmethod
     def _user_message(options: MusicLyricsAssistOptions) -> str:
         parts = [f"Mode: {options.mode}"]
-        if options.theme.strip():
-            label = "Section/arrangement description" if options.mode == "structure" else "Theme"
-            parts.append(f"{label}: {options.theme.strip()}")
-        if options.lyrics.strip():
-            parts.append(f"Partial lyrics (preserve verbatim, complete around them):\n{options.lyrics.strip()}")
+        if options.revise:
+            base_label = (
+                "Current structure/tag map (base text to preserve)"
+                if options.mode == "structure"
+                else "Current lyrics (base text to preserve)"
+            )
+            parts.append(f"{base_label}:\n{options.lyrics.strip()}")
+            if options.theme.strip():
+                label = "Section/arrangement description" if options.mode == "structure" else "Theme"
+                parts.append(f"Additional direction ({label}): {options.theme.strip()}")
+            parts.append(
+                "Revision instruction (apply this as an edit; do not describe it): "
+                f"{options.instruction.strip()}"
+            )
+        else:
+            if options.theme.strip():
+                label = "Section/arrangement description" if options.mode == "structure" else "Theme"
+                parts.append(f"{label}: {options.theme.strip()}")
+            if options.lyrics.strip():
+                parts.append(f"Partial lyrics (preserve verbatim, complete around them):\n{options.lyrics.strip()}")
         if options.constraints.strip():
             parts.append(f"Additional constraints: {options.constraints.strip()}")
         return "\n\n".join(parts)

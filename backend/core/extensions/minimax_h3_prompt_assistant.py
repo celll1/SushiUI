@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import difflib
 import hashlib
 import ipaddress
 import json
@@ -22,7 +23,10 @@ from config.settings import settings
 
 
 logger = logging.getLogger(__name__)
-GUIDE_VERSION = "minimax-h3-official-2026-08-09-v3"
+# Bumped from v3 for the revise-mode system prompt and cache-key material
+# below (instruction/revise) -- a v3 cache entry was produced before either
+# existed and must not be served for a revise-mode request.
+GUIDE_VERSION = "minimax-h3-official-2026-08-16-v4"
 BASE_MODES = {"t2va", "i2va", "fl2va", "l2va"}
 ALL_MODES = BASE_MODES | {"ref2va"}
 SECTION_NAMES = {
@@ -60,6 +64,21 @@ class PromptAssistOptions:
     max_output_tokens: int
     context_length: int
     timeout_seconds: int
+    # `instruction` is deliberately a SEPARATE field from `prompt`, not text
+    # appended into it: an instruction folded into the prompt text reads to
+    # the LLM as more content to describe ("make the drop harder" becomes a
+    # phrase to narrate), not a directive to apply. See `revise` below and
+    # `_system_prompt`'s REVISE MODE block, which is the actual fix for that
+    # failure mode.
+    instruction: str = ""
+    # False (the default): `prompt` is freeform user intent and this call
+    # behaves exactly as it always has -- expand it into a new, structured
+    # MiniMax-H3 prompt, with `instruction` unused. True: `prompt` is
+    # instead the CURRENT, already-structured MiniMax-H3 prompt, treated as
+    # the base text to preserve, and `instruction` is the set of edits to
+    # apply to it. See `_system_prompt`'s REVISE MODE block for the exact
+    # wording and the reasoning behind it.
+    revise: bool = False
     force_refresh: bool = False
 
 
@@ -241,7 +260,86 @@ def validate_prompt(
     return warnings
 
 
-def _system_prompt(mode: str, duration: float, references: Iterable[Dict[str, str]]) -> str:
+def _revise_mode_block(instruction: str) -> str:
+    """The REVISE MODE addendum appended to the system prompt when
+    `PromptAssistOptions.revise` is True. Never called, and never appended,
+    when it is False -- see `_system_prompt`'s own guard -- so the expand
+    path's system prompt is untouched by this function's existence.
+
+    Wording rationale (the actual reported failure this feature exists to
+    fix): a naive "Instruction: <text>" line reads to a local LLM as one
+    more piece of context describing the scene, so "make the drop harder"
+    gets summarized back into prose about a harder drop instead of being
+    used to edit the existing non_diegetic_music/overall_soundscape text.
+    Three things are stated explicitly to head that off:
+    (1) the supplied prompt is relabelled as the BASE TEXT, not intent to
+    expand, so the model does not try to re-derive a whole new prompt from
+    it; (2) the instruction is named as a directive to APPLY, with an
+    explicit "never restate ... as new subject matter" contrast, because
+    "apply this" alone still leaves room for a model to just paraphrase the
+    instruction into the output; (3) the parts the instruction does not
+    name must come through UNCHANGED, because an instruction-following LLM
+    given permission to touch anything a novel edit implies will happily
+    rewrite the whole passage "in the spirit of" the request instead of
+    making the one change asked for.
+    """
+    return (
+        "\n\nREVISE MODE: the prompt supplied below is not raw user intent to expand -- "
+        "it is the CURRENT, already-structured MiniMax-H3 prompt, and it is the BASE TEXT "
+        "to preserve. A separate revision instruction is supplied as part of the user "
+        "message; APPLY it as a set of edits to the base text. Never restate, describe, or "
+        "narrate the instruction as if it were new subject matter -- \"make the drop "
+        "harder\" is a directive about the existing description, not a sentence to add to "
+        "it. Anything in the base text the instruction does not address must reach your "
+        "output unchanged, in its original section and its original position.\n\n"
+        f"Revision instruction: {instruction.strip()}"
+    )
+
+
+def _user_message(options: "PromptAssistOptions") -> str:
+    """The literal user-turn text sent to the LLM. Identical to
+    `options.prompt` whenever `options.revise` is False -- this is the
+    exact input H3 has always sent, kept byte-identical so a caller that
+    never supplies an instruction sees no behaviour change at all. In
+    revise mode the base text and the revision instruction are sent as two
+    clearly labelled sections rather than concatenated into one paragraph,
+    for the same reason `_revise_mode_block` states in the system prompt:
+    blending the instruction into the prompt text lets the LLM read it as
+    more content to describe instead of a directive to apply."""
+    if not options.revise:
+        return options.prompt
+    return (
+        f"Current prompt (base text to preserve):\n{options.prompt.strip()}\n\n"
+        "Revision instruction (apply this as an edit; do not describe it): "
+        f"{options.instruction.strip()}"
+    )
+
+
+def _summarize_diff(base: str, revised: str) -> str:
+    """Unified line diff between a revise-mode base text and the model's
+    revision. A claim of "only the parts the instruction named changed" is
+    not machine-checkable, but a diff against the base is -- this is what
+    lets a caller see, at a glance, whether a revise targeted the edit or
+    quietly rewrote the whole piece. Shared by all three prompt-assist
+    modules (imported from here, matching how they already share
+    `PromptAssistCache`/`PromptAssistError`/`_extract_json` etc.)."""
+    diff = difflib.unified_diff(
+        base.splitlines(),
+        revised.splitlines(),
+        fromfile="before",
+        tofile="after",
+        lineterm="",
+    )
+    return "\n".join(diff)
+
+
+def _system_prompt(
+    mode: str,
+    duration: float,
+    references: Iterable[Dict[str, str]],
+    revise: bool = False,
+    instruction: str = "",
+) -> str:
     family = "full-reference" if mode == "ref2va" else "base"
     inventory = json.dumps(list(references), ensure_ascii=False)
     mode_rule = {
@@ -251,6 +349,7 @@ def _system_prompt(mode: str, duration: float, references: Iterable[Dict[str, st
         "l2va": _alignment_instruction("l2va", duration),
         "ref2va": "Use exactly the six full-reference sections in the documented order.",
     }[mode]
+    revise_block = _revise_mode_block(instruction) if revise else ""
     return f"""You transform a user's intent into one MiniMax-H3 {family} video prompt.
 Return exactly one JSON object: {{"prompt":"...","warnings":["..."]}}.
 The JSON prompt value must be the complete formatted MiniMax-H3 prompt, not a summary or a plain sentence.
@@ -273,7 +372,7 @@ Fidelity rules:
 Mode requirement: {mode_rule}
 Base output order: integrated_multimodal_description, overall_soundscape, non_diegetic_music.
 Full-reference output order: subject_definitions, summary, retention_analysis, detailed_description, overall_soundscape, non_diegetic_music.
-For full-reference generation, make detailed_description explicit and useful, but do not pad it with invented facts."""
+For full-reference generation, make detailed_description explicit and useful, but do not pad it with invented facts.{revise_block}"""
 
 
 class PromptAssistCache:
@@ -389,6 +488,12 @@ class MiniMaxH3PromptAssistant:
             "top_p": options.top_p,
             "max_output_tokens": options.max_output_tokens,
             "context_length": options.context_length,
+            # Both required in the cache key material, not just GUIDE_VERSION:
+            # a revise=True request with a given instruction must never be
+            # served the expand-mode (or a different instruction's) cached
+            # answer for the same base prompt/mode/duration.
+            "instruction": options.instruction.strip().replace("\r\n", "\n"),
+            "revise": options.revise,
         }
         encoded = json.dumps(material, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
@@ -398,6 +503,8 @@ class MiniMaxH3PromptAssistant:
             raise PromptAssistError(f"Unsupported MiniMax-H3 mode: {options.mode}")
         if not options.prompt.strip():
             raise PromptAssistError("Prompt cannot be empty")
+        if options.revise and not options.instruction.strip():
+            raise PromptAssistError("Revise mode requires a revision instruction")
         if options.duration_seconds <= 0:
             raise PromptAssistError("Duration must be greater than zero")
         if not options.model:
@@ -416,11 +523,15 @@ class MiniMaxH3PromptAssistant:
                 cached = self.cache.get(cache_key)
                 if cached is not None:
                     return {**cached, "cached": True, "cache_key": cache_key}
-            system_prompt = _system_prompt(options.mode, options.duration_seconds, options.references)
+            system_prompt = _system_prompt(
+                options.mode, options.duration_seconds, options.references,
+                options.revise, options.instruction,
+            )
+            user_message = _user_message(options)
             if options.provider == "lm_studio":
-                result, lifecycle_warnings = self._lm_studio(options, system_prompt, api_key)
+                result, lifecycle_warnings = self._lm_studio(options, system_prompt, user_message, api_key)
             elif options.provider == "ollama":
-                result, lifecycle_warnings = self._ollama(options, system_prompt)
+                result, lifecycle_warnings = self._ollama(options, system_prompt, user_message)
             else:
                 raise PromptAssistError(f"Unsupported provider: {options.provider}")
             parsed = _extract_json(result)
@@ -441,13 +552,20 @@ class MiniMaxH3PromptAssistant:
                 "provider": options.provider,
                 "model": options.model,
                 "cached": False,
+                "revise": options.revise,
+                # None in expand mode -- there is no meaningful "base" to
+                # diff a freeform-intent input against a structured output.
+                "diff_summary": (
+                    _summarize_diff(normalize_prompt(options.prompt), prompt)
+                    if options.revise else None
+                ),
             }
             if response["valid"]:
                 self.cache.put(cache_key, response)
             return {**response, "cache_key": cache_key}
 
     def _lm_studio(
-        self, options: PromptAssistOptions, system_prompt: str, api_key: str
+        self, options: PromptAssistOptions, system_prompt: str, user_message: str, api_key: str
     ) -> tuple[str, List[str]]:
         instance_id: Optional[str] = None
         warnings: List[str] = []
@@ -463,7 +581,7 @@ class MiniMaxH3PromptAssistant:
             instance_id = load_data.get("instance_id") or load_data.get("model_instance_id")
             chat_payload = {
                 "model": instance_id or options.model,
-                "input": options.prompt,
+                "input": user_message,
                 "system_prompt": system_prompt,
                 "temperature": options.temperature,
                 "top_p": options.top_p,
@@ -508,7 +626,7 @@ class MiniMaxH3PromptAssistant:
                     "Your previous answer failed validation. Correct it and return only the JSON object.\n"
                     "The JSON prompt string itself must contain every required section and the full rewrite.\n"
                     f"Validation errors: {json.dumps(structural_warnings, ensure_ascii=False)}\n"
-                    f"Original user prompt: {options.prompt}\n"
+                    f"Original user prompt: {user_message}\n"
                     f"Previous answer: {output_text}"
                 )
                 repair = requests.post(
@@ -543,14 +661,16 @@ class MiniMaxH3PromptAssistant:
                     warnings.append(message)
                     logger.warning(message)
 
-    def _ollama(self, options: PromptAssistOptions, system_prompt: str) -> tuple[str, List[str]]:
+    def _ollama(
+        self, options: PromptAssistOptions, system_prompt: str, user_message: str
+    ) -> tuple[str, List[str]]:
         warnings: List[str] = []
         try:
             chat_payload = {
                 "model": options.model,
                 "messages": [
                     {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": options.prompt},
+                    {"role": "user", "content": user_message},
                 ],
                 "format": "json",
                 "stream": False,

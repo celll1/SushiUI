@@ -138,12 +138,37 @@ _ROPE_THETA_TOLERANCE = 10.0
 # ---------------------------------------------------------------------------
 
 def read_safetensors_header(path: str) -> Dict[str, Any]:
-    """The JSON header of a safetensors file. ZERO tensor bytes are read."""
+    """The JSON header of a safetensors file. ZERO tensor bytes are read.
+
+    Returns the RAW header, ``__metadata__`` entry included -- this function's
+    contract is "the header", not "the tensor keys". Callers that want a
+    TENSOR key list (a plan, a census, a membership check) must go through
+    ``_safetensors_tensor_keys`` below, not call ``.keys()`` on this directly.
+    """
     with open(path, "rb") as fh:
         (header_len,) = struct.unpack("<Q", fh.read(8))
         if header_len <= 0 or header_len > 512 * 1024 * 1024:
             raise ValueError(f"implausible safetensors header length {header_len} in {path}")
         return json.loads(fh.read(header_len).decode("utf-8"))
+
+
+def _safetensors_tensor_keys(path: str) -> List[str]:
+    """``read_safetensors_header(path)``'s keys, MINUS safetensors' own
+    ``__metadata__`` entry (a string-string map, not a tensor).
+
+    Every call site in this module that treats a header's keys as a
+    census/plan/membership-check input over TENSOR names goes through this
+    helper, so ``__metadata__`` can never reach one of them as a stray
+    "unrecognized" key. A real bug, not a hypothetical one: the real,
+    phase-9-verified non-pruned flat bf16 text encoder's header carries a
+    ``__metadata__`` entry, and ``plan_flat_text_encoder_keys`` -- unlike the
+    plain membership checks elsewhere in this module (``is_pruned_flat_text_
+    encoder``, ``keys_look_like_flat_minimax_music3_dit``, ``_header_looks_
+    quantized``, all of which are harmless against an unrecognized key
+    because they only test SPECIFIC keys/prefixes/suffixes) -- reports ANY
+    key it does not explicitly recognize, so it refused the whole file.
+    """
+    return [k for k in read_safetensors_header(path).keys() if k != "__metadata__"]
 
 
 # Key-signature of the FLAT (ComfyUI-repack) DiT, per the design doc's
@@ -162,9 +187,7 @@ def keys_look_like_flat_minimax_music3_dit(keys) -> bool:
 def is_minimax_music3_safetensors(path: str) -> bool:
     """``keys_look_like_flat_minimax_music3_dit`` against a file's header. Never raises."""
     try:
-        header = read_safetensors_header(path)
-        header.pop("__metadata__", None)
-        return keys_look_like_flat_minimax_music3_dit(header.keys())
+        return keys_look_like_flat_minimax_music3_dit(_safetensors_tensor_keys(path))
     except Exception:
         return False
 
@@ -479,7 +502,7 @@ def build_transformer_and_condition_encoder_from_flat_dit(
     # Header-only fast path: refuse an obviously-quantized file (e.g.
     # minimax_music3_dit_int8_convrot.safetensors) before reading a single
     # tensor byte of it.
-    if _header_looks_quantized(read_safetensors_header(flat_dit_path).keys()):
+    if _header_looks_quantized(_safetensors_tensor_keys(flat_dit_path)):
         raise RuntimeError(
             f"the MiniMax Music 3 flat DiT checkpoint ({flat_dit_path}) declares weight-only "
             f"quantization in its header (a '.weight_scale' or '.comfy_quant' key), and the "
@@ -607,7 +630,7 @@ def build_language_model_and_depth_decoder_from_flat_text_encoder(
     # them: pruned-vocabulary first (the more informative refusal -- it names
     # the phase that would fix it), then quantization. Neither reads a single
     # tensor byte of what can be an 18 GB file.
-    header_keys = list(read_safetensors_header(flat_text_encoder_path).keys())
+    header_keys = _safetensors_tensor_keys(flat_text_encoder_path)
     raise_if_pruned_flat_text_encoder(header_keys)
     if _header_looks_quantized(header_keys):
         raise RuntimeError(
@@ -707,7 +730,7 @@ def build_language_model_and_depth_decoder_from_pruned_flat_text_encoder(
     # pruned layout" first (a caller that reaches this function with the NON-pruned file gets a
     # message naming the OTHER builder, not a confusing remap failure), then quantization.
     # Neither reads a single tensor byte of what can be a 16.7 GB file.
-    header_keys = list(read_safetensors_header(flat_text_encoder_path).keys())
+    header_keys = _safetensors_tensor_keys(flat_text_encoder_path)
     if not is_pruned_flat_text_encoder(header_keys):
         raise ValueError(
             f"{flat_text_encoder_path!r} does not carry any of the pruned-vocabulary tells "
@@ -1263,7 +1286,7 @@ def detect_minimax_music3_text_encoder_source(path: str) -> str:
     suffix = p.suffix.lower()
     if suffix == ".safetensors":
         try:
-            keys = list(read_safetensors_header(path).keys())
+            keys = _safetensors_tensor_keys(path)
         except FileNotFoundError:
             raise
         except Exception as exc:
@@ -1276,6 +1299,23 @@ def detect_minimax_music3_text_encoder_source(path: str) -> str:
                 f"{path!r} carries the MiniMax Music 3 flat DiT's tensor signature "
                 f"(diffusion_transformer.* + cond_layer_logits + latent_conditioners.*), not a "
                 f"text encoder's. Select the DiT through the model path, not text_encoder_file."
+            )
+        # HEADER-ONLY, and checked BEFORE this function commits to a kind
+        # string: `int8_convrot` (either pruned or non-pruned) is refused by
+        # the builders themselves (`refuse_quantized_state_dict` /
+        # `_header_looks_quantized`), but that refusal fires deep inside
+        # `load_minimax_music3_from_path`, reached only AFTER the F3 preflight
+        # in `_load_model_locked` has already let the request through and the
+        # live model has been torn down. Detecting it HERE closes that gap:
+        # an int8_convrot `text_encoder_file` is refused pre-teardown, same
+        # as every other refusal this function raises.
+        if _header_looks_quantized(keys):
+            raise MiniMaxMusic3TextEncoderRefusal(
+                f"the MiniMax Music 3 flat text encoder checkpoint ({path}) declares "
+                f"weight-only quantization in its header (a '.weight_scale' or '.comfy_quant' "
+                f"key), and the MiniMax Music 3 loader does not support quantized flat "
+                f"checkpoints (design doc phase 13, 'INT8 ConvRot'). Load an unquantized flat "
+                f"text encoder instead."
             )
         if is_pruned_flat_text_encoder(keys):
             return "flat_pruned"

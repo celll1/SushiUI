@@ -398,3 +398,72 @@ def test_wrong_extension_text_encoder_file_is_refused_before_teardown_too(tmp_pa
 
     assert manager.current_model == f"diffusers:{root}"
     assert manager.current_model_info == {"source": str(root), "type": "minimax_music3"}
+
+
+# ---------------------------------------------------------------------------
+# Real staged files, header-only (zero tensor bytes read), skipped cleanly
+# when not present on this machine -- same convention
+# minimax_h3_te_int8_convrot_test.py's own real-distribution test uses.
+#
+# A regression this section exists to catch: an earlier version of the F4
+# fix (the architecture gate above) fed `plan_flat_text_encoder_keys` the
+# RAW safetensors header keys, `__metadata__` included -- and that plan
+# function, unlike the membership-only checks elsewhere in this module,
+# reports ANY key it does not explicitly recognize. The real non-pruned flat
+# bf16 encoder's header carries a `__metadata__` entry (most real safetensors
+# files do), so it was refused outright: a detector test that covers only
+# refusal shapes stayed green while the ACCEPT path for the one file phase 9
+# verified bit-exact against `official/` was silently broken. Fixed via
+# `_safetensors_tensor_keys` (strips `__metadata__` at the one place every
+# tensor-key consumer in this module now reads through); pinned here against
+# the real file, not only the synthetic fixture (which happened not to carry
+# `__metadata__` and so did not catch this).
+# ---------------------------------------------------------------------------
+
+_REAL_TEXT_ENCODERS_ROOT = "M:/model/minimax-music3/text_encoders"
+_REAL_DIT_ROOT = "M:/model/minimax-music3/diffusion_models"
+
+
+def test_real_non_pruned_bf16_encoder_is_accepted_not_refused():
+    path = os.path.join(_REAL_TEXT_ENCODERS_ROOT, "minimax_music3_text_encoder_bf16.safetensors")
+    if not os.path.isfile(path):
+        pytest.skip(f"{path} not present on this machine")
+    assert detect_minimax_music3_text_encoder_source(path) == "flat_non_pruned"
+
+
+def test_real_pruned_bf16_encoder_is_accepted():
+    path = os.path.join(_REAL_TEXT_ENCODERS_ROOT, "minimax_music3_text_encoder_pruned_bf16.safetensors")
+    if not os.path.isfile(path):
+        pytest.skip(f"{path} not present on this machine")
+    assert detect_minimax_music3_text_encoder_source(path) == "flat_pruned"
+
+
+def test_real_pruned_q8_0_gguf_encoder_is_accepted():
+    path = os.path.join(_REAL_TEXT_ENCODERS_ROOT, "minimax_music3_text_encoder_pruned_Q8_0.gguf")
+    if not os.path.isfile(path):
+        pytest.skip(f"{path} not present on this machine")
+    assert detect_minimax_music3_text_encoder_source(path) == "gguf_pruned_q8_0"
+
+
+def test_real_pruned_int8_convrot_encoder_is_refused_at_detection_not_only_in_the_builder():
+    """Item 1 from the coordinator's second-pass audit: this file used to
+    detect as `flat_pruned` (a truthful kind, since the vocabulary IS pruned)
+    and only get refused later, inside the builder, deep inside `load_
+    minimax_music3_from_path` -- reached AFTER `_load_model_locked`'s F3
+    preflight had already let the request through and torn the live model
+    down. The detector must refuse it directly, so the F3 preflight (which
+    calls only the detector, not the builder) catches it BEFORE teardown."""
+    path = os.path.join(_REAL_TEXT_ENCODERS_ROOT, "minimax_music3_text_encoder_pruned_int8_convrot.safetensors")
+    if not os.path.isfile(path):
+        pytest.skip(f"{path} not present on this machine")
+    with pytest.raises(MiniMaxMusic3TextEncoderRefusal, match="INT8 ConvRot"):
+        detect_minimax_music3_text_encoder_source(path)
+
+
+def test_real_flat_dit_is_still_refused_as_a_text_encoder():
+    """Item 2: the DiT-as-text-encoder refusal must survive the fixes above."""
+    path = os.path.join(_REAL_DIT_ROOT, "minimax_music3_dit_fp16.safetensors")
+    if not os.path.isfile(path):
+        pytest.skip(f"{path} not present on this machine")
+    with pytest.raises(MiniMaxMusic3TextEncoderRefusal, match="DiT"):
+        detect_minimax_music3_text_encoder_source(path)

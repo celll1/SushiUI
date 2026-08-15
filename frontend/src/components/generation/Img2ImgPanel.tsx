@@ -56,7 +56,7 @@ import {
   ChainAdvanceResult,
 } from "@/utils/videoChain";
 import { migrateLoopGenerationConfig, computeLoopDecodeDirective } from "@/utils/loopGenerationInheritance";
-import { getSamplers, getScheduleTypes, generateImg2Img, generateImg2Vid, Img2VidParams, Txt2VidParams, MiniMaxH3Keyframe, MiniMaxH3References, generateRef2Vid, Ref2VidParams, generateOutpaintVideo, OutpaintVideoParams, generateAud2Aud, Aud2AudParams, generateImg2ImgTrainingPreview, toBase64, LoRAConfig, ControlNetConfig, generateTIPOPrompt, cancelGeneration, isLatentOnlyResult, getResultFilename, getResultPlaybackFilename, getResultSeed, getResultAncestralSeed, unetQuantizationOptions, normalizeUnetQuantization, transformerQuantizationLabel, archSupportsFeature, archDisplayName, normalizeVideoFrames, fitVideoCanvas, videoCanvasRule, videoCanvasAxisBounds, videoMinInferenceSteps, videoCanvasExceedsEnvelope, isGenerationStalledError, planVideoChain, snapUpValidVideoFrameCount, effectiveSegmentFrames, VideoChainManifest, VIDEO_BLOCK_SWAP_MAX } from "@/utils/api";
+import { getSamplers, getScheduleTypes, generateImg2Img, generateImg2Vid, Img2VidParams, Txt2VidParams, MiniMaxH3Keyframe, MiniMaxH3References, generateRef2Vid, Ref2VidParams, generateOutpaintVideo, OutpaintVideoParams, generateAud2Aud, Aud2AudParams, aud2audMusic3RepaintModes, generateImg2ImgTrainingPreview, toBase64, LoRAConfig, ControlNetConfig, generateTIPOPrompt, cancelGeneration, isLatentOnlyResult, getResultFilename, getResultPlaybackFilename, getResultSeed, getResultAncestralSeed, unetQuantizationOptions, normalizeUnetQuantization, transformerQuantizationLabel, archSupportsFeature, archDisplayName, normalizeVideoFrames, fitVideoCanvas, videoCanvasRule, videoCanvasAxisBounds, videoMinInferenceSteps, videoCanvasExceedsEnvelope, isGenerationStalledError, planVideoChain, snapUpValidVideoFrameCount, effectiveSegmentFrames, VideoChainManifest, VIDEO_BLOCK_SWAP_MAX } from "@/utils/api";
 import { useActiveTraining } from "@/hooks/useActiveTraining";
 import { useSmoothProgress } from "@/hooks/useSmoothProgress";
 import { wsClient, CFGMetrics } from "@/utils/websocket";
@@ -171,6 +171,34 @@ interface Img2ImgParams {
   mode?: "cover" | "repaint";
   repaint_start?: number;
   repaint_end?: number;
+  // --- MiniMax Music 3 aud2aud repaint only ---
+  // Which of the two honest repaint mechanisms to run -- "regenerate"
+  // (AR-resume with a NEW tail from `repaint_start` onward: CONTENT changes
+  // from that point on, everything before it preserved sample-exact) or
+  // "rerender" (the codes never change, only the flow-matching stage's
+  // rendering of [repaint_start, repaint_end) is redone with a new seed:
+  // timbre/mix change, lyrics/melody/timing do NOT). No equivalent on
+  // ACE-Step's own aud2aud, which has no such sub-mode concept. Mapped onto
+  // Aud2AudParams' own `music3_repaint_mode` field 1:1 at enqueue time.
+  music3_repaint_mode?: "regenerate" | "rerender";
+  // Flow-matching steps PER CHUNK (200-frame window) for MiniMax Music 3
+  // repaint, distinct from `num_inference_steps` above (per-song VIDEO step
+  // count, default 8) and from ACE-Step's own `inference_steps` above
+  // (per-song, turbo distilled, default 8) -- the architectures' defaults (8
+  // vs 30) must not bleed into each other across a model switch. Mapped onto
+  // Aud2AudParams' own `num_inference_steps` field at enqueue time (see the
+  // aud2aud arch-overlay effect and handleAddToQueue).
+  music3_num_inference_steps?: number;
+  // Flow-stage CFG for MiniMax Music 3 repaint, distinct from `guidance_scale`
+  // above (ACE-Step's own per-song CFG, default 1.0) for the same reason.
+  // Mapped onto Aud2AudParams' own `flow_guidance_scale` field at enqueue time.
+  flow_guidance_scale?: number;
+  // Tracks which loaded architecture `music3_repaint_mode` /
+  // `music3_num_inference_steps` / `flow_guidance_scale` were last resolved
+  // for (the aud2aud arch-overlay effect below). Not sent to the backend --
+  // UI bookkeeping only, same pattern as Txt2ImgPanel's own
+  // `audio_defaults_arch` / OutpaintPanel's `outpaint_video_audio_mode_arch`.
+  audio_defaults_arch?: string;
   // Loop-generation decode mode (heavy-decoder aware; see loopGenerationInheritance.ts)
   loop_decode?: "full" | "cheap" | "none";
   skip_gallery?: boolean;
@@ -309,6 +337,11 @@ const DEFAULT_PARAMS: Img2ImgParams = {
   mode: "cover",
   repaint_start: 0,
   repaint_end: 0,
+  // MiniMax Music 3 repaint fallback (used before GET /schema/generation-defaults
+  // answers); mirrors param_defaults.py's AUD2AUD_GEN_ARCH_OVERLAYS["minimax_music3"].
+  music3_repaint_mode: "regenerate",
+  music3_num_inference_steps: 30,
+  flow_guidance_scale: 1.7,
 };
 
 // Img2Img's secondary options are grouped into a single-open tabbed accordion
@@ -561,6 +594,13 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
   const [generatedAudio, setGeneratedAudio] = useState<string | null>(null);
   const [generatedAudioInfo, setGeneratedAudioInfo] = useState<{ duration?: number; sample_rate?: number } | null>(null);
   const [generatedAudioParams, setGeneratedAudioParams] = useState<Img2ImgParams | null>(null);
+  // The run's `warnings[]`, shown under the result -- mirrors
+  // OutpaintPanel's/InpaintPanel's own `generatedAudioWarnings`/
+  // `generatedVideoWarnings`. MiniMax Music 3 repaint surfaces real ones here
+  // (e.g. a supplied prompt/lyrics being ignored, a requested boundary being
+  // snapped to a chunk-window start), so this must not be silently discarded
+  // the way this panel's aud2aud branch previously did.
+  const [generatedAudioWarnings, setGeneratedAudioWarnings] = useState<string[]>([]);
   // Reference audio clip (the aud2aud "input image" equivalent) -- kept as a
   // File (not base64) so it can carry through the queue as `inputAudio`.
   const [referenceAudioFile, setReferenceAudioFile] = useState<File | null>(null);
@@ -623,6 +663,13 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
   // merely because the matrix was unavailable.
   const loadedArch = currentModelInfo?.model_info?.type as string | undefined;
   const loadedArchName = archDisplayName(loadedArch);
+  // Audio-arch dispatch, same convention as Txt2ImgPanel's/OutpaintPanel's own
+  // `isMusic3`: MiniMax Music 3's aud2aud repaint (mode="repaint" only,
+  // music3_repaint_mode/num_inference_steps/flow_guidance_scale) is a
+  // materially different request shape from ACE-Step's cover/repaint, so
+  // every audio-branch render/queue site below distinguishes the two rather
+  // than assuming ACE-Step's shape whenever `isAudio` is true.
+  const isMusic3 = loadedArch === "minimax_music3";
   // Applies a LoRA's own declared recommended settings (from its file
   // metadata) to params, like any ordinary user edit -- see Txt2ImgPanel's
   // twin of this function for the full rationale.
@@ -1492,6 +1539,45 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
     }
   }, [generationDefaults]);
 
+  // Re-resolve `music3_repaint_mode`/`music3_num_inference_steps`/
+  // `flow_guidance_scale` from the schema API's `aud2aud_arch_overlays`
+  // OVERLAY (backend AUD2AUD_GEN_ARCH_OVERLAYS -- NOT the merged
+  // `generationDefaults.aud2aud` base above) whenever the LOADED ARCHITECTURE
+  // changes -- mirrors Txt2ImgPanel's/OutpaintPanel's identical audio-defaults
+  // effect verbatim (see either's comment for the full rationale: reading the
+  // raw overlay directly is what lets ACE-Step, which has no overlay entry,
+  // leave a persisted value untouched instead of resetting it, and
+  // `params.audio_defaults_arch` in the dependency list is what makes "Reset
+  // to Default" re-resolve on a still-loaded Music 3 model rather than
+  // getting stuck on DEFAULT_PARAMS' literals).
+  useEffect(() => {
+    if (!isAudio || !loadedArch || !generationDefaults) return;
+    setParams((prev) => {
+      if (prev.audio_defaults_arch === loadedArch) return prev;
+      const overlay = (generationDefaults.aud2aud_arch_overlays?.[loadedArch] || {}) as Record<string, unknown>;
+      const next: Img2ImgParams = { ...prev, audio_defaults_arch: loadedArch };
+      if ("music3_repaint_mode" in overlay) next.music3_repaint_mode = overlay.music3_repaint_mode as "regenerate" | "rerender";
+      if ("num_inference_steps" in overlay) next.music3_num_inference_steps = overlay.num_inference_steps as number;
+      if ("flow_guidance_scale" in overlay) next.flow_guidance_scale = overlay.flow_guidance_scale as number;
+      return next;
+    });
+  }, [isAudio, loadedArch, generationDefaults, params.audio_defaults_arch]);
+
+  // MiniMax Music 3 only ever accepts aud2aud mode="repaint" (see
+  // routes.py's generate_aud2aud docstring -- "cover" would need to turn
+  // arbitrary reference audio into the autoregressive stage's semantic codes,
+  // and the RVQ tokenizer's unpublished encoder makes that impossible).
+  // Deliberately NOT enforced by mutating `params.mode` here: an earlier
+  // version of this forced `params.mode = "repaint"` in an effect keyed on
+  // this architecture, which persisted past a later switch back to ACE-Step
+  // (nothing ever restored the prior value) and left an ACE-Step session
+  // permanently stuck on "Repaint" with a 0/0 range, 400-ing its very next
+  // Generate. The Music 3 "Repaint" card below renders its own Mode control
+  // as a fixed, disabled display (never reading `params.mode`), and
+  // `handleAddToQueue` forces `mode: "repaint"` at dispatch from a FRESH
+  // architecture read -- so `params.mode` itself is left to mean exactly one
+  // thing, ACE-Step's own cover/repaint choice, for every architecture.
+
   const resetToDefault = () => {
     setParams(DEFAULT_PARAMS);
     localStorage.removeItem(STORAGE_KEY);
@@ -2255,17 +2341,45 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
     const modality = await resolveModality();
     const videoMode = modality.isVideo;
     const audioMode = modality.isAudio;
+    // Same freshness rule as `modality` itself (comment above): the render-time
+    // `isMusic3` can be stale if the loaded model changed out of band between
+    // this render and this click, and unlike `audioMode`/`videoMode` a stale
+    // `isMusic3` does NOT get refused server-side when it disagrees with the
+    // real architecture in the "true -> false" direction (both ACE-Step and
+    // Music 3 are audio, so nothing about the request shape trips a 400) --
+    // it would instead send an ACE-Step request with `prompt=""`/`lyrics=""`/
+    // `mode="repaint"`, spending a full generation on an empty caption with no
+    // error at all. Every Music-3-only decision in this branch (below) must
+    // read this, never the render-time `isMusic3` (mirrors Txt2ImgPanel's
+    // identical freshness re-verification for its own arch-branching audio
+    // requests).
+    const freshIsMusic3 = modality.modelInfo?.type === "minimax_music3";
 
     if (videoMode && modality.modelInfo?.type === "minimax_h3" && modality.modelInfo?.variant === "hybrid") {
       alert("A merged MiniMax-H3 checkpoint is released for text-to-video only, which is the Txt2Img tab with this model loaded. Keyframe conditioning is refused: it was not part of the comparison that released the merge.");
       return;
     }
 
-    // Audio mode (ACE-Step) uses an uploaded reference clip instead of an
-    // input image; skip the image-required check and base64 conversion below.
+    // Audio mode (ACE-Step or MiniMax Music 3) uses an uploaded reference
+    // clip instead of an input image; skip the image-required check and
+    // base64 conversion below.
     if (audioMode) {
       if (!referenceAudioFile) {
-        alert("Please select a reference audio clip");
+        alert(freshIsMusic3
+          ? "Please select a MiniMax Music 3 song from the gallery (\"Send to Img2Img\") to repaint"
+          : "Please select a reference audio clip");
+        return;
+      }
+      // MiniMax Music 3 always forces mode="repaint" (above), and
+      // DEFAULT_PARAMS' repaint_start/repaint_end are both 0 -- ACE-Step never
+      // hits this because its own default mode is "cover", which does not
+      // read either field. Refuse here, before enqueueing, rather than
+      // letting a first-time user's very first Generate spend a queue slot on
+      // a guaranteed backend 400 with nothing in the UI pointing at the
+      // range (mirrors Txt2ImgPanel's own pre-enqueue refusal for empty
+      // MiniMax Music 3 lyrics).
+      if (freshIsMusic3 && (params.repaint_end ?? 0) <= (params.repaint_start ?? 0)) {
+        alert("Repaint: the end must be greater than the start. Set both under \"Repaint\" before generating.");
         return;
       }
     } else if (!inputImage && !inputImagePreview) {
@@ -2362,13 +2476,23 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
       }
     }
 
-    // Audio mode: an audio model (ACE-Step) is loaded -> enqueue an aud2aud item
-    // built from the shared params + the uploaded reference clip. Checked before
-    // the video branch (mutually exclusive). Audio loop-generation is out of scope.
+    // Audio mode: an audio model (ACE-Step or MiniMax Music 3) is loaded ->
+    // enqueue an aud2aud item built from the shared params + the uploaded
+    // reference clip. Checked before the video branch (mutually exclusive).
+    // Audio loop-generation is out of scope.
     if (audioMode) {
       const audioParams: Aud2AudParams = {
-        prompt: processedPrompt,
-        lyrics: params.lyrics,
+        // MiniMax Music 3: ALWAYS sent empty, never `processedPrompt`/
+        // `params.lyrics` -- the backend warns whenever a supplied non-empty
+        // prompt/lyrics differs from the sidecar's own stored value (it is
+        // always ignored either way), and since these fields are rendered
+        // disabled on this architecture there would be no way to clear that
+        // warning short of typing into a field the UI itself refuses to let
+        // the user edit. ACE-Step is unaffected: it still gets the real
+        // caption/lyrics text. Mirrors OutpaintPanel's identical extend
+        // convention.
+        prompt: freshIsMusic3 ? "" : processedPrompt,
+        lyrics: freshIsMusic3 ? "" : params.lyrics,
         seed: params.seed,
         inference_steps: params.inference_steps,
         guidance_scale: params.guidance_scale,
@@ -2376,9 +2500,25 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         cover_strength: params.cover_strength,
         vocal_language: params.vocal_language,
         loras: params.loras,
-        mode: params.mode,
+        // MiniMax Music 3 only ever accepts "repaint". `params.mode` itself is
+        // NEVER mutated for this architecture (see the comment above the
+        // arch-defaults effect near the top of this component for why), so
+        // it is forced ONLY here, at dispatch, from the FRESH architecture
+        // read -- ACE-Step's own cover/repaint choice in `params.mode` is
+        // left untouched either way.
+        mode: freshIsMusic3 ? "repaint" : params.mode,
         repaint_start: params.repaint_start,
         repaint_end: params.repaint_end,
+        // MiniMax Music 3 repaint only. Omitted entirely, not sent as
+        // undefined/null, when this architecture is not loaded, so ACE-Step's
+        // request is byte-for-byte what it always was (CLAUDE.md: sending an
+        // explicit null/undefined key still lands in FastAPI's bound value
+        // and can defeat the backend's own per-arch default resolution).
+        ...(freshIsMusic3 ? {
+          music3_repaint_mode: params.music3_repaint_mode,
+          num_inference_steps: params.music3_num_inference_steps,
+          flow_guidance_scale: params.flow_guidance_scale,
+        } : {}),
         // Weight-only quantization (both axes). The panel controls are rendered
         // from arch capabilities, and `acestep` is now in runtime_int8_archs +
         // quantized_linear_archs, so these must be carried into the audio
@@ -3086,13 +3226,19 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
       setIsGenerating(true);
       setProgress(0);
       setProgressMessage("");
-      setTotalSteps((nextItem.params as any).inference_steps || 8);
+      // MiniMax Music 3 items carry `num_inference_steps` (per-chunk flow
+      // steps, distinct from ACE-Step's per-song `inference_steps`); either
+      // field name works here since only one is ever set per item, mirroring
+      // OutpaintPanel's identical outpaint_aud dispatch.
+      setTotalSteps((nextItem.params as Aud2AudParams).num_inference_steps
+        || (nextItem.params as Aud2AudParams).inference_steps || 8);
       setPreviewImage(null);
       setGeneratedImage(null);
       // An audio run supersedes any image/video result still on screen; the
       // stored preview is only replaced once this run actually succeeds.
       setGeneratedAudio(null);
       setGeneratedAudioInfo(null);
+      setGeneratedAudioWarnings([]);
       setGeneratedVideo(null);
       setGeneratedVideoInfo(null);
       try {
@@ -3103,12 +3249,16 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         const result = await generateAud2Aud(nextItem.params as Aud2AudParams, referenceAudio);
         const audioUrl = `/outputs/${result.image.filename}`;
         const audioInfo = { duration: result.image.duration, sample_rate: result.image.sample_rate };
+        const audioWarnings = (result.warnings || [])
+          .map((w: any) => (typeof w === "string" ? w : w?.message))
+          .filter(Boolean);
         const audioParams = {
           ...(nextItem.params as Img2ImgParams),
           seed: getResultSeed(result) ?? (nextItem.params as Img2ImgParams).seed,
         };
         setGeneratedAudio(audioUrl);
         setGeneratedAudioInfo(audioInfo);
+        setGeneratedAudioWarnings(audioWarnings);
         setGeneratedAudioParams(audioParams);
         publishCompletedResult({ panel: "img2img", kind: "audio", url: audioUrl, info: audioInfo, params: audioParams });
         if (onImageGenerated) onImageGenerated(audioUrl, { kind: "audio" });
@@ -4825,19 +4975,23 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
     <Card title="Prompt">
       <Textarea
         label="Caption"
-        placeholder="Describe the music (genre, mood, instruments)..."
+        placeholder={isMusic3 ? "Reused from the repainted song's own sidecar; not sent here" : "Describe the music (genre, mood, instruments)..."}
         rows={3}
         resizeStorageKey={GENERATION_PROMPT_HEIGHT_KEY}
         value={params.prompt}
         onChange={(e) => setParams({ ...params, prompt: e.target.value })}
+        disabled={isMusic3}
+        title={isMusic3 ? "MiniMax Music 3 repaint always reuses the original song's own caption; this field has no effect." : undefined}
       />
       <Textarea
         label="Lyrics"
-        placeholder="Enter lyrics (optional)..."
+        placeholder={isMusic3 ? "Reused from the repainted song's own sidecar; not sent here" : "Enter lyrics (optional)..."}
         rows={3}
         resizeStorageKey={GENERATION_LYRICS_HEIGHT_KEY}
         value={params.lyrics ?? ""}
         onChange={(e) => setParams({ ...params, lyrics: e.target.value })}
+        disabled={isMusic3}
+        title={isMusic3 ? "MiniMax Music 3 repaint always reuses the original song's own lyrics; this field has no effect." : undefined}
       />
       <Textarea
         label="Negative Prompt"
@@ -4849,7 +5003,15 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         disabled
         title="Audio generation does not accept negative-prompt conditioning."
       />
-      <p className="text-xs text-gray-500">Unavailable for audio generation; the saved value is preserved.</p>
+      {isMusic3 ? (
+        <p className="text-xs text-gray-500">
+          MiniMax Music 3 repaint always reuses the caption/lyrics stored in the repainted song's own
+          frame-code sidecar; the fields above have no effect. Negative prompting is unavailable for audio
+          generation regardless of architecture.
+        </p>
+      ) : (
+        <p className="text-xs text-gray-500">Unavailable for audio generation; the saved value is preserved.</p>
+      )}
     </Card>
   ) : (
     <Card title="Prompt">
@@ -5271,9 +5433,21 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
               ) : (
                 <div className="bg-gray-800 rounded-lg border-2 border-dashed border-gray-600 py-6">
                   <p className="text-gray-500 text-center text-sm px-4">
-                    Select a reference audio clip to cover. Duration is derived from the clip itself.
+                    {isMusic3
+                      ? "Use \"Send to Img2Img\" on a MiniMax Music 3 song from the gallery, or the file picker above to select an unmodified copy of one"
+                      : "Select a reference audio clip to cover. Duration is derived from the clip itself."}
                   </p>
                 </div>
+              )}
+              {isMusic3 && (
+                <p className="text-xs text-gray-500">
+                  Only a song this server already generated (MiniMax Music 3 txt2aud, extend, or a previous
+                  repaint) can be repainted: the server matches the file by content against the gallery to find
+                  the frame-code sidecar saved next to it, so an edited/re-encoded copy or an unrelated upload
+                  is refused with that reason. Cover/style transfer from arbitrary reference audio is not
+                  available for this architecture -- the RVQ tokenizer's encoder needed to turn arbitrary audio
+                  into semantic codes is not published in this release.
+                </p>
               )}
             </div>
           </Card>
@@ -5728,7 +5902,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
           />
         )}
 
-        {isAudio && (
+        {isAudio && !isMusic3 && (
           <Card title="Audio Settings">
             <Select
               label="Mode"
@@ -5857,6 +6031,203 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
                 { value: "pt", label: "Portuguese" },
               ]}
             />
+          </Card>
+        )}
+
+        {isAudio && isMusic3 && (
+          <Card title="Repaint">
+            <Select
+              label="Mode"
+              value="repaint"
+              onChange={() => {}}
+              disabled
+              options={[{ value: "repaint", label: "Repaint (the only mode MiniMax Music 3 supports)" }]}
+              title={"MiniMax Music 3 refuses aud2aud mode=\"cover\": turning arbitrary reference audio into the autoregressive stage's semantic codes needs the RVQ tokenizer's unpublished encoder."}
+            />
+
+            {/* Which `music3_repaint_mode` values exist comes from the backend's own
+                table (GET /schema/arch-capabilities' aud2aud_music3_repaint_modes),
+                not a hardcoded enum here -- mirrors OutpaintPanel's identical
+                `audioOutpaintPlacements`-driven Placement select. An empty result
+                (no entry for the loaded arch) means "no selector", not an error --
+                this card only renders for MiniMax Music 3, which always has one. */}
+            {aud2audMusic3RepaintModes(archCapabilities, loadedArch).length > 0 && (
+              <Select
+                label="Repaint mechanism"
+                value={params.music3_repaint_mode ?? "regenerate"}
+                onChange={(e) => setParams({ ...params, music3_repaint_mode: e.target.value as "regenerate" | "rerender" })}
+                options={aud2audMusic3RepaintModes(archCapabilities, loadedArch).map((m) => ({
+                  value: m,
+                  label: m === "regenerate"
+                    ? "Regenerate from a point (new content)"
+                    : m === "rerender"
+                      ? "Re-render a range (same content, new mix)"
+                      : m,
+                }))}
+              />
+            )}
+
+            {(params.music3_repaint_mode ?? "regenerate") === "regenerate" ? (
+              <div className="mt-2">
+                <p className="text-xs text-gray-400 mb-2">
+                  Resumes the autoregressive stage from the snapped start point using the stored codes as
+                  context, and generates a brand-new tail from there -- the song&apos;s content (lyrics, melody,
+                  everything) changes from that point onward. Everything before the snapped start point is
+                  preserved exactly, sample for sample.
+                </p>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-300 mb-1">Regenerate from (s)</label>
+                    <NumberInput
+                      label="Regenerate from (s)"
+                      value={params.repaint_start ?? 0}
+                      onCommit={(v) => setParams({ ...params, repaint_start: v })}
+                      min={0}
+                      step={0.1}
+                      parse="float"
+                      className="w-full"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-300 mb-1">Total length upper bound (s)</label>
+                    <NumberInput
+                      label="Total length upper bound (s)"
+                      value={params.repaint_end ?? 0}
+                      onCommit={(v) => {
+                        // Strictly greater than start, not `>=` -- the backend
+                        // rejects `repaint_end <= repaint_start` outright, so
+                        // clamping to equality (the old `v < start ? start : v`)
+                        // still produced a guaranteed 400.
+                        const start = params.repaint_start ?? 0;
+                        setParams({ ...params, repaint_end: v <= start ? start + 0.1 : v });
+                      }}
+                      min={0}
+                      step={0.1}
+                      parse="float"
+                      className="w-full"
+                    />
+                  </div>
+                </div>
+                <p className="text-xs text-gray-500 mt-2">
+                  Only &quot;Regenerate from&quot; is snapped server-side, to the nearest chunk boundary that is
+                  not the song&apos;s very first chunk -- a low value (including 0) still snaps forward to a
+                  real boundary rather than being refused, but a source song shorter than about two
+                  flow-matching chunks has no valid boundary to snap to and is refused outright with that
+                  reason. &quot;Total length upper bound&quot; is used as entered, not snapped -- it caps the new
+                  tail&apos;s TOTAL song length, not a target; the model may stop generating before it is
+                  reached.
+                </p>
+              </div>
+            ) : (
+              <div className="mt-2">
+                <p className="text-xs text-gray-400 mb-2">
+                  Keeps the original autoregressive codes exactly and only redraws the flow-matching stage over
+                  the range below with a new seed -- timbre and mix change, but the lyrics, melody and timing do
+                  NOT change. This does not generate new words or notes.
+                </p>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-300 mb-1">Re-render start (s)</label>
+                    <NumberInput
+                      label="Re-render start (s)"
+                      value={params.repaint_start ?? 0}
+                      onCommit={(v) => setParams({ ...params, repaint_start: v })}
+                      min={0}
+                      step={0.1}
+                      parse="float"
+                      className="w-full"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-300 mb-1">Re-render end (s)</label>
+                    <NumberInput
+                      label="Re-render end (s)"
+                      value={params.repaint_end ?? 0}
+                      onCommit={(v) => {
+                        // Strictly greater than start, not `>=` -- same reason
+                        // as the "regenerate" mechanism's own clamp above.
+                        const start = params.repaint_start ?? 0;
+                        setParams({ ...params, repaint_end: v <= start ? start + 0.1 : v });
+                      }}
+                      min={0}
+                      step={0.1}
+                      parse="float"
+                      className="w-full"
+                    />
+                  </div>
+                </div>
+                <p className="text-xs text-gray-500 mt-2">
+                  Both values are snapped server-side to the nearest flow-matching chunk boundary, so the range
+                  actually re-rendered may differ slightly from what is entered here.
+                </p>
+              </div>
+            )}
+
+            <p className="text-xs text-gray-500 mt-2">
+              Mid-song infill with a preserved tail (changing a span in the middle while a different, original
+              ending after it stays intact) is not offered by either mechanism: the autoregressive stage is a
+              causal language model, so it has no infilling contract.
+            </p>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-2">
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-1">Steps (per chunk)</label>
+                <NumberInput
+                  label="Steps (per chunk)"
+                  value={params.music3_num_inference_steps ?? DEFAULT_PARAMS.music3_num_inference_steps!}
+                  onCommit={(v) => setParams({ ...params, music3_num_inference_steps: v })}
+                  min={1}
+                  max={100}
+                  step={1}
+                  parse="int"
+                  className="w-full"
+                />
+                <p className="text-xs text-gray-500 mt-1">
+                  Flow-matching steps per 200-frame window of the newly rendered span, not per song.
+                </p>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-1">Flow Guidance Scale</label>
+                <NumberInput
+                  label="Flow Guidance Scale"
+                  value={params.flow_guidance_scale ?? DEFAULT_PARAMS.flow_guidance_scale!}
+                  onCommit={(v) => setParams({ ...params, flow_guidance_scale: v })}
+                  min={0.01}
+                  max={20}
+                  step={0.1}
+                  parse="float"
+                  className="w-full"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">Seed</label>
+              <div className="flex gap-1">
+                <NumberInput
+                  value={params.seed ?? -1}
+                  onCommit={(v) => setParams({ ...params, seed: v })}
+                  parse="int"
+                  className="flex-1 min-w-0"
+                />
+                <Button
+                  onClick={() => setParams({ ...params, seed: Math.floor(Math.random() * 2147483647) })}
+                  variant="secondary"
+                  size="sm"
+                  title="Random seed"
+                >
+                  🎲
+                </Button>
+                <Button
+                  onClick={() => setParams({ ...params, seed: -1 })}
+                  variant="secondary"
+                  size="sm"
+                  title="Reset to random (-1)"
+                >
+                  -1
+                </Button>
+              </div>
+            </div>
           </Card>
         )}
             </>
@@ -6513,6 +6884,11 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
                         {generatedAudioInfo.duration != null && Number.isFinite(Number(generatedAudioInfo.duration)) && <span>{Number(generatedAudioInfo.duration).toFixed(2)}s</span>}
                         {generatedAudioInfo.sample_rate != null && <span> · {generatedAudioInfo.sample_rate} Hz</span>}
                       </div>
+                    )}
+                    {generatedAudioWarnings.length > 0 && (
+                      <ul className="text-xs text-amber-400 list-disc pl-4 space-y-1">
+                        {generatedAudioWarnings.map((w, i) => <li key={i}>{w}</li>)}
+                      </ul>
                     )}
                   </div>
                 ) : generatedImage ? (

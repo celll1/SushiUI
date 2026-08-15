@@ -1354,6 +1354,40 @@ export interface Aud2AudParams {
   mode?: "cover" | "repaint";    // default "cover"; "repaint" regenerates only [repaint_start, repaint_end)
   repaint_start?: number;        // seconds, repaint mode only; default 0.0
   repaint_end?: number;          // seconds, repaint mode only; default 0.0
+  // --- MiniMax Music 3 repaint ONLY (mode MUST be "repaint" for this arch;
+  // "cover" is refused server-side -- see routes.py's generate_aud2aud
+  // docstring). Two honest sub-mechanisms, selected by `music3_repaint_mode`,
+  // with DIFFERENT snapping/refusal rules for `repaint_start`/`repaint_end`
+  // each -- see `_minimax_music3_repaint_regenerate`/`_minimax_music3_repaint_
+  // rerender` in core/pipeline_backends/minimax_music3.py, the source of
+  // truth for both:
+  //   "regenerate" -- AR-resume with a NEW tail from `repaint_start` onward:
+  //     CONTENT changes from that point on, everything before it is preserved
+  //     sample-exact. Only `repaint_start` is snapped server-side, to the
+  //     nearest chunk-window start that is NOT the song's very first chunk
+  //     (so it can land at 0 even for a 0 request); `repaint_end` is used
+  //     RAW as an upper bound on the new tail's TOTAL song length, not a
+  //     window end and not itself snapped. A source song with fewer than two
+  //     chunk windows is refused outright ("requires a longer source song").
+  //   "rerender" -- the codes never change, only the flow-matching stage's
+  //     rendering of [repaint_start, repaint_end) is redone with a new seed:
+  //     timbre/mix change, lyrics/melody/timing do NOT. BOTH `repaint_start`
+  //     and `repaint_end` are snapped server-side to chunk-window boundaries
+  //     (independently of each other, via different logic per endpoint), so
+  //     the effective range may differ from what was requested.
+  // `undefined` lets the backend resolve MiniMax Music 3's own default
+  // ("regenerate") from `aud2aud_defaults_for_arch` -- see generateAud2Aud's
+  // FormData sender for why this must never be sent as an explicit `null`.
+  music3_repaint_mode?: "regenerate" | "rerender";
+  // Flow-matching steps PER CHUNK for the mechanism above (distinct from
+  // ACE-Step's per-song `inference_steps` above; same field/semantics as
+  // Txt2AudParams.num_inference_steps / OutpaintAudioParams.num_inference_steps).
+  // `undefined` resolves to 30.
+  num_inference_steps?: number;
+  // Flow-stage CFG for the mechanism above (distinct from ACE-Step's
+  // `guidance_scale` above; same field/semantics as
+  // Txt2AudParams.flow_guidance_scale). `undefined` resolves to 1.7.
+  flow_guidance_scale?: number;
   // Weight-only quantization of the ACE-Step DiT. Only "int8" is applied on
   // this architecture (a one-time in-place conversion of the audio DiT -- NOT
   // the Oobleck VAE or the Qwen3-Embedding text encoder); the FP8 values warn
@@ -1647,6 +1681,12 @@ export interface ArchCapabilities {
   // continuous total_duration/input_offset_sec offset, not an enumerated
   // set. Optional so an older backend without the key still type-checks.
   audio_outpaint_placements?: Record<string, string[]>;
+  // Sibling table for POST /generate/aud2aud's `music3_repaint_mode` field
+  // (repaint mode only): which sub-mechanisms `arch` offers. MiniMax Music 3:
+  // `["regenerate", "rerender"]`. ACE-Step is ABSENT -- its own aud2aud has no
+  // such sub-mode concept at all (mode=cover/repaint directly, no further
+  // choice). Optional so an older backend without the key still type-checks.
+  aud2aud_music3_repaint_modes?: Record<string, string[]>;
 }
 
 // One architecture's (or one loaded transformer variant's) chain-context
@@ -2429,6 +2469,17 @@ export const audioOutpaintPlacements = (
   caps: ArchCapabilities | null | undefined,
   arch: string | null | undefined
 ): string[] => (arch && caps?.audio_outpaint_placements?.[arch]) || [];
+
+// The `music3_repaint_mode` values POST /generate/aud2aud's repaint mode can
+// serve for the loaded arch, from the backend's own table. Same "empty, not a
+// fallback placeholder" convention as `audioOutpaintPlacements`: ACE-Step has
+// no entry at all (its own aud2aud has no such sub-mode), so a caller should
+// read an empty array as "no repaint-mode selector for this arch", not as an
+// error.
+export const aud2audMusic3RepaintModes = (
+  caps: ArchCapabilities | null | undefined,
+  arch: string | null | undefined
+): string[] => (arch && caps?.aud2aud_music3_repaint_modes?.[arch]) || [];
 
 export const fetchArchCapabilities = async (): Promise<ArchCapabilities> =>
   (await api.get("/schema/arch-capabilities")).data;
@@ -4152,6 +4203,23 @@ export const generateAud2Aud = async (params: Aud2AudParams, referenceAudio: Fil
   formData.append("mode", params.mode ?? "cover");
   formData.append("repaint_start", String(params.repaint_start ?? 0.0));
   formData.append("repaint_end", String(params.repaint_end ?? 0.0));
+  // MiniMax Music 3 repaint only. Appended ONLY when set (CLAUDE.md
+  // "sending null is not omitting it" -- an always-sent `music3_repaint_mode`
+  // would land in FastAPI's bound value regardless of what the arch's own
+  // overlay would otherwise resolve, and the pipeline backend raises a
+  // ValidationError on `num_inference_steps`/`flow_guidance_scale` being
+  // `None`, which an unconditional `?? 30`/`?? 1.7` literal here would defeat
+  // for a pre-update queued item). Mirrors generateOutpaintAudio's identical
+  // convention for its own MiniMax Music 3 -only fields.
+  if (params.music3_repaint_mode) {
+    formData.append("music3_repaint_mode", params.music3_repaint_mode);
+  }
+  if (params.num_inference_steps !== undefined) {
+    formData.append("num_inference_steps", String(params.num_inference_steps));
+  }
+  if (params.flow_guidance_scale !== undefined) {
+    formData.append("flow_guidance_scale", String(params.flow_guidance_scale));
+  }
   // Weight-only quantization (both axes). Appended only when set, so an unset
   // field leaves the backend default (and the process GEMM flags) untouched.
   if (params.unet_quantization && params.unet_quantization !== "none") {

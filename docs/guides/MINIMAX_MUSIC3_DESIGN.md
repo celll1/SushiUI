@@ -905,6 +905,38 @@ from phase 1 doubles as a training-data artifact for the flow stage.
   `GET /models/minimax-h3/text-encoders`, which remains H3-only) and that a
   truncated file is refused by name rather than surfacing a bare parse
   error.
+
+  **A second-pass audit against the four real staged files found the F4 fix
+  had a regression, plus two judgement calls.** Running the detector against
+  the real, phase-9-verified non-pruned flat bf16 encoder showed it was now
+  REFUSED: `plan_flat_text_encoder_keys` -- unlike the membership-only checks
+  elsewhere in this module -- reports ANY key it does not explicitly
+  recognize, and F4's fix fed it the RAW safetensors header keys, which
+  include safetensors' own `__metadata__` entry (a string-string map, not a
+  tensor). The tiny synthetic test fixtures happened not to carry that entry,
+  so a detector test suite covering only refusal shapes stayed green while
+  the one accept path phase 9 verified bit-exact was silently broken.
+  Fixed with a single shared helper, `_safetensors_tensor_keys` (`read_
+  safetensors_header` minus `__metadata__`), and every tensor-key consumer in
+  `loader.py` was audited and routed through it, not just the one that broke
+  -- `flat_remap.py` itself was already safe (it only ever plans over a REAL
+  state dict's keys, which never carries `__metadata__`). Judgement call 1:
+  `minimax_music3_text_encoder_pruned_int8_convrot.safetensors` detected as
+  `flat_pruned` rather than being refused -- truthful about the vocabulary
+  layout, but the actual int8 refusal only fired later, inside the builder,
+  which is reached AFTER the F3 preflight had already let the request
+  through and torn the live model down -- reopening exactly the hole F3
+  closed, for this one quantization. Fixed by adding the same header-only
+  `_header_looks_quantized` check to the detector itself, before it commits
+  to a kind string, so `_load_model_locked`'s F3 preflight (which calls only
+  the detector) now refuses it pre-teardown too. Judgement call 2 (the DiT-
+  as-text-encoder and truncated-file refusals) was verified unaffected by
+  both fixes, against the real files, not only re-asserted from memory. All
+  four real text-encoder files plus the real flat DiT file are now in
+  `backend/tests/minimax_music3_text_encoder_choice_test.py`'s own matrix
+  (skipped cleanly, matching `minimax_h3_te_int8_convrot_test.py`'s own
+  convention, when `M:/model/minimax-music3` is not present) specifically so
+  an accept-path regression like this one cannot pass unnoticed again.
 - Frontend: txt2aud/extend UI shipped; repaint's UI branch is BLOCKED on a
   shared-worktree conflict (`frontend/src/components/generation/Img2ImgPanel.tsx`
   was dirty under another session's edits when this phase landed) -- not

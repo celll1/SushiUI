@@ -358,23 +358,28 @@ paths:
                     description: >-
                       Architecture name -> the `aud2aud`-only default keys
                       that differ from the base ones on that architecture.
-                      Empty today for every architecture — see this
-                      endpoint's own description.
                     additionalProperties:
                       type: object
                       additionalProperties: true
-                    example: {}
+                    example:
+                      minimax_music3:
+                        music3_repaint_mode: regenerate
+                        num_inference_steps: 30
+                        flow_guidance_scale: 1.7
                   outpaint_audio_arch_overlays:
                     type: object
                     description: >-
                       Architecture name -> the outpaint-audio-only default
                       keys that differ from the base ones on that
                       architecture, applied on top of `aud2aud_arch_overlays`.
-                      Empty today for every architecture.
                     additionalProperties:
                       type: object
                       additionalProperties: true
-                    example: {}
+                    example:
+                      minimax_music3:
+                        extend_duration_sec: 30.0
+                        num_inference_steps: 30
+                        flow_guidance_scale: 1.7
                   param_bounds:
                     type: object
                     description: >-
@@ -1057,8 +1062,9 @@ paths:
         MiniMax Music 3 additionally writes a per-generation frame-code
         sidecar next to the saved FLAC file (not exposed through this
         response), which a later `/generate/outpaint/audio` (extend) or
-        `/generate/aud2aud` (repaint/cover) request will read back once those
-        endpoints support this architecture.
+        `/generate/aud2aud` (repaint, `mode=repaint` only -- `mode=cover` is
+        refused for this architecture) request reads back to continue or
+        repaint the song.
       operationId: generateTxt2Aud
       requestBody:
         required: true
@@ -1118,10 +1124,10 @@ paths:
   /generate/aud2aud:
     post:
       tags: [generation]
-      summary: Generate a cover or repaint (audio-to-audio) from a reference clip (ACE-Step 1.5)
+      summary: Generate a cover or repaint (audio-to-audio) from a reference clip (ACE-Step 1.5 or MiniMax Music 3)
       description: |
-        Audio-to-audio generation using a loaded ACE-Step 1.5 (turbo) model,
-        with two sub-modes selected by `mode`:
+        Audio-to-audio generation. ACE-Step 1.5 (turbo) has two sub-modes
+        selected by `mode`:
 
         - `mode=cover` (default, the img2img analog): the uploaded reference
           clip is VAE-encoded and fed back to the model as the cover context
@@ -1135,30 +1141,61 @@ paths:
           (with a short crossfade at the boundaries), so only the
           repainted region actually changes.
 
-        Produces a lossless FLAC file and a gallery row in both modes.
+        MiniMax Music 3 supports `mode=repaint` ONLY (`mode=cover` is refused
+        -- turning arbitrary reference audio into the autoregressive stage's
+        semantic codes needs the RVQ tokenizer's unpublished encoder), and
+        `reference_audio` must be an UNMODIFIED copy of a song this server
+        already generated (matched by content hash against the gallery; the
+        frame-code sidecar `/generate/txt2aud`/`/generate/outpaint/audio`
+        write lives next to that song's own file on disk, not inside the
+        upload). `music3_repaint_mode` picks one of two mechanisms:
+
+        - `"regenerate"`: resumes the autoregressive stage from the prefix
+          codes and generates a NEW tail from the (snapped) `repaint_start`
+          onward, discarding the song's own codes after that point.
+          Content changes from that point on; everything before it is
+          preserved sample-exact.
+        - `"rerender"`: the codes never change; only the flow-matching
+          stage's rendering of `[repaint_start, repaint_end)` is redone
+          with a new seed. Timbre/mix change; lyrics/melody/timing do not.
+
+        Mid-song infill with a preserved tail is not offered by either
+        MiniMax Music 3 sub-mode (the autoregressive stage is a causal
+        language model).
+
+        Produces a lossless FLAC file and a gallery row in every mode; a
+        MiniMax Music 3 result also writes a new frame-code sidecar, so it
+        can itself be extended or repainted again.
 
         **Requirements:**
-        - An ACE-Step model must be loaded (otherwise 400).
+        - An ACE-Step 1.5 or MiniMax Music 3 model must be loaded (otherwise 400).
         - Sent as multipart/form-data with the `reference_audio` file plus
           the cover/repaint parameters as form fields.
 
         **Key parameters:**
         - `prompt`: caption text the reference (or repainted region) is
-          rendered under.
+          rendered under. Ignored (with a warning) for MiniMax Music 3 --
+          the sidecar's own stored caption is always reused.
         - `mode`: `cover` or `repaint`.
-        - `cover_strength` (cover only): fraction of steps that keep the
-          reference's semantic context (step-count blend, NOT an img2img
-          start-timestep/partial-denoise knob). Higher = closer to the
-          reference.
+        - `cover_strength` (ACE-Step cover only): fraction of steps that
+          keep the reference's semantic context (step-count blend, NOT an
+          img2img start-timestep/partial-denoise knob). Higher = closer to
+          the reference.
         - `repaint_start` / `repaint_end` (repaint only, required, seconds):
-          the time range to regenerate. Must satisfy `repaint_end >
-          repaint_start` (otherwise 400).
+          the time range to regenerate. Meaning depends on architecture and,
+          for MiniMax Music 3, on `music3_repaint_mode` -- see each field's
+          own description. Must satisfy `repaint_end > repaint_start`
+          (otherwise 400).
+        - `music3_repaint_mode` (MiniMax Music 3 repaint only): `"regenerate"`
+          or `"rerender"` -- see above.
         - Output duration is always derived from the reference clip's
           length, not user-supplied.
 
-        **Distilled defaults:** inference_steps=8, guidance_scale=1.0 (turbo
-        is CFG-distilled; a non-default value is overridden back to 1.0),
-        shift=3.0.
+        **ACE-Step distilled defaults:** inference_steps=8, guidance_scale=1.0
+        (turbo is CFG-distilled; a non-default value is overridden back to
+        1.0), shift=3.0. **MiniMax Music 3 defaults:** num_inference_steps=30
+        (per flow-matching chunk), flow_guidance_scale=1.7,
+        music3_repaint_mode="regenerate".
       operationId: generateAud2Aud
       requestBody:
         required: true
@@ -9055,6 +9092,23 @@ components:
               type: string
           example:
             minimax_music3: [extend_forward]
+        aud2aud_music3_repaint_modes:
+          type: object
+          description: |
+            Architecture name -> which `music3_repaint_mode` values
+            `POST /generate/aud2aud` (repaint mode only) accepts there.
+            Sibling table to `audio_outpaint_placements`, declared directly
+            (`backend/api/arch_capabilities.AUD2AUD_MUSIC3_REPAINT_MODES`).
+            MiniMax Music 3 lists `["regenerate", "rerender"]` -- see
+            `Aud2AudRequest.music3_repaint_mode` for what each means.
+            ACE-Step is ABSENT from this map: its own aud2aud has no such
+            sub-mode concept at all.
+          additionalProperties:
+            type: array
+            items:
+              type: string
+          example:
+            minimax_music3: [regenerate, rerender]
     ChainContextVariantCapability:
       type: object
       required:
@@ -11997,25 +12051,99 @@ components:
           type: string
           enum: [cover, repaint]
           default: cover
-          description: "Sub-mode. `cover` (img2img analog) re-renders the whole reference under the new caption/lyrics. `repaint` (inpaint analog) regenerates only [repaint_start, repaint_end) seconds of the reference, keeping the rest (approximately) unchanged."
+          description: |
+            Sub-mode. `cover` (img2img analog) re-renders the whole
+            reference under the new caption/lyrics -- ACE-Step ONLY;
+            refused (400) when a MiniMax Music 3 model is loaded, because
+            turning arbitrary reference audio into the autoregressive
+            stage's semantic codes needs the RVQ tokenizer's unpublished
+            encoder. `repaint` (inpaint analog) regenerates only
+            [repaint_start, repaint_end) seconds of the reference; on
+            ACE-Step this keeps the rest (approximately) unchanged, on
+            MiniMax Music 3 the meaning of the range depends on
+            `music3_repaint_mode` below -- MiniMax Music 3 MUST send
+            `mode=repaint`.
           example: cover
         repaint_start:
           type: number
           default: 0.0
           minimum: 0.0
-          description: "Repaint mode only. Start of the region to regenerate, in seconds. Required (with repaint_end) when mode=repaint."
+          description: |
+            Repaint mode only. ACE-Step: start of the region to regenerate,
+            in seconds. MiniMax Music 3: meaning depends on
+            `music3_repaint_mode` -- for `"regenerate"`, the point from
+            which the song is resumed and re-generated forward (snapped
+            server-side to the nearest flow-matching chunk-window
+            boundary); for `"rerender"`, the start of the range whose
+            flow-stage rendering is redone. Required (with repaint_end)
+            when mode=repaint.
           example: 4.0
         repaint_end:
           type: number
           default: 0.0
           minimum: 0.0
-          description: "Repaint mode only. End of the region to regenerate, in seconds. Must be greater than repaint_start (otherwise 400)."
+          description: |
+            Repaint mode only. ACE-Step: end of the region to regenerate,
+            in seconds. MiniMax Music 3: for `"regenerate"`, an UPPER BOUND
+            on the new tail's TOTAL song length (not a window end -- same
+            "duration is an upper bound" semantics as
+            `Txt2AudRequest.audio_duration`); for `"rerender"`, the end of
+            the re-rendered range (also snapped to the nearest chunk-window
+            boundary). Must be greater than repaint_start (otherwise 400).
           example: 7.0
+        music3_repaint_mode:
+          type: string
+          nullable: true
+          enum: [regenerate, rerender]
+          default: null
+          description: |
+            MiniMax Music 3 ONLY, repaint mode only. Which of the two
+            honest repaint mechanisms to run:
+
+            * `"regenerate"` -- AR-resume with the prefix codes as context
+              and a NEW tail from the (snapped) `repaint_start` onward.
+              Content changes from that point on; everything before it is
+              preserved sample-exact. Discards the song's own codes after
+              that point.
+            * `"rerender"` -- the codes never change; only the flow-stage
+              rendering of `[repaint_start, repaint_end)` is redone with a
+              new seed. Timbre/mix change; lyrics/melody/timing do not,
+              because the autoregressive stage never runs.
+
+            Mid-song infill with a preserved tail is not offered by either
+            mode (the autoregressive stage is a causal language model).
+            `null` (the default here) resolves to `"regenerate"` at request
+            time. No effect on ACE-Step.
+          example: regenerate
         vocal_language:
           type: string
           default: "en"
           description: "Language folded into the lyrics/metas conditioning text."
           example: "en"
+        num_inference_steps:
+          type: integer
+          nullable: true
+          default: null
+          minimum: 1
+          description: |
+            MiniMax Music 3 ONLY. Number of flow-matching denoising steps
+            PER CHUNK -- same field and semantics as
+            `Txt2AudRequest.num_inference_steps`; no effect on ACE-Step.
+            `null` (the default here) resolves to that architecture's own
+            default (30) at request time.
+          example: 30
+        flow_guidance_scale:
+          type: number
+          nullable: true
+          default: null
+          exclusiveMinimum: true
+          minimum: 0
+          description: |
+            MiniMax Music 3 ONLY. Flow-stage classifier-free guidance scale
+            -- same field and semantics as `Txt2AudRequest.flow_guidance_scale`;
+            no effect on ACE-Step. `null` (the default here) resolves to
+            1.7 at request time.
+          example: 1.7
         loras:
           type: string
           default: "[]"
@@ -12056,7 +12184,16 @@ components:
         reference_audio:
           type: string
           format: binary
-          description: "Reference audio clip (multipart file upload) used as the cover/repaint source. VAE-encoded and fed back to the model as conditioning (is_covers=true for cover mode, false for repaint mode). Output duration is derived from this clip's length, not user-supplied."
+          description: |
+            Reference audio clip (multipart file upload). ACE-Step: used as
+            the cover/repaint source -- VAE-encoded and fed back to the
+            model as conditioning (is_covers=true for cover mode, false for
+            repaint mode). Output duration is derived from this clip's
+            length, not user-supplied. MiniMax Music 3: MUST be an
+            UNMODIFIED copy of a song this server already generated
+            (matched by content hash against the gallery); repaint needs
+            the frame-code sidecar stored next to that song's own file on
+            disk, so an arbitrary upload is refused (400).
 
     OutpaintAudioRequest:
       type: object

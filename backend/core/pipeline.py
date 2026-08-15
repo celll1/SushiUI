@@ -3392,33 +3392,54 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         )
 
     def generate_aud2aud(self, params: Dict[str, Any], reference_audio, progress_callback=None, step_callback=None):
-        """Generate a cover OR repaint (audio-to-audio) from a reference clip
-        + text conditioning (ACE-Step 1.5 only). See
-        `AceStepMixin._generate_aud2aud_acestep` docstring for the full
-        mode contract.
+        """Generate a cover OR repaint (audio-to-audio) (ACE-Step 1.5), or a
+        repaint-only variant for a SushiUI-generated song (MiniMax Music 3,
+        design doc phase plan item 8). See `AceStepMixin._generate_aud2aud_
+        acestep`/`MiniMaxMusic3Mixin._generate_aud2aud_minimax_music3`
+        docstrings for each architecture's full mode contract -- the two are
+        NOT the same mechanism (ACE-Step's repaint holds everything OUTSIDE
+        a window and generates inside it via a diffusion repaint hold;
+        MiniMax Music 3 has no equivalent -- its "repaint" is either an
+        AR-resume from a point onward or a flow-stage-only re-render of an
+        already-decoded range -- see the latter's own docstring for why).
 
         Args:
-            params: Generation parameters -- caption/prompt, lyrics, mode
-                ("cover"|"repaint", default "cover"), cover_strength (cover
-                only), repaint_start/repaint_end (seconds, repaint only),
-                seed, inference_steps, guidance_scale, shift,
-                vocal_language/bpm/key_scale/time_signature.
-            reference_audio: a file path (str) or raw audio bytes for the
-                cover/repaint reference clip.
+            params: ACE-Step -- caption/prompt, lyrics, mode ("cover"|
+                "repaint", default "cover"), cover_strength (cover only),
+                repaint_start/repaint_end (seconds, repaint only), seed,
+                inference_steps, guidance_scale, shift, vocal_language/bpm/
+                key_scale/time_signature. MiniMax Music 3 -- `mode` (must be
+                `"repaint"`; `"cover"` is refused), `music3_repaint_mode`
+                (`"regenerate"`|`"rerender"`), `repaint_start`/`repaint_end`
+                (seconds; different meaning per sub-mode -- see
+                `_generate_aud2aud_minimax_music3`'s docstring),
+                `num_inference_steps`/`flow_guidance_scale` (required, no
+                fallback), `seed`.
+            reference_audio: ACE-Step -- a file path (str) or raw audio
+                bytes for the cover/repaint reference clip. MiniMax Music 3
+                -- a server-side file PATH (str) ONLY (the sidecar must
+                already sit next to it; raw upload bytes are refused).
             progress_callback: Called as (step, total_steps).
-            step_callback: Reserved (unused for ACE-Step aud2aud).
+            step_callback: Reserved (unused on either architecture).
 
         Returns:
-            tuple: (waveform, sample_rate, actual_seed) -- identical contract
-            to generate_txt2aud.
+            ACE-Step: `(waveform, sample_rate, actual_seed)` tuple --
+            identical contract to `generate_txt2aud`. MiniMax Music 3:
+            `MiniMaxMusic3RepaintResult` (NOT the plain 3-tuple -- see its
+            own docstring for why the frame-code state must survive the
+            call so a route can persist a new sidecar for the repainted
+            file).
         """
         if self.is_acestep_model:
             return self._generate_aud2aud_acestep(params, reference_audio, progress_callback, step_callback)
+        if self.is_minimax_music3_model:
+            return self._generate_aud2aud_minimax_music3(params, reference_audio, progress_callback, step_callback)
 
         from api.error_handlers import ValidationError
         raise ValidationError(
-            "Audio-to-audio generation requires an ACE-Step model",
-            detail="The currently loaded model is not an audio model. Load an ACE-Step model to use /generate/aud2aud.",
+            "Audio-to-audio generation requires an ACE-Step or MiniMax Music 3 model",
+            detail="The currently loaded model is not an audio model. Load an ACE-Step or MiniMax Music 3 model "
+                   "to use /generate/aud2aud.",
         )
 
     def generate_aud_outpaint(self, params: Dict[str, Any], reference_audio, progress_callback=None, step_callback=None):

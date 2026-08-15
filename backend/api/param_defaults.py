@@ -1637,18 +1637,36 @@ AUD2AUD_DEFAULTS: Dict[str, Any] = {
 }
 
 # Per-architecture overlay twin of `AUDIO_GEN_ARCH_OVERLAYS`, for
-# `/generate/aud2aud`'s own key set. Empty for now: MiniMax Music 3's
-# repaint/cover mechanism (design doc phase plan item 8) needs its own two
-# AR-resume/re-render paths over the frame-code sidecar
-# `/generate/txt2aud` writes (design doc "Per-generation state contract");
-# `/generate/outpaint/audio`'s extend mechanism (item 7,
-# `OUTPAINT_AUDIO_ARCH_OVERLAYS` below) already reads that same sidecar
-# back, but `/generate/aud2aud` still refuses a MiniMax Music 3 model
-# outright (`routes._reject_if_music3_repaint_not_yet_wired`) until item 8
-# ships. The mechanism is introduced now, empty, so item 8 adds an overlay
-# entry rather than inventing this file's second half of the pattern from
-# scratch.
-AUD2AUD_GEN_ARCH_OVERLAYS: Dict[str, Dict[str, Any]] = {}
+# `/generate/aud2aud`'s own key set. MiniMax Music 3 (design doc phase plan
+# item 8, "repaint") needs three keys ACE-Step has no equivalent of:
+# `music3_repaint_mode` (which of the two honest repaint mechanisms to run --
+# see `core.pipeline_backends.minimax_music3.MiniMaxMusic3Mixin.
+# _generate_aud2aud_minimax_music3`'s docstring), and the same
+# `num_inference_steps`/`flow_guidance_scale` flow-stage keys `AUDIO_GEN_ARCH_
+# OVERLAYS`/`OUTPAINT_AUDIO_ARCH_OVERLAYS` already overlay for this
+# architecture's other two audio routes. `repaint_start`/`repaint_end` are
+# already declared in `AUD2AUD_DEFAULTS` above (shared with ACE-Step's own
+# repaint sub-mode) but carry a DIFFERENT meaning per MiniMax Music 3 sub-mode
+# -- see that same docstring -- so they are not duplicated here.
+AUD2AUD_GEN_ARCH_OVERLAYS: Dict[str, Dict[str, Any]] = {
+    "minimax_music3": {
+        # Which of the two honest repaint mechanisms to run -- "regenerate"
+        # (AR-resume with a new tail from a point onward) or "rerender" (keep
+        # the codes, redraw the flow stage over a window with a new seed).
+        # "cover" (ACE-Step's other aud2aud mode) is never valid for this
+        # architecture and has no default here -- `mode` itself (inherited
+        # from AUD2AUD_DEFAULTS above, default "cover") must be explicitly
+        # "repaint" for a MiniMax Music 3 request to be accepted at all.
+        "music3_repaint_mode": "regenerate",
+        # Per CHUNK (the flow-matching DiT's 200-frame windows), matching
+        # AUDIO_GEN_ARCH_OVERLAYS/OUTPAINT_AUDIO_ARCH_OVERLAYS's identical
+        # entries for this architecture's other two audio routes.
+        "num_inference_steps": 30,
+        # Flow-stage CFG; AR CFG (1.5) and top-k (50) stay fixed by the
+        # reference recipe, same as txt2aud/extend.
+        "flow_guidance_scale": 1.7,
+    },
+}
 
 
 def aud2aud_defaults_for_arch(arch: Optional[str],

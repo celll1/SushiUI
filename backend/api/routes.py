@@ -584,33 +584,12 @@ def _reject_if_video_model_on_audio_route(endpoint: str):
         )
 
 
-def _reject_if_music3_repaint_not_yet_wired(endpoint: str):
-    """MiniMax Music 3 text-to-music generation (/generate/txt2aud, design doc
-    phase plan item 4) and extend (/generate/outpaint/audio, item 7) are both
-    shipped; repaint/cover (/generate/aud2aud, item 8) is not.
-
-    Repaint needs the frame-code sidecar's AR-resume replay for its
-    "regenerate from T onward" mode (design doc "Per-generation state
-    contract" / `core.models.minimax_music3.frame_codes`) plus a re-render
-    mode with no AR-resume mechanism at all yet. Without this gate,
-    `/generate/aud2aud` would fall through to "No ACE-Step model loaded"
-    while a Music3 model is actually loaded -- true only in the narrow sense
-    that it isn't ACE-Step, and misleading about why, and it would also
-    misdescribe two working features (txt2aud, extend) as unimplemented.
-
-    The single remaining caller is `/generate/aud2aud`; `endpoint` is kept as
-    a parameter (rather than hardcoding the string) only so the message names
-    whichever route actually called this.
-    """
-    if getattr(pipeline_manager, "is_minimax_music3_model", False):
-        raise CustomValidationError(
-            "MiniMax Music 3 repaint/cover is not implemented yet",
-            detail=f"The loaded model is MiniMax Music 3. Its text-to-music generation "
-                   f"(/generate/txt2aud) and extend (/generate/outpaint/audio) are implemented, but "
-                   f"{endpoint}'s repaint/cover mechanism -- resuming the autoregressive stage from "
-                   f"the saved frame-code sidecar, or re-rendering the flow stage over a fixed "
-                   f"window -- has not shipped yet.",
-        )
+# NOTE: `_reject_if_music3_repaint_not_yet_wired` lived here. It refused
+# `/generate/aud2aud` for a loaded MiniMax Music 3 model with "not implemented
+# yet" while design doc phase plan item 8 (repaint) had not shipped. Removed
+# now that `generate_aud2aud` below dispatches MiniMax Music 3 to
+# `_generate_aud2aud_minimax_music3` (mode="repaint" only -- mode="cover" is
+# refused there with a capability reason, not a "not implemented yet" one).
 
 
 # NOTE: `_reject_if_video_arch_unwired` lived here. It refused a video endpoint
@@ -922,11 +901,17 @@ async def get_arch_capabilities():
     MiniMax Music 3 lists only `["extend_forward"]` (its autoregressive stage
     is a causal language model); ACE-Step has no entry at all, since its own
     placement is a continuous timeline offset, not an enumerated set.
+
+    `aud2aud_music3_repaint_modes` is the sibling table for `POST
+    /generate/aud2aud`'s `music3_repaint_mode` field (repaint mode only,
+    design doc phase plan item 8): MiniMax Music 3 lists
+    `["regenerate", "rerender"]`; ACE-Step has no entry (its own aud2aud has
+    no such sub-mode concept at all).
     """
     from api.arch_capabilities import (
         ARCH_SUPPORTED_VALUES, ARCH_UNSUPPORTED, FEATURE_PARAMS, FEATURE_LABELS,
         QUANTIZED_LINEAR_ARCHS, RUNTIME_INT8_ARCHS, TRAINING_UNSUPPORTED,
-        AUDIO_OUTPAINT_PLACEMENTS,
+        AUDIO_OUTPAINT_PLACEMENTS, AUD2AUD_MUSIC3_REPAINT_MODES,
         chain_context_payload, video_constraints_payload,
     )
     return {
@@ -940,6 +925,7 @@ async def get_arch_capabilities():
         "runtime_int8_archs": list(RUNTIME_INT8_ARCHS),
         "quantized_linear_archs": list(QUANTIZED_LINEAR_ARCHS),
         "audio_outpaint_placements": {k: list(v) for k, v in AUDIO_OUTPAINT_PLACEMENTS.items()},
+        "aud2aud_music3_repaint_modes": {k: list(v) for k, v in AUD2AUD_MUSIC3_REPAINT_MODES.items()},
     }
 
 
@@ -3335,26 +3321,58 @@ async def generate_aud2aud(
     # Weight-only quantization; see the Txt2AudRequest fields for both axes.
     unet_quantization: Optional[str] = Form(AUD2AUD_DEFAULTS["unet_quantization"]),
     quantized_gemm_mode: Optional[str] = Form(AUD2AUD_DEFAULTS["quantized_gemm_mode"]),
+    # MiniMax Music 3 repaint only (design doc phase plan item 8). `Form(None)`
+    # sentinels, resolved below via `aud2aud_defaults_for_arch` -- mirrors
+    # `/generate/outpaint/audio`'s identical resolution of its own per-arch
+    # overlay keys. AceStepMixin never reads any of these.
+    music3_repaint_mode: Optional[str] = Form(None),
+    num_inference_steps: Optional[int] = Form(None, ge=1),
+    flow_guidance_scale: Optional[float] = Form(None, gt=0),
     reference_audio: UploadFile = File(...),
     db: Session = Depends(get_gallery_db)
 ):
-    """Generate a cover OR repaint (audio-to-audio) from a reference clip
-    using the loaded ACE-Step 1.5 model.
+    """Generate a cover OR repaint (audio-to-audio) from a reference clip.
 
-    Multipart form: an uploaded reference audio clip plus the cover/repaint
-    parameters. `mode="cover"` (default) re-renders the WHOLE reference
-    under a new caption/lyrics (the reference is VAE-encoded and fed back to
-    the DiT as the cover context, `is_covers=True`). `mode="repaint"`
-    regenerates only `[repaint_start, repaint_end)` seconds of the
-    reference, keeping everything outside that window (approximately)
+    ACE-Step 1.5: multipart form, an uploaded reference audio clip plus the
+    cover/repaint parameters. `mode="cover"` (default) re-renders the WHOLE
+    reference under a new caption/lyrics (the reference is VAE-encoded and
+    fed back to the DiT as the cover context, `is_covers=True`).
+    `mode="repaint"` regenerates only `[repaint_start, repaint_end)` seconds
+    of the reference, keeping everything outside that window (approximately)
     unchanged -- see
     `core.pipeline_backends.acestep.AceStepMixin._generate_aud2aud_acestep`
-    for the full mechanism (latent-domain repaint hold + boundary blend,
-    plus a post-decode waveform splice). Duration is always derived from
-    the reference's length, not user-supplied. Produces a lossless FLAC
-    file and a gallery row. Requires an ACE-Step model to be loaded.
+    for the full mechanism.
+
+    MiniMax Music 3: `mode` MUST be `"repaint"` (`"cover"` is refused --
+    turning arbitrary reference audio into the autoregressive stage's
+    semantic codes needs the RVQ tokenizer's unpublished encoder).
+    `reference_audio` must be an UNMODIFIED copy of a song this server
+    already generated (matched by content hash against the gallery, same
+    mechanism `/generate/outpaint/audio`'s extend already uses) -- repaint
+    needs the frame-code sidecar stored next to that song's own file on
+    disk, so an arbitrary upload is refused with that reason.
+    `music3_repaint_mode` selects one of two honest mechanisms -- see
+    `core.pipeline_backends.minimax_music3.MiniMaxMusic3Mixin.
+    _generate_aud2aud_minimax_music3` for the full contract:
+
+      * `"regenerate"` -- AR-resume with the prefix codes as context and a
+        NEW tail from `repaint_start` onward (an upper bound, same
+        semantics as `extend_duration_sec`); `repaint_end` is the upper
+        bound on the new tail's TOTAL song length, not a window end.
+        Content changes from `repaint_start` onward; everything before it
+        is preserved sample-exact.
+      * `"rerender"` -- the codes never change; only the flow-matching
+        stage's rendering of `[repaint_start, repaint_end)` is redone with
+        a new seed. Timbre/mix change; lyrics/melody/timing do not.
+
+    Mid-song infill with a preserved tail is not offered by either mode
+    (the autoregressive stage is a causal language model).
+
+    Duration is always derived from the reference's length, not
+    user-supplied. Produces a lossless FLAC file and a gallery row.
+    Requires an ACE-Step 1.5 or MiniMax Music 3 model to be loaded.
     """
-    from api.generation_status import start_generation, complete_generation, fail_generation, get_warnings
+    from api.generation_status import start_generation, complete_generation, fail_generation, get_warnings, add_warning
     from utils.audio_utils import save_audio_with_metadata
 
     # Parse LoRA configs (same JSON-string-of-configs convention as txt2img/img2img/inpaint)
@@ -3372,6 +3390,31 @@ async def generate_aud2aud(
             detail=f"repaint_end ({repaint_end}) must be greater than repaint_start ({repaint_start}).",
         )
 
+    # MiniMax-H3 first: it DOES generate audio, but only jointly with video, so
+    # the generic "no ACE-Step/Music3 model" message below would misdescribe it.
+    _reject_if_video_model_on_audio_route("/generate/aud2aud")
+    _aud_arch = (pipeline_manager.current_model_info or {}).get("type")
+    _is_music3 = getattr(pipeline_manager, "is_minimax_music3_model", False)
+    if not (getattr(pipeline_manager, "is_acestep_model", False) or _is_music3):
+        raise CustomValidationError(
+            "No ACE-Step or MiniMax Music 3 model loaded",
+            detail="Load an ACE-Step 1.5 or MiniMax Music 3 audio model before calling /generate/aud2aud.",
+        )
+
+    # MiniMax Music 3: resolve the omitted `Form(None)` sentinels from the
+    # per-arch overlay -- mirrors /generate/outpaint/audio's identical
+    # resolution of its own overlay-only fields. ACE-Step has no overlay
+    # entry, so these three keys stay whatever the client sent (`None` if
+    # omitted; harmless, since AceStepMixin never reads them).
+    from api.param_defaults import aud2aud_defaults_for_arch
+    _resolved_aud2aud = aud2aud_defaults_for_arch(_aud_arch)
+    if music3_repaint_mode is None and "music3_repaint_mode" in _resolved_aud2aud:
+        music3_repaint_mode = str(_resolved_aud2aud["music3_repaint_mode"])
+    if num_inference_steps is None and "num_inference_steps" in _resolved_aud2aud:
+        num_inference_steps = int(_resolved_aud2aud["num_inference_steps"])
+    if flow_guidance_scale is None and "flow_guidance_scale" in _resolved_aud2aud:
+        flow_guidance_scale = float(_resolved_aud2aud["flow_guidance_scale"])
+
     params = {
         "prompt": prompt,
         "lyrics": lyrics,
@@ -3386,20 +3429,15 @@ async def generate_aud2aud(
         "vocal_language": vocal_language,
         "loras": lora_configs,
         "unet_quantization": unet_quantization,
+        # MiniMax Music 3 repaint only; AceStepMixin never reads these keys
+        # (mirrors OUTPAINT_AUDIO_DEFAULTS' inherited-but-unused fields note).
+        "music3_repaint_mode": music3_repaint_mode,
+        "num_inference_steps": num_inference_steps,
+        "flow_guidance_scale": flow_guidance_scale,
         # Normalized here (not after start_generation) so an invalid value is a
         # 400 rather than a 500 from inside the run.
         "quantized_gemm_mode": _normalize_media_qgm(quantized_gemm_mode),
     }
-
-    # MiniMax-H3 first: it DOES generate audio, but only jointly with video, so
-    # the generic "no ACE-Step model" message below would misdescribe it.
-    _reject_if_video_model_on_audio_route("/generate/aud2aud")
-    _reject_if_music3_repaint_not_yet_wired("/generate/aud2aud")
-    if not getattr(pipeline_manager, "is_acestep_model", False):
-        raise CustomValidationError(
-            "No ACE-Step model loaded",
-            detail="Load an ACE-Step 1.5 audio model before calling /generate/aud2aud.",
-        )
 
     # Read the uploaded reference audio clip.
     try:
@@ -3412,13 +3450,40 @@ async def generate_aud2aud(
             detail=str(e),
         )
 
+    if _is_music3:
+        # Same content-hash-against-the-gallery resolution `/generate/outpaint/audio`'s extend uses, for the
+        # identical reason (the sidecar lives next to a specific server-side file, not inside the upload). "repaint"
+        # is included in the generation_type filter (alongside "txt2aud"/"outpaint_aud") because a repainted song's
+        # own result also carries a frame-code sidecar (written below) and can itself be repainted or extended
+        # again.
+        _src_hash = calculate_bytes_hash(reference_audio_bytes)
+        _src_row = (
+            db.query(GeneratedImage)
+            .filter(GeneratedImage.image_hash == _src_hash)
+            .filter(GeneratedImage.generation_type.in_(["txt2aud", "outpaint_aud", "repaint"]))
+            .order_by(GeneratedImage.created_at.asc())
+            .first()
+        )
+        if _src_row is None or not _src_row.filename:
+            raise CustomValidationError(
+                "MiniMax Music 3 audio repaint requires a song already in this gallery",
+                detail="Repaint resumes/re-renders from a frame-code sidecar stored next to the original audio "
+                       "file on this server; an arbitrary upload (or an edited/re-encoded copy) has no such "
+                       "sidecar and cannot be matched to one. Use \"Send to Repaint\" on a MiniMax Music 3 song "
+                       "already in the gallery, rather than uploading a new file. Cover/style transfer from "
+                       "arbitrary audio is not available for this architecture -- see the RVQ-tokenizer-encoder "
+                       "reason in this route's docstring.",
+            )
+        reference_audio_source = os.path.join(settings.outputs_dir, _src_row.filename)
+    else:
+        reference_audio_source = reference_audio_bytes
+
     _gen_id = start_generation("aud2aud")
     try:
         pipeline_manager.reset_cancel_flag()
 
         from api.arch_capabilities import check_arch_capabilities
-        _acestep_arch = (pipeline_manager.current_model_info or {}).get("type")
-        check_arch_capabilities(params, _acestep_arch)
+        check_arch_capabilities(params, _aud_arch)
 
         print(f"aud2aud generation params: {sanitize_params_for_logging(params)}")
 
@@ -3443,25 +3508,38 @@ async def generate_aud2aud(
         from core.gpu_coordinator import gpu_coordinator
         loop = asyncio.get_event_loop()
         _gen_start = time.perf_counter()
-        # Arch-dependent (see /generate/txt2aud's identical lookup): still
-        # always resolves to "acestep" today, since MiniMax Music 3 is
-        # refused above, but this stays correct once that gate lifts.
+        # Arch-dependent (see /generate/txt2aud's identical lookup): MiniMax Music 3's language model + depth
+        # decoder (AR stage) and transformer + condition encoder (flow stage) peak far above ACE-Step's DiT+VAE+TE
+        # footprint.
         _peak_gb = _PEAK_VRAM_GB_BY_KIND.get(pipeline_manager.current_pipeline_kind, _PEAK_VRAM_GB_BY_KIND["acestep"])
         async with gpu_coordinator.generation_slot(estimated_peak_gb=_peak_gb, timeout=120.0):
             # GEMM flags are process-wide; keep selection and probing in this slot.
             from api.quantized_gemm import apply_quantized_gemm_mode
             apply_quantized_gemm_mode(params.get("quantized_gemm_mode"))
-            waveform, sample_rate, actual_seed = await _run_generation_in_executor(
+            _gen_result = await _run_generation_in_executor(
                 loop, executor,
-                lambda: pipeline_manager.generate_aud2aud(params, reference_audio_bytes, progress_callback=progress_callback)
+                lambda: pipeline_manager.generate_aud2aud(params, reference_audio_source, progress_callback=progress_callback)
             )
             fp8_gemm = extract_fp8_gemm_info(pipeline_manager)
         apply_generation_timings(params, time.perf_counter() - _gen_start)
-        _record_media_gemm_outcome(params, fp8_gemm, _acestep_arch)
+        _record_media_gemm_outcome(params, fp8_gemm, _aud_arch)
+
+        # ACE-Step returns a plain (waveform, sample_rate, actual_seed) tuple; MiniMax Music 3 returns
+        # `MiniMaxMusic3RepaintResult`, which also carries the FULL (post-repaint) frame codes the sidecar below
+        # needs -- see that result type's own docstring.
+        if _is_music3:
+            waveform = _gen_result.waveform
+            sample_rate = _gen_result.sample_rate
+            actual_seed = _gen_result.actual_seed
+        else:
+            waveform, sample_rate, actual_seed = _gen_result
 
         params["seed"] = actual_seed
 
-        # Hash the reference clip (mirrors img2img/img2vid's source_image_hash).
+        # Hash the reference clip (mirrors img2img/img2vid's source_image_hash). For MiniMax Music 3 this is the
+        # hash of the ORIGINAL (pre-repaint) song, since `reference_audio_bytes` is the exact bytes matched
+        # against the gallery above -- same "what was this generated from" semantics as /generate/outpaint/audio's
+        # identical field.
         params["source_audio_hash"] = calculate_bytes_hash(reference_audio_bytes)
 
         # Encode FLAC, waveform PNG (thumbnail seed), and sidecar JSON.
@@ -3486,6 +3564,20 @@ async def generate_aud2aud(
         num_samples = int(waveform.shape[-1])
         duration_s = (num_samples / sample_rate) if sample_rate else 0.0
         params_for_db = {k: v for k, v in params.items() if not k.startswith("_")}
+        # Cross-arch keys never applied to the OTHER architecture's request are dropped rather than persisted as
+        # a null/inert value -- same reasoning (and the same class of finding) as /generate/outpaint/audio's
+        # identical filter: a user reading gallery parameters back would otherwise see MiniMax Music 3's
+        # `music3_repaint_mode`/`num_inference_steps`/`flow_guidance_scale` (always None) on an ACE-Step row, or
+        # ACE-Step's `cover_strength`/`shift`/`vocal_language` on a Music 3 row, none of which ever had any effect
+        # on that generation. This is also what keeps the earlier "ACE-Step's aud2aud output is unaffected by
+        # this phase" claim accurate at the SAVED-ROW level too, not only for the generated audio/file bytes --
+        # without this, an ACE-Step row would gain three new always-null keys it did not carry before.
+        if _is_music3:
+            for _key in ("cover_strength", "inference_steps", "guidance_scale", "shift", "vocal_language"):
+                params_for_db.pop(_key, None)
+        else:
+            for _key in ("music3_repaint_mode", "num_inference_steps", "flow_guidance_scale"):
+                params_for_db.pop(_key, None)
         # Audio has no visual dimensions; do not let create_db_image_record's
         # width/height fallback (512) fabricate a fake resolution.
         params_for_db["width"] = 0
@@ -3494,11 +3586,41 @@ async def generate_aud2aud(
         params_for_db["sample_rate"] = sample_rate
         params_for_db["is_audio"] = True
         params_for_db["hash_kind"] = "file_bytes"
+
+        model_name, model_hash = extract_model_info(pipeline_manager)
+
+        # MiniMax Music 3's per-generation state contract, extended to repaint: the NEW sidecar carries the FULL
+        # (post-repaint) code sequence, so repainting or extending this file again replays the whole history --
+        # mirrors /generate/txt2aud's and /generate/outpaint/audio's identical write (same best-effort: a write
+        # failure must not fail an already-succeeded generation, surfaced as a warning rather than only a console
+        # print).
+        if _is_music3:
+            from core.models.minimax_music3.frame_codes import write_frame_codes_sidecar
+            try:
+                write_frame_codes_sidecar(
+                    os.path.join(settings.outputs_dir, filename),
+                    _gen_result.frame_codes,
+                    _gen_result.prefix_codes,
+                    sample_rate=sample_rate,
+                    frame_rate=_gen_result.frame_rate,
+                    prompt=_gen_result.prompt,
+                    lyrics=_gen_result.lyrics,
+                    seed=actual_seed,
+                    num_samples=num_samples,
+                    content_hash=_media_hash,
+                    model_hash=model_hash,
+                )
+            except Exception as exc:
+                _sidecar_error_msg = (
+                    f"Failed to write the frame-code sidecar for {filename!r} ({exc!r}); "
+                    f"this song cannot be extended or repainted further."
+                )
+                print(f"[MiniMaxMusic3] WARNING: {_sidecar_error_msg}")
+                add_warning(_sidecar_error_msg, code="sidecar_write_failed")
+
         _effective_warnings = get_warnings(_gen_id)
         if _effective_warnings:
             params_for_db["effective_warnings"] = _effective_warnings
-
-        model_name, model_hash = extract_model_info(pipeline_manager)
 
         db_image = create_db_image_record(
             GeneratedImage,
@@ -3720,11 +3842,10 @@ async def generate_outpaint_audio(
         _src_row = (
             db.query(GeneratedImage)
             .filter(GeneratedImage.image_hash == _src_hash)
-            # txt2aud and a previous extend are the two generation types that
-            # can produce a MiniMax-Music3 song with a frame-code sidecar
-            # today; phase 8 (repaint) adds "aud2aud" to this list once it
-            # ships its own AR-resume/re-render path.
-            .filter(GeneratedImage.generation_type.in_(["txt2aud", "outpaint_aud"]))
+            # txt2aud, a previous extend, and a previous repaint (design doc phase plan item 8,
+            # /generate/aud2aud's own identical filter) are the three generation types that can produce a
+            # MiniMax-Music3 song with a frame-code sidecar.
+            .filter(GeneratedImage.generation_type.in_(["txt2aud", "outpaint_aud", "repaint"]))
             .order_by(GeneratedImage.created_at.asc())
             .first()
         )

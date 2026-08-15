@@ -144,11 +144,12 @@ def test_check_arch_capabilities_warns_on_negative_prompt_when_forced():
 def test_check_arch_capabilities_warns_on_reference_audio_conditioning_when_forced():
     """Proves the table ENTRY and its FEATURE_PARAMS wiring, not a live
     refusal -- see this module's docstring "REACHABILITY". `is_cover` is
-    force-inserted into a hand-built dict because no real request can carry
-    it today (pinned by the test above); its real future surface is an
-    aud2aud "cover" request, which this architecture's `/generate/aud2aud`
-    route refuses outright regardless
-    (`routes._reject_if_music3_repaint_not_yet_wired`).
+    force-inserted into a hand-built dict because no real `Txt2AudRequest`/
+    `Aud2AudRequest` field carries it today (pinned by the test above); its
+    real surface is an aud2aud `mode="cover"` request (design doc phase plan
+    item 8), which `MiniMaxMusic3Mixin._generate_aud2aud_minimax_music3`
+    refuses outright for this architecture with the RVQ-tokenizer-encoder
+    capability reason, at the mechanism layer rather than this warning table.
     """
     params = dict(_defaults())
     params["is_cover"] = True

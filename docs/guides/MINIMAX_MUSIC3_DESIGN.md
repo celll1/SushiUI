@@ -458,8 +458,17 @@ from phase 1 doubles as a training-data artifact for the flow stage.
 
 - Official snapshot and flat artifacts: staged and verified under
   `M:/model/minimax-music3/`, provenance in `manifest.json`.
-- Upstream pipeline code: identified, fetched, and reviewed; not yet vendored.
-- SushiUI backend / API / frontend: not yet changed.
+- Upstream pipeline code: vendored and ported (phase plan item 1).
+- Backend: phases 1-8 of the phase plan are implemented -- vendor/port,
+  loader/registry, txt2aud, API/`param_defaults.py`/`arch_capabilities.py`
+  wiring, extend (`/generate/outpaint/audio`), and repaint
+  (`/generate/aud2aud` with `mode="repaint"`, both the "regenerate" and
+  "rerender" sub-modes). Items 9-14 (flat/GGUF key remap, pruned vocabulary,
+  Q8_0 residency, INT8 ConvRot, docs) are not yet done.
+- Frontend: txt2aud/extend UI shipped; repaint's UI branch is BLOCKED on a
+  shared-worktree conflict (`frontend/src/components/generation/Img2ImgPanel.tsx`
+  was dirty under another session's edits when this phase landed) -- not
+  implemented in this phase.
 
 ## Revision history
 

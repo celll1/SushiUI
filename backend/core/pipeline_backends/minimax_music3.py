@@ -182,6 +182,122 @@ def combined_progress(
     return max(0, min(int(round(combined)), total_units))
 
 
+# ---------------------------------------------------------------------------
+# Chunk/decode geometry: pure, weight-free functions (no component access),
+# used by repaint's "re-render a range" mode (design doc phase plan item 8,
+# "Modality surfaces") to work out, IN SAMPLES, exactly which span of an
+# already-decoded audio file a given range of chunk indices corresponds to --
+# without running the model. This is what makes a byte-exact splice possible:
+# `MiniMaxMusic3ConditionEncoder.forward`'s frame -> latent resample (nearest-
+# neighbor, `input_sampling_rate`/`input_hop_length` -> `output_sampling_rate`/
+# `output_hop_length`) and `MiniMaxMusic3Pipeline.decode`'s crop (`CROP_LEFT_
+# LATENT`/`CROP_RIGHT_LATENT` latent frames per window) are BOTH deterministic
+# functions of a chunk's FRAME COUNT alone, never of the tensor's CONTENT --
+# so replaying that exact arithmetic here, with no model loaded, reproduces
+# the real decode's per-chunk sample counts precisely. `_generate_txt2aud_
+# minimax_music3`'s own `frame_hiddens` -> `latents` -> `decode` path is the
+# ground truth this mirrors; `minimax_music3_chunk_geometry_test.py` proves
+# the same crop arithmetic against a real (tiny, synthetic) pipeline.
+# ---------------------------------------------------------------------------
+def prepare_chunk_starts(num_frames: int, chunk_frames: int, chunk_hop: int) -> "list[int]":
+    """Pure mirror of `MiniMaxMusic3Pipeline.prepare_chunks`'s chunk-start arithmetic (which needs a real
+    `frame_hiddens` tensor only to read its own frame-axis length) -- identical output for the same `num_frames`.
+    """
+    if num_frames <= chunk_frames:
+        return [0]
+    return list(range(0, num_frames - chunk_hop, chunk_hop))
+
+
+def compute_condition_latent_length(
+    num_frames_in_chunk: int,
+    input_sampling_rate: int,
+    input_hop_length: int,
+    output_sampling_rate: int,
+    output_hop_length: int,
+) -> int:
+    """Pure mirror of `MiniMaxMusic3ConditionEncoder.forward`'s `latent_length` formula -- the exact integer
+    `F.interpolate(..., size=latent_length, mode="nearest")` target it computes from a chunk's frame count alone,
+    with NO dependency on the tensor's content. Reproduced here so repaint's geometry accounting needs no model.
+    """
+    return max(
+        1,
+        int(num_frames_in_chunk * output_sampling_rate / input_sampling_rate * input_hop_length / output_hop_length),
+    )
+
+
+def compute_chunk_geometry(
+    num_frames_total: int,
+    chunk_frames: int,
+    chunk_hop: int,
+    input_sampling_rate: int,
+    input_hop_length: int,
+    output_sampling_rate: int,
+    output_hop_length: int,
+) -> "list[dict]":
+    """Every chunk `MiniMaxMusic3Pipeline.prepare_chunks`/`denoise_chunks` would produce for a song of
+    `num_frames_total` emitted frames, as `{"start", "end", "latent_length"}` dicts (AR-frame start/end, and the
+    condition encoder's own deterministic latent-frame count for that chunk) -- pure, no model needed.
+    """
+    chunk_starts = prepare_chunk_starts(num_frames_total, chunk_frames, chunk_hop)
+    geometry = []
+    for chunk_start in chunk_starts:
+        chunk_end = min(chunk_start + chunk_frames, num_frames_total)
+        n = chunk_end - chunk_start
+        latent_length = compute_condition_latent_length(
+            n, input_sampling_rate, input_hop_length, output_sampling_rate, output_hop_length,
+        )
+        geometry.append({"start": chunk_start, "end": chunk_end, "latent_length": latent_length})
+    return geometry
+
+
+def compute_cumulative_samples(
+    num_frames_total: int,
+    hop_length: int,
+    chunk_frames: int,
+    chunk_hop: int,
+    crop_left_latent: int,
+    crop_right_latent: int,
+    input_sampling_rate: int,
+    input_hop_length: int,
+    output_sampling_rate: int,
+    output_hop_length: int,
+) -> "list[int]":
+    """`cumulative[k]` = the exact number of DECODED AUDIO SAMPLES `MiniMaxMusic3Pipeline.decode` would produce
+    from chunks `[0, k)` of a `num_frames_total`-frame song's FULL chunk sequence -- i.e. the sample offset at
+    which chunk `k`'s own (cropped) output begins in the full song's decoded waveform. `cumulative[len(chunk_
+    starts)]` equals the FULL decoded sample count (a strong self-check: it must match the sidecar's own recorded
+    `num_samples` for the file this is computed against -- see the callers below, which assert exactly that).
+
+    Uses the SAME left/right crop exception `decode` uses -- crop 0 on the side that is chunk index 0 / the LAST
+    chunk of the WHOLE `num_frames_total`-frame sequence, `crop_left_latent`/`crop_right_latent` otherwise -- so
+    this is only meaningful when `num_frames_total` is the REAL total frame count of the song being spliced
+    against (not an arbitrary sub-range's local frame count, which would misapply the edge exception).
+
+    Geometry self-check (why matching `cumulative[-1]` against a file's real sample count is enough, even though
+    it only checks the TOTAL length, not any individual boundary). Every INTERNAL chunk keeps exactly
+    `CHUNK_HOP` frames' worth of latents (`CROP_RIGHT_LATENT` is defined as `344 - CROP_LEFT_LATENT`, and a
+    100-frame hop is exactly 344 latents at the checkpoint's frame->latent ratio -- see `defaults.py`), so the
+    per-chunk kept spans TELESCOPE: chunk `k`'s kept span starts exactly where chunk `k-1`'s ends, for every
+    internal `k`. This means the individual `cumulative[k]` boundaries are not independent guesses that happen to
+    sum to the right total -- once the SUM matches the file's real length, every intermediate entry is a genuine
+    segment boundary on disk (a coarser subgrid of chunk starts, never a misaligned one). Checked directly against
+    a real (tiny, synthetic) pipeline across 19 frame counts spanning every 200/100-hop boundary in
+    `minimax_music3_repaint_test.py`, and by construction (not sampling) for every case the self-check accepts.
+    """
+    geometry = compute_chunk_geometry(
+        num_frames_total, chunk_frames, chunk_hop,
+        input_sampling_rate, input_hop_length, output_sampling_rate, output_hop_length,
+    )
+    num_chunks = len(geometry)
+    cumulative = [0]
+    for idx, g in enumerate(geometry):
+        left = 0 if idx == 0 else crop_left_latent
+        right = 0 if idx == num_chunks - 1 else crop_right_latent
+        kept = max(0, g["latent_length"] - left - right)
+        cumulative.append(cumulative[-1] + kept * hop_length)
+    return cumulative
+
+
 class MiniMaxMusic3Txt2AudResult(NamedTuple):
     """Return shape of `_generate_txt2aud_minimax_music3`.
 
@@ -239,6 +355,35 @@ class MiniMaxMusic3ExtendResult(NamedTuple):
     prompt: str
     lyrics: str
     appended_num_frames: int  # how many of `num_frames` are NEW (this call only)
+
+
+class MiniMaxMusic3RepaintResult(NamedTuple):
+    """Return shape of `_generate_aud2aud_minimax_music3` (design doc phase plan item 8, "repaint").
+
+    Mirrors `MiniMaxMusic3ExtendResult` field-for-field for the same reason (a route must be able to write a NEW
+    sidecar for the repainted file so it can itself be extended or repainted again) -- `frame_codes`/`prefix_codes`/
+    `num_frames` here are always the FULL song's code sequence after this call, for BOTH repaint sub-modes:
+
+      * "regenerate" -- `frame_codes` is `codes[:T]` (the preserved prefix) concatenated with the freshly
+        AR-resumed new tail; strictly SHORTER than the original song's codes when `T` is not the very end.
+      * "rerender" -- `frame_codes` is UNCHANGED from the sidecar (the whole point of this mode is that the codes
+        never change, only their flow-stage rendering does), returned here anyway so both sub-modes share one
+        result shape and one sidecar-writing call site in `routes.py`.
+
+    `repaint_mode` records which sub-mode actually ran (diagnostic/gallery-metadata surface, mirrors
+    `MiniMaxMusic3ExtendResult.appended_num_frames`'s role) -- `"regenerate"` or `"rerender"`.
+    """
+
+    waveform: torch.Tensor  # [2, samples], CPU, float32, [-1, 1] -- FULL song after repaint
+    sample_rate: int
+    actual_seed: int
+    frame_codes: torch.Tensor  # [num_frames, num_codebooks], CPU, int64 -- FULL song after repaint
+    prefix_codes: torch.Tensor  # [1, num_codebooks], CPU, int64
+    num_frames: int
+    frame_rate: float
+    prompt: str
+    lyrics: str
+    repaint_mode: str  # "regenerate" | "rerender"
 
 
 class MiniMaxMusic3Mixin:
@@ -1115,4 +1260,863 @@ class MiniMaxMusic3Mixin:
             prompt=prompt,
             lyrics=lyrics,
             appended_num_frames=appended_num_frames,
+        )
+
+    # ------------------------------------------------------------------
+    # Repaint (design doc phase plan item 8 -- "inpaint / repaint",
+    # `POST /generate/aud2aud` with `mode="repaint"`). Two honest modes
+    # (design doc "Modality surfaces"):
+    #
+    #   * "regenerate" -- AR-resume with the prefix codes as context and a
+    #     NEW tail, exactly like extend above, except the truncation point is
+    #     somewhere in the MIDDLE of the song (discarding everything after it,
+    #     including any content the song used to have there) rather than at
+    #     the original end.
+    #   * "rerender" -- the codes never change; only a WINDOW's flow-stage
+    #     rendering is redone with a new seed (new timbre/mix; melody/timing/
+    #     lyrics unchanged, since the autoregressive stage never runs).
+    #
+    # Mid-span infill with a preserved tail (changing codes in the middle
+    # while an ORIGINAL, different-content tail after it stays intact) is not
+    # offered by either mode and is not reachable through this dispatcher --
+    # see the design doc's "Capability verdict": "the global LM is causal;
+    # there is no infilling contract." "regenerate" discards everything after
+    # its cut point; "rerender" never touches the codes at all.
+    # ------------------------------------------------------------------
+
+    def _minimax_music3_load_repaint_source(self, reference_audio_path):
+        """Shared setup for both repaint sub-modes: component fetch, sidecar read + identity validation, source
+        waveform read. Factored out of `_generate_audoutpaint_minimax_music3`'s equivalent opening section (same
+        checks, same reasons) because both repaint sub-modes need EXACTLY this, not because extend also needs it
+        again -- extend's own copy is untouched, so a change here cannot silently affect it.
+
+        Returns `(pipeline, sidecar, original_wave, original_sr, model_hash)`. Raises `ValidationError` for every
+        failure mode `_generate_audoutpaint_minimax_music3`'s docstring documents for its own identical checks
+        (missing component, non-path reference_audio, missing/unreadable file, missing/mismatched sidecar,
+        sample-rate mismatch, non-stereo source).
+        """
+        from api.error_handlers import ValidationError
+        from core.models.minimax_music3.frame_codes import read_frame_codes_sidecar_for_audio
+        from core.models.minimax_music3.pipeline import MiniMaxMusic3Pipeline
+
+        if not getattr(self, "is_minimax_music3_model", False) or not self.minimax_music3_components:
+            raise ValidationError(
+                "MiniMax Music 3 audio repaint requires a MiniMax Music 3 model",
+                detail="The currently loaded model is not a MiniMax Music 3 audio model.",
+            )
+
+        comps = self.minimax_music3_components
+        tokenizer = comps.get("tokenizer")
+        language_model = comps.get("language_model")
+        rvq_depth_decoder = comps.get("rvq_depth_decoder")
+        condition_encoder = comps.get("condition_encoder")
+        transformer = comps.get("transformer")
+        scheduler = comps.get("scheduler")
+        vocoder = comps.get("vocoder")
+
+        missing = [
+            name for name, comp in (
+                ("tokenizer", tokenizer),
+                ("language_model", language_model),
+                ("rvq_depth_decoder", rvq_depth_decoder),
+                ("condition_encoder", condition_encoder),
+                ("transformer", transformer),
+                ("scheduler", scheduler),
+                ("vocoder", vocoder),
+            ) if comp is None
+        ]
+        if missing:
+            detail = f"missing component(s): {', '.join(missing)}."
+            if "language_model" in missing:
+                detail += " The language model is required to repaint audio; reload the full model."
+            raise ValidationError("MiniMax Music 3 model is missing a required component", detail=detail)
+
+        if not isinstance(reference_audio_path, str) or not reference_audio_path:
+            raise ValidationError(
+                "MiniMax Music 3 audio repaint requires a server-side audio file path",
+                detail="Repaint resumes/re-renders from a frame-code sidecar stored next to the original audio "
+                       "file; an in-memory upload has no such sidecar to find. Select an existing MiniMax Music 3 "
+                       "song (e.g. from the gallery) rather than uploading a new file.",
+            )
+        import os as _os
+        if not _os.path.isfile(reference_audio_path):
+            raise ValidationError(
+                "MiniMax Music 3 audio repaint: source audio file not found",
+                detail=f"No file at {reference_audio_path!r}.",
+            )
+
+        try:
+            sidecar = read_frame_codes_sidecar_for_audio(reference_audio_path)
+        except ValueError as exc:
+            raise ValidationError(
+                "MiniMax Music 3 audio repaint: the frame-code sidecar is unreadable",
+                detail=str(exc),
+            )
+        if sidecar is None:
+            raise ValidationError(
+                "MiniMax Music 3 audio repaint: no frame-code sidecar found",
+                detail=f"No sidecar next to {reference_audio_path!r}. This song either predates the frame-code "
+                       f"sidecar feature or was not generated by MiniMax Music 3; it cannot be repainted. Repaint "
+                       f"only works on a song this server generated -- cover/style transfer from arbitrary "
+                       f"uploaded audio is refused (the RVQ tokenizer's encoder is not published in this release, "
+                       f"so no audio can be turned into semantic codes).",
+            )
+
+        pipeline = MiniMaxMusic3Pipeline(
+            tokenizer=tokenizer,
+            language_model=language_model,
+            rvq_depth_decoder=rvq_depth_decoder,
+            condition_encoder=condition_encoder,
+            transformer=transformer,
+            scheduler=scheduler,
+            vocoder=vocoder,
+        )
+
+        try:
+            original_wave, original_sr = self._minimax_music3_load_source_waveform(reference_audio_path)
+        except Exception as exc:
+            raise ValidationError(
+                "MiniMax Music 3 audio repaint: could not read the source audio file",
+                detail=f"{reference_audio_path!r}: {exc}",
+            )
+
+        current_model_info = getattr(self, "current_model_info", None) or {}
+        model_hash = current_model_info.get("model_hash") or None
+
+        # Same "identity validation" reasoning as `_generate_audoutpaint_minimax_music3` -- see its docstring: the
+        # content hash is ALWAYS computed here, server-side, from the file just read, never accepted from `params`.
+        from utils.image_utils import calculate_file_hash
+        source_content_hash = calculate_file_hash(reference_audio_path) or None
+
+        if not sidecar.matches(
+            sample_rate=int(pipeline.sampling_rate),
+            frame_rate=float(pipeline.frame_rate),
+            num_codebooks=int(pipeline.num_codebooks),
+            model_hash=model_hash,
+            num_samples=int(original_wave.shape[-1]),
+            content_hash=source_content_hash,
+        ):
+            raise ValidationError(
+                "MiniMax Music 3 audio repaint: the sidecar does not match this audio file or the loaded model",
+                detail=f"sidecar sample_rate={sidecar.sample_rate}, frame_rate={sidecar.frame_rate}, "
+                       f"num_codebooks={sidecar.num_codebooks}, num_samples={sidecar.num_samples} vs the currently "
+                       f"loaded model ({pipeline.sampling_rate} Hz, {pipeline.frame_rate} frames/s, "
+                       f"{pipeline.num_codebooks} codebooks) and the file on disk ({original_wave.shape[-1]} "
+                       f"samples @ {original_sr} Hz, content hash {source_content_hash!r}). This sidecar may "
+                       f"belong to a different file, a different model checkpoint, or the file may have been "
+                       f"overwritten since it was generated.",
+            )
+        if original_sr != sidecar.sample_rate:
+            raise ValidationError(
+                "MiniMax Music 3 audio repaint: source file sample rate does not match its sidecar",
+                detail=f"File is {original_sr} Hz; sidecar declares {sidecar.sample_rate} Hz.",
+            )
+        if original_wave.shape[0] != _MINIMAX_MUSIC3_EXPECTED_CHANNELS:
+            raise ValidationError(
+                "MiniMax Music 3 audio repaint: source file is not stereo",
+                detail=f"Source file has {original_wave.shape[0]} channel(s); MiniMax Music 3 always decodes to "
+                       f"{_MINIMAX_MUSIC3_EXPECTED_CHANNELS} (stereo), so this file cannot be the vocoder's own "
+                       f"output for the sidecar next to it.",
+            )
+
+        return pipeline, sidecar, original_wave, original_sr, model_hash
+
+    @staticmethod
+    def _minimax_music3_resolve_prompt_lyrics(sidecar, params):
+        """Prompt/lyrics are ALWAYS reused from the sidecar for repaint, exactly like extend -- see
+        `_generate_audoutpaint_minimax_music3`'s docstring, "Prompt/lyrics", for the full reasoning (mechanically
+        supported at zero extra cost, refused as a product decision because the checkpoint was trained to condition
+        a whole song on one caption/lyrics pair from the start). Returns `(prompt, lyrics)` and surfaces a warning
+        (never silently drops) if `params` supplied a different, non-empty value for either.
+        """
+        prompt = sidecar.prompt
+        lyrics = sidecar.lyrics
+        requested_prompt = params.get("prompt")
+        requested_lyrics = params.get("lyrics")
+        if (requested_prompt and requested_prompt != prompt) or (requested_lyrics and requested_lyrics != lyrics):
+            from api.generation_status import add_warning
+            add_warning(
+                "MiniMax Music 3 repaint reuses the original song's prompt/lyrics (required for both the "
+                "autoregressive resume and the frame-hidden recovery to be well-defined); the prompt/lyrics "
+                "supplied with this request were ignored.",
+                code="minimax_music3_repaint_prompt_ignored",
+            )
+        return prompt, lyrics
+
+    @staticmethod
+    def _minimax_music3_snap_seconds_to_chunk_start(
+        requested_seconds: float,
+        frame_rate: float,
+        chunk_starts: "list[int]",
+        *,
+        min_index: int = 0,
+    ) -> "tuple[int, int]":
+        """Snap a user-requested time (seconds) to the NEAREST entry of `chunk_starts` (AR-frame indices,
+        `MiniMaxMusic3Pipeline.prepare_chunks`'s own chunk-window starts) at or after `min_index` (an index into
+        `chunk_starts`). Repaint's boundary math (both sub-modes -- see `compute_cumulative_samples`'s docstring
+        and the two callers below) is only sample-exact AT a chunk-window start, so an arbitrary requested second
+        is always coerced to one of these, never used verbatim.
+
+        No upper bound: both callers snap against the LAST entry of `chunk_starts` too (`_minimax_music3_repaint_
+        regenerate`'s `T` may be the song's last chunk's own start -- see its docstring; `_minimax_music3_repaint_
+        rerender` snaps its OWN end candidates separately, against exclusive chunk-count boundaries rather than
+        through this function a second time).
+
+        Returns `(chunk_index, frame_index)` -- `chunk_index` into `chunk_starts`, `frame_index = chunk_starts[
+        chunk_index]`.
+        """
+        if not chunk_starts:
+            raise ValueError("chunk_starts must be non-empty")
+        min_index = max(0, min(min_index, len(chunk_starts) - 1))
+        candidates = chunk_starts[min_index:]
+        requested_frame = requested_seconds * frame_rate
+        best_offset = min(range(len(candidates)), key=lambda i: abs(candidates[i] - requested_frame))
+        chunk_index = min_index + best_offset
+        return chunk_index, chunk_starts[chunk_index]
+
+    def _minimax_music3_repaint_regenerate(
+        self,
+        params: Dict[str, Any],
+        reference_audio_path: str,
+        progress_callback: Optional[Callable] = None,
+        step_callback: Optional[Callable] = None,
+    ) -> MiniMaxMusic3RepaintResult:
+        """Repaint sub-mode "regenerate from T onward" (design doc "Modality surfaces").
+
+        Mechanism: `params["repaint_start"]` (seconds) is snapped to the nearest chunk-window start `T` that is
+        NOT the song's very first chunk (see `_minimax_music3_snap_seconds_to_chunk_start`'s `min_index=1` below
+        -- `T` MAY be the song's LAST chunk's own start; regenerating just the final chunk is well-defined and
+        `is_global_first=False` still holds, since a preserved predecessor still exists); everything before `T`
+        is preserved VERBATIM from the source file (`_minimax_music3_
+        apply_extend_waveform_splice` reused unchanged -- same "sample-exact to the decoded representation, one
+        boundary, declick confined to the new side" contract as extend); `sidecar.frame_codes[:T]` becomes the
+        AR-resume context for a NEW tail via `MiniMaxMusic3Pipeline.generate_ar`'s `resume_*` path, exactly like
+        `_generate_audoutpaint_minimax_music3` -- codes from `T` onward in the ORIGINAL song are discarded, never
+        read again.
+
+        Splice alignment (the reason `T` must be a chunk-window start, not an arbitrary frame). Because
+        `MiniMaxMusic3ConditionEncoder`'s frame -> latent resample is nearest-neighbor at a NON-integer ratio
+        (`output_sampling_rate / input_sampling_rate * input_hop_length / output_hop_length` ~= 3.445), a chunk's
+        KEPT (post-crop) audio span, measured in AR-frame-equivalent width, is NOT the clean `CHUNK_HOP` (100)
+        frames the window geometry might suggest -- see `compute_cumulative_samples`'s docstring. The preserved
+        prefix's LAST kept chunk therefore ends at frame `T + ~25` (an internal chunk's crop keeps roughly frames
+        `[window_start + 25, window_start + 125)` of its own 200-frame window), not at `T` itself. The new tail's
+        OWN first flow chunk covers the SAME window `[T, T + 200)` -- decoded with `CROP_LEFT_LATENT` applied
+        (`is_global_first=False` on `MiniMaxMusic3Pipeline.decode_range`) rather than `decode`'s ordinary
+        chunk-index-0 rule (`left=0`, what extend's tail uses) -- so its own kept span begins at the SAME `T + ~25`
+        frame boundary the preserved prefix ends at: BOTH sides of the splice are cropped by the identical,
+        purely-geometric (content-independent) amount, so they tile with no gap and no overlap in TIME COVERAGE.
+        `is_global_first=False` is unconditional here because `T` is always required to be an INTERNAL chunk start
+        (never the song's first), so there is always a preserved predecessor to align against.
+
+        This alignment is exact in TIME COVERAGE, not in CONTENT -- the two sides are independently rendered audio
+        that happen to tile without gap/overlap, so a short (10ms) declick ramp, confined entirely to the new
+        tail's own leading samples, is still applied (same mechanism and same reasoning as extend's single
+        boundary) to remove any audible amplitude step.
+
+        Known limitation, tested rather than silently wrong (`minimax_music3_repaint_test.py`'s
+        `test_rerender_after_a_short_regenerate_result_is_refused_not_mis_spliced`): this method's `decode_range`
+        call always forces `is_global_first=False` for the new tail's own leading chunk, deliberately NOT the
+        standard "chunk 0 of a fresh decode" rule -- the whole point is alignment against the preserved
+        predecessor. This means the RESULT FILE's tail is not decoded the way a from-scratch decode of the SAME
+        frame range would be. If a LATER request against this result file needs to recompute standard chunk
+        geometry from ITS OWN (possibly now shorter) total frame count -- "rerender", or a second "regenerate" --
+        and that recomputed geometry does not, by coincidence, describe the tail's actual crop treatment, the
+        geometry self-check both sibling methods run (`cumulative[-1]` against the file's real sample count)
+        refuses with a `RuntimeError` rather than mis-splicing. Extending the result (`_generate_audoutpaint_
+        minimax_music3`) is NEVER affected: it only appends after the file's end and never recomputes any
+        INTERNAL geometry of the existing audio.
+
+        Args:
+            params: `repaint_start` (seconds, required), `repaint_end` (seconds, required -- an UPPER BOUND on the
+                new tail's total song length, same "duration is an upper bound" semantics as `audio_duration`/
+                `extend_duration_sec` elsewhere in this module: the new tail's own duration is `repaint_end -
+                T_seconds`, and the language model may stop earlier), `num_inference_steps`/`flow_guidance_scale`
+                (required, no fallback), `seed` (int, -1/None = random). `prompt`/`lyrics` -- see
+                `_minimax_music3_resolve_prompt_lyrics`.
+            reference_audio_path: server-side file path, resolved by the caller (mirrors `_generate_audoutpaint_
+                minimax_music3`'s identical contract).
+
+        Returns:
+            `MiniMaxMusic3RepaintResult` with `repaint_mode="regenerate"`.
+        """
+        from api.error_handlers import ValidationError
+        from core.models.minimax_music3.defaults import (
+            CHUNK_FRAMES, CHUNK_HOP, CROP_LEFT_LATENT, CROP_RIGHT_LATENT, MAX_AUDIO_FRAMES,
+        )
+        from core.models.minimax_music3.pipeline import check_ar_resume_budget
+
+        pipeline, sidecar, original_wave, original_sr, model_hash = self._minimax_music3_load_repaint_source(
+            reference_audio_path,
+        )
+        prompt, lyrics = self._minimax_music3_resolve_prompt_lyrics(sidecar, params)
+
+        for required_key in ("repaint_start", "repaint_end", "num_inference_steps", "flow_guidance_scale"):
+            if params.get(required_key) is None:
+                raise ValidationError(
+                    f"`{required_key}` is required",
+                    detail=f"`{required_key}` must be provided explicitly; no default is available yet.",
+                )
+        repaint_start_sec = float(params["repaint_start"])
+        repaint_end_sec = float(params["repaint_end"])
+        num_inference_steps = int(params["num_inference_steps"])
+        flow_guidance_scale = float(params["flow_guidance_scale"])
+        if repaint_end_sec <= repaint_start_sec:
+            raise ValidationError(
+                "Invalid repaint range",
+                detail=f"repaint_end ({repaint_end_sec}) must be greater than repaint_start ({repaint_start_sec}) "
+                       f"for MiniMax Music 3's 'regenerate' repaint mode (repaint_end is an upper bound on the "
+                       f"new tail's total song length).",
+            )
+
+        chunk_starts = prepare_chunk_starts(sidecar.num_frames, CHUNK_FRAMES, CHUNK_HOP)
+        if len(chunk_starts) < 2:
+            raise ValidationError(
+                "MiniMax Music 3 'regenerate' repaint requires a longer source song",
+                detail=f"The source song is {sidecar.num_frames} frames ({sidecar.num_frames / sidecar.frame_rate:.2f}s "
+                       f"at {sidecar.frame_rate} frames/s) -- shorter than two flow-matching chunk windows, so "
+                       f"there is no chunk boundary to regenerate from other than the song's very first, which "
+                       f"would leave nothing preserved. 'regenerate' needs a boundary strictly after the song's "
+                       f"first chunk (it may be the LAST chunk's own start -- regenerating just the final chunk "
+                       f"is well-defined).",
+            )
+        # min_index=1: T must be an INTERNAL-OR-LAST chunk start (never chunk_starts[0]==0, since "regenerate
+        # from the very start" leaves nothing preserved -- see this method's docstring, "Splice alignment").
+        # max_index is left at its default (the last entry of chunk_starts): T MAY be the last chunk's own start,
+        # regenerating just the final chunk -- that is well-defined and is_global_first=False still holds, since
+        # a preserved predecessor still exists.
+        chunk_index, T = self._minimax_music3_snap_seconds_to_chunk_start(
+            repaint_start_sec, sidecar.frame_rate, chunk_starts, min_index=1,
+        )
+
+        hop_length = int(pipeline.latent_hop_length)
+        ce_config = pipeline.condition_encoder.config
+        cumulative = compute_cumulative_samples(
+            sidecar.num_frames, hop_length, CHUNK_FRAMES, CHUNK_HOP,
+            CROP_LEFT_LATENT, CROP_RIGHT_LATENT,
+            ce_config.input_sampling_rate, ce_config.input_hop_length,
+            ce_config.output_sampling_rate, ce_config.output_hop_length,
+        )
+        # Self-check (module docstring, "Geometry self-check"): the full cumulative table must reproduce the
+        # sidecar's own recorded sample count exactly, or this geometry does not describe the file actually on
+        # disk. USER-REACHABLE, not only a defensive assertion: a "regenerate" result's tail is decoded with
+        # continuity-preserving crop treatment (see `_minimax_music3_repaint_regenerate`'s "Known limitation"
+        # paragraph), so a LATER repaint request against such a file can legitimately land here -- a
+        # ValidationError (400), not a RuntimeError (500), because a caller can reach this without a bug.
+        if cumulative[-1] != int(original_wave.shape[-1]):
+            raise ValidationError(
+                "MiniMax Music 3 repaint: this file's chunk geometry does not match its own sidecar",
+                detail=f"Computed chunk geometry predicts {cumulative[-1]} total samples for this source file, "
+                       f"but it actually has {int(original_wave.shape[-1])}. This can happen for a file that was "
+                       f"itself produced by a 'regenerate' repaint whose tail used non-standard (continuity-"
+                       f"preserving) crop treatment -- see that method's docstring, 'Known limitation'. Extending "
+                       f"this file (rather than repainting it) is unaffected and still works.",
+            )
+        preserved_samples = cumulative[chunk_index]
+
+        seed = params.get("seed", -1)
+        if seed is None or int(seed) < 0:
+            seed = random.randint(0, 2**32 - 1)
+        seed = int(seed)
+        device = self.device
+        generator = torch.Generator(device=device).manual_seed(seed)
+
+        new_tail_duration_sec = repaint_end_sec - (T / sidecar.frame_rate)
+        max_new_frames = min(int(new_tail_duration_sec * sidecar.frame_rate), MAX_AUDIO_FRAMES)
+        if max_new_frames == 0:
+            raise ValidationError(
+                "MiniMax Music 3 'regenerate' repaint: the requested range is too short to produce a single "
+                "audio frame",
+                detail=f"repaint_end ({repaint_end_sec}s) minus the snapped repaint_start ({T / sidecar.frame_rate:.3f}"
+                       f"s) is shorter than one frame at {sidecar.frame_rate} frames/sec; widen the range.",
+            )
+
+        comps = self.minimax_music3_components
+        language_model = comps["language_model"]
+
+        try:
+            preflight_text_ids = pipeline.encode_text(prompt, lyrics)
+        except ValueError as exc:
+            raise ValidationError(
+                "MiniMax Music 3 repaint: the sidecar's stored prompt/lyrics could not be tokenized",
+                detail=f"{exc} This sidecar's prompt/lyrics may be empty or corrupted; the song cannot be "
+                       f"repainted until it is re-generated.",
+            )
+        max_position_embeddings = getattr(language_model.config, "max_position_embeddings", None)
+        try:
+            check_ar_resume_budget(
+                prompt_tokens=int(preflight_text_ids.shape[1]),
+                total_frames_so_far=T,
+                max_frames=max_new_frames,
+                max_position_embeddings=max_position_embeddings,
+                duration_param_name="repaint_end",
+                prompt_is_adjustable=False,
+            )
+        except ValueError as exc:
+            raise ValidationError(
+                "MiniMax Music 3 repaint request exceeds the checkpoint's limits",
+                detail=str(exc),
+            )
+
+        ar_budget, flow_budget = compute_progress_budget(
+            max_new_frames, int(pipeline.num_codebooks), num_inference_steps, CHUNK_FRAMES, CHUNK_HOP,
+        )
+
+        def _combined_progress(step, total, stage) -> None:
+            if progress_callback is None:
+                return
+            try:
+                combined = combined_progress(stage, step, total, ar_budget, flow_budget)
+                progress_callback(combined, PROGRESS_TOTAL_UNITS)
+            except Exception as exc:
+                print(f"[MiniMaxMusic3] progress_callback raised: {exc!r}")
+
+        rvq_depth_decoder = comps["rvq_depth_decoder"]
+        transformer = comps["transformer"]
+        condition_encoder = comps["condition_encoder"]
+        vocoder = comps["vocoder"]
+
+        self._minimax_music3_move(("language_model", "rvq_depth_decoder"), device)
+        lm_device = next(language_model.parameters()).device
+        depth_device = next(rvq_depth_decoder.parameters()).device
+        if lm_device != depth_device:
+            raise RuntimeError(
+                f"MiniMax Music 3's language model ({lm_device}) and RVQ depth decoder "
+                f"({depth_device}) are not on the same device after staging; the autoregressive "
+                f"stage requires both co-resident."
+            )
+        try:
+            try:
+                text_ids = pipeline.encode_text(prompt, lyrics)
+            except ValueError as exc:
+                raise ValidationError(
+                    "MiniMax Music 3 repaint: the sidecar's stored prompt/lyrics could not be tokenized",
+                    detail=str(exc),
+                )
+            ar_result = pipeline.generate_ar(
+                text_ids,
+                new_tail_duration_sec,
+                generator=generator,
+                progress_callback=_combined_progress,
+                resume_frame_codes=sidecar.frame_codes[:T],
+                resume_prefix_codes=sidecar.prefix_codes,
+            )
+        finally:
+            self._minimax_music3_move(("language_model", "rvq_depth_decoder"), "cpu", allow_partial_failure=True)
+            self._minimax_music3_empty_cache()
+
+        ar_result.frame_hiddens = ar_result.frame_hiddens.detach().to("cpu")
+
+        self._minimax_music3_move(("transformer", "condition_encoder"), device)
+        try:
+            latent_chunks = pipeline.denoise_chunks(
+                ar_result.frame_hiddens,
+                num_inference_steps=num_inference_steps,
+                flow_guidance_scale=flow_guidance_scale,
+                generator=generator,
+                progress_callback=_combined_progress,
+            )
+        finally:
+            self._minimax_music3_move(("transformer", "condition_encoder"), "cpu", allow_partial_failure=True)
+            self._minimax_music3_empty_cache()
+
+        self._minimax_music3_move(("vocoder",), device)
+        try:
+            # is_global_first=False: crop the new tail's own first chunk exactly like an INTERNAL chunk (see this
+            # method's docstring, "Splice alignment") -- T is always an internal chunk start (min_index=1 above),
+            # so there is always a preserved predecessor to align against. is_global_last=True: the new tail's
+            # last chunk is the true end of the repainted song (nothing follows it), same as a fresh generation.
+            new_audio = pipeline.decode_range(latent_chunks, is_global_first=False, is_global_last=True, output_type="pt")
+        finally:
+            self._minimax_music3_move(("vocoder",), "cpu", allow_partial_failure=True)
+            self._minimax_music3_empty_cache()
+
+        if progress_callback is not None:
+            try:
+                progress_callback(PROGRESS_TOTAL_UNITS, PROGRESS_TOTAL_UNITS)
+            except Exception as exc:
+                print(f"[MiniMaxMusic3] progress_callback raised: {exc!r}")
+
+        if torch.isnan(new_audio).any() or torch.isinf(new_audio).any():
+            raise RuntimeError(f"MiniMax Music 3 repaint produced NaN/Inf audio (shape={list(new_audio.shape)}).")
+        if new_audio.numel() > 0 and new_audio.abs().sum() == 0:
+            raise RuntimeError("MiniMax Music 3 repaint produced all-silent (all-zero) audio for the new tail.")
+
+        new_waveform = new_audio[0].detach().to("cpu").float()
+        sample_rate = int(pipeline.sampling_rate)
+
+        preserved_prefix = original_wave[..., :preserved_samples]
+        full_waveform = self._minimax_music3_apply_extend_waveform_splice(preserved_prefix, new_waveform, sample_rate)
+
+        full_frame_codes = torch.cat(
+            [sidecar.frame_codes[:T].to(torch.long), ar_result.frame_codes.detach().to("cpu")], dim=0,
+        )
+
+        return MiniMaxMusic3RepaintResult(
+            waveform=full_waveform,
+            sample_rate=sample_rate,
+            actual_seed=seed,
+            frame_codes=full_frame_codes,
+            prefix_codes=sidecar.prefix_codes.to(torch.long),
+            num_frames=int(full_frame_codes.shape[0]),
+            frame_rate=float(sidecar.frame_rate),
+            prompt=prompt,
+            lyrics=lyrics,
+            repaint_mode="regenerate",
+        )
+
+    @staticmethod
+    def _minimax_music3_apply_rerender_waveform_splice(
+        original_wave: torch.Tensor,
+        new_middle_wave: torch.Tensor,
+        start_sample: int,
+        end_sample: int,
+        sample_rate: int,
+        crossfade_ms: float = 10.0,
+    ) -> torch.Tensor:
+        """Splice a re-rendered middle span into `original_wave` at `[start_sample, end_sample)`, sample-exact
+        OUTSIDE that range (`original_wave[..., :start_sample]`/`original_wave[..., end_sample:]` are returned
+        byte-identical -- never touched). Two boundaries (unlike extend's/regenerate's one), so up to two short
+        (10ms) declick ramps are applied, EACH confined entirely to `new_middle_wave`'s own leading/trailing
+        samples (never to `original_wave`'s) -- same "level-match, not content-blend" reasoning as
+        `_minimax_music3_apply_extend_waveform_splice`'s single ramp. The left ramp is skipped when `start_sample
+        == 0` (nothing precedes it to blend against, mirrors `_generate_audoutpaint_minimax_music3`'s "no
+        reference on the far side" case); the right ramp is skipped when `end_sample == original_wave.shape[-1]`
+        (nothing follows it).
+        """
+        original_wave = original_wave.to(dtype=torch.float32)
+        new_middle_wave = new_middle_wave.to(dtype=torch.float32).clone()
+        total_original_samples = original_wave.shape[-1]
+
+        crossfade_samples = max(0, int(round((crossfade_ms / 1000.0) * sample_rate)))
+
+        if start_sample > 0 and new_middle_wave.shape[-1] > 0:
+            n = min(crossfade_samples, new_middle_wave.shape[-1])
+            if n > 0:
+                boundary_value = original_wave[..., start_sample - 1 : start_sample]
+                frac = torch.linspace(0.0, 1.0, n + 2, device=new_middle_wave.device, dtype=new_middle_wave.dtype)[1:-1]
+                seg = new_middle_wave[..., :n]
+                new_middle_wave[..., :n] = seg * frac + boundary_value.to(new_middle_wave.dtype) * (1.0 - frac)
+
+        if end_sample < total_original_samples and new_middle_wave.shape[-1] > 0:
+            n = min(crossfade_samples, new_middle_wave.shape[-1])
+            if n > 0:
+                boundary_value = original_wave[..., end_sample : end_sample + 1]
+                frac = torch.linspace(0.0, 1.0, n + 2, device=new_middle_wave.device, dtype=new_middle_wave.dtype)[1:-1]
+                seg = new_middle_wave[..., -n:]
+                # frac ramps 0->1 moving FORWARD through the segment; the trailing ramp needs the boundary value
+                # approached at the END, so its blend weight runs 1->0 (reverse of the leading ramp's 0->1).
+                new_middle_wave[..., -n:] = seg * frac.flip(0) + boundary_value.to(new_middle_wave.dtype) * (1.0 - frac.flip(0))
+
+        return torch.cat(
+            [original_wave[..., :start_sample], new_middle_wave, original_wave[..., end_sample:]], dim=-1,
+        )
+
+    def _minimax_music3_repaint_rerender(
+        self,
+        params: Dict[str, Any],
+        reference_audio_path: str,
+        progress_callback: Optional[Callable] = None,
+        step_callback: Optional[Callable] = None,
+    ) -> MiniMaxMusic3RepaintResult:
+        """Repaint sub-mode "re-render a range" (design doc "Modality surfaces"): the codes never change; only the
+        flow-matching stage's rendering of a WINDOW is redone with a new seed. Timbre/mix change; lyrics/melody/
+        timing do not, because the autoregressive stage never runs (no sampling, no CFG -- see `MiniMaxMusic3
+        Pipeline.recover_frame_hiddens`'s docstring for why the recovered condition input is identical, up to
+        floating-point reduction order, to what the original generation would have produced for these frames --
+        not bit-for-bit, since the batch shapes differ, but nothing here depends on bit-exactness).
+
+        Window geometry (design doc: "the pipeline denoises in 200-frame windows with a 100-frame hop ... [so]
+        re-rendering 'a range' therefore touches more windows than the range itself"). `params["repaint_start"]`/
+        `params["repaint_end"]` (seconds) are each snapped to the nearest chunk-window start (`_minimax_music3_
+        snap_seconds_to_chunk_start`), giving chunk indices `[k1, k2)`. The frame_hiddens needed to re-render
+        EXACTLY those chunks span AR frames `[chunk_starts[k1], min(chunk_starts[k2 - 1] + CHUNK_FRAMES,
+        num_frames))` -- i.e. up to `CHUNK_FRAMES - CHUNK_HOP` (100) frames PAST the nominal end of the range, since
+        chunk `k2 - 1`'s own 200-frame window extends that far -- recovered via `MiniMaxMusic3Pipeline.
+        recover_frame_hiddens` (teacher-forced, deterministic, no sampling).
+
+        Splice alignment. `MiniMaxMusic3Pipeline.decode_range` is called with `is_global_first=(k1 == 0)` and
+        `is_global_last=(k2 == num_chunks_total)`: when the range is fully INTERNAL to the song, both edges get the
+        SAME crop treatment (`CROP_LEFT_LATENT`/`CROP_RIGHT_LATENT`) the ORIGINAL decode gave those exact chunk
+        positions -- purely geometric, content-independent (see `compute_cumulative_samples`'s docstring) -- so the
+        re-rendered span's sample count and boundary positions are IDENTICAL to the original span's
+        (`compute_cumulative_samples` computes the exact `[cumulative[k1], cumulative[k2])` sample range being
+        replaced). Both boundaries get a short declick ramp (`_minimax_music3_apply_rerender_waveform_splice`,
+        confined to the new middle span's own edges), for the same reason regenerate's single boundary does: exact
+        alignment in TIME COVERAGE does not guarantee AMPLITUDE continuity across two independently-rendered spans.
+
+        Args:
+            params: `repaint_start`/`repaint_end` (seconds, required, `repaint_end > repaint_start`),
+                `num_inference_steps`/`flow_guidance_scale` (required, no fallback), `seed` (int, -1/None =
+                random). `prompt`/`lyrics` -- see `_minimax_music3_resolve_prompt_lyrics` (needed only to rebuild
+                the KV-cache context for `recover_frame_hiddens`; no sampling/CFG happens in this mode at all).
+            reference_audio_path: server-side file path, resolved by the caller.
+
+        Returns:
+            `MiniMaxMusic3RepaintResult` with `repaint_mode="rerender"`; `frame_codes`/`num_frames` are UNCHANGED
+            from the sidecar (see `MiniMaxMusic3RepaintResult`'s own docstring).
+        """
+        from api.error_handlers import ValidationError
+        from core.models.minimax_music3.defaults import CHUNK_FRAMES, CHUNK_HOP, CROP_LEFT_LATENT, CROP_RIGHT_LATENT
+
+        pipeline, sidecar, original_wave, original_sr, model_hash = self._minimax_music3_load_repaint_source(
+            reference_audio_path,
+        )
+        prompt, lyrics = self._minimax_music3_resolve_prompt_lyrics(sidecar, params)
+
+        for required_key in ("repaint_start", "repaint_end", "num_inference_steps", "flow_guidance_scale"):
+            if params.get(required_key) is None:
+                raise ValidationError(
+                    f"`{required_key}` is required",
+                    detail=f"`{required_key}` must be provided explicitly; no default is available yet.",
+                )
+        repaint_start_sec = float(params["repaint_start"])
+        repaint_end_sec = float(params["repaint_end"])
+        num_inference_steps = int(params["num_inference_steps"])
+        flow_guidance_scale = float(params["flow_guidance_scale"])
+        if repaint_end_sec <= repaint_start_sec:
+            raise ValidationError(
+                "Invalid repaint range",
+                detail=f"repaint_end ({repaint_end_sec}) must be greater than repaint_start ({repaint_start_sec}).",
+            )
+
+        chunk_starts = prepare_chunk_starts(sidecar.num_frames, CHUNK_FRAMES, CHUNK_HOP)
+        num_chunks_total = len(chunk_starts)
+        if num_chunks_total < 1:
+            raise ValidationError(
+                "MiniMax Music 3 'rerender' repaint: source song has no flow-matching chunks",
+                detail="This should be unreachable for a non-empty sidecar.",
+            )
+        k1, frame_start = self._minimax_music3_snap_seconds_to_chunk_start(
+            repaint_start_sec, sidecar.frame_rate, chunk_starts,
+        )
+        # k2 (exclusive end) is a chunk COUNT, not an index into chunk_starts -- candidates run from k1+1 (at
+        # least one chunk re-rendered) through num_chunks_total (the whole rest of the song). Each candidate's
+        # VALUE is `chunk_starts[k2]` (the frame at which chunk k2 -- the first chunk NOT re-rendered -- would
+        # itself start), except for k2 == num_chunks_total, where `chunk_starts` has no such entry (there is no
+        # chunk k2) and `sidecar.num_frames` (the song's own end) stands in for it -- so the same "nearest
+        # chunk-window start, or the song's end" rule governs both ends symmetrically. This list is NEVER empty
+        # (it always contains at least the appended `sidecar.num_frames`), so there is no "nothing after
+        # repaint_start" case to refuse here -- k1 being the song's last chunk still leaves exactly one valid
+        # candidate, k2 == num_chunks_total, re-rendering that one last chunk.
+        end_candidates = chunk_starts[k1 + 1:] + [sidecar.num_frames]
+        requested_end_frame = repaint_end_sec * sidecar.frame_rate
+        best_end_offset = min(
+            range(len(end_candidates)), key=lambda i: abs(end_candidates[i] - requested_end_frame),
+        )
+        k2 = k1 + 1 + best_end_offset  # exclusive chunk-count end
+
+        is_global_first = (k1 == 0)
+        is_global_last = (k2 == num_chunks_total)
+
+        hop_length = int(pipeline.latent_hop_length)
+        ce_config = pipeline.condition_encoder.config
+        cumulative = compute_cumulative_samples(
+            sidecar.num_frames, hop_length, CHUNK_FRAMES, CHUNK_HOP,
+            CROP_LEFT_LATENT, CROP_RIGHT_LATENT,
+            ce_config.input_sampling_rate, ce_config.input_hop_length,
+            ce_config.output_sampling_rate, ce_config.output_hop_length,
+        )
+        # Same self-check as `_minimax_music3_repaint_regenerate`'s identical block -- see there for why this is
+        # USER-REACHABLE (a "regenerate" result's own tail geometry) and therefore a ValidationError, not a
+        # RuntimeError.
+        if cumulative[-1] != int(original_wave.shape[-1]):
+            raise ValidationError(
+                "MiniMax Music 3 repaint: this file's chunk geometry does not match its own sidecar",
+                detail=f"Computed chunk geometry predicts {cumulative[-1]} total samples for this source file, "
+                       f"but it actually has {int(original_wave.shape[-1])}. This can happen for a file that was "
+                       f"itself produced by a 'regenerate' repaint whose tail used non-standard (continuity-"
+                       f"preserving) crop treatment -- see that method's docstring, 'Known limitation'. Extending "
+                       f"this file (rather than repainting it) is unaffected and still works.",
+            )
+        start_sample = cumulative[k1]
+        end_sample = cumulative[k2]
+
+        # Frame-hidden recovery span: the union of chunks [k1, k2)'s own 200-frame windows -- see this method's
+        # docstring "Window geometry".
+        recover_frame_start = frame_start  # == chunk_starts[k1], already computed above
+        recover_frame_end = min(chunk_starts[k2 - 1] + CHUNK_FRAMES, sidecar.num_frames)
+
+        seed = params.get("seed", -1)
+        if seed is None or int(seed) < 0:
+            seed = random.randint(0, 2**32 - 1)
+        seed = int(seed)
+        device = self.device
+        generator = torch.Generator(device=device).manual_seed(seed)
+
+        num_recovered_frames = recover_frame_end - recover_frame_start
+        num_rerendered_chunks = k2 - k1
+        ar_budget, flow_budget = compute_progress_budget(
+            num_recovered_frames, int(pipeline.num_codebooks), num_inference_steps, CHUNK_FRAMES, CHUNK_HOP,
+        )
+
+        def _combined_progress(step, total, stage) -> None:
+            if progress_callback is None:
+                return
+            try:
+                combined = combined_progress(stage, step, total, ar_budget, flow_budget)
+                progress_callback(combined, PROGRESS_TOTAL_UNITS)
+            except Exception as exc:
+                print(f"[MiniMaxMusic3] progress_callback raised: {exc!r}")
+
+        comps = self.minimax_music3_components
+        language_model = comps["language_model"]
+        rvq_depth_decoder = comps["rvq_depth_decoder"]
+
+        self._minimax_music3_move(("language_model", "rvq_depth_decoder"), device)
+        lm_device = next(language_model.parameters()).device
+        depth_device = next(rvq_depth_decoder.parameters()).device
+        if lm_device != depth_device:
+            raise RuntimeError(
+                f"MiniMax Music 3's language model ({lm_device}) and RVQ depth decoder "
+                f"({depth_device}) are not on the same device after staging; frame-hidden recovery "
+                f"requires both co-resident."
+            )
+        try:
+            try:
+                text_ids = pipeline.encode_text(prompt, lyrics)
+            except ValueError as exc:
+                raise ValidationError(
+                    "MiniMax Music 3 repaint: the sidecar's stored prompt/lyrics could not be tokenized",
+                    detail=str(exc),
+                )
+            recovered_frame_hiddens = pipeline.recover_frame_hiddens(
+                text_ids,
+                sidecar.frame_codes,
+                sidecar.prefix_codes,
+                recover_frame_start,
+                recover_frame_end,
+                progress_callback=_combined_progress,
+            )
+        finally:
+            self._minimax_music3_move(("language_model", "rvq_depth_decoder"), "cpu", allow_partial_failure=True)
+            self._minimax_music3_empty_cache()
+
+        recovered_frame_hiddens = recovered_frame_hiddens.detach().to("cpu")
+
+        self._minimax_music3_move(("transformer", "condition_encoder"), device)
+        try:
+            latent_chunks = pipeline.denoise_chunks(
+                recovered_frame_hiddens,
+                num_inference_steps=num_inference_steps,
+                flow_guidance_scale=flow_guidance_scale,
+                generator=generator,
+                progress_callback=_combined_progress,
+            )
+        finally:
+            self._minimax_music3_move(("transformer", "condition_encoder"), "cpu", allow_partial_failure=True)
+            self._minimax_music3_empty_cache()
+
+        if len(latent_chunks) != num_rerendered_chunks:
+            raise RuntimeError(
+                f"MiniMax Music 3 'rerender' repaint: denoise_chunks produced {len(latent_chunks)} latent "
+                f"chunk(s) from {num_recovered_frames} recovered frames, expected {num_rerendered_chunks} -- the "
+                f"recovered frame-hiddens span does not tile the way this mode's own geometry assumed."
+            )
+
+        self._minimax_music3_move(("vocoder",), device)
+        try:
+            new_middle_audio = pipeline.decode_range(
+                latent_chunks, is_global_first=is_global_first, is_global_last=is_global_last, output_type="pt",
+            )
+        finally:
+            self._minimax_music3_move(("vocoder",), "cpu", allow_partial_failure=True)
+            self._minimax_music3_empty_cache()
+
+        if progress_callback is not None:
+            try:
+                progress_callback(PROGRESS_TOTAL_UNITS, PROGRESS_TOTAL_UNITS)
+            except Exception as exc:
+                print(f"[MiniMaxMusic3] progress_callback raised: {exc!r}")
+
+        if torch.isnan(new_middle_audio).any() or torch.isinf(new_middle_audio).any():
+            raise RuntimeError(
+                f"MiniMax Music 3 repaint produced NaN/Inf audio (shape={list(new_middle_audio.shape)})."
+            )
+        if new_middle_audio.numel() > 0 and new_middle_audio.abs().sum() == 0:
+            raise RuntimeError("MiniMax Music 3 repaint produced all-silent (all-zero) audio for the re-rendered range.")
+
+        new_middle_waveform = new_middle_audio[0].detach().to("cpu").float()
+        sample_rate = int(pipeline.sampling_rate)
+
+        if new_middle_waveform.shape[0] != original_wave.shape[0]:
+            raise RuntimeError(
+                f"MiniMax Music 3 repaint: channel count mismatch between the (already-validated) source file "
+                f"({original_wave.shape[0]} channel(s)) and the re-rendered range "
+                f"({new_middle_waveform.shape[0]} channel(s)) -- this should be unreachable."
+            )
+
+        full_waveform = self._minimax_music3_apply_rerender_waveform_splice(
+            original_wave, new_middle_waveform, start_sample, end_sample, sample_rate,
+        )
+
+        return MiniMaxMusic3RepaintResult(
+            waveform=full_waveform,
+            sample_rate=sample_rate,
+            actual_seed=seed,
+            frame_codes=sidecar.frame_codes.to(torch.long),
+            prefix_codes=sidecar.prefix_codes.to(torch.long),
+            num_frames=sidecar.num_frames,
+            frame_rate=float(sidecar.frame_rate),
+            prompt=prompt,
+            lyrics=lyrics,
+            repaint_mode="rerender",
+        )
+
+    def _generate_aud2aud_minimax_music3(
+        self,
+        params: Dict[str, Any],
+        reference_audio_path: str,
+        progress_callback: Optional[Callable] = None,
+        step_callback: Optional[Callable] = None,
+    ) -> MiniMaxMusic3RepaintResult:
+        """Dispatch `/generate/aud2aud` for a loaded MiniMax Music 3 model (design doc phase plan item 8).
+
+        `params["mode"]` must be `"repaint"` -- ACE-Step's other `aud2aud` mode, `"cover"` (re-render the WHOLE
+        reference under a new caption), is refused here for MiniMax Music 3: it would require turning arbitrary
+        reference audio into semantic codes to condition the autoregressive stage, and the RVQ tokenizer's encoder
+        is not published in this release (design doc "Capability verdict": "Cover / repaint of arbitrary user
+        audio -- Not in phase 1; not proven"). Repaint only ever operates on a song THIS server generated,
+        identified by its frame-code sidecar (`_minimax_music3_load_repaint_source`'s content-hash-matched lookup,
+        same mechanism `/generate/outpaint/audio`'s extend already uses).
+
+        `params["music3_repaint_mode"]` selects the sub-mode: `"regenerate"` (`_minimax_music3_repaint_
+        regenerate`) or `"rerender"` (`_minimax_music3_repaint_rerender`) -- see this module's "Repaint" section
+        docstring above both for the honest description of each, and for why mid-span infill with a preserved
+        tail is not offered by either.
+        """
+        from api.error_handlers import ValidationError
+
+        mode = params.get("mode")
+        if mode != "repaint":
+            raise ValidationError(
+                f"MiniMax Music 3 does not support aud2aud mode {mode!r}",
+                detail="Only mode='repaint' is available for MiniMax Music 3. Re-rendering arbitrary reference "
+                       "audio under a new caption ('cover') would require turning that audio into the "
+                       "autoregressive stage's semantic codes, and the RVQ tokenizer's encoder that would do that "
+                       "is not published in this release -- see docs/guides/MINIMAX_MUSIC3_DESIGN.md, "
+                       "\"Capability verdict\". Repaint only works on a song this server itself generated.",
+            )
+
+        repaint_mode = params.get("music3_repaint_mode")
+        if repaint_mode == "regenerate":
+            return self._minimax_music3_repaint_regenerate(params, reference_audio_path, progress_callback, step_callback)
+        if repaint_mode == "rerender":
+            return self._minimax_music3_repaint_rerender(params, reference_audio_path, progress_callback, step_callback)
+        # Same causal-LM reason `_generate_audoutpaint_minimax_music3`'s "Placement" enumeration gives for
+        # backward extension -- named explicitly here (rather than falling into the generic "invalid value" branch
+        # below) for any request that names what it actually wants: mid-span infill with a preserved tail.
+        if repaint_mode in ("infill", "inpaint", "mid_span", "preserve_tail"):
+            raise ValidationError(
+                f"MiniMax Music 3 does not support music3_repaint_mode {repaint_mode!r}",
+                detail="Mid-song infill with a preserved tail is not offered: the autoregressive stage is a "
+                       "causal language model, so changing codes in the middle of a song while an ORIGINAL, "
+                       "different-content tail after them stays intact has no infilling contract. 'regenerate' "
+                       "discards everything after its cut point instead of preserving a differing tail; "
+                       "'rerender' never changes the codes at all, only their flow-stage rendering.",
+            )
+        raise ValidationError(
+            f"Invalid music3_repaint_mode {repaint_mode!r}",
+            detail="music3_repaint_mode must be 'regenerate' (AR-resume with a new tail from a point onward) or "
+                   "'rerender' (keep the codes, redraw the flow stage over a window with a new seed).",
         )

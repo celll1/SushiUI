@@ -301,12 +301,14 @@ _add("acestep", "controlnets", "ControlNet is not supported for the ACE-Step aud
 #     audible effect" rather than "it was never loaded".
 #   - `negative_prompt`/`audio_reference_conditioning` are UNREACHABLE on
 #     `/generate/txt2aud` today (neither is a `Txt2AudRequest` field; the
-#     latter's real surface, an aud2aud "cover" request, is hard-gated off
-#     for this architecture entirely -- see
-#     `routes._reject_if_music3_repaint_not_yet_wired`). Both are
-#     properties of the RELEASED MODEL, not unimplemented features -- design
-#     doc "Capability verdict", first three rows -- kept for documentation
-#     and ready the moment either surface exists.
+#     latter's real surface, an aud2aud "cover" request, IS reachable now
+#     (design doc phase plan item 8) but is refused for this architecture at
+#     the mechanism layer, inside `MiniMaxMusic3Mixin._generate_aud2aud_
+#     minimax_music3`, with the RVQ-tokenizer-encoder capability reason --
+#     not by a route-level gate). Both are properties of the RELEASED MODEL,
+#     not unimplemented features -- design doc "Capability verdict", first
+#     three rows -- kept for documentation and ready the moment either
+#     surface exists.
 # ---------------------------------------------------------------------------
 _add("minimax_music3", "advanced_cfg",
      "CFG scheduling / dynamic thresholding / CFG-rescale run only in the U-Net sampling loop, not in MiniMax Music 3's autoregressive + flow-matching samplers")
@@ -878,6 +880,27 @@ def audio_outpaint_placements(arch: Optional[str]) -> Tuple[str, ...]:
     placement" and falls back to whatever free-offset UI it already has.
     """
     return AUDIO_OUTPAINT_PLACEMENTS.get(arch or "", ())
+
+
+# ---------------------------------------------------------------------------
+# MiniMax Music 3 aud2aud "repaint" sub-modes (POST /generate/aud2aud with
+# mode=repaint, design doc phase plan item 8). Same rationale as
+# AUDIO_OUTPAINT_PLACEMENTS just above -- a client builds its repaint-mode
+# control from this instead of hardcoding an arch check. ACE-Step has no
+# entry: its own aud2aud has no music3_repaint_mode concept at all (it uses
+# mode=cover/repaint directly, with no further sub-mode).
+# ---------------------------------------------------------------------------
+AUD2AUD_MUSIC3_REPAINT_MODES: Dict[str, Tuple[str, ...]] = {
+    "minimax_music3": ("regenerate", "rerender"),
+}
+
+
+def aud2aud_music3_repaint_modes(arch: Optional[str]) -> Tuple[str, ...]:
+    """`music3_repaint_mode` values `/generate/aud2aud`'s mechanism can serve for `arch` (repaint mode only).
+
+    Empty for an architecture with no entry (ACE-Step: no such sub-mode) or an unrecognized/None arch.
+    """
+    return AUD2AUD_MUSIC3_REPAINT_MODES.get(arch or "", ())
 
 
 def arch_supports_feature(arch: Optional[str], feature: str,

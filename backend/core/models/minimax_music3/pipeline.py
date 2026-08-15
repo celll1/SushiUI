@@ -665,6 +665,171 @@ class MiniMaxMusic3Pipeline:
         )
 
     # ------------------------------------------------------------------
+    # SushiUI addition (design doc phase plan item 8, "re-render a range"
+    # repaint mode): deterministic, teacher-forced recovery of `frame_hiddens`
+    # for a range of ALREADY-KNOWN frames, from stored codes alone. No
+    # sampling, no CFG -- both the semantic and residual codes for every
+    # recovered frame are already fixed, and CFG/top-k only ever influenced
+    # WHICH code was chosen during the original (live) generation, never the
+    # hidden states this recomputes. Same equivalence argument as
+    # `generate_ar`'s `resume_*` replay path (see its docstring), generalized
+    # to capture every recovered frame's hidden state, not only the final
+    # one.
+    # ------------------------------------------------------------------
+    def _replay_depth_hidden(self, last_hidden: torch.Tensor, frame_codes_row: torch.Tensor) -> torch.Tensor:
+        """Teacher-forced (batch=1, no CFG, no sampling) recomputation of ONE frame's `depth_hidden` from its
+        ALREADY-KNOWN codes -- the deterministic counterpart of `_generate_depth_codes` (verbatim upstream, live
+        sampling), used by `recover_frame_hiddens`. Deterministic given fixed weights: `hidden_parts` at each
+        residual-codebook step is a function of the PRIOR codes only (never of what gets sampled next), so replaying
+        the known codes into the same running `sequence` reproduces hidden states identical up to floating-point
+        reduction order -- no CFG batching needed because nothing is sampled. (Measured against a real
+        `generate_ar` run: max abs diff ~4.768e-07 in fp32 on CPU -- the batch-1 replay here and the batch-2
+        CFG-doubled original sum in a different order, so they agree to about one fp32 ulp, not bit-for-bit; the
+        gap will be larger in the bf16 production dtype. Nothing functional depends on exactness here -- the
+        preserved span is copied from the file, never re-derived from these hidden states.)
+
+        Args:
+            last_hidden: `[1, hidden_size]` (batch=1 -- unlike `_generate_depth_codes`'s CFG-doubled
+                `[2, hidden_size]` input; no unconditional branch is needed here).
+            frame_codes_row: `[num_codebooks]`, this frame's semantic + residual codes, already known.
+
+        Returns:
+            `[1, hidden_size * (num_codebooks - 1)]`, matching `_generate_depth_codes`'s second return value.
+        """
+        rvq_dtype = self.rvq_depth_decoder.dtype
+        semantic_code = frame_codes_row[0:1]
+        sequence = [self.rvq_depth_decoder.projection(last_hidden.to(rvq_dtype)).unsqueeze(1)]
+        code_embed = self.language_model.model.embed_tokens(semantic_code + AUDIO_CODE_OFFSET)
+        sequence.append(self.rvq_depth_decoder.projection(code_embed.to(rvq_dtype)).unsqueeze(1))
+        hidden_parts = []
+        for index in range(1, self.num_codebooks):
+            hidden = self.rvq_depth_decoder(torch.cat(sequence, dim=1))[:, -1]
+            hidden_parts.append(hidden)
+            if index < self.num_codebooks - 1:
+                code = frame_codes_row[index:index + 1]
+                embed = self.rvq_depth_decoder.audio_embeddings(code + (index - 1) * self.audio_vocab_size)
+                sequence.append(self.rvq_depth_decoder.projection(embed).unsqueeze(1))
+        return torch.cat(hidden_parts, dim=-1)
+
+    @torch.no_grad()
+    def recover_frame_hiddens(
+        self,
+        text_ids: torch.Tensor,
+        frame_codes: torch.Tensor,
+        prefix_codes: torch.Tensor,
+        frame_start: int,
+        frame_end: int,
+        progress_callback: Optional[Callable[[int, int, str], None]] = None,
+    ) -> torch.Tensor:
+        """Teacher-forced, deterministic recovery of `frame_hiddens` for emitted frames `[frame_start, frame_end)`
+        from ALREADY-KNOWN codes.
+
+        Used by MiniMax Music 3 repaint's "re-render a range" mode (design doc "Modality surfaces"): the flow
+        stage needs `frame_hiddens` as its condition input, but the design doc's per-generation state contract
+        deliberately does NOT store `frame_hiddens` (too large -- see design doc "Per-generation state contract"),
+        only `frame_codes`. Re-rendering a range therefore first reconstructs the `frame_hiddens` the AR stage
+        would have produced for that range, from the STORED codes, exactly like `generate_ar`'s own AR-resume path
+        reconstructs its KV cache from stored codes -- this is the same mechanism, generalized to capture EVERY
+        recovered frame's hidden state instead of only the final one.
+
+        Mechanism: a chunked teacher-forced replay first primes the KV cache through the prompt and `frame_codes[
+        :frame_start]` (context only, nothing captured -- identical to `generate_ar`'s own resume replay), then a
+        second windowed forward over `frame_codes[frame_start:frame_end - 1]` captures EVERY position's own output
+        hidden state (not only the final one) -- position `j` of that forward is exactly the `last_hidden`
+        `generate_ar` would have used to predict emitted frame `frame_start + j` during the original, live
+        generation. Each recovered `last_hidden` is then run through `_replay_depth_hidden` (teacher-forced, no
+        sampling) using that SAME frame's known residual codes, to reconstruct `depth_hidden`.
+
+        Batch shape: `text_ids` is `encode_text`'s CFG-doubled `[2, seq_len]` (row 0 conditional, row 1 the
+        audio-CFG-masked row) -- this method does not need row 1 at all (no sampling, no CFG), but MUST still run
+        the LM forward on the full `[2, ...]` batch throughout, because `language_model.model`'s KV cache is
+        allocated at whatever batch size the FIRST call establishes and every later call in the same replay must
+        match it exactly (mirrors `generate_ar`'s own `text_embeds`/`replay_pair` batch-2 shape, for the identical
+        reason). Only the conditional row (index 0) is read out of each recovered `last_hidden` before it is
+        combined with `depth_hidden`.
+
+        Args:
+            text_ids: `[2, seq_len]` from `encode_text`, using the SAME prompt/lyrics the song was originally
+                generated with (caller's responsibility -- mirrors `_generate_audoutpaint_minimax_music3`'s
+                "Prompt/lyrics" contract; a different prompt would prime the WRONG KV-cache context).
+            frame_codes: every frame emitted for this song, 0-indexed, `[F_total, num_codebooks]`.
+            prefix_codes: the song's original warm-up code, `[1, num_codebooks]`.
+            frame_start, frame_end: half-open range of emitted frame indices to recover hidden states for
+                (`0 <= frame_start < frame_end <= F_total`).
+            progress_callback: called as `(recovered_count, frame_end - frame_start, "ar")` after each frame's
+                `depth_hidden` is recomputed -- reuses the same `(step, total, stage)` shape `generate_ar` reports,
+                so a caller can feed it through the same `compute_progress_budget`/`combined_progress` machinery.
+
+        Returns:
+            `[1, frame_end - frame_start, num_codebooks * hidden_size]`, same shape/dtype convention as
+            `MiniMaxMusic3ARResult.frame_hiddens`.
+        """
+        total_frames = int(frame_codes.shape[0])
+        if not (0 <= frame_start < frame_end <= total_frames):
+            raise ValueError(
+                f"recover_frame_hiddens: invalid range [{frame_start}, {frame_end}) for {total_frames} total frames."
+            )
+
+        device = text_ids.device
+        frame_codes = frame_codes.to(device=device, dtype=torch.long)
+        prefix_codes = prefix_codes.to(device=device, dtype=torch.long)
+
+        language_model = self.language_model
+        text_embeds = language_model.model.embed_tokens(text_ids)
+        output = language_model.model(inputs_embeds=text_embeds, use_cache=True)
+        past_key_values = output.past_key_values
+        last_hidden = output.last_hidden_state[:, -1]  # predicts frame 0 (the warm-up code)
+
+        # ---- Context replay: prefix + frames[0:frame_start] -- captures nothing, only rebuilds the KV cache.
+        # Same chunked mechanism as generate_ar's resume path, batch=2 (matching text_ids/the KV cache's batch
+        # size -- see this method's docstring, "Batch shape"). ----
+        context_codes = torch.cat((prefix_codes.reshape(1, -1), frame_codes[:frame_start]), dim=0)
+        context_pair = context_codes.unsqueeze(0).expand(2, -1, -1).contiguous()
+        total_context = context_pair.shape[1]
+        for start in range(0, total_context, AR_RESUME_REPLAY_CHUNK_FRAMES):
+            raise_if_cancelled()
+            end = min(start + AR_RESUME_REPLAY_CHUNK_FRAMES, total_context)
+            feedback = self._embed_audio_frames(context_pair[:, start:end])
+            output = language_model.model(inputs_embeds=feedback, past_key_values=past_key_values, use_cache=True)
+            past_key_values = output.past_key_values
+            last_hidden = output.last_hidden_state[:, -1]
+        # `last_hidden` now predicts frame `frame_start`.
+
+        # ---- Windowed forward: capture EVERY position's hidden state for frames [frame_start, frame_end). ----
+        hiddens_by_frame: List[torch.Tensor] = [last_hidden]
+        remaining = (frame_end - 1) - frame_start  # codes still needed to advance through frame_end - 1
+        if remaining > 0:
+            feed_codes = frame_codes[frame_start:frame_end - 1]
+            feed_pair = feed_codes.unsqueeze(0).expand(2, -1, -1).contiguous()
+            total_feed = feed_pair.shape[1]
+            for start in range(0, total_feed, AR_RESUME_REPLAY_CHUNK_FRAMES):
+                raise_if_cancelled()
+                end = min(start + AR_RESUME_REPLAY_CHUNK_FRAMES, total_feed)
+                feedback = self._embed_audio_frames(feed_pair[:, start:end])
+                output = language_model.model(inputs_embeds=feedback, past_key_values=past_key_values, use_cache=True)
+                past_key_values = output.past_key_values
+                for t in range(output.last_hidden_state.shape[1]):
+                    hiddens_by_frame.append(output.last_hidden_state[:, t])
+
+        # ---- Per-frame depth-decoder teacher forcing (deterministic -- codes already known). ----
+        # Only the conditional row (index 0) is read out here -- see this method's docstring, "Batch shape".
+        frame_hiddens_out = []
+        total_recovered = len(hiddens_by_frame)
+        for offset, lm_hidden in enumerate(hiddens_by_frame):
+            raise_if_cancelled()
+            frame_idx = frame_start + offset
+            cond_hidden = lm_hidden[:1]
+            depth_hidden = self._replay_depth_hidden(cond_hidden, frame_codes[frame_idx])
+            frame_hiddens_out.append(torch.cat((cond_hidden, depth_hidden.to(cond_hidden.dtype)), dim=-1))
+            if progress_callback:
+                try:
+                    progress_callback(offset + 1, total_recovered, "ar")
+                except Exception as exc:
+                    print(f"[MiniMaxMusic3] progress_callback raised during frame-hidden recovery: {exc!r}")
+
+        return torch.stack(frame_hiddens_out, dim=1)
+
+    # ------------------------------------------------------------------
     # Stage 3: chunk bookkeeping. Upstream `before_denoise.py::MiniMaxMusic3PrepareChunksStep`.
     # ------------------------------------------------------------------
     def prepare_chunks(self, frame_hiddens: torch.Tensor) -> List[int]:
@@ -789,6 +954,55 @@ class MiniMaxMusic3Pipeline:
             waveform = self.vocoder(latents.to(self.vocoder.dtype))
             left = 0 if chunk_index == 0 else CROP_LEFT_LATENT * hop_length
             right = 0 if chunk_index == num_chunks - 1 else CROP_RIGHT_LATENT * hop_length
+            waveform_chunks.append(waveform[..., left : waveform.shape[-1] - right])
+
+        audios = torch.cat(waveform_chunks, dim=-1).float().clamp(-1.0, 1.0)
+        if output_type == "np":
+            audios = audios.cpu().numpy()
+        return audios
+
+    # ------------------------------------------------------------------
+    # SushiUI addition (design doc phase plan item 8, repaint's both modes):
+    # `decode`, generalized to decode a SUB-RANGE of a song's chunks with the
+    # crop treatment of the chunk's GLOBAL position in the whole song, rather
+    # than assuming `latent_chunks[0]`/`latent_chunks[-1]` are the true first/
+    # last chunks of the whole sequence (which `decode` above always assumes,
+    # correctly, for both a fresh generation and extend's tail-only call).
+    # Repaint needs this because it decodes only a WINDOW of chunks from the
+    # middle (or a truncated end) of an already-longer song: the plain
+    # `decode` above would wrongly treat that window's own first/last chunk
+    # as the whole song's edges (crop 0 there) even when the song continues
+    # on one or both sides.
+    # ------------------------------------------------------------------
+    @torch.no_grad()
+    def decode_range(
+        self,
+        latent_chunks: List[torch.Tensor],
+        is_global_first: bool,
+        is_global_last: bool,
+        output_type: str = "pt",
+    ):
+        """Like `decode`, but `is_global_first`/`is_global_last` tell this call whether
+        `latent_chunks[0]`/`latent_chunks[-1]` are truly the first/last chunk of the WHOLE
+        song (crop 0 on that side, matching `decode`'s own edge rule) or an INTERNAL window
+        (crop `CROP_LEFT_LATENT`/`CROP_RIGHT_LATENT`, matching `decode`'s treatment of every
+        chunk that is not at an edge). Every chunk strictly between the first and last of
+        `latent_chunks` is always cropped on BOTH sides, exactly as `decode` already does --
+        only the two edge chunks' treatment is overridable here.
+        """
+        if output_type not in ("np", "pt"):
+            raise ValueError(f"Invalid output_type: {output_type}")
+
+        hop_length = self.latent_hop_length
+        num_chunks = len(latent_chunks)
+        waveform_chunks = []
+        for chunk_index, latents in enumerate(latent_chunks):
+            raise_if_cancelled()
+            waveform = self.vocoder(latents.to(self.vocoder.dtype))
+            chunk_is_first = (chunk_index == 0) and is_global_first
+            chunk_is_last = (chunk_index == num_chunks - 1) and is_global_last
+            left = 0 if chunk_is_first else CROP_LEFT_LATENT * hop_length
+            right = 0 if chunk_is_last else CROP_RIGHT_LATENT * hop_length
             waveform_chunks.append(waveform[..., left : waveform.shape[-1] - right])
 
         audios = torch.cat(waveform_chunks, dim=-1).float().clamp(-1.0, 1.0)

@@ -348,11 +348,29 @@ language model with the depth decoder. Every one of those needs a key remap that
 `official/` does not, and `official/` was verified to load key-for-key with no
 remap at all (441/441, 4/4, 47/47, 121/121).
 
-The cost, which the refusal message states: until item 9 lands, the only
-available precision is the `official/` FP32 transformer cast at load time. The
-flat tree's FP16 and INT8 variants are unreachable, which is why the remap is
-grouped with INT8 ConvRot rather than done here — the same key mapping serves
-both, and neither is needed to get generation working.
+The cost, which the refusal message stated before item 9 landed: until then, the
+only available precision was the `official/` FP32 transformer cast at load
+time.
+
+**Item 9 has landed.** `core.models.minimax_music3.flat_remap` performs the DiT
+and non-pruned text-encoder key remaps described above, and
+`load_minimax_music3_from_path` now reads a flat, non-quantized DiT file
+(FP32 or FP16) when pointed at one, with configs still coming from `official/`
+and every other component (language model, depth decoder, vocoder, tokenizer,
+scheduler) still read from `official/` unchanged. The flat text encoder's
+builder exists and is tested but is not wired into that dispatch — there is
+no existing detection hook that selects a text-encoder SOURCE the way the DiT
+file already does, and inventing one is a decision left to a later phase.
+`int8_convrot` (either file) and the pruned-vocabulary text encoder remain
+refused, header-only (no multi-GB tensor read), with reasons naming
+phase-plan items 13 and 10 respectively.
+
+The flat "FP16" DiT is bit-exact under `official.bfloat16().half()`, not
+`official.half()` directly (verified on sampled tensors): the repack went
+through a bf16 cast, so it carries bf16 precision under an FP16 label. Loading
+it at this loader's bf16 default is therefore bit-identical to casting
+`official/`'s FP32 transformer to bf16 — a user picking the flat FP16 file
+expecting extra precision over bf16 gets none.
 
 ## Memory
 
@@ -459,12 +477,26 @@ from phase 1 doubles as a training-data artifact for the flow stage.
 - Official snapshot and flat artifacts: staged and verified under
   `M:/model/minimax-music3/`, provenance in `manifest.json`.
 - Upstream pipeline code: vendored and ported (phase plan item 1).
-- Backend: phases 1-8 of the phase plan are implemented -- vendor/port,
+- Backend: phases 1-9 of the phase plan are implemented -- vendor/port,
   loader/registry, txt2aud, API/`param_defaults.py`/`arch_capabilities.py`
-  wiring, extend (`/generate/outpaint/audio`), and repaint
+  wiring, extend (`/generate/outpaint/audio`), repaint
   (`/generate/aud2aud` with `mode="repaint"`, both the "regenerate" and
-  "rerender" sub-modes). Items 9-14 (flat/GGUF key remap, pruned vocabulary,
-  Q8_0 residency, INT8 ConvRot, docs) are not yet done.
+  "rerender" sub-modes), and the flat key remap
+  (`core.models.minimax_music3.flat_remap`). The remap covers the flat DiT
+  (QKV split, `.gamma`/`.beta` norm rename, condition encoder unfolded out)
+  and the flat NON-pruned text encoder (language model + RVQ depth decoder
+  split apart, including the `model.audio_extra_embedding` ->
+  `audio_embeddings` cross-component rename); both are proven total against
+  the vendored classes' own `state_dict()` keys and numerically verified
+  against the real snapshot. `load_minimax_music3_from_path` now loads a
+  flat, non-quantized DiT file (`minimax_music3_dit_{fp32,fp16}.safetensors`)
+  when pointed at one directly, with every other component still sourced
+  from `official/`; the flat text-encoder builder is implemented and tested
+  but not wired into that dispatch (no existing detection hook selects a
+  text-encoder source the way the DiT file already does). Items 10-14
+  (pruned vocabulary, GGUF containers, Q8_0 residency, INT8 ConvRot, docs)
+  are not yet done; `int8_convrot` and the pruned text-encoder variant are
+  refused (header-only, no multi-GB read) with reasons naming those phases.
 - Frontend: txt2aud/extend UI shipped; repaint's UI branch is BLOCKED on a
   shared-worktree conflict (`frontend/src/components/generation/Img2ImgPanel.tsx`
   was dirty under another session's edits when this phase landed) -- not

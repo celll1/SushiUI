@@ -15,6 +15,7 @@ import os
 import sys
 
 import pytest
+import torch
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
@@ -52,6 +53,26 @@ def _write_flat_dit_header(path):
 
     header = {
         "diffusion_transformer.proj_in.weight": {"dtype": "F16", "shape": [0], "data_offsets": [0, 0]},
+        "latent_conditioners.0.weight": {"dtype": "F16", "shape": [0], "data_offsets": [0, 0]},
+        "cond_layer_logits": {"dtype": "F16", "shape": [8], "data_offsets": [0, 0]},
+    }
+    raw = json.dumps(header).encode("utf-8")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "wb") as fh:
+        fh.write(struct.pack("<Q", len(raw)))
+        fh.write(raw)
+
+
+def _write_quantized_flat_dit_header(path):
+    """A flat-DiT-shaped header that ALSO carries a ``.weight_scale`` sibling --
+    the ``int8_convrot`` tell ``loader._header_looks_quantized`` reads. 0-byte
+    placeholder tensors: this must be refused before any tensor byte is read,
+    so a real read would raise (offsets point past a near-empty file)."""
+    import struct
+
+    header = {
+        "diffusion_transformer.proj_in.weight": {"dtype": "F16", "shape": [0], "data_offsets": [0, 0]},
+        "diffusion_transformer.proj_in.weight_scale": {"dtype": "F32", "shape": [0], "data_offsets": [0, 0]},
         "latent_conditioners.0.weight": {"dtype": "F16", "shape": [0], "data_offsets": [0, 0]},
         "cond_layer_logits": {"dtype": "F16", "shape": [8], "data_offsets": [0, 0]},
     }
@@ -152,16 +173,117 @@ def test_missing_layout_raises_value_error_naming_expectations(tmp_path):
         loader.load_minimax_music3_from_path(str(tmp_path / "nowhere"))
 
 
-def test_flat_dit_with_official_present_is_refused_not_silently_substituted(tmp_path):
-    """Pointing AT the flat file (with official/ reachable) refuses with a
-    message naming the file, rather than silently loading official/'s
-    transformer as if that were what was requested."""
-    _make_official_tree(str(tmp_path))
-    dit_path = os.path.join(str(tmp_path), "diffusion_models", "minimax_music3_dit_fp16.safetensors")
-    _write_flat_dit_header(dit_path)
+def test_flat_dit_with_official_present_is_now_loadable(tmp_path):
+    """Design doc phase 9: pointing AT a flat DiT file (with official/
+    reachable) now LOADS the transformer + condition encoder from that file
+    via ``flat_remap``, rather than refusing.
 
-    with pytest.raises(NotImplementedError, match="flat repacked DiT"):
-        loader.load_minimax_music3_from_path(dit_path)
+    Exercises the standalone builder directly (not the full
+    ``load_minimax_music3_from_path`` dispatch, which also needs real
+    rvq_depth_decoder/vocoder/tokenizer/scheduler weights this file's other
+    tests deliberately keep config-only -- see the module docstring). The
+    real multi-GB snapshot's end-to-end dispatch, including this builder
+    being reached FROM ``load_minimax_music3_from_path``, was verified
+    manually while writing this loader, same convention as every other
+    weight-bearing claim in this file.
+
+    A real (tiny) round-trip: the loaded weight is the FLAT file's value,
+    not a placeholder, and not silently substituted with official/'s (which
+    this fixture gives a DIFFERENT value, specifically to catch a
+    substitution bug)."""
+    from tests.minimax_music3_flat_dit_fixture import write_tiny_flat_dit_and_official_tree
+
+    fixture = write_tiny_flat_dit_and_official_tree(tmp_path)
+    transformer, transformer_config, condition_encoder, condition_encoder_config = (
+        loader.build_transformer_and_condition_encoder_from_flat_dit(
+            fixture["dit_path"], fixture["official"], torch.float16,
+        )
+    )
+    assert type(transformer).__name__ == "MiniMaxMusic3Transformer1DModel"
+    assert type(condition_encoder).__name__ == "MiniMaxMusic3ConditionEncoder"
+    got = transformer.proj_in.weight.to(torch.float32)
+    expected = fixture["expected_proj_in_weight"].to(torch.float32)
+    assert torch.allclose(got, expected, atol=1e-3, rtol=1e-2)
+    # And NOT official/'s placeholder value (the fixture makes them differ on
+    # purpose): a substitution bug would make this assertion fail instead.
+    assert not torch.allclose(got, fixture["official_placeholder_proj_in_weight"].to(torch.float32))
+    # F11: pin the q/k/v split order through the round-trip too, not only via
+    # the pure-function test in minimax_music3_flat_remap_test.py.
+    fused_qkv = fixture["expected_fused_qkv"]
+    inner_dim = fused_qkv.shape[0] // 3
+    block0 = transformer.transformer_blocks[0]
+    tol = dict(atol=1e-3, rtol=1e-2)  # transformer was built in float16
+    assert torch.allclose(block0.attn.to_q.weight.to(torch.float32), fused_qkv[0:inner_dim].to(torch.float32), **tol)
+    assert torch.allclose(block0.attn.to_k.weight.to(torch.float32), fused_qkv[inner_dim:2 * inner_dim].to(torch.float32), **tol)
+    assert torch.allclose(block0.attn.to_v.weight.to(torch.float32), fused_qkv[2 * inner_dim:3 * inner_dim].to(torch.float32), **tol)
+
+
+def test_flat_text_encoder_builder_round_trip(tmp_path):
+    """F2 in the phase-9 audit: ``build_language_model_and_depth_decoder_from_
+    flat_text_encoder`` had zero callers and zero tests. A tiny real Qwen3 +
+    RVQ depth decoder round-trip, proving it builds a loadable
+    ``Qwen3ForCausalLM`` and ``MiniMaxMusic3RVQDepthDecoder`` on the installed
+    transformers version, and that the flat file's values (not placeholders)
+    land in the built modules."""
+    from tests.minimax_music3_flat_text_encoder_fixture import (
+        write_tiny_flat_text_encoder_and_official_tree,
+    )
+
+    fixture = write_tiny_flat_text_encoder_and_official_tree(tmp_path)
+    language_model, rvq_depth_decoder, depth_config = (
+        loader.build_language_model_and_depth_decoder_from_flat_text_encoder(
+            fixture["text_encoder_path"], fixture["official"], torch.float32,
+        )
+    )
+    assert type(language_model).__name__ == "Qwen3ForCausalLM"
+    assert type(rvq_depth_decoder).__name__ == "MiniMaxMusic3RVQDepthDecoder"
+    got_lm_head = language_model.lm_head.weight.to(torch.float32)
+    assert torch.allclose(got_lm_head, fixture["expected_lm_head_weight"].to(torch.float32))
+    got_audio_embeddings = rvq_depth_decoder.audio_embeddings.weight.to(torch.float32)
+    assert torch.allclose(got_audio_embeddings, fixture["expected_audio_embeddings_weight"].to(torch.float32))
+
+
+def test_flat_text_encoder_builder_gates_on_rope_theta_before_reading_weights(tmp_path):
+    """F3 regression: a wrong ``rope_parameters.rope_theta`` in
+    ``official/language_model/config.json`` must be refused BEFORE
+    ``read_state_dict`` opens the (potentially 18 GB) flat file."""
+    from tests.minimax_music3_flat_text_encoder_fixture import (
+        write_tiny_flat_text_encoder_and_official_tree,
+    )
+
+    fixture = write_tiny_flat_text_encoder_and_official_tree(tmp_path)
+    lm_config_path = os.path.join(fixture["official"], "language_model", "config.json")
+    with open(lm_config_path, encoding="utf-8") as fh:
+        bad_config = json.load(fh)
+    bad_config["rope_parameters"]["rope_theta"] = 10_000.0
+    with open(lm_config_path, "w", encoding="utf-8") as fh:
+        json.dump(bad_config, fh)
+    # Corrupt the flat file's bytes after its header so a real tensor read
+    # would raise a decode error -- proving the gate fires BEFORE that read,
+    # not merely before some slow I/O.
+    with open(fixture["text_encoder_path"], "r+b") as fh:
+        fh.seek(-16, os.SEEK_END)
+        fh.write(b"\xff" * 16)
+
+    with pytest.raises(ValueError, match="rope_parameters"):
+        loader.build_language_model_and_depth_decoder_from_flat_text_encoder(
+            fixture["text_encoder_path"], fixture["official"], torch.float32,
+        )
+
+
+def test_flat_dit_int8_convrot_is_refused_header_only(tmp_path):
+    """The quantized flat DiT variant stays refused (design doc phase 13),
+    and the refusal fires from the HEADER alone (no tensor bytes read) --
+    this test's placeholder tensors are 0-byte, so a real-byte read would
+    error, not just be slow."""
+    _make_official_tree(str(tmp_path))
+    dit_path = os.path.join(str(tmp_path), "diffusion_models", "minimax_music3_dit_int8_convrot.safetensors")
+    _write_quantized_flat_dit_header(dit_path)
+
+    with pytest.raises(RuntimeError, match="quantiz"):
+        loader.build_transformer_and_condition_encoder_from_flat_dit(
+            dit_path, os.path.join(str(tmp_path), "official"), torch.bfloat16,
+        )
 
 
 def test_flat_dit_with_no_official_tree_is_refused_with_a_distinct_reason(tmp_path):

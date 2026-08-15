@@ -91,16 +91,24 @@ def test_minimax_music3_is_the_only_overlay_entry_today():
     assert set(AUDIO_GEN_ARCH_OVERLAYS.keys()) == {"minimax_music3"}
 
 
-def test_aud2aud_twin_is_still_a_noop_for_every_arch():
-    """Design doc phase plan item 8 (repaint/cover) is what populates
-    `AUD2AUD_GEN_ARCH_OVERLAYS`; until then every arch, including
-    "minimax_music3", resolves unchanged -- `/generate/aud2aud` still
-    hard-refuses a loaded MiniMax Music 3 model regardless of what a
-    resolved default would say.
+def test_aud2aud_twin_is_populated_only_for_minimax_music3():
+    """Design doc phase plan item 8 (repaint) populates `AUD2AUD_GEN_ARCH_OVERLAYS` with a "minimax_music3" entry
+    (`music3_repaint_mode`/`num_inference_steps`/`flow_guidance_scale`) now that `/generate/aud2aud` dispatches a
+    loaded MiniMax Music 3 model's `mode="repaint"` requests to its own AR-resume/re-render mechanism. ACE-Step
+    and any unrecognized/absent arch still resolve to `AUD2AUD_DEFAULTS` unchanged -- the no-op contract this
+    overlay mechanism preserves for every arch that has nothing to add (mirrors `test_outpaint_audio_twin_is_
+    populated_only_for_minimax_music3` below for the sibling overlay).
     """
-    assert AUD2AUD_GEN_ARCH_OVERLAYS == {}
-    for arch in ("acestep", "minimax_music3", None, "unknown"):
+    assert set(AUD2AUD_GEN_ARCH_OVERLAYS.keys()) == {"minimax_music3"}
+    for arch in ("acestep", None, "unknown"):
         assert aud2aud_defaults_for_arch(arch) == AUD2AUD_DEFAULTS
+    _music3_resolved = aud2aud_defaults_for_arch("minimax_music3")
+    assert _music3_resolved["music3_repaint_mode"] == "regenerate"
+    assert _music3_resolved["num_inference_steps"] == 30
+    assert _music3_resolved["flow_guidance_scale"] == 1.7
+    # Every OTHER key is unchanged from the base ACE-Step-shaped defaults.
+    for key, value in AUD2AUD_DEFAULTS.items():
+        assert _music3_resolved[key] == value
 
 
 def test_outpaint_audio_twin_is_populated_only_for_minimax_music3():

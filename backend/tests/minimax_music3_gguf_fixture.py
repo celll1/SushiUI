@@ -121,6 +121,7 @@ def write_gguf(
     alignment: int = 32,
     extra_raw_tensors: "Optional[Dict[str, bytes]]" = None,
     extra_raw_ggml_type_id: int = 8,  # Q8_0, for the refusal-path fixtures.
+    extra_raw_tensor_shapes: "Optional[Dict[str, tuple]]" = None,
 ) -> str:
     """Write a real GGUF v3 file at ``path``.
 
@@ -129,14 +130,23 @@ def write_gguf(
 
     ``extra_raw_tensors``: name -> ALREADY-ENCODED raw bytes, declared as
     ``extra_raw_ggml_type_id`` (default Q8_0) regardless of their actual
-    content -- for the "this reader must refuse a Q8_0 tensor" fixtures,
-    where the byte CONTENT is irrelevant (the refusal is header-only and
-    never reads it) but the file must still be big enough for
-    ``parse_gguf_header``'s data-range validation to accept it. The declared
-    shape is inferred as a single 1-D tensor of ``len(bytes) // 34 * 32``
-    Q8_0-equivalent elements (34 bytes/block, 32 elements/block) -- exact
-    numeric shape does not matter for these fixtures, only that it round-trips
-    through the block-size arithmetic cleanly.
+    content.
+
+    For the "this reader must refuse a Q8_0 tensor" HEADER-ONLY fixtures, the
+    byte CONTENT is irrelevant (the refusal never reads it) but the file must
+    still be big enough for ``parse_gguf_header``'s data-range validation to
+    accept it -- for those, leave ``extra_raw_tensor_shapes`` unset and the
+    declared shape is inferred as a single 1-D tensor of
+    ``len(bytes) // 34 * 32`` Q8_0-equivalent elements (34 bytes/block, 32
+    elements/block); exact numeric shape does not matter there.
+
+    For an END-TO-END fixture whose Q8_0 bytes are genuinely decodable
+    (``encode_q8_0_tensor``'s output), the REAL ``(out_features, in_features)``
+    torch shape must be declared instead of the inferred flat one, or a
+    reader reconstructing ``(out, in)`` from the header gets the wrong shape
+    entirely (a 1-D `(n_elements,)` tensor, not a 2-D Linear weight) --
+    ``extra_raw_tensor_shapes`` supplies that per-tensor torch shape; a name
+    absent from it falls back to the inferred 1-D shape.
     """
     metadata = dict(metadata or {})
 
@@ -176,7 +186,21 @@ def write_gguf(
         if len(raw) % block_bytes != 0:
             raise ValueError(f"{name}: {len(raw)} byte(s) is not a multiple of Q8_0's 34-byte block")
         n_elements = (len(raw) // block_bytes) * 32
-        _place(name, (n_elements,), extra_raw_ggml_type_id, raw)
+        explicit_shape = (extra_raw_tensor_shapes or {}).get(name)
+        if explicit_shape is not None:
+            declared_elements = 1
+            for d in explicit_shape:
+                declared_elements *= int(d)
+            if declared_elements != n_elements:
+                raise ValueError(
+                    f"{name}: explicit shape {explicit_shape} implies {declared_elements} element(s), "
+                    f"but the encoded bytes imply {n_elements} -- the fixture's own shape and its "
+                    f"encoder disagree."
+                )
+            dims = tuple(reversed(explicit_shape))  # ne[0] fastest -- see module docstring.
+        else:
+            dims = (n_elements,)
+        _place(name, dims, extra_raw_ggml_type_id, raw)
 
     for name, dims, ggml_type_id, rel_offset, _payload in infos:
         header += _encode_string(name)
@@ -518,6 +542,41 @@ def write_tiny_pruned_gguf_text_encoder_and_official_tree(tmp_path) -> dict:
     }
 
 
+def encode_q8_0_tensor(weight: torch.Tensor) -> bytes:
+    """Real (not placeholder-zero) Q8_0 encoding of a 2-D weight: per-row,
+    per-32-column block, ``block_q8_0`` layout (2-byte LE fp16 scale + 32
+    ``int8`` codes = 34 bytes/block), matching
+    ``core.models.common.gguf_container.GGUFStateDict.get_q8_0_packed`` /
+    ``core.models.common.gguf_q8_0_linear.dequantize_q8_0``'s read side
+    exactly -- this is the WRITER counterpart the design doc phase 12
+    end-to-end test needs (unlike the header-only refusal fixtures above,
+    whose Q8_0 bytes are zero-filled placeholders never read for content).
+
+    ``weight.shape[1]`` (``in_features``) must be divisible by 32 -- the same
+    requirement the real reader enforces.
+    """
+    if weight.dim() != 2:
+        raise ValueError(f"encode_q8_0_tensor: expected a 2-D tensor, got shape {tuple(weight.shape)}")
+    out_features, in_features = weight.shape
+    if in_features % 32 != 0:
+        raise ValueError(f"encode_q8_0_tensor: in_features={in_features} is not a multiple of 32")
+    blocks_per_row = in_features // 32
+    blocked = weight.detach().to(torch.float32).reshape(out_features, blocks_per_row, 32)
+    amax = blocked.abs().amax(dim=-1, keepdim=True).clamp(min=1e-12)
+    scale = amax / 127.0
+    codes = (blocked / scale).round().clamp(-127, 127).to(torch.int8)
+    scale_fp16 = scale.squeeze(-1).to(torch.float16)  # (out_features, blocks_per_row)
+
+    codes_np = codes.contiguous().numpy()
+    scale_np = scale_fp16.contiguous().numpy()
+    chunks: List[bytes] = []
+    for r in range(out_features):
+        for b in range(blocks_per_row):
+            chunks.append(scale_np[r, b].tobytes())  # 2 bytes, little-endian fp16
+            chunks.append(codes_np[r, b].tobytes())  # 32 bytes, int8
+    return b"".join(chunks)
+
+
 def write_pruned_gguf_text_encoder_with_q8_0_tensor(tmp_path) -> str:
     """Header-only refusal fixture: a pruned-vocabulary-tell-bearing GGUF
     text encoder (so it passes the pruned-layout check) that also carries one
@@ -534,3 +593,160 @@ def write_pruned_gguf_text_encoder_with_q8_0_tensor(tmp_path) -> str:
         extra_raw_tensors=extra_raw_tensors, extra_raw_ggml_type_id=8,
     )
     return path
+
+
+# ---------------------------------------------------------------------------
+# End-to-end packed Q8_0 builder fixture (design doc phase 12): a REAL Q8_0
+# encoding (via `encode_q8_0_tensor` above) of every tensor that is Q8_0-typed
+# on the real staged checkpoint (fused qkv_proj / gate_up_proj, o_proj,
+# down_proj -- both the language model and the depth decoder -- audio_heads,
+# projection, lm_head_pruned), with everything else (norms, q_norm/k_norm,
+# the two dense vocab tables, audio_extra_embedding, pos_embedding) written
+# as plain F32, exactly matching the real file's own F32/BF16-vs-Q8_0 split
+# by TENSOR NAME (not a placeholder subset of it).
+#
+# `HIDDEN_SIZE`/`INTERMEDIATE_SIZE` (32 here, not 8 as in
+# `minimax_music3_pruned_text_encoder_fixture`'s dense fixture) are the one
+# forced difference: Q8_0 blocks are 32 elements wide, so every Q8_0 tensor's
+# `in_features` here must be a multiple of 32 -- the dense fixture's
+# HIDDEN_SIZE=8 geometry cannot be reused for this one. The two vocabulary
+# tables' ROW counts are still the real checkpoint's own constants
+# (`AUDIO_CODE_OFFSET`, `SEMANTIC_VOCAB_SIZE`, `AUDIO_HEAD_VOCAB_SIZE`) for
+# the same reason the dense fixture uses them: the loader's census gates
+# check against those constants directly.
+# ---------------------------------------------------------------------------
+
+Q8_0_HIDDEN_SIZE = 32
+Q8_0_INTERMEDIATE_SIZE = 32  # gate_up_proj is [64, 32], down_proj is [32, 32]
+Q8_0_NUM_HIDDEN_LAYERS = 1
+Q8_0_NUM_ATTENTION_HEADS = 2
+Q8_0_NUM_KEY_VALUE_HEADS = 1
+# HEAD_DIM=16 (not the dense fixture's 4) so Q_DIM = NUM_ATTENTION_HEADS *
+# HEAD_DIM = 32 is itself divisible by 32 -- `self_attn.o_proj`'s
+# IN_FEATURES is Q_DIM (the concatenated per-head attention output), NOT
+# HIDDEN_SIZE (they only coincide in the dense fixture's own tiny geometry,
+# where HEAD_DIM=4 makes Q_DIM=8=HIDDEN_SIZE by coincidence; Qwen3's config
+# keeps `head_dim` independent of `hidden_size // num_attention_heads` in
+# general, and this fixture's Q8_0 tensors need EVERY in_features divisible
+# by 32, o_proj's included).
+Q8_0_HEAD_DIM = 16
+Q8_0_Q_DIM = Q8_0_NUM_ATTENTION_HEADS * Q8_0_HEAD_DIM  # 32
+Q8_0_KV_DIM = Q8_0_NUM_KEY_VALUE_HEADS * Q8_0_HEAD_DIM  # 16
+Q8_0_MAX_POSITION_EMBEDDINGS = 32
+Q8_0_ROPE_THETA = 1_000_000.0
+
+Q8_0_DEPTH_HIDDEN_SIZE = 32
+Q8_0_DEPTH_INTERMEDIATE_SIZE = 32
+Q8_0_DEPTH_NUM_LAYERS = 1
+Q8_0_DEPTH_NUM_HEADS = 2
+Q8_0_AUDIO_VOCAB_SIZE = 4
+Q8_0_NUM_CODEBOOKS = 3  # -> 2 audio_heads
+Q8_0_DEPTH_MAX_POSITION_EMBEDDINGS = 8
+
+
+def write_tiny_pruned_gguf_q8_0_text_encoder_and_official_tree(tmp_path) -> dict:
+    """A REAL (genuinely Q8_0-encoded, not zero-filled) pruned GGUF text
+    encoder for an end-to-end
+    ``build_language_model_and_depth_decoder_from_pruned_gguf_q8_0_text_encoder``
+    test. Returns the pre-quantization source weights for every Q8_0 tensor
+    (so a test can dequantize-and-compare within Q8_0's own tolerance, not
+    assert bit-identity) alongside the paths and dense reference tensors.
+    """
+    root = str(tmp_path)
+    official = os.path.join(root, "official")
+    generator = torch.Generator().manual_seed(13579)
+
+    lm_config = {
+        "model_type": "qwen3",
+        "architectures": ["Qwen3ForCausalLM"],
+        "vocab_size": 200_000,
+        "hidden_size": Q8_0_HIDDEN_SIZE,
+        "intermediate_size": Q8_0_INTERMEDIATE_SIZE,
+        "num_hidden_layers": Q8_0_NUM_HIDDEN_LAYERS,
+        "num_attention_heads": Q8_0_NUM_ATTENTION_HEADS,
+        "num_key_value_heads": Q8_0_NUM_KEY_VALUE_HEADS,
+        "head_dim": Q8_0_HEAD_DIM,
+        "max_position_embeddings": Q8_0_MAX_POSITION_EMBEDDINGS,
+        "rope_parameters": {"rope_theta": Q8_0_ROPE_THETA, "rope_type": "default"},
+    }
+    _write_json(os.path.join(official, "language_model", "config.json"), lm_config)
+
+    depth_config = {
+        "_class_name": "MiniMaxMusic3RVQDepthDecoder",
+        "hidden_size": Q8_0_DEPTH_HIDDEN_SIZE,
+        "num_layers": Q8_0_DEPTH_NUM_LAYERS,
+        "num_attention_heads": Q8_0_DEPTH_NUM_HEADS,
+        "intermediate_size": Q8_0_DEPTH_INTERMEDIATE_SIZE,
+        "audio_vocab_size": Q8_0_AUDIO_VOCAB_SIZE,
+        "num_codebooks": Q8_0_NUM_CODEBOOKS,
+        "max_position_embeddings": Q8_0_DEPTH_MAX_POSITION_EMBEDDINGS,
+    }
+    _write_json(os.path.join(official, "rvq_depth_decoder", "config.json"), depth_config)
+
+    def _r(*shape):
+        return torch.randn(*shape, generator=generator)
+
+    lm_head_pruned = _r(AUDIO_HEAD_VOCAB_SIZE, Q8_0_HIDDEN_SIZE)
+    embed_tokens_audio = _r(SEMANTIC_VOCAB_SIZE, Q8_0_HIDDEN_SIZE)
+    audio_embeddings_rows = Q8_0_AUDIO_VOCAB_SIZE * (Q8_0_NUM_CODEBOOKS - 1)
+    audio_extra_embedding = _r(audio_embeddings_rows, Q8_0_DEPTH_HIDDEN_SIZE)
+    lm_fused_qkv = _r(Q8_0_Q_DIM + 2 * Q8_0_KV_DIM, Q8_0_HIDDEN_SIZE)
+    lm_fused_gate_up = _r(2 * Q8_0_INTERMEDIATE_SIZE, Q8_0_HIDDEN_SIZE)
+    lm_o_proj = _r(Q8_0_HIDDEN_SIZE, Q8_0_Q_DIM)  # (out=hidden_size, in=Q_DIM) -- see Q8_0_HEAD_DIM's comment
+    lm_down_proj = _r(Q8_0_HIDDEN_SIZE, Q8_0_INTERMEDIATE_SIZE)
+    projection = _r(Q8_0_DEPTH_HIDDEN_SIZE, Q8_0_DEPTH_HIDDEN_SIZE)
+    audio_heads = [_r(Q8_0_AUDIO_VOCAB_SIZE, Q8_0_DEPTH_HIDDEN_SIZE) for _ in range(Q8_0_NUM_CODEBOOKS - 1)]
+    depth_fused_qkv = _r(3 * Q8_0_DEPTH_HIDDEN_SIZE, Q8_0_DEPTH_HIDDEN_SIZE)
+    depth_fused_gate_up = _r(2 * Q8_0_DEPTH_INTERMEDIATE_SIZE, Q8_0_DEPTH_HIDDEN_SIZE)
+    depth_o_proj = _r(Q8_0_DEPTH_HIDDEN_SIZE, Q8_0_DEPTH_HIDDEN_SIZE)
+    depth_down_proj = _r(Q8_0_DEPTH_HIDDEN_SIZE, Q8_0_DEPTH_INTERMEDIATE_SIZE)
+
+    dense_tensors: Dict[str, torch.Tensor] = {
+        "model.embed_tokens_prefill.weight": _r(AUDIO_CODE_OFFSET, Q8_0_HIDDEN_SIZE),
+        "model.embed_tokens_audio.weight": embed_tokens_audio,
+        "model.norm.weight": _r(Q8_0_HIDDEN_SIZE),
+        "model.audio_extra_embedding.weight": audio_extra_embedding,
+        "model.audio_decoder.norm.weight": _r(Q8_0_DEPTH_HIDDEN_SIZE),
+        "model.audio_decoder.pos_embedding.weight": _r(Q8_0_DEPTH_MAX_POSITION_EMBEDDINGS, Q8_0_DEPTH_HIDDEN_SIZE),
+        "model.layers.0.input_layernorm.weight": _r(Q8_0_HIDDEN_SIZE),
+        "model.layers.0.post_attention_layernorm.weight": _r(Q8_0_HIDDEN_SIZE),
+        "model.layers.0.self_attn.q_norm.weight": _r(Q8_0_HEAD_DIM),
+        "model.layers.0.self_attn.k_norm.weight": _r(Q8_0_HEAD_DIM),
+        "model.audio_decoder.layers.0.input_layernorm.weight": _r(Q8_0_DEPTH_HIDDEN_SIZE),
+        "model.audio_decoder.layers.0.post_attention_layernorm.weight": _r(Q8_0_DEPTH_HIDDEN_SIZE),
+    }
+
+    q8_0_source_tensors: Dict[str, torch.Tensor] = {
+        "model.lm_head_pruned.weight": lm_head_pruned,
+        "model.layers.0.self_attn.qkv_proj.weight": lm_fused_qkv,
+        "model.layers.0.mlp.gate_up_proj.weight": lm_fused_gate_up,
+        "model.layers.0.self_attn.o_proj.weight": lm_o_proj,
+        "model.layers.0.mlp.down_proj.weight": lm_down_proj,
+        "model.audio_decoder.projection.weight": projection,
+        "model.audio_decoder.layers.0.self_attn.qkv_proj.weight": depth_fused_qkv,
+        "model.audio_decoder.layers.0.mlp.gate_up_proj.weight": depth_fused_gate_up,
+        "model.audio_decoder.layers.0.self_attn.o_proj.weight": depth_o_proj,
+        "model.audio_decoder.layers.0.mlp.down_proj.weight": depth_down_proj,
+    }
+    for i, head in enumerate(audio_heads):
+        q8_0_source_tensors[f"model.audio_decoder.audio_heads.{i}.weight"] = head
+
+    extra_raw_tensors = {name: encode_q8_0_tensor(t) for name, t in q8_0_source_tensors.items()}
+    extra_raw_tensor_shapes = {name: tuple(t.shape) for name, t in q8_0_source_tensors.items()}
+
+    text_encoder_path = os.path.join(root, "text_encoders", "minimax_music3_text_encoder_pruned_q8_0_tiny.gguf")
+    write_gguf(
+        text_encoder_path, dense_tensors, {"general.architecture": "minimax_music3"},
+        extra_raw_tensors=extra_raw_tensors, extra_raw_ggml_type_id=8,
+        extra_raw_tensor_shapes=extra_raw_tensor_shapes,
+    )
+
+    return {
+        "official": official,
+        "text_encoder_path": text_encoder_path,
+        "q8_0_source_tensors": q8_0_source_tensors,
+        "dense_tensors": dense_tensors,
+        "expected_lm_head_pruned_weight": lm_head_pruned,
+        "hidden_size": Q8_0_HIDDEN_SIZE,
+        "depth_hidden_size": Q8_0_DEPTH_HIDDEN_SIZE,
+    }

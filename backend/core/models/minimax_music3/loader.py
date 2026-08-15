@@ -968,6 +968,230 @@ def build_language_model_and_depth_decoder_from_pruned_gguf_text_encoder(
     return language_model, rvq_depth_decoder, depth_config
 
 
+def build_language_model_and_depth_decoder_from_pruned_gguf_q8_0_text_encoder(
+    gguf_text_encoder_path: str,
+    official: str,
+    torch_dtype: torch.dtype,
+):
+    """The PRUNED-vocabulary GGUF text encoder's Q8_0 tensors, kept PACKED
+    (design doc phase 12) instead of being refused the way
+    ``build_language_model_and_depth_decoder_from_pruned_gguf_text_encoder``
+    (above) refuses them. Mirrors that function's shape and gate ordering
+    exactly except for the one difference this docstring exists to explain.
+
+    Every Q8_0-typed tensor (169 in the real staged
+    ``minimax_music3_text_encoder_pruned_Q8_0.gguf`` -- every quantized
+    Linear weight in both the language model and the RVQ depth decoder,
+    INCLUDING ``lm_head_pruned``; see
+    ``pruned_text_encoder_q8_0_remap``'s module docstring for the full
+    census) is read PACKED via ``pruned_text_encoder_q8_0_remap.
+    apply_pruned_text_encoder_state_dict_packed`` and installed as a
+    ``core.models.common.gguf_q8_0_linear.GGUFQ8_0Linear`` -- weight-only
+    quantized, dequantized ONCE PER DEVICE MOVE rather than once per forward
+    (see that module's docstring for why: the AR loop that owns this text
+    encoder calls it up to ~9,000 times per generation, so a per-forward
+    dequant of an 8B-parameter stack is not viable). Every F32/BF16 tensor
+    (norms, the three vocabulary tables) loads exactly as the dense pruned
+    GGUF builder loads them, through the SAME ``load_state_dict`` call.
+
+    ANY OTHER unsupported GGML type (this checkpoint carries none; a
+    hypothetical Q4_0 sibling would) is still refused HEADER-ONLY -- Q8_0 is
+    popped out of the refusal set FIRST, so this function's tolerance is
+    exactly one type wider than the dense builder's, not "anything goes".
+
+    NOT wired into ``load_minimax_music3_from_path``'s directory-detection
+    dispatch, same status as every other text-encoder builder in this
+    module -- see the module docstring.
+    """
+    from accelerate import init_empty_weights
+    from transformers import AutoConfig, AutoModelForCausalLM
+
+    from core.models.common.gguf_q8_0_linear import install_packed_q8_0_linears
+    from core.models.minimax_music3.defaults import AUDIO_CODE_OFFSET
+    from core.models.minimax_music3.flat_remap import (
+        _PRUNED_TELLS,
+        assert_state_dict_matches_module_keys,
+        expected_module_state_dict_keys,
+        is_pruned_flat_text_encoder,
+    )
+    from core.models.minimax_music3.pruned_text_encoder_q8_0_remap import (
+        PackedQ8_0Weight,
+        apply_pruned_text_encoder_state_dict_packed,
+    )
+    from core.models.minimax_music3.pruned_text_encoder_remap import (
+        AUDIO_HEAD_VOCAB_SIZE,
+        SEMANTIC_VOCAB_SIZE,
+    )
+    from core.models.minimax_music3.vendor import MiniMaxMusic3RVQDepthDecoder
+
+    header = gguf_container.parse_gguf_header(gguf_text_encoder_path)
+    if header.metadata.get(GGUF_ARCHITECTURE_METADATA_KEY) != GGUF_EXPECTED_ARCHITECTURE:
+        raise ValueError(
+            f"{gguf_text_encoder_path!r} does not declare "
+            f"{GGUF_ARCHITECTURE_METADATA_KEY}={GGUF_EXPECTED_ARCHITECTURE!r} in its GGUF "
+            f"metadata (found {header.metadata.get(GGUF_ARCHITECTURE_METADATA_KEY)!r}) -- "
+            f"refusing to guess this is a MiniMax Music 3 checkpoint."
+        )
+    header_keys = header.tensor_names()
+    if not is_pruned_flat_text_encoder(header_keys):
+        raise ValueError(
+            f"{gguf_text_encoder_path!r} does not carry any of the pruned-vocabulary tells "
+            f"({sorted(_PRUNED_TELLS)}) in its tensor names -- this builder reads only the "
+            f"pruned-vocabulary GGUF layout."
+        )
+    # HEADER-ONLY: refuse any GGML type other than Q8_0/F32/F16/BF16, with
+    # Q8_0 popped out of the refusal set first -- see the docstring above.
+    unsupported = gguf_container.unsupported_tensor_types(header)
+    unsupported.pop("Q8_0", None)
+    if unsupported:
+        raise gguf_container.GGUFUnsupportedTensorTypeError(
+            f"the MiniMax Music 3 pruned text encoder GGUF checkpoint ({gguf_text_encoder_path}) "
+            f"declares tensor type(s) neither this reader's dense path (F32/F16/BF16) nor its "
+            f"Q8_0 packed path (design doc phase 12) materializes: "
+            f"{ {k: len(v) for k, v in unsupported.items()} }. Header-only refusal -- no tensor "
+            f"byte of this {header.file_size}-byte file was read."
+        )
+
+    lm_config_path = os.path.join(official, "language_model", "config.json")
+    if not os.path.isfile(lm_config_path):
+        raise FileNotFoundError(
+            f"MiniMax Music 3's config tree at {official!r} is missing language_model/config.json."
+        )
+    with open(lm_config_path, encoding="utf-8") as fh:
+        lm_config_dict = json.load(fh)
+    rope_parameters = lm_config_dict.get("rope_parameters")
+    theta = rope_parameters.get("rope_theta") if isinstance(rope_parameters, dict) else None
+    if theta is None or abs(float(theta) - EXPECTED_LANGUAGE_MODEL_ROPE_THETA) > _ROPE_THETA_TOLERANCE:
+        raise ValueError(
+            f"MiniMax Music 3's language_model config.rope_parameters['rope_theta'] is "
+            f"{theta!r}, expected {EXPECTED_LANGUAGE_MODEL_ROPE_THETA}. Checked from "
+            f"official/language_model/config.json BEFORE reading the pruned GGUF text "
+            f"encoder's tensor data."
+        )
+    depth_config = _read_component_config(official, "rvq_depth_decoder", "MiniMaxMusic3RVQDepthDecoder")
+
+    state = gguf_container.GGUFStateDict(
+        header, arch="MiniMax Music 3", label="pruned text encoder (Q8_0 packed)",
+    )
+    try:
+        hidden_size = int(lm_config_dict["hidden_size"])
+        prefill_rows = int(state["model.embed_tokens_prefill.weight"].shape[0])
+        if prefill_rows != AUDIO_CODE_OFFSET:
+            raise ValueError(
+                f"MiniMax Music 3 pruned GGUF (Q8_0) text encoder: model.embed_tokens_prefill has "
+                f"{prefill_rows} rows, expected AUDIO_CODE_OFFSET ({AUDIO_CODE_OFFSET})."
+            )
+        audio_rows = int(state["model.embed_tokens_audio.weight"].shape[0])
+        if audio_rows != SEMANTIC_VOCAB_SIZE:
+            raise ValueError(
+                f"MiniMax Music 3 pruned GGUF (Q8_0) text encoder: model.embed_tokens_audio has "
+                f"{audio_rows} rows, expected SEMANTIC_VOCAB_SIZE ({SEMANTIC_VOCAB_SIZE})."
+            )
+        # `model.lm_head_pruned.weight` is Q8_0-typed on the real checkpoint (unlike the two
+        # vocab-table reads above, which are BF16), so it cannot go through `state[...]` --
+        # that refuses Q8_0 by design (see gguf_container's module docstring). Its row count
+        # is already in the header's own tensor descriptor (`torch_shape`), which needs no
+        # tensor byte read at all -- cheaper than the other two checks, not just Q8_0-safe.
+        header_tensors_by_name = {t.name: t for t in header.tensors}
+        lm_head_pruned_info = header_tensors_by_name.get("model.lm_head_pruned.weight")
+        if lm_head_pruned_info is None:
+            # `is_pruned_flat_text_encoder` above only requires ANY ONE of
+            # its three tells to be present, so a file could pass that gate
+            # via `embed_tokens_prefill`/`embed_tokens_audio` alone and still
+            # be missing this specific tensor -- name that explicitly rather
+            # than a bare `KeyError`, matching every neighbouring gate here.
+            raise ValueError(
+                f"{gguf_text_encoder_path!r} is a pruned-vocabulary GGUF text encoder (matched a "
+                f"pruned-vocabulary tell) but declares no 'model.lm_head_pruned.weight' tensor -- "
+                f"this builder cannot construct the patched Qwen3ForCausalLM without it."
+            )
+        head_rows = lm_head_pruned_info.torch_shape[0]
+        if head_rows != AUDIO_HEAD_VOCAB_SIZE:
+            raise ValueError(
+                f"MiniMax Music 3 pruned GGUF (Q8_0) text encoder: model.lm_head_pruned has "
+                f"{head_rows} rows, expected SEMANTIC_VOCAB_SIZE + 1 ({AUDIO_HEAD_VOCAB_SIZE})."
+            )
+
+        remapped = apply_pruned_text_encoder_state_dict_packed(state, lm_config_dict)
+    finally:
+        state.close()
+
+    lm_hf_config = AutoConfig.from_pretrained(os.path.join(official, "language_model"))
+    lm_hf_config.vocab_size = prefill_rows
+
+    with init_empty_weights():
+        language_model = AutoModelForCausalLM.from_config(lm_hf_config)
+        del language_model.lm_head
+        language_model.lm_head_pruned = torch.nn.Linear(hidden_size, AUDIO_HEAD_VOCAB_SIZE, bias=False)
+        language_model.model.embed_tokens_audio = torch.nn.Embedding(SEMANTIC_VOCAB_SIZE, hidden_size)
+
+    lm_remapped = remapped["language_model"]
+    lm_packed = {k: v for k, v in lm_remapped.items() if isinstance(v, PackedQ8_0Weight)}
+    lm_dense = {k: v for k, v in lm_remapped.items() if not isinstance(v, PackedQ8_0Weight)}
+    assert_state_dict_matches_module_keys(
+        set(lm_packed.keys()) | set(lm_dense.keys()), expected_module_state_dict_keys(language_model),
+        component="language_model (pruned GGUF, Q8_0 packed)",
+    )
+    lm_dense_cast = {
+        k: (v.to(dtype=torch_dtype) if v.is_floating_point() else v) for k, v in lm_dense.items()
+    }
+    language_model.load_state_dict(lm_dense_cast, strict=False, assign=True)
+    installed = install_packed_q8_0_linears(
+        language_model, {k: (v.codes, v.scale) for k, v in lm_packed.items()}, torch_dtype,
+    )
+    if installed != len(lm_packed):
+        raise RuntimeError(
+            f"MiniMax Music 3 pruned GGUF (Q8_0) text encoder: installed {installed} packed "
+            f"Linear(s), expected {len(lm_packed)} -- a destination key produced no swap, which "
+            f"is a bug in install_packed_q8_0_linears or in the remap plan."
+        )
+    stranded = _stranded_meta_tensors(language_model)
+    if stranded:
+        raise RuntimeError(
+            f"MiniMax Music 3's language_model (pruned GGUF Q8_0 text encoder source) still "
+            f"holds {len(stranded)} meta tensor(s) after loading and packed-swap (first 5: "
+            f"{stranded[:5]}); it would fail at the first forward."
+        )
+    language_model.eval()
+    language_model.requires_grad_(False)
+    _assert_language_model_rope_theta(language_model)
+
+    with init_empty_weights():
+        rvq_depth_decoder = MiniMaxMusic3RVQDepthDecoder.from_config(depth_config)
+
+    depth_remapped = remapped["rvq_depth_decoder"]
+    depth_packed = {k: v for k, v in depth_remapped.items() if isinstance(v, PackedQ8_0Weight)}
+    depth_dense = {k: v for k, v in depth_remapped.items() if not isinstance(v, PackedQ8_0Weight)}
+    assert_state_dict_matches_module_keys(
+        set(depth_packed.keys()) | set(depth_dense.keys()),
+        expected_module_state_dict_keys(rvq_depth_decoder),
+        component="rvq_depth_decoder (pruned GGUF, Q8_0 packed)",
+    )
+    depth_dense_cast = {
+        k: (v.to(dtype=torch_dtype) if v.is_floating_point() else v) for k, v in depth_dense.items()
+    }
+    rvq_depth_decoder.load_state_dict(depth_dense_cast, strict=False, assign=True)
+    depth_installed = install_packed_q8_0_linears(
+        rvq_depth_decoder, {k: (v.codes, v.scale) for k, v in depth_packed.items()}, torch_dtype,
+    )
+    if depth_installed != len(depth_packed):
+        raise RuntimeError(
+            f"MiniMax Music 3 pruned GGUF (Q8_0) text encoder: installed {depth_installed} packed "
+            f"Linear(s) in rvq_depth_decoder, expected {len(depth_packed)}."
+        )
+    stranded_depth = _stranded_meta_tensors(rvq_depth_decoder)
+    if stranded_depth:
+        raise RuntimeError(
+            f"MiniMax Music 3's rvq_depth_decoder (pruned GGUF Q8_0 text encoder source) still "
+            f"holds {len(stranded_depth)} meta tensor(s) after loading and packed-swap (first 5: "
+            f"{stranded_depth[:5]}); it would fail at the first forward."
+        )
+    rvq_depth_decoder.eval()
+    rvq_depth_decoder.requires_grad_(False)
+
+    return language_model, rvq_depth_decoder, depth_config
+
+
 def _assert_language_model_rope_theta(language_model) -> None:
     """Load-time gate: ``config.rope_parameters["rope_theta"] == 1e6``.
 

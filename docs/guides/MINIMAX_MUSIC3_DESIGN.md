@@ -627,8 +627,195 @@ from phase 1 doubles as a training-data artifact for the flow stage.
   the refusal gate -- proven with a tiny all-F32 fixture exercising the full
   `pruned_text_encoder_remap` path end to end.
 
-  Items 12-14 (Q8_0 residency, INT8 ConvRot, docs) are not yet done;
-  `int8_convrot` (either flat safetensors file) is still refused
+  **Item 12 (Q8_0 residency) has landed for the pruned GGUF text encoder.**
+  `core.models.common.gguf_container.GGUFStateDict.get_q8_0_packed`
+  materializes one Q8_0 tensor's raw block layout (an `(out, in)` int8 codes
+  tensor + an `(out, in // 32)` float16 per-block scale, `__getitem__`
+  itself still refuses Q8_0 unchanged) -- verified against the real staged
+  `minimax_music3_text_encoder_pruned_Q8_0.gguf`: every one of its 169 Q8_0
+  tensors' declared byte length equals `n_elements // 32 * 34` exactly, and
+  a dequantized sample matches the sibling bf16 safetensors file to a
+  relative RMS of 0.537%-0.738% (25-tensor sample; mean 0.553%) and a max
+  absolute error of 0.0004-0.0042 -- consistent with Q8_0's own per-block
+  quantization noise floor, not a layout or split bug, and NOT bit-identical
+  (Q8_0 is lossy by construction, unlike this reader's F32/F16/BF16 path).
+  `core.models.common.gguf_q8_0_linear.GGUFQ8_0Linear` is the packed Linear
+  this feeds: it dequantizes ONCE PER DEVICE MOVE (cached across every
+  forward until the next `.to()`/`.cuda()`/`.cpu()` call, which drops the
+  cache via an `_apply` override) rather than once per forward -- the AR
+  stage this text encoder serves calls the language model up to ~9,000
+  times per generation (design doc, "Autoregressive stage"), so re-expanding
+  an 8B-parameter stack on every call was ESTIMATED FROM MEMORY BANDWIDTH
+  (not benchmarked) to cost ~10-25 ms of pure memory traffic alone at a
+  representative ~1-2 TB/s -- well over budget against a 40 ms/frame
+  real-time target -- and was rejected outright on that estimate, not merely
+  deprioritized. Stated as an estimate deliberately: this repo's rule against
+  presenting an unmeasured number as measured applies to its own design
+  justifications, not only to a checkpoint's claims.
+  `core.models.minimax_music3.pruned_text_encoder_q8_0_remap` reuses item
+  10's key plan and fused-projection splits UNCHANGED, splitting a fused
+  tensor's packed `(codes, scale)` pair along the same output-row ranges as
+  the dense split (Q8_0 blocks run along `in_features`, never across
+  `out_features`, so this needs no dequantization first) -- cross-checked:
+  every split piece, dequantized, matches item 10's independently
+  bit-identical-to-`official/` dense remap to the same ~0.5% noise floor as
+  an unsplit tensor, not a larger one. A new builder,
+  `core.models.minimax_music3.loader.build_language_model_and_depth_decoder_
+  from_pruned_gguf_q8_0_text_encoder`, constructs the REAL patched
+  `Qwen3ForCausalLM` + `MiniMaxMusic3RVQDepthDecoder` from the real staged
+  file end to end (not a fixture): 289 `GGUFQ8_0Linear` modules installed
+  (169 source Q8_0 tensors, expanded by the qkv/gate_up splits -- 253 in the
+  language model including `lm_head_pruned`, 36 in the depth decoder), zero
+  stranded meta tensors, a real forward pass on an installed layer produces
+  finite output, and it does NOT touch `load_minimax_music3_from_path`'s
+  directory-detection dispatch, same "implemented and tested, not wired"
+  status every other text-encoder builder in this module carries. The
+  existing DENSE pruned-GGUF builder (`build_language_model_and_depth_
+  decoder_from_pruned_gguf_text_encoder`) is UNCHANGED and still refuses
+  Q8_0 header-only -- this is a wholly additive sibling, not a replacement.
+
+  **A first version of this feature was reported, measured, and rejected
+  before it shipped.** It let the packed `qweight`/`qscale` buffers move
+  under `.to(device)` like any other buffer, alongside the cached dense
+  mirror, on the SAME device. On a real device-move round trip that measured
+  correctly (packed buffers freed on return to CPU, no leak) but it missed
+  the actual failure mode: for the WHOLE AR stage, once the first forward per
+  layer built the dense mirror, BOTH the packed source AND the dense mirror
+  sat on the GPU together -- the module's GPU footprint was the full
+  bf16-equivalent size PLUS the packed bytes riding along, i.e. WORSE than
+  loading the plain bf16 file, not better, on exactly the card (24 GB,
+  against the model card's own ~22 GB bf16-with-offload figure) this feature
+  was meant to help. That is the hollow feature this section already warned
+  against, arriving in a new shape rather than being avoided by naming it
+  once. The fix is a placement rule, not a different algorithm: `qweight`/
+  `qscale` are now PINNED host-resident for the module's whole life
+  (`GGUFQ8_0Linear._apply` no longer forwards a device-changing call to
+  them); the first forward on a given device copies them to that device as
+  TRANSIENT temporaries for the one dequantize call, and only the resulting
+  dense mirror is cached and kept resident there. The once-per-device-move
+  (not once-per-forward) dequantization timing is UNCHANGED -- only WHERE the
+  packed source lives during and after that dequantization changed.
+
+  **The residency claim, measured on the real staged file, both arms.** Two
+  independent audits agree the FIRST published host-RAM number (process RSS:
+  10.581 GB Q8_0 vs 20.767 GB bf16, reported as 49.05% lower) was overstated
+  by a load-path artifact, not a real difference in what the two arms hold:
+  the bf16 arm's builder calls `read_state_dict`, which materializes the
+  WHOLE 16.7 GB dense dict in memory, then remaps it (renaming keys) and
+  clones every fused-projection split -- that intermediate heap (measured
+  +4.06 GB of it) was still resident, un-garbage-collected, at the moment RSS
+  was sampled, while the Q8_0 arm reads each tensor lazily from a memory-mapped
+  file it closes before construction finishes (+1.0 GB of comparable
+  overhead). Both arms' PROCESS RSS numbers are real measurements of what
+  each arm's LOAD PATH costs, not of the two checkpoints' actual resident
+  bytes, so they overstate the comparison in bf16's favor of being worse than
+  it is.
+
+  The number that survives scrutiny is header-only tensor-byte arithmetic on
+  the two real files, which has no load-path artifact to inflate or deflate:
+  the Q8_0 GGUF's 328 tensors total 9.589 GB on disk (matching its own file
+  size) against the bf16 safetensors' 328 tensors at 16.707 GB (also matching
+  its file size) -- a delta of **~7.12-7.14 GB, ~42.6-42.75%**, two
+  independently-computed figures that agree with each other and, expectedly,
+  with the 42.6% disk-footprint figure already stated above (both are
+  dominated by the same tensor bytes). **Say ~42.7%, not 49%: the corrected,
+  defensible host-RAM saving is ~42.7%, not the ~49% the process-RSS
+  measurement first reported.**
+
+  VRAM is unaffected by the host-RAM correction above (host RSS and VRAM were
+  measured by different code paths). Its number ALSO CHANGED across this
+  section's own history, for a different and legitimate reason: a real fix,
+  not a methodology correction. First measured, `torch.cuda.
+  max_memory_allocated` after every packed layer's dense mirror is forced
+  resident was 16.924 GB (Q8_0) against 16.695 GB (bf16) -- 1.37% (0.229 GB)
+  higher. The correct explanation for that transient was the fp32 working
+  PAIR the first version of `dequantize_q8_0` allocated for one layer's
+  dequantization: a widened-to-float32 codes tensor AND a separately-
+  materialized expanded-scale tensor of the SAME size (~0.402 GB each for
+  the largest such tensor, `mlp.gate_up_proj` at 24576 x 4096, ~0.805 GB
+  together) -- NOT "each layer's packed copy briefly co-resident with the
+  growing set of dense mirrors" (that copy is ~0.105 GB for the same layer,
+  an order of magnitude too small to explain the number). `dequantize_q8_0`
+  was rewritten to an IN-PLACE, BROADCAST form (multiply the widened codes
+  tensor by `scale.unsqueeze(-1)` directly, relying on broadcasting rather
+  than pre-expanding the scale to the full `(out, in)` shape), cutting the
+  transient's SOURCE in roughly half by construction; RE-MEASURED after the
+  rewrite, the real peak fell to **16.773 GB -- 0.47% (0.078 GB) higher than
+  bf16's 16.695 GB**, not the theoretical ~0.402 GB a single remaining
+  full-size buffer would predict (the caching allocator's own reuse behavior
+  across the sequential per-layer loop accounts for the rest of the gap
+  between the back-of-envelope estimate and the measured number; the
+  measured number is what is reported). The two arms' STEADY-STATE allocated
+  VRAM (`torch.cuda.memory_allocated` after every layer has been touched)
+  are unaffected by any of this and remain 16.704 GB (Q8_0) vs 16.695 GB
+  (bf16) -- a 9 MB difference, equal within rounding, which is the property
+  the placement fix (not the in-place-dequant fix) was built to produce.
+  **Say this plainly, in the terms it was asked for: Q8_0 residency saves
+  host RAM and disk; it does not reduce VRAM during the autoregressive
+  stage, because the language model and depth decoder must be co-resident
+  and dense to compute.** A genuine VRAM-during-compute reduction would need
+  a block-quantized GEMM kernel that reads the packed representation
+  directly and never materializes a dense mirror at all (as llama.cpp's own
+  CUDA Q8_0 kernels do) -- named here as the path forward so it is not
+  re-derived later: no such kernel exists in this repo or its pinned
+  dependencies, and per the no-new-dependency constraint this phase was
+  built under, none is added here. What phase 12 actually delivers: a 42.6%
+  smaller download/disk footprint, and a ~42.7% host RAM reduction (header-
+  only tensor-byte arithmetic, not process RSS) for however long the
+  component sits off-GPU under the pipeline backend's staged offload. It
+  does NOT yet accrue to this repo's "keep models hot" cross-generation
+  residency mode -- that mode is not wired for MiniMax Music 3 at all (no
+  architecture-specific gap; the mechanism simply has not been extended to
+  this arch), so the claim is scoped to staged offload only, not stated more
+  broadly than what is actually wired.
+
+  Placement is also PINNED, not merely documented: `qweight`/`qscale` never
+  move under `_apply` (only `bias` does), and `_materialized_weight`
+  self-heals if something outside that path relocates them. The one known
+  gap: `diffusers/hooks/group_offloading.py` and `accelerate/hooks.py`'s
+  `AlignDevicesHook` both bypass `_apply` entirely (direct `buffer.data`
+  reassignment / `set_module_tensor_to_device`) and, if ever applied to this
+  architecture's language model, would strand the packed buffers on GPU
+  between forwards despite the self-heal (which only runs on the NEXT use).
+  Neither is applied to this architecture today -- the shipped staged
+  offload is a plain `component.to(device)`, no hooks -- so this is latent,
+  not live, but `GGUFQ8_0Linear` is INCOMPATIBLE with group offloading or an
+  `AlignDevicesHook` being wired onto a module holding it; see
+  `gguf_q8_0_linear.py`'s own docstring for the same note, since a reader of
+  either document should find it.
+
+  Reproduction: `tmp/minimax_music3_q8_0_vs_bf16_arm_q8_0.py` and
+  `tmp/minimax_music3_q8_0_vs_bf16_arm_bf16.py` -- one-shot measurement
+  probes against the real staged files (not test-suite code; see the
+  "Current status" note below on why they stay in `tmp/` rather than
+  becoming tests). The fragile PROPERTIES (placement invariant, cache
+  invalidation on `load_state_dict`, the dequant round trip, row-split
+  exactness, bias refusal) are covered by
+  `backend/tests/minimax_music3_gguf_q8_0_linear_test.py` instead, which
+  needs no checkpoint.
+
+  **Known debt, tracked here rather than left implicit**: like every other
+  GGUF-phase text-encoder builder in this module (items 9-11), the new
+  `build_language_model_and_depth_decoder_from_pruned_gguf_q8_0_text_encoder`
+  is implemented and tested against the real file but is NOT wired into
+  `load_minimax_music3_from_path`'s directory-detection dispatch -- there is
+  still no hook in that dispatch that selects a text-encoder SOURCE the way
+  the DiT file already does. Four builders (non-pruned flat, pruned flat,
+  pruned GGUF dense, pruned GGUF Q8_0) are now implemented and unreachable
+  from a real load; wiring that selection is accumulating across the GGUF
+  phases and remains a decision for a later phase, not resolved here.
+  Relatedly and deliberately: MiniMax Music 3 is NOT added to
+  `core.models.common.int8_runtime_quantize.QUANTIZED_LINEAR_ARCHS` /
+  `RUNTIME_INT8_ARCHS` by this phase. Adding it would advertise a
+  `quantized_gemm_mode` capability (the `"w8a8"` per-generation toggle those
+  tuples gate, served by `backend/api/quantized_gemm.py`) that does not
+  actually exist for an architecture whose only quantized-Linear builder is
+  unreachable from a real load -- the same "do not claim what is not wired"
+  discipline as the paragraph above, recorded so a later phase does not add
+  the entry reflexively when wiring the dispatch.
+
+  Item 13 (INT8 ConvRot, plus its own A/B) and item 14 (docs) remain not
+  done; `int8_convrot` (either flat safetensors file) is still refused
   (header-only, no multi-GB read) with a reason naming phase 13.
 - Frontend: txt2aud/extend UI shipped; repaint's UI branch is BLOCKED on a
   shared-worktree conflict (`frontend/src/components/generation/Img2ImgPanel.tsx`

@@ -1674,8 +1674,9 @@ def aud2aud_defaults_for_arch(arch: Optional[str],
     """`base` (default `AUD2AUD_DEFAULTS`) with ``arch``'s overlay applied.
 
     Same no-op contract as `audio_defaults_for_arch`/`video_defaults_for_arch`:
-    an unknown or missing arch (every arch today, since
-    `AUD2AUD_GEN_ARCH_OVERLAYS` is empty) returns `base` unchanged (a copy).
+    an unknown or missing arch returns `base` unchanged (a copy). Only
+    `minimax_music3` has an overlay today; ACE-Step deliberately has none, so
+    its defaults must stay bit-identical to `AUD2AUD_DEFAULTS`.
     """
     resolved = dict(base if base is not None else AUD2AUD_DEFAULTS)
     resolved.update(AUD2AUD_GEN_ARCH_OVERLAYS.get(arch or "", {}))

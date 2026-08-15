@@ -3469,7 +3469,7 @@ async def generate_aud2aud(
                 "MiniMax Music 3 audio repaint requires a song already in this gallery",
                 detail="Repaint resumes/re-renders from a frame-code sidecar stored next to the original audio "
                        "file on this server; an arbitrary upload (or an edited/re-encoded copy) has no such "
-                       "sidecar and cannot be matched to one. Use \"Send to Repaint\" on a MiniMax Music 3 song "
+                       "sidecar and cannot be matched to one. Use \"Send to Img2Img\" on a MiniMax Music 3 song "
                        "already in the gallery, rather than uploading a new file. Cover/style transfer from "
                        "arbitrary audio is not available for this architecture -- see the RVQ-tokenizer-encoder "
                        "reason in this route's docstring.",

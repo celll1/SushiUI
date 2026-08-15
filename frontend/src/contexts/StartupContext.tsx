@@ -161,6 +161,7 @@ export function StartupProvider({ children }: StartupProviderProps) {
   // without making every caller depend on render timing.
   const modelInfoRef = useRef<ModelInfo | null>(null);
   const modelIdentityRef = useRef<string>("");
+  const modelSyncInFlightRef = useRef<Promise<{ ok: boolean; modelInfo: ModelInfo | null }> | null>(null);
   // Startup payload fetch state. A ref, not component state, because it guards
   // an in-flight request: two callers in the same tick must share one fetch.
   const payloadsLoadedRef = useRef(false);
@@ -213,34 +214,43 @@ export function StartupProvider({ children }: StartupProviderProps) {
   // background sync, ModelLoadSection, dispatch-time modality check) goes
   // through this so the shared state can never disagree with itself.
   const syncModelInfo = useCallback(async (): Promise<{ ok: boolean; modelInfo: ModelInfo | null }> => {
-    try {
-      // Via the shared client (baseURL "/api/v1"): the unversioned
-      // "/api/models/current" answers with a 308 to the versioned path, so a
-      // raw fetch of it costs two round trips per sync.
-      const data = await getCurrentModel();
-      const info: ModelInfo | null = data.loaded ? ((data.model_info as ModelInfo) ?? null) : null;
+    if (modelSyncInFlightRef.current) return modelSyncInFlightRef.current;
 
-      setIsBackendReady(true);
-      setModelLoaded(data.loaded === true);
-      setModelInfo(info);
-      modelInfoRef.current = info;
+    const inFlight = (async () => {
+      try {
+        // Via the shared client (baseURL "/api/v1"): the unversioned
+        // "/api/models/current" answers with a 308 to the versioned path, so a
+        // raw fetch of it costs two round trips per sync.
+        const data = await getCurrentModel();
+        const info: ModelInfo | null = data.loaded ? ((data.model_info as ModelInfo) ?? null) : null;
 
-      const identity = modelIdentity(info);
-      if (identity !== modelIdentityRef.current) {
-        modelIdentityRef.current = identity;
-        // Bump only on a real change, so consumers keyed on this do not
-        // re-fetch every background tick.
-        setModelInfoVersion((v) => v + 1);
+        setIsBackendReady(true);
+        setModelLoaded(data.loaded === true);
+        setModelInfo(info);
+        modelInfoRef.current = info;
+
+        const identity = modelIdentity(info);
+        if (identity !== modelIdentityRef.current) {
+          modelIdentityRef.current = identity;
+          // Bump only on a real change, so consumers keyed on this do not
+          // re-fetch every background tick.
+          setModelInfoVersion((v) => v + 1);
+        }
+
+        void fetchStartupPayloads();
+        return { ok: true, modelInfo: info };
+      } catch (error) {
+        // Backend down / restarting: keep the last known info rather than
+        // claiming nothing is loaded.
+        console.warn("[StartupContext] /models/current failed; keeping last known model info", error);
+        return { ok: false, modelInfo: modelInfoRef.current };
+      } finally {
+        modelSyncInFlightRef.current = null;
       }
+    })();
 
-      void fetchStartupPayloads();
-      return { ok: true, modelInfo: info };
-    } catch (error) {
-      // Backend down / restarting: keep the last known info rather than
-      // claiming nothing is loaded.
-      console.warn("[StartupContext] /models/current failed; keeping last known model info", error);
-      return { ok: false, modelInfo: modelInfoRef.current };
-    }
+    modelSyncInFlightRef.current = inFlight;
+    return inFlight;
   }, [fetchStartupPayloads]);
 
   // Re-fetch the currently loaded model info. Panels call this after a

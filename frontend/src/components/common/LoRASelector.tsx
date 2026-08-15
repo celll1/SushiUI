@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import Card from "./Card";
 import Button from "./Button";
 import Slider from "./Slider";
@@ -163,19 +163,31 @@ function LoRALayerWeights({ loraPath, weights, onChange, disabled, loadLoraInfo 
 }
 
 export default function LoRASelector({ value, onChange, disabled = false, storageKey = "lora_panel_collapsed", simpleMode = false, loadedArch = null, onApplyRecommended }: LoRASelectorProps) {
-  const { modelLoaded } = useStartup();
+  const { isBackendReady, modelLoaded } = useStartup();
   const [availableLoras, setAvailableLoras] = useState<Array<LoRAListEntry>>([]);
   const [loraInfoCache, setLoraInfoCache] = useState<Map<string, LoRAInfo>>(new Map());
+  const mountedRef = useRef(true);
 
   useEffect(() => {
-    // Load LoRAs immediately on mount, independent of model load
-    loadAvailableLoras();
-  }, []);
+    mountedRef.current = true;
+    if (!isBackendReady) {
+      return () => {
+        mountedRef.current = false;
+      };
+    }
+    // A LoRA directory scan is not needed for the first paint or state restore.
+    // Start it only after current-model confirmation has settled.
+    const timer = window.setTimeout(() => { void loadAvailableLoras(); }, 1000);
+    return () => {
+      mountedRef.current = false;
+      window.clearTimeout(timer);
+    };
+  }, [isBackendReady]);
 
   const loadAvailableLoras = async () => {
     try {
       const response = await getLoras();
-      setAvailableLoras(response.loras);
+      if (mountedRef.current) setAvailableLoras(response.loras);
     } catch (error) {
       console.error("Failed to load LoRAs:", error);
     }
@@ -189,7 +201,7 @@ export default function LoRASelector({ value, onChange, disabled = false, storag
 
     try {
       const info = await getLoraInfo(loraPath);
-      setLoraInfoCache((prev) => new Map(prev).set(loraPath, info));
+      if (mountedRef.current) setLoraInfoCache((prev) => new Map(prev).set(loraPath, info));
       return info;
     } catch (error) {
       console.error("Failed to load LoRA info:", error);

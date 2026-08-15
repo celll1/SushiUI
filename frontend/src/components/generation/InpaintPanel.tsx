@@ -43,7 +43,7 @@ import {
   MASK_WHITE_LUMINANCE_THRESHOLD,
 } from "@/utils/maskConventions";
 import { migrateLoopGenerationConfig, computeLoopDecodeDirective } from "@/utils/loopGenerationInheritance";
-import { getSamplers, getScheduleTypes, generateInpaint, generateInpaintVideo, generateInpaintTrainingPreview, toBase64, InpaintParams as ApiInpaintParams, InpaintVideoParams, LoRAConfig, ControlNetConfig, MiniMaxH3References, generateTIPOPrompt, cancelGeneration, getCurrentModel, getResultFilename, getResultPlaybackFilename, getResultSeed, getResultAncestralSeed, isLatentOnlyResult, unetQuantizationOptions, normalizeUnetQuantization, transformerQuantizationLabel, archSupportsFeature, archDisplayName, inpaintVideoDefaultsForArch, fitVideoCanvas, videoCanvasRule, videoCanvasAxisBounds, videoCanvasExceedsEnvelope, largestValidVideoFrameCount, isValidVideoFrameCount, latentGroupSpans, snapRangeToLatentGroups, isGenerationStalledError, VIDEO_BLOCK_SWAP_MAX } from "@/utils/api";
+import { getSamplers, getScheduleTypes, generateInpaint, generateInpaintVideo, generateInpaintTrainingPreview, toBase64, InpaintParams as ApiInpaintParams, InpaintVideoParams, LoRAConfig, ControlNetConfig, MiniMaxH3References, generateTIPOPrompt, cancelGeneration, getResultFilename, getResultPlaybackFilename, getResultSeed, getResultAncestralSeed, isLatentOnlyResult, unetQuantizationOptions, normalizeUnetQuantization, transformerQuantizationLabel, archSupportsFeature, archDisplayName, inpaintVideoDefaultsForArch, fitVideoCanvas, videoCanvasRule, videoCanvasAxisBounds, videoCanvasExceedsEnvelope, largestValidVideoFrameCount, isValidVideoFrameCount, latentGroupSpans, snapRangeToLatentGroups, isGenerationStalledError, VIDEO_BLOCK_SWAP_MAX } from "@/utils/api";
 import MiniMaxH3ReferenceSelector, { EMPTY_MINIMAX_H3_REFERENCES, countMiniMaxH3References } from "../common/MiniMaxH3ReferenceSelector";
 import VideoInpaintTimeline from "./VideoInpaintTimeline";
 import VideoMaskPreviewOverlay from "./VideoMaskPreviewOverlay";
@@ -651,7 +651,7 @@ interface InpaintPanelProps {
 }
 
 export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintPanelProps = {}) {
-  const { modelLoaded, isBackendReady, generationDefaults, archCapabilities, modelInfoVersion, isVideo, resolveModality } = useStartup();
+  const { modelLoaded, modelInfo, isBackendReady, generationDefaults, archCapabilities, isVideo, resolveModality } = useStartup();
   const [params, setParams] = useState<InpaintParams>(DEFAULT_PARAMS);
   const [generatedImageParams, setGeneratedImageParams] = useState<InpaintParams | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
@@ -857,16 +857,9 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
   const [samplers, setSamplers] = useState<Array<{ id: string; name: string }>>([]);
   const [scheduleTypes, setScheduleTypes] = useState<Array<{ id: string; name: string }>>([]);
   const [isMounted, setIsMounted] = useState(false);
-  const [currentModelInfo, setCurrentModelInfo] = useState<any>(null);
-  // Keep this panel's copy of GET /models/current in step with the shared one.
-  // It decides the arch-dependent controls AND, with `isVideo`, which of the
-  // two surfaces (image mask / video range) is on screen.
-  useEffect(() => {
-    if (modelInfoVersion === 0) return; // initial fetch happens on mount below
-    getCurrentModel()
-      .then(setCurrentModelInfo)
-      .catch((error) => console.warn("[Inpaint] Failed to refresh model info", error));
-  }, [modelInfoVersion]);
+  // Keep the legacy response shape locally while reading the shared SSOT. This
+  // panel no longer issues its own GET /models/current on mount or model change.
+  const currentModelInfo = modelInfo ? { loaded: true, model_info: modelInfo } : null;
   // Drop a persisted unet_quantization the loaded architecture does not offer
   // (e.g. fp8_e4m3fn carried over onto a krea2 model): otherwise the <select>
   // holds a value absent from its options and renders blank, while the panel
@@ -1233,20 +1226,12 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
 
   // Load from localStorage after component mounts (client-side only)
   useEffect(() => {
+    let cancelled = false;
     // console.clear(); // Temporarily disabled for debugging
     console.log("=== InpaintPanel mounted ===");
     setIsMounted(true);
 
     const loadInitialData = async () => {
-      // Load current model info
-      try {
-        const modelInfo = await getCurrentModel();
-        setCurrentModelInfo(modelInfo);
-        console.log("[Inpaint] Current model info:", modelInfo);
-      } catch (error) {
-        console.error("Failed to load model info:", error);
-      }
-
       // Load params
       const saved = localStorage.getItem(STORAGE_KEY);
       if (saved) {
@@ -1291,6 +1276,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         // } else if (savedInputRef.startsWith('temp_img://') || savedInputRef.startsWith('data:')) {
         try {
           const imageData = await loadTempImage(savedInputRef);
+          if (cancelled) return;
           console.log("[Inpaint] Input image loaded successfully:", imageData ? "yes" : "no");
           if (imageData) {
             setInputImagePreview(imageData);
@@ -1327,6 +1313,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         // } else if (savedMaskRef.startsWith('temp_img://') || savedMaskRef.startsWith('data:')) {
         try {
           const imageData = await loadTempImage(savedMaskRef);
+          if (cancelled) return;
           console.log("[Inpaint] Mask image loaded successfully:", imageData ? "yes" : "no");
           if (imageData) {
             setMaskImage(imageData);
@@ -1420,17 +1407,17 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
           const refRefs: string[] = JSON.parse(savedRefImageRefs);
           console.log(`[Inpaint] Loading ${refRefs.length} reference images from storage`);
 
-          const loadedPreviews: string[] = [];
-          for (const ref of refRefs) {
+          const restored = await Promise.all(refRefs.map(async (ref) => {
             try {
               const imageData = await loadTempImage(ref);
-              if (imageData) {
-                loadedPreviews.push(imageData);
-              }
+              return imageData || null;
             } catch (error) {
               console.error(`[Inpaint] Failed to load reference image ${ref}:`, error);
+              return null;
             }
-          }
+          }));
+          if (cancelled) return;
+          const loadedPreviews = restored.filter((value): value is string => value !== null);
 
           if (loadedPreviews.length > 0) {
             setRefImagePreviews(loadedPreviews);
@@ -1442,11 +1429,14 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
       }
 
       // Mark initial load as complete
-      setIsInitialLoad(false);
+      if (!cancelled) setIsInitialLoad(false);
       console.log("[Inpaint] Initial load complete");
     };
 
-    loadInitialData();
+    void loadInitialData();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   // Reset torch.compile when developer mode is disabled
@@ -1470,6 +1460,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
   // When backend becomes ready, reload temp images if not already loaded
   useEffect(() => {
     if (isBackendReady) {
+      let cancelled = false;
       const reloadImages = async () => {
         console.log("[Inpaint] Backend ready, reloading images if needed");
 
@@ -1485,6 +1476,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         if (savedPreview && savedPreview.startsWith('/outputs/')) {
           const previewPath = stripCacheBuster(savedPreview);
           const previewStillThere = await outputExists(previewPath);
+          if (cancelled) return;
           if (!previewStillThere) {
             console.log("[Inpaint] Stored preview image is gone, clearing:", previewPath);
             clearImagePreview(PREVIEW_KEYS);
@@ -1499,6 +1491,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         // stamp -- an .mp4 is large and its URL is stable.
         const savedVideo = loadVideoPreview(PREVIEW_KEYS);
         if (savedVideo && !(await outputExists(savedVideo.url))) {
+          if (cancelled) return;
           console.log("[Inpaint] Stored preview video is gone, clearing:", savedVideo.url);
           clearVideoPreview(PREVIEW_KEYS);
           setGeneratedVideo(null);
@@ -1513,6 +1506,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
           if (savedInputRef) {
             try {
               const imageData = await loadTempImage(savedInputRef);
+              if (cancelled) return;
               if (imageData) {
                 setInputImagePreview(imageData);
                 const img = new Image();
@@ -1533,6 +1527,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
           if (savedMaskRef) {
             try {
               const imageData = await loadTempImage(savedMaskRef);
+              if (cancelled) return;
               if (imageData) {
                 setMaskImage(imageData);
               }
@@ -1544,7 +1539,10 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
 
       };
 
-      reloadImages();
+      void reloadImages();
+      return () => {
+        cancelled = true;
+      };
     }
   }, [isBackendReady]);
 
@@ -5544,14 +5542,9 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
       {/* Parameters Panel */}
       <div className="generation-settings space-y-2">
         <ModelLoadSection
-          onModelLoad={async () => {
-            // Reload model info when model changes
-            const modelInfo = await getCurrentModel();
-            setCurrentModelInfo(modelInfo);
-            console.log("[Inpaint] Model changed, updated currentModelInfo:", modelInfo);
-
+          onModelLoad={(loadedModelInfo) => {
             // Auto-adjust sampler/schedule for Flow Matching models (Z-Image, FLUX.2)
-            const modelType = modelInfo?.model_info?.type;
+            const modelType = loadedModelInfo?.type;
             if (modelType === "zimage" || modelType === "flux2" || modelType === "anima") {
               // Flow Matching models: use Euler with flow schedule
               setParams(prev => ({

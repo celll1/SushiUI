@@ -7,7 +7,7 @@ import Select from "./Select";
 import MiniMaxH3ReferenceBankPanel from "./MiniMaxH3ReferenceBankPanel";
 import { ChevronDown, ChevronUp, Folder } from "lucide-react";
 import { useStartup } from "@/contexts/StartupContext";
-import { getCurrentModel, getModels, loadModel } from "@/utils/api";
+import { getModels, loadModel } from "@/utils/api";
 import type { MiniMaxH3LoadOptions } from "./MiniMaxH3LoadOptions";
 
 interface Model {
@@ -56,9 +56,9 @@ export default function ModelSelector({
   onSelectionChange,
   onLoadingChange,
 }: ModelSelectorProps) {
-  const { modelInfoVersion, refreshModelInfo } = useStartup();
+  const { isBackendReady, modelInfo, modelInfoVersion, refreshModelInfo } = useStartup();
   const [models, setModels] = useState<Model[]>([]);
-  const [currentModel, setCurrentModel] = useState<any>(null);
+  const [modelsLoading, setModelsLoading] = useState(true);
   const [loading, setLoading] = useState(false);
   const [selectedModelPath, setSelectedModelPath] = useState<string>("");
   const [selectedArchitecture, setSelectedArchitecture] = useState<string>("all");
@@ -67,41 +67,34 @@ export default function ModelSelector({
   const [loadError, setLoadError] = useState("");
 
   useEffect(() => {
-    loadModels();
-    loadCurrentModel();
-  }, []);
+    if (!isBackendReady) return;
+    let cancelled = false;
+    // Directory discovery is not part of current-model confirmation. Give the
+    // shared /models/current request and panel restoration the first turn.
+    const timer = window.setTimeout(() => {
+      getModels()
+        .then((data) => {
+          if (!cancelled) setModels(data.models || []);
+        })
+        .catch((error) => console.error("Failed to load models:", error))
+        .finally(() => {
+          if (!cancelled) setModelsLoading(false);
+        });
+    }, 250);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [isBackendReady]);
 
-  // Re-read the loaded model whenever the shared source says it changed --
-  // including changes this page did not make (API call, backend restart,
-  // another tab), which previously left the header showing the wrong model.
+  // StartupContext is the single current-model fetch path. Mirror only the
+  // selected dropdown value here; a panel mount must not start another copy of
+  // GET /models/current.
   useEffect(() => {
-    loadCurrentModel();
-  }, [modelInfoVersion]);
+    if (modelInfo?.source) setSelectedModelPath(String(modelInfo.source));
+  }, [modelInfo?.source]);
 
-  const loadModels = async () => {
-    try {
-      const data = await getModels();
-      setModels(data.models || []);
-    } catch (error) {
-      console.error("Failed to load models:", error);
-    }
-  };
-
-  const loadCurrentModel = async () => {
-    try {
-      const data = await getCurrentModel();
-      if (data.loaded) {
-        setCurrentModel(data.model_info);
-        if (data.model_info.source) {
-          setSelectedModelPath(data.model_info.source);
-        }
-      } else {
-        setCurrentModel(null);
-      }
-    } catch (error) {
-      console.error("Failed to load current model:", error);
-    }
-  };
+  const currentModel = modelInfo;
 
   // Loading the model that is ALREADY loaded sends force=true: without it the
   // backend early-returns and the click does nothing at all. That reload is the
@@ -131,10 +124,9 @@ export default function ModelSelector({
       if (!data.success) {
         throw new Error(data.detail || data.message || "The model could not be loaded.");
       }
-      await refreshModelInfo();
-      await loadCurrentModel();
+      const refreshed = await refreshModelInfo();
       if (onModelLoad) {
-        await onModelLoad(data.model_info);
+        await onModelLoad(data.model_info ?? refreshed);
       }
       const merged = hybridSummary(data.model_info);
       alert(
@@ -148,7 +140,6 @@ export default function ModelSelector({
     } catch (error: any) {
       console.error("Failed to load model:", error);
       await refreshModelInfo();
-      await loadCurrentModel();
       const detail = error?.response?.data?.detail;
       setLoadError(
         (typeof detail === "string" && detail) ||
@@ -234,10 +225,18 @@ export default function ModelSelector({
             )}
           </div>
         )}
+        {!currentModel && !isBackendReady && (
+          <div className="h-full rounded-md border border-gray-700 bg-gray-800/70 p-2.5">
+            <p className="app-kicker">Active model</p>
+            <p className="mt-1 text-xs text-gray-400">Checking the backend for a loaded model...</p>
+          </div>
+        )}
 
-        <div className={`grid gap-2 sm:grid-cols-2 ${currentModel ? "" : "lg:col-span-2"}`}>
+        <div className={`grid gap-2 sm:grid-cols-2 ${currentModel || !isBackendReady ? "" : "lg:col-span-2"}`}>
           {models.length === 0 ? (
-            <p className="text-gray-500 text-sm">No local models found. Place models in the models/ directory.</p>
+            <p className="text-gray-500 text-sm">
+              {modelsLoading ? "Scanning model directories..." : "No local models found. Place models in the models/ directory."}
+            </p>
           ) : (
             <>
               {/* Architecture Filter — PRIMARY (only shown when >1 architecture present) */}

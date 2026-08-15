@@ -6,6 +6,7 @@
 import { uploadTempImage, getTempImage, deleteTempImage } from "./api";
 
 const TEMP_IMAGE_PREFIX = "temp_img://";
+const inFlightLoads = new Map<string, Promise<string>>();
 
 /**
  * Save an image to temp storage and return a reference string
@@ -39,12 +40,17 @@ export async function loadTempImage(reference: string): Promise<string> {
   // If it's a temp reference, load from backend
   if (reference.startsWith(TEMP_IMAGE_PREFIX)) {
     const imageId = reference.substring(TEMP_IMAGE_PREFIX.length);
-    try {
-      return await getTempImage(imageId);
-    } catch (error) {
-      console.error("Failed to load temp image:", error);
-      return "";
-    }
+    const existing = inFlightLoads.get(reference);
+    if (existing) return existing;
+
+    const request = getTempImage(imageId)
+      .catch((error) => {
+        console.error("Failed to load temp image:", error);
+        return "";
+      })
+      .finally(() => inFlightLoads.delete(reference));
+    inFlightLoads.set(reference, request);
+    return request;
   }
 
   // Otherwise, it's already a base64 string

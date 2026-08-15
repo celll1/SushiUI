@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import Card from "./Card";
 import Select from "./Select";
@@ -139,12 +139,13 @@ function ControlNetLayerWeights({ controlnetPath, weights, onChange, disabled, l
 }
 
 export default function ControlNetSelector({ value, onChange, disabled, storageKey, inputImagePreview, hideImageInput, imageInputOverride }: ControlNetSelectorPropsWithStorage) {
-  const { modelLoaded } = useStartup();
+  const { isBackendReady, modelLoaded } = useStartup();
   const [availableControlNets, setAvailableControlNets] = useState<Array<{ path: string; name: string }>>([]);
   const [editingImageIndex, setEditingImageIndex] = useState<number | null>(null);
   const [draggingIndex, setDraggingIndex] = useState<number | null>(null);
   const [controlnetInfoCache, setControlnetInfoCache] = useState<Map<string, ControlNetInfo>>(new Map());
   const [modelTypes, setModelTypes] = useState<Map<number, string>>(new Map());
+  const mountedRef = useRef(true);
 
   // Use panel-specific storage key for images, fallback to generic key
   const IMAGE_STORAGE_KEY = storageKey ? `${storageKey}_images` : "controlnet_images";
@@ -172,25 +173,35 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
   };
 
   useEffect(() => {
-    // Load ControlNets and preprocessors immediately on mount, independent of model load
-    loadControlNets();
-    loadPreprocessors();
+    mountedRef.current = true;
     // Load persisted images on startup (like Img2ImgPanel does)
     if (!imagesLoaded) {
-      loadPersistedImages();
-      setImagesLoaded(true);
+      void loadPersistedImages().finally(() => {
+        if (mountedRef.current) setImagesLoaded(true);
+      });
     }
-    // Detect model types for existing ControlNets
-    value.forEach((cn, index) => {
-      if (cn.model_path) {
-        detectModelType(cn.model_path, index);
-      }
-    });
+    return () => {
+      mountedRef.current = false;
+    };
   }, []);
+
+  useEffect(() => {
+    if (!isBackendReady) return;
+    // Candidate and preprocessor scans are non-critical. Start them after the
+    // shared current-model check and panel restoration have had the first turn.
+    const timer = window.setTimeout(() => {
+      void loadControlNets();
+      void loadPreprocessors();
+    }, 1000);
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [isBackendReady]);
 
   const loadPreprocessors = async () => {
     try {
       const result = await getAvailablePreprocessors();
+      if (!mountedRef.current) return;
       setAvailablePreprocessors(result.preprocessors);
       console.log("[ControlNetSelector] Loaded preprocessors:", result.preprocessors);
     } catch (error) {
@@ -233,7 +244,7 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
   const loadControlNets = async () => {
     try {
       const data = await getControlNets();
-      setAvailableControlNets(data.controlnets);
+      if (mountedRef.current) setAvailableControlNets(data.controlnets);
     } catch (error) {
       console.error("Failed to load ControlNets:", error);
     }
@@ -264,6 +275,7 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
 
       // Update image previews state
       if (newPreviews.size > 0) {
+        if (!mountedRef.current) return;
         setImagePreviews(newPreviews);
         console.log(`[ControlNetSelector] Restored ${newPreviews.size} images from storage`);
       }
@@ -334,7 +346,7 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
 
     try {
       const info = await getControlNetInfo(controlnetPath);
-      setControlnetInfoCache((prev) => new Map(prev).set(controlnetPath, info));
+      if (mountedRef.current) setControlnetInfoCache((prev) => new Map(prev).set(controlnetPath, info));
       return info;
     } catch (error) {
       console.error("Failed to load ControlNet info:", error);
@@ -345,7 +357,7 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
   const detectModelType = async (controlnetPath: string, index: number) => {
     try {
       const info = await loadControlNetInfo(controlnetPath);
-      if (info) {
+      if (info && mountedRef.current) {
         const modelType = info.is_lllite ? "LLLite" : "Standard";
         setModelTypes((prev) => new Map(prev).set(index, modelType));
       }

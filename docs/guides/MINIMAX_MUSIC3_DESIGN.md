@@ -256,6 +256,81 @@ Whether to vendor upstream's genre router and templates is a separate decision
 gated on that repository's license — the weights' Community License does not
 cover it. Contract-only is sufficient to ship.
 
+## Lyrics assistant
+
+The motivating defect is in [Generation parameter contract](#generation-parameter-contract)'s
+`lyrics` row: the checkpoint's own lyric normalizer, `_normalize_lyrics` in
+`backend/core/models/minimax_music3/pipeline.py`, keeps only the leading
+structure-tag run on a line and silently drops the rest of that line, with no
+error anywhere:
+
+```
+"[Verse] The morning light"    ->  "[start]\n[verse]"
+"[Verse]\nThe morning light"   ->  "[start]\n[verse]\nThe morning light"
+```
+
+The most natural way to type lyrics destroys them. `backend/core/extensions/
+minimax_music3_lyrics_assistant.py` addresses this with three explicit,
+opt-in, user-selected modes — never auto-applied, so a user who types lyrics
+directly and never opens the assistant is unaffected:
+
+- **`format`** — deterministic, no LLM call, no network. Fixes only the
+  layout: moves any text sharing a line with a tag onto its own line, puts
+  one tag per line, lowercases tag case, and drops blank-line noise. This
+  mode is REQUIRED to preserve the user's words exactly: the ordered
+  sequence of non-tag word tokens is identical before and after, enforced as
+  a checked invariant inside `format_lyrics` itself (it raises rather than
+  returning a result that fails the check, treating a violation as a bug in
+  the function, never a user-input problem). Served by
+  `POST /prompt-assist/music/lyrics/format`.
+- **`structure`** — the LLM emits only tags, one per line, no prose. For a
+  purely instrumental piece — `lyrics` is required non-empty by the
+  checkpoint contract even with no words — this is the structural control
+  surface: the user describes the arrangement, and the model returns the
+  section map.
+- **`complete`** — the user supplies a theme and/or partial lyrics; the LLM
+  writes or finishes the words. Any lyric line the user actually supplied is
+  validated to survive verbatim in the output (a contiguous word-token
+  sublist match, not a raw substring match — see the module for why a raw
+  substring check on joined text can false-accept a shuffled fragment).
+  Both LLM-driven modes are served by
+  `POST /prompt-assist/music/lyrics/transform`.
+
+`format_lyrics` is run as the final pass over the LLM's raw output for both
+`structure` and `complete`, so whatever `transform()` returns is
+contract-clean by construction before validation even runs.
+
+Tag vocabulary: the model card documents nine tags — `[Intro]` `[Verse]`
+`[Pre-Chorus]` `[Chorus]` `[Post-Chorus]` `[Bridge]` `[Instrumental]`
+`[Solo]` `[Outro]`. MiniMax's own example script also uses `[interlude]` and
+a descriptive freeform tag, so a tag outside the documented nine is always a
+warning, never a refusal — the assistant's validators and `format_lyrics`
+itself follow this rule uniformly.
+
+This is a sibling of the caption rewriter above, not an extension of it, and
+like it a sibling of `minimax_h3_prompt_assistant.py`: it reuses that
+module's provider/cache/transport layer (LM Studio and Ollama transport,
+loopback-only URL enforcement, strict-JSON extraction, the SQLite result
+cache, the one self-repair retry, the error type) unchanged, but has its own
+domain logic, its own `GUIDE_VERSION`, and its own cache file — a
+caption-rewrite cache entry and a lyrics-assist cache entry can never
+collide, even for an identical-looking request. Model listing is shared
+unchanged (`POST /prompt-assist/models`). Frontend:
+`frontend/src/components/common/MusicLyricsAssist.tsx`, rendered beside
+`MusicCaptionAssist.tsx` in `Txt2ImgPanel.tsx`.
+
+Generation-time surfacing, independent of whether the assistant is used at
+all: `POST /generate/txt2aud` scans the request's `lyrics` for any line
+where text follows a leading tag (using the checkpoint's own leading-tag
+regex, matched against the raw line exactly as `_normalize_lyrics` does, not
+a whitespace-stripped copy of it) and adds one `warnings[]` entry per
+offending line, naming the line and the text that will not reach the model.
+This only applies to `POST /generate/txt2aud`: extend and repaint always
+reuse the original song's sidecar-stored `prompt`/`lyrics` and refuse a
+request that supplies a differing one (see
+[Per-generation state contract](#per-generation-state-contract)), so a
+caller's `lyrics` never reaches the model unmodified on those two routes.
+
 ## Quantization
 
 The staged flat artifacts follow ComfyUI's `int8_convrot` layout, the same family
@@ -1185,3 +1260,12 @@ from phase 1 doubles as a training-data artifact for the flow stage.
 - New material: latent/frame layout, generation-parameter table, the frame-code
   state contract, the caption rewriter, progress/cancellation, and the training
   reachability split.
+
+**Revision 3 (2026-08-15)** — added the [Lyrics assistant](#lyrics-assistant)
+section, documenting the `format`/`structure`/`complete` modes, the format
+invariant, the documented-plus-freeform tag vocabulary, and the
+generation-time `warnings[]` surfacing on `POST /generate/txt2aud`. No prior
+material was corrected; this is additive, closing citations in
+`minimax_music3_lyrics_assistant.py`, `routes.py`, its test file, and
+`MusicLyricsAssist.tsx` that pointed at section titles this document never
+had.

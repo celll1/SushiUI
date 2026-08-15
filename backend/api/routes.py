@@ -57,7 +57,7 @@ from api.param_defaults import (
     AUDIO_GEN_ARCH_OVERLAYS,
     AUD2AUD_GEN_ARCH_OVERLAYS,
     OUTPAINT_AUDIO_ARCH_OVERLAYS,
-    PROMPT_ASSIST_DEFAULTS, MUSIC_PROMPT_ASSIST_DEFAULTS,
+    PROMPT_ASSIST_DEFAULTS, MUSIC_PROMPT_ASSIST_DEFAULTS, MUSIC_LYRICS_ASSIST_DEFAULTS,
     STUDIO_RENDER_DEFAULTS, H3_HYBRID_LOAD_DEFAULTS,
     VIDEO_CHAIN_DEFAULTS,
     VIDEO_CHAIN_PROVENANCE_DEFAULTS,
@@ -114,6 +114,14 @@ from core.extensions.minimax_music3_caption_rewriter import (
     MiniMaxMusic3CaptionRewriter,
     MusicCaptionAssistOptions,
 )
+from core.extensions.minimax_music3_lyrics_assistant import (
+    MiniMaxMusic3LyricsAssistant,
+    MusicLyricsAssistOptions,
+    find_lyrics_drop_warnings,
+    format_lyrics as format_music3_lyrics,
+    LyricsFormatInvariantError,
+    unknown_tag_warnings as music3_lyrics_unknown_tag_warnings,
+)
 from api.studio_render_jobs import (
     StudioRenderValidationError,
     get_render_job,
@@ -131,6 +139,9 @@ minimax_h3_prompt_assistant = MiniMaxH3PromptAssistant(
 )
 minimax_music3_caption_rewriter = MiniMaxMusic3CaptionRewriter(
     MUSIC_PROMPT_ASSIST_DEFAULTS["cache_max_entries"]
+)
+minimax_music3_lyrics_assistant = MiniMaxMusic3LyricsAssistant(
+    MUSIC_LYRICS_ASSIST_DEFAULTS["cache_max_entries"]
 )
 
 # Single source of truth for the API version, also used by main.py when
@@ -799,6 +810,11 @@ async def get_prompt_assist_defaults():
 async def get_prompt_assist_music_defaults():
     """Return MiniMax Music 3 caption-rewriter defaults."""
     return MUSIC_PROMPT_ASSIST_DEFAULTS
+
+@router.get("/schema/prompt-assist-music-lyrics-defaults")
+async def get_prompt_assist_music_lyrics_defaults():
+    """Return MiniMax Music 3 lyrics-assistant defaults."""
+    return MUSIC_LYRICS_ASSIST_DEFAULTS
 
 @router.get("/schema/training-defaults")
 async def get_training_defaults():
@@ -3153,6 +3169,18 @@ async def generate_txt2aud(
         # into the autoregressive stage (audit finding F4).
         validate_audio_params(params, _aud_arch)
         check_arch_capabilities(params, _aud_arch, defaults=_aud_defaults)
+
+        # Surface the checkpoint's silent lyric-drop defect even when the
+        # lyrics assistant is not used (design doc, "Lyrics assistant"):
+        # `_normalize_lyrics` keeps only the leading tag(s) on a line and
+        # drops any text sharing that line, with no error anywhere. This is
+        # the only txt2aud-family route where a caller's `lyrics` actually
+        # reaches the model unmodified -- extend/repaint always reuse the
+        # sidecar's original lyrics and refuse a differing one, so this
+        # check does not apply there.
+        if _is_music3:
+            for _drop_warning in find_lyrics_drop_warnings(params.get("lyrics") or ""):
+                add_warning(_drop_warning, code="lyrics_line_text_dropped")
 
         print(f"txt2aud generation params: {sanitize_params_for_logging(params)}")
 
@@ -11143,6 +11171,91 @@ async def transform_music3_caption(request: MusicPromptAssistTransformRequest):
 @router.post("/prompt-assist/music/cache/clear", tags=["prompt-assist"])
 async def clear_music3_caption_cache():
     deleted = await asyncio.to_thread(minimax_music3_caption_rewriter.cache.clear)
+    return {"status": "success", "deleted": deleted}
+
+
+# ============================================================================
+# MiniMax Music 3 Lyrics Assistant
+#
+# Sibling of the caption rewriter above, not an extension of it -- see
+# core/extensions/minimax_music3_lyrics_assistant.py for why. `format` is a
+# pure, synchronous, NO-NETWORK endpoint (fixes only the layout, is not an
+# "AI rewrite"); `structure`/`complete` are the two LLM-driven modes and
+# share /prompt-assist/models unchanged, exactly like the caption rewriter.
+# ============================================================================
+
+class MusicLyricsFormatRequest(BaseModel):
+    lyrics: str
+
+
+@router.post("/prompt-assist/music/lyrics/format", tags=["prompt-assist"])
+async def format_music3_lyrics_endpoint(request: MusicLyricsFormatRequest):
+    """Deterministic layout fix -- no LLM, no network. Preserves every word
+    of `lyrics` exactly; only moves text off a tag line, one tag per line,
+    lowercases tag case, and drops blank lines. See `format_lyrics`'s own
+    docstring for the enforced invariant."""
+    try:
+        formatted = format_music3_lyrics(request.lyrics)
+    except LyricsFormatInvariantError as exc:
+        # This is a bug in format_lyrics itself (it is documented to never
+        # fail this way), not a user-input problem -- surfaced as a 500,
+        # not a 400.
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return {"lyrics": formatted, "warnings": music3_lyrics_unknown_tag_warnings(formatted)}
+
+
+class MusicLyricsAssistTransformRequest(BaseModel):
+    mode: Literal["structure", "complete"]
+    theme: str = MUSIC_LYRICS_ASSIST_DEFAULTS["theme"]
+    lyrics: str = MUSIC_LYRICS_ASSIST_DEFAULTS["lyrics"]
+    constraints: str = MUSIC_LYRICS_ASSIST_DEFAULTS["constraints"]
+    provider: Literal["lm_studio", "ollama"] = MUSIC_LYRICS_ASSIST_DEFAULTS["provider"]
+    base_url: str = MUSIC_LYRICS_ASSIST_DEFAULTS["base_url"]
+    model: str = MUSIC_LYRICS_ASSIST_DEFAULTS["model"]
+    api_key: str = Field(
+        MUSIC_LYRICS_ASSIST_DEFAULTS["api_key"], json_schema_extra={"writeOnly": True}
+    )
+    temperature: float = Field(MUSIC_LYRICS_ASSIST_DEFAULTS["temperature"], ge=0, le=1)
+    top_p: float = Field(MUSIC_LYRICS_ASSIST_DEFAULTS["top_p"], gt=0, le=1)
+    max_output_tokens: int = Field(MUSIC_LYRICS_ASSIST_DEFAULTS["max_output_tokens"], ge=128, le=8192)
+    context_length: int = Field(MUSIC_LYRICS_ASSIST_DEFAULTS["context_length"], ge=1024, le=262144)
+    timeout_seconds: int = Field(MUSIC_LYRICS_ASSIST_DEFAULTS["timeout_seconds"], ge=10, le=1800)
+    force_refresh: bool = MUSIC_LYRICS_ASSIST_DEFAULTS["force_refresh"]
+
+
+@router.post("/prompt-assist/music/lyrics/transform", tags=["prompt-assist"])
+async def transform_music3_lyrics(request: MusicLyricsAssistTransformRequest):
+    options = MusicLyricsAssistOptions(
+        mode=request.mode,
+        theme=request.theme,
+        lyrics=request.lyrics,
+        constraints=request.constraints,
+        provider=request.provider,
+        base_url=_prompt_assist_base_url(request.provider, request.base_url),
+        model=request.model,
+        temperature=request.temperature,
+        top_p=request.top_p,
+        max_output_tokens=request.max_output_tokens,
+        context_length=request.context_length,
+        timeout_seconds=request.timeout_seconds,
+        force_refresh=request.force_refresh,
+    )
+    try:
+        return await asyncio.to_thread(
+            minimax_music3_lyrics_assistant.transform, options, request.api_key
+        )
+    except (PromptAssistError, LyricsFormatInvariantError) as exc:
+        # `transform()` itself already converts a LyricsFormatInvariantError
+        # into a PromptAssistError before it can escape -- this second catch
+        # is defense in depth (F1 audit finding) so an odd LLM output can
+        # never surface as an unhandled 500 at this route even if that
+        # internal conversion is ever bypassed or removed.
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/prompt-assist/music/lyrics/cache/clear", tags=["prompt-assist"])
+async def clear_music3_lyrics_cache():
+    deleted = await asyncio.to_thread(minimax_music3_lyrics_assistant.cache.clear)
     return {"status": "success", "deleted": deleted}
 
 

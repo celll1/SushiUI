@@ -29,7 +29,7 @@ section) and `_build_transformer` is always stubbed; no checkpoint under
 import json
 import os
 import sys
-from types import SimpleNamespace
+from types import MethodType, SimpleNamespace
 
 import pytest
 
@@ -218,7 +218,23 @@ def _locked_load(monkeypatch, *, source, hybrid=None, current_model=None,
         minimax_h3_components=components if components is not None else {},
         _minimax_h3_te_selection_differs=lambda *_a: False,
         _reload_minimax_h3_dit_only=dit_only,
+        # `_load_model_locked` also checks the MiniMax Music 3 selection (a
+        # second architecture reusing the same `text_encoder_file` field);
+        # this fixture is H3-only, so the gate must read False here, same as
+        # `is_minimax_music3_model` would report on a real manager with no
+        # music3 model loaded.
+        is_minimax_music3_model=False,
+        minimax_music3_components={},
     )
+    # The REAL implementation, bound via `types.MethodType` -- NOT a
+    # `lambda *_a: False` stub (audit F5): a stub here would make the
+    # `is_minimax_music3_model` guard this method itself relies on
+    # (`pipeline.py`'s own F1 fix) untested by every test that uses this
+    # fixture, silently. Safe to bind for real because the method's first
+    # statement is exactly the guard this fixture's `is_minimax_music3_model
+    # =False` is set up to exercise.
+    manager._minimax_music3_te_selection_differs = MethodType(
+        pipeline_module.DiffusionPipelineManager._minimax_music3_te_selection_differs, manager)
 
     def stop(_manager):
         calls.append("full_reload")

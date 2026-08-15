@@ -3172,13 +3172,31 @@ paths:
                   type: string
                   nullable: true
                   description: |
-                    **MiniMax-H3 only.** Absolute path to the `.safetensors` or
-                    `.gguf` text encoder to build, inside this model's tree.
-                    Omitted/null uses the loader's own preference order — which
-                    never auto-selects a small stand-in Qwen3-VL (converted or
-                    GGUF), so reaching one takes this field.
-                    List the choices with
-                    `GET /models/minimax-h3/text-encoders`.
+                    Absolute path to the `.safetensors` or `.gguf` text encoder to
+                    build, inside this model's tree. Implemented for two
+                    architectures, each with its own default and its own set of
+                    loadable files:
+
+                    - **MiniMax-H3**: omitted/null uses the loader's own preference
+                      order — which never auto-selects a small stand-in Qwen3-VL
+                      (converted or GGUF), so reaching one takes this field. List
+                      the choices with `GET /models/minimax-h3/text-encoders`. Pairs
+                      with `clip_projection_file` below.
+                    - **MiniMax Music 3**: omitted/null builds the language model +
+                      RVQ depth decoder from `official/language_model`, unchanged
+                      from every load that does not set this field. A named file is
+                      detected by its own content (safetensors vs. GGUF, pruned vs.
+                      non-pruned vocabulary, Q8_0-packed vs. dense) and routed to the
+                      matching one of this architecture's four text-encoder
+                      builders — not by filename. `clip_projection_file` has no
+                      meaning for this architecture and is refused if sent. There is
+                      no discovery endpoint for these files (unlike MiniMax-H3's
+                      `GET /models/minimax-h3/text-encoders`, which is H3-only): a
+                      caller must already know the path, e.g.
+                      `<root>/text_encoders/minimax_music3_text_encoder_pruned_Q8_0.gguf`.
+                      A bad path or a file this loader cannot route is answered with
+                      a 400 naming the reason, before anything already loaded is torn
+                      down.
 
                     Sent for any other architecture, the request is refused rather
                     than silently ignored.

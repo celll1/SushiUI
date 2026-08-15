@@ -794,8 +794,9 @@ from phase 1 doubles as a training-data artifact for the flow stage.
   `backend/tests/minimax_music3_gguf_q8_0_linear_test.py` instead, which
   needs no checkpoint.
 
-  **Known debt, tracked here rather than left implicit**: like every other
-  GGUF-phase text-encoder builder in this module (items 9-11), the new
+  **Known debt (CLOSED, see below): tracked here rather than left implicit**:
+  like every other GGUF-phase text-encoder builder in this module (items
+  9-11), the new
   `build_language_model_and_depth_decoder_from_pruned_gguf_q8_0_text_encoder`
   is implemented and tested against the real file but is NOT wired into
   `load_minimax_music3_from_path`'s directory-detection dispatch -- there is
@@ -817,10 +818,99 @@ from phase 1 doubles as a training-data artifact for the flow stage.
   Item 13 (INT8 ConvRot, plus its own A/B) and item 14 (docs) remain not
   done; `int8_convrot` (either flat safetensors file) is still refused
   (header-only, no multi-GB read) with a reason naming phase 13.
+
+  **The wiring above was closed in a follow-up commit.** The mechanism
+  chosen is a load-time file selection, not a post-load hot-swap: it mirrors
+  MiniMax-H3's existing `te_override` (`POST /models/load`'s
+  `text_encoder_file` field), the same field, generalised rather than
+  duplicated -- `ModelLoader._refuse_load_time_te_choice` now accepts
+  `minimax_h3` and `minimax_music3` for `text_encoder_file` (still refusing
+  `clip_projection_file` for music3, which has no projection concept).
+  `core.models.minimax_music3.loader.detect_minimax_music3_text_encoder_
+  source` reads a named file's own content -- safetensors vs. GGUF, the
+  pruned-vocabulary tells, and each GGUF tensor's own declared type -- and
+  `build_language_model_and_depth_decoder_from_text_encoder_file` dispatches
+  to the matching one of the four builders; none of the four needed a
+  behavior change, only a caller.
+  `load_minimax_music3_from_path(..., text_encoder_file=...)` then sources
+  BOTH the language model and the RVQ depth decoder from that one file
+  (mirroring the checkpoint's own merged layout), skipping the corresponding
+  `official/` weight-presence checks while still reading every config from
+  `official/` unchanged. The pruned vocabulary needed no separate flag:
+  `vocab_view.resolve_vocab_view` already dispatches on the LOADED
+  `language_model` object's own shape (`hasattr(..., "lm_head_pruned")`), so
+  whichever builder ran decides the vocabulary view with no way for the two
+  to drift apart. The component-switch catalog surface
+  (`backend/core/models/components/component_catalog.py`,
+  `POST /models/current/components/switch`) was deliberately NOT extended for
+  this: it requires a per-architecture unload-first adapter music3 does not
+  have (the generic "no adapter" disabled reason still applies to its
+  `text_encoder`/`vae` slots), and building one was not needed to close this
+  debt -- the catalog's existing generic `{slot}_origin` read already reports
+  `selected_external` for an override load, with no catalog code change.
+  Verified: the default (no override) path is BYTE-FOR-BYTE unchanged --
+  proven with a real load of `M:/model/minimax-music3/official` (no
+  `text_encoder_file`) reporting `text_encoder_origin: architecture_default`
+  and every component from `official/`, exactly as before; all four builders
+  are reachable and produce the correct vocabulary view, proven structurally
+  against fixtures for all four AND with one real arm, the staged 9.59 GB
+  `minimax_music3_text_encoder_pruned_Q8_0.gguf`, which built a real
+  `Qwen3ForCausalLM` (289 packed `GGUFQ8_0Linear` modules, matching this
+  section's own census) and `MiniMaxMusic3RVQDepthDecoder` end to end and
+  resolved `PrunedVocabView`.
+
+  **An independent audit of this wiring found and fixed six defects, two of
+  them serious.** (F1) `_minimax_h3_te_selection_differs` had no
+  `is_minimax_h3_model` guard, so it misfired while a Music 3 model was
+  loaded -- a same-file re-request triggered a full teardown and rebuild for
+  nothing, and a `clip_projection_file` sent against a loaded Music 3 model
+  (newly refused by this phase) destroyed the live model BEFORE the refusal
+  raised, leaving no model loaded at all. Fixed with the same guard on that
+  side too, pinned by binding the REAL method (not a stub) in the fixtures
+  that exercise `_load_model_locked`. (F2) The music3 branch's
+  `_save_last_model` call carried no `text_encoder_file`, so a chosen
+  encoder did not survive a backend restart -- silently rebuilt from
+  `official/language_model` on the next auto-load, a different vocabulary
+  view for a pruned source, with no warning. Fixed by passing it through,
+  the same way the H3 branch already did. (F3) Every refusal ran only inside
+  `load_minimax_music3_from_path`, reached after Step 1's teardown had
+  already cleared the live model -- a typo'd path left the user unloaded
+  with a 500. Fixed with a header-only preflight in `_load_model_locked`,
+  before anything is torn down, mirroring the hybrid preflight already in
+  that function; the raised `MiniMaxMusic3TextEncoderRefusal` (a `ValueError`
+  subclass, mirroring `MiniMaxH3HybridRefusal`) is mapped to a 400 in
+  `POST /models/load`. (F4) The safetensors arm of
+  `detect_minimax_music3_text_encoder_source` had no architecture gate --
+  anything that was not the DiT signature was assumed non-pruned, so a
+  foreign safetensors file was only refused after a multi-GB
+  `read_state_dict`. Fixed by running the same header-only key plan
+  (`plan_flat_text_encoder_keys`) the real builder runs against the real
+  tensors. (F5) The fixtures added alongside F1 stubbed the new gate with
+  `lambda *_a: False`, which would have hidden both F1 itself and any
+  regression of it from that suite; rebound via `types.MethodType` to the
+  real implementation, and a dedicated
+  `backend/tests/minimax_music3_text_encoder_choice_test.py` was added
+  covering the detector matrix, the gate matrix (both directions, both
+  architectures), and the F2/F3 fixes end to end. (F6) `text_encoder_origin`
+  was emitted unconditionally, including `architecture_default` on a
+  default load -- but `component_catalog._current_origin` reads that key
+  BEFORE its own derivation, so the default path's origin changed from a
+  derived `model_tree` to a hardcoded `architecture_default`. Fixed by
+  emitting the key only when overridden, re-verified against the real
+  `official/` tree (the key is now absent, not merely a different valid
+  value, on the default path). Two further line-item fixes: `_refuse_load_
+  time_te_choice` now names every invalid field in one raise instead of one
+  per round trip, and this section's own `text_encoder_file` prose now
+  states plainly that Music 3 has no discovery endpoint (unlike H3's
+  `GET /models/minimax-h3/text-encoders`, which remains H3-only) and that a
+  truncated file is refused by name rather than surfacing a bare parse
+  error.
 - Frontend: txt2aud/extend UI shipped; repaint's UI branch is BLOCKED on a
   shared-worktree conflict (`frontend/src/components/generation/Img2ImgPanel.tsx`
   was dirty under another session's edits when this phase landed) -- not
-  implemented in this phase.
+  implemented in this phase. The text-encoder-file selection closed above has
+  no frontend surface either, for the same shared-worktree reason -- the API
+  and loader are usable today via `POST /models/load`'s `text_encoder_file`.
 
 ## Revision history
 

@@ -222,11 +222,15 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         no-op when the user re-selected the SAME checkpoint.
 
         ``text_encoder_file``/``clip_projection_file`` choose MiniMax-H3's
-        load-time text encoder and its trained projection. Naming an encoder
-        other than the loaded one reloads on its own: the model id does not
-        change with the encoder, so depending on the caller to send
-        ``force_reload`` would make an ignored request look like a successful
-        one.
+        load-time text encoder and its trained projection.
+        ``text_encoder_file`` also chooses MiniMax Music 3's load-time
+        language-model + RVQ-depth-decoder source (``clip_projection_file``
+        has no meaning there and is refused); see
+        ``core.models.minimax_music3.loader``. Naming an encoder other than
+        the loaded one reloads on its own, for both architectures: the model
+        id does not change with the encoder, so depending on the caller to
+        send ``force_reload`` would make an ignored request look like a
+        successful one.
 
         ``hybrid`` is MiniMax-H3's base+overlay DiT request -- a mapping of
         ``HYBRID_REQUEST_KEYS`` (``overlay_file`` and the recipe). It IS part of
@@ -309,6 +313,26 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             # different model and must not be answered by the early return.
             model_id = f"{model_id}#{hybrid_model_identity(hybrid_preflight.spec)}"
 
+        # HEADER-ONLY, and before anything is torn down -- same discipline as
+        # the hybrid preflight just above (audit F3): a text_encoder_file that
+        # detects as MiniMax Music 3's own source (safetensors vs. GGUF,
+        # pruned vs. non-pruned, dense vs. Q8_0) is validated by CONTENT here,
+        # so a bad path or an unsupported GGML type raises before the live
+        # model is destroyed, not after -- previously this was only checked
+        # deep inside `load_minimax_music3_from_path`, reached well after Step
+        # 1's cleanup had already cleared `current_model`/`current_model_info`.
+        # Only music3 is preflighted here: H3's text_encoder_file validation
+        # is unchanged by this commit and stays where it already was.
+        if text_encoder_file is not None:
+            from core.model_loader import ModelLoader as _ModelLoaderForPreflight
+
+            if _ModelLoaderForPreflight.detect_model_type(source) == "minimax_music3":
+                from core.models.minimax_music3.loader import (
+                    detect_minimax_music3_text_encoder_source,
+                )
+
+                detect_minimax_music3_text_encoder_source(text_encoder_file)
+
         # A different H3 text encoder or projection is a different set of loaded
         # components under the SAME model id, so neither the same-model early
         # return nor the DiT-only fast path below may fire for it. The fast path
@@ -316,6 +340,11 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         # encoder would compare equal and the request would vanish silently.
         h3_te_selection_changed = self._minimax_h3_te_selection_differs(
             text_encoder_file, clip_projection_file)
+        # Same reasoning as H3's own check, one architecture over: a different
+        # MiniMax Music 3 text_encoder_file under the SAME model id (source
+        # path unchanged) is a different set of loaded components, and the
+        # early return below must not treat it as a no-op.
+        music3_te_selection_changed = self._minimax_music3_te_selection_differs(text_encoder_file)
 
         # Degraded means a component switch or a failed load left a hole in the
         # live components. Re-selecting the same checkpoint is then a repair
@@ -324,6 +353,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         # UI short of loading some other model first.
         if (self.current_model == model_id and not force_reload
                 and not h3_te_selection_changed
+                and not music3_te_selection_changed
                 and self.component_health != "degraded"):
             return
 
@@ -1133,7 +1163,15 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     "latent_channels": self.minimax_music3_components.get(
                         "latent_channels", FALLBACK_NUM_CHANNELS_LATENTS),
                 }
-                self._save_last_model(source_type, source, pipeline_type)
+                # Persist the chosen text_encoder_file, mirroring H3's own
+                # `*self._minimax_h3_te_request` call just above (audit F2):
+                # dropping it here would make a restart silently rebuild from
+                # `official/language_model` -- different weights AND (for a
+                # pruned source) a different vocabulary view -- while
+                # reporting success, exactly the failure the named-parameter
+                # plumbing exists to make impossible.
+                self._save_last_model(
+                    source_type, source, pipeline_type, text_encoder_file=text_encoder_file)
                 print("[Pipeline] MiniMax Music 3 model loaded successfully")
                 return
 
@@ -1353,7 +1391,19 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         Compared against the LOADED component paths, not against what the last
         request asked for: a request that names the file already in use must
         stay a no-op, and one that names any other file must reload.
+
+        Gated on ``self.is_minimax_h3_model`` FIRST, same reasoning as
+        ``_minimax_music3_te_selection_differs``'s own gate (added after this
+        one -- audit F1): ``text_encoder_file``/``clip_projection_file`` are
+        now shared with MiniMax Music 3, and this architecture's own two
+        callers (the same-model early return and the DiT-only fast path) both
+        already require an H3 model to be loaded before either is reached, so
+        this guard changes no H3 behavior -- it only stops a Music 3-loaded
+        session's request from reading as "the H3 selection differs" merely
+        because ``self.minimax_h3_components`` is empty.
         """
+        if not self.is_minimax_h3_model:
+            return False
         if text_encoder_file is None and clip_projection_file is None:
             return False
         from core.models.minimax_h3.reload import same_path
@@ -1365,6 +1415,32 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             return True
         return (clip_projection_file is not None
                 and not same_path(clip_projection_file, loaded_projection))
+
+    def _minimax_music3_te_selection_differs(self, text_encoder_file: Optional[str]) -> bool:
+        """Whether a requested MiniMax Music 3 ``text_encoder_file`` is not the
+        loaded one. Mirrors ``_minimax_h3_te_selection_differs``'s reasoning:
+        compared against the LOADED component's own path, not against what the
+        last request asked for, so re-naming the file already in use stays a
+        no-op and naming any other one -- including going back to ``None``,
+        i.e. the ``official/`` default, from an override -- forces a reload.
+
+        Gated on ``self.is_minimax_music3_model``: unlike
+        ``_minimax_h3_te_selection_differs`` (which can fast-return False on
+        "both fields are None" alone), ``text_encoder_file`` alone cannot say
+        which of the two architectures it was meant for -- a non-None
+        ``text_encoder_file`` naming an H3 encoder, evaluated while an H3
+        model is loaded, must NOT read as "the music3 selection differs" just
+        because ``self.minimax_music3_components`` is empty.
+        """
+        if not self.is_minimax_music3_model:
+            return False
+        components = self.minimax_music3_components or {}
+        if text_encoder_file is None:
+            return components.get("text_encoder_origin") == "selected_external"
+        from core.models.minimax_h3.reload import same_path
+
+        loaded_te = components.get("text_encoder_path")
+        return not same_path(text_encoder_file, loaded_te)
 
     def _reload_minimax_h3_dit_only(
         self,

@@ -25,10 +25,18 @@ What this loader reads from the flat tree, briefly:
   (design doc phase 10, "The pruned vocabulary" -- see that function's
   docstring for the representation choice: a real ``Qwen3ForCausalLM``
   patched with two extra leaf modules, ``lm_head_pruned`` and
-  ``model.embed_tokens_audio``, and its default ``lm_head`` removed). Neither
-  is wired into ``load_minimax_music3_from_path``'s directory-detection
-  dispatch -- nothing in this loader's detection points AT a text-encoder
-  file at all (detection keys off the DiT's tensor signature only);
+  ``model.embed_tokens_audio``, and its default ``lm_head`` removed). Both,
+  plus the two GGUF pruned builders described below, are now reachable
+  through ``load_minimax_music3_from_path``'s ``text_encoder_file``
+  parameter (mirroring ``minimax_h3.loader``'s ``te_override``): naming a
+  file there is detected by content
+  (``detect_minimax_music3_text_encoder_source``, HEADER-ONLY) and dispatched
+  to the matching builder by
+  ``build_language_model_and_depth_decoder_from_text_encoder_file``. Directory
+  DETECTION (``detect_minimax_music3_layout``) still keys off the DiT's own
+  tensor signature only -- the text-encoder source is a caller-supplied
+  override, not something a bare directory scan discovers on its own, same
+  division of labor as the DiT file's own explicit-path spelling;
 * ``int8_convrot`` (either the flat DiT or either text encoder) is refused,
   HEADER-ONLY, naming design doc phase 13. The pruned-vocabulary text encoder
   is NO LONGER refused (design doc phase 10 landed) -- only its own dedicated
@@ -50,11 +58,16 @@ What this loader reads from the flat tree, briefly:
   any Q8_0 (or other GGML type this reader does not materialize) is refused
   HEADER-ONLY, naming design doc phase 12/13. A GGUF PRUNED text encoder is
   readable by ``build_language_model_and_depth_decoder_from_pruned_gguf_text_
-  encoder`` (mirroring the safetensors pruned builder, same "not wired into
-  directory-detection dispatch" status as every other text-encoder builder in
-  this module) -- the staged
-  ``minimax_music3_text_encoder_pruned_Q8_0.gguf`` carries 169 Q8_0 tensors
-  and is therefore ALWAYS refused today by that same header-only gate.
+  encoder`` (dense F32/F16/BF16 tensors) and, when the file also carries
+  Q8_0 tensors, by ``build_language_model_and_depth_decoder_from_pruned_gguf_
+  q8_0_text_encoder`` (design doc phase 12, packed weight-only quantized
+  ``Linear`` modules) -- both reachable via ``text_encoder_file`` like the
+  safetensors builders above, ``detect_minimax_music3_text_encoder_source``
+  choosing between them by each tensor's own declared GGML type, not by
+  filename. The staged ``minimax_music3_text_encoder_pruned_Q8_0.gguf``
+  (169 Q8_0 tensors) now loads through the Q8_0 builder; any OTHER
+  unsupported GGML type is still refused, HEADER-ONLY, naming design doc
+  phase 13.
 """
 
 from __future__ import annotations
@@ -564,8 +577,8 @@ def build_language_model_and_depth_decoder_from_flat_text_encoder(
 ):
     """The ``Qwen3ForCausalLM`` + RVQ depth decoder from a flat, NON-pruned text encoder file.
 
-    Not wired into ``load_minimax_music3_from_path``'s dispatch -- see the
-    module docstring for why. Tested with a tiny real Qwen3 + RVQ depth
+    Reachable from ``load_minimax_music3_from_path``'s ``text_encoder_file``
+    parameter -- see the module docstring. Tested with a tiny real Qwen3 + RVQ depth
     decoder round-trip in ``backend/tests/minimax_music3_loader_test.py``
     (``test_flat_text_encoder_builder_round_trip``).
 
@@ -667,8 +680,8 @@ def build_language_model_and_depth_decoder_from_pruned_flat_text_encoder(
     unexpected keys -- do not round-trip a pruned-loaded language model through
     ``save_pretrained``/``from_pretrained``.
 
-    Mirrors ``build_language_model_and_depth_decoder_from_flat_text_encoder``'s shape; NOT
-    wired into ``load_minimax_music3_from_path``'s directory-detection dispatch, same status
+    Mirrors ``build_language_model_and_depth_decoder_from_flat_text_encoder``'s shape;
+    reachable from ``load_minimax_music3_from_path``'s ``text_encoder_file`` parameter, same
     as that function -- see the module docstring.
     """
     from accelerate import init_empty_weights
@@ -823,10 +836,10 @@ def build_language_model_and_depth_decoder_from_pruned_gguf_text_encoder(
     Mirrors ``build_language_model_and_depth_decoder_from_pruned_flat_text_
     encoder``'s shape, gate ordering and representation choice (a real
     ``Qwen3ForCausalLM``, ``lm_head`` removed, ``lm_head_pruned`` /
-    ``model.embed_tokens_audio`` attached) exactly; NOT wired into
-    ``load_minimax_music3_from_path``'s directory-detection dispatch, same
-    status as every other text-encoder builder in this module -- see the
-    module docstring.
+    ``model.embed_tokens_audio`` attached) exactly; reachable from
+    ``load_minimax_music3_from_path``'s ``text_encoder_file`` parameter, same
+    as every other text-encoder builder in this module -- see the module
+    docstring.
 
     Refuses HEADER-ONLY (``gguf_container.refuse_unsupported_tensor_types``,
     no tensor byte read) for any GGML type this reader does not materialize,
@@ -999,9 +1012,9 @@ def build_language_model_and_depth_decoder_from_pruned_gguf_q8_0_text_encoder(
     popped out of the refusal set FIRST, so this function's tolerance is
     exactly one type wider than the dense builder's, not "anything goes".
 
-    NOT wired into ``load_minimax_music3_from_path``'s directory-detection
-    dispatch, same status as every other text-encoder builder in this
-    module -- see the module docstring.
+    Reachable from ``load_minimax_music3_from_path``'s ``text_encoder_file``
+    parameter, same as every other text-encoder builder in this module --
+    see the module docstring.
     """
     from accelerate import init_empty_weights
     from transformers import AutoConfig, AutoModelForCausalLM
@@ -1192,6 +1205,180 @@ def build_language_model_and_depth_decoder_from_pruned_gguf_q8_0_text_encoder(
     return language_model, rvq_depth_decoder, depth_config
 
 
+# ---------------------------------------------------------------------------
+# Text-encoder SOURCE selection (design doc "Known debt"). Four builders exist
+# above -- non-pruned flat, pruned flat, pruned GGUF dense, pruned GGUF Q8_0 --
+# and until this section none had a caller: `load_minimax_music3_from_path`
+# always built the language model + depth decoder from `official/`. This is
+# the dispatcher that makes them reachable, mirroring
+# `minimax_h3.loader`'s `te_override` mechanism (a load-time file choice
+# threaded through `POST /models/load`'s existing `text_encoder_file` field)
+# rather than inventing a parallel one: naming a file IS the caller's
+# decision, detected here by content, not trusted by name.
+# ---------------------------------------------------------------------------
+
+class MiniMaxMusic3TextEncoderRefusal(ValueError):
+    """A ``text_encoder_file`` this loader will not build from.
+
+    A ``ValueError`` subclass -- matching every existing
+    ``pytest.raises(ValueError, ...)`` call site in this module's test suite,
+    and every other refusal here -- so ``POST /models/load`` can map it to a
+    400 specifically (audit F3), mirroring
+    ``core.models.minimax_h3.hybrid_spec.MiniMaxH3HybridRefusal``'s own
+    pattern for the same reason: this route documents 200/400/409, never 500,
+    for a request the caller can fix by naming a different file.
+    """
+
+
+def detect_minimax_music3_text_encoder_source(path: str) -> str:
+    """HEADER-ONLY: which of the four builders above ``path`` belongs to.
+
+    Returns one of ``"flat_non_pruned"``, ``"flat_pruned"``,
+    ``"gguf_pruned_dense"``, ``"gguf_pruned_q8_0"``. Raises
+    ``MiniMaxMusic3TextEncoderRefusal`` for anything this loader cannot
+    route: a DiT file named where a text encoder was expected, a file whose
+    safetensors header does not match this architecture's own key plan
+    (audit F4 -- an SDXL checkpoint or MiniMax-H3's own text encoder must be
+    refused HEADER-ONLY, not after ``read_state_dict`` has pulled a
+    multi-GB file into RAM), a non-pruned GGUF text encoder (no such builder
+    exists -- see the module docstring), a file whose GGUF metadata does not
+    declare this architecture at all, or a header this reader cannot even
+    parse (a truncated file surfaces here as a named refusal, not a bare
+    ``JSONDecodeError``/``struct.error`` with no path -- also audit
+    feedback). Never trusts the filename: safetensors vs. GGUF is read from
+    the container itself, and pruned vs. non-pruned / dense vs. Q8_0 are read
+    from the tensor census (``is_pruned_flat_text_encoder`` / each tensor's
+    own declared GGML type), the same primitives the builders themselves
+    gate on. ``FileNotFoundError`` (the path does not exist at all) is left
+    to propagate unchanged, same as every neighbouring header read in this
+    module.
+    """
+    from core.models.minimax_music3.flat_remap import (
+        _PRUNED_TELLS,
+        is_pruned_flat_text_encoder,
+        plan_flat_text_encoder_keys,
+    )
+
+    p = Path(path)
+    suffix = p.suffix.lower()
+    if suffix == ".safetensors":
+        try:
+            keys = list(read_safetensors_header(path).keys())
+        except FileNotFoundError:
+            raise
+        except Exception as exc:
+            raise MiniMaxMusic3TextEncoderRefusal(
+                f"{path!r} could not be read as a safetensors header ({exc!r}) -- likely "
+                f"truncated or not a safetensors file at all."
+            ) from exc
+        if keys_look_like_flat_minimax_music3_dit(keys):
+            raise MiniMaxMusic3TextEncoderRefusal(
+                f"{path!r} carries the MiniMax Music 3 flat DiT's tensor signature "
+                f"(diffusion_transformer.* + cond_layer_logits + latent_conditioners.*), not a "
+                f"text encoder's. Select the DiT through the model path, not text_encoder_file."
+            )
+        if is_pruned_flat_text_encoder(keys):
+            return "flat_pruned"
+        # F4: everything that reaches here must ALSO look like a plausible
+        # non-pruned Music3 text encoder before this function commits to
+        # "flat_non_pruned" -- HEADER-ONLY, via the exact same key plan
+        # `apply_flat_text_encoder_state_dict` runs against the real tensors
+        # (`plan_flat_text_encoder_keys` takes only key NAMES, no tensor
+        # bytes). Without this, an SDXL checkpoint or MiniMax-H3's own text
+        # encoder would only be refused after a multi-GB `read_state_dict`.
+        # NOTE: `plan_flat_text_encoder_keys` itself never raises for
+        # unrecognized keys -- only its caller `apply_flat_text_encoder_
+        # state_dict` does, by checking `plan.unrecognized` -- so THIS
+        # function must run that same check itself rather than trust the
+        # plan call alone to refuse a foreign file.
+        try:
+            plan = plan_flat_text_encoder_keys(keys)
+        except Exception as exc:
+            raise MiniMaxMusic3TextEncoderRefusal(
+                f"{path!r} does not carry MiniMax Music 3's flat non-pruned text-encoder key "
+                f"signature ({exc}) -- refusing to guess this is one."
+            ) from exc
+        if plan.unrecognized or not (plan.renames.get("language_model") or plan.renames.get("rvq_depth_decoder")):
+            raise MiniMaxMusic3TextEncoderRefusal(
+                f"{path!r} does not carry MiniMax Music 3's flat non-pruned text-encoder key "
+                f"signature ({len(plan.unrecognized)} of {len(keys)} key(s) matched no known "
+                f"rule, first 10: {plan.unrecognized[:10]}) -- refusing to guess this is one."
+            )
+        return "flat_non_pruned"
+    if suffix == ".gguf":
+        try:
+            header = gguf_container.parse_gguf_header(path)
+        except FileNotFoundError:
+            raise
+        except Exception as exc:
+            raise MiniMaxMusic3TextEncoderRefusal(
+                f"{path!r} could not be read as a GGUF header ({exc!r}) -- likely truncated or "
+                f"not a GGUF file at all."
+            ) from exc
+        if header.metadata.get(GGUF_ARCHITECTURE_METADATA_KEY) != GGUF_EXPECTED_ARCHITECTURE:
+            raise MiniMaxMusic3TextEncoderRefusal(
+                f"{path!r} does not declare {GGUF_ARCHITECTURE_METADATA_KEY}="
+                f"{GGUF_EXPECTED_ARCHITECTURE!r} in its GGUF metadata (found "
+                f"{header.metadata.get(GGUF_ARCHITECTURE_METADATA_KEY)!r}) -- refusing to guess "
+                f"this is a MiniMax Music 3 checkpoint."
+            )
+        tensor_names = header.tensor_names()
+        if keys_look_like_flat_minimax_music3_dit(tensor_names):
+            raise MiniMaxMusic3TextEncoderRefusal(
+                f"{path!r} carries the MiniMax Music 3 GGUF DiT's tensor signature, not a text "
+                f"encoder's. Select the DiT through the model path, not text_encoder_file."
+            )
+        if not is_pruned_flat_text_encoder(tensor_names):
+            raise MiniMaxMusic3TextEncoderRefusal(
+                f"{path!r} is a MiniMax Music 3 GGUF text encoder without any of the "
+                f"pruned-vocabulary tensor names ({sorted(_PRUNED_TELLS)}). No non-pruned GGUF "
+                f"text-encoder builder exists (design doc phase 11 covers only the pruned "
+                f"distribution's own tensor names) -- use a flat safetensors non-pruned text "
+                f"encoder (minimax_music3_text_encoder_bf16.safetensors) instead."
+            )
+        has_q8_0 = any(t.ggml_type_name == "Q8_0" for t in header.tensors)
+        return "gguf_pruned_q8_0" if has_q8_0 else "gguf_pruned_dense"
+    raise MiniMaxMusic3TextEncoderRefusal(
+        f"{path!r} is neither a .safetensors nor a .gguf file; MiniMax Music 3's text_encoder_"
+        f"file override supports only those two container formats."
+    )
+
+
+_TEXT_ENCODER_BUILDERS = {
+    "flat_non_pruned": build_language_model_and_depth_decoder_from_flat_text_encoder,
+    "flat_pruned": build_language_model_and_depth_decoder_from_pruned_flat_text_encoder,
+    "gguf_pruned_dense": build_language_model_and_depth_decoder_from_pruned_gguf_text_encoder,
+    "gguf_pruned_q8_0": build_language_model_and_depth_decoder_from_pruned_gguf_q8_0_text_encoder,
+}
+
+
+def build_language_model_and_depth_decoder_from_text_encoder_file(
+    text_encoder_file: str,
+    official: str,
+    torch_dtype: torch.dtype,
+):
+    """Detect ``text_encoder_file``'s source kind and dispatch to the matching
+    one of the four builders above. This is the "wiring" the design doc's
+    "Known debt" section describes as missing: before this function existed,
+    every one of those builders was implemented and tested but had no caller
+    from a real load.
+
+    Returns ``(language_model, rvq_depth_decoder, rvq_depth_decoder_config)``,
+    matching every builder's own return shape. The returned ``language_model``
+    carries (or does not carry) ``lm_head_pruned`` exactly as the dispatched
+    builder leaves it, so ``core.models.minimax_music3.vocab_view.resolve_
+    vocab_view`` -- called downstream, at pipeline construction, off THIS
+    object -- resolves the vocabulary view that matches what was actually
+    built: ``PrunedVocabView`` for the three pruned sources, ``FullVocabView``
+    for the non-pruned flat source, with no separate flag to thread and no
+    way for the two to drift apart.
+    """
+    kind = detect_minimax_music3_text_encoder_source(text_encoder_file)
+    builder = _TEXT_ENCODER_BUILDERS[kind]
+    print(f"[MiniMaxMusic3Loader] text_encoder_file override: {text_encoder_file} (detected: {kind})")
+    return builder(text_encoder_file, official, torch_dtype)
+
+
 def _assert_language_model_rope_theta(language_model) -> None:
     """Load-time gate: ``config.rope_parameters["rope_theta"] == 1e6``.
 
@@ -1284,6 +1471,7 @@ def load_minimax_music3_from_path(
     torch_dtype: torch.dtype = torch.bfloat16,
     *,
     load_language_model: bool = True,
+    text_encoder_file: Optional[str] = None,
 ) -> dict:
     """Load MiniMax Music 3, reading ``official/`` and (if pointed at a flat DiT
     file) the transformer + condition encoder from it instead -- see the
@@ -1292,10 +1480,34 @@ def load_minimax_music3_from_path(
     side's geometry; it is NOT a memory optimization for generation (the AR
     stage needs the language model resident).
 
+    ``text_encoder_file``, when given, names the exact text encoder file to
+    build the language model + RVQ depth decoder from instead of
+    ``official/language_model`` -- symmetric with the DiT ``.safetensors``/
+    ``.gguf``-path spelling of ``model_path`` above: an explicit request
+    bypasses this loader's own default and is detected by content
+    (``detect_minimax_music3_text_encoder_source``), not by filename. Configs
+    (``language_model/config.json``, ``rvq_depth_decoder/config.json``) still
+    come from ``official/`` regardless. Requires ``load_language_model=True``
+    -- naming an override and then skipping the language-model build would
+    silently drop the request rather than honour or refuse it.
+
     Returns the component dict ``PipelineManager.load_model()`` consumes,
     with ``type == "minimax_music3"``. Every component stays CPU-resident;
     GPU staging is a later commit's (pipeline-backend) concern.
     """
+    if text_encoder_file is not None:
+        if not load_language_model:
+            raise ValueError(
+                "text_encoder_file was given but load_language_model=False -- these are "
+                "contradictory; drop one or the other."
+            )
+        te_override_path = Path(text_encoder_file)
+        if not te_override_path.is_file() or te_override_path.suffix.lower() not in (".safetensors", ".gguf"):
+            raise FileNotFoundError(
+                f"MiniMax Music 3 text_encoder_file override {text_encoder_file!r} is not an "
+                f"existing .safetensors or .gguf file"
+            )
+
     layout = detect_minimax_music3_layout(model_path)
     if layout is None:
         raise ValueError(
@@ -1332,6 +1544,7 @@ def load_minimax_music3_from_path(
     # `detect_minimax_music3_layout` already proved it is a MiniMax Music 3
     # DiT of ONE of these two formats before `flat_dit` was ever populated.
     use_gguf_dit = use_flat_dit and str(layout["flat_dit"]).lower().endswith(".gguf")
+    use_te_override = text_encoder_file is not None
 
     official = layout["official"]
     if official is None:
@@ -1353,17 +1566,24 @@ def load_minimax_music3_from_path(
             # `build_transformer_and_condition_encoder_from_flat_dit`); only
             # the CONFIG (checked above) is still read from official/<subdir>/.
             continue
+        if subdir == "rvq_depth_decoder" and use_te_override:
+            # The RVQ depth decoder's WEIGHTS come from the same
+            # text_encoder_file override (every one of the four builders
+            # returns it alongside the language model); only the CONFIG
+            # (checked above) is still read from official/rvq_depth_decoder/.
+            continue
         if not _component_weight_present(official, subdir):
             missing.append(f"{subdir}/{_WEIGHT_BASENAME}.safetensors")
     if load_language_model:
         if not os.path.isfile(os.path.join(official, "language_model", "config.json")):
             missing.append("language_model/config.json")
-        lm_dir = os.path.join(official, "language_model")
-        if not (
-            os.path.isfile(os.path.join(lm_dir, "model.safetensors"))
-            or os.path.isfile(os.path.join(lm_dir, "model.safetensors.index.json"))
-        ):
-            missing.append("language_model weights")
+        if not use_te_override:
+            lm_dir = os.path.join(official, "language_model")
+            if not (
+                os.path.isfile(os.path.join(lm_dir, "model.safetensors"))
+                or os.path.isfile(os.path.join(lm_dir, "model.safetensors.index.json"))
+            ):
+                missing.append("language_model weights")
     if not os.path.isdir(os.path.join(official, "tokenizer")):
         missing.append("tokenizer/")
     if not os.path.isfile(os.path.join(official, "scheduler", "scheduler_config.json")):
@@ -1388,6 +1608,9 @@ def load_minimax_music3_from_path(
             source_label = "GGUF, remapped" if use_gguf_dit else "flat, remapped"
             print(f"[MiniMaxMusic3Loader] {subdir}:{' ' * max(1, 17 - len(subdir))}{layout['flat_dit']} ({source_label})")
             continue
+        if subdir == "rvq_depth_decoder" and use_te_override:
+            print(f"[MiniMaxMusic3Loader] {subdir}:{' ' * max(1, 17 - len(subdir))}{text_encoder_file} (text_encoder_file override)")
+            continue
         print(f"[MiniMaxMusic3Loader] {subdir}:{' ' * max(1, 17 - len(subdir))}{os.path.join(official, subdir)}")
     if use_gguf_dit and torch_dtype == torch.bfloat16:
         # Design doc "GGUF weights": at this dtype, the GGUF DiT's own
@@ -1400,7 +1623,10 @@ def load_minimax_music3_from_path(
               f"official.half() cast again to bf16 here -- up to 2**-8 EXTRA rounding "
               f"vs. the flat fp16/fp32 safetensors DiT on those tensors, not a wash.")
     if load_language_model:
-        print(f"[MiniMaxMusic3Loader] language_model:  {os.path.join(official, 'language_model')}")
+        if use_te_override:
+            print(f"[MiniMaxMusic3Loader] language_model:  {text_encoder_file} (text_encoder_file override)")
+        else:
+            print(f"[MiniMaxMusic3Loader] language_model:  {os.path.join(official, 'language_model')}")
     print(f"[MiniMaxMusic3Loader] tokenizer:       {os.path.join(official, 'tokenizer')}")
     print(f"[MiniMaxMusic3Loader] scheduler:       {os.path.join(official, 'scheduler')}")
 
@@ -1416,8 +1642,23 @@ def load_minimax_music3_from_path(
     # On Windows, doing the largest last can access-violate inside
     # safetensors/torch storage -- same ordering rule
     # `minimax_h3.loader.load_minimax_h3_from_path` documents for its own
-    # (much larger) text encoder.
-    language_model = _build_language_model(official, torch_dtype) if load_language_model else None
+    # (much larger) text encoder. When `text_encoder_file` names an override,
+    # the language model AND the RVQ depth decoder both come from it (every
+    # one of the four builders returns the pair together, mirroring the
+    # checkpoint's own merged layout) -- the separate official/rvq_depth_
+    # decoder build below is skipped in that case.
+    rvq_depth_decoder = rvq_depth_decoder_config = None
+    if load_language_model:
+        if use_te_override:
+            language_model, rvq_depth_decoder, rvq_depth_decoder_config = (
+                build_language_model_and_depth_decoder_from_text_encoder_file(
+                    text_encoder_file, official, torch_dtype,
+                )
+            )
+        else:
+            language_model = _build_language_model(official, torch_dtype)
+    else:
+        language_model = None
 
     if use_gguf_dit:
         transformer, transformer_config, condition_encoder, condition_encoder_config = (
@@ -1445,10 +1686,11 @@ def load_minimax_music3_from_path(
             official, "condition_encoder", MiniMaxMusic3ConditionEncoder,
             "MiniMaxMusic3ConditionEncoder", torch.float32,
         )
-    rvq_depth_decoder, rvq_depth_decoder_config = _build_diffusers_component(
-        official, "rvq_depth_decoder", MiniMaxMusic3RVQDepthDecoder,
-        "MiniMaxMusic3RVQDepthDecoder", torch_dtype,
-    )
+    if not use_te_override:
+        rvq_depth_decoder, rvq_depth_decoder_config = _build_diffusers_component(
+            official, "rvq_depth_decoder", MiniMaxMusic3RVQDepthDecoder,
+            "MiniMaxMusic3RVQDepthDecoder", torch_dtype,
+        )
     vocoder, vocoder_config = _build_diffusers_component(
         official, "vocoder", MiniMaxMusic3Vocoder,
         "MiniMaxMusic3Vocoder", torch.float32,
@@ -1463,7 +1705,7 @@ def load_minimax_music3_from_path(
     print("[MiniMaxMusic3Loader] Loaded MiniMax Music 3 components (CPU-resident; no "
           "pipeline-backend wiring yet -- design doc phase plan item 3).")
 
-    return {
+    result = {
         "type": "minimax_music3",
         "is_audio": True,
         "transformer": transformer,
@@ -1497,8 +1739,19 @@ def load_minimax_music3_from_path(
         # why those two slot NAMES, not the components' own dict keys, are
         # what the catalog reads by default.
         "dit_path": layout["flat_dit"] if use_flat_dit else os.path.join(official, "transformer"),
-        "text_encoder_path": os.path.join(official, "language_model"),
+        "text_encoder_path": text_encoder_file if use_te_override else os.path.join(official, "language_model"),
         "vae_path": os.path.join(official, "vocoder"),
         "official_dir": official,
         "root": layout.get("root"),
     }
+    if use_te_override:
+        # Emitted ONLY when overridden (audit F6): `component_catalog.
+        # _current_origin` reads this key BEFORE its own "is text_encoder_path
+        # under the source root" derivation, so setting it unconditionally to
+        # "architecture_default" on the default (no-override) path would have
+        # SUPPRESSED that derivation -- which, for a `source` that is the root
+        # holding `official/`, previously resolved to "model_tree". Omitting
+        # the key on the default path leaves that derivation exactly as it
+        # was before this feature existed.
+        result["text_encoder_origin"] = "selected_external"
+    return result

@@ -1,4 +1,4 @@
-from typing import Dict, Any, Optional, Literal, Union
+from typing import Dict, Any, List, Optional, Literal, Union
 import os
 import sys
 import json
@@ -2240,7 +2240,8 @@ class ModelLoader:
         # confusing diffusers error.
         if model_type == "minimax_music3":
             print(f"[ModelLoader] MiniMax Music 3 DiT file selected ({file_path})")
-            return ModelLoader.load_minimax_music3_from_path(file_path, torch.bfloat16)
+            return ModelLoader.load_minimax_music3_from_path(
+                file_path, torch.bfloat16, text_encoder_file=text_encoder_file)
 
         is_v_prediction = ModelLoader.detect_v_prediction(file_path)
 
@@ -2646,7 +2647,8 @@ class ModelLoader:
         # MiniMax Music 3 (root directory holding official/, or official/ itself).
         if model_type == "minimax_music3":
             print(f"[ModelLoader] Loading as MiniMax Music 3 (official/ config-and-weight tree)")
-            return ModelLoader.load_minimax_music3_from_path(model_path, torch.bfloat16)
+            return ModelLoader.load_minimax_music3_from_path(
+                model_path, torch.bfloat16, text_encoder_file=text_encoder_file)
 
         is_v_prediction = ModelLoader.detect_v_prediction(model_path)
 
@@ -2806,23 +2808,41 @@ class ModelLoader:
         text_encoder_file: Optional[str],
         clip_projection_file: Optional[str],
     ) -> None:
-        """Refuse ``POST /models/load``'s H3 fields on any other architecture.
+        """Refuse ``POST /models/load``'s load-time text-encoder fields on an
+        architecture that does not implement them.
 
         Dropping them instead would load that architecture's default components
-        and report success, which is exactly the failure these two fields exist
-        to make impossible.
+        and report success, which is exactly the failure these fields exist
+        to make impossible. ``text_encoder_file`` is implemented for both
+        minimax_h3 (``te_override``) and minimax_music3 (its own
+        ``text_encoder_file`` loader parameter, dispatching by content among
+        four builders -- see ``core.models.minimax_music3.loader``).
+        ``clip_projection_file`` pairs a trained projection with a converted
+        stand-in encoder, a minimax_h3-only concept; minimax_music3 has
+        nothing to pair it with, so it is refused there like everywhere else.
+
+        Both invalid fields are named in ONE raise when both were sent: a
+        caller who fixes the first and resends must not be surprised by a
+        second refusal naming the one this function already knew about.
         """
-        if text_encoder_file is None and clip_projection_file is None:
+        invalid: List[tuple] = []
+        if text_encoder_file is not None and model_type not in ("minimax_h3", "minimax_music3"):
+            invalid.append((
+                "text_encoder_file",
+                "selects the text encoder built at load time and is implemented for minimax_h3 "
+                "and minimax_music3 only",
+            ))
+        if clip_projection_file is not None and model_type != "minimax_h3":
+            invalid.append((
+                "clip_projection_file",
+                "pairs a trained projection with a minimax_h3 converted stand-in text encoder "
+                "and is implemented for minimax_h3 only",
+            ))
+        if not invalid:
             return
-        if model_type == "minimax_h3":
-            return
-        named = ", ".join(
-            name for name, value in (("text_encoder_file", text_encoder_file),
-                                     ("clip_projection_file", clip_projection_file))
-            if value is not None)
+        detail = "; ".join(f"{name} {reason}" for name, reason in invalid)
         raise ValueError(
-            f"{named} selects the text encoder built at load time and is implemented for "
-            f"minimax_h3 only; this model detects as {model_type!r}. Per-generation text-encoder "
+            f"{detail}; this model detects as {model_type!r}. Per-generation text-encoder "
             f"swapping is a different parameter (text_encoder_path) on the generation routes.")
 
     @staticmethod
@@ -3107,6 +3127,8 @@ class ModelLoader:
     def load_minimax_music3_from_path(
         path: str,
         torch_dtype: torch.dtype = torch.bfloat16,
+        *,
+        text_encoder_file: Optional[str] = None,
     ) -> dict:
         """Load MiniMax Music 3 from its ``official/`` tree (or a root holding
         one), optionally sourcing the DiT's weights from a flat safetensors or
@@ -3115,9 +3137,20 @@ class ModelLoader:
         (``type == "minimax_music3"``); ``int8_convrot`` and any GGML type
         this reader does not materialize (Q8_0 above all) are still refused --
         see ``core.models.minimax_music3.loader``'s docstring.
+
+        ``text_encoder_file``, when given, names the exact language-model +
+        RVQ-depth-decoder source file to build from instead of
+        ``official/language_model`` -- one of the flat safetensors (pruned or
+        non-pruned) or pruned GGUF (dense or Q8_0-packed) forms, detected by
+        content and dispatched by
+        ``core.models.minimax_music3.loader.build_language_model_and_depth_
+        decoder_from_text_encoder_file``. Named, not ``**kwargs``, for the
+        same reason every other load-time override in this class is: a
+        dropped key here would load the default encoder and report success.
         """
         from core.models.minimax_music3.loader import (
             load_minimax_music3_from_path as _load_music3,
         )
 
-        return _load_music3(model_path=path, torch_dtype=torch_dtype)
+        return _load_music3(
+            model_path=path, torch_dtype=torch_dtype, text_encoder_file=text_encoder_file)

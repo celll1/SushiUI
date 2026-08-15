@@ -8,9 +8,22 @@ decision and full rationale are recorded in that design doc, not repeated
 here.
 
 SCOPE: header/metadata/tensor-descriptor parsing, and materialization of
-F32/F16/BF16 tensors only. Any other GGML type (Q8_0 above all) is
-RECOGNIZED but UNSUPPORTED -- ``GGUFStateDict.__getitem__`` refuses it via
-``refuse_unsupported_tensor_types``, HEADER-ONLY (no tensor byte read).
+F32/F16/BF16 tensors only via ``__getitem__``. Any other GGML type (Q8_0
+above all) is RECOGNIZED but UNSUPPORTED there -- ``__getitem__`` refuses it
+via ``refuse_unsupported_tensor_types``, HEADER-ONLY (no tensor byte read).
+
+Design doc phase 12 ("Q8_0 residency") adds ONE exception to that refusal:
+``GGUFStateDict.get_q8_0_packed`` materializes a Q8_0 tensor's raw block
+layout -- an ``(out, in)`` int8 codes tensor and an ``(out, in // 32)``
+float16 per-block scale tensor -- WITHOUT dequantizing it to a dense
+``(out, in)`` tensor of some other dtype. That is a deliberately different
+contract from ``__getitem__``, which promises "the tensor, in a real torch
+dtype": Q8_0 has no such single dtype, so ``__getitem__`` keeps refusing it
+and only this explicit, differently-named method exposes it, so a caller
+must ask for the packed representation on purpose rather than receiving it
+by surprise from the same call every other GGML type answers. See
+``core.models.common.gguf_q8_0_linear`` for what a caller does with the
+result (a packed ``nn.Module`` that dequantizes at use, not at load).
 
 DIMENSION ORDER: GGUF's ``ne[]`` has ``ne[0]`` FASTEST-varying (the opposite
 of a torch/numpy shape, whose LAST entry is fastest), so
@@ -66,6 +79,9 @@ __all__ = [
     "unsupported_tensor_types",
     "refuse_unsupported_tensor_types",
     "GGUFStateDict",
+    "GGML_TYPE_Q8_0",
+    "Q8_0_BLOCK_SIZE",
+    "Q8_0_BLOCK_BYTES",
 ]
 
 GGUF_MAGIC = b"GGUF"
@@ -130,6 +146,19 @@ GGML_QUANT_LAYOUT: Dict[int, Tuple[int, int]] = {
 }
 
 _GGML_BF16 = 30
+
+# Q8_0's own type id and its block layout, spelled out as named constants
+# (rather than only a ``GGML_QUANT_LAYOUT[8]`` lookup) because
+# ``gguf_q8_0_linear.py`` needs both numbers by name to validate a packed
+# tensor's shape without re-deriving them. ``(32, 34)`` is GGML's own
+# ``block_q8_0`` struct: a little-endian fp16 delta (2 bytes) followed by 32
+# ``int8_t`` quantized values (32 bytes) -- verified against the real staged
+# ``minimax_music3_text_encoder_pruned_Q8_0.gguf`` (every one of its 169 Q8_0
+# tensors' declared ``n_bytes`` equals ``n_elements // 32 * 34`` exactly; see
+# the design doc phase 12 section and this module's test).
+GGML_TYPE_Q8_0 = 8
+Q8_0_BLOCK_SIZE = 32   # values per block
+Q8_0_BLOCK_BYTES = 34  # 2 (fp16 scale) + 32 (int8 codes)
 
 # The three GGML types this phase materializes into a torch tensor, and the
 # numpy dtype used to view their raw bytes (BF16 has no native numpy dtype --
@@ -604,6 +633,83 @@ class GGUFStateDict(Mapping):
         if info.ggml_type_id == _GGML_BF16:
             tensor = tensor.view(torch.bfloat16)
         return tensor
+
+    def get_q8_0_packed(self, name: str) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Materialize one Q8_0 tensor PACKED: ``(codes, scale)``.
+
+        ``codes`` is ``(out, in)`` ``torch.int8`` and ``scale`` is
+        ``(out, in // Q8_0_BLOCK_SIZE)`` ``torch.float16``, related by
+        ``weight[:, i] ~= codes[:, i].float() * scale[:, i // 32].float()``
+        (``core.models.common.gguf_q8_0_linear.dequantize_q8_0`` is the sole
+        place that combines them). Raises ``KeyError`` if ``name`` is not a
+        tensor in this file, and ``GGUFFormatError`` if it is not Q8_0 --
+        this method is deliberately narrower than ``__getitem__``, which
+        refuses Q8_0; this one refuses everything else.
+
+        DIMENSION ORDER: GGML's ``block_q8_0`` blocks run along ``ne[0]``,
+        the FASTEST-varying GGUF dimension, which ``torch_shape = reversed
+        (gguf_dims)`` makes the LAST torch dimension -- ``in_features`` for a
+        Linear weight, never ``out_features``. Concretely: for an
+        ``(out, in)`` weight, block ``[r, c]`` (row ``r``, the ``c``-th block
+        of 32 columns within that row) sits at byte offset ``(r * (in // 32)
+        + c) * 34`` -- ROW-MAJOR over ``(out, in // 32)`` -- which is exactly
+        what reshaping the raw byte stream to ``(out, in // 32, 34)`` before
+        splitting each block's 2 scale bytes from its 32 code bytes recovers,
+        with no transpose needed. Verified against the real staged
+        ``minimax_music3_text_encoder_pruned_Q8_0.gguf``: every one of its
+        169 Q8_0 tensors' ``torch_shape[-1]`` (``in_features``) is divisible
+        by 32, and a dequantized sample (this method's ``codes``/``scale``
+        fed through ``gguf_q8_0_linear.dequantize_q8_0``) matches the
+        corresponding tensor in the sibling bf16 safetensors file to within
+        Q8_0's own quantization error (measured relative RMS ~0.5-0.6% on
+        sampled real tensors, never bit-identical -- Q8_0 is lossy by
+        construction, unlike this reader's F32/F16/BF16 path).
+
+        MEMORY: same discipline as ``__getitem__`` -- both returned tensors
+        are OWNED (copied) CPU tensors, never a view into the mmap, so they
+        remain valid after ``close()``. Materializes exactly the ``n_bytes``
+        this ONE tensor declares; never touches another tensor's bytes.
+        """
+        if self._closed:
+            raise RuntimeError(f"{self._header.path}: GGUFStateDict is closed; cannot read {name!r}")
+        info = self._by_name[name]
+        if info.ggml_type_id != GGML_TYPE_Q8_0:
+            raise GGUFFormatError(
+                f"{self._header.path}: tensor {name!r} is {info.ggml_type_name}, not Q8_0 -- "
+                f"get_q8_0_packed only serves Q8_0 tensors (use __getitem__ for F32/F16/BF16)."
+            )
+        out_features, in_features = info.torch_shape
+        if in_features % Q8_0_BLOCK_SIZE != 0:
+            raise GGUFFormatError(
+                f"{self._header.path}: tensor {name!r} has in_features={in_features}, not a "
+                f"multiple of Q8_0's block size ({Q8_0_BLOCK_SIZE}) -- cannot be a row-blocked "
+                f"Q8_0 weight."
+            )
+        blocks_per_row = in_features // Q8_0_BLOCK_SIZE
+        n_blocks = info.n_elements // Q8_0_BLOCK_SIZE
+        if n_blocks != out_features * blocks_per_row:
+            raise GGUFFormatError(
+                f"{self._header.path}: tensor {name!r} declares {n_blocks} block(s) but its "
+                f"torch_shape {info.torch_shape} implies {out_features * blocks_per_row} -- "
+                f"header/shape mismatch."
+            )
+        raw = np.frombuffer(self._mm, dtype=np.uint8, count=info.n_bytes, offset=info.data_offset)
+        # One reshape recovers the (block, byte-within-block) grid described
+        # in the docstring above; `.copy()` on each half is the same
+        # mmap-detach discipline `__getitem__` already uses (see its own
+        # comment), not an extra allocation beyond what returning owned
+        # tensors requires.
+        blocks = raw.reshape(n_blocks, Q8_0_BLOCK_BYTES)
+        # No explicit endian prefix, matching `_NUMPY_VIEW_DTYPE` above and
+        # this module's documented LE-only assumption (module docstring):
+        # `np.float16`/`np.int8` are read as native, which is little-endian
+        # on every platform this repo targets.
+        scale_np = blocks[:, :2].copy().view(np.float16).reshape(out_features, blocks_per_row)
+        codes_np = blocks[:, 2:].copy().view(np.int8).reshape(out_features, blocks_per_row, Q8_0_BLOCK_SIZE)
+        codes_np = codes_np.reshape(out_features, in_features)
+        codes = torch.from_numpy(codes_np)
+        scale = torch.from_numpy(scale_np)
+        return codes, scale
 
     def close(self) -> None:
         if self._closed:

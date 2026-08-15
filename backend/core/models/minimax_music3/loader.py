@@ -1,4 +1,4 @@
-"""MiniMax Music 3 loader: detection + component build (design doc phases 2 + 9).
+"""MiniMax Music 3 loader: detection + component build (design doc phases 2, 9 + 10).
 
 The released snapshot ships the model twice: ``official/`` (MiniMax's own
 config-and-weight tree, loads into the vendored classes key-for-key, no
@@ -20,14 +20,28 @@ What this loader reads from the flat tree, briefly:
   SOURCE, not a different model;
 * the flat NON-pruned text encoder is readable by
   ``build_language_model_and_depth_decoder_from_flat_text_encoder`` below,
-  but nothing in this loader's directory detection points AT a text-encoder
-  file (detection keys off the DiT's tensor signature only), so that builder
-  is not wired into ``load_minimax_music3_from_path``'s dispatch;
-* ``int8_convrot`` (either file) and the pruned-vocabulary text encoder are
-  refused, HEADER-ONLY, with reasons naming design doc phases 13 and 10;
-* GGUF containers (phase 11) are not read here -- ``flat_remap`` is written
-  so that reader can reuse the same remap, but no GGUF parsing happens in
-  this module.
+  and the flat PRUNED-vocabulary text encoder is readable by
+  ``build_language_model_and_depth_decoder_from_pruned_flat_text_encoder``
+  (design doc phase 10, "The pruned vocabulary" -- see that function's
+  docstring for the representation choice: a real ``Qwen3ForCausalLM``
+  patched with two extra leaf modules, ``lm_head_pruned`` and
+  ``model.embed_tokens_audio``, and its default ``lm_head`` removed). Neither
+  is wired into ``load_minimax_music3_from_path``'s directory-detection
+  dispatch -- nothing in this loader's detection points AT a text-encoder
+  file at all (detection keys off the DiT's tensor signature only);
+* ``int8_convrot`` (either the flat DiT or either text encoder) is refused,
+  HEADER-ONLY, naming design doc phase 13. The pruned-vocabulary text encoder
+  is NO LONGER refused (design doc phase 10 landed) -- only its own dedicated
+  builder reads it; handing a pruned file to
+  ``build_language_model_and_depth_decoder_from_flat_text_encoder`` (the
+  NON-pruned builder) still raises ``PrunedTextEncoderNotSupported``, because
+  that specific function's remap genuinely cannot read the pruned layout
+  (see ``flat_remap.PrunedTextEncoderNotSupported``'s docstring);
+* GGUF containers (phase 11) are not read here -- ``flat_remap`` and
+  ``pruned_text_encoder_remap`` are both written so that reader can reuse the
+  same remaps (the pruned GGUF text encoder carries the identical 328 tensor
+  names as the pruned flat safetensors -- design doc, "GGUF weights"), but no
+  GGUF parsing happens in this module.
 """
 
 from __future__ import annotations
@@ -514,6 +528,171 @@ def build_language_model_and_depth_decoder_from_flat_text_encoder(
     rvq_depth_decoder = _build_module_from_remapped_state_dict(
         MiniMaxMusic3RVQDepthDecoder, depth_config, remapped["rvq_depth_decoder"], torch_dtype,
         label="rvq_depth_decoder",
+    )
+    return language_model, rvq_depth_decoder, depth_config
+
+
+def build_language_model_and_depth_decoder_from_pruned_flat_text_encoder(
+    flat_text_encoder_path: str,
+    official: str,
+    torch_dtype: torch.dtype,
+):
+    """The PRUNED-vocabulary flat text encoder (design doc phase 10) -- a real
+    ``Qwen3ForCausalLM`` with its default ``lm_head`` removed and two extra leaf modules
+    (``lm_head_pruned``, ``model.embed_tokens_audio``) attached, ``config.vocab_size`` set to
+    the checkpoint's own text-row count; not a subclass or hand-rolled wrapper, because every
+    transformer layer here is bit-identical to ``official/language_model``'s -- see the design
+    doc's phase-10 section for the full justification and the numeric proof.
+    ``core.models.minimax_music3.vocab_view.resolve_vocab_view`` detects this patching
+    (``hasattr(language_model, "lm_head_pruned")``) at generation time and routes accordingly.
+
+    TRAP: ``language_model.save_pretrained()`` succeeds on this patched model (writes
+    ``vocab_size: 151675`` and the two patched keys) and a later plain ``from_pretrained()``
+    would silently rebuild a random 200,000-wide ``lm_head`` and only WARN about the two
+    unexpected keys -- do not round-trip a pruned-loaded language model through
+    ``save_pretrained``/``from_pretrained``.
+
+    Mirrors ``build_language_model_and_depth_decoder_from_flat_text_encoder``'s shape; NOT
+    wired into ``load_minimax_music3_from_path``'s directory-detection dispatch, same status
+    as that function -- see the module docstring.
+    """
+    from accelerate import init_empty_weights
+    from transformers import AutoConfig, AutoModelForCausalLM
+
+    from core.models.common.quantized_checkpoint_guard import refuse_quantized_state_dict
+    from core.models.common.single_file_format import read_state_dict
+    from core.models.minimax_music3.defaults import AUDIO_CODE_OFFSET
+    from core.models.minimax_music3.flat_remap import (
+        _PRUNED_TELLS,
+        assert_state_dict_matches_module_keys,
+        expected_module_state_dict_keys,
+        is_pruned_flat_text_encoder,
+    )
+    from core.models.minimax_music3.pruned_text_encoder_remap import (
+        AUDIO_HEAD_VOCAB_SIZE,
+        SEMANTIC_VOCAB_SIZE,
+        apply_pruned_text_encoder_state_dict,
+    )
+    from core.models.minimax_music3.vendor import MiniMaxMusic3RVQDepthDecoder
+
+    # Header-only gates, in the order a caller would want to know about them: "is this even the
+    # pruned layout" first (a caller that reaches this function with the NON-pruned file gets a
+    # message naming the OTHER builder, not a confusing remap failure), then quantization.
+    # Neither reads a single tensor byte of what can be a 16.7 GB file.
+    header_keys = list(read_safetensors_header(flat_text_encoder_path).keys())
+    if not is_pruned_flat_text_encoder(header_keys):
+        raise ValueError(
+            f"{flat_text_encoder_path!r} does not carry any of the pruned-vocabulary tells "
+            f"({sorted(_PRUNED_TELLS)}) in its header -- it looks like the NON-pruned flat text "
+            f"encoder. Use build_language_model_and_depth_decoder_from_flat_text_encoder for that "
+            f"file instead."
+        )
+    if _header_looks_quantized(header_keys):
+        raise RuntimeError(
+            f"the MiniMax Music 3 pruned flat text encoder checkpoint ({flat_text_encoder_path}) "
+            f"declares weight-only quantization in its header (a '.weight_scale' or "
+            f"'.comfy_quant' key), and the MiniMax Music 3 loader does not support quantized "
+            f"flat checkpoints (design doc phase 13, 'INT8 ConvRot'). Load the unquantized pruned "
+            f"flat text encoder (minimax_music3_text_encoder_pruned_bf16.safetensors) instead."
+        )
+
+    # Cheap config reads + the rope-theta gate BEFORE the heavy read -- same ordering rule
+    # `_build_language_model` and the non-pruned builder above follow.
+    lm_config_path = os.path.join(official, "language_model", "config.json")
+    if not os.path.isfile(lm_config_path):
+        raise FileNotFoundError(
+            f"MiniMax Music 3's config tree at {official!r} is missing language_model/config.json."
+        )
+    with open(lm_config_path, encoding="utf-8") as fh:
+        lm_config_dict = json.load(fh)
+    rope_parameters = lm_config_dict.get("rope_parameters")
+    theta = rope_parameters.get("rope_theta") if isinstance(rope_parameters, dict) else None
+    if theta is None or abs(float(theta) - EXPECTED_LANGUAGE_MODEL_ROPE_THETA) > _ROPE_THETA_TOLERANCE:
+        raise ValueError(
+            f"MiniMax Music 3's language_model config.rope_parameters['rope_theta'] is "
+            f"{theta!r}, expected {EXPECTED_LANGUAGE_MODEL_ROPE_THETA}. Checked from "
+            f"official/language_model/config.json BEFORE reading the pruned flat text encoder's "
+            f"multi-GB weights."
+        )
+    depth_config = _read_component_config(official, "rvq_depth_decoder", "MiniMaxMusic3RVQDepthDecoder")
+
+    flat_state_dict, _metadata = read_state_dict(flat_text_encoder_path)
+    refuse_quantized_state_dict(
+        flat_state_dict, arch="MiniMax Music 3", path=flat_text_encoder_path, label="pruned flat text encoder",
+    )
+
+    # Shape census BEFORE remapping -- measured from the checkpoint's own tensors, not assumed
+    # (see the module-level docstring's "verify from evidence" convention). `prefill_rows` is
+    # cross-checked against `AUDIO_CODE_OFFSET`: that constant is DEFINED as "where audio codes
+    # begin in the merged (full-vocab) embedding table", which is only meaningful if it equals
+    # this checkpoint's own count of text rows -- a mismatch here means either constant is stale
+    # for whatever produced this file, and every other AUDIO_CODE_OFFSET-derived assumption in
+    # this codebase (SEMANTIC_VOCAB_SIZE's placement, etc.) would be silently wrong too.
+    hidden_size = int(lm_config_dict["hidden_size"])
+    prefill_rows = int(flat_state_dict["model.embed_tokens_prefill.weight"].shape[0])
+    if prefill_rows != AUDIO_CODE_OFFSET:
+        raise ValueError(
+            f"MiniMax Music 3 pruned text encoder: model.embed_tokens_prefill has {prefill_rows} "
+            f"rows, expected AUDIO_CODE_OFFSET ({AUDIO_CODE_OFFSET}). These must be the same "
+            f"number by construction (AUDIO_CODE_OFFSET is defined as the text-vocabulary size); "
+            f"a mismatch means this file was built against a different checkpoint revision than "
+            f"the one docs/guides/MINIMAX_MUSIC3_DESIGN.md was written against."
+        )
+    audio_rows = int(flat_state_dict["model.embed_tokens_audio.weight"].shape[0])
+    if audio_rows != SEMANTIC_VOCAB_SIZE:
+        raise ValueError(
+            f"MiniMax Music 3 pruned text encoder: model.embed_tokens_audio has {audio_rows} "
+            f"rows, expected SEMANTIC_VOCAB_SIZE ({SEMANTIC_VOCAB_SIZE})."
+        )
+    head_rows = int(flat_state_dict["model.lm_head_pruned.weight"].shape[0])
+    if head_rows != AUDIO_HEAD_VOCAB_SIZE:
+        raise ValueError(
+            f"MiniMax Music 3 pruned text encoder: model.lm_head_pruned has {head_rows} rows, "
+            f"expected SEMANTIC_VOCAB_SIZE + 1 ({AUDIO_HEAD_VOCAB_SIZE})."
+        )
+
+    remapped = apply_pruned_text_encoder_state_dict(flat_state_dict, lm_config_dict)
+    del flat_state_dict
+
+    lm_hf_config = AutoConfig.from_pretrained(os.path.join(official, "language_model"))
+    # See this function's docstring: the checkpoint's OWN embed_tokens size, not official/'s
+    # merged 200,000 -- `lm_hf_config.vocab_size` would otherwise size `model.embed_tokens` (and
+    # the default `lm_head` this function immediately deletes) to a value the pruned file never
+    # populates 48,325 rows of.
+    lm_hf_config.vocab_size = prefill_rows
+
+    with init_empty_weights():
+        language_model = AutoModelForCausalLM.from_config(lm_hf_config)
+        del language_model.lm_head
+        language_model.lm_head_pruned = torch.nn.Linear(hidden_size, AUDIO_HEAD_VOCAB_SIZE, bias=False)
+        language_model.model.embed_tokens_audio = torch.nn.Embedding(SEMANTIC_VOCAB_SIZE, hidden_size)
+
+    lm_cast_state_dict = {
+        k: (v.to(dtype=torch_dtype) if v.is_floating_point() else v)
+        for k, v in remapped["language_model"].items()
+    }
+    assert_state_dict_matches_module_keys(
+        lm_cast_state_dict.keys(), expected_module_state_dict_keys(language_model),
+        component="language_model (pruned)",
+    )
+    language_model.load_state_dict(lm_cast_state_dict, strict=True, assign=True)
+    stranded = _stranded_meta_tensors(language_model)
+    if stranded:
+        raise RuntimeError(
+            f"MiniMax Music 3's language_model (pruned flat text encoder source) still holds "
+            f"{len(stranded)} meta tensor(s) after loading (first 5: {stranded[:5]}); it would "
+            f"fail at the first forward."
+        )
+    language_model.eval()
+    language_model.requires_grad_(False)
+    # Defense in depth, same as `_build_language_model`'s / the non-pruned builder's own
+    # post-load re-assert: against the LOADED model's own config object, not just the pre-load
+    # JSON read above.
+    _assert_language_model_rope_theta(language_model)
+
+    rvq_depth_decoder = _build_module_from_remapped_state_dict(
+        MiniMaxMusic3RVQDepthDecoder, depth_config, remapped["rvq_depth_decoder"], torch_dtype,
+        label="rvq_depth_decoder (pruned)",
     )
     return language_model, rvq_depth_decoder, depth_config
 

@@ -62,15 +62,9 @@ __all__ = [
 
 
 class PrunedTextEncoderNotSupported(NotImplementedError):
-    """The flat/GGUF text encoder is the PRUNED vocabulary variant.
-
-    Splitting ``embed_tokens_prefill`` / ``embed_tokens_audio`` /
-    ``lm_head_pruned`` back into a full-vocabulary ``Qwen3ForCausalLM`` is not
-    a key rename: it changes the AR loop's offset arithmetic and vocab mask
-    (design doc phase 10, "The pruned vocabulary"). This remap module (phase
-    9) intentionally does not do that work; refusing here is preferred over a
-    half-remap that would load and generate wrong audio.
-    """
+    """Raised by THIS module's remap functions when handed the pruned-vocabulary layout --
+    that layout is supported, but by the dedicated ``pruned_text_encoder_remap`` module
+    instead (see ``raise_if_pruned_flat_text_encoder``'s message)."""
 
 
 @dataclass
@@ -293,8 +287,11 @@ _LM_LAYER_RE = re.compile(r"^model\.layers\.\d+\.(.+)$")
 _DEPTH_LAYER_RE = re.compile(r"^model\.audio_decoder\.layers\.(\d+)\.(.+)$")
 _DEPTH_AUDIO_HEAD_RE = re.compile(r"^model\.audio_decoder\.audio_heads\.(\d+)\.weight$")
 
-# Pruned-variant tells: any of these present means "refuse" (see
-# `is_pruned_flat_text_encoder`). Verified against
+# Pruned-variant tells: any of these present means THIS module's remap
+# functions refuse (see `is_pruned_flat_text_encoder` /
+# `raise_if_pruned_flat_text_encoder`) -- the pruned layout is handled by the
+# dedicated `pruned_text_encoder_remap` module instead, see
+# `PrunedTextEncoderNotSupported`'s docstring. Verified against
 # text_encoders/minimax_music3_text_encoder_pruned_bf16.safetensors's header
 # (328 tensors: the vocab split plus fused `qkv_proj` / `gate_up_proj` per
 # layer, replacing the non-pruned file's separate q/k/v/gate/up projections).
@@ -389,26 +386,16 @@ def is_pruned_flat_text_encoder(flat_keys: Iterable[str]) -> bool:
 
 def raise_if_pruned_flat_text_encoder(flat_keys: Iterable[str]) -> None:
     """Raise ``PrunedTextEncoderNotSupported`` iff ``flat_keys`` is the pruned variant.
-
-    HEADER-ONLY: takes just the key names, so a caller holding a safetensors
-    header (no tensor bytes read) can refuse an 18 GB pruned file before
-    opening it. ``plan_flat_text_encoder_keys`` calls this first, so both
-    entry points raise the identical message; this is the one place that
-    message is written.
-    """
+    HEADER-ONLY (no tensor bytes read). ``plan_flat_text_encoder_keys`` calls this first."""
     keys = list(flat_keys)
     if not is_pruned_flat_text_encoder(keys):
         return
     present = sorted(t for t in _PRUNED_TELLS if t in keys)
     raise PrunedTextEncoderNotSupported(
-        f"this text encoder is the PRUNED-vocabulary flat layout (found {present}). "
-        f"Splitting the pruned vocabulary back into a full Qwen3ForCausalLM changes "
-        f"the AR loop's offset arithmetic and vocab mask -- see "
-        f"docs/guides/MINIMAX_MUSIC3_DESIGN.md, phase-plan item 10 ('The pruned "
-        f"vocabulary'). This remap module (phase 9) only reads the NON-pruned flat "
-        f"text encoder (minimax_music3_text_encoder_bf16.safetensors, not the _pruned_ "
-        f"variant -- and note there is no non-pruned int8_convrot file in this snapshot; "
-        f"any int8_convrot file is refused separately, design doc phase 13)."
+        f"this text encoder is the PRUNED-vocabulary flat layout (found {present}); use "
+        f"core.models.minimax_music3.pruned_text_encoder_remap via "
+        f"core.models.minimax_music3.loader."
+        f"build_language_model_and_depth_decoder_from_pruned_flat_text_encoder instead."
     )
 
 

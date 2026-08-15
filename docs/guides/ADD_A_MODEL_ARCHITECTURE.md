@@ -1,10 +1,16 @@
 # Add a Model Architecture
 
-SushiUI currently supports 12 architectures: 9 image (SD1.5, SDXL, Z-Image,
+SushiUI currently supports 13 architectures: 9 image (SD1.5, SDXL, Z-Image,
 Flux2, Anima, Lens, Krea2, Ideogram4, MiniT2I), 2 video that also generate audio
-jointly (LTX-2.3, MiniMax-H3) and 1 audio (ACE-Step 1.5). `ARCH_REGISTRY` in
-`backend/core/training/arch/__init__.py` is the authoritative list — check it
-rather than this sentence if the two ever disagree.
+jointly (LTX-2.3, MiniMax-H3) and 2 audio (ACE-Step 1.5, MiniMax Music 3).
+`ModelType` in `backend/core/model_loader.py` is the authoritative *generation*
+list — check it rather than this sentence if the two ever disagree.
+`ARCH_REGISTRY` in `backend/core/training/arch/__init__.py` is the
+authoritative *training-capable* list; it has 12 entries because MiniMax Music
+3's training is out of scope (design forward-compatible, not implemented — see
+`docs/guides/MINIMAX_MUSIC3_DESIGN.md`'s "Training forward-compatibility"
+section). Do not assume the two lists are always the same size — they were
+equal only by coincidence before this architecture.
 
 This is the procedure for adding the next one. Sections 1-8 are the common
 surface; **section 9 is the additional surface a video (or audio) architecture
@@ -80,6 +86,22 @@ one giant file — follow the existing completion logic in
 Ideogram4, and Lens all use single-file loading; check their loader paths
 for the sibling-completion pattern before writing a new one).
 
+## 6b. Component-switch catalog is opt-in per architecture
+
+`backend/core/models/components/component_catalog.py` and
+`POST /models/current/components/switch` let a user swap one component (text
+encoder, VAE, ...) of an already-loaded model without a full reload, but only
+for an architecture that has a per-architecture **unload-first adapter**
+registered for that slot — a new architecture is not automatically wired into
+this surface just because it has a load-time component-selection mechanism
+(e.g. `text_encoder_file` on `POST /models/load`). Without an adapter, the
+catalog's generic `{slot}_origin` reporting still works (it reads back what
+the loader recorded, e.g. `selected_external` for an override load), so
+declining to build the adapter does not break anything — it just means the
+architecture's components can only be chosen at load time, not hot-swapped
+after. Decide this deliberately per architecture rather than assuming parity
+with MiniMax-H3, which does have the adapter for its `te_override`.
+
 ## 7. Document the new architecture
 
 Add a row for the new architecture to `docs/guides/MODEL_FACTS.md` (a
@@ -109,9 +131,15 @@ new default value.
 A video architecture reuses everything above and adds the following. The two
 existing video archs are the references, and they differ deliberately: LTX-2.3
 drives stock diffusers pipelines, MiniMax-H3 vendors its model classes and owns
-its denoise loop (upstream ships a Modular pipeline only). ACE-Step is the audio
-sibling and was built by mirroring LTX-2.3, so diffing those two shows exactly
-what the per-arch surface is.
+its denoise loop (upstream ships a Modular pipeline only). There are now two
+audio architectures, and they differ the same way: ACE-Step was built by
+mirroring LTX-2.3 (stock-pipeline-shaped), while MiniMax Music 3 vendors its
+model classes and owns its own multi-stage loop for the same reason MiniMax-H3
+does — upstream ships no usable `DiffusionPipeline` (see
+`docs/guides/MINIMAX_MUSIC3_DESIGN.md`'s "Dependency gate" section). Diffing
+LTX-2.3 against MiniMax-H3, or ACE-Step against MiniMax Music 3, shows exactly
+what the per-arch surface is; do not assume every architecture in a modality
+looks like the first one you read.
 
 **Detection and routing.** Video models are loaded and dispatched separately
 from image-model detection: `pipeline.py` sets `is_<arch>_model` and the load
@@ -151,7 +179,19 @@ file grows an `if arch ==`.
 routes resolve omitted fields through `video_defaults_for_arch(loaded_arch)`
 (JSON bodies use `model_fields_set`, multipart routes use `Form(None)`
 sentinels). Pass those **resolved** defaults to `check_arch_capabilities`, or
-every video-only key will read as user-set and warn on every request.
+every video-only key will read as user-set and warn on every request. Audio has
+the identical pattern: `AUDIO_GEN_ARCH_OVERLAYS`/`audio_defaults_for_arch`, and
+the outpaint/repaint twins (`OUTPAINT_AUDIO_ARCH_OVERLAYS`/
+`outpaint_audio_defaults_for_arch`, and the repaint equivalent), all in
+`backend/api/param_defaults.py`. Before MiniMax Music 3, audio had exactly one
+architecture (ACE-Step) and no overlay mechanism at all — the per-arch overlay
+had to be introduced as a **prerequisite**, not added alongside the second
+architecture's own defaults, because a flat single-architecture default dict
+cannot express "the same field means something different, or does not exist,
+on the next audio architecture" (MiniMax Music 3's `flow_guidance_scale`,
+`num_inference_steps`-per-chunk and required `lyrics` have no ACE-Step
+analogue). If you are the second architecture in any modality that only ever
+had one before, check for this trap before writing the new defaults.
 
 **Capabilities, honestly.** Declare what the architecture genuinely cannot do
 (`arch_capabilities.py`) with a factual reason per feature, and use
@@ -208,6 +248,37 @@ quantization registries are wired**, by design. That is the forcing function for
 `isinstance(x, nn.Linear)` in the LoRA target predicate — the latter silently
 drops every quantized target and has been found on four architectures in this
 repo already.
+
+**Owning real quantized-Linear modules is not the same claim as being in
+`RUNTIME_INT8_ARCHS`/`QUANTIZED_LINEAR_ARCHS`.** Those tables advertise a
+`quantized_gemm_mode`/`unet_quantization` **runtime toggle** reachable from a
+generation request. An architecture can have working packed-weight Linear
+classes (MiniMax Music 3 has both `GGUFQ8_0Linear` and a reused
+`ConvRotInt8Linear` for its Q8_0 and INT8 ConvRot checkpoint formats) while
+still correctly staying out of both tables, if the only path that builds those
+modules is a load-time checkpoint-format choice with no live toggle behind it —
+adding the table entry would advertise a capability the wiring does not
+actually expose. Add the entry only when a real runtime converter reaches that
+architecture's modules; do not add it reflexively because the class exists.
+
+**Detection and refusal ordering matters as much as the checks themselves,**
+learned from a chain of load-path defects on MiniMax Music 3's
+`text_encoder_file` selection (design doc, "Current status", the two
+independent-audit paragraphs): (1) any detection/refusal that a generic
+teardown-then-load flow can reach must run in a **header-only preflight**,
+before the live model is torn down — a check that only runs inside the new
+architecture's own loader fires too late, after a bad request has already
+cost the user their loaded model (this repo's existing hybrid-model preflight
+in `_load_model_locked` is the pattern to extend, not re-derive). (2) a
+detector shared or adjacent to another architecture's existing detector needs
+an explicit architecture (or format) gate — a check written against one
+architecture's file shapes will misfire on a different architecture's model
+being loaded unless it is gated to fire only for the architecture it was
+written for. (3) a detector that reports "any unrecognized key" rather than
+"any of these specific signature keys" must be fed the same key set its real
+caller uses (e.g. excluding a container format's own non-tensor metadata
+entries) — a synthetic test fixture that happens not to carry that extra key
+will not catch the gap.
 
 ## Verification
 

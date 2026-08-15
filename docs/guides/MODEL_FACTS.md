@@ -20,6 +20,7 @@ them. No subjective performance claims.
 | krea2 | MM-DiT (single-stream) | Qwen3-VL-4B-Instruct (frozen) | velocity / flow (rectified flow) | latent, `AutoencoderKLQwenImage` 16ch (latents_mean/std) | `guidance = cfg_scale - 1` (default cfg 4.5); distilled/turbo disables CFG (guidance 0) | conduit (tq usable, GQA) (verify infer/train head_dim) | diffusers dir (`Krea2Pipeline`), transformer-only dir (auto-complement), single-file (diffusers/raw/comfy/sushiUI TE+DiT combined); TE `Qwen/Qwen3-VL-4B-Instruct`, VAE `Qwen/Qwen-Image` `vae` (env `KREA2_TE_DIR`/`KREA2_VAE_DIR` overrides) | `krea2_adapter.py`; transformer only, Qwen3-VL TE ALWAYS frozen (`train_text_encoder` rejected), VAE frozen; train_runner forces bf16 |
 | ltx2 | joint video+audio DiT (`LTX2VideoTransformer3DModel`) | Gemma-3 text encoder (frozen) | velocity / flow (`LTX2Pipeline`/`LTX2ImageToVideoPipeline`, txt2vid + img2vid) | 5D video latent (`[T,H,W]`) via LTX video VAE (tiling enabled) + separate audio VAE/vocoder | plain CFG (`guidance_scale`); img2vid pins frame 0 via `conditioning_mask` | n/a (own pipeline backend, not conduit-routed) | not in the single-file completion matrix above (own loader) | own trainer ops (`ltx2_ops.py`); see row-level notes for AP1-3 speed/lightweight features |
 | minimax_h3 | joint video+audio DiT, **single stream, no cross-attention** (vendored `MiniMaxH3Transformer3DModel`, 50 blocks, 33 B dense): one packed sequence of `[text \| conditioning \| audio \| video]` rows scattered by `index_copy`, split back by `index_select` | Qwen3-VL-32B (`Qwen3VLForConditionalGeneration`), truncated to **50 decoder layers**, unnormalised hidden state after layer 50, 5120-dim; frozen, never moved (layer-streamed off the mmap) | velocity / flow with the sign **opposite** to the usual convention, `x0 = x_t + σ·v` (vendored `MiniMaxH3Scheduler`); **two sigma schedules**, video shift 12.0 and audio shift 3.0, each stream stepped on its own grid once per loop iteration | 5-D 24-ch video latent, `AutoencoderKLMiniMaxH3` (16× spatial / 4× temporal, 36-layer ViT decoder, fp16, **pinned tiling policy**), pixels ImageNet-normalised RGB over `[0,1]` (not `[-1,1]`); **separate** 32-ch audio VAE (fp32, 32 kHz stereo) | **none** — no `guidance_scale`, no `negative_prompt`, no unconditional branch; guidance is distilled into the weights, one forward per step. Both keys are accepted and warned on a non-default value | conduit-routed, head_dim 128, equal q/kv heads, no mask → no capability guard fires, so native/flash/sage/tq all really run; sage refused in TRAINING mode by the shared mode guard | ComfyUI-style flat tree (`diffusion_models/` + `text_encoders/` + `vae/`) plus MiniMax's config-only `official/` for geometry, tokenizer and normalization vectors; DiT files are `*_pruned_fp8_scaled` or packed ConvRot `*_pruned_w4a8_mixed` (Comfy-Kitchen 0.2.28), each with `fl2va` and `ref2va` partitions — selecting the FILE selects the workflow | `minimax_h3_adapter.py`, **LoRA only** — full fine-tuning refused in three layers; TE and both VAEs frozen; block swap optional (opt-in) |
+| minimax_music3 | 3-stage: 8B `Qwen3ForCausalLM` autoregressive stage + 0.6B RVQ depth decoder (semantic + 7 residual codes/frame) → condition encoder → 2.4B 1D flow-matching DiT (`MiniMaxMusic3Transformer1DModel`, 36 layers, windowed 200-frame/100-hop denoise) → vocoder decode. No separate text encoder component: `prompt`/`lyrics` are tokenized (`Qwen2Tokenizer`) and consumed directly by the AR stage's own `Qwen3ForCausalLM` | AR stage: categorical, top-k 50 sampling of semantic (vocab 16,384) + 7 residual (vocab 1,024 each) codes per 25 Hz frame, cross-entropy-trained upstream. Flow stage: velocity / flow (`FlowMatchEulerDiscreteScheduler`, `invert_sigmas: true`, `sigmas = linspace(1, 1/steps, steps)`) at 86.13 Hz | 128-ch latent = **two folded 64-ch mono streams** (`vocoder.forward` reshapes `[B,128,L]`→`[2B,64,L]`); `MiniMaxMusic3Vocoder` is **decode-only** (upsamples 512× to 44.1 kHz stereo) — the matching encoder exists in `official/dav.pth` but is not part of the released diffusers component set and is not wired | **two CFGs, no negative prompt anywhere.** AR CFG fixed at 1.5 (unconditional branch = the same prompt with interior tokens replaced by `<\|audio_cfg\|>`); flow CFG exposed as `flow_guidance_scale` (default 1.7), unconditional branch conditions on **zeros** (there is no text/audio unconditional branch to negate, structurally, not by omission) | conduit-routed (attention re-pointed at `backend/core/attention/` during vendoring, replacing upstream's `dispatch_attention_fn`); same conduit for inference and (design-only, unimplemented) training | `official/` 7-component tree (default; every config, including for a flat/GGUF DiT, is sourced from here); flat ComfyUI-repack safetensors (DiT + text encoder, key-remapped — fused QKV split, `.gamma`/`.beta` norm rename, condition encoder unfolded out of the DiT; LM+depth-decoder split apart for the text encoder); GGUF containers (same remap, native reader, no `gguf` pip dependency); Q8_0 packed text encoder (`GGUFQ8_0Linear`, dequantizes once per device move); INT8 ConvRot (`ConvRotInt8Linear`, reused unchanged from MiniMax-H3) for both the flat DiT and the pruned text encoder. `text_encoder_file` on `POST /models/load` selects which of 4 text-encoder builders (non-pruned flat, pruned flat, pruned GGUF dense, pruned GGUF Q8_0) runs, generalising MiniMax-H3's `te_override` field | **none.** Training is out of scope for the phases shipped so far; not in `ARCH_REGISTRY`. Design-forward-compatible only: flow-stage (DiT) LoRA is reachable in principle (needs a from-scratch DAV-encoder reimplementation, since the encoder half is unpublished in the diffusers component set), AR-stage (LM) training is **blocked** — the RVQ tokenizer's own encoder (turns audio into the codes the LM predicts) is not published anywhere in the release |
 
 ## VRAM management: keep_models_hot (opt-in, all image archs except ltx2)
 
@@ -1397,6 +1398,89 @@ a generation without style transfer.
   - **Attribution**: the UI displays this architecture as "MiniMax H3", which the
     model's license requires (`archDisplayName` in `frontend/src/utils/api.ts`,
     `_ARCH_DISPLAY_NAMES` in `int8_runtime_quantize.py`).
+- **minimax_music3** — Full implementation account, including every measured
+  number and the audit history behind them, is
+  `docs/guides/MINIMAX_MUSIC3_DESIGN.md`; this entry states only the facts an
+  arch-maintainer needs at a glance.
+  - **Refusals, and why each is a model property, not an unimplemented
+    feature** (`arch_capabilities.py`): `negative_prompt` (the flow-stage
+    unconditional branch conditions on zeros; there is nothing to negate
+    against); `audio_reference_conditioning` — no voice/timbre/instrument
+    reference audio can condition generation, because the RVQ tokenizer's
+    *encoder* (turns audio into semantic codes) is not published, so no audio
+    can be turned into the AR stage's own input alphabet, and the DiT
+    conditions on LM hidden states, not on audio directly; `controlnets`;
+    `nag`; `advanced_cfg`; generation-time `lora` (the pipeline backend never
+    reads `params["loras"]`); `unet_quantization` (checkpoint-format driven,
+    like Ideogram 4/Krea 2, not a runtime toggle — see below). `vae_override`
+    is refused: the "VAE" here is a decode-only vocoder with no swappable
+    counterpart in this repo's override mechanism.
+  - **Modality surfaces**: `POST /generate/txt2aud` (text-to-music, real
+    audio); `POST /generate/outpaint/audio` with `extend_forward` only
+    (forward continuation by AR-resume from the frame-code sidecar; backward
+    extension is not possible — the LM is causal); `POST /generate/aud2aud`
+    with `mode="repaint"`, two sub-modes (`regenerate`: AR-resume with a new
+    tail, content changes, everything before the cut point preserved exactly;
+    `rerender`: redraw the flow stage over a kept-codes window with a new
+    seed, timbre/mix change, lyrics/melody/timing do not). Mid-span infill
+    with a preserved tail is refused (causal LM, no infilling contract) —
+    same style as MiniMax-H3's placement enumeration above.
+  - **Per-generation state contract**: every `txt2aud` generation writes a
+    sidecar (frame codes, sample/frame rates, prompt, lyrics, seed) next to the
+    audio file. Extend and repaint both require it — a song generated by an
+    older build without one cannot be extended or repainted. Storing the
+    sidecar's frame codes rather than the AR stage's `frame_hiddens` is a
+    ~4,000x size reduction (144 KB vs. ~590 MB for a six-minute song, bf16) —
+    the hidden states are exactly recoverable from the codes by a
+    teacher-forced replay.
+  - **A seed is not portable across text-encoder sources.** The full-vocabulary
+    and pruned-vocabulary text encoders sample DIFFERENT frame codes from the
+    same seed even when fed bit-identical restricted logits, because
+    `torch.multinomial`'s RNG consumption depends on the sampled category
+    count (200,000-wide vs. 16,385-wide). Songs stay reproducible by their
+    stored frame codes regardless of which text encoder generated them; a seed
+    alone does not reproduce a song across a `text_encoder_file` change.
+  - **Quantization residency, per format, measured** (see the design doc for
+    the full methodology and audit trail): Q8_0 (`GGUFQ8_0Linear`) keeps a
+    dense mirror co-resident once a layer is touched — VRAM saving during the
+    AR stage is **zero by construction**, because the language model and depth
+    decoder must be dense to compute at the AR loop's per-frame call rate; the
+    saving is host RAM / disk only, **~42.7%** (header-only tensor-byte
+    arithmetic: 9.589 GB vs. 16.707 GB for the same 328 tensors), not the
+    ~49% a since-corrected process-RSS measurement first reported. INT8
+    ConvRot (`ConvRotInt8Linear`, reused unchanged from MiniMax-H3) never
+    materializes a dense mirror at all — measured on a real 4096×4096 layer,
+    resident weight **50.05% smaller** (16.794 MB vs. 33.554 MB) and the
+    forward-call peak-memory delta below a single dense weight's own size —
+    but that number is layer-local; AR-stage KV cache and activation memory
+    were not measured for either format. The flat "FP16" DiT is bit-exact
+    under `official.bfloat16().half()`, not `official.half()` directly — it
+    carries bf16 precision under an FP16 label, so it gains nothing over
+    loading `official/` at this loader's bf16 default. The "BF16" GGUF DiT is,
+    at that same bf16 default, the **worse** of the two flat sources for ~40%
+    of its tensors (up to 2⁻⁸ extra rounding from a double cast), not a wash.
+  - **`MiniMax Music 3` is not in `RUNTIME_INT8_ARCHS` / `QUANTIZED_LINEAR_ARCHS`
+    (`core.models.common.int8_runtime_quantize`)**, deliberately: those tables
+    advertise a runtime `unet_quantization`/`quantized_gemm_mode` toggle, and
+    this architecture's quantized-Linear builders (Q8_0, ConvRot) are all
+    reached only by a load-time checkpoint-format choice, with no live
+    runtime-conversion path behind them.
+  - **The component-switch catalog** (`component_catalog.py`,
+    `POST /models/current/components/switch`) was **not** extended for this
+    architecture — it needs a per-architecture unload-first adapter this
+    architecture does not have. The generic `{slot}_origin` reporting still
+    works without one (`selected_external` for a `text_encoder_file`
+    override), so component selection works at load time via
+    `POST /models/load`'s `text_encoder_file` but not as a post-load hot-swap.
+  - **`keep_models_hot` is not wired for this architecture** — see the
+    "VRAM management" section above.
+  - **Frontend**: txt2aud and extend (`/generate/outpaint/audio`) UI shipped.
+    **Repaint's UI branch is not implemented** — blocked on a shared-worktree
+    conflict in `Img2ImgPanel.tsx` at the time this phase landed. The backend
+    and API (`POST /generate/aud2aud` with `mode="repaint"`) are complete and
+    reachable by direct API calls; there is no UI path to reach them today.
+    The `text_encoder_file` selection has no frontend surface either, for the
+    same reason — it is reachable today only via `POST /models/load`.
 
 ## Anchors used
 
@@ -1446,3 +1530,13 @@ a generation without style transfer.
 - `backend/core/keep_hot.py` — `keep_models_hot` model_key computation, VRAM
   guard, resident-set tracking, shared by `pipeline.py` and the 7 DiT
   `pipeline_backends/*.py` files (not `ltx2.py`).
+- `backend/core/models/minimax_music3/loader.py` — directory/file detection,
+  the `official/`-tree load, flat/GGUF DiT and 4-way text-encoder-builder
+  dispatch (`detect_minimax_music3_text_encoder_source`), the header-only
+  quantization/pruned-vocabulary censuses. `vendor/` holds the ported
+  diffusers-PR model classes; `flat_remap.py` / `pruned_text_encoder_remap.py`
+  / `convrot_remap.py` are the checkpoint-key remaps; `vocab_view.py` resolves
+  full- vs. pruned-vocabulary AR dispatch by the loaded `language_model`'s own
+  shape. `backend/core/pipeline_backends/minimax_music3.py` is the AR + flow +
+  vocode generation loop (txt2aud, extend, repaint). See
+  `docs/guides/MINIMAX_MUSIC3_DESIGN.md` for the full account.

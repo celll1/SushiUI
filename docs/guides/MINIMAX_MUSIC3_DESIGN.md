@@ -512,24 +512,90 @@ outpaint/inpaint twins; audio has no equivalent because ACE-Step was the only
 audio architecture. The per-arch overlay mechanism must be introduced for audio
 rather than branching on the architecture at each call site.
 
-## Training forward-compatibility
+## Training
 
-Training is a later scope, but two findings decide whether it is reachable, and
-both are recorded now so phase 1 does not foreclose them.
+**Nothing in this release can learn from music the model did not itself
+generate, except the DAV decoder.** That is the headline, and it is narrower
+than the earlier revision of this section claimed.
 
-- **Flow-stage (DiT) training is reachable.** It needs ground-truth latents, which
-  need the DAV encoder — and the encoder is published in `official/dav.pth`
-  (`encoder.*`, `mean_proj`, `logs_proj`, `flow`), even though it is absent from
-  the diffusers component set. Cost: reimplementing the encoder and remapping its
-  keys. The 128-channel latent is two folded 64-channel mono streams, so stereo
-  encoding is two mono passes stacked.
-- **AR-stage (LM) training is blocked** on the RVQ tokenizer's encoder, which is
-  not published anywhere in the release. Without it, audio cannot be turned into
-  the semantic and residual codes the LM is trained to predict.
+### Why "train the DiT on a music dataset" is not reachable
 
-So a LoRA over the DiT is the tractable target and should be assumed by the
-component wiring; LM-side training should not be promised. The frame-code sidecar
-from phase 1 doubles as a training-data artifact for the flow stage.
+The DiT is not conditioned on audio. It is conditioned on
+`condition_encoder(frame_hiddens)`, and `frame_hiddens` is the language model's
+per-frame hidden states — the LM's `last_hidden` concatenated with the seven
+depth-decoder hiddens. The condition encoder is four tensors
+(`layer_weight_logits [8]`, `layer_scale [1]`, `proj [2048, 4096, 3]`, bias) and
+has no audio input of any kind.
+
+So a training pair for a piece of real audio needs a condition derived from that
+audio, which needs the LM teacher-forced on that audio's codes, which needs the
+RVQ tokenizer's **encoder**. That encoder is in no artifact of the release:
+
+- `official/dav.pth` is the continuous DAV VAE — `encoder.*` (119), `decoder.*`
+  (119), a VITS-style `flow` (304), `mean_proj`/`logs_proj` `[64, 1024, 1]`.
+  Every tensor is a conv or flow weight. No quantizer, no codebook.
+- `official/flowmatching_vae.pth`, despite its name, is the flat-layout DiT plus
+  condition encoder in fp32 — not a VAE and not a tokenizer.
+- `embed_tokens_audio [16384, 4096]` and `rvq_depth_decoder.audio_embeddings
+  [7168, 4096]` are the LM's and depth decoder's **embeddings of code indices**
+  in 4096-d LM space, not acoustic codebooks.
+- Nearest-neighbour recovery has nothing to quantise against: the only published
+  audio encoder emits 64-d latents at 86.13 Hz, while the indexed tables live in
+  4096-d LM space at 25 Hz, with no published map between them.
+- The official GitHub repository contains **zero Python files** — no training
+  code, recipe or config. Its README states inference "does not require the
+  discrete tokenizer *decoder*", and is silent on the encoder, which reads as
+  the tokenizer being a training-time artifact that was kept.
+
+Conditioning real latents on a text-only AR pass is not a workaround: the pairs
+would be frame-misaligned, which is noise, not signal.
+
+### Correcting the previous revision in both directions
+
+It said flow-stage training was reachable and AR-stage training was blocked.
+Both halves were wrong. Flow-stage training is blocked for user audio, at the
+conditioning rather than at the latents. And AR-stage training is *not* blocked
+for songs this server generated, because their codes are in the frame-code
+sidecar. Both stages are in the same position: trainable on generated songs,
+untrainable on arbitrary audio.
+
+### What is reachable
+
+| Target | Accepts a real music dataset | What it can change |
+|---|---|---|
+| DAV decoder fine-tune | **Yes** | decode quality and timbre rendering for a domain; nothing about composition, melody, lyrics or arrangement |
+| DiT LoRA on generated songs | No | the renderer's sound; meaningful only on a curated subset, or on user-modified audio paired with the original conditions |
+| AR LoRA on generated songs | No | composition, via preference distillation over curated generations; tight on 24 GB, probe-gated |
+
+Rejected and recorded so they are not re-derived: training the *unconditional*
+branch on real audio (CFG subtracts it, so it pushes output away from the
+target), code recovery by nearest-neighbour quantisation (refuted above), and
+learning an audio-to-condition inverter (research, not integration).
+
+### Phase plan
+
+1. **Latent-space probe**, in `tmp/`, not shipped. Implement the DAV encoder and
+   its key remap; encode a real clip, decode with the shipped vocoder, and
+   compare latent statistics against latents captured at generation time, over
+   the three candidate spaces — posterior mean, sampled z, flow-mapped. This
+   decides whether real-audio latents live in the space the DiT and vocoder use,
+   and everything else waits on it.
+2. **DAV encoder as a component**, plus the capability refusals for training on
+   arbitrary audio, stated as a property of the release.
+3. **Generation-time latent capture**, opt-in, beside the frame-code sidecar.
+4. **`vae_decoder` mode for Music 3** — the one target that takes a real dataset.
+5. **Condition and latent caching** for generated-song datasets.
+6. **DiT LoRA**, with condition dropout to zeros so the CFG unconditional branch
+   stays aligned.
+7. **API, frontend, docs**, carrying the capability statements above verbatim —
+   no "train on your music" claim for the generated-song targets.
+8. **AR LoRA**, gated on a feasibility probe that fits one teacher-forced step in
+   24 GB. Ship only if the probe passes.
+
+Open questions the probe must answer: which latent space is the DiT's, whether
+any latent normalisation applies (no `scaling_factor` appears in the vocoder
+config), and the upstream condition-dropout probability, which is unknown and
+must be exposed rather than guessed.
 
 ## Verification gates
 

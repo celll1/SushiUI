@@ -84,6 +84,7 @@ from api.generation_utils import (
     resolve_video_defaults,
     validate_video_geometry,
     validate_video_steps,
+    is_still_image_video_request,
     plan_keyframe_placements,
     resolve_chain_provenance,
     MINIMAX_H3_DOCUMENTED_ANCHOR_SCOPE,
@@ -2949,6 +2950,22 @@ async def generate_txt2vid(
             if _hybrid_warning:
                 add_warning(_hybrid_warning, code=MINIMAX_H3_HYBRID_WARNING_CODE)
 
+        # Still-image request (TemporalSpec.allows_single_frame, currently
+        # MiniMax-H3 only): audio is forced off here rather than left to the
+        # backend, since MiniMax-H3's joint denoise still runs the audio rows
+        # regardless of `audio_enable` (`_generate_minimax_h3`'s decode phase
+        # is what actually skips them) and a joint 1-frame audio clip has
+        # never been built or measured. The length exemption itself is
+        # validated below, spec-driven, by `validate_video_geometry`.
+        if is_still_image_video_request(params, _vid_arch):
+            from api.generation_status import add_warning
+            if params.get("audio_enable"):
+                add_warning(
+                    "num_frames=1 is a still-image request; audio_enable was forced to false "
+                    "(a 1-frame joint audio clip is not a generated shape).",
+                    code="video_constraint",
+                )
+            params["audio_enable"] = False
         # Spec-driven geometry validation (TemporalSpec): a hard 400 for the
         # canvas and, on an arch whose spec says so, a snap-with-warning for the
         # clip length. Inside the try because a snap emits a `warnings[]` entry,

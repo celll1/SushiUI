@@ -1608,6 +1608,13 @@ def validate_video_geometry(params: Dict[str, Any], arch: Optional[str],
         ceiling is None or num_frames <= ceiling)
     if num_frames is None:
         pass
+    elif spec.allows_single_frame and num_frames == 1:
+        # Still-image special case (TemporalSpec.allows_single_frame):
+        # exempt from the floor/grid entirely rather than snapped or refused.
+        # Stated, not silent, same as every other exemption in this function.
+        warn(f"{frame_key}=1 is a still-image request for this model: exempt from the "
+             f"{floor}-frame minimum, decoded to a single frame with no audio track. This is "
+             f"below the model's trained range ({spec.min_frames}-{spec.trained_max_frames}).")
     elif not (spec.is_valid_length(num_frames) and in_range):
         if not spec.snap_invalid_length:
             raise ValidationError(
@@ -1644,6 +1651,21 @@ def validate_video_geometry(params: Dict[str, Any], arch: Optional[str],
                  f"fixed {spec.fps_fixed} fps; using {spec.fps_fixed}.")
 
     return warnings
+
+
+def is_still_image_video_request(params: Dict[str, Any], arch: Optional[str]) -> bool:
+    """Whether this video request is the still-image special case (see
+    ``TemporalSpec.allows_single_frame``): ``num_frames=1`` on an arch that
+    has measured and shipped decode support for a lone latent frame.
+
+    A named, importable predicate rather than an inline route check, so the
+    route's own gate is directly unit-testable and does not duplicate the
+    arch-scoping logic ``validate_video_geometry`` already carries.
+    """
+    from core.models.components.wiring import temporal_spec_for_arch
+
+    spec = temporal_spec_for_arch(arch)
+    return bool(spec and spec.allows_single_frame and int(params.get("num_frames", 0) or 0) == 1)
 
 
 def plan_video_outpaint_placement(

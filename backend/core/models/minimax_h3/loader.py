@@ -261,9 +261,12 @@ def minimax_h3_latent_frames(num_frames: int) -> int:
     disagrees off it (T=18: it says 2, measured 7), so this form is the one to
     use.
 
-    Note the decode floor this implies: ``_decode`` needs at least 7 latent
-    frames, so the shortest decodable clip is 22 pixel frames (0.917 s) -- T = 5
-    is on the grid and cannot be decoded.
+    Note the decode floor this implies: the multi-chunk ``_decode`` path needs
+    at least 7 latent frames, so the shortest clip decodable THROUGH IT is 22
+    pixel frames (0.917 s) -- T = 5 is on the grid and cannot be decoded. T = 1
+    is exempt: ``_decode`` special-cases a lone latent frame (mirroring this
+    function's own ``num_frames <= 1`` branch) and decodes it directly,
+    bypassing the chunk-walk entirely.
     """
     if num_frames <= 1:
         return 1

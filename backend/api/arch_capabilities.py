@@ -815,6 +815,12 @@ def video_constraints_payload() -> Dict[str, Dict[str, Any]]:
             # snaps up and warns), and it cannot be derived from the fields
             # above, so a client cannot get it right without this flag.
             "snap_invalid_length": spec.snap_invalid_length,
+            # Whether `num_frames=1` is a still-image special case, exempt
+            # from `min_frames` entirely rather than snapped/refused like any
+            # other invalid length (MiniMax-H3: true; LTX-2.3: false, but only
+            # because 1 is already a normal on-grid length there and needs no
+            # exemption -- see `TemporalSpec.allows_single_frame`).
+            "allows_single_frame": spec.allows_single_frame,
             # 16, not the default 8: a client builds its clip-length control
             # from this list, and 8 entries stopped LTX-2.3's list at 65 --
             # dropping 81/97/121, all valid `8k+1` lengths that were offered

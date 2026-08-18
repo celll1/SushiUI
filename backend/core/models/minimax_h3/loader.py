@@ -164,6 +164,13 @@ MINIMAX_H3_AUDIO_VAE_PATTERNS: List[str] = [
     "minimax_h3_audio_vae_fp32.safetensors",
     "minimax_h3_audio_vae_fp16.safetensors",
 ]
+# OPTIONAL. A community checkpoint fine-tuned specifically for the T=1
+# (still-image) decode -- see ``_is_image_vae_filename`` below and the
+# ``image_vae`` slot in ``_layout_from_root``. Not part of the official
+# MiniMax-H3 release; never required for a model to load.
+MINIMAX_H3_IMAGE_VAE_PATTERNS: List[str] = [
+    "minimax_h3_t1_image_vae_step1597.safetensors",
+]
 MINIMAX_H3_TE_PATTERNS: List[str] = [
     "qwen3vl_32b_minimax_h3_int8_convrot.safetensors",
     "qwen3vl_32b_minimax_h3_bf16.safetensors",
@@ -273,6 +280,16 @@ def minimax_h3_latent_frames(num_frames: int) -> int:
     return math.ceil(num_frames / 17) * 5 - 3
 
 
+def _is_image_vae_filename(path: Path) -> bool:
+    """``minimax_h3_t1_image_vae*.safetensors`` -- the ``accept`` predicate for
+    the ``image_vae`` slot, so ``_find_first``'s glob fallback still resolves a
+    future differently-numbered release (e.g. a later ``_stepNNNN``) without a
+    new literal entry in ``MINIMAX_H3_IMAGE_VAE_PATTERNS``, and without ever
+    matching the video or audio VAE files that share the same ``vae/`` directory.
+    """
+    return path.name.startswith("minimax_h3_t1_image_vae") and path.suffix == ".safetensors"
+
+
 def _find_first(directory: Path, patterns: List[str],
                 accept=None) -> Optional[Path]:
     """The first file in ``directory`` matching ``patterns``, then a glob, then any.
@@ -326,7 +343,7 @@ def _is_h3_model_index(directory: Path) -> bool:
 def detect_minimax_h3_layout(
     path: str, *, te_override: Optional[str] = None,
 ) -> Optional[Dict[str, Optional[str]]]:
-    """``{dit, vae, audio_vae, text_encoder, official, root, variant, text_encoder_reason}`` or ``None``.
+    """``{dit, vae, audio_vae, image_vae, text_encoder, official, root, variant, text_encoder_reason}`` or ``None``.
 
     Accepts three spellings of the same tree:
 
@@ -375,8 +392,8 @@ def detect_minimax_h3_layout(
         # A model_index.json with no reachable weight tree. Returned anyway (so
         # detection is honest about WHAT this is) with every weight slot None;
         # the loader turns that into a message naming the missing files.
-        return {"dit": None, "vae": None, "audio_vae": None, "text_encoder": None,
-                "text_encoder_reason": None,
+        return {"dit": None, "vae": None, "audio_vae": None, "image_vae": None,
+                "text_encoder": None, "text_encoder_reason": None,
                 "official": str(p), "root": str(p), "variant": None}
     if root is None:
         return None
@@ -1041,6 +1058,14 @@ def _layout_from_root(
     # when only one of the two is present; a video VAE is not an audio VAE.
     if vae is not None and audio_vae is not None and vae == audio_vae:
         audio_vae = None
+    # OPTIONAL. Absent on every install today; ``load_minimax_h3_from_path``
+    # does not require it. See ``MINIMAX_H3_IMAGE_VAE_PATTERNS``.
+    image_vae = _find_first(root / "vae", MINIMAX_H3_IMAGE_VAE_PATTERNS,
+                            accept=_is_image_vae_filename)
+    # Same guard, three-way: an image VAE must not silently stand in for the
+    # video or the audio VAE, or vice versa.
+    if image_vae is not None and (image_vae == vae or image_vae == audio_vae):
+        image_vae = None
     te_dir = root / "text_encoders"
     if te_override is not None:
         te = te_override
@@ -1054,6 +1079,7 @@ def _layout_from_root(
         "dit": str(dit),
         "vae": str(vae) if vae else None,
         "audio_vae": str(audio_vae) if audio_vae else None,
+        "image_vae": str(image_vae) if image_vae else None,
         "text_encoder": str(te) if te else None,
         "text_encoder_reason": te_reason,
         "official": _resolve_official_dir(root),
@@ -2418,8 +2444,15 @@ def _rename_video_vae_key(key: str) -> str:
     return out
 
 
-def _build_video_vae(vae_path: str, official_dir: Optional[str], torch_dtype: torch.dtype):
+def _build_video_vae(
+    vae_path: str, official_dir: Optional[str], torch_dtype: torch.dtype, *, label: str = "video VAE",
+):
     """The 24-channel causal video VAE with the ViT decoder.
+
+    ``label`` names the component in every error/guard message this raises --
+    the same builder loads the optional community T=1 image VAE (same class,
+    same config), and an error that says "video VAE" while naming the image
+    file would misdirect debugging.
 
     fp16 is the design point (66.72 dB against a full-fp32 decode, MEASURED),
     which halves 10.4 GB to 5.2 GB resident; upstream's ``_keep_in_fp32_modules``
@@ -2442,7 +2475,7 @@ def _build_video_vae(vae_path: str, official_dir: Optional[str], torch_dtype: to
     # THE GUARD FIRST -- ahead of the config read, which raises its own
     # "needs vae/config.json" on a tree with no official/ and would otherwise
     # answer a convrot file with that instead of with the reason that matters.
-    _guard_component_file(vae_path, label="video VAE")
+    _guard_component_file(vae_path, label=label)
 
     config = _read_component_config(official_dir, "vae", vae_path)
     heads = int(config["decoder_num_attention_heads"])
@@ -2453,8 +2486,8 @@ def _build_video_vae(vae_path: str, official_dir: Optional[str], torch_dtype: to
     with safe_open(vae_path, framework="pt", device="cpu") as handle:
         raw = {k: handle.get_tensor(k) for k in handle.keys()}
     # The guard, on the RAW dict, before anything is transformed or installed.
-    refuse_quantized_state_dict(raw, arch="MiniMax-H3", path=vae_path, label="video VAE")
-    _assert_guard_reached(raw, label="video VAE", path=vae_path)
+    refuse_quantized_state_dict(raw, arch="MiniMax-H3", path=vae_path, label=label)
+    _assert_guard_reached(raw, label=label, path=vae_path)
 
     for key, tensor in raw.items():
         if key in _VIDEO_VAE_DROPPED:
@@ -2481,7 +2514,7 @@ def _build_video_vae(vae_path: str, official_dir: Optional[str], torch_dtype: to
     missing, unexpected = vae.load_state_dict(state_dict, strict=True, assign=True)
     if missing or unexpected:  # pragma: no cover - strict=True raises first
         raise RuntimeError(
-            f"MiniMax-H3 video VAE state_dict mismatch: missing={missing[:5]}, "
+            f"MiniMax-H3 {label} state_dict mismatch: missing={missing[:5]}, "
             f"unexpected={unexpected[:5]}")
     # The parameters are already at ``torch_dtype`` (the state dict was cast on
     # the way in); this catches the real, constructor-built BUFFERS, exactly as
@@ -2491,7 +2524,7 @@ def _build_video_vae(vae_path: str, official_dir: Optional[str], torch_dtype: to
                 if getattr(t, "is_meta", False)]
     if stranded:
         raise RuntimeError(
-            f"the MiniMax-H3 video VAE from {vae_path} still holds {len(stranded)} meta "
+            f"the MiniMax-H3 {label} from {vae_path} still holds {len(stranded)} meta "
             f"tensor(s) after loading (first 5: {stranded[:5]}); it would fail at the first "
             f"encode, not here.")
 
@@ -3302,6 +3335,35 @@ def resolve_minimax_h3_te_projection(
     return projection
 
 
+def _check_image_vae_contract(vae_path: str, vae) -> None:
+    """Refuse a T=1 image VAE checkpoint whose declared crop contract
+    disagrees with this build's ``frame_pre_padding``.
+
+    The Mamad8 checkpoint's own safetensors metadata declares
+    ``h3_t1_output_slice`` -- the pixel-frame index its training assumed the
+    loader crops to. A future differently-numbered release (the glob pattern
+    this loader resolves against deliberately allows for one) that disagreed
+    would otherwise load successfully and silently decode the wrong pixel
+    frame. Metadata absent entirely (an older or third-party checkpoint) is
+    accepted without a check -- only a DECLARED and DISAGREEING contract is
+    refused.
+    """
+    from safetensors import safe_open
+
+    with safe_open(vae_path, framework="pt") as handle:
+        meta = handle.metadata() or {}
+    declared_format = meta.get("h3_t1_format")
+    if declared_format is not None and declared_format != "full_decoder_v1":
+        raise ValueError(
+            f"declares h3_t1_format={declared_format!r}, which this loader's decode contract "
+            f"('full_decoder_v1') does not recognise")
+    declared_slice = meta.get("h3_t1_output_slice")
+    if declared_slice is not None and int(declared_slice) != int(vae.frame_pre_padding):
+        raise ValueError(
+            f"declares h3_t1_output_slice={declared_slice}, but this build's frame_pre_padding is "
+            f"{vae.frame_pre_padding} -- decoding with it would crop the wrong pixel frame")
+
+
 def load_minimax_h3_from_path(
     model_path: str,
     torch_dtype: torch.dtype = torch.bfloat16,
@@ -3311,6 +3373,7 @@ def load_minimax_h3_from_path(
     te_override: Optional[str] = None,
     te_projection_override: Optional[str] = None,
     hybrid: Optional[Any] = None,
+    load_image_vae: bool = True,
 ) -> dict:
     """Load MiniMax-H3 from its ComfyUI-style flat tree (or MiniMax's own dir).
 
@@ -3318,6 +3381,12 @@ def load_minimax_h3_from_path(
     component stays on the CPU; nothing is staged to GPU here (Phase 2 owns the
     strictly sequential text-encode -> denoise -> decode phases, because no two
     of these components fit in 48 GB together).
+
+    ``load_image_vae=False`` skips building the optional community T=1 image
+    VAE (~5.2 GB host RAM) even when the file is present -- for a caller that
+    never decodes a frame (training) or only needs DiT/VAE geometry (a probe).
+    ``components["image_vae"]`` is then always ``None``, exactly as it is for
+    an install that lacks the file.
 
     ``load_text_encoder=False`` skips the 48 GiB encoder -- for a caller that
     only needs the DiT/VAE geometry (a probe, a test). It is NOT a memory
@@ -3409,6 +3478,9 @@ def load_minimax_h3_from_path(
               f"(variant={hybrid.spec.overlay_variant}; the loaded model reports variant=hybrid)")
     print(f"[MiniMaxH3Loader] video VAE:    {layout['vae']}")
     print(f"[MiniMaxH3Loader] audio VAE:    {layout['audio_vae']}")
+    _image_vae_status = layout.get('image_vae') or (
+        "not found (optional; still-image requests fall back to the video VAE T=1 decode)")
+    print(f"[MiniMaxH3Loader] image VAE:    {_image_vae_status}")
     print(f"[MiniMaxH3Loader] text encoder: {layout['text_encoder']} "
           f"({layout.get('text_encoder_reason') or 'n/a'})")
     print(f"[MiniMaxH3Loader] configs:      {official}")
@@ -3444,6 +3516,22 @@ def load_minimax_h3_from_path(
     vae_dtype = video_vae_dtype or MINIMAX_H3_VIDEO_VAE_DTYPE
     vae, vae_config = _build_video_vae(layout["vae"], official, vae_dtype)
     audio_vae, audio_vae_config = _build_audio_vae(layout["audio_vae"], official, torch.float32)
+    # OPTIONAL community checkpoint (https://huggingface.co/Mamad8/MiniMax-H3-Image-VAE,
+    # license text unresolved beyond "applicable MiniMax H3 license and terms")
+    # fine-tuned for the T=1 decode: 14-18 dB PSNR above the video VAE's own
+    # T=1 branch, measured (see MODEL_FACTS.md). A present-but-broken file
+    # degrades to None (logged) rather than failing the whole model load --
+    # advisory, never required.
+    image_vae = image_vae_config = None
+    if load_image_vae and layout.get("image_vae"):
+        try:
+            image_vae, image_vae_config = _build_video_vae(
+                layout["image_vae"], official, vae_dtype, label="image VAE")
+            _check_image_vae_contract(layout["image_vae"], image_vae)
+        except Exception as exc:
+            print(f"[MiniMaxH3Loader] image VAE at {layout['image_vae']} failed to load ({exc}); "
+                  f"still-image requests will fall back to the video VAE's own T=1 decode.")
+            image_vae = image_vae_config = None
 
     tokenizer, processor = _load_tokenizer_and_processor(official)
     scheduler, audio_scheduler = _load_schedulers(official)
@@ -3463,6 +3551,10 @@ def load_minimax_h3_from_path(
         "vae_config": vae_config,
         "audio_vae": audio_vae,
         "audio_vae_config": audio_vae_config,
+        # OPTIONAL. None on every install that lacks the community checkpoint;
+        # the still-image decode path falls back to "vae" when this is None.
+        "image_vae": image_vae,
+        "image_vae_config": image_vae_config,
         "text_encoder": text_encoder,
         "text_encoder_config": text_encoder_config,
         "tokenizer": tokenizer,
@@ -3492,6 +3584,8 @@ def load_minimax_h3_from_path(
         "vae_path": layout["vae"],
         "dit_path": layout["dit"],
         "audio_vae_path": layout["audio_vae"],
+        "image_vae_source": os.path.basename(layout["image_vae"]) if layout.get("image_vae") else None,
+        "image_vae_path": layout.get("image_vae"),
         "text_encoder_path": layout["text_encoder"],
         "text_encoder_origin": "selected_external" if te_override is not None else "architecture_default",
         # A converted small encoder: no vision tower (P3 refuses ref2va/fl2va on

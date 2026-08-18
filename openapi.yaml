@@ -639,10 +639,17 @@ paths:
           from the client.
         - `num_frames=1` is a SPECIAL CASE (see `allows_single_frame` in
           `GET /schema/arch-capabilities`): a still-image request, exempt from
-          the `17 * n + 5` / 124-minimum rule above entirely, decoded through
-          the SAME video VAE this endpoint always uses (no separate image
-          VAE). A `warnings[]` entry states this is below the trained range.
-          The response is still a video-shaped gallery row (a 1-frame mp4,
+          the `17 * n + 5` / 124-minimum rule above entirely. Decode PREFERS a
+          separate, optional community VAE checkpoint fine-tuned specifically
+          for a single latent frame, when the loaded install has one; when it
+          does not, decode falls back to the same video VAE this endpoint
+          otherwise uses for its own T=1 branch, and a `warnings[]` entry
+          (`minimax_h3_still_image_default_vae_fallback`) states that this
+          checkpoint is not installed and that internal testing measured the
+          fallback path 14-18 dB lower PSNR. A `warnings[]` entry also
+          states this length is below the trained range, independent of which
+          VAE decoded it. The response is still a video-shaped gallery row (a
+          1-frame mp4,
           `duration = 1/frame_rate`), with the frame also written losslessly
           as the row's poster PNG. `audio_enable` is forced to `false`
           server-side for this request regardless of what was sent — a joint
@@ -10644,8 +10651,14 @@ components:
             only; see GET /schema/arch-capabilities) treat num_frames=1 as a
             still-image special case -- exempt from the floor/grid rule above
             entirely (no snap), with a warnings[] entry stating it is below
-            the trained range, decoded through the same video VAE as every
-            other request, and audio_enable forced to false server-side.
+            the trained range, and audio_enable forced to false server-side.
+            Decode prefers an optional, separately installed image VAE
+            checkpoint over the video VAE's own T=1 branch when the loaded
+            install has one; when it does not, decode falls back to the video
+            VAE and a warnings[] entry
+            (minimax_h3_still_image_default_vae_fallback) states that the
+            checkpoint is not installed and that internal testing measured
+            the fallback path 14-18 dB lower PSNR.
           example: 121
         frame_rate:
           type: number

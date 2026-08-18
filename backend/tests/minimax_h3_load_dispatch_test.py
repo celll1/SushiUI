@@ -96,3 +96,65 @@ def test_removing_the_safetensors_dispatch_branch_reproduces_the_defect(tmp_path
                          staticmethod(lambda path: False if path == dit else real_looks_like(path)))
 
     assert ModelLoader.detect_model_type(dit) != "minimax_h3"
+
+
+def _touch(path: str) -> None:
+    """A zero-byte stand-in file. Layout resolution only checks existence."""
+    with open(path, "wb"):
+        pass
+
+
+def test_image_vae_detected_when_present(tmp_path):
+    """The optional still-image VAE resolves into its own layout slot."""
+    root = str(tmp_path / "minimax_h3")
+    _build_h3_tree(root)
+    vae_dir = os.path.join(root, "vae")
+    _touch(os.path.join(vae_dir, "minimax_h3_video_vae_fp16.safetensors"))
+    _touch(os.path.join(vae_dir, "minimax_h3_audio_vae_fp32.safetensors"))
+    image_vae_path = os.path.join(vae_dir, "minimax_h3_t1_image_vae_step1597.safetensors")
+    _touch(image_vae_path)
+
+    layout = detect_minimax_h3_layout(root)
+    assert layout is not None
+    assert layout["image_vae"] == image_vae_path
+    assert layout["vae"] == os.path.join(vae_dir, "minimax_h3_video_vae_fp16.safetensors")
+    assert layout["audio_vae"] == os.path.join(vae_dir, "minimax_h3_audio_vae_fp32.safetensors")
+
+
+def test_image_vae_none_when_absent(tmp_path):
+    """Every install without the community checkpoint keeps resolving as before."""
+    root = str(tmp_path / "minimax_h3")
+    _build_h3_tree(root)
+    vae_dir = os.path.join(root, "vae")
+    _touch(os.path.join(vae_dir, "minimax_h3_video_vae_fp16.safetensors"))
+    _touch(os.path.join(vae_dir, "minimax_h3_audio_vae_fp32.safetensors"))
+
+    layout = detect_minimax_h3_layout(root)
+    assert layout is not None
+    assert layout["image_vae"] is None
+
+
+def test_image_vae_three_way_collision_guard(tmp_path):
+    """A lone file that satisfies the image VAE's own accept predicate must not
+    ALSO be silently treated as the video (or audio) VAE, or vice versa.
+
+    Set up so it is: with neither a literal ``minimax_h3_video_vae_*`` nor
+    ``minimax_h3_audio_vae_*`` file on disk, ``_find_first``'s generic glob
+    fallback (no ``accept`` predicate for those two slots) hands the video and
+    audio VAE slots this SAME lone file, because it is the only
+    ``*minimax_h3*.safetensors`` file present. The guard must then null the
+    ``image_vae`` slot rather than let it double as the video/audio VAE.
+    """
+    root = str(tmp_path / "minimax_h3")
+    _build_h3_tree(root)
+    vae_dir = os.path.join(root, "vae")
+    image_vae_path = os.path.join(vae_dir, "minimax_h3_t1_image_vae_step1597.safetensors")
+    _touch(image_vae_path)
+
+    layout = detect_minimax_h3_layout(root)
+    assert layout is not None
+    # The generic fallback (no accept predicate) resolved "vae" to this same
+    # file -- a pre-existing property of `_find_first`, exercised here on
+    # purpose to prove the guard actually fires.
+    assert layout["vae"] == image_vae_path
+    assert layout["image_vae"] is None

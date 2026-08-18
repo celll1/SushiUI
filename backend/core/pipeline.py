@@ -1046,7 +1046,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                 # module (even "to cpu", even more so with a dtype) detaches them
                 # from that mapping — MEASURED at 73.08 GB peak RSS against
                 # 49.82 GB for the mapping-preserving path.
-                for comp_name in ("transformer", "vae", "audio_vae"):
+                for comp_name in ("transformer", "vae", "audio_vae", "image_vae"):
                     comp = self.minimax_h3_components.get(comp_name)
                     if comp is not None and hasattr(comp, "to"):
                         try:

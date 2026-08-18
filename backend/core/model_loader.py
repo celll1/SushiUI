@@ -3093,6 +3093,7 @@ class ModelLoader:
         text_encoder_file: Optional[str] = None,
         clip_projection_file: Optional[str] = None,
         hybrid: Optional[Any] = None,
+        load_image_vae: bool = True,
     ) -> dict:
         """Load MiniMax-H3 from its flat ComfyUI-style model tree
         (diffusion_models/ + vae/ + text_encoders/ + MiniMax's config-only
@@ -3114,6 +3115,10 @@ class ModelLoader:
         ``hybrid`` is the validated base+overlay preflight from
         ``preflight_minimax_h3_hybrid``; ``None`` is the ordinary single-file
         load.
+
+        ``load_image_vae=False`` skips the optional ~5.2 GB community T=1
+        image VAE even when installed -- for a caller (training) that never
+        decodes a still-image frame.
         """
         from core.models.minimax_h3.loader import load_minimax_h3_from_path as _load_h3
 
@@ -3121,6 +3126,7 @@ class ModelLoader:
         return _load_h3(model_path=path, torch_dtype=torch_dtype,
                         te_override=text_encoder_file,
                         te_projection_override=clip_projection_file,
+                        load_image_vae=load_image_vae,
                         **({} if hybrid is None else {"hybrid": hybrid}))
 
     @staticmethod

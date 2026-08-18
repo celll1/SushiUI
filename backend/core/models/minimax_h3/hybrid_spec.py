@@ -496,8 +496,8 @@ def preflight_minimax_h3_hybrid(
         raise _refuse(
             "different_tree",
             f"base and overlay resolve to different shared components ({', '.join(differing)}). "
-            "A hybrid shares one official/, one video VAE, one audio VAE and one text encoder; "
-            "combining DiTs across trees is out of scope.")
+            "A hybrid shares one official/, one video VAE, one optional image VAE, one audio VAE "
+            "and one text encoder; combining DiTs across trees is out of scope.")
 
     # --- 2. direction: base fl2va, overlay ref2va -------------------------
     base_variant = base_layout.get("variant")

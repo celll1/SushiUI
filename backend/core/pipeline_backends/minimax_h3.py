@@ -85,6 +85,25 @@ def _is_lora_target(module) -> bool:
     return is_lora_wrappable_linear(module)
 
 
+def select_minimax_h3_decode_vae(
+    components: Dict[str, Any], latent_frames: int,
+) -> Tuple[Any, str, bool]:
+    """The VAE to decode ``latent_frames`` with: ``(module, component_name, used_fallback)``.
+
+    At ``latent_frames == 1`` (the still-image case), prefers the optional
+    community ``image_vae`` (measured 14-18 dB PSNR above the base video
+    VAE's own T=1 decode) and falls back to the video VAE's T=1 branch when
+    it is absent. Any other ``latent_frames`` always decodes through the
+    video VAE with ``used_fallback=False``.
+    """
+    if latent_frames == 1:
+        image_vae = components.get("image_vae")
+        if image_vae is not None:
+            return image_vae, "image_vae", False
+        return components["vae"], "vae", True
+    return components["vae"], "vae", False
+
+
 def build_outpaint_references(
     head: np.ndarray, generated_frames: int, frame_rate: float, reference_images: Sequence[Image.Image],
 ) -> Tuple[Any, ...]:
@@ -2874,7 +2893,7 @@ class MiniMaxH3Mixin:
         del audio_condition_rows, condition_noises
 
         # ---- Phase 2: denoise (DiT resident) ----
-        self._minimax_h3_assert_components_off_cuda("text_encoder", "vae", "audio_vae")
+        self._minimax_h3_assert_components_off_cuda("text_encoder", "vae", "audio_vae", "image_vae")
         prepare_allocated, prepare_reserved, prepare_peak = self._minimax_h3_vram_stats()
         phase_peaks["prepare"] = prepare_peak
         print(f"[MiniMax-H3] packed preparation VRAM: allocated {prepare_allocated:.2f} GB, "
@@ -2979,13 +2998,26 @@ class MiniMaxH3Mixin:
         del clip_rows
         del video_rows
 
+        decode_vae, decode_vae_name, decode_vae_is_fallback = select_minimax_h3_decode_vae(
+            components, latent_frames)
+        if decode_vae_is_fallback:
+            from api.generation_status import add_warning
+
+            add_warning(
+                "This still-image request decoded through the video VAE's T=1 branch because "
+                "the optional MiniMax-H3 image VAE checkpoint is not installed. Internal "
+                "testing measured this decode path 14-18 dB lower PSNR than the image VAE "
+                "checkpoint.",
+                code="minimax_h3_still_image_default_vae_fallback",
+            )
+
         decode_start = time.perf_counter()
         self._minimax_h3_reset_peak_vram()
-        self._minimax_h3_move("vae", torch_device)
+        self._minimax_h3_move(decode_vae_name, torch_device)
         try:
             with generation_timer.phase("vae_decode"):
                 frames = ops.decode_video(
-                    components["vae"], latents,
+                    decode_vae, latents,
                     latents_mean=components["latents_mean"],
                     latents_std=components["latents_std"],
                     pixel_mean=components["pixel_mean"],
@@ -2993,7 +3025,7 @@ class MiniMaxH3Mixin:
                     device=device,
                 )
         finally:
-            self._minimax_h3_move("vae", "cpu")
+            self._minimax_h3_move(decode_vae_name, "cpu")
             del latents
             self._minimax_h3_empty_cache()
         video_decode_allocated, video_decode_reserved, video_decode_peak = self._minimax_h3_vram_stats()

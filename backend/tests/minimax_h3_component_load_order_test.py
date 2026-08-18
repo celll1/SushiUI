@@ -22,29 +22,44 @@ def test_text_encoder_is_mapped_before_transformer_and_vaes(tmp_path, monkeypatc
         "dit": str(tmp_path / "dit.safetensors"),
         "vae": str(tmp_path / "video_vae.safetensors"),
         "audio_vae": str(tmp_path / "audio_vae.safetensors"),
+        "image_vae": str(tmp_path / "image_vae.safetensors"),
         "text_encoder": str(tmp_path / "text_encoder.safetensors"),
         "official": str(official),
         "variant": "ref2va",
     }
     calls = []
+    video_vae_build_args = []
 
     monkeypatch.setattr(loader, "detect_minimax_h3_layout", lambda _path: layout)
     monkeypatch.setattr(loader, "_build_text_encoder",
                         lambda *_args: (calls.append("text_encoder") or object(), object()))
     monkeypatch.setattr(loader, "_build_transformer",
                         lambda *_args: (calls.append("transformer") or object(), object()))
-    monkeypatch.setattr(loader, "_build_video_vae",
-                        lambda *_args: (calls.append("video_vae") or object(), {}))
+
+    def _fake_build_video_vae(vae_path, *_rest, label="video VAE", **_kwargs):
+        calls.append("image_vae" if label == "image VAE" else "video_vae")
+        video_vae_build_args.append((vae_path, label))
+        return object(), {}
+
+    monkeypatch.setattr(loader, "_build_video_vae", _fake_build_video_vae)
     monkeypatch.setattr(loader, "_build_audio_vae",
                         lambda *_args: (calls.append("audio_vae") or object(), {}))
+    monkeypatch.setattr(loader, "_check_image_vae_contract", lambda *_args: None)
     monkeypatch.setattr(loader, "_load_tokenizer_and_processor", lambda *_args: (None, None))
     monkeypatch.setattr(loader, "_load_schedulers", lambda *_args: (object(), object()))
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
 
     result = loader.load_minimax_h3_from_path(layout["dit"])
 
-    assert calls == ["text_encoder", "transformer", "video_vae", "audio_vae"]
+    assert calls == ["text_encoder", "transformer", "video_vae", "audio_vae", "image_vae"]
     assert result["text_encoder"] is not None
+    # The exact bug this pins: the image VAE build must receive its OWN path,
+    # not a copy-paste of layout["vae"]'s.
+    assert video_vae_build_args == [
+        (layout["vae"], "video VAE"),
+        (layout["image_vae"], "image VAE"),
+    ]
+    assert result["image_vae"] is not None
 
 
 def test_geometry_only_load_still_skips_text_encoder(tmp_path, monkeypatch):

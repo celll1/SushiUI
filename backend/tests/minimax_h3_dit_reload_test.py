@@ -69,6 +69,27 @@ def test_same_tree_reload_replaces_only_the_transformer(monkeypatch, tmp_path):
         assert replacement[name] is current[name]
 
 
+def test_image_vae_presence_disagreement_falls_back_without_building(monkeypatch, tmp_path):
+    """Same tree in every other respect, but one side has picked up the
+    optional community image VAE and the other has not (e.g. installed
+    between the two loads) -- the fast path must not silently keep serving
+    whichever image VAE (or lack of one) the CURRENT components hold."""
+    root = str(tmp_path / "h3")
+    old_source = os.path.join(root, "diffusion_models", "ref_fp8.safetensors")
+    new_source = os.path.join(root, "diffusion_models", "ref_w4a8.safetensors")
+    old_layout = _layout(root, old_source, "ref2va")
+    new_layout = dict(_layout(root, new_source, "ref2va"),
+                       image_vae=os.path.join(root, "vae", "image.safetensors"))
+    layouts = {old_source: old_layout, new_source: new_layout}
+    monkeypatch.setattr(h3_reload, "detect_minimax_h3_layout", layouts.get)
+    monkeypatch.setattr(
+        h3_reload, "_build_transformer",
+        lambda *args: pytest.fail("an image-VAE disagreement must use the full loader"))
+
+    assert h3_reload.build_dit_only_reload(
+        _components(), old_source, new_source) is None
+
+
 def test_different_tree_falls_back_without_building(monkeypatch, tmp_path):
     old_root = str(tmp_path / "old")
     new_root = str(tmp_path / "new")

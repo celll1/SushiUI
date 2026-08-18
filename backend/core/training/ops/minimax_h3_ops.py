@@ -164,7 +164,11 @@ def load_components(trainer) -> None:
     normalize_dtypes(trainer)
 
     from core.model_loader import ModelLoader
-    components = ModelLoader.load_minimax_h3_from_path(trainer.model_path, trainer.weight_dtype)
+    # load_image_vae=False: training never decodes a still-image frame, so the
+    # optional ~5.2 GB community T=1 image VAE (see pipeline_backends/minimax_h3.py)
+    # would only add host RAM here for no benefit.
+    components = ModelLoader.load_minimax_h3_from_path(
+        trainer.model_path, trainer.weight_dtype, load_image_vae=False)
 
     trainer.minimax_h3_components = components
     trainer.transformer = components["transformer"]

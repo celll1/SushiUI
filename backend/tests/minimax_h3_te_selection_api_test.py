@@ -235,7 +235,8 @@ def test_both_fields_reach_the_h3_loader_from_a_diffusers_tree(tmp_path, monkeyp
     root = _tree(tmp_path)
     seen = {}
 
-    def stub(model_path, torch_dtype=None, *, te_override=None, te_projection_override=None):
+    def stub(model_path, torch_dtype=None, *, te_override=None, te_projection_override=None,
+             load_image_vae=True):
         seen.update(model_path=model_path, te_override=te_override,
                     te_projection_override=te_projection_override)
         return {"type": "minimax_h3"}
@@ -255,7 +256,8 @@ def test_both_fields_reach_the_h3_loader_from_a_dit_file(tmp_path, monkeypatch):
     seen = {}
     monkeypatch.setattr(
         h3_loader, "load_minimax_h3_from_path",
-        lambda model_path, torch_dtype=None, *, te_override=None, te_projection_override=None:
+        lambda model_path, torch_dtype=None, *, te_override=None, te_projection_override=None,
+               load_image_vae=True:
             seen.update(te_override=te_override, te_projection_override=te_projection_override))
 
     ModelLoader.load_from_safetensors(_dit(root), text_encoder_file=_te(root, CONVERTED_NAME))

@@ -10,7 +10,7 @@ import torch
 from .loader import _build_transformer, detect_minimax_h3_layout
 
 
-_SHARED_LAYOUT_KEYS = ("root", "official", "vae", "audio_vae", "text_encoder")
+_SHARED_LAYOUT_KEYS = ("root", "official", "vae", "audio_vae", "image_vae", "text_encoder")
 
 
 def canonical_path(path: str) -> str:

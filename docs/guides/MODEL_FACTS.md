@@ -936,14 +936,44 @@ a generation without style transfer.
     (`TemporalSpec.allows_single_frame = True`), which is left exactly as sent:
     a still-image request, exempt from the 124 floor entirely (still gets an
     unconditional `warnings[]` entry stating it is below the trained range),
-    decoded through the same video VAE, with `audio_enable` forced to `false`
-    server-side. `POST /generate/txt2vid` is currently the only route this
-    reaches (`is_still_image_video_request`, `api/generation_utils.py`).
+    with `audio_enable` forced to `false` server-side. `POST /generate/txt2vid`
+    is currently the only route this reaches (`is_still_image_video_request`,
+    `api/generation_utils.py`).
     **fps is fixed at 24** and a different `frame_rate` is forced back with a
     warning. All of this is declarative in `MINIMAX_H3_TEMPORAL`
     (`core/models/components/wiring.py`), read by route validation, bucketing,
     the video loader, the clip-cache key and the `video_constraints` block of
     `GET /schema/arch-capabilities` — there is no `if arch ==` in shared code.
+  - **The T=1 decode has an optional, higher-fidelity VAE.** The base video
+    VAE's own T=1 branch (`AutoencoderKLMiniMaxH3._decode`) is measured 14-18
+    dB PSNR below a second, independently fine-tuned checkpoint trained
+    specifically for T=1 reconstruction
+    (`minimax_h3_t1_image_vae_step1597.safetensors`, from
+    `https://huggingface.co/Mamad8/MiniMax-H3-Image-VAE`; measured at 512x512
+    fp16, production normalization, encode/decode through the real production
+    pipeline (`h3_pipeline_ops.encode_visual_condition`/`decode_video`), 9
+    test images — 5 synthetic patterns plus 4 real generated PNGs from
+    `outputs/`). Both load through the
+    same `AutoencoderKLMiniMaxH3` class. This checkpoint is OPTIONAL and not
+    part of the official release: `detect_minimax_h3_layout`/`_layout_from_root`
+    resolve it into an `image_vae` layout/component slot
+    (`MINIMAX_H3_IMAGE_VAE_PATTERNS`, `backend/core/models/minimax_h3/loader.py`)
+    that is never in the required-component check, so every install without
+    it keeps loading exactly as before; a PRESENT but malformed file degrades
+    to `image_vae = None` (logged) rather than failing the whole model load.
+    Adds ~5.2 GB host RAM to every H3 load when the file is present, including
+    training and geometry-probe loads that never decode a frame — there is no
+    lazy-load, so a host RAM budget that assumes the pre-image-VAE footprint
+    needs revisiting once this file is installed. `select_minimax_h3_decode_vae`
+    (`backend/core/pipeline_backends/minimax_h3.py`) prefers `image_vae` for a
+    `latent_frames == 1` decode when the install has it and its embedded
+    contract metadata (`h3_t1_format`, `h3_t1_output_slice`) matches this
+    build's `frame_pre_padding`; otherwise it falls back to the video VAE and
+    emits ONE `warnings[]` entry (`minimax_h3_still_image_default_vae_fallback`)
+    stating the measured gap. Any `latent_frames != 1` (ordinary video) request
+    always decodes through the video VAE and never triggers this warning. The
+    Mamad8 model card states only "the applicable MiniMax H3 license and
+    terms," with no further concrete license text.
   - **`num_inference_steps` counts sigma GRID POINTS, so N steps = N−1 model
     evaluations**, and the vendored scheduler refuses `N = 1`. The minimum is
     validated at the route next to the geometry check, because leaving it to the

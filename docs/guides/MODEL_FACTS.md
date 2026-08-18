@@ -909,8 +909,12 @@ a generation without style transfer.
   - **Frame geometry is a hard grid, and there are two different floors.** Valid
     lengths are `17n + 5`; `latent_frames(T) = ceil(T/17)*5 − 3` for `T ≥ 2`
     (`1` at `T = 1`, the spatial-only image-conditioning path). `T = 5` is on the
-    grid but **cannot be decoded** — the VAE floor is **22 frames / 0.917 s** and
-    nothing overrides it. The production floor is **124**; there is **no enforced
+    grid but **cannot be decoded** through the multi-chunk path — that floor is
+    **22 frames / 0.917 s**. `T = 1` is the one exception: `_decode` special-cases
+    a lone latent frame (mirroring `_encode`'s own `T = 1` branch) and decodes it
+    directly, bypassing the chunk-walk — this is the still-image request
+    (`TemporalSpec.allows_single_frame`, see below), not a smaller version of an
+    ordinary clip. The production floor is **124**; there is **no enforced
     maximum** — `max_frames` is `None`. **362 is `trained_max_frames`, an
     ADVISORY (not enforced) top**: ComfyUI's node states the trained range as
     "~124–362, longer is untested"; 362 = 17·21+5 = 15.083 s is the grid point
@@ -928,7 +932,13 @@ a generation without style transfer.
     invalid `num_frames` (off-grid, or below the 124 floor) is snapped UP to
     the next valid length with a `warnings[]` entry naming the rule — which is
     what the model's own `align_num_frames` does, so a snap never drops
-    requested content.
+    requested content — **except `num_frames = 1`**
+    (`TemporalSpec.allows_single_frame = True`), which is left exactly as sent:
+    a still-image request, exempt from the 124 floor entirely (still gets an
+    unconditional `warnings[]` entry stating it is below the trained range),
+    decoded through the same video VAE, with `audio_enable` forced to `false`
+    server-side. `POST /generate/txt2vid` is currently the only route this
+    reaches (`is_still_image_video_request`, `api/generation_utils.py`).
     **fps is fixed at 24** and a different `frame_rate` is forced back with a
     warning. All of this is declarative in `MINIMAX_H3_TEMPORAL`
     (`core/models/components/wiring.py`), read by route validation, bucketing,

@@ -637,6 +637,19 @@ paths:
           as MiniMax-H3's own reference implementation does — and a
           `warnings[]` entry states the rule, including when the value came
           from the client.
+        - `num_frames=1` is a SPECIAL CASE (see `allows_single_frame` in
+          `GET /schema/arch-capabilities`): a still-image request, exempt from
+          the `17 * n + 5` / 124-minimum rule above entirely, decoded through
+          the SAME video VAE this endpoint always uses (no separate image
+          VAE). A `warnings[]` entry states this is below the trained range.
+          The response is still a video-shaped gallery row (a 1-frame mp4,
+          `duration = 1/frame_rate`), with the frame also written losslessly
+          as the row's poster PNG. `audio_enable` is forced to `false`
+          server-side for this request regardless of what was sent — a joint
+          1-frame audio clip is not a generated shape. Every other MiniMax-H3
+          request shape (keyframes, references, chained continuation) is
+          unaffected; this exemption applies to `num_frames` alone, on this
+          endpoint only.
         - `frame_rate` is fixed at 24.0; any other value is forced to 24.0 with
           a warning.
         - `guidance_scale` and `negative_prompt` are ignored: guidance is
@@ -9285,6 +9298,15 @@ components:
               a `warnings[]` entry states the rule (MiniMax-H3). The two video
               architectures differ here, and the behaviour cannot be derived
               from the fields above.
+            * `allows_single_frame` — whether `num_frames=1` is a still-image
+              special case, exempt from `min_frames` entirely rather than
+              snapped or refused like any other invalid length. `true` on
+              MiniMax-H3 (its VAE decodes a lone latent frame directly); the
+              response is a single frame with no audio track, and
+              `audio_enable` is forced to false server-side regardless of
+              what was sent. `false` on LTX-2.3, but only because `1` is
+              already a normal, valid, on-grid length there
+              (`frame_offset=1`) and needs no exemption.
             * `suggested_frames` — valid in-range lengths a client can offer in
               a clip-length list. This is a subset of what validation accepts,
               in two ways: LTX-2.3 accepts a 1-frame clip but does not suggest
@@ -9341,6 +9363,7 @@ components:
               max_pixel_hw: [768, 1344]
               pixel_align: 32
               snap_invalid_length: true
+              allows_single_frame: true
               suggested_frames: [124, 141, 158, 175, 192, 209, 226, 243, 260, 277, 294, 311, 328, 345, 362]
               min_inference_steps: 2
               steps_are_sigma_grid_points: true
@@ -10617,6 +10640,12 @@ components:
             top, not a decoder limit -- a longer on-grid value is accepted
             with an untested-range warning); an off-grid or too-short value is
             snapped to the nearest valid length and reported in warnings[].
+            Architectures with allows_single_frame=true (currently MiniMax-H3
+            only; see GET /schema/arch-capabilities) treat num_frames=1 as a
+            still-image special case -- exempt from the floor/grid rule above
+            entirely (no snap), with a warnings[] entry stating it is below
+            the trained range, decoded through the same video VAE as every
+            other request, and audio_enable forced to false server-side.
           example: 121
         frame_rate:
           type: number

@@ -238,6 +238,14 @@ class TemporalSpec:
     # implementation rounds up to the next encodable length with a warning.
     # `snap_length` rounds UP for the same reason.
     snap_invalid_length: bool = False
+    # Whether `num_frames=1` is a still-image special case for this arch:
+    # exempt from `min_frames`/the grid entirely (validated separately, see
+    # `generation_utils.validate_video_geometry`), rather than snapped or
+    # refused like any other invalid length. False for every arch that has
+    # not measured and shipped decode support for a lone latent frame --
+    # including LTX-2.3, where `num_frames=1` is already a normal, valid,
+    # on-grid length (`frame_offset=1`) and needs no exemption at all.
+    allows_single_frame: bool = False
     # Step-count contract of the arch's SCHEDULER. Two different facts:
     #
     # * `min_inference_steps` is the smallest `num_inference_steps` the
@@ -448,6 +456,11 @@ MINIMAX_H3_TEMPORAL = TemporalSpec(
     # unaffected by this correction.
     trained_max_frames=362,
     pixel_align=32, max_pixel_hw=(768, 1344), snap_invalid_length=True,
+    # `_decode` special-cases a lone latent frame (mirrors `_encode`'s own
+    # `num_frames == 1` branch) and decodes it directly, bypassing the
+    # multi-chunk path's 22-frame floor entirely. See
+    # `vendor/autoencoder_kl_minimax_h3.py`'s `_decode`.
+    allows_single_frame=True,
     # `num_inference_steps` counts sigma grid points (terminal 0 included), so
     # it drives N-1 model evaluations; N=1 gives zero and the vendored
     # scheduler's `set_timesteps` refuses it.

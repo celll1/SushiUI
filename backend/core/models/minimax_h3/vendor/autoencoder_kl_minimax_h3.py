@@ -816,6 +816,15 @@ class AutoencoderKLMiniMaxH3(ModelMixin, ConfigMixin, AttentionMixin, Autoencode
         pixel frames and are linearly cross-faded. Latent frames are repeated at the end when the length is not a whole
         number of chunks; the extra pixel frames are cut off again at the end.
         """
+        # A single latent frame is structurally identical to token 0 of any chunk: both carry `frame_pre_padding`
+        # frames of causal zero-pad ahead of the true frame (see `_encode`'s own `num_frames == 1` special case).
+        # The chunk-walk below computes `num_chunks == 0` for a lone token (its one `tokens_chunk_size` group never
+        # fills), leaving `decoded_chunks` empty and crashing `torch.cat([])` -- decode it directly instead, and
+        # crop the same leading pad every chunk already crops at `j == 0`.
+        if z.shape[2] == 1:
+            dec = self._decode_clip(z)
+            return dec[:, :, self.frame_pre_padding :]
+
         tokens_chunk_size = self.tokens_chunk_size
         token_drop = self.config.token_drop
         temporal_ratio = self.temporal_compression_ratio

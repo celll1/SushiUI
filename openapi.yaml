@@ -14169,12 +14169,23 @@ components:
             `GeneratedImageSummary`.
 
             It also carries what the generation COST, measured around this
-            request: `generation_time` (total wall seconds) plus the
-            `time_text_encode` / `time_denoise` / `time_vae_decode` breakdown on
-            instrumented architectures, and `peak_vram_gb` (peak CUDA
-            allocation, GiB) on the endpoints that arm the measurement. Both are
-            informational — they do not affect reproducibility — and
-            `peak_vram_gb` is absent rather than stale when it was not measured.
+            request: `generation_time` (total wall seconds) plus a
+            `time_<phase>` breakdown on instrumented architectures --
+            `time_text_encode` / `time_denoise` / `time_vae_decode` on every
+            instrumented arch (on MiniMax-H3, `time_vae_decode` also covers
+            staging the decode VAE onto and off the device, unlike other
+            architectures where it is the decode call alone), and MiniMax-H3
+            additionally reports `time_condition_encode` (VAE encode of
+            whatever conditions the request: the temporal-inpaint source
+            clip, keyframes, references, pinned audio -- absent when there is
+            none), `time_prepare` (packed-layout + noise draw),
+            `time_stage_transformer` / `time_unstage_transformer` (the DiT's
+            device move, staged strictly sequentially against the other
+            components -- see `pipeline_backends/minimax_h3.py`'s module
+            docstring) -- and `peak_vram_gb` (peak CUDA allocation, GiB) on the
+            endpoints that arm the measurement. Both are informational — they
+            do not affect reproducibility — and `peak_vram_gb` is absent
+            rather than stale when it was not measured.
         created_at:
           type: string
           format: date-time

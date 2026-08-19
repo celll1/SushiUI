@@ -686,6 +686,41 @@ class MiniMaxH3Mixin:
         print(f"[MiniMax-H3 LoRA] Unloaded {restored} LoRA wrapper(s)")
         return restored
 
+    def _minimax_h3_report_te_provenance(
+        self, components: Dict[str, Any], params: Dict[str, Any],
+    ) -> None:
+        """``params`` provenance + the TE-substitution warning, per GENERATION.
+
+        Split out of ``_minimax_h3_project_prompt_embeds`` so a
+        ``prompt_cache`` hit -- which skips that function's encode-dependent
+        projection math entirely -- can still call just this half. These
+        fields and the warning describe what model is generating THIS
+        request, not what work happened to produce the prompt embedding, so
+        they must fire on every generation, cached or not.
+
+        A released encoder carries no projection and this returns after
+        setting ``text_encoder_file`` alone -- that path emits no warning and
+        runs no extra arithmetic.
+        """
+        params["text_encoder_file"] = os.path.basename(
+            str(components.get("text_encoder_path") or ""))
+        projection = components.get("te_projection")
+        if not projection:
+            return
+
+        from core.models.minimax_h3.te_projection import (
+            TE_SUBSTITUTION_WARNING_CODE, describe_te_substitution,
+        )
+
+        te_path = str(components.get("text_encoder_path") or "")
+        projection_path = str(projection.get("path") or "")
+        params["clip_projection_file"] = os.path.basename(projection_path)
+
+        message = describe_te_substitution(te_path, projection_path)
+        print(f"[MiniMax-H3] {message}")
+        from api.generation_status import add_warning
+        add_warning(message, code=TE_SUBSTITUTION_WARNING_CODE)
+
     def _minimax_h3_project_prompt_embeds(
         self,
         prompt_embeds_cpu: torch.Tensor,
@@ -699,16 +734,12 @@ class MiniMaxH3Mixin:
         A released encoder carries no projection and this returns its argument
         untouched -- that path emits no warning and runs no extra arithmetic.
         """
-        params["text_encoder_file"] = os.path.basename(
-            str(components.get("text_encoder_path") or ""))
+        self._minimax_h3_report_te_provenance(components, params)
         projection = components.get("te_projection")
         if not projection:
             return prompt_embeds_cpu
 
         from core.models.minimax_h3 import h3_pipeline_ops as ops
-        from core.models.minimax_h3.te_projection import (
-            TE_SUBSTITUTION_WARNING_CODE, describe_te_substitution,
-        )
 
         te_path = str(components.get("text_encoder_path") or "")
         projection_path = str(projection.get("path") or "")
@@ -727,12 +758,6 @@ class MiniMaxH3Mixin:
             prompt_embeds_cpu, projection,
             text_dim=int(components["transformer_config"]["text_dim"]), device=device,
         )
-        params["clip_projection_file"] = os.path.basename(projection_path)
-
-        message = describe_te_substitution(te_path, projection_path)
-        print(f"[MiniMax-H3] {message}")
-        from api.generation_status import add_warning
-        add_warning(message, code=TE_SUBSTITUTION_WARNING_CODE)
         return projected
 
     # ------------------------------------------------------------------
@@ -2305,6 +2330,7 @@ class MiniMaxH3Mixin:
         """
         from core.models.minimax_h3 import h3_pipeline_ops as ops
         from core.models.minimax_h3 import h3_references as refs
+        from core.models.minimax_h3 import prompt_cache
         from core.models.minimax_h3.loader import minimax_h3_latent_frames
 
         components = getattr(self, "minimax_h3_components", None)
@@ -2497,13 +2523,16 @@ class MiniMaxH3Mixin:
                 "encoded. Load the model with its text_encoders/ and official/tokenizer/ trees.")
         encode_start = time.perf_counter()
         text_token_tags = None
+        prompt_cache_hit = False
         with generation_timer.phase("text_encode"):
             if normalized_references:
                 # The ref2va PRESENTATION: a label and a vision block per
                 # reference, then the prompt verbatim. The vision blocks' rows
                 # are tagged VIDEO, not text, which is what the transformer's
                 # AdaLN modulation keys off -- so the tags travel with the
-                # embeddings into the layout.
+                # embeddings into the layout. NOT prompt-cached: see
+                # `core.models.minimax_h3.prompt_cache`'s module docstring for
+                # why this branch is out of that cache's scope.
                 token_ids, text_token_tags, vision_inputs = refs.build_ref2va_presentation(
                     tokenizer, components.get("processor"), prompt, normalized_references,
                     fps=float(components.get("fps", 24.0)),
@@ -2514,23 +2543,50 @@ class MiniMaxH3Mixin:
                     dtype=torch.bfloat16, layer=ops.TEXT_ENCODER_LAYER,
                 )
                 num_text_tokens = len(token_ids)
+                # A substituted encoder's hidden state is not conditioning until it
+                # is projected: this is the one seam where that is true, and the
+                # projection is a per-token map, so `num_text_tokens` is unchanged.
+                prompt_embeds_cpu = self._minimax_h3_project_prompt_embeds(
+                    prompt_embeds_cpu, components, params, device=device)
             else:
-                prompt_embeds_cpu, num_text_tokens = ops.encode_prompt(
-                    text_encoder, tokenizer, prompt, device=device,
-                    dtype=torch.bfloat16, layer=ops.TEXT_ENCODER_LAYER,
-                )
-            # A substituted encoder's hidden state is not conditioning until it
-            # is projected: this is the one seam where that is true, and the
-            # projection is a per-token map, so `num_text_tokens` is unchanged.
-            prompt_embeds_cpu = self._minimax_h3_project_prompt_embeds(
-                prompt_embeds_cpu, components, params, device=device)
+                te_path = str(components.get("text_encoder_path") or "")
+                te_projection_path = (
+                    str((components.get("te_projection") or {}).get("path") or "") or None)
+
+                def _encode_and_project_prompt():
+                    embeds, tokens = ops.encode_prompt(
+                        text_encoder, tokenizer, prompt, device=device,
+                        dtype=torch.bfloat16, layer=ops.TEXT_ENCODER_LAYER,
+                    )
+                    # Same projection seam as the ref2va branch above, applied
+                    # BEFORE the pair reaches the cache: the cache key is
+                    # (encoder, projection, prompt), so what it stores must
+                    # already be that key's final, projection-dependent
+                    # conditioning.
+                    embeds = self._minimax_h3_project_prompt_embeds(
+                        embeds, components, params, device=device)
+                    return embeds, tokens
+
+                ((prompt_embeds_cpu, num_text_tokens), prompt_cache_hit) = (
+                    prompt_cache.get_or_encode_prompt(
+                        te_path, te_projection_path, prompt,
+                        int(components["transformer_config"]["text_dim"]),
+                        _encode_and_project_prompt))
+                if prompt_cache_hit:
+                    # A hit skips `_encode_and_project_prompt` (and therefore
+                    # `_minimax_h3_project_prompt_embeds`) entirely, but that
+                    # function's params provenance and substitution warning are
+                    # per-GENERATION, not per-prompt -- report them here so a
+                    # cache hit still surfaces them.
+                    self._minimax_h3_report_te_provenance(components, params)
         self._minimax_h3_empty_cache()
         text_allocated, text_reserved, text_peak = self._minimax_h3_vram_stats()
         phase_peaks["text_encode"] = text_peak
         print(f"[MiniMax-H3] prompt encoded: {num_text_tokens} token(s) in "
               f"{time.perf_counter() - encode_start:.1f}s "
               f"(VRAM allocated {text_allocated:.2f} GB, reserved {text_reserved:.2f} GB, "
-              f"phase peak {text_peak:.2f} GB)")
+              f"phase peak {text_peak:.2f} GB)"
+              + (" (cache hit)" if prompt_cache_hit else ""))
         self._minimax_h3_reset_peak_vram()
 
         # ---- Visual (and, for ref2va, audio) conditioning: VAE-encode it ----
@@ -2558,22 +2614,23 @@ class MiniMaxH3Mixin:
         pinned_video_rows = None
         if pinned_video_source is not None:
             clip_start = time.perf_counter()
-            self._minimax_h3_move("vae", torch_device)
-            try:
-                # ONE encode of the whole clip, through the same recipe a ref2va
-                # video reference takes -- the T > 1 branch, so the temporally
-                # chunked latents line up frame for frame with the target grid.
-                clip_latents = ops.encode_visual_condition(
-                    components["vae"], np.asarray(pinned_video_source, dtype=np.uint8),
-                    latents_mean=components["latents_mean"],
-                    latents_std=components["latents_std"],
-                    pixel_mean=components["pixel_mean"],
-                    pixel_std=components["pixel_std"],
-                    device=device,
-                )
-            finally:
-                self._minimax_h3_move("vae", "cpu")
-                self._minimax_h3_empty_cache()
+            with generation_timer.phase("condition_encode"):
+                self._minimax_h3_move("vae", torch_device)
+                try:
+                    # ONE encode of the whole clip, through the same recipe a ref2va
+                    # video reference takes -- the T > 1 branch, so the temporally
+                    # chunked latents line up frame for frame with the target grid.
+                    clip_latents = ops.encode_visual_condition(
+                        components["vae"], np.asarray(pinned_video_source, dtype=np.uint8),
+                        latents_mean=components["latents_mean"],
+                        latents_std=components["latents_std"],
+                        pixel_mean=components["pixel_mean"],
+                        pixel_std=components["pixel_std"],
+                        device=device,
+                    )
+                finally:
+                    self._minimax_h3_move("vae", "cpu")
+                    self._minimax_h3_empty_cache()
             if tuple(clip_latents.shape[2:5]) != (latent_frames, latent_height, latent_width):
                 raise RuntimeError(
                     f"MiniMax-H3 temporal inpaint encoded its source clip to "
@@ -2587,45 +2644,46 @@ class MiniMaxH3Mixin:
                   f"(peak VRAM {self._minimax_h3_peak_vram():.2f} GB)")
         if keyframe_pixels or normalized_references:
             cond_start = time.perf_counter()
-            self._minimax_h3_move("vae", torch_device)
-            try:
-                if normalized_references:
-                    reference_condition_latents = refs.encode_reference_visuals(
-                        components["vae"], normalized_references,
-                        latents_mean=components["latents_mean"],
-                        latents_std=components["latents_std"],
-                        pixel_mean=components["pixel_mean"],
-                        pixel_std=components["pixel_std"],
-                        device=device,
-                    )
-                if keyframe_pixels:
-                    anchor_condition_latents = ops.encode_condition_images(
-                        components["vae"], keyframe_pixels,
-                        latents_mean=components["latents_mean"],
-                        latents_std=components["latents_std"],
-                        pixel_mean=components["pixel_mean"],
-                        pixel_std=components["pixel_std"],
-                        device=device,
-                    )
-                condition_latents = reference_condition_latents + anchor_condition_latents
-            finally:
-                self._minimax_h3_move("vae", "cpu")
-                self._minimax_h3_empty_cache()
-            if any(getattr(reference, "has_audio", False) for reference in normalized_references):
-                # The audio VAE is 0.6 GB and is the ONLY component needed here,
-                # so it is staged on its own after the video VAE has gone back.
-                self._minimax_h3_move("audio_vae", torch_device)
+            with generation_timer.phase("condition_encode"):
+                self._minimax_h3_move("vae", torch_device)
                 try:
-                    audio_condition_rows = refs.encode_reference_audio_rows(
-                        components["audio_vae"], normalized_references,
-                        latents_mean=components["audio_latents_mean"],
-                        latents_std=components["audio_latents_std"],
-                        audio_latent_channels=int(components.get("audio_latent_channels", 32)),
-                        device=device,
-                    )
+                    if normalized_references:
+                        reference_condition_latents = refs.encode_reference_visuals(
+                            components["vae"], normalized_references,
+                            latents_mean=components["latents_mean"],
+                            latents_std=components["latents_std"],
+                            pixel_mean=components["pixel_mean"],
+                            pixel_std=components["pixel_std"],
+                            device=device,
+                        )
+                    if keyframe_pixels:
+                        anchor_condition_latents = ops.encode_condition_images(
+                            components["vae"], keyframe_pixels,
+                            latents_mean=components["latents_mean"],
+                            latents_std=components["latents_std"],
+                            pixel_mean=components["pixel_mean"],
+                            pixel_std=components["pixel_std"],
+                            device=device,
+                        )
+                    condition_latents = reference_condition_latents + anchor_condition_latents
                 finally:
-                    self._minimax_h3_move("audio_vae", "cpu")
+                    self._minimax_h3_move("vae", "cpu")
                     self._minimax_h3_empty_cache()
+                if any(getattr(reference, "has_audio", False) for reference in normalized_references):
+                    # The audio VAE is 0.6 GB and is the ONLY component needed here,
+                    # so it is staged on its own after the video VAE has gone back.
+                    self._minimax_h3_move("audio_vae", torch_device)
+                    try:
+                        audio_condition_rows = refs.encode_reference_audio_rows(
+                            components["audio_vae"], normalized_references,
+                            latents_mean=components["audio_latents_mean"],
+                            latents_std=components["audio_latents_std"],
+                            audio_latent_channels=int(components.get("audio_latent_channels", 32)),
+                            device=device,
+                        )
+                    finally:
+                        self._minimax_h3_move("audio_vae", "cpu")
+                        self._minimax_h3_empty_cache()
             print(f"[MiniMax-H3] conditioning encoded in "
                   f"{time.perf_counter() - cond_start:.1f}s: "
                   f"{len(condition_latents)} visual, {len(audio_condition_rows)} audio "
@@ -2646,22 +2704,23 @@ class MiniMaxH3Mixin:
                 sample_rate=int(components.get("audio_sample_rate", 32000)),
                 latent_rate=float(components.get("audio_latent_rate", 40.0)),
             )
-            self._minimax_h3_move("audio_vae", torch_device)
-            try:
-                pinned_audio_rows = refs.encode_reference_audio_rows(
-                    components["audio_vae"],
-                    [refs.MiniMaxH3Reference(
-                        kind="audio", audio=input_audio[:, :grid_samples],
-                        sample_rate=int(components.get("audio_sample_rate", 32000)),
-                        label="input_audio")],
-                    latents_mean=components["audio_latents_mean"],
-                    latents_std=components["audio_latents_std"],
-                    audio_latent_channels=int(components.get("audio_latent_channels", 32)),
-                    device=device,
-                )[0]
-            finally:
-                self._minimax_h3_move("audio_vae", "cpu")
-                self._minimax_h3_empty_cache()
+            with generation_timer.phase("condition_encode"):
+                self._minimax_h3_move("audio_vae", torch_device)
+                try:
+                    pinned_audio_rows = refs.encode_reference_audio_rows(
+                        components["audio_vae"],
+                        [refs.MiniMaxH3Reference(
+                            kind="audio", audio=input_audio[:, :grid_samples],
+                            sample_rate=int(components.get("audio_sample_rate", 32000)),
+                            label="input_audio")],
+                        latents_mean=components["audio_latents_mean"],
+                        latents_std=components["audio_latents_std"],
+                        audio_latent_channels=int(components.get("audio_latent_channels", 32)),
+                        device=device,
+                    )[0]
+                finally:
+                    self._minimax_h3_move("audio_vae", "cpu")
+                    self._minimax_h3_empty_cache()
             expected = num_audio_latents * ops.AUDIO_CHANNELS
             if pinned_audio_rows.shape[0] != expected:
                 raise RuntimeError(
@@ -2681,6 +2740,10 @@ class MiniMaxH3Mixin:
         self._minimax_h3_reset_peak_vram()
 
         # ---- Layout + noise (drawn on the generation device, before staging) ----
+        # Manual accumulate (`generation_timer.add()` below) rather than a
+        # `with` block: this ~250-line span already has its own peak-VRAM
+        # reset/read pair (`phase_peaks["prepare"]`).
+        prepare_time_start = time.perf_counter()
         if normalized_references:
             layout = ops.build_ref2va_packed_layout(
                 text_token_tags,
@@ -2891,6 +2954,7 @@ class MiniMaxH3Mixin:
             del reference_audio_rows
         del condition_latents, reference_condition_latents, anchor_condition_latents
         del audio_condition_rows, condition_noises
+        generation_timer.add("prepare", time.perf_counter() - prepare_time_start)
 
         # ---- Phase 2: denoise (DiT resident) ----
         self._minimax_h3_assert_components_off_cuda("text_encoder", "vae", "audio_vae", "image_vae")
@@ -2904,19 +2968,24 @@ class MiniMaxH3Mixin:
         # LoRA wraps Linear modules on the RAW transformer, before staging
         # replaces `minimax_h3_components["transformer"]` with a block-loop
         # wrapper (or hands `swap_linears_to_w4a8`/TransformerBlockOffloader a
-        # tree containing a non-nn.Linear module, which they reject).
-        lora_configs = params.get("loras") or []
-        applied_lora_count = self._load_lora_minimax_h3(lora_configs, params) if lora_configs else 0
-        # Staging owns the device move: with block swap it places the block stack
-        # itself rather than moving all 21 GB on and some of it back off.
-        transformer, offloader = self._ensure_minimax_h3_swap_and_offload(params, torch_device)
-        self._minimax_h3_apply_attention_backend(transformer, params)
-        # ~150s per step means the per-step callback alone looks like a hang, so
-        # block-level forward hooks tick progress from inside the step. Removed
-        # in the `finally` below: a surviving hook would fire on the next
-        # generation against this generation's callback.
-        substep_reporter = attach_block_substep_hooks(
-            transformer, progress_callback, label="MiniMax-H3")
+        # tree containing a non-nn.Linear module, which they reject). Timed as
+        # its own phase: this is where the 21 GB DiT actually moves onto the
+        # GPU (`_ensure_minimax_h3_swap_and_offload`), previously unaccounted
+        # for between the `text_encode` and `denoise` phases.
+        with generation_timer.phase("stage_transformer"):
+            lora_configs = params.get("loras") or []
+            applied_lora_count = (
+                self._load_lora_minimax_h3(lora_configs, params) if lora_configs else 0)
+            # Staging owns the device move: with block swap it places the block stack
+            # itself rather than moving all 21 GB on and some of it back off.
+            transformer, offloader = self._ensure_minimax_h3_swap_and_offload(params, torch_device)
+            self._minimax_h3_apply_attention_backend(transformer, params)
+            # ~150s per step means the per-step callback alone looks like a hang, so
+            # block-level forward hooks tick progress from inside the step. Removed
+            # in the `finally` below: a surviving hook would fire on the next
+            # generation against this generation's callback.
+            substep_reporter = attach_block_substep_hooks(
+                transformer, progress_callback, label="MiniMax-H3")
         try:
             with generation_timer.phase("denoise"):
                 video_rows, audio_rows = ops.denoise(
@@ -2946,16 +3015,21 @@ class MiniMaxH3Mixin:
                 )
         finally:
             substep_reporter.close()
-            if applied_lora_count:
-                self._unload_lora_minimax_h3()
-            # Back to the CPU before ANY decode: the video VAE's ViT decoder is
-            # the second-largest allocation of the generation and the two do not
-            # fit together. This also unwraps the block-loop wrapper and cleans
-            # up the block offloader.
-            self._unstage_minimax_h3_transformer(offloader)
-            del transformer
-            del prompt_embeds
-            self._minimax_h3_empty_cache()
+            # Mirrors `stage_transformer` above: the DiT's round trip back to
+            # the CPU is real seconds too (module docstring, "WHY THE STAGING
+            # IS STRICTLY SEQUENTIAL"), previously folded silently into
+            # whatever the caller's own wall-clock measurement was.
+            with generation_timer.phase("unstage_transformer"):
+                if applied_lora_count:
+                    self._unload_lora_minimax_h3()
+                # Back to the CPU before ANY decode: the video VAE's ViT decoder is
+                # the second-largest allocation of the generation and the two do not
+                # fit together. This also unwraps the block-loop wrapper and cleans
+                # up the block offloader.
+                self._unstage_minimax_h3_transformer(offloader)
+                del transformer
+                del prompt_embeds
+                self._minimax_h3_empty_cache()
         denoise_seconds = time.perf_counter() - denoise_start
         denoise_allocated, denoise_reserved, peak_after_denoise = self._minimax_h3_vram_stats()
         phase_peaks["denoise"] = peak_after_denoise
@@ -3013,9 +3087,14 @@ class MiniMaxH3Mixin:
 
         decode_start = time.perf_counter()
         self._minimax_h3_reset_peak_vram()
-        self._minimax_h3_move(decode_vae_name, torch_device)
-        try:
-            with generation_timer.phase("vae_decode"):
+        # The move onto/off the device is inside the timed phase now too (not
+        # just the decode call): staging the video VAE (5.2 GB) is real
+        # seconds, the same reason `stage_transformer`/`unstage_transformer`
+        # exist for the DiT above, and it shares `vae_decode`'s own VRAM-peak
+        # span (`phase_peaks["video_decode"]` below already reads across both).
+        with generation_timer.phase("vae_decode"):
+            self._minimax_h3_move(decode_vae_name, torch_device)
+            try:
                 frames = ops.decode_video(
                     decode_vae, latents,
                     latents_mean=components["latents_mean"],
@@ -3024,10 +3103,10 @@ class MiniMaxH3Mixin:
                     pixel_std=components["pixel_std"],
                     device=device,
                 )
-        finally:
-            self._minimax_h3_move(decode_vae_name, "cpu")
-            del latents
-            self._minimax_h3_empty_cache()
+            finally:
+                self._minimax_h3_move(decode_vae_name, "cpu")
+                del latents
+                self._minimax_h3_empty_cache()
         video_decode_allocated, video_decode_reserved, video_decode_peak = self._minimax_h3_vram_stats()
         phase_peaks["video_decode"] = video_decode_peak
         print(f"[MiniMax-H3] video decode: {frames.shape[0]} frame(s) in "
@@ -3088,19 +3167,23 @@ class MiniMaxH3Mixin:
                                if audio_row_order is not None else audio_rows[n_cond_audio:])
             audio_latents = ops.unpack_audio_rows(full_audio_rows, num_audio_latents)
             self._minimax_h3_reset_peak_vram()
-            self._minimax_h3_move("audio_vae", torch_device)
-            try:
-                with generation_timer.phase("vae_decode"):
+            # Same widening as the video decode above: the audio VAE's move
+            # onto/off the device is inside `vae_decode` now too, and it
+            # accumulates (`generation_timer.phase` sums repeat calls) onto
+            # whatever the video decode already recorded this generation.
+            with generation_timer.phase("vae_decode"):
+                self._minimax_h3_move("audio_vae", torch_device)
+                try:
                     waveform = ops.decode_audio(
                         components["audio_vae"], audio_latents,
                         latents_mean=components["audio_latents_mean"],
                         latents_std=components["audio_latents_std"],
                         device=device,
                     )
-            finally:
-                self._minimax_h3_move("audio_vae", "cpu")
-                del audio_latents
-                self._minimax_h3_empty_cache()
+                finally:
+                    self._minimax_h3_move("audio_vae", "cpu")
+                    del audio_latents
+                    self._minimax_h3_empty_cache()
             audio_sample_rate = int(components.get("audio_sample_rate", 32000))
             audio_out = ops.trim_audio_to_video(
                 waveform, num_frames, fps=float(components.get("fps", 24.0)),

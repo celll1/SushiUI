@@ -161,6 +161,45 @@ def test_the_encode_seam_projects_records_and_warns(tmp_path):
     assert "qwen3vl_32b_minimax_h3_int8_convrot.safetensors" in message
 
 
+def test_a_prompt_cache_hit_still_records_provenance_and_warns(tmp_path):
+    """The provenance/warning half of the encode seam, called on its own --
+    exactly what `pipeline_backends.minimax_h3`'s prompt-cache hit path calls
+    when it skips the encode+projection half entirely (see
+    `_minimax_h3_report_te_provenance`'s docstring)."""
+    projection = _projection(tmp_path)
+    components = _components(tmp_path, projection=projection, text_only=True)
+    params = {}
+
+    generation_id = start_generation("txt2vid")
+    try:
+        _Backend()._minimax_h3_report_te_provenance(components, params)
+        warnings = get_warnings(generation_id)
+    finally:
+        complete_generation(generation_id=generation_id)
+
+    assert params["text_encoder_file"] == ENCODER_4B
+    assert params["clip_projection_file"] == PROJECTION_4B
+    entries = [w for w in warnings if w["code"] == TE_SUBSTITUTION_WARNING_CODE]
+    assert len(entries) == 1
+
+
+def test_a_prompt_cache_hit_on_a_released_encoder_warns_about_nothing(tmp_path):
+    components = _components(tmp_path, projection=None, text_only=False,
+                             encoder="qwen3vl_32b_minimax_h3_int8_convrot.safetensors")
+    params = {}
+
+    generation_id = start_generation("txt2vid")
+    try:
+        _Backend()._minimax_h3_report_te_provenance(components, params)
+        warnings = get_warnings(generation_id)
+    finally:
+        complete_generation(generation_id=generation_id)
+
+    assert params["text_encoder_file"] == "qwen3vl_32b_minimax_h3_int8_convrot.safetensors"
+    assert "clip_projection_file" not in params
+    assert not [w for w in warnings if w["code"] == TE_SUBSTITUTION_WARNING_CODE]
+
+
 def test_a_released_encoder_is_left_completely_alone(tmp_path):
     """No projection, no warning, and the same tensor object back."""
     components = _components(tmp_path, projection=None, text_only=False,

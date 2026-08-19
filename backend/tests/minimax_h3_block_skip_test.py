@@ -282,20 +282,22 @@ class EnsureSwapAndOffloadWiringTest(unittest.TestCase):
         self.backend.minimax_h3_components = {"transformer": self.model}
 
     def test_skip_blocks_alone_forces_a_wrapper_not_the_raw_transformer(self):
-        transformer, offloader = self.backend._ensure_minimax_h3_swap_and_offload(
+        transformer, offloader, probe_records = self.backend._ensure_minimax_h3_swap_and_offload(
             {"_minimax_h3_debug_skip_blocks": {1}}, torch.device("cpu"))
 
         self.assertIsInstance(transformer, MiniMaxH3BlockLoopWrapper)
         self.assertIsNone(offloader)
+        self.assertIsNone(probe_records, "skip_blocks alone must not arm the residual probe")
         self.assertEqual(transformer._skip_blocks, frozenset({1}))
 
     def test_block_swap_and_skip_blocks_together_attach_to_the_same_wrapper(self):
-        transformer, offloader = self.backend._ensure_minimax_h3_swap_and_offload(
+        transformer, offloader, probe_records = self.backend._ensure_minimax_h3_swap_and_offload(
             {"_minimax_h3_debug_skip_blocks": {1}, "blocks_to_swap": 2}, torch.device("cpu"))
 
         self.assertIsInstance(transformer, MiniMaxH3BlockLoopWrapper)
         self.assertIsNotNone(offloader, "block swap must still build its own offloader")
         self.assertIs(transformer._block_offloader, offloader)
+        self.assertIsNone(probe_records)
         self.assertEqual(transformer._skip_blocks, frozenset({1}))
 
     def test_an_out_of_range_index_raises_before_the_transformer_is_moved(self):
@@ -310,10 +312,12 @@ class EnsureSwapAndOffloadWiringTest(unittest.TestCase):
         self.assertEqual(moved, [], "an invalid skip set must be refused before staging the DiT")
 
     def test_no_skip_blocks_is_unaffected(self):
-        transformer, offloader = self.backend._ensure_minimax_h3_swap_and_offload({}, torch.device("cpu"))
+        transformer, offloader, probe_records = self.backend._ensure_minimax_h3_swap_and_offload(
+            {}, torch.device("cpu"))
 
         self.assertIs(transformer, self.model, "the byte-identical default path returns the raw transformer")
         self.assertIsNone(offloader)
+        self.assertIsNone(probe_records)
 
 
 class RouteRefusesSkipBlocksOffMiniMaxH3Test(unittest.TestCase):

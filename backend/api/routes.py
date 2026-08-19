@@ -331,6 +331,12 @@ class Txt2VidRequest(BaseModel):
     # `MiniMaxH3BlockLoopWrapper.attach_block_skip`. Bare-literal default,
     # same shape as `controlnets: ... = []` above -- not in `TXT2VID_DEFAULTS`.
     minimax_h3_debug_skip_blocks: Optional[List[conint(ge=0)]] = None
+    # Internal MiniMax-H3 instrumentation knob, not a stable parameter. See
+    # `MiniMaxH3BlockLoopWrapper.attach_residual_probe`. Same
+    # internal-only/ablation-knob shape as `minimax_h3_debug_skip_blocks`
+    # above (Experiment B of the same speed investigation, its measurement
+    # counterpart rather than its ablation).
+    minimax_h3_debug_probe_residuals: Optional[bool] = None
 
 
 class Txt2AudRequest(BaseModel):
@@ -2934,6 +2940,20 @@ async def generate_txt2vid(
                        f"architecture only; the loaded video model is {_vid_arch!r}.",
             )
         params["_minimax_h3_debug_skip_blocks"] = _h3_skip_blocks
+
+    # minimax_h3_debug_probe_residuals: same internal-only/arch-gated shape as
+    # minimax_h3_debug_skip_blocks just above (Experiment B's measurement
+    # counterpart to Phase 1c's ablation knob) -- see
+    # `MiniMaxH3BlockLoopWrapper.attach_residual_probe`.
+    _h3_probe_residuals = params.pop("minimax_h3_debug_probe_residuals", None)
+    if _h3_probe_residuals:
+        if _vid_arch != "minimax_h3":
+            raise CustomValidationError(
+                "minimax_h3_debug_probe_residuals requires a loaded MiniMax-H3 model",
+                detail="This is an internal instrumentation-research knob for the MiniMax-H3 "
+                       f"architecture only; the loaded video model is {_vid_arch!r}.",
+            )
+        params["_minimax_h3_debug_probe_residuals"] = True
 
     # Training-free reference-style transfer (video). No image-conditioning
     # ControlNets are supported for LTX-2.3 -- `controlnets` exists only to

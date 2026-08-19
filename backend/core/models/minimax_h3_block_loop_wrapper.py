@@ -52,6 +52,15 @@ Extension slot (None by default -> fast path):
     Attached by the same ``_ensure_minimax_h3_swap_and_offload`` from the
     request-level ``_minimax_h3_debug_skip_blocks`` param. Not a normal
     feature -- see ``attach_block_skip``.
+  * ``_residual_probe`` — inference-only instrumentation tool (Experiment B
+    of the MiniMax-H3 speed investigation, the follow-up to Phase 1c's static
+    AdaLN-gate audit): records each block's ACTUAL residual contribution
+    during a real forward pass (``‖Δh_video‖ / ‖h_video‖``, generated-video
+    rows only), rather than guessing it from static weight magnitude.
+    Attached by ``_ensure_minimax_h3_swap_and_offload`` from the
+    request-level ``_minimax_h3_debug_probe_residuals`` param. Read-only: it
+    never changes ``hidden_states`` on the path it observes. Not a normal
+    feature -- see ``attach_residual_probe``.
 
 Gradient checkpointing is honored on the custom path exactly as the stock loop
 honors it (``torch.is_grad_enabled() and transformer.gradient_checkpointing``),
@@ -70,6 +79,11 @@ from core.models.minimax_h3.vendor.transformer_minimax_h3 import (
     MiniMaxH3TransformerOutput,
     sample_adaln_curve,
 )
+
+# Denominator floor for the residual probe's ratio (`attach_residual_probe`) --
+# guards a block whose input video rows are exactly zero, which never happens
+# on a real generation but would otherwise be a division by zero.
+_RESIDUAL_PROBE_EPS = 1e-12
 
 
 class MiniMaxH3BlockLoopWrapper(nn.Module):
@@ -98,6 +112,7 @@ class MiniMaxH3BlockLoopWrapper(nn.Module):
         self._fbcache_rows_per_frame = None
         self._fbcache_condition_video_rows = 0
         self._skip_blocks: Optional[frozenset] = None
+        self._residual_probe: Optional[Any] = None
 
         # Compatibility attributes (sampler + LoRA/export introspection).
         self.config = transformer.config
@@ -162,10 +177,27 @@ class MiniMaxH3BlockLoopWrapper(nn.Module):
                     "block 0's residual as its cache decision indicator.")
         self._skip_blocks = frozenset(skip_blocks) if skip_blocks else None
 
+    def attach_residual_probe(self, recorder: Optional[Any]) -> None:
+        """Attach (or clear with ``None``) a per-block residual-contribution recorder.
+
+        Inference-only research instrument (Experiment B, MiniMax-H3 speed
+        investigation): measures how much each block ACTUALLY changes the
+        packed state on a real forward pass, as opposed to
+        ``attach_block_skip``'s static ablation or the AdaLN gate audit's
+        static weight-magnitude proxy. ``recorder`` is called as
+        ``recorder(block_idx: int, step_idx: int, rel_residual: float)`` once
+        per block that actually ran this forward -- a skipped block's
+        residual is zero by definition (no compute), so recording it would be
+        noise, not signal, and the block loop below skips the call for it.
+        No validation: this is a debug tool, not a request-facing feature.
+        """
+        self._residual_probe = recorder
+
     def _any_feature_active(self) -> bool:
         return bool(
             self._fbcache is not None
             or self._skip_blocks is not None
+            or self._residual_probe is not None
             or (
                 self._block_offloader is not None
                 and getattr(self._block_offloader, "blocks_to_swap", 0) > 0
@@ -247,6 +279,14 @@ class MiniMaxH3BlockLoopWrapper(nn.Module):
         skip_blocks = self._skip_blocks
         if skip_blocks is not None and torch.is_grad_enabled():
             raise RuntimeError("MiniMax-H3 block skip is inference-only.")
+        probe = self._residual_probe
+        # Gated the same way as fbcache/skip_blocks: a REAL reason, not just
+        # consistency -- under grad, `.norm()` on `probe_before`/`probe_after`
+        # would retain both in the autograd graph until backward frees it,
+        # ~2 GiB x 50 blocks of extra activations at production sequence
+        # length. Nothing in this repo needs to probe a training step.
+        if probe is not None and torch.is_grad_enabled():
+            raise RuntimeError("MiniMax-H3 residual probe is inference-only.")
 
         # === Replicated stock stages (transformer_minimax_h3.forward) ===
         # The attention-backend stamp is one of them: the stock forward calls
@@ -325,12 +365,32 @@ class MiniMaxH3BlockLoopWrapper(nn.Module):
             if swap_on:
                 offloader.wait_for_block(block_idx)
 
+            skipped = skip_blocks is not None and block_idx in skip_blocks
+
+            # Residual probe (debug/research only, Experiment B): capture the
+            # video-row state BEFORE the block runs, restricted the same way
+            # FBCache's own block-0 residual is -- only when this block is
+            # actually going to run (a skipped block's delta is zero by
+            # definition). `index_select` always allocates a fresh tensor
+            # (never a view), so `probe_before` survives the block's own
+            # in-place gated residual add with no extra clone needed.
+            # `self._fbcache_condition_video_rows` is the FBCache slot's own
+            # geometry (0 unless FBCache is also attached); txt2vid -- the
+            # only route this probe is reachable from -- never has condition
+            # video rows, so this is currently a no-op cut. A future route
+            # that reaches this probe WITH condition rows would need its own
+            # geometry threaded through `attach_residual_probe`, not this one.
+            probe_before = None
+            if probe is not None and not skipped:
+                probe_before = hidden_states.index_select(
+                    1, video_indices)[:, self._fbcache_condition_video_rows:]
+
             # Identity skip (ablation only): `hidden_states` is left exactly as
             # it entered this iteration -- no block call, no gradient
             # checkpointing wrapper. The offloader bookkeeping above/below still
             # runs for this index so the swap rotation stays in lock-step even
             # though the block's weights go unused this step.
-            if skip_blocks is not None and block_idx in skip_blocks:
+            if skipped:
                 pass
             elif grad_ckpt:
                 hidden_states = t._gradient_checkpointing_func(
@@ -340,6 +400,25 @@ class MiniMaxH3BlockLoopWrapper(nn.Module):
 
             if swap_on:
                 offloader.submit_move_blocks_forward(block_idx)
+
+            if probe_before is not None:
+                probe_after = hidden_states.index_select(
+                    1, video_indices)[:, self._fbcache_condition_video_rows:]
+                # In-place sub_ on the fresh `probe_after` copy (one fewer
+                # allocation) and cast to fp32 before the norm/division:
+                # production hidden_states is bf16, whose ~0.4% granularity
+                # would otherwise quantise the very ranking this experiment
+                # exists to produce.
+                before_norm = probe_before.norm().float().clamp_min(_RESIDUAL_PROBE_EPS)
+                rel_residual = probe_after.sub_(probe_before).norm().float() / before_norm
+                # Read off `self` (the wrapper), not `t` (the inner model): the
+                # call site (`h3_pipeline_ops.py::call_transformer`) sets
+                # `_probe_step_idx` on whatever object it calls, which is this
+                # wrapper whenever the probe is attached at all -- the same
+                # object `_fbcache_step` above is read from. Defensive default
+                # (`-1`) covers a probe attached without that plumbing (e.g. a
+                # unit test driving the wrapper directly).
+                probe(block_idx, int(getattr(self, "_probe_step_idx", -1)), float(rel_residual))
 
             if fbcache is not None and block_idx == 0:
                 first_residual = hidden_states - original_hidden_states

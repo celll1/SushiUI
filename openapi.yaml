@@ -11060,6 +11060,29 @@ components:
             type: integer
             minimum: 0
           example: [12, 13, 14]
+        minimax_h3_debug_probe_residuals:
+          type: boolean
+          nullable: true
+          default: null
+          description: >-
+            INTERNAL INSTRUMENTATION-RESEARCH KNOB, MiniMax-H3 only -- NOT a
+            stable public parameter; it may change shape or be removed
+            without notice and is not surfaced in the UI. The measurement
+            counterpart to `minimax_h3_debug_skip_blocks` above (Experiment B
+            of the same speed investigation): when true, records each of the
+            50 `transformer_blocks`' actual residual contribution
+            (`‖Δh_video‖ / ‖h_video‖`, generated-video rows only) at every
+            denoise step, and dumps the recording as JSON to
+            `outputs/debug_latents/` once the generation completes (see
+            `MiniMaxH3BlockLoopWrapper.attach_residual_probe`) -- there is no
+            response field for the recorded data. Declared on this shared
+            schema, so it also appears on `Img2VidRequest`/`Ref2VidRequest`
+            -- those two routes are `multipart/form-data` and declare no
+            matching form field, so FastAPI drops it there without a warning
+            (no 400, no effect). `POST /generate/txt2vid` alone reads it: a
+            value there is refused with HTTP 400 when the loaded model is not
+            MiniMax-H3, and applied (never silently ignored) when it is.
+          example: true
 
     Img2VidRequest:
       allOf:

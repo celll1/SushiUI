@@ -11039,6 +11039,27 @@ components:
             (`VideoChainManifest.root_prompt_hash`), 64 hex characters. The
             prompt itself stays in the manifest.
           example: "1b0c9d8e7f6a5b4c3d2e1f0a9b8c7d6e5f4a3b2c1d0e9f8a7b6c5d4e3f2a1b0c"
+        minimax_h3_debug_skip_blocks:
+          type: array
+          nullable: true
+          default: null
+          description: >-
+            INTERNAL ABLATION-RESEARCH KNOB, MiniMax-H3 only -- NOT a stable
+            public parameter; it may change shape or be removed without
+            notice and is not surfaced in the UI. Identity-skips (pure
+            residual passthrough, no compute) the named `transformer_blocks`
+            indices for one generation, so which of the 50 blocks matter for
+            a given clip shape can be measured. Declared on this shared
+            schema, so it also appears on `Img2VidRequest`/`Ref2VidRequest`
+            -- those two routes are `multipart/form-data` and declare no
+            matching form field, so FastAPI drops it there without a warning
+            (no 400, no effect). `POST /generate/txt2vid` alone reads it: a
+            value there is refused with HTTP 400 when the loaded model is not
+            MiniMax-H3, and applied (never silently ignored) when it is.
+          items:
+            type: integer
+            minimum: 0
+          example: [12, 13, 14]
 
     Img2VidRequest:
       allOf:

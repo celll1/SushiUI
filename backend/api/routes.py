@@ -3,7 +3,7 @@ from fastapi.responses import Response, StreamingResponse, FileResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import func, or_
 from typing import List, Optional, Dict, Any, Callable, Sequence, Tuple, Literal
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, conint
 from datetime import datetime
 from pathlib import Path
 import contextvars
@@ -327,6 +327,10 @@ class Txt2VidRequest(BaseModel):
     chain_global_frame_end: Optional[int] = VIDEO_CHAIN_PROVENANCE_DEFAULTS["chain_global_frame_end"]
     chain_context_mode: Optional[str] = VIDEO_CHAIN_PROVENANCE_DEFAULTS["chain_context_mode"]
     chain_root_prompt_hash: Optional[str] = VIDEO_CHAIN_PROVENANCE_DEFAULTS["chain_root_prompt_hash"]
+    # Internal MiniMax-H3 ablation knob, not a stable parameter. See
+    # `MiniMaxH3BlockLoopWrapper.attach_block_skip`. Bare-literal default,
+    # same shape as `controlnets: ... = []` above -- not in `TXT2VID_DEFAULTS`.
+    minimax_h3_debug_skip_blocks: Optional[List[conint(ge=0)]] = None
 
 
 class Txt2AudRequest(BaseModel):
@@ -2917,6 +2921,19 @@ async def generate_txt2vid(
     # against LTX-2.3's 121 on a MiniMax-H3 request and snapped for no reason.
     _vid_arch = (pipeline_manager.current_model_info or {}).get("type")
     _vid_defaults = resolve_video_defaults(params, request.model_fields_set, _vid_arch)
+
+    # minimax_h3_debug_skip_blocks names an ablation condition meaningless off
+    # MiniMax-H3 -- refused with a 400 rather than silently no-op'd. Internal
+    # key convention: leading underscore, as `_upscaler_model_path` already does.
+    _h3_skip_blocks = params.pop("minimax_h3_debug_skip_blocks", None)
+    if _h3_skip_blocks:
+        if _vid_arch != "minimax_h3":
+            raise CustomValidationError(
+                "minimax_h3_debug_skip_blocks requires a loaded MiniMax-H3 model",
+                detail="This is an internal ablation-research knob for the MiniMax-H3 "
+                       f"architecture only; the loaded video model is {_vid_arch!r}.",
+            )
+        params["_minimax_h3_debug_skip_blocks"] = _h3_skip_blocks
 
     # Training-free reference-style transfer (video). No image-conditioning
     # ControlNets are supported for LTX-2.3 -- `controlnets` exists only to

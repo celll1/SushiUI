@@ -595,6 +595,9 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     del comp
                 self.minimax_h3_components = None
                 self.is_minimax_h3_model = False
+                # See prompt_cache's module docstring for why unload clears it.
+                from core.models.minimax_h3 import prompt_cache
+                prompt_cache.clear()
 
             # Clean up MiniMax Music 3 components
             if self.minimax_music3_components is not None:
@@ -1027,6 +1030,10 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             if isinstance(model_result, dict) and model_result.get("type") == "minimax_h3":
                 print("[Pipeline] MiniMax-H3 video model detected (component-based dict returned)")
                 self.minimax_h3_components = model_result
+                # A full load, unlike a DiT-only reload -- see prompt_cache's
+                # module docstring for why only this one clears it.
+                from core.models.minimax_h3 import prompt_cache
+                prompt_cache.clear()
                 self.is_minimax_h3_model = True
                 self.is_acestep_model = False
                 self.is_ltx2_model = False

@@ -46,6 +46,12 @@ Extension slot (None by default -> fast path):
   * ``_fbcache`` — inference-only cache of the whole packed-state residual.
     Its decision uses generated-video rows only, with a max-per-frame guard;
     one decision therefore keeps the video and audio paths in lock-step.
+  * ``_skip_blocks`` — inference-only ablation tool (Phase 1c of the
+    MiniMax-H3 speed investigation): a set of ``transformer_blocks`` indices
+    to identity-skip (the block's output is its unchanged input, no compute).
+    Attached by the same ``_ensure_minimax_h3_swap_and_offload`` from the
+    request-level ``_minimax_h3_debug_skip_blocks`` param. Not a normal
+    feature -- see ``attach_block_skip``.
 
 Gradient checkpointing is honored on the custom path exactly as the stock loop
 honors it (``torch.is_grad_enabled() and transformer.gradient_checkpointing``),
@@ -91,6 +97,7 @@ class MiniMaxH3BlockLoopWrapper(nn.Module):
         self._fbcache_step = 0
         self._fbcache_rows_per_frame = None
         self._fbcache_condition_video_rows = 0
+        self._skip_blocks: Optional[frozenset] = None
 
         # Compatibility attributes (sampler + LoRA/export introspection).
         self.config = transformer.config
@@ -120,14 +127,45 @@ class MiniMaxH3BlockLoopWrapper(nn.Module):
                 raise ValueError("MiniMax-H3 FBCache needs a positive rows_per_frame.")
             if condition_video_rows < 0:
                 raise ValueError("condition_video_rows must be non-negative.")
+            # Fires for the production order (skip attached per-generation,
+            # FBCache per-step) -- `attach_block_skip`'s own mirror check
+            # covers the reverse order.
+            if self._skip_blocks is not None and 0 in self._skip_blocks:
+                raise ValueError(
+                    "MiniMax-H3 block 0 cannot be skipped with FBCache attached: FBCache reads "
+                    "block 0's residual as its cache decision indicator.")
         self._fbcache = fbcache
         self._fbcache_step = 0
         self._fbcache_rows_per_frame = rows_per_frame
         self._fbcache_condition_video_rows = int(condition_video_rows)
 
+    def attach_block_skip(self, skip_blocks: Optional[Any]) -> None:
+        """Attach (or clear with None/empty) the set of block indices to identity-skip.
+
+        Inference-only ablation tool (Phase 1c, MiniMax-H3 speed
+        investigation): a skipped block's output is its INPUT, unchanged
+        (pure residual passthrough, no compute) -- not the same thing as
+        FBCache's cached-residual reuse, and not gated by a hit/miss decision.
+
+        Not DiT-BlockSkip (``Ltx2BlockLoopWrapper.attach_blockskip``, arXiv
+        2603.20755's training-time residual-delta fold) -- no fold, no
+        training use, name similarity aside.
+        """
+        if skip_blocks:
+            n = len(self.transformer.transformer_blocks)
+            bad = sorted(i for i in skip_blocks if not (0 <= i < n))
+            if bad:
+                raise ValueError(f"skip_blocks out of range [0, {n}): {bad}")
+            if self._fbcache is not None and 0 in skip_blocks:
+                raise ValueError(
+                    "MiniMax-H3 block 0 cannot be skipped with FBCache attached: FBCache reads "
+                    "block 0's residual as its cache decision indicator.")
+        self._skip_blocks = frozenset(skip_blocks) if skip_blocks else None
+
     def _any_feature_active(self) -> bool:
         return bool(
             self._fbcache is not None
+            or self._skip_blocks is not None
             or (
                 self._block_offloader is not None
                 and getattr(self._block_offloader, "blocks_to_swap", 0) > 0
@@ -206,6 +244,9 @@ class MiniMaxH3BlockLoopWrapper(nn.Module):
         fbcache = self._fbcache
         if fbcache is not None and torch.is_grad_enabled():
             raise RuntimeError("MiniMax-H3 FBCache is inference-only.")
+        skip_blocks = self._skip_blocks
+        if skip_blocks is not None and torch.is_grad_enabled():
+            raise RuntimeError("MiniMax-H3 block skip is inference-only.")
 
         # === Replicated stock stages (transformer_minimax_h3.forward) ===
         # The attention-backend stamp is one of them: the stock forward calls
@@ -284,7 +325,14 @@ class MiniMaxH3BlockLoopWrapper(nn.Module):
             if swap_on:
                 offloader.wait_for_block(block_idx)
 
-            if grad_ckpt:
+            # Identity skip (ablation only): `hidden_states` is left exactly as
+            # it entered this iteration -- no block call, no gradient
+            # checkpointing wrapper. The offloader bookkeeping above/below still
+            # runs for this index so the swap rotation stays in lock-step even
+            # though the block's weights go unused this step.
+            if skip_blocks is not None and block_idx in skip_blocks:
+                pass
+            elif grad_ckpt:
                 hidden_states = t._gradient_checkpointing_func(
                     block, hidden_states, temb, adaln_indices, rotary_emb)
             else:

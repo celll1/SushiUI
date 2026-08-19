@@ -383,9 +383,12 @@ class MiniMaxH3Mixin:
         """Stage the DiT onto ``device`` for the denoise loop. Returns the callable.
 
         Returns ``(module, offloader)``: the object the sampler calls (the raw
-        transformer, or a ``MiniMaxH3BlockLoopWrapper`` when block swap/FBCache needs the
-        re-owned block loop) and the block offloader to tear down afterwards
-        (``None`` when there is none).
+        transformer, or a ``MiniMaxH3BlockLoopWrapper`` when block swap/FBCache/
+        block-skip needs the re-owned block loop) and the block offloader to tear
+        down afterwards (``None`` when there is none). A truthy
+        ``params["_minimax_h3_debug_skip_blocks"]`` (Phase 1c ablation knob) forces
+        the wrapper even when block swap and FBCache are both off, so the raw
+        transformer is never returned while a skip set is attached.
 
         TWO STATES:
 
@@ -446,6 +449,12 @@ class MiniMaxH3Mixin:
             transformer = transformer.transformer
             components["transformer"] = transformer
 
+        # Phase 1c debug/ablation knob (see Txt2VidRequest.minimax_h3_debug_skip_blocks
+        # and MiniMaxH3BlockLoopWrapper.attach_block_skip). Internal only -- the
+        # request-level gate in routes.py already refused this on a non-minimax_h3
+        # arch, so any truthy value reaching here belongs to this generation.
+        skip_blocks = params.get("_minimax_h3_debug_skip_blocks")
+
         # SushiUI addition: opt-in, not bit-exact -- see `adaln_chunking.py`'s "Head fusion" note.
         # Set on the INNER transformer (not the wrapper) so both call sites -- the stock forward's
         # (fast path, wrapper delegates to it) and `MiniMaxH3BlockLoopWrapper._custom_forward`'s
@@ -456,6 +465,14 @@ class MiniMaxH3Mixin:
         from core.inference.fbcache import fbcache_active
         fbcache_on = fbcache_active(params) and not params.get("spectrum_enable", False)
         num_blocks = len(transformer.transformer_blocks)
+        if skip_blocks:
+            # Validated HERE, before the device move below: raising inside
+            # `attach_block_skip` after the 21 GB DiT is already on the GPU
+            # would leave it resident with no denoise loop left to stage it
+            # back off (nothing downstream of this function catches that raise).
+            bad = sorted(i for i in skip_blocks if not (0 <= i < num_blocks))
+            if bad:
+                raise ValueError(f"minimax_h3_debug_skip_blocks out of range [0, {num_blocks}): {bad}")
         if blocks_to_swap >= num_blocks:
             print(f"[MiniMax-H3] blocks_to_swap={blocks_to_swap} >= {num_blocks} blocks; "
                   f"clamping to {num_blocks - 1} (at least one block must stay resident)")
@@ -463,10 +480,14 @@ class MiniMaxH3Mixin:
 
         if blocks_to_swap <= 0:
             self._minimax_h3_move("transformer", device)
-            if fbcache_on:
+            if fbcache_on or skip_blocks:
                 wrapper = MiniMaxH3BlockLoopWrapper(transformer)
                 components["transformer"] = wrapper
-                print("[FBCache] MiniMax-H3 wrapper armed (cache is opt-in)")
+                if fbcache_on:
+                    print("[FBCache] MiniMax-H3 wrapper armed (cache is opt-in)")
+                if skip_blocks:
+                    wrapper.attach_block_skip(skip_blocks)
+                    print(f"[MiniMax-H3] Block skip (debug/ablation): {sorted(skip_blocks)}")
                 return wrapper, None
             return transformer, None
 
@@ -497,6 +518,10 @@ class MiniMaxH3Mixin:
         components["transformer"] = wrapper
         print(f"[MiniMax-H3] Block Swap enabled: {blocks_to_swap} of {num_blocks} blocks "
               f"swapped (MiniMaxH3BlockLoopWrapper active)")
+        if skip_blocks:
+            wrapper.attach_block_skip(skip_blocks)
+            print(f"[MiniMax-H3] Block skip (debug/ablation): {sorted(skip_blocks)} "
+                  f"(with Block Swap)")
         return wrapper, offloader
 
     def _unstage_minimax_h3_transformer(self, offloader) -> None:

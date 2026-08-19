@@ -1731,6 +1731,16 @@ def denoise(
     )
 
     def call_transformer(step_idx, unique_timesteps, timestep_indices):
+        # Residual probe step index (Experiment B, debug/research only -- see
+        # `MiniMaxH3BlockLoopWrapper.attach_residual_probe`). Set unconditionally
+        # here -- unlike `_fbcache_step` below, which is set only on the fbcache
+        # branch -- since it's a cheap plain attribute set on an `nn.Module` and
+        # the wrapper reads it back defensively (`getattr(self, "_probe_step_idx",
+        # -1)`), harmless when no probe is attached. NOTE: this assumes `transformer`
+        # supports arbitrary attribute assignment (true for every caller today --
+        # the raw model, the block-loop wrapper, and every test double in this
+        # repo's suite -- but not guaranteed for e.g. a `__slots__` stub).
+        transformer._probe_step_idx = step_idx
         kwargs = dict(
             hidden_states=video_rows[None],
             audio_hidden_states=audio_rows[None],

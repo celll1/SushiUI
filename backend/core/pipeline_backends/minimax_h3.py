@@ -346,6 +346,53 @@ class MiniMaxH3Mixin:
             Image.fromarray(anchor).save(os.path.join(run_dir, f"{name}_anchor.png"))
         print(f"[MiniMax-H3] vid_outpaint: pre-paste debug dump -> {run_dir}")
 
+    @staticmethod
+    def _minimax_h3_dump_residual_probe(records, *, prompt, num_frames, seed, num_inference_steps):
+        """Dump Experiment B's per-block residual-contribution recording as JSON.
+
+        Unlike ``_minimax_h3_dump_outpaint_ref_debug``'s own env-var/sentinel
+        gate, there is no separate dump toggle here: the request field
+        (``_minimax_h3_debug_probe_residuals``, threaded through
+        ``_ensure_minimax_h3_swap_and_offload``) IS the gate -- a run that
+        asked for the recording gets it written unconditionally, no-op when
+        ``records`` is empty or ``None`` (probing was never requested).
+        Called from the denoise ``finally``, so a failed generation still
+        dumps whatever steps it reached before raising -- best-effort, not a
+        guaranteed on-failure dump: an exception raised by this function
+        itself is left to propagate rather than swallowed, since a broken
+        dump on a research-only path is something the caller should see.
+        NOTE: because this runs inside a ``finally``, an exception raised
+        here REPLACES (not appends to) an in-flight generation exception --
+        Python's own ``finally`` semantics, not a bug in this function -- so
+        a disk-full/permissions error while dumping would surface instead of
+        whatever actually broke the generation. Realistically rare (a few
+        hundred KB write) and this repo has no existing convention for a
+        finally-safe secondary write, so accepted rather than engineered
+        around here.
+        """
+        if not records:
+            return
+        import json
+        import os
+        import time as _time
+
+        base = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))),
+            "outputs", "debug_latents",
+        )
+        os.makedirs(base, exist_ok=True)
+        out_path = os.path.join(base, f"minimax_h3_residual_probe_{_time.time_ns()}.json")
+        payload = {
+            "prompt": prompt,
+            "num_frames": num_frames,
+            "seed": seed,
+            "num_inference_steps": num_inference_steps,
+            "records": records,
+        }
+        with open(out_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f)
+        print(f"[MiniMax-H3] Residual probe (debug/research): {len(records)} record(s) -> {out_path}")
+
     # ------------------------------------------------------------------
     # Attention backend
     # ------------------------------------------------------------------
@@ -377,18 +424,41 @@ class MiniMaxH3Mixin:
     # Block swap (the block-loop wrapper)
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _minimax_h3_build_residual_recorder():
+        """Build a residual-probe recorder plus the list it accumulates into.
+
+        See ``MiniMaxH3BlockLoopWrapper.attach_residual_probe`` (Experiment B,
+        debug/research only). Returns ``(records, recorder)``; ``records`` is
+        the list the caller dumps to disk once the generation completes.
+        """
+        records: List[Dict[str, Any]] = []
+
+        def _recorder(block_idx: int, step_idx: int, rel_residual: float) -> None:
+            records.append({
+                "block_idx": block_idx,
+                "step_idx": step_idx,
+                "rel_residual": rel_residual,
+            })
+
+        return records, _recorder
+
     def _ensure_minimax_h3_swap_and_offload(
         self, params: Dict[str, Any], device: torch.device,
     ):
         """Stage the DiT onto ``device`` for the denoise loop. Returns the callable.
 
-        Returns ``(module, offloader)``: the object the sampler calls (the raw
-        transformer, or a ``MiniMaxH3BlockLoopWrapper`` when block swap/FBCache/
-        block-skip needs the re-owned block loop) and the block offloader to tear
-        down afterwards (``None`` when there is none). A truthy
+        Returns ``(module, offloader, probe_records)``: the object the sampler
+        calls (the raw transformer, or a ``MiniMaxH3BlockLoopWrapper`` when
+        block swap/FBCache/block-skip/residual-probe needs the re-owned block
+        loop), the block offloader to tear down afterwards (``None`` when
+        there is none), and the residual-probe recording list (``None`` when
+        ``params["_minimax_h3_debug_probe_residuals"]`` is not set -- see
+        ``_minimax_h3_build_residual_recorder``). A truthy
         ``params["_minimax_h3_debug_skip_blocks"]`` (Phase 1c ablation knob) forces
         the wrapper even when block swap and FBCache are both off, so the raw
-        transformer is never returned while a skip set is attached.
+        transformer is never returned while a skip set is attached; the same is
+        true of a truthy ``params["_minimax_h3_debug_probe_residuals"]``.
 
         TWO STATES:
 
@@ -455,6 +525,12 @@ class MiniMaxH3Mixin:
         # arch, so any truthy value reaching here belongs to this generation.
         skip_blocks = params.get("_minimax_h3_debug_skip_blocks")
 
+        # Experiment B instrumentation knob (see
+        # Txt2VidRequest.minimax_h3_debug_probe_residuals and
+        # MiniMaxH3BlockLoopWrapper.attach_residual_probe). Same internal-only
+        # contract as skip_blocks above.
+        probe_on = bool(params.get("_minimax_h3_debug_probe_residuals"))
+
         # SushiUI addition: opt-in, not bit-exact -- see `adaln_chunking.py`'s "Head fusion" note.
         # Set on the INNER transformer (not the wrapper) so both call sites -- the stock forward's
         # (fast path, wrapper delegates to it) and `MiniMaxH3BlockLoopWrapper._custom_forward`'s
@@ -480,7 +556,7 @@ class MiniMaxH3Mixin:
 
         if blocks_to_swap <= 0:
             self._minimax_h3_move("transformer", device)
-            if fbcache_on or skip_blocks:
+            if fbcache_on or skip_blocks or probe_on:
                 wrapper = MiniMaxH3BlockLoopWrapper(transformer)
                 components["transformer"] = wrapper
                 if fbcache_on:
@@ -488,8 +564,13 @@ class MiniMaxH3Mixin:
                 if skip_blocks:
                     wrapper.attach_block_skip(skip_blocks)
                     print(f"[MiniMax-H3] Block skip (debug/ablation): {sorted(skip_blocks)}")
-                return wrapper, None
-            return transformer, None
+                probe_records = None
+                if probe_on:
+                    probe_records, recorder = self._minimax_h3_build_residual_recorder()
+                    wrapper.attach_residual_probe(recorder)
+                    print("[MiniMax-H3] Residual probe (debug/research) armed")
+                return wrapper, None, probe_records
+            return transformer, None, None
 
         from core.memory_management import TransformerBlockOffloader
 
@@ -522,7 +603,12 @@ class MiniMaxH3Mixin:
             wrapper.attach_block_skip(skip_blocks)
             print(f"[MiniMax-H3] Block skip (debug/ablation): {sorted(skip_blocks)} "
                   f"(with Block Swap)")
-        return wrapper, offloader
+        probe_records = None
+        if probe_on:
+            probe_records, recorder = self._minimax_h3_build_residual_recorder()
+            wrapper.attach_residual_probe(recorder)
+            print("[MiniMax-H3] Residual probe (debug/research) armed (with Block Swap)")
+        return wrapper, offloader, probe_records
 
     def _unstage_minimax_h3_transformer(self, offloader) -> None:
         """Tear the block-loop wrapper down and put the DiT back on the CPU.
@@ -3003,7 +3089,8 @@ class MiniMaxH3Mixin:
                 self._load_lora_minimax_h3(lora_configs, params) if lora_configs else 0)
             # Staging owns the device move: with block swap it places the block stack
             # itself rather than moving all 21 GB on and some of it back off.
-            transformer, offloader = self._ensure_minimax_h3_swap_and_offload(params, torch_device)
+            transformer, offloader, probe_records = self._ensure_minimax_h3_swap_and_offload(
+                params, torch_device)
             self._minimax_h3_apply_attention_backend(transformer, params)
             # ~150s per step means the per-step callback alone looks like a hang, so
             # block-level forward hooks tick progress from inside the step. Removed
@@ -3055,6 +3142,10 @@ class MiniMaxH3Mixin:
                 del transformer
                 del prompt_embeds
                 self._minimax_h3_empty_cache()
+            self._minimax_h3_dump_residual_probe(
+                probe_records, prompt=prompt, num_frames=num_frames,
+                seed=seed, num_inference_steps=num_inference_steps,
+            )
         denoise_seconds = time.perf_counter() - denoise_start
         denoise_allocated, denoise_reserved, peak_after_denoise = self._minimax_h3_vram_stats()
         phase_peaks["denoise"] = peak_after_denoise

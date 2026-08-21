@@ -364,6 +364,27 @@ ARCH_QUANT_POLICY: Dict[str, Dict[str, object]] = {
             "relevant only if the *_pruned_bf16 variant ever becomes the generation file."
         ),
     },
+    "sensenova": {
+        # DEQUANT-ONLY, AND NOT WIRED FOR THE RUNTIME CONVERTER -- same shape as
+        # minimax_h3 above, for the same reason: the checkpoint this loader
+        # reads is ALREADY weight-only int8 (588 quantized Linears: the 42
+        # decoder layers' self_attn.{q,k,v,o}_proj and mlp.{gate,up,down}_proj,
+        # each doubled for the understanding/generation MoT branches --
+        # 336 attention + 252 MLP), produced by this repo's own conversion, not
+        # by an upstream distribution this repo also loads unquantized. There is
+        # no unquantized bf16 transformer for the in-place converter to act on;
+        # a runtime path becomes relevant only if a plain bf16 SenseNova
+        # checkpoint is ever wired into this loader.
+        "skip_below_work_gate": False,
+        "excludes": (),
+        "note": (
+            "SenseNova-U1.5-8B-MoT ships via this repo's own int8 conversion (588 "
+            "quantized Linears: attn q/k/v/o + mlp gate/up/down, doubled for the MoT "
+            "understanding/generation branches, across 42 layers), so no runtime int8 "
+            "conversion is registered for it -- there is no unquantized transformer to "
+            "convert."
+        ),
+    },
 }
 
 # Architectures the RUNTIME converter is wired for. A superset entry in
@@ -387,6 +408,11 @@ ARCH_QUANT_POLICY: Dict[str, Dict[str, object]] = {
 # that would change it (the *_pruned_bf16 variant becoming the generation file).
 # It IS in QUANTIZED_LINEAR_ARCHS below, because its loader really does swap in
 # the quantized Linear classes.
+#
+# ``sensenova`` is absent for the same reason, stated in its own
+# ARCH_QUANT_POLICY entry: it ships via this repo's own int8 conversion, with
+# no unquantized bf16 transformer this loader reads for the in-place converter
+# to act on.
 RUNTIME_INT8_ARCHS = ("anima", "krea2", "flux2", "ideogram4", "ltx2", "acestep",
                       "zimage")
 
@@ -403,7 +429,10 @@ RUNTIME_INT8_ARCHS = ("anima", "krea2", "flux2", "ideogram4", "ltx2", "acestep",
 # ``Fp8Linear`` from the released `*_pruned_fp8_scaled` file, and it has no
 # runtime int8 path (see RUNTIME_INT8_ARCHS above). So the two sets are a strict
 # superset relation again, which is why this stays an expression.
-QUANTIZED_LINEAR_ARCHS = tuple(sorted({"ideogram4", "minimax_h3", *RUNTIME_INT8_ARCHS}))
+#
+# ``sensenova`` swaps 588 ``nn.Linear`` for ``Int8Linear`` from its own
+# pre-quantized checkpoint and has no runtime int8 path either -- same relation.
+QUANTIZED_LINEAR_ARCHS = tuple(sorted({"ideogram4", "minimax_h3", "sensenova", *RUNTIME_INT8_ARCHS}))
 
 # Display spelling of an arch id, for user-facing prose only. Every arch that
 # can appear in either tuple above needs an entry; ``arch_names`` falls back to
@@ -421,6 +450,7 @@ ARCH_DISPLAY_NAMES: Dict[str, str] = {
     "ltx2": "LTX-2.3",
     "acestep": "ACE-Step",
     "minimax_h3": "MiniMax H3",
+    "sensenova": "SenseNova U1.5",
 }
 
 

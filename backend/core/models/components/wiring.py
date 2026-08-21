@@ -170,6 +170,24 @@ MINIMAX_MUSIC3_WIRING = ComponentWiringSpec(
     vae_scale_factor=512, vae_norm="identity",
 )
 
+# SenseNova-U1.5-8B-MoT: a Qwen3-8B LLM used directly as a flow-matching
+# denoiser in raw RGB pixel space -- no VAE (latent_channels=0, the same
+# pixel-space sentinel MiniT2I uses) and no separate text encoder (the prompt
+# goes through the LLM's own tokenizer/chat template, `te_seq_packing="llm"`
+# like Anima/LTX-2.3/MiniMax-H3). `te_out_dim=4096` is the LLM hidden size
+# (`config.llm_config.hidden_size`), what `encoder_hidden_states` would be if
+# this arch had a separate encoder -- it does not, but this field is what
+# `_fold_baseline` uses to seed `backbone.cond_dim`. `latent_ndim=4` (an
+# image arch, NOT 5) keeps this out of `component_registry`'s `is_video=True`
+# fold. `vae_scale_factor=1` / `vae_norm="identity"` mirror MiniT2I's
+# pixel-space convention; the real 32px token-patch alignment (patch_size 16 x
+# merge_size 2) is a `pixel_align` property, not a VAE scale factor.
+SENSENOVA_WIRING = ComponentWiringSpec(
+    te_out_dim=4096, te_pooled_dim=None, te_seq_packing="llm", added_cond=None,
+    latent_channels=0, latent_ndim=4, latent_packing="none",
+    vae_scale_factor=1, vae_norm="identity",
+)
+
 
 # ---------------------------------------------------------------------------
 # TemporalSpec — the per-arch clip-length / frame-rate / canvas contract of a

@@ -137,6 +137,12 @@ BACKENDS = {
     #                 flash / sage / tq all run rather than downgrading. sage is
     #                 refused in TRAINING mode by the shared MODE guard, which is
     #                 the only downgrade this arch can hit.
+    #   SenseNova   : conduit-routed (vendored Qwen3Attention.forward_gen calls
+    #                 dispatch_attention via `_flash_or_sdpa`). head_dim 128,
+    #                 GQA (32 q heads / 8 kv heads, h_kv != h_q) -- the GQA
+    #                 guard auto-downgrades sage (supports_gqa=False) to
+    #                 native; flash and tq both declare supports_gqa=True and
+    #                 run. No mask on this path, so supports_mask never fires.
     "tq": AttentionBackend(
         name="tq",
         fn=_tq_attn,

@@ -9922,6 +9922,19 @@ components:
             steps near the clean end. Ignored (accepted and warned) by every other
             architecture, which has no equivalent time-shift knob at the API layer.
           example: 3.0
+        img_cfg_scale:
+          type: number
+          minimum: 0
+          default: 1.0
+          description: |
+            SenseNova U1.5 second CFG scale used by the `it2i_generate`
+            (reference-image editing) path alongside `cfg_scale`, active only when
+            `ref_images` is supplied. Upstream's documented operating point is
+            `cfg_scale=4.0, img_cfg_scale=1.0`; at the default value of 1.0 sampling
+            uses the two-branch form `v = out_img_cond + cfg_scale*(out_cond -
+            out_img_cond)`. Ignored (accepted and warned) by every other architecture,
+            and inert without `ref_images`.
+          example: 1.0
         seed:
           type: integer
           default: -1

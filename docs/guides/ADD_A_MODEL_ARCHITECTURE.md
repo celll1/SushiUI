@@ -1,16 +1,20 @@
 # Add a Model Architecture
 
-SushiUI currently supports 13 architectures: 9 image (SD1.5, SDXL, Z-Image,
-Flux2, Anima, Lens, Krea2, Ideogram4, MiniT2I), 2 video that also generate audio
-jointly (LTX-2.3, MiniMax-H3) and 2 audio (ACE-Step 1.5, MiniMax Music 3).
-`ModelType` in `backend/core/model_loader.py` is the authoritative *generation*
-list — check it rather than this sentence if the two ever disagree.
-`ARCH_REGISTRY` in `backend/core/training/arch/__init__.py` is the
-authoritative *training-capable* list; it has 12 entries because MiniMax Music
-3's training is out of scope (design forward-compatible, not implemented — see
-`docs/guides/MINIMAX_MUSIC3_DESIGN.md`'s "Training forward-compatibility"
-section). Do not assume the two lists are always the same size — they were
-equal only by coincidence before this architecture.
+SushiUI currently supports 14 architectures: 10 image (SD1.5, SDXL, Z-Image,
+Flux2, Anima, Lens, Krea2, Ideogram4, MiniT2I, SenseNova U1.5), 2 video that
+also generate audio jointly (LTX-2.3, MiniMax-H3) and 2 audio (ACE-Step 1.5,
+MiniMax Music 3). `ModelType` in `backend/core/model_loader.py` is the
+authoritative *generation* list — check it rather than this sentence if the
+two ever disagree. `ARCH_REGISTRY` in `backend/core/training/arch/__init__.py`
+is the authoritative *training-capable* list; it has 12 entries because
+MiniMax Music 3's training is out of scope (design forward-compatible, not
+implemented — see `docs/guides/MINIMAX_MUSIC3_DESIGN.md`'s "Training
+forward-compatibility" section) and SenseNova U1.5's training is a deliberately
+separate future phase (its base checkpoint is converted unmerged from the
+8-step distillation LoRA specifically to keep that lineage canonical — see the
+`sensenova` row in `docs/guides/MODEL_FACTS.md`). Do not assume the two lists
+are always the same size — they diverge further with each generation-only
+architecture added.
 
 This is the procedure for adding the next one. Sections 1-8 are the common
 surface; **section 9 is the additional surface a video (or audio) architecture

@@ -1,15 +1,17 @@
 # AGENTS.md
 
 SushiUI is a Stable-Diffusion-style web UI: a FastAPI backend (`backend/`)
-driving 13 diffusion architectures — 9 image (SD1.5, SDXL, Z-Image, Flux2,
-Anima, Lens, Krea2, Ideogram4, MiniT2I), 2 video (LTX-2.3, MiniMax-H3, both of
-which also generate audio jointly) and 2 audio (ACE-Step 1.5, MiniMax Music 3)
-— plus LoRA / full-parameter / tagger / VAE-decoder training, and a Next.js
-frontend (`frontend/`). The authoritative *generation* list is `ModelType` in
-`backend/core/model_loader.py`; the authoritative *training-capable* list is
-`ARCH_REGISTRY` in `backend/core/training/arch/__init__.py` (12 entries — every
-generation architecture except MiniMax Music 3, whose training is out of scope
-today; see `docs/guides/MINIMAX_MUSIC3_DESIGN.md`). Per-architecture facts are
+driving 14 diffusion architectures — 10 image (SD1.5, SDXL, Z-Image, Flux2,
+Anima, Lens, Krea2, Ideogram4, MiniT2I, SenseNova U1.5), 2 video (LTX-2.3,
+MiniMax-H3, both of which also generate audio jointly) and 2 audio (ACE-Step
+1.5, MiniMax Music 3) — plus LoRA / full-parameter / tagger / VAE-decoder
+training, and a Next.js frontend (`frontend/`). The authoritative *generation*
+list is `ModelType` in `backend/core/model_loader.py`; the authoritative
+*training-capable* list is `ARCH_REGISTRY` in
+`backend/core/training/arch/__init__.py` (12 entries — every generation
+architecture except MiniMax Music 3 and SenseNova U1.5, both out of scope for
+training today; see `docs/guides/MINIMAX_MUSIC3_DESIGN.md` for the former).
+Per-architecture facts are
 in `docs/guides/MODEL_FACTS.md`. Every capability is reachable through the
 versioned REST API under `/api/v1` (see `openapi.yaml`), so agents can drive
 and verify most changes without touching the UI. This file is the durable,

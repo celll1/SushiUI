@@ -19,9 +19,9 @@ Local-only files that may be absent in a fresh clone are listed separately.
 | `docs/guides/ARCHITECTURE_MAP.md` | Directory tree + backend/frontend module responsibilities. |
 | `docs/guides/REQUEST_LIFECYCLE.md` | End-to-end request flow (frontend to DB to gallery) for image generation, video generation and model load. |
 | `docs/guides/ADD_A_PARAMETER.md` | Ordered checklist for threading a new API parameter through the stack. |
-| `docs/guides/ADD_A_MODEL_ARCHITECTURE.md` | Procedure for adding another diffusion architecture (13 exist), including the extra surface a video/audio architecture needs. |
+| `docs/guides/ADD_A_MODEL_ARCHITECTURE.md` | Procedure for adding another diffusion architecture (14 exist), including the extra surface a video/audio architecture needs. |
 | `docs/guides/API_TESTING.md` | Safe vs. owner-sanctioned endpoints, dry-run convention, restart polling. |
-| `docs/guides/MODEL_FACTS.md` | Per-architecture facts reference for all 13 architectures, including the video models' (LTX-2.3, MiniMax-H3) and MiniMax Music 3's measured performance and their accepted/refused feature set. |
+| `docs/guides/MODEL_FACTS.md` | Per-architecture facts reference for all 14 architectures, including the video models' (LTX-2.3, MiniMax-H3) and MiniMax Music 3's measured performance and their accepted/refused feature set. |
 | `docs/guides/MINIMAX_MUSIC3_DESIGN.md` | Implementation contract and status for the MiniMax Music 3 audio architecture: why its code is vendored from an unmerged diffusers PR, what the model can and cannot be conditioned on (no reference audio, no negative prompt), the frame-code state contract that extend/repaint depend on, the phase plan, and the weight-format (flat/GGUF/Q8_0/INT8 ConvRot) landing status. Repaint's frontend UI and the component-switch catalog are shipped-backend-only; see the doc's "Current status". |
 | `docs/guides/VAE_TRAINING.md` | Read when running/changing a `vae_decoder` (decoder-only, encoder-frozen) fine-tune, or before touching its loss defaults or refusal gate. |
 | `docs/guides/VAE_DECODE_BEHAVIOR.md` | Read before working on tiled decode, seams, or any claim about what a VAE decoder adds/loses — the measured non-locality decomposition and artifact facts live here. |

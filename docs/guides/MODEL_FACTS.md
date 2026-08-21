@@ -20,17 +20,18 @@ them. No subjective performance claims.
 | krea2 | MM-DiT (single-stream) | Qwen3-VL-4B-Instruct (frozen) | velocity / flow (rectified flow) | latent, `AutoencoderKLQwenImage` 16ch (latents_mean/std) | `guidance = cfg_scale - 1` (default cfg 4.5); distilled/turbo disables CFG (guidance 0) | conduit (tq usable, GQA) (verify infer/train head_dim) | diffusers dir (`Krea2Pipeline`), transformer-only dir (auto-complement), single-file (diffusers/raw/comfy/sushiUI TE+DiT combined); TE `Qwen/Qwen3-VL-4B-Instruct`, VAE `Qwen/Qwen-Image` `vae` (env `KREA2_TE_DIR`/`KREA2_VAE_DIR` overrides) | `krea2_adapter.py`; transformer only, Qwen3-VL TE ALWAYS frozen (`train_text_encoder` rejected), VAE frozen; train_runner forces bf16 |
 | ltx2 | joint video+audio DiT (`LTX2VideoTransformer3DModel`) | Gemma-3 text encoder (frozen) | velocity / flow (`LTX2Pipeline`/`LTX2ImageToVideoPipeline`, txt2vid + img2vid) | 5D video latent (`[T,H,W]`) via LTX video VAE (tiling enabled) + separate audio VAE/vocoder | plain CFG (`guidance_scale`); img2vid pins frame 0 via `conditioning_mask` | n/a (own pipeline backend, not conduit-routed) | not in the single-file completion matrix above (own loader) | own trainer ops (`ltx2_ops.py`); see row-level notes for AP1-3 speed/lightweight features |
 | minimax_h3 | joint video+audio DiT, **single stream, no cross-attention** (vendored `MiniMaxH3Transformer3DModel`, 50 blocks, 33 B dense): one packed sequence of `[text \| conditioning \| audio \| video]` rows scattered by `index_copy`, split back by `index_select` | Qwen3-VL-32B (`Qwen3VLForConditionalGeneration`), truncated to **50 decoder layers**, unnormalised hidden state after layer 50, 5120-dim; frozen, never moved (layer-streamed off the mmap) | velocity / flow with the sign **opposite** to the usual convention, `x0 = x_t + σ·v` (vendored `MiniMaxH3Scheduler`); **two sigma schedules**, video shift 12.0 and audio shift 3.0, each stream stepped on its own grid once per loop iteration | 5-D 24-ch video latent, `AutoencoderKLMiniMaxH3` (16× spatial / 4× temporal, 36-layer ViT decoder, fp16, **pinned tiling policy**), pixels ImageNet-normalised RGB over `[0,1]` (not `[-1,1]`); **separate** 32-ch audio VAE (fp32, 32 kHz stereo) | **none** — no `guidance_scale`, no `negative_prompt`, no unconditional branch; guidance is distilled into the weights, one forward per step. Both keys are accepted and warned on a non-default value | conduit-routed, head_dim 128, equal q/kv heads, no mask → no capability guard fires, so native/flash/sage/tq all really run; sage refused in TRAINING mode by the shared mode guard | ComfyUI-style flat tree (`diffusion_models/` + `text_encoders/` + `vae/`) plus MiniMax's config-only `official/` for geometry, tokenizer and normalization vectors; DiT files are `*_pruned_fp8_scaled` or packed ConvRot `*_pruned_w4a8_mixed` (Comfy-Kitchen 0.2.28), each with `fl2va` and `ref2va` partitions — selecting the FILE selects the workflow | `minimax_h3_adapter.py`, **LoRA only** — full fine-tuning refused in three layers; TE and both VAEs frozen; block swap optional (opt-in) |
+| sensenova | Qwen3-8B LLM used directly as the flow-matching denoiser (MoT: every layer carries a `_mot_gen` twin of q/k/v/o_proj + norms + MLP, selected per token by a boolean mask; 42 layers, hidden 4096, GQA 32 q / 8 kv heads, head_dim 128, 3-axis RoPE) | none separate — the prompt goes through the LLM's own tokenizer + chat template, encoded by the same prefix forward pass that builds the KV cache the denoiser consumes | flow matching, `linspace(0,1)` with **t=0 noise, t=1 clean** (opposite of flux2/zimage's convention), Euler forward, `v = (x_pred - z)/(1-t).clamp_min(t_eps)` | pixel-space (no VAE); resolution free (not bucketed), only the structural /32 token grid (patch 16 x merge 2) enforced by snapping, off-range sizes warn and generate | ordinary CFG via two independent prefix KV caches (cond + empty-string uncond); upstream's own `needs_cfg = cfg_scale > 1` collapses to single-branch at `cfg_scale <= 1`, which is how the 8-step distillation LoRA runs — no separate mode flag | conduit-routed (BSHD); sage auto-refused for GQA declaratively (`supports_gqa=False`), no per-arch registry entry / same conduit, training unimplemented | sushiUI single-file shard index only (`transformer.`-prefixed, `sensenova_config` metadata carries geometry); no upstream single-file distribution to complete siblings against | none — training is a deliberately separate future phase; the base is converted UNMERGED from the 8-step distillation LoRA specifically to keep the trainable lineage canonical |
 | minimax_music3 | 3-stage: 8B `Qwen3ForCausalLM` autoregressive stage + 0.6B RVQ depth decoder (semantic + 7 residual codes/frame) → condition encoder → 2.4B 1D flow-matching DiT (`MiniMaxMusic3Transformer1DModel`, 36 layers, windowed 200-frame/100-hop denoise) → vocoder decode. No separate text encoder component: `prompt`/`lyrics` are tokenized (`Qwen2Tokenizer`) and consumed directly by the AR stage's own `Qwen3ForCausalLM` | AR stage: categorical, top-k 50 sampling of semantic (vocab 16,384) + 7 residual (vocab 1,024 each) codes per 25 Hz frame, cross-entropy-trained upstream. Flow stage: velocity / flow (`FlowMatchEulerDiscreteScheduler`, `invert_sigmas: true`, `sigmas = linspace(1, 1/steps, steps)`) at 86.13 Hz | 128-ch latent = **two folded 64-ch mono streams** (`vocoder.forward` reshapes `[B,128,L]`→`[2B,64,L]`); `MiniMaxMusic3Vocoder` is **decode-only** (upsamples 512× to 44.1 kHz stereo) — the matching encoder exists in `official/dav.pth` but is not part of the released diffusers component set and is not wired | **two CFGs, no negative prompt anywhere.** AR CFG fixed at 1.5 (unconditional branch = the same prompt with interior tokens replaced by `<\|audio_cfg\|>`); flow CFG exposed as `flow_guidance_scale` (default 1.7), unconditional branch conditions on **zeros** (there is no text/audio unconditional branch to negate, structurally, not by omission) | conduit-routed (attention re-pointed at `backend/core/attention/` during vendoring, replacing upstream's `dispatch_attention_fn`); same conduit for inference and (design-only, unimplemented) training | `official/` 7-component tree (default; every config, including for a flat/GGUF DiT, is sourced from here); flat ComfyUI-repack safetensors (DiT + text encoder, key-remapped — fused QKV split, `.gamma`/`.beta` norm rename, condition encoder unfolded out of the DiT; LM+depth-decoder split apart for the text encoder); GGUF containers (same remap, native reader, no `gguf` pip dependency); Q8_0 packed text encoder (`GGUFQ8_0Linear`, dequantizes once per device move); INT8 ConvRot (`ConvRotInt8Linear`, reused unchanged from MiniMax-H3) for both the flat DiT and the pruned text encoder. `text_encoder_file` on `POST /models/load` selects which of 4 text-encoder builders (non-pruned flat, pruned flat, pruned GGUF dense, pruned GGUF Q8_0) runs, generalising MiniMax-H3's `te_override` field | **none.** Training is out of scope for the phases shipped so far; not in `ARCH_REGISTRY`. Design-forward-compatible only: flow-stage (DiT) LoRA is reachable in principle (needs a from-scratch DAV-encoder reimplementation, since the encoder half is unpublished in the diffusers component set), AR-stage (LM) training is **blocked** — the RVQ tokenizer's own encoder (turns audio into the codes the LM predicts) is not published anywhere in the release |
 
-## VRAM management: keep_models_hot (opt-in, all image archs except ltx2)
+## VRAM management: keep_models_hot (opt-in, all image archs except sensenova; ltx2 is video)
 
 Post-load CPU offload and generation-time sequential component staging (text
 encoder(s) -> GPU -> encode -> CPU, denoiser -> GPU -> denoise -> CPU, VAE ->
 GPU -> decode -> CPU, one component on GPU at a time to bound peak VRAM) is
 already implemented for every architecture: the SDXL reference path in
-`backend/core/vram_optimization.py`, the 7 DiT archs via per-arch `_move`
-helpers in `pipeline_backends/*.py`, and LTX-2.3 via diffusers accelerate's
-`model_cpu_offload_seq` hooks.
+`backend/core/vram_optimization.py`, the 8 DiT archs (including sensenova) via
+per-arch `_move` helpers in `pipeline_backends/*.py`, and LTX-2.3 via
+diffusers accelerate's `model_cpu_offload_seq` hooks.
 
 `keep_models_hot` (`GenerationParams`, default `false`) is an additional,
 opt-in layer on top of that staging: when a queue runs consecutive
@@ -71,6 +72,10 @@ reused verbatim by SD1.5/SDXL (`pipeline.py`) and all 7 DiT image archs
   encoder) + 5.2 GB + 0.6 GB against a 48 GB card, so there is no configuration
   in which two of them are wanted resident at once. `core/keep_hot.py` is not
   imported by `pipeline_backends/{ltx2,acestep,minimax_h3}.py`.
+- **sensenova is excluded too**: `core/keep_hot.py` is not imported by
+  `pipeline_backends/sensenova.py`. Its transformer is the ONLY component
+  (pixel-space, no VAE, no separate text encoder), so keep-hot's per-component
+  residency has nothing to partition across.
 - **Frontend**: the generation queue (`GenerationQueueContext`) sets
   `keep_models_hot = true` on every queued item except the last one in a
   back-to-back run on txt2img/img2img/inpaint; the last item sends `false`
@@ -98,7 +103,7 @@ Measurements, the non-locality decomposition and the two tiling options are in
 | `AutoencoderKLLTXVideo` | ltx2 | **5-D** | n/a (video VAE, not measured) | n/a | **not offered** |
 | `AutoencoderKLMiniMaxH3` (24ch) | minimax_h3 (video) | **5-D** | present (`MiniMaxH3VideoGroupNorm` in the conv encoder; the decoder is a 36-layer ViT with RMSNorm) | ViT decoder is all attention | **not offered** (5-D, and its tiling policy is pinned — see the row-level notes) |
 | `AutoencoderKLMiniMaxH3Audio` (32ch) | minimax_h3 (audio) | 3-D waveform latent | n/a (DAC/BigVGAN-derived 1-D stack) | n/a | **not offered** |
-| none | minit2i (default variants) | pixel-space | n/a | n/a | **not offered** (no VAE) |
+| none | minit2i (default variants), sensenova | pixel-space | n/a | n/a | **not offered** (no VAE) |
 
 Consequences:
 
@@ -612,7 +617,7 @@ a generation without style transfer.
   - Host RAM: a runtime INT8 conversion of the 23.9 GB bf16 transformer holds
     roughly 36 GB of host RAM for the session (source mapping + quantized
     module); see the measured Anima ratio in the Anima row.
-- **ltx2** — Video (+ optional audio) generation, not part of the 9-architecture
+- **ltx2** — Video (+ optional audio) generation, not part of the 10-architecture
   image roster; loaded/routed separately from `model_loader.py`'s image-model
   detection. All speed/lightweight features below are opt-in (default OFF) and
   apply to both txt2vid and img2vid.
@@ -1438,6 +1443,62 @@ a generation without style transfer.
   - **Attribution**: the UI displays this architecture as "MiniMax H3", which the
     model's license requires (`archDisplayName` in `frontend/src/utils/api.ts`,
     `_ARCH_DISPLAY_NAMES` in `int8_runtime_quantize.py`).
+- **sensenova** — SenseNova-U1.5-8B-MoT, vendored under `models/sensenova/vendor/`
+  the same way as MiniMax-H3 (model classes only; SushiUI owns the denoise
+  loop, driving the vendored `NEOChatModel` from `sensenova_pipeline_ops.py`
+  rather than calling upstream's `t2i_generate`). Apache-2.0,
+  `github.com/OpenSenseNova/SenseNova-U1` branch `feat/u1.5`.
+  - **Sampling direction is the trap**: `t=0` is noise and `t=1` is clean —
+    the OPPOSITE of Z-Image/FLUX.2's convention in this repo. img2img/inpaint
+    follow MiniT2I (the other pixel-space, no-VAE arch), not flux2: img2img is
+    SDEdit from `t_start = 1 - denoising_strength`, inpaint is RePaint
+    (re-pins the known region each step against noise drawn once).
+  - **Ships already int8-quantized**: the conversion script
+    (`quantize_transformer_fp8`-adjacent, arch-specific) quantizes exactly the
+    588 Linears of both MoT branches — 42 layers x {q,k,v,o}_proj + their
+    `_mot_gen` twins + both MLPs — to per-row int8 weight-only; `lm_head`,
+    embeddings, all norms, the flow-matching pixel head and both vision patch
+    embeds stay bf16. Source 46.8 GiB -> converted 17.6 GiB, 5 shards. In
+    `QUANTIZED_LINEAR_ARCHS` but deliberately NOT `RUNTIME_INT8_ARCHS` — no
+    unquantized transformer exists for the in-place converter to act on (same
+    reasoning as `minimax_h3`); `unet_quantization` is listed unsupported for
+    this reason.
+  - **8-step distillation LoRA**: applied over the already-int8-quantized base
+    via `Int8Linear`-aware LoRA (an `isinstance(x, nn.Linear)` predicate would
+    silently drop every target), never merged, restored in the same `finally`
+    that tears down the KV caches. Targets exactly the 294 gen-branch Linears
+    the conversion quantizes. `cfg_scale <= 1` is what drives the 8-step path
+    (upstream's own `needs_cfg = cfg_scale > 1` collapses CFG to a single
+    branch); there is no separate mode flag.
+  - **Resolution**: free, not bucketed; only the structural /32 token grid
+    (patch 16 x merge 2) is enforced by snapping. The 11 upstream ~4 MP
+    training-resolution buckets ship as UI presets (starting points, not
+    restrictions); an off-bucket size warns (`sensenova_resolution`) and
+    generates anyway.
+  - **Refused, with a typed error, not warned**: reference-image editing
+    (`ref_images`) and spatial outpaint (`_reject_if_sensenova_unsupported`).
+    Both are deferred as a distinct, larger feature rather than refused for
+    lacking a mapping onto strength/masks — reference-image editing needs a
+    second vision-tower conditioning pass plus multi-reference prompt-prefix
+    construction. VQA has no route anywhere in this codebase, so its absence
+    is a documentation fact, not a refusal.
+  - **Measured, RTX 6000 Ada 48 GB, int8, SDPA**: 2048x2048, 50 steps, CFG
+    (two prefix-KV-cache branches) — 5.488 s/step, 275.1 s wall, prefill
+    0.74 s, peak 24.51 GiB. 2048x2048, 8 steps, `cfg_scale=1.0`, distillation
+    LoRA (294/294 modules applied) — 2.675 s/step, 22.0 s wall, prefill
+    0.61 s, peak 24.58 GiB (per-step cost roughly halves because the single
+    branch drops the uncond forward). Peak VRAM scales roughly linearly with
+    pixel count; 3008x3008 (9.05 MP) at 43.68 GiB is the largest arm that
+    completed on the 48 GB card, and 3162x3162 (10.0 MP) failed after the
+    checkpoint was resident with no traceback or OOM message — exhaustion
+    inferred from the VRAM trend, not read from an error. int8 vs bf16 at a
+    fixed seed was visually indistinguishable (same composition, framing,
+    lighting; differences confined to fine detail), so plain int8 stands and
+    ConvRot was not needed.
+  - **Training is a deliberately separate future phase**, not in
+    `ARCH_REGISTRY`: the base checkpoint is converted UNMERGED from the
+    8-step distillation LoRA specifically to keep the trainable lineage
+    canonical.
 - **minimax_music3** — Full implementation account, including every measured
   number and the audit history behind them, is
   `docs/guides/MINIMAX_MUSIC3_DESIGN.md`; this entry states only the facts an

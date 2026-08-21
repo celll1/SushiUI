@@ -151,18 +151,10 @@ class SenseNovaMixin:
         ref_images = params.get("ref_images") or []
         img_cfg_scale = float(params.get("img_cfg_scale", SENSENOVA_GENERATION_DEFAULTS["img_cfg_scale"]))
 
-        # A prompt may place references explicitly with <image> markers. More
-        # markers than references is a user error, so refuse it as a 4xx here
-        # rather than letting encode_prompt's backstop ValueError become a 500.
-        placeholders = str(params.get("prompt", "")).count("<image>")
-        if placeholders > len(ref_images):
-            from api.error_handlers import ValidationError
-            raise ValidationError(
-                "More <image> placeholders than reference images",
-                detail=f"The prompt has {placeholders} <image> placeholder(s) but {len(ref_images)} "
-                       f"reference image(s) were supplied. Supply one reference per placeholder, or "
-                       f"remove the extra placeholders.",
-            )
+        # The <image>-placeholder/reference count check lives at the route
+        # (routes.py's _reject_if_sensenova_ref_placeholders_exceed_refs):
+        # raising ValidationError here would be re-wrapped as a 500 by the
+        # route's generic except, since it is GenerationError's sibling.
         if not ref_images and img_cfg_scale != SENSENOVA_GENERATION_DEFAULTS["img_cfg_scale"]:
             msg = (f"[SenseNova] img_cfg_scale={img_cfg_scale} has no effect without ref_images "
                    f"(it only applies to reference-image editing).")

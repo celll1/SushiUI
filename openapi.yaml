@@ -566,7 +566,10 @@ paths:
             request shape of the route that was called (img2img -> /generate/img2vid
             or /generate/aud2aud, inpaint -> /generate/inpaint/video on MiniMax-H3
             or /generate/aud2aud, outpaint -> /generate/outpaint/video or
-            /generate/outpaint/audio), not always the text-only one.
+            /generate/outpaint/audio), not always the text-only one. Also refused
+            when SenseNova U1.5 is loaded and more than 5 `ref_images` are supplied
+            (5 is upstream's largest demonstrated reference count), or when the
+            prompt contains more `<image>` placeholders than there are references.
           content:
             application/json:
               schema:
@@ -1474,10 +1477,9 @@ paths:
             or /generate/aud2aud, inpaint -> /generate/inpaint/video on MiniMax-H3
             or /generate/aud2aud, outpaint -> /generate/outpaint/video or
             /generate/outpaint/audio), not always the text-only one. Also refused
-            when SenseNova U1.5 is loaded AND `ref_images` is supplied: reference-image
-            editing is deferred (a distinct, larger feature needing a second
-            vision-tower conditioning pass and multi-reference prompt-prefix
-            construction) -- SenseNova's plain img2img (no ref_images) works normally.
+            when SenseNova U1.5 is loaded and more than 5 `ref_images` are supplied
+            (5 is upstream's largest demonstrated reference count), or when the
+            prompt contains more `<image>` placeholders than there are references.
           content:
             application/json:
               schema:
@@ -1550,10 +1552,9 @@ paths:
             or /generate/aud2aud, inpaint -> /generate/inpaint/video on MiniMax-H3
             or /generate/aud2aud, outpaint -> /generate/outpaint/video or
             /generate/outpaint/audio), not always the text-only one. Also refused
-            when SenseNova U1.5 is loaded AND `ref_images` is supplied: reference-image
-            editing is deferred (a distinct, larger feature needing a second
-            vision-tower conditioning pass and multi-reference prompt-prefix
-            construction) -- SenseNova's plain inpaint (no ref_images) works normally.
+            when SenseNova U1.5 is loaded and more than 5 `ref_images` are supplied
+            (5 is upstream's largest demonstrated reference count), or when the
+            prompt contains more `<image>` placeholders than there are references.
           content:
             application/json:
               schema:

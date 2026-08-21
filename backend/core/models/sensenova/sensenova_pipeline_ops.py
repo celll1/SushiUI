@@ -239,6 +239,7 @@ def _embed_reference_images(
             pass
     pixel_values, grid_hw = [], []
     for image in ref_images:
+        raise_if_cancelled()  # up to 5 vision-tower encodes before step 0
         cur_pixel_values, cur_grid_hw = load_image_native(
             image, transformer.patch_size, transformer.downsample_ratio,
             min_pixels=512 * 512, max_pixels=max_pixels,
@@ -452,8 +453,15 @@ def encode_prompt(
                     "<image>" * len(ref_images), len(ref_images), grid_hw, transformer.downsample_ratio)
                 if negative_into_img_cond:
                     img_cond_text = f"{img_cond_text}\n{negative_prompt}"
-                    print(f"[{LABEL}] negative_prompt carried on the img_cond (reference) branch, "
-                          f"which is this run's CFG baseline (img_cfg_scale={img_cfg_scale}).")
+                    msg = (f"[{LABEL}] negative_prompt carried on the img_cond (reference) branch, this run's "
+                           f"CFG baseline at img_cfg_scale={img_cfg_scale}. Upstream conditions that branch on "
+                           f"the images alone; set img_cfg_scale != 1 for a separate uncond branch instead.")
+                    print(msg)
+                    try:
+                        from api.generation_status import add_warning
+                        add_warning(msg, code="sensenova_negative_prompt_on_img_cond")
+                    except Exception:
+                        pass
                 query_img_cond = transformer._build_t2i_query(img_cond_text, append_text="<img>")
 
             query_uncond = transformer._build_t2i_query(negative_prompt, append_text="<img>") if needs_uncond else None
@@ -719,13 +727,13 @@ def _euler_run(
 
     img_cfg_scale = prefix.encode_img_cfg_scale
     # A second branch of EITHER kind gives CFG a baseline: uncond for the
-    # classic blend, img_cond for the reference-image blend at
-    # img_cfg_scale == 1 (its default -- so refs runs legitimately have no
-    # uncond cache and must not be reported as broken CFG).
-    if (cfg_scale > 1 or img_cfg_scale > 1) and (prefix.uncond_past_key_values is None
-                                                 and prefix.img_cond_past_key_values is None):
-        msg = (f"[{LABEL}] cfg_scale={cfg_scale}/img_cfg_scale={img_cfg_scale} was requested for this denoise "
-              f"pass, but the prefix was built with encode_prompt(cfg_scale={prefix.encode_cfg_scale}, "
+    # classic blend, img_cond for the reference blend at img_cfg_scale == 1.
+    # img_cfg_scale only counts as "CFG was asked for" on the reference path;
+    # without references it is inert and warned about by the pipeline backend.
+    if ((cfg_scale > 1 or (prefix.has_reference_images and img_cfg_scale > 1))
+            and prefix.uncond_past_key_values is None and prefix.img_cond_past_key_values is None):
+        msg = (f"[{LABEL}] cfg_scale={cfg_scale} was requested for this denoise pass, but the prefix was "
+              f"built with encode_prompt(cfg_scale={prefix.encode_cfg_scale}, "
               f"img_cfg_scale={prefix.encode_img_cfg_scale}), which built no second branch, so no CFG baseline "
               f"exists. CFG is silently unavailable this run -- proceeding single-branch, which is visibly "
               f"weaker than a normal cfg_scale={cfg_scale} generation.")

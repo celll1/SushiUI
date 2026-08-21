@@ -329,6 +329,16 @@ def save_image_with_metadata(
     if params.get("use_tipo", False):
         metadata.add_text("use_tipo", "True")
 
+    # SenseNova U1.5 flow-matching time-shift (non-default only; every other
+    # architecture ignores the field entirely).
+    timestep_shift = params.get("timestep_shift")
+    if timestep_shift is not None:
+        # Local import: param_defaults is the single source of truth for the
+        # default, and importing it at module scope would couple utils -> api.
+        from api.param_defaults import GENERATION_DEFAULTS
+        if float(timestep_shift) != float(GENERATION_DEFAULTS["timestep_shift"]):
+            metadata.add_text("timestep_shift", str(timestep_shift))
+
     # Spectrum forecasting (write full family only when enabled)
     if params.get("spectrum_enable", False):
         metadata.add_text("spectrum_enable", "True")

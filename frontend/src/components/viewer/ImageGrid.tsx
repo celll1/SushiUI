@@ -610,6 +610,8 @@ export default function ImageGrid() {
     if (sendParameters) {
       txt2imgParams.steps = image.steps;
       txt2imgParams.cfg_scale = image.cfg_scale;
+      // SenseNova U1.5 flow-matching time-shift; absent for every other architecture.
+      txt2imgParams.timestep_shift = image.parameters?.timestep_shift ?? 3.0;
       txt2imgParams.sampler = image.parameters?.sampler || "euler";
       txt2imgParams.schedule_type = image.parameters?.schedule_type || "uniform";
       txt2imgParams.seed = image.seed;
@@ -1378,6 +1380,13 @@ export default function ImageGrid() {
                           <span className="text-gray-400">Scheduler:</span> {selectedImage.parameters?.schedule_type || 'uniform'}
                         </div>
                       </div>
+                      {/* SenseNova U1.5 flow-matching time-shift; absent for every other architecture */}
+                      {selectedImage.parameters?.timestep_shift !== undefined
+                        && selectedImage.parameters.timestep_shift !== 3.0 && (
+                        <div>
+                          <span className="text-gray-400">Timestep Shift:</span> {selectedImage.parameters.timestep_shift}
+                        </div>
+                      )}
                     </>
                   )}
                   <div className="grid grid-cols-2 gap-2">

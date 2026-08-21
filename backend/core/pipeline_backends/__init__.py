@@ -16,6 +16,7 @@ from core.pipeline_backends.ltx2 import LTX2Mixin
 from core.pipeline_backends.acestep import AceStepMixin
 from core.pipeline_backends.minimax_h3 import MiniMaxH3Mixin
 from core.pipeline_backends.minimax_music3 import MiniMaxMusic3Mixin
+from core.pipeline_backends.sensenova import SenseNovaMixin
 
 __all__ = [
     "ZImageMixin",
@@ -29,4 +30,5 @@ __all__ = [
     "AceStepMixin",
     "MiniMaxH3Mixin",
     "MiniMaxMusic3Mixin",
+    "SenseNovaMixin",
 ]

@@ -49,12 +49,37 @@ def classify_lora_keys(keys) -> Dict[str, Any]:
     the UI) -- do not add a second signature table elsewhere; extend HERE.
 
     Returns ``{"arch": str, "blocks": List[str]}``. ``arch`` is one of
-    "sd15", "sdxl", "zimage", "flux2", "minimax_h3", "unknown" ("unknown" is a
-    first-class value, not an error).
+    "sd15", "sdxl", "zimage", "flux2", "minimax_h3", "sensenova", "unknown"
+    ("unknown" is a first-class value, not an error).
     """
     keys = list(keys)
     blocks = set()
     arch = "unknown"
+
+    # --- SenseNova-U1.5-8B-MoT (distillation LoRA over the Qwen3-as-denoiser
+    # gen branch) --------------------------------------------------------
+    # Keys: language_model.model.layers.{N}.self_attn.{q,k,v,o}_proj_mot_gen.
+    # <lora_down.weight|lora_up.weight|alpha> and
+    # language_model.model.layers.{N}.mlp_mot_gen.{gate,up,down}_proj.<...>.
+    # No other architecture's LoRA keys ever start with
+    # "language_model.model.layers." (every other arch here is a diffusion
+    # U-Net/DiT, spelling "lora_unet_"/"diffusion_model."/"transformer.*");
+    # the "_mot_gen" (Mixture-of-Transformers generation branch) suffix is a
+    # second, independent marker checked alongside it so a same-prefixed key
+    # from some future non-MoT LLM-backed arch is not misclassified here.
+    is_sensenova = any(
+        key.startswith('language_model.model.layers.') and 'mot_gen' in key
+        for key in keys
+    )
+    if is_sensenova:
+        arch = "sensenova"
+        for key in keys:
+            match = re.search(r'language_model\.model\.layers\.(\d+)\.', key)
+            if match:
+                blocks.add(f"L{int(match.group(1)):02d}")
+        if not blocks:
+            blocks.add("BASE")
+        return {"arch": arch, "blocks": _sort_lora_blocks(blocks)}
 
     # --- MiniMax-H3 (ComfyUI-exported LoRA) ---------------------------------
     # Keys: diffusion_model.blocks.{N}.<attn.qkv_proj|attn.out_proj|mlp.fc1|
@@ -159,7 +184,7 @@ def classify_lora_keys(keys) -> Dict[str, Any]:
 
 def _sort_lora_blocks(blocks) -> List[str]:
     """Sort block labels: BASE, IN00-IN.., MID, OUT00-.., NRef/CRef/FDiT
-    (Z-Image), DUAL/SING (FLUX.2), MMB/TREF/FINAL (MiniMax-H3)."""
+    (Z-Image), DUAL/SING (FLUX.2), MMB/TREF/FINAL (MiniMax-H3), L00-.. (SenseNova)."""
     def sort_key(block):
         if block == "BASE":
             return (0, 0)
@@ -187,6 +212,8 @@ def _sort_lora_blocks(blocks) -> List[str]:
             return (3, 0)
         elif block.startswith("MMB"):
             return (2, int(block[3:]))
+        elif block.startswith("L"):
+            return (1, int(block[1:]))
         return (9, 0)
 
     return sorted(list(blocks), key=sort_key)
@@ -449,7 +476,8 @@ class LoRAManager:
 
         Returns:
             The detected arch string ("sd15" | "sdxl" | "zimage" | "flux2" |
-            "minimax_h3" | "unknown") if this is a valid LoRA file, else None.
+            "minimax_h3" | "sensenova" | "unknown") if this is a valid LoRA
+            file, else None.
         """
         # Exclude known training artifacts by filename patterns
         filename = file_path.name.lower()

@@ -71,11 +71,30 @@ import { useGenerationQueue } from "@/contexts/GenerationQueueContext";
 import { createH3ReferenceInventory, maybeTransformH3PromptForGeneration } from "@/utils/h3PromptAssist";
 import { readGlobalAttentionType } from "@/utils/attentionSettings";
 
+// SenseNova U1.5's 11 ~4MP training resolution buckets, starting points not
+// restrictions -- width/height stay freely editable. Labelled with ratio and
+// pixel size only (no "recommended"/"best").
+const SENSENOVA_RESOLUTION_PRESETS: Array<{ label: string; width: number; height: number }> = [
+  { label: "1:1 2048×2048", width: 2048, height: 2048 },
+  { label: "4:3 2368×1760", width: 2368, height: 1760 },
+  { label: "3:4 1760×2368", width: 1760, height: 2368 },
+  { label: "16:9 2720×1536", width: 2720, height: 1536 },
+  { label: "9:16 1536×2720", width: 1536, height: 2720 },
+  { label: "3:2 2496×1664", width: 2496, height: 1664 },
+  { label: "2:3 1664×2496", width: 1664, height: 2496 },
+  { label: "1:2 1440×2880", width: 1440, height: 2880 },
+  { label: "2:1 2880×1440", width: 2880, height: 1440 },
+  { label: "1:3 1152×3456", width: 1152, height: 3456 },
+  { label: "3:1 3456×1152", width: 3456, height: 1152 },
+];
+
 const DEFAULT_PARAMS: GenerationParams = {
   prompt: "",
   negative_prompt: "",
   steps: 20,
   cfg_scale: 7.0,
+  // SenseNova U1.5 flow-matching time-shift; every other architecture ignores it.
+  timestep_shift: 3.0,
   sampler: "euler",
   schedule_type: "uniform",
   seed: -1,
@@ -555,6 +574,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
   const supportsSpectrum = archSupportsFeature(archCapabilities, loadedArch, "spectrum");
   const supportsFbcache = archSupportsFeature(archCapabilities, loadedArch, "fbcache");
   const supportsFuseOutputProj = archSupportsFeature(archCapabilities, loadedArch, "fuse_output_proj");
+  const supportsTimestepShift = archSupportsFeature(archCapabilities, loadedArch, "timestep_shift");
   // The value the video Block Swap checkbox writes when turned ON (backend
   // SSOT: param_defaults.VIDEO_GEN_DEFAULTS["blocks_to_swap_enabled_default"],
   // identical across txt2vid/img2vid/ref2vid since there is no per-arch
@@ -5132,6 +5152,16 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                 value={params.cfg_scale}
                 onChange={(e) => setParams({ ...params, cfg_scale: parseFloat(e.target.value) })}
               />
+              {supportsTimestepShift && (
+                <Slider
+                  label="Timestep Shift"
+                  min={0.1}
+                  max={10.0}
+                  step={0.1}
+                  value={params.timestep_shift ?? 3.0}
+                  onChange={(e) => setParams({ ...params, timestep_shift: parseFloat(e.target.value) })}
+                />
+              )}
             </div>
 
             <div className="space-y-4">
@@ -5221,6 +5251,24 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                         title={`${preset.width}×${preset.height}`}
                       >
                         {preset.width}×{preset.height}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {loadedArch === "sensenova" && (
+                <div className="space-y-2">
+                  <label className="block text-sm font-medium text-gray-300">SenseNova U1.5 Resolution Buckets</label>
+                  <div className="grid grid-cols-3 sm:grid-cols-6 gap-2">
+                    {SENSENOVA_RESOLUTION_PRESETS.map((preset) => (
+                      <button
+                        key={`sensenova-${preset.width}x${preset.height}`}
+                        onClick={() => setParams({ ...params, width: preset.width, height: preset.height })}
+                        className="px-2 py-1 text-xs bg-gray-700 hover:bg-gray-600 rounded transition-colors"
+                        title={`${preset.width}×${preset.height}`}
+                      >
+                        {preset.label}
                       </button>
                     ))}
                   </div>

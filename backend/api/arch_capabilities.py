@@ -104,6 +104,9 @@ FEATURE_PARAMS: Dict[str, List[str]] = {
     # entries just below, which are unreachable because their routes reject
     # ACE-Step on the image endpoints outright.
     "audio_reference_conditioning": ["reference_audio_path", "reference_audio_enable", "is_cover"],
+    # SenseNova U1.5's flow-matching time-shift. No other architecture has an
+    # equivalent knob at the API layer.
+    "timestep_shift": ["timestep_shift"],
 }
 
 # Human-readable label used in the warning message for each feature.
@@ -133,6 +136,7 @@ FEATURE_LABELS: Dict[str, str] = {
     "lora": "loras (LoRA)",
     "fuse_output_proj": "fuse_output_proj (output-tail head fusion)",
     "audio_reference_conditioning": "reference_audio_path/reference_audio_enable/is_cover (reference-audio conditioning)",
+    "timestep_shift": "timestep_shift (SenseNova U1.5 flow-matching time-shift)",
 }
 
 # ---------------------------------------------------------------------------
@@ -140,7 +144,7 @@ FEATURE_LABELS: Dict[str, str] = {
 # effect on that architecture.
 # ---------------------------------------------------------------------------
 _DIT_ARCHS = ["zimage", "flux2", "ideogram4", "lens", "minit2i", "anima", "krea2", "ltx2", "acestep",
-              "minimax_h3", "minimax_music3"]
+              "minimax_h3", "minimax_music3", "sensenova"]
 # Both Spectrum and FBCache are wired for every image DiT arch through the
 # same shared pattern (spectrum_params=params -> build_output_forecaster() /
 # fbcache_active()+build_fbcache() inside each arch's *_pipeline_ops.py denoise
@@ -150,8 +154,8 @@ _DIT_ARCHS = ["zimage", "flux2", "ideogram4", "lens", "minit2i", "anima", "krea2
 # core/pipeline_backends/ltx2.py). Only krea2, acestep and minimax_music3
 # have no such codepath at all. MiniMax-H3 implements paired video/audio
 # final-output forecasting and guarded whole-state FBCache.
-_SPECTRUM_UNSUPPORTED = ["krea2", "acestep", "minimax_music3"]
-_FBCACHE_UNSUPPORTED = ["krea2", "acestep", "minimax_music3"]
+_SPECTRUM_UNSUPPORTED = ["krea2", "acestep", "minimax_music3", "sensenova"]
+_FBCACHE_UNSUPPORTED = ["krea2", "acestep", "minimax_music3", "sensenova"]
 
 ARCH_UNSUPPORTED: Dict[str, Dict[str, str]] = {}
 
@@ -276,6 +280,38 @@ _add("acestep", "nag", "Normalized Attention Guidance is not implemented for the
 _add("acestep", "controlnets", "ControlNet is not supported for the ACE-Step audio model")
 
 # ---------------------------------------------------------------------------
+# SenseNova-U1.5-8B-MoT: a Qwen3-8B LLM used directly as a flow-matching
+# denoiser in pixel space (no VAE, no separate text encoder -- the prompt goes
+# through the LLM's own tokenizer/chat template). txt2img, img2img (SDEdit)
+# and inpaint (RePaint) are implemented in this integration; reference-image
+# editing (`ref_images`) and spatial outpaint are refused at the route
+# (core.pipeline_backends.sensenova / routes.py's
+# `_reject_if_sensenova_unsupported`), not warned here, because they are
+# absent capabilities rather than ignored parameters. Reference-image editing
+# is deferred as a distinct, larger feature -- it needs a second vision-tower
+# conditioning pass plus multi-reference prompt-prefix construction, not a
+# missing mapping and not raw implementation difficulty. VQA (visual
+# question answering) has no route in this codebase at all; that is a
+# documentation fact, not a refusal.
+# ---------------------------------------------------------------------------
+_add("sensenova", "advanced_cfg",
+     "CFG scheduling / dynamic thresholding / CFG-rescale run only in the U-Net sampling loop, not in SenseNova's flow-matching sampler")
+_add("sensenova", "negative_prompt",
+     "the classifier-free-guidance unconditional branch always conditions on the empty string through the same chat template; a user-supplied negative_prompt has no effect")
+_add("sensenova", "nag", "Normalized Attention Guidance is not implemented for SenseNova U1.5")
+_add("sensenova", "controlnets", "ControlNet is not supported for SenseNova U1.5")
+_add("sensenova", "vae_override",
+     "VAE override is not supported on this pixel-space architecture, which has no VAE")
+_add("sensenova", "text_encoder_quantization",
+     "there is no separate text-encoder path to quantize; SenseNova's LLM is the denoiser itself and ships pre-quantized (this repo's own int8 conversion)")
+_add("sensenova", "cpu_text_encoding",
+     "CPU text encoding is not honored: prompt encoding is the LLM's own prefix-forward pass, which builds the KV cache the denoise loop consumes on-device")
+_add("sensenova", "attention_impl",
+     "attention_impl is only consumed by the FLUX.2 inference path; this architecture is conduit-only or ignores it")
+_add("sensenova", "unet_quantization",
+     "the released SenseNova checkpoint already ships weight-only int8-quantized (this repo's own conversion: 588 Int8Linear modules), so there is no unquantized transformer for the per-generation converter to convert")
+
+# ---------------------------------------------------------------------------
 # MiniMax Music 3 (lyrics- and caption-conditioned music generation, driven
 # through /generate/txt2aud alongside ACE-Step; see
 # docs/guides/MINIMAX_MUSIC3_DESIGN.md "Capability verdict"). Image endpoints
@@ -386,6 +422,12 @@ for _a in [a for a in _ALL_ARCHS if a not in _QUANTIZED_GEMM_SUPPORTED]:
          "quantized-GEMM path selection applies only to the weight-only quantized Linear "
          f"layers used by {arch_names(QUANTIZED_LINEAR_ARCHS)}")
 
+# timestep_shift: a SenseNova U1.5-specific flow-matching time-shift; every
+# other architecture's sampler has no equivalent knob and ignores it.
+for _a in [a for a in _ALL_ARCHS if a != "sensenova"]:
+    _add(_a, "timestep_shift",
+         "timestep_shift is a SenseNova U1.5-specific flow-matching time-shift parameter; this architecture's sampler does not consult it")
+
 # Text-encoder quantization: not applied on these architectures' text-encoder paths.
 for _a in ["sd15", "sdxl", "ideogram4", "minit2i", "krea2", "ltx2", "acestep", "minimax_music3"]:
     _add(_a, "text_encoder_quantization",
@@ -428,6 +470,11 @@ for _a in _DIT_ARCHS:
 for _a in _DIT_ARCHS:
     _add(_a, "te_override",
          "text-encoder override is only supported on SD1.5/SDXL; this architecture's text encoder feeds arch-specific fusion trained for that exact geometry")
+# SenseNova has no separate text encoder AT ALL (the generic reason above talks
+# about a fusion connector this arch does not have): the prompt is encoded by
+# the same Qwen3-8B LLM that denoises, through its own tokenizer/chat template.
+_add("sensenova", "te_override",
+     "SenseNova U1.5 has no separate text encoder to override: the prompt is encoded by the same Qwen3-8B LLM that denoises, through its own tokenizer/chat template")
 
 # VAE override: unsupported on LTX-2.3 (a component swap invalidates the cpu-offload
 # hook chain and there is no compatible 5D VAE), on MiniT2I (pixel-space, no VAE),

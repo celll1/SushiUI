@@ -162,6 +162,38 @@ H3_HYBRID_LOAD_DEFAULTS: Dict[str, Any] = {
 }
 
 # ---------------------------------------------------------------------------
+# SenseNova-U1.5-8B-MoT generation defaults
+# ---------------------------------------------------------------------------
+# Image generation (GENERATION_DEFAULTS below) is a FLAT dict shared by every
+# image architecture -- unlike video/audio there is no per-arch overlay
+# mechanism (VIDEO_GEN_ARCH_OVERLAYS / AUDIO_GEN_ARCH_OVERLAYS): the single
+# /generate/txt2img route's Form() signature serves all 9 image archs, so
+# `steps`/`cfg_scale` keep resolving to the shared GENERATION_DEFAULTS (20 /
+# 7.0) for a loaded SenseNova model too, exactly as they already do for every
+# other DiT architecture. Building an image-side overlay mechanism to give
+# ONE architecture its own steps/cfg_scale default is out of scope for this
+# unit. `SENSENOVA_GENERATION_DEFAULTS` below is instead consulted as
+# `core.pipeline_backends.sensenova`'s internal fallback for a caller that
+# builds a params dict without going through the route (mirrors MiniT2I's
+# existing `params.get("cfg_scale", 6.0)` pattern in
+# `core/pipeline_backends/minit2i.py`, sourced from here instead of a bare
+# literal). `timestep_shift` is new to this architecture and collides with no
+# other arch's key, so it is exposed as a real, shared `GENERATION_DEFAULTS`
+# entry (below) even though the dict stays flat.
+SENSENOVA_GENERATION_DEFAULTS: Dict[str, Any] = {
+    # Upstream reference (examples/t2i/inference.py) default step count -- NOT
+    # the 8-step distillation LoRA's count. Driving the LoRA path is the
+    # caller's own choice (cfg_scale<=1 collapses CFG to single-branch); there
+    # is no separate "8-step mode" flag anywhere in this integration.
+    "steps": 50,
+    "cfg_scale": 4.0,
+    # Upstream examples/t2i/inference.py default (NOT config.json's
+    # timestep_shift: 1.0 -- see core/models/sensenova/sensenova_pipeline_ops.py's
+    # module docstring for why the example script's value is the one used here).
+    "timestep_shift": 3.0,
+}
+
+# ---------------------------------------------------------------------------
 # Generation (txt2img / img2img / inpaint)
 # ---------------------------------------------------------------------------
 # Authoritative source: Form() defaults in generate_* route handlers.
@@ -172,6 +204,10 @@ GENERATION_DEFAULTS: Dict[str, Any] = {
     "negative_prompt": "",
     "steps": 20,
     "cfg_scale": 7.0,
+    # SenseNova U1.5 flow-matching time-shift (see SENSENOVA_GENERATION_DEFAULTS
+    # above). Every other architecture has no equivalent knob and ignores it
+    # (accepted and warned, api/arch_capabilities.py).
+    "timestep_shift": SENSENOVA_GENERATION_DEFAULTS["timestep_shift"],
     "sampler": "euler",
     "schedule_type": "uniform",
     "seed": -1,

@@ -420,6 +420,8 @@ class GenerationParams(BaseModel):
     negative_prompt: Optional[str] = ""
     steps: int = 20
     cfg_scale: float = 7.0
+    # SenseNova U1.5 flow-matching time-shift; every other architecture ignores it.
+    timestep_shift: float = GENERATION_DEFAULTS["timestep_shift"]
     sampler: str = "euler"
     schedule_type: str = "uniform"
     seed: int = -1
@@ -647,6 +649,41 @@ def _reject_if_audio_model(endpoint: str = "/generate/txt2img"):
             f"The loaded model is an audio model (MiniMax Music 3); use {replacement}",
             detail=f"MiniMax Music 3 produces music, not still images, so {endpoint} cannot serve "
                    f"it. Load an image model for txt2img/img2img/inpaint/outpaint.",
+        )
+
+
+def _reject_if_sensenova_unsupported(endpoint: str, has_ref_images: bool = False):
+    """Refuse a SenseNova U1.5 request for a capability this integration does
+    not implement: reference-image editing (`ref_images`) and spatial outpaint.
+    txt2img, img2img and inpaint are implemented (SDEdit/RePaint over the same
+    flow-matching denoise loop, see core.pipeline_backends.sensenova).
+
+    Both refusals are DEFERRED, not "impossible": reference-image editing is a
+    distinct, larger feature than txt2img/img2img/inpaint -- it needs a second
+    vision-tower conditioning pass (`vision_model_mot_gen`'s sibling
+    understanding-branch encoder) plus multi-reference prompt-prefix
+    construction -- and is not implemented in this integration. Outpaint is
+    layered on top of img2img/inpaint's SDEdit/RePaint denoise entry points,
+    which this unit does not wire up either. Raised before the executor so it
+    surfaces as a 4xx, matching `_reject_if_video_model`/`_reject_if_audio_model`
+    just above.
+    """
+    if not getattr(pipeline_manager, "is_sensenova_model", False):
+        return
+    if endpoint == "/generate/outpaint":
+        raise CustomValidationError(
+            "Spatial outpaint is not implemented for SenseNova U1.5",
+            detail="SenseNova U1.5's txt2img path is implemented; outpaint is layered on top "
+                   "of img2img/inpaint denoising, which this integration does not wire up yet. "
+                   "Use /generate/txt2img.",
+        )
+    if has_ref_images:
+        raise CustomValidationError(
+            "Reference-image editing is not implemented for SenseNova U1.5",
+            detail="ref_images (reference-image editing) requires a second vision-tower "
+                   "conditioning pass and multi-reference prompt-prefix construction -- a "
+                   "distinct, larger feature than txt2img -- and is not implemented in this "
+                   "integration. Omit ref_images.",
         )
 
 
@@ -1026,6 +1063,7 @@ async def generate_txt2img(
     negative_prompt: str = Form(""),
     steps: int = Form(20),
     cfg_scale: float = Form(7.0),
+    timestep_shift: float = Form(GENERATION_DEFAULTS["timestep_shift"]),  # SenseNova U1.5 flow-matching time-shift; other archs ignore it
     sampler: str = Form("euler"),
     schedule_type: str = Form("uniform"),
     seed: int = Form(-1),
@@ -1113,6 +1151,7 @@ async def generate_txt2img(
     """Generate image from text"""
     _reject_if_video_model("/generate/txt2img")
     _reject_if_audio_model("/generate/txt2img")
+    _reject_if_sensenova_unsupported("/generate/txt2img", has_ref_images=bool(ref_images))
     lora_configs = []
     from api.generation_status import start_generation, complete_generation, fail_generation, get_warnings
     from api.arch_capabilities import check_arch_capabilities
@@ -1248,6 +1287,7 @@ async def generate_txt2img(
             "negative_prompt": negative_prompt,
             "steps": steps,
             "cfg_scale": cfg_scale,
+            "timestep_shift": timestep_shift,
             "sampler": sampler,
             "schedule_type": schedule_type,
             "seed": seed,
@@ -1395,6 +1435,12 @@ async def generate_txt2img(
         minit2i_vae_type = (pipeline_manager.minit2i_components or {}).get("vae_type", "none") if is_minit2i else "none"
         is_krea2 = pipeline_manager.current_model_info and \
                    pipeline_manager.current_model_info.get("type") == "krea2"
+        # SenseNova is pixel-space (no VAE), same [-1,1] RGB [B,3,H,W] convention
+        # as MiniT2I -- reuse taesd_manager.decode_latent's is_minit2i branch
+        # (raw-RGB passthrough) rather than adding an identical branch under a
+        # new flag.
+        is_sensenova = pipeline_manager.current_model_info and \
+                       pipeline_manager.current_model_info.get("type") == "sensenova"
 
         # Warn about parameters the loaded architecture silently ignores
         _current_arch = pipeline_manager.current_model_info.get("type") if pipeline_manager.current_model_info else None
@@ -1412,7 +1458,7 @@ async def generate_txt2img(
             is_anima,
             is_lens=is_lens,
             is_ideogram4=is_ideogram4,
-            is_minit2i=is_minit2i,
+            is_minit2i=(is_minit2i or is_sensenova),
             minit2i_vae_type=minit2i_vae_type,
             is_krea2=is_krea2,
             image_width=params.get("width"),
@@ -1422,7 +1468,7 @@ async def generate_txt2img(
             # pred_x0 = x_t - σ·v shows the model's current clean-image
             # estimate from the very first steps. Any explicit user override
             # via the API still wins.
-            preview_predicted_x0=(preview_predicted_x0 or is_anima or is_zimage or is_flux2 or is_lens or is_ideogram4 or is_minit2i or is_krea2),
+            preview_predicted_x0=(preview_predicted_x0 or is_anima or is_zimage or is_flux2 or is_lens or is_ideogram4 or is_minit2i or is_krea2 or is_sensenova),
             preview_enabled=params.get("preview_enabled", True),
             preview_interval=params.get("preview_interval", 4),
             preview_decoder=params.get("preview_decoder", "matrix")
@@ -2033,6 +2079,7 @@ async def generate_img2img(
     negative_prompt: str = Form(""),
     steps: int = Form(20),
     cfg_scale: float = Form(7.0),
+    timestep_shift: float = Form(GENERATION_DEFAULTS["timestep_shift"]),  # SenseNova U1.5 flow-matching time-shift; other archs ignore it
     denoising_strength: float = Form(0.75),
     img2img_fix_steps: bool = Form(True),
     sampler: str = Form("euler"),
@@ -2126,6 +2173,7 @@ async def generate_img2img(
     """Generate image from image"""
     _reject_if_video_model("/generate/img2img")
     _reject_if_audio_model("/generate/img2img")
+    _reject_if_sensenova_unsupported("/generate/img2img", has_ref_images=bool(ref_images))
     lora_configs = []
     from api.generation_status import start_generation, complete_generation, fail_generation, get_warnings
     from api.arch_capabilities import check_arch_capabilities
@@ -2277,6 +2325,7 @@ async def generate_img2img(
             "negative_prompt": negative_prompt,
             "steps": steps,
             "cfg_scale": cfg_scale,
+            "timestep_shift": timestep_shift,
             "denoising_strength": denoising_strength,
             "img2img_fix_steps": img2img_fix_steps,
             "sampler": sampler,
@@ -7338,6 +7387,7 @@ async def generate_inpaint(
     negative_prompt: str = Form(""),
     steps: int = Form(20),
     cfg_scale: float = Form(7.0),
+    timestep_shift: float = Form(GENERATION_DEFAULTS["timestep_shift"]),  # SenseNova U1.5 flow-matching time-shift; other archs ignore it
     denoising_strength: float = Form(0.75),
     img2img_fix_steps: bool = Form(True),
     sampler: str = Form("euler"),
@@ -7452,6 +7502,7 @@ async def generate_inpaint(
     """Generate inpainted image"""
     _reject_if_video_model("/generate/inpaint")
     _reject_if_audio_model("/generate/inpaint")
+    _reject_if_sensenova_unsupported("/generate/inpaint", has_ref_images=bool(ref_images))
     lora_configs = []
     from api.generation_status import start_generation, complete_generation, fail_generation, get_warnings
     from api.arch_capabilities import check_arch_capabilities
@@ -7617,6 +7668,7 @@ async def generate_inpaint(
             "negative_prompt": negative_prompt,
             "steps": steps,
             "cfg_scale": cfg_scale,
+            "timestep_shift": timestep_shift,
             "denoising_strength": denoising_strength,
             "img2img_fix_steps": img2img_fix_steps,
             "sampler": sampler,
@@ -8118,6 +8170,7 @@ async def generate_outpaint(
     PipelineManager.generate_outpaint."""
     _reject_if_video_model("/generate/outpaint")
     _reject_if_audio_model("/generate/outpaint")
+    _reject_if_sensenova_unsupported("/generate/outpaint")
     lora_configs = []
     from api.generation_status import start_generation, complete_generation, fail_generation, get_warnings
     from api.arch_capabilities import check_arch_capabilities

@@ -396,6 +396,8 @@ export interface GenerationParams {
   negative_prompt?: string;
   steps?: number;
   cfg_scale?: number;
+  // SenseNova U1.5 flow-matching time-shift; every other architecture ignores it.
+  timestep_shift?: number;
   sampler?: string;
   schedule_type?: string;
   seed?: number;
@@ -3022,6 +3024,8 @@ export const generateTxt2Img = async (params: GenerationParams) => {
   formData.append("negative_prompt", paramsWithImages.negative_prompt || "");
   formData.append("steps", String(paramsWithImages.steps || 20));
   formData.append("cfg_scale", String(paramsWithImages.cfg_scale !== undefined ? paramsWithImages.cfg_scale : 7.0));
+  // SenseNova U1.5 flow-matching time-shift; every other architecture ignores it.
+  formData.append("timestep_shift", String(paramsWithImages.timestep_shift ?? 3.0));
   formData.append("sampler", paramsWithImages.sampler || "euler");
   formData.append("schedule_type", paramsWithImages.schedule_type || "uniform");
   formData.append("seed", String(paramsWithImages.seed || -1));

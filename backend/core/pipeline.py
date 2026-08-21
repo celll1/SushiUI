@@ -27,11 +27,11 @@ from core.prompts.processors import PromptEditingProcessor
 from core.inference.schedulers import get_scheduler
 from core.inference.custom_sampling import custom_sampling_loop, custom_img2img_sampling_loop, custom_inpaint_sampling_loop
 from core.inference.generation_timing import generation_timer
-from core.pipeline_backends import ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, Ideogram4Mixin, MiniT2IMixin, Krea2Mixin, LTX2Mixin, AceStepMixin, MiniMaxH3Mixin, MiniMaxMusic3Mixin
+from core.pipeline_backends import ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, Ideogram4Mixin, MiniT2IMixin, Krea2Mixin, LTX2Mixin, AceStepMixin, MiniMaxH3Mixin, MiniMaxMusic3Mixin, SenseNovaMixin
 
 LAST_MODEL_CONFIG_FILE = Path("last_model.json")
 
-class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, Ideogram4Mixin, MiniT2IMixin, Krea2Mixin, LTX2Mixin, AceStepMixin, MiniMaxH3Mixin, MiniMaxMusic3Mixin):
+class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, Ideogram4Mixin, MiniT2IMixin, Krea2Mixin, LTX2Mixin, AceStepMixin, MiniMaxH3Mixin, MiniMaxMusic3Mixin, SenseNovaMixin):
     def __init__(self):
         self.txt2img_pipeline: Optional[StableDiffusionPipeline] = None
         self.img2img_pipeline: Optional[StableDiffusionImg2ImgPipeline] = None
@@ -191,6 +191,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             return "minimax_h3"
         if self.is_minimax_music3_model:
             return "minimax_music3"
+        if self.is_sensenova_model:
+            return "sensenova"
         # Detect SDXL vs SD1.5 by inspecting the loaded pipeline class
         pipe = self.txt2img_pipeline
         if pipe is not None:
@@ -1199,6 +1201,60 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                 self._save_last_model(
                     source_type, source, pipeline_type, text_encoder_file=text_encoder_file)
                 print("[Pipeline] MiniMax Music 3 model loaded successfully")
+                return
+
+            # Check if SenseNova-U1.5-8B-MoT (Qwen3-8B-as-flow-matching-denoiser,
+            # pixel-space -- no VAE). MUST be before the generic Z-Image check
+            # below, which matches any dict carrying a "transformer" key --
+            # SenseNova's does.
+            if isinstance(model_result, dict) and model_result.get("type") == "sensenova":
+                print("[Pipeline] SenseNova model detected (component-based dict returned)")
+                self.sensenova_components = model_result
+                self.is_sensenova_model = True
+                self.is_minimax_music3_model = False
+                self.is_minimax_h3_model = False
+                self.is_acestep_model = False
+                self.is_ltx2_model = False
+                self.is_krea2_model = False
+                self.is_minit2i_model = False
+                self.is_ideogram4_model = False
+                self.is_lens_model = False
+                self.is_anima_model = False
+                self.is_zimage_model = False
+                self.is_flux2_model = False
+                self.current_model = model_id
+                self.current_attention_type = "normal"
+
+                # The loader already leaves the transformer CPU-resident (see
+                # loader.py's docstring); this is a no-op today, kept for parity
+                # with every other arch branch that stages its own components.
+                _sensenova_transformer = self.sensenova_components.get("transformer")
+                if _sensenova_transformer is not None and hasattr(_sensenova_transformer, "to"):
+                    try:
+                        _sensenova_transformer.to("cpu")
+                    except Exception:
+                        pass
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                print("[VRAM] SenseNova transformer on CPU. Will load to GPU as needed.")
+
+                model_hash = ""
+                if source_type in ["safetensors", "diffusers"] and os.path.exists(source):
+                    try:
+                        from utils.hash_cache import get_cached_file_hash
+                        model_hash = get_cached_file_hash(source)
+                    except Exception as e:
+                        print(f"[Pipeline] Hash compute skipped: {e}")
+
+                self.current_model_info = {
+                    "source_type": source_type,
+                    "source": source,
+                    "type": "sensenova",
+                    "is_v_prediction": False,  # flow matching, x0-parameterized
+                    "model_hash": model_hash,
+                }
+                self._save_last_model(source_type, source, pipeline_type)
+                print("[Pipeline] SenseNova model loaded successfully")
                 return
 
             # Check if Z-Image
@@ -3655,6 +3711,10 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         if self.is_krea2_model:
             return self._generate_txt2img_krea2(params, progress_callback, step_callback)
 
+        # SenseNova-U1.5-8B-MoT (Qwen3-8B-as-flow-matching-denoiser, pixel-space)
+        if self.is_sensenova_model:
+            return self._generate_txt2img_sensenova(params, progress_callback, step_callback)
+
         # LTX-2.3 is a video model — image endpoints must not run it (P1b adds
         # /generate/txt2vid, /generate/img2vid).
         if self.is_ltx2_model:
@@ -4351,7 +4411,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         if params.get("input_latent_id") and (
             self.is_zimage_model or self.is_flux2_model or self.is_anima_model
             or self.is_lens_model or self.is_ideogram4_model or self.is_minit2i_model
-            or self.is_krea2_model or self.is_ltx2_model
+            or self.is_krea2_model or self.is_ltx2_model or self.is_sensenova_model
         ):
             from api.error_handlers import ValidationError
             raise ValidationError(
@@ -4384,6 +4444,10 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             return self._generate_img2img_minit2i(params, init_image, progress_callback, step_callback)
         if self.is_krea2_model:
             return self._generate_img2img_krea2(params, init_image, progress_callback, step_callback)
+
+        # SenseNova-U1.5-8B-MoT (SDEdit over the flow-matching denoise loop)
+        if self.is_sensenova_model:
+            return self._generate_img2img_sensenova(params, init_image, progress_callback, step_callback)
 
         # LTX-2.3 is a video model — image endpoints must not run it (P1b adds
         # /generate/txt2vid, /generate/img2vid).
@@ -5145,6 +5209,10 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             return self._generate_inpaint_minit2i(params, init_image, mask_image, progress_callback, step_callback)
         if self.is_krea2_model:
             return self._generate_inpaint_krea2(params, init_image, mask_image, progress_callback, step_callback)
+
+        # SenseNova-U1.5-8B-MoT (RePaint over the flow-matching denoise loop)
+        if self.is_sensenova_model:
+            return self._generate_inpaint_sensenova(params, init_image, mask_image, progress_callback, step_callback)
 
         # LTX-2.3 is a video model — image endpoints must not run it (P1b adds
         # /generate/txt2vid, /generate/img2vid).

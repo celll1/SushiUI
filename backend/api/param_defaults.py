@@ -186,6 +186,9 @@ SENSENOVA_GENERATION_DEFAULTS: Dict[str, Any] = {
     # caller's own choice (cfg_scale<=1 collapses CFG to single-branch); there
     # is no separate "8-step mode" flag anywhere in this integration.
     "steps": 50,
+    # Also the shared default for real-negative_prompt use, not just the
+    # empty-string-uncond case -- see docs/guides/MODEL_FACTS.md's sensenova
+    # row for the measured cfg_scale/negative_prompt behavior.
     "cfg_scale": 4.0,
     # Upstream examples/t2i/inference.py default (NOT config.json's
     # timestep_shift: 1.0 -- see core/models/sensenova/sensenova_pipeline_ops.py's

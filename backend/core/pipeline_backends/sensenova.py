@@ -143,6 +143,9 @@ class SenseNovaMixin:
         return {
             "seed": seed,
             "prompt": params.get("prompt", ""),
+            # Feeds the CFG uncond branch in encode_prompt(); None/empty falls
+            # back to the original empty-string uncond (see MODEL_FACTS.md).
+            "negative_prompt": params.get("negative_prompt") or None,
             "num_inference_steps": int(params.get("steps") or SENSENOVA_GENERATION_DEFAULTS["steps"]),
             "cfg_scale": float(params.get("cfg_scale", SENSENOVA_GENERATION_DEFAULTS["cfg_scale"])),
             "timestep_shift": float(params.get("timestep_shift", SENSENOVA_GENERATION_DEFAULTS["timestep_shift"])),
@@ -183,7 +186,7 @@ class SenseNovaMixin:
 
             prefix = ops.encode_prompt(
                 transformer, tokenizer, cfg["prompt"], cfg["height"], cfg["width"], cfg["cfg_scale"],
-                prefill_callback=_prefill_note,
+                prefill_callback=_prefill_note, negative_prompt=cfg["negative_prompt"],
             )
 
             def _step_bridge(j, total, image_prediction, _mask, _extra):
@@ -258,7 +261,7 @@ class SenseNovaMixin:
 
             prefix = ops.encode_prompt(
                 transformer, tokenizer, cfg["prompt"], cfg["height"], cfg["width"], cfg["cfg_scale"],
-                prefill_callback=_prefill_note,
+                prefill_callback=_prefill_note, negative_prompt=cfg["negative_prompt"],
             )
 
             def _step_bridge(j, total, image_prediction, _mask, _extra):
@@ -327,7 +330,7 @@ class SenseNovaMixin:
 
             prefix = ops.encode_prompt(
                 transformer, tokenizer, cfg["prompt"], cfg["height"], cfg["width"], cfg["cfg_scale"],
-                prefill_callback=_prefill_note,
+                prefill_callback=_prefill_note, negative_prompt=cfg["negative_prompt"],
             )
 
             def _step_bridge(j, total, image_prediction, _mask, _extra):

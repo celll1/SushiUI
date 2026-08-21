@@ -266,6 +266,8 @@ const DEFAULT_PARAMS: InpaintParams = {
   cfg_scale: 7.0,
   // SenseNova U1.5 flow-matching time-shift; every other architecture ignores it.
   timestep_shift: 3.0,
+  // SenseNova U1.5 second CFG scale; inert without ref_images, ignored elsewhere.
+  img_cfg_scale: 1.0,
   sampler: "euler",
   schedule_type: "uniform",
   seed: -1,
@@ -941,6 +943,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
   const supportsFbcache = archSupportsFeature(archCapabilities, loadedArchType, "fbcache");
   const supportsFuseOutputProj = archSupportsFeature(archCapabilities, loadedArchType, "fuse_output_proj");
   const supportsTimestepShift = archSupportsFeature(archCapabilities, loadedArchType, "timestep_shift");
+  const supportsImgCfgScale = archSupportsFeature(archCapabilities, loadedArchType, "img_cfg_scale");
   // The value the Block Swap checkbox writes when turned ON (backend SSOT:
   // param_defaults.VIDEO_GEN_DEFAULTS["blocks_to_swap_enabled_default"]). The
   // `?? 40` fallback only matters before /schema/generation-defaults answers.
@@ -3675,6 +3678,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         unet_quantization: mainParams.unet_quantization, // Inherit quantization from main
         quantized_gemm_mode: mainParams.quantized_gemm_mode, // Inherit quantized GEMM path from main
         timestep_shift: mainParams.timestep_shift, // Inherit SenseNova U1.5 time-shift (no per-step override)
+        img_cfg_scale: mainParams.img_cfg_scale, // Inherit SenseNova U1.5 second CFG scale
         original_size_w: mainParams.original_size_w,
         original_size_h: mainParams.original_size_h,
         original_size_scale: mainParams.original_size_scale,
@@ -3966,6 +3970,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         steps: nextItem.params.steps,
         cfg_scale: nextItem.params.cfg_scale,
         timestep_shift: nextItem.params.timestep_shift, // SenseNova U1.5 flow-matching time-shift
+        img_cfg_scale: nextItem.params.img_cfg_scale, // SenseNova U1.5 second CFG scale
         sampler: nextItem.params.sampler,
         schedule_type: nextItem.params.schedule_type,
         seed: nextItem.params.seed,
@@ -6261,6 +6266,17 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
                   step={0.1}
                   value={params.timestep_shift ?? generationDefaults?.inpaint?.timestep_shift ?? 3.0}
                   onChange={(e) => setParams({ ...params, timestep_shift: parseFloat(e.target.value) })}
+                />
+              )}
+              {supportsImgCfgScale && (
+                <Slider
+                  label="Image CFG Scale"
+                  min={0}
+                  max={10.0}
+                  step={0.1}
+                  value={params.img_cfg_scale ?? generationDefaults?.inpaint?.img_cfg_scale ?? 1.0}
+                  onChange={(e) => setParams({ ...params, img_cfg_scale: parseFloat(e.target.value) })}
+                  title="SenseNova U1.5 second CFG scale, applied alongside CFG Scale only when reference images are supplied. At 1.0, sampling uses the reference-conditioned branch as the guidance baseline."
                 />
               )}
             </div>

@@ -677,6 +677,26 @@ def _reject_if_sensenova_unsupported(endpoint: str):
         )
 
 
+def _reject_if_sensenova_ref_placeholders_exceed_refs(prompt: str, ref_image_list: list):
+    """Refuse a prompt that places more `<image>` markers than it supplies
+    references. Only applies once references ARE supplied: with none, `<image>`
+    is ordinary prompt text and must stay that way.
+
+    Must be raised here, not from the pipeline backend: `ValidationError` there
+    is re-wrapped as a 500 by the route's generic `except`.
+    """
+    if not getattr(pipeline_manager, "is_sensenova_model", False) or not ref_image_list:
+        return
+    placeholders = str(prompt or "").count("<image>")
+    if placeholders > len(ref_image_list):
+        raise CustomValidationError(
+            "More <image> placeholders than reference images",
+            detail=f"The prompt has {placeholders} <image> placeholder(s) but "
+                   f"{len(ref_image_list)} reference image(s) were supplied. Supply one reference "
+                   f"per placeholder, or remove the extra placeholders.",
+        )
+
+
 def _reject_if_sensenova_too_many_ref_images(ref_image_list: list):
     """Cap SenseNova U1.5 reference-image editing at upstream's largest
     demonstrated reference count. Mirrors the MiniMax-H3 MAX_REFERENCE_IMAGES
@@ -1159,6 +1179,7 @@ async def generate_txt2img(
     _reject_if_audio_model("/generate/txt2img")
     _reject_if_sensenova_unsupported("/generate/txt2img")
     _reject_if_sensenova_too_many_ref_images(ref_images)
+    _reject_if_sensenova_ref_placeholders_exceed_refs(prompt, ref_images)
     lora_configs = []
     from api.generation_status import start_generation, complete_generation, fail_generation, get_warnings
     from api.arch_capabilities import check_arch_capabilities
@@ -2184,6 +2205,7 @@ async def generate_img2img(
     _reject_if_audio_model("/generate/img2img")
     _reject_if_sensenova_unsupported("/generate/img2img")
     _reject_if_sensenova_too_many_ref_images(ref_images)
+    _reject_if_sensenova_ref_placeholders_exceed_refs(prompt, ref_images)
     lora_configs = []
     from api.generation_status import start_generation, complete_generation, fail_generation, get_warnings
     from api.arch_capabilities import check_arch_capabilities
@@ -7516,6 +7538,7 @@ async def generate_inpaint(
     _reject_if_audio_model("/generate/inpaint")
     _reject_if_sensenova_unsupported("/generate/inpaint")
     _reject_if_sensenova_too_many_ref_images(ref_images)
+    _reject_if_sensenova_ref_placeholders_exceed_refs(prompt, ref_images)
     lora_configs = []
     from api.generation_status import start_generation, complete_generation, fail_generation, get_warnings
     from api.arch_capabilities import check_arch_capabilities

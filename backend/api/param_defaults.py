@@ -194,6 +194,11 @@ SENSENOVA_GENERATION_DEFAULTS: Dict[str, Any] = {
     # timestep_shift: 1.0 -- see core/models/sensenova/sensenova_pipeline_ops.py's
     # module docstring for why the example script's value is the one used here).
     "timestep_shift": 3.0,
+    # Second CFG scale used by SenseNova's it2i_generate (reference-image
+    # editing) path alongside cfg_scale. 1.0 is upstream's documented
+    # operating point (cfg_scale=4.0, img_cfg_scale=1.0) and keeps the
+    # default at two-branch cost; inert without ref_images.
+    "img_cfg_scale": 1.0,
 }
 
 # ---------------------------------------------------------------------------
@@ -211,6 +216,10 @@ GENERATION_DEFAULTS: Dict[str, Any] = {
     # above). Every other architecture has no equivalent knob and ignores it
     # (accepted and warned, api/arch_capabilities.py).
     "timestep_shift": SENSENOVA_GENERATION_DEFAULTS["timestep_shift"],
+    # SenseNova it2i_generate second CFG scale (see SENSENOVA_GENERATION_DEFAULTS
+    # above). Only meaningful with ref_images on SenseNova; every other
+    # architecture ignores it.
+    "img_cfg_scale": SENSENOVA_GENERATION_DEFAULTS["img_cfg_scale"],
     "sampler": "euler",
     "schedule_type": "uniform",
     "seed": -1,

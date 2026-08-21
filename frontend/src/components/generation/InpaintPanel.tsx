@@ -264,6 +264,8 @@ const DEFAULT_PARAMS: InpaintParams = {
   negative_prompt: "",
   steps: 20,
   cfg_scale: 7.0,
+  // SenseNova U1.5 flow-matching time-shift; every other architecture ignores it.
+  timestep_shift: 3.0,
   sampler: "euler",
   schedule_type: "uniform",
   seed: -1,
@@ -938,6 +940,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
   const supportsSpectrum = archSupportsFeature(archCapabilities, loadedArchType, "spectrum");
   const supportsFbcache = archSupportsFeature(archCapabilities, loadedArchType, "fbcache");
   const supportsFuseOutputProj = archSupportsFeature(archCapabilities, loadedArchType, "fuse_output_proj");
+  const supportsTimestepShift = archSupportsFeature(archCapabilities, loadedArchType, "timestep_shift");
   // The value the Block Swap checkbox writes when turned ON (backend SSOT:
   // param_defaults.VIDEO_GEN_DEFAULTS["blocks_to_swap_enabled_default"]). The
   // `?? 40` fallback only matters before /schema/generation-defaults answers.
@@ -3671,6 +3674,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         boundary_relax_paste: mainParams.boundary_relax_paste,
         unet_quantization: mainParams.unet_quantization, // Inherit quantization from main
         quantized_gemm_mode: mainParams.quantized_gemm_mode, // Inherit quantized GEMM path from main
+        timestep_shift: mainParams.timestep_shift, // Inherit SenseNova U1.5 time-shift (no per-step override)
         original_size_w: mainParams.original_size_w,
         original_size_h: mainParams.original_size_h,
         original_size_scale: mainParams.original_size_scale,
@@ -3961,6 +3965,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         negative_prompt: nextItem.params.negative_prompt,
         steps: nextItem.params.steps,
         cfg_scale: nextItem.params.cfg_scale,
+        timestep_shift: nextItem.params.timestep_shift, // SenseNova U1.5 flow-matching time-shift
         sampler: nextItem.params.sampler,
         schedule_type: nextItem.params.schedule_type,
         seed: nextItem.params.seed,
@@ -6248,6 +6253,16 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
                 value={params.cfg_scale}
                 onChange={(e) => setParams({ ...params, cfg_scale: parseFloat(e.target.value) })}
               />
+              {supportsTimestepShift && (
+                <Slider
+                  label="Timestep Shift"
+                  min={0.1}
+                  max={10.0}
+                  step={0.1}
+                  value={params.timestep_shift ?? generationDefaults?.inpaint?.timestep_shift ?? 3.0}
+                  onChange={(e) => setParams({ ...params, timestep_shift: parseFloat(e.target.value) })}
+                />
+              )}
             </div>
 
             <div>

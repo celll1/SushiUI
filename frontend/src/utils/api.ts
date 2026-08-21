@@ -3025,6 +3025,7 @@ export const generateTxt2Img = async (params: GenerationParams) => {
   formData.append("steps", String(paramsWithImages.steps || 20));
   formData.append("cfg_scale", String(paramsWithImages.cfg_scale !== undefined ? paramsWithImages.cfg_scale : 7.0));
   // SenseNova U1.5 flow-matching time-shift; every other architecture ignores it.
+  // Module-level helper, no React context here -- mirrors DEFAULT_PARAMS' fallback.
   formData.append("timestep_shift", String(paramsWithImages.timestep_shift ?? 3.0));
   formData.append("sampler", paramsWithImages.sampler || "euler");
   formData.append("schedule_type", paramsWithImages.schedule_type || "uniform");
@@ -3376,6 +3377,9 @@ export const generateImg2Img = async (
   formData.append("negative_prompt", paramsWithImages.negative_prompt || "");
   formData.append("steps", String(paramsWithImages.steps || 20));
   formData.append("cfg_scale", String(paramsWithImages.cfg_scale !== undefined ? paramsWithImages.cfg_scale : 7.0));
+  // SenseNova U1.5 flow-matching time-shift; every other architecture ignores it.
+  // Module-level helper, no React context here -- mirrors DEFAULT_PARAMS' fallback.
+  formData.append("timestep_shift", String(paramsWithImages.timestep_shift ?? 3.0));
   formData.append("denoising_strength", String(paramsWithImages.denoising_strength || 0.75));
   formData.append("img2img_fix_steps", String(paramsWithImages.img2img_fix_steps ?? true));
   formData.append("vae_drift_correction", String(paramsWithImages.vae_drift_correction ?? false));
@@ -4276,6 +4280,9 @@ export const generateInpaint = async (params: InpaintParams, image: File | strin
   formData.append("negative_prompt", paramsWithImages.negative_prompt || "");
   formData.append("steps", String(paramsWithImages.steps || 20));
   formData.append("cfg_scale", String(paramsWithImages.cfg_scale !== undefined ? paramsWithImages.cfg_scale : 7.0));
+  // SenseNova U1.5 flow-matching time-shift; every other architecture ignores it.
+  // Module-level helper, no React context here -- mirrors DEFAULT_PARAMS' fallback.
+  formData.append("timestep_shift", String(paramsWithImages.timestep_shift ?? 3.0));
   formData.append("denoising_strength", String(paramsWithImages.denoising_strength || 0.75));
   formData.append("img2img_fix_steps", String(paramsWithImages.img2img_fix_steps ?? true));
   formData.append("vae_drift_correction", String(paramsWithImages.vae_drift_correction ?? false));

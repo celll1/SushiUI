@@ -2391,6 +2391,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         resampling_method: step.resamplingMethod,
         unet_quantization: mainParams.unet_quantization, // Inherit quantization from main
         quantized_gemm_mode: mainParams.quantized_gemm_mode, // Inherit quantized GEMM path from main
+        timestep_shift: mainParams.timestep_shift, // Inherit SenseNova U1.5 time-shift (no per-step override)
         original_size_w: mainParams.original_size_w,
         original_size_h: mainParams.original_size_h,
         original_size_scale: mainParams.original_size_scale,
@@ -5158,7 +5159,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                   min={0.1}
                   max={10.0}
                   step={0.1}
-                  value={params.timestep_shift ?? 3.0}
+                  value={params.timestep_shift ?? generationDefaults?.txt2img?.timestep_shift ?? 3.0}
                   onChange={(e) => setParams({ ...params, timestep_shift: parseFloat(e.target.value) })}
                 />
               )}

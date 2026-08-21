@@ -116,6 +116,12 @@ class SenseNovaMixin:
         width, height = ops.normalize_resolution(req_w, req_h)
         if (width, height) != (req_w, req_h):
             print(f"[SenseNova] Resolution aligned to the /32 token grid: {req_w}x{req_h} -> {width}x{height}")
+            # Write the snapped size back: `params` is what the route later hands
+            # to prepare_params_for_db() and the PNG metadata writer, so leaving
+            # the request size here would record a resolution that was never
+            # generated -- and "reuse parameters" from the gallery would replay it.
+            params["width"] = width
+            params["height"] = height
 
         # Structural /32 alignment is enforced above (snap, never refuse). The
         # ~4MP bucket range is a documented-preference range, not a bound --

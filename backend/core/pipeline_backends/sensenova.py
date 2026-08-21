@@ -1,4 +1,4 @@
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 import random
 
 import torch
@@ -16,6 +16,64 @@ class SenseNovaMixin:
     transformer is the ONLY component (self.sensenova_components["transformer"]),
     all-or-nothing residency, the same shape MiniT2I uses.
     """
+
+    def _load_lora_sensenova(self, lora_configs: List[Dict]) -> int:
+        """Wrap the SenseNova gen-branch Linears with runtime LoRA adapters.
+
+        Never merges into the base (see sensenova_lora.py's module docstring)
+        -- restore_originals must always be called in a finally, mirroring
+        Ideogram4Mixin._load_lora_ideogram4/_unload_lora_ideogram4.
+        """
+        from core.models.sensenova.sensenova_lora import (
+            load_lora_safetensors, normalise_lora_state_dict, apply_lora_group,
+        )
+        from core.extensions.lora_manager import lora_manager
+
+        if not lora_configs or not self.sensenova_components:
+            return 0
+
+        transformer = self.sensenova_components["transformer"]
+        if not hasattr(self, "_sensenova_lora_orig"):
+            self._sensenova_lora_orig: Dict[str, torch.nn.Module] = {}
+            self._sensenova_lora_keys: set = set()
+
+        total = 0
+        for i, cfg in enumerate(lora_configs):
+            lora_path = cfg.get("path", "")
+            strength = float(cfg.get("strength", cfg.get("weight", 1.0)))
+            resolved = lora_manager._resolve_lora_path(lora_path)
+            if resolved is None:
+                print(f"[SenseNova LoRA] WARNING: file not found: {lora_path}")
+                continue
+            try:
+                raw, fmt = load_lora_safetensors(str(resolved))
+                grouped = normalise_lora_state_dict(raw)
+                applied = apply_lora_group(
+                    transformer, grouped, strength,
+                    self._sensenova_lora_orig, self._sensenova_lora_keys,
+                )
+                print(f"[SenseNova LoRA] {i+1}/{len(lora_configs)}: {lora_path} "
+                      f"format={fmt} modules={len(grouped)} wrapped={applied} strength={strength}")
+                total += applied
+            except Exception as e:
+                print(f"[SenseNova LoRA] ERROR loading {lora_path}: {e}")
+                import traceback; traceback.print_exc()
+        return total
+
+    def _unload_lora_sensenova(self) -> int:
+        """Restore every SenseNova transformer Linear to its pre-LoRA original."""
+        from core.models.sensenova.sensenova_lora import restore_originals
+        if not self.sensenova_components:
+            return 0
+        restored = 0
+        if getattr(self, "_sensenova_lora_keys", None):
+            restored += restore_originals(
+                self.sensenova_components["transformer"],
+                self._sensenova_lora_orig, self._sensenova_lora_keys,
+            )
+        if restored:
+            print(f"[SenseNova LoRA] Unloaded {restored} LoRA wrappers")
+        return restored
 
     def _sensenova_move(self, component_name: str, target_device: str):
         # Takes the component KEY, not the component. Passing the module itself
@@ -101,7 +159,10 @@ class SenseNovaMixin:
         self._sensenova_apply_attention_backend(transformer, params)
         self._sensenova_move("transformer", device)
         prefix = None
+        applied_lora = 0
         try:
+            applied_lora = self._load_lora_sensenova(params.get("loras") or [])
+
             def _prefill_note():
                 # A real, multi-second stall (the prefix KV-cache forward pass)
                 # that must not read as a hang before step 0 -- see
@@ -149,6 +210,8 @@ class SenseNovaMixin:
                     ops.clear_prefix_caches(prefix)
                 except Exception:
                     pass
+            if applied_lora:
+                self._unload_lora_sensenova()
             self._sensenova_move("transformer", "cpu")
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
@@ -174,7 +237,10 @@ class SenseNovaMixin:
         self._sensenova_apply_attention_backend(transformer, params)
         self._sensenova_move("transformer", device)
         prefix = None
+        applied_lora = 0
         try:
+            applied_lora = self._load_lora_sensenova(params.get("loras") or [])
+
             def _prefill_note():
                 if progress_callback is not None:
                     try:
@@ -211,6 +277,8 @@ class SenseNovaMixin:
                     ops.clear_prefix_caches(prefix)
                 except Exception:
                     pass
+            if applied_lora:
+                self._unload_lora_sensenova()
             self._sensenova_move("transformer", "cpu")
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
@@ -238,7 +306,10 @@ class SenseNovaMixin:
         self._sensenova_apply_attention_backend(transformer, params)
         self._sensenova_move("transformer", device)
         prefix = None
+        applied_lora = 0
         try:
+            applied_lora = self._load_lora_sensenova(params.get("loras") or [])
+
             def _prefill_note():
                 if progress_callback is not None:
                     try:
@@ -273,6 +344,8 @@ class SenseNovaMixin:
                     ops.clear_prefix_caches(prefix)
                 except Exception:
                     pass
+            if applied_lora:
+                self._unload_lora_sensenova()
             self._sensenova_move("transformer", "cpu")
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()

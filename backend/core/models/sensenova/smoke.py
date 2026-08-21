@@ -185,6 +185,30 @@ def _vram_spill_readout() -> dict:
     }
 
 
+def _apply_lora(model, lora_path: str, strength: float) -> int:
+    """Wrap the gen-branch Linears with the distillation LoRA (runtime-only,
+    never merged -- see sensenova_lora.py's module docstring). Returns the
+    number of modules actually wrapped, and the caller must restore via
+    ``_restore_lora`` even on a failed/cancelled run."""
+    from core.models.sensenova.sensenova_lora import (
+        load_lora_safetensors, normalise_lora_state_dict, apply_lora_group,
+    )
+
+    raw, fmt = load_lora_safetensors(lora_path)
+    grouped = normalise_lora_state_dict(raw)
+    orig: dict = {}
+    keys: set = set()
+    applied = apply_lora_group(model, grouped, strength, orig, keys)
+    print(f"[SenseNova.smoke] LoRA {lora_path}: format={fmt} modules_in_file={len(grouped)} "
+          f"applied={applied}/294")
+    return applied, orig, keys
+
+
+def _restore_lora(model, orig: dict, keys: set) -> int:
+    from core.models.sensenova.sensenova_lora import restore_originals
+    return restore_originals(model, orig, keys)
+
+
 def run_generation(model, tokenizer, args, width: int, height: int, num_steps: int) -> dict:
     """One full txt2img generation. Returns a dict of measured numbers."""
     import torch
@@ -197,25 +221,43 @@ def run_generation(model, tokenizer, args, width: int, height: int, num_steps: i
 
     ops.set_attention_backend(model, args.attn_backend)
 
+    lora_orig: dict = {}
+    lora_keys: set = set()
+    lora_applied = 0
+    if args.lora:
+        lora_applied, lora_orig, lora_keys = _apply_lora(model, args.lora, args.lora_strength)
+
     torch.cuda.reset_peak_memory_stats()
     generation_timer.reset()
     wall_start = time.perf_counter()
 
-    def _prefill_note():
-        print("[SenseNova.smoke] prefill: building prefix KV cache(s) -- this can take several seconds ...")
+    prefix = None
+    try:
+        def _prefill_note():
+            print("[SenseNova.smoke] prefill: building prefix KV cache(s) -- this can take several seconds ...")
 
-    prefix = ops.encode_prompt(
-        model, tokenizer, args.prompt, height, width, args.cfg_scale,
-        prefill_callback=_prefill_note,
-    )
+        prefix = ops.encode_prompt(
+            model, tokenizer, args.prompt, height, width, args.cfg_scale,
+            prefill_callback=_prefill_note,
+        )
 
-    def _progress(step, total):
-        print(f"[SenseNova.smoke] step {step}/{total}")
+        def _progress(step, total):
+            print(f"[SenseNova.smoke] step {step}/{total}")
 
-    x = ops.denoise_loop(
-        model, prefix, seed=args.seed, cfg_scale=args.cfg_scale, timestep_shift=args.timestep_shift,
-        num_inference_steps=num_steps, progress_callback=_progress,
-    )
+        x = ops.denoise_loop(
+            model, prefix, seed=args.seed, cfg_scale=args.cfg_scale, timestep_shift=args.timestep_shift,
+            num_inference_steps=num_steps, progress_callback=_progress,
+        )
+    finally:
+        if prefix is not None:
+            try:
+                ops.clear_prefix_caches(prefix)
+            except Exception:
+                pass
+        if lora_applied:
+            restored = _restore_lora(model, lora_orig, lora_keys)
+            print(f"[SenseNova.smoke] LoRA restored {restored} module(s) to base.")
+
     wall_total = time.perf_counter() - wall_start
 
     phases = generation_timer.phases_dict()
@@ -227,6 +269,7 @@ def run_generation(model, tokenizer, args, width: int, height: int, num_steps: i
         "denoise_s": phases.get("time_denoise", 0.0),
         "wall_s": wall_total,
         "peak_vram_gb": _peak_vram_gb(),
+        "lora_applied": lora_applied,
         "image": ops.tensor_to_image(x) if args.output else None,
     }
     result.update(_vram_spill_readout())
@@ -505,6 +548,11 @@ def main(argv=None) -> int:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--prompt", default="A photo of a red panda eating a bamboo leaf, studio lighting.")
     parser.add_argument("--output", default=None, help="PNG path to save the result. Omit to skip saving.")
+    parser.add_argument("--lora", default=None,
+                        help="Path to a SenseNova LoRA safetensors file (e.g. the 8-step distillation LoRA). "
+                             "Applied runtime-only (never merged) before the timed denoise, restored after.")
+    parser.add_argument("--lora-strength", type=float, default=1.0,
+                        help="Scale multiplier on top of the LoRA's own alpha/rank scale.")
     parser.add_argument("--probe-adaptive", action="store_true",
                         help="VRAM-ceiling probe: adaptive ladder starting at --probe-start-mp, stepping by "
                              "--probe-step-mp, one subprocess per arm, stopping at the first confirmed VRAM "
@@ -585,7 +633,8 @@ def main(argv=None) -> int:
               f"prefill={result['prefill_s']:.2f}s denoise={result['denoise_s']:.2f}s "
               f"wall={result['wall_s']:.2f}s peak_vram={result['peak_vram_gb']:.2f}GiB/"
               f"{result.get('total_vram_bytes', 0) / 2**30:.2f}GiB spilled={result.get('spilled')} "
-              f"s/step={result['denoise_s'] / max(1, result['steps']):.3f}")
+              f"s/step={result['denoise_s'] / max(1, result['steps']):.3f} "
+              f"lora_applied={result.get('lora_applied', 0)}")
         if args.output and result["image"] is not None:
             os.makedirs(os.path.dirname(os.path.abspath(args.output)) or ".", exist_ok=True)
             result["image"].save(args.output)

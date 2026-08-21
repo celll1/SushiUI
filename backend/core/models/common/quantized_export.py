@@ -65,6 +65,7 @@ __all__ = [
     "ltx2_export_metadata",
     "acestep_export_metadata",
     "zimage_export_metadata",
+    "sensenova_export_metadata",
     "layout_unwrap",
     "check_layout_prefixes",
     "identity_source_transform",
@@ -361,6 +362,29 @@ def minimax_h3_export_metadata(config: dict) -> Dict[str, str]:
     }
     if config:
         metadata["minimax_h3_config"] = json.dumps(config, default=str)
+    return metadata
+
+
+def sensenova_export_metadata(config: dict) -> Dict[str, str]:
+    """Metadata block for an exported SenseNova-U1.5 transformer single file.
+
+    Unlike Z-Image (whose loader re-derives geometry and reads no metadata
+    key), SenseNova's checkpoint has no separate upstream single-file
+    distribution to fall back on: the loader reads ``sensenova_config`` back
+    as its PRIMARY geometry source (a sibling ``config.json`` is the fallback
+    only), so ``config`` here is load-bearing, not merely provenance.
+    ``modelspec.architecture``/``model_type`` are what
+    ``ModelLoader.detect_model_type``'s metadata-first shard-index path
+    consults (``_map_model_type_string``'s passthrough set).
+    """
+    config = {k: v for k, v in dict(config or {}).items() if not str(k).startswith("_")}
+    metadata = {
+        "modelspec.architecture": "sensenova",
+        "model_type": "sensenova",
+        "format": "pt",
+    }
+    if config:
+        metadata["sensenova_config"] = json.dumps(config, default=str)
     return metadata
 
 
@@ -785,6 +809,26 @@ EXPORT_LAYOUTS: Dict[str, Dict[str, object]] = {
         "siblings": ("vae", "text_encoders", "official"),
         "sibling_root": "..",
         "output_subdir": "diffusion_models",
+    },
+    "sensenova": {
+        # sushiUI single-file layout: the checkpoint carries "transformer."
+        # (see backend/core/models/common/single_file_format.py); the live
+        # NEOChatModel's own state_dict() has bare module paths, exactly the
+        # same offline/live split as krea2's entry above. Single component,
+        # no siblings: this required to exist even though there is nothing to
+        # re-export today (see the minimax_h3 entry's comment) --
+        # ``generation_utils.extract_fp8_gemm_info`` resolves the quantized
+        # module as ``sensenova_components[layout_module_specs("sensenova")[0][0]]``,
+        # so without this entry every generation would falsely report no
+        # weight-only quantized Linear layers on a checkpoint made of 588 of
+        # them.
+        "modules": (("transformer", "transformer."),),
+        "offline_prefix": "transformer.",
+        "source_prefix": "",
+        "metadata": sensenova_export_metadata,
+        "siblings": (),
+        "sibling_root": ".",
+        "output_subdir": "",
     },
 }
 

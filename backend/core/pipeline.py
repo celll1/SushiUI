@@ -122,6 +122,14 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         self.minimax_music3_components: Optional[Dict[str, Any]] = None
         self.is_minimax_music3_model: bool = False
 
+        # SenseNova-U1.5-8B-MoT components (Qwen3-8B-as-flow-matching-denoiser,
+        # MoT-doubled attention/MLP + a flow-matching pixel head). All-or-nothing
+        # single "transformer" component, CPU-resident at load (the loader never
+        # stages to GPU) -- see core/models/sensenova/loader.py's docstring.
+        # Loadable/slot-switchable only here; generation is a later commit.
+        self.sensenova_components: Optional[Dict[str, Any]] = None
+        self.is_sensenova_model: bool = False
+
         # SigLIP2 Vision Encoder (optional, for SD/SDXL vision-conditioned generation)
         self.vision_encoder: Optional[Any] = None
         self._vision_encoder_path: Optional[str] = None
@@ -610,6 +618,17 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     del comp
                 self.minimax_music3_components = None
                 self.is_minimax_music3_model = False
+
+            # Clean up SenseNova components
+            if self.sensenova_components is not None:
+                print("[Pipeline] Cleaning up SenseNova components...")
+                for comp_name, comp in self.sensenova_components.items():
+                    # No `comp.to('cpu')`: every component is already CPU-resident
+                    # (the loader never stages to GPU, see loader.py's docstring),
+                    # so it is a no-op, not a safety requirement.
+                    del comp
+                self.sensenova_components = None
+                self.is_sensenova_model = False
 
             # Force garbage collection
             gc.collect()

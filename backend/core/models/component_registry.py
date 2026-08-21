@@ -41,6 +41,7 @@ try:
         ACESTEP_WIRING,
         MINIMAX_H3_WIRING,
         MINIMAX_MUSIC3_WIRING,
+        SENSENOVA_WIRING,
     )
     _WIRING_BY_ARCH: Dict[str, ComponentWiringSpec] = {
         "sd15": SD15_WIRING,
@@ -62,6 +63,9 @@ try:
         # MINIMAX_MUSIC3_WIRING's own comment for why latent_ndim=3 (not 5)
         # keeps this arch OUT of the is_video=True fold below.
         "minimax_music3": MINIMAX_MUSIC3_WIRING,
+        # Pixel-space DiT (Qwen3-8B-as-denoiser), latent_channels=0 like
+        # minit2i -- see SENSENOVA_WIRING's own comment.
+        "sensenova": SENSENOVA_WIRING,
     }
 except Exception as _e:  # pragma: no cover - wiring is a hard dependency
     _WIRING_BY_ARCH = {}

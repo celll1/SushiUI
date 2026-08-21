@@ -10,7 +10,7 @@ from pathlib import Path
 ModelSource = Literal["safetensors", "diffusers", "huggingface", "gguf"]
 # DEUS support removed - architecture no longer maintained
 # ModelType = Literal["sd15", "sdxl", "zimage", "deus", "flux2"]
-ModelType = Literal["sd15", "sdxl", "zimage", "flux2", "anima", "lens", "ideogram4", "minit2i", "krea2", "ltx2", "acestep", "minimax_h3", "minimax_music3"]
+ModelType = Literal["sd15", "sdxl", "zimage", "flux2", "anima", "lens", "ideogram4", "minit2i", "krea2", "ltx2", "acestep", "minimax_h3", "minimax_music3", "sensenova"]
 
 class ModelLoader:
     """Handles loading models from various sources"""
@@ -443,6 +443,17 @@ class ModelLoader:
             return False
 
     @staticmethod
+    def _keys_look_sensenova(keys) -> bool:
+        """SenseNova single-file/shard signature (MoT-doubled Qwen3 attention +
+        flow-matching pixel head). Delegates to the loader's own key-name check
+        so the signature stays defined in one place. Key NAMES only."""
+        try:
+            from core.models.sensenova.loader import is_sensenova_state_dict_keys
+            return bool(is_sensenova_state_dict_keys(list(keys)))
+        except Exception:
+            return False
+
+    @staticmethod
     def _looks_like_acestep_dir(model_path: str) -> bool:
         """ACE-Step 1.5 flat ComfyUI-style tree: a `diffusion_models/` subfolder
         containing one of the EXACT known `acestep_v1.5_{turbo,sft,base}.safetensors`
@@ -586,7 +597,7 @@ class ModelLoader:
             return "sd15"
         if mt in ("zimage", "z-image"):
             return "zimage"
-        if mt in ("minit2i", "krea2", "anima", "lens", "ideogram4"):
+        if mt in ("minit2i", "krea2", "anima", "lens", "ideogram4", "sensenova"):
             return mt
         if mt == "siglip2_vision_encoder":
             return "vision_encoder"
@@ -628,6 +639,9 @@ class ModelLoader:
                     return "ideogram4"
                 if ModelLoader._keys_look_krea2(keys, md):
                     return "krea2"
+                # SenseNova: MoT-doubled Qwen3 attention + flow-matching pixel head.
+                if ModelLoader._keys_look_sensenova(keys):
+                    return "sensenova"
                 # Lens net.* dual-stream DiT signature (runs before Anima; the
                 # two key sets are disjoint but metadata already resolves ties).
                 if ModelLoader._keys_look_lens(keys):
@@ -869,6 +883,11 @@ class ModelLoader:
                     # Krea 2 single-file (see _keys_look_krea2 for the signatures).
                     if ModelLoader._keys_look_krea2(keys, metadata):
                         return "krea2"
+
+                    # SenseNova single-file (metadata-first; key-signature fallback).
+                    if (str(metadata.get("model_type", "")).lower() == "sensenova"
+                            or ModelLoader._keys_look_sensenova(keys)):
+                        return "sensenova"
 
                     # Priority 1: Check metadata for explicit model_type
                     if "model_type" in metadata:
@@ -2217,6 +2236,11 @@ class ModelLoader:
             print(f"[ModelLoader] Loading as Krea 2 (single-file)")
             return ModelLoader.load_krea2_from_path(file_path, torch.bfloat16)
 
+        # SenseNova-U1.5-8B-MoT (sushiUI shard index; this repo's own int8 conversion)
+        if model_type == "sensenova":
+            print(f"[ModelLoader] Loading as SenseNova-U1.5-8B-MoT (single-file/shard index)")
+            return ModelLoader.load_sensenova_from_path(file_path, torch.bfloat16)
+
         # MiniMax-H3 DiT single file. Selecting the FILE rather than the tree is
         # how the transformer VARIANT is chosen: MiniMax ships two partitions
         # (`fl2va`, which serves txt2vid/img2vid/outpaint, and `ref2va`, which
@@ -3057,6 +3081,19 @@ class ModelLoader:
         """
         from core.models.krea2.krea2_loader import load_krea2_components
         return load_krea2_components(model_path=path, torch_dtype=torch_dtype)
+
+    @staticmethod
+    def load_sensenova_from_path(
+        path: str,
+        torch_dtype: torch.dtype = torch.bfloat16,
+    ) -> dict:
+        """Load SenseNova-U1.5-8B-MoT from a sushiUI shard index (or single-file save).
+
+        Returns a component dict consumed by PipelineManager.load_model()
+        (type == "sensenova").
+        """
+        from core.models.sensenova.loader import load_sensenova_from_path as _load_sensenova
+        return _load_sensenova(model_path=path, torch_dtype=torch_dtype)
 
     @staticmethod
     def load_ltx2_from_path(

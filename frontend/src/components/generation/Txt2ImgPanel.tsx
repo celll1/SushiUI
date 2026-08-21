@@ -690,10 +690,15 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
   const [previewViewerOpen, setPreviewViewerOpen] = useState(false);
   const [showAdvancedCFG, setShowAdvancedCFG] = useState(false);
 
-  // FLUX.2 Image Edit: Reference images
+  // FLUX.2 Image Edit / Vision Encoder / SenseNova U1.5: Reference images
   const [refImages, setRefImages] = useState<File[]>([]);
   const [refImagePreviews, setRefImagePreviews] = useState<string[]>([]);
   const [isRefImageDragging, setIsRefImageDragging] = useState(false);
+  // SenseNova's reference-image count cap mirrors the backend's
+  // SENSENOVA_MAX_REFERENCE_IMAGES (backend/core/pipeline_backends/sensenova.py).
+  // FLUX.2 has no backend-enforced cap; 10 is this UI's own upload-grid limit.
+  const isSenseNovaModel = currentModelInfo?.model_info?.type === "sensenova";
+  const maxRefImages = isSenseNovaModel ? 5 : 10;
 
   const [loopGenerationConfig, setLoopGenerationConfig] = useState<LoopGenerationConfig>({
     enabled: false,
@@ -1482,7 +1487,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
     const files = e.target.files;
     if (!files || files.length === 0) return;
 
-    const newFiles = Array.from(files).slice(0, 10 - refImagePreviews.length); // Max 10 total
+    const newFiles = Array.from(files).slice(0, maxRefImages - refImagePreviews.length); // Max total
     const newPreviews: string[] = [];
     const newRefs: string[] = [];
 
@@ -1557,7 +1562,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
 
     const imageFiles = Array.from(files)
       .filter(file => file.type.startsWith('image/'))
-      .slice(0, 10 - refImagePreviews.length); // Max 10 total
+      .slice(0, maxRefImages - refImagePreviews.length); // Max total
 
     if (imageFiles.length === 0) return;
 
@@ -4237,6 +4242,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
     archCapabilities, loadedArch, videoCanvasWidth, videoCanvasHeight);
   const hasLeadConditioning = (isVideo && isRef2Va)
     || currentModelInfo?.model_info?.type === "flux2"
+    || currentModelInfo?.model_info?.type === "sensenova"
     || !!params.vision_encoder_path;
   const promptPanel = isAudio ? (
     <Card title="Prompt">
@@ -4506,10 +4512,16 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
           </>
         )}
 
-        {/* FLUX.2 Image Edit / Vision Encoder: Reference Images */}
-        {(currentModelInfo?.model_info?.type === "flux2" || params.vision_encoder_path) && (
+        {/* FLUX.2 Image Edit / SenseNova U1.5 / Vision Encoder: Reference Images */}
+        {(currentModelInfo?.model_info?.type === "flux2" || isSenseNovaModel || params.vision_encoder_path) && (
           <Card
-            title={currentModelInfo?.model_info?.type === "flux2" ? "FLUX.2 Image Edit (Reference Images)" : "Vision Encoder (Reference Images)"}
+            title={
+              currentModelInfo?.model_info?.type === "flux2"
+                ? "FLUX.2 Image Edit (Reference Images)"
+                : isSenseNovaModel
+                ? "SenseNova U1.5 (Reference Images)"
+                : "Vision Encoder (Reference Images)"
+            }
 
             collapsible={true}
             defaultCollapsed={true}
@@ -4530,7 +4542,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                   accept="image/png,image/jpeg,image/jpg,image/webp"
                   multiple
                   onChange={handleRefImageUpload}
-                  disabled={refImages.length >= 10}
+                  disabled={refImages.length >= maxRefImages}
                   className="flex-1 block w-full text-sm text-gray-400
                     file:mr-4 file:py-2 file:px-4
                     file:rounded-lg file:border-0
@@ -4566,8 +4578,8 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                 >
                   <p className="text-gray-500 text-center text-sm px-4">
                     {isRefImageDragging
-                      ? 'Drop images here (max 10)'
-                      : 'Drag and drop images here or use the file picker above (max 10)'}
+                      ? `Drop images here (max ${maxRefImages})`
+                      : `Drag and drop images here or use the file picker above (max ${maxRefImages})`}
                   </p>
                 </div>
               ) : (
@@ -4597,7 +4609,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                       </div>
                     ))}
                     {/* Drag & drop area fills remaining grid cells */}
-                    {refImagePreviews.length < 10 && (
+                    {refImagePreviews.length < maxRefImages && (
                       <div
                         onDragOver={handleRefImageDragOver}
                         onDragLeave={handleRefImageDragLeave}
@@ -4621,7 +4633,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                   </div>
                   {/* Info text */}
                   <p className="text-xs text-gray-400 mt-2">
-                    💡 {refImages.length}/10 images. {refImages.length < 10 ? 'Drop more images in the area above' : 'Max reached'}
+                    💡 {refImages.length}/{maxRefImages} images. {refImages.length < maxRefImages ? 'Drop more images in the area above' : 'Max reached'}
                   </p>
                 </div>
               )}

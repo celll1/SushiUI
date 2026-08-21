@@ -422,6 +422,9 @@ class GenerationParams(BaseModel):
     cfg_scale: float = 7.0
     # SenseNova U1.5 flow-matching time-shift; every other architecture ignores it.
     timestep_shift: float = GENERATION_DEFAULTS["timestep_shift"]
+    # SenseNova U1.5 second CFG scale for reference-image editing (active only
+    # with ref_images); every other architecture ignores it.
+    img_cfg_scale: float = GENERATION_DEFAULTS["img_cfg_scale"]
     sampler: str = "euler"
     schedule_type: str = "uniform"
     seed: int = -1
@@ -652,21 +655,16 @@ def _reject_if_audio_model(endpoint: str = "/generate/txt2img"):
         )
 
 
-def _reject_if_sensenova_unsupported(endpoint: str, has_ref_images: bool = False):
-    """Refuse a SenseNova U1.5 request for a capability this integration does
-    not implement: reference-image editing (`ref_images`) and spatial outpaint.
-    txt2img, img2img and inpaint are implemented (SDEdit/RePaint over the same
-    flow-matching denoise loop, see core.pipeline_backends.sensenova).
+def _reject_if_sensenova_unsupported(endpoint: str):
+    """Refuse a SenseNova U1.5 request for spatial outpaint, the one capability
+    this integration does not implement. txt2img, img2img, inpaint and
+    reference-image editing are implemented (SDEdit/RePaint/ref-conditioning
+    over the same flow-matching denoise loop, see core.pipeline_backends.sensenova).
 
-    Both refusals are DEFERRED, not "impossible": reference-image editing is a
-    distinct, larger feature than txt2img/img2img/inpaint -- it needs a second
-    vision-tower conditioning pass (`vision_model_mot_gen`'s sibling
-    understanding-branch encoder) plus multi-reference prompt-prefix
-    construction -- and is not implemented in this integration. Outpaint is
-    layered on top of img2img/inpaint's SDEdit/RePaint denoise entry points,
-    which this unit does not wire up either. Raised before the executor so it
-    surfaces as a 4xx, matching `_reject_if_video_model`/`_reject_if_audio_model`
-    just above.
+    Outpaint is layered on top of img2img/inpaint's SDEdit/RePaint denoise
+    entry points, which this unit does not wire up. Raised before the executor
+    so it surfaces as a 4xx, matching
+    `_reject_if_video_model`/`_reject_if_audio_model` just above.
     """
     if not getattr(pipeline_manager, "is_sensenova_model", False):
         return
@@ -677,13 +675,20 @@ def _reject_if_sensenova_unsupported(endpoint: str, has_ref_images: bool = False
                    "of img2img/inpaint denoising, which this integration does not wire up yet. "
                    "Use /generate/txt2img.",
         )
-    if has_ref_images:
+
+
+def _reject_if_sensenova_too_many_ref_images(ref_image_list: list):
+    """Cap SenseNova U1.5 reference-image editing at upstream's largest
+    demonstrated reference count. Mirrors the MiniMax-H3 MAX_REFERENCE_IMAGES
+    check just below."""
+    if not getattr(pipeline_manager, "is_sensenova_model", False):
+        return
+    from core.pipeline_backends.sensenova import SENSENOVA_MAX_REFERENCE_IMAGES
+    if len(ref_image_list) > SENSENOVA_MAX_REFERENCE_IMAGES:
         raise CustomValidationError(
-            "Reference-image editing is not implemented for SenseNova U1.5",
-            detail="ref_images (reference-image editing) requires a second vision-tower "
-                   "conditioning pass and multi-reference prompt-prefix construction -- a "
-                   "distinct, larger feature than txt2img -- and is not implemented in this "
-                   "integration. Omit ref_images.",
+            f"SenseNova U1.5 accepts at most {SENSENOVA_MAX_REFERENCE_IMAGES} reference image(s)",
+            detail=f"Got {len(ref_image_list)}. {SENSENOVA_MAX_REFERENCE_IMAGES} is upstream's largest "
+                   f"demonstrated reference count.",
         )
 
 
@@ -1064,6 +1069,7 @@ async def generate_txt2img(
     steps: int = Form(20),
     cfg_scale: float = Form(7.0),
     timestep_shift: float = Form(GENERATION_DEFAULTS["timestep_shift"]),  # SenseNova U1.5 flow-matching time-shift; other archs ignore it
+    img_cfg_scale: float = Form(GENERATION_DEFAULTS["img_cfg_scale"]),  # SenseNova U1.5 reference-image editing second CFG scale; other archs ignore it
     sampler: str = Form("euler"),
     schedule_type: str = Form("uniform"),
     seed: int = Form(-1),
@@ -1151,7 +1157,8 @@ async def generate_txt2img(
     """Generate image from text"""
     _reject_if_video_model("/generate/txt2img")
     _reject_if_audio_model("/generate/txt2img")
-    _reject_if_sensenova_unsupported("/generate/txt2img", has_ref_images=bool(ref_images))
+    _reject_if_sensenova_unsupported("/generate/txt2img")
+    _reject_if_sensenova_too_many_ref_images(ref_images)
     lora_configs = []
     from api.generation_status import start_generation, complete_generation, fail_generation, get_warnings
     from api.arch_capabilities import check_arch_capabilities
@@ -1288,6 +1295,7 @@ async def generate_txt2img(
             "steps": steps,
             "cfg_scale": cfg_scale,
             "timestep_shift": timestep_shift,
+            "img_cfg_scale": img_cfg_scale,
             "sampler": sampler,
             "schedule_type": schedule_type,
             "seed": seed,
@@ -2080,6 +2088,7 @@ async def generate_img2img(
     steps: int = Form(20),
     cfg_scale: float = Form(7.0),
     timestep_shift: float = Form(GENERATION_DEFAULTS["timestep_shift"]),  # SenseNova U1.5 flow-matching time-shift; other archs ignore it
+    img_cfg_scale: float = Form(GENERATION_DEFAULTS["img_cfg_scale"]),  # SenseNova U1.5 reference-image editing second CFG scale; other archs ignore it
     denoising_strength: float = Form(0.75),
     img2img_fix_steps: bool = Form(True),
     sampler: str = Form("euler"),
@@ -2173,7 +2182,8 @@ async def generate_img2img(
     """Generate image from image"""
     _reject_if_video_model("/generate/img2img")
     _reject_if_audio_model("/generate/img2img")
-    _reject_if_sensenova_unsupported("/generate/img2img", has_ref_images=bool(ref_images))
+    _reject_if_sensenova_unsupported("/generate/img2img")
+    _reject_if_sensenova_too_many_ref_images(ref_images)
     lora_configs = []
     from api.generation_status import start_generation, complete_generation, fail_generation, get_warnings
     from api.arch_capabilities import check_arch_capabilities
@@ -2326,6 +2336,7 @@ async def generate_img2img(
             "steps": steps,
             "cfg_scale": cfg_scale,
             "timestep_shift": timestep_shift,
+            "img_cfg_scale": img_cfg_scale,
             "denoising_strength": denoising_strength,
             "img2img_fix_steps": img2img_fix_steps,
             "sampler": sampler,
@@ -7388,6 +7399,7 @@ async def generate_inpaint(
     steps: int = Form(20),
     cfg_scale: float = Form(7.0),
     timestep_shift: float = Form(GENERATION_DEFAULTS["timestep_shift"]),  # SenseNova U1.5 flow-matching time-shift; other archs ignore it
+    img_cfg_scale: float = Form(GENERATION_DEFAULTS["img_cfg_scale"]),  # SenseNova U1.5 reference-image editing second CFG scale; other archs ignore it
     denoising_strength: float = Form(0.75),
     img2img_fix_steps: bool = Form(True),
     sampler: str = Form("euler"),
@@ -7502,7 +7514,8 @@ async def generate_inpaint(
     """Generate inpainted image"""
     _reject_if_video_model("/generate/inpaint")
     _reject_if_audio_model("/generate/inpaint")
-    _reject_if_sensenova_unsupported("/generate/inpaint", has_ref_images=bool(ref_images))
+    _reject_if_sensenova_unsupported("/generate/inpaint")
+    _reject_if_sensenova_too_many_ref_images(ref_images)
     lora_configs = []
     from api.generation_status import start_generation, complete_generation, fail_generation, get_warnings
     from api.arch_capabilities import check_arch_capabilities
@@ -7669,6 +7682,7 @@ async def generate_inpaint(
             "steps": steps,
             "cfg_scale": cfg_scale,
             "timestep_shift": timestep_shift,
+            "img_cfg_scale": img_cfg_scale,
             "denoising_strength": denoising_strength,
             "img2img_fix_steps": img2img_fix_steps,
             "sampler": sampler,

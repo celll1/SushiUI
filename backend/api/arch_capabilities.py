@@ -107,6 +107,9 @@ FEATURE_PARAMS: Dict[str, List[str]] = {
     # SenseNova U1.5's flow-matching time-shift. No other architecture has an
     # equivalent knob at the API layer.
     "timestep_shift": ["timestep_shift"],
+    # SenseNova U1.5's second CFG scale for reference-image editing. No other
+    # architecture has an equivalent knob at the API layer.
+    "img_cfg_scale": ["img_cfg_scale"],
 }
 
 # Human-readable label used in the warning message for each feature.
@@ -137,6 +140,7 @@ FEATURE_LABELS: Dict[str, str] = {
     "fuse_output_proj": "fuse_output_proj (output-tail head fusion)",
     "audio_reference_conditioning": "reference_audio_path/reference_audio_enable/is_cover (reference-audio conditioning)",
     "timestep_shift": "timestep_shift (SenseNova U1.5 flow-matching time-shift)",
+    "img_cfg_scale": "img_cfg_scale (SenseNova U1.5 reference-image editing second CFG scale)",
 }
 
 # ---------------------------------------------------------------------------
@@ -282,17 +286,14 @@ _add("acestep", "controlnets", "ControlNet is not supported for the ACE-Step aud
 # ---------------------------------------------------------------------------
 # SenseNova-U1.5-8B-MoT: a Qwen3-8B LLM used directly as a flow-matching
 # denoiser in pixel space (no VAE, no separate text encoder -- the prompt goes
-# through the LLM's own tokenizer/chat template). txt2img, img2img (SDEdit)
-# and inpaint (RePaint) are implemented in this integration; reference-image
-# editing (`ref_images`) and spatial outpaint are refused at the route
-# (core.pipeline_backends.sensenova / routes.py's
-# `_reject_if_sensenova_unsupported`), not warned here, because they are
-# absent capabilities rather than ignored parameters. Reference-image editing
-# is deferred as a distinct, larger feature -- it needs a second vision-tower
-# conditioning pass plus multi-reference prompt-prefix construction, not a
-# missing mapping and not raw implementation difficulty. VQA (visual
-# question answering) has no route in this codebase at all; that is a
-# documentation fact, not a refusal.
+# through the LLM's own tokenizer/chat template). txt2img, img2img (SDEdit),
+# inpaint (RePaint) and reference-image editing (`ref_images`, capped at
+# SENSENOVA_MAX_REFERENCE_IMAGES) are implemented in this integration. Spatial
+# outpaint is refused at the route (routes.py's
+# `_reject_if_sensenova_unsupported`), not warned here, because it is an
+# absent capability rather than an ignored parameter. VQA (visual question
+# answering) has no route in this codebase at all; that is a documentation
+# fact, not a refusal.
 # ---------------------------------------------------------------------------
 _add("sensenova", "advanced_cfg",
      "CFG scheduling / dynamic thresholding / CFG-rescale run only in the U-Net sampling loop, not in SenseNova's flow-matching sampler")
@@ -430,6 +431,13 @@ for _a in [a for a in _ALL_ARCHS if a not in _QUANTIZED_GEMM_SUPPORTED]:
 for _a in [a for a in _ALL_ARCHS if a != "sensenova"]:
     _add(_a, "timestep_shift",
          "timestep_shift is a SenseNova U1.5-specific flow-matching time-shift parameter; this architecture's sampler does not consult it")
+
+# img_cfg_scale: a SenseNova U1.5-specific second CFG scale for reference-image
+# editing; every other architecture's sampler has no equivalent knob and
+# ignores it.
+for _a in [a for a in _ALL_ARCHS if a != "sensenova"]:
+    _add(_a, "img_cfg_scale",
+         "img_cfg_scale is a SenseNova U1.5-specific second CFG scale for reference-image editing; this architecture does not consult it")
 
 # Text-encoder quantization: not applied on these architectures' text-encoder paths.
 for _a in ["sd15", "sdxl", "ideogram4", "minit2i", "krea2", "ltx2", "acestep", "minimax_music3"]:

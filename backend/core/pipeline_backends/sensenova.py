@@ -4,14 +4,22 @@ import random
 import torch
 
 
+# Upstream's largest demonstrated reference count for `it2i_generate`
+# (reference-image editing). Bounds the request, not a hard architectural
+# limit; enforced at the route (routes.py's ref_images cap check).
+SENSENOVA_MAX_REFERENCE_IMAGES = 5
+
+
 class SenseNovaMixin:
     """SenseNovaMixin: SenseNova-U1.5-8B-MoT generation methods.
 
     txt2img, img2img (SDEdit) and inpaint (RePaint) -- all three share the
     same encode_prompt() prefix + Euler denoise loop; img2img/inpaint call
     core/models/sensenova/sensenova_pipeline_ops.py's denoise_loop_img2img/
-    denoise_loop_inpaint instead of denoise_loop. Reference-image editing and
-    spatial outpaint remain unimplemented (refused at the route, see
+    denoise_loop_inpaint instead of denoise_loop. Reference-image editing
+    (`ref_images`/`img_cfg_scale`, passed through to encode_prompt()) is a
+    PREFIX-phase concern, orthogonal to and combinable with all three denoise
+    loops. Spatial outpaint remains unimplemented (refused at the route, see
     routes.py's `_reject_if_sensenova_unsupported`). Pixel-space (no VAE): the
     transformer is the ONLY component (self.sensenova_components["transformer"]),
     all-or-nothing residency, the same shape MiniT2I uses.
@@ -140,6 +148,31 @@ class SenseNovaMixin:
             except Exception:
                 pass
 
+        ref_images = params.get("ref_images") or []
+        img_cfg_scale = float(params.get("img_cfg_scale", SENSENOVA_GENERATION_DEFAULTS["img_cfg_scale"]))
+
+        # A prompt may place references explicitly with <image> markers. More
+        # markers than references is a user error, so refuse it as a 4xx here
+        # rather than letting encode_prompt's backstop ValueError become a 500.
+        placeholders = str(params.get("prompt", "")).count("<image>")
+        if placeholders > len(ref_images):
+            from api.error_handlers import ValidationError
+            raise ValidationError(
+                "More <image> placeholders than reference images",
+                detail=f"The prompt has {placeholders} <image> placeholder(s) but {len(ref_images)} "
+                       f"reference image(s) were supplied. Supply one reference per placeholder, or "
+                       f"remove the extra placeholders.",
+            )
+        if not ref_images and img_cfg_scale != SENSENOVA_GENERATION_DEFAULTS["img_cfg_scale"]:
+            msg = (f"[SenseNova] img_cfg_scale={img_cfg_scale} has no effect without ref_images "
+                   f"(it only applies to reference-image editing).")
+            print(msg)
+            try:
+                from api.generation_status import add_warning
+                add_warning(msg, code="sensenova_img_cfg_scale_no_refs")
+            except Exception:
+                pass
+
         return {
             "seed": seed,
             "prompt": params.get("prompt", ""),
@@ -149,6 +182,10 @@ class SenseNovaMixin:
             "num_inference_steps": int(params.get("steps") or SENSENOVA_GENERATION_DEFAULTS["steps"]),
             "cfg_scale": float(params.get("cfg_scale", SENSENOVA_GENERATION_DEFAULTS["cfg_scale"])),
             "timestep_shift": float(params.get("timestep_shift", SENSENOVA_GENERATION_DEFAULTS["timestep_shift"])),
+            "img_cfg_scale": img_cfg_scale,
+            # routes.py already decodes uploads into PIL Image objects before
+            # putting them in params["ref_images"]; nothing to decode here.
+            "ref_images": ref_images,
             "width": width,
             "height": height,
         }
@@ -187,6 +224,7 @@ class SenseNovaMixin:
             prefix = ops.encode_prompt(
                 transformer, tokenizer, cfg["prompt"], cfg["height"], cfg["width"], cfg["cfg_scale"],
                 prefill_callback=_prefill_note, negative_prompt=cfg["negative_prompt"],
+                ref_images=cfg["ref_images"], img_cfg_scale=cfg["img_cfg_scale"],
             )
 
             def _step_bridge(j, total, image_prediction, _mask, _extra):
@@ -262,6 +300,7 @@ class SenseNovaMixin:
             prefix = ops.encode_prompt(
                 transformer, tokenizer, cfg["prompt"], cfg["height"], cfg["width"], cfg["cfg_scale"],
                 prefill_callback=_prefill_note, negative_prompt=cfg["negative_prompt"],
+                ref_images=cfg["ref_images"], img_cfg_scale=cfg["img_cfg_scale"],
             )
 
             def _step_bridge(j, total, image_prediction, _mask, _extra):
@@ -331,6 +370,7 @@ class SenseNovaMixin:
             prefix = ops.encode_prompt(
                 transformer, tokenizer, cfg["prompt"], cfg["height"], cfg["width"], cfg["cfg_scale"],
                 prefill_callback=_prefill_note, negative_prompt=cfg["negative_prompt"],
+                ref_images=cfg["ref_images"], img_cfg_scale=cfg["img_cfg_scale"],
             )
 
             def _step_bridge(j, total, image_prediction, _mask, _extra):

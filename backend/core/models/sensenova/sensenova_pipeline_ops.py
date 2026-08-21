@@ -144,8 +144,9 @@ def set_attention_backend(transformer, backend: str = "native", mode=None) -> in
 @dataclass
 class SenseNovaPrefix:
     """The resolution- and prompt-dependent prefix KV cache(s) for one
-    generation. CFG needs two INDEPENDENT caches (cond + empty-string
-    uncond) -- see ``encode_prompt``. Built once per generation and consumed
+    generation. CFG needs two INDEPENDENT caches (cond + uncond, the latter
+    from an empty string or a caller-supplied negative_prompt) -- see
+    ``encode_prompt``. Built once per generation and consumed
     by every ``denoise_loop*`` below, each of which clears both caches in a
     ``finally`` (via ``clear_prefix_caches``) so a cancelled/failed run can
     never leak a cache into the next generation.
@@ -197,6 +198,7 @@ def encode_prompt(
     batch_size: int = 1,
     system_message: Optional[str] = None,
     prefill_callback: Optional[Callable[[], None]] = None,
+    negative_prompt: Optional[str] = None,
 ) -> SenseNovaPrefix:
     """Build the prefix KV cache(s): the tokenizer + chat-template + prefix-
     forward stage. Resolution-DEPENDENT (the image token indexes bake in
@@ -211,6 +213,12 @@ def encode_prompt(
     ``needs_cfg = cfg_scale > 1`` (upstream's own gate): a distillation-LoRA
     request at ``cfg_scale <= 1`` naturally skips the uncond prefix entirely,
     no separate mode flag needed.
+
+    ``negative_prompt``: the uncond branch is, structurally, just a second
+    call through the SAME ``_build_t2i_query``/``_build_t2i_text_inputs``/
+    ``_t2i_prefix_forward`` path as the cond branch, conditioned on whatever
+    string is given (upstream always uses ``""``); see MODEL_FACTS.md for the
+    measured effect. ``None``/empty keeps the original empty-string uncond.
     """
     if height % TOKEN_GRID_ALIGN != 0 or width % TOKEN_GRID_ALIGN != 0:
         raise ValueError(
@@ -230,9 +238,27 @@ def encode_prompt(
     patch = transformer.patch_size * merge_size
     needs_cfg = cfg_scale > 1
 
+    negative_prompt = (negative_prompt or "").strip()
+
+    if negative_prompt and not needs_cfg:
+        # negative_prompt only has an effect through the uncond branch, which
+        # this same needs_cfg gate skips entirely at cfg_scale<=1 (the 8-step
+        # distillation LoRA's usual operating point, but the real condition is
+        # cfg_scale, not "a LoRA is loaded" -- a LoRA run at cfg_scale>1 still
+        # gets a real uncond branch). Never silently drop it -- warn instead.
+        msg = (f"[{LABEL}] negative_prompt was given but cfg_scale={cfg_scale} <= 1, so no uncond "
+              f"branch is built and the negative prompt has no effect (this is the single-branch/"
+              f"distillation-LoRA operating point). Use cfg_scale > 1 for negative_prompt to work.")
+        print(msg)
+        try:
+            from api.generation_status import add_warning
+            add_warning(msg, code="sensenova_negative_prompt_no_cfg")
+        except Exception:
+            pass
+
     sys_msg = SYSTEM_MESSAGE_FOR_GEN if system_message is None else system_message
     query_cond = transformer._build_t2i_query(prompt, system_message=sys_msg, append_text="<think>\n\n</think>\n\n<img>")
-    query_uncond = transformer._build_t2i_query("", append_text="<img>") if needs_cfg else None
+    query_uncond = transformer._build_t2i_query(negative_prompt, append_text="<img>") if needs_cfg else None
 
     token_h = height // patch
     token_w = width // patch

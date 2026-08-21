@@ -296,8 +296,11 @@ _add("acestep", "controlnets", "ControlNet is not supported for the ACE-Step aud
 # ---------------------------------------------------------------------------
 _add("sensenova", "advanced_cfg",
      "CFG scheduling / dynamic thresholding / CFG-rescale run only in the U-Net sampling loop, not in SenseNova's flow-matching sampler")
-_add("sensenova", "negative_prompt",
-     "the classifier-free-guidance unconditional branch always conditions on the empty string through the same chat template; a user-supplied negative_prompt has no effect")
+# negative_prompt IS supported (see docs/guides/MODEL_FACTS.md's sensenova
+# row) -- no entry here. The cfg_scale<=1 no-op case is warned at the point
+# of use (sensenova_pipeline_ops.encode_prompt, code
+# "sensenova_negative_prompt_no_cfg"), not as a blanket capability entry,
+# since it depends on cfg_scale rather than the architecture as a whole.
 _add("sensenova", "nag", "Normalized Attention Guidance is not implemented for SenseNova U1.5")
 _add("sensenova", "controlnets", "ControlNet is not supported for SenseNova U1.5")
 _add("sensenova", "vae_override",

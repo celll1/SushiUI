@@ -239,6 +239,7 @@ def run_generation(model, tokenizer, args, width: int, height: int, num_steps: i
         prefix = ops.encode_prompt(
             model, tokenizer, args.prompt, height, width, args.cfg_scale,
             prefill_callback=_prefill_note,
+            negative_prompt=args.negative_prompt,
         )
 
         def _progress(step, total):
@@ -547,6 +548,9 @@ def main(argv=None) -> int:
     parser.add_argument("--timestep-shift", type=float, default=SENSENOVA_GENERATION_DEFAULTS["timestep_shift"])
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--prompt", default="A photo of a red panda eating a bamboo leaf, studio lighting.")
+    parser.add_argument("--negative-prompt", default=None,
+                        help="A/B probe: if given, the CFG uncond branch is conditioned on this text instead "
+                             "of the empty string (see docs/guides/MODEL_FACTS.md's sensenova row).")
     parser.add_argument("--output", default=None, help="PNG path to save the result. Omit to skip saving.")
     parser.add_argument("--lora", default=None,
                         help="Path to a SenseNova LoRA safetensors file (e.g. the 8-step distillation LoRA). "

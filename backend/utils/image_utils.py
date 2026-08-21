@@ -339,6 +339,14 @@ def save_image_with_metadata(
         if float(timestep_shift) != float(GENERATION_DEFAULTS["timestep_shift"]):
             metadata.add_text("timestep_shift", str(timestep_shift))
 
+    # SenseNova U1.5 reference-image editing second CFG scale (non-default
+    # only; inert without ref_images, ignored by every other architecture).
+    img_cfg_scale = params.get("img_cfg_scale")
+    if img_cfg_scale is not None:
+        from api.param_defaults import GENERATION_DEFAULTS
+        if float(img_cfg_scale) != float(GENERATION_DEFAULTS["img_cfg_scale"]):
+            metadata.add_text("img_cfg_scale", str(img_cfg_scale))
+
     # Spectrum forecasting (write full family only when enabled)
     if params.get("spectrum_enable", False):
         metadata.add_text("spectrum_enable", "True")

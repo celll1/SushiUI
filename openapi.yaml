@@ -9934,6 +9934,11 @@ components:
             uses the two-branch form `v = out_img_cond + cfg_scale*(out_cond -
             out_img_cond)`. Ignored (accepted and warned) by every other architecture,
             and inert without `ref_images`.
+
+            `negative_prompt` is carried by whichever branch serves as the guidance
+            baseline: the unconditional branch when `img_cfg_scale != 1`, and the
+            reference-conditioned branch at `img_cfg_scale == 1`. Crossing that
+            boundary therefore changes how a negative prompt is applied.
           example: 1.0
         seed:
           type: integer

@@ -22,7 +22,7 @@ from __future__ import annotations
 import math
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
@@ -32,7 +32,7 @@ from core.inference.cancellation import raise_if_cancelled
 from core.inference.generation_timing import time_phase
 
 from .vendor.modeling_neo_chat import clear_flash_kv_cache, optimized_scale, prepare_flash_kv_cache
-from .vendor.utils import SYSTEM_MESSAGE_FOR_GEN
+from .vendor.utils import SYSTEM_MESSAGE_FOR_GEN, load_image_native
 
 LABEL = "SenseNova"
 TOKEN_GRID_ALIGN = 32  # patch_size(16) * merge_size(2) -- the token patch, not the raw ViT patch_size.
@@ -50,6 +50,17 @@ TOKEN_GRID_ALIGN = 32  # patch_size(16) * merge_size(2) -- the token patch, not 
 # caller -- see this module's audit note for the follow-up this implies.
 DEFAULT_CFG_NORM = "none"
 DEFAULT_CFG_INTERVAL = (0.0, 1.0)
+
+# Reference-image (it2i) token markers -- upstream's IMG_START_TOKEN/
+# IMG_END_TOKEN/IMG_CONTEXT_TOKEN defaults (modeling_neo_chat.py:1386).
+_IMG_START_TOKEN = "<img>"
+_IMG_END_TOKEN = "</img>"
+_IMG_CONTEXT_TOKEN = "<IMG_CONTEXT>"
+
+# Cost knob, not a correctness constant: caps a reference image's encode
+# resolution (upstream has no such cap, only min(2048*2048, (4096*4096)//n));
+# a measurement gate may retune this.
+REFERENCE_IMAGE_MAX_PIXELS_CAP = 1024 * 1024
 
 
 def align_to_grid(value: int, align: int = TOKEN_GRID_ALIGN) -> int:
@@ -156,7 +167,13 @@ class SenseNovaPrefix:
     ``cfg_scale`` a ``denoise_loop*`` call is later given -- a mismatch
     (encode at <=1, denoise at >1) would otherwise silently drop CFG with no
     error; ``_euler_run`` checks this. ``consumed`` guards against reusing a
-    single-use prefix after its caches have already been cleared."""
+    single-use prefix after its caches have already been cleared.
+
+    ``img_cond_*``/``encode_img_cfg_scale`` are the third (reference-image)
+    branch from ``encode_prompt(ref_images=...)`` -- upstream's
+    ``it2i_generate``'s ``past_key_values_img_condition``. Absent (``None``)
+    whenever ``ref_images`` was empty/None, which is what keeps the no-refs
+    ``_euler_run`` path numerically identical to before."""
 
     device: torch.device
     dtype: torch.dtype
@@ -174,6 +191,13 @@ class SenseNovaPrefix:
     uncond_past_key_values: Optional[Any] = None
     uncond_indexes_image: Optional[torch.Tensor] = None
     uncond_attention_mask: Optional[Dict[str, Any]] = None
+    img_cond_past_key_values: Optional[Any] = None
+    img_cond_indexes_image: Optional[torch.Tensor] = None
+    img_cond_attention_mask: Optional[Dict[str, Any]] = None
+    encode_img_cfg_scale: float = 1.0
+    # Which gate _euler_run applies. Not inferable from img_cond's presence:
+    # equal scales != 1 with references build an uncond branch and no img_cond.
+    has_reference_images: bool = False
     consumed: bool = False
 
 
@@ -183,7 +207,91 @@ def clear_prefix_caches(prefix: SenseNovaPrefix) -> None:
     clear_flash_kv_cache(prefix.cond_past_key_values)
     if prefix.uncond_past_key_values is not None:
         clear_flash_kv_cache(prefix.uncond_past_key_values)
+    if prefix.img_cond_past_key_values is not None:
+        clear_flash_kv_cache(prefix.img_cond_past_key_values)
     prefix.consumed = True
+
+
+def _embed_reference_images(
+    transformer, ref_images: Sequence[Image.Image], max_pixels_cap: int = REFERENCE_IMAGE_MAX_PIXELS_CAP,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Encode reference images through the vendored ``load_image_native`` (RGB/
+    RGBA-flatten, ImageNet normalization, smart-resize, patchify) -- upstream
+    ``it2i_generate:1401-1417``. Read through the UNDERSTANDING vision tower
+    (``extract_feature(..., gen_model=False)`` inside ``_build_it2i_inputs``),
+    distinct from the per-step gen-branch ViT in ``_build_step_context``.
+    Returns ``(pixel_values, grid_hw)`` concatenated across all references."""
+    device = transformer.device
+    dtype = transformer.language_model.get_input_embeddings().weight.dtype
+    n = len(ref_images)
+    upstream_max_pixels = min(2048 * 2048, (4096 * 4096) // n)
+    max_pixels = min(max_pixels_cap, upstream_max_pixels)
+    if max_pixels < upstream_max_pixels and any(img.width * img.height > max_pixels for img in ref_images):
+        # The cap is ours, not upstream's -- make the fidelity deviation visible.
+        msg = (f"[{LABEL}] reference image(s) downscaled to {max_pixels / 1e6:.2f} MP for encoding "
+               f"(upstream would allow {upstream_max_pixels / 1e6:.2f} MP at {n} reference(s)); this is "
+               f"SushiUI's reference-encode cost cap, not a model limit.")
+        print(msg)
+        try:
+            from api.generation_status import add_warning
+            add_warning(msg, code="sensenova_reference_downscaled")
+        except Exception:
+            pass
+    pixel_values, grid_hw = [], []
+    for image in ref_images:
+        cur_pixel_values, cur_grid_hw = load_image_native(
+            image, transformer.patch_size, transformer.downsample_ratio,
+            min_pixels=512 * 512, max_pixels=max_pixels,
+            upscale=False,
+        )
+        pixel_values.append(cur_pixel_values.to(device=device, dtype=dtype))
+        grid_hw.append(cur_grid_hw.to(device))
+    return torch.cat(pixel_values), torch.cat(grid_hw)
+
+
+def _splice_reference_image_tokens(
+    text: str, num_images: int, grid_hw: torch.Tensor, downsample_ratio: float,
+) -> str:
+    """Upstream ``it2i_generate:1393-1440``. Pads missing ``<image>``
+    placeholders (an ``Image-N:<image>`` prefix per reference when ``text``
+    has none and there is more than one reference, otherwise a bare
+    ``<image>`` prefix for the shortfall), then replaces each ``<image>``
+    with ``IMG_START + IMG_CONTEXT*num_patch_token + IMG_END`` for that
+    reference. Reused for both the main prompt and the raw ``'<image>'*n``
+    img_cond text -- the latter already has exactly ``num_images``
+    placeholders, so the padding step is a no-op for it."""
+    image_token_count = text.count("<image>")
+    if num_images < image_token_count:
+        raise ValueError(
+            f"{LABEL}: prompt references {image_token_count} <image> placeholder(s) but only "
+            f"{num_images} reference image(s) were given.")
+    if num_images > image_token_count:
+        if image_token_count == 0 and num_images > 1:
+            text = "".join(f"Image-{i + 1}:<image>\n" for i in range(num_images)) + text
+        else:
+            text = "<image>\n" * (num_images - image_token_count) + text
+    for i in range(grid_hw.shape[0]):
+        num_patch_token = int(grid_hw[i, 0] * grid_hw[i, 1] * downsample_ratio ** 2)
+        image_tokens = _IMG_START_TOKEN + _IMG_CONTEXT_TOKEN * num_patch_token + _IMG_END_TOKEN
+        text = text.replace("<image>", image_tokens, 1)
+    return text
+
+
+def _finalize_prefix_caches(transformer, caches, batch_size: int, token_h: int, token_w: int) -> None:
+    """Batch-expand + ``prepare_flash_kv_cache`` for every non-``None`` cache in
+    ``caches`` (order: cond, img_cond, uncond) -- generalizes the original
+    two-cache block (and upstream ``it2i_generate:1524-1564``) to 1-3
+    branches. ``caches[0]`` (cond) is always present; its layer count is the
+    shared loop bound (every branch has the same layer count)."""
+    transformer._notify_layer_offload_phase("denoise")
+    present = [c for c in caches if c is not None]
+    for layer_idx in range(len(present[0].layers)):
+        for cache in present:
+            layer = cache.layers[layer_idx]
+            layer.keys = layer.keys.expand(batch_size, *layer.keys.shape[1:])
+            layer.values = layer.values.expand(batch_size, *layer.values.shape[1:])
+    for cache in present:
+        prepare_flash_kv_cache(cache, current_len=token_h * token_w, batch_size=batch_size)
 
 
 @torch.no_grad()
@@ -199,6 +307,8 @@ def encode_prompt(
     system_message: Optional[str] = None,
     prefill_callback: Optional[Callable[[], None]] = None,
     negative_prompt: Optional[str] = None,
+    ref_images: Optional[Sequence[Image.Image]] = None,
+    img_cfg_scale: float = 1.0,
 ) -> SenseNovaPrefix:
     """Build the prefix KV cache(s): the tokenizer + chat-template + prefix-
     forward stage. Resolution-DEPENDENT (the image token indexes bake in
@@ -219,6 +329,20 @@ def encode_prompt(
     ``_t2i_prefix_forward`` path as the cond branch, conditioned on whatever
     string is given (upstream always uses ``""``); see MODEL_FACTS.md for the
     measured effect. ``None``/empty keeps the original empty-string uncond.
+
+    ``ref_images``/``img_cfg_scale``: upstream's reference-image
+    ``it2i_generate`` path (``vendor/modeling_neo_chat.py:1386``). When
+    ``ref_images`` is empty/None, the branch below is ``if not ref_images:``,
+    an UNMODIFIED copy of this function's original (pre-reference) body --
+    same queries, same ``_build_t2i_text_inputs``/``_t2i_prefix_forward``,
+    same ``needs_cfg = cfg_scale > 1`` uncond gate, same warning -- so that
+    code path's behavior is unchanged. With references, up to three prefix
+    caches are built (cond, img_cond, uncond) per upstream's
+    ``needs_img_condition``/``needs_uncondition`` gates (``it2i_generate``
+    lines 1422-1424); ``img_cfg_scale`` is otherwise inert. A ``negative_prompt``
+    rides the uncond branch when one exists, and otherwise the img_cond branch
+    (the blend's baseline at the default ``img_cfg_scale=1``) -- SushiUI's own
+    extension, upstream conditions img_cond on the images alone.
     """
     if height % TOKEN_GRID_ALIGN != 0 or width % TOKEN_GRID_ALIGN != 0:
         raise ValueError(
@@ -236,73 +360,142 @@ def encode_prompt(
     transformer._notify_layer_offload_phase("prefix")
     merge_size = int(1 / transformer.downsample_ratio)
     patch = transformer.patch_size * merge_size
-    needs_cfg = cfg_scale > 1
-
+    ref_images = list(ref_images) if ref_images else []
     negative_prompt = (negative_prompt or "").strip()
-
-    if negative_prompt and not needs_cfg:
-        # negative_prompt only has an effect through the uncond branch, which
-        # this same needs_cfg gate skips entirely at cfg_scale<=1 (the 8-step
-        # distillation LoRA's usual operating point, but the real condition is
-        # cfg_scale, not "a LoRA is loaded" -- a LoRA run at cfg_scale>1 still
-        # gets a real uncond branch). Never silently drop it -- warn instead.
-        msg = (f"[{LABEL}] negative_prompt was given but cfg_scale={cfg_scale} <= 1, so no uncond "
-              f"branch is built and the negative prompt has no effect (this is the single-branch/"
-              f"distillation-LoRA operating point). Use cfg_scale > 1 for negative_prompt to work.")
-        print(msg)
-        try:
-            from api.generation_status import add_warning
-            add_warning(msg, code="sensenova_negative_prompt_no_cfg")
-        except Exception:
-            pass
-
     sys_msg = SYSTEM_MESSAGE_FOR_GEN if system_message is None else system_message
-    query_cond = transformer._build_t2i_query(prompt, system_message=sys_msg, append_text="<think>\n\n</think>\n\n<img>")
-    query_uncond = transformer._build_t2i_query(negative_prompt, append_text="<img>") if needs_cfg else None
-
     token_h = height // patch
     token_w = width // patch
 
     past_kv_cond = None
     past_kv_uncond = None
+    past_kv_img_cond = None
     try:
-        input_ids_cond, indexes_cond, attn_prefix_cond = transformer._build_t2i_text_inputs(tokenizer, query_cond)
-        indexes_image_cond = transformer._build_t2i_image_indexes(
-            token_h, token_w, indexes_cond.shape[1], device=input_ids_cond.device)
+        if not ref_images:
+            # ---- Text-only path: EXACTLY the original (pre-reference) body. ----
+            needs_cfg = cfg_scale > 1
 
-        past_kv_cond, prefix_hidden = transformer._t2i_prefix_forward(input_ids_cond, indexes_cond, attn_prefix_cond)
-        device, dtype = prefix_hidden.device, prefix_hidden.dtype
-        del prefix_hidden
+            if negative_prompt and not needs_cfg:
+                # negative_prompt only has an effect through the uncond branch,
+                # which this same needs_cfg gate skips entirely at cfg_scale<=1
+                # (the 8-step distillation LoRA's usual operating point, but the
+                # real condition is cfg_scale, not "a LoRA is loaded" -- a LoRA
+                # run at cfg_scale>1 still gets a real uncond branch). Never
+                # silently drop it -- warn instead.
+                msg = (f"[{LABEL}] negative_prompt was given but cfg_scale={cfg_scale} <= 1, so no uncond "
+                      f"branch is built and the negative prompt has no effect (this is the single-branch/"
+                      f"distillation-LoRA operating point). Use cfg_scale > 1 for negative_prompt to work.")
+                print(msg)
+                try:
+                    from api.generation_status import add_warning
+                    add_warning(msg, code="sensenova_negative_prompt_no_cfg")
+                except Exception:
+                    pass
 
-        indexes_image_uncond = None
-        if needs_cfg:
-            input_ids_uncond, indexes_uncond, attn_prefix_uncond = transformer._build_t2i_text_inputs(
-                tokenizer, query_uncond)
-            indexes_image_uncond = transformer._build_t2i_image_indexes(
-                token_h, token_w, indexes_uncond.shape[1], device=input_ids_uncond.device)
-            past_kv_uncond, _ = transformer._t2i_prefix_forward(input_ids_uncond, indexes_uncond, attn_prefix_uncond)
+            query_cond = transformer._build_t2i_query(
+                prompt, system_message=sys_msg, append_text="<think>\n\n</think>\n\n<img>")
+            query_uncond = transformer._build_t2i_query(negative_prompt, append_text="<img>") if needs_cfg else None
+
+            input_ids_cond, indexes_cond, attn_prefix_cond = transformer._build_t2i_text_inputs(tokenizer, query_cond)
+            indexes_image_cond = transformer._build_t2i_image_indexes(
+                token_h, token_w, indexes_cond.shape[1], device=input_ids_cond.device)
+
+            past_kv_cond, prefix_hidden = transformer._t2i_prefix_forward(input_ids_cond, indexes_cond, attn_prefix_cond)
+            device, dtype = prefix_hidden.device, prefix_hidden.dtype
+            del prefix_hidden
+
+            indexes_image_uncond = None
+            if needs_cfg:
+                input_ids_uncond, indexes_uncond, attn_prefix_uncond = transformer._build_t2i_text_inputs(
+                    tokenizer, query_uncond)
+                indexes_image_uncond = transformer._build_t2i_image_indexes(
+                    token_h, token_w, indexes_uncond.shape[1], device=input_ids_uncond.device)
+                past_kv_uncond, _ = transformer._t2i_prefix_forward(input_ids_uncond, indexes_uncond, attn_prefix_uncond)
+
+            indexes_image_img_cond = None
+        else:
+            # ---- Reference-image path: upstream it2i_generate:1386-1524. ----
+            pixel_values, grid_hw = _embed_reference_images(transformer, ref_images)
+            transformer.img_context_token_id = tokenizer.convert_tokens_to_ids(_IMG_CONTEXT_TOKEN)
+
+            needs_cfg = not (cfg_scale == 1 and img_cfg_scale == 1)
+            needs_img_cond = needs_cfg and (img_cfg_scale == 1 or cfg_scale != img_cfg_scale)
+            needs_uncond = needs_cfg and img_cfg_scale != 1
+
+            # At img_cfg_scale == 1 (the default) there is no uncond branch, but
+            # img_cond IS the blend's baseline -- carrying the negative prompt in
+            # its text makes the guidance direction cond - (refs + negative),
+            # the usual negative-prompt-as-baseline form, instead of dropping it.
+            negative_into_img_cond = bool(negative_prompt) and not needs_uncond and needs_img_cond
+            if negative_prompt and not needs_uncond and not needs_img_cond:
+                # Neither branch exists (both scales <= 1): nothing can carry it.
+                msg = (f"[{LABEL}] negative_prompt was given with ref_images, but cfg_scale={cfg_scale} and "
+                      f"img_cfg_scale={img_cfg_scale} build no second branch at all, so the negative prompt "
+                      f"has no effect this run. Use cfg_scale > 1 for it to take effect.")
+                print(msg)
+                try:
+                    from api.generation_status import add_warning
+                    add_warning(msg, code="sensenova_negative_prompt_no_uncond")
+                except Exception:
+                    pass
+
+            query_cond_text = _splice_reference_image_tokens(
+                prompt, len(ref_images), grid_hw, transformer.downsample_ratio)
+            query_cond = transformer._build_t2i_query(
+                query_cond_text, system_message=sys_msg, append_text="<think>\n\n</think>\n\n<img>")
+
+            query_img_cond = None
+            if needs_img_cond:
+                # Splice FIRST, then append the negative text: _splice_reference_image_tokens
+                # counts "<image>" occurrences, and a negative prompt containing that
+                # literal would otherwise be miscounted as a placeholder.
+                img_cond_text = _splice_reference_image_tokens(
+                    "<image>" * len(ref_images), len(ref_images), grid_hw, transformer.downsample_ratio)
+                if negative_into_img_cond:
+                    img_cond_text = f"{img_cond_text}\n{negative_prompt}"
+                    print(f"[{LABEL}] negative_prompt carried on the img_cond (reference) branch, "
+                          f"which is this run's CFG baseline (img_cfg_scale={img_cfg_scale}).")
+                query_img_cond = transformer._build_t2i_query(img_cond_text, append_text="<img>")
+
+            query_uncond = transformer._build_t2i_query(negative_prompt, append_text="<img>") if needs_uncond else None
+
+            input_embeds_cond, indexes_cond, attn_prefix_cond = transformer._build_it2i_inputs(
+                tokenizer, query_cond, pixel_values, grid_hw)
+            indexes_image_cond = transformer._build_t2i_image_indexes(
+                token_h, token_w, indexes_cond[0].max() + 1, device=input_embeds_cond.device)
+
+            past_kv_cond, prefix_hidden = transformer._it2i_prefix_forward(
+                input_embeds_cond, indexes_cond, attn_prefix_cond)
+            device, dtype = prefix_hidden.device, prefix_hidden.dtype
+            del prefix_hidden
+
+            indexes_image_img_cond = None
+            if query_img_cond is not None:
+                input_embeds_img_cond, indexes_img_cond, attn_prefix_img_cond = transformer._build_it2i_inputs(
+                    tokenizer, query_img_cond, pixel_values, grid_hw)
+                indexes_image_img_cond = transformer._build_t2i_image_indexes(
+                    token_h, token_w, indexes_img_cond[0].max() + 1, device=input_embeds_img_cond.device)
+                past_kv_img_cond, _ = transformer._it2i_prefix_forward(
+                    input_embeds_img_cond, indexes_img_cond, attn_prefix_img_cond)
+
+            indexes_image_uncond = None
+            if query_uncond is not None:
+                input_embeds_uncond, indexes_uncond, attn_prefix_uncond = transformer._build_it2i_inputs(
+                    tokenizer, query_uncond)
+                indexes_image_uncond = transformer._build_t2i_image_indexes(
+                    token_h, token_w, indexes_uncond[0].max() + 1, device=input_embeds_uncond.device)
+                past_kv_uncond, _ = transformer._it2i_prefix_forward(
+                    input_embeds_uncond, indexes_uncond, attn_prefix_uncond)
 
         raise_if_cancelled()
-
-        transformer._notify_layer_offload_phase("denoise")
-
-        for layer_idx in range(len(past_kv_cond.layers)):
-            layer_cond = past_kv_cond.layers[layer_idx]
-            layer_cond.keys = layer_cond.keys.expand(batch_size, *layer_cond.keys.shape[1:])
-            layer_cond.values = layer_cond.values.expand(batch_size, *layer_cond.values.shape[1:])
-            if past_kv_uncond is not None:
-                layer_uncond = past_kv_uncond.layers[layer_idx]
-                layer_uncond.keys = layer_uncond.keys.expand(batch_size, *layer_uncond.keys.shape[1:])
-                layer_uncond.values = layer_uncond.values.expand(batch_size, *layer_uncond.values.shape[1:])
-
-        prepare_flash_kv_cache(past_kv_cond, current_len=token_h * token_w, batch_size=batch_size)
-        if past_kv_uncond is not None:
-            prepare_flash_kv_cache(past_kv_uncond, current_len=token_h * token_w, batch_size=batch_size)
+        _finalize_prefix_caches(
+            transformer, [past_kv_cond, past_kv_img_cond, past_kv_uncond], batch_size, token_h, token_w)
     except Exception:
         if past_kv_cond is not None:
             clear_flash_kv_cache(past_kv_cond)
         if past_kv_uncond is not None:
             clear_flash_kv_cache(past_kv_uncond)
+        if past_kv_img_cond is not None:
+            clear_flash_kv_cache(past_kv_img_cond)
         raise
 
     grid_h = height // transformer.patch_size
@@ -319,6 +512,11 @@ def encode_prompt(
         uncond_past_key_values=past_kv_uncond,
         uncond_indexes_image=indexes_image_uncond,
         uncond_attention_mask={"full_attention": None} if past_kv_uncond is not None else None,
+        img_cond_past_key_values=past_kv_img_cond,
+        img_cond_indexes_image=indexes_image_img_cond,
+        img_cond_attention_mask={"full_attention": None} if past_kv_img_cond is not None else None,
+        encode_img_cfg_scale=img_cfg_scale,
+        has_reference_images=bool(ref_images),
     )
 
 
@@ -365,14 +563,18 @@ def _build_step_context(transformer, prefix: SenseNovaPrefix, image_prediction: 
 @torch.no_grad()
 def _predict_v_branch(transformer, prefix: SenseNovaPrefix, image_embeds: torch.Tensor,
                       timestep_embeddings: torch.Tensor, z: torch.Tensor, t: torch.Tensor,
-                      use_uncond: bool = False) -> torch.Tensor:
-    """One ``_t2i_predict_v`` call against the cond or uncond prefix KV cache,
-    reusing the embeds ``_build_step_context`` already built for this step
-    (see that function's docstring)."""
-    if use_uncond:
+                      branch: str = "cond") -> torch.Tensor:
+    """One ``_t2i_predict_v`` call against the cond/img_cond/uncond prefix KV
+    cache, reusing the embeds ``_build_step_context`` already built for this
+    step (see that function's docstring)."""
+    if branch == "uncond":
         indexes_image = prefix.uncond_indexes_image
         attn_mask = prefix.uncond_attention_mask
         past_kv = prefix.uncond_past_key_values
+    elif branch == "img_cond":
+        indexes_image = prefix.img_cond_indexes_image
+        attn_mask = prefix.img_cond_attention_mask
+        past_kv = prefix.img_cond_past_key_values
     else:
         indexes_image = prefix.cond_indexes_image
         attn_mask = prefix.cond_attention_mask
@@ -387,7 +589,9 @@ def _predict_v_branch(transformer, prefix: SenseNovaPrefix, image_embeds: torch.
 
 def _cfg_combine(v_cond: torch.Tensor, v_uncond: torch.Tensor, cfg_scale: float, cfg_norm: str,
                  step_i: int) -> torch.Tensor:
-    """Mirrors ``t2i_generate``'s CFG blend, all four ``cfg_norm`` modes."""
+    """Mirrors ``t2i_generate``'s CFG blend, all four ``cfg_norm`` modes. Used
+    for the classic cond/uncond pair only -- see ``_cfg_combine_refs`` for the
+    reference-image branch set."""
     if cfg_norm == "cfg_zero_star":
         positive_flat = v_cond.reshape(v_cond.shape[0], -1)
         negative_flat = v_uncond.reshape(v_uncond.shape[0], -1)
@@ -398,6 +602,48 @@ def _cfg_combine(v_cond: torch.Tensor, v_uncond: torch.Tensor, cfg_scale: float,
         return v_uncond * alpha + cfg_scale * (v_cond - v_uncond * alpha)
 
     v_pred = v_uncond + cfg_scale * (v_cond - v_uncond)
+    # Upstream gates the norm rescale on the scale, not on "a blend happened"
+    # (``:1681``). No-refs callers always pass cfg_scale > 1, but the reference
+    # path reaches this with equal scales below 1, where upstream skips it.
+    if cfg_scale <= 1:
+        return v_pred
+    if cfg_norm == "global":
+        norm_cond = torch.norm(v_cond, dim=(1, 2), keepdim=True)
+        norm_cfg = torch.norm(v_pred, dim=(1, 2), keepdim=True)
+        scale = (norm_cond / (norm_cfg + 1e-8)).clamp(min=0, max=1.0)
+        v_pred = v_pred * scale
+    elif cfg_norm == "channel":
+        norm_cond = torch.norm(v_cond, dim=-1, keepdim=True)
+        norm_cfg = torch.norm(v_pred, dim=-1, keepdim=True)
+        scale = (norm_cond / (norm_cfg + 1e-8)).clamp(min=0, max=1.0)
+        v_pred = v_pred * scale
+    return v_pred
+
+
+def _cfg_combine_refs(v_cond: torch.Tensor, v_img_cond: torch.Tensor, v_uncond: Optional[torch.Tensor],
+                      cfg_scale: float, img_cfg_scale: float, cfg_norm: str) -> torch.Tensor:
+    """cond+img_cond(+uncond) CFG blend for the reference-image path -- mirrors
+    ``it2i_generate:1623-1691``. Only called when an img_cond branch exists
+    (``_euler_run``); ``v_uncond`` is ``None`` when only cond+img_cond exist.
+    Upstream restricts ``cfg_norm`` to ``('none','global','channel')`` here
+    (no ``cfg_zero_star`` -- that blend is defined against a cond/uncond text
+    pair and has no defined meaning against a reference-image branch, so it is
+    treated as ``'none'`` here rather than raising).
+
+    Upstream's ``cfg_scale == img_cfg_scale`` arm (``:1640``) is deliberately
+    absent: it is unreachable here (that case builds no img_cond branch) and
+    the three-branch formula below reduces to it exactly when the scales are
+    equal, so it would be dead code, not a behavioral difference."""
+    if v_uncond is None:
+        v_pred = v_img_cond + cfg_scale * (v_cond - v_img_cond)
+    else:
+        v_pred = v_uncond + cfg_scale * (v_cond - v_img_cond) + img_cfg_scale * (v_img_cond - v_uncond)
+
+    # Upstream gates the norm rescale on the scales, not on "a blend happened"
+    # (``:1681``) -- the blend itself runs for any non-unit scale pair.
+    if not (cfg_scale > 1 or img_cfg_scale > 1):
+        return v_pred
+
     if cfg_norm == "global":
         norm_cond = torch.norm(v_cond, dim=(1, 2), keepdim=True)
         norm_cfg = torch.norm(v_pred, dim=(1, 2), keepdim=True)
@@ -460,18 +706,28 @@ def _euler_run(
     kept region is pinned to the noised init every step (RePaint), in pixel
     space, against the SAME fixed noise tensor drawn once by the caller.
 
-    Clears both prefix KV caches on the way out regardless of exit path --
-    see ``SenseNovaPrefix``'s docstring for the full contract.
+    Clears all prefix KV caches on the way out regardless of exit path --
+    see ``SenseNovaPrefix``'s docstring for the full contract. The reference-
+    image ``img_cond`` branch (when present) is driven by
+    ``prefix.encode_img_cfg_scale`` -- NOT a new argument here (see
+    ``encode_prompt``'s docstring); ``denoise_loop*`` never needs to change.
     """
     if prefix.consumed:
         raise RuntimeError(
             f"{LABEL}: this SenseNovaPrefix was already consumed by a previous denoise_loop* call -- "
             f"its KV caches have been cleared. Call encode_prompt() again for a new generation.")
 
-    if cfg_scale > 1 and prefix.uncond_past_key_values is None:
-        msg = (f"[{LABEL}] cfg_scale={cfg_scale} was requested for this denoise pass, but the prefix was "
-              f"built with encode_prompt(cfg_scale={prefix.encode_cfg_scale}) (<=1), so no uncond KV cache "
-              f"exists. CFG is silently unavailable this run -- proceeding uncond-free, which is visibly "
+    img_cfg_scale = prefix.encode_img_cfg_scale
+    # A second branch of EITHER kind gives CFG a baseline: uncond for the
+    # classic blend, img_cond for the reference-image blend at
+    # img_cfg_scale == 1 (its default -- so refs runs legitimately have no
+    # uncond cache and must not be reported as broken CFG).
+    if (cfg_scale > 1 or img_cfg_scale > 1) and (prefix.uncond_past_key_values is None
+                                                 and prefix.img_cond_past_key_values is None):
+        msg = (f"[{LABEL}] cfg_scale={cfg_scale}/img_cfg_scale={img_cfg_scale} was requested for this denoise "
+              f"pass, but the prefix was built with encode_prompt(cfg_scale={prefix.encode_cfg_scale}, "
+              f"img_cfg_scale={prefix.encode_img_cfg_scale}), which built no second branch, so no CFG baseline "
+              f"exists. CFG is silently unavailable this run -- proceeding single-branch, which is visibly "
               f"weaker than a normal cfg_scale={cfg_scale} generation.")
         print(msg)
         try:
@@ -489,19 +745,39 @@ def _euler_run(
             t = ts[i]
             t_next = ts[i + 1]
 
-            # Embeds built ONCE per step, reused across both CFG branches --
+            # Embeds built ONCE per step, reused across every CFG branch --
             # see _build_step_context's docstring (this was H1: the earlier
             # version recomputed the full ViT feature extraction twice here).
             z, image_embeds, timestep_embeddings = _build_step_context(
                 transformer, prefix, image_prediction, t, noise_scale)
-            v_cond = _predict_v_branch(transformer, prefix, image_embeds, timestep_embeddings, z, t,
-                                       use_uncond=False)
-            use_cfg = (prefix.uncond_past_key_values is not None and cfg_scale > 1
-                      and cfg_interval[0] <= float(t) <= cfg_interval[1])
+            v_cond = _predict_v_branch(transformer, prefix, image_embeds, timestep_embeddings, z, t, branch="cond")
+
+            has_img_cond = prefix.img_cond_past_key_values is not None
+            has_uncond = prefix.uncond_past_key_values is not None
+            in_interval = cfg_interval[0] <= float(t) <= cfg_interval[1]
+            if prefix.has_reference_images:
+                # encode_prompt already applied upstream's own needs_cfg gates
+                # when it chose the branch set, so re-testing the scales here
+                # would skip blends upstream performs (any non-unit scale pair,
+                # including scales below 1).
+                use_cfg = (has_img_cond or has_uncond) and in_interval
+            else:
+                # Classic path, unchanged.
+                use_cfg = has_uncond and cfg_scale > 1 and in_interval
             if use_cfg:
-                v_uncond = _predict_v_branch(transformer, prefix, image_embeds, timestep_embeddings, z, t,
-                                             use_uncond=True)
-                v_pred = _cfg_combine(v_cond, v_uncond, cfg_scale, cfg_norm, j)
+                if has_img_cond:
+                    v_img_cond = _predict_v_branch(transformer, prefix, image_embeds, timestep_embeddings, z, t,
+                                                   branch="img_cond")
+                    v_uncond = (_predict_v_branch(transformer, prefix, image_embeds, timestep_embeddings, z, t,
+                                                  branch="uncond") if has_uncond else None)
+                    v_pred = _cfg_combine_refs(v_cond, v_img_cond, v_uncond, cfg_scale, img_cfg_scale, cfg_norm)
+                else:
+                    # Classic 2-branch path -- IDENTICAL call to before (also
+                    # the only path a no-refs prefix can ever reach, since
+                    # has_img_cond is always False there).
+                    v_uncond = _predict_v_branch(transformer, prefix, image_embeds, timestep_embeddings, z, t,
+                                                 branch="uncond")
+                    v_pred = _cfg_combine(v_cond, v_uncond, cfg_scale, cfg_norm, j)
             else:
                 v_pred = v_cond
 

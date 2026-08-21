@@ -32,6 +32,9 @@ export default function ImageGrid() {
   // SenseNova U1.5 flow-matching time-shift default (schema SSOT); 3.0 fallback
   // only covers the window before /schema/generation-defaults answers.
   const timestepShiftDefault = generationDefaults?.txt2img?.timestep_shift ?? 3.0;
+  // SenseNova U1.5 second CFG scale default (schema SSOT); 1.0 fallback only
+  // covers the window before /schema/generation-defaults answers.
+  const imgCfgScaleDefault = generationDefaults?.txt2img?.img_cfg_scale ?? 1.0;
   const [images, setImages] = useState<GeneratedImage[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedImage, setSelectedImage] = useState<GeneratedImage | null>(null);
@@ -617,6 +620,8 @@ export default function ImageGrid() {
       txt2imgParams.cfg_scale = image.cfg_scale;
       // SenseNova U1.5 flow-matching time-shift; absent for every other architecture.
       txt2imgParams.timestep_shift = image.parameters?.timestep_shift ?? timestepShiftDefault;
+      // SenseNova U1.5 second CFG scale; absent for every other architecture.
+      txt2imgParams.img_cfg_scale = image.parameters?.img_cfg_scale ?? imgCfgScaleDefault;
       txt2imgParams.sampler = image.parameters?.sampler || "euler";
       txt2imgParams.schedule_type = image.parameters?.schedule_type || "uniform";
       txt2imgParams.seed = image.seed;
@@ -1390,6 +1395,13 @@ export default function ImageGrid() {
                         && selectedImage.parameters.timestep_shift !== timestepShiftDefault && (
                         <div>
                           <span className="text-gray-400">Timestep Shift:</span> {selectedImage.parameters.timestep_shift}
+                        </div>
+                      )}
+                      {/* SenseNova U1.5 second CFG scale; absent for every other architecture */}
+                      {selectedImage.parameters?.img_cfg_scale !== undefined
+                        && selectedImage.parameters.img_cfg_scale !== imgCfgScaleDefault && (
+                        <div>
+                          <span className="text-gray-400">Image CFG Scale:</span> {selectedImage.parameters.img_cfg_scale}
                         </div>
                       )}
                     </>

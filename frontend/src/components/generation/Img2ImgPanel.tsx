@@ -234,6 +234,8 @@ const DEFAULT_PARAMS: Img2ImgParams = {
   cfg_scale: 7.0,
   // SenseNova U1.5 flow-matching time-shift; every other architecture ignores it.
   timestep_shift: 3.0,
+  // SenseNova U1.5 second CFG scale; inert without ref_images, ignored elsewhere.
+  img_cfg_scale: 1.0,
   sampler: "euler",
   schedule_type: "uniform",
   seed: -1,
@@ -703,6 +705,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
   const supportsSpectrum = archSupportsFeature(archCapabilities, loadedArch, "spectrum");
   const supportsFbcache = archSupportsFeature(archCapabilities, loadedArch, "fbcache");
   const supportsTimestepShift = archSupportsFeature(archCapabilities, loadedArch, "timestep_shift");
+  const supportsImgCfgScale = archSupportsFeature(archCapabilities, loadedArch, "img_cfg_scale");
   const supportsFuseOutputProj = archSupportsFeature(archCapabilities, loadedArch, "fuse_output_proj");
   // The value the video Block Swap checkbox writes when turned ON (backend
   // SSOT: param_defaults.VIDEO_GEN_DEFAULTS["blocks_to_swap_enabled_default"],
@@ -3023,6 +3026,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         unet_quantization: mainParams.unet_quantization, // Inherit quantization from main
         quantized_gemm_mode: mainParams.quantized_gemm_mode, // Inherit quantized GEMM path from main
         timestep_shift: mainParams.timestep_shift, // Inherit SenseNova U1.5 time-shift (no per-step override)
+        img_cfg_scale: mainParams.img_cfg_scale, // Inherit SenseNova U1.5 second CFG scale
         original_size_w: mainParams.original_size_w,
         original_size_h: mainParams.original_size_h,
         original_size_scale: mainParams.original_size_scale,
@@ -6301,6 +6305,17 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
                   step={0.1}
                   value={params.timestep_shift ?? generationDefaults?.img2img?.timestep_shift ?? 3.0}
                   onChange={(e) => setParams({ ...params, timestep_shift: parseFloat(e.target.value) })}
+                />
+              )}
+              {supportsImgCfgScale && (
+                <Slider
+                  label="Image CFG Scale"
+                  min={0}
+                  max={10.0}
+                  step={0.1}
+                  value={params.img_cfg_scale ?? generationDefaults?.img2img?.img_cfg_scale ?? 1.0}
+                  onChange={(e) => setParams({ ...params, img_cfg_scale: parseFloat(e.target.value) })}
+                  title="SenseNova U1.5 second CFG scale, applied alongside CFG Scale only when reference images are supplied. At 1.0, sampling uses the reference-conditioned branch as the guidance baseline."
                 />
               )}
             </div>

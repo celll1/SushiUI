@@ -398,6 +398,10 @@ export interface GenerationParams {
   cfg_scale?: number;
   // SenseNova U1.5 flow-matching time-shift; every other architecture ignores it.
   timestep_shift?: number;
+  // SenseNova U1.5 second CFG scale (it2i_generate reference-image editing path),
+  // active only alongside cfg_scale when ref_images is supplied. Every other
+  // architecture ignores it.
+  img_cfg_scale?: number;
   sampler?: string;
   schedule_type?: string;
   seed?: number;
@@ -3027,6 +3031,8 @@ export const generateTxt2Img = async (params: GenerationParams) => {
   // SenseNova U1.5 flow-matching time-shift; every other architecture ignores it.
   // Module-level helper, no React context here -- mirrors DEFAULT_PARAMS' fallback.
   formData.append("timestep_shift", String(paramsWithImages.timestep_shift ?? 3.0));
+  // SenseNova U1.5 second CFG scale; inert without ref_images, ignored elsewhere.
+  formData.append("img_cfg_scale", String(paramsWithImages.img_cfg_scale ?? 1.0));
   formData.append("sampler", paramsWithImages.sampler || "euler");
   formData.append("schedule_type", paramsWithImages.schedule_type || "uniform");
   formData.append("seed", String(paramsWithImages.seed || -1));
@@ -3380,6 +3386,8 @@ export const generateImg2Img = async (
   // SenseNova U1.5 flow-matching time-shift; every other architecture ignores it.
   // Module-level helper, no React context here -- mirrors DEFAULT_PARAMS' fallback.
   formData.append("timestep_shift", String(paramsWithImages.timestep_shift ?? 3.0));
+  // SenseNova U1.5 second CFG scale; inert without ref_images, ignored elsewhere.
+  formData.append("img_cfg_scale", String(paramsWithImages.img_cfg_scale ?? 1.0));
   formData.append("denoising_strength", String(paramsWithImages.denoising_strength || 0.75));
   formData.append("img2img_fix_steps", String(paramsWithImages.img2img_fix_steps ?? true));
   formData.append("vae_drift_correction", String(paramsWithImages.vae_drift_correction ?? false));
@@ -4283,6 +4291,8 @@ export const generateInpaint = async (params: InpaintParams, image: File | strin
   // SenseNova U1.5 flow-matching time-shift; every other architecture ignores it.
   // Module-level helper, no React context here -- mirrors DEFAULT_PARAMS' fallback.
   formData.append("timestep_shift", String(paramsWithImages.timestep_shift ?? 3.0));
+  // SenseNova U1.5 second CFG scale; inert without ref_images, ignored elsewhere.
+  formData.append("img_cfg_scale", String(paramsWithImages.img_cfg_scale ?? 1.0));
   formData.append("denoising_strength", String(paramsWithImages.denoising_strength || 0.75));
   formData.append("img2img_fix_steps", String(paramsWithImages.img2img_fix_steps ?? true));
   formData.append("vae_drift_correction", String(paramsWithImages.vae_drift_correction ?? false));

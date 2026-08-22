@@ -32,9 +32,10 @@ generation (see ``teardown()``) -- torch's caching host allocator pools freed
 pinned blocks rather than returning them to the OS, so an explicit "unpin"
 would only add a pageable clone on top of the still-reserved pool (measured:
 a net increase, not a release). Leaving tensors pinned lets the next
-generation's ``_pin_module_cpu_`` reuse the same pool for free. Steady state:
-~15.11 GiB reserved (7.55 GiB live + 7.55 GiB pooled), not returned between
-generations.
+generation's ``_pin_module_cpu_`` reuse the same pool for free. Measured
+steady state: RSS +~21.7 GiB once eviction first engages (15.11 GiB pinned --
+7.55 live + 7.55 pooled -- plus pageable staging), flat across generations,
+never returned to the OS.
 """
 
 from __future__ import annotations
@@ -144,8 +145,8 @@ class MotPhaseEvictor:
         print(f"[{LABEL}] MoT phase eviction ENABLED: {len(self._gen_modules)} generation-branch "
               f"module(s) across {len(layers)} layers, {gen_bytes / 1024 ** 3:.2f} GiB. Host RAM: "
               f"pinned tensors are pooled by torch's caching host allocator and reused across "
-              f"generations, not freed after each one (steady state: ~15.11 GiB reserved -- "
-              f"7.55 GiB live + 7.55 GiB pooled).")
+              f"generations, not freed after each one (measured steady state: RSS +~21.7 GiB, "
+              f"15.11 GiB pinned + pageable staging, never returned to the OS).")
         self._sanity_check_selection(len(layers))
 
     def _sanity_check_selection(self, num_layers: int) -> None:

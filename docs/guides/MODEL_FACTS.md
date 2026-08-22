@@ -1625,6 +1625,114 @@ a generation without style transfer.
       **Reopening condition**: a concrete workload whose measured peak
       exceeds ~44 GB after this feature is active, or an explicit
       requirement to run on a <48 GB card.
+  - **`sensenova_kv_cache_streaming`** (API boolean, default **off**,
+    `SENSENOVA_GENERATION_DEFAULTS`): collapses the persistent per-layer
+    flash-KV prefix cache into a **2-slot GPU ring shared across every layer
+    and branch**, streaming each slot's prefix head from a pinned CPU master
+    with 1-layer lookahead on its own dedicated CUDA stream and pinned pool
+    (deliberately not shared with `sensenova_mot_phase_eviction`'s — that
+    feature's phase-boundary GB-scale transfer would head-of-line-block a
+    per-layer prefetch). `prepare_flash_kv_cache` normally allocates one
+    buffer per layer per branch, shape `(B, prefix_len + current_len, H, D)`;
+    collapsing to 2 slots is valid because the denoise loop is
+    branch-outer/layer-inner (`_predict_v_branch` is a full 42-layer pass per
+    branch), so only one `(branch, layer)` buffer is ever live. `adopt()`
+    deliberately bypasses `prepare_flash_kv_cache` entirely and builds the
+    pinned master directly from each layer's existing `keys`/`values`, one
+    layer at a time — building the full buffer set first and then freeing it
+    would hit the very peak this feature exists to remove. Implementation:
+    `backend/core/models/sensenova/kv_cache_streaming.py`, wired in
+    `backend/core/pipeline_backends/sensenova.py` (3 install + 3 teardown
+    sites), with the per-layer hookup in
+    `backend/core/models/sensenova/vendor/modeling_qwen3.py` and
+    adopt/begin_branch/teardown calls in
+    `backend/core/models/sensenova/sensenova_pipeline_ops.py`.
+    - **Design trap**: the flash KV buffer is ONE tensor with TWO regions of
+      OPPOSITE lifecycle. The head `[:prefix_len]` is write-once/read-many
+      (the prompt/reference prefix — immutable, the only part worth
+      streaming). The tail `[prefix_len:]` is REWRITTEN IN PLACE by every
+      layer on every denoise step (`vendor/modeling_qwen3.py:722-723`, the
+      `update_cache=False` live path) immediately before that same layer
+      reads it — it is per-step scratch, not a cache, and streaming it back
+      would feed a stale tail and change outputs. The saving comes from
+      collapsing the buffer COUNT, not from offloading the tail; slot
+      reassignment between denoise steps is numerically inert precisely
+      because of this write-then-read ordering, which the change leaves
+      untouched — that is the load-bearing safety property.
+    - **Trap found by audit before the feature ever ran**:
+      `layer.is_initialized` is a bool SEPARATE from `keys`/`values` being
+      `None`. transformers 5.1.0's `DynamicLayer.get_seq_length()` is
+      `if not self.is_initialized or self.keys.numel() == 0: return 0`, so
+      nulling the adopted GPU tensors without also clearing that flag makes
+      it dereference `None.numel()`. Every denoise step reaches this path,
+      because `_t2i_predict_v` calls the LM without `cache_position`
+      (`vendor/modeling_qwen3.py:1198-1199` and the identical code in
+      `modeling_qwen3_moe.py:431-432`). The fix sets `is_initialized = False`;
+      the resulting `prefix_len -> 0` divergence on that call is inert on
+      this path because `forward_gen`'s RoPE keys off `indexes`
+      (`cache_position` appears only in its signature, never its body) and
+      the flash branch's `attention_mask` is always the dict
+      `{"full_attention": None}`, which skips mask construction entirely
+      (`modeling_qwen3.py:1208`, takes the `else` at `:1231`).
+    - **Measured, RTX 6000 Ada 48 GB, fixed seed 424242, `cfg_scale=4.0`,
+      10 steps, backend restarted before the run** (peak VRAM is
+      allocation-driven and reproduces `sensenova_mot_phase_eviction`'s
+      recorded 3008² baseline of 43.82 GB almost exactly at 43.808 GB, so
+      the peaks below are comparable across step counts even though
+      wall-clock is not): 3008² t2i, 2 branches — off 43.808 GB, on
+      40.882 GB (**-2.926 GB**). 2048² t2i, 2 branches — off 24.614 GB, on
+      23.246 GB (**-1.368 GB**). 3-ref 2048² it2i, `img_cfg_scale=1.5`, 3
+      branches — off 30.784 GB, on 26.803 GB (**-3.981 GB**). Same it2i
+      workload with BOTH toggles (this feature + MoT eviction) on — 19.249 GB
+      against the 30.784 GB plain baseline (**-11.535 GB**). Output is
+      **bit-identical at fixed seed on every pair** (max abs channel diff 0,
+      0.000000% pixels differing), including the both-toggles-on cell against
+      the plain baseline — independently re-verified from the saved PNGs, not
+      only self-reported. **Additivity is near-exact**: the measured combined
+      -11.535 GB matches -11.531 GB predicted from MoT eviction's documented
+      -7.55 GB plus this feature's own -3.981 GB on the same workload, with
+      both features' `_active` warnings present.
+    - **Staged pinned-CPU bytes scale with reference count (prefix size), NOT
+      with output resolution** — 45.1 MiB for t2i; 1058.7 MiB across 3
+      branches (~353 MiB/branch) for 3-reference it2i — whereas the VRAM
+      saving scales with resolution via the `(res/32)²` tail. This asymmetry
+      is the single most useful predictive fact for an operator deciding
+      whether to enable the toggle: it helps most at high resolution and
+      costs more host RAM with more references.
+    - **Wall-clock is within noise on most cells** (it2i -1.01%, both-on
+      +1.28%, 2048² +2.94%). The 3008² `cfg_scale>1` pair reproducibly ran
+      ~10% FASTER with streaming on (off: 265.1 s cold, 233.5 s / 240.0 s
+      warm; on: 209.8 s / 211.7 s). Since output is bit-identical the
+      computation is provably identical, so this is a memory-system effect,
+      not skipped work — the plausible mechanism is relief of allocator
+      pressure near the card ceiling (43.8 GB on a 49.1 GB card), offered as
+      unconfirmed, not as a benchmarked speedup claim.
+    - **Host RAM cost, same class as `sensenova_mot_phase_eviction`'s**:
+      RSS rose **~1.42 GiB** on first engagement — far more than the
+      45.1 MiB staged for t2i — consistent with pinned-pool granularity (the
+      same caching-host-allocator behavior already documented for MoT
+      eviction). Flat across repeats and across a cancel/recovery cycle (no
+      leak), but not returned to the OS; no release is claimed.
+      Cancellation was explicitly tested: cancelled at step 12/40, clean
+      error transition, backend stayed healthy, RSS flat, and the next
+      streaming-on generation succeeded with no stale-state or
+      slot-mismatch errors.
+    - **Default is off for the same reason as `sensenova_mot_phase_eviction`**:
+      the measured peaks already fit the 48 GB reference card, so an
+      on-by-default would be an unmeasured default for the sub-48 GB
+      population.
+    - **Composes with `sensenova_mot_phase_eviction`**: disjoint tensors,
+      hook points, cadences, and CUDA streams, with no shared coordinator.
+      `enable_block_swap` remains unsupported/warned for this arch, same as
+      above.
+    - **No applicability to future SenseNova training**: a training step is
+      a single-timestep forward/backward with no multi-step denoise loop, so
+      there is no persistent read-many KV cache to stream; training-side
+      offload belongs to `LayerOffloadConductor`. What DOES transfer is the
+      MoT half-eviction CONCEPT: a gen-branch-only fine-tune with the
+      understanding branch frozen could CPU-evict that half during training.
+      Flag it as a thing to evaluate when training is built, not as planned
+      work.
 - **minimax_music3** — Full implementation account, including every measured
   number and the audit history behind them, is
   `docs/guides/MINIMAX_MUSIC3_DESIGN.md`; this entry states only the facts an

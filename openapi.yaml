@@ -9941,6 +9941,27 @@ components:
             reference-conditioned branch at `img_cfg_scale == 1`. Crossing that
             boundary therefore changes how a negative prompt is applied.
           example: 1.0
+        sensenova_mot_phase_eviction:
+          type: boolean
+          default: false
+          description: |
+            SenseNova U1.5 only. The transformer's layers hold two weight
+            halves (understanding / generation, exactly 50/50); each
+            generation phase uses only one half at a time (prefix uses the
+            understanding half, denoise uses the generation half). When
+            enabled: the generation-branch weights are moved to pinned CPU
+            memory at the start of the prefix phase (device-to-host); at the
+            start of the denoise phase, the understanding-branch weights are
+            moved to pinned CPU memory (device-to-host) first, and the
+            generation-branch weights are then moved back to GPU
+            (host-to-device) -- three half-transfers per generation, roughly
+            22.6 GiB of PCIe traffic. Approximately 15.11 GiB of pinned host
+            RAM is reserved in steady state (7.55 GiB live + 7.55 GiB pooled
+            in torch's caching host allocator for the other half) and is not
+            returned between generations. Ignored (accepted and warned) by
+            every other architecture. Not related to `blocks_to_swap`, which
+            SenseNova does not implement.
+          example: false
         seed:
           type: integer
           default: -1

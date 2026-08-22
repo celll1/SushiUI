@@ -1733,6 +1733,50 @@ a generation without style transfer.
       understanding branch frozen could CPU-evict that half during training.
       Flag it as a thing to evaluate when training is built, not as planned
       work.
+  - **2026-08-22 production incident: rare non-deterministic output
+    corruption ("TV static"), MoT eviction and KV streaming both OFF.** A
+    live report of an off-bucket (768x1152) generation producing garbage,
+    with EVERY later generation in that backend process also corrupted
+    (including at the 1024x1024 default) until a restart, was reproduced
+    live and traced as far as it could be: a full audit of every position-
+    index/RoPE/grid construction path in this arch (`_build_t2i_image_indexes`,
+    `get_thw_indexes`, both `Qwen3RotaryEmbedding` instances, the vision
+    tower's `NEOVisionEmbeddings`/`build_abs_positions_from_grid_hw`) found
+    no hardcoded bucket assumption and no table sized smaller than a
+    realistic resolution could reach (`max_position_embeddings`/`_hw`/
+    `_vision` are all >=10000 against grids that never exceed a few hundred)
+    — that whole class of cause is ruled out. Direct reproduction attempts
+    showed the corruption is genuinely **non-deterministic**: identical
+    (prompt, seed, resolution, step count, cfg_scale) request sequences,
+    replayed on a fresh backend, were clean in 4 of 5 controlled attempts and
+    corrupted in 1; a control of six back-to-back SAME-resolution requests
+    (no resolution change at all) never corrupted, but the one reproduction
+    that succeeded followed several resolution CHANGES in the same process.
+    The corruption pattern itself — structured per-pixel noise with the
+    underlying composition still faintly visible, not a crash, not a
+    black/NaN image — is the signature of a genuinely uninitialized GPU
+    memory read, not an out-of-bounds index (which errors) or a smooth
+    all-zero region (which a pure under-write bug would produce). The one
+    concrete allocation matching that signature is
+    `prepare_flash_kv_cache` (`vendor/modeling_neo_chat.py`): it builds each
+    layer's flash K/V buffer with `torch.empty` and relies on
+    `forward_gen` writing the `[prefix_len:total_len]` tail every step
+    before it is read back — a precondition this incident's evidence
+    suggests doesn't always hold, for a reason not fully isolated. Applied
+    as defence in depth (not a resolution-based refusal, which the evidence
+    does not support: the "safe" 1024x1024 default was hit in the one
+    reproduction, and 768x1152 was clean in every other attempt, so no
+    resolution boundary could be drawn that would actually prevent it):
+    `_zero_uninitialized_flash_cache_tail` in `sensenova_pipeline_ops.py`
+    zeroes that tail immediately after `prepare_flash_kv_cache` returns, a
+    no-op in the normal (correctly-overwritten) case. The equivalent
+    `torch.empty` ring-buffer slots in `kv_cache_streaming.py` were NOT
+    hardened the same way (that feature was off in every reproduction, per
+    this incident's own scope) — flagged as a follow-up if this recurs with
+    streaming enabled. If "TV static" corruption resurfaces after this fix,
+    the next step is instrumentation (`CUDA_LAUNCH_BLOCKING=1`, a
+    controlled multi-generation stress loop with memory debugging) rather
+    than another blind allocation audit.
 - **minimax_music3** — Full implementation account, including every measured
   number and the audit history behind them, is
   `docs/guides/MINIMAX_MUSIC3_DESIGN.md`; this entry states only the facts an

@@ -287,6 +287,26 @@ def _splice_reference_image_tokens(
     return text
 
 
+def _zero_uninitialized_flash_cache_tail(cache) -> None:
+    """``prepare_flash_kv_cache`` (vendor) allocates each layer's flash K/V
+    buffers with ``torch.empty``; the ``[prefix_len:total_len]`` tail is
+    normally overwritten by ``forward_gen`` every step before being read, but
+    a rare non-deterministic "TV static" corruption traced to exactly this
+    allocation (see MODEL_FACTS.md's sensenova row) means that precondition
+    doesn't always hold. Zeroing it here is defence in depth: a no-op in the
+    normal case (the tail gets overwritten anyway), resolution-independent,
+    and cheap (once per prefix branch, not once per step)."""
+    for layer in cache.layers:
+        prefix_len = getattr(layer, "flash_prefix_len", None)
+        total_len = getattr(layer, "flash_total_len", None)
+        if prefix_len is None or total_len is None or prefix_len >= total_len:
+            continue
+        if layer.flash_k_cache is not None:
+            layer.flash_k_cache[:, prefix_len:total_len].zero_()
+        if layer.flash_v_cache is not None:
+            layer.flash_v_cache[:, prefix_len:total_len].zero_()
+
+
 def _finalize_prefix_caches(transformer, caches, batch_size: int, token_h: int, token_w: int) -> None:
     """Batch-expand + build the flash KV buffers for every non-``None`` cache
     in ``caches`` (order: cond, img_cond, uncond) -- generalizes the original
@@ -320,6 +340,7 @@ def _finalize_prefix_caches(transformer, caches, batch_size: int, token_h: int, 
     else:
         for cache in present:
             prepare_flash_kv_cache(cache, current_len=current_len, batch_size=batch_size)
+            _zero_uninitialized_flash_cache_tail(cache)
 
 
 @torch.no_grad()

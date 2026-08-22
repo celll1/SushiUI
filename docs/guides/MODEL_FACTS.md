@@ -75,7 +75,11 @@ reused verbatim by SD1.5/SDXL (`pipeline.py`) and all 7 DiT image archs
 - **sensenova is excluded too**: `core/keep_hot.py` is not imported by
   `pipeline_backends/sensenova.py`. Its transformer is the ONLY component
   (pixel-space, no VAE, no separate text encoder), so keep-hot's per-component
-  residency has nothing to partition across.
+  residency has nothing to partition across. This is orthogonal to
+  `sensenova_mot_phase_eviction` (see the sensenova row above): that feature
+  moves weight HALVES within one already-resident transformer during a single
+  generation, an axis keep-hot's cross-generation per-component residency
+  does not have.
 - **Frontend**: the generation queue (`GenerationQueueContext`) sets
   `keep_models_hot = true` on every queued item except the last one in a
   back-to-back run on txt2img/img2img/inpaint; the last item sends `false`
@@ -1558,6 +1562,69 @@ a generation without style transfer.
     `ARCH_REGISTRY`: the base checkpoint is converted UNMERGED from the
     8-step distillation LoRA specifically to keep the trainable lineage
     canonical.
+  - **`sensenova_mot_phase_eviction`** (API boolean, default **off**,
+    `SENSENOVA_GENERATION_DEFAULTS`): MoT phase-exclusive half-weight
+    eviction. Each of the 42 layers carries two halves — "understanding"
+    (plain names) and "generation" (`_mot_gen`), exactly 50/50 at
+    386,221,056 bytes/layer (15.11 GiB total, 7.55 GiB/half) — and each
+    generation phase uses exactly one: the prefix phase (KV-cache build)
+    takes `forward_und`, the denoise phase (Euler loop) takes `forward_gen`.
+    When enabled, the idle half is staged to pinned CPU per phase, driven by
+    the previously no-op `_notify_layer_offload_phase` hook: three
+    half-transfers per generation (~22.6 GiB PCIe) — generation half D2H at
+    the start of prefix; understanding half D2H then generation half H2D at
+    the start of denoise, in that order (**the eviction must precede the
+    load at the denoise transition** — reversing it co-resides both halves
+    on GPU for one window and the saving vanishes). Implementation:
+    `backend/core/models/sensenova/mot_phase_eviction.py`, wired in
+    `backend/core/pipeline_backends/sensenova.py`.
+    - **Selection trap**: "owns no `nn.Parameter`" is not a safe
+      "not a weight" test for this split — `Int8Linear` (588 of the 588
+      quantized Linears) registers weight/weight_scale/bias as BUFFERS and
+      owns zero Parameters, so a buffer-only rule silently selected only
+      RMSNorm (~0.21 GiB) and made the feature inert with no code-level
+      signal; it shipped that way twice before a full GPU measurement gate
+      caught it. The real discriminator is persistence (a rotary
+      embedding's `inv_freq` is a non-persistent buffer, int8 weight
+      buffers are persistent), and a sanity check now warns
+      (`sensenova_mot_phase_eviction_selection_suspect`) if either half
+      comes in under 1 GiB or the halves differ by more than 2x.
+    - **Measured, RTX 6000 Ada 48 GB, fixed seed 424242, 50 steps, cfg 4.0**:
+      9.05 MP txt2img (3008², no refs) — off 43.82 GB / 1226.7 s (cold-start
+      first arm after a restart, not a clean wall-clock baseline), on
+      36.19 GB / 1045.6 s, on (repeat) 36.23 GB / 1046.9 s. 5-ref 2048² it2i
+      — off 30.96 GB / 563.4 s, on 23.41 GB / 564.1 s. VRAM: **-7.63 GB**
+      (9.05 MP) and **-7.55 GB** (5-ref it2i). Wall-clock: **+0.12%** on the
+      it2i pair, the clean comparison (the txt2img pair's apparent speedup
+      is a cold-start artifact of run order, not a measurement of the
+      feature). Output bit-identical at fixed seed on both workloads (max
+      abs channel diff 0, 0.000000% pixels differing).
+    - **Host RAM cost is the reason the default is off**: pinned CPU
+      tensors are never explicitly un-pinned after a generation — torch's
+      caching host allocator pools freed pinned blocks rather than
+      returning them to the OS, and an explicit unpin only adds a pageable
+      clone on top of the still-reserved pool (measured: a net increase,
+      not a release). Measured: RSS rises **~21.7 GiB** once eviction first
+      engages (15.11 GiB pinned — 7.55 live + 7.55 pooled — plus pageable
+      staging), flat across repeats (no leak), but **never returned to the
+      OS**: it persists for the process lifetime, including into later
+      generations run with the toggle off. The measured peaks already fit a
+      48 GB card without this feature (worst case 43.82 GB); it is for
+      operators who are VRAM-constrained and have host RAM to spare.
+    - **Generic rolling block-swap was deliberately not built for this
+      arch** (`TransformerBlockOffloader`, the mechanism 5 other
+      architectures use): its transformer is never registered with it
+      (`core.memory_management.transformer_registry` detects it as
+      "unknown"), and rewriting the 3-branch denoise loop's
+      layer-outer/branch-inner ordering to support it would cost 2-3x more
+      PCIe traffic than this phase-exclusive scheme, while activations and
+      KV-cache dominate the peak regardless — the marginal ceiling did not
+      justify it. `blocks_to_swap` warns rather than being silently inert
+      here (also unsupported, same reason, on sd15/sdxl/krea2/
+      minimax_music3's generation path; see `arch_capabilities.py`).
+      **Reopening condition**: a concrete workload whose measured peak
+      exceeds ~44 GB after this feature is active, or an explicit
+      requirement to run on a <48 GB card.
 - **minimax_music3** — Full implementation account, including every measured
   number and the audit history behind them, is
   `docs/guides/MINIMAX_MUSIC3_DESIGN.md`; this entry states only the facts an

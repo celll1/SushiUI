@@ -52,6 +52,7 @@ __all__ = [
     "filter_convrot_eligible",
     "load_bf16_weight_map",
     "group_layers_by_shard",
+    "sort_names_by_data_offset",
     "rotation_precision_report",
     "convrot_marker_fields",
     "export_sensenova_convrot",
@@ -199,6 +200,21 @@ def group_layers_by_shard(
             continue
         by_shard.setdefault(shard, []).append(layer)
     return by_shard, missing
+
+
+def sort_names_by_data_offset(names: Sequence[str], header: Dict[str, Any]) -> List[str]:
+    """``names`` reordered by ascending ``data_offsets[0]`` in ``header``.
+
+    Physical-layout order turns a shard read into a single forward scan
+    instead of seeking across it, which matters when the source lives on a
+    spinning disk (see the module docstring). Falls back to the input order
+    on any missing/malformed ``data_offsets`` rather than raising -- a slow
+    export beats a failed one.
+    """
+    try:
+        return sorted(names, key=lambda n: header[n]["data_offsets"][0])
+    except (KeyError, TypeError, IndexError):
+        return list(names)
 
 
 def convrot_marker_fields(group_size: int = GROUP_SIZE) -> Dict[str, object]:
@@ -367,6 +383,14 @@ def export_sensenova_convrot(
     try:
         for shard_idx, (shard_name, shard_layers) in enumerate(sorted(by_shard.items())):
             shard_path = os.path.join(bf16_root, shard_name)
+            # Read this shard's header (no tensor bytes) and reorder its layers by
+            # physical byte offset, so the shard is consumed as one forward scan.
+            shard_header, _shard_metadata = read_safetensors_header(shard_path)
+            name_to_layer = {layer.name: layer for layer in shard_layers}
+            shard_layers = [
+                name_to_layer[n]
+                for n in sort_names_by_data_offset(list(name_to_layer), shard_header)
+            ]
             print(f"[ConvRotExport] shard {shard_idx + 1}/{len(by_shard)}: {shard_name} "
                   f"({len(shard_layers)} layer(s))")
             with safe_open(shard_path, framework="pt", device="cpu") as handle:
@@ -400,7 +424,11 @@ def export_sensenova_convrot(
         # Second pass: everything else, verbatim from the plain-int8 file.
         copied = 0
         with safe_open(plain_int8_path, framework="pt", device="cpu") as handle:
-            for key in sorted(header.keys()):
+            # Physical-offset order, not alphabetical: same forward-scan rationale
+            # as the first pass. Safe to reorder the WRITE order too -- confirmed
+            # safetensors is a keyed format and every downstream reader (loader,
+            # marker scan) looks tensors up by name, never by file position.
+            for key in sort_names_by_data_offset(sorted(header.keys()), header):
                 if key in written_keys:
                     continue
                 writer.add(key, handle.get_tensor(key))

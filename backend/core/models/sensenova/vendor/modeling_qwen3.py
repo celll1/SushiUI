@@ -414,6 +414,19 @@ class Qwen3RotaryEmbedding(nn.Module):
         return cos.to(dtype=x.dtype), sin.to(dtype=x.dtype)
 
 
+def _assert_style_cur_len(ref_k: torch.Tensor, cur_len: int, layer_idx: int) -> None:
+    """``make_ref_value`` broadcasts the reference Value against the target's own,
+    so a differing reference token count fails obscurely once ``ref_value_mix <
+    1``. Raise a clear error instead. Stricter than the sibling archs, which
+    tolerate a differently-sized reference at the default mix."""
+    ref_len = ref_k.shape[1]
+    if ref_len != cur_len:
+        raise RuntimeError(
+            f"SenseNova reference-style capture/inject token-count mismatch at layer {layer_idx}: "
+            f"captured {ref_len}, injecting {cur_len}."
+        )
+
+
 class Qwen3Attention(nn.Module):
     """Multi-headed attention from 'Attention Is All You Need' paper"""
 
@@ -423,6 +436,11 @@ class Qwen3Attention(nn.Module):
     # ``_attn_backend`` / ``_attn_mode`` stamping.
     _attn_backend: str = "native"
     _attn_mode: "AttentionMode" = AttentionMode.INFERENCE
+
+    # Reference-style KV injection (``core.inference.reference_style``); None =
+    # inactive, taking the byte-identical original path. Keyed by
+    # ``self.layer_idx``, so no separate ``block_idx`` attribute.
+    _style_ctx = None
 
     def __init__(self, config: Qwen3Config, layer_idx: int):
         super().__init__()
@@ -700,6 +718,18 @@ class Qwen3Attention(nn.Module):
             k_cur = key_states.transpose(1, 2).contiguous()
             v_cur = value_states.transpose(1, 2).contiguous()
 
+            # Reference-style capture. Must run HERE: post qk-RMSNorm (which is
+            # scale-invariant, so pre-norm AdaIN would be erased) and post-RoPE
+            # (pre-RoPE would desync the reference's positions from the target's).
+            # 3-tuple ``(q, k, v)`` is the arity ``collect_block_refs`` unpacks.
+            ctx = self._style_ctx
+            if ctx is not None and ctx.mode == "capture" and ctx.active_for_block(self.layer_idx):
+                ctx.store[self.layer_idx] = (
+                    q.detach().clone(),
+                    k_cur.detach().clone(),
+                    v_cur.detach().clone(),
+                )
+
             if past_key_values is not None:
                 if update_cache:
                     # Rare path, keep compatibility.
@@ -757,6 +787,101 @@ class Qwen3Attention(nn.Module):
                 k = k_cur
                 v = v_cur
 
+            # Reference-style inject. Unlike the sibling archs, ``q`` covers only
+            # the current tokens while ``k``/``v`` cover ``prefix + current``, so
+            # one ``img_start``/``img_end`` pair cannot serve both -- AdaIN is
+            # applied here against each tensor's own slice (``q`` whole, ``k``'s
+            # tail; never the prefix, which carries text semantics) and
+            # ``inject_kv`` is then called with ``adain_strength=0`` purely to
+            # concat. ``k``/``v`` may be views into the flash cache or streamer
+            # ring: every reassignment below is a ``torch.cat``, so the reference
+            # segment never lands in either buffer.
+            ctx = self._style_ctx
+            if ctx is not None and ctx.mode == "inject" and ctx.active_for_block(self.layer_idx):
+                cur_len = q.shape[1]
+                prefix_len = k.shape[1] - cur_len
+                k_img = k[:, prefix_len:prefix_len + cur_len]
+                target_v_img = v[:, prefix_len:prefix_len + cur_len]
+
+                if ctx.refs is not None:
+                    from core.inference.reference_style import cross_batch_adain_qk, inject_kv, inject_kv_multi
+
+                    block_refs = ctx.collect_block_refs(self.layer_idx, target_v_img, k.device, k.dtype)
+                    for _r in block_refs:
+                        _assert_style_cur_len(_r[0], cur_len, self.layer_idx)
+                    if block_refs:
+                        if ctx.combine_mode == "common_concept":
+                            # Averaging every ref's K/V/Q/strength/adain into ONE
+                            # consensus ref reduces this exactly to the single-ref
+                            # shape below, so no q/k-length-aware variant of
+                            # inject_kv_multi's own common_concept branch is needed.
+                            ref_k_mean = torch.stack([r[0] for r in block_refs], dim=0).mean(dim=0)
+                            ref_v_mean = torch.stack([r[1] for r in block_refs], dim=0).mean(dim=0)
+                            if all(r[2] is not None for r in block_refs):
+                                ref_q_mean = torch.stack([r[2] for r in block_refs], dim=0).mean(dim=0)
+                            else:
+                                ref_q_mean = None
+                            strength = sum(r[3] for r in block_refs) / len(block_refs)
+                            adain_strength = sum(r[4] for r in block_refs) / len(block_refs)
+                            freq_vec = block_refs[0][5]
+                            if adain_strength > 0.0:
+                                anchor_q = ref_q_mean if ref_q_mean is not None else ref_k_mean
+                                q, k_img = cross_batch_adain_qk(q, k_img, anchor_q, ref_k_mean, adain_strength)
+                                k = torch.cat([k[:, :prefix_len], k_img], dim=1)
+                            k, v = inject_kv(
+                                k, v, ref_k_mean, ref_v_mean, prefix_len, prefix_len + cur_len,
+                                strength, freq_vec, 0.0, q=None,
+                            )
+                        elif ctx.combine_mode == "stack":
+                            active = [r for r in block_refs if not (r[3] == 0.0 and r[4] <= 0.0)]
+                            if active:
+                                mean_ref_k = torch.stack([r[0] for r in active], dim=0).mean(dim=0)
+                                if all(r[2] is not None for r in active):
+                                    mean_ref_q = torch.stack([r[2] for r in active], dim=0).mean(dim=0)
+                                else:
+                                    mean_ref_q = None
+                                max_adain = max(r[4] for r in active)
+                                if max_adain > 0.0:
+                                    anchor_q = mean_ref_q if mean_ref_q is not None else mean_ref_k
+                                    q, k_img = cross_batch_adain_qk(q, k_img, anchor_q, mean_ref_k, max_adain)
+                                    k = torch.cat([k[:, :prefix_len], k_img], dim=1)
+                                zeroed_refs = [
+                                    (rk, rv, rq, rs, 0.0, fv) for (rk, rv, rq, rs, _a, fv) in block_refs
+                                ]
+                                k, v = inject_kv_multi(
+                                    k, v, None, prefix_len, prefix_len + cur_len, zeroed_refs, "stack",
+                                )
+                        else:
+                            raise ValueError(f"Unknown combine_mode: {ctx.combine_mode!r}")
+                else:
+                    entry = ctx.store.get(self.layer_idx)
+                    if entry is not None:
+                        from core.inference.reference_style import cross_batch_adain_qk, inject_kv, make_ref_value
+
+                        ref_q, ref_k, ref_v = entry
+                        _assert_style_cur_len(ref_k, cur_len, self.layer_idx)
+                        cfg = ctx.config
+                        if cfg.ref_k_strength != 0.0 or cfg.adain_strength > 0.0:
+                            # Frequency-content suppression on the reference Key
+                            # assumes the interleave-real RoPE pair layout (Krea2/
+                            # FLUX-style); SenseNova's t/h/w-split "rotate-half"
+                            # RoPE (apply_rotary_pos_emb, per-axis) is incompatible
+                            # with that curve. Use an all-ones vector (no frequency
+                            # suppression) -- a quality knob, not a correctness
+                            # requirement: ref_k_strength + AdaIN still apply in
+                            # full. Mirrors Anima/MiniT2I/Ideogram4/LTX-2.3.
+                            freq_vec = torch.ones(self.head_dim, device=k.device, dtype=k.dtype)
+                            ref_v_final = make_ref_value(
+                                target_v_img, ref_v, cfg.value_mode, cfg.value_adain_strength, cfg.ref_value_mix
+                            )
+                            if cfg.adain_strength > 0.0:
+                                q, k_img = cross_batch_adain_qk(q, k_img, ref_q, ref_k, cfg.adain_strength)
+                                k = torch.cat([k[:, :prefix_len], k_img], dim=1)
+                            k, v = inject_kv(
+                                k, v, ref_k, ref_v_final, prefix_len, prefix_len + cur_len,
+                                cfg.ref_k_strength, freq_vec, 0.0, q=None,
+                            )
+
             # sanity checks
             assert q.ndim == 4 and k.ndim == 4 and v.ndim == 4
             assert q.shape[0] == k.shape[0] == v.shape[0], (q.shape, k.shape, v.shape)
@@ -781,6 +906,19 @@ class Qwen3Attention(nn.Module):
         # ------------------------------------------------------------------
         # Original eager fallback path
         # ------------------------------------------------------------------
+        # Style injection is wired only into the flash path above. Unreachable
+        # today (the denoise loop always passes {"full_attention": None}, so
+        # attention_mask is None per layer); raise rather than let a future
+        # caller silently lose the effect here.
+        ctx = self._style_ctx
+        if ctx is not None and ctx.active_for_block(self.layer_idx):
+            raise RuntimeError(
+                "SenseNova reference-style KV injection is only implemented for the flash "
+                "self-attention path (attention_mask is None). This forward_gen call reached "
+                "the eager fallback path with attention_mask set while a style context is "
+                "active, which would silently drop the injection."
+            )
+
         if past_key_values is not None:
             if update_cache:
                 key_states, value_states = past_key_values.update(

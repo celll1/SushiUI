@@ -92,6 +92,7 @@ __all__ = [
     "UnsupportedQuantSemanticsError",
     "cast_float8_tensors",
     "decode_comfy_quant_marker",
+    "encode_comfy_quant_marker",
     "comfy_quant_markers",
     "unsupported_quant_semantics_report",
     "refuse_unsupported_quant_semantics",
@@ -202,6 +203,17 @@ def decode_comfy_quant_marker(tensor: "torch.Tensor") -> Optional[Dict[str, obje
     except Exception:
         return None
     return parsed if isinstance(parsed, dict) else None
+
+
+def encode_comfy_quant_marker(fields: Dict[str, object]) -> "torch.Tensor":
+    """The inverse of ``decode_comfy_quant_marker``: a dict -> a 1-D uint8 tensor.
+
+    UTF-8 JSON via ``json.dumps`` default formatting, byte-identical to the H3
+    ConvRot test fixtures when called with the same field order (decoding
+    itself is whitespace-insensitive).
+    """
+    raw = json.dumps(fields).encode("utf-8")
+    return torch.tensor(list(raw), dtype=torch.uint8)
 
 
 def comfy_quant_markers(

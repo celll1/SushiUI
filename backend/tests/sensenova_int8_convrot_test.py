@@ -211,3 +211,40 @@ def test_ablation_forces_only_the_requested_group(monkeypatch):
 
     assert model.layer0.self_attn.o_proj._force_dequant is True
     assert model.layer0.self_attn.o_proj_mot_gen._force_dequant is False
+
+
+def test_reshape_convrot_scales_touches_only_marker_validated_layers():
+    """`[out, 1]` -> `(out,)` for ConvRot layers; plain int8 scales left alone.
+
+    The narrow scope is what makes the reshape legitimate rather than the
+    blanket squeeze ``quantized_checkpoint_guard``'s docstring warns about.
+    """
+    import torch
+
+    from core.models.sensenova.loader import _reshape_convrot_scales
+
+    convrot = "language_model.model.layers.0.self_attn.q_proj"
+    plain = "language_model.model.layers.0.self_attn.k_proj"
+    sd = {
+        f"{convrot}.weight_scale": torch.zeros(8, 1),
+        f"{plain}.weight_scale": torch.zeros(8, 1),
+    }
+
+    reshaped = _reshape_convrot_scales(sd, {convrot: {"convrot_groupsize": 256}})
+
+    assert reshaped == 1
+    assert tuple(sd[f"{convrot}.weight_scale"].shape) == (8,)
+    assert tuple(sd[f"{plain}.weight_scale"].shape) == (8, 1)
+
+
+def test_reshape_convrot_scales_is_idempotent():
+    """An already-1-D scale (the marker validator accepts both) is left as-is."""
+    import torch
+
+    from core.models.sensenova.loader import _reshape_convrot_scales
+
+    layer = "language_model.model.layers.0.self_attn.q_proj"
+    sd = {f"{layer}.weight_scale": torch.zeros(8)}
+
+    assert _reshape_convrot_scales(sd, {layer: {"convrot_groupsize": 256}}) == 0
+    assert tuple(sd[f"{layer}.weight_scale"].shape) == (8,)

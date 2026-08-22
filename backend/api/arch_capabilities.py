@@ -113,6 +113,9 @@ FEATURE_PARAMS: Dict[str, List[str]] = {
     # SenseNova U1.5's per-phase weight-half CPU eviction. No other
     # architecture has an equivalent knob at the API layer.
     "sensenova_mot_phase_eviction": ["sensenova_mot_phase_eviction"],
+    # SenseNova U1.5's per-layer prefix KV cache CPU streaming. No other
+    # architecture has an equivalent knob at the API layer.
+    "sensenova_kv_cache_streaming": ["sensenova_kv_cache_streaming"],
     # Per-block CPU offload swap count. Enable-gated (see the file-header
     # convention above): the image routes (txt2img/img2img/inpaint/outpaint)
     # carry a separate `enable_block_swap` flag and only consult
@@ -151,6 +154,7 @@ FEATURE_LABELS: Dict[str, str] = {
     "timestep_shift": "timestep_shift (SenseNova U1.5 flow-matching time-shift)",
     "img_cfg_scale": "img_cfg_scale (SenseNova U1.5 reference-image editing second CFG scale)",
     "sensenova_mot_phase_eviction": "sensenova_mot_phase_eviction (SenseNova U1.5 per-phase weight-half CPU eviction)",
+    "sensenova_kv_cache_streaming": "sensenova_kv_cache_streaming (SenseNova U1.5 per-layer prefix KV cache CPU streaming)",
     "block_swap": "enable_block_swap/blocks_to_swap (per-block CPU offload)",
 }
 
@@ -456,6 +460,13 @@ for _a in [a for a in _ALL_ARCHS if a != "sensenova"]:
 for _a in [a for a in _ALL_ARCHS if a != "sensenova"]:
     _add(_a, "sensenova_mot_phase_eviction",
          "sensenova_mot_phase_eviction is a SenseNova U1.5-specific per-phase weight-half CPU eviction parameter; this architecture does not consult it")
+
+# sensenova_kv_cache_streaming: a SenseNova U1.5-specific per-layer prefix KV
+# cache CPU streaming toggle; every other architecture's inference path has
+# no equivalent knob and ignores it.
+for _a in [a for a in _ALL_ARCHS if a != "sensenova"]:
+    _add(_a, "sensenova_kv_cache_streaming",
+         "sensenova_kv_cache_streaming is a SenseNova U1.5-specific per-layer prefix KV cache CPU streaming parameter; this architecture does not consult it")
 
 # block_swap (`blocks_to_swap`/`enable_block_swap`): NOT a blanket DiT-vs-U-Net
 # split. `blocks_to_swap` is consumed by three separate mechanisms on the

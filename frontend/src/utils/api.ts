@@ -405,6 +405,9 @@ export interface GenerationParams {
   // SenseNova U1.5 per-phase weight-half CPU eviction; every other
   // architecture ignores it.
   sensenova_mot_phase_eviction?: boolean;
+  // SenseNova U1.5 per-layer prefix KV cache CPU streaming; every other
+  // architecture ignores it.
+  sensenova_kv_cache_streaming?: boolean;
   sampler?: string;
   schedule_type?: string;
   seed?: number;
@@ -3038,6 +3041,8 @@ export const generateTxt2Img = async (params: GenerationParams) => {
   formData.append("img_cfg_scale", String(paramsWithImages.img_cfg_scale ?? 1.0));
   // SenseNova U1.5 per-phase weight-half CPU eviction; every other architecture ignores it.
   formData.append("sensenova_mot_phase_eviction", String(paramsWithImages.sensenova_mot_phase_eviction ?? false));
+  // SenseNova U1.5 per-layer prefix KV cache CPU streaming; every other architecture ignores it.
+  formData.append("sensenova_kv_cache_streaming", String(paramsWithImages.sensenova_kv_cache_streaming ?? false));
   formData.append("sampler", paramsWithImages.sampler || "euler");
   formData.append("schedule_type", paramsWithImages.schedule_type || "uniform");
   formData.append("seed", String(paramsWithImages.seed || -1));
@@ -3395,6 +3400,8 @@ export const generateImg2Img = async (
   formData.append("img_cfg_scale", String(paramsWithImages.img_cfg_scale ?? 1.0));
   // SenseNova U1.5 per-phase weight-half CPU eviction; every other architecture ignores it.
   formData.append("sensenova_mot_phase_eviction", String(paramsWithImages.sensenova_mot_phase_eviction ?? false));
+  // SenseNova U1.5 per-layer prefix KV cache CPU streaming; every other architecture ignores it.
+  formData.append("sensenova_kv_cache_streaming", String(paramsWithImages.sensenova_kv_cache_streaming ?? false));
   formData.append("denoising_strength", String(paramsWithImages.denoising_strength || 0.75));
   formData.append("img2img_fix_steps", String(paramsWithImages.img2img_fix_steps ?? true));
   formData.append("vae_drift_correction", String(paramsWithImages.vae_drift_correction ?? false));
@@ -4302,6 +4309,8 @@ export const generateInpaint = async (params: InpaintParams, image: File | strin
   formData.append("img_cfg_scale", String(paramsWithImages.img_cfg_scale ?? 1.0));
   // SenseNova U1.5 per-phase weight-half CPU eviction; every other architecture ignores it.
   formData.append("sensenova_mot_phase_eviction", String(paramsWithImages.sensenova_mot_phase_eviction ?? false));
+  // SenseNova U1.5 per-layer prefix KV cache CPU streaming; every other architecture ignores it.
+  formData.append("sensenova_kv_cache_streaming", String(paramsWithImages.sensenova_kv_cache_streaming ?? false));
   formData.append("denoising_strength", String(paramsWithImages.denoising_strength || 0.75));
   formData.append("img2img_fix_steps", String(paramsWithImages.img2img_fix_steps ?? true));
   formData.append("vae_drift_correction", String(paramsWithImages.vae_drift_correction ?? false));

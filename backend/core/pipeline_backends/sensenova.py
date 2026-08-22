@@ -141,6 +141,32 @@ class SenseNovaMixin:
         from core.models.sensenova import mot_phase_eviction
         mot_phase_eviction.uninstall(transformer, evictor)
 
+    def _sensenova_maybe_install_kv_streaming(self, params: Dict[str, Any], transformer, device):
+        """Install the 2-slot flash-KV prefix streamer when requested.
+
+        See kv_cache_streaming.py for the mechanism. Independent of MoT phase
+        eviction (disjoint tensors, disjoint hook points, no shared
+        coordinator) -- installing both together is expected to compose.
+        """
+        from api.param_defaults import SENSENOVA_GENERATION_DEFAULTS
+
+        enabled = bool(params.get(
+            "sensenova_kv_cache_streaming",
+            SENSENOVA_GENERATION_DEFAULTS["sensenova_kv_cache_streaming"],
+        ))
+        if not enabled:
+            return None
+        from core.models.sensenova import kv_cache_streaming
+        return kv_cache_streaming.install(transformer, device)
+
+    def _sensenova_teardown_kv_streaming(self, transformer, streamer) -> None:
+        """Always call from the generation's ``finally``, AFTER the whole-model
+        restore -- idempotent with ``clear_prefix_caches``'s own defence-in-
+        depth teardown call (``sensenova_pipeline_ops.py``), so a normal run
+        that already tore the streamer down here is a no-op."""
+        from core.models.sensenova import kv_cache_streaming
+        kv_cache_streaming.uninstall(transformer, streamer)
+
     def _sensenova_common_params(self, params: Dict[str, Any], default_w: int, default_h: int) -> Dict[str, Any]:
         from api.param_defaults import SENSENOVA_GENERATION_DEFAULTS
         from core.models.sensenova import sensenova_pipeline_ops as ops
@@ -228,11 +254,15 @@ class SenseNovaMixin:
         prefix = None
         applied_lora = 0
         evictor = None
+        kv_streamer = None
         try:
             applied_lora = self._load_lora_sensenova(params.get("loras") or [])
             # Installed AFTER LoRA (if any) has wrapped the gen-branch Linears
             # in place -- see mot_phase_eviction.py's MotPhaseEvictor docstring.
             evictor = self._sensenova_maybe_install_mot_eviction(params, transformer, device)
+            # Independent of MoT eviction (disjoint tensors/hooks); must be
+            # installed before encode_prompt() so _finalize_prefix_caches sees it.
+            kv_streamer = self._sensenova_maybe_install_kv_streaming(params, transformer, device)
 
             def _prefill_note():
                 # A real, multi-second stall (the prefix KV-cache forward pass)
@@ -286,6 +316,7 @@ class SenseNovaMixin:
                 self._unload_lora_sensenova()
             self._sensenova_move("transformer", "cpu")
             self._sensenova_teardown_mot_eviction(transformer, evictor)
+            self._sensenova_teardown_kv_streaming(transformer, kv_streamer)
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
@@ -312,9 +343,11 @@ class SenseNovaMixin:
         prefix = None
         applied_lora = 0
         evictor = None
+        kv_streamer = None
         try:
             applied_lora = self._load_lora_sensenova(params.get("loras") or [])
             evictor = self._sensenova_maybe_install_mot_eviction(params, transformer, device)
+            kv_streamer = self._sensenova_maybe_install_kv_streaming(params, transformer, device)
 
             def _prefill_note():
                 if progress_callback is not None:
@@ -357,6 +390,7 @@ class SenseNovaMixin:
                 self._unload_lora_sensenova()
             self._sensenova_move("transformer", "cpu")
             self._sensenova_teardown_mot_eviction(transformer, evictor)
+            self._sensenova_teardown_kv_streaming(transformer, kv_streamer)
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
@@ -385,9 +419,11 @@ class SenseNovaMixin:
         prefix = None
         applied_lora = 0
         evictor = None
+        kv_streamer = None
         try:
             applied_lora = self._load_lora_sensenova(params.get("loras") or [])
             evictor = self._sensenova_maybe_install_mot_eviction(params, transformer, device)
+            kv_streamer = self._sensenova_maybe_install_kv_streaming(params, transformer, device)
 
             def _prefill_note():
                 if progress_callback is not None:
@@ -428,6 +464,7 @@ class SenseNovaMixin:
                 self._unload_lora_sensenova()
             self._sensenova_move("transformer", "cpu")
             self._sensenova_teardown_mot_eviction(transformer, evictor)
+            self._sensenova_teardown_kv_streaming(transformer, kv_streamer)
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 

@@ -589,6 +589,7 @@ export default function ImageGrid() {
     if (p.original_size_scale !== undefined) target.original_size_scale = p.original_size_scale;
     if (p.use_tipo !== undefined) target.use_tipo = p.use_tipo;
     if (p.sensenova_mot_phase_eviction !== undefined) target.sensenova_mot_phase_eviction = p.sensenova_mot_phase_eviction;
+    if (p.sensenova_kv_cache_streaming !== undefined) target.sensenova_kv_cache_streaming = p.sensenova_kv_cache_streaming;
     if (p.tipo_config !== undefined) target.tipo_config = p.tipo_config;
     if (p.color_flatten_strength !== undefined) target.color_flatten_strength = p.color_flatten_strength;
     if (p.vae_drift_correction !== undefined) target.vae_drift_correction = p.vae_drift_correction;
@@ -1600,6 +1601,7 @@ export default function ImageGrid() {
                   (selectedImage.parameters?.text_encoder_quantization && selectedImage.parameters.text_encoder_quantization !== 'none') ||
                   selectedImage.parameters?.use_tipo ||
                   selectedImage.parameters?.sensenova_mot_phase_eviction ||
+                  selectedImage.parameters?.sensenova_kv_cache_streaming ||
                   (selectedImage.parameters?.original_size_w > 0) ||
                   (selectedImage.parameters?.original_size_h > 0) ||
                   (selectedImage.parameters?.original_size_scale !== undefined && selectedImage.parameters.original_size_scale !== 1.0)) && (
@@ -1653,6 +1655,11 @@ export default function ImageGrid() {
                       {selectedImage.parameters?.sensenova_mot_phase_eviction && (
                         <div>
                           <span className="text-gray-500">SenseNova phase eviction:</span> enabled
+                        </div>
+                      )}
+                      {selectedImage.parameters?.sensenova_kv_cache_streaming && (
+                        <div>
+                          <span className="text-gray-500">SenseNova KV cache streaming:</span> enabled
                         </div>
                       )}
                       {(selectedImage.parameters?.original_size_w > 0 || selectedImage.parameters?.original_size_h > 0 || (selectedImage.parameters?.original_size_scale !== undefined && selectedImage.parameters.original_size_scale !== 1.0)) && (

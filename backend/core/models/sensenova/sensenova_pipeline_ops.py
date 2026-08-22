@@ -202,8 +202,17 @@ class SenseNovaPrefix:
 
 
 def clear_prefix_caches(prefix: SenseNovaPrefix) -> None:
-    """Idempotent (``clear_flash_kv_cache`` guards with ``hasattr``) -- safe to
-    call from both an outer caller's ``finally`` and ``_euler_run``'s own."""
+    """Idempotent (``clear_flash_kv_cache`` guards with ``hasattr``, and
+    ``SenseNovaKVCacheStreamer.teardown()`` resets to empty state) -- safe to
+    call from both an outer caller's ``finally`` and ``_euler_run``'s own.
+    Defence in depth against ``_sensenova_teardown_kv_streaming`` (pipeline
+    backend's own ``finally``): idempotent either way."""
+    streamer = getattr(prefix.cond_past_key_values, "_kv_cache_streamer", None)
+    if streamer is not None:
+        try:
+            streamer.teardown()
+        except Exception as exc:
+            print(f"[{LABEL}] KV cache streamer teardown raised (non-fatal): {exc}")
     clear_flash_kv_cache(prefix.cond_past_key_values)
     if prefix.uncond_past_key_values is not None:
         clear_flash_kv_cache(prefix.uncond_past_key_values)
@@ -279,20 +288,38 @@ def _splice_reference_image_tokens(
 
 
 def _finalize_prefix_caches(transformer, caches, batch_size: int, token_h: int, token_w: int) -> None:
-    """Batch-expand + ``prepare_flash_kv_cache`` for every non-``None`` cache in
-    ``caches`` (order: cond, img_cond, uncond) -- generalizes the original
+    """Batch-expand + build the flash KV buffers for every non-``None`` cache
+    in ``caches`` (order: cond, img_cond, uncond) -- generalizes the original
     two-cache block (and upstream ``it2i_generate:1524-1564``) to 1-3
     branches. ``caches[0]`` (cond) is always present; its layer count is the
-    shared loop bound (every branch has the same layer count)."""
+    shared loop bound (every branch has the same layer count).
+
+    When ``sensenova_kv_cache_streaming`` installed a
+    ``SenseNovaKVCacheStreamer`` on ``transformer._kv_cache_streamer`` (see
+    ``pipeline_backends/sensenova.py``'s ``_sensenova_maybe_install_kv_streaming``
+    and ``kv_cache_streaming.py``), this calls its ``adopt()`` instead of
+    ``prepare_flash_kv_cache`` -- the latter would allocate the full
+    42-layer-x-branches buffer this feature exists to avoid.
+    """
     transformer._notify_layer_offload_phase("denoise")
+    branch_names = ("cond", "img_cond", "uncond")
+    present_names = [n for n, c in zip(branch_names, caches) if c is not None]
     present = [c for c in caches if c is not None]
     for layer_idx in range(len(present[0].layers)):
         for cache in present:
             layer = cache.layers[layer_idx]
             layer.keys = layer.keys.expand(batch_size, *layer.keys.shape[1:])
             layer.values = layer.values.expand(batch_size, *layer.values.shape[1:])
-    for cache in present:
-        prepare_flash_kv_cache(cache, current_len=token_h * token_w, batch_size=batch_size)
+
+    current_len = token_h * token_w
+    streamer = getattr(transformer, "_kv_cache_streamer", None)
+    if streamer is not None:
+        # Ordering guard: adoption must never precede the phase notification
+        # above (mirrors the MoT evictor's own prefix->denoise transition).
+        streamer.adopt(dict(zip(present_names, present)), batch_size, current_len, phase_notified=True)
+    else:
+        for cache in present:
+            prepare_flash_kv_cache(cache, current_len=current_len, batch_size=batch_size)
 
 
 @torch.no_grad()
@@ -574,7 +601,17 @@ def _predict_v_branch(transformer, prefix: SenseNovaPrefix, image_embeds: torch.
                       branch: str = "cond") -> torch.Tensor:
     """One ``_t2i_predict_v`` call against the cond/img_cond/uncond prefix KV
     cache, reusing the embeds ``_build_step_context`` already built for this
-    step (see that function's docstring)."""
+    step (see that function's docstring).
+
+    ``begin_branch`` runs first, before the transformer forward below: the
+    ring streamer (when attached) is shared across ALL branches, and each
+    branch has a different prefix, so it must be told which branch's masters
+    to stream on every call -- never skipped on a repeated layer index (see
+    ``kv_cache_streaming.py``'s safety condition 3)."""
+    streamer = getattr(transformer, "_kv_cache_streamer", None)
+    if streamer is not None:
+        streamer.begin_branch(branch)
+
     if branch == "uncond":
         indexes_image = prefix.uncond_indexes_image
         attn_mask = prefix.uncond_attention_mask

@@ -207,6 +207,13 @@ SENSENOVA_GENERATION_DEFAULTS: Dict[str, Any] = {
     # (15.11 GiB pinned + pageable staging), persisting for the process
     # lifetime even for later generations run with the toggle off.
     "sensenova_mot_phase_eviction": False,
+    # Streams the prefix-phase KV cache from pinned host memory per layer,
+    # through a 2-slot GPU ring shared across layers and branches, instead of
+    # keeping all 42 layers' KV buffers GPU-resident. Default False: the
+    # measured peaks fit a 48GB card without it; the host-RAM cost (tens to
+    # hundreds of MB transient, not the eviction toggle's tens of GiB) is
+    # small but still unmeasured against a gate.
+    "sensenova_kv_cache_streaming": False,
 }
 
 # ---------------------------------------------------------------------------
@@ -232,6 +239,10 @@ GENERATION_DEFAULTS: Dict[str, Any] = {
     # SENSENOVA_GENERATION_DEFAULTS above). Every other architecture ignores
     # it (accepted and warned, api/arch_capabilities.py).
     "sensenova_mot_phase_eviction": SENSENOVA_GENERATION_DEFAULTS["sensenova_mot_phase_eviction"],
+    # SenseNova per-phase KV cache CPU streaming (see
+    # SENSENOVA_GENERATION_DEFAULTS above). Every other architecture ignores
+    # it (accepted and warned, api/arch_capabilities.py).
+    "sensenova_kv_cache_streaming": SENSENOVA_GENERATION_DEFAULTS["sensenova_kv_cache_streaming"],
     "sampler": "euler",
     "schedule_type": "uniform",
     "seed": -1,

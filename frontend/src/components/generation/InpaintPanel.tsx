@@ -270,6 +270,8 @@ const DEFAULT_PARAMS: InpaintParams = {
   img_cfg_scale: 1.0,
   // SenseNova U1.5 per-phase weight-half CPU eviction; every other architecture ignores it.
   sensenova_mot_phase_eviction: false,
+  // SenseNova U1.5 per-layer prefix KV cache CPU streaming; every other architecture ignores it.
+  sensenova_kv_cache_streaming: false,
   sampler: "euler",
   schedule_type: "uniform",
   seed: -1,
@@ -947,6 +949,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
   const supportsTimestepShift = archSupportsFeature(archCapabilities, loadedArchType, "timestep_shift");
   const supportsImgCfgScale = archSupportsFeature(archCapabilities, loadedArchType, "img_cfg_scale");
   const supportsSensenovaMotPhaseEviction = archSupportsFeature(archCapabilities, loadedArchType, "sensenova_mot_phase_eviction");
+  const supportsSensenovaKvCacheStreaming = archSupportsFeature(archCapabilities, loadedArchType, "sensenova_kv_cache_streaming");
   // The value the Block Swap checkbox writes when turned ON (backend SSOT:
   // param_defaults.VIDEO_GEN_DEFAULTS["blocks_to_swap_enabled_default"]). The
   // `?? 40` fallback only matters before /schema/generation-defaults answers.
@@ -3688,6 +3691,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         timestep_shift: mainParams.timestep_shift, // Inherit SenseNova U1.5 time-shift (no per-step override)
         img_cfg_scale: mainParams.img_cfg_scale, // Inherit SenseNova U1.5 second CFG scale
         sensenova_mot_phase_eviction: mainParams.sensenova_mot_phase_eviction, // Inherit SenseNova U1.5 per-phase weight-half CPU eviction
+        sensenova_kv_cache_streaming: mainParams.sensenova_kv_cache_streaming, // Inherit SenseNova U1.5 per-layer KV cache CPU streaming
         original_size_w: mainParams.original_size_w,
         original_size_h: mainParams.original_size_h,
         original_size_scale: mainParams.original_size_scale,
@@ -3981,6 +3985,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         timestep_shift: nextItem.params.timestep_shift, // SenseNova U1.5 flow-matching time-shift
         img_cfg_scale: nextItem.params.img_cfg_scale, // SenseNova U1.5 second CFG scale
         sensenova_mot_phase_eviction: nextItem.params.sensenova_mot_phase_eviction, // SenseNova U1.5 per-phase weight-half CPU eviction
+        sensenova_kv_cache_streaming: nextItem.params.sensenova_kv_cache_streaming, // SenseNova U1.5 per-layer KV cache CPU streaming
         sampler: nextItem.params.sampler,
         schedule_type: nextItem.params.schedule_type,
         seed: nextItem.params.seed,
@@ -6310,6 +6315,23 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
                   title="Moves the generation-branch weights to pinned CPU memory at the start of the prefix phase; at the start of the denoise phase, moves the understanding-branch weights to pinned CPU memory first, then moves the generation-branch weights back to GPU (three half-transfers per generation, roughly 22.6 GiB of PCIe traffic). Measured host-RAM cost: process resident memory rises by about 21.7 GiB once eviction first engages (15.11 GiB pinned - 7.55 GiB live + 7.55 GiB pooled - plus pageable staging copies), stays flat across subsequent generations, and is not returned to the OS; it persists for the process lifetime, including for later generations run with this toggle off."
                 >
                   SenseNova Phase-Eviction (CPU offload of unused weight half)
+                </label>
+              </div>
+            )}
+
+            {supportsSensenovaKvCacheStreaming && (
+              <div className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={params.sensenova_kv_cache_streaming || false}
+                  onChange={(e) => setParams({ ...params, sensenova_kv_cache_streaming: e.target.checked })}
+                  className="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500 focus:ring-2"
+                />
+                <label
+                  className="text-sm font-medium text-gray-300"
+                  title="Streams the prefix phase's KV cache from pinned host memory per layer, through a 2-slot GPU ring shared across layers and branches, instead of keeping all 42 layers' KV buffers GPU-resident. Independent of SenseNova Phase-Eviction above; the two toggles may be combined or used alone."
+                >
+                  SenseNova KV Cache Streaming (streams prefix KV cache from pinned CPU per layer)
                 </label>
               </div>
             )}

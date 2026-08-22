@@ -27,6 +27,11 @@
 #   * `Qwen3Attention.forward_und` (the understanding-branch path) is
 #     untouched: it always asserts eager attention and never reaches
 #     `_flash_or_sdpa`.
+#   * The optimized flash-cache path (`update_cache=False`) now consults an
+#     optional `past_key_values._kv_cache_streamer`
+#     (`core.models.sensenova.kv_cache_streaming.SenseNovaKVCacheStreamer`) in
+#     place of the preallocated `layer.flash_k_cache`/`flash_v_cache` when
+#     attached; absent (the default), this path is byte-for-byte unchanged.
 
 from typing import Callable, Optional, Union
 
@@ -705,38 +710,49 @@ class Qwen3Attention(nn.Module):
                     k = key_states.transpose(1, 2).contiguous()
                     v = value_states.transpose(1, 2).contiguous()
                 else:
-                    # Optimized path:
-                    # use preallocated flash_k_cache / flash_v_cache
-                    layer = past_key_values.layers[self.layer_idx]
+                    # Optimized path: preallocated flash_k_cache/flash_v_cache,
+                    # or the streaming ring when attached (see file header).
+                    streamer = getattr(past_key_values, "_kv_cache_streamer", None)
+                    cur_len = k_cur.shape[1]
+                    if streamer is not None:
+                        branch = getattr(past_key_values, "_kv_cache_streamer_branch", None)
+                        k_cache, v_cache, prefix_len = streamer.acquire(self.layer_idx, branch=branch)
 
-                    if (
-                        hasattr(layer, "flash_k_cache")
-                        and layer.flash_k_cache is not None
-                        and hasattr(layer, "flash_v_cache")
-                        and layer.flash_v_cache is not None
-                    ):
-                        prefix_len = layer.flash_prefix_len
-                        cur_len = k_cur.shape[1]
+                        k_cache[:, prefix_len:prefix_len + cur_len].copy_(k_cur)
+                        v_cache[:, prefix_len:prefix_len + cur_len].copy_(v_cur)
 
-                        # overwrite current segment in-place
-                        layer.flash_k_cache[:, prefix_len:prefix_len + cur_len].copy_(k_cur)
-                        layer.flash_v_cache[:, prefix_len:prefix_len + cur_len].copy_(v_cur)
-
-                        k = layer.flash_k_cache[:, :prefix_len + cur_len]
-                        v = layer.flash_v_cache[:, :prefix_len + cur_len]
+                        k = k_cache[:, :prefix_len + cur_len]
+                        v = v_cache[:, :prefix_len + cur_len]
                     else:
-                        # fallback if user forgot to prepare flash cache
                         layer = past_key_values.layers[self.layer_idx]
-                        past_k, past_v = layer.keys, layer.values
 
-                        if past_k is not None:
-                            past_k = past_k.transpose(1, 2).contiguous()
-                            past_v = past_v.transpose(1, 2).contiguous()
-                            k = torch.cat([past_k, k_cur], dim=1)
-                            v = torch.cat([past_v, v_cur], dim=1)
+                        if (
+                            hasattr(layer, "flash_k_cache")
+                            and layer.flash_k_cache is not None
+                            and hasattr(layer, "flash_v_cache")
+                            and layer.flash_v_cache is not None
+                        ):
+                            prefix_len = layer.flash_prefix_len
+
+                            # overwrite current segment in-place
+                            layer.flash_k_cache[:, prefix_len:prefix_len + cur_len].copy_(k_cur)
+                            layer.flash_v_cache[:, prefix_len:prefix_len + cur_len].copy_(v_cur)
+
+                            k = layer.flash_k_cache[:, :prefix_len + cur_len]
+                            v = layer.flash_v_cache[:, :prefix_len + cur_len]
                         else:
-                            k = k_cur
-                            v = v_cur
+                            # fallback if user forgot to prepare flash cache
+                            layer = past_key_values.layers[self.layer_idx]
+                            past_k, past_v = layer.keys, layer.values
+
+                            if past_k is not None:
+                                past_k = past_k.transpose(1, 2).contiguous()
+                                past_v = past_v.transpose(1, 2).contiguous()
+                                k = torch.cat([past_k, k_cur], dim=1)
+                                v = torch.cat([past_v, v_cur], dim=1)
+                            else:
+                                k = k_cur
+                                v = v_cur
             else:
                 k = k_cur
                 v = v_cur

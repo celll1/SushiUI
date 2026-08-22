@@ -1599,6 +1599,22 @@ a generation without style transfer.
       place, so raising it needs its own measurement rather than an inference
       from that number. The deviation is warned
       (`sensenova_reference_downscaled`) rather than silent.
+  - **A ControlNet-shaped "structural reference conditioning" feature
+    (control image -> preprocessor -> it2i-style prefix token splice,
+    surfaced as a `controlnets[]` UI entry) was considered and rejected**,
+    not deferred. First, it adds no new conditioning mechanism: a user can
+    already run the existing standalone preprocessors
+    (`backend/core/extensions/controlnet_preprocessor.py` — canny, depth,
+    openpose) manually and feed the resulting map in as an ordinary `ref_images`
+    entry with a text instruction, which is exactly what a `controlnets[]`
+    wrapper would do internally. Second, and more importantly, presenting it
+    as `controlnets[]` would misrepresent its capability: that name implies
+    pixel-aligned structural control, but mechanically a spliced reference
+    image only enters through `forward_und` as prefix tokens
+    (`_embed_reference_images`/`_splice_reference_image_tokens` in
+    `sensenova_pipeline_ops.py`) — soft semantic guidance via the
+    understanding branch, with no spatial residual injected into the
+    denoiser the way real ControlNets inject one.
   - **Refused, with a typed error, not warned**: spatial outpaint
     (`_reject_if_sensenova_unsupported`), deferred because it layers on the
     img2img/inpaint entry points rather than for lacking a mapping. VQA and

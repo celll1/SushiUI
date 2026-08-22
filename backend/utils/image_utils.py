@@ -347,6 +347,11 @@ def save_image_with_metadata(
         if float(img_cfg_scale) != float(GENERATION_DEFAULTS["img_cfg_scale"]):
             metadata.add_text("img_cfg_scale", str(img_cfg_scale))
 
+    # SenseNova U1.5 per-phase weight-half CPU eviction (flag only; ignored by
+    # every other architecture).
+    if params.get("sensenova_mot_phase_eviction", False):
+        metadata.add_text("sensenova_mot_phase_eviction", "True")
+
     # Spectrum forecasting (write full family only when enabled)
     if params.get("spectrum_enable", False):
         metadata.add_text("spectrum_enable", "True")

@@ -110,6 +110,15 @@ FEATURE_PARAMS: Dict[str, List[str]] = {
     # SenseNova U1.5's second CFG scale for reference-image editing. No other
     # architecture has an equivalent knob at the API layer.
     "img_cfg_scale": ["img_cfg_scale"],
+    # SenseNova U1.5's per-phase weight-half CPU eviction. No other
+    # architecture has an equivalent knob at the API layer.
+    "sensenova_mot_phase_eviction": ["sensenova_mot_phase_eviction"],
+    # Per-block CPU offload swap count. Enable-gated (see the file-header
+    # convention above): the image routes (txt2img/img2img/inpaint/outpaint)
+    # carry a separate `enable_block_swap` flag and only consult
+    # `blocks_to_swap` when it is set, so `enable_block_swap` is the trigger,
+    # not the count itself.
+    "block_swap": ["enable_block_swap"],
 }
 
 # Human-readable label used in the warning message for each feature.
@@ -141,6 +150,8 @@ FEATURE_LABELS: Dict[str, str] = {
     "audio_reference_conditioning": "reference_audio_path/reference_audio_enable/is_cover (reference-audio conditioning)",
     "timestep_shift": "timestep_shift (SenseNova U1.5 flow-matching time-shift)",
     "img_cfg_scale": "img_cfg_scale (SenseNova U1.5 reference-image editing second CFG scale)",
+    "sensenova_mot_phase_eviction": "sensenova_mot_phase_eviction (SenseNova U1.5 per-phase weight-half CPU eviction)",
+    "block_swap": "enable_block_swap/blocks_to_swap (per-block CPU offload)",
 }
 
 # ---------------------------------------------------------------------------
@@ -438,6 +449,59 @@ for _a in [a for a in _ALL_ARCHS if a != "sensenova"]:
 for _a in [a for a in _ALL_ARCHS if a != "sensenova"]:
     _add(_a, "img_cfg_scale",
          "img_cfg_scale is a SenseNova U1.5-specific second CFG scale for reference-image editing; this architecture does not consult it")
+
+# sensenova_mot_phase_eviction: a SenseNova U1.5-specific per-phase weight-half
+# CPU eviction toggle; every other architecture's inference path has no
+# equivalent knob and ignores it.
+for _a in [a for a in _ALL_ARCHS if a != "sensenova"]:
+    _add(_a, "sensenova_mot_phase_eviction",
+         "sensenova_mot_phase_eviction is a SenseNova U1.5-specific per-phase weight-half CPU eviction parameter; this architecture does not consult it")
+
+# block_swap (`blocks_to_swap`/`enable_block_swap`): NOT a blanket DiT-vs-U-Net
+# split. `blocks_to_swap` is consumed by three separate mechanisms on the
+# generation path -- `create_block_offloader_for_model`/
+# `TransformerBlockOffloader` (core.pipeline_backends.{zimage,anima,
+# ideogram4,lens,minit2i}), the per-arch block-loop wrappers
+# (core.pipeline_backends.flux2 via models.flux2_block_swap_wrapper;
+# core.pipeline_backends.ltx2 and core.pipeline_backends.minimax_h3 via their
+# own *_block_loop_wrapper modules, both of which build a
+# `TransformerBlockOffloader` directly rather than going through
+# `create_block_offloader_for_model`), and acestep's own path (acestep has NO
+# block-swap consumer on generation -- `blocks_to_swap` is only read on its
+# TRAINING path, core.training.ops.acestep_ops). Every architecture below was
+# individually grepped for `blocks_to_swap` across `backend/core`
+# (pipeline.py, vram_optimization.py, model_loader.py and each arch's own
+# pipeline_backends file) and found to have NO consumer of any of the above
+# on the generation path:
+#   - sensenova: its transformer is never registered with
+#     TransformerBlockOffloader (core.memory_management.transformer_registry
+#     detects it as "unknown"), and core.pipeline_backends.sensenova never
+#     reads the parameter; it has its own per-phase weight-half CPU eviction
+#     mechanism instead (`sensenova_mot_phase_eviction`).
+#   - sd15/sdxl: `enable_block_swap`/`blocks_to_swap` are accepted Form
+#     parameters on the legacy U-Net generation routes (txt2img, img2img,
+#     inpaint, outpaint), but core.pipeline (the SD1.5/SDXL generation path)
+#     and core.vram_optimization (the SD1.5/SDXL U-Net GPU/CPU move path)
+#     contain no reference to either name. SD1.5/SDXL's own VRAM story is the
+#     existing sequential Text Encoder -> U-Net -> VAE device rotation in
+#     vram_optimization.py, not per-block streaming.
+#   - krea2: core.pipeline_backends.krea2 contains no reference to
+#     `blocks_to_swap` at all.
+#   - minimax_music3: core.pipeline_backends.minimax_music3 contains no
+#     reference to `blocks_to_swap` at all.
+# This list is exhaustive over every architecture this table warns for, and
+# every reason string below was independently verified rather than copied
+# from the others.
+_add("sensenova", "block_swap",
+     "SenseNova U1.5 does not implement per-block CPU offload swapping; use sensenova_mot_phase_eviction instead")
+_add("sd15", "block_swap",
+     "the SD1.5/SDXL U-Net generation path (core.pipeline, core.vram_optimization) never reads blocks_to_swap/enable_block_swap; block-swap streaming is implemented only for the per-arch DiT pipeline backends")
+_add("sdxl", "block_swap",
+     "the SD1.5/SDXL U-Net generation path (core.pipeline, core.vram_optimization) never reads blocks_to_swap/enable_block_swap; block-swap streaming is implemented only for the per-arch DiT pipeline backends")
+_add("krea2", "block_swap",
+     "Krea 2's pipeline backend (core.pipeline_backends.krea2) never reads blocks_to_swap/enable_block_swap; block-swap streaming is not implemented for this architecture")
+_add("minimax_music3", "block_swap",
+     "MiniMax Music 3's pipeline backend (core.pipeline_backends.minimax_music3) never reads blocks_to_swap/enable_block_swap; block-swap streaming is not implemented for this architecture")
 
 # Text-encoder quantization: not applied on these architectures' text-encoder paths.
 for _a in ["sd15", "sdxl", "ideogram4", "minit2i", "krea2", "ltx2", "acestep", "minimax_music3"]:

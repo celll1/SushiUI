@@ -199,6 +199,13 @@ SENSENOVA_GENERATION_DEFAULTS: Dict[str, Any] = {
     # operating point (cfg_scale=4.0, img_cfg_scale=1.0) and keeps the
     # default at two-branch cost; inert without ref_images.
     "img_cfg_scale": 1.0,
+    # Per-phase CPU eviction of the transformer's unused weight half
+    # (understanding half idle during denoise, generation half idle during
+    # prefix). Default False pending a measurement gate; do not flip without
+    # one. Approximately 15.11 GiB of pinned host RAM is reserved in steady
+    # state (7.55 GiB live + 7.55 GiB pooled, never returned between
+    # generations).
+    "sensenova_mot_phase_eviction": False,
 }
 
 # ---------------------------------------------------------------------------
@@ -220,6 +227,10 @@ GENERATION_DEFAULTS: Dict[str, Any] = {
     # above). Only meaningful with ref_images on SenseNova; every other
     # architecture ignores it.
     "img_cfg_scale": SENSENOVA_GENERATION_DEFAULTS["img_cfg_scale"],
+    # SenseNova per-phase weight-half CPU eviction (see
+    # SENSENOVA_GENERATION_DEFAULTS above). Every other architecture ignores
+    # it (accepted and warned, api/arch_capabilities.py).
+    "sensenova_mot_phase_eviction": SENSENOVA_GENERATION_DEFAULTS["sensenova_mot_phase_eviction"],
     "sampler": "euler",
     "schedule_type": "uniform",
     "seed": -1,

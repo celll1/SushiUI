@@ -329,6 +329,16 @@ _add("sensenova", "attention_impl",
      "attention_impl is only consumed by the FLUX.2 inference path; this architecture is conduit-only or ignores it")
 _add("sensenova", "unet_quantization",
      "the released SenseNova checkpoint already ships weight-only int8-quantized (this repo's own conversion: 588 Int8Linear modules), so there is no unquantized transformer for the per-generation converter to convert")
+# Quantization. NOTE WHAT IS *NOT* DECLARED HERE: `quantized_gemm`, same
+# reason as minimax_h3 above -- `sensenova` is in `QUANTIZED_LINEAR_ARCHS`
+# (its loader really does swap 588 `nn.Linear` for `Int8Linear`), so an
+# unsupported entry here would contradict that tuple and
+# `quantized_capability_parity_test` would catch it. `"w8a8"` is accepted
+# and always resolves to dequant: the loader pins every `Int8Linear` with
+# `disable_int8_mm`, for a DIFFERENT reason than minimax_h3's declared-
+# semantics mismatch -- an empirically re-verified W8A8 numerics regression
+# with no isolated mechanism yet. See `ARCH_QUANT_POLICY["sensenova"]` and
+# `models/sensenova/loader.py`'s QUANTIZATION section for the full account.
 
 # ---------------------------------------------------------------------------
 # MiniMax Music 3 (lyrics- and caption-conditioned music generation, driven

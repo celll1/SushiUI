@@ -28,14 +28,25 @@ Every one of the 588 int8 Linears (the 42 decoder layers' MoT-doubled
 ``self_attn.{q,k,v,o}_proj`` and ``mlp.{gate,up,down}_proj``, both the
 understanding and generation branches -- see ``ARCH_QUANT_POLICY["sensenova"]``
 in ``core.models.common.int8_runtime_quantize``) is a per-output-row-scaled
-plain int8 Linear, the SAME layout Ideogram 4/Krea 2/FLUX.2/Anima already
-read via ``core.models.ideogram4.vendor.int8_linear``. There is no ConvRot
-rotation, no NVFP4/AWQ smoothing and no dequant-only pin: this is the
-ordinary scaled-int8 contract, verified through
+plain int8 Linear, the SAME on-disk layout Ideogram 4/Krea 2/FLUX.2/Anima
+already read via ``core.models.ideogram4.vendor.int8_linear``, with no
+ConvRot rotation and no NVFP4/AWQ smoothing -- verified through
 ``core.models.common.quantized_checkpoint_guard.verify_quantized_swap`` (a
 swap-count mismatch -- an unswapped quantized layer reaching
 ``load_state_dict(assign=True)`` -- REFUSES the load rather than silently
 installing int8 codes as a bf16 parameter; see that module's docstring).
+
+W8A8 IS PINNED OFF (``disable_int8_mm``), unlike Ideogram 4/Krea 2/FLUX.2/
+Anima. This is a DIFFERENT pin from MiniMax-H3's declared-semantics
+mismatch (see that loader for detail): SenseNova's checkpoint has no such
+markers and unremarkable weight-quantization error, so this is instead an
+empirically confirmed W8A8 numerics regression, re-verified with 5 replays
+per arm against a backend carrying e77b1dd7 (ruling out that unrelated
+probabilistic uninitialized-flash-KV-cache-tail bug as a confound) --
+fully deterministic in both directions. The mechanism is NOT isolated; see
+``docs/guides/MODEL_FACTS.md``'s sensenova row for the full evidence and
+next-investigation notes. Revisit if someone isolates it; until then this
+pin is the safe default.
 
 The model is built under ``accelerate.init_empty_weights()`` (meta device,
 mirroring the Anima loader) because it is 18.7 GB and this repo's other
@@ -67,7 +78,9 @@ from core.models.common.single_file_format import read_state_dict, strip_prefix,
 from core.models.common.quantized_checkpoint_guard import (
     quantized_state_dict_report, scaled_quantization_report, verify_quantized_swap,
 )
-from core.models.ideogram4.vendor.int8_linear import is_int8_state_dict, swap_linears_to_int8
+from core.models.ideogram4.vendor.int8_linear import (
+    disable_int8_mm, is_int8_state_dict, swap_linears_to_int8,
+)
 
 from .vendor import NEOChatConfig, NEOChatModel
 
@@ -124,10 +137,16 @@ def _swap_sensenova_quantized_linears(model: NEOChatModel, sd: Dict[str, torch.T
     Only int8 is checked (unlike Ideogram 4/Anima, which also probe fp8):
     Unit 1's conversion emits int8 exclusively, and the census/verify pair
     below would refuse a file that carried anything else anyway.
+
+    W8A8 (``torch._int_mm``) is pinned off on every swapped-in ``Int8Linear``
+    -- see the module docstring's QUANTIZATION section for what is and is not
+    known about why. This pin is authoritative over ``SUSHI_INT8_MM`` and any
+    per-generation ``quantized_gemm_mode='w8a8'`` request.
     """
     if not is_int8_state_dict(sd):
         return 0
     swapped = swap_linears_to_int8(model, sd, compute_dtype=dtype)
+    disable_int8_mm(model, label="SenseNova transformer")
     print(f"[SenseNovaLoader] weight-only int8 checkpoint: swapped {swapped} Int8Linear(s); "
           f"the rest load at their checkpoint dtype")
     return swapped

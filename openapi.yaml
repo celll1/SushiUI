@@ -10127,16 +10127,19 @@ components:
 
             Consumed only by the architectures whose loaders swap in the
             quantized Linear classes — `acestep`, `anima`, `flux2`, `ideogram4`,
-            `krea2`, `ltx2`, `minimax_h3`, `zimage`
+            `krea2`, `ltx2`, `minimax_h3`, `sensenova`, `zimage`
             (the `quantized_linear_archs` list of
             `GET /schema/arch-capabilities`, which is derived from the backend's
             own tuple and is the authority if this sentence ever drifts).
-            One of them accepts the parameter and always resolves to `dequant`:
+            Two of them accept the parameter and always resolve to `dequant`:
             `minimax_h3`'s loader pins all 300 of its FP8 Linear modules to
             the dequantized path (of the 200 quantized tensors in the file, 50
             are marked `full_precision_matrix_mult` and the other 150 carry an
-            activation scale this backend does not read), and that pin
-            outranks this request — a `"w8a8"` there is reported through the
+            activation scale this backend does not read); `sensenova`'s loader
+            pins all 588 of its `Int8Linear` modules the same way, on an
+            empirically re-verified W8A8 numerics regression (see
+            `docs/guides/MODEL_FACTS.md`'s sensenova row). Both pins outrank
+            this request — a `"w8a8"` there is reported through the
             generation's `warnings[]` rather than silently ignored.
             Whether a given layer is FP8 or INT8 is
             fixed by the checkpoint, not by this parameter, so this is ONE axis

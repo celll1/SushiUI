@@ -112,6 +112,35 @@ class SenseNovaMixin:
         print(f"[SenseNova] Attention backend: {attn_backend} "
               f"(from attention_type={params.get('attention_type')!r}, {count} module(s) stamped)")
 
+    def _sensenova_maybe_install_mot_eviction(self, params: Dict[str, Any], transformer, device):
+        """Install the MoT phase-exclusive half-weight evictor when requested.
+
+        See mot_phase_eviction.py for the mechanism; `blocks_to_swap` is NOT
+        wired here (it is inert for SenseNova today, and this boolean is not
+        an alias for it).
+        """
+        from api.param_defaults import SENSENOVA_GENERATION_DEFAULTS
+
+        enabled = bool(params.get(
+            "sensenova_mot_phase_eviction",
+            SENSENOVA_GENERATION_DEFAULTS["sensenova_mot_phase_eviction"],
+        ))
+        if not enabled:
+            return None
+        from core.models.sensenova import mot_phase_eviction
+        return mot_phase_eviction.install(transformer, device)
+
+    def _sensenova_teardown_mot_eviction(self, transformer, evictor) -> None:
+        """Always call from the generation's ``finally``, AFTER the whole-model
+        `_sensenova_move("transformer", "cpu")` restore -- robust to a mid-run
+        exception/cancellation (the full-model move already normalizes device
+        placement regardless of which phase the evictor last saw). Does NOT
+        un-pin (see mot_phase_eviction.py); this only clears the callback so a
+        later, eviction-off generation on the same loaded transformer never
+        sees a stale hook."""
+        from core.models.sensenova import mot_phase_eviction
+        mot_phase_eviction.uninstall(transformer, evictor)
+
     def _sensenova_common_params(self, params: Dict[str, Any], default_w: int, default_h: int) -> Dict[str, Any]:
         from api.param_defaults import SENSENOVA_GENERATION_DEFAULTS
         from core.models.sensenova import sensenova_pipeline_ops as ops
@@ -198,8 +227,12 @@ class SenseNovaMixin:
         self._sensenova_move("transformer", device)
         prefix = None
         applied_lora = 0
+        evictor = None
         try:
             applied_lora = self._load_lora_sensenova(params.get("loras") or [])
+            # Installed AFTER LoRA (if any) has wrapped the gen-branch Linears
+            # in place -- see mot_phase_eviction.py's MotPhaseEvictor docstring.
+            evictor = self._sensenova_maybe_install_mot_eviction(params, transformer, device)
 
             def _prefill_note():
                 # A real, multi-second stall (the prefix KV-cache forward pass)
@@ -252,6 +285,7 @@ class SenseNovaMixin:
             if applied_lora:
                 self._unload_lora_sensenova()
             self._sensenova_move("transformer", "cpu")
+            self._sensenova_teardown_mot_eviction(transformer, evictor)
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
@@ -277,8 +311,10 @@ class SenseNovaMixin:
         self._sensenova_move("transformer", device)
         prefix = None
         applied_lora = 0
+        evictor = None
         try:
             applied_lora = self._load_lora_sensenova(params.get("loras") or [])
+            evictor = self._sensenova_maybe_install_mot_eviction(params, transformer, device)
 
             def _prefill_note():
                 if progress_callback is not None:
@@ -320,6 +356,7 @@ class SenseNovaMixin:
             if applied_lora:
                 self._unload_lora_sensenova()
             self._sensenova_move("transformer", "cpu")
+            self._sensenova_teardown_mot_eviction(transformer, evictor)
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
@@ -347,8 +384,10 @@ class SenseNovaMixin:
         self._sensenova_move("transformer", device)
         prefix = None
         applied_lora = 0
+        evictor = None
         try:
             applied_lora = self._load_lora_sensenova(params.get("loras") or [])
+            evictor = self._sensenova_maybe_install_mot_eviction(params, transformer, device)
 
             def _prefill_note():
                 if progress_callback is not None:
@@ -388,6 +427,7 @@ class SenseNovaMixin:
             if applied_lora:
                 self._unload_lora_sensenova()
             self._sensenova_move("transformer", "cpu")
+            self._sensenova_teardown_mot_eviction(transformer, evictor)
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 

@@ -9955,10 +9955,13 @@ components:
             moved to pinned CPU memory (device-to-host) first, and the
             generation-branch weights are then moved back to GPU
             (host-to-device) -- three half-transfers per generation, roughly
-            22.6 GiB of PCIe traffic. Approximately 15.11 GiB of pinned host
-            RAM is reserved in steady state (7.55 GiB live + 7.55 GiB pooled
-            in torch's caching host allocator for the other half) and is not
-            returned between generations. Ignored (accepted and warned) by
+            22.6 GiB of PCIe traffic. Measured host-RAM cost: process
+            resident memory rises by about 21.7 GiB once eviction first
+            engages (15.11 GiB pinned -- 7.55 GiB live + 7.55 GiB pooled in
+            torch's caching host allocator -- plus pageable staging copies).
+            It is flat across subsequent generations, but is not returned to
+            the OS and persists for the process lifetime, including for later
+            generations run with this toggle off. Ignored (accepted and warned) by
             every other architecture. Not related to `blocks_to_swap`, which
             SenseNova does not implement.
           example: false

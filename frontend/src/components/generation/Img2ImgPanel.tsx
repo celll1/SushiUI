@@ -6344,7 +6344,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
                 />
                 <label
                   className="text-sm font-medium text-gray-300"
-                  title="Moves the generation-branch weights to pinned CPU memory at the start of the prefix phase; at the start of the denoise phase, moves the understanding-branch weights to pinned CPU memory first, then moves the generation-branch weights back to GPU (three half-transfers per generation, roughly 22.6 GiB of PCIe traffic). Approximately 15.11 GiB of pinned host RAM is reserved in steady state (7.55 GiB live + 7.55 GiB pooled) and is not returned between generations."
+                  title="Moves the generation-branch weights to pinned CPU memory at the start of the prefix phase; at the start of the denoise phase, moves the understanding-branch weights to pinned CPU memory first, then moves the generation-branch weights back to GPU (three half-transfers per generation, roughly 22.6 GiB of PCIe traffic). Measured host-RAM cost: process resident memory rises by about 21.7 GiB once eviction first engages (15.11 GiB pinned - 7.55 GiB live + 7.55 GiB pooled - plus pageable staging copies), stays flat across subsequent generations, and is not returned to the OS; it persists for the process lifetime, including for later generations run with this toggle off."
                 >
                   SenseNova Phase-Eviction (CPU offload of unused weight half)
                 </label>

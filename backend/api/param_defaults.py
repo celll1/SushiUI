@@ -201,10 +201,11 @@ SENSENOVA_GENERATION_DEFAULTS: Dict[str, Any] = {
     "img_cfg_scale": 1.0,
     # Per-phase CPU eviction of the transformer's unused weight half
     # (understanding half idle during denoise, generation half idle during
-    # prefix). Default False pending a measurement gate; do not flip without
-    # one. Approximately 15.11 GiB of pinned host RAM is reserved in steady
-    # state (7.55 GiB live + 7.55 GiB pooled, never returned between
-    # generations).
+    # prefix). Default False: the measured VRAM saving is real (-7.6 GB at
+    # 9.05MP, -7.55 GB at 5-ref 2048^2) but the peaks fit a 48GB card without
+    # it, and it costs ~21.7 GiB of host RAM that is never returned to the OS
+    # (15.11 GiB pinned + pageable staging), persisting for the process
+    # lifetime even for later generations run with the toggle off.
     "sensenova_mot_phase_eviction": False,
 }
 

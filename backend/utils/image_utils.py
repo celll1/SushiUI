@@ -352,6 +352,11 @@ def save_image_with_metadata(
     if params.get("sensenova_mot_phase_eviction", False):
         metadata.add_text("sensenova_mot_phase_eviction", "True")
 
+    # SenseNova U1.5 per-layer prefix KV cache CPU streaming (flag only;
+    # ignored by every other architecture).
+    if params.get("sensenova_kv_cache_streaming", False):
+        metadata.add_text("sensenova_kv_cache_streaming", "True")
+
     # Spectrum forecasting (write full family only when enabled)
     if params.get("spectrum_enable", False):
         metadata.add_text("spectrum_enable", "True")

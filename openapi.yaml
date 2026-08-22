@@ -9965,6 +9965,18 @@ components:
             every other architecture. Not related to `blocks_to_swap`, which
             SenseNova does not implement.
           example: false
+        sensenova_kv_cache_streaming:
+          type: boolean
+          default: false
+          description: |
+            SenseNova U1.5 only. Streams the prefix phase's KV cache from
+            pinned host memory per layer, through a 2-slot GPU ring shared
+            across layers and branches, instead of keeping all 42 layers' KV
+            buffers GPU-resident for the duration of the prefix phase.
+            Independent of `sensenova_mot_phase_eviction` -- the two toggles
+            may be combined or used alone. Ignored (accepted and warned) by
+            every other architecture.
+          example: false
         seed:
           type: integer
           default: -1

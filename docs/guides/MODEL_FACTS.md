@@ -1488,6 +1488,79 @@ a generation without style transfer.
     `quantization_fallback` warning naming the resolved path, same contract as
     `minimax_h3`. See `ARCH_QUANT_POLICY["sensenova"]` and
     `models/sensenova/loader.py`'s QUANTIZATION section for the full account.
+  - **A second, opt-in ConvRot int8 checkpoint exists and IS covered by a
+    passed measurement gate** (`M:/model/sensenova/sensenova_int8_convrot.safetensors`,
+    selected like any other checkpoint via its file path on `POST
+    /models/load` — there is no separate API parameter). It is a Hadamard-rotated
+    `int8_tensorwise` file, the same on-disk contract `minimax_h3`'s DiT
+    reads (`core.models.common.convrot_marker`), quantizing the same 588
+    Linears (both MoT branches, groupsize 256, 0 excluded) the plain int8
+    file quantizes as plain per-output-row int8. Loading it swaps those
+    layers to `ConvRotInt8Linear` instead of `Int8Linear`, and **the pin
+    above does not reach it**: `disable_int8_mm` is `isinstance(Int8Linear)`-based, and
+    while it does flip the inherited `_allow_int8_mm` flag on a loaded
+    `ConvRotInt8Linear`, that flag is inert there — `ConvRotInt8Linear.forward`
+    never reads it and always dispatches to comfy-kitchen's fused W8A8
+    kernel. Selecting this file therefore always runs W8A8, unconditionally,
+    deliberately re-entering the risk class the plain file's pin above exists
+    to close; it reports `fp8_gemm: convrot_int8(comfy-kitchen)` where the
+    plain file reports `int8_dequant`. A debug-only env var
+    (`SUSHI_SENSENOVA_CONVROT_DEQUANT`, comma-separated layer groups or
+    `"all"`) can force selected groups back onto the dequant path for
+    ablation; it is not a shipped configuration knob.
+    - **G0 (per-layer oracle, real captured activations)**: 240 captures (5
+      decoder layers x 6 groups x first/middle/final-5 steps) against a bf16
+      reference. Fused ConvRot: mean rel-L2 9.01e-3, worst 2.28e-2
+      (`layers.29.self_attn.o_proj_mot_gen`). The plain dequant path was
+      strictly lower on all 240/240 captures (mean 5.69e-3), so the extra
+      error is activation quantization, not the rotation. Error does NOT grow
+      at late steps — the worst case falls monotonically (2.28e-2 -> 2.06e-2)
+      even as activations get heavier-tailed (mean absmax 16.9 -> 21.0,
+      max/mean channel-absmax ratio 30.8 -> 38.6), consistent with the rotation absorbing
+      channel concentration. `o_proj` is the worst group on both branches
+      (~1.7-2x qkv/mlp). A random-activation oracle run first UNDERSTATED the
+      tail relative to real captures (higher mean 1.33e-2, lower worst-case
+      1.72e-2), so the gate was re-run on real activations before being
+      trusted.
+    - **G1 / G1-burst (fixed-seed A/B/C, 24 runs)**: txt2img (1024x1024 and
+      768x1280), img2img, inpaint, and reference-image (it2i) editing, plus
+      both VRAM toggles below and an 8-step-LoRA run; every step's
+      mean/std/max-abs/NaN logged and the final 5 steps of every run decoded
+      and inspected individually. No NaN/Inf, no step-over-step statistic
+      jump, and no late-step noise burst in any arm-C run in any mode — the
+      plain-checkpoint W8A8 regression the pin above exists for did not
+      reproduce on the rotated path. A negative control (all six groups
+      forced to dequant via the debug env var) was clean too, so no
+      dequant-group carve-out ships: the fully fused configuration is the one
+      that runs. `sensenova_mot_phase_eviction` and
+      `sensenova_kv_cache_streaming` are bit-identical to the unrotated run
+      under this checkpoint (they change memory placement only) and still
+      reduce VRAM the same way (18.60 -> 17.72 GiB eviction, -> 18.23 GiB
+      streaming, -> 17.67 GiB both).
+    - **G2 (clean timing, no instrumentation, 3 reps, median, both arms
+      pinned at the same 240 W cap)**:
+
+      | config | plain int8 s/step | ConvRot s/step | speedup |
+      |---|---:|---:|---:|
+      | txt2img 1024x1024 | 0.863 | 0.428 | 2.02x |
+      | txt2img 768x1280 | 0.808 | 0.414 | 1.95x |
+      | img2img 1024x1024 | 0.866 | 0.435 | 1.99x |
+      | it2i 1024x1024 (1 ref) | 1.093 | 0.646 | 1.69x |
+      | txt2img 8-step LoRA | 0.470 | 0.262 | 1.80x |
+
+      it2i is the weakest because the reference-image vision tower is not
+      ConvRot-quantized (a fixed, unaccelerated cost in both arms). Peak VRAM
+      is identical between the two checkpoints (19.61 GiB global peak) —
+      ConvRot costs no extra VRAM for its ~2x step-time reduction. Model load
+      time is unaffected (~8.8 s both). Confirmed live through the real
+      backend: `POST /models/load` on the ConvRot file followed by
+      generation reports `fp8_gemm: convrot_int8(comfy-kitchen)` on both
+      txt2img and it2i, where the plain file reports `int8_dequant`.
+    - A loader defect (fixed in `2956d3fe`) blocked this checkpoint from
+      loading at all before the fix: the export stores `weight_scale` as
+      `[out, 1]` while `Int8Linear` (the base class `ConvRotInt8Linear`
+      extends) registers `(out_features,)`, so the loader now reshapes the
+      ConvRot scales at load.
   - **8-step distillation LoRA**: applied over the already-int8-quantized base
     via `Int8Linear`-aware LoRA (an `isinstance(x, nn.Linear)` predicate would
     silently drop every target), never merged, restored in the same `finally`
@@ -1578,7 +1651,10 @@ a generation without style transfer.
     inferred from the VRAM trend, not read from an error. int8 vs bf16 at a
     fixed seed was visually indistinguishable (same composition, framing,
     lighting; differences confined to fine detail), so plain int8 stands and
-    ConvRot was not needed.
+    ConvRot was not needed FOR WEIGHT-QUANTIZATION ACCURACY. The ConvRot
+    checkpoint documented above exists for a different reason (a ~2x W8A8
+    step-time win, passed on its own gate) and is a separate, opt-in file,
+    not a replacement for this conclusion.
   - **Training is a deliberately separate future phase**, not in
     `ARCH_REGISTRY`: the base checkpoint is converted UNMERGED from the
     8-step distillation LoRA specifically to keep the trainable lineage

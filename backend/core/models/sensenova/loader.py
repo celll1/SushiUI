@@ -52,10 +52,12 @@ ConvRot LAYERS ARE NOT COVERED BY THE W8A8 PIN BELOW: ``disable_int8_mm`` is
 inert there -- ``ConvRotInt8Linear.forward`` never reads it and always
 dispatches to comfy-kitchen's fused W8A8 kernel (or ``_dequant_forward``
 under grad / the ablation above). A ConvRot checkpoint therefore always runs
-W8A8, unconditionally, regardless of the pin. Whether SenseNova tolerates
-rotated W8A8 at all is unmeasured -- the confirmed regression below was
-characterized on the PLAIN (unrotated) int8 path only, and ConvRot
-deliberately bypasses this pin rather than being silently covered by it.
+W8A8, unconditionally, regardless of the pin. That bypass is deliberate, not
+an oversight, and it was gated before being relied on: a fixed-seed A/B/C
+sweep over all four generation modes reproduced no late-step burst on the
+rotated path (the regression below was characterized on the PLAIN, unrotated
+path only), at 1.69-2.02x the plain checkpoint's per-step time. No dequant
+group carve-out is needed; see ``docs/guides/MODEL_FACTS.md``'s sensenova row.
 
 W8A8 IS PINNED OFF (``disable_int8_mm``) FOR THE PLAIN INT8 LINEARS ABOVE,
 unlike Ideogram 4/Krea 2/FLUX.2/Anima -- this pin does NOT reach ConvRot

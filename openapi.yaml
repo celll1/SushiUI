@@ -10131,16 +10131,28 @@ components:
             (the `quantized_linear_archs` list of
             `GET /schema/arch-capabilities`, which is derived from the backend's
             own tuple and is the authority if this sentence ever drifts).
-            Two of them accept the parameter and always resolve to `dequant`:
-            `minimax_h3`'s loader pins all 300 of its FP8 Linear modules to
-            the dequantized path (of the 200 quantized tensors in the file, 50
-            are marked `full_precision_matrix_mult` and the other 150 carry an
-            activation scale this backend does not read); `sensenova`'s loader
-            pins all 588 of its `Int8Linear` modules the same way, on an
-            empirically re-verified W8A8 numerics regression (see
+            Two of them accept the parameter and always resolve to `dequant`
+            for their released checkpoint: `minimax_h3`'s loader pins all 300
+            of its FP8 Linear modules to the dequantized path (of the 200
+            quantized tensors in the file, 50 are marked
+            `full_precision_matrix_mult` and the other 150 carry an activation
+            scale this backend does not read); `sensenova`'s PLAIN int8
+            checkpoint pins all 588 of its `Int8Linear` modules the same way,
+            on an empirically re-verified W8A8 numerics regression (see
             `docs/guides/MODEL_FACTS.md`'s sensenova row). Both pins outrank
             this request — a `"w8a8"` there is reported through the
             generation's `warnings[]` rather than silently ignored.
+            `sensenova` additionally accepts a SEPARATE ConvRot-quantized
+            checkpoint file (selected by loading it via `POST /models/load`,
+            not by this parameter): its layers swap to `ConvRotInt8Linear`
+            instead of `Int8Linear` and are NOT covered by the pin above — a
+            ConvRot checkpoint always runs W8A8 through a fused kernel
+            regardless of this parameter's value, so `"dequant"` is a no-op
+            there in the opposite direction — and a silent one, since only a
+            `"w8a8"` request is ever reported through `warnings[]` (that one
+            does warn, naming the fixed Comfy-Kitchen path it does not
+            control). See `docs/guides/MODEL_FACTS.md`'s sensenova row for
+            the measured comparison between the two checkpoint files.
             Whether a given layer is FP8 or INT8 is
             fixed by the checkpoint, not by this parameter, so this is ONE axis
             that drives both process flags rather than two independent booleans.
@@ -14613,16 +14625,23 @@ components:
           description: |
             Quantized Linear GEMM path that produced the image. Present only on
             rows from a weight-only FP8 checkpoint (Ideogram 4, Krea 2, Anima)
-            or a weight-only INT8 checkpoint (Krea 2, Anima -- the Ideogram 4
-            loader does not swap `Int8Linear`).
+            or a weight-only INT8 checkpoint (Krea 2, Anima, SenseNova U1.5 --
+            the Ideogram 4 loader does not swap `Int8Linear`).
             Opaque mechanism label, kept as ONE field across both formats: the
             FP8 stems are `w8a8_scaled_mm(...)` / `dequant...` and the INT8 stems
             are `w8a8_int_mm(...)` / `int8_dequant...`. A mixed int8/e4m3
             checkpoint reports both, joined with `+`, FP8 label first. A `+fused` marker inside
             the parentheses records that the fused Triton epilogue/quantizer
             served the run (bitwise-identical output, so it does not distinguish
-            two sets of pixels). The field name is historical; it is not
-            FP8-specific.
+            two sets of pixels). Architectures whose checkpoint already ships
+            weight-only quantized (no runtime conversion step) instead report a
+            fixed comfy-kitchen kernel label with no request-driven variants:
+            SenseNova U1.5's Hadamard-rotated ConvRot checkpoint always reports
+            `convrot_int8(comfy-kitchen)` (a second, opt-in checkpoint file
+            alongside its default plain-int8 one, which reports `int8_dequant`
+            like the runtime-converted architectures above -- see
+            `docs/guides/MODEL_FACTS.md`'s sensenova row). The field name is
+            historical; it is not FP8-specific.
           example: "dequant+w8a8_int_mm(int_mm+fused)"
 
     GeneratedImageSummary:

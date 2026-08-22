@@ -423,7 +423,7 @@ class DequantCauseTest(unittest.TestCase):
     message must not flatten them back into one sentence.
 
     * bare `dequant` + flag ON  -> every layer opted out == the loader's
-      architecture policy pin (MiniMax-H3), NOT the hardware.
+      architecture policy pin (MiniMax-H3, SenseNova), NOT the hardware.
     * `dequant(scaled_mm unavailable)` -> the per-device probe rejected it: the
       genuine device/build limitation.
     * `dequant(scaled_mm unprobed)`    -> nothing reached the probe.
@@ -440,6 +440,19 @@ class DequantCauseTest(unittest.TestCase):
         self.assertIn("pinned to the dequantized path", message)
         self.assertIn("disable_scaled_mm", message)
         self.assertIn("minimax_h3", message)
+        self.assertIn("NOT a device or build", message)
+        self.assertNotIn("unavailable on this device/build", message)
+
+    def test_int8_policy_pin_is_not_reported_as_a_hardware_limit(self):
+        """SenseNova's `disable_int8_mm` pin, the INT8-axis sibling of
+        `test_policy_pin_is_not_reported_as_a_hardware_limit` above -- a
+        DIFFERENT `disabler` name must appear on this stem/format pair."""
+        message = qg._dequant_cause("int8_dequant", "sensenova")
+        self.assertIn("pinned to the dequantized path", message)
+        self.assertIn("disable_int8_mm", message)
+        self.assertNotIn("disable_scaled_mm", message)
+        self.assertIn("sensenova", message)
+        self.assertIn("INT8", message)
         self.assertIn("NOT a device or build", message)
         self.assertNotIn("unavailable on this device/build", message)
 

@@ -1467,6 +1467,27 @@ a generation without style transfer.
     unquantized transformer exists for the in-place converter to act on (same
     reasoning as `minimax_h3`); `unet_quantization` is listed unsupported for
     this reason.
+  - **W8A8 is off for the whole architecture, permanently for this file, for
+    a DIFFERENT reason than `minimax_h3`'s.** The checkpoint carries none of
+    `minimax_h3`'s declared-semantics markers (no `full_precision_matrix_mult`,
+    no per-tensor `input_scale`) and the offline weight-quantization audit is
+    unremarkable (crest_mean tops out at 10.68 of 588 quantized tensors, well
+    under the 12.0 int8-vs-e4m3 crossover). The pin
+    (`_swap_sensenova_quantized_linears` calls `disable_int8_mm` on every
+    `Int8Linear`) is instead an empirically confirmed W8A8 numerics
+    regression: a fixed-seed 2048x2048 A/B, 5 replays per arm, deliberately
+    re-run against a backend carrying `e77b1dd7` (the fix for an unrelated,
+    probabilistic uninitialized-flash-KV-cache-tail bug this same denoise
+    loop had, which an earlier single-trial A/B could have confounded) —
+    every dequant replay was byte-identical to every other, every w8a8 replay
+    was byte-identical to every other (17x the dequant arm's high-frequency
+    pixel energy), fully deterministic in both directions. That rules out the
+    probabilistic uninitialized-memory bug as the cause; the actual mechanism
+    is not isolated. `quantized_gemm_mode='w8a8'` is accepted (SenseNova is in
+    `QUANTIZED_LINEAR_ARCHS`) and resolves to dequant with a
+    `quantization_fallback` warning naming the resolved path, same contract as
+    `minimax_h3`. See `ARCH_QUANT_POLICY["sensenova"]` and
+    `models/sensenova/loader.py`'s QUANTIZATION section for the full account.
   - **8-step distillation LoRA**: applied over the already-int8-quantized base
     via `Int8Linear`-aware LoRA (an `isinstance(x, nn.Linear)` predicate would
     silently drop every target), never merged, restored in the same `finally`

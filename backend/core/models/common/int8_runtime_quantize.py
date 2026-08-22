@@ -366,8 +366,8 @@ ARCH_QUANT_POLICY: Dict[str, Dict[str, object]] = {
     },
     "sensenova": {
         # DEQUANT-ONLY, AND NOT WIRED FOR THE RUNTIME CONVERTER -- same shape as
-        # minimax_h3 above, for the same reason: the checkpoint this loader
-        # reads is ALREADY weight-only int8 (588 quantized Linears: the 42
+        # minimax_h3 above for NO RUNTIME CONVERSION (the checkpoint this loader
+        # reads is ALREADY weight-only int8: 588 quantized Linears, the 42
         # decoder layers' self_attn.{q,k,v,o}_proj and mlp.{gate,up,down}_proj,
         # each doubled for the understanding/generation MoT branches --
         # 336 attention + 252 MLP), produced by this repo's own conversion, not
@@ -375,6 +375,13 @@ ARCH_QUANT_POLICY: Dict[str, Dict[str, object]] = {
         # no unquantized bf16 transformer for the in-place converter to act on;
         # a runtime path becomes relevant only if a plain bf16 SenseNova
         # checkpoint is ever wired into this loader.
+        #
+        # W8A8 is ALSO pinned off (loader.py's `_swap_sensenova_quantized_linears`
+        # calls `disable_int8_mm`), UNLIKE minimax_h3 for a different reason --
+        # not a declared-semantics mismatch (no full_precision_matrix_mult /
+        # input_scale markers here, and the offline weight audit is unremarkable)
+        # but a deterministic, empirically re-verified W8A8 numerics regression.
+        # See loader.py's QUANTIZATION section for the full account.
         "skip_below_work_gate": False,
         "excludes": (),
         "note": (
@@ -382,7 +389,8 @@ ARCH_QUANT_POLICY: Dict[str, Dict[str, object]] = {
             "quantized Linears: attn q/k/v/o + mlp gate/up/down, doubled for the MoT "
             "understanding/generation branches, across 42 layers), so no runtime int8 "
             "conversion is registered for it -- there is no unquantized transformer to "
-            "convert."
+            "convert. W8A8 is separately pinned off at load time on an empirically "
+            "confirmed regression, unrelated to the offline weight audit (see loader.py)."
         ),
     },
 }

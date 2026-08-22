@@ -1,8 +1,12 @@
 """Per-generation selection of the quantized-GEMM path (``quantized_gemm_mode``).
 
 Two process-level flags govern how ALREADY-quantized Linear weights are
-multiplied on the three architectures whose loaders swap in the quantized
-Linear classes (Ideogram 4, Krea 2, Anima):
+multiplied on the nine architectures whose loaders swap in the quantized
+Linear classes (``QUANTIZED_LINEAR_ARCHS`` below: Ideogram 4, Krea 2, Anima,
+FLUX.2, LTX-2.3, ACE-Step, Z-Image, MiniMax-H3, SenseNova -- the last two
+accept this parameter but their loaders pin every owned layer to the
+dequant path, so it is a no-op for them; see their ``ARCH_QUANT_POLICY``
+entries in ``core.models.common.int8_runtime_quantize`` for why):
 
 * ``core.models.ideogram4.vendor.fp8_linear`` -- W8A8 ``torch._scaled_mm`` vs a
   dequantized matmul, for e4m3 weights.
@@ -154,11 +158,10 @@ def _dequant_cause(label: str, arch: Optional[str]) -> str:
     "The W8A8 path is unavailable on this device/build" -- what this used to say
     for every case -- is false for an architecture whose LOADER pins its layers
     to the dequant path, and it points the reader at a GPU upgrade that would
-    change nothing. MiniMax-H3 is exactly that case: `disable_scaled_mm` is
-    called over the whole DiT at load time because 50 of the checkpoint's 200
-    quantized tensors are marked `full_precision_matrix_mult` and the other 150
-    carry an `input_scale` this repo's `Fp8Linear` does not read, and that pin
-    outranks both the env flag and this request.
+    change nothing. MiniMax-H3 and SenseNova both pin (`disable_scaled_mm` /
+    `disable_int8_mm` respectively, for DIFFERENT reasons -- see their
+    `ARCH_QUANT_POLICY` entries in `int8_runtime_quantize.py`), and either
+    pin outranks both the env flag and this request.
 
     The cause is DERIVED from the resolved label plus the process flag, not from
     an arch list, because `describe_gemm_path` already separates them:
@@ -173,9 +176,9 @@ def _dequant_cause(label: str, arch: Optional[str]) -> str:
     """
     flags = _gemm_flags_enabled()
     reasons = []
-    for stem, fmt, flag_key, kernel in (
-        ("int8_dequant", "INT8", "int8", "torch._int_mm"),
-        ("dequant", "FP8", "fp8", "torch._scaled_mm"),
+    for stem, fmt, flag_key, kernel, disabler in (
+        ("int8_dequant", "INT8", "int8", "torch._int_mm", "disable_int8_mm"),
+        ("dequant", "FP8", "fp8", "torch._scaled_mm", "disable_scaled_mm"),
     ):
         parts = [p for p in label.split("+") if p.startswith(stem)]
         if not parts:
@@ -202,9 +205,11 @@ def _dequant_cause(label: str, arch: Optional[str]) -> str:
                 f"The {fmt} W8A8 flag is on and this is NOT a device or build "
                 f"limitation: every quantized Linear layer of the loaded "
                 f"'{arch}' model is pinned to the dequantized path by its loader "
-                "(disable_scaled_mm), which outranks this request. That pin is a "
-                "property of the checkpoint's declared quantization semantics, so "
-                "a different GPU would resolve the same way."
+                f"({disabler}), which outranks this request -- a different GPU "
+                "would resolve the same way. See that architecture's loader/"
+                "ARCH_QUANT_POLICY entry for why the pin exists (a declared "
+                "checkpoint incompatibility in some cases, an empirically "
+                "confirmed regression with no isolated mechanism in others)."
             )
         # Only the first matching stem per format is described; `label.split("+")`
         # holds at most one stem per format by construction.

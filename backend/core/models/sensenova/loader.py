@@ -254,6 +254,28 @@ def _apply_sensenova_convrot_dequant_ablation(model: NEOChatModel) -> None:
           f"forced {forced} Linear(s) in group(s) {sorted(requested)} onto the dequant path")
 
 
+def _reshape_convrot_scales(
+    sd: Dict[str, torch.Tensor], int8_convrot_source_layers: Dict[str, Dict[str, int]]
+) -> int:
+    """Reshape marker-validated ConvRot scales from the file's ``[out, 1]`` to ``(out,)``.
+
+    ``Int8Linear`` registers ``weight_scale`` as ``(out_features,)`` and
+    ``load_state_dict`` shape-checks even under ``assign=True``. Only
+    marker-validated layers are touched (and the caller asserts each one got a
+    ``ConvRotInt8Linear``), so this is not the blanket squeeze
+    ``quantized_checkpoint_guard``'s docstring warns about. Same as
+    minimax_h3/loader.py's.
+    """
+    reshaped = 0
+    for layer in int8_convrot_source_layers:
+        key = f"{layer}.weight_scale"
+        scale = sd.get(key)
+        if scale is not None and scale.dim() > 1:
+            sd[key] = scale.reshape(-1)
+            reshaped += 1
+    return reshaped
+
+
 def _sensenova_quant_dict_views(
     sd: Dict[str, torch.Tensor],
     int8_convrot_source_layers: Dict[str, Dict[str, int]],
@@ -366,6 +388,8 @@ def load_sensenova_from_path(
         from core.models.common.convrot_int8_linear import require_convrot_int8_runtime
 
         require_convrot_int8_runtime()
+
+    _reshape_convrot_scales(sd, int8_convrot_source_layers)
 
     with init_empty_weights():
         model = NEOChatModel(config)

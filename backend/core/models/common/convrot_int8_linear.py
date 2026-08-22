@@ -35,6 +35,11 @@ class ConvRotInt8Linear(Int8Linear):
 
     _fixed_quantized_gemm_path = "convrot_int8(comfy-kitchen)"
 
+    # Debug-only ablation override (set per-instance, e.g. by sensenova/loader.py's
+    # SUSHI_SENSENOVA_CONVROT_DEQUANT). Class default False, so ordinary loads
+    # -- H3 included, which shares this class -- are unaffected.
+    _force_dequant: bool = False
+
     def __init__(
         self,
         in_features: int,
@@ -65,7 +70,7 @@ class ConvRotInt8Linear(Int8Linear):
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        if torch.is_grad_enabled() and x.requires_grad:
+        if self._force_dequant or (torch.is_grad_enabled() and x.requires_grad):
             return self._dequant_forward(x)
         from comfy_kitchen import int8_linear
 
@@ -166,7 +171,17 @@ def swap_linears_to_convrot_int8(
 
 
 def describe_gemm_path(module: torch.nn.Module) -> str:
-    """Opaque generation-metadata label for a loaded ConvRot INT8 module."""
-    return ConvRotInt8Linear._fixed_quantized_gemm_path if any(
-        isinstance(child, ConvRotInt8Linear) for child in module.modules()
-    ) else ""
+    """Opaque generation-metadata label for a loaded ConvRot INT8 module.
+
+    Suffixed ``,dequant`` when any matching child has ``_force_dequant`` set
+    (the SUSHI_SENSENOVA_CONVROT_DEQUANT ablation): the fused and dequant
+    arms are numerically different, so the label must distinguish them, same
+    as the rest of ``extract_fp8_gemm_info``'s vocabulary. Unaffected when
+    nothing sets the flag (H3, which shares this class, included).
+    """
+    children = [child for child in module.modules() if isinstance(child, ConvRotInt8Linear)]
+    if not children:
+        return ""
+    if any(getattr(child, "_force_dequant", False) for child in children):
+        return f"{ConvRotInt8Linear._fixed_quantized_gemm_path},dequant"
+    return ConvRotInt8Linear._fixed_quantized_gemm_path

@@ -1431,7 +1431,7 @@ async def generate_txt2img(
         _img_omitted = {key for key, value in (
             ("steps", steps), ("cfg_scale", cfg_scale),
         ) if value is None}
-        resolve_image_defaults(params, set(params) - _img_omitted, _img_arch)
+        _img_defaults = resolve_image_defaults(params, set(params) - _img_omitted, _img_arch)
         # The sentinel locals are still None for an omitted field; re-read them
         # so later code that uses the local rather than `params` sees the
         # resolved value.
@@ -1516,7 +1516,7 @@ async def generate_txt2img(
 
         # Warn about parameters the loaded architecture silently ignores
         _current_arch = pipeline_manager.current_model_info.get("type") if pipeline_manager.current_model_info else None
-        check_arch_capabilities(params, _current_arch)
+        check_arch_capabilities(params, _current_arch, defaults=_img_defaults)
 
         # Progress callback to send updates via WebSocket
         progress_callback = create_progress_callback_factory(
@@ -2496,7 +2496,7 @@ async def generate_img2img(
         _img_omitted = {key for key, value in (
             ("steps", steps), ("cfg_scale", cfg_scale),
         ) if value is None}
-        resolve_image_defaults(params, set(params) - _img_omitted, _img_arch)
+        _img_defaults = resolve_image_defaults(params, set(params) - _img_omitted, _img_arch)
         # See /generate/txt2img: the sentinel locals are still None for an
         # omitted field, and `steps` is used below (progress callback,
         # actual_steps).
@@ -2546,7 +2546,7 @@ async def generate_img2img(
 
         # Warn about parameters the loaded architecture silently ignores
         _current_arch = pipeline_manager.current_model_info.get("type") if pipeline_manager.current_model_info else None
-        check_arch_capabilities(params, _current_arch)
+        check_arch_capabilities(params, _current_arch, defaults=_img_defaults)
 
         # Progress callback to send updates via WebSocket
         progress_callback = create_progress_callback_factory(
@@ -7884,7 +7884,7 @@ async def generate_inpaint(
         _img_omitted = {key for key, value in (
             ("steps", steps), ("cfg_scale", cfg_scale),
         ) if value is None}
-        resolve_image_defaults(params, set(params) - _img_omitted, _img_arch)
+        _img_defaults = resolve_image_defaults(params, set(params) - _img_omitted, _img_arch)
         # See /generate/txt2img: the sentinel locals are still None for an
         # omitted field, and `steps` is used below (progress callback,
         # actual_steps).
@@ -7942,7 +7942,7 @@ async def generate_inpaint(
 
         # Warn about parameters the loaded architecture silently ignores
         _current_arch = pipeline_manager.current_model_info.get("type") if pipeline_manager.current_model_info else None
-        check_arch_capabilities(params, _current_arch)
+        check_arch_capabilities(params, _current_arch, defaults=_img_defaults)
 
         # Progress callback to send updates via WebSocket
         progress_callback = create_progress_callback_factory(
@@ -8630,7 +8630,7 @@ async def generate_outpaint(
         _img_omitted = {key for key, value in (
             ("steps", steps), ("cfg_scale", cfg_scale),
         ) if value is None}
-        resolve_image_defaults(params, set(params) - _img_omitted, _img_arch, OUTPAINT_DEFAULTS)
+        _img_defaults = resolve_image_defaults(params, set(params) - _img_omitted, _img_arch, OUTPAINT_DEFAULTS)
         # See /generate/txt2img: the sentinel locals are still None for an
         # omitted field, and `steps` is used below (progress callback,
         # actual_steps).
@@ -8690,7 +8690,7 @@ async def generate_outpaint(
 
         # Warn about parameters the loaded architecture silently ignores
         _current_arch = pipeline_manager.current_model_info.get("type") if pipeline_manager.current_model_info else None
-        check_arch_capabilities(params, _current_arch)
+        check_arch_capabilities(params, _current_arch, defaults=_img_defaults)
 
         # Progress callback to send updates via WebSocket. Uses the CANVAS
         # size (the actual output dimensions), not the raw input image size.

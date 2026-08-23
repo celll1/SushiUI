@@ -201,8 +201,7 @@ SENSENOVA_GENERATION_DEFAULTS: Dict[str, Any] = {
     # overshoot. Defaulted ON because SenseNova is pixel-space and decodes no
     # VAE to absorb overshoot, unlike the archs served by
     # cfg_rescale_snr_alpha. The vendored generate() signatures default to
-    # "none"; this is our own default, chosen on the visual comparison
-    # recorded in docs/guides/MODEL_FACTS.md's sensenova row.
+    # "none"; this is our own default.
     "cfg_norm": "global",
     # Per-phase CPU eviction of the transformer's unused weight half
     # (understanding half idle during denoise, generation half idle during

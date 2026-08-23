@@ -8,7 +8,10 @@ from torch import nn
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from core.models.sensenova import mot_cpu_staging, mot_phase_eviction
+from core.models.sensenova.mot_cpu_staging import stage_modules_to_pinned_cpu
 from core.models.sensenova.mot_weight_selector import select_mot_weight_modules
+from core.training import sensenova_phase_eviction
 from core.training.sensenova_phase_eviction import SenseNovaTrainingPhaseEvictor
 
 
@@ -125,6 +128,78 @@ def test_parameter_objects_are_not_replaced():
     evictor.enter_prefix()
     with pytest.raises(RuntimeError, match="denoise state"):
         evictor.assert_generation_resident()
+
+
+class Staged(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.weight = nn.Parameter(torch.arange(4, dtype=torch.float32))
+        self.register_buffer("scale", torch.full((2,), 3.0))
+        self.register_buffer("scratch", torch.zeros(1), persistent=False)
+
+
+def test_staging_lands_on_cpu_and_skips_non_persistent_buffers():
+    module = Staged()
+    parameter = module.weight
+    scratch = module.scratch
+    warn_once = {}
+
+    stage_modules_to_pinned_cpu((module,), warn_once=warn_once)
+
+    assert module.weight is parameter
+    assert torch.equal(module.weight.data, torch.arange(4, dtype=torch.float32))
+    assert torch.equal(module.scale, torch.full((2,), 3.0))
+    assert module.weight.data.device.type == "cpu"
+    assert module.scale.device.type == "cpu"
+    assert module.scratch is scratch
+    if torch.cuda.is_available():
+        assert module.weight.data.is_pinned() and module.scale.is_pinned()
+        assert not module.scratch.is_pinned()
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="pinned memory needs CUDA")
+def test_staging_reuses_an_already_pinned_tensor_without_copying():
+    module = Staged()
+    warn_once = {}
+    stage_modules_to_pinned_cpu((module,), warn_once=warn_once)
+    pointers = (module.weight.data.data_ptr(), module.scale.data_ptr())
+
+    stage_modules_to_pinned_cpu((module,), warn_once=warn_once)
+
+    assert (module.weight.data.data_ptr(), module.scale.data_ptr()) == pointers
+    assert warn_once == {}
+
+
+def test_staging_falls_back_to_pageable_when_pinned_allocation_fails(capsys):
+    modules = [Staged(), Staged()]
+    warn_once = {}
+
+    def no_pinned_memory(*args, **kwargs):
+        raise RuntimeError("no pinned allocator")
+
+    with patch.object(mot_cpu_staging.torch, "empty_like", no_pinned_memory):
+        stage_modules_to_pinned_cpu(modules, warn_once=warn_once)
+
+    for module in modules:
+        assert module.weight.data.device.type == "cpu"
+        assert not module.weight.data.is_pinned()
+        assert torch.equal(module.weight.data, torch.arange(4, dtype=torch.float32))
+        assert torch.equal(module.scale, torch.full((2,), 3.0))
+    assert warn_once == {"pin_failed": True}
+    assert capsys.readouterr().out.count("no pinned allocator") == 1
+
+
+def test_generation_and_training_evictors_share_one_staging_implementation():
+    assert not hasattr(mot_phase_eviction, "_pin_module_cpu_")
+    assert (
+        mot_phase_eviction.stage_modules_to_pinned_cpu
+        is mot_cpu_staging.stage_modules_to_pinned_cpu
+    )
+    module = Staged()
+    warn_once = {}
+    with patch.object(mot_cpu_staging, "_stage_tensor", return_value=torch.zeros(1)):
+        sensenova_phase_eviction._move_modules_to_cpu((module,), warn_once=warn_once)
+    assert torch.equal(module.scale, torch.zeros(1))
 
 
 def test_partial_transfer_failure_is_fatal_and_normalized_to_cpu():

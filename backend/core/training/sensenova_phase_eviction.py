@@ -7,33 +7,21 @@ from typing import Any, Dict, Iterable
 import torch
 from torch import nn
 
+from core.models.sensenova.mot_cpu_staging import stage_modules_to_pinned_cpu
 from core.models.sensenova.mot_weight_selector import select_mot_weight_modules
+
+_PIN_FAILURE_MESSAGE = (
+    "[SenseNova] Training MoT eviction could not pin CPU staging "
+    "memory ({exc}); continuing with blocking pageable copies."
+)
 
 
 def _move_modules_to_cpu(
     modules: Iterable[nn.Module], *, warn_once: Dict[str, bool]
 ) -> None:
-    def stage(tensor):
-        cpu = tensor.detach().to("cpu")
-        if not cpu.is_pinned():
-            try:
-                cpu = cpu.pin_memory()
-            except Exception as exc:
-                if "pin_failed" not in warn_once:
-                    warn_once["pin_failed"] = True
-                    print(
-                        "[SenseNova] Training MoT eviction could not pin CPU staging "
-                        f"memory ({exc}); continuing with blocking pageable copies."
-                    )
-        return cpu
-
-    for module in modules:
-        for parameter in module._parameters.values():
-            if parameter is not None:
-                parameter.data = stage(parameter.data)
-        for name, buffer in list(module._buffers.items()):
-            if buffer is not None and name not in module._non_persistent_buffers_set:
-                module._buffers[name] = stage(buffer)
+    stage_modules_to_pinned_cpu(
+        modules, warn_once=warn_once, warn_message=_PIN_FAILURE_MESSAGE
+    )
 
 
 def _move_modules_to_device(modules: Iterable[nn.Module], device: Any) -> None:

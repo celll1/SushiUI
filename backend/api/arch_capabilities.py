@@ -110,6 +110,9 @@ FEATURE_PARAMS: Dict[str, List[str]] = {
     # SenseNova U1.5's second CFG scale for reference-image editing. No other
     # architecture has an equivalent knob at the API layer.
     "img_cfg_scale": ["img_cfg_scale"],
+    # SenseNova U1.5's CFG-overshoot clamp. No other architecture has an
+    # equivalent knob at the API layer.
+    "cfg_norm": ["cfg_norm"],
     # SenseNova U1.5's per-phase weight-half CPU eviction. No other
     # architecture has an equivalent knob at the API layer.
     "sensenova_mot_phase_eviction": ["sensenova_mot_phase_eviction"],
@@ -153,6 +156,7 @@ FEATURE_LABELS: Dict[str, str] = {
     "audio_reference_conditioning": "reference_audio_path/reference_audio_enable/is_cover (reference-audio conditioning)",
     "timestep_shift": "timestep_shift (SenseNova U1.5 flow-matching time-shift)",
     "img_cfg_scale": "img_cfg_scale (SenseNova U1.5 reference-image editing second CFG scale)",
+    "cfg_norm": "cfg_norm (SenseNova U1.5 CFG-overshoot clamp)",
     "sensenova_mot_phase_eviction": "sensenova_mot_phase_eviction (SenseNova U1.5 per-phase weight-half CPU eviction)",
     "sensenova_kv_cache_streaming": "sensenova_kv_cache_streaming (SenseNova U1.5 per-layer prefix KV cache CPU streaming)",
     "block_swap": "enable_block_swap/blocks_to_swap (per-block CPU offload)",
@@ -311,7 +315,7 @@ _add("acestep", "controlnets", "ControlNet is not supported for the ACE-Step aud
 # fact, not a refusal.
 # ---------------------------------------------------------------------------
 _add("sensenova", "advanced_cfg",
-     "CFG scheduling / dynamic thresholding / CFG-rescale run only in the U-Net sampling loop, not in SenseNova's flow-matching sampler")
+     "CFG scheduling / dynamic thresholding / CFG-rescale run only in the U-Net sampling loop, not in SenseNova's flow-matching sampler; SenseNova has its own native CFG-overshoot clamp instead (cfg_norm)")
 # negative_prompt IS supported (see docs/guides/MODEL_FACTS.md's sensenova
 # row) -- no entry here. The cfg_scale<=1 no-op case is warned at the point
 # of use (sensenova_pipeline_ops.encode_prompt, code
@@ -463,6 +467,12 @@ for _a in [a for a in _ALL_ARCHS if a != "sensenova"]:
 for _a in [a for a in _ALL_ARCHS if a != "sensenova"]:
     _add(_a, "img_cfg_scale",
          "img_cfg_scale is a SenseNova U1.5-specific second CFG scale for reference-image editing; this architecture does not consult it")
+
+# cfg_norm: a SenseNova U1.5-specific CFG-overshoot clamp; every other
+# architecture's sampler has no equivalent knob and ignores it.
+for _a in [a for a in _ALL_ARCHS if a != "sensenova"]:
+    _add(_a, "cfg_norm",
+         "cfg_norm is a SenseNova U1.5-specific CFG-overshoot clamp; this architecture does not consult it")
 
 # sensenova_mot_phase_eviction: a SenseNova U1.5-specific per-phase weight-half
 # CPU eviction toggle; every other architecture's inference path has no

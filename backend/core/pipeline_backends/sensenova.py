@@ -310,6 +310,7 @@ class SenseNovaMixin:
             "cfg_scale": float(params.get("cfg_scale", SENSENOVA_GENERATION_DEFAULTS["cfg_scale"])),
             "timestep_shift": float(params.get("timestep_shift", SENSENOVA_GENERATION_DEFAULTS["timestep_shift"])),
             "img_cfg_scale": img_cfg_scale,
+            "cfg_norm": params.get("cfg_norm", SENSENOVA_GENERATION_DEFAULTS["cfg_norm"]),
             # routes.py already decodes uploads into PIL Image objects before
             # putting them in params["ref_images"]; nothing to decode here.
             "ref_images": ref_images,
@@ -392,6 +393,7 @@ class SenseNovaMixin:
             x = ops.denoise_loop(
                 transformer, prefix,
                 seed=cfg["seed"], cfg_scale=cfg["cfg_scale"], timestep_shift=cfg["timestep_shift"],
+                cfg_norm=cfg["cfg_norm"],
                 num_inference_steps=cfg["num_inference_steps"],
                 step_callback=_step_bridge,
                 style_cfg=style_cfg, style_ref_x0=style_ref_x0, style_eps_ref=style_eps_ref,
@@ -489,6 +491,7 @@ class SenseNovaMixin:
             x = ops.denoise_loop_img2img(
                 transformer, prefix, init_image, denoising_strength,
                 seed=cfg["seed"], cfg_scale=cfg["cfg_scale"], timestep_shift=cfg["timestep_shift"],
+                cfg_norm=cfg["cfg_norm"],
                 num_inference_steps=cfg["num_inference_steps"],
                 step_callback=_step_bridge,
                 style_cfg=style_cfg, style_ref_x0=style_ref_x0, style_eps_ref=style_eps_ref,
@@ -582,6 +585,7 @@ class SenseNovaMixin:
             x = ops.denoise_loop_inpaint(
                 transformer, prefix, init_image, mask_image, denoising_strength,
                 seed=cfg["seed"], cfg_scale=cfg["cfg_scale"], timestep_shift=cfg["timestep_shift"],
+                cfg_norm=cfg["cfg_norm"],
                 num_inference_steps=cfg["num_inference_steps"], mask_blur=mask_blur,
                 step_callback=_step_bridge,
                 style_cfg=style_cfg, style_ref_x0=style_ref_x0, style_eps_ref=style_eps_ref,

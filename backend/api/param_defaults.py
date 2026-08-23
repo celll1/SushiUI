@@ -195,6 +195,15 @@ SENSENOVA_GENERATION_DEFAULTS: Dict[str, Any] = {
     # operating point (cfg_scale=4.0, img_cfg_scale=1.0) and keeps the
     # default at two-branch cost; inert without ref_images.
     "img_cfg_scale": 1.0,
+    # CFG-overshoot clamp applied to the predicted velocity before the Euler
+    # step (see sensenova_pipeline_ops.py's _cfg_combine): scales v_pred by
+    # clamp(||v_cond||/||v_pred||, 0, 1), so it can only ever shrink an
+    # overshoot. Defaulted ON because SenseNova is pixel-space and decodes no
+    # VAE to absorb overshoot, unlike the archs served by
+    # cfg_rescale_snr_alpha. The vendored generate() signatures default to
+    # "none"; this is our own default, chosen on the visual comparison
+    # recorded in docs/guides/MODEL_FACTS.md's sensenova row.
+    "cfg_norm": "global",
     # Per-phase CPU eviction of the transformer's unused weight half
     # (understanding half idle during denoise, generation half idle during
     # prefix). Default False: the measured VRAM saving is real (-7.6 GB at
@@ -231,6 +240,10 @@ GENERATION_DEFAULTS: Dict[str, Any] = {
     # above). Only meaningful with ref_images on SenseNova; every other
     # architecture ignores it.
     "img_cfg_scale": SENSENOVA_GENERATION_DEFAULTS["img_cfg_scale"],
+    # SenseNova CFG-overshoot clamp (see SENSENOVA_GENERATION_DEFAULTS above).
+    # Every other architecture ignores it (accepted and warned,
+    # api/arch_capabilities.py).
+    "cfg_norm": SENSENOVA_GENERATION_DEFAULTS["cfg_norm"],
     # SenseNova per-phase weight-half CPU eviction (see
     # SENSENOVA_GENERATION_DEFAULTS above). Every other architecture ignores
     # it (accepted and warned, api/arch_capabilities.py).

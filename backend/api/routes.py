@@ -427,6 +427,8 @@ class GenerationParams(BaseModel):
     # SenseNova U1.5 second CFG scale for reference-image editing (active only
     # with ref_images); every other architecture ignores it.
     img_cfg_scale: float = GENERATION_DEFAULTS["img_cfg_scale"]
+    # SenseNova U1.5 CFG-overshoot clamp; every other architecture ignores it.
+    cfg_norm: str = GENERATION_DEFAULTS["cfg_norm"]
     # SenseNova U1.5 per-phase weight-half CPU eviction; every other
     # architecture ignores it.
     sensenova_mot_phase_eviction: bool = GENERATION_DEFAULTS["sensenova_mot_phase_eviction"]
@@ -1110,6 +1112,7 @@ async def generate_txt2img(
     cfg_scale: Optional[float] = Form(None),
     timestep_shift: float = Form(GENERATION_DEFAULTS["timestep_shift"]),  # SenseNova U1.5 flow-matching time-shift; other archs ignore it
     img_cfg_scale: float = Form(GENERATION_DEFAULTS["img_cfg_scale"]),  # SenseNova U1.5 reference-image editing second CFG scale; other archs ignore it
+    cfg_norm: str = Form(GENERATION_DEFAULTS["cfg_norm"]),  # SenseNova U1.5 CFG-overshoot clamp; other archs ignore it
     sensenova_mot_phase_eviction: bool = Form(GENERATION_DEFAULTS["sensenova_mot_phase_eviction"]),  # SenseNova U1.5 per-phase weight-half CPU eviction; other archs ignore it
     sensenova_kv_cache_streaming: bool = Form(GENERATION_DEFAULTS["sensenova_kv_cache_streaming"]),  # SenseNova U1.5 per-phase KV cache CPU streaming; other archs ignore it
     sampler: str = Form("euler"),
@@ -1339,6 +1342,7 @@ async def generate_txt2img(
             "cfg_scale": cfg_scale,
             "timestep_shift": timestep_shift,
             "img_cfg_scale": img_cfg_scale,
+            "cfg_norm": cfg_norm,
             "sensenova_mot_phase_eviction": sensenova_mot_phase_eviction,
             "sensenova_kv_cache_streaming": sensenova_kv_cache_streaming,
             "sampler": sampler,
@@ -2152,6 +2156,7 @@ async def generate_img2img(
     cfg_scale: Optional[float] = Form(None),
     timestep_shift: float = Form(GENERATION_DEFAULTS["timestep_shift"]),  # SenseNova U1.5 flow-matching time-shift; other archs ignore it
     img_cfg_scale: float = Form(GENERATION_DEFAULTS["img_cfg_scale"]),  # SenseNova U1.5 reference-image editing second CFG scale; other archs ignore it
+    cfg_norm: str = Form(GENERATION_DEFAULTS["cfg_norm"]),  # SenseNova U1.5 CFG-overshoot clamp; other archs ignore it
     sensenova_mot_phase_eviction: bool = Form(GENERATION_DEFAULTS["sensenova_mot_phase_eviction"]),  # SenseNova U1.5 per-phase weight-half CPU eviction; other archs ignore it
     sensenova_kv_cache_streaming: bool = Form(GENERATION_DEFAULTS["sensenova_kv_cache_streaming"]),  # SenseNova U1.5 per-phase KV cache CPU streaming; other archs ignore it
     denoising_strength: float = Form(0.75),
@@ -2403,6 +2408,7 @@ async def generate_img2img(
             "cfg_scale": cfg_scale,
             "timestep_shift": timestep_shift,
             "img_cfg_scale": img_cfg_scale,
+            "cfg_norm": cfg_norm,
             "sensenova_mot_phase_eviction": sensenova_mot_phase_eviction,
             "sensenova_kv_cache_streaming": sensenova_kv_cache_streaming,
             "denoising_strength": denoising_strength,
@@ -7484,6 +7490,7 @@ async def generate_inpaint(
     cfg_scale: Optional[float] = Form(None),
     timestep_shift: float = Form(GENERATION_DEFAULTS["timestep_shift"]),  # SenseNova U1.5 flow-matching time-shift; other archs ignore it
     img_cfg_scale: float = Form(GENERATION_DEFAULTS["img_cfg_scale"]),  # SenseNova U1.5 reference-image editing second CFG scale; other archs ignore it
+    cfg_norm: str = Form(GENERATION_DEFAULTS["cfg_norm"]),  # SenseNova U1.5 CFG-overshoot clamp; other archs ignore it
     sensenova_mot_phase_eviction: bool = Form(GENERATION_DEFAULTS["sensenova_mot_phase_eviction"]),  # SenseNova U1.5 per-phase weight-half CPU eviction; other archs ignore it
     sensenova_kv_cache_streaming: bool = Form(GENERATION_DEFAULTS["sensenova_kv_cache_streaming"]),  # SenseNova U1.5 per-phase KV cache CPU streaming; other archs ignore it
     denoising_strength: float = Form(0.75),
@@ -7770,6 +7777,7 @@ async def generate_inpaint(
             "cfg_scale": cfg_scale,
             "timestep_shift": timestep_shift,
             "img_cfg_scale": img_cfg_scale,
+            "cfg_norm": cfg_norm,
             "sensenova_mot_phase_eviction": sensenova_mot_phase_eviction,
             "sensenova_kv_cache_streaming": sensenova_kv_cache_streaming,
             "denoising_strength": denoising_strength,

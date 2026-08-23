@@ -9966,6 +9966,29 @@ components:
             reference-conditioned branch at `img_cfg_scale == 1`. Crossing that
             boundary therefore changes how a negative prompt is applied.
           example: 1.0
+        cfg_norm:
+          type: string
+          enum: ["none", "global", "channel"]
+          default: global
+          description: |
+            SenseNova U1.5 CFG-overshoot clamp, applied to the predicted
+            velocity before the Euler step. SenseNova is a pixel-space
+            architecture with no VAE decode stage to absorb CFG overshoot
+            (unlike the U-Net architectures, where `cfg_rescale_snr_alpha`
+            plays an equivalent role); `cfg_norm` rescales the norm of the
+            post-CFG velocity back toward the conditional branch's norm,
+            clamped to never scale up. `none` disables the clamp. `global`
+            computes one scale factor per sample; `channel` computes one per
+            feature channel. The clamp is also skipped whenever the effective
+            CFG scale is <= 1, matching the vendored sampler. The vendored
+            `it2i_generate` (reference-image editing) accepts only these three
+            values; a fourth vendored value, `cfg_zero_star`, is defined only
+            for the plain two-branch `t2i_generate` path and is not part of
+            this API's surface — the value is not rejected, but on the
+            reference-image path it is treated as `none`. Ignored (accepted
+            and warned) by every other architecture, which has no equivalent
+            knob at the API layer.
+          example: global
         sensenova_mot_phase_eviction:
           type: boolean
           default: false

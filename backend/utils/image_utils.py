@@ -347,6 +347,14 @@ def save_image_with_metadata(
         if float(img_cfg_scale) != float(GENERATION_DEFAULTS["img_cfg_scale"]):
             metadata.add_text("img_cfg_scale", str(img_cfg_scale))
 
+    # SenseNova U1.5 CFG-overshoot clamp (non-default only; ignored by every
+    # other architecture).
+    cfg_norm = params.get("cfg_norm")
+    if cfg_norm is not None:
+        from api.param_defaults import GENERATION_DEFAULTS
+        if str(cfg_norm) != str(GENERATION_DEFAULTS["cfg_norm"]):
+            metadata.add_text("cfg_norm", str(cfg_norm))
+
     # SenseNova U1.5 per-phase weight-half CPU eviction (flag only; ignored by
     # every other architecture).
     if params.get("sensenova_mot_phase_eviction", False):

@@ -37,17 +37,19 @@ from .vendor.utils import SYSTEM_MESSAGE_FOR_GEN, load_image_native
 LABEL = "SenseNova"
 TOKEN_GRID_ALIGN = 32  # patch_size(16) * merge_size(2) -- the token patch, not the raw ViT patch_size.
 
-# cfg_scale/timestep_shift/num_inference_steps have NO module-level default
-# (AGENTS.md: never hardcode a default outside backend/api/param_defaults.py)
-# -- every real caller (core/pipeline_backends/sensenova.py) already sources
-# them from SENSENOVA_GENERATION_DEFAULTS and passes them explicitly, h3-style
+# cfg_scale/timestep_shift/cfg_norm/num_inference_steps have NO module-level
+# default (AGENTS.md: never hardcode a default outside
+# backend/api/param_defaults.py) -- every real caller
+# (core/pipeline_backends/sensenova.py) already sources them from
+# SENSENOVA_GENERATION_DEFAULTS and passes them explicitly, h3-style
 # (core/models/minimax_h3/h3_pipeline_ops.py's denoise() takes no default for
-# any tunable generation param either). cfg_norm/cfg_interval are NOT yet
-# surfaced through param_defaults.py by any caller (only steps/cfg_scale/
-# timestep_shift are), so they keep a neutral "CFG behaves exactly like the
-# vanilla two-branch blend, no norm rescaling, active every step" default
-# here rather than becoming a required arg that would break the one live
-# caller -- see this module's audit note for the follow-up this implies.
+# any tunable generation param either). DEFAULT_CFG_NORM below is NOT the
+# served default (that is SENSENOVA_GENERATION_DEFAULTS["cfg_norm"] == "global"
+# in param_defaults.py) -- it is only a defensive fallback for the
+# _euler_run*() function signatures should a future caller omit the arg.
+# cfg_interval is NOT yet surfaced through param_defaults.py by any caller, so
+# it keeps a neutral "active every step" default here rather than becoming a
+# required arg that would break the one live caller.
 DEFAULT_CFG_NORM = "none"
 DEFAULT_CFG_INTERVAL = (0.0, 1.0)
 

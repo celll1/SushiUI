@@ -20,7 +20,7 @@ them. No subjective performance claims.
 | krea2 | MM-DiT (single-stream) | Qwen3-VL-4B-Instruct (frozen) | velocity / flow (rectified flow) | latent, `AutoencoderKLQwenImage` 16ch (latents_mean/std) | `guidance = cfg_scale - 1` (default cfg 4.5); distilled/turbo disables CFG (guidance 0) | conduit (tq usable, GQA) (verify infer/train head_dim) | diffusers dir (`Krea2Pipeline`), transformer-only dir (auto-complement), single-file (diffusers/raw/comfy/sushiUI TE+DiT combined); TE `Qwen/Qwen3-VL-4B-Instruct`, VAE `Qwen/Qwen-Image` `vae` (env `KREA2_TE_DIR`/`KREA2_VAE_DIR` overrides) | `krea2_adapter.py`; transformer only, Qwen3-VL TE ALWAYS frozen (`train_text_encoder` rejected), VAE frozen; train_runner forces bf16 |
 | ltx2 | joint video+audio DiT (`LTX2VideoTransformer3DModel`) | Gemma-3 text encoder (frozen) | velocity / flow (`LTX2Pipeline`/`LTX2ImageToVideoPipeline`, txt2vid + img2vid) | 5D video latent (`[T,H,W]`) via LTX video VAE (tiling enabled) + separate audio VAE/vocoder | plain CFG (`guidance_scale`); img2vid pins frame 0 via `conditioning_mask` | n/a (own pipeline backend, not conduit-routed) | not in the single-file completion matrix above (own loader) | own trainer ops (`ltx2_ops.py`); see row-level notes for AP1-3 speed/lightweight features |
 | minimax_h3 | joint video+audio DiT, **single stream, no cross-attention** (vendored `MiniMaxH3Transformer3DModel`, 50 blocks, 33 B dense): one packed sequence of `[text \| conditioning \| audio \| video]` rows scattered by `index_copy`, split back by `index_select` | Qwen3-VL-32B (`Qwen3VLForConditionalGeneration`), truncated to **50 decoder layers**, unnormalised hidden state after layer 50, 5120-dim; frozen, never moved (layer-streamed off the mmap) | velocity / flow with the sign **opposite** to the usual convention, `x0 = x_t + σ·v` (vendored `MiniMaxH3Scheduler`); **two sigma schedules**, video shift 12.0 and audio shift 3.0, each stream stepped on its own grid once per loop iteration | 5-D 24-ch video latent, `AutoencoderKLMiniMaxH3` (16× spatial / 4× temporal, 36-layer ViT decoder, fp16, **pinned tiling policy**), pixels ImageNet-normalised RGB over `[0,1]` (not `[-1,1]`); **separate** 32-ch audio VAE (fp32, 32 kHz stereo) | **none** — no `guidance_scale`, no `negative_prompt`, no unconditional branch; guidance is distilled into the weights, one forward per step. Both keys are accepted and warned on a non-default value | conduit-routed, head_dim 128, equal q/kv heads, no mask → no capability guard fires, so native/flash/sage/tq all really run; sage refused in TRAINING mode by the shared mode guard | ComfyUI-style flat tree (`diffusion_models/` + `text_encoders/` + `vae/`) plus MiniMax's config-only `official/` for geometry, tokenizer and normalization vectors; DiT files are `*_pruned_fp8_scaled` or packed ConvRot `*_pruned_w4a8_mixed` (Comfy-Kitchen 0.2.28), each with `fl2va` and `ref2va` partitions — selecting the FILE selects the workflow | `minimax_h3_adapter.py`, **LoRA only** — full fine-tuning refused in three layers; TE and both VAEs frozen; block swap optional (opt-in) |
-| sensenova | Qwen3-8B LLM used directly as the flow-matching denoiser (MoT: every layer carries a `_mot_gen` twin of q/k/v/o_proj + norms + MLP, selected per token by a boolean mask; 42 layers, hidden 4096, GQA 32 q / 8 kv heads, head_dim 128, 3-axis RoPE) | none separate — the prompt goes through the LLM's own tokenizer + chat template, encoded by the same prefix forward pass that builds the KV cache the denoiser consumes | flow matching, `linspace(0,1)` with **t=0 noise, t=1 clean** (opposite of flux2/zimage's convention), Euler forward, `v = (x_pred - z)/(1-t).clamp_min(t_eps)` | pixel-space (no VAE); resolution free (not bucketed), only the structural /32 token grid (patch 16 x merge 2) enforced by snapping, off-range sizes warn and generate | ordinary CFG via two independent prefix KV caches (cond + empty-string uncond by default), or up to three (cond + img_cond + uncond) once `ref_images` is supplied, selected by `img_cfg_scale`; upstream's own `needs_cfg = cfg_scale > 1` collapses to single-branch at `cfg_scale <= 1`, which is how the 8-step distillation LoRA runs — no separate mode flag. **`negative_prompt` IS supported** (empirically verified A/B, not just upstream's own default): the uncond branch is built by the SAME `encode_prompt()` prefix pass as the cond branch, so a caller-supplied string substitutes cleanly for `""` and produces a real, `cfg_scale`-dose-dependent suppression effect (clean up to ~cfg_scale 6, classic CFG-too-high degradation from ~cfg_scale 8); default `cfg_scale` 4.0 is kept for both the plain and negative-prompt cases. Has no effect at `cfg_scale<=1` (warned, `sensenova_negative_prompt_no_cfg`) since no uncond branch is built there at all | conduit-routed (BSHD); sage auto-refused for GQA declaratively (`supports_gqa=False`), no per-arch registry entry / same conduit, stamped `AttentionMode.TRAINING` over all 42 layers by `training/ops/sensenova_ops.setup_attention_backend` (sage stripped to native by the shared training-mode guard) | sushiUI single-file shard index only (`transformer.`-prefixed, `sensenova_config` metadata carries geometry); no upstream single-file distribution to complete siblings against | `sensenova_adapter.py`, **LoRA only** — the 294 generation-branch (`_mot_gen`) Linears, understanding branch and both vision towers frozen; the base must be either int8 checkpoint with all 588 decoder Linears in ONE flavour (no bf16 base exists in this repo); physical `batch_size=1`, `blocks_to_swap=0`, no reference-image datasets and no training samples, all enforced before the model loads by `train_runner._apply_sensenova_training_contract`; `full_finetune`/`relora`/`controlnet` refused via `TRAINING_UNSUPPORTED`. Full fine-tune (Phase 2b) and reference-mixed datasets (Phase 3) are not implemented. The base is converted UNMERGED from the 8-step distillation LoRA specifically to keep the trainable lineage canonical |
+| sensenova | Qwen3-8B LLM used directly as the flow-matching denoiser (MoT: every layer carries a `_mot_gen` twin of q/k/v/o_proj + norms + MLP, selected per token by a boolean mask; 42 layers, hidden 4096, GQA 32 q / 8 kv heads, head_dim 128, 3-axis RoPE) | none separate — the prompt goes through the LLM's own tokenizer + chat template, encoded by the same prefix forward pass that builds the KV cache the denoiser consumes | flow matching, `linspace(0,1)` with **t=0 noise, t=1 clean** (opposite of flux2/zimage's convention), Euler forward, `v = (x_pred - z)/(1-t).clamp_min(t_eps)` | pixel-space (no VAE); resolution free (not bucketed), only the structural /32 token grid (patch 16 x merge 2) enforced by snapping, off-range sizes warn and generate | ordinary CFG via two independent prefix KV caches (cond + empty-string uncond by default), or up to three (cond + img_cond + uncond) once `ref_images` is supplied, selected by `img_cfg_scale`; upstream's own `needs_cfg = cfg_scale > 1` collapses to single-branch at `cfg_scale <= 1`, which is how the 8-step distillation LoRA runs — no separate mode flag. **`negative_prompt` IS supported** (empirically verified A/B, not just upstream's own default): the uncond branch is built by the SAME `encode_prompt()` prefix pass as the cond branch, so a caller-supplied string substitutes cleanly for `""` and produces a real, `cfg_scale`-dose-dependent suppression effect (clean up to ~cfg_scale 6, classic CFG-too-high degradation from ~cfg_scale 8); default `cfg_scale` 4.0 is kept for both the plain and negative-prompt cases. Has no effect at `cfg_scale<=1` (warned, `sensenova_negative_prompt_no_cfg`) since no uncond branch is built there at all | conduit-routed (BSHD); sage auto-refused for GQA declaratively (`supports_gqa=False`), no per-arch registry entry / same conduit, stamped `AttentionMode.TRAINING` over all 42 layers by `training/ops/sensenova_ops.setup_attention_backend` (sage stripped to native by the shared training-mode guard) | sushiUI single-file shard index only (`transformer.`-prefixed, `sensenova_config` metadata carries geometry); no upstream single-file distribution to complete siblings against | `sensenova_adapter.py`, **LoRA only** — the 294 generation-branch (`_mot_gen`) Linears, understanding branch and both vision towers frozen; the base must be either int8 checkpoint with all 588 decoder Linears in ONE flavour (no bf16 base exists in this repo); physical `batch_size=1`, `blocks_to_swap=0` and no reference-image datasets, all enforced before the model loads by `train_runner._apply_sensenova_training_contract`; training-time sampling and `debug_latents` both work (`dc91bef1`); `full_finetune`/`relora`/`controlnet` refused via `TRAINING_UNSUPPORTED`. Full fine-tune (Phase 2b) and reference-mixed datasets (Phase 3) are not implemented. The base is converted UNMERGED from the 8-step distillation LoRA specifically to keep the trainable lineage canonical |
 | minimax_music3 | 3-stage: 8B `Qwen3ForCausalLM` autoregressive stage + 0.6B RVQ depth decoder (semantic + 7 residual codes/frame) → condition encoder → 2.4B 1D flow-matching DiT (`MiniMaxMusic3Transformer1DModel`, 36 layers, windowed 200-frame/100-hop denoise) → vocoder decode. No separate text encoder component: `prompt`/`lyrics` are tokenized (`Qwen2Tokenizer`) and consumed directly by the AR stage's own `Qwen3ForCausalLM` | AR stage: categorical, top-k 50 sampling of semantic (vocab 16,384) + 7 residual (vocab 1,024 each) codes per 25 Hz frame, cross-entropy-trained upstream. Flow stage: velocity / flow (`FlowMatchEulerDiscreteScheduler`, `invert_sigmas: true`, `sigmas = linspace(1, 1/steps, steps)`) at 86.13 Hz | 128-ch latent = **two folded 64-ch mono streams** (`vocoder.forward` reshapes `[B,128,L]`→`[2B,64,L]`); `MiniMaxMusic3Vocoder` is **decode-only** (upsamples 512× to 44.1 kHz stereo) — the matching encoder exists in `official/dav.pth` but is not part of the released diffusers component set and is not wired | **two CFGs, no negative prompt anywhere.** AR CFG fixed at 1.5 (unconditional branch = the same prompt with interior tokens replaced by `<\|audio_cfg\|>`); flow CFG exposed as `flow_guidance_scale` (default 1.7), unconditional branch conditions on **zeros** (there is no text/audio unconditional branch to negate, structurally, not by omission) | conduit-routed (attention re-pointed at `backend/core/attention/` during vendoring, replacing upstream's `dispatch_attention_fn`); same conduit for inference and (design-only, unimplemented) training | `official/` 7-component tree (default; every config, including for a flat/GGUF DiT, is sourced from here); flat ComfyUI-repack safetensors (DiT + text encoder, key-remapped — fused QKV split, `.gamma`/`.beta` norm rename, condition encoder unfolded out of the DiT; LM+depth-decoder split apart for the text encoder); GGUF containers (same remap, native reader, no `gguf` pip dependency); Q8_0 packed text encoder (`GGUFQ8_0Linear`, dequantizes once per device move); INT8 ConvRot (`ConvRotInt8Linear`, reused unchanged from MiniMax-H3) for both the flat DiT and the pruned text encoder. `text_encoder_file` on `POST /models/load` selects which of 4 text-encoder builders (non-pruned flat, pruned flat, pruned GGUF dense, pruned GGUF Q8_0) runs, generalising MiniMax-H3's `te_override` field | **none.** Training is out of scope for the phases shipped so far; not in `ARCH_REGISTRY`. Design-forward-compatible only: flow-stage (DiT) LoRA is reachable in principle (needs a from-scratch DAV-encoder reimplementation, since the encoder half is unpublished in the diffusers component set), AR-stage (LM) training is **blocked** — the RVQ tokenizer's own encoder (turns audio into the codes the LM predicts) is not published anywhere in the release |
 
 ## VRAM management: keep_models_hot (opt-in, all image archs except sensenova; ltx2 is video)
@@ -172,6 +172,32 @@ transfer.
 - **Knobs not yet exposed in the UI** (carried at their reference-node
   defaults in `StyleTransferConfig`): `value_mode`, `ref_value_mix`,
   multi-reference support, `late_release`, `rope_offset`.
+
+## Training diagnostics coverage: `debug_latents` and training-time samples
+
+Both options are accepted by the API for every training-capable arch, and on
+most of them **nothing happens and nothing says so**. Paths below are relative
+to `backend/core/training/`.
+
+- **`debug_latents` writes a dump on 5 archs only**: sd15/sdxl
+  (`ops/sd_sdxl_ops.py:936`), zimage (`ops/zimage_ops.py:467`), flux2
+  (`ops/flux2_ops.py:665`), minit2i (`ops/minit2i_ops.py:361`), sensenova
+  (`ops/sensenova_ops.py:391`). These are exactly the five `train_step` bodies
+  containing an `if debug_save_path is not None:` branch.
+- **Accept-and-ignore**: anima (`ops/anima_ops.py:342`), ltx2
+  (`ops/ltx2_ops.py:510`), minimax_h3 (`ops/minimax_h3_ops.py:655`), acestep
+  (`ops/acestep_ops.py:471`) declare `debug_save_path`/`debug_captions`/
+  `debug_reference_image_paths` in the `train_step` signature and never read
+  them. The call site looks correct; the dump is simply not implemented.
+- **No parameter at all**: lens (`ops/lens_ops.py:215`), ideogram4
+  (`ops/ideogram4_ops.py:229`), krea2 (`ops/krea2_ops.py:201`), and the
+  ControlNet path (`base_trainer.py:5973`, `train_step_controlnet`) — adding a
+  dump there means changing the signature first.
+- **Training-time sampling is implemented for every arch except ideogram4**,
+  whose `sample()` prints a warning and returns `None`
+  (`arch/ideogram4.py:69`); both `base_trainer.py` sample sites skip on `None`
+  (`:9082`, `:11763`). Its dual-transformer + fp8 + resolution-aware
+  dual-branch conditioning is not ported to the trainer.
 
 ## Row-level notes
 
@@ -1965,10 +1991,45 @@ transfer.
       match and there is no padding mask / varlen attention on the gen
       flash path); `blocks_to_swap` must be 0 (`setup_block_swap` raises);
       `use_reference_images` is refused as deferred to Phase 3; text and
-      pixel encoding are forced to `onthefly_gpu`; `sample_every` is forced
-      to 0 because training-time sampling is not integrated
-      (`arch/sensenova.py::sample` raises). `training_dtype`/`weight_dtype`
-      are forced to bf16 by `_is_bf16_native_base_model`.
+      pixel encoding are forced to `onthefly_gpu`. `training_dtype`/`weight_dtype`
+      are forced to bf16 by `_is_bf16_native_base_model`. `sample_every` is
+      NOT clamped (it was forced to 0 until `dc91bef1`, see the next bullet).
+    - **Training-time sampling (`dc91bef1`)**: `arch/sensenova.py::sample`
+      delegates to `ops/sensenova_ops.generate_sample`, which drives the
+      inference module's own prefix + Euler loop
+      (`sensenova_pipeline_ops.normalize_resolution` -> `encode_prompt` ->
+      `denoise_loop` -> `tensor_to_image`); nothing about the denoise is
+      reimplemented, `timestep_shift`/`cfg_norm` come from
+      `SENSENOVA_GENERATION_DEFAULTS`, and the YAML's width/height/steps are
+      used as given (an off-grid size is snapped and warned). The LoRA under
+      training needs no separate apply — its `LoRALinearLayer` wrappers ARE
+      the modules the generation forward calls.
+      - **Attention mode must be re-stamped `TRAINING` in a `finally`.**
+        Generation is stamped `AttentionMode.INFERENCE` explicitly (otherwise
+        `set_attention_backend` infers the mode from `torch.is_grad_enabled()`),
+        and nothing re-stamps these modules after load —
+        `ops/sensenova_ops.setup_attention_backend` runs once — so an
+        INFERENCE stamp left behind would silently persist for the rest of the
+        run. `train()` state and the prefix caches are restored in the same
+        `finally`.
+      - **A failed sample prints its traceback and returns `None`** instead of
+        propagating: neither `base_trainer` sample block guards the call
+        (`:9070`, `:11749`), so an exception would take the run down.
+      - **With `sensenova_mot_phase_eviction` on**, sampling drives the evictor
+        through the same `enter_prefix`/`enter_denoise` transition pair a
+        training step uses, so the two halves still never co-reside. The
+        evictor is deliberately left in whichever of those two states the call
+        ended in; the next step's `encode_prompt` transitions out of either
+        legally.
+    - **`debug_latents` dumps pixel-space previews.** SenseNova's "latent" is
+      already `[-1,1]` RGB, so `target`/`noisy`/`pred_x0` go through
+      `tensor_to_image` with no decode, and the `.pt` stays scalar-only. The
+      filenames are the ones the existing `visualize_debug_latent` endpoint
+      already derives (`latents_t<ts>.pt` ->
+      `decode_t<ts>_{target,noisy,pred_x0}.webp`), so no API or frontend
+      change was needed. Before `dc91bef1` the `is_sensenova` branch of
+      `_execute_forward_backward` did not pass the debug fields at all and the
+      option was silently inert.
     - **Not implemented**: full fine-tune (Phase 2b, blocked on obtaining a
       bf16 generation-branch base) and reference-conditioned datasets
       (Phase 3). Design, rationale and the DONE/PENDING boundary:

@@ -91,6 +91,7 @@ facts は [`MODEL_FACTS.md`](MODEL_FACTS.md) を正とする。本文書は Sens
 | `TRAINING_UNSUPPORTED` | full FT / ReLoRA / ControlNet をロード前に拒否 | DONE |
 | real trainer exit smoke | 3 finite steps、runtime strength 0 exact parity、294 apply / restore を実 checkpoint で検証済み | DONE |
 | half-eviction | training 専用 driver、opt-in API/UI、実 checkpoint OFF / ON 測定を完了 | DONE |
+| 学習中 sample / `debug_latents` | 推論の prefix + Euler loop をそのまま駆動する `generate_sample` と、pixel space の debug dump を実装済み（`dc91bef1`）。`sample_every` の強制 0 は解除 | DONE |
 | reference / full FT | §11 の後続フェーズ | PENDING |
 
 ---
@@ -328,6 +329,12 @@ Phase 1 の前提実装になった（DONE）。
   stamp する必要がある（`sensenova_pipeline_ops.set_attention_backend` が stamp 器）。
   `forward_und` は eager 固定で `_flash_or_sdpa` に到達しないため、影響を受けるのは
   gen 側のみ。
+  - **stamp を戻す責任は呼び出し側にある。** stamp するのは load 時の
+    `ops/sensenova_ops.setup_attention_backend` 1 箇所だけで、以後 TRAINING を
+    貼り直す場所は存在しない。学習中 sample は生成のあいだ
+    `AttentionMode.INFERENCE` を明示的に stamp するため、`finally` で TRAINING を
+    貼り直さないと残り全 step が INFERENCE のまま静かに走る。mode を明示するのは
+    `set_attention_backend` が省略時に `torch.is_grad_enabled()` から推論するため。
 - **style transfer の tripwire。** `forward_und` は style context が armed だと raise する
   (`modeling_qwen3.py:515-525`)。学習経路では style context を必ず未設定にする。
 - **noise scale の一般形。** config の現在値だけを展開して式を再実装せず、
@@ -692,6 +699,11 @@ staging 実装、すなわち host 側で `.to("cpu")`（pageable）→ `pin_mem
 無害に見える形で不活性なまま出荷された**。学習側で層選択ロジックを再利用する際は
 この判別子ごと持ってくる。`rotary_emb` は名前で除外される。
 
+学習中 sample は evictor を学習 step と同じ `enter_prefix` / `enter_denoise` の
+遷移ペアで駆動するため、half-eviction ON でも両 half が同時常駐しない。生成後の
+evictor は `prefix` / `denoise` のどちらかに置かれたままになるが、次 step の
+`encode_prompt` はどちらからも合法に遷移する（§11 Phase 1）。
+
 なお `block_swap` と optimizer の互換性検証（`base_trainer.py:3546-3642`）は
 arch 非依存で、`blocks_to_swap` / `num_optimizer_groups` / `optimizer_type` だけを
 見る。SenseNova 用の追加は不要だが、CLAUDE.md の Block Swap × 8bit optimizer の
@@ -760,6 +772,11 @@ arch 非依存で、`blocks_to_swap` / `num_optimizer_groups` / `optimizer_type`
   training は別契約として許可する。
 - **DONE:** real trainer の 3-step exit smoke と fresh runtime strength 0 parity。
 - **DONE:** Phase 1 half-eviction の OFF / ON 別 process 計測。
+- **DONE:** 学習中 sample（`arch/sensenova.py::sample` → `ops.generate_sample`）と
+  `debug_latents` の pixel dump（`_execute_forward_backward` の `is_sensenova` 分岐が
+  `TrainStepContext` の debug 3 フィールドを渡す）。`train_runner` と
+  `base_trainer.train()` の `sample_every` 強制 0 は削除済み。API / フロントの変更は
+  不要だった（§11 Phase 1 参照）。
 
 ### PENDING
 
@@ -860,6 +877,26 @@ model resident allocated は 17.59 GiB、prefix の live allocated 増分は 50.
   （plain / ConvRot、`0c9ea86b`）、checkpoint-safe
   2-pass core、trainer/runner integration、prediction/defaults、保存と runtime round-trip。
 - **DONE:** MoT half-eviction の学習側再利用（opt-in）。
+- **DONE:** 学習中 sample と `debug_latents`（`dc91bef1`）。要点:
+  - `generate_sample` は `sensenova_pipeline_ops` の `normalize_resolution` →
+    `encode_prompt` → `denoise_loop` → `tensor_to_image` をそのまま駆動する。
+    denoise は一切再実装していない。`timestep_shift` / `cfg_norm` は
+    `SENSENOVA_GENERATION_DEFAULTS`、解像度と step 数は YAML の値をそのまま使う
+    （grid 外の解像度は snap して warn）。学習中の LoRA は別途 apply 不要
+    （`LoRALinearLayer` wrapper 自体が生成 forward の呼ぶ module である）。
+  - `finally` で attention mode の TRAINING 再 stamp（§5.4）、`train()` 状態、
+    prefix cache を必ず復元する。生成失敗は traceback を出して `None` を返す。
+    `base_trainer` の sample ブロック（`:9070`, `:11749`）に例外ガードが無いため、
+    伝播させると run ごと落ちる。
+  - half-eviction ON との併用は拒否ではなく対応。生成は学習 step と同じ
+    `enter_prefix` / `enter_denoise` の遷移ペアで evictor を駆動するので両 half が
+    同時常駐しない。evictor は呼び出し終了時の状態に置かれたままになるが、次 step の
+    `encode_prompt` はどちらからも合法に遷移できる（§8.4）。
+  - `debug_latents` は pixel space の等価物。SenseNova の「latent」は既に
+    `[-1,1]` RGB なので `target` / `noisy` / `pred_x0` を decode 無しで webp 化し、
+    `.pt` はスカラーのみ。ファイル名は既存の `visualize_debug_latent` が導出する規約
+    （`latents_t<ts>.pt` → `decode_t<ts>_{target,noisy,pred_x0}.webp`）に合わせたため
+    API / フロントの変更は無い。
 - **DONE:** §8.3 の OFF / ON 別 process 計測（64×64、0.50 GiB 削減 / train loop 5.61 倍）。
   既定 OFF を維持する運用判断もそこに記す。この shape は機構の有効性そのものを
   判定していない未解決の gate であり、減速比は変更中の staging 実装に対する値である

@@ -6,8 +6,9 @@ The trainer supplies one immutable prompt prefix per physical B1 batch.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Optional
+from typing import Any, List, Optional
 
 import torch
 from torch import nn
@@ -215,6 +216,68 @@ def vae_encode(trainer: Any, image_tensor: torch.Tensor, **_: Any) -> torch.Tens
     return image_tensor.detach().to(dtype=trainer.training_dtype, device="cpu")
 
 
+def _save_pixel_debug(
+    transformer: Any,
+    debug_save_path: Path,
+    *,
+    t_val: float,
+    noise_scale: float,
+    images: torch.Tensor,
+    z_image: torch.Tensor,
+    x0_pred_tokens: torch.Tensor,
+    patch: int,
+    height: int,
+    width: int,
+    loss_value: float,
+    recon_loss_value: float,
+    captions: Optional[List[str]],
+    reference_image_paths: Optional[List[Optional[str]]],
+) -> None:
+    """Dump this step's pixel tensors, the pixel-space analogue of the latent
+    archs' debug latents: ``target`` is their ``latents`` (the clean sample),
+    ``noisy`` their ``noisy_latents``, ``pred_x0`` their ``predicted_latent``.
+
+    SenseNova's "latent" already IS [-1,1] RGB, so the previews are written
+    directly and the ``.pt`` stays scalar-only (the visualize endpoint prefers
+    the webp over false-colouring a tensor, and a full-res pixel tensor per
+    dump would be tens of MB).
+    """
+    from core.models.sensenova.sensenova_pipeline_ops import tensor_to_image
+
+    debug_save_path.mkdir(parents=True, exist_ok=True)
+    debug_data: dict = {
+        "timestep": t_val,
+        "noise_scale": noise_scale,
+        "model_type": "sensenova",
+        "is_latent": False,
+        "loss": loss_value,
+        "recon_loss": recon_loss_value,
+        "batch_size": 1,
+    }
+    if captions:
+        debug_data["caption"] = captions[0]
+    if reference_image_paths:
+        first_ref = next((p for p in reference_image_paths if p is not None), None)
+        if first_ref:
+            debug_data["reference_image_path"] = first_ref
+    torch.save(debug_data, debug_save_path / f"latents_t{t_val:.4f}.pt")
+
+    x0_pred_image = transformer.unpatchify(x0_pred_tokens.detach(), patch, height, width)
+    for name, tensor in (
+        ("noisy", z_image),
+        ("target", images),
+        ("pred_x0", x0_pred_image),
+    ):
+        # tensor_to_image clamps to [-1,1]: the noised map saturates at low t,
+        # which is the same convention the VAE archs' decoded previews use.
+        tensor_to_image(tensor.detach().float()).save(
+            debug_save_path / f"decode_t{t_val:.4f}_{name}.webp",
+            "WEBP",
+            quality=80,
+            method=4,
+        )
+
+
 def train_step(
     trainer: Any,
     *,
@@ -222,6 +285,9 @@ def train_step(
     prefix: SenseNovaTrainingPrefix,
     timesteps: Optional[torch.Tensor] = None,
     profile_vram: bool = False,
+    debug_save_path: Optional[Path] = None,
+    debug_captions: Optional[List[str]] = None,
+    debug_reference_image_paths: Optional[List[Optional[str]]] = None,
 ) -> tuple[torch.Tensor, float, float]:
     """Run one B1 pixel-space flow-matching forward pass."""
     del profile_vram  # Central profiling owns peak-memory reporting.
@@ -320,7 +386,146 @@ def train_step(
         recon_loss = torch.nn.functional.mse_loss(x0_pred.float(), x0_tokens.float())
 
     value = float(loss.detach())
-    return loss, value, float(recon_loss.detach())
+    recon_value = float(recon_loss.detach())
+
+    if debug_save_path is not None:
+        try:
+            _save_pixel_debug(
+                transformer,
+                debug_save_path,
+                t_val=float(t[0].item()),
+                noise_scale=noise_scale,
+                images=x0,
+                z_image=z_image,
+                x0_pred_tokens=x0_pred,
+                patch=patch,
+                height=height,
+                width=width,
+                loss_value=value,
+                recon_loss_value=recon_value,
+                captions=debug_captions,
+                reference_image_paths=debug_reference_image_paths,
+            )
+        except Exception as debug_error:
+            print(f"{trainer.log_prefix} [debug_latents] save failed: {debug_error}")
+
+    return loss, value, recon_value
+
+
+def generate_sample(
+    trainer: Any,
+    *,
+    prompt: str,
+    height: int,
+    width: int,
+    num_inference_steps: int,
+    guidance_scale: float,
+    seed: int,
+    negative_prompt: str = "",
+    reference_image_path: Optional[str] = None,
+    condition_image_path: Optional[str] = None,
+):
+    """Run one inference txt2img generation from inside the training loop.
+
+    Drives the SAME ``sensenova_pipeline_ops`` prefix + Euler loop generation
+    uses; nothing about the denoise is reimplemented here. The LoRA under
+    training is applied automatically because its ``LoRALinearLayer`` wrappers
+    ARE the live modules the generation forward calls.
+
+    Returns a PIL image, or ``None`` if the generation failed -- the training
+    loop's sample block has no exception guard of its own, so a failed sample
+    must never take the run down.
+    """
+    from api.param_defaults import SENSENOVA_GENERATION_DEFAULTS
+    from core.attention import AttentionMode
+    from core.models.sensenova import sensenova_pipeline_ops as ops
+
+    transformer = trainer.transformer
+    if reference_image_path or condition_image_path:
+        print(
+            f"{trainer.log_prefix} SenseNova sampling ignores reference/condition "
+            f"images (reference-conditioned training is deferred to Phase 3)"
+        )
+
+    snapped_width, snapped_height = ops.normalize_resolution(width, height)
+    if (snapped_width, snapped_height) != (width, height):
+        print(
+            f"{trainer.log_prefix} SenseNova sample resolution snapped to the "
+            f"{ops.TOKEN_GRID_ALIGN}px token grid: {width}x{height} -> "
+            f"{snapped_width}x{snapped_height}"
+        )
+
+    backend = trainer._resolve_training_backend(trainer.attention_backend)
+    was_training = transformer.training
+    evictor = getattr(trainer, "sensenova_phase_evictor", None)
+    prefix = None
+    try:
+        # No-op while the phase evictor owns weight placement.
+        trainer.move_main_model_to_gpu()
+        transformer.eval()
+        # Pass the mode EXPLICITLY: set_attention_backend infers it from
+        # torch.is_grad_enabled() otherwise, and this call happens before the
+        # no_grad block below.
+        ops.set_attention_backend(transformer, backend, AttentionMode.INFERENCE)
+        with torch.no_grad():
+            # The evictor's full/prefix/denoise machine is driven here exactly as
+            # a training step drives it, so generation's own prefix->denoise
+            # phase change stays the SAME transition pair and the two halves
+            # never co-reside.
+            if evictor is not None:
+                evictor.enter_prefix()
+            prefix = ops.encode_prompt(
+                transformer,
+                trainer.tokenizer,
+                prompt,
+                snapped_height,
+                snapped_width,
+                guidance_scale,
+                negative_prompt=negative_prompt,
+            )
+            if evictor is not None:
+                evictor.enter_denoise()
+                evictor.assert_generation_resident()
+            image_tensor = ops.denoise_loop(
+                transformer,
+                prefix,
+                cfg_scale=guidance_scale,
+                timestep_shift=SENSENOVA_GENERATION_DEFAULTS["timestep_shift"],
+                num_inference_steps=num_inference_steps,
+                seed=seed if seed is not None and seed >= 0 else None,
+                cfg_norm=SENSENOVA_GENERATION_DEFAULTS["cfg_norm"],
+            )
+        image = ops.tensor_to_image(image_tensor.float())
+        del image_tensor
+        return image
+    except Exception as sample_error:
+        import traceback
+
+        print(
+            f"{trainer.log_prefix} SenseNova sample generation failed "
+            f"({type(sample_error).__name__}: {sample_error}); training continues"
+        )
+        traceback.print_exc()
+        return None
+    finally:
+        if prefix is not None:
+            try:
+                ops.clear_prefix_caches(prefix)
+            except Exception as clear_error:
+                print(
+                    f"{trainer.log_prefix} SenseNova sample prefix cleanup failed: {clear_error}"
+                )
+        # Restore TRAINING mode before the next forward: nothing re-stamps the
+        # attention modules after load, so an INFERENCE stamp left here would
+        # persist for the rest of the run.
+        ops.set_attention_backend(transformer, backend, AttentionMode.TRAINING)
+        if was_training:
+            transformer.train()
+        # The evictor is deliberately left wherever this call ended: both
+        # "prefix" (sample raised mid-way) and "denoise" are states the next
+        # step's encode_prompt transitions out of legally.
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
 
 def _assert_immutable_prefix_cache(prefix_cache: Any, expected_layers: int) -> None:

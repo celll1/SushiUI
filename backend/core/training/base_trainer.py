@@ -5681,6 +5681,9 @@ class BaseTrainer(ABC):
                 latents=mnt_latents,
                 sensenova_prefix=sensenova_prefix,
                 timesteps=timesteps,
+                debug_save_path=debug_save_path,
+                debug_captions=batch_captions if debug_save_path else None,
+                debug_reference_image_paths=batch_reference_paths if debug_save_path else None,
                 profile_vram=self.debug_vram,
             )
             loss, pred_loss, recon_loss = self.arch.train_step(self, ctx)
@@ -8051,7 +8054,6 @@ class BaseTrainer(ABC):
                 raise ValueError("SenseNova reference-image training is deferred to Phase 3")
             text_encoding_mode = "onthefly_gpu"
             latent_encoding_mode = "onthefly_gpu"
-            sample_every_n_steps = 0
 
         # Store references for subclass access
         self._training_datasets = datasets

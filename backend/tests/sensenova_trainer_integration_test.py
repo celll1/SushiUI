@@ -48,7 +48,7 @@ def test_sensenova_prediction_and_timestep_defaults():
     assert default["mean"] == -0.8 and default["std"] == 0.8
 
 
-def test_runner_enforces_b1_onthefly_and_disables_sampling():
+def test_runner_enforces_b1_onthefly_and_keeps_sampling():
     train = {
         "batch_size": "1",
         "blocks_to_swap": "0",
@@ -63,7 +63,8 @@ def test_runner_enforces_b1_onthefly_and_disables_sampling():
     assert train["batch_size"] == 1
     assert train["blocks_to_swap"] == 0
     assert train["use_reference_images"] is False
-    assert process["sample"]["sample_every"] == 0
+    # Training-time sampling is implemented; the contract must leave it alone.
+    assert process["sample"]["sample_every"] == 100
     assert _is_bf16_native_base_model("models/sensenova")
 
 

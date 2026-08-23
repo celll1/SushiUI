@@ -204,10 +204,6 @@ def _apply_sensenova_training_contract(
     _warn_on_sensenova_timestep_sampling(base_model_path, train_config)
     train_config["text_encoding_mode"] = "onthefly_gpu"
     train_config["latent_encoding_mode"] = "onthefly_gpu"
-    sample_config = process_config.setdefault("sample", {})
-    if int(sample_config.get("sample_every", 0) or 0) > 0:
-        print("[TrainRunner] SenseNova training sampling is not integrated; disabling samples")
-    sample_config["sample_every"] = 0
     return True
 
 

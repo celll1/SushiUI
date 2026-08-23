@@ -179,6 +179,49 @@ def test_encode_prompt_builds_detached_training_prefix():
     assert not cache.layers[0].keys.requires_grad
 
 
+def test_encode_prompt_phase_retry_and_success_transition():
+    cache = _Cache()
+    calls = []
+
+    class Evictor:
+        def enter_prefix(self):
+            calls.append("prefix")
+
+        def enter_denoise(self):
+            calls.append("denoise")
+
+        def assert_generation_resident(self):
+            calls.append("resident")
+
+    attempts = iter([RuntimeError("prefix failed"), (cache, torch.zeros(1, 3, 1))])
+
+    def prefix_forward(*args):
+        result = next(attempts)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    transformer = SimpleNamespace(
+        language_model=SimpleNamespace(model=SimpleNamespace(layers=[object()])),
+        _build_t2i_query=lambda prompt, **kwargs: prompt,
+        _build_t2i_text_inputs=lambda tokenizer, query: (
+            torch.ones(1, 3, dtype=torch.long),
+            torch.zeros(3, 3, dtype=torch.long),
+            {"full_attention": None},
+        ),
+        _t2i_prefix_forward=prefix_forward,
+    )
+    trainer = SimpleNamespace(
+        transformer=transformer,
+        tokenizer=object(),
+        sensenova_phase_evictor=Evictor(),
+    )
+    with pytest.raises(RuntimeError, match="prefix failed"):
+        encode_prompt(trainer, "caption")
+    encode_prompt(trainer, "caption")
+    assert calls == ["prefix", "prefix", "denoise", "resident"]
+
+
 def test_pixel_encode_is_cpu_and_requires_32_alignment():
     trainer = SimpleNamespace(training_dtype=torch.float32)
     encoded = vae_encode(trainer, torch.zeros(1, 3, 32, 64))

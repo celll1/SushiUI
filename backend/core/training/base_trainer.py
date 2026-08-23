@@ -783,9 +783,13 @@ class BaseTrainer(ABC):
         # Read from the same train_config source that populates blocks_to_swap /
         # use_pinned_memory (train_runner passes those via constructor from
         # train_config.get(...)). Defaults: h2d_only=False, ring_size=2.
-        # NOTE: SSoT plumbing (TRAINING_DEFAULTS/OpenAPI/Pydantic/frontend) is a
-        # separate follow-up; here we only READ these keys.
         _tc = train_config if train_config else {}
+        from api.param_defaults import TRAINING_DEFAULTS as _TD_PHASE_EVICTION
+        self.sensenova_mot_phase_eviction = bool(_tc.get(
+            "sensenova_mot_phase_eviction",
+            _TD_PHASE_EVICTION["sensenova_mot_phase_eviction"],
+        ))
+        self.sensenova_phase_evictor = None
         self.block_swap_h2d_only = bool(_tc.get("block_swap_h2d_only", False))
         self.block_swap_ring_size = int(_tc.get("block_swap_ring_size", 2))
 
@@ -4606,6 +4610,11 @@ class BaseTrainer(ABC):
 
     def move_main_model_to_gpu(self):
         """Move main model (U-Net or Transformer) to GPU for training."""
+        if (
+            self.is_sensenova
+            and getattr(self, "sensenova_phase_evictor", None) is not None
+        ):
+            return
         if self.is_zimage or self.is_anima or self.is_lens or self.is_ideogram4 or self.is_minit2i or self.is_krea2 or self.is_ltx2 or self.is_acestep or self.is_minimax_h3 or self.is_sensenova:
             if self.transformer_original is not None:
                 self.transformer_original.to(self.device)
@@ -4615,6 +4624,11 @@ class BaseTrainer(ABC):
 
     def move_main_model_to_cpu(self):
         """Move main model (U-Net or Transformer) to CPU to free VRAM."""
+        if (
+            self.is_sensenova
+            and getattr(self, "sensenova_phase_evictor", None) is not None
+        ):
+            return
         if self.is_zimage or self.is_anima or self.is_lens or self.is_ideogram4 or self.is_minit2i or self.is_krea2 or self.is_ltx2 or self.is_acestep or self.is_minimax_h3 or self.is_sensenova:
             if self.transformer_original is not None:
                 self.transformer_original.to("cpu")
@@ -11536,6 +11550,11 @@ class BaseTrainer(ABC):
                                 except Exception as lr_err:
                                     print(f"{self.log_prefix} [CUDA Recovery] LR scheduler step failed: {lr_err}")
                         elif should_step_optimizer:
+                            phase_evictor = getattr(
+                                self, "sensenova_phase_evictor", None
+                            )
+                            if phase_evictor is not None:
+                                phase_evictor.assert_generation_resident()
                             if not self.use_fused_backward and self.fused_optimizer_groups is None:
                                 # Normal flow: optimizer.step() and zero_grad() here
                                 if self.use_grad_scaler:
@@ -12522,6 +12541,14 @@ class BaseTrainer(ABC):
         - Close TensorBoard writer
         """
         print(f"{self.log_prefix} Cleaning up training resources...")
+
+        if getattr(self, "sensenova_phase_evictor", None) is not None:
+            try:
+                self.sensenova_phase_evictor.teardown()
+            except Exception as exc:
+                print(f"{self.log_prefix} WARNING: SenseNova eviction teardown failed: {exc}")
+            finally:
+                self.sensenova_phase_evictor = None
 
         # Flush any remaining metrics to database
         if hasattr(self, '_metrics_buffer') and self._metrics_buffer and self.run_id is not None:

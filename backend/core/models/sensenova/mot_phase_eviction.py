@@ -38,7 +38,7 @@ generation's ``_pin_module_cpu_`` reuse the same pool for free.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 import torch
 from torch import nn
@@ -105,35 +105,12 @@ class MotPhaseEvictor:
     def __init__(self, transformer: nn.Module, device: Any):
         self.device = device
         self.transformer = transformer
+        from .mot_weight_selector import select_mot_weight_modules
+
         layers = list(transformer.language_model.model.layers)
-        self._gen_modules: List[nn.Module] = []
-        self._und_modules: List[nn.Module] = []
-        for layer in layers:
-            for name, m in layer.named_modules():
-                if not name:
-                    continue
-                # NOTE: "owns no nn.Parameter" is NOT a safe "not a weight" test
-                # here -- Int8Linear (588 of these) registers weight/weight_scale/
-                # bias as BUFFERS and owns zero Parameters, so a buffer-only rule
-                # skipped every quantized weight and left only RMSNorm (~0.21 GiB)
-                # to swap. The real discriminator is PERSISTENCE: a rotary
-                # embedding's `inv_freq` is a non-persistent buffer (derived/
-                # cached, not a weight); int8 weight buffers are persistent.
-                has_param = any(True for _ in m.parameters(recurse=False))
-                has_persistent_buffer = any(
-                    b is not None for key, b in m._buffers.items()
-                    if key not in m._non_persistent_buffers_set
-                )
-                if not (has_param or has_persistent_buffer):
-                    continue
-                if "rotary_emb" in name:
-                    # Belt-and-braces: same rule, by name. (Also sidesteps
-                    # Qwen3RotaryEmbedding.original_inv_freq's stale-alias
-                    # hazard -- it aliases .inv_freq at construction time, so
-                    # any future reassignment of .inv_freq would desync them;
-                    # inert today, and moot for us since we never touch it.)
-                    continue
-                (self._gen_modules if "_mot_gen" in name else self._und_modules).append(m)
+        selection = select_mot_weight_modules(transformer)
+        self._gen_modules = list(selection.gen_modules)
+        self._und_modules = list(selection.und_modules)
         self._warn_once: Dict[str, bool] = {}
         self._phase: Optional[str] = None
 

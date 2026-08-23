@@ -176,6 +176,28 @@ def _apply_sensenova_training_contract(
     use_reference_images = _normalize_sensenova_bool(
         train_config, "use_reference_images", False
     )
+    from api.param_defaults import TRAINING_DEFAULTS
+
+    phase_eviction = _normalize_sensenova_bool(
+        train_config,
+        "sensenova_mot_phase_eviction",
+        TRAINING_DEFAULTS["sensenova_mot_phase_eviction"],
+    )
+    if phase_eviction:
+        groups = _normalize_sensenova_integer(
+            train_config, "num_optimizer_groups", 0
+        )
+        if groups != 0:
+            raise ValueError(
+                "SenseNova MoT phase eviction requires num_optimizer_groups=0"
+            )
+        if _normalize_sensenova_bool(
+            train_config, "block_swap_h2d_only", False
+        ):
+            raise ValueError(
+                "SenseNova MoT phase eviction is independent of block swap; "
+                "set block_swap_h2d_only=false"
+            )
     if use_reference_images:
         raise ValueError("SenseNova reference-image training is deferred to Phase 3")
     train_config["text_encoding_mode"] = "onthefly_gpu"

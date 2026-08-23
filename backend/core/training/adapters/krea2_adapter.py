@@ -30,6 +30,7 @@ from safetensors.torch import save_file
 
 from .base_adapter import (
     BaseLoRAAdapter, BaseFullParameterAdapter, reject_quantized_base,
+    LORA_COMPONENT_UNET,
 )
 from .sd15_adapter import LoRALinearLayer
 
@@ -64,7 +65,7 @@ class Krea2LoRAAdapter(BaseLoRAAdapter):
                 parent[attr] = lora_layer
             else:
                 setattr(parent, attr, lora_layer)
-            lora_layers[lora_name] = lora_layer
+            self.register_lora_layer(lora_layers, lora_name, lora_layer, LORA_COMPONENT_UNET)
             count += 1
         print(f"[Krea2LoRAAdapter] Injected {count} LoRA layer(s)")
         return count

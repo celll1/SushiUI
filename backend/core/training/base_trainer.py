@@ -12038,7 +12038,10 @@ class BaseTrainer(ABC):
         Returns:
             Tuple of (total_grad_norm, text_encoder_grad_norm, text_encoder_1_grad_norm,
                       text_encoder_2_grad_norm, unet_grad_norm, vision_encoder_grad_norm)
-            text_encoder_1/2 are non-zero only for SDXL (LoRA: te1_/te2_ prefix; Full FT: text_encoder/text_encoder_2).
+            text_encoder_1/2 are non-zero only where the two encoders are
+            distinguishable (SDXL LoRA + Full FT, SD1.5 which reports its single
+            CLIP as TE1); other architectures' TE LoRA lands in the combined
+            text_encoder bucket.
         """
         total_grad_norm = 0.0
         text_encoder_grad_norm = 0.0
@@ -12050,25 +12053,52 @@ class BaseTrainer(ABC):
         # For LoRA training, iterate through lora_layers dict
         if hasattr(self, 'lora_layers'):
             grad_count = 0
+            # Components come from the adapter that injected each layer. Inferring
+            # them from substrings of the LoRA key ('unet'/'transformer'/'te1_')
+            # mis-binned every architecture whose keys are plain module paths
+            # (SenseNova) or use another prefix (FLUX.2/MiniT2I text encoders):
+            # they landed in the total only, leaving grad_norm_unet at 0.0.
+            # Local import: core.training.adapters pulls every arch's model
+            # modules, which base_trainer must not require at module load.
+            from core.training.adapters.base_adapter import (
+                LORA_COMPONENT_UNET,
+                LORA_COMPONENT_TEXT_ENCODER,
+                LORA_COMPONENT_TEXT_ENCODER_1,
+                LORA_COMPONENT_TEXT_ENCODER_2,
+                LORA_COMPONENT_VISION_ENCODER,
+            )
+            components = getattr(getattr(self, 'adapter', None), 'lora_components', None) or {}
+            unclassified = []
             for lora_name, lora_layer in self.lora_layers.items():
+                component = components.get(lora_name)
+                if component is None:
+                    unclassified.append(lora_name)
+                    component = LORA_COMPONENT_UNET  # main trainable model
                 for param in lora_layer.parameters():
                     if param.grad is not None:
                         param_norm = param.grad.data.norm(2).item()
                         total_grad_norm += param_norm ** 2
                         grad_count += 1
 
-                        # Categorize by LoRA layer name — TE1/TE2 separation for SDXL
-                        if 'te1_' in lora_name:
+                        if component == LORA_COMPONENT_TEXT_ENCODER_1:
                             text_encoder_grad_norm += param_norm ** 2
                             text_encoder_1_grad_norm += param_norm ** 2
-                        elif 'te2_' in lora_name:
+                        elif component == LORA_COMPONENT_TEXT_ENCODER_2:
                             text_encoder_grad_norm += param_norm ** 2
                             text_encoder_2_grad_norm += param_norm ** 2
-                        elif 'text_encoder' in lora_name or 'clip_' in lora_name:
-                            # SD1.5 or unknown TE prefix — add to combined only
+                        elif component == LORA_COMPONENT_TEXT_ENCODER:
                             text_encoder_grad_norm += param_norm ** 2
-                        elif 'unet' in lora_name or 'transformer' in lora_name or 'dit_' in lora_name:
+                        elif component == LORA_COMPONENT_VISION_ENCODER:
+                            vision_encoder_grad_norm += param_norm ** 2
+                        else:
                             unet_grad_norm += param_norm ** 2
+
+            if unclassified and not hasattr(self, '_grad_norm_unclassified_warned'):
+                print(f"{self.log_prefix} [GradNorm] WARNING: {len(unclassified)} LoRA layer(s) "
+                      f"were injected without a registered component and are being reported "
+                      f"under grad_norm_unet; the adapter should call register_lora_layer(). "
+                      f"Examples: {unclassified[:3]}")
+                self._grad_norm_unclassified_warned = True
 
             # Debug: Print first calculation only
             if grad_count > 0 and not hasattr(self, '_grad_norm_debug_printed'):

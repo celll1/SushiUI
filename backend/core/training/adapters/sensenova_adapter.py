@@ -9,7 +9,7 @@ from torch import nn
 
 from core.models.sensenova.sensenova_lora import iter_sensenova_lora_targets
 
-from .base_adapter import BaseLoRAAdapter, is_lora_wrappable_linear
+from .base_adapter import BaseLoRAAdapter, is_lora_wrappable_linear, LORA_COMPONENT_UNET
 from .sd15_adapter import LoRALinearLayer
 
 
@@ -69,7 +69,7 @@ class SenseNovaLoRAAdapter(BaseLoRAAdapter):
                     raise RuntimeError(
                         f"SenseNova LoRA registry conflicts with wrapper {path}"
                     )
-                lora_layers[path] = layer
+                self.register_lora_layer(lora_layers, path, layer, LORA_COMPONENT_UNET)
             return 0
         if len(unwrapped) != 294:
             raise RuntimeError(
@@ -87,7 +87,7 @@ class SenseNovaLoRAAdapter(BaseLoRAAdapter):
                 self.lora_dtype,
             )
             setattr(parent, attr, wrapper)
-            lora_layers[module_path] = wrapper
+            self.register_lora_layer(lora_layers, module_path, wrapper, LORA_COMPONENT_UNET)
             count += 1
 
         print(f"[SenseNovaLoRAAdapter] Injected {count} generation LoRA layer(s)")

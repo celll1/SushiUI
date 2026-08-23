@@ -257,6 +257,10 @@ interface InpaintParams {
   inpaint_video_audio_mode_arch?: string;
   video_lossless?: boolean;
   video_blocks_to_swap?: number;
+  // Tracks which loaded architecture `steps`/`cfg_scale` were last resolved
+  // for via `image_arch_overlays` (currently only SenseNova's 50/4.0). Same
+  // bookkeeping pattern as `inpaint_video_audio_mode_arch` above.
+  image_defaults_arch?: string;
 }
 
 const DEFAULT_PARAMS: InpaintParams = {
@@ -2032,6 +2036,23 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
       fuse_output_proj: (vid.fuse_output_proj as boolean) ?? DEFAULT_PARAMS.fuse_output_proj,
     }));
   }, [generationDefaults]);
+
+  // Re-resolve `steps`/`cfg_scale` from the schema API's per-arch IMAGE
+  // overlay (backend IMAGE_GEN_ARCH_OVERLAYS -- NOT the merged `inpaint` base
+  // above) whenever the LOADED ARCHITECTURE changes -- mirrors Txt2ImgPanel's
+  // identical image-defaults effect verbatim. Only SenseNova has an overlay
+  // entry today (steps 50, cfg_scale 4.0).
+  useEffect(() => {
+    if (isVideo || !loadedArchType || !generationDefaults) return;
+    setParams((prev) => {
+      if (prev.image_defaults_arch === loadedArchType) return prev;
+      const overlay = (generationDefaults.image_arch_overlays?.[loadedArchType] || {}) as Record<string, unknown>;
+      const next: InpaintParams = { ...prev, image_defaults_arch: loadedArchType };
+      if ("steps" in overlay) next.steps = overlay.steps as number;
+      if ("cfg_scale" in overlay) next.cfg_scale = overlay.cfg_scale as number;
+      return next;
+    });
+  }, [isVideo, loadedArchType, generationDefaults, params.image_defaults_arch]);
 
   const resetToDefault = () => {
     setParams(DEFAULT_PARAMS);

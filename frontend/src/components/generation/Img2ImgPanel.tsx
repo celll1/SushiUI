@@ -199,6 +199,10 @@ interface Img2ImgParams {
   // UI bookkeeping only, same pattern as Txt2ImgPanel's own
   // `audio_defaults_arch` / OutpaintPanel's `outpaint_video_audio_mode_arch`.
   audio_defaults_arch?: string;
+  // Tracks which loaded architecture `steps`/`cfg_scale` were last resolved
+  // for via `image_arch_overlays` (currently only SenseNova's 50/4.0). Same
+  // bookkeeping pattern as `audio_defaults_arch` just above.
+  image_defaults_arch?: string;
   // Loop-generation decode mode (heavy-decoder aware; see loopGenerationInheritance.ts)
   loop_decode?: "full" | "cheap" | "none";
   skip_gallery?: boolean;
@@ -1579,6 +1583,23 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
       return next;
     });
   }, [isAudio, loadedArch, generationDefaults, params.audio_defaults_arch]);
+
+  // Re-resolve `steps`/`cfg_scale` from the schema API's per-arch IMAGE
+  // overlay (backend IMAGE_GEN_ARCH_OVERLAYS -- NOT the merged `img2img` base)
+  // whenever the LOADED ARCHITECTURE changes -- mirrors Txt2ImgPanel's
+  // identical image-defaults effect verbatim. Only SenseNova has an overlay
+  // entry today (steps 50, cfg_scale 4.0).
+  useEffect(() => {
+    if (isAudio || isVideo || !loadedArch || !generationDefaults) return;
+    setParams((prev) => {
+      if (prev.image_defaults_arch === loadedArch) return prev;
+      const overlay = (generationDefaults.image_arch_overlays?.[loadedArch] || {}) as Record<string, unknown>;
+      const next: Img2ImgParams = { ...prev, image_defaults_arch: loadedArch };
+      if ("steps" in overlay) next.steps = overlay.steps as number;
+      if ("cfg_scale" in overlay) next.cfg_scale = overlay.cfg_scale as number;
+      return next;
+    });
+  }, [isAudio, isVideo, loadedArch, generationDefaults, params.image_defaults_arch]);
 
   // MiniMax Music 3 only ever accepts aud2aud mode="repaint" (see
   // routes.py's generate_aud2aud docstring -- "cover" would need to turn

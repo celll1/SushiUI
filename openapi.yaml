@@ -261,6 +261,17 @@ paths:
         `POST /generate/outpaint/audio`; both are currently EMPTY for every
         architecture, because those two endpoints still refuse a MiniMax
         Music 3 model outright pending their own extend/repaint mechanism.
+
+        `image_arch_overlays` (`IMAGE_GEN_ARCH_OVERLAYS`) is the IMAGE
+        equivalent, for `POST /generate/txt2img` / `/img2img` / `/inpaint` /
+        `/outpaint`: the base `txt2img`/`img2img`/`inpaint`/`outpaint`
+        defaults are shared by every image architecture (`steps: 20`,
+        `cfg_scale: 7.0`), and SenseNova U1.5 overlays its own upstream
+        reference operating point (`steps: 50`, `cfg_scale: 4.0`). A client
+        resolves an image default as `base | image_arch_overlays[arch]`,
+        exactly like the video/audio case. An architecture absent from the
+        map (every architecture but SenseNova today) takes the base values
+        unchanged.
       tags: [Schema]
       responses:
         '200':
@@ -380,6 +391,20 @@ paths:
                         extend_duration_sec: 30.0
                         num_inference_steps: 30
                         flow_guidance_scale: 1.7
+                  image_arch_overlays:
+                    type: object
+                    description: >-
+                      Architecture name -> the image default keys (`steps`,
+                      `cfg_scale`) that differ from the shared `txt2img`/
+                      `img2img`/`inpaint`/`outpaint` base defaults on that
+                      architecture.
+                    additionalProperties:
+                      type: object
+                      additionalProperties: true
+                    example:
+                      sensenova:
+                        steps: 50
+                        cfg_scale: 4.0
                   param_bounds:
                     type: object
                     description: >-

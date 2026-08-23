@@ -57,6 +57,7 @@ from api.param_defaults import (
     AUDIO_GEN_ARCH_OVERLAYS,
     AUD2AUD_GEN_ARCH_OVERLAYS,
     OUTPAINT_AUDIO_ARCH_OVERLAYS,
+    IMAGE_GEN_ARCH_OVERLAYS,
     PROMPT_ASSIST_DEFAULTS, MUSIC_PROMPT_ASSIST_DEFAULTS, MUSIC_LYRICS_ASSIST_DEFAULTS,
     STUDIO_RENDER_DEFAULTS, H3_HYBRID_LOAD_DEFAULTS,
     VIDEO_CHAIN_DEFAULTS,
@@ -82,6 +83,7 @@ from api.generation_utils import (
     calculate_generation_metadata,
     apply_generation_timings,
     resolve_video_defaults,
+    resolve_image_defaults,
     validate_video_geometry,
     validate_video_steps,
     is_still_image_video_request,
@@ -736,6 +738,11 @@ async def get_generation_defaults():
     above is ACE-Step-shaped, and Music 3 overlays its own ``audio_duration``/
     ``num_inference_steps``/``flow_guidance_scale`` on top of it, exactly as
     MiniMax-H3 overlays video geometry on top of LTX-2.3's shape.
+
+    ``image_arch_overlays`` is the same thing for the four image routes
+    (``param_defaults.image_defaults_for_arch``): a client resolves an image
+    default as `base | overlay[arch]`, matching what those routes do
+    server-side for `steps`/`cfg_scale` on a loaded SenseNova model.
     """
     return {
         "video_arch_overlays": VIDEO_GEN_ARCH_OVERLAYS,
@@ -744,6 +751,7 @@ async def get_generation_defaults():
         "audio_arch_overlays": AUDIO_GEN_ARCH_OVERLAYS,
         "aud2aud_arch_overlays": AUD2AUD_GEN_ARCH_OVERLAYS,
         "outpaint_audio_arch_overlays": OUTPAINT_AUDIO_ARCH_OVERLAYS,
+        "image_arch_overlays": IMAGE_GEN_ARCH_OVERLAYS,
         "txt2img": TXT2IMG_DEFAULTS,
         "img2img": IMG2IMG_DEFAULTS,
         "inpaint":  INPAINT_DEFAULTS,
@@ -1092,8 +1100,14 @@ def _estimate_gen_peak_gb(width: int, height: int, batch_size: int, pipeline_kin
 async def generate_txt2img(
     prompt: str = Form(...),
     negative_prompt: str = Form(""),
-    steps: int = Form(20),
-    cfg_scale: float = Form(7.0),
+    # `steps`/`cfg_scale` are `Form(None)` SENTINELS, not their base values: a
+    # multipart route has no `model_fields_set`, so an omitted field is only
+    # distinguishable from a sent one by the sentinel. Whatever comes back
+    # None is filled from `image_defaults_for_arch` below -- the same pattern
+    # as the video routes' per-arch overlay (VIDEO_GEN_ARCH_OVERLAYS). The
+    # openapi schema keeps documenting the base values (20 / 7.0).
+    steps: Optional[int] = Form(None),
+    cfg_scale: Optional[float] = Form(None),
     timestep_shift: float = Form(GENERATION_DEFAULTS["timestep_shift"]),  # SenseNova U1.5 flow-matching time-shift; other archs ignore it
     img_cfg_scale: float = Form(GENERATION_DEFAULTS["img_cfg_scale"]),  # SenseNova U1.5 reference-image editing second CFG scale; other archs ignore it
     sensenova_mot_phase_eviction: bool = Form(GENERATION_DEFAULTS["sensenova_mot_phase_eviction"]),  # SenseNova U1.5 per-phase weight-half CPU eviction; other archs ignore it
@@ -1403,6 +1417,21 @@ async def generate_txt2img(
             "skip_gallery": skip_gallery,
         }
         params.update(_override_meta)
+
+        # Per-architecture image defaults (steps/cfg_scale only, IMAGE_GEN_ARCH_OVERLAYS)
+        # for the fields this request OMITTED -- fills an omitted steps/cfg_scale
+        # from the loaded arch's overlay (SenseNova's 50/4.0) instead of the shared
+        # 20/7.0. `_img_arch` is the same `current_model_info["type"]` string the
+        # video routes read.
+        _img_arch = (pipeline_manager.current_model_info or {}).get("type")
+        _img_omitted = {key for key, value in (
+            ("steps", steps), ("cfg_scale", cfg_scale),
+        ) if value is None}
+        resolve_image_defaults(params, set(params) - _img_omitted, _img_arch)
+        # The sentinel locals are still None for an omitted field; re-read them
+        # so later code that uses the local rather than `params` sees the
+        # resolved value.
+        steps, cfg_scale = params["steps"], params["cfg_scale"]
 
         # Log params without large base64 data
         print(f"txt2img generation params: {sanitize_params_for_logging(params)}")
@@ -2116,8 +2145,11 @@ async def generate_txt2img_training_preview(request: TrainingPreviewRequest):
 async def generate_img2img(
     prompt: str = Form(...),
     negative_prompt: str = Form(""),
-    steps: int = Form(20),
-    cfg_scale: float = Form(7.0),
+    # `steps`/`cfg_scale` are `Form(None)` SENTINELS -- see /generate/txt2img's
+    # identical fields for the reason (a multipart route has no
+    # `model_fields_set`). Filled from `image_defaults_for_arch` below.
+    steps: Optional[int] = Form(None),
+    cfg_scale: Optional[float] = Form(None),
     timestep_shift: float = Form(GENERATION_DEFAULTS["timestep_shift"]),  # SenseNova U1.5 flow-matching time-shift; other archs ignore it
     img_cfg_scale: float = Form(GENERATION_DEFAULTS["img_cfg_scale"]),  # SenseNova U1.5 reference-image editing second CFG scale; other archs ignore it
     sensenova_mot_phase_eviction: bool = Form(GENERATION_DEFAULTS["sensenova_mot_phase_eviction"]),  # SenseNova U1.5 per-phase weight-half CPU eviction; other archs ignore it
@@ -2451,6 +2483,19 @@ async def generate_img2img(
             "skip_gallery": skip_gallery,
         }
         params.update(_override_meta)
+
+        # Per-architecture image defaults for the fields this request OMITTED --
+        # see /generate/txt2img's identical block for the reason.
+        _img_arch = (pipeline_manager.current_model_info or {}).get("type")
+        _img_omitted = {key for key, value in (
+            ("steps", steps), ("cfg_scale", cfg_scale),
+        ) if value is None}
+        resolve_image_defaults(params, set(params) - _img_omitted, _img_arch)
+        # See /generate/txt2img: the sentinel locals are still None for an
+        # omitted field, and `steps` is used below (progress callback,
+        # actual_steps).
+        steps, cfg_scale = params["steps"], params["cfg_scale"]
+
         print(f"img2img generation params: {sanitize_params_for_logging(params)}")
 
         # Set prompt chunking settings
@@ -7432,8 +7477,11 @@ async def list_upscaler_models(db: Session = Depends(get_gallery_db)):
 async def generate_inpaint(
     prompt: str = Form(...),
     negative_prompt: str = Form(""),
-    steps: int = Form(20),
-    cfg_scale: float = Form(7.0),
+    # `steps`/`cfg_scale` are `Form(None)` SENTINELS -- see /generate/txt2img's
+    # identical fields for the reason (a multipart route has no
+    # `model_fields_set`). Filled from `image_defaults_for_arch` below.
+    steps: Optional[int] = Form(None),
+    cfg_scale: Optional[float] = Form(None),
     timestep_shift: float = Form(GENERATION_DEFAULTS["timestep_shift"]),  # SenseNova U1.5 flow-matching time-shift; other archs ignore it
     img_cfg_scale: float = Form(GENERATION_DEFAULTS["img_cfg_scale"]),  # SenseNova U1.5 reference-image editing second CFG scale; other archs ignore it
     sensenova_mot_phase_eviction: bool = Form(GENERATION_DEFAULTS["sensenova_mot_phase_eviction"]),  # SenseNova U1.5 per-phase weight-half CPU eviction; other archs ignore it
@@ -7821,6 +7869,19 @@ async def generate_inpaint(
             "skip_gallery": skip_gallery,
         }
         params.update(_override_meta)
+
+        # Per-architecture image defaults for the fields this request OMITTED --
+        # see /generate/txt2img's identical block for the reason.
+        _img_arch = (pipeline_manager.current_model_info or {}).get("type")
+        _img_omitted = {key for key, value in (
+            ("steps", steps), ("cfg_scale", cfg_scale),
+        ) if value is None}
+        resolve_image_defaults(params, set(params) - _img_omitted, _img_arch)
+        # See /generate/txt2img: the sentinel locals are still None for an
+        # omitted field, and `steps` is used below (progress callback,
+        # actual_steps).
+        steps, cfg_scale = params["steps"], params["cfg_scale"]
+
         print(f"inpaint generation params: {sanitize_params_for_logging(params)}")
 
         # inpaint_full_res is accepted for API compatibility but not implemented.
@@ -8061,8 +8122,12 @@ async def generate_inpaint(
 async def generate_outpaint(
     prompt: str = Form(...),
     negative_prompt: str = Form(OUTPAINT_DEFAULTS["negative_prompt"]),
-    steps: int = Form(OUTPAINT_DEFAULTS["steps"]),
-    cfg_scale: float = Form(OUTPAINT_DEFAULTS["cfg_scale"]),
+    # `steps`/`cfg_scale` are `Form(None)` SENTINELS -- see /generate/txt2img's
+    # identical fields for the reason (a multipart route has no
+    # `model_fields_set`). Filled from `image_defaults_for_arch(..., OUTPAINT_DEFAULTS)`
+    # below. The openapi schema keeps documenting OUTPAINT_DEFAULTS's base values.
+    steps: Optional[int] = Form(None),
+    cfg_scale: Optional[float] = Form(None),
     denoising_strength: float = Form(OUTPAINT_DEFAULTS["denoising_strength"]),
     img2img_fix_steps: bool = Form(OUTPAINT_DEFAULTS["img2img_fix_steps"]),
     sampler: str = Form(OUTPAINT_DEFAULTS["sampler"]),
@@ -8548,6 +8613,21 @@ async def generate_outpaint(
             "skip_gallery": skip_gallery,
         }
         params.update(_override_meta)
+
+        # Per-architecture image defaults for the fields this request OMITTED --
+        # see /generate/txt2img's identical block for the reason. Base is
+        # OUTPAINT_DEFAULTS (not GENERATION_DEFAULTS), matching every other
+        # field on this route.
+        _img_arch = (pipeline_manager.current_model_info or {}).get("type")
+        _img_omitted = {key for key, value in (
+            ("steps", steps), ("cfg_scale", cfg_scale),
+        ) if value is None}
+        resolve_image_defaults(params, set(params) - _img_omitted, _img_arch, OUTPAINT_DEFAULTS)
+        # See /generate/txt2img: the sentinel locals are still None for an
+        # omitted field, and `steps` is used below (progress callback,
+        # actual_steps).
+        steps, cfg_scale = params["steps"], params["cfg_scale"]
+
         print(f"outpaint generation params: {sanitize_params_for_logging(params)}")
 
         # inpaint_full_res is accepted for API compatibility but not implemented

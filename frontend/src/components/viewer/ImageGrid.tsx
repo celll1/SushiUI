@@ -35,6 +35,9 @@ export default function ImageGrid() {
   // SenseNova U1.5 second CFG scale default (schema SSOT); 1.0 fallback only
   // covers the window before /schema/generation-defaults answers.
   const imgCfgScaleDefault = generationDefaults?.txt2img?.img_cfg_scale ?? 1.0;
+  // SenseNova U1.5 CFG-overshoot clamp default (schema SSOT); "global"
+  // fallback only covers the window before /schema/generation-defaults answers.
+  const cfgNormDefault = generationDefaults?.txt2img?.cfg_norm ?? "global";
   const [images, setImages] = useState<GeneratedImage[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedImage, setSelectedImage] = useState<GeneratedImage | null>(null);
@@ -624,6 +627,8 @@ export default function ImageGrid() {
       txt2imgParams.timestep_shift = image.parameters?.timestep_shift ?? timestepShiftDefault;
       // SenseNova U1.5 second CFG scale; absent for every other architecture.
       txt2imgParams.img_cfg_scale = image.parameters?.img_cfg_scale ?? imgCfgScaleDefault;
+      // SenseNova U1.5 CFG-overshoot clamp; absent for every other architecture.
+      txt2imgParams.cfg_norm = image.parameters?.cfg_norm ?? cfgNormDefault;
       txt2imgParams.sampler = image.parameters?.sampler || "euler";
       txt2imgParams.schedule_type = image.parameters?.schedule_type || "uniform";
       txt2imgParams.seed = image.seed;
@@ -1404,6 +1409,13 @@ export default function ImageGrid() {
                         && selectedImage.parameters.img_cfg_scale !== imgCfgScaleDefault && (
                         <div>
                           <span className="text-gray-400">Image CFG Scale:</span> {selectedImage.parameters.img_cfg_scale}
+                        </div>
+                      )}
+                      {/* SenseNova U1.5 CFG-overshoot clamp; absent for every other architecture */}
+                      {selectedImage.parameters?.cfg_norm !== undefined
+                        && selectedImage.parameters.cfg_norm !== cfgNormDefault && (
+                        <div>
+                          <span className="text-gray-400">CFG Norm:</span> {selectedImage.parameters.cfg_norm}
                         </div>
                       )}
                     </>

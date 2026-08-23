@@ -240,6 +240,8 @@ const DEFAULT_PARAMS: Img2ImgParams = {
   timestep_shift: 3.0,
   // SenseNova U1.5 second CFG scale; inert without ref_images, ignored elsewhere.
   img_cfg_scale: 1.0,
+  // SenseNova U1.5 CFG-overshoot clamp; every other architecture ignores it.
+  cfg_norm: "global",
   // SenseNova U1.5 per-phase weight-half CPU eviction; every other architecture ignores it.
   sensenova_mot_phase_eviction: false,
   // SenseNova U1.5 per-layer prefix KV cache CPU streaming; every other architecture ignores it.
@@ -714,6 +716,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
   const supportsFbcache = archSupportsFeature(archCapabilities, loadedArch, "fbcache");
   const supportsTimestepShift = archSupportsFeature(archCapabilities, loadedArch, "timestep_shift");
   const supportsImgCfgScale = archSupportsFeature(archCapabilities, loadedArch, "img_cfg_scale");
+  const supportsCfgNorm = archSupportsFeature(archCapabilities, loadedArch, "cfg_norm");
   const supportsSensenovaMotPhaseEviction = archSupportsFeature(archCapabilities, loadedArch, "sensenova_mot_phase_eviction");
   const supportsSensenovaKvCacheStreaming = archSupportsFeature(archCapabilities, loadedArch, "sensenova_kv_cache_streaming");
   const supportsFuseOutputProj = archSupportsFeature(archCapabilities, loadedArch, "fuse_output_proj");
@@ -3059,6 +3062,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         quantized_gemm_mode: mainParams.quantized_gemm_mode, // Inherit quantized GEMM path from main
         timestep_shift: mainParams.timestep_shift, // Inherit SenseNova U1.5 time-shift (no per-step override)
         img_cfg_scale: mainParams.img_cfg_scale, // Inherit SenseNova U1.5 second CFG scale
+        cfg_norm: mainParams.cfg_norm, // Inherit SenseNova U1.5 CFG-overshoot clamp
         sensenova_mot_phase_eviction: mainParams.sensenova_mot_phase_eviction, // Inherit SenseNova U1.5 per-phase weight-half CPU eviction
         sensenova_kv_cache_streaming: mainParams.sensenova_kv_cache_streaming, // Inherit SenseNova U1.5 per-layer KV cache CPU streaming
         original_size_w: mainParams.original_size_w,
@@ -6356,6 +6360,19 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
                   value={params.img_cfg_scale ?? generationDefaults?.img2img?.img_cfg_scale ?? 1.0}
                   onChange={(e) => setParams({ ...params, img_cfg_scale: parseFloat(e.target.value) })}
                   title="SenseNova U1.5 second CFG scale, applied alongside CFG Scale only when reference images are supplied. At 1.0, sampling uses the reference-conditioned branch as the guidance baseline."
+                />
+              )}
+              {supportsCfgNorm && (
+                <Select
+                  label="CFG Norm"
+                  options={[
+                    { value: "none", label: "None" },
+                    { value: "global", label: "Global" },
+                    { value: "channel", label: "Channel" },
+                  ]}
+                  value={params.cfg_norm ?? generationDefaults?.img2img?.cfg_norm ?? "global"}
+                  onChange={(e) => setParams({ ...params, cfg_norm: e.target.value })}
+                  title="SenseNova U1.5 CFG-overshoot clamp applied to the predicted velocity before the Euler step."
                 />
               )}
             </div>

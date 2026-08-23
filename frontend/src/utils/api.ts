@@ -402,6 +402,9 @@ export interface GenerationParams {
   // active only alongside cfg_scale when ref_images is supplied. Every other
   // architecture ignores it.
   img_cfg_scale?: number;
+  // SenseNova U1.5 CFG-overshoot clamp applied before the Euler step; every
+  // other architecture ignores it.
+  cfg_norm?: "none" | "global" | "channel";
   // SenseNova U1.5 per-phase weight-half CPU eviction; every other
   // architecture ignores it.
   sensenova_mot_phase_eviction?: boolean;
@@ -3051,6 +3054,8 @@ export const generateTxt2Img = async (params: GenerationParams) => {
   formData.append("timestep_shift", String(paramsWithImages.timestep_shift ?? 3.0));
   // SenseNova U1.5 second CFG scale; inert without ref_images, ignored elsewhere.
   formData.append("img_cfg_scale", String(paramsWithImages.img_cfg_scale ?? 1.0));
+  // SenseNova U1.5 CFG-overshoot clamp; every other architecture ignores it.
+  formData.append("cfg_norm", paramsWithImages.cfg_norm ?? "global");
   // SenseNova U1.5 per-phase weight-half CPU eviction; every other architecture ignores it.
   formData.append("sensenova_mot_phase_eviction", String(paramsWithImages.sensenova_mot_phase_eviction ?? false));
   // SenseNova U1.5 per-layer prefix KV cache CPU streaming; every other architecture ignores it.
@@ -3410,6 +3415,8 @@ export const generateImg2Img = async (
   formData.append("timestep_shift", String(paramsWithImages.timestep_shift ?? 3.0));
   // SenseNova U1.5 second CFG scale; inert without ref_images, ignored elsewhere.
   formData.append("img_cfg_scale", String(paramsWithImages.img_cfg_scale ?? 1.0));
+  // SenseNova U1.5 CFG-overshoot clamp; every other architecture ignores it.
+  formData.append("cfg_norm", paramsWithImages.cfg_norm ?? "global");
   // SenseNova U1.5 per-phase weight-half CPU eviction; every other architecture ignores it.
   formData.append("sensenova_mot_phase_eviction", String(paramsWithImages.sensenova_mot_phase_eviction ?? false));
   // SenseNova U1.5 per-layer prefix KV cache CPU streaming; every other architecture ignores it.
@@ -4319,6 +4326,8 @@ export const generateInpaint = async (params: InpaintParams, image: File | strin
   formData.append("timestep_shift", String(paramsWithImages.timestep_shift ?? 3.0));
   // SenseNova U1.5 second CFG scale; inert without ref_images, ignored elsewhere.
   formData.append("img_cfg_scale", String(paramsWithImages.img_cfg_scale ?? 1.0));
+  // SenseNova U1.5 CFG-overshoot clamp; every other architecture ignores it.
+  formData.append("cfg_norm", paramsWithImages.cfg_norm ?? "global");
   // SenseNova U1.5 per-phase weight-half CPU eviction; every other architecture ignores it.
   formData.append("sensenova_mot_phase_eviction", String(paramsWithImages.sensenova_mot_phase_eviction ?? false));
   // SenseNova U1.5 per-layer prefix KV cache CPU streaming; every other architecture ignores it.

@@ -1702,11 +1702,12 @@ a generation without style transfer.
     resolution, since capture and inject must yield the same image-token
     count; a non-matching aspect ratio is resized and warned
     (`sensenova_style_reference_resized`). Injection is cond-branch only, so
-    style does not ride the CFG delta. The reference Key uses an all-ones
-    frequency vector — same reasoning as Anima/MiniT2I/Ideogram4/LTX-2.3,
-    since the rotate-half per-axis RoPE is incompatible with
-    `frequency_scale_vector`'s interleave-real curve (`axes_dims` stays
-    None). Each style-active step runs a full extra 42-layer forward
+    style does not ride the CFG delta. The reference Key is frequency-scaled
+    with `axes_dims=(64, 32, 32)` (Qwen3Attention's t=`head_dim//2`,
+    h=w=`head_dim//4` split) and `rope_layout="rotate_half"`, the GPT-NeoX
+    pairing `frequency_scale_vector` grew a parameter for; the interleaved
+    default remains what the other seven archs use. Each style-active step
+    runs a full extra 42-layer forward
     (capture), re-noising the reference to that step's t with a
     per-generation fixed `eps_ref`.
     - **Measured on the ConvRot int8 checkpoint, 512x512, seed-fixed, CFG
@@ -1741,20 +1742,48 @@ a generation without style transfer.
       ~0.75, where the reference's CONTENT replaces the subject rather than
       restyling it. Recurring artifact: neon-edge fringing and garbled
       texture in high-frequency repetitive regions (tree trunks, knitwear),
-      across several reference/prompt pairs. The all-ones frequency vector is
-      the likely cause — `frequency_scale_vector` exists precisely to
-      suppress high-frequency reference-Key content (its `high_scale_end` is
-      0.0, i.e. full suppression by the last step), and SenseNova skips it,
-      so nothing damps that band. Treated as a known quality gap, not a
-      correctness bug; deriving a rotate-half-correct curve (per-axis
-      `cat([curve, curve])` instead of `repeat_interleave(2)`) is the
-      candidate fix if it is ever worth the work.
-    - **Cosmetic**: a style-active request still emits the blanket
+      across several reference/prompt pairs.
+    - **The all-ones frequency vector was NOT the cause.** The leading
+      hypothesis was that SenseNova skipped `frequency_scale_vector`
+      (`axes_dims=None`) so nothing damped the high-frequency reference-Key
+      band. Wiring the real rotate-half curve did not fix the artifact.
+      Measured A/B/C, 1024x1024, 30 steps, `cfg_scale=4`, `cfg_norm=global`,
+      seed 424242, anime-cel reference x landscape prompt, both arms
+      regenerated on identical code except the curve: the neon-edge banding
+      on the cabin and the left-hand trunks survives at comparable intensity
+      and saturation. Broad-area fringing (distant forest, water, mountains)
+      does look cleaner, so the curve is doing something, but the headline
+      artifact is not high-frequency reference-Key content and the real cause
+      is still unidentified. A fine-detail photo-grade reference shows no
+      over-suppression (style influence unchanged), so the curve is not too
+      aggressive either. Evidence: `outputs/sensenova_style_freq_fix/`.
+      Note the shipped `high_scale_end=0.0` now really does drive the
+      top frequency band to zero by the final step for SenseNova.
+    - **NOT STARTED — next hypothesis for the fringing.** The banding reads
+      as a saturation/overshoot artifact rather than transplanted fine
+      detail: it sits on flat cel-shaded faces and along object outlines,
+      not in the busiest texture. That points at the AdaIN alignment step
+      (`cross_batch_adain_qk`, which rescales by reference statistics and can
+      overshoot when the reference's per-channel variance is far from the
+      target's — an anime-cel reference against a photoreal prompt is exactly
+      that case) or at the CFG combine path, rather than at the reference-Key
+      frequency curve. Nobody has measured this yet.
+    - **NOT FIXED — style freq-curve knobs are unreachable on the JSON
+      routes.** `api/generation_utils.py` reads `style_high_scale_start`,
+      `style_high_scale_end` and `style_low_scale_start`, none of which are
+      declared on `ControlNetConfig`; it declares only `style_low_scale_end`
+      plus a stale `style_high_scale` that nothing reads. txt2img/txt2vid
+      type `controlnets` as `List[ControlNetConfig]`, so Pydantic drops the
+      three undeclared keys silently. They work only on the Form-based
+      img2img/inpaint routes, which `json.loads` into plain dicts. Affects
+      every style-transfer arch, not just SenseNova.
+    - **Cosmetic**: a style-active request used to emit the blanket
       `unsupported_param` warning "ControlNet is not supported for
-      SenseNova U1.5", because style entries ride the same `controlnets[]`
-      array the rejected feature above would have used. Spurious — the
-      style entry is extracted and applied regardless — and pre-existing;
-      Krea2 and LTX-2.3 share it.
+      SenseNova U1.5" (shared with Krea2 and LTX-2.3), because style entries
+      ride the same `controlnets[]` array the rejected feature above would
+      have used. Fixed: `_is_user_set` now counts only non-style entries, and
+      archs supporting neither feature (acestep, minimax_music3, minimax_h3)
+      warn about style transfer by name instead of going silent.
   - **Refused, with a typed error, not warned**: spatial outpaint
     (`_reject_if_sensenova_unsupported`), deferred because it layers on the
     img2img/inpaint entry points rather than for lacking a mapping. VQA and

@@ -873,15 +873,11 @@ class Qwen3Attention(nn.Module):
                         _assert_style_cur_len(ref_k, cur_len, self.layer_idx)
                         cfg = ctx.config
                         if cfg.ref_k_strength != 0.0 or cfg.adain_strength > 0.0:
-                            # Frequency-content suppression on the reference Key
-                            # assumes the interleave-real RoPE pair layout (Krea2/
-                            # FLUX-style); SenseNova's t/h/w-split "rotate-half"
-                            # RoPE (apply_rotary_pos_emb, per-axis) is incompatible
-                            # with that curve. Use an all-ones vector (no frequency
-                            # suppression) -- a quality knob, not a correctness
-                            # requirement: ref_k_strength + AdaIN still apply in
-                            # full. Mirrors Anima/MiniT2I/Ideogram4/LTX-2.3.
-                            freq_vec = torch.ones(self.head_dim, device=k.device, dtype=k.dtype)
+                            # cfg.axes_dims/rope_layout are set by the sensenova
+                            # pipeline backend, not this vendor module.
+                            freq_vec = cfg.get_freq_scale_vector(
+                                self.head_dim, ctx.progress, k.device, k.dtype
+                            )
                             ref_v_final = make_ref_value(
                                 target_v_img, ref_v, cfg.value_mode, cfg.value_adain_strength, cfg.ref_value_mix
                             )

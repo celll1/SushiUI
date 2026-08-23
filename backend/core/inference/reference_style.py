@@ -34,7 +34,7 @@ node this port matches is the community ComfyUI-Krea2-StyleTransfer custom node
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
 import torch
 
@@ -89,6 +89,14 @@ class StyleTransferConfig:
     low_scale_end: float = 1.10
     beta: float = 2.5
     axes_dims: Optional[Tuple[int, ...]] = None
+
+    # RoPE pair layout of the per-axis frequency curve built by
+    # ``frequency_scale_vector`` -- MUST match the target arch's own RoPE
+    # application, not just its axis split. "interleaved" (default, all 7
+    # pre-existing archs): frequency j occupies adjacent slots 2j/2j+1.
+    # "rotate_half" (SenseNova's Qwen3Attention): frequency j occupies slots
+    # j and j + axis_dim//2 within its axis chunk (GPT-NeoX style).
+    rope_layout: Literal["interleaved", "rotate_half"] = "interleaved"
 
     # --- value-mode path (implemented) ---
     value_mode: str = "target_adain"  # "target_adain" | "ref_raw"
@@ -172,7 +180,8 @@ class StyleTransferConfig:
             high_scale = self.high_scale_start + (self.high_scale_end - self.high_scale_start) * progress
             low_scale = self.low_scale_start + (self.low_scale_end - self.low_scale_start) * progress
             cached = frequency_scale_vector(
-                head_dim, self.axes_dims, high_scale, low_scale, self.beta, device, dtype
+                head_dim, self.axes_dims, high_scale, low_scale, self.beta, device, dtype,
+                rope_layout=self.rope_layout,
             )
             self._freq_cache[key] = cached
         return cached
@@ -190,19 +199,29 @@ def frequency_scale_vector(
     beta: float,
     device: torch.device,
     dtype: torch.dtype,
+    rope_layout: Literal["interleaved", "rotate_half"] = "interleaved",
 ) -> torch.Tensor:
     """Per-head-dim scale curve, shape ``(head_dim,)``.
 
     Within each RoPE axis (e.g. Krea2's ``(32, 48, 48)`` t/h/w split), builds a
     ``high -> low`` power curve over the axis' *frequency* index (low index =
     high frequency / fine detail, matching ``get_1d_rotary_pos_embed``'s
-    descending-frequency layout) and duplicates each value once to match the
-    ``repeat_interleave_real=True`` RoPE convention used by
-    ``apply_rotary_emb`` (each rotary pair occupies 2 adjacent head-dim slots).
+    descending-frequency layout), then duplicates each value onto the two
+    head-dim slots sharing that frequency. ``rope_layout`` selects the pairing:
+    ``"interleaved"`` (default, ``repeat_interleave_real=True``) pairs adjacent
+    slots ``2j``/``2j+1``; ``"rotate_half"`` (GPT-NeoX, e.g. SenseNova's
+    ``Qwen3Attention``) pairs ``j`` with ``j + axis_dim//2``.
+
+    The rotate-half duplication must stay INSIDE the per-axis loop: pairing is
+    local to each axis chunk, so a single cat over the whole head_dim would
+    pair a t-axis frequency with an h-axis one.
+
     ``curve = high + (low - high) * x**beta``, ``x`` in ``[0, 1]``.
     """
     if sum(axes_dims) != head_dim:
         raise ValueError(f"sum(axes_dims)={sum(axes_dims)} must equal head_dim={head_dim}")
+    if rope_layout not in ("interleaved", "rotate_half"):
+        raise ValueError(f"Unknown rope_layout: {rope_layout!r} (expected 'interleaved' or 'rotate_half')")
 
     curves = []
     for dim in axes_dims:
@@ -211,7 +230,7 @@ def frequency_scale_vector(
             continue
         x = torch.linspace(0.0, 1.0, half, device=device, dtype=torch.float32)
         curve = high_scale + (low_scale - high_scale) * x.pow(beta)
-        curve = curve.repeat_interleave(2)
+        curve = curve.repeat_interleave(2) if rope_layout == "interleaved" else torch.cat([curve, curve])
         curves.append(curve)
     vec = torch.cat(curves, dim=0)
     if vec.shape[0] != head_dim:
@@ -587,9 +606,8 @@ class StyleContext:
         The frequency-scale vector is derived the same way a single-ref hook
         would: ``config_i.get_freq_scale_vector(head_dim, self.progress,
         device, dtype)`` when ``config_i.axes_dims`` was set by the arch
-        wiring, and an all-ones vector otherwise (mirrors archs like Anima
-        whose RoPE layout is incompatible with the interleave-real frequency
-        curve and always use an all-ones vector regardless of ``axes_dims``).
+        wiring, and an all-ones vector otherwise (archs like Anima leave
+        ``axes_dims`` unset and so never suppress).
         ``head_dim`` is read from the captured ``ref_k`` tensor's last
         dimension so no extra arch-specific parameter is needed here.
 

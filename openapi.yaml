@@ -10073,6 +10073,21 @@ components:
             (boolean, default false), is_reference_guide (boolean, default false —
             blend latent toward the reference image instead of using a ControlNet
             model), preprocessor (string), enable_preprocessor (boolean, default false).
+
+            Training-free reference-style transfer entries (is_style_transfer: true)
+            additionally accept: style_transfer_type (string, "style" or "character",
+            default "style"), style_combine_mode (string, "stack" or "common_concept",
+            default "stack"; read from the first style entry and applied to all of
+            them), style_adain_strength (number), style_blocks (string,
+            "lo-hi" block range), style_high_scale_start / style_high_scale_end /
+            style_low_scale_start / style_low_scale_end (number, RoPE-frequency-scale
+            curve endpoints), style_beta (number), style_value_mode (string),
+            style_value_adain_strength (number), style_ref_value_mix (number),
+            style_late_release (number), style_rope_offset (integer), and
+            style_guidance_scale (number, CFG-decoupled style guidance; null/<=0 =
+            disabled). On the JSON-based txt2img/txt2vid endpoints these are declared
+            on the ControlNetConfig Pydantic model (backend/api/routes.py) rather than
+            this JSON-encoded-string form, but carry the identical field names.
           example: '[{"model_path": "controlnet.safetensors", "strength": 1.0}]'
         cfg_schedule_type:
           type: string

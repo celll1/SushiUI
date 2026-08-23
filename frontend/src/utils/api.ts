@@ -375,7 +375,6 @@ export interface ControlNetConfig {
   style_adain_strength?: number;
   style_blocks?: string;
   style_low_scale_end?: number;
-  style_high_scale?: number;
   style_beta?: number;
   style_value_mode?: string;
   style_ref_value_mix?: number;

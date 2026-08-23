@@ -1820,15 +1820,18 @@ transfer.
       - The flag-off path is bit-identical to the pre-change archive across 8
         image pairs, and SenseNova generation is bit-reproducible across
         backend restarts at a fixed seed.
-    - **NOT FIXED — style freq-curve knobs are unreachable on the JSON
-      routes.** `api/generation_utils.py` reads `style_high_scale_start`,
-      `style_high_scale_end` and `style_low_scale_start`, none of which are
-      declared on `ControlNetConfig`; it declares only `style_low_scale_end`
-      plus a stale `style_high_scale` that nothing reads. txt2img/txt2vid
-      type `controlnets` as `List[ControlNetConfig]`, so Pydantic drops the
-      three undeclared keys silently. They work only on the Form-based
-      img2img/inpaint routes, which `json.loads` into plain dicts. Affects
-      every style-transfer arch, not just SenseNova.
+    - **FIXED — style freq-curve knobs are now reachable on the JSON
+      routes.** `ControlNetConfig` (`backend/api/routes.py`) now declares
+      `style_high_scale_start`, `style_high_scale_end`, `style_low_scale_start`,
+      `style_transfer_type`, `style_combine_mode` and `style_guidance_scale`
+      (all `Optional[...] =
+      None`, no literal defaults — `style_config_from_dict`'s dataclass
+      defaults still own the actual numbers). The stale `style_high_scale`
+      field (declared but never read by `generation_utils.py`) was removed,
+      along with its unused frontend type/passthrough references. txt2img/
+      txt2vid type `controlnets` as `List[ControlNetConfig]`, so previously
+      Pydantic silently dropped the undeclared keys; they now round-trip the
+      same as on the Form-based img2img/inpaint routes.
     - **Cosmetic**: a style-active request used to emit the blanket
       `unsupported_param` warning "ControlNet is not supported for
       SenseNova U1.5" (shared with Krea2 and LTX-2.3), because style entries

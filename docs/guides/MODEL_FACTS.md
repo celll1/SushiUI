@@ -1599,6 +1599,83 @@ a generation without style transfer.
       place, so raising it needs its own measurement rather than an inference
       from that number. The deviation is warned
       (`sensenova_reference_downscaled`) rather than silent.
+  - **Served operating point (`steps`=50, `cfg_scale`=4.0) is resolved
+    server-side, not by the shared schema default.** `GENERATION_DEFAULTS`
+    (the base schema shape, `backend/api/param_defaults.py`) documents
+    `steps`=20/`cfg_scale`=7.0 for every image architecture; a per-architecture
+    overlay (`IMAGE_GEN_ARCH_OVERLAYS`/`image_defaults_for_arch`, mirroring the
+    pre-existing `VIDEO_GEN_ARCH_OVERLAYS` pair) resolves those two fields to
+    `SENSENOVA_GENERATION_DEFAULTS`'s 50/4.0 when the loaded model is
+    SenseNova, filling only whichever of the two a request OMITS
+    (`Form(None)` sentinels on all four image routes: txt2img/img2img/
+    inpaint/outpaint). An architecture with no overlay entry — every other
+    architecture today — resolves to the base map unchanged. Exposed to
+    clients via the `image_arch_overlays` block of
+    `GET /schema/generation-defaults`. Before this overlay existed, every
+    SenseNova request was served the shared 20/7.0 regardless of the
+    documented reference point.
+  - **`cfg_norm`** (API string, default **`global`**,
+    `SENSENOVA_GENERATION_DEFAULTS`): a CFG-overshoot clamp applied to the
+    predicted velocity before the Euler step (`_cfg_combine`/
+    `_cfg_combine_refs` in `sensenova_pipeline_ops.py`) — scales `v_pred` by
+    `clamp(||v_cond|| / ||v_pred||, 0, 1)`, so it can only ever shrink an
+    overshoot, never amplify one. Modes `none`/`global`/`channel`. It exists
+    for SenseNova specifically because SenseNova is pixel-space and decodes
+    no VAE to partly absorb CFG overshoot, unlike the latent-space
+    architectures (where `cfg_rescale_snr_alpha` plays the analogous role in
+    the shared U-Net sampling loop that SenseNova's standalone Euler loop
+    never enters). The vendored `generate()` signatures default to `"none"`;
+    `"global"` is this repo's own choice. The vendored `it2i_generate`
+    (3-branch reference-editing path) accepts only `none`/`global`/`channel`;
+    `t2i_generate` also accepts a fourth value, `cfg_zero_star`, which is not
+    part of this API's surface — an unrecognized mode falls through to an
+    unclamped blend rather than raising.
+    - **Visual gate finding (RTX 6000 Ada, fixed seed 424242, 1024x1024,
+      50 steps fixed): the `cfg_scale` 7.0 -> 4.0 change is what resolved the
+      reported oversaturated/"overbaked" symptom, not `cfg_norm`.** A 5-arm x
+      3-surface matrix (txt2img, style-guide reference, it2i reference; 15
+      generations) was judged visually by the repo owner: A=(7.0, none)
+      reproduces the reported symptom, B=(4.0, global) is the shipped
+      default, C=(7.0, global), D=(4.0, none), E=(4.0, channel). Verdict: B,
+      D and E all look roughly equivalent and all acceptable — `cfg_norm` at
+      the shipped `cfg_scale` measured as **near-inert**. It ships anyway as
+      overshoot insurance for a user who raises `cfg_scale` manually, not
+      because it is what fixed the symptom. Supporting measurements (plain
+      txt2img surface): mean edge energy (mean abs neighbouring-pixel luma
+      difference) A=16.00, B=8.56, C=15.13, D=8.27, E=8.45; HSV mean
+      saturation A=191.3, B=201.7, C=196.6, D=202.9, E=201.9; RGB std
+      A=96.1, B=88.2, C=94.5, D=88.9, E=88.1 — the clamp at `cfg_scale`=7.0
+      (arm C) does not rescue 7.0 either. The style-guide reference surface
+      was confirmed still active after the change (its output diverges from
+      plain txt2img by mean-abs 38-54 per channel, comparable to the
+      it2i-reference surface's 52-65) — the fix did not disable the style
+      feature.
+    - **Two regressions caught before this landed**, kept here as part of the
+      honest record: (1) converting `steps`/`cfg_scale` to `Form(None)`
+      sentinels initially left the route's LOCAL variables `None` after
+      resolution, which mutates only the params dict — img2img/inpaint/
+      outpaint compute `int(steps * denoising_strength)` from the local, so
+      an omitted `steps` would have raised `TypeError` for every
+      architecture; caught in review, the routes now re-read both locals from
+      `params` after resolving. (2) the frontend overlay effect initially
+      wrote only the keys the newly-loaded arch's overlay carried (copied
+      from an audio-defaults precedent where that is correct); for
+      `steps`/`cfg_scale` — fields every architecture uses — that meant
+      loading SenseNova then switching to SDXL silently left SDXL generating
+      at `cfg_scale`=4.0. Caught by an independent audit; the panels now
+      revert both fields to the base default when leaving an
+      overlay-carrying architecture.
+    - **Known gap, not yet a bug in practice**: `OutpaintRequest` inherits
+      `GenerationParams` via `openapi.yaml`'s `allOf`, so the flattened schema
+      advertises `cfg_norm`, `timestep_shift` and `img_cfg_scale` on
+      `POST /generate/outpaint`, but `generate_outpaint` declares no `Form()`
+      parameter for any of the three, so FastAPI silently drops them
+      regardless of architecture. Currently moot for SenseNova specifically
+      because `/generate/outpaint` refuses SenseNova outright
+      (`_reject_if_sensenova_unsupported`, see "Refused, with a typed error"
+      below); pre-existing for `timestep_shift`/`img_cfg_scale`, this unit
+      extended the same gap to `cfg_norm`. Relevant again the day spatial
+      outpaint support for SenseNova ships.
   - **A ControlNet-shaped "structural reference conditioning" feature
     (control image -> preprocessor -> it2i-style prefix token splice,
     surfaced as a `controlnets[]` UI entry) was considered and rejected**,

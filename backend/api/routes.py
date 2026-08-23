@@ -8136,6 +8136,12 @@ async def generate_outpaint(
     # below. The openapi schema keeps documenting OUTPAINT_DEFAULTS's base values.
     steps: Optional[int] = Form(None),
     cfg_scale: Optional[float] = Form(None),
+    # KNOWN GAP: this signature has no `cfg_norm`/`timestep_shift`/
+    # `img_cfg_scale` Form() params, but openapi.yaml's OutpaintRequest
+    # advertises all three via its `allOf` on GenerationParams -- FastAPI
+    # silently drops them. Currently moot: SenseNova outpaint is refused
+    # outright below (_reject_if_sensenova_unsupported). See
+    # docs/guides/MODEL_FACTS.md's sensenova row for the full account.
     denoising_strength: float = Form(OUTPAINT_DEFAULTS["denoising_strength"]),
     img2img_fix_steps: bool = Form(OUTPAINT_DEFAULTS["img2img_fix_steps"]),
     sampler: str = Form(OUTPAINT_DEFAULTS["sampler"]),

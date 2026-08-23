@@ -10,10 +10,28 @@
 // state. Panels render `progressSnapshot` and `completedResults` instead.
 
 import { useCallback, useEffect, useRef } from "react";
-import { QueueItem, useGenerationQueue } from "@/contexts/GenerationQueueContext";
+import { QueueItem, typeToPanel, useGenerationQueue } from "@/contexts/GenerationQueueContext";
 import { useStartup } from "@/contexts/StartupContext";
 import { useActiveTraining } from "@/hooks/useActiveTraining";
+import { advanceVideoChain } from "@/utils/videoChain";
+import { EMPTY_MINIMAX_H3_REFERENCES } from "../common/MiniMaxH3ReferenceSelector";
 import {
+  generateAud2Aud,
+  generateImg2Img,
+  generateImg2ImgTrainingPreview,
+  generateImg2Vid,
+  generateRef2Vid,
+  generateTxt2Aud,
+  generateTxt2Img,
+  generateTxt2ImgTrainingPreview,
+  generateTxt2Vid,
+  Aud2AudParams,
+  GenerationParams,
+  Img2ImgParams,
+  Img2VidParams,
+  Ref2VidParams,
+  Txt2AudParams,
+  Txt2VidParams,
   generateInpaint,
   generateInpaintTrainingPreview,
   generateInpaintVideo,
@@ -45,6 +63,14 @@ const CLAIMED_TYPES: readonly QueueItem["type"][] = [
   "outpaint_aud",
   "inpaint",
   "inpaint_vid",
+  "txt2img",
+  "img2img",
+  "txt2vid",
+  "img2vid",
+  "ref2vid",
+  "txt2aud",
+  "aud2aud",
+  "chain_vid",
 ];
 
 const resultWarnings = (result: any): string[] =>
@@ -52,6 +78,12 @@ const resultWarnings = (result: any): string[] =>
 
 const errorDetail = (error: any) =>
   error?.response?.data?.detail || error?.message || "Unknown error";
+
+// The video branches read a cancel off the message/detail only, deliberately
+// narrower than the image branches' JSON sweep below: a false positive there
+// swallows the failure alert for a whole chain.
+const isCancelledVideoError = (error: any) =>
+  String(error?.message || error?.response?.data?.detail || "").toLowerCase().includes("cancel");
 
 // A deliberate cancelGeneration() surfaces as the backend's own RuntimeError,
 // not a distinct error type, so it has to be recognised by its text.
@@ -71,6 +103,30 @@ const NO_MODEL_REQUIRED: readonly QueueItem["type"][] = ["upscale"];
 
 const RESCHEDULE_MS = 100;
 
+// The training-preview endpoints answer with a blob, not the usual generation
+// response; give downstream `result.*` readers the shape they expect.
+const synthesizedPreviewResult = (
+  preview: { blob: Blob; seed?: string; requestId?: string; filename?: string },
+  imageUrl: string,
+  params: any,
+) => ({
+  success: true,
+  actual_seed: preview.seed ? Number(preview.seed) : -1,
+  actual_ancestral_seed: -1,
+  image: {
+    filename: preview.filename ?? `preview_${preview.requestId ?? "training"}.png`,
+    filepath: imageUrl,
+    seed: preview.seed ? Number(preview.seed) : -1,
+    ancestral_seed: -1,
+    prompt: params.prompt,
+    negative_prompt: params.negative_prompt,
+    width: params.width,
+    height: params.height,
+    metadata: {},
+    size_bytes: preview.blob.size,
+  },
+});
+
 export default function GenerationQueueProcessor() {
   const {
     queue,
@@ -80,14 +136,26 @@ export default function GenerationQueueProcessor() {
     failCurrentItem,
     updateQueueItemByLoop,
     getLoopGroupItems,
+    cancelLoopGroup,
     publishCompletedResult,
     publishFailure,
     appendResult,
     chainPause,
+    pauseChain,
+    setChainStoppedMessage,
   } = useGenerationQueue();
-  const { modelLoaded } = useStartup();
+  const { modelLoaded, modelInfo, archCapabilities } = useStartup();
 
   const activeTraining = useActiveTraining();
+
+  // advanceVideoChain wants the whole queue; a ref keeps it current inside a
+  // callback that started before the last patch landed.
+  const queueRef = useRef(queue);
+  queueRef.current = queue;
+
+  // Stands in for the panel-local `generatedImage` the old dispatch loops used
+  // as a fallback input for a loop step whose predecessor left one behind.
+  const lastImageUrlRef = useRef<Partial<Record<string, string>>>({});
 
   // Re-entrancy guard, synchronous where `currentItem` is a render behind.
   const busyRef = useRef(false);
@@ -566,16 +634,276 @@ export default function GenerationQueueProcessor() {
     }
   }, [activeTraining, advanceLoopGroup, appendResult, completeCurrentItem, failCurrentItem, publishCompletedResult, publishFailure, scheduleNext, trainingPreviewUrl]);
 
-  const process = useCallback(async () => {
-    if (busyRef.current) return;
+  // Shared tail for every video item: publish the clip, then let
+  // advanceVideoChain feed this chain's next segment (a no-op for an unchained
+  // item) or hold the queue on a drift pause.
+  // `onFailure` performs any cascade-cancel synchronously and RETURNS the alert
+  // to show, if any: alert() blocks the JS thread, so the queue has to be
+  // re-scheduled first or the auto-start effect sees stale state until the
+  // dialog closes.
+  const runVideoItem = useCallback(async (
+    item: QueueItem,
+    invoke: () => Promise<any>,
+    onFailure: (error: any, cancelled: boolean) => (() => void) | void,
+  ) => {
+    const panel = item.panel ?? typeToPanel(item.type);
+    try {
+      const result = await invoke();
+      const url = `/outputs/${getResultFilename(result)}`;
+      const playbackFilename = getResultPlaybackFilename(result);
+      const playbackFull = playbackFilename ? `/outputs/${playbackFilename}` : url;
+      const playbackUrl = playbackFull !== url ? playbackFull : undefined;
+      const info = {
+        num_frames: result.image?.num_frames,
+        fps: result.image?.fps,
+        duration: result.image?.duration,
+      };
+      publishCompletedResult({
+        panel, kind: "video", url, playbackUrl, info,
+        seed: getResultSeed(result), params: item.params, warnings: resultWarnings(result),
+      });
+      appendResult({ url, kind: "video", playbackUrl });
 
-    const claimable = modelLoaded
-      ? CLAIMED_TYPES
-      : CLAIMED_TYPES.filter((type) => NO_MODEL_REQUIRED.includes(type));
-    const nextItem = startNextInQueue(claimable);
-    if (!nextItem) return;
+      const chainOutcome = await advanceVideoChain({
+        caps: archCapabilities,
+        arch: modelInfo?.type as string | undefined,
+        queue: queueRef.current,
+        completedItem: item,
+        resultFrames: result.image?.num_frames,
+        resultVideoUrl: url,
+        updateQueueItemByLoop,
+        cancelLoopGroup,
+      });
+      // A drift pause leaves the next chain_vid item deliberately unpatched;
+      // holding the queue is what stops it dispatching into a "no input video"
+      // failure before the user has answered the dialog.
+      if (chainOutcome.driftPause) pauseChain(chainOutcome.driftPause);
+      setChainStoppedMessage(chainOutcome.message ?? null);
 
-    busyRef.current = true;
+      busyRef.current = false;
+      completeCurrentItem();
+      if (!chainOutcome.driftPause) scheduleNext();
+    } catch (error: any) {
+      console.error(`[Queue] ${item.type} generation failed:`, error);
+      const cancelled = isCancelledVideoError(error);
+      busyRef.current = false;
+      publishFailure({ panel, itemId: item.id, cancelled });
+      failCurrentItem();
+      const showAlert = onFailure(error, cancelled);
+      scheduleNext();
+      showAlert?.();
+    }
+  }, [appendResult, archCapabilities, cancelLoopGroup, completeCurrentItem, failCurrentItem,
+      modelInfo?.type, pauseChain, publishCompletedResult, publishFailure, scheduleNext,
+      setChainStoppedMessage, updateQueueItemByLoop]);
+
+  // Cascade-cancel for a failed chain segment: every remaining pending step of
+  // the group only gets its `inputVideo` from a predecessor that SUCCEEDED, so
+  // leaving them queued produces one generic failure alert per segment.
+  const failChainSegment = useCallback((item: QueueItem, cancelled: boolean) => {
+    if (item.loopGroupId) cancelLoopGroup(item.loopGroupId);
+    const completedSegments = (item.loopStepIndex ?? -1) + 1;
+    const reason = cancelled ? "cancelled" : "stopped: a segment failed";
+    return () => alert(completedSegments > 0
+      ? `Video chain ${reason}. ${completedSegments} segment(s) completed before this are saved to the gallery.`
+      : `Video chain ${reason} before any segment completed.`);
+  }, [cancelLoopGroup]);
+
+  const runTxt2Vid = useCallback((item: QueueItem) => runVideoItem(
+    item,
+    () => item.type === "ref2vid"
+      ? generateRef2Vid(item.params as Ref2VidParams, item.references ?? EMPTY_MINIMAX_H3_REFERENCES)
+      : generateTxt2Vid(item.params as Txt2VidParams),
+    (error, cancelled) => {
+      if (!!item.loopGroupId && item.chainTargetFrames != null) return failChainSegment(item, cancelled);
+      if (cancelled) return;
+      return () => alert(isGenerationStalledError(error)
+        ? error.message
+        : `${item.type} generation failed: ${error?.response?.data?.detail || error?.response?.data?.error || "see the console for details."}`);
+    },
+  ), [runVideoItem, failChainSegment]);
+
+  const runImg2Vid = useCallback((item: QueueItem) => runVideoItem(
+    item,
+    () => {
+      const keyframe = item.inputImage;
+      if (!keyframe) throw new Error("No keyframe image available for img2vid generation");
+      // The uploaded audio track rides on the ITEM (it is a File); the sender
+      // reads it off the params object, so it is merged in here at dispatch.
+      return generateImg2Vid({ ...(item.params as Img2VidParams), input_audio: item.inputAudio ?? null }, keyframe);
+    },
+    (error, cancelled) => {
+      if (!!item.loopGroupId && item.chainTargetFrames != null) return failChainSegment(item, cancelled);
+      if (cancelled) return;
+      return () => alert(isGenerationStalledError(error)
+        ? error.message
+        : "img2vid generation failed. Please check console for details.");
+    },
+  ), [runVideoItem, failChainSegment]);
+
+  const runChainVid = useCallback((item: QueueItem) => runVideoItem(
+    item,
+    () => {
+      const clip = item.inputVideo;
+      if (!clip) {
+        throw new Error("No input video available for this chain segment (the previous segment has not finished yet)");
+      }
+      return generateOutpaintVideo(item.params as OutpaintVideoParams, clip, undefined, item.referenceImages);
+    },
+    (error, cancelled) => {
+      if (item.loopGroupId) cancelLoopGroup(item.loopGroupId);
+      const completedSegments = (item.loopStepIndex ?? -1) + 1;
+      if (!cancelled) {
+        const detail = isGenerationStalledError(error)
+          ? error.message
+          : (error?.response?.data?.detail || error?.message || "see the console for details.");
+        return () => alert(completedSegments > 0
+          ? `Video chain stopped: segment failed (${detail}). ${completedSegments} segment(s) completed before this are saved to the gallery.`
+          : `Video chain stopped: segment failed (${detail}).`);
+      }
+      return () => alert(completedSegments > 0
+        ? `Video chain cancelled. ${completedSegments} segment(s) completed before the cancel are saved to the gallery.`
+        : "Video chain cancelled before any segment completed.");
+    },
+  ), [runVideoItem, cancelLoopGroup]);
+
+  const runAudio = useCallback(async (item: QueueItem) => {
+    const panel = item.panel ?? typeToPanel(item.type);
+    try {
+      let result: any;
+      if (item.type === "aud2aud") {
+        if (!item.inputAudio) throw new Error("No reference audio available for aud2aud generation");
+        result = await generateAud2Aud(item.params as Aud2AudParams, item.inputAudio);
+      } else {
+        result = await generateTxt2Aud(item.params as Txt2AudParams);
+      }
+      const url = `/outputs/${result.image.filename}`;
+      const info = { duration: result.image.duration, sample_rate: result.image.sample_rate };
+      publishCompletedResult({
+        panel, kind: "audio", url, info, warnings: resultWarnings(result),
+        params: { ...(item.params as GenerationParams), seed: getResultSeed(result) ?? (item.params as GenerationParams).seed },
+      });
+      appendResult({ url, kind: "audio" });
+
+      busyRef.current = false;
+      completeCurrentItem();
+      scheduleNext();
+    } catch (error: any) {
+      console.error(`[Queue] ${item.type} generation failed:`, error);
+      busyRef.current = false;
+      publishFailure({ panel, itemId: item.id, cancelled: false });
+      failCurrentItem();
+      scheduleNext();
+      if (item.type === "aud2aud") {
+        alert(isGenerationStalledError(error)
+          ? error.message
+          : "aud2aud generation failed. Please check console for details.");
+      } else {
+        // Surface the backend's own refusal text (MiniMax Music 3's empty-lyrics
+        // and audio_duration 400s) rather than a generic "check console".
+        alert(isGenerationStalledError(error)
+          ? error.message
+          : `txt2aud generation failed: ${error?.response?.data?.detail || error?.response?.data?.error || "see the console for details."}`);
+      }
+    }
+  }, [appendResult, completeCurrentItem, failCurrentItem, publishCompletedResult, publishFailure, scheduleNext]);
+
+  const runImage = useCallback(async (item: QueueItem) => {
+    const panel = item.panel ?? typeToPanel(item.type);
+    const params = item.params as Img2ImgParams;
+    const runId = item.trainingRunId ?? activeTraining?.run_id;
+    try {
+      let result: any;
+      let imageUrl: string | undefined;
+
+      if (item.type === "txt2img") {
+        if (item.useTrainingModel && runId) {
+          const preview = await generateTxt2ImgTrainingPreview({
+            ...(params as GenerationParams),
+            run_id: runId,
+            save_to_gallery: item.savePreviewToGallery ?? false,
+          });
+          imageUrl = trainingPreviewUrl(preview);
+          result = synthesizedPreviewResult(preview, imageUrl, params);
+        } else {
+          result = await generateTxt2Img(params as GenerationParams);
+          // loop_decode="none" (decodeMode "final-only" with loop steps to
+          // follow) answers with { latent_id, actual_seed } and no image.
+          imageUrl = isLatentOnlyResult(result) ? undefined : `/outputs/${getResultFilename(result)}`;
+        }
+      } else {
+        const inputImage = item.inputLatentId
+          ? undefined
+          : (item.inputImage || lastImageUrlRef.current[panel]);
+        if (!item.inputLatentId && !inputImage) {
+          throw new Error("No input image available for img2img generation");
+        }
+        if (item.useTrainingModel && runId) {
+          if (!inputImage) {
+            // The training-preview endpoint takes init_image_base64; it knows
+            // nothing about loop_decode/input_latent_id.
+            throw new Error("Training-preview generation requires an input image (latent passthrough is not supported)");
+          }
+          const preview = await generateImg2ImgTrainingPreview({
+            ...(params as any),
+            init_image_base64: await imageSourceToBase64(inputImage),
+            denoising_strength: params.denoising_strength ?? 0.75,
+            run_id: runId,
+            save_to_gallery: item.savePreviewToGallery ?? false,
+          });
+          imageUrl = trainingPreviewUrl(preview);
+          result = synthesizedPreviewResult(preview, imageUrl, params);
+        } else {
+          result = await generateImg2Img(params, inputImage, item.inputLatentId);
+          imageUrl = isLatentOnlyResult(result) ? undefined : `/outputs/${getResultFilename(result)}`;
+        }
+      }
+
+      const seed = getResultSeed(result);
+      const ancestralSeed = getResultAncestralSeed(result);
+      // A latent-only step has nothing to display: leave the panel showing what
+      // it already had rather than pointing it at an undefined URL.
+      if (imageUrl) {
+        lastImageUrlRef.current[panel] = imageUrl;
+        publishCompletedResult({
+          panel,
+          kind: "image",
+          url: imageUrl,
+          seed,
+          ancestralSeed,
+          params: {
+            ...item.params,
+            seed,
+            ancestral_seed: ancestralSeed ?? -1,
+            width: result.image?.width ?? params.width,
+            height: result.image?.height ?? params.height,
+          },
+        });
+        appendResult({ url: imageUrl, kind: "image" });
+      }
+
+      await advanceLoopGroup(item, result, imageUrl, { latentPassthrough: true });
+
+      busyRef.current = false;
+      completeCurrentItem();
+      scheduleNext();
+    } catch (error: any) {
+      console.error(`[Queue] ${item.type} generation failed:`, error);
+      const cancelled = isCancelledError(error);
+      busyRef.current = false;
+      publishFailure({ panel, itemId: item.id, cancelled });
+      failCurrentItem();
+      scheduleNext();
+      if (!cancelled) {
+        alert(isGenerationStalledError(error)
+          ? error.message
+          : "Generation failed. Please check console for details.");
+      }
+    }
+  }, [activeTraining, advanceLoopGroup, appendResult, completeCurrentItem, failCurrentItem,
+      publishCompletedResult, publishFailure, scheduleNext, trainingPreviewUrl]);
+
+  const dispatch = useCallback(async (nextItem: QueueItem) => {
     switch (nextItem.type) {
       case "upscale":
         await runUpscale(nextItem);
@@ -595,14 +923,52 @@ export default function GenerationQueueProcessor() {
       case "inpaint_vid":
         await runInpaintVideo(nextItem);
         return;
+      case "txt2img":
+      case "img2img":
+        await runImage(nextItem);
+        return;
+      case "txt2vid":
+      case "ref2vid":
+        await runTxt2Vid(nextItem);
+        return;
+      case "img2vid":
+        await runImg2Vid(nextItem);
+        return;
+      case "chain_vid":
+        await runChainVid(nextItem);
+        return;
+      case "txt2aud":
+      case "aud2aud":
+        await runAudio(nextItem);
+        return;
       default:
-        // Unreachable: `claimable` is exactly the set handled above.
-        busyRef.current = false;
+        // Unreachable: CLAIMED_TYPES is exactly the set handled above.
         console.error("[Queue] No dispatch branch for claimed type:", nextItem.type);
         failCurrentItem();
         return;
     }
-  }, [modelLoaded, startNextInQueue, failCurrentItem, runUpscale, runOutpaintImage, runOutpaintVideo, runOutpaintAudio, runInpaint, runInpaintVideo]);
+  }, [failCurrentItem, runUpscale, runOutpaintImage, runOutpaintVideo, runOutpaintAudio,
+      runInpaint, runInpaintVideo, runImage, runTxt2Vid, runImg2Vid, runChainVid, runAudio]);
+
+  const process = useCallback(async () => {
+    if (busyRef.current) return;
+
+    const claimable = modelLoaded
+      ? CLAIMED_TYPES
+      : CLAIMED_TYPES.filter((type) => NO_MODEL_REQUIRED.includes(type));
+    const nextItem = startNextInQueue(claimable);
+    if (!nextItem) return;
+
+    busyRef.current = true;
+    // Each branch clears the guard itself before completing/failing its item,
+    // so the next dispatch can start; the finally is only a backstop against a
+    // branch throwing outside its own try.
+    try {
+      await dispatch(nextItem);
+    } finally {
+      busyRef.current = false;
+    }
+  }, [modelLoaded, startNextInQueue, dispatch]);
 
   processRef.current = process;
 

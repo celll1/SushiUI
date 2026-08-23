@@ -451,7 +451,9 @@ of a quantized base — out of scope"）。
   **未検証の不確実性**: dequant 起点が FT の初期値として実測で劣るかどうかは
   誰も測っていない。upstream ソースが入手できない場合の fallback としては妥当。
 
-ガードのメッセージは両方の経路を名指しする。
+Phase 2b 本体を実装して受付を開く際は、loader と利用者向け文書で両方の経路を
+明示する。現行ガードは未提供の full FT を広告せず、未実装であることと LoRA 代替だけを
+示す。
 
 ---
 
@@ -817,7 +819,8 @@ model resident allocated は 17.59 GiB、prefix の live allocated 増分は 50.
 #### Phase 1 exit-smoke（DONE、2026-08-24）
 
 通常の pytest から収集されない opt-in probe である。repo の venv から次を実行すると、
-trainer arm（実画像 64×64、B1、rank 1 / alpha 1、fp32 LoRA、bf16 base / training、
+trainer arm（実画像 64×64、B1、rank 1 / alpha 1、fp32 LoRA、plain-int8 base /
+bf16 compute・training、
 native attention、専用 non-reentrant GC、3 step、step 3 保存、sample なし）を起動し、
 完全終了後に別 process の runtime arm が fresh model をロードする。
 

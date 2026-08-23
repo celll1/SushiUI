@@ -339,7 +339,6 @@ class SenseNovaMixin:
         tokenizer = self.sensenova_components["tokenizer"]
 
         self._sensenova_apply_attention_backend(transformer, params)
-        self._sensenova_move("transformer", device)
         prefix = None
         applied_lora = 0
         evictor = None
@@ -349,6 +348,14 @@ class SenseNovaMixin:
             # Installed AFTER LoRA (if any) has wrapped the gen-branch Linears
             # in place -- see mot_phase_eviction.py's MotPhaseEvictor docstring.
             evictor = self._sensenova_maybe_install_mot_eviction(params, transformer, device)
+            # Split-aware placement, not a blanket move -- see
+            # move_non_gen_to_device's docstring. Unlike _sensenova_move it
+            # raises rather than warning, so a placement failure aborts the
+            # generation; the finally below still restores device state.
+            if evictor is not None:
+                evictor.move_non_gen_to_device()
+            else:
+                self._sensenova_move("transformer", device)
             # Independent of MoT eviction (disjoint tensors/hooks); must be
             # installed before encode_prompt() so _finalize_prefix_caches sees it.
             kv_streamer = self._sensenova_maybe_install_kv_streaming(params, transformer, device)
@@ -455,14 +462,20 @@ class SenseNovaMixin:
         tokenizer = self.sensenova_components["tokenizer"]
 
         self._sensenova_apply_attention_backend(transformer, params)
-        self._sensenova_move("transformer", device)
         prefix = None
         applied_lora = 0
         evictor = None
         kv_streamer = None
         try:
             applied_lora = self._load_lora_sensenova(params.get("loras") or [])
+            # Installed AFTER LoRA -- see mot_phase_eviction.py's MotPhaseEvictor
+            # docstring. Split-aware placement, not a blanket move -- see
+            # txt2img's move_non_gen_to_device comment.
             evictor = self._sensenova_maybe_install_mot_eviction(params, transformer, device)
+            if evictor is not None:
+                evictor.move_non_gen_to_device()
+            else:
+                self._sensenova_move("transformer", device)
             kv_streamer = self._sensenova_maybe_install_kv_streaming(params, transformer, device)
 
             def _prefill_note():
@@ -547,14 +560,20 @@ class SenseNovaMixin:
         tokenizer = self.sensenova_components["tokenizer"]
 
         self._sensenova_apply_attention_backend(transformer, params)
-        self._sensenova_move("transformer", device)
         prefix = None
         applied_lora = 0
         evictor = None
         kv_streamer = None
         try:
             applied_lora = self._load_lora_sensenova(params.get("loras") or [])
+            # Installed AFTER LoRA -- see mot_phase_eviction.py's MotPhaseEvictor
+            # docstring. Split-aware placement, not a blanket move -- see
+            # txt2img's move_non_gen_to_device comment.
             evictor = self._sensenova_maybe_install_mot_eviction(params, transformer, device)
+            if evictor is not None:
+                evictor.move_non_gen_to_device()
+            else:
+                self._sensenova_move("transformer", device)
             kv_streamer = self._sensenova_maybe_install_kv_streaming(params, transformer, device)
 
             def _prefill_note():

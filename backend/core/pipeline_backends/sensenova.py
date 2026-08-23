@@ -181,6 +181,7 @@ class SenseNovaMixin:
         non-matching aspect ratio is warned about. ``ref_index`` decorrelates
         the fixed noise across simultaneous references (``seed+991+ref_index``,
         as Krea2/Lens)."""
+        from api.param_defaults import SENSENOVA_GENERATION_DEFAULTS
         from core.inference.reference_style import style_config_from_dict
         from core.models.sensenova import sensenova_pipeline_ops as ops
 
@@ -205,6 +206,11 @@ class SenseNovaMixin:
         head_dim = transformer.language_model.model.layers[0].self_attn.head_dim
         cfg.axes_dims = (head_dim // 2, head_dim // 4, head_dim // 4)
         cfg.rope_layout = "rotate_half"
+        # SenseNova-only default; see StyleTransferConfig.inject_all_cfg_branches.
+        _inject_all = style_dict.get("inject_all_cfg_branches")
+        cfg.inject_all_cfg_branches = bool(
+            SENSENOVA_GENERATION_DEFAULTS["style_inject_all_cfg_branches"]
+            if _inject_all is None else _inject_all)
 
         noise_scale = ops.compute_noise_scale(transformer, prefix.grid_h, prefix.grid_w, prefix.merge_size)
         ref_seed = None if seed is None or seed < 0 else (int(seed) + 991 + ref_index) % (2**32)

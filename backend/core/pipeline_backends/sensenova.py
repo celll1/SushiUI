@@ -172,10 +172,9 @@ class SenseNovaMixin:
         """Build a single (StyleTransferConfig, ref_x0, eps_ref) triple from one
         style_transfer dict, mirroring Krea2/Lens's own ``_style_triple``.
 
-        ``axes_dims`` is intentionally left ``None``: SenseNova's rotate-half
-        per-axis RoPE is incompatible with ``frequency_scale_vector``'s
-        interleave-real curve, so the hook uses an all-ones vector, as
-        Anima/MiniT2I/Ideogram4/LTX-2.3 already do.
+        ``axes_dims`` is the t/h/w RoPE split from ``Qwen3Attention.__init__``
+        (t gets ``head_dim//2``, h and w ``head_dim//4`` each), and SenseNova
+        rotates halves rather than interleaved pairs, hence ``rope_layout``.
 
         Pixel-space, no VAE, so the reference is resized outright to the exact
         target size (capture and inject must yield the same token count) and a
@@ -203,6 +202,9 @@ class SenseNovaMixin:
 
         cfg = style_config_from_dict(style_dict)
         cfg.resolve_default_block_range(len(transformer.language_model.model.layers))
+        head_dim = transformer.language_model.model.layers[0].self_attn.head_dim
+        cfg.axes_dims = (head_dim // 2, head_dim // 4, head_dim // 4)
+        cfg.rope_layout = "rotate_half"
 
         noise_scale = ops.compute_noise_scale(transformer, prefix.grid_h, prefix.grid_w, prefix.merge_size)
         ref_seed = None if seed is None or seed < 0 else (int(seed) + 991 + ref_index) % (2**32)

@@ -40,7 +40,7 @@
 
 ### Constraints
 
-- **配布 checkpoint は int8 のみ。** `M:\model\sensenova\sensenova_int8.safetensors`
+- **配布 checkpoint は int8 のみ。** `sensenova_int8.safetensors`
   (17.58 GiB) と ConvRot 版の 2 本。588 個の Linear が `Int8Linear` で、weight と scale は
   `nn.Parameter` ではなく **buffer** として保持される
   ([`loader.py:27-38`](../../backend/core/models/sensenova/loader.py))。
@@ -723,6 +723,35 @@ cache namespace と alignment は登録だけで正しくなる。
   step 後の 2 backward 目で `lora_down.grad` にも nonzero が届くこと、GC ON/OFF の
   loss/gradient parity、prefix cache の長さと tensor identity が forward/backward 前後で
   不変であること、peak allocated/reserved VRAM の記録。
+
+#### Phase 0 実測（2026-08-23: PASS）
+
+`backend/core/training/probes/sensenova_real_checkpoint.py` を GC OFF / ON の別 process で
+実行した。checkpoint は plain-int8 `sensenova_int8.safetensors`（18,872,241,160 bytes）、
+GPU は RTX 6000 Ada 48 GB、native attention、物理 B1、64×64、seed 1234、`t=0.5`、
+rank 1 / alpha 1 の fp32 LoRA である。実型 census は plain `Int8Linear` 588、ConvRot 0、
+学習 target 294（attention 168 + MLP 126）、decoder/cache layer 42 だった。
+
+| | GC OFF | GC ON |
+|---|---:|---:|
+| step 1 loss | 1.4259879589 | 1.4259879589 |
+| step 1 up grad L2 / nonzero | 0.03093660 / 294 | 0.03093660 / 294 |
+| step 1 peak allocated | 33.12 GiB | 18.07 GiB |
+| step 1 wall（optimizer state 初期化込み） | 5.069 s | 4.484 s |
+| step 2 loss | 1.4267587662 | 1.4267587662 |
+| step 2 up / down grad L2 | 0.02673777 / 0.01044420 | 0.02673777 / 0.01044420 |
+| step 2 up / down nonzero | 294 / 294 | 294 / 294 |
+| step 2 peak allocated | 33.16 GiB | 18.09 GiB |
+| step 2 wall | 0.363 s | 0.531 s |
+| max reserved | 33.42 GiB | 18.14 GiB |
+
+両 arm で 2 loss、全 grad L2、全 grad tensor の SHA-256 が一致した。1 backward 目の
+down grad は zero-up 初期化どおり全 0 で、optimizer step 後は 294/294 が nonzero になった。
+prefix cache は sequence length 258 のまま、cache 本体、layers list、全 layer、全 K/V
+tensor の object identity / data pointer / shape / value が 2 backward 後も不変だった。
+model resident allocated は 17.59 GiB、prefix の live allocated 増分は 50.5 MiB である
+（reserved 増分は allocator cache を含む）。専用 non-reentrant loop は数値を変えず、
+この条件で peak allocated を約 15.06 GiB 下げたため、Phase 1 の前提を満たす。
 
 ### Phase 1 — LoRA
 

@@ -142,11 +142,24 @@ class MiniT2IMixin:
         from core.keep_hot import is_resident, mark_resident, discard_resident
         _cf = getattr(self, "_color_flatten_strength", 0)
         if not cfg["is_latent"]:
+            # Pixel-space checkpoint: no VAE exists, so a requested tiling toggle
+            # is a real runtime no-op, not the arch-level "unsupported" case.
+            if getattr(self, "_vae_tiling", False):
+                try:
+                    from api.generation_status import add_warning
+                    add_warning(
+                        "vae_tiling requested but the loaded MiniT2I checkpoint is pixel-space "
+                        "(no VAE); the toggle has nothing to apply to",
+                        code="minit2i_vae_tiling_no_vae",
+                    )
+                except Exception:
+                    pass
             return tensor_to_image(x, color_flatten_strength=_cf)
         if model_key is None or not is_resident(self, "vae", model_key):
             vae = self._minit2i_move("vae", self.device)
         else:
             vae = self.minit2i_components["vae"]
+        self._apply_vae_tiling(vae, getattr(self, "_vae_tiling", False))
         try:
             return vae_decode_latent(vae, x, color_flatten_strength=_cf)
         finally:

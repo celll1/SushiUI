@@ -130,6 +130,14 @@ FEATURE_PARAMS: Dict[str, List[str]] = {
     # `blocks_to_swap` when it is set, so `enable_block_swap` is the trigger,
     # not the count itself.
     "block_swap": ["enable_block_swap"],
+    "vae_tiling": ["vae_tiling"],
+    # Block-swap SUB-OPTIONS: pinned-memory staging, H2D-only mode and the
+    # ring-buffer slot count. A different axis from `block_swap` above -- an
+    # architecture can support block swap itself while an arch-specific reason
+    # fixes how it is staged, so these are armed independently.
+    "block_swap_pinned_memory": ["use_pinned_memory"],
+    "block_swap_h2d_only": ["block_swap_h2d_only"],
+    "block_swap_ring_size": ["block_swap_ring_size"],
 }
 
 # Human-readable label used in the warning message for each feature.
@@ -166,6 +174,10 @@ FEATURE_LABELS: Dict[str, str] = {
     "sensenova_mot_phase_eviction": "sensenova_mot_phase_eviction (SenseNova U1.5 per-phase weight-half CPU eviction)",
     "sensenova_kv_cache_streaming": "sensenova_kv_cache_streaming (SenseNova U1.5 per-layer prefix KV cache CPU streaming)",
     "block_swap": "enable_block_swap/blocks_to_swap (per-block CPU offload)",
+    "vae_tiling": "vae_tiling (VAE decode tiling)",
+    "block_swap_pinned_memory": "use_pinned_memory (block-swap pinned-memory staging)",
+    "block_swap_h2d_only": "block_swap_h2d_only (block-swap H2D-only mode)",
+    "block_swap_ring_size": "block_swap_ring_size (block-swap GPU weight-buffer ring size)",
 }
 
 # ---------------------------------------------------------------------------
@@ -603,6 +615,63 @@ _add("acestep", "vae_override",
      "VAE override is not supported on the ACE-Step audio model: its Oobleck VAE is audio-specific and not a per-generation image/video override target")
 _add("minimax_music3", "vae_override",
      "VAE override is not supported on MiniMax Music 3: its vocoder is the decoder half of a music-specific autoencoder (the DAV), not a per-generation image/video override target")
+
+# VAE decode tiling (per-generation vae_tiling): consulted only by
+# PipelineManager._apply_vae_tiling's callers (sd15/sdxl, zimage, flux2, ideogram4,
+# krea2, anima, lens, minit2i). Only the sensenova entry can actually fire: vae_tiling
+# is a Form() param on the image routes only, and the four video/audio archs below are
+# served by the video/audio routes -- those are documentation until the param spreads.
+_add("sensenova", "vae_tiling",
+     "VAE decode tiling is not supported on this pixel-space architecture, which has no VAE")
+_add("ltx2", "vae_tiling",
+     "the LTX-2.3 video VAE calls enable_tiling() unconditionally at pipeline setup "
+     "(core.pipeline_backends.ltx2) and never reads the vae_tiling parameter, so tiling stays "
+     "on regardless of this toggle's value")
+_add("minimax_h3", "vae_tiling",
+     "MiniMax-H3's video VAE runs a PINNED spatial tiling policy fixed at load time "
+     "(models.minimax_h3.loader.MINIMAX_H3_VAE_TILING_POLICY -- flipping it changes the "
+     "decoded output, not just VRAM), and core.pipeline_backends.minimax_h3 never reads the "
+     "per-generation vae_tiling parameter")
+_add("acestep", "vae_tiling",
+     "VAE decode tiling is not supported on the ACE-Step audio model: its Oobleck VAE is an "
+     "audio codec with no spatial dimension to tile, and core.pipeline_backends.acestep never "
+     "reads the vae_tiling parameter")
+_add("minimax_music3", "vae_tiling",
+     "VAE decode tiling is not supported on MiniMax Music 3: its vocoder is the decoder half "
+     "of a music-specific autoencoder (the DAV) with no spatial dimension to tile, and "
+     "core.pipeline_backends.minimax_music3 never reads the vae_tiling parameter")
+
+# Block-swap sub-options fixed by architecture-specific staging requirements. Block swap
+# ITSELF remains supported on both -- only these three sub-options are pinned by the loop
+# wrapper's own constructor call rather than threaded from the request. Documentation-only
+# today: the arming params are Form() params on the image routes only, and neither video
+# arch is served by those.
+_add("ltx2", "block_swap_h2d_only",
+     "LTX-2.3's block-swap wrapper hardcodes h2d_only=True (core.pipeline_backends.ltx2): "
+     "generation weights are frozen, so the H2D-only path (no device->host eviction of "
+     "read-only weights) is strictly better and the per-generation toggle is not consulted")
+_add("ltx2", "block_swap_pinned_memory",
+     "LTX-2.3's block-swap wrapper hardcodes use_pinned_memory=False at construction "
+     "(core.pipeline_backends.ltx2), but its forced H2D-only mode allocates its own permanent "
+     "pinned CPU weight masters unconditionally (TransformerBlockOffloader._h2d_setup); the "
+     "per-generation toggle is superseded by that, not consulted")
+_add("ltx2", "block_swap_ring_size",
+     "LTX-2.3's block-swap wrapper never passes block_swap_ring_size to TransformerBlockOffloader "
+     "(core.pipeline_backends.ltx2), so the offloader's default ring of 2 GPU weight-buffer slots "
+     "is always used regardless of the request")
+_add("minimax_h3", "block_swap_h2d_only",
+     "MiniMax-H3's block-swap wrapper hardcodes h2d_only=False (core.pipeline_backends.minimax_h3): "
+     "a swappable block mixes float8_e4m3fn Fp8Linear weights with the float32 adaln_proj.linear, "
+     "and H2D-only's coalesced flat buffer needs one dtype across the block, so it would detect the "
+     "mismatch and fall back to the standard swap anyway; the per-generation toggle is not consulted")
+_add("minimax_h3", "block_swap_pinned_memory",
+     "MiniMax-H3's block-swap wrapper hardcodes use_pinned_memory=False at construction "
+     "(core.pipeline_backends.minimax_h3); the per-generation toggle is not consulted")
+_add("minimax_h3", "block_swap_ring_size",
+     "block_swap_ring_size only affects TransformerBlockOffloader's H2D-only ring, and "
+     "MiniMax-H3 hardcodes h2d_only=False (mixed Fp8Linear/float32 weights in a swappable "
+     "block cannot coalesce into one flat buffer), so the ring is never built and the "
+     "per-generation toggle is not consulted")
 
 # ---------------------------------------------------------------------------
 # MiniMax-H3 (joint video + audio DiT, driven through /generate/txt2vid).

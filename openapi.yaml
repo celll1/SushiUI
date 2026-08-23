@@ -9932,11 +9932,22 @@ components:
           minimum: 1
           maximum: 150
           default: 20
+          description: |
+            This schema's default (20) is the shared value served to most
+            architectures. An omitted `steps` is resolved server-side through
+            `image_arch_overlays` (see `GET /schema/generation-defaults`);
+            SenseNova U1.5 currently resolves to 50, not this default.
         cfg_scale:
           type: number
           minimum: 0
           maximum: 30
           default: 7.0
+          description: |
+            This schema's default (7.0) is the shared value served to most
+            architectures. An omitted `cfg_scale` is resolved server-side
+            through `image_arch_overlays` (see
+            `GET /schema/generation-defaults`); SenseNova U1.5 currently
+            resolves to 4.0, not this default.
         timestep_shift:
           type: number
           default: 3.0

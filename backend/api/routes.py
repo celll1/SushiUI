@@ -228,17 +228,28 @@ class ControlNetConfig(BaseModel):
     # reference image, strength maps to ref_k_strength, start_step/end_step gate
     # the denoise-loop step range. See core.inference.reference_style.
     is_style_transfer: Optional[bool] = None
+    style_transfer_type: Optional[str] = None  # "style" (default) or "character"; see StyleTransferConfig
+    # Multi-reference combine mode ("stack" / "common_concept"); read off the
+    # FIRST style entry by process_controlnet_configs.
+    style_combine_mode: Optional[str] = None
     style_adain_strength: Optional[float] = None
     style_blocks: Optional[str] = None  # "lo-hi" block range string; None = all blocks
+    # RoPE-frequency-scale curve endpoints. No literal fallback: None propagates so
+    # style_config_from_dict applies the StyleTransferConfig dataclass default
+    # (a literal here would be a second, stale source of truth).
+    style_high_scale_start: Optional[float] = None
+    style_high_scale_end: Optional[float] = None
+    style_low_scale_start: Optional[float] = None
     # Deferred/advanced knobs (carried for parity; no-op at these defaults).
     style_low_scale_end: Optional[float] = None
-    style_high_scale: Optional[float] = None
     style_beta: Optional[float] = None
     style_value_mode: Optional[str] = None
     style_value_adain_strength: Optional[float] = None
     style_ref_value_mix: Optional[float] = None
     style_late_release: Optional[float] = None
     style_rope_offset: Optional[int] = None
+    # CFG-decoupled style guidance (SDXL/SD1.5 prototype only). None/<=0 = disabled.
+    style_guidance_scale: Optional[float] = None
 
 class AddTagRequest(BaseModel):
     tag: str

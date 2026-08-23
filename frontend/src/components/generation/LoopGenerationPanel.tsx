@@ -74,7 +74,6 @@ export interface LoopGenerationStep {
     style_adain_strength?: number;
     style_blocks?: string;
     style_low_scale_end?: number;
-    style_high_scale?: number;
     style_beta?: number;
     style_value_mode?: string;
     style_ref_value_mix?: number;
@@ -883,7 +882,6 @@ export default function LoopGenerationPanel({
                         style_adain_strength: cn.style_adain_strength,
                         style_blocks: cn.style_blocks,
                         style_low_scale_end: cn.style_low_scale_end,
-                        style_high_scale: cn.style_high_scale,
                         style_beta: cn.style_beta,
                         style_value_mode: cn.style_value_mode,
                         style_ref_value_mix: cn.style_ref_value_mix,

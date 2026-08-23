@@ -633,7 +633,8 @@ export default function Img2ImgPanel({ onTabChange }: Img2ImgPanelProps = {}) {
   // File (not base64) so it can carry through the queue as `inputAudio`.
   const [referenceAudioFile, setReferenceAudioFile] = useState<File | null>(null);
   const [referenceAudioPreview, setReferenceAudioPreview] = useState<string | null>(null);
-  // Revoke the reference-audio blob URL on unmount (mirrors previewBlobUrlRef cleanup).
+  // Revoke the reference-audio blob URL on unmount; createObjectURL persists
+  // until explicitly revoked.
   useEffect(() => {
     return () => {
       if (referenceAudioPreview) URL.revokeObjectURL(referenceAudioPreview);
@@ -862,18 +863,9 @@ export default function Img2ImgPanel({ onTabChange }: Img2ImgPanelProps = {}) {
   const [useTrainingModel, setUseTrainingModel] = useState(false);
   const [savePreviewToGallery, setSavePreviewToGallery] = useState(false);
   const activeTraining = useActiveTraining();
-  const previewBlobUrlRef = useRef<string | null>(null);
   useEffect(() => {
     if (!activeTraining && useTrainingModel) setUseTrainingModel(false);
   }, [activeTraining, useTrainingModel]);
-  useEffect(() => {
-    return () => {
-      if (previewBlobUrlRef.current) {
-        URL.revokeObjectURL(previewBlobUrlRef.current);
-        previewBlobUrlRef.current = null;
-      }
-    };
-  }, []);
   const [isTIPODialogOpen, setIsTIPODialogOpen] = useState(false);
   const [tipoSettings, setTipoSettings] = useState<TIPOSettings>({
     model_name: "KBlueLeaf/TIPO-500M",

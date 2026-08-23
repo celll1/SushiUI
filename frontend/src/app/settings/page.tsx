@@ -1202,7 +1202,7 @@ export default function SettingsPage() {
                       }}
                       min={0.1}
                       max={4.0}
-                      step={0.1}
+                      step="any"
                       className="w-24 px-3 py-2 bg-gray-700 border border-gray-600 rounded text-gray-100 focus:ring-blue-500 focus:border-blue-500"
                     />
                     <span className="text-sm text-gray-400">×</span>

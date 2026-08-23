@@ -752,7 +752,7 @@ export default function UpscalePanel({ onTabChange }: UpscalePanelProps = {}) {
                   onCommit={(v) => setParams({ ...params, cfg_scale: v })}
                   min={1.0}
                   max={resolveBound("cfg_scale_max", generationDefaults?.param_bounds, sliderBounds, params.cfg_scale ?? 7.0)}
-                  step={0.1}
+                  step="any"
                   parse="float"
                   className="w-full"
                 />

@@ -3746,7 +3746,7 @@ export default function StudioWorkspace() {
                 {isVideoModel && <label>Frame rate<input type="number" value={form.frameRate ?? ""} onChange={(event) => setForm((current) => ({ ...current, frameRate: Number(event.target.value) }))} disabled={!generationDefaults} /></label>}
                 <label>Seed<input type="number" value={form.seed ?? ""} onChange={(event) => setForm((current) => ({ ...current, seed: Number(event.target.value) }))} disabled={!generationDefaults} /></label>
                 <label>Steps<input type="number" value={form.steps ?? ""} onChange={(event) => setForm((current) => ({ ...current, steps: Number(event.target.value) }))} disabled={!generationDefaults} /></label>
-                {!isVideoModel && <label>Denoise<input type="number" min="0" max="1" step="0.05" value={form.denoisingStrength ?? 0.75} onChange={(event) => setForm((current) => ({ ...current, denoisingStrength: Number(event.target.value) }))} /></label>}
+                {!isVideoModel && <label>Denoise<input type="number" min="0" max="1" step="any" value={form.denoisingStrength ?? 0.75} onChange={(event) => setForm((current) => ({ ...current, denoisingStrength: Number(event.target.value) }))} /></label>}
                 {!isVideoModel && <label>Sampler<input value={form.sampler ?? "euler"} onChange={(event) => setForm((current) => ({ ...current, sampler: event.target.value }))} /></label>}
               </div>
               <label className={styles.sliderField}><span>Guidance <strong>{supportsGuidance ? form.guidance ?? "—" : `Fixed by ${loadedArch}`}</strong></span><input type="range" min="0" max="20" step="0.1" value={form.guidance ?? 0} onChange={(event) => setForm((current) => ({ ...current, guidance: Number(event.target.value) }))} disabled={!generationDefaults || !supportsGuidance} /></label>
@@ -3786,9 +3786,9 @@ export default function StudioWorkspace() {
                     </section>
                   )}
                   <div className={styles.inspectorFields}>
-                    <label>Timeline start<input type="number" step="0.04" min="0" max={project.duration - selectedClip.duration} value={selectedClip.start} onChange={(event) => updateSelectedClip({ start: Number(event.target.value) })} /></label>
-                    <label>Duration<input type="number" step="0.04" min="0.1" max={project.duration - selectedClip.start} value={selectedClip.duration} onChange={(event) => updateSelectedClip({ duration: Number(event.target.value) })} /></label>
-                    <label>Source in<input type="number" step="0.04" min="0" value={selectedClip.sourceIn} onChange={(event) => updateSelectedClip({ sourceIn: Number(event.target.value) })} /></label>
+                    <label>Timeline start<input type="number" step="any" min="0" max={project.duration - selectedClip.duration} value={selectedClip.start} onChange={(event) => updateSelectedClip({ start: Number(event.target.value) })} /></label>
+                    <label>Duration<input type="number" step="any" min="0.1" max={project.duration - selectedClip.start} value={selectedClip.duration} onChange={(event) => updateSelectedClip({ duration: Number(event.target.value) })} /></label>
+                    <label>Source in<input type="number" step="any" min="0" value={selectedClip.sourceIn} onChange={(event) => updateSelectedClip({ sourceIn: Number(event.target.value) })} /></label>
                     {selectedAsset?.kind !== "audio" && <label>Canvas fit<select value={selectedClip.fitMode || "cover"} onChange={(event) => updateSelectedClip({ fitMode: event.target.value as StudioClipFitMode })}><option value="cover">Fill and crop</option><option value="contain">Fit and letterbox</option></select></label>}
                   </div>
                   <section className={styles.inspectorSection}><div><strong>Link group</strong><small>Stream-aware linked A/V editing is planned for the backend media-import phase.</small></div><button disabled><Link2 size={14} /> Unavailable</button></section>

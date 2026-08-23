@@ -5,6 +5,7 @@ import "./globals.css";
 import { StartupProvider } from "@/contexts/StartupContext";
 import { ModelComponentsProvider } from "@/contexts/ModelComponentsContext";
 import { GenerationQueueProvider } from "@/contexts/GenerationQueueContext";
+import GenerationQueueProcessor from "@/components/generation/GenerationQueueProcessor";
 import { AuthProvider } from "@/contexts/AuthContext";
 import { TagSuggestionsProvider } from "@/contexts/TagSuggestionsContext";
 import { useEffect } from "react";
@@ -28,7 +29,12 @@ function LayoutContent({ children }: { children: React.ReactNode }) {
       <TagSuggestionsProvider>
         <StartupProvider>
           <ModelComponentsProvider>
-            <GenerationQueueProvider>{children}</GenerationQueueProvider>
+            <GenerationQueueProvider>
+              {/* Headless: dispatches the queue regardless of which panel, if
+                  any, is mounted. */}
+              <GenerationQueueProcessor />
+              {children}
+            </GenerationQueueProvider>
           </ModelComponentsProvider>
         </StartupProvider>
       </TagSuggestionsProvider>

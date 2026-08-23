@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useSearchParams } from "next/navigation";
 import Sidebar from "@/components/common/Sidebar";
 import Txt2ImgPanel from "@/components/generation/Txt2ImgPanel";
@@ -39,7 +39,8 @@ function GeneratePageContent() {
   const [activeTab, setActiveTab] = useState<GenerateTab>(() => tabFromParam(tabParam));
   const [galleryImages, setGalleryImages] = useState<GalleryEntry[]>([]);
   const [maxGalleryImages, setMaxGalleryImages] = useState(30);
-  const { setGenerateForever } = useGenerationQueue();
+  const { setGenerateForever, resultFeed } = useGenerationQueue();
+  const lastFeedIdRef = useRef(0);
 
   useEffect(() => {
     if (tabParam !== null) setActiveTab(tabFromParam(tabParam));
@@ -57,6 +58,24 @@ function GeneratePageContent() {
   useEffect(() => {
     setGenerateForever(false);
   }, [activeTab, setGenerateForever]);
+
+  // Results produced by the global queue processor. Panels that still dispatch
+  // their own types keep using the onImageGenerated prop below until they are
+  // migrated; the two sources never carry the same result.
+  useEffect(() => {
+    const fresh = resultFeed.filter((entry) => entry.id > lastFeedIdRef.current);
+    if (fresh.length === 0) return;
+    lastFeedIdRef.current = fresh[fresh.length - 1].id;
+    setGalleryImages((prev) => [
+      ...prev,
+      ...fresh.map((entry) => ({
+        url: entry.url,
+        timestamp: entry.timestamp,
+        kind: entry.kind,
+        playbackUrl: entry.playbackUrl,
+      })),
+    ]);
+  }, [resultFeed]);
 
   const handleImageGenerated = (
     imageUrl: string,

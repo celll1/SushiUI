@@ -20,21 +20,18 @@ import ResizableColumns, {
 } from "../common/ResizableColumns";
 import { fixFloatingPointParams } from "@/utils/numberUtils";
 import {
-  generateUpscale,
   fetchUpscalerModels,
   getSamplers,
   getScheduleTypes,
   UpscaleParams,
   UpscalerModelInfo,
   archSupportsFeature,
-  isGenerationStalledError,
 } from "@/utils/api";
 import { saveTempImage, loadTempImage, deleteTempImageRef } from "@/utils/tempImageStorage";
 import { previewStorageKeys, saveImagePreview, clearImagePreview, outputExists, stripCacheBuster, withCacheBuster, imagePreviewGone } from "@/utils/previewStorage";
 import { sendImageToImg2Img, sendImageToInpaint, sendImageToOutpaint } from "@/utils/sendHelpers";
 import { useStartup } from "@/contexts/StartupContext";
 import { useGenerationQueue } from "@/contexts/GenerationQueueContext";
-import { wsClient, CFGMetrics } from "@/utils/websocket";
 import { useSmoothProgress } from "@/hooks/useSmoothProgress";
 import SendToStudioButton from "../studio/SendToStudioButton";
 
@@ -112,21 +109,8 @@ export default function UpscalePanel({ onTabChange, onImageGenerated }: UpscaleP
     isGeneratingRef.current = isGenerating;
   }, [isGenerating]);
 
-  const handleProgress = useCallback((step: number, total: number, message: string, preview?: string, metrics?: CFGMetrics, subProgress?: number) => {
-    if (isGeneratingRef.current) {
-      setProgress(step);
-      setTotalSteps(total);
-      reportSubProgress(step, subProgress);
-    }
-  }, [reportSubProgress]);
-
-  useEffect(() => {
-    wsClient.connect();
-    wsClient.subscribe(handleProgress);
-    return () => {
-      wsClient.unsubscribe(handleProgress);
-    };
-  }, [handleProgress]);
+  // Progress arrives via the queue context's own global WebSocket subscription
+  // (progressSnapshot), which keeps running while this panel is unmounted.
 
   // Initial load from localStorage
   useEffect(() => {
@@ -397,7 +381,11 @@ export default function UpscalePanel({ onTabChange, onImageGenerated }: UpscaleP
   const supportsNegativePrompt = diffusionPromptEnabled
     && archSupportsFeature(archCapabilities, modelInfo?.type, "negative_prompt");
 
-  const { addToQueue, startNextInQueue, completeCurrentItem, failCurrentItem, currentItem, queue, progressSnapshot, completedResults, publishCompletedResult } = useGenerationQueue();
+  const { addToQueue, currentItem, progressSnapshot, completedResults } = useGenerationQueue();
+
+  // Which queued item this panel last cleared its display for, so a run is
+  // cleared once at dispatch rather than on every progress tick.
+  const clearedForItemRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (!currentItem || currentItem.type !== "upscale") {
@@ -407,6 +395,12 @@ export default function UpscalePanel({ onTabChange, onImageGenerated }: UpscaleP
     }
     isGeneratingRef.current = true;
     setIsGenerating(true);
+    if (clearedForItemRef.current !== currentItem.id) {
+      clearedForItemRef.current = currentItem.id;
+      setProgress(0);
+      setTotalSteps(0);
+      setGeneratedImage(null);
+    }
     if (progressSnapshot?.itemId !== currentItem.id) return;
     setProgress(progressSnapshot.step);
     setTotalSteps(progressSnapshot.totalSteps);
@@ -449,6 +443,7 @@ export default function UpscalePanel({ onTabChange, onImageGenerated }: UpscaleP
 
     addToQueue({
       type: "upscale",
+      panel: "upscale",
       params: {
         ...params,
         negative_prompt: supportsNegativePrompt ? params.negative_prompt : "",
@@ -457,82 +452,6 @@ export default function UpscalePanel({ onTabChange, onImageGenerated }: UpscaleP
       prompt: "Upscale",
     });
   };
-
-  const processQueueRef = useRef<() => Promise<void>>();
-
-  const processQueue = useCallback(async () => {
-    if (isGeneratingRef.current) return;
-
-    const nextItem = startNextInQueue(["upscale"]);
-    if (!nextItem || nextItem.type !== "upscale") return;
-
-    isGeneratingRef.current = true;
-    setIsGenerating(true);
-    setProgress(0);
-    setTotalSteps(0);
-    setGeneratedImage(null);
-
-    try {
-      const inputImageToUse = nextItem.inputImage;
-      if (!inputImageToUse) {
-        throw new Error("No input image available for upscale generation");
-      }
-
-      const result = await generateUpscale(nextItem.params as UpscaleParams, inputImageToUse);
-      const imageUrl = `/outputs/${result.image.filename}`;
-      const imageInfo = { width: result.image.width, height: result.image.height };
-      setGeneratedImage(imageUrl);
-      setGeneratedImageInfo(imageInfo);
-      setGeneratedImageParams(nextItem.params as UpscaleParams);
-      publishCompletedResult({ panel: "upscale", kind: "image", url: imageUrl, info: imageInfo, params: nextItem.params });
-
-      // Notify the page so the result reaches the shared top-right strip, the
-      // same way every other generation panel does. An upscale result is a
-      // plain image URL under /outputs/, so the strip renders it as a tile and
-      // the full-screen viewer's prev/next walks it along with the rest.
-      if (onImageGenerated) {
-        onImageGenerated(imageUrl, { kind: "image" });
-      }
-
-      isGeneratingRef.current = false;
-      setIsGenerating(false);
-      setProgress(0);
-      completeCurrentItem();
-
-      setTimeout(() => {
-        if (processQueueRef.current) {
-          processQueueRef.current();
-        }
-      }, 100);
-    } catch (error: any) {
-      console.error("[Upscale] Generation failed:", error);
-      // alert() blocks the JS thread; reset state and requeue before showing
-      // it, otherwise the queue effect sees a stale isGenerating until the
-      // dialog closes.
-      isGeneratingRef.current = false;
-      setIsGenerating(false);
-      setProgress(0);
-      failCurrentItem();
-
-      setTimeout(() => {
-        if (processQueueRef.current) {
-          processQueueRef.current();
-        }
-      }, 100);
-      alert(isGenerationStalledError(error) ? error.message : "Upscale generation failed. Please check console for details.");
-    }
-  }, [isGenerating, startNextInQueue, completeCurrentItem, failCurrentItem, onImageGenerated, publishCompletedResult]);
-
-  processQueueRef.current = processQueue;
-
-  useEffect(() => {
-    const hasPendingItems = queue.some(item => item.status === "pending" && item.type === "upscale");
-    const isCurrentItemNull = currentItem === null;
-
-    if (hasPendingItems && isCurrentItemNull && !isGenerating) {
-      processQueue();
-    }
-  }, [queue, currentItem, isGenerating, processQueue]);
 
   const sendToTxt2Img = () => {
     if (!generatedImage) {

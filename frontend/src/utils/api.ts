@@ -7025,6 +7025,7 @@ export interface TrainingRunCreateRequest {
   dataset_configs?: DatasetConfigItem[];  // Multiple datasets with filters
   run_name?: string;  // Optional - will use UUID if not provided
   training_method: "lora" | "relora" | "full_finetune" | "controlnet" | "vae_decoder";
+  sensenova_mot_phase_eviction?: boolean;
   base_model_path: string;
   // Decoder-only VAE fine-tune options (training_method "vae_decoder" only).
   // Nested so the backend can tell "the caller asked for this" from "a diffusion

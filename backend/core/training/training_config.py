@@ -55,6 +55,8 @@ def _build_train_section(
 
     The flags `include_*` allow each training method to opt in/out of optional sections.
     """
+    from api.param_defaults import TRAINING_DEFAULTS as _TD
+
     lr = learning_rate if learning_rate is not None else p.get("learning_rate", 1e-4)
     train: Dict[str, Any] = {
         "batch_size": p.get("batch_size", 1),
@@ -205,6 +207,9 @@ def _build_train_section(
     if include_block_swap:
         train["blocks_to_swap"] = p.get("blocks_to_swap", 0)
         train["use_pinned_memory"] = p.get("use_pinned_memory", False)
+        train["sensenova_mot_phase_eviction"] = p.get(
+            "sensenova_mot_phase_eviction", _TD["sensenova_mot_phase_eviction"]
+        )
         train["block_swap_h2d_only"] = p.get("block_swap_h2d_only", False)
         train["block_swap_ring_size"] = p.get("block_swap_ring_size", 2)
         train["num_optimizer_groups"] = p.get("num_optimizer_groups", 0)
@@ -242,7 +247,6 @@ def _build_train_section(
     train["fp8_base_dtype"] = p.get("fp8_base_dtype", None)
     # MiniMax-H3 joint video+audio objective weight. Read unconditionally; every
     # other architecture ignores it. SSoT: api/param_defaults.TRAINING_DEFAULTS.
-    from api.param_defaults import TRAINING_DEFAULTS as _TD
     train["audio_loss_weight"] = p.get("audio_loss_weight", _TD["audio_loss_weight"])
     # torch.compile (opt-in DiT training acceleration). Persisted so resumes
     # reproduce the same compile mode. Non-DiT / LoRA / block-swap runs read it

@@ -92,6 +92,9 @@ def encode_prompt(
     from core.models.sensenova.vendor.utils import SYSTEM_MESSAGE_FOR_GEN
 
     transformer = trainer.transformer
+    phase_evictor = getattr(trainer, "sensenova_phase_evictor", None)
+    if phase_evictor is not None:
+        phase_evictor.enter_prefix()
     query = transformer._build_t2i_query(
         prompt,
         system_message=SYSTEM_MESSAGE_FOR_GEN,
@@ -104,6 +107,9 @@ def encode_prompt(
         cache, _ = transformer._t2i_prefix_forward(input_ids, indexes, attention_mask)
     expected_layers = len(transformer.language_model.model.layers)
     _assert_immutable_prefix_cache(cache, expected_layers)
+    if phase_evictor is not None:
+        phase_evictor.enter_denoise()
+        phase_evictor.assert_generation_resident()
     return SenseNovaTrainingPrefix(cache=cache, text_length=int(input_ids.shape[1]))
 
 
@@ -128,6 +134,10 @@ def train_step(
     del profile_vram  # Central profiling owns peak-memory reporting.
     if not isinstance(prefix, SenseNovaTrainingPrefix):
         raise TypeError("SenseNova train_step requires SenseNovaTrainingPrefix")
+    phase_evictor = getattr(trainer, "sensenova_phase_evictor", None)
+    if phase_evictor is not None:
+        phase_evictor.enter_denoise()
+        phase_evictor.assert_generation_resident()
     if images.ndim != 4 or images.shape[0] != 1 or images.shape[1] != 3:
         raise ValueError("SenseNova training currently requires batch_size=1 BCHW RGB")
     height, width = images.shape[-2:]

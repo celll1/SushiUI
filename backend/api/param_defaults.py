@@ -2320,6 +2320,7 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     # Block swap
     "blocks_to_swap": 0,
     "use_pinned_memory": False,
+    "sensenova_mot_phase_eviction": False,
     "block_swap_h2d_only": False,   # H2D-only swap (FLUX.2 LoRA training: no D2H of frozen base)
     "block_swap_ring_size": 2,      # GPU weight-buffer ring slots (>=1)
     "num_optimizer_groups": 0,

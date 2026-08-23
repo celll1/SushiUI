@@ -18610,6 +18610,17 @@ components:
         use_pinned_memory:
           type: 'boolean'
           default: false
+        sensenova_mot_phase_eviction:
+          type: 'boolean'
+          default: false
+          description: >-
+            SenseNova LoRA training only. Opt-in phase-exclusive eviction of
+            the frozen MoT weight half to pinned CPU memory. Prefix keeps the
+            understanding half resident; denoise, backward, optimizer step and
+            periodic checkpoint save keep the generation half and its LoRA
+            weights resident. Emergency saves may run after CPU normalization.
+            Requires batch_size=1, blocks_to_swap=0,
+            num_optimizer_groups=0 and reference conditioning disabled.
         block_swap_h2d_only:
           type: 'boolean'
           default: false

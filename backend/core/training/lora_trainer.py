@@ -101,6 +101,8 @@ class LoRATrainer(BaseTrainer):
         # Apply LoRA using adapter
         self._apply_lora()
 
+        self._setup_sensenova_phase_eviction()
+
         # Block swap deferred until after LoRA wraps Linear modules — the
         # LayerOffloadConductor snapshots layer state_dicts at registration
         # time and post-wrap key changes would break the swap.
@@ -134,7 +136,7 @@ class LoRATrainer(BaseTrainer):
 
     def _create_adapter(self):
         """Create model-specific LoRA adapter based on detected model type."""
-        if self.is_sensenova:
+        if getattr(self, "is_sensenova", False):
             self.adapter = SenseNovaLoRAAdapter(
                 self, self.lora_rank, self.lora_alpha, self.lora_dtype
             )
@@ -271,6 +273,26 @@ class LoRATrainer(BaseTrainer):
         else:
             self.adapter = SD15LoRAAdapter(self, self.lora_rank, self.lora_alpha, self.lora_dtype)
             print(f"{self.log_prefix} Using SD15LoRAAdapter")
+
+    def train(self, *args, **kwargs):
+        try:
+            return super().train(*args, **kwargs)
+        finally:
+            evictor = getattr(self, "sensenova_phase_evictor", None)
+            if evictor is not None:
+                try:
+                    evictor.teardown()
+                except Exception as exc:
+                    print(f"{self.log_prefix} WARNING: SenseNova eviction teardown failed: {exc}")
+                finally:
+                    self.sensenova_phase_evictor = None
+
+    def _setup_sensenova_phase_eviction(self) -> None:
+        if not (self.is_sensenova and self.sensenova_mot_phase_eviction):
+            return
+        from .sensenova_phase_eviction import install_training_phase_eviction
+
+        install_training_phase_eviction(self)
 
     def _apply_lora(self):
         """Apply LoRA to U-Net/Transformer and Text Encoders using adapter."""

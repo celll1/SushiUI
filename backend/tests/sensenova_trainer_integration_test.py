@@ -1,10 +1,13 @@
 import sys
+import asyncio
+import inspect
 from pathlib import Path
 from types import MethodType, SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 import torch
+import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -62,6 +65,61 @@ def test_runner_enforces_b1_onthefly_and_disables_sampling():
     assert train["use_reference_images"] is False
     assert process["sample"]["sample_every"] == 0
     assert _is_bf16_native_base_model("models/sensenova")
+
+
+@pytest.mark.parametrize(
+    "extra,message",
+    [
+        ({"num_optimizer_groups": 2}, "num_optimizer_groups"),
+        ({"block_swap_h2d_only": True}, "block_swap_h2d_only"),
+    ],
+)
+def test_phase_eviction_rejects_block_swap_only_optimizer_modes(extra, message):
+    train = {
+        "batch_size": 1,
+        "blocks_to_swap": 0,
+        "sensenova_mot_phase_eviction": True,
+        **extra,
+    }
+    with patch.object(ModelLoader, "detect_model_type", return_value="sensenova"):
+        with pytest.raises(ValueError, match=message):
+            _apply_sensenova_training_contract("model", "lora", train, {})
+
+
+def test_phase_eviction_api_yaml_openapi_and_frontend_parity():
+    from api.param_defaults import TRAINING_DEFAULTS
+    from api.routes import TrainingRunCreateRequest, get_training_defaults
+    from core.training.training_config import TrainingConfigGenerator
+
+    assert TRAINING_DEFAULTS["sensenova_mot_phase_eviction"] is False
+    assert asyncio.run(get_training_defaults())["sensenova_mot_phase_eviction"] is False
+    request = TrainingRunCreateRequest(
+        training_method="lora", base_model_path="models/sensenova"
+    )
+    assert request.sensenova_mot_phase_eviction is False
+    config = yaml.safe_load(
+        TrainingConfigGenerator.generate_lora_config(
+            {**request.model_dump(), "total_steps": 1, "epochs": None},
+            run_name="phase-eviction",
+            base_model_path=request.base_model_path,
+            output_dir="output",
+        )
+    )
+    train = config["config"]["process"][0]["train"]
+    assert train["sensenova_mot_phase_eviction"] is False
+
+    root = Path(__file__).resolve().parents[2]
+    spec = yaml.safe_load((root / "openapi.yaml").read_text(encoding="utf-8"))
+    prop = spec["components"]["schemas"]["TrainingRunCreateRequest"]["properties"][
+        "sensenova_mot_phase_eviction"
+    ]
+    assert prop["default"] is False
+    api_source = (root / "frontend/src/utils/api.ts").read_text(encoding="utf-8")
+    form_source = (
+        root / "frontend/src/components/training/TrainingConfig.tsx"
+    ).read_text(encoding="utf-8")
+    assert "sensenova_mot_phase_eviction?: boolean" in api_source
+    assert 'updateParam("sensenova_mot_phase_eviction"' in form_source
 
 
 @pytest.mark.parametrize(
@@ -176,6 +234,108 @@ def test_registry_and_lora_adapter_selection():
 
     assert resolve_arch_name(trainer) == "sensenova"
     assert isinstance(trainer.adapter, SenseNovaLoRAAdapter)
+
+
+def test_phase_eviction_toggle_off_does_not_install_selector():
+    trainer = LoRATrainer.__new__(LoRATrainer)
+    trainer.is_sensenova = True
+    trainer.sensenova_mot_phase_eviction = False
+    with patch(
+        "core.training.sensenova_phase_eviction.install_training_phase_eviction"
+    ) as install:
+        trainer._setup_sensenova_phase_eviction()
+    install.assert_not_called()
+
+
+@pytest.mark.parametrize("fails", [False, True])
+def test_lora_train_always_tears_down_phase_eviction(fails):
+    calls = []
+    trainer = LoRATrainer.__new__(LoRATrainer)
+    trainer.log_prefix = "[test]"
+    trainer.sensenova_phase_evictor = SimpleNamespace(
+        teardown=lambda: calls.append("teardown")
+    )
+    effect = RuntimeError("train failed") if fails else None
+    with patch.object(BaseTrainer, "train", side_effect=effect, return_value="done"):
+        if fails:
+            with pytest.raises(RuntimeError, match="train failed"):
+                trainer.train()
+        else:
+            assert trainer.train() == "done"
+    assert calls == ["teardown"]
+    assert trainer.sensenova_phase_evictor is None
+
+
+@pytest.mark.parametrize("train_fails", [False, True])
+def test_teardown_error_does_not_mask_train_result(train_fails, capsys):
+    def teardown():
+        raise RuntimeError("teardown failed")
+
+    trainer = LoRATrainer.__new__(LoRATrainer)
+    trainer.log_prefix = "[test]"
+    trainer.sensenova_phase_evictor = SimpleNamespace(teardown=teardown)
+    effect = RuntimeError("train failed") if train_fails else None
+    with patch.object(BaseTrainer, "train", side_effect=effect, return_value="done"):
+        if train_fails:
+            with pytest.raises(RuntimeError, match="train failed"):
+                trainer.train()
+        else:
+            assert trainer.train() == "done"
+    assert "SenseNova eviction teardown failed" in capsys.readouterr().out
+    assert trainer.sensenova_phase_evictor is None
+
+
+def test_optimizer_step_checks_generation_residency_first():
+    source = inspect.getsource(BaseTrainer.train)
+    step_branch = source.split("elif should_step_optimizer:", 1)[1]
+    assert step_branch.index("assert_generation_resident()") < step_branch.index(
+        "self.optimizer.step()"
+    )
+    assert "assert_generation_resident" not in inspect.getsource(
+        LoRATrainer.save_checkpoint
+    )
+
+
+def _sensenova_staging_trainer(evictor):
+    trainer = _ConcreteTrainer.__new__(_ConcreteTrainer)
+    for name in (
+        "zimage", "anima", "lens", "ideogram4", "minit2i", "krea2",
+        "ltx2", "acestep", "minimax_h3",
+    ):
+        setattr(trainer, f"is_{name}", False)
+    trainer.is_sensenova = True
+    trainer.device = torch.device("cpu")
+    calls = []
+
+    class Transformer:
+        def to(self, device):
+            calls.append(device)
+
+    trainer.transformer_original = Transformer()
+    trainer.sensenova_phase_evictor = evictor
+    return trainer, calls
+
+
+@pytest.mark.parametrize("state", ["prefix", "denoise"])
+def test_active_phase_eviction_blocks_generic_main_model_staging(state):
+    evictor = SimpleNamespace(state=state)
+    trainer, calls = _sensenova_staging_trainer(evictor)
+
+    trainer.move_main_model_to_gpu()
+    trainer.move_main_model_to_cpu()
+
+    assert calls == []
+    assert evictor.state == state
+    assert trainer._main_model_module() is trainer.transformer_original
+
+
+def test_inactive_phase_eviction_keeps_generic_main_model_staging():
+    trainer, calls = _sensenova_staging_trainer(None)
+
+    trainer.move_main_model_to_gpu()
+    trainer.move_main_model_to_cpu()
+
+    assert calls == [torch.device("cpu"), "cpu"]
 
 
 def test_base_dispatch_loads_sensenova_ops():

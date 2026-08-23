@@ -234,6 +234,7 @@ const DEFAULT_PARAMS: TrainingRunCreateRequest = {
   danbooru_aug_keep_tokens: 0,
   blocks_to_swap: 0,
   use_pinned_memory: false,
+  sensenova_mot_phase_eviction: false,
   block_swap_h2d_only: false,
   block_swap_ring_size: 2,
   num_optimizer_groups: 0,
@@ -663,6 +664,11 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     return model?.architecture === "acestep";
   };
 
+  const isSenseNovaModel = (modelPath: string): boolean => {
+    const model = availableModels.find(m => m.path === modelPath);
+    return model?.architecture === "sensenova";
+  };
+
   const getModelArchitecture = (modelPath: string): string | undefined => {
     if (modelPath.startsWith("scratch:minit2i:")) return "minit2i";
     const model = availableModels.find(m => m.path === modelPath);
@@ -844,6 +850,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       latent_encoding_swap_interval: params.latent_encoding_swap_interval,
       blocks_to_swap: params.blocks_to_swap,
       use_pinned_memory: params.use_pinned_memory,
+      sensenova_mot_phase_eviction: params.sensenova_mot_phase_eviction,
       block_swap_h2d_only: params.block_swap_h2d_only,
       block_swap_ring_size: params.block_swap_ring_size,
       num_optimizer_groups: params.num_optimizer_groups,
@@ -1099,7 +1106,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       "danbooru_aug_shuffle_tags", "danbooru_aug_shuffle_keep_first_n",
       "danbooru_aug_tag_dropout_rate", "danbooru_aug_tag_dropout_keep_first_n",
       "danbooru_aug_caption_dropout_rate", "danbooru_aug_keep_tokens",
-      "blocks_to_swap", "use_pinned_memory", "block_swap_h2d_only", "block_swap_ring_size", "num_optimizer_groups",
+      "blocks_to_swap", "use_pinned_memory", "sensenova_mot_phase_eviction", "block_swap_h2d_only", "block_swap_ring_size", "num_optimizer_groups",
       "bundle_vae",
       "activation_dispatch_enable", "activation_dispatch_margin_gb",
       "activation_dispatch_seed_coef", "activation_dispatch_residual_frac",
@@ -1784,6 +1791,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       latentEncodingSwapInterval,
       blocksToSwap,
       usePinnedMemory,
+      sensenovaMotPhaseEviction: params.sensenova_mot_phase_eviction,
       numOptimizerGroups,
       multiNoiseTimesteps,
       timestepDistribution,
@@ -1976,6 +1984,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     if (config.latentEncodingSwapInterval !== undefined) updateParam("latent_encoding_swap_interval", config.latentEncodingSwapInterval);
     if (config.blocksToSwap !== undefined) updateParam("blocks_to_swap", config.blocksToSwap);
     if (config.usePinnedMemory !== undefined) updateParam("use_pinned_memory", config.usePinnedMemory);
+    if (config.sensenovaMotPhaseEviction !== undefined) updateParam("sensenova_mot_phase_eviction", config.sensenovaMotPhaseEviction);
     if (config.numOptimizerGroups !== undefined) updateParam("num_optimizer_groups", config.numOptimizerGroups);
     if (config.multiNoiseTimesteps !== undefined) updateParam("multi_noise_timesteps", config.multiNoiseTimesteps);
     if (config.timestepDistribution !== undefined) setTimestepDistribution(config.timestepDistribution);
@@ -4403,6 +4412,27 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
             Lower precision dtypes reduce VRAM usage. FP8 can save ~50% VRAM. Use FP32 output for best loss calculation accuracy. Flash Attention improves training speed and reduces memory usage. Min-SNR gamma reweights loss to balance learning across all timesteps. Reconstruction loss weight enables dual loss training (direct image quality optimization).
           </p>
         </div>
+
+        {isSenseNovaModel(baseModelPath) && trainingMethod === "lora" && (
+          <div className="break-inside-avoid border border-gray-700 rounded p-4 space-y-2">
+            <h3 className="text-sm font-medium text-gray-300">SenseNova Training Memory</h3>
+            <div className="flex items-center space-x-2">
+              <input
+                type="checkbox"
+                id="sensenova-mot-phase-eviction"
+                checked={params.sensenova_mot_phase_eviction ?? false}
+                onChange={(e) => updateParam("sensenova_mot_phase_eviction", e.target.checked)}
+                className="w-4 h-4"
+              />
+              <label htmlFor="sensenova-mot-phase-eviction" className="text-xs text-gray-300 cursor-pointer">
+                MoT Phase Eviction
+              </label>
+            </div>
+            <p className="text-xs text-gray-500">
+              Keeps only the active understanding or generation weight half on GPU. Opt-in; requires batch size 1, Blocks to Swap 0, Optimizer Groups 0, and H2D-only off.
+            </p>
+          </div>
+        )}
 
         {/* Block Swap Settings (VRAM Optimization) */}
         <div className="break-inside-avoid border border-gray-700 rounded p-4 space-y-3">

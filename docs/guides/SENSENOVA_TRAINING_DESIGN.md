@@ -84,7 +84,7 @@
 | `ARCH_REGISTRY` | 未登録（12 arch。sensenova と minimax_music3 が除外） | 要追加 |
 | `arch/sensenova.py` / `ops/sensenova_ops.py` / `adapters/sensenova_adapter.py` | いずれも存在しない | 新規 3 ファイル |
 | `base_trainer.py` の `is_sensenova` | 0 件 | 要追加（§9） |
-| `detect_prediction_config` | flow-matching arch 一覧に `sensenova` が**無く、`ddpm` に落ちる** | 要追加 |
+| `detect_prediction_config` | flow-matching arch 一覧に `sensenova` が登録済み | 変更不要（退行テストのみ） |
 | `TRAINING_UNSUPPORTED` | sensenova のエントリ無し（拒否ではなく単に不在） | Phase 2 で追加 |
 
 つまり「推論用の部品はあるが学習用の配線が一本も無い」状態である。逆に、
@@ -219,7 +219,8 @@ understanding branch を凍結して phase 1 を `no_grad` にすれば、この
 
 1. **und を凍結することは VRAM と忘却対策の話に留まらず、正しさの問題クラスを
    丸ごと削除する。** und を凍結すれば prefix forward は `no_grad` で回せるので、
-   §4.7 の autograd 非互換な KV 経路がそのまま合法になる。und を学習させるなら、
+   prefix KV を定数として扱える。gen forward は current K/V に勾配が必要なため
+   §4.7 の `update_cache=True` 経路を使う。und を学習させるなら、
    2 つの独立した forward をまたぐ微分可能な KV パイプラインを構築し、42 層分の
    prefix activation を backward まで保持し、`cat[prefix_KV, gen_KV]` の flash
    attention に勾配を通す必要がある。これはフラグではなくサブシステムであり、
@@ -286,8 +287,8 @@ G4 の実測（Krea 2 由来）では checkpointing OFF で
   gen 側のみ。
 - **style transfer の tripwire。** `forward_und` は style context が armed だと raise する
   (`modeling_qwen3.py:515-525`)。学習経路では style context を必ず未設定にする。
-- **`detect_prediction_config`** に `sensenova` を flow-matching として追加しないと
-  `ddpm` に落ちる。これは静かに間違った学習をする類の欠落である。
+- **`detect_prediction_config`** は既に `sensenova` を flow-matching として扱う。
+  実装変更は不要だが、学習統合でこの分類を退行させないテストを置く。
 
 ---
 
@@ -316,7 +317,7 @@ weight を buffer で持つので `requires_grad_(True)` が no-op になり、
   既知の拒否に到達しないため）。
 
 ガードのメッセージには「bf16 base が必要」だけでなく、**その bf16 base をどう得るか**
-2 つの経路を明記する（§6.3）。
+2 つの経路を明記する（§6.4）。
 
 ### 6.2 確定した設計判断 — 対象は gen branch のみ（fable 諮問）
 
@@ -328,12 +329,12 @@ weight を buffer で持つので `requires_grad_(True)` が no-op になり、
 - **座りが悪いのは gen-only ではなく both-branch の方である。** 言語理解を担う branch
   を含む 16.2B を学習するのは「text encoder も一緒に fine-tune する」ことであり、
   本リポジトリはどの arch でもそれを既定にしていない。破滅的忘却の profile が
-  悪く、同時にメモリ的にも成立しない — fp32 master だけで 64.8 GB になる。
-  原理とメモリの両方で落ちるので、選択肢から外す。
+  悪く、同時に bf16 weight 32.4 GB + gradient 32.4 GB だけで 48 GB を超え、
+  activation と一時領域を置けない。原理とメモリの両方で落ちるので選択肢から外す。
 - **gen-only の算術は厳しいが現実的:** bf16 weight 16.2 GB + gradient 16.2 GB +
-  fp32 master 32.4 GB（CPU 常駐）+ optimizer state（offload）+ pixel space の
-  activation（checkpointing 下）。48 GB で閉じるのは gen 半分の block swap と
-  master/optimizer の CPU 常駐が揃った場合のみ。つまり **Phase 2 は §8 の
+  optimizer state（CPU offload）+ stochastic-rounding の per-step scratch + pixel space の
+  activation（checkpointing 下）。48 GB で閉じるには gen 半分の block swap と
+  optimizer state の CPU 常駐が必要になる。つまり **Phase 2 は §8 の
   block-swap 機構の存在に依存する**。この依存順序自体がガード先行を正当化する。
 
 ### 6.3 master weight dtype 戦略
@@ -459,17 +460,15 @@ bucketing の 4 層である。
 
 ### 7.2 確定した設計判断 — 表現と batch 構成（fable 諮問）
 
-**判断 1: per-item presence を真とする。per-dataset は「この dataset で ref を
-走査・有効化するか」だけを表す。**
+**判断 1: per-item presence を真とする。既存の run-global
+`use_reference_images` は「ref 経路が armed」であることだけを表す。**
 
-DB は既に per-item で `item["reference_images"]` を stamp しており、それが正しい
-粒度である。これにより ref 有り dataset と ref 無し dataset が、run 全体の意味論を
-新しく発明することなく 1 つの run に共存できる。run-global の
-`use_reference_images` は「ref 経路が armed である」の意味に解釈し直し、
-「全 item が ref を持つ」の意味では使わない。
-per-dataset 側は `DATASET_LEVEL_PARAMS`（現在 `caption_types` と
-`ve_reconstruction_mode` のみの小さな dict）に 1 エントリ追加し、
-`train_runner.py:1498-1501` で per-item フラグとして stamp する既存パターンに従う。
+DB と `train_runner.py` は既に per-item で `item["reference_images"]` を保持しており、
+それが正しい粒度である。これにより ref 有り dataset と ref 無し dataset が、run 全体の
+意味論を新しく発明することなく 1 つの run に共存できる。`use_reference_images` は
+FLUX.2 でも既に経路の arm と homogeneous bucketing の有効化に使われており、SenseNova
+も同じ意味論を再利用する。**新しい dataset-level parameter、schema、per-item stamp は
+追加しない。** item 自身の `reference_images` の有無だけが各 batch の分類を決める。
 
 **判断 2: `separate_by_reference` の homogeneous bucketing を再利用する。
 ragged な混在 batch は作らない。**
@@ -648,8 +647,8 @@ arch 非依存で、`blocks_to_swap` / `num_optimizer_groups` / `optimizer_type`
 
 ### その他
 
-- `model_loader.detect_prediction_config` の flow-matching 一覧（`~:151`）に
-  `sensenova` を追加。**現状 `ddpm` に落ちる。**
+- `model_loader.detect_prediction_config` は既に `sensenova` を flow-matching として
+  扱うため変更不要。分類の退行テストだけを追加する。
 - `train_runner.py` の bf16 強制ブロック 3 箇所（`:1640-1673` / `:2100-2110` /
   `:2505-2515`）と `_is_bf16_native_base_model`。
 - frontend の `TrainingConfig.tsx`（`FORCED_BF16_ARCHITECTURES`、dtype preset 連鎖）。
@@ -675,7 +674,7 @@ cache namespace と alignment は登録だけで正しくなる。
 | `noise_scale` の再現漏れ | bucket ごとに変わる値をモデルにも渡す必要がある | §4.4。学習 step の必須要素として扱う |
 | `Int8Linear` の isinstance 罠 | `nn.Linear` サブクラスでないため 294 件を黙って取りこぼす | 既存の共有述語を使う（§5.4） |
 | 正規化の取り違え | reference は ImageNet、target は 0.5/0.5 | §4.6, §7.4 |
-| prediction config の既定 | `ddpm` に落ちる | §9 |
+| prediction config の退行 | 既存の flow-matching 登録を学習統合時に外すと静かに誤る | §9 の退行テストで固定 |
 | half-eviction の層選択 | Parameter ベースの規則は 2 度不活性のまま出荷された | 判別子ごと再利用する（§8.4） |
 | prefix forward のコスト | Qwen3-8B 全体を毎 step 通す | 実測後にキャッシュ可否を判断（§12） |
 | pixel space の activation | VAE が無いぶん activation が pixel 解像度に比例 | gradient checkpointing + 解像度上限。block swap では減らない |
@@ -700,7 +699,7 @@ cache namespace と alignment は登録だけで正しくなる。
 
 - `arch/sensenova.py` + `ops/sensenova_ops.py` + `adapters/sensenova_adapter.py`。
 - 登録 5 箇所 + `base_trainer.py` の分岐（§9）。
-- `detect_prediction_config` と `TIMESTEP_SAMPLING_DEFAULTS_BY_ARCH`。
+- `TIMESTEP_SAMPLING_DEFAULTS_BY_ARCH` と、既存の flow-matching prediction config の退行テスト。
 - `train_step`: MiniT2I の骨格 + prefix KV conditioning + per-sample `noise_scale`。
 - checkpoint 保存形式: 推論側 loader が読む `neo_hf_lora` 方言と round-trip すること
   （`LoRATrainer.load_checkpoint` は arch 非依存で
@@ -719,12 +718,13 @@ cache namespace と alignment は登録だけで正しくなる。
 
 - gen branch 抽出 bf16 base の作成。
 - `TransformerBlockOffloader` の gen 半分への適用 + und 半分の常時 CPU 退避。
-- master weight 戦略の実測比較（stochastic rounding vs fp32 master）。
+- stochastic rounding の有効性を実測し、既定 ON / OFF 拒否と `optimizer: adamw` 拒否を決定する。
 - prefix forward を checkpointed region の外に置く不変条件のテスト。
 
 ### Phase 3 — reference 混在
 
-- `DATASET_LEVEL_PARAMS` への 1 エントリ追加と per-item stamp。
+- 既存の run-global `use_reference_images` と per-item `reference_images` を再利用する
+  （新しい dataset-level parameter / API 変更は行わない）。
 - `separate_by_reference` の SenseNova への適用（bucket key に反映）。
 - prefix への reference token 差し込み（ImageNet 正規化、固定 token 数）。
 - ref 有り / 無し dataset を 1 run で混ぜる smoke。
@@ -750,9 +750,6 @@ cache namespace と alignment は登録だけで正しくなる。
   不足した場合のみ `scope: both`（LoRA 限定）を開く。
 - **固定 reference 解像度をいくつにするか。** 推論側の
   `REFERENCE_IMAGE_MAX_PIXELS_CAP` との整合。
-- **`use_reference_images` の run-global フラグを SenseNova でも流用するか、
-  arch 固有の名前にするか。** 意味論を「ref 経路が armed」に読み替える以上、
-  FLUX.2 の既存意味論との衝突が無いか確認が要る。
 - **upstream issue #207 の mixed forward を検証・修正して 1 パス化する価値があるか。**
   2 パス設計で十分機能する見込みなので優先度は低いが、und 学習を将来入れるなら
   再評価する。

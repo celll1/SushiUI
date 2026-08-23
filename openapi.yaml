@@ -5433,12 +5433,11 @@ paths:
             type: integer
       responses:
         '200':
-          description: Run status (state, progress, current step)
+          description: Run status (state, progress, current step, current epoch)
           content:
             application/json:
               schema:
-                type: object
-                additionalProperties: true
+                $ref: '#/components/schemas/TrainingRunStatus'
         '404':
           description: Training run not found
           content:
@@ -17672,6 +17671,74 @@ components:
     # ========================================
     # Training Schemas
     # ========================================
+
+    TrainingRunStatus:
+      type: object
+      description: |
+        Live status of a training run, polled by the Training Monitor.
+
+        `current_epoch` / `total_epochs` are 1-based for display and are
+        architecture-independent: `current_epoch` comes from the 0-based epoch
+        recorded on the newest `training_metrics` row at or before
+        `current_step` (+1), and `total_epochs` from `train.epochs` in the run's
+        `config_yaml`. Both are null when unavailable — no metrics logged yet,
+        or a run configured by `train.steps` rather than epochs.
+      properties:
+        status:
+          type: string
+          description: Run state (pending, starting, running, completed, stopped, failed)
+          example: running
+        progress:
+          type: number
+          format: float
+          description: Training progress percentage (0-100)
+          example: 3.1
+        current_step:
+          type: integer
+          example: 1561
+        total_steps:
+          type: integer
+          example: 49590
+        current_epoch:
+          type: integer
+          nullable: true
+          description: 1-based epoch currently being trained. Null when unknown.
+          example: 1
+        total_epochs:
+          type: integer
+          nullable: true
+          description: Total epochs from the run config. Null for step-configured runs.
+          example: 10
+        loss:
+          type: number
+          format: float
+          nullable: true
+          example: 0.0812
+        learning_rate:
+          type: number
+          format: float
+          nullable: true
+          example: 0.0001
+        phase:
+          type: string
+          nullable: true
+          description: Current phase (initializing, bucketing, latent_cache, text_encoder_cache, training)
+          example: training
+        phase_progress:
+          type: number
+          format: float
+          nullable: true
+          example: 100.0
+        phase_detail:
+          type: string
+          nullable: true
+          example: null
+        process_status:
+          type: object
+          nullable: true
+          additionalProperties: true
+          description: Subprocess state when the run is managed by this backend instance.
+      additionalProperties: true
 
     TrainingRunCreateRequest:
       type: object

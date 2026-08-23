@@ -7298,8 +7298,14 @@ export interface TrainingStatus {
   progress: number;
   current_step: number;
   total_steps: number;
+  // 1-based for display; null when no metrics logged yet / step-configured run.
+  current_epoch?: number | null;
+  total_epochs?: number | null;
   loss?: number;
   learning_rate?: number;
+  phase?: string | null;
+  phase_progress?: number | null;
+  phase_detail?: string | null;
 }
 
 // ---------------------------------------------------------------------------

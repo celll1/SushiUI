@@ -26,6 +26,9 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
   const [samples, setSamples] = useState<TrainingSampleStep[]>([]);
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
   const [selectedStepIndex, setSelectedStepIndex] = useState<number>(0); // For step slider
+  // Epoch lives only on the status response (there is no epoch column on the
+  // run row), so it is held here rather than folded into currentRun.
+  const [epochInfo, setEpochInfo] = useState<{ current: number | null; total: number | null }>({ current: null, total: null });
 
   // Configuration viewing and editing
   const [showConfigModal, setShowConfigModal] = useState(false);
@@ -48,6 +51,20 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
   const [scanDatasetId, setScanDatasetId] = useState<number | null>(null);
   const [scanSkipping, setScanSkipping] = useState(false);
 
+  // Epoch is not on the run row, so fetch it once on open (covers finished runs
+  // and the gap before the first poll tick).
+  useEffect(() => {
+    let cancelled = false;
+    getTrainingStatus(currentRun.id)
+      .then((status) => {
+        if (!cancelled) {
+          setEpochInfo({ current: status.current_epoch ?? null, total: status.total_epochs ?? null });
+        }
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [currentRun.id]);
+
   // Poll training status
   useEffect(() => {
     if (currentRun.status !== "starting" && currentRun.status !== "running") {
@@ -57,6 +74,7 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
     const interval = setInterval(async () => {
       try {
         const status = await getTrainingStatus(currentRun.id);
+        setEpochInfo({ current: status.current_epoch ?? null, total: status.total_epochs ?? null });
         const updatedRun = {
           ...currentRun,
           progress: status.progress,
@@ -419,7 +437,15 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
             </div>
 
             {/* Metrics */}
-            <div className="grid grid-cols-2 gap-1.5 text-xs xl:grid-cols-4">
+            <div className={`grid grid-cols-2 gap-1.5 text-xs ${epochInfo.current !== null ? "xl:grid-cols-5" : "xl:grid-cols-4"}`}>
+              {epochInfo.current !== null && (
+                <div>
+                  <span className="text-gray-400">Epoch:</span>{" "}
+                  <span className="font-mono">
+                    {epochInfo.total ? `${epochInfo.current} / ${epochInfo.total}` : epochInfo.current}
+                  </span>
+                </div>
+              )}
               <div>
                 <span className="text-gray-400">Loss:</span>{" "}
                 <span className="font-mono">{currentRun.loss?.toFixed(6) || "N/A"}</span>

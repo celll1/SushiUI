@@ -161,6 +161,16 @@ paths:
           a one-line factual reason that method cannot be run for that
           architecture, so a client can filter its training-method dropdown
           from the same table the backend refuses on.
+        * `training_feature_unsupported` — architecture name -> TRAINING CONFIG
+          FEATURE -> `{reason, methods?}`: why that feature's mechanism does not
+          exist for the architecture, optionally narrowed to the listed training
+          methods. An architecture absent from the map supports the feature, so
+          a newly added architecture keeps every control rather than losing one
+          silently. `training_feature_params` / `training_feature_labels` are its
+          sibling maps (arming config keys, human-readable label).
+        * `arch_display_names` — architecture id -> its user-facing spelling
+          (`sensenova` -> `SenseNova U1.5`). An id with no entry falls back to
+          itself.
         * `video_constraints` — architecture name -> the temporal/spatial
           generation constraints of a VIDEO architecture (`frame_multiple`,
           `frame_offset`, `min_frames`, `max_frames` (the ENFORCED production
@@ -9304,6 +9314,76 @@ components:
           example:
             minimax_h3:
               full_finetune: "MiniMax-H3's DiT is a 33 B dense transformer; its parameters, gradients and optimizer state do not fit the single-GPU 48 GB envelope this integration targets, so only LoRA training is implemented"
+        training_feature_unsupported:
+          type: object
+          description: |
+            Architecture name -> training CONFIG FEATURE -> why the trainer
+            cannot run that feature there. A third axis, distinct from
+            `unsupported` (generation parameters accepted and ignored) and
+            `training_unsupported` (whole training methods). Mirrors
+            `TRAINING_FEATURE_UNSUPPORTED` in
+            `backend/api/arch_capabilities.py`.
+
+            An architecture absent from the map, or a feature absent from its
+            entry, SUPPORTS the feature: an unrecognised architecture keeps
+            every control rather than losing one silently. `methods`, when
+            present, narrows the claim to those `training_method` values (e.g.
+            Z-Image trains no text encoder under LoRA while a full fine-tune
+            does).
+          additionalProperties:
+            type: object
+            additionalProperties:
+              type: object
+              required: [reason]
+              properties:
+                reason:
+                  type: string
+                  description: One-line factual reason the mechanism is absent there.
+                methods:
+                  type: array
+                  description: |
+                    Training methods the refusal applies to. Absent = every
+                    method.
+                  items:
+                    type: string
+                    enum: [lora, relora, full_finetune, controlnet]
+          example:
+            sensenova:
+              block_swap:
+                reason: "SenseNova training does not implement block swap: arch/sensenova.py's setup_block_swap raises, and a non-zero blocks_to_swap is refused before the run starts (train_runner._apply_sensenova_training_contract). Its per-phase weight-half CPU eviction (sensenova_mot_phase_eviction) is the mechanism it offers instead"
+            zimage:
+              text_encoder_training:
+                reason: "ZImageLoRAAdapter injects no text-encoder LoRA (the Qwen3 encoder stays frozen); full fine-tuning does train it"
+                methods: [lora, relora]
+        training_feature_params:
+          type: object
+          description: Training feature name -> the training-config keys that arm it.
+          additionalProperties:
+            type: array
+            items:
+              type: string
+          example:
+            block_swap: [blocks_to_swap, use_pinned_memory, block_swap_h2d_only, block_swap_ring_size]
+        training_feature_labels:
+          type: object
+          description: Training feature name -> its human-readable label.
+          additionalProperties:
+            type: string
+          example:
+            block_swap: "Block Swap (per-block CPU offload during training)"
+        arch_display_names:
+          type: object
+          description: |
+            Architecture id -> user-facing spelling, mirroring
+            `ARCH_DISPLAY_NAMES` in
+            `backend/core/models/common/int8_runtime_quantize.py` (the module
+            that owns the table). A client labels an architecture filter from
+            here; an id with no entry falls back to the id itself.
+          additionalProperties:
+            type: string
+          example:
+            sensenova: "SenseNova U1.5"
+            zimage: "Z-Image"
         video_constraints:
           type: object
           description: |

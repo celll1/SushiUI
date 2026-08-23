@@ -24,7 +24,7 @@ from api.param_defaults import GENERATION_DEFAULTS
 # is wired, without a second hardcoded arch list in the frontend. The tuple is
 # owned by the module that implements the conversion.
 from core.models.common.int8_runtime_quantize import (
-    QUANTIZED_LINEAR_ARCHS, RUNTIME_INT8_ARCHS, arch_names,
+    ARCH_DISPLAY_NAMES, QUANTIZED_LINEAR_ARCHS, RUNTIME_INT8_ARCHS, arch_names,
 )
 
 # ---------------------------------------------------------------------------
@@ -216,6 +216,69 @@ TRAINING_UNSUPPORTED: Dict[str, Dict[str, str]] = {}
 
 def _add_training_unsupported(arch: str, method: str, reason: str) -> None:
     TRAINING_UNSUPPORTED.setdefault(arch, {})[method] = reason
+
+
+# The training methods `training_method` can name (the vae_decoder form is a
+# separate config surface and is not filtered from these tables).
+TRAINING_METHODS = ("lora", "relora", "full_finetune", "controlnet")
+
+# Every architecture with a training arch handler. Mirrors
+# `core.training.arch.ARCH_REGISTRY`, which cannot be imported here (it pulls
+# the whole trainer stack into the API process); `training_capability_test.py`
+# asserts the two sets are equal, in the same style as that module's own
+# `_EXPECTED_ARCH_KEYS`.
+TRAINING_DECLARED_ARCHS = frozenset({
+    "sd15", "sdxl", "zimage", "anima", "lens", "ideogram4", "minit2i",
+    "krea2", "flux2", "ltx2", "minimax_h3", "acestep", "sensenova",
+})
+
+# ---------------------------------------------------------------------------
+# TRAINING_FEATURE_UNSUPPORTED[arch][feature] = {"reason": ..., "methods": [...]}
+#
+# A THIRD axis, next to ARCH_UNSUPPORTED (generation parameters accepted and
+# ignored) and TRAINING_UNSUPPORTED (whole training methods that are refused):
+# a training-config FEATURE the trainer cannot run on that architecture. The
+# declaration lives here, in the backend, because the fact it records is a
+# property of the trainer -- whether an arch handler implements the mechanism at
+# all -- and a copy of it in the UI is a copy that goes stale the next time an
+# architecture is added. The training form reads this table and hides/disables
+# the section instead of carrying `arch === "..."` checks.
+#
+# ABSENT MEANS SUPPORTED. An unknown or newly added architecture therefore keeps
+# every control: an extra control that the backend then refuses is recoverable,
+# a control that silently disappears is not.
+#
+# "methods" narrows the claim to those `training_method` values; omitted, the
+# feature is unavailable for every method.
+# ---------------------------------------------------------------------------
+TRAINING_FEATURE_PARAMS: Dict[str, List[str]] = {
+    "block_swap": ["blocks_to_swap", "use_pinned_memory", "block_swap_h2d_only",
+                   "block_swap_ring_size"],
+    "fused_optimizer_groups": ["num_optimizer_groups"],
+    "reference_images": ["use_reference_images"],
+    "text_encoder_training": ["train_text_encoder"],
+    "training_samples": ["sample_every", "sample_prompts"],
+    "vae": ["vae_dtype", "bundle_vae"],
+}
+
+TRAINING_FEATURE_LABELS: Dict[str, str] = {
+    "block_swap": "Block Swap (per-block CPU offload during training)",
+    "fused_optimizer_groups": "Fused Optimizer Groups",
+    "reference_images": "reference image conditioning",
+    "text_encoder_training": "text encoder training",
+    "training_samples": "sample generation during training",
+    "vae": "VAE settings",
+}
+
+TRAINING_FEATURE_UNSUPPORTED: Dict[str, Dict[str, Dict[str, Any]]] = {}
+
+
+def _add_training_feature_unsupported(arch: str, feature: str, reason: str,
+                                      methods: Optional[List[str]] = None) -> None:
+    entry: Dict[str, Any] = {"reason": reason}
+    if methods:
+        entry["methods"] = list(methods)
+    TRAINING_FEATURE_UNSUPPORTED.setdefault(arch, {})[feature] = entry
 
 # ---------------------------------------------------------------------------
 # ARCH_SUPPORTED_VALUES[arch][feature] = the VALUES of the feature's arming
@@ -755,6 +818,142 @@ _add_training_unsupported(
 _add_training_unsupported(
     "sensenova", "controlnet",
     "SenseNova ControlNet conditioning is not implemented; its training path currently supports only LoRA on the native prefix-conditioned denoiser")
+
+# Ideogram 4: the UI carried this refusal as a hardcoded arch check since before
+# the table existed. Declared here so `_refuse_unsupported_full_finetune` /
+# `_refuse_unsupported_relora` (which read this table) enforce it too, instead of
+# `full_parameter_trainer._create_adapter` falling through to the SD1.5 adapter.
+_add_training_unsupported(
+    "ideogram4", "full_finetune",
+    "Ideogram 4's base ships FP8/nf4 quantized and its two 9.3 B transformers do not fit a single-GPU full fine-tune; no Ideogram4FullParameterAdapter branch exists in full_parameter_trainer._create_adapter")
+_add_training_unsupported(
+    "ideogram4", "relora",
+    "ReLoRA cannot merge dense updates back into Ideogram 4's quantized base")
+
+# ControlNet training implements SD1.5 and SDXL adapters only
+# (adapters/controlnet_sd15_adapter.py, adapters/controlnet_sdxl_adapter.py; the
+# selection in controlnet_trainer._create_adapter is `if is_sdxl else sd15`).
+# Z-Image/FLUX.2 are refused explicitly in ControlNetTrainer.__init__; every
+# other architecture would silently build an SD1.5 ControlNet against a DiT.
+for _a in sorted(TRAINING_DECLARED_ARCHS - {"sd15", "sdxl", "sensenova"}):
+    _add_training_unsupported(
+        _a, "controlnet",
+        "ControlNet training implements SD1.5 and SDXL adapters only "
+        "(controlnet_trainer._create_adapter selects ControlNetSDXLAdapter or "
+        "ControlNetSD15Adapter and has no branch for this architecture)")
+
+# --- Block Swap -------------------------------------------------------------
+# `blocks_to_swap` is consumed on the training path by the per-arch
+# `ops/<arch>_ops.setup_block_swap` (anima, lens, ideogram4, krea2, minit2i,
+# ltx2, acestep, minimax_h3) or inside the loader (zimage, flux2). The three
+# architectures below have no such consumer at all.
+_add_training_feature_unsupported(
+    "sd15", "block_swap",
+    "the SD1.5 U-Net training path has no block-swap consumer (arch/sd15.py's setup_block_swap is a no-op and ops/sd_sdxl_ops.py defines none); its VRAM story is the sequential text-encoder/U-Net/VAE component offload")
+_add_training_feature_unsupported(
+    "sdxl", "block_swap",
+    "the SDXL U-Net training path has no block-swap consumer (arch/sdxl.py's setup_block_swap is a no-op and ops/sd_sdxl_ops.py defines none); its VRAM story is the sequential text-encoder/U-Net/VAE component offload")
+_add_training_feature_unsupported(
+    "sensenova", "block_swap",
+    "SenseNova training does not implement block swap: arch/sensenova.py's setup_block_swap raises, and a non-zero blocks_to_swap is refused before the run starts (train_runner._apply_sensenova_training_contract). Its per-phase weight-half CPU eviction (sensenova_mot_phase_eviction) is the mechanism it offers instead")
+
+# --- Fused optimizer groups -------------------------------------------------
+# `num_optimizer_groups` is only read inside the `if self.blocks_to_swap > 0`
+# branch of base_trainer.setup_optimizer, so it governs nothing wherever block
+# swap itself is unavailable.
+for _a in ["sd15", "sdxl", "sensenova"]:
+    _add_training_feature_unsupported(
+        _a, "fused_optimizer_groups",
+        "fused optimizer groups are only set up when blocks_to_swap > 0 (base_trainer.setup_optimizer), and this architecture has no training block-swap path")
+
+# --- Reference-image conditioning -------------------------------------------
+# `use_reference_images` gates FLUX.2 code only: base_trainer's dataset split
+# (`separate_by_reference = use_reference_images and self.is_flux2`) and its two
+# `use_reference_images and self.is_flux2` train-loop branches. Every other
+# architecture logs "will be ignored" and trains without it.
+for _a in sorted(TRAINING_DECLARED_ARCHS - {"flux2"}):
+    _add_training_feature_unsupported(
+        _a, "reference_images",
+        "reference-image conditioning during training is implemented for FLUX.2 only; base_trainer gates every reference codepath on is_flux2 and warns that the flag is ignored elsewhere")
+# SenseNova refuses rather than ignores, so it carries its own reason.
+_add_training_feature_unsupported(
+    "sensenova", "reference_images",
+    "SenseNova reference-image training is deferred to Phase 3 and a run that asks for it is refused (train_runner._apply_sensenova_training_contract)")
+
+# --- Text-encoder training --------------------------------------------------
+# Declared where the text encoder is frozen by the adapter regardless of the
+# flag. Z-Image is the one split case: its LoRA adapter injects no TE LoRA while
+# ZImageFullParameterAdapter does unfreeze the encoder, hence the method scope.
+for _a, _why in [
+    ("anima", "AnimaLoRAAdapter/AnimaFullParameterAdapter keep the Qwen3 text encoder frozen; the trainable LLM adapter lives inside the DiT and is reached through the LoRA scope instead"),
+    ("lens", "LensLoRAAdapter/LensFullParameterAdapter keep the GPT-OSS text encoder frozen"),
+    ("ideogram4", "Ideogram4LoRAAdapter injects no text-encoder LoRA and the full-parameter adapter never unfreezes the Qwen3-VL encoder"),
+    ("krea2", "Krea2FullParameterAdapter rejects train_text_encoder outright and Krea2LoRAAdapter injects no text-encoder LoRA (Qwen3-VL policy)"),
+    ("ltx2", "Ltx2LoRAAdapter/Ltx2FullParameterAdapter keep the Gemma-3 text encoder and its connectors frozen"),
+    ("acestep", "AceStepLoRAAdapter/AceStepFullParameterAdapter keep the Qwen3-Embedding-0.6B text encoder frozen"),
+    ("minimax_h3", "the Qwen3-VL conditioner is read one decoder layer at a time off a memory-mapped 48 GiB file precisely so it never becomes resident; there is no configuration in which its weights and the DiT's are both on the GPU"),
+    ("sensenova", "SenseNova's understanding branch is frozen and SenseNovaLoRAAdapter injects no text LoRA; the prompt is encoded by the same LLM that denoises"),
+]:
+    _add_training_feature_unsupported(_a, "text_encoder_training", _why)
+_add_training_feature_unsupported(
+    "zimage", "text_encoder_training",
+    "ZImageLoRAAdapter injects no text-encoder LoRA (the Qwen3 encoder stays frozen); full fine-tuning does train it",
+    methods=["lora", "relora"])
+
+# --- Sample generation during training --------------------------------------
+# NOT declared for SenseNova: its sampling integration is in flight, and a
+# hardcoded "unsupported" here would contradict it the moment it lands. Absent
+# means supported, so the controls stay visible either way.
+_add_training_feature_unsupported(
+    "ideogram4", "training_samples",
+    "step-0 and periodic sampling are not implemented for Ideogram 4 (dual transformer + FP8); arch/ideogram4.py's sample() warns and returns None")
+
+# --- VAE --------------------------------------------------------------------
+_add_training_feature_unsupported(
+    "sensenova", "vae",
+    "SenseNova is pixel-space and has no VAE: there is nothing for the VAE dtype to apply to and nothing to bundle into a checkpoint")
+
+
+# Coverage invariants (same style as core.training.arch's _EXPECTED_ARCH_KEYS):
+# every declaration names a known architecture, a known feature/method, and a
+# known training method in its scope. That ARCH_REGISTRY itself is fully covered
+# by TRAINING_DECLARED_ARCHS is asserted in tests/training_capability_test.py,
+# which can afford to import the trainer package.
+assert set(TRAINING_UNSUPPORTED) <= TRAINING_DECLARED_ARCHS, (
+    f"TRAINING_UNSUPPORTED names undeclared archs: "
+    f"{set(TRAINING_UNSUPPORTED) - TRAINING_DECLARED_ARCHS}")
+for _arch, _methods in TRAINING_UNSUPPORTED.items():
+    assert set(_methods) <= set(TRAINING_METHODS), (
+        f"TRAINING_UNSUPPORTED[{_arch}] names unknown training methods: "
+        f"{set(_methods) - set(TRAINING_METHODS)}")
+assert set(TRAINING_FEATURE_UNSUPPORTED) <= TRAINING_DECLARED_ARCHS, (
+    f"TRAINING_FEATURE_UNSUPPORTED names undeclared archs: "
+    f"{set(TRAINING_FEATURE_UNSUPPORTED) - TRAINING_DECLARED_ARCHS}")
+assert set(TRAINING_FEATURE_LABELS) == set(TRAINING_FEATURE_PARAMS), (
+    "every training feature needs both a label and its arming parameter keys")
+for _arch, _features in TRAINING_FEATURE_UNSUPPORTED.items():
+    for _feature, _entry in _features.items():
+        assert _feature in TRAINING_FEATURE_PARAMS, (
+            f"TRAINING_FEATURE_UNSUPPORTED[{_arch}] names unknown feature {_feature!r}")
+        assert set(_entry.get("methods", TRAINING_METHODS)) <= set(TRAINING_METHODS), (
+            f"TRAINING_FEATURE_UNSUPPORTED[{_arch}][{_feature}] scopes unknown "
+            f"training methods")
+
+
+def training_feature_unsupported_reason(arch: Optional[str], feature: str,
+                                        method: Optional[str] = None) -> Optional[str]:
+    """Why ``feature`` cannot run for ``arch`` (under ``method``), else None.
+
+    An unknown/None arch answers None -- absent means supported, so a newly
+    added architecture keeps every control rather than losing it silently.
+    """
+    entry = (TRAINING_FEATURE_UNSUPPORTED.get(arch or "") or {}).get(feature)
+    if not entry:
+        return None
+    methods = entry.get("methods")
+    if methods and method is not None and method not in methods:
+        return None
+    return entry["reason"]
 
 
 # ---------------------------------------------------------------------------

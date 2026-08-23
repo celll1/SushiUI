@@ -1694,6 +1694,23 @@ export interface ArchCapabilities {
   // reason shown to the user all come from one source. Optional so an older
   // backend without the key still type-checks.
   training_unsupported?: Record<string, Record<string, string>>;
+  // arch -> training CONFIG FEATURE -> why the trainer has no such mechanism
+  // there (block swap, fused optimizer groups, reference images, text-encoder
+  // training, in-training samples, VAE settings).
+  //
+  // A THIRD axis, next to `unsupported` (generation params ignored) and
+  // `training_unsupported` (whole methods refused). ABSENT MEANS SUPPORTED, so
+  // an architecture the backend does not know about keeps every control instead
+  // of silently losing one. The declaration is the backend's because the fact is
+  // a property of the trainer; the form must not re-derive it from arch names.
+  training_feature_unsupported?: Record<string, Record<string, TrainingFeatureRefusal>>;
+  training_feature_params?: Record<string, string[]>;
+  training_feature_labels?: Record<string, string>;
+  // Architecture id -> its user-facing spelling ("sensenova" -> "SenseNova
+  // U1.5"), from the backend's ARCH_DISPLAY_NAMES. An id with no entry falls
+  // back to the id, so a new architecture shows up (unprettified) rather than
+  // disappearing.
+  arch_display_names?: Record<string, string>;
   // arch -> what a long-form video CHAIN's continuation segments receive from
   // their predecessor there (design §7.1). The backend's loaded variant plus
   // this table is the authority on which continuation modes exist — a client
@@ -1806,6 +1823,37 @@ export const chainContinuationOverlapLengths = (
     .map(([, end]) => end)
     .filter((end) => end >= min && end <= max);
 };
+
+// One training-config feature's refusal for one architecture.
+export interface TrainingFeatureRefusal {
+  reason: string;
+  // Training methods the refusal applies to; absent = all of them (Z-Image
+  // trains no text encoder under LoRA while a full fine-tune does).
+  methods?: string[];
+}
+
+// The reason `feature` cannot run for `arch` under `method`, or undefined when
+// it can. Undefined for an unknown arch or an unloaded matrix: the control stays
+// visible and the backend refuses the run, which is recoverable — a control that
+// vanishes because the frontend has never heard of the architecture is not.
+export const trainingFeatureUnsupportedReason = (
+  caps: ArchCapabilities | null | undefined,
+  arch: string | null | undefined,
+  feature: string,
+  method?: string | null
+): string | undefined => {
+  if (!arch) return undefined;
+  const entry = caps?.training_feature_unsupported?.[arch]?.[feature];
+  if (!entry) return undefined;
+  if (entry.methods && method && !entry.methods.includes(method)) return undefined;
+  return entry.reason;
+};
+
+// The user-facing spelling of an architecture id, falling back to the id.
+export const archDisplayName = (
+  caps: ArchCapabilities | null | undefined,
+  arch: string
+): string => caps?.arch_display_names?.[arch] ?? arch;
 
 // The reason `method` is refused for `arch`, or undefined when it is offered.
 // Used to disable a training-method control AND to title it with the backend's

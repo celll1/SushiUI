@@ -36,6 +36,16 @@ export function typeToPanel(type: QueueItem["type"]): GenerationPanelId {
   }
 }
 
+/** A run that ended badly. Only the owning panel can honour
+ *  `restore_image_on_cancel` (it holds the image that was on screen), and the
+ *  dispatcher is the only place that can tell a user cancel from a failure. */
+export interface GenerationFailureSnapshot {
+  panel: GenerationPanelId;
+  itemId: string;
+  cancelled: boolean;
+  revision: number;
+}
+
 /** One finished result, for the shared top-right strip (FloatingGallery). */
 export interface GenerationResultFeedEntry {
   id: number;
@@ -69,6 +79,10 @@ export interface GenerationResultSnapshot {
   // Backend warnings for this result; the panel renders them next to it, so
   // they have to survive the panel being unmounted while the run finishes.
   warnings?: string[];
+  // The server kept no gallery record for this result (a skip_gallery or
+  // latent-only intermediate loop step), so a session gallery must not list it
+  // -- it would show now and vanish on refresh.
+  ephemeral?: boolean;
   revision: number;
 }
 
@@ -220,6 +234,8 @@ interface GenerationQueueContextType {
   // Bounded; the strip trims further to its own configured maximum.
   resultFeed: GenerationResultFeedEntry[];
   appendResult: (entry: Omit<GenerationResultFeedEntry, "id" | "timestamp">) => void;
+  lastFailure: GenerationFailureSnapshot | null;
+  publishFailure: (failure: Omit<GenerationFailureSnapshot, "revision">) => void;
   // Video-chain drift pause (videoChain.ts design §4.1). Held HERE, not in the
   // panel that observed it: `chain_vid` is claimed by both Txt2Img and Img2Img,
   // which are mounted exclusively per tab, so panel-local pause state would be
@@ -242,6 +258,7 @@ export function GenerationQueueProvider({ children }: { children: ReactNode }) {
   const [progressSnapshot, setProgressSnapshot] = useState<GenerationProgressSnapshot | null>(null);
   const [completedResults, setCompletedResults] = useState<Partial<Record<GenerationPanelId, GenerationResultSnapshot>>>({});
   const [resultFeed, setResultFeed] = useState<GenerationResultFeedEntry[]>([]);
+  const [lastFailure, setLastFailure] = useState<GenerationFailureSnapshot | null>(null);
   const [chainPause, setChainPause] = useState<ChainDriftPause | null>(null);
 
   // Use refs that are synchronously updated alongside state
@@ -301,6 +318,10 @@ export function GenerationQueueProvider({ children }: { children: ReactNode }) {
       ];
       return next.length > RESULT_FEED_LIMIT ? next.slice(next.length - RESULT_FEED_LIMIT) : next;
     });
+  }, []);
+
+  const publishFailure = useCallback((failure: Omit<GenerationFailureSnapshot, "revision">) => {
+    setLastFailure((previous) => ({ ...failure, revision: (previous?.revision ?? 0) + 1 }));
   }, []);
 
   const publishCompletedResult = useCallback((result: Omit<GenerationResultSnapshot, "revision">) => {
@@ -621,6 +642,8 @@ export function GenerationQueueProvider({ children }: { children: ReactNode }) {
         publishCompletedResult,
         resultFeed,
         appendResult,
+        lastFailure,
+        publishFailure,
         chainPause,
         pauseChain,
         clearChainPause,

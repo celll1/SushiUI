@@ -43,7 +43,7 @@ import {
   MASK_WHITE_LUMINANCE_THRESHOLD,
 } from "@/utils/maskConventions";
 import { migrateLoopGenerationConfig, computeLoopDecodeDirective } from "@/utils/loopGenerationInheritance";
-import { getSamplers, getScheduleTypes, generateInpaint, generateInpaintVideo, generateInpaintTrainingPreview, imageSourceToBase64, InpaintParams as ApiInpaintParams, InpaintVideoParams, LoRAConfig, ControlNetConfig, MiniMaxH3References, generateTIPOPrompt, cancelGeneration, getResultFilename, getResultPlaybackFilename, getResultSeed, getResultAncestralSeed, isLatentOnlyResult, unetQuantizationOptions, normalizeUnetQuantization, transformerQuantizationLabel, archSupportsFeature, archDisplayName, inpaintVideoDefaultsForArch, fitVideoCanvas, videoCanvasRule, videoCanvasAxisBounds, videoCanvasExceedsEnvelope, largestValidVideoFrameCount, isValidVideoFrameCount, latentGroupSpans, snapRangeToLatentGroups, isGenerationStalledError, VIDEO_BLOCK_SWAP_MAX } from "@/utils/api";
+import { getSamplers, getScheduleTypes, InpaintVideoParams, LoRAConfig, ControlNetConfig, MiniMaxH3References, generateTIPOPrompt, cancelGeneration, unetQuantizationOptions, normalizeUnetQuantization, transformerQuantizationLabel, archSupportsFeature, archDisplayName, inpaintVideoDefaultsForArch, fitVideoCanvas, videoCanvasRule, videoCanvasAxisBounds, videoCanvasExceedsEnvelope, largestValidVideoFrameCount, isValidVideoFrameCount, latentGroupSpans, snapRangeToLatentGroups, VIDEO_BLOCK_SWAP_MAX } from "@/utils/api";
 import MiniMaxH3ReferenceSelector, { EMPTY_MINIMAX_H3_REFERENCES, countMiniMaxH3References } from "../common/MiniMaxH3ReferenceSelector";
 import VideoInpaintTimeline from "./VideoInpaintTimeline";
 import VideoMaskPreviewOverlay from "./VideoMaskPreviewOverlay";
@@ -93,7 +93,7 @@ import { fixFloatingPointParams } from "@/utils/numberUtils";
 import { readGlobalAttentionType } from "@/utils/attentionSettings";
 import { newId } from "@/utils/id";
 import { useStartup } from "@/contexts/StartupContext";
-import { useGenerationQueue } from "@/contexts/GenerationQueueContext";
+import { QueueItem, useGenerationQueue } from "@/contexts/GenerationQueueContext";
 import SendToStudioButton from "../studio/SendToStudioButton";
 import { createH3ReferenceInventory, maybeTransformH3PromptForGeneration } from "@/utils/h3PromptAssist";
 
@@ -656,6 +656,13 @@ const INPUT_IMAGE_STORAGE_KEY = "inpaint_input_image";
 const MASK_IMAGE_STORAGE_KEY = "inpaint_mask_image";
 const REF_IMAGES_STORAGE_KEY = "inpaint_ref_images";
 
+// Progress-bar denominator to show until the first WebSocket tick arrives.
+function dispatchTotalSteps(item: QueueItem): number {
+  const p = item.params as any;
+  if (item.type === "inpaint_vid") return p.num_inference_steps || 8;
+  return Math.ceil((p.steps || 20) * (p.denoising_strength || 0.75));
+}
+
 interface InpaintPanelProps {
   // opts.kind/playbackUrl let the shared top-right strip (FloatingGallery)
   // render video/audio results correctly instead of guessing from the URL
@@ -665,7 +672,7 @@ interface InpaintPanelProps {
 }
 
 export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintPanelProps = {}) {
-  const { modelLoaded, modelInfo, isBackendReady, generationDefaults, archCapabilities, isVideo, resolveModality } = useStartup();
+  const { modelInfo, isBackendReady, generationDefaults, archCapabilities, isVideo, resolveModality } = useStartup();
   const [params, setParams] = useState<InpaintParams>(DEFAULT_PARAMS);
   const [generatedImageParams, setGeneratedImageParams] = useState<InpaintParams | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
@@ -1218,33 +1225,26 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
   // TIPO: Treat as Natural Language (local state, not persisted)
   const [treatAsNL, setTreatAsNL] = useState(false);
 
-  // Use refs for WebSocket callback to prevent recreations
-  const isGeneratingRef = useRef(isGenerating);
   const developerModeRef = useRef(developerMode);
-
-  useEffect(() => {
-    isGeneratingRef.current = isGenerating;
-  }, [isGenerating]);
+  // True while the queue's currentItem is an inpaint/inpaint_vid item owned by
+  // this panel -- set by the currentItem effect below. progress/preview now
+  // come from the context's progressSnapshot; this ref only gates the
+  // cfgMetrics accumulation, which the snapshot does not carry (it holds only
+  // the latest tick, not the accumulated array).
+  const isOwnRunRef = useRef(false);
 
   useEffect(() => {
     developerModeRef.current = developerMode;
   }, [developerMode]);
 
-  // WebSocket progress callback - stable reference
+  // WebSocket progress callback - stable reference. Only cfgMetrics
+  // accumulation survives here; step/totalSteps/message/preview are read from
+  // progressSnapshot in the currentItem effect instead.
   const handleProgress = useCallback((step: number, totalSteps: number, message: string, preview?: string, metrics?: CFGMetrics, subProgress?: number) => {
-    if (isGeneratingRef.current) {
-      setProgress(step);
-      setTotalSteps(totalSteps);
-      setProgressMessage(message || "");
-      reportSubProgress(step, subProgress);
-      if (preview) {
-        setPreviewImage(preview);
-      }
-      if (metrics && developerModeRef.current) {
-        setCfgMetrics(prev => [...prev, metrics]);
-      }
+    if (metrics && isOwnRunRef.current && developerModeRef.current) {
+      setCfgMetrics(prev => [...prev, metrics]);
     }
-  }, [reportSubProgress]); // reportSubProgress is stable
+  }, []);
 
   // Setup WebSocket connection - runs once
   useEffect(() => {
@@ -3224,23 +3224,70 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
     }
   };
 
-  const { addToQueue, updateQueueItem, updateQueueItemByLoop, getLoopGroupItems, cancelLoopGroup, startNextInQueue, completeCurrentItem, failCurrentItem, currentItem, queue, generateForever, setGenerateForever, progressSnapshot, completedResults, publishCompletedResult } = useGenerationQueue();
+  const { addToQueue, cancelLoopGroup, currentItem, queue, generateForever, setGenerateForever, progressSnapshot, completedResults, lastFailure } = useGenerationQueue();
+
+  // Once per new item this panel owns, reset the display for the run that
+  // just started -- reproducing what the deleted dispatch loop did at
+  // dispatch time (GenerationQueueProcessor now owns dispatch itself, and has
+  // no view of this panel's state).
+  const clearedForItemRef = useRef<string | null>(null);
+  // The panel's own session gallery. Bumped once per completed-result
+  // revision so this effect (which re-runs whenever currentItem changes, not
+  // just on a new result) cannot append the same result twice.
+  const lastGalleryRevisionRef = useRef<number | null>(null);
+  // What was on screen when the current run started, for restore-on-cancel.
+  const previousImageRef = useRef<string | null>(null);
+  const lastFailureRevisionRef = useRef(0);
 
   useEffect(() => {
     if (!currentItem || !["inpaint", "inpaint_vid"].includes(currentItem.type)) {
-      isGeneratingRef.current = false;
+      isOwnRunRef.current = false;
       setIsGenerating(false);
       return;
     }
-    isGeneratingRef.current = true;
+    isOwnRunRef.current = true;
     setIsGenerating(true);
+    if (clearedForItemRef.current !== currentItem.id) {
+      clearedForItemRef.current = currentItem.id;
+      previousImageRef.current = generatedImage;
+      setProgress(0);
+      setProgressMessage("");
+      setPreviewImage(null);
+      setCfgMetrics([]);
+      setGeneratedImage(null);
+      setTotalSteps(dispatchTotalSteps(currentItem));
+      if (currentItem.type === "inpaint_vid") {
+        setGeneratedVideo(null);
+        setGeneratedVideoPlaybackUrl(null);
+        setGeneratedVideoInfo(null);
+        setGeneratedVideoSeed(null);
+        setGeneratedVideoWarnings([]);
+      }
+    }
     if (progressSnapshot?.itemId !== currentItem.id) return;
     setProgress(progressSnapshot.step);
     setTotalSteps(progressSnapshot.totalSteps);
     setProgressMessage(progressSnapshot.message);
     reportSubProgress(progressSnapshot.step, progressSnapshot.subProgress);
     if (progressSnapshot.previewImage) setPreviewImage(progressSnapshot.previewImage);
+    // generatedImage is read only to snapshot it, and re-running on every
+    // change of it would re-snapshot mid-run.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentItem, progressSnapshot, reportSubProgress]);
+
+  // Restore-on-cancel: only this panel holds the image the cancelled run
+  // replaced, and only the dispatcher can tell a cancel from a failure.
+  useEffect(() => {
+    if (!lastFailure || lastFailure.panel !== "inpaint") return;
+    if (lastFailure.revision === lastFailureRevisionRef.current) return;
+    lastFailureRevisionRef.current = lastFailure.revision;
+    if (!lastFailure.cancelled) return;
+    if (localStorage.getItem("restore_image_on_cancel") !== "true") return;
+    if (previousImageRef.current) {
+      setGeneratedImage(previousImageRef.current);
+      setPreviewImage(null);
+    }
+  }, [lastFailure]);
 
   useEffect(() => {
     const result = completedResults.inpaint;
@@ -3252,6 +3299,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
       setGeneratedVideoInfo(result.info as typeof generatedVideoInfo);
       setGeneratedVideoSeed(result.seed ?? null);
       setGeneratedVideoParams(result.params as InpaintParams);
+      setGeneratedVideoWarnings(result.warnings ?? []);
       setGeneratedImage(null);
     } else if (result.kind === "image") {
       setGeneratedImage(result.url);
@@ -3259,6 +3307,10 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
       setGeneratedImageAncestralSeed(result.ancestralSeed ?? null);
       setGeneratedImageParams(result.params as InpaintParams);
       setGeneratedVideo(null);
+    }
+    if (result.kind === "image" && !result.ephemeral && lastGalleryRevisionRef.current !== result.revision) {
+      lastGalleryRevisionRef.current = result.revision;
+      setGalleryImages(prev => [...prev, { url: result.url, timestamp: Date.now() }]);
     }
   }, [completedResults.inpaint, currentItem]);
   const [showForeverMenu, setShowForeverMenu] = useState(false);
@@ -3532,6 +3584,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
       }
       addToQueue({
         type: "inpaint_vid",
+        panel: "inpaint",
         params: videoParams as any,
         inputVideo: videoFile,
         ...(spatialMaskFiles ? { spatialMaskFiles } : {}),
@@ -3609,6 +3662,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
 
     addToQueue({
       type: "inpaint",
+      panel: "inpaint",
       params: freezeDispatchState({
         ...params,
         prompt: processedPrompt,
@@ -3909,6 +3963,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
 
       addToQueue({
         type: "inpaint",
+        panel: "inpaint",
         params: freezeDispatchState({
           ...stepParams,
           prompt: processedPrompt,
@@ -3935,598 +3990,19 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
     console.log(`[Inpaint] Added ${enabledSteps.length} loop steps to queue with group ID: ${loopGroupId}`);
   }, [loopGenerationConfig, addToQueue, refImages, useTrainingModel, activeTraining, savePreviewToGallery, freezeDispatchState]);
 
-  // Process queue - automatically start next item
-  const processQueueRef = useRef<() => Promise<void>>();
-
-  const processQueue = useCallback(async () => {
-    console.log("[Inpaint] processQueue called, isGenerating:", isGeneratingRef.current);
-    if (isGeneratingRef.current) {
-      console.log("[Inpaint] Already generating, skipping");
-      return;
-    }
-
-    const nextItem = startNextInQueue(["inpaint", "inpaint_vid"]);
-    console.log("[Inpaint] Next item from queue:", nextItem);
-    if (!nextItem || (nextItem.type !== "inpaint" && nextItem.type !== "inpaint_vid")) {
-      console.log("[Inpaint] No inpaint items in queue");
-      return;
-    }
-
-    // Video branch: inpaint_vid item. The queued clip is a File (inputVideo on
-    // QueueItem), the result is a clip, and there is no loop-generation
-    // handling -- matching the video branches of the other panels.
-    if (nextItem.type === "inpaint_vid") {
-      const videoParams = nextItem.params as InpaintVideoParams;
-      isGeneratingRef.current = true;
-      setIsGenerating(true);
-      setProgress(0);
-      setProgressMessage("");
-      setTotalSteps(videoParams.num_inference_steps || 8);
-      setPreviewImage(null);
-      setGeneratedImage(null);
-      setGeneratedVideo(null);
-      setGeneratedVideoPlaybackUrl(null);
-      setGeneratedVideoInfo(null);
-      setGeneratedVideoSeed(null);
-      setGeneratedVideoWarnings([]);
-      setCfgMetrics([]);
-      try {
-        const clip = nextItem.inputVideo;
-        if (!clip) throw new Error("No input video available for video inpaint generation");
-        const result = await generateInpaintVideo(
-          videoParams, clip, nextItem.spatialMaskFiles, nextItem.references);
-        const videoUrl = `/outputs/${getResultFilename(result)}`;
-        const videoPlaybackUrl = `/outputs/${getResultPlaybackFilename(result)}`;
-        const playbackUrl = videoPlaybackUrl !== videoUrl ? videoPlaybackUrl : undefined;
-        const videoSeed = getResultSeed(result);
-        const videoInfo = {
-          num_frames: result.image?.num_frames,
-          fps: result.image?.fps,
-          duration: result.image?.duration,
-        };
-        setGeneratedVideoWarnings(
-          (result.warnings || []).map((w: any) => (typeof w === "string" ? w : w?.message)).filter(Boolean));
-        setGeneratedVideo(videoUrl);
-        setGeneratedVideoPlaybackUrl(playbackUrl || null);
-        setGeneratedVideoSeed(videoSeed);
-        setGeneratedVideoParams(nextItem.params as InpaintParams);
-        setGeneratedVideoInfo(videoInfo);
-        publishCompletedResult({ panel: "inpaint", kind: "video", url: videoUrl, playbackUrl, info: videoInfo, seed: videoSeed, params: nextItem.params });
-        if (onImageGenerated) onImageGenerated(videoUrl, { kind: "video", playbackUrl });
-        completeCurrentItem();
-      } catch (error: any) {
-        console.error("[Inpaint] Video generation failed:", error);
-        failCurrentItem();
-        // alert() blocks the JS thread; reset state and requeue before showing
-        // it, otherwise the queue effect sees a stale isGenerating until the
-        // dialog closes.
-        isGeneratingRef.current = false;
-        setIsGenerating(false);
-        setProgress(0);
-        setProgressMessage("");
-        setTimeout(() => {
-          if (processQueueRef.current) processQueueRef.current();
-        }, 100);
-        alert(isGenerationStalledError(error)
-          ? error.message
-          : `Video inpaint generation failed: ${error?.response?.data?.detail || error?.message || "Unknown error"}`);
-        return;
-      }
-      isGeneratingRef.current = false;
-      setIsGenerating(false);
-      setProgress(0);
-      setProgressMessage("");
-      setTimeout(() => {
-        if (processQueueRef.current) processQueueRef.current();
-      }, 100);
-      return;
-    }
-
-    // Save current image before starting new generation
-    const previousImage = generatedImage;
-
-    isGeneratingRef.current = true;
-    setIsGenerating(true);
-    setProgress(0);
-    setProgressMessage("");
-    const denoisingStrength = nextItem.params.denoising_strength || 0.75;
-    const actualSteps = Math.ceil((nextItem.params.steps || 20) * denoisingStrength);
-    setTotalSteps(actualSteps);
-    setPreviewImage(null);
-    setGeneratedImage(null);
-    setCfgMetrics([]); // Clear previous metrics
-
-    try {
-      let apiParams: ApiInpaintParams = {
-        prompt: nextItem.params.prompt,
-        negative_prompt: nextItem.params.negative_prompt,
-        steps: nextItem.params.steps,
-        cfg_scale: nextItem.params.cfg_scale,
-        timestep_shift: nextItem.params.timestep_shift, // SenseNova U1.5 flow-matching time-shift
-        img_cfg_scale: nextItem.params.img_cfg_scale, // SenseNova U1.5 second CFG scale
-        cfg_norm: nextItem.params.cfg_norm, // SenseNova U1.5 CFG-overshoot clamp
-        sensenova_mot_phase_eviction: nextItem.params.sensenova_mot_phase_eviction, // SenseNova U1.5 per-phase weight-half CPU eviction
-        sensenova_kv_cache_streaming: nextItem.params.sensenova_kv_cache_streaming, // SenseNova U1.5 per-layer KV cache CPU streaming
-        sampler: nextItem.params.sampler,
-        schedule_type: nextItem.params.schedule_type,
-        seed: nextItem.params.seed,
-        width: nextItem.params.width,
-        height: nextItem.params.height,
-        denoising_strength: nextItem.params.denoising_strength,
-        vae_drift_correction: nextItem.params.vae_drift_correction,
-        mask_blur: nextItem.params.mask_blur,
-        inpaint_full_res: nextItem.params.inpaint_full_res,
-        inpaint_full_res_padding: nextItem.params.inpaint_full_res_padding,
-        inpaint_fill_mode: nextItem.params.inpaint_fill_mode,
-        inpaint_fill_strength: nextItem.params.inpaint_fill_strength,
-        inpaint_blur_strength: nextItem.params.inpaint_blur_strength,
-        // Regional additional prompt (SD/SDXL only, generated/repaint region)
-        region_prompt: nextItem.params.region_prompt,
-        region_negative_prompt: nextItem.params.region_negative_prompt,
-        region_prompt_strength: nextItem.params.region_prompt_strength,
-        region_prompt_method: nextItem.params.region_prompt_method,
-        region_mask_feather: nextItem.params.region_mask_feather,
-        seam_structure_strength: nextItem.params.seam_structure_strength,
-        seam_structure_depth: nextItem.params.seam_structure_depth,
-        seam_structure_end: nextItem.params.seam_structure_end,
-        seam_structure_saliency: nextItem.params.seam_structure_saliency,
-        seam_structure_max_area: nextItem.params.seam_structure_max_area,
-        boundary_relax_strength: nextItem.params.boundary_relax_strength,
-        boundary_relax_width: nextItem.params.boundary_relax_width,
-        boundary_relax_noise: nextItem.params.boundary_relax_noise,
-        boundary_relax_full_until: nextItem.params.boundary_relax_full_until,
-        boundary_relax_end: nextItem.params.boundary_relax_end,
-        boundary_relax_paste: nextItem.params.boundary_relax_paste,
-        resize_mode: nextItem.params.resize_mode,
-        resampling_method: nextItem.params.resampling_method,
-        loras: nextItem.params.loras,
-        controlnets: nextItem.params.controlnets,
-        // developer_mode and the Advanced-CFG reset are frozen onto
-        // nextItem.params at enqueue time (freezeDispatchState) — read as-is.
-        developer_mode: nextItem.params.developer_mode,
-        cfg_schedule_type: nextItem.params.cfg_schedule_type,
-        cfg_rescale_snr_alpha: nextItem.params.cfg_rescale_snr_alpha,
-        dynamic_threshold_percentile: nextItem.params.dynamic_threshold_percentile,
-        // NAG params
-        nag_enable: nextItem.params.nag_enable,
-        nag_scale: nextItem.params.nag_scale,
-        nag_tau: nextItem.params.nag_tau,
-        nag_alpha: nextItem.params.nag_alpha,
-        nag_sigma_end: nextItem.params.nag_sigma_end,
-        nag_negative_prompt: nextItem.params.nag_negative_prompt,
-        unet_quantization: nextItem.params.unet_quantization,
-        quantized_gemm_mode: nextItem.params.quantized_gemm_mode,
-        cpu_text_encoding: nextItem.params.cpu_text_encoding,
-        text_encoder_quantization: nextItem.params.text_encoder_quantization,
-        original_size_w: nextItem.params.original_size_w,
-        original_size_h: nextItem.params.original_size_h,
-        original_size_scale: nextItem.params.original_size_scale,
-        attention_type: nextItem.params.attention_type,
-        vision_encoder_path: nextItem.params.vision_encoder_path,
-        vae_path: nextItem.params.vae_path,
-        text_encoder_path: nextItem.params.text_encoder_path,
-        pid_sr_output: nextItem.params.pid_sr_output,
-        pid_use_gemma: nextItem.params.pid_use_gemma,
-        pid_low_vram: nextItem.params.pid_low_vram,
-        pid_tile_native: nextItem.params.pid_tile_native,
-        pid_tile_overlap_ratio: nextItem.params.pid_tile_overlap_ratio,
-        pid_fast_large_decode: nextItem.params.pid_fast_large_decode,
-        // Spectrum acceleration
-        spectrum_enable: nextItem.params.spectrum_enable,
-        // First Block Cache
-        fbcache_enable: nextItem.params.fbcache_enable,
-        fbcache_threshold: nextItem.params.fbcache_threshold,
-        fbcache_warmup_steps: nextItem.params.fbcache_warmup_steps,
-        spectrum_w: nextItem.params.spectrum_w,
-        spectrum_w_decay: nextItem.params.spectrum_w_decay,
-        spectrum_delta_cap: nextItem.params.spectrum_delta_cap,
-        spectrum_m: nextItem.params.spectrum_m,
-        spectrum_lam: nextItem.params.spectrum_lam,
-        spectrum_warmup_steps: nextItem.params.spectrum_warmup_steps,
-        spectrum_window_size: nextItem.params.spectrum_window_size,
-        spectrum_flex_window: nextItem.params.spectrum_flex_window,
-        spectrum_tail: nextItem.params.spectrum_tail,
-        spectrum_feature_mode: nextItem.params.spectrum_feature_mode,
-        spectrum_cache_branch: nextItem.params.spectrum_cache_branch,
-        spectrum_max_cache: nextItem.params.spectrum_max_cache,
-        // VAE tiling (model-global). vae_tiling / vae_tile_threshold were
-        // missing from this object, so a queued inpaint always fell back to
-        // the api.ts defaults regardless of the panel setting.
-        vae_tiling: nextItem.params.vae_tiling,
-        vae_tile_threshold: nextItem.params.vae_tile_threshold,
-        vae_tile_mode: nextItem.params.vae_tile_mode,
-        vae_tile_global_norm: nextItem.params.vae_tile_global_norm,
-        color_flatten_strength: nextItem.params.color_flatten_strength,
-        flatten_in_loop: nextItem.params.flatten_in_loop,
-        flatten_in_loop_last_steps: nextItem.params.flatten_in_loop_last_steps,
-        flatten_in_loop_min_region: nextItem.params.flatten_in_loop_min_region,
-        // Block swap (model-global)
-        enable_block_swap: nextItem.params.enable_block_swap,
-        blocks_to_swap: nextItem.params.blocks_to_swap,
-        use_pinned_memory: nextItem.params.use_pinned_memory,
-        block_swap_h2d_only: nextItem.params.block_swap_h2d_only,
-        block_swap_ring_size: nextItem.params.block_swap_ring_size,
-        // Keep model components GPU-resident for the next queued generation
-        // (value is set by the queue dispatcher's hasNext check)
-        keep_models_hot: nextItem.params.keep_models_hot,
-        // Loop-generation decode mode (heavy-decoder aware). Inpaint never
-        // uses loop_decode="none" (backend rejects it) — intermediate loop
-        // steps fall back to "cheap"+skip_gallery instead (see addLoopStepsToQueueImmediate).
-        loop_decode: nextItem.params.loop_decode,
-        skip_gallery: nextItem.params.skip_gallery,
-      };
-
-      // Add FLUX.2 Image Edit / Vision Encoder reference images. Frozen onto
-      // nextItem.params at enqueue time (main step: freezeDispatchState; loop
-      // steps: addLoopStepsToQueueImmediate) — read as-is.
-      if (nextItem.params.ref_images && nextItem.params.ref_images.length > 0) {
-        apiParams = {
-          ...apiParams,
-          ref_images: nextItem.params.ref_images,
-        };
-      }
-
-      console.log('[Inpaint] Generating with params:', {
-        loras: apiParams.loras?.length || 0,
-        controlnets: apiParams.controlnets?.length || 0,
-        unet_quantization: apiParams.unet_quantization,
-      });
-
-      let result: any;
-      let imageUrl: string;
-      // Per-item flag (set at enqueue) so loop steps keep the model choice.
-      if (nextItem.useTrainingModel && (nextItem.trainingRunId ?? activeTraining?.run_id)) {
-        // Training-preview branch: encode init+mask, route to
-        // /generate/inpaint/training-preview; result is a blob URL.
-        const initImageBase64 = await imageSourceToBase64(nextItem.inputImage!);
-        const maskImageBase64 = await imageSourceToBase64(nextItem.maskImage!);
-        const preview = await generateInpaintTrainingPreview({
-          ...(apiParams as any),
-          init_image_base64: initImageBase64,
-          mask_image_base64: maskImageBase64,
-          denoising_strength: apiParams.denoising_strength ?? 0.75,
-          run_id: nextItem.trainingRunId ?? activeTraining!.run_id,
-          save_to_gallery: nextItem.savePreviewToGallery ?? false,
-        });
-        if (preview.filename) {
-          imageUrl = `/outputs/${preview.filename}`;
-        } else {
-          if (previewBlobUrlRef.current) URL.revokeObjectURL(previewBlobUrlRef.current);
-          const objectUrl = URL.createObjectURL(preview.blob);
-          previewBlobUrlRef.current = objectUrl;
-          imageUrl = objectUrl;
-        }
-        result = {
-          success: true,
-          actual_seed: preview.seed ? Number(preview.seed) : -1,
-          image: {
-            filename: preview.filename
-              ?? `preview_${preview.requestId ?? "training"}.png`,
-            filepath: imageUrl,
-            seed: preview.seed ? Number(preview.seed) : -1,
-            ancestral_seed: -1,
-            prompt: apiParams.prompt,
-            negative_prompt: apiParams.negative_prompt,
-            width: apiParams.width,
-            height: apiParams.height,
-          },
-        };
-      } else {
-        result = await generateInpaint(apiParams, nextItem.inputImage!, nextItem.maskImage!);
-        // skip_gallery=true (loop_decode="cheap" intermediate step) returns a
-        // top-level filename with NO nested `image` object.
-        imageUrl = result.success ? `/outputs/${getResultFilename(result)}` : "";
-      }
-
-      if (result.success) {
-        const resultSeed = getResultSeed(result);
-        const resultAncestralSeed = getResultAncestralSeed(result);
-        setGeneratedImage(imageUrl);
-        setGeneratedImageSeed(resultSeed);
-        setGeneratedImageAncestralSeed(resultAncestralSeed);
-        setPreviewImage(null);
-
-        // Save the params used for this generation (with actual result values)
-        const completedParams: InpaintParams = {
-          ...nextItem.params,
-          seed: resultSeed,
-          ancestral_seed: resultAncestralSeed ?? -1,
-          width: result.image?.width ?? nextItem.params.width,
-          height: result.image?.height ?? nextItem.params.height,
-        };
-        setGeneratedImageParams(completedParams);
-        if (imageUrl) {
-          publishCompletedResult({
-            panel: "inpaint",
-            kind: "image",
-            url: imageUrl,
-            seed: resultSeed,
-            ancestralSeed: resultAncestralSeed,
-            params: completedParams,
-          });
-        }
-
-        // Add to the client-side session gallery — but NOT for latent-only or
-        // skip_gallery intermediate loop steps (decodeMode "final-only"
-        // fallback for inpaint, which never uses loop_decode="none"): the
-        // server intentionally skipped the DB record for these, so they'd
-        // show transiently then vanish on refresh. Only the final (fully
-        // galleried) step should populate it.
-        const isEphemeralStep = isLatentOnlyResult(result) || !result.image;
-        if (!isEphemeralStep) {
-          setGalleryImages(prev => [...prev, { url: imageUrl, timestamp: Date.now() }]);
-        }
-
-        // Notify parent component
-        if (onImageGenerated) {
-          onImageGenerated(imageUrl, { kind: "image" });
-        }
-
-        if (isMounted) {
-          saveImagePreview(PREVIEW_KEYS, imageUrl);
-        }
-
-        // If this item has a loop group, update the next loop step's input image, prompt, and ControlNets
-        // Use nextItem (not currentItem from context) to avoid timing issues
-        if (nextItem?.loopGroupId !== undefined) {
-          const nextLoopStepIndex = (nextItem.loopStepIndex ?? -1) + 1;
-
-          console.log(`[Inpaint] Processing loop step completion:`, {
-            loopGroupId: nextItem.loopGroupId,
-            currentStepIndex: nextItem.loopStepIndex,
-            nextLoopStepIndex,
-          });
-
-          // Update input image first
-          console.log(`[Inpaint] Updating loop step ${nextLoopStepIndex} with input image:`, imageUrl);
-          updateQueueItemByLoop(nextItem.loopGroupId, nextLoopStepIndex, { inputImage: imageUrl });
-
-          // If TIPO was used for base generation, update loop steps with TIPO-generated prompt.
-          // Guarded with optional chaining: skip_gallery=true responses have no nested `image`.
-          if (nextItem.loopStepIndex === -1 && nextItem.params.use_tipo && result.image?.prompt) {
-            console.log(`[Inpaint] Base generation used TIPO, updating all loop steps with TIPO prompt`);
-            console.log(`[Inpaint] Original prompt: ${nextItem.params.prompt?.substring(0, 100)}...`);
-            console.log(`[Inpaint] TIPO prompt: ${result.image.prompt?.substring(0, 100)}...`);
-
-            // Update all loop steps (not just the next one) with TIPO-generated prompt
-            for (const stepItem of getLoopGroupItems(nextItem.loopGroupId)) {
-              if (!stepItem.isLoopStep || stepItem.loopStepIndex === undefined) continue;
-              updateQueueItemByLoop(nextItem.loopGroupId, stepItem.loopStepIndex, (item) => ({
-                params: {
-                  ...item.params,
-                  prompt: result.image.prompt,
-                } as any,
-              }));
-            }
-          }
-
-          // Find step config to check if ControlNet processing is needed
-          const stepConfig = getLoopGroupItems(nextItem.loopGroupId)
-            .find((item) => item.loopStepIndex === nextLoopStepIndex)?.loopStepConfig;
-
-          console.log(`[Inpaint] Step config:`, {
-            hasStepConfig: !!stepConfig,
-            useMainControlNets: stepConfig?.useMainControlNets,
-            controlnetsCount: stepConfig?.controlnets?.length,
-            sizeMode: stepConfig?.sizeMode,
-            scale: stepConfig?.scale,
-          });
-
-          // Fetch the generated image for ControlNet or size calculation
-          let imageBlob: Blob | null = null;
-          let imageWidth: number | null = null;
-          let imageHeight: number | null = null;
-
-          const needsImageData = stepConfig && (
-            (!stepConfig.useMainControlNets && stepConfig.controlnets && stepConfig.controlnets.length > 0) ||
-            stepConfig.sizeMode === "scale"
-          );
-
-          if (needsImageData) {
-            const response = await fetch(imageUrl);
-            imageBlob = await response.blob();
-
-            // Load image to get dimensions for scale mode
-            if (stepConfig.sizeMode === "scale") {
-              const img = new Image();
-              const imageLoadPromise = new Promise<void>((resolve) => {
-                img.onload = () => {
-                  imageWidth = img.width;
-                  imageHeight = img.height;
-                  resolve();
-                };
-              });
-              img.src = URL.createObjectURL(imageBlob);
-              await imageLoadPromise;
-              URL.revokeObjectURL(img.src);
-
-              // Update size based on scale
-              if (imageWidth && imageHeight && stepConfig.scale) {
-                const scaledWidth = Math.round(imageWidth * stepConfig.scale);
-                const scaledHeight = Math.round(imageHeight * stepConfig.scale);
-                console.log(`[Inpaint] Scale mode: ${imageWidth}x${imageHeight} * ${stepConfig.scale} = ${scaledWidth}x${scaledHeight}`);
-
-                updateQueueItemByLoop(nextItem.loopGroupId!, nextLoopStepIndex, (item) => ({
-                  params: {
-                    ...item.params,
-                    width: scaledWidth,
-                    height: scaledHeight,
-                  } as any,
-                }));
-              }
-            }
-          }
-
-          // Update ControlNet images if needed
-          if (stepConfig && !stepConfig.useMainControlNets && stepConfig.controlnets && stepConfig.controlnets.length > 0 && imageBlob) {
-            console.log(`[Inpaint] Processing ${stepConfig.controlnets.length} ControlNet(s) for loop step ${nextLoopStepIndex}`);
-
-            // Convert to base64
-            const reader = new FileReader();
-
-            const imageBase64 = await new Promise<string>((resolve) => {
-              reader.onloadend = () => {
-                const base64 = reader.result as string;
-                // Remove data URL prefix to get just the base64 string
-                const base64String = base64.split(',')[1];
-                resolve(base64String);
-              };
-              reader.readAsDataURL(imageBlob);
-            });
-
-            console.log(`[Inpaint] Converted image to base64, length: ${imageBase64.length}`);
-
-            // Update ControlNets with useLoopImage enabled using callback to preserve existing params
-            updateQueueItemByLoop(nextItem.loopGroupId!, nextLoopStepIndex, (item) => {
-              const updatedControlnets = stepConfig.controlnets.map((cnConfig, idx) => {
-                console.log(`[Inpaint] ControlNet ${idx}: useLoopImage=${cnConfig.useLoopImage}`);
-                if (cnConfig.useLoopImage) {
-                  console.log(`[Inpaint] Setting image_base64 for ControlNet ${idx}`);
-                  return { ...cnConfig, image_base64: imageBase64 };
-                }
-                return cnConfig;
-              });
-
-              return {
-                params: {
-                  ...item.params,
-                  controlnets: updatedControlnets,
-                } as any,
-              };
-            });
-
-            console.log(`[Inpaint] ControlNet images updated for loop step ${nextLoopStepIndex}`);
-          }
-        }
-
-        // Reset state first, then complete item
-        console.log("[Inpaint] Generation complete, resetting state and completing item");
-        isGeneratingRef.current = false;
-        setIsGenerating(false);
-        setProgress(0);
-        setProgressMessage("");
-        completeCurrentItem();
-
-        // Wait briefly for state to propagate, then trigger next
-        setTimeout(() => {
-          console.log("[Inpaint] Triggering next queue item");
-          if (processQueueRef.current) {
-            processQueueRef.current();
-          }
-        }, 100);
-      } else {
-        // alert() blocks the JS thread; reset state and requeue before
-        // showing it, otherwise the queue effect sees a stale isGenerating
-        // until the dialog closes.
-        isGeneratingRef.current = false;
-        setIsGenerating(false);
-        setProgress(0);
-        setProgressMessage("");
-        failCurrentItem();
-
-        setTimeout(() => {
-          if (processQueueRef.current) {
-            processQueueRef.current();
-          }
-        }, 100);
-        alert("Generation failed");
-      }
-    } catch (error: any) {
-      console.error("Generation error:", error);
-      console.log("Error details:", {
-        message: error?.message,
-        responseData: error?.response?.data,
-        responseDetail: error?.response?.data?.detail,
-      });
-
-      // Check if cancelled
-      const errorStr = JSON.stringify(error);
-      const errorMessage = error?.message || "";
-      const errorDetail = error?.response?.data?.detail || "";
-      const isCancelled =
-        errorMessage.toLowerCase().includes("cancel") ||
-        errorDetail.toLowerCase().includes("cancel") ||
-        errorStr.toLowerCase().includes("cancel");
-
-      // alert() blocks the JS thread; decide what to show but do not call it
-      // yet -- reset state and requeue first, or the queue effect sees a
-      // stale isGenerating until the dialog closes.
-      let alertMessage: string | null = null;
-      if (isCancelled) {
-        const shouldRestore = localStorage.getItem('restore_image_on_cancel') === 'true';
-        if (shouldRestore && previousImage) {
-          setGeneratedImage(previousImage);
-          setPreviewImage(null);
-        }
-      } else if (isGenerationStalledError(error)) {
-        alertMessage = error.message;
-      } else {
-        alertMessage = "Generation failed: " + (error instanceof Error ? error.message : String(error));
-      }
-
-      // Reset state first, then fail item
-      console.log("[Inpaint] Generation failed, resetting state and failing item");
-      isGeneratingRef.current = false;
-      setIsGenerating(false);
-      setProgress(0);
-      setProgressMessage("");
-      failCurrentItem();
-
-      // Wait briefly for state to propagate, then trigger next
-      setTimeout(() => {
-        console.log("[Inpaint] Triggering next queue item after failure");
-        if (processQueueRef.current) {
-          processQueueRef.current();
-        }
-      }, 100);
-
-      if (alertMessage) {
-        alert(alertMessage);
-      }
-    }
-  }, [isGenerating, generatedImage, onImageGenerated, isMounted, startNextInQueue, completeCurrentItem, failCurrentItem, updateQueueItem, queue, publishCompletedResult, activeTraining, getLoopGroupItems]);
-
-  processQueueRef.current = processQueue;
-
-  // Auto-start queue processing when queue has pending items and not currently generating
+  // Dispatch now lives in GenerationQueueProcessor.tsx (always-mounted,
+  // outlives this panel unmounting on tab switch). This panel only re-enqueues
+  // for "generate forever" once the queue has drained -- image mode only, the
+  // video branch has no mask and one clip per request.
   useEffect(() => {
     const hasPendingItems = queue.some(item =>
       item.status === "pending" && (item.type === "inpaint" || item.type === "inpaint_vid"));
     const isCurrentItemNull = currentItem === null;
 
-    console.log("[Inpaint] Queue effect:", {
-      hasPendingItems,
-      isCurrentItemNull,
-      isGenerating,
-      queueLength: queue.length,
-      queue: queue,
-      currentItem: currentItem,
-      generateForever
-    });
-
-    // If generate forever is enabled and queue is empty, add new item. Image
-    // mode only -- the video branch has no mask and one clip per request.
     if (generateForever && !isVideo && !hasPendingItems && isCurrentItemNull && !isGenerating && params.prompt && inputImagePreview && maskImage) {
-      console.log("[Inpaint] Generate forever: Adding new item to queue");
       handleAddToQueue();
-      return;
     }
-
-    // A queue survives a page reload and a backend restart, so on mount there
-    // can be pending items with no model loaded yet. Dispatching then earns an
-    // immediate 400 and the item is marked failed for a reason that has nothing
-    // to do with the item. Hold instead: `modelLoaded` is a dependency, so the
-    // queue starts by itself once a model is up.
-    if (hasPendingItems && isCurrentItemNull && !isGenerating && !modelLoaded) {
-      console.log("[Inpaint] Queue held: no model loaded yet");
-      return;
-    }
-
-    if (hasPendingItems && isCurrentItemNull && !isGenerating) {
-      console.log("[Inpaint] Auto-starting queue processing");
-      processQueue();
-    }
-  }, [queue, currentItem, isGenerating, processQueue, generateForever, params, inputImagePreview, maskImage, modelLoaded]);
+  }, [queue, currentItem, isGenerating, generateForever, params, inputImagePreview, maskImage, isVideo]);
 
   // Handle Ctrl+Enter keyboard shortcut
   useEffect(() => {
@@ -7031,8 +6507,9 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
                         if (currentItem?.loopGroupId) {
                           cancelLoopGroup(currentItem.loopGroupId);
                         }
-                        // Don't call processQueue() here - let the error handler handle it
-                        // to avoid race condition with reset_cancel_flag()
+                        // The queue is resumed by the processor's own error
+                        // path, not from here -- calling it now would race
+                        // reset_cancel_flag().
                       } catch (error) {
                         console.error("Failed to cancel generation:", error);
                       }
@@ -7093,8 +6570,8 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
                               if (currentItem?.loopGroupId) {
                                 cancelLoopGroup(currentItem.loopGroupId);
                               }
-                              // Don't call processQueue() here - let the error handler handle it
-                              // to avoid race condition with reset_cancel_flag()
+                              // See the other Cancel button: the processor's
+                              // error path resumes the queue.
                             } catch (error) {
                               console.error("Failed to cancel generation:", error);
                             }

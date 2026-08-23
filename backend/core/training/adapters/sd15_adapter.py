@@ -16,7 +16,13 @@ import torch.nn as nn
 from safetensors.torch import save_file
 import math
 
-from .base_adapter import BaseLoRAAdapter, BaseFullParameterAdapter, reject_quantized_base
+from .base_adapter import (
+    BaseLoRAAdapter,
+    BaseFullParameterAdapter,
+    reject_quantized_base,
+    LORA_COMPONENT_UNET,
+    LORA_COMPONENT_TEXT_ENCODER_1,
+)
 from .state_dict_converter import (
     convert_unet_state_dict_to_original,
     convert_vae_state_dict_to_original,
@@ -189,7 +195,7 @@ class SD15LoRAAdapter(BaseLoRAAdapter):
                         # Child is direct attribute (e.g., "proj_in", "proj_out")
                         setattr(block_module, child_name, lora_layer)
 
-                    lora_layers[lora_name] = lora_layer
+                    self.register_lora_layer(lora_layers, lora_name, lora_layer, LORA_COMPONENT_UNET)
                     count += 1
 
         return count
@@ -220,7 +226,7 @@ class SD15LoRAAdapter(BaseLoRAAdapter):
             lora_layer = LoRALinearLayer(layer.mlp.fc1, self.lora_rank, self.lora_alpha, lora_name
             , self.lora_dtype)
             layer.mlp.fc1 = lora_layer
-            lora_layers[lora_name] = lora_layer
+            self.register_lora_layer(lora_layers, lora_name, lora_layer, LORA_COMPONENT_TEXT_ENCODER_1)
             count += 1
 
             # mlp.fc2
@@ -228,7 +234,7 @@ class SD15LoRAAdapter(BaseLoRAAdapter):
             lora_layer = LoRALinearLayer(layer.mlp.fc2, self.lora_rank, self.lora_alpha, lora_name
             , self.lora_dtype)
             layer.mlp.fc2 = lora_layer
-            lora_layers[lora_name] = lora_layer
+            self.register_lora_layer(lora_layers, lora_name, lora_layer, LORA_COMPONENT_TEXT_ENCODER_1)
             count += 1
 
         return count

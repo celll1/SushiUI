@@ -31,7 +31,7 @@ import math
 
 from .base_adapter import (
     BaseLoRAAdapter, BaseFullParameterAdapter, is_lora_wrappable_linear,
-    reject_quantized_base,
+    reject_quantized_base, LORA_COMPONENT_UNET, LORA_COMPONENT_TEXT_ENCODER,
 )
 from .sd15_adapter import LoRALinearLayer  # Reuse LoRA layer implementation
 
@@ -86,7 +86,7 @@ class FLUX2LoRAAdapter(BaseLoRAAdapter):
                                 original_linear, self.lora_rank, self.lora_alpha, lora_name, self.lora_dtype
                             )
                             setattr(module, attr_name, lora_layer)
-                            lora_layers[lora_name] = lora_layer
+                            self.register_lora_layer(lora_layers, lora_name, lora_layer, LORA_COMPONENT_UNET)
                             count += 1
 
                 # to_out (ModuleList)
@@ -97,7 +97,7 @@ class FLUX2LoRAAdapter(BaseLoRAAdapter):
                             module.to_out[0], self.lora_rank, self.lora_alpha, lora_name, self.lora_dtype
                         )
                         module.to_out[0] = lora_layer
-                        lora_layers[lora_name] = lora_layer
+                        self.register_lora_layer(lora_layers, lora_name, lora_layer, LORA_COMPONENT_UNET)
                         count += 1
 
                 # Additional projections for encoder cross attention (dual stream specific)
@@ -110,7 +110,7 @@ class FLUX2LoRAAdapter(BaseLoRAAdapter):
                                 original_linear, self.lora_rank, self.lora_alpha, lora_name, self.lora_dtype
                             )
                             setattr(module, attr_name, lora_layer)
-                            lora_layers[lora_name] = lora_layer
+                            self.register_lora_layer(lora_layers, lora_name, lora_layer, LORA_COMPONENT_UNET)
                             count += 1
 
             # Flux2ParallelSelfAttention (single stream blocks)
@@ -124,7 +124,7 @@ class FLUX2LoRAAdapter(BaseLoRAAdapter):
                             original_linear, self.lora_rank, self.lora_alpha, lora_name, self.lora_dtype
                         )
                         module.to_qkv_mlp_proj = lora_layer
-                        lora_layers[lora_name] = lora_layer
+                        self.register_lora_layer(lora_layers, lora_name, lora_layer, LORA_COMPONENT_UNET)
                         count += 1
 
                 # Output projection (attention out + MLP out fused)
@@ -134,7 +134,7 @@ class FLUX2LoRAAdapter(BaseLoRAAdapter):
                         module.to_out, self.lora_rank, self.lora_alpha, lora_name, self.lora_dtype
                     )
                     module.to_out = lora_layer
-                    lora_layers[lora_name] = lora_layer
+                    self.register_lora_layer(lora_layers, lora_name, lora_layer, LORA_COMPONENT_UNET)
                     count += 1
 
             # Flux2FeedForward (dual stream blocks only)
@@ -148,7 +148,7 @@ class FLUX2LoRAAdapter(BaseLoRAAdapter):
                                 original_linear, self.lora_rank, self.lora_alpha, lora_name, self.lora_dtype
                             )
                             setattr(module, attr_name, lora_layer)
-                            lora_layers[lora_name] = lora_layer
+                            self.register_lora_layer(lora_layers, lora_name, lora_layer, LORA_COMPONENT_UNET)
                             count += 1
 
         print(f"[FLUX2LoRAAdapter] Injected {count} LoRA layers into FLUX.2 Transformer")
@@ -212,7 +212,7 @@ class FLUX2LoRAAdapter(BaseLoRAAdapter):
                                 original_linear, self.lora_rank, self.lora_alpha, lora_name, self.lora_dtype
                             )
                             setattr(layer.mlp, mlp_attr, lora_layer)
-                            lora_layers[lora_name] = lora_layer
+                            self.register_lora_layer(lora_layers, lora_name, lora_layer, LORA_COMPONENT_TEXT_ENCODER)
                             count += 1
 
             # Self-attention layers
@@ -226,7 +226,7 @@ class FLUX2LoRAAdapter(BaseLoRAAdapter):
                                 original_linear, self.lora_rank, self.lora_alpha, lora_name, self.lora_dtype
                             )
                             setattr(layer.self_attn, attn_attr, lora_layer)
-                            lora_layers[lora_name] = lora_layer
+                            self.register_lora_layer(lora_layers, lora_name, lora_layer, LORA_COMPONENT_TEXT_ENCODER)
                             count += 1
 
         print(f"[FLUX2LoRAAdapter] Injected {count} LoRA layers into Qwen3 Text Encoder")

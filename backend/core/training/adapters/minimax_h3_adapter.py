@@ -40,7 +40,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from safetensors.torch import save_file
 
-from .base_adapter import BaseLoRAAdapter, is_lora_wrappable_linear
+from .base_adapter import BaseLoRAAdapter, is_lora_wrappable_linear, LORA_COMPONENT_UNET
 from .sd15_adapter import LoRALinearLayer
 
 
@@ -199,7 +199,7 @@ class MiniMaxH3LoRAAdapter(BaseLoRAAdapter):
             else:
                 setattr(parent, attr, lora_layer)
 
-            lora_layers[lora_name] = lora_layer
+            self.register_lora_layer(lora_layers, lora_name, lora_layer, LORA_COMPONENT_UNET)
             count += 1
 
         n_params = sum(p.numel() for layer in lora_layers.values() for p in layer.parameters()

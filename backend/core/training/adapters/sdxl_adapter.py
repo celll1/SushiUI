@@ -23,7 +23,14 @@ import torch.nn as nn
 from safetensors.torch import save_file
 import math
 
-from .base_adapter import BaseLoRAAdapter, BaseFullParameterAdapter, reject_quantized_base
+from .base_adapter import (
+    BaseLoRAAdapter,
+    BaseFullParameterAdapter,
+    reject_quantized_base,
+    LORA_COMPONENT_UNET,
+    LORA_COMPONENT_TEXT_ENCODER_1,
+    LORA_COMPONENT_TEXT_ENCODER_2,
+)
 from .sd15_adapter import LoRALinearLayer  # Reuse LoRA layer implementation
 
 
@@ -141,7 +148,7 @@ class SDXLLoRAAdapter(BaseLoRAAdapter):
                         # Child is direct attribute (e.g., "proj_in", "proj_out")
                         setattr(block_module, child_name, lora_layer)
 
-                    lora_layers[lora_name] = lora_layer
+                    self.register_lora_layer(lora_layers, lora_name, lora_layer, LORA_COMPONENT_UNET)
                     count += 1
 
         return count
@@ -173,7 +180,7 @@ class SDXLLoRAAdapter(BaseLoRAAdapter):
                     layer.mlp.fc1, self.lora_rank, self.lora_alpha, lora_name
                 )
                 layer.mlp.fc1 = lora_layer
-                lora_layers[lora_name] = lora_layer
+                self.register_lora_layer(lora_layers, lora_name, lora_layer, LORA_COMPONENT_TEXT_ENCODER_1)
                 count += 1
 
                 # mlp.fc2
@@ -182,7 +189,7 @@ class SDXLLoRAAdapter(BaseLoRAAdapter):
                     layer.mlp.fc2, self.lora_rank, self.lora_alpha, lora_name
                 )
                 layer.mlp.fc2 = lora_layer
-                lora_layers[lora_name] = lora_layer
+                self.register_lora_layer(lora_layers, lora_name, lora_layer, LORA_COMPONENT_TEXT_ENCODER_1)
                 count += 1
 
         # Text Encoder 2 (OpenCLIP ViT-bigG): All layers
@@ -195,7 +202,7 @@ class SDXLLoRAAdapter(BaseLoRAAdapter):
                     layer.mlp.fc1, self.lora_rank, self.lora_alpha, lora_name
                 )
                 layer.mlp.fc1 = lora_layer
-                lora_layers[lora_name] = lora_layer
+                self.register_lora_layer(lora_layers, lora_name, lora_layer, LORA_COMPONENT_TEXT_ENCODER_2)
                 count += 1
 
                 # mlp.fc2
@@ -204,7 +211,7 @@ class SDXLLoRAAdapter(BaseLoRAAdapter):
                     layer.mlp.fc2, self.lora_rank, self.lora_alpha, lora_name
                 )
                 layer.mlp.fc2 = lora_layer
-                lora_layers[lora_name] = lora_layer
+                self.register_lora_layer(lora_layers, lora_name, lora_layer, LORA_COMPONENT_TEXT_ENCODER_2)
                 count += 1
 
         return count

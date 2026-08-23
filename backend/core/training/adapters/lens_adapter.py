@@ -28,7 +28,10 @@ import torch
 import torch.nn as nn
 from safetensors.torch import save_file
 
-from .base_adapter import BaseLoRAAdapter, BaseFullParameterAdapter, reject_quantized_base
+from .base_adapter import (
+    BaseLoRAAdapter, BaseFullParameterAdapter, reject_quantized_base,
+    LORA_COMPONENT_UNET,
+)
 from .sd15_adapter import LoRALinearLayer
 
 from core.models.lens.lens_lora import (
@@ -74,7 +77,7 @@ class LensLoRAAdapter(BaseLoRAAdapter):
             else:
                 setattr(parent, attr, lora_layer)
 
-            lora_layers[lora_name] = lora_layer
+            self.register_lora_layer(lora_layers, lora_name, lora_layer, LORA_COMPONENT_UNET)
             count += 1
 
         print(f"[LensLoRAAdapter] Injected {count} LoRA layer(s) into Lens transformer")

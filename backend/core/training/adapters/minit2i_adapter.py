@@ -22,7 +22,10 @@ import torch
 import torch.nn as nn
 from safetensors.torch import save_file
 
-from .base_adapter import BaseLoRAAdapter, BaseFullParameterAdapter, reject_quantized_base
+from .base_adapter import (
+    BaseLoRAAdapter, BaseFullParameterAdapter, reject_quantized_base,
+    LORA_COMPONENT_UNET, LORA_COMPONENT_TEXT_ENCODER,
+)
 from .sd15_adapter import LoRALinearLayer
 
 from core.models.minit2i.minit2i_lora import (
@@ -71,7 +74,7 @@ class MiniT2ILoRAAdapter(BaseLoRAAdapter):
                 parent[attr] = lora_layer
             else:
                 setattr(parent, attr, lora_layer)
-            lora_layers[lora_name] = lora_layer
+            self.register_lora_layer(lora_layers, lora_name, lora_layer, LORA_COMPONENT_UNET)
             count += 1
         print(f"[MiniT2ILoRAAdapter] Injected {count} LoRA layer(s)")
         return count
@@ -91,7 +94,7 @@ class MiniT2ILoRAAdapter(BaseLoRAAdapter):
             lora_name = flatten_to_te_key(module_path)  # "lora_te_<flat>"
             lora_layer = LoRALinearLayer(current, self.lora_rank, self.lora_alpha, lora_name, self.lora_dtype)
             setattr(parent, attr, lora_layer)
-            lora_layers[lora_name] = lora_layer
+            self.register_lora_layer(lora_layers, lora_name, lora_layer, LORA_COMPONENT_TEXT_ENCODER)
             count += 1
         print(f"[MiniT2ILoRAAdapter] Injected {count} FLAN-T5 LoRA layer(s)")
         return count

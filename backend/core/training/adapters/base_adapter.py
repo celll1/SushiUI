@@ -11,6 +11,21 @@ import torch
 import torch.nn as nn
 
 
+LORA_COMPONENT_UNET = "unet"
+LORA_COMPONENT_TEXT_ENCODER = "text_encoder"
+LORA_COMPONENT_TEXT_ENCODER_1 = "text_encoder_1"
+LORA_COMPONENT_TEXT_ENCODER_2 = "text_encoder_2"
+LORA_COMPONENT_VISION_ENCODER = "vision_encoder"
+
+LORA_COMPONENTS = frozenset({
+    LORA_COMPONENT_UNET,
+    LORA_COMPONENT_TEXT_ENCODER,
+    LORA_COMPONENT_TEXT_ENCODER_1,
+    LORA_COMPONENT_TEXT_ENCODER_2,
+    LORA_COMPONENT_VISION_ENCODER,
+})
+
+
 def count_quantized_linears(module: Optional[nn.Module]) -> int:
     """Number of weight-only quantized Linear modules under ``module``.
 
@@ -228,6 +243,39 @@ class BaseLoRAAdapter(ABC):
         self.lora_alpha = lora_alpha
         self.lora_scale = lora_alpha / lora_rank
         self.lora_dtype = lora_dtype
+        self._lora_components: Dict[str, str] = {}
+
+    @property
+    def lora_components(self) -> Dict[str, str]:
+        """``lora_layers`` key -> component bucket, recorded at injection time.
+
+        Grad-norm reporting used to infer the component from substrings of the
+        LoRA key ('unet'/'transformer'/'te1_'...). Any architecture whose keys
+        are plain module paths (SenseNova) or use another prefix (FLUX.2 /
+        MiniT2I text encoders) silently fell through every branch and was
+        counted only in the total. The injecting adapter knows the component, so
+        it records it here instead.
+        """
+        comps = self.__dict__.get("_lora_components")
+        if comps is None:
+            comps = {}
+            self.__dict__["_lora_components"] = comps
+        return comps
+
+    def register_lora_layer(
+        self,
+        lora_layers: Dict[str, nn.Module],
+        name: str,
+        layer: nn.Module,
+        component: str,
+    ) -> None:
+        """Insert a LoRA layer into ``lora_layers`` and record its component."""
+        if component not in LORA_COMPONENTS:
+            raise ValueError(
+                f"Unknown LoRA component {component!r} (expected one of {sorted(LORA_COMPONENTS)})"
+            )
+        lora_layers[name] = layer
+        self.lora_components[name] = component
 
     @abstractmethod
     def apply_lora_to_unet(self, lora_layers: Dict[str, nn.Module]) -> int:

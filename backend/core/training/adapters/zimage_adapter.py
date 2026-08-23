@@ -32,7 +32,7 @@ import math
 
 from .base_adapter import (
     BaseLoRAAdapter, BaseFullParameterAdapter, is_lora_wrappable_linear,
-    reject_quantized_base,
+    reject_quantized_base, LORA_COMPONENT_UNET,
 )
 from .sd15_adapter import LoRALinearLayer  # Reuse LoRA layer implementation
 
@@ -105,7 +105,7 @@ class ZImageLoRAAdapter(BaseLoRAAdapter):
                         setattr(attn_module, attr_name, lora_layer)
 
                         # Store reference
-                        lora_layers[lora_name] = lora_layer
+                        self.register_lora_layer(lora_layers, lora_name, lora_layer, LORA_COMPONENT_UNET)
                         count += 1
 
             # Handle to_out (ModuleList in Z-Image, first element is Linear projection)
@@ -123,7 +123,7 @@ class ZImageLoRAAdapter(BaseLoRAAdapter):
                     attn_module.to_out[0] = lora_layer
 
                     # Store reference
-                    lora_layers[lora_name] = lora_layer
+                    self.register_lora_layer(lora_layers, lora_name, lora_layer, LORA_COMPONENT_UNET)
                     count += 1
 
         print(f"[ZImageLoRAAdapter] Injected {count} LoRA layers into Z-Image Transformer")

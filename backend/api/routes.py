@@ -16640,6 +16640,48 @@ async def reload_training_config(
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Failed to reload config: {str(e)}")
 
+def _resolve_training_epoch(run, db: Session):
+    """Return (current_epoch, total_epochs) as 1-based / None, arch-independent.
+
+    Every trainer records the 0-based loop epoch on each ``training_metrics``
+    row, so the latest row at or before ``current_step`` is the authoritative
+    current epoch (a resume that rewinds the step counter leaves stale
+    higher-step rows behind, hence the bound). ``total_epochs`` only exists for
+    epoch-configured runs; step-configured runs return None.
+    """
+    from database.models import TrainingMetrics
+
+    current_epoch = None
+    try:
+        row = (
+            db.query(TrainingMetrics.epoch)
+            .filter(
+                TrainingMetrics.run_id == run.id,
+                TrainingMetrics.step <= (run.current_step or 0),
+            )
+            .order_by(TrainingMetrics.step.desc(), TrainingMetrics.id.desc())
+            .first()
+        )
+        if row is not None and row[0] is not None:
+            current_epoch = int(row[0]) + 1
+    except Exception as e:
+        print(f"[API] WARNING: could not resolve current epoch for run {run.id}: {e}")
+
+    total_epochs = None
+    try:
+        import yaml as _yaml
+        doc = _yaml.safe_load(run.config_yaml or "") or {}
+        process = (doc.get("config", {}) or {}).get("process") or doc.get("process") or []
+        train_cfg = (process[0] or {}).get("train", {}) if process else {}
+        epochs = train_cfg.get("epochs")
+        if epochs is not None:
+            total_epochs = int(epochs)
+    except Exception as e:
+        print(f"[API] WARNING: could not read total epochs for run {run.id}: {e}")
+
+    return current_epoch, total_epochs
+
+
 @router.get("/training/runs/{run_id}/status")
 async def get_training_status(run_id: int, db: Session = Depends(get_training_db)):
     """Get current training status"""
@@ -16654,11 +16696,15 @@ async def get_training_status(run_id: int, db: Session = Depends(get_training_db
     process = training_process_manager.get_process(run_id)
     process_status = process.get_status() if process else None
 
+    current_epoch, total_epochs = _resolve_training_epoch(run, db)
+
     return {
         "status": run.status,
         "progress": run.progress,
         "current_step": run.current_step,
         "total_steps": run.total_steps,
+        "current_epoch": current_epoch,
+        "total_epochs": total_epochs,
         "loss": run.loss,
         "learning_rate": run.learning_rate,
         "phase": run.phase,

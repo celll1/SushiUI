@@ -371,13 +371,9 @@ function dispatchTotalSteps(item: QueueItem): number {
 
 interface Txt2ImgPanelProps {
   onTabChange?: (tab: "txt2img" | "img2img" | "inpaint" | "outpaint" | "upscale") => void;
-  // opts.kind/playbackUrl let the shared top-right strip (FloatingGallery)
-  // render video/audio results correctly instead of guessing from the URL
-  // extension and falling back to a non-playable master URL.
-  onImageGenerated?: (imageUrl: string, opts?: { kind?: "image" | "video" | "audio"; playbackUrl?: string }) => void;
 }
 
-export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgPanelProps = {}) {
+export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
   const { modelInfo, isBackendReady, generationDefaults, isVideo, isAudio, archCapabilities, resolveModality, refreshModelInfo, videoFrameSliderMax, sliderBounds } = useStartup();
   const pathname = usePathname();
   const [params, setParams] = useState<GenerationParams>(DEFAULT_PARAMS);
@@ -2669,107 +2665,6 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
 
     console.log(`[Txt2Img] Added ${enabledSteps.length} loop steps to queue with group ID: ${loopGroupId}`);
   }, [loopGenerationConfig, addToQueue, refImages, useTrainingModel, activeTraining, savePreviewToGallery, freezeDispatchState]);
-
-  // Add loop generation steps to queue after main generation completes (legacy - not used anymore)
-  const addLoopStepsToQueue = useCallback(async (baseImageUrl: string, mainParams: GenerationParams, loopGroupId: string) => {
-    if (!loopGenerationConfig.enabled || loopGenerationConfig.steps.length === 0) {
-      return;
-    }
-
-    const { replaceWildcardsInPrompt } = await import("@/utils/wildcardStorage");
-    const enabledSteps = loopGenerationConfig.steps.filter(step => step.enabled);
-
-    for (let i = 0; i < enabledSteps.length; i++) {
-      const step = enabledSteps[i];
-      const previousImageUrl = i === 0 ? baseImageUrl : null; // First step uses main output, others will chain
-
-      // Prepare params for this loop step
-      const stepParams: any = {
-        prompt: mainParams.prompt,
-        negative_prompt: mainParams.negative_prompt,
-        width: step.width || mainParams.width,
-        height: step.height || mainParams.height,
-        denoising_strength: step.denoisingStrength,
-        img2img_fix_steps: step.doFullSteps,
-        resize_mode: step.resizeMode,
-        resampling_method: step.resamplingMethod,
-      };
-
-      // Use custom settings or inherit from main
-      if (step.useMainSettings) {
-        stepParams.steps = mainParams.steps;
-        stepParams.cfg_scale = mainParams.cfg_scale;
-        stepParams.sampler = mainParams.sampler;
-        stepParams.schedule_type = mainParams.schedule_type;
-        stepParams.seed = mainParams.seed;
-        stepParams.ancestral_seed = mainParams.ancestral_seed;
-      } else {
-        stepParams.steps = step.steps || 20;
-        stepParams.cfg_scale = step.cfgScale || 7;
-        stepParams.sampler = step.sampler || mainParams.sampler;
-        stepParams.schedule_type = step.scheduleType || mainParams.schedule_type;
-        stepParams.seed = step.seed ?? -1;
-        stepParams.ancestral_seed = step.ancestralSeed ?? -1;
-        // Use step's Advanced CFG or defaults
-        stepParams.cfg_schedule_type = step.cfg_schedule_type || "constant";
-        stepParams.cfg_schedule_min = step.cfg_schedule_min ?? 1.0;
-        stepParams.cfg_schedule_max = step.cfg_schedule_max;
-        stepParams.cfg_schedule_power = step.cfg_schedule_power ?? 2.0;
-        stepParams.cfg_rescale_snr_alpha = step.cfg_rescale_snr_alpha ?? 0.0;
-        stepParams.dynamic_threshold_percentile = step.dynamic_threshold_percentile ?? 0.0;
-        stepParams.dynamic_threshold_mimic_scale = step.dynamic_threshold_mimic_scale ?? 7.0;
-        // Use step's NAG or defaults
-        stepParams.nag_enable = step.nag_enable ?? false;
-        stepParams.nag_scale = step.nag_scale ?? 5.0;
-        stepParams.nag_tau = step.nag_tau ?? 3.5;
-        stepParams.nag_alpha = step.nag_alpha ?? 0.25;
-        stepParams.nag_sigma_end = step.nag_sigma_end ?? 3.0;
-        stepParams.nag_negative_prompt = step.nag_negative_prompt ?? "";
-      }
-
-      stepParams.loras = mainParams.loras || [];
-      stepParams.controlnets = mainParams.controlnets || [];
-      stepParams.prompt_chunking_mode = mainParams.prompt_chunking_mode;
-      stepParams.max_prompt_chunks = mainParams.max_prompt_chunks;
-      stepParams.unet_quantization = mainParams.unet_quantization;
-      stepParams.quantized_gemm_mode = mainParams.quantized_gemm_mode;
-      stepParams.original_size_w = mainParams.original_size_w;
-      stepParams.original_size_h = mainParams.original_size_h;
-      stepParams.original_size_scale = mainParams.original_size_scale;
-      stepParams.cpu_text_encoding = mainParams.cpu_text_encoding;
-      stepParams.vision_encoder_path = mainParams.vision_encoder_path;
-      stepParams.vae_path = mainParams.vae_path;
-      stepParams.text_encoder_path = mainParams.text_encoder_path;
-      stepParams.pid_sr_output = mainParams.pid_sr_output;
-      stepParams.pid_use_gemma = mainParams.pid_use_gemma;
-      stepParams.pid_low_vram = mainParams.pid_low_vram;
-      stepParams.pid_tile_native = mainParams.pid_tile_native;
-      stepParams.pid_tile_overlap_ratio = mainParams.pid_tile_overlap_ratio;
-      stepParams.pid_fast_large_decode = mainParams.pid_fast_large_decode;
-
-      const processedPrompt = await replaceWildcardsInPrompt(stepParams.prompt);
-      const processedNegativePrompt = await replaceWildcardsInPrompt(stepParams.negative_prompt);
-
-      addToQueue({
-        type: "img2img",
-        params: {
-          ...stepParams,
-          prompt: processedPrompt,
-          negative_prompt: processedNegativePrompt,
-        },
-        inputImage: previousImageUrl || "", // Will be updated to previous output for chained steps
-        prompt: `[Loop ${i + 1}/${enabledSteps.length}] ${processedPrompt.substring(0, 50)}...`,
-        loopGroupId,
-        loopStepIndex: i,
-        isLoopStep: true,
-        useTrainingModel,
-        trainingRunId: activeTraining?.run_id,
-        panel: "txt2img",
-      });
-    }
-
-    console.log(`[Txt2Img] Added ${enabledSteps.length} loop steps to queue with group ID: ${loopGroupId}`);
-  }, [loopGenerationConfig, addToQueue, useTrainingModel, activeTraining]);
 
   // Dispatch now lives in GenerationQueueProcessor.tsx (always-mounted,
   // outlives this panel unmounting on tab switch). This panel only re-enqueues

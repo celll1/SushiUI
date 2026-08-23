@@ -512,14 +512,10 @@ function dispatchTotalSteps(item: QueueItem): number {
 }
 
 interface OutpaintPanelProps {
-  // opts.kind/playbackUrl let the shared top-right strip (FloatingGallery)
-  // render video/audio results correctly instead of guessing from the URL
-  // extension and falling back to a non-playable master URL.
-  onImageGenerated?: (imageUrl: string, opts?: { kind?: "image" | "video" | "audio"; playbackUrl?: string }) => void;
   onTabChange?: (tab: "txt2img" | "img2img" | "inpaint" | "outpaint" | "upscale") => void;
 }
 
-export default function OutpaintPanel({ onTabChange, onImageGenerated }: OutpaintPanelProps = {}) {
+export default function OutpaintPanel({ onTabChange }: OutpaintPanelProps = {}) {
   const { isBackendReady, modelInfo, generationDefaults, isVideo, isAudio, archCapabilities, resolveModality, refreshModelInfo, sliderBounds } = useStartup();
   const [params, setParams] = useState<OutpaintPanelParams>(DEFAULT_PARAMS);
   const [generatedImageParams, setGeneratedImageParams] = useState<OutpaintPanelParams | null>(null);

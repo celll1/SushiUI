@@ -19,6 +19,7 @@ Local-only files that may be absent in a fresh clone are listed separately.
 | `docs/guides/ARCHITECTURE_MAP.md` | Directory tree + backend/frontend module responsibilities. |
 | `docs/guides/REQUEST_LIFECYCLE.md` | End-to-end request flow (frontend to DB to gallery) for image generation, video generation and model load. |
 | `docs/guides/ADD_A_PARAMETER.md` | Ordered checklist for threading a new API parameter through the stack. |
+| `docs/guides/GENERATION_QUEUE_PROCESSOR.md` | Read before changing anything about the generation queue's frontend dispatch: what the headless processor owns vs. the panels, which UI state is frozen onto a QueueItem at enqueue time and why, and the alert-ordering / model-hold / drift-pause traps. |
 | `docs/guides/ADD_A_MODEL_ARCHITECTURE.md` | Procedure for adding another diffusion architecture (14 exist), including the extra surface a video/audio architecture needs. |
 | `docs/guides/API_TESTING.md` | Safe vs. owner-sanctioned endpoints, dry-run convention, restart polling. |
 | `docs/guides/MODEL_FACTS.md` | Per-architecture facts reference for all 14 architectures, including the video models' (LTX-2.3, MiniMax-H3) and MiniMax Music 3's measured performance and their accepted/refused feature set. |

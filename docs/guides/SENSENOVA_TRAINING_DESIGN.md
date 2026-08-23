@@ -1,8 +1,6 @@
 # SenseNova U1.5 学習設計案
 
-> Status: Phase 0 と Phase 1 の core/trainer integration・real 3-step
-> exit-smoke・half-eviction driver は完了。half-eviction OFF / ON 実測、
-> Phase 2b、Phase 3 は未完。
+> Status: Phase 0 と Phase 1 は完了。Phase 2b、Phase 3 は未完。
 > Date: 2026-08-24
 > Scope: SenseNova-U1.5-8B-MoT の (1) LoRA 学習 / (2) full-parameter fine-tune /
 > (3) reference 画像を含むデータセットの混在学習
@@ -92,7 +90,7 @@ facts は [`MODEL_FACTS.md`](MODEL_FACTS.md) を正とする。本文書は Sens
 | `detect_prediction_config` | `sensenova` を flow / velocity として登録し退行テスト済み | DONE |
 | `TRAINING_UNSUPPORTED` | full FT / ReLoRA / ControlNet をロード前に拒否 | DONE |
 | real trainer exit smoke | 3 finite steps、runtime strength 0 exact parity、294 apply / restore を実 checkpoint で検証済み | DONE |
-| half-eviction driver | training 専用 3-state driver と opt-in API/UI を統合済み。OFF / ON 実測は未完 | DONE / MEASUREMENT PENDING |
+| half-eviction | training 専用 driver、opt-in API/UI、実 checkpoint OFF / ON 測定を完了 | DONE |
 | reference / full FT | §11 の後続フェーズ | PENDING |
 
 ---
@@ -209,7 +207,7 @@ non-reentrant checkpoint loop を持つ。immutable な prefix cache を closure
 
 ---
 
-## 5. Phase 1 — LoRA 学習（driver DONE、half-eviction 実測 PENDING）
+## 5. Phase 1 — LoRA 学習（DONE）
 
 ### 5.1 採用する方式
 
@@ -584,7 +582,7 @@ generation の非対応が training の非対応を含意しないことは既�
 
 | | Phase 1（LoRA） | Phase 2（gen full FT） |
 |---|---|---|
-| 主機構 | MoT half-eviction driver（DONE、実測 PENDING） | `TransformerBlockOffloader`（gen 半分のみ、PENDING） |
+| 主機構 | MoT half-eviction（DONE、既定 OFF） | `TransformerBlockOffloader`（gen 半分のみ、PENDING） |
 | und 半分 | 凍結済み。prefix cache 成功後から次の prefix まで CPU 退避 | 同左 |
 | 根拠 | weight は int8 で 15.1 GiB、圧迫要因は pixel space の activation で block swap では減らない。half-eviction は粗い粒度（7.55 GiB）で phase 境界あたり 2 転送、`kv_cache_streaming.py:27-35` が学習への転移を明示的に是認している | bf16 gen weight 16.2 GB + gradient がボトルネックになり、per-block の rolling window が効く |
 
@@ -612,15 +610,31 @@ rolling）。
 **DONE（driver）**: 推論用 callback は再利用せず、学習専用の `full / prefix /
 denoise` state machine を実装した。2 周目の `denoise -> prefix` は gen D2H 完了後に
 und H2D、`prefix -> denoise` は und D2H 完了後に gen H2D とし、同一 phase は no-op。
-転送は correctness 優先の blocking copy とし、H2D 非同期化は OFF / ON 実測後に判断する。
+転送は correctness 優先の blocking copy とする。§8.3 の実測では既定 ON にできる
+trade-off ではなかったため、H2D 非同期化は将来の opt-in 最適化として残す。
 prefix 失敗時は `prefix` に留まるため retry で余分な転送を起こさず、LoRA の
 forward / backward / optimizer / save 中は gen half を GPU に維持する。selector は
 LoRA injection 後の live tree から Parameter と永続 buffer を選び、non-persistent
 buffer と rotary を除外し、42 layer の両 half の形状・dtype 対称性を fail-closed で
 検証する。partial transfer 失敗は再利用不能にし、全 weight の CPU 正規化を試みる。
 
-**PENDING（measurement）**: 7.55 GiB は退避候補量にすぎないため、必要性と効果は
-half-eviction OFF / ON の別 process 計測後に判断する。
+**DONE（measurement、2026-08-24）**: exit-smoke と同じ plain-int8 checkpoint、
+RTX 6000 Ada 48 GB、seed 1234、native attention、64×64、B1、rank 1 / alpha 1、
+GC ON、3 step を OFF / ON の別 process で測定した。
+
+| | OFF | ON |
+|---|---:|---:|
+| peak allocated | 18.09 GiB | 17.59 GiB |
+| peak reserved | 18.19 GiB | 18.00 GiB |
+| train loop wall | 3.278 s | 18.400 s |
+| model load込み wall | 22.759 s | 37.330 s |
+
+ON は peak allocated を 0.50 GiB（2.76%）、reserved を 0.18 GiB（1.01%）下げたが、
+train loop は 5.61 倍遅くなった。両 arm の 3 loss、live / saved LoRA SHA-256、
+882-tensor checkpoint は一致し、fresh runtime の strength 0 parity と 294 apply / restore
+も両方で成立した。64×64 では初期の both-half model load が high-water を支配するため、
+7.55 GiB の退避候補量は end-to-end peak 削減へ直結しない。この測定はより高い解像度の
+効果を示さないため、既定 OFF を維持し、VRAM 制約時だけ opt-in とする。
 
 ### 8.4 half-eviction 再利用時の注意
 
@@ -697,10 +711,10 @@ arch 非依存で、`blocks_to_swap` / `num_optimizer_groups` / `optimizer_type`
   backend refusal。SenseNova は VAE を持たないが、明示 VAE path/store の decoder
   training は別契約として許可する。
 - **DONE:** real trainer の 3-step exit smoke と fresh runtime strength 0 parity。
+- **DONE:** Phase 1 half-eviction の OFF / ON 別 process 計測。
 
 ### PENDING
 
-- Phase 1 half-eviction の OFF / ON 別 process 計測。
 - Phase 2b full FT 本体と Phase 3 reference 混在。
 
 ### DONE — 登録から自動的に得られたもの
@@ -781,7 +795,7 @@ model resident allocated は 17.59 GiB、prefix の live allocated 増分は 50.
 の前提を満たす。この数値は GC OFF / ON 差であり、half-eviction OFF / ON による
 削減量ではない（§8.3）。
 
-### Phase 1 — LoRA（driver DONE、half-eviction 実測 PENDING）
+### Phase 1 — LoRA（DONE）
 
 - `arch/sensenova.py` + `ops/sensenova_ops.py` + `adapters/sensenova_adapter.py`。
 - 登録 5 箇所 + `base_trainer.py` の分岐（§9）。
@@ -795,7 +809,8 @@ model resident allocated は 17.59 GiB、prefix の live allocated 増分は 50.
 - **DONE:** 上記の arch/ops/adapter、294-target plain-int8 gate、checkpoint-safe
   2-pass core、trainer/runner integration、prediction/defaults、保存と runtime round-trip。
 - **DONE:** MoT half-eviction の学習側再利用（opt-in）。
-- **PENDING:** §8.3 の OFF / ON 別 process 計測。
+- **DONE:** §8.3 の OFF / ON 別 process 計測。64×64 では 0.50 GiB 削減に対して
+  train loop が 5.61 倍遅くなるため、既定 OFF を維持する。
 - **DONE exit criteria:** real trainer の 3-step smoke で有限 loss、保存した LoRA が推論側の
   runtime LoRA としてそのままロードでき、strength 0 で base 出力と一致すること。
 
@@ -826,11 +841,11 @@ peak allocated は 18.09 GiB、peak reserved は 18.19 GiB だった。
 
 fresh runtime arm は保存物を 294/294 module に適用し、294/294 を復元した。
 復元後の全 module identity は元と一致した。base と strength 0 の denoise tensor は
-同じ SHA-256 を持ち、`torch.equal` でも一致した。これにより half-eviction の
-OFF / ON 実測を除く Phase 1 exit criteria を満たす。
+同じ SHA-256 を持ち、`torch.equal` でも一致した。half-eviction の OFF / ON 実測も
+§8.3 のとおり完了し、Phase 1 exit criteria を満たした。
 
 half-eviction の効果を測る場合は、同一 checkpoint / seed / shape / GC 条件で
-別 process の OFF / ON を個別に起動する（現時点の結果は **PENDING**）。
+別 process の OFF / ON を個別に起動する。2026-08-24 の結果は §8.3 に記録した。
 
 ```text
 # OFF

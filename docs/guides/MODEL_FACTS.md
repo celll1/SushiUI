@@ -1615,6 +1615,46 @@ a generation without style transfer.
     `sensenova_pipeline_ops.py`) — soft semantic guidance via the
     understanding branch, with no spatial residual injected into the
     denoiser the way real ControlNets inject one.
+  - **Training-free reference-style transfer is supported** (`f41ed959`,
+    `99009179`): the shared KV-injection mechanism
+    (`backend/core/inference/reference_style.py`), reached through
+    `controlnets[]` with `is_style_transfer: true` — the same surface
+    Krea2/SDXL/FLUX.2/Lens/Anima/MiniT2I/Ideogram4/LTX-2.3 use, no
+    SenseNova-specific API. Pixel-space (the reference goes through
+    `image_to_tensor`, not a VAE encode) and resized outright to the target
+    resolution, since capture and inject must yield the same image-token
+    count; a non-matching aspect ratio is resized and warned
+    (`sensenova_style_reference_resized`). Injection is cond-branch only, so
+    style does not ride the CFG delta. The reference Key uses an all-ones
+    frequency vector — same reasoning as Anima/MiniT2I/Ideogram4/LTX-2.3,
+    since the rotate-half per-axis RoPE is incompatible with
+    `frequency_scale_vector`'s interleave-real curve (`axes_dims` stays
+    None). Each style-active step runs a full extra 42-layer forward
+    (capture), re-noising the reference to that step's t with a
+    per-generation fixed `eps_ref`.
+    - **Measured on the ConvRot int8 checkpoint, 512x512, seed-fixed, CFG
+      active**: marginal per-step cost 0.1934 s/step off vs 0.3145 s/step on
+      — **1.63x** (slope between 8-step and 32-step runs, isolating the
+      fixed prefix/model-move overhead a naive 16-step total-time ratio
+      would dilute into 1.26x). Peak VRAM +110 MiB at this resolution.
+    - **Gated by optimization-invariance, not a full A/B**: with style
+      active, output is bit-identical across all 4 combinations of
+      {KV-cache-streaming on/off} x {MoT phase-exclusive eviction on/off},
+      and differs from the style-off output — verifies the feature is
+      active rather than a silent no-op, which matters given this arch's
+      cache machinery has produced two real bugs before. Determinism (same
+      seed twice, style active) is also confirmed identical. The off state
+      was verified inert by code inspection plus a diff audit (zero
+      deletions, a single `is None` check) rather than by a pre-commit A/B.
+      Not yet run: a long (>=50 step) non-square late-step corruption
+      screen, the full CFG matrix (`cfg_scale<=1`, simultaneous
+      it2i-reference + style-reference), and a user-judged efficacy grid.
+    - **Cosmetic**: a style-active request still emits the blanket
+      `unsupported_param` warning "ControlNet is not supported for
+      SenseNova U1.5", because style entries ride the same `controlnets[]`
+      array the rejected feature above would have used. Spurious — the
+      style entry is extracted and applied regardless — and pre-existing;
+      Krea2 and LTX-2.3 share it.
   - **Refused, with a typed error, not warned**: spatial outpaint
     (`_reject_if_sensenova_unsupported`), deferred because it layers on the
     img2img/inpaint entry points rather than for lacking a mapping. VQA and

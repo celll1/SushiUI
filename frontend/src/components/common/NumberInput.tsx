@@ -31,17 +31,26 @@ interface NumberInputProps {
   defaultValue?: number;
   min?: number;
   max?: number;
-  step?: number;
+  /**
+   * Spinner/wheel increment, forwarded verbatim to the DOM.
+   *
+   * A numeric `step` also defines the browser's validity grid (`min + n*step`),
+   * and the spinner rewrites off-grid values onto it — so a continuous
+   * quantity must pass `"any"`, and a numeric `step` is only correct when
+   * `min` sits on that grid (`min="0.01" step="0.1"` rounded a typed 0.8 to
+   * 0.81). Where `snap` is also given, `step` should match it: `snap` is the
+   * real constraint, and a coarser `step` only rejects values `snap` allows.
+   */
+  step?: number | "any";
   parse?: "int" | "float";
   /**
    * Optional commit-time quantization to the nearest multiple of `snap`
    * (e.g. `snap={64}` forces committed values onto 0, 64, 128, ...).
    *
-   * This is independent of `step`: `step` is only the spinner's
-   * increment/decrement amount (and a UA hint for native validation styling)
-   * — it never rewrites typed/pasted input. `snap` is the actual backend
-   * constraint and is applied only at commit time (live-commit-while-typing
-   * and blur-resolve), never to the draft string while the user is mid-type.
+   * `snap` is the actual backend constraint and is applied only at commit
+   * time (live-commit-while-typing and blur-resolve), never to the draft
+   * string while the user is mid-type — unlike `step`, which the browser
+   * enforces on the spinner (see the `step` doc above; keep the two equal).
    *
    * Ordering: snap is applied BEFORE min/max clamping, then the result is
    * re-clamped. Snapping first and clamping second (rather than the

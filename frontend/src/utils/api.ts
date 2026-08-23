@@ -3308,8 +3308,12 @@ export const toBase64 = async (src: File | Blob | string): Promise<string> => {
  *  data: URL when the user uploaded it but an /outputs/ or blob: URL once a loop
  *  step patches in the previous result -- toBase64 hands those straight back
  *  unchanged, so they must be fetched to a Blob first. */
-export const imageSourceToBase64 = async (src: string): Promise<string> =>
-  src.startsWith("data:") ? toBase64(src) : toBase64(await (await fetch(src)).blob());
+export const imageSourceToBase64 = async (src: string): Promise<string> => {
+  // fetch("") resolves to the current document, which would be encoded and sent
+  // as if it were an image.
+  if (!src) throw new Error("imageSourceToBase64: empty image source");
+  return src.startsWith("data:") ? toBase64(src) : toBase64(await (await fetch(src)).blob());
+};
 
 export const generateImg2ImgTrainingPreview = async (
   params: Img2ImgTrainingPreviewParams,

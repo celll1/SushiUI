@@ -12,7 +12,6 @@
 import { useCallback, useEffect, useRef } from "react";
 import { QueueItem, typeToPanel, useGenerationQueue } from "@/contexts/GenerationQueueContext";
 import { useStartup } from "@/contexts/StartupContext";
-import { useActiveTraining } from "@/hooks/useActiveTraining";
 import { advanceVideoChain } from "@/utils/videoChain";
 import { EMPTY_MINIMAX_H3_REFERENCES } from "../common/MiniMaxH3ReferenceSelector";
 import {
@@ -54,8 +53,9 @@ import {
   UpscaleParams,
 } from "@/utils/api";
 
-// Types this processor has taken over from the panels. Panels still claim the
-// rest until their migration phase lands.
+// Every QueueItem type. Kept explicit rather than implied: `startNextInQueue`
+// takes it as the claim list, which is also how the no-model hold gate below
+// narrows what may dispatch.
 const CLAIMED_TYPES: readonly QueueItem["type"][] = [
   "upscale",
   "outpaint",
@@ -145,8 +145,6 @@ export default function GenerationQueueProcessor() {
     setChainStoppedMessage,
   } = useGenerationQueue();
   const { modelLoaded, modelInfo, archCapabilities } = useStartup();
-
-  const activeTraining = useActiveTraining();
 
   // advanceVideoChain wants the whole queue; a ref keeps it current inside a
   // callback that started before the last patch landed.
@@ -427,14 +425,13 @@ export default function GenerationQueueProcessor() {
     } catch (error: any) {
       console.error("[Queue] Video inpaint generation failed:", error);
       busyRef.current = false;
-      publishFailure({ panel: "inpaint", itemId: item.id, cancelled: false });
       failCurrentItem();
       scheduleNext();
       alert(isGenerationStalledError(error)
         ? error.message
         : `Video inpaint generation failed: ${errorDetail(error)}`);
     }
-  }, [publishCompletedResult, appendResult, completeCurrentItem, failCurrentItem, publishFailure, scheduleNext]);
+  }, [publishCompletedResult, appendResult, completeCurrentItem, failCurrentItem, scheduleNext]);
 
   const runInpaint = useCallback(async (item: QueueItem) => {
     // Explicit allowlist rather than a spread: `item.params` also carries
@@ -553,13 +550,13 @@ export default function GenerationQueueProcessor() {
       let result: any;
       let imageUrl: string;
 
-      if (item.useTrainingModel && (item.trainingRunId ?? activeTraining?.run_id)) {
+      if (item.useTrainingModel && item.trainingRunId) {
         const preview = await generateInpaintTrainingPreview({
           ...(apiParams as any),
           init_image_base64: await imageSourceToBase64(item.inputImage!),
           mask_image_base64: await imageSourceToBase64(item.maskImage!),
           denoising_strength: apiParams.denoising_strength ?? 0.75,
-          run_id: (item.trainingRunId ?? activeTraining!.run_id),
+          run_id: item.trainingRunId,
           save_to_gallery: item.savePreviewToGallery ?? false,
         });
         imageUrl = trainingPreviewUrl(preview);
@@ -632,7 +629,7 @@ export default function GenerationQueueProcessor() {
           : "Generation failed: " + (error instanceof Error ? error.message : String(error)));
       }
     }
-  }, [activeTraining, advanceLoopGroup, appendResult, completeCurrentItem, failCurrentItem, publishCompletedResult, publishFailure, scheduleNext, trainingPreviewUrl]);
+  }, [advanceLoopGroup, appendResult, completeCurrentItem, failCurrentItem, publishCompletedResult, publishFailure, scheduleNext, trainingPreviewUrl]);
 
   // Shared tail for every video item: publish the clip, then let
   // advanceVideoChain feed this chain's next segment (a no-op for an unchained
@@ -687,14 +684,16 @@ export default function GenerationQueueProcessor() {
       console.error(`[Queue] ${item.type} generation failed:`, error);
       const cancelled = isCancelledVideoError(error);
       busyRef.current = false;
-      publishFailure({ panel, itemId: item.id, cancelled });
+      // No publishFailure: restore-on-cancel is an image-run contract, and a
+      // cancelled video run must not resurrect a stale still into the slot the
+      // user was making a clip in.
       failCurrentItem();
       const showAlert = onFailure(error, cancelled);
       scheduleNext();
       showAlert?.();
     }
   }, [appendResult, archCapabilities, cancelLoopGroup, completeCurrentItem, failCurrentItem,
-      modelInfo?.type, pauseChain, publishCompletedResult, publishFailure, scheduleNext,
+      modelInfo?.type, pauseChain, publishCompletedResult, scheduleNext,
       setChainStoppedMessage, updateQueueItemByLoop]);
 
   // Cascade-cancel for a failed chain segment: every remaining pending step of
@@ -791,7 +790,6 @@ export default function GenerationQueueProcessor() {
     } catch (error: any) {
       console.error(`[Queue] ${item.type} generation failed:`, error);
       busyRef.current = false;
-      publishFailure({ panel, itemId: item.id, cancelled: false });
       failCurrentItem();
       scheduleNext();
       if (item.type === "aud2aud") {
@@ -806,12 +804,14 @@ export default function GenerationQueueProcessor() {
           : `txt2aud generation failed: ${error?.response?.data?.detail || error?.response?.data?.error || "see the console for details."}`);
       }
     }
-  }, [appendResult, completeCurrentItem, failCurrentItem, publishCompletedResult, publishFailure, scheduleNext]);
+  }, [appendResult, completeCurrentItem, failCurrentItem, publishCompletedResult, scheduleNext]);
 
   const runImage = useCallback(async (item: QueueItem) => {
     const panel = item.panel ?? typeToPanel(item.type);
     const params = item.params as Img2ImgParams;
-    const runId = item.trainingRunId ?? activeTraining?.run_id;
+    // The run is chosen at enqueue time; a training started since then must not
+    // capture an already-queued item.
+    const runId = item.trainingRunId;
     try {
       let result: any;
       let imageUrl: string | undefined;
@@ -900,7 +900,7 @@ export default function GenerationQueueProcessor() {
           : "Generation failed. Please check console for details.");
       }
     }
-  }, [activeTraining, advanceLoopGroup, appendResult, completeCurrentItem, failCurrentItem,
+  }, [advanceLoopGroup, appendResult, completeCurrentItem, failCurrentItem,
       publishCompletedResult, publishFailure, scheduleNext, trainingPreviewUrl]);
 
   const dispatch = useCallback(async (nextItem: QueueItem) => {
@@ -960,15 +960,21 @@ export default function GenerationQueueProcessor() {
     if (!nextItem) return;
 
     busyRef.current = true;
-    // Each branch clears the guard itself before completing/failing its item,
-    // so the next dispatch can start; the finally is only a backstop against a
-    // branch throwing outside its own try.
+    // Each branch clears the guard and settles its own item; this is only a
+    // backstop against a branch throwing outside its own try. Without it the
+    // item would stay "generating" forever and the auto-start effect, which
+    // requires currentItem === null, could never re-enter -- stalling the whole
+    // app rather than one panel.
     try {
       await dispatch(nextItem);
+    } catch (error) {
+      console.error("[Queue] Dispatch threw outside its own handler:", error);
+      failCurrentItem();
+      scheduleNext();
     } finally {
       busyRef.current = false;
     }
-  }, [modelLoaded, startNextInQueue, dispatch]);
+  }, [modelLoaded, startNextInQueue, dispatch, failCurrentItem, scheduleNext]);
 
   processRef.current = process;
 

@@ -58,7 +58,23 @@ class SenseNovaArchHandler(ArchHandler):
             prefix=ctx.sensenova_prefix,
             timesteps=ctx.timesteps,
             profile_vram=ctx.profile_vram,
+            debug_save_path=ctx.debug_save_path,
+            debug_captions=ctx.debug_captions,
+            debug_reference_image_paths=ctx.debug_reference_image_paths,
         )
 
     def sample(self, trainer, sample_ctx: SampleContext):
-        raise NotImplementedError("SenseNova training sampling is not integrated")
+        from core.training.ops import sensenova_ops
+
+        return sensenova_ops.generate_sample(
+            trainer,
+            prompt=sample_ctx.prompt,
+            height=sample_ctx.height,
+            width=sample_ctx.width,
+            num_inference_steps=sample_ctx.num_inference_steps,
+            guidance_scale=sample_ctx.guidance_scale,
+            seed=sample_ctx.seed,
+            negative_prompt=sample_ctx.negative_prompt,
+            reference_image_path=sample_ctx.reference_image_path,
+            condition_image_path=sample_ctx.condition_image_path,
+        )

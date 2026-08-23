@@ -61,8 +61,10 @@ class _Transformer(nn.Module):
     downsample_ratio = 0.5
     config = SimpleNamespace(t_eps=0.05)
 
-    def __init__(self):
+    def __init__(self, use_pixel_head=True, use_deep_fm_head=False):
         super().__init__()
+        self.use_pixel_head = use_pixel_head
+        self.use_deep_fm_head = use_deep_fm_head
         model = nn.Module()
         model.layers = nn.ModuleList([_Layer()])
         model.norm_mot_gen = nn.Identity()
@@ -347,6 +349,52 @@ def test_flow_step_matches_vendor_noising_conditioning_and_velocity_math():
     assert recon_loss == pytest.approx(1.0)
     assert transformer.language_model.model.layers[0].scale.grad is not None
     assert prefix.cache is cache and cache.layers[0].keys is key
+
+
+def _run_train_step(transformer):
+    trainer = SimpleNamespace(
+        transformer=transformer,
+        device=torch.device("cpu"),
+        training_dtype=torch.float32,
+        gradient_checkpointing=False,
+    )
+    return train_step(
+        trainer,
+        images=torch.ones(1, 3, 32, 32),
+        prefix=SenseNovaTrainingPrefix(_Cache(), text_length=3),
+        timesteps=torch.tensor([0.25]),
+    )
+
+
+def test_train_step_refuses_non_pixel_head_fm_decoders():
+    with pytest.raises(RuntimeError, match="plain fm_head branch"):
+        _run_train_step(_Transformer(use_pixel_head=False))
+
+    with pytest.raises(RuntimeError, match="use_deep_fm_head branch"):
+        _run_train_step(_Transformer(use_deep_fm_head=True))
+
+    unknown = _Transformer()
+    del unknown.use_pixel_head
+    del unknown.use_deep_fm_head
+    with pytest.raises(RuntimeError, match="use_pixel_head, use_deep_fm_head"):
+        _run_train_step(unknown)
+
+
+def test_load_components_refuses_non_pixel_head_fm_decoders():
+    transformer = _attach_plain_int8(_Transformer(use_deep_fm_head=True))
+    trainer = SimpleNamespace(
+        model_path="checkpoint.safetensors",
+        weight_dtype=torch.bfloat16,
+        device=torch.device("cpu"),
+        attention_backend="native",
+    )
+    components = {"transformer": transformer, "tokenizer": object(), "config": object()}
+    with patch(
+        "core.models.sensenova.loader.load_sensenova_from_path",
+        return_value=components,
+    ), patch("core.training.ops.sensenova_ops.setup_attention_backend"):
+        with pytest.raises(RuntimeError, match="use_deep_fm_head branch"):
+            load_components(trainer)
 
 
 def test_handler_is_registered_and_declares_pixel_grid():

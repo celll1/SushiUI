@@ -580,6 +580,8 @@ const INPAINT_OPTIONS_TAB_KEYS: Record<InpaintOptionsTabId, (keyof InpaintParams
     "use_pinned_memory",
     "block_swap_h2d_only",
     "block_swap_ring_size",
+    "sensenova_mot_phase_eviction",
+    "sensenova_kv_cache_streaming",
   ],
 };
 
@@ -631,7 +633,9 @@ function isInpaintOptionsTabActive(tabId: InpaintOptionsTabId, params: InpaintPa
         !!params.cpu_text_encoding ||
         !!params.vae_tiling ||
         !!params.use_torch_compile ||
-        !!params.enable_block_swap
+        !!params.enable_block_swap ||
+        !!params.sensenova_mot_phase_eviction ||
+        !!params.sensenova_kv_cache_streaming
       );
     default:
       return false;
@@ -4903,6 +4907,40 @@ export default function InpaintPanel({ onTabChange }: InpaintPanelProps = {}) {
         </>
         )}
 
+        {supportsSensenovaMotPhaseEviction && (
+          <div className="flex items-center gap-2 mt-2">
+            <input
+              type="checkbox"
+              checked={params.sensenova_mot_phase_eviction || false}
+              onChange={(e) => setParams({ ...params, sensenova_mot_phase_eviction: e.target.checked })}
+              className="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500 focus:ring-2"
+            />
+            <label
+              className="text-sm font-medium text-gray-300"
+              title="Moves the generation-branch weights to pinned CPU memory at the start of the prefix phase; at the start of the denoise phase, moves the understanding-branch weights to pinned CPU memory first, then moves the generation-branch weights back to GPU (three half-transfers per generation, roughly 22.6 GiB of PCIe traffic). Measured host-RAM cost: process resident memory rises by about 21.7 GiB once eviction first engages (15.11 GiB pinned - 7.55 GiB live + 7.55 GiB pooled - plus pageable staging copies), stays flat across subsequent generations, and is not returned to the OS; it persists for the process lifetime, including for later generations run with this toggle off."
+            >
+              SenseNova Phase-Eviction (CPU offload of unused weight half)
+            </label>
+          </div>
+        )}
+
+        {supportsSensenovaKvCacheStreaming && (
+          <div className="flex items-center gap-2 mt-2">
+            <input
+              type="checkbox"
+              checked={params.sensenova_kv_cache_streaming || false}
+              onChange={(e) => setParams({ ...params, sensenova_kv_cache_streaming: e.target.checked })}
+              className="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500 focus:ring-2"
+            />
+            <label
+              className="text-sm font-medium text-gray-300"
+              title="Streams the prefix phase's KV cache from pinned host memory per layer, through a 2-slot GPU ring shared across layers and branches, instead of keeping all 42 layers' KV buffers GPU-resident. Independent of SenseNova Phase-Eviction above; the two toggles may be combined or used alone."
+            >
+              SenseNova KV Cache Streaming (streams prefix KV cache from pinned CPU per layer)
+            </label>
+          </div>
+        )}
+
         {developerMode && (
           <>
             <div className="flex items-center gap-2 mt-2">
@@ -5846,40 +5884,6 @@ export default function InpaintPanel({ onTabChange }: InpaintPanelProps = {}) {
                 />
               )}
             </div>
-
-            {supportsSensenovaMotPhaseEviction && (
-              <div className="flex items-center gap-2">
-                <input
-                  type="checkbox"
-                  checked={params.sensenova_mot_phase_eviction || false}
-                  onChange={(e) => setParams({ ...params, sensenova_mot_phase_eviction: e.target.checked })}
-                  className="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500 focus:ring-2"
-                />
-                <label
-                  className="text-sm font-medium text-gray-300"
-                  title="Moves the generation-branch weights to pinned CPU memory at the start of the prefix phase; at the start of the denoise phase, moves the understanding-branch weights to pinned CPU memory first, then moves the generation-branch weights back to GPU (three half-transfers per generation, roughly 22.6 GiB of PCIe traffic). Measured host-RAM cost: process resident memory rises by about 21.7 GiB once eviction first engages (15.11 GiB pinned - 7.55 GiB live + 7.55 GiB pooled - plus pageable staging copies), stays flat across subsequent generations, and is not returned to the OS; it persists for the process lifetime, including for later generations run with this toggle off."
-                >
-                  SenseNova Phase-Eviction (CPU offload of unused weight half)
-                </label>
-              </div>
-            )}
-
-            {supportsSensenovaKvCacheStreaming && (
-              <div className="flex items-center gap-2">
-                <input
-                  type="checkbox"
-                  checked={params.sensenova_kv_cache_streaming || false}
-                  onChange={(e) => setParams({ ...params, sensenova_kv_cache_streaming: e.target.checked })}
-                  className="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500 focus:ring-2"
-                />
-                <label
-                  className="text-sm font-medium text-gray-300"
-                  title="Streams the prefix phase's KV cache from pinned host memory per layer, through a 2-slot GPU ring shared across layers and branches, instead of keeping all 42 layers' KV buffers GPU-resident. Independent of SenseNova Phase-Eviction above; the two toggles may be combined or used alone."
-                >
-                  SenseNova KV Cache Streaming (streams prefix KV cache from pinned CPU per layer)
-                </label>
-              </div>
-            )}
 
             <div>
               <div className="flex items-center justify-between mb-2">

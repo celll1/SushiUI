@@ -2729,6 +2729,9 @@ TIMESTEP_SAMPLING_DEFAULTS_BY_ARCH: Dict[str, Any] = {
     # sampled at; a non-uniform distribution here COMPOSES with those shifts
     # instead of replacing them (train_step warns once when it sees one).
     "minimax_h3": {"distribution": "uniform", "min_timestep": 0.0, "max_timestep": 1.0},
+    # SenseNova uses t=0 noise / t=1 data; this is its released flow schedule.
+    "sensenova": {"distribution": "logit_normal", "mean": -0.8, "std": 0.8,
+                  "min_timestep": 0.0, "max_timestep": 1.0},
 }
 
 # ---------------------------------------------------------------------------

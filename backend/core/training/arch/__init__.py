@@ -32,6 +32,7 @@ from core.training.arch.flux2 import Flux2ArchHandler
 from core.training.arch.ltx2 import Ltx2ArchHandler
 from core.training.arch.minimax_h3 import MiniMaxH3ArchHandler
 from core.training.arch.acestep import AceStepArchHandler
+from core.training.arch.sensenova import SenseNovaArchHandler
 
 ARCH_REGISTRY: Dict[str, Type[ArchHandler]] = {
     "sd15": SD15ArchHandler,
@@ -46,13 +47,14 @@ ARCH_REGISTRY: Dict[str, Type[ArchHandler]] = {
     "ltx2": Ltx2ArchHandler,
     "minimax_h3": MiniMaxH3ArchHandler,
     "acestep": AceStepArchHandler,
+    "sensenova": SenseNovaArchHandler,
 }
 
 # R6 invariant: registry keys == _build_cache_namespace arch strings.
 _EXPECTED_ARCH_KEYS = {
     "sd15", "sdxl", "zimage", "anima", "lens",
     "ideogram4", "minit2i", "krea2", "flux2", "ltx2", "acestep",
-    "minimax_h3",
+    "minimax_h3", "sensenova",
 }
 assert set(ARCH_REGISTRY) == _EXPECTED_ARCH_KEYS, (
     f"ARCH_REGISTRY keys {set(ARCH_REGISTRY)} != expected {_EXPECTED_ARCH_KEYS} "
@@ -72,6 +74,8 @@ def resolve_arch_name(trainer: Any) -> str:
         return "ltx2"
     if getattr(trainer, "is_minimax_h3", False):
         return "minimax_h3"
+    if getattr(trainer, "is_sensenova", False):
+        return "sensenova"
     if getattr(trainer, "is_zimage", False):
         return "zimage"
     if getattr(trainer, "is_flux2", False):

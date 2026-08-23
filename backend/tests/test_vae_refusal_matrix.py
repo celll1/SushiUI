@@ -39,6 +39,7 @@ import copy
 import os
 import sys
 import unittest
+from unittest.mock import patch
 
 # ── path setup ───────────────────────────────────────────────────────────────
 # `backend` itself must be on sys.path: the modules under test import
@@ -356,6 +357,29 @@ class VaeRefusalMatrixTest(unittest.TestCase):
     def test_store_with_an_arch_is_accepted(self):
         cfg = self._assert_accepted(vae={"vae_source": "store", "vae_arch": "sdxl"})
         self.assertEqual(cfg["vae_arch"], "sdxl")
+
+    def test_sensenova_model_source_is_refused_before_vae_loading(self):
+        with patch("core.model_loader.ModelLoader.detect_model_type",
+                   return_value="sensenova"):
+            self._assert_refused(
+                ["vae_source='model'", "no VAE component"],
+                vae={"vae_source": "model"},
+            )
+
+    def test_sensenova_run_accepts_explicit_path_or_store_vae_sources(self):
+        with patch("core.model_loader.ModelLoader.detect_model_type",
+                   return_value="sensenova") as detect:
+            path_cfg = self._assert_accepted(vae={
+                "vae_source": "path",
+                "vae_path": "models/vae/explicit.safetensors",
+            })
+            store_cfg = self._assert_accepted(vae={
+                "vae_source": "store",
+                "vae_arch": "sdxl",
+            })
+        detect.assert_not_called()
+        self.assertEqual(path_cfg["vae_source"], "path")
+        self.assertEqual(store_cfg["vae_source"], "store")
 
     # ── shapes / cadence ─────────────────────────────────────────────────
     def test_resolution_must_be_a_multiple_of_8_and_at_least_64(self):

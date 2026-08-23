@@ -66,6 +66,7 @@ class TrainStepContext:
     text_embeddings: Optional[torch.Tensor] = None          # SD/SDXL/controlnet/flux2 (prompt_embeds)
     encoder_features: Optional[torch.Tensor] = None         # lens/ideogram4/krea2 (5023/6035/6048)
     text_embeds: Optional[torch.Tensor] = None              # minit2i (6060)
+    sensenova_prefix: Optional[Any] = None                  # immutable prompt DynamicCache (B1)
 
     # --- masks / pooled / micro-conditioning ---
     attention_mask: Optional[Any] = None                    # mnt_attention_mask (5961) - tensor OR anima dict

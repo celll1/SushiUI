@@ -8,10 +8,12 @@ MiniMax-H3, both of which also generate audio jointly) and 2 audio (ACE-Step
 training, and a Next.js frontend (`frontend/`). The authoritative *generation*
 list is `ModelType` in `backend/core/model_loader.py`; the authoritative
 *training-capable* list is `ARCH_REGISTRY` in
-`backend/core/training/arch/__init__.py` (12 entries — every generation
-architecture except MiniMax Music 3 and SenseNova U1.5, both out of scope for
-training today; see `docs/guides/MINIMAX_MUSIC3_DESIGN.md` for the former and
-`docs/guides/SENSENOVA_TRAINING_DESIGN.md` for the latter).
+`backend/core/training/arch/__init__.py` (13 entries — every generation
+architecture except MiniMax Music 3). SenseNova U1.5 supports Phase 1 LoRA;
+full-parameter training remains deferred to Phase 2b and reference-conditioned
+training to Phase 3. See `docs/guides/SENSENOVA_TRAINING_DESIGN.md` for its
+implemented and pending boundaries, and `docs/guides/MINIMAX_MUSIC3_DESIGN.md`
+for the remaining training-out-of-scope architecture.
 Per-architecture facts are
 in `docs/guides/MODEL_FACTS.md`. Every capability is reachable through the
 versioned REST API under `/api/v1` (see `openapi.yaml`), so agents can drive

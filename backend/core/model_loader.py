@@ -148,7 +148,7 @@ class ModelLoader:
             # default noise_process by architecture family (ddpm for SD/SDXL).
             if "modelspec.prediction_type" in metadata:
                 pred_target = str(metadata["modelspec.prediction_type"]).strip().lower()
-                default_np = "flow" if model_type in ("zimage", "flux2", "minit2i", "krea2", "anima", "lens", "ltx2", "minimax_h3", "minimax_music3") else "ddpm"
+                default_np = "flow" if model_type in ("zimage", "flux2", "minit2i", "krea2", "anima", "lens", "ltx2", "minimax_h3", "minimax_music3", "sensenova") else "ddpm"
                 print(f"[ModelLoader] Detected prediction_type from ModelSpec metadata: {pred_target}")
                 return {
                     "noise_process": metadata.get("modelspec.noise_process", default_np),
@@ -245,6 +245,12 @@ class ModelLoader:
                     "prediction_target": "velocity",
                     "source": "inferred"
                 }
+            elif model_type == "sensenova":
+                return {
+                    "noise_process": "flow",
+                    "prediction_target": "velocity",
+                    "source": "inferred"
+                }
             # DEUS support removed - architecture no longer maintained
             # elif model_type == "deus":
             #     # DEUS uses DDPM with epsilon prediction (same as SDXL base)
@@ -267,9 +273,10 @@ class ModelLoader:
             import traceback
             traceback.print_exc()
             # Fallback to safe defaults
+            flow_velocity = model_type in {"zimage", "sensenova"}
             return {
-                "noise_process": "ddpm" if model_type != "zimage" else "flow",
-                "prediction_target": "epsilon" if model_type != "zimage" else "velocity",
+                "noise_process": "flow" if flow_velocity else "ddpm",
+                "prediction_target": "velocity" if flow_velocity else "epsilon",
                 "source": "error_fallback"
             }
 

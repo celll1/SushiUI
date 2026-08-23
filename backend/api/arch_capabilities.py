@@ -746,6 +746,16 @@ _add_training_unsupported(
     "minimax_h3", "relora",
     "MiniMax-H3 ReLoRA is not implemented; the supported training bases use weight-only FP8 or packed W4A8 Linears, which cannot accept dense LoRA merges without format-specific requantization. Use LoRA instead")
 
+_add_training_unsupported(
+    "sensenova", "full_finetune",
+    "SenseNova full fine-tuning is not implemented for its weight-only INT8 base; use LoRA training")
+_add_training_unsupported(
+    "sensenova", "relora",
+    "SenseNova ReLoRA cannot merge dense updates back into its weight-only INT8 base; use LoRA training")
+_add_training_unsupported(
+    "sensenova", "controlnet",
+    "SenseNova ControlNet conditioning is not implemented; its training path currently supports only LoRA on the native prefix-conditioned denoiser")
+
 
 # ---------------------------------------------------------------------------
 # CHAIN_CONTEXT[arch] = what a long-form video CHAIN's continuation segments can

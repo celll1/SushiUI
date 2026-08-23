@@ -1,36 +1,38 @@
 # SenseNova U1.5 学習設計案
 
-> Status: design only（実装前。コードは一行も書かれていない）
+> Status: Phase 0 と Phase 1 core/trainer integration は実装済み。Phase 1 の
+> real 3-step exit smoke と half-eviction、Phase 2b、Phase 3 は未完。
 > Date: 2026-08-23
 > Scope: SenseNova-U1.5-8B-MoT の (1) LoRA 学習 / (2) full-parameter fine-tune /
 > (3) reference 画像を含むデータセットの混在学習
 > 本文中の `file:line` は 2026-08-23 時点の静的調査による。
 
-この文書は実装計画ではなく、実装を始める前に確定させておくべき設計判断とその
-根拠を記録するものである。SenseNova は推論側が完全に出荷済みである一方、学習側は
-`ARCH_REGISTRY` に存在せず、`backend/core/training/**` に `sensenova` の参照が
-1 件もない。ゼロからの追加であるため、既存アーキテクチャの手順書
-[`ADD_A_MODEL_ARCHITECTURE.md`](ADD_A_MODEL_ARCHITECTURE.md) をベースとし、
-本文書は **SenseNova 固有の差分だけ** を扱う。一般的な DiT 学習の説明は書かない。
+この文書は設計判断、その根拠、実装状況を記録する。初期計画のフェーズ順は履歴として
+残すが、各節の **DONE / PENDING** が現在の境界である。SenseNova の推論と Phase 1
+LoRA は `ARCH_REGISTRY` を含む学習経路へ統合済みで、一般的な追加手順は
+[`ADD_A_MODEL_ARCHITECTURE.md`](ADD_A_MODEL_ARCHITECTURE.md)、現行の architecture
+facts は [`MODEL_FACTS.md`](MODEL_FACTS.md) を正とする。本文書は SenseNova 固有の
+差分だけを扱う。
 
 ---
 
 ## 1. Executive decision
 
-1. **Phase 1（LoRA）は generation branch のみを対象とする。** 既存の推論側 LoRA
+1. **Phase 1（LoRA）は generation branch のみを対象とし、core/trainer integration
+   まで実装済み。** 既存の推論側 LoRA
    (`sensenova_lora.py`) が列挙する 294 個の `_mot_gen` Linear をそのまま学習対象と
    する。understanding branch は凍結し、prefix forward は `no_grad` で回す。
-2. **Phase 2（full FT）は、まず Ideogram 4 と同型の `NotImplementedError` ガードとして
-   出荷する。** 配布されている checkpoint は int8 のみで、`reject_quantized_base()`
-   が正しく発火する。実装本体は bf16 base の入手を前提条件として後続フェーズに送る。
+2. **Phase 2a（full FT の拒否ガード）は出荷済み。** 配布されている checkpoint は
+   int8 のみで、既知の非対応はモデルロード前に拒否する。実装本体は bf16 base の
+   入手を前提条件として Phase 2b に送る。
    実装する場合の対象は **gen branch のみの 8.1B**（both-branch 16.2B は設計対象外）。
 3. **Phase 3（reference 混在）は per-item presence を真とする。** 初版は物理
    `batch_size=1` を強制し、gradient accumulation で effective batch を作る。
    `separate_by_reference` は sampler 整理のため再利用するが、prefix shape の保証には
    使わない。it2i 挙動の学習に understanding branch の解凍は既定では不要とする。
-4. **VRAM は Phase 1 が MoT half-eviction、Phase 2 が `TransformerBlockOffloader`**
-   という分担にする。推論側で記録された block-swap 非対応の判断は generation 固有で
-   あり、学習には転移しない（§8）。
+4. **VRAM の未実装計画は Phase 1 が MoT half-eviction、Phase 2b が
+   `TransformerBlockOffloader`** という分担にする。推論側で記録された block-swap
+   非対応の判断は generation 固有であり、学習には転移しない（§8）。
 
 §5-§7 の設計判断は fable への設計相談を経て確定したものであり、根拠は各節に併記する。
 
@@ -76,22 +78,19 @@
 
 ---
 
-## 3. Current-state gap
+## 3. Current state
 
-| 領域 | 現状 | 追加要否 |
+| 領域 | 現状 | 状態 |
 |---|---|---|
 | `ModelType` 検出 | `"sensenova"` は既に `ModelType` にあり `detect_model_type` も返す（`model_loader.py:13, 643-644`） | 不要 |
-| `ComponentWiringSpec` | **`SENSENOVA_WIRING` は既に存在**（`core/models/components/wiring.py:185-189`） | training 側 shim への re-export のみ |
-| LoRA target 列挙 | **`iter_sensenova_lora_targets` が既に存在**（`sensenova_lora.py:180`）、実 checkpoint で 294 module 検証済み | adapter から再利用 |
-| `ARCH_REGISTRY` | 未登録（12 arch。sensenova と minimax_music3 が除外） | 要追加 |
-| `arch/sensenova.py` / `ops/sensenova_ops.py` / `adapters/sensenova_adapter.py` | いずれも存在しない | 新規 3 ファイル |
-| `base_trainer.py` の `is_sensenova` | 0 件 | 要追加（§9） |
-| `detect_prediction_config` | flow-matching arch 一覧に `sensenova` が登録済み | 変更不要（退行テストのみ） |
-| `TRAINING_UNSUPPORTED` | sensenova のエントリ無し（拒否ではなく単に不在） | Phase 2 で追加 |
-
-つまり「推論用の部品はあるが学習用の配線が一本も無い」状態である。逆に、
-target 列挙と wiring spec という間違えやすい 2 つは既に実在し、実 checkpoint に
-対して検証済みである点は着手コストを大きく下げている。
+| `ComponentWiringSpec` | `SENSENOVA_WIRING` を training shim から re-export 済み | DONE |
+| LoRA target / adapter | 実 checkpoint で 294 target を検証し、推論・学習 adapter と保存 round-trip を実装済み | DONE |
+| `ARCH_REGISTRY` | SenseNova を含む 13 arch | DONE |
+| `arch/sensenova.py` / `ops/sensenova_ops.py` / `adapters/sensenova_adapter.py` | Phase 1 の loader、prefix、pixel-space step、LoRA adapter を実装済み | DONE |
+| `base_trainer.py` / `train_runner.py` | B1、plain-int8、no-reference、no-block-swap の初版契約と専用 prefix payload を統合済み | DONE |
+| `detect_prediction_config` | `sensenova` を flow / velocity として登録し退行テスト済み | DONE |
+| `TRAINING_UNSUPPORTED` | full FT / ReLoRA / ControlNet をロード前に拒否 | DONE |
+| half-eviction / real exit smoke / reference / full FT | §11 の後続フェーズ | PENDING |
 
 ---
 
@@ -207,7 +206,7 @@ non-reentrant checkpoint loop を持つ。immutable な prefix cache を closure
 
 ---
 
-## 5. Phase 1 — LoRA 学習
+## 5. Phase 1 — LoRA 学習（core/trainer DONE、exit PENDING）
 
 ### 5.1 採用する方式
 
@@ -290,7 +289,7 @@ G4 の実測（Krea 2 由来）では checkpointing OFF で
 **gradient checkpointing は事実上必須**である。ただし `Qwen3DecoderLayer` が継承する
 stock `GradientCheckpointingLayer` は prefix cache を除去するため使えない。
 `supports_gradient_checkpointing = True` という宣言だけでは成立せず、§4.7 の専用 loop が
-Phase 1 の前提実装になる。
+Phase 1 の前提実装になった（DONE）。
 
 ### 5.4 実装上の注意
 
@@ -310,16 +309,16 @@ Phase 1 の前提実装になる。
 - **noise scale の一般形。** config の現在値だけを展開して式を再実装せず、
   `compute_noise_scale()` を再利用する。`noise_scale` 基礎値の乗算、mode 分岐、
   `dynamic_sqrt`、max clamp をすべて推論と一致させる。
-- **`detect_prediction_config`** は既に `sensenova` を flow-matching として扱う。
-  実装変更は不要だが、学習統合でこの分類を退行させないテストを置く。
+- **`detect_prediction_config`** は Phase 1 統合で `sensenova` を flow / velocity として
+  登録し、退行テストで固定した。
 
 ---
 
-## 6. Phase 2 — full-parameter fine-tune
+## 6. Phase 2 — full-parameter fine-tune（guard DONE、本体 PENDING）
 
-### 6.1 まず拒否ガードとして出荷する
+### 6.1 拒否ガード（DONE）
 
-**判断: Ideogram 4 と同型の `NotImplementedError` ガードを先に出す。**
+**判断: 既知の非対応を共通 preflight でモデルロード前に拒否する。**
 
 配布されている base は int8 のみで、588 個すべての decoder Linear が `Int8Linear` で
 ある。`reject_quantized_base()` はここで正しく発火し、その発火は迂回すべきバグでは
@@ -329,7 +328,7 @@ weight を buffer で持つので `requires_grad_(True)` が no-op になり、
 **何も学習していないのに loss は正常に下がる**。SenseNova の場合、量子化が
 スキップした層しか動かないどころか、decoder は文字通り 1 パラメータも動かない。
 
-したがって Phase 2 の出荷単位は次の 2 つである。
+初期計画では次の 2 層を想定した。
 
 - `SenseNovaFullParameterAdapter` を `prepare_models_for_training` /
   `setup_trainable_parameters` / `save_checkpoint` すべてが `NotImplementedError` を
@@ -339,8 +338,9 @@ weight を buffer で持つので `requires_grad_(True)` が no-op になり、
   **モデルをロードする前に**拒否できるようにする（17.6 GiB のロードを払ってから
   既知の拒否に到達しないため）。
 
-ガードのメッセージには「bf16 base が必要」だけでなく、**その bf16 base をどう得るか**
-2 つの経路を明記する（§6.4）。
+実装は後者の共通 preflight だけで fail-closed になるため、前者の専用 adapter は追加しなかった。
+現行メッセージは int8 base で full FT が未実装であることと LoRA 代替を示す。bf16 base
+を前提とする本体設計は Phase 2b に残る。
 
 ### 6.2 確定した設計判断 — 対象は gen branch のみ（fable 諮問）
 
@@ -454,7 +454,7 @@ of a quantized base — out of scope"）。
 
 ---
 
-## 7. Phase 3 — reference 画像を含むデータセットの混在
+## 7. Phase 3 — reference 画像を含むデータセットの混在（PENDING）
 
 ### 7.1 前例は存在する（新規設計ではない）
 
@@ -581,9 +581,15 @@ generation の非対応が training の非対応を含意しないことは既�
 
 | | Phase 1（LoRA） | Phase 2（gen full FT） |
 |---|---|---|
-| 主機構 | MoT half-eviction | `TransformerBlockOffloader`（gen 半分のみ） |
-| und 半分 | 凍結 → fwd+bwd 全体で CPU 退避 | 同左 |
+| 主機構 | MoT half-eviction（PENDING） | `TransformerBlockOffloader`（gen 半分のみ、PENDING） |
+| und 半分 | 凍結済み。fwd+bwd 全体での CPU 退避は未実装 | 同左 |
 | 根拠 | weight は int8 で 15.1 GiB、圧迫要因は pixel space の activation で block swap では減らない。half-eviction は粗い粒度（7.55 GiB）で phase 境界あたり 2 転送、`kv_cache_streaming.py:27-35` が学習への転移を明示的に是認している | bf16 gen weight 16.2 GB + gradient がボトルネックになり、per-block の rolling window が効く |
+
+7.55 GiB は構造上 CPU 退避の候補になる understanding-side weight 量であり、allocator の
+peak allocated / reserved が同量減る保証ではない。Phase 0 で観測した約 15.06 GiB の差は
+**gradient checkpointing OFF と ON の差**で、half-eviction の実測値ではない。
+half-eviction の exit 判定には、同一 checkpoint・seed・shape・GC 条件で eviction OFF / ON
+を別 process で走らせ、peak allocated / reserved と wall time を個別に記録する必要がある。
 
 2 つの機構は**互いに素な weight 集合**を持つため、Phase 2 では素直に合成できる
 （und 半分は half-eviction で fwd+bwd 全体を通じて CPU、gen 半分は block swap で
@@ -600,9 +606,9 @@ rolling）。
 > Evaluate that when training is built; reuse the layer-selection logic, not this
 > module.
 
-**保留**: offloader を und の prefix pass に対しても使えるようにすること。1 回の
-`no_grad` sweep に過ぎず、phase 1 中の 7.55 GiB 常駐が律速になるのは full FT より
-前には起こらない。今は設計しない。
+**PENDING**: offloader を und の prefix pass に対しても使えるようにすること。
+7.55 GiB は退避候補量にすぎないため、必要性と効果は half-eviction OFF / ON の
+別 process 計測後に判断する。
 
 ### 8.4 half-eviction 再利用時の注意
 
@@ -622,9 +628,10 @@ arch 非依存で、`blocks_to_swap` / `num_optimizer_groups` / `optimizer_type`
 ## 9. 既存コードベースへの統合ポイント
 
 [`ADD_A_MODEL_ARCHITECTURE.md`](ADD_A_MODEL_ARCHITECTURE.md) の §4 が正規手順。
-以下は SenseNova に固有の差分と、見落とすと**静かに誤動作する**箇所の一覧。
+以下は初期計画を残した実装マップである。DONE は現行コードへ統合済み、PENDING は
+§11 の exit criteria をまだ満たしていない。
 
-### 新規ファイル（3）
+### DONE — Phase 1 ファイル
 
 - `backend/core/training/arch/sensenova.py` — `name = "sensenova"`,
   `wiring = SENSENOVA_WIRING`, `pixel_align = 32`（patch 16 × merge 2。
@@ -636,10 +643,11 @@ arch 非依存で、`blocks_to_swap` / `num_optimizer_groups` / `optimizer_type`
   `setup_block_swap`, `setup_attention_backend`, `encode_prompt`（= prefix KV 構築）,
   `vae_encode`（= pixel passthrough）, `train_step`, `generate_sample`。
 - `backend/core/training/adapters/sensenova_adapter.py` —
-  `SenseNovaLoRAAdapter`（`iter_sensenova_lora_targets` を再利用）と
-  `SenseNovaFullParameterAdapter`（Phase 2 では全メソッド raise）。
+  `SenseNovaLoRAAdapter`（`iter_sensenova_lora_targets` を再利用）。初期案の
+  `SenseNovaFullParameterAdapter` は追加せず、full FT は共通のロード前 capability
+  guard で拒否する。
 
-### 登録（漏れると import 時に落ちる = 安全）
+### DONE — 登録（漏れると import 時に落ちる = 安全）
 
 1. `arch/__init__.py` — import 追加、`ARCH_REGISTRY` に追加、
    **`_EXPECTED_ARCH_KEYS` にも追加**（module レベルの assert がある）、
@@ -648,11 +656,11 @@ arch 非依存で、`blocks_to_swap` / `num_optimizer_groups` / `optimizer_type`
    `__all__` の両方）。
 3. `adapters/__init__.py` — import と `__all__`。
 4. `lora_trainer.py` — adapter import と `_create_adapter` の分岐、
-   block-swap hook（minimax_h3 の新しい形式 `self.arch.setup_block_swap(self)` を使う）。
-5. `full_parameter_trainer.py` — Phase 2 のガード。
-   `arch_capabilities._add_training_unsupported("sensenova", "full_finetune", ...)` も。
+   SenseNova adapter 選択。
+5. `arch_capabilities.py` / 既存の full-parameter・ReLoRA preflight — full FT と ReLoRA
+   をモデルロード前に拒否。
 
-### `base_trainer.py`（漏れると静かに間違う = 危険）
+### DONE — `base_trainer.py`（漏れると静かに間違う = 危険）
 
 - flag 代入ブロック **2 箇所**（`:1271-1283` と `:1875-1887`。後者は
   `_load_checkpoint_as_base` 側の重複）。
@@ -670,18 +678,24 @@ arch 非依存で、`blocks_to_swap` / `num_optimizer_groups` / `optimizer_type`
 
 ### その他
 
-- `model_loader.detect_prediction_config` は既に `sensenova` を flow-matching として
-  扱うため変更不要。分類の退行テストだけを追加する。
-- `train_runner.py` の bf16 強制ブロック 3 箇所（`:1640-1673` / `:2100-2110` /
-  `:2505-2515`）と `_is_bf16_native_base_model`。
-- frontend の `TrainingConfig.tsx`（`FORCED_BF16_ARCHITECTURES`、dtype preset 連鎖）。
-  本設計フェーズでは触らない。
+- **DONE:** `model_loader.detect_prediction_config` の flow / velocity 分類と退行テスト。
+- **DONE:** `train_runner.py` の bf16 強制、B1・plain-int8・no-reference・no-block-swap
+  preflight、on-the-fly prefix/pixel 経路。
+- **DONE:** training-method capability による full FT / ReLoRA / ControlNet の UI と
+  backend refusal。SenseNova は VAE を持たないが、明示 VAE path/store の decoder
+  training は別契約として許可する。
 
-### 自動的に得られるもの
+### PENDING
+
+- Phase 1 half-eviction と、その OFF / ON 別 process 計測。
+- real trainer の 3-step exit smoke。
+- Phase 2b full FT 本体と Phase 3 reference 混在。
+
+### DONE — 登録から自動的に得られたもの
 
 `_build_cache_namespace` は `self.arch.name` を読むだけになっており、
 `pixel_align` / `temporal` も handler のクラス属性を読む宣言的な機構なので、
-cache namespace と alignment は登録だけで正しくなる。
+cache namespace と alignment は登録だけで有効になった。
 
 ---
 
@@ -708,9 +722,9 @@ cache namespace と alignment は登録だけで正しくなる。
 
 ## 11. フェーズ分割
 
-将来の実装セッションがそのまま着手できる粒度で示す。
+初期計画を残し、現在の DONE / PENDING 境界を明示する。
 
-### Phase 0 — 前提確認（コード変更なし、または最小）
+### Phase 0 — 前提確認（DONE）
 
 - `forward_gen` を勾配付きで通す最小 probe。物理 batch 1、64×64、plain int8 base、
   推論用 flash cache/streamer 未準備、`update_cache=False` fallback で image token 側に
@@ -751,9 +765,11 @@ prefix cache は sequence length 258 のまま、cache 本体、layers list、�
 tensor の object identity / data pointer / shape / value が 2 backward 後も不変だった。
 model resident allocated は 17.59 GiB、prefix の live allocated 増分は 50.5 MiB である
 （reserved 増分は allocator cache を含む）。専用 non-reentrant loop は数値を変えず、
-この条件で peak allocated を約 15.06 GiB 下げたため、Phase 1 の前提を満たす。
+この条件で GC OFF 比の peak allocated を約 15.06 GiB 下げたため、checkpoint-safe GC
+の前提を満たす。この数値は GC OFF / ON 差であり、未実装の half-eviction による
+削減量ではない（§8.3）。
 
-### Phase 1 — LoRA
+### Phase 1 — LoRA（core/trainer DONE、exit smoke と half-eviction PENDING）
 
 - `arch/sensenova.py` + `ops/sensenova_ops.py` + `adapters/sensenova_adapter.py`。
 - 登録 5 箇所 + `base_trainer.py` の分岐（§9）。
@@ -761,27 +777,28 @@ model resident allocated は 17.59 GiB、prefix の live allocated 増分は 50.
 - `train_step`: MiniT2I の骨格 + prefix KV conditioning + per-sample `noise_scale`。
 - 物理 `batch_size=1` の config-time guardと、prefix cache を保持する専用
   non-reentrant checkpoint loop。
-- checkpoint 保存形式: 推論側 loader が読む `neo_hf_lora` 方言と round-trip すること
+- checkpoint 保存形式: 推論側 loader が読む `neo_hf_lora` 方言との round-trip を実装済み
   （`LoRATrainer.load_checkpoint` は arch 非依存で
   `{lora_name}.lora_down.weight` / `.lora_up.weight` を読む）。
-- MoT half-eviction の学習側再利用（opt-in）。
-- **exit criteria**: 3 step 程度の smoke で有限 loss、保存した LoRA が推論側の
+- **DONE:** 上記の arch/ops/adapter、294-target plain-int8 gate、checkpoint-safe
+  2-pass core、trainer/runner integration、prediction/defaults、保存と runtime round-trip。
+- **PENDING:** MoT half-eviction の学習側再利用（opt-in）と §8.3 の OFF / ON 計測。
+- **PENDING exit criteria:** real trainer の 3-step smoke で有限 loss、保存した LoRA が推論側の
   runtime LoRA としてそのままロードでき、strength 0 で base 出力と一致すること。
 
-### Phase 2a — full FT ガード
+### Phase 2a — full FT ガード（DONE）
 
-- `SenseNovaFullParameterAdapter` の raise 実装。
-- `TRAINING_UNSUPPORTED` エントリ（ロード前に拒否できること）。
-- ガードメッセージに bf16 base の 2 経路を明記。
+- `TRAINING_UNSUPPORTED` と共通 preflight でモデルロード前に拒否する。初期案の
+  `SenseNovaFullParameterAdapter` は不要になったため追加していない。
 
-### Phase 2b — full FT 本体（bf16 base 入手が前提条件）
+### Phase 2b — full FT 本体（PENDING、bf16 base 入手が前提条件）
 
 - gen branch 抽出 bf16 base の作成。
 - `TransformerBlockOffloader` の gen 半分への適用 + und 半分の常時 CPU 退避。
 - stochastic rounding の有効性を実測し、既定 ON / OFF 拒否と `optimizer: adamw` 拒否を決定する。
 - prefix forward を checkpointed region の外に置く不変条件のテスト。
 
-### Phase 3 — reference 混在
+### Phase 3 — reference 混在（PENDING）
 
 - 既存の run-global `use_reference_images` と per-item `reference_images` を再利用する
   （新しい dataset-level parameter / API 変更は行わない）。

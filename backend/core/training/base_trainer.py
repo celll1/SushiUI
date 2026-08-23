@@ -1280,6 +1280,7 @@ class BaseTrainer(ABC):
         self.is_ltx2 = (model_type == "ltx2")
         self.is_minimax_h3 = (model_type == "minimax_h3")
         self.is_acestep = (model_type == "acestep")
+        self.is_sensenova = (model_type == "sensenova")
         self.is_sdxl = False
 
         # P3a: zimage + sd/sdxl loader BODIES moved to ops/ free functions. They
@@ -1293,9 +1294,13 @@ class BaseTrainer(ABC):
         from core.training.ops import (
             sd_sdxl_ops, zimage_ops, anima_ops, lens_ops, ideogram4_ops,
             minit2i_ops, krea2_ops, flux2_ops, ltx2_ops, acestep_ops,
-            minimax_h3_ops,
+            minimax_h3_ops, sensenova_ops,
         )
-        if self.is_ltx2:
+        if self.is_sensenova:
+            if self.blocks_to_swap != 0:
+                raise ValueError("SenseNova training does not implement blocks_to_swap; set it to 0")
+            sensenova_ops.load_components(self)
+        elif self.is_ltx2:
             ltx2_ops.load_components(self)
         elif self.is_minimax_h3:
             minimax_h3_ops.load_components(self)
@@ -1884,6 +1889,7 @@ class BaseTrainer(ABC):
         self.is_ltx2 = (model_type == "ltx2")
         self.is_minimax_h3 = (model_type == "minimax_h3")
         self.is_acestep = (model_type == "acestep")
+        self.is_sensenova = (model_type == "sensenova")
         self.is_sdxl = False
 
         # DEUS support removed
@@ -1891,6 +1897,15 @@ class BaseTrainer(ABC):
         #     print(f"{self.log_prefix} Loading DEUS checkpoint as base model")
         #     ...
         #     return
+
+        if self.is_sensenova:
+            if self.blocks_to_swap != 0:
+                raise ValueError("SenseNova training does not implement blocks_to_swap; set it to 0")
+            self.model_path = checkpoint_path
+            from core.training.ops import sensenova_ops
+            sensenova_ops.load_components(self)
+            print(f"{self.log_prefix} SenseNova checkpoint loaded successfully as base model")
+            return
 
         if self.is_flux2:
             print(f"{self.log_prefix} Loading FLUX.2 checkpoint as base model")
@@ -4372,6 +4387,8 @@ class BaseTrainer(ABC):
         """
         if self.is_zimage:
             return self.encode_prompt_zimage(caption)
+        elif self.is_sensenova:
+            return self.arch.encode_prompt(self, caption, requires_grad=False), None
         elif self.is_lens:
             return self.encode_prompt_lens(caption)
         elif self.is_ideogram4:
@@ -4589,7 +4606,7 @@ class BaseTrainer(ABC):
 
     def move_main_model_to_gpu(self):
         """Move main model (U-Net or Transformer) to GPU for training."""
-        if self.is_zimage or self.is_anima or self.is_lens or self.is_ideogram4 or self.is_minit2i or self.is_krea2 or self.is_ltx2 or self.is_acestep or self.is_minimax_h3:
+        if self.is_zimage or self.is_anima or self.is_lens or self.is_ideogram4 or self.is_minit2i or self.is_krea2 or self.is_ltx2 or self.is_acestep or self.is_minimax_h3 or self.is_sensenova:
             if self.transformer_original is not None:
                 self.transformer_original.to(self.device)
         else:
@@ -4598,7 +4615,7 @@ class BaseTrainer(ABC):
 
     def move_main_model_to_cpu(self):
         """Move main model (U-Net or Transformer) to CPU to free VRAM."""
-        if self.is_zimage or self.is_anima or self.is_lens or self.is_ideogram4 or self.is_minit2i or self.is_krea2 or self.is_ltx2 or self.is_acestep or self.is_minimax_h3:
+        if self.is_zimage or self.is_anima or self.is_lens or self.is_ideogram4 or self.is_minit2i or self.is_krea2 or self.is_ltx2 or self.is_acestep or self.is_minimax_h3 or self.is_sensenova:
             if self.transformer_original is not None:
                 self.transformer_original.to("cpu")
         else:
@@ -4651,7 +4668,7 @@ class BaseTrainer(ABC):
         Mirrors the arch dispatch in move_main_model_to_cpu/gpu so the three stay
         consistent. Returns None if the module is not present.
         """
-        if self.is_zimage or self.is_anima or self.is_lens or self.is_ideogram4 or self.is_minit2i or self.is_krea2 or self.is_ltx2 or self.is_acestep or self.is_minimax_h3:
+        if self.is_zimage or self.is_anima or self.is_lens or self.is_ideogram4 or self.is_minit2i or self.is_krea2 or self.is_ltx2 or self.is_acestep or self.is_minimax_h3 or self.is_sensenova:
             return getattr(self, "transformer_original", None)
         return getattr(self, "unet", None)
 
@@ -4862,7 +4879,7 @@ class BaseTrainer(ABC):
         # fully self-contained (pixel no-VAE + latent early-return paths) and returns
         # the final CPU/training-dtype tensor directly (no shared post-amble). The two
         # sub-branch bodies moved VERBATIM to ops/minit2i_ops.vae_encode (P5).
-        if self.is_minit2i:
+        if self.is_minit2i or self.is_sensenova:
             return self.arch.vae_encode(self, image_tensor, image=image, width=width, height=height)
 
         vae_device = next(self.vae.parameters()).device
@@ -5138,6 +5155,18 @@ class BaseTrainer(ABC):
             return aux[lo:hi]
         return aux
 
+    @staticmethod
+    def _collate_sensenova_b1_prefix(prefixes: List[Any]) -> Any:
+        """Return the one opaque prefix allowed in a physical SenseNova batch."""
+        if len(prefixes) != 1:
+            raise ValueError("SenseNova B1 collation requires exactly one prompt prefix")
+        return prefixes[0]
+
+    @staticmethod
+    def _sensenova_mnt_conditioning(prefix: Any):
+        """Build the opaque conditioning payload reused by every MNT iteration."""
+        return None, None, None, prefix
+
     def _microbatch_two_stage(self, micro_bs: int, eff_bs: int, b: dict):
         """Run a batch (the _execute_forward_backward args in dict ``b``) as
         micro-chunks of size ``micro_bs`` with gradient accumulation, returning
@@ -5187,6 +5216,7 @@ class BaseTrainer(ABC):
                 mnt_repa_pixels=leaves["mnt_repa_pixels"],
                 mnt_time_ids=b["mnt_time_ids"][lo:hi] if b["mnt_time_ids"] is not None else None,
                 loss_weight_maps_batch=b["loss_weight_maps_batch"][lo:hi] if b.get("loss_weight_maps_batch") is not None else None,
+                sensenova_prefix=b.get("sensenova_prefix"),
                 loss_scale=w / eff_bs,
             )
             for n, leaf in leaves.items():
@@ -5220,6 +5250,7 @@ class BaseTrainer(ABC):
         mnt_time_ids: Optional[torch.Tensor] = None,
         effective_batch_size: Optional[int] = None,
         loss_weight_maps_batch: Optional[torch.Tensor] = None,
+        sensenova_prefix: Optional[Any] = None,
     ) -> Tuple[float, float, float, bool]:
         """
         Execute forward + backward pass with OOM recovery via batch splitting.
@@ -5267,6 +5298,7 @@ class BaseTrainer(ABC):
             condition_images_batch=condition_images_batch, reference_latents_nested=reference_latents_nested,
             lens_latent_shape=lens_latent_shape, mnt_repa_pixels=mnt_repa_pixels,
             mnt_time_ids=mnt_time_ids, loss_weight_maps_batch=loss_weight_maps_batch,
+            sensenova_prefix=sensenova_prefix,
         )
 
         _disp_cm, _disp_info = self._activation_dispatch_begin(mnt_latents)
@@ -5613,6 +5645,7 @@ class BaseTrainer(ABC):
         mnt_repa_pixels: Optional[torch.Tensor] = None,
         mnt_time_ids: Optional[torch.Tensor] = None,
         loss_weight_maps_batch: Optional[torch.Tensor] = None,
+        sensenova_prefix: Optional[Any] = None,
         loss_scale: float = 1.0,
     ) -> Tuple[float, float, float]:
         """
@@ -5628,7 +5661,16 @@ class BaseTrainer(ABC):
         The returned loss VALUE stays unscaled (per-chunk mean) for reporting.
         """
         # Forward pass (architecture-specific)
-        if self.is_zimage:
+        if self.is_sensenova:
+            from core.training.arch.base_arch import TrainStepContext
+            ctx = TrainStepContext(
+                latents=mnt_latents,
+                sensenova_prefix=sensenova_prefix,
+                timesteps=timesteps,
+                profile_vram=self.debug_vram,
+            )
+            loss, pred_loss, recon_loss = self.arch.train_step(self, ctx)
+        elif self.is_zimage:
             # P6b: route via the arch handler (registry dispatch). The kwargs
             # bundle is frozen into TrainStepContext; the handler unpacks it into
             # ops/zimage_ops.train_step (verbatim body).
@@ -7983,6 +8025,20 @@ class BaseTrainer(ABC):
             text_encoding_swap_interval: Swap interval for swap_onthefly mode (default: 256 steps)
             use_reference_images: Enable reference image conditioning during training (FLUX.2 only)
         """
+        if self.is_sensenova:
+            if batch_size != 1:
+                raise ValueError(
+                    "SenseNova training requires batch_size=1; use "
+                    "gradient_accumulation_steps for a larger effective batch"
+                )
+            if self.blocks_to_swap != 0:
+                raise ValueError("SenseNova training does not implement blocks_to_swap; set it to 0")
+            if use_reference_images:
+                raise ValueError("SenseNova reference-image training is deferred to Phase 3")
+            text_encoding_mode = "onthefly_gpu"
+            latent_encoding_mode = "onthefly_gpu"
+            sample_every_n_steps = 0
+
         # Store references for subclass access
         self._training_datasets = datasets
         self._sample_prompts = sample_prompts or [{"positive": "a beautiful landscape", "negative": ""}]
@@ -8238,6 +8294,7 @@ class BaseTrainer(ABC):
                 "anima" if self.is_anima else
                 "ltx2" if self.is_ltx2 else
                 "minimax_h3" if self.is_minimax_h3 else
+                "sensenova" if self.is_sensenova else
                 "lens" if self.is_lens else
                 "ideogram4" if self.is_ideogram4 else
                 "krea2" if self.is_krea2 else
@@ -10261,6 +10318,7 @@ class BaseTrainer(ABC):
 
                     latents_list = []
                     text_embeddings_list = []
+                    sensenova_prefixes = []
                     auxiliary_data_list = []  # Unified: attention_mask (Z-Image), pooled_embeddings (SDXL), or None (SD1.5)
                     reference_latents_list = []  # FLUX.2 reference image conditioning
                     condition_images_list = []  # ControlNet condition images [B, 3, H, W]
@@ -10503,7 +10561,10 @@ class BaseTrainer(ABC):
                         # Encode caption (mode-specific, architecture-unified)
                         caption = item.get("caption", "")
 
-                        if text_encoding_mode in ("swap_onthefly", "cpu_prefetch"):
+                        if self.is_sensenova:
+                            prefix, _ = self.encode_caption(caption, requires_grad=False)
+                            sensenova_prefixes.append(prefix)
+                        elif text_encoding_mode in ("swap_onthefly", "cpu_prefetch"):
                             # Get from swap buffer using image_path as key (dict lookup).
                             # Both swap_onthefly and cpu_prefetch share this consumer:
                             # cpu_prefetch's daemon worker fills swap_buffer ahead of
@@ -10783,6 +10844,12 @@ class BaseTrainer(ABC):
                     # Create batch tensors (ONCE, reused across MNT iterations)
                     latents = torch.cat(latents_list, dim=0)
 
+                    sensenova_prefix = None
+                    if self.is_sensenova:
+                        sensenova_prefix = self._collate_sensenova_b1_prefix(
+                            sensenova_prefixes
+                        )
+
                     # onthefly_gpu latent encoding keeps the VAE on GPU per batch (see the
                     # encode branch). The VAE is not needed during the forward/backward, so
                     # offload it to CPU now to free its VRAM during the peak; the next batch's
@@ -10933,6 +11000,7 @@ class BaseTrainer(ABC):
 
                     # Free individual item lists (no longer needed, batch tensors are created)
                     del latents_list, text_embeddings_list, auxiliary_data_list
+                    del sensenova_prefixes
                     if reference_latents_list:
                         del reference_latents_list
                     if condition_images_list:
@@ -11010,7 +11078,15 @@ class BaseTrainer(ABC):
                         mnt_time_ids = time_ids_batch
 
                         # Handle text embeddings based on training mode
-                        if need_recompute_text_embeddings:
+                        mnt_sensenova_prefix = None
+                        if self.is_sensenova:
+                            (
+                                mnt_text_embeddings,
+                                mnt_attention_mask,
+                                mnt_pooled_embeddings,
+                                mnt_sensenova_prefix,
+                            ) = self._sensenova_mnt_conditioning(sensenova_prefix)
+                        elif need_recompute_text_embeddings:
                             # Text Encoder trainable + MNT > 1: Re-encode text for each iteration
                             # This creates a fresh computation graph with gradient flow to Text Encoder.
                             # NOTE: unreachable for ACE-Step (text_encoder is unconditionally frozen in
@@ -11206,6 +11282,7 @@ class BaseTrainer(ABC):
                                 mnt_repa_pixels=mnt_repa_pixels,
                                 mnt_time_ids=mnt_time_ids,
                                 loss_weight_maps_batch=loss_weight_maps_batch,
+                                sensenova_prefix=mnt_sensenova_prefix,
                             )
                         except FatalCudaError:
                             # Sticky CUDA-context corruption, already classified by the

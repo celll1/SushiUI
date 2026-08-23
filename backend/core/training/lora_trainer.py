@@ -40,6 +40,7 @@ from .adapters import (
     Ltx2LoRAAdapter,
     MiniMaxH3LoRAAdapter,
     AceStepLoRAAdapter,
+    SenseNovaLoRAAdapter,
 )
 
 
@@ -133,7 +134,12 @@ class LoRATrainer(BaseTrainer):
 
     def _create_adapter(self):
         """Create model-specific LoRA adapter based on detected model type."""
-        if self.is_zimage:
+        if self.is_sensenova:
+            self.adapter = SenseNovaLoRAAdapter(
+                self, self.lora_rank, self.lora_alpha, self.lora_dtype
+            )
+            print(f"{self.log_prefix} Using SenseNovaLoRAAdapter")
+        elif self.is_zimage:
             self.adapter = ZImageLoRAAdapter(self, self.lora_rank, self.lora_alpha, self.lora_dtype)
             print(f"{self.log_prefix} Using ZImageLoRAAdapter")
         # DEUS support removed - architecture no longer maintained

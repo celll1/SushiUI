@@ -351,6 +351,55 @@ def test_flow_step_matches_vendor_noising_conditioning_and_velocity_math():
     assert prefix.cache is cache and cache.layers[0].keys is key
 
 
+def test_flow_step_conditions_on_unquantized_timestep_under_bf16():
+    """bf16 training must still condition on the fp32 t inference uses.
+
+    bf16 carries ~2e-3 resolution near t=0.31, so casting t to training_dtype
+    would feed timestep_embedder a different value than any inference step.
+    """
+    transformer = _Transformer()
+    trainer = SimpleNamespace(
+        transformer=transformer,
+        device=torch.device("cpu"),
+        training_dtype=torch.bfloat16,
+        gradient_checkpointing=False,
+    )
+    context_call = {}
+
+    def build_context(model, shape, image, timestep, noise_scale):
+        context_call.update(image=image.detach().clone(), timestep=timestep.detach().clone())
+        return (
+            model.patchify(image, 32),
+            torch.full((1, 1, 1), 2.0, dtype=torch.bfloat16),
+            torch.ones(1, 1, 1, dtype=torch.bfloat16),
+        )
+
+    sampled = torch.tensor([0.3123456])
+    assert sampled.to(torch.bfloat16).float() != sampled
+    images = torch.ones(1, 3, 32, 32)
+    with patch(
+        "core.models.sensenova.sensenova_pipeline_ops.compute_noise_scale",
+        return_value=2.0,
+    ), patch(
+        "core.models.sensenova.sensenova_pipeline_ops._build_step_context",
+        side_effect=build_context,
+    ), patch("torch.randn_like", return_value=torch.full_like(images, 0.2, dtype=torch.bfloat16)):
+        loss, _, _ = train_step(
+            trainer, images=images, prefix=SenseNovaTrainingPrefix(_Cache(), text_length=3),
+            timesteps=sampled,
+        )
+
+    assert context_call["timestep"].dtype == torch.float32
+    torch.testing.assert_close(context_call["timestep"], sampled[0])
+    # The noised map keeps training_dtype: the gen-branch ViT runs outside autocast.
+    assert context_call["image"].dtype == torch.bfloat16
+    expected = sampled.to(torch.bfloat16) + (1 - sampled).to(torch.bfloat16) * torch.tensor(
+        0.4, dtype=torch.bfloat16
+    )
+    torch.testing.assert_close(context_call["image"], torch.full_like(context_call["image"], expected.item()))
+    assert loss.dtype == torch.float32
+
+
 def _run_train_step(transformer):
     trainer = SimpleNamespace(
         transformer=transformer,

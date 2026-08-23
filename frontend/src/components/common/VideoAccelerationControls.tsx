@@ -195,7 +195,7 @@ export default function VideoAccelerationControls({
               type="number"
               min={0}
               max={1}
-              step={0.05}
+              step="any"
               value={values.spectrum_w ?? 0.5}
               onChange={(e) => onChange({ spectrum_w: parseFloat(e.target.value) })}
               className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs"
@@ -241,7 +241,7 @@ export default function VideoAccelerationControls({
             Residual threshold
             <NumberInput
               min={0}
-              step={0.01}
+              step="any"
               parse="float"
               value={values.fbcache_threshold ?? 0.12}
               defaultValue={0.12}

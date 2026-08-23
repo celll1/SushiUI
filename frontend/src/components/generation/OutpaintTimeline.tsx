@@ -80,7 +80,14 @@ export interface OutpaintTimelineProps {
    * `max`, so a wildly unservable value is not even typeable.
    */
   totalUnitsMax?: number;
-  totalUnitsStep?: number;
+  /**
+   * Spinner increment for the total field. Must equal the grid
+   * `totalUnitsSnapFn` actually enforces — a numeric step is also the
+   * browser's validity grid (`totalUnitsMin + n*step`) and the spinner
+   * rewrites off-grid values onto it. Pass `"any"` for a continuous total
+   * (e.g. audio seconds).
+   */
+  totalUnitsStep?: number | "any";
 
   /** Full length of the uploaded input clip, in units, before trim. */
   rawSegmentLength: number;

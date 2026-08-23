@@ -2966,21 +2966,21 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
           <div className="ml-6 mt-1 grid grid-cols-2 gap-2">
             <label className="text-xs text-gray-400 flex items-center gap-1">
               Mix w
-              <input type="number" min={0} max={1} step={0.05}
+              <input type="number" min={0} max={1} step="any"
                 value={params.spectrum_w ?? 1.0}
                 onChange={(e) => setParams({ ...params, spectrum_w: parseFloat(e.target.value) })}
                 className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs" />
             </label>
             <label className="text-xs text-gray-400 flex items-center gap-1">
               Mix w decay
-              <input type="number" min={0} step={0.25}
+              <input type="number" min={0} step="any"
                 value={params.spectrum_w_decay ?? 0.0}
                 onChange={(e) => setParams({ ...params, spectrum_w_decay: parseFloat(e.target.value) })}
                 className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs" />
             </label>
             <label className="text-xs text-gray-400 flex items-center gap-1" title="Limits how far a forecast may advance past the last real pass, relative to the observed trajectory speed. 0 disables the cap.">
               Delta cap
-              <input type="number" step={0.25}
+              <input type="number" step="any"
                 value={params.spectrum_delta_cap ?? 0.0}
                 onChange={(e) => setParams({ ...params, spectrum_delta_cap: parseFloat(e.target.value) })}
                 className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs" />
@@ -2994,7 +2994,7 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
             </label>
             <label className="text-xs text-gray-400 flex items-center gap-1">
               Ridge λ
-              <input type="number" min={0} step={0.01}
+              <input type="number" min={0} step="any"
                 value={params.spectrum_lam ?? 0.1}
                 onChange={(e) => setParams({ ...params, spectrum_lam: parseFloat(e.target.value) })}
                 className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs" />
@@ -3015,14 +3015,14 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
             </label>
             <label className="text-xs text-gray-400 flex items-center gap-1">
               Flex
-              <input type="number" min={0} max={1} step={0.05}
+              <input type="number" min={0} max={1} step="any"
                 value={params.spectrum_flex_window ?? 0.75}
                 onChange={(e) => setParams({ ...params, spectrum_flex_window: parseFloat(e.target.value) })}
                 className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs" />
             </label>
             <label className="text-xs text-gray-400 flex items-center gap-1" title="Fraction of final steps forced to real forwards (preserves detail). Higher = sharper/slower.">
               Tail
-              <input type="number" min={0} max={0.5} step={0.02}
+              <input type="number" min={0} max={0.5} step="any"
                 value={params.spectrum_tail ?? 0.12}
                 onChange={(e) => setParams({ ...params, spectrum_tail: parseFloat(e.target.value) })}
                 className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs" />
@@ -3051,7 +3051,7 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
           <div className="ml-6 mt-1 grid grid-cols-2 gap-2">
             <label className="text-xs text-gray-400 flex items-center gap-1">
               Residual threshold (higher = more skips)
-              <NumberInput min={0} step={0.01} parse="float"
+              <NumberInput min={0} step="any" parse="float"
                 value={params.fbcache_threshold ?? 0.12}
                 defaultValue={0.12}
                 placeholder="0.12"
@@ -3113,7 +3113,7 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
             </label>
             <label className="text-xs text-gray-400 flex items-center gap-1" title="Minimum fraction of the image the detected flat region must cover; below it the feature is a no-op (protects textured backgrounds).">
               Min region fraction
-              <NumberInput min={0.005} max={0.5} step={0.005} parse="float"
+              <NumberInput min={0.005} max={0.5} step="any" parse="float"
                 value={params.flatten_in_loop_min_region ?? 0.02}
                 defaultValue={0.02}
                 placeholder="0.02"
@@ -3919,7 +3919,7 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
                   onCommit={(v) => setParams({ ...params, audio_duration: v })}
                   min={1}
                   max={360}
-                  step={1}
+                  step="any"
                   parse="float"
                   className="w-full"
                 />
@@ -3955,7 +3955,7 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
                   onCommit={(v) => setParams({ ...params, flow_guidance_scale: v })}
                   min={0.01}
                   max={20}
-                  step={0.1}
+                  step="any"
                   parse="float"
                   className="w-full"
                 />
@@ -3985,7 +3985,7 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
                   onCommit={(v) => setParams({ ...params, audio_duration: v })}
                   min={1}
                   max={600}
-                  step={1}
+                  step="any"
                   parse="float"
                   className="w-full"
                 />
@@ -4014,7 +4014,7 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
                   onCommit={(v) => setParams({ ...params, shift: v })}
                   min={0}
                   max={20}
-                  step={0.1}
+                  step="any"
                   parse="float"
                   className="w-full"
                 />
@@ -4027,7 +4027,7 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
                   onCommit={(v) => setParams({ ...params, guidance_scale: v })}
                   min={0}
                   max={20}
-                  step={0.1}
+                  step="any"
                   parse="float"
                   className="w-full"
                 />

@@ -71,8 +71,11 @@ const transformFields: Array<{
 }> = [
   { key: "x", label: "X", step: "1" },
   { key: "y", label: "Y", step: "1" },
-  { key: "scaleX", label: "Scale X", step: "0.05", min: String(MIN_MASK_SCALE), max: String(MAX_MASK_SCALE) },
-  { key: "scaleY", label: "Scale Y", step: "0.05", min: String(MIN_MASK_SCALE), max: String(MAX_MASK_SCALE) },
+  // step "any", not 0.05: a numeric step is the browser's validity grid
+  // (min + n*step), and MIN_MASK_SCALE=0.01 puts identity scale 1.0 off it,
+  // so the spinner rewrote a typed 1.0 to 1.01.
+  { key: "scaleX", label: "Scale X", step: "any", min: String(MIN_MASK_SCALE), max: String(MAX_MASK_SCALE) },
+  { key: "scaleY", label: "Scale Y", step: "any", min: String(MIN_MASK_SCALE), max: String(MAX_MASK_SCALE) },
   { key: "rotation", label: "Rotation (degrees)", step: "1" },
 ];
 

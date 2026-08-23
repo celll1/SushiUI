@@ -4557,17 +4557,17 @@ export default function InpaintPanel({ onTabChange }: InpaintPanelProps = {}) {
         {params.spectrum_enable && (
           <div className="ml-6 mt-1 grid grid-cols-2 gap-2">
             <label className="text-xs text-gray-400 flex items-center gap-1">Mix w
-              <input type="number" min={0} max={1} step={0.05} value={params.spectrum_w ?? 0.5}
+              <input type="number" min={0} max={1} step="any" value={params.spectrum_w ?? 0.5}
                 onChange={(e) => setParams({ ...params, spectrum_w: parseFloat(e.target.value) })}
                 className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs" />
             </label>
             <label className="text-xs text-gray-400 flex items-center gap-1">Mix w decay
-              <input type="number" min={0} step={0.25} value={params.spectrum_w_decay ?? 0.0}
+              <input type="number" min={0} step="any" value={params.spectrum_w_decay ?? 0.0}
                 onChange={(e) => setParams({ ...params, spectrum_w_decay: parseFloat(e.target.value) })}
                 className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs" />
             </label>
             <label className="text-xs text-gray-400 flex items-center gap-1" title="Limits how far a forecast may advance past the last real pass, relative to the observed trajectory speed. 0 disables the cap.">Delta cap
-              <input type="number" step={0.25} value={params.spectrum_delta_cap ?? 0.0}
+              <input type="number" step="any" value={params.spectrum_delta_cap ?? 0.0}
                 onChange={(e) => setParams({ ...params, spectrum_delta_cap: parseFloat(e.target.value) })}
                 className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs" />
             </label>
@@ -4577,7 +4577,7 @@ export default function InpaintPanel({ onTabChange }: InpaintPanelProps = {}) {
                 className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs" />
             </label>
             <label className="text-xs text-gray-400 flex items-center gap-1">Ridge λ
-              <input type="number" min={0} step={0.01} value={params.spectrum_lam ?? 0.1}
+              <input type="number" min={0} step="any" value={params.spectrum_lam ?? 0.1}
                 onChange={(e) => setParams({ ...params, spectrum_lam: parseFloat(e.target.value) })}
                 className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs" />
             </label>
@@ -4592,12 +4592,12 @@ export default function InpaintPanel({ onTabChange }: InpaintPanelProps = {}) {
                 className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs" />
             </label>
             <label className="text-xs text-gray-400 flex items-center gap-1">Flex
-              <input type="number" min={0} max={1} step={0.05} value={params.spectrum_flex_window ?? 0.75}
+              <input type="number" min={0} max={1} step="any" value={params.spectrum_flex_window ?? 0.75}
                 onChange={(e) => setParams({ ...params, spectrum_flex_window: parseFloat(e.target.value) })}
                 className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs" />
             </label>
             <label className="text-xs text-gray-400 flex items-center gap-1">Tail
-              <input type="number" min={0} max={0.5} step={0.02} value={params.spectrum_tail ?? 0.12}
+              <input type="number" min={0} max={0.5} step="any" value={params.spectrum_tail ?? 0.12}
                 onChange={(e) => setParams({ ...params, spectrum_tail: parseFloat(e.target.value) })}
                 className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs" />
             </label>
@@ -4626,7 +4626,7 @@ export default function InpaintPanel({ onTabChange }: InpaintPanelProps = {}) {
         {params.fbcache_enable && (
           <div className="ml-6 mt-1 grid grid-cols-2 gap-2">
             <label className="text-xs text-gray-400 flex items-center gap-1">Residual threshold (higher = more skips)
-              <NumberInput min={0} step={0.01} parse="float" value={params.fbcache_threshold ?? 0.12}
+              <NumberInput min={0} step="any" parse="float" value={params.fbcache_threshold ?? 0.12}
                 defaultValue={0.12}
                 placeholder="0.12"
                 onCommit={(v) => setParams({ ...params, fbcache_threshold: v })}
@@ -4685,7 +4685,7 @@ export default function InpaintPanel({ onTabChange }: InpaintPanelProps = {}) {
             </label>
             <label className="text-xs text-gray-400 flex items-center gap-1" title="Minimum fraction of the image the detected flat region must cover; below it the feature is a no-op (protects textured backgrounds).">
               Min region fraction
-              <NumberInput min={0.005} max={0.5} step={0.005} parse="float"
+              <NumberInput min={0.005} max={0.5} step="any" parse="float"
                 value={params.flatten_in_loop_min_region ?? 0.02}
                 defaultValue={0.02}
                 placeholder="0.02"

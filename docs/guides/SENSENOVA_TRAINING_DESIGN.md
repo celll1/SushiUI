@@ -829,6 +829,21 @@ fresh runtime arm は保存物を 294/294 module に適用し、294/294 を復�
 同じ SHA-256 を持ち、`torch.equal` でも一致した。これにより half-eviction の
 OFF / ON 実測を除く Phase 1 exit criteria を満たす。
 
+half-eviction の効果を測る場合は、同一 checkpoint / seed / shape / GC 条件で
+別 process の OFF / ON を個別に起動する（現時点の結果は **PENDING**）。
+
+```text
+# OFF
+<repo>/venv/Scripts/python.exe backend/core/training/probes/sensenova_real_checkpoint.py --model-path <plain-int8-checkpoint> --trainer-exit-smoke --smoke-phase-eviction off --smoke-json-out <off-result.json>
+
+# ON
+<repo>/venv/Scripts/python.exe backend/core/training/probes/sensenova_real_checkpoint.py --model-path <plain-int8-checkpoint> --trainer-exit-smoke --smoke-phase-eviction on --smoke-json-out <on-result.json>
+```
+
+trainer arm の JSON には `phase_eviction`、`wall_time_s`（`train()` のみ）、
+`wall_time_with_model_load_s`、`model_load_wall_time_s`、
+`peak_memory.allocated/reserved` を記録する。
+
 ### Phase 2a — full FT ガード（DONE）
 
 - `TRAINING_UNSUPPORTED` と共通 preflight でモデルロード前に拒否する。初期案の

@@ -12,6 +12,7 @@ from core.training.probes.sensenova_real_checkpoint import (
     EXPECTED_TARGETS,
     _inspect_saved_lora,
     _parse_args,
+    _run_exit_smoke_subprocess,
     _take_denoise_tensor,
     trainer_exit_smoke_config,
 )
@@ -43,6 +44,77 @@ def test_sensenova_trainer_exit_smoke_config_pins_the_phase1_contract():
     assert train["base_resolutions"] == [64]
     assert train["text_encoding_mode"] == "onthefly_gpu"
     assert train["latent_encoding_mode"] == "onthefly_gpu"
+    assert train_config["sensenova_mot_phase_eviction"] is False
+
+
+def test_sensenova_trainer_exit_smoke_config_can_enable_phase_eviction():
+    config = trainer_exit_smoke_config(True)
+
+    assert config["train_config"]["sensenova_mot_phase_eviction"] is True
+
+
+def test_sensenova_exit_smoke_parser_defaults_phase_eviction_off_and_accepts_on(monkeypatch):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["probe", "--model-path", "checkpoint", "--trainer-exit-smoke"],
+    )
+    off = _parse_args()
+    assert off.smoke_phase_eviction == "off"
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "probe",
+            "--model-path",
+            "checkpoint",
+            "--trainer-exit-smoke",
+            "--smoke-phase-eviction",
+            "on",
+        ],
+    )
+    on = _parse_args()
+    assert on.smoke_phase_eviction == "on"
+
+
+def test_sensenova_exit_smoke_subprocess_propagates_phase_eviction_flag(monkeypatch, tmp_path):
+    from core.training.probes import sensenova_real_checkpoint as probe
+
+    captured = {}
+
+    class _Completed:
+        returncode = 0
+
+    def fake_run(command, **kwargs):
+        del kwargs
+        captured["command"] = command
+        result_path = Path(command[command.index("--smoke-arm-json") + 1])
+        result_path.write_text("{}", encoding="utf-8")
+        return _Completed()
+
+    monkeypatch.setattr(probe.subprocess, "run", fake_run)
+    monkeypatch.setattr(probe, "_repo_venv_python", lambda: Path("venv-python"))
+    args = type(
+        "Args",
+        (),
+        {
+            "model_path": "checkpoint",
+            "seed": 1234,
+            "prompt": "prompt",
+            "smoke_cfg_scale": 1.0,
+            "smoke_timestep_shift": 1.0,
+            "smoke_cfg_norm": "none",
+            "smoke_phase_eviction": "on",
+            "smoke_timeout_s": 1.0,
+        },
+    )()
+
+    _run_exit_smoke_subprocess(args, "trainer", tmp_path)
+
+    command = captured["command"]
+    index = command.index("--smoke-phase-eviction")
+    assert command[index + 1] == "on"
 
 
 def test_sensenova_exit_smoke_inspector_accepts_the_real_882_tensor_contract(tmp_path):

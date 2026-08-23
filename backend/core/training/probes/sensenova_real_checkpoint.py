@@ -442,13 +442,13 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
-def trainer_exit_smoke_config() -> dict[str, Any]:
+def trainer_exit_smoke_config(phase_eviction: bool = False) -> dict[str, Any]:
     """Return the fixed, intentionally small Phase 1 exit-smoke contract.
 
     This is kept as data so the CPU test can pin the contract without loading a
     checkpoint.  The real trainer arm consumes the same mapping below.
     """
-    return {
+    config = {
         "constructor": {
             "lora_rank": 1,
             "lora_alpha": 1,
@@ -475,6 +475,7 @@ def trainer_exit_smoke_config() -> dict[str, Any]:
             "prediction_target": "velocity",
             "gradient_accumulation_steps": 1,
             "multi_noise_timesteps": 1,
+            "sensenova_mot_phase_eviction": bool(phase_eviction),
         },
         "train": {
             "total_steps": EXIT_SMOKE_STEPS,
@@ -492,6 +493,7 @@ def trainer_exit_smoke_config() -> dict[str, Any]:
             "use_reference_images": False,
         },
     }
+    return config
 
 
 class _ExitSmokeDataset:
@@ -624,7 +626,9 @@ def _run_trainer_exit_smoke_arm(args: argparse.Namespace) -> dict[str, Any]:
 
     from core.training.lora_trainer import LoRATrainer
 
-    config = trainer_exit_smoke_config()
+    config = trainer_exit_smoke_config(
+        phase_eviction=getattr(args, "smoke_phase_eviction", "off") == "on"
+    )
     workdir = Path(args.smoke_workdir)
     workdir.mkdir(parents=True, exist_ok=True)
     image_path = workdir / "training_image.png"
@@ -644,6 +648,7 @@ def _run_trainer_exit_smoke_arm(args: argparse.Namespace) -> dict[str, Any]:
     torch.use_deterministic_algorithms(True)
     torch.cuda.reset_peak_memory_stats()
 
+    load_started = time.perf_counter()
     trainer_kwargs = dict(config["constructor"])
     trainer = LoRATrainer(
         model_path=args.model_path,
@@ -655,6 +660,7 @@ def _run_trainer_exit_smoke_arm(args: argparse.Namespace) -> dict[str, Any]:
         train_config=dict(config["train_config"]),
         **trainer_kwargs,
     )
+    model_load_wall_time_s = time.perf_counter() - load_started
     losses: list[float] = []
     training_steps: list[int] = []
 
@@ -689,7 +695,10 @@ def _run_trainer_exit_smoke_arm(args: argparse.Namespace) -> dict[str, Any]:
         "force_recache": False,
     })
     dataset = _ExitSmokeDataset(image_path, args.prompt)
+    train_started = time.perf_counter()
     trainer.train(datasets=[dataset], **train)
+    train_wall_time_s = time.perf_counter() - train_started
+    wall_time_with_model_load_s = time.perf_counter() - load_started
 
     if training_steps != list(range(1, EXIT_SMOKE_STEPS + 1)):
         raise AssertionError(
@@ -748,6 +757,10 @@ def _run_trainer_exit_smoke_arm(args: argparse.Namespace) -> dict[str, Any]:
         },
         "weight_dtype": str(trainer.weight_dtype),
         "training_dtype": str(trainer.training_dtype),
+        "phase_eviction": bool(config["train_config"]["sensenova_mot_phase_eviction"]),
+        "wall_time_s": train_wall_time_s,
+        "wall_time_with_model_load_s": wall_time_with_model_load_s,
+        "model_load_wall_time_s": model_load_wall_time_s,
     }
     try:
         trainer.writer.close()
@@ -888,6 +901,7 @@ def _run_exit_smoke_subprocess(
         "--model-path", args.model_path,
         "--seed", str(args.seed),
         "--prompt", args.prompt,
+        "--smoke-phase-eviction", getattr(args, "smoke_phase_eviction", "off"),
         "--smoke-cfg-scale", str(args.smoke_cfg_scale),
         "--smoke-timestep-shift", str(args.smoke_timestep_shift),
         "--smoke-cfg-norm", args.smoke_cfg_norm,
@@ -958,6 +972,12 @@ def _parse_args() -> argparse.Namespace:
         "--trainer-exit-smoke",
         action="store_true",
         help="Opt-in Phase 1 real trainer + fresh runtime verification (CUDA, multi-process).",
+    )
+    parser.add_argument(
+        "--smoke-phase-eviction",
+        choices=("off", "on"),
+        default="off",
+        help="Enable SenseNova MoT half-eviction for the trainer exit-smoke arm.",
     )
     parser.add_argument("--prompt", default="a red cube on a white table")
     parser.add_argument(

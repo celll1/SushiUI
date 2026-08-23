@@ -91,6 +91,45 @@ def _assert_supported_quantized_training_base(transformer: nn.Module) -> None:
         )
 
 
+def _assert_pixel_head_fm_decoder(transformer: nn.Module) -> None:
+    """Require the vendor ``use_pixel_head`` fm-head branch.
+
+    ``train_step`` inlines only that branch of ``_t2i_predict_v``: it feeds the
+    fm_head a ``b c h w`` map and un-patchifies the ``b 3 H W`` result. The other
+    two vendor branches take token-shaped input -- ``use_deep_fm_head`` also
+    takes a second ``t`` argument -- and neither is implemented here, so refuse
+    rather than reshape into a head that cannot accept it. A missing attribute
+    means an unknown tree and is refused for the same reason.
+    """
+    missing = [
+        name
+        for name in ("use_pixel_head", "use_deep_fm_head")
+        if not hasattr(transformer, name)
+    ]
+    if missing:
+        raise RuntimeError(
+            "SenseNova training requires a vendor transformer exposing "
+            f"use_pixel_head and use_deep_fm_head; this tree is missing "
+            f"{', '.join(missing)}, so the fm-head layout it was built with is "
+            "unknown and cannot be assumed to be the pixel-head (ConvDecoder) one "
+            "that train_step implements."
+        )
+    if transformer.use_deep_fm_head:
+        raise RuntimeError(
+            "SenseNova training does not implement the vendor _t2i_predict_v "
+            "use_deep_fm_head branch (FlowMatchingHead called as fm_head(x, t) on "
+            "token-shaped input); this checkpoint has fm_head_layers > 2. Only the "
+            "use_pixel_head (ConvDecoder) branch is implemented."
+        )
+    if not transformer.use_pixel_head:
+        raise RuntimeError(
+            "SenseNova training does not implement the vendor _t2i_predict_v plain "
+            "fm_head branch (nn.Sequential called on token-shaped input); this "
+            f"checkpoint has use_pixel_head={transformer.use_pixel_head!r}. Only the "
+            "use_pixel_head (ConvDecoder) branch is implemented."
+        )
+
+
 def setup_attention_backend(trainer: Any, backend: str) -> None:
     from core.attention import AttentionMode
     from core.models.sensenova.sensenova_pipeline_ops import set_attention_backend
@@ -113,6 +152,7 @@ def load_components(trainer: Any) -> None:
     components = load_sensenova_from_path(trainer.model_path, torch_dtype=trainer.weight_dtype)
     trainer.transformer = components["transformer"]
     _assert_supported_quantized_training_base(trainer.transformer)
+    _assert_pixel_head_fm_decoder(trainer.transformer)
     trainer.transformer_original = trainer.transformer
     trainer.transformer_uncond = None
     trainer.tokenizer = components["tokenizer"]
@@ -198,6 +238,7 @@ def train_step(
         raise ValueError("SenseNova image height and width must be divisible by 32")
 
     transformer = trainer.transformer
+    _assert_pixel_head_fm_decoder(transformer)
     device = trainer.device
     dtype = trainer.training_dtype
     x0 = images.to(device=device, dtype=dtype)

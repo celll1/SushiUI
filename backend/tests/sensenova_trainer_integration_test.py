@@ -217,6 +217,75 @@ def test_sensenova_name_does_not_override_successful_non_sensenova_detection():
     assert train == {"batch_size": 2}
 
 
+def _sensenova_checkpoint_dir(tmp_path, t_eps=0.05):
+    (tmp_path / "config.json").write_text(
+        f'{{"t_eps": {t_eps}}}', encoding="utf-8"
+    )
+    return str(tmp_path)
+
+
+def _run_contract_with_timestep_sampling(tmp_path, sampling):
+    train = {"batch_size": 1, "blocks_to_swap": 0}
+    if sampling is not None:
+        train["timestep_sampling"] = sampling
+    with patch.object(ModelLoader, "detect_model_type", return_value="sensenova"):
+        assert _apply_sensenova_training_contract(
+            _sensenova_checkpoint_dir(tmp_path), "lora", train, {}
+        )
+    return train
+
+
+@pytest.mark.parametrize(
+    "sampling",
+    [
+        None,
+        dict(TIMESTEP_SAMPLING_DEFAULTS_BY_ARCH["sensenova"]),
+        {**TIMESTEP_SAMPLING_DEFAULTS_BY_ARCH["sensenova"], "max_timestep": 0.5},
+    ],
+)
+def test_sensenova_safe_timestep_sampling_does_not_warn(tmp_path, capsys, sampling):
+    _run_contract_with_timestep_sampling(tmp_path, sampling)
+    assert "timestep_sampling departs" not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "sampling",
+    [
+        {"distribution": "uniform", "min_timestep": 0.0, "max_timestep": 1.0},
+        {"distribution": "uniform", "min_timestep": 0.0, "max_timestep": 0.9},
+        {"distribution": "logit_normal", "mean": 2.0, "std": 1.0,
+         "min_timestep": 0.0, "max_timestep": 1.0},
+    ],
+)
+def test_sensenova_clean_side_timestep_sampling_warns(tmp_path, capsys, sampling):
+    train = _run_contract_with_timestep_sampling(tmp_path, sampling)
+    out = capsys.readouterr().out
+    assert "timestep_sampling departs" in out
+    assert "mse(x0_pred, x0) / (1-t)^2" in out
+    assert "1/t_eps^2 = 400.0" in out and "t_eps=0.05" in out
+    assert "logit_normal(mean=-0.8, std=0.8)" in out
+    assert train["timestep_sampling"] == sampling
+
+
+def test_sensenova_timestep_warning_is_qualitative_without_config_t_eps(
+    tmp_path, capsys
+):
+    train = {
+        "batch_size": 1,
+        "blocks_to_swap": 0,
+        "timestep_sampling": {
+            "distribution": "uniform", "min_timestep": 0.0, "max_timestep": 1.0
+        },
+    }
+    with patch.object(ModelLoader, "detect_model_type", return_value="sensenova"):
+        assert _apply_sensenova_training_contract(
+            str(tmp_path / "missing"), "lora", train, {}
+        )
+    out = capsys.readouterr().out
+    assert "clamped only by the model's t_eps at 1/t_eps^2." in out
+    assert "E[1/(1-t)^2]" not in out
+
+
 def test_registry_and_lora_adapter_selection():
     trainer = LoRATrainer.__new__(LoRATrainer)
     for name in (

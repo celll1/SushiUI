@@ -33,7 +33,10 @@ generation (see ``teardown()``) -- torch's caching host allocator pools freed
 pinned blocks rather than returning them to the OS, so an explicit "unpin"
 would only add a pageable clone on top of the still-reserved pool (measured:
 a net increase, not a release). Leaving tensors pinned lets the next
-generation's ``_pin_module_cpu_`` reuse the same pool for free.
+generation's ``stage_modules_to_pinned_cpu`` reuse the same pool for free.
+
+The CPU staging loop itself lives in ``mot_cpu_staging`` -- shared with the
+training-side evictor (``core.training.sensenova_phase_eviction``).
 """
 
 from __future__ import annotations
@@ -42,6 +45,8 @@ from typing import Any, Dict, Optional
 
 import torch
 from torch import nn
+
+from .mot_cpu_staging import stage_modules_to_pinned_cpu
 
 LABEL = "SenseNova"
 
@@ -55,45 +60,6 @@ def _module_nbytes(module: nn.Module) -> int:
             continue
         total += b.numel() * b.element_size()
     return total
-
-
-def _pin_module_cpu_(module: nn.Module, *, warn_once: Dict[str, bool]) -> None:
-    """Move every parameter/PERSISTENT buffer OWNED (recurse=False) by
-    ``module`` to a pinned CPU tensor. Touches ``_parameters``/``_buffers``
-    directly (not ``.to()``) because pinning requires an explicit
-    ``.pin_memory()`` copy, which ``nn.Module.to()`` has no option for.
-    Non-persistent buffers (e.g. a rotary embedding's cached ``inv_freq``) are
-    skipped even if a caller passes such a module in -- they are derived
-    tensors, not weights, and moving them is never the point of this call."""
-    def _warn_pin_failed(exc: Exception) -> None:
-        if "pin_failed" not in warn_once:
-            warn_once["pin_failed"] = True
-            print(f"[{LABEL}] MoT phase eviction: pin_memory() failed ({exc}); "
-                  f"continuing with unpinned CPU staging (slower transfer, same result).")
-
-    for key, p in list(module._parameters.items()):
-        if p is None:
-            continue
-        cpu = p.data.detach().to("cpu")
-        if not cpu.is_pinned():
-            try:
-                cpu = cpu.pin_memory()
-            except Exception as exc:
-                _warn_pin_failed(exc)
-        module._parameters[key].data = cpu
-    for key, b in list(module._buffers.items()):
-        if b is None or key in module._non_persistent_buffers_set:
-            continue
-        cpu = b.detach().to("cpu")
-        if not cpu.is_pinned():
-            try:
-                cpu = cpu.pin_memory()
-            except Exception as exc:
-                # The int8 weight buffers (Int8Linear) are the tensors large
-                # enough to actually exhaust pinned host memory -- this branch
-                # must warn too, not just the parameter loop above.
-                _warn_pin_failed(exc)
-        module._buffers[key] = cpu
 
 
 class MotPhaseEvictor:
@@ -178,16 +144,14 @@ class MotPhaseEvictor:
         if phase == self._phase:
             return  # idempotent: a repeat notification of the same phase is a no-op.
         if phase == "prefix":
-            for m in self._gen_modules:
-                _pin_module_cpu_(m, warn_once=self._warn_once)
+            stage_modules_to_pinned_cpu(self._gen_modules, warn_once=self._warn_once)
         elif phase == "denoise":
-            # Evict the understanding half FIRST -- `.to("cpu")` is a blocking
-            # copy, so this loop fully completes (freeing the GPU blocks)
+            # Evict the understanding half FIRST -- the D2H staging copy is
+            # blocking, so this loop fully completes (freeing the GPU blocks)
             # before the gen half's non_blocking H2D load below is enqueued.
             # Reversing this order co-resides both halves on GPU for one
             # window, defeating the peak-VRAM reduction this feature exists for.
-            for m in self._und_modules:
-                _pin_module_cpu_(m, warn_once=self._warn_once)
+            stage_modules_to_pinned_cpu(self._und_modules, warn_once=self._warn_once)
             for m in self._gen_modules:
                 m.to(self.device, non_blocking=True)
         self._phase = phase

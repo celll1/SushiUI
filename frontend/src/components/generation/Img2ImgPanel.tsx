@@ -56,7 +56,7 @@ import {
   ChainAdvanceResult,
 } from "@/utils/videoChain";
 import { migrateLoopGenerationConfig, computeLoopDecodeDirective } from "@/utils/loopGenerationInheritance";
-import { getSamplers, getScheduleTypes, generateImg2Img, generateImg2Vid, Img2VidParams, Txt2VidParams, MiniMaxH3Keyframe, MiniMaxH3References, generateRef2Vid, Ref2VidParams, generateOutpaintVideo, OutpaintVideoParams, generateAud2Aud, Aud2AudParams, aud2audMusic3RepaintModes, generateImg2ImgTrainingPreview, toBase64, LoRAConfig, ControlNetConfig, generateTIPOPrompt, cancelGeneration, isLatentOnlyResult, getResultFilename, getResultPlaybackFilename, getResultSeed, getResultAncestralSeed, unetQuantizationOptions, normalizeUnetQuantization, transformerQuantizationLabel, archSupportsFeature, archDisplayName, normalizeVideoFrames, fitVideoCanvas, videoCanvasRule, videoCanvasAxisBounds, videoMinInferenceSteps, videoCanvasExceedsEnvelope, isGenerationStalledError, planVideoChain, snapUpValidVideoFrameCount, effectiveSegmentFrames, VideoChainManifest, VIDEO_BLOCK_SWAP_MAX } from "@/utils/api";
+import { getSamplers, getScheduleTypes, generateImg2Img, generateImg2Vid, Img2VidParams, Txt2VidParams, MiniMaxH3Keyframe, MiniMaxH3References, generateRef2Vid, Ref2VidParams, generateOutpaintVideo, OutpaintVideoParams, generateAud2Aud, Aud2AudParams, aud2audMusic3RepaintModes, generateImg2ImgTrainingPreview, toBase64, imageSourceToBase64, LoRAConfig, ControlNetConfig, generateTIPOPrompt, cancelGeneration, isLatentOnlyResult, getResultFilename, getResultPlaybackFilename, getResultSeed, getResultAncestralSeed, unetQuantizationOptions, normalizeUnetQuantization, transformerQuantizationLabel, archSupportsFeature, archDisplayName, normalizeVideoFrames, fitVideoCanvas, videoCanvasRule, videoCanvasAxisBounds, videoMinInferenceSteps, videoCanvasExceedsEnvelope, isGenerationStalledError, planVideoChain, snapUpValidVideoFrameCount, effectiveSegmentFrames, VideoChainManifest, VIDEO_BLOCK_SWAP_MAX } from "@/utils/api";
 import { useActiveTraining } from "@/hooks/useActiveTraining";
 import { useSmoothProgress } from "@/hooks/useSmoothProgress";
 import { wsClient, CFGMetrics } from "@/utils/websocket";
@@ -3751,7 +3751,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         if (!inputImageToUse) {
           throw new Error("Training-preview generation requires an input image (latent passthrough is not supported)");
         }
-        const initImageBase64 = await toBase64(inputImageToUse);
+        const initImageBase64 = await imageSourceToBase64(inputImageToUse);
         const preview = await generateImg2ImgTrainingPreview({
           ...(paramsWithDevMode as any),
           init_image_base64: initImageBase64,

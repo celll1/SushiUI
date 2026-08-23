@@ -57,7 +57,7 @@ import {
   ChainAdvanceResult,
 } from "@/utils/videoChain";
 import { migrateLoopGenerationConfig, computeLoopDecodeDirective } from "@/utils/loopGenerationInheritance";
-import { generateTxt2Img, generateImg2Img, generateTxt2Vid, Txt2VidParams, generateRef2Vid, Ref2VidParams, generateOutpaintVideo, OutpaintVideoParams, MiniMaxH3References, MiniMaxH3Keyframe, generateTxt2Aud, Txt2AudParams, generateTxt2ImgTrainingPreview, generateImg2ImgTrainingPreview, toBase64, GenerationParams, getSamplers, getScheduleTypes, tokenizePrompt, generateTIPOPrompt, cancelGeneration, getCurrentModel, isLatentOnlyResult, getResultFilename, getResultPlaybackFilename, getResultSeed, getResultAncestralSeed, unetQuantizationOptions, normalizeUnetQuantization, transformerQuantizationLabel, archSupportsFeature, archDisplayName, normalizeVideoFrames, videoCanvasRule, videoCanvasAxisBounds, videoMinInferenceSteps, videoCanvasExceedsEnvelope, isGenerationStalledError, planVideoChain, snapUpValidVideoFrameCount, effectiveSegmentFrames, VideoChainManifest, VIDEO_BLOCK_SWAP_MAX, audioDefaultsForArch } from "@/utils/api";
+import { generateTxt2Img, generateImg2Img, generateTxt2Vid, Txt2VidParams, generateRef2Vid, Ref2VidParams, generateOutpaintVideo, OutpaintVideoParams, MiniMaxH3References, MiniMaxH3Keyframe, generateTxt2Aud, Txt2AudParams, generateTxt2ImgTrainingPreview, generateImg2ImgTrainingPreview, imageSourceToBase64, GenerationParams, getSamplers, getScheduleTypes, tokenizePrompt, generateTIPOPrompt, cancelGeneration, getCurrentModel, isLatentOnlyResult, getResultFilename, getResultPlaybackFilename, getResultSeed, getResultAncestralSeed, unetQuantizationOptions, normalizeUnetQuantization, transformerQuantizationLabel, archSupportsFeature, archDisplayName, normalizeVideoFrames, videoCanvasRule, videoCanvasAxisBounds, videoMinInferenceSteps, videoCanvasExceedsEnvelope, isGenerationStalledError, planVideoChain, snapUpValidVideoFrameCount, effectiveSegmentFrames, VideoChainManifest, VIDEO_BLOCK_SWAP_MAX, audioDefaultsForArch } from "@/utils/api";
 import { useActiveTraining } from "@/hooks/useActiveTraining";
 import { useSmoothProgress } from "@/hooks/useSmoothProgress";
 import { wsClient, CFGMetrics } from "@/utils/websocket";
@@ -3173,9 +3173,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
           if (!inputImageToUse) {
             throw new Error("No input image available for img2img loop step");
           }
-          // A loop step's input is an /outputs/ (or blob:) URL, never a data
-          // URL -- toBase64 would hand a string straight back, so fetch first.
-          const initImageBase64 = await toBase64(await (await fetch(inputImageToUse)).blob());
+          const initImageBase64 = await imageSourceToBase64(inputImageToUse);
           const preview = await generateImg2ImgTrainingPreview({
             ...(paramsWithDevMode as any),
             init_image_base64: initImageBase64,

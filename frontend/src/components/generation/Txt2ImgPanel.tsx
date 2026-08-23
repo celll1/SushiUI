@@ -53,11 +53,9 @@ import {
   segmentChainSeed,
   segmentChainFirstFrames,
   chainSegmentProvenance,
-  advanceVideoChain,
-  ChainAdvanceResult,
 } from "@/utils/videoChain";
 import { migrateLoopGenerationConfig, computeLoopDecodeDirective } from "@/utils/loopGenerationInheritance";
-import { generateTxt2Img, generateImg2Img, generateTxt2Vid, Txt2VidParams, generateRef2Vid, Ref2VidParams, generateOutpaintVideo, OutpaintVideoParams, MiniMaxH3References, MiniMaxH3Keyframe, generateTxt2Aud, Txt2AudParams, generateTxt2ImgTrainingPreview, generateImg2ImgTrainingPreview, imageSourceToBase64, GenerationParams, getSamplers, getScheduleTypes, tokenizePrompt, generateTIPOPrompt, cancelGeneration, isLatentOnlyResult, getResultFilename, getResultPlaybackFilename, getResultSeed, getResultAncestralSeed, unetQuantizationOptions, normalizeUnetQuantization, transformerQuantizationLabel, archSupportsFeature, archDisplayName, normalizeVideoFrames, videoCanvasRule, videoCanvasAxisBounds, videoMinInferenceSteps, videoCanvasExceedsEnvelope, isGenerationStalledError, planVideoChain, snapUpValidVideoFrameCount, effectiveSegmentFrames, VideoChainManifest, VIDEO_BLOCK_SWAP_MAX, audioDefaultsForArch } from "@/utils/api";
+import { Txt2VidParams, Ref2VidParams, OutpaintVideoParams, MiniMaxH3References, MiniMaxH3Keyframe, Txt2AudParams, GenerationParams, getSamplers, getScheduleTypes, tokenizePrompt, generateTIPOPrompt, cancelGeneration, unetQuantizationOptions, normalizeUnetQuantization, transformerQuantizationLabel, archSupportsFeature, archDisplayName, normalizeVideoFrames, videoCanvasRule, videoCanvasAxisBounds, videoMinInferenceSteps, videoCanvasExceedsEnvelope, planVideoChain, snapUpValidVideoFrameCount, effectiveSegmentFrames, VideoChainManifest, VIDEO_BLOCK_SWAP_MAX, audioDefaultsForArch } from "@/utils/api";
 import { useActiveTraining } from "@/hooks/useActiveTraining";
 import { useSmoothProgress } from "@/hooks/useSmoothProgress";
 import { wsClient, CFGMetrics } from "@/utils/websocket";
@@ -67,7 +65,7 @@ import { saveTempImage, loadTempImage } from "@/utils/tempImageStorage";
 import { previewStorageKeys, loadVideoPreview, saveVideoPreview, loadAudioPreview, saveAudioPreview, saveImagePreview, clearVideoPreview, clearAudioPreview, clearImagePreview, outputExists, stripCacheBuster, withCacheBuster, imagePreviewGone } from "@/utils/previewStorage";
 import { sendToPanel, sendImageToImg2Img, sendBase64ImageToInpaint, sendBase64ImageToUpscale, sendBase64ImageToOutpaint, sendVideoToOutpaint, sendVideoToInpaint, sendVideoToReference, sendAudioToOutpaint, sendAudioToImg2Img, fetchUrlToFile } from "@/utils/sendHelpers";
 import { useStartup } from "@/contexts/StartupContext";
-import { useGenerationQueue } from "@/contexts/GenerationQueueContext";
+import { useGenerationQueue, QueueItem, typeToPanel } from "@/contexts/GenerationQueueContext";
 import { createH3ReferenceInventory, maybeTransformH3PromptForGeneration } from "@/utils/h3PromptAssist";
 import { readGlobalAttentionType } from "@/utils/attentionSettings";
 
@@ -360,6 +358,17 @@ const REF_IMAGES_STORAGE_KEY = "txt2img_ref_images";
 // persisted, also defaults to null) from "key present".
 const CHAIN_SEGMENT_FRAMES_STORAGE_KEY = "txt2img_chain_segment_frames";
 
+// Progress-bar denominator to show until the first WebSocket tick arrives.
+function dispatchTotalSteps(item: QueueItem): number {
+  const p = item.params as any;
+  if (item.type === "txt2aud") return p.num_inference_steps || p.inference_steps || 8;
+  if (item.type === "txt2vid" || item.type === "ref2vid" || item.type === "chain_vid") {
+    return p.num_inference_steps || 8;
+  }
+  if (item.type === "img2img") return Math.ceil((p.steps || 20) * (p.denoising_strength || 0.75));
+  return p.steps || 20;
+}
+
 interface Txt2ImgPanelProps {
   onTabChange?: (tab: "txt2img" | "img2img" | "inpaint" | "outpaint" | "upscale") => void;
   // opts.kind/playbackUrl let the shared top-right strip (FloatingGallery)
@@ -369,7 +378,7 @@ interface Txt2ImgPanelProps {
 }
 
 export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgPanelProps = {}) {
-  const { modelLoaded, modelInfo, isBackendReady, generationDefaults, isVideo, isAudio, archCapabilities, resolveModality, refreshModelInfo, videoFrameSliderMax, sliderBounds } = useStartup();
+  const { modelInfo, isBackendReady, generationDefaults, isVideo, isAudio, archCapabilities, resolveModality, refreshModelInfo, videoFrameSliderMax, sliderBounds } = useStartup();
   const pathname = usePathname();
   const [params, setParams] = useState<GenerationParams>(DEFAULT_PARAMS);
   const [isGenerating, setIsGenerating] = useState(false);
@@ -416,11 +425,10 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
     // checkpoint name, so it is captured here rather than re-read later.
     variant: string | null;
   } | null>(null);
-  // Any-segment-of-a-chain reason the chain stopped short of its target
-  // (no forward progress / architecture could not continue further) --
-  // set by advanceVideoChain via processQueue, shown next to the frame
-  // slider until the user starts a new chain or dismisses it.
-  const [videoChainStoppedMessage, setVideoChainStoppedMessage] = useState<string | null>(null);
+  // Any-segment-of-a-chain reason the chain stopped short of its target (no
+  // forward progress / architecture could not continue further) -- held on
+  // the queue context (chainStoppedMessage), not here: the dispatcher that
+  // sets it is GenerationQueueProcessor, not this panel.
   // User-settable chain segment length (`chain_segment_frames`, client-side
   // orchestration only -- NEVER sent to the backend). `null` = unset = never
   // split: raising the total frame count alone splits nothing, regardless of
@@ -1697,39 +1705,111 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
     }
   };
 
-  const { addToQueue, updateQueueItem, updateQueueItemByLoop, getLoopGroupItems, cancelLoopGroup, startNextInQueue, completeCurrentItem, failCurrentItem, currentItem, queue, generateForever, setGenerateForever, progressSnapshot, completedResults, publishCompletedResult, chainPause, pauseChain, clearChainPause } = useGenerationQueue();
+  const { addToQueue, updateQueueItemByLoop, cancelLoopGroup, currentItem, queue, generateForever, setGenerateForever, progressSnapshot, completedResults, chainPause, clearChainPause, lastFailure, chainStoppedMessage, setChainStoppedMessage } = useGenerationQueue();
 
-  // Use refs for WebSocket callback to prevent recreations
-  const isGeneratingRef = useRef(isGenerating);
   const developerModeRef = useRef(developerMode);
-
-  useEffect(() => {
-    isGeneratingRef.current = isGenerating;
-  }, [isGenerating]);
+  // True while the queue's currentItem is a txt2img/img2img/txt2vid/ref2vid/
+  // txt2aud/chain_vid item owned by THIS panel (currentItem.panel === "txt2img";
+  // several of these types can also be enqueued by Img2ImgPanel, so type alone
+  // is not ownership) -- set by the currentItem effect below.
+  // progress/preview now come from the context's progressSnapshot; this ref
+  // only gates the cfgMetrics accumulation, which the snapshot does not carry
+  // (it holds only the latest tick, not the accumulated array).
+  const isOwnRunRef = useRef(false);
 
   useEffect(() => {
     developerModeRef.current = developerMode;
   }, [developerMode]);
 
+  // WebSocket progress callback - stable reference. Only cfgMetrics
+  // accumulation survives here; step/totalSteps/message/preview are read from
+  // progressSnapshot in the currentItem effect instead.
+  const handleProgress = useCallback((step: number, totalSteps: number, message: string, preview?: string, metrics?: CFGMetrics, subProgress?: number) => {
+    if (metrics && isOwnRunRef.current && developerModeRef.current) {
+      setCfgMetrics(prev => [...prev, metrics]);
+    }
+  }, []);
+
+  // Setup WebSocket connection - runs once
   useEffect(() => {
-    if (!currentItem || !["txt2img", "img2img", "txt2vid", "ref2vid", "txt2aud", "chain_vid"].includes(currentItem.type)) {
-      isGeneratingRef.current = false;
+    wsClient.connect();
+    wsClient.subscribe(handleProgress);
+
+    return () => {
+      wsClient.unsubscribe(handleProgress);
+    };
+  }, [handleProgress]); // handleProgress is now stable
+
+  // Once per new item this panel owns, reset the display for the run that
+  // just started -- reproducing what the deleted dispatch loop did at
+  // dispatch time (GenerationQueueProcessor now owns dispatch itself, and has
+  // no view of this panel's state).
+  const clearedForItemRef = useRef<string | null>(null);
+  // What was on screen when the current run started, for restore-on-cancel.
+  const previousImageRef = useRef<string | null>(null);
+  const lastFailureRevisionRef = useRef(0);
+
+  useEffect(() => {
+    const owner = currentItem ? (currentItem.panel ?? typeToPanel(currentItem.type)) : null;
+    if (!currentItem || owner !== "txt2img") {
+      isOwnRunRef.current = false;
       setIsGenerating(false);
       return;
     }
-    isGeneratingRef.current = true;
+    isOwnRunRef.current = true;
     setIsGenerating(true);
+    if (clearedForItemRef.current !== currentItem.id) {
+      clearedForItemRef.current = currentItem.id;
+      previousImageRef.current = generatedImage;
+      setProgress(0);
+      setProgressMessage("");
+      setPreviewImage(null);
+      setCfgMetrics([]);
+      setTotalSteps(dispatchTotalSteps(currentItem));
+      // An image/video/audio run supersedes whatever the previous run left on
+      // screen -- but only that run's own modality-specific fields; the
+      // others are cleared unconditionally the same way the deleted dispatch
+      // branches did per type.
+      setGeneratedImage(null);
+      setGeneratedVideo(null);
+      setGeneratedVideoInfo(null);
+      setGeneratedAudio(null);
+      setGeneratedAudioInfo(null);
+      setGeneratedAudioWarnings([]);
+      if (currentItem.type === "txt2vid" || currentItem.type === "ref2vid" || currentItem.type === "chain_vid") {
+        setGeneratedVideoSeed(null);
+        setGeneratedVideoWarnings([]);
+      }
+    }
     if (progressSnapshot?.itemId !== currentItem.id) return;
     setProgress(progressSnapshot.step);
     setTotalSteps(progressSnapshot.totalSteps);
     setProgressMessage(progressSnapshot.message);
     reportSubProgress(progressSnapshot.step, progressSnapshot.subProgress);
     if (progressSnapshot.previewImage) setPreviewImage(progressSnapshot.previewImage);
+    // generatedImage is read only to snapshot it, and re-running on every
+    // change of it would re-snapshot mid-run.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentItem, progressSnapshot, reportSubProgress]);
+
+  // Restore-on-cancel: only this panel holds the image the cancelled run
+  // replaced, and only the dispatcher can tell a cancel from a failure.
+  useEffect(() => {
+    if (!lastFailure || lastFailure.panel !== "txt2img") return;
+    if (lastFailure.revision === lastFailureRevisionRef.current) return;
+    lastFailureRevisionRef.current = lastFailure.revision;
+    if (!lastFailure.cancelled) return;
+    if (localStorage.getItem("restore_image_on_cancel") !== "true") return;
+    if (previousImageRef.current) {
+      setGeneratedImage(previousImageRef.current);
+      setPreviewImage(null);
+    }
+  }, [lastFailure]);
 
   useEffect(() => {
     const result = completedResults.txt2img;
-    if (!result || (currentItem && ["txt2img", "img2img", "txt2vid", "ref2vid", "txt2aud", "chain_vid"].includes(currentItem.type))) return;
+    const owner = currentItem ? (currentItem.panel ?? typeToPanel(currentItem.type)) : null;
+    if (!result || owner === "txt2img") return;
     setPreviewImage(null);
     if (result.kind === "image") {
       setGeneratedImage(result.url);
@@ -1744,6 +1824,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
       setGeneratedVideoInfo(result.info as typeof generatedVideoInfo);
       setGeneratedVideoSeed(result.seed ?? null);
       setGeneratedVideoParams(result.params as GenerationParams);
+      setGeneratedVideoWarnings(result.warnings ?? []);
       setGeneratedImage(null);
       setGeneratedAudio(null);
       setGeneratedAudioWarnings([]);
@@ -1751,40 +1832,11 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
       setGeneratedAudio(result.url);
       setGeneratedAudioInfo(result.info as typeof generatedAudioInfo);
       setGeneratedAudioParams(result.params as GenerationParams);
-      // GenerationResultSnapshot (this cross-panel published-result path)
-      // carries no warnings[] field, so a STALE list from a previous,
-      // unrelated audio run must not linger under this new result.
-      setGeneratedAudioWarnings([]);
+      setGeneratedAudioWarnings(result.warnings ?? []);
       setGeneratedImage(null);
       setGeneratedVideo(null);
     }
   }, [completedResults.txt2img, currentItem]);
-
-  // WebSocket progress callback - stable reference
-  const handleProgress = useCallback((step: number, totalSteps: number, message: string, preview?: string, metrics?: CFGMetrics, subProgress?: number) => {
-    if (isGeneratingRef.current) {
-      setProgress(step);
-      setTotalSteps(totalSteps);
-      setProgressMessage(message || "");
-      reportSubProgress(step, subProgress);
-      if (preview) {
-        setPreviewImage(preview);
-      }
-      if (metrics && developerModeRef.current) {
-        setCfgMetrics(prev => [...prev, metrics]);
-      }
-    }
-  }, [reportSubProgress]); // reportSubProgress is stable
-
-  // Setup WebSocket connection - runs once
-  useEffect(() => {
-    wsClient.connect();
-    wsClient.subscribe(handleProgress);
-
-    return () => {
-      wsClient.unsubscribe(handleProgress);
-    };
-  }, [handleProgress]); // handleProgress is now stable
 
   const [showForeverMenu, setShowForeverMenu] = useState(false);
   const [menuPosition, setMenuPosition] = useState({ x: 0, y: 0 });
@@ -2076,6 +2128,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         type: "txt2aud",
         params: audioParams as any,
         prompt: processedPrompt,
+        panel: "txt2img",
       });
       return;
     }
@@ -2194,6 +2247,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
           params: fullVideoParams as any,
           references: h3References,
           prompt: processedPrompt,
+          panel: "txt2img",
         });
         return;
       }
@@ -2201,6 +2255,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         type: "txt2vid",
         params: videoParams as any,
         prompt: processedPrompt,
+        panel: "txt2img",
       });
       return;
     }
@@ -2229,6 +2284,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
       useTrainingModel,
       trainingRunId: activeTraining?.run_id,
       savePreviewToGallery,
+      panel: "txt2img",
     });
 
     // If loop generation is enabled, add all loop steps immediately
@@ -2255,12 +2311,14 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         params: cappedParams as any,
         references,
         prompt: cappedParams.prompt,
+        panel: "txt2img",
       });
     } else {
       addToQueue({
         type: "txt2vid",
         params: cappedParams as any,
         prompt: cappedParams.prompt,
+        panel: "txt2img",
       });
     }
     setVideoChainPrompt(null);
@@ -2334,6 +2392,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
       // manifest, same as every other chain-provenance field here.
       chainPlannedAccumulatedFrames: manifest?.segments.find((s) => s.index === 0)?.owned_end_frame,
       chainDriftToleranceFrames: manifest?.chain_drift_tolerance_frames,
+      panel: "txt2img",
     });
 
     const continuationItems = buildChainContinuationQueueItems({
@@ -2348,28 +2407,15 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
       referenceImages: isRef2Va ? referenceImages : undefined,
       manifest,
     });
-    continuationItems.forEach((item) => addToQueue(item));
+    continuationItems.forEach((item) => addToQueue({ ...item, panel: "txt2img" }));
   };
-
-  // Design §4.1: called with every `advanceVideoChain` result right after it
-  // resolves, before the usual complete-current-item / schedule-next-queue
-  // step. Returns whether the caller should schedule the queue as normal
-  // (true) or hold off because the chain just paused for drift (false). The
-  // pause itself is raised on the QUEUE (`pauseChain`), not in this panel:
-  // that is what actually stops the next, still-unpatched `chain_vid` item
-  // from being dispatched -- skipping this panel's own `processQueue()` call
-  // does not, because the auto-start effect re-enters it as soon as
-  // `completeCurrentItem()` clears `currentItem`.
-  const handleChainDriftPause = useCallback((outcome: ChainAdvanceResult): boolean => {
-    if (!outcome.driftPause) return true;
-    pauseChain(outcome.driftPause);
-    return false;
-  }, [pauseChain]);
 
   // The user's choice from ChainDriftPauseDialog. "continue" performs
   // exactly the patch `advanceVideoChain` deferred (inputVideo/total_frames,
   // plus the recorded drift for display); "stop" cancels the rest of the
-  // loop group with a factual reason. Either way the queue resumes.
+  // loop group with a factual reason. Either way the queue resumes on its
+  // own once `chainPause` clears -- GenerationQueueProcessor's auto-start
+  // effect re-runs on that change.
   const resolveChainDriftPause = useCallback((action: "continue" | "stop") => {
     const pause = chainPause;
     if (!pause) return;
@@ -2383,17 +2429,14 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
       }));
     } else {
       cancelLoopGroup(pause.loopGroupId);
-      setVideoChainStoppedMessage(
+      setChainStoppedMessage(
         `Video chain stopped after segment ${pause.segmentsCompleted}: that segment's actual accumulated ` +
         `frame count (${pause.actualAccumulatedFrames}) drifted ${pause.driftFrames} frames from the plan's ` +
         `${pause.plannedAccumulatedFrames} (tolerance ${pause.toleranceFrames}). ` +
         `${pause.segmentsCompleted} segment(s) already completed are saved to the gallery.`
       );
     }
-    setTimeout(() => {
-      if (processQueueRef.current) processQueueRef.current();
-    }, 100);
-  }, [chainPause, clearChainPause, updateQueueItemByLoop, cancelLoopGroup]);
+  }, [chainPause, clearChainPause, updateQueueItemByLoop, cancelLoopGroup, setChainStoppedMessage]);
 
   // Add loop generation steps to queue immediately (without base image URL)
   const addLoopStepsToQueueImmediate = useCallback(async (mainParams: GenerationParams, loopGroupId: string) => {
@@ -2620,6 +2663,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
           useMainControlNets: step.useMainControlNets,
           controlnets: step.controlnets || [],
         },
+        panel: "txt2img",
       });
     }
 
@@ -2720,791 +2764,20 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         isLoopStep: true,
         useTrainingModel,
         trainingRunId: activeTraining?.run_id,
+        panel: "txt2img",
       });
     }
 
     console.log(`[Txt2Img] Added ${enabledSteps.length} loop steps to queue with group ID: ${loopGroupId}`);
   }, [loopGenerationConfig, addToQueue, useTrainingModel, activeTraining]);
 
-  // Process queue - automatically start next item
-  const processQueueRef = useRef<() => Promise<void>>();
-
-  const processQueue = useCallback(async () => {
-    console.log("[Txt2Img] processQueue called, isGenerating:", isGeneratingRef.current);
-    if (isGeneratingRef.current) {
-      console.log("[Txt2Img] Already generating, skipping");
-      return;
-    }
-
-    const nextItem = startNextInQueue(["txt2img", "img2img", "txt2vid", "ref2vid", "txt2aud", "chain_vid"]);
-    console.log("[Txt2Img] Next item from queue:", nextItem);
-    if (!nextItem) {
-      console.log("[Txt2Img] No items in queue");
-      return;
-    }
-
-    // Audio branch: txt2aud item (an audio model is loaded). Produces a .flac
-    // and renders an <audio> instead of an <img>. No loop-generation handling.
-    if (nextItem.type === "txt2aud") {
-      isGeneratingRef.current = true;
-      setIsGenerating(true);
-      setProgress(0);
-      setProgressMessage("");
-      // MiniMax Music 3's Txt2AudParams carries its per-CHUNK step count under
-      // `num_inference_steps` (ACE-Step's is `inference_steps`; see api.ts) --
-      // prefer whichever the queued item actually set.
-      setTotalSteps((nextItem.params as any).num_inference_steps || (nextItem.params as any).inference_steps || 8);
-      setPreviewImage(null);
-      setGeneratedImage(null);
-      // An audio run supersedes any image/video result still on screen; the
-      // stored preview is only replaced once this run actually succeeds.
-      setGeneratedAudio(null);
-      setGeneratedAudioInfo(null);
-      setGeneratedAudioWarnings([]);
-      setGeneratedVideo(null);
-      setGeneratedVideoInfo(null);
-      try {
-        const result = await generateTxt2Aud(nextItem.params as Txt2AudParams);
-        const audioUrl = `/outputs/${result.image.filename}`;
-        const audioInfo = {
-          duration: result.image.duration,
-          sample_rate: result.image.sample_rate,
-        };
-        const audioParams = {
-          ...(nextItem.params as GenerationParams),
-          seed: getResultSeed(result) ?? (nextItem.params as GenerationParams).seed,
-        };
-        setGeneratedAudio(audioUrl);
-        setGeneratedAudioInfo(audioInfo);
-        setGeneratedAudioParams(audioParams);
-        setGeneratedAudioWarnings(
-          (result.warnings || []).map((w: any) => (typeof w === "string" ? w : w?.message)).filter(Boolean));
-        publishCompletedResult({ panel: "txt2img", kind: "audio", url: audioUrl, info: audioInfo, params: audioParams });
-        if (onImageGenerated) onImageGenerated(audioUrl, { kind: "audio" });
-        isGeneratingRef.current = false;
-        setIsGenerating(false);
-        setProgress(0);
-        setProgressMessage("");
-        completeCurrentItem();
-        setTimeout(() => {
-          if (processQueueRef.current) processQueueRef.current();
-        }, 100);
-      } catch (error: any) {
-        console.error("[Txt2Img] txt2aud generation failed:", error);
-        // alert() blocks the JS thread; reset state and requeue before showing it,
-        // otherwise the queue effect sees a stale isGenerating until the dialog closes.
-        isGeneratingRef.current = false;
-        setIsGenerating(false);
-        setProgress(0);
-        setProgressMessage("");
-        failCurrentItem();
-        setTimeout(() => {
-          if (processQueueRef.current) processQueueRef.current();
-        }, 100);
-        // Surface the backend's own refusal text (e.g. MiniMax Music 3's
-        // "lyrics must not be empty" / audio_duration validation 400s)
-        // instead of a generic "check console" -- same fallback chain as the
-        // video branch below.
-        alert(isGenerationStalledError(error)
-          ? error.message
-          : `txt2aud generation failed: ${error?.response?.data?.detail || error?.response?.data?.error || "see the console for details."}`);
-      }
-      return;
-    }
-
-    // Video branch: txt2vid, or ref2vid when the loaded MiniMax-H3 partition is
-    // ref2va and the request carries references. Both produce an .mp4 and
-    // render a <video> instead of an <img>; no loop-generation handling.
-    if (nextItem.type === "txt2vid" || nextItem.type === "ref2vid") {
-      isGeneratingRef.current = true;
-      setIsGenerating(true);
-      setProgress(0);
-      setProgressMessage("");
-      setTotalSteps((nextItem.params as any).num_inference_steps || 8);
-      setPreviewImage(null);
-      setGeneratedImage(null);
-      setGeneratedVideo(null);
-      setGeneratedVideoInfo(null);
-      setGeneratedVideoSeed(null);
-      setGeneratedVideoWarnings([]);
-      setGeneratedAudio(null);
-      setGeneratedAudioInfo(null);
-      setGeneratedAudioWarnings([]);
-      try {
-        const result = nextItem.type === "ref2vid"
-          ? await generateRef2Vid(
-              nextItem.params as Ref2VidParams,
-              nextItem.references ?? EMPTY_MINIMAX_H3_REFERENCES)
-          : await generateTxt2Vid(nextItem.params as Txt2VidParams);
-        const videoUrl = `/outputs/${getResultFilename(result)}`;
-        const videoPlaybackFilename = getResultPlaybackFilename(result);
-        const videoPlaybackUrl = videoPlaybackFilename ? `/outputs/${videoPlaybackFilename}` : videoUrl;
-        const videoInfo = {
-          num_frames: result.image.num_frames,
-          fps: result.image.fps,
-          duration: result.image.duration,
-        };
-        const videoSeed = getResultSeed(result);
-        setGeneratedVideo(videoUrl);
-        setGeneratedVideoInfo(videoInfo);
-        // The seed the run actually used (-1 in the request means "pick one"),
-        // so the seed control's reuse button can pin it for the next run.
-        setGeneratedVideoSeed(videoSeed);
-        setGeneratedVideoParams(nextItem.params as GenerationParams);
-        setGeneratedVideoWarnings(
-          (result.warnings || []).map((w: any) => (typeof w === "string" ? w : w?.message)).filter(Boolean));
-        publishCompletedResult({
-          panel: "txt2img", kind: "video", url: videoUrl,
-          playbackUrl: videoPlaybackUrl !== videoUrl ? videoPlaybackUrl : undefined,
-          info: videoInfo, seed: videoSeed, params: nextItem.params,
-        });
-        if (onImageGenerated) {
-          onImageGenerated(videoUrl, {
-            kind: "video",
-            playbackUrl: videoPlaybackUrl !== videoUrl ? videoPlaybackUrl : undefined,
-          });
-        }
-
-        // Video-length chain (this segment may be segment 1 of one): advance
-        // to the next queued step, or stop the chain with a reason. A no-op
-        // for a plain, unchained txt2vid/ref2vid item.
-        const chainOutcome = await advanceVideoChain({
-          caps: archCapabilities,
-          arch: loadedArch,
-          queue,
-          completedItem: nextItem,
-          resultFrames: result.image?.num_frames,
-          resultVideoUrl: videoUrl,
-          updateQueueItemByLoop,
-          cancelLoopGroup,
-        });
-        // Design §4.1: a driftPause means the next chain_vid item was
-        // deliberately left unpatched -- do not schedule the queue until the
-        // user resolves it via ChainDriftPauseDialog (resolveChainDriftPause
-        // schedules it itself once they do).
-        const shouldScheduleNext = handleChainDriftPause(chainOutcome);
-        setVideoChainStoppedMessage(chainOutcome.message ?? null);
-
-        isGeneratingRef.current = false;
-        setIsGenerating(false);
-        setProgress(0);
-        setProgressMessage("");
-        completeCurrentItem();
-        if (shouldScheduleNext) {
-          setTimeout(() => {
-            if (processQueueRef.current) processQueueRef.current();
-          }, 100);
-        }
-      } catch (error: any) {
-        console.error(`[Txt2Img] ${nextItem.type} generation failed:`, error);
-        isGeneratingRef.current = false;
-        setIsGenerating(false);
-        setProgress(0);
-        setProgressMessage("");
-        // A deliberate cancel (cancelGeneration()) surfaces here as the
-        // backend's RuntimeError, not as a distinct error type -- read it as
-        // a cancel, not a generic failure, and say how many chain segments
-        // (if any) already completed and are in the gallery.
-        const isCancelled = String(error?.message || error?.response?.data?.detail || "").toLowerCase().includes("cancel");
-        const isChainSegment = !!nextItem.loopGroupId && nextItem.chainTargetFrames != null;
-        failCurrentItem();
-        // A chain segment failing or being cancelled must not let the
-        // remaining pending "chain_vid" steps of the SAME loop group dispatch
-        // next -- each of them would otherwise fail its own generic "no
-        // input video" error (their `inputVideo` is only filled in by a
-        // segment that finishes successfully), cascading into one alert per
-        // remaining segment. Drop them all up front instead; already
-        // completed segments stay in the gallery.
-        if (isChainSegment) {
-          cancelLoopGroup(nextItem.loopGroupId!);
-        }
-        setTimeout(() => {
-          if (processQueueRef.current) processQueueRef.current();
-        }, 100);
-        if (isChainSegment) {
-          const completedSegments = (nextItem.loopStepIndex ?? -1) + 1;
-          const reason = isCancelled ? "cancelled" : "stopped: a segment failed";
-          alert(completedSegments > 0
-            ? `Video chain ${reason}. ${completedSegments} segment(s) completed before this are saved to the gallery.`
-            : `Video chain ${reason} before any segment completed.`);
-        } else if (!isCancelled) {
-          alert(isGenerationStalledError(error)
-            ? error.message
-            : `${nextItem.type} generation failed: ${error?.response?.data?.detail || error?.response?.data?.error || "see the console for details."}`);
-        }
-      }
-      return;
-    }
-
-    // Video branch: chain_vid item (a video-length chain continuation
-    // segment, from either panel's "Start chain" -- see videoChain.ts).
-    // Structurally identical to OutpaintPanel's own outpaint_vid dispatch
-    // (same endpoint, same request shape); the only addition is
-    // advanceVideoChain, which feeds this chain's NEXT step or stops it.
-    if (nextItem.type === "chain_vid") {
-      isGeneratingRef.current = true;
-      setIsGenerating(true);
-      setProgress(0);
-      setProgressMessage("");
-      setTotalSteps((nextItem.params as OutpaintVideoParams).num_inference_steps || 8);
-      setPreviewImage(null);
-      setGeneratedImage(null);
-      setGeneratedVideo(null);
-      setGeneratedVideoInfo(null);
-      setGeneratedVideoSeed(null);
-      setGeneratedVideoWarnings([]);
-      setGeneratedAudio(null);
-      setGeneratedAudioInfo(null);
-      setGeneratedAudioWarnings([]);
-      try {
-        const clip = nextItem.inputVideo;
-        if (!clip) {
-          throw new Error("No input video available for this chain segment (the previous segment has not finished yet)");
-        }
-        const result = await generateOutpaintVideo(
-          nextItem.params as OutpaintVideoParams, clip, undefined, nextItem.referenceImages);
-        const videoUrl = `/outputs/${getResultFilename(result)}`;
-        const videoPlaybackFilename = getResultPlaybackFilename(result);
-        const videoPlaybackUrl = videoPlaybackFilename ? `/outputs/${videoPlaybackFilename}` : videoUrl;
-        const videoInfo = { num_frames: result.image?.num_frames, fps: result.image?.fps, duration: result.image?.duration };
-        const videoSeed = getResultSeed(result);
-        setGeneratedVideo(videoUrl);
-        setGeneratedVideoInfo(videoInfo);
-        setGeneratedVideoSeed(videoSeed);
-        setGeneratedVideoParams(nextItem.params as unknown as GenerationParams);
-        setGeneratedVideoWarnings(
-          (result.warnings || []).map((w: any) => (typeof w === "string" ? w : w?.message)).filter(Boolean));
-        publishCompletedResult({
-          panel: "txt2img", kind: "video", url: videoUrl,
-          playbackUrl: videoPlaybackUrl !== videoUrl ? videoPlaybackUrl : undefined,
-          info: videoInfo, seed: videoSeed, params: nextItem.params,
-        });
-        if (onImageGenerated) {
-          onImageGenerated(videoUrl, {
-            kind: "video",
-            playbackUrl: videoPlaybackUrl !== videoUrl ? videoPlaybackUrl : undefined,
-          });
-        }
-
-        const chainOutcome = await advanceVideoChain({
-          caps: archCapabilities,
-          arch: loadedArch,
-          queue,
-          completedItem: nextItem,
-          resultFrames: result.image?.num_frames,
-          resultVideoUrl: videoUrl,
-          updateQueueItemByLoop,
-          cancelLoopGroup,
-        });
-        // Design §4.1: a driftPause means the next chain_vid item was
-        // deliberately left unpatched -- do not schedule the queue until the
-        // user resolves it via ChainDriftPauseDialog (resolveChainDriftPause
-        // schedules it itself once they do).
-        const shouldScheduleNext = handleChainDriftPause(chainOutcome);
-        setVideoChainStoppedMessage(chainOutcome.message ?? null);
-
-        isGeneratingRef.current = false;
-        setIsGenerating(false);
-        setProgress(0);
-        setProgressMessage("");
-        completeCurrentItem();
-        if (shouldScheduleNext) {
-          setTimeout(() => {
-            if (processQueueRef.current) processQueueRef.current();
-          }, 100);
-        }
-      } catch (error: any) {
-        console.error("[Txt2Img] chain_vid generation failed:", error);
-        isGeneratingRef.current = false;
-        setIsGenerating(false);
-        setProgress(0);
-        setProgressMessage("");
-        const isCancelled = String(error?.message || error?.response?.data?.detail || "").toLowerCase().includes("cancel");
-        failCurrentItem();
-        // Drop the remaining pending "chain_vid" steps of this loop group up
-        // front. Without this, each of them dispatches next with no
-        // `inputVideo` (only a successful predecessor fills that in) and
-        // throws its own generic error, cascading into one alert per
-        // remaining segment. Already completed segments stay in the gallery.
-        if (nextItem.loopGroupId) {
-          cancelLoopGroup(nextItem.loopGroupId);
-        }
-        setTimeout(() => {
-          if (processQueueRef.current) processQueueRef.current();
-        }, 100);
-        const completedSegments = (nextItem.loopStepIndex ?? -1) + 1;
-        if (!isCancelled) {
-          const detail = isGenerationStalledError(error)
-            ? error.message
-            : (error?.response?.data?.detail || error?.message || "see the console for details.");
-          alert(completedSegments > 0
-            ? `Video chain stopped: segment failed (${detail}). ${completedSegments} segment(s) completed before this are saved to the gallery.`
-            : `Video chain stopped: segment failed (${detail}).`);
-        } else {
-          alert(completedSegments > 0
-            ? `Video chain cancelled. ${completedSegments} segment(s) completed before the cancel are saved to the gallery.`
-            : "Video chain cancelled before any segment completed.");
-        }
-      }
-      return;
-    }
-
-    // Save current image before starting new generation
-    const previousImage = generatedImage;
-
-    isGeneratingRef.current = true;
-    setIsGenerating(true);
-    setProgress(0);
-    setProgressMessage("");
-    // A loop step queued as "img2img" only runs steps*denoising_strength
-    // denoise steps (see custom_img2img_sampling_loop's init_timestep) --
-    // matches the rounding Img2Img/Inpaint/Outpaint panels already use for
-    // their own real img2img runs.
-    if (nextItem.type === "img2img") {
-      const denoisingStrength = (nextItem.params as any).denoising_strength || 0.75;
-      setTotalSteps(Math.ceil((nextItem.params.steps || 20) * denoisingStrength));
-    } else {
-      setTotalSteps(nextItem.params.steps || 20);
-    }
-    setPreviewImage(null);
-    setGeneratedImage(null);
-    // An image run supersedes any video/audio result still on screen. The
-    // stored previews are left alone until the image actually succeeds (see the
-    // save effects), so a failed run does not throw away the last good result.
-    setGeneratedVideo(null);
-    setGeneratedVideoInfo(null);
-    setGeneratedAudio(null);
-    setGeneratedAudioInfo(null);
-    setGeneratedAudioWarnings([]);
-    setCfgMetrics([]); // Clear previous metrics
-
-    try {
-      let result;
-      let imageUrl;
-
-      // Generate based on type
-      if (nextItem.type === "txt2img") {
-        // developer_mode, the collapsed-Advanced-CFG resets and ref_images were
-        // all frozen into params at enqueue time.
-        const paramsWithDevMode = { ...nextItem.params };
-        // Training-preview branch: route to in-training model when the
-        // toggle is on and a LoRA/Full-FT run is active.  Returns a blob;
-        // we wrap it in an object-URL and reuse the same display path.
-        // Skips gallery save (preview only).
-        // Per-item flag (set at enqueue) so queued items keep the model choice
-        // regardless of the live checkbox state.
-        if (nextItem.useTrainingModel && (nextItem.trainingRunId ?? activeTraining?.run_id)) {
-          const preview = await generateTxt2ImgTrainingPreview({
-            ...(paramsWithDevMode as GenerationParams),
-            run_id: nextItem.trainingRunId ?? activeTraining!.run_id,
-            save_to_gallery: nextItem.savePreviewToGallery ?? false,
-          });
-          // Prefer the stable /outputs/<filename> URL when the backend
-          // persisted it; fall back to a transient blob URL otherwise.
-          if (preview.filename) {
-            imageUrl = `/outputs/${preview.filename}`;
-          } else {
-            if (previewBlobUrlRef.current) URL.revokeObjectURL(previewBlobUrlRef.current);
-            const objectUrl = URL.createObjectURL(preview.blob);
-            previewBlobUrlRef.current = objectUrl;
-            imageUrl = objectUrl;
-          }
-          // Synthesise a minimal result shape so downstream code that
-          // reads result.* doesn't crash.
-          result = {
-            image: {
-              filename: preview.filename
-                ?? `preview_${preview.requestId ?? "training"}.png`,
-              filepath: imageUrl,
-              prompt: paramsWithDevMode.prompt,
-              negative_prompt: paramsWithDevMode.negative_prompt,
-              metadata: {},
-              size_bytes: preview.blob.size,
-            },
-            actual_seed: preview.seed ? Number(preview.seed) : -1,
-            actual_ancestral_seed: -1,
-          } as any;
-        } else {
-          result = await generateTxt2Img(paramsWithDevMode as GenerationParams);
-          // loop_decode="none" (decodeMode "final-only" main step, when loop
-          // steps follow) returns { latent_id, actual_seed } with NO image.
-          imageUrl = isLatentOnlyResult(result) ? undefined : `/outputs/${getResultFilename(result)}`;
-        }
-      } else if (nextItem.type === "img2img") {
-        console.log(`[Txt2Img] Starting img2img generation with prompt:`, nextItem.params.prompt?.substring(0, 100));
-
-        const paramsWithDevMode = { ...nextItem.params };
-
-        // Training-preview branch: mirrors the txt2img branch above -- a
-        // loop step queued while "Use training model" was on stays on the
-        // training checkpoint even though its type flipped to img2img.
-        const itemUseTraining = nextItem.useTrainingModel;
-        const itemRunId = nextItem.trainingRunId ?? activeTraining?.run_id;
-
-        if (itemUseTraining && itemRunId) {
-          if (nextItem.inputLatentId) {
-            // Latent passthrough has no decoded image to base64-encode; the
-            // training-preview endpoint requires init_image_base64.
-            throw new Error("Training-preview generation requires an input image (latent passthrough is not supported)");
-          }
-          const inputImageToUse = nextItem.inputImage || previousImage;
-          if (!inputImageToUse) {
-            throw new Error("No input image available for img2img loop step");
-          }
-          const initImageBase64 = await imageSourceToBase64(inputImageToUse);
-          const preview = await generateImg2ImgTrainingPreview({
-            ...(paramsWithDevMode as any),
-            init_image_base64: initImageBase64,
-            denoising_strength: paramsWithDevMode.denoising_strength ?? 0.75,
-            run_id: itemRunId,
-            save_to_gallery: nextItem.savePreviewToGallery ?? false,
-          });
-          if (preview.filename) {
-            imageUrl = `/outputs/${preview.filename}`;
-          } else {
-            if (previewBlobUrlRef.current) URL.revokeObjectURL(previewBlobUrlRef.current);
-            const objectUrl = URL.createObjectURL(preview.blob);
-            previewBlobUrlRef.current = objectUrl;
-            imageUrl = objectUrl;
-          }
-          result = {
-            image: {
-              filename: preview.filename
-                ?? `preview_${preview.requestId ?? "training"}.png`,
-              filepath: imageUrl,
-              prompt: paramsWithDevMode.prompt,
-              negative_prompt: paramsWithDevMode.negative_prompt,
-              metadata: {},
-              size_bytes: preview.blob.size,
-            },
-            actual_seed: preview.seed ? Number(preview.seed) : -1,
-            actual_ancestral_seed: -1,
-          } as any;
-        } else {
-          let file: File | undefined;
-          if (nextItem.inputLatentId) {
-            // Latent passthrough chaining (decodeMode "final-only"): the previous
-            // step returned a cached latent_id instead of an image; no PNG to fetch.
-            console.log(`[Txt2Img] Loop step chaining via cached latent: ${nextItem.inputLatentId}`);
-          } else {
-            // For loop steps after the first, use the previous output as input
-            const inputImageToUse = nextItem.inputImage || previousImage;
-            if (!inputImageToUse) {
-              throw new Error("No input image available for img2img loop step");
-            }
-            // Fetch the input image and convert to File
-            const response = await fetch(inputImageToUse);
-            const blob = await response.blob();
-            file = new File([blob], "input.png", { type: "image/png" });
-          }
-
-          result = await generateImg2Img(paramsWithDevMode, file, nextItem.inputLatentId);
-          // loop_decode="none" (this step's resize_mode is "latent" under
-          // decodeMode "final-only") returns { latent_id, actual_seed } with NO image.
-          imageUrl = isLatentOnlyResult(result) ? undefined : `/outputs/${getResultFilename(result)}`;
-        }
-      } else {
-        throw new Error(`Unsupported generation type: ${nextItem.type}`);
-      }
-
-      // Latent-only steps (loop_decode="none") produce no displayable image —
-      // leave the preview/gallery display untouched (already cleared to null
-      // above) rather than pointing it at an undefined imageUrl.
-      const resultSeed = getResultSeed(result);
-      const resultAncestralSeed = getResultAncestralSeed(result);
-      if (imageUrl) {
-        setGeneratedImage(imageUrl);
-      }
-      setGeneratedImageSeed(resultSeed);
-      setGeneratedImageAncestralSeed(resultAncestralSeed);
-      // Save the params used for this generation (with actual result values)
-      const completedParams: GenerationParams = {
-        ...nextItem.params,
-        seed: resultSeed,
-        ancestral_seed: resultAncestralSeed ?? -1,
-        width: result.image?.width ?? nextItem.params.width,
-        height: result.image?.height ?? nextItem.params.height,
-      };
-      setGeneratedImageParams(completedParams);
-      if (imageUrl) {
-        publishCompletedResult({
-          panel: "txt2img",
-          kind: "image",
-          url: imageUrl,
-          seed: resultSeed,
-          ancestralSeed: resultAncestralSeed,
-          params: completedParams,
-        });
-      }
-      setPreviewImage(null);
-
-      // Notify parent component (skip for latent-only steps — nothing to show)
-      if (onImageGenerated && imageUrl) {
-        onImageGenerated(imageUrl, { kind: "image" });
-      }
-
-      // If this item has a loop group, update the next loop step's input image, prompt, and ControlNets
-      // Use nextItem (not currentItem from context) to avoid timing issues
-      console.log(`[Txt2Img] Checking loop group:`, {
-        hasNextItem: !!nextItem,
-        nextItemType: nextItem?.type,
-        loopGroupId: nextItem?.loopGroupId,
-        loopStepIndex: nextItem?.loopStepIndex,
-      });
-
-      if (nextItem?.loopGroupId !== undefined) {
-        const nextLoopStepIndex = (nextItem.loopStepIndex ?? -1) + 1;
-
-        console.log(`[Txt2Img] Processing loop step completion:`, {
-          loopGroupId: nextItem.loopGroupId,
-          currentStepIndex: nextItem.loopStepIndex,
-          nextLoopStepIndex,
-        });
-
-        if (isLatentOnlyResult(result)) {
-          // Latent passthrough chaining (decodeMode "final-only", resize_mode
-          // "latent"): no decoded image exists for this step — chain the next
-          // loop step via the cached latent_id instead of an image URL. Skip
-          // TIPO-prompt/ControlNet-recompute below (both need a decoded image;
-          // ControlNet-conditioned steps always force resize_mode="image" at
-          // enqueue time, so they never land here).
-          console.log(`[Txt2Img] Updating loop step ${nextLoopStepIndex} with cached latent:`, result.latent_id);
-          updateQueueItemByLoop(nextItem.loopGroupId, nextLoopStepIndex, {
-            inputLatentId: result.latent_id,
-            inputImage: undefined,
-          });
-
-          // Scale-mode compounding: there's no decoded image to measure, but
-          // this step's OWN target width/height (nextItem.params) is already
-          // known — the next step's scale must compound off THAT, not off the
-          // constant mainParams size baked in at enqueue time (addLoopStepsToQueueImmediate
-          // computes every step's initial width/height from mainParams, so
-          // without this recompute a chain of scale steps would never compound).
-          const nextStepConfig = getLoopGroupItems(nextItem.loopGroupId)
-            .find((item) => item.loopStepIndex === nextLoopStepIndex)?.loopStepConfig;
-          const currentWidth = nextItem.params.width;
-          const currentHeight = nextItem.params.height;
-          if (nextStepConfig && nextStepConfig.sizeMode === "scale" && currentWidth && currentHeight) {
-            const scale = nextStepConfig.scale || 1.0;
-            const scaledWidth = Math.round(currentWidth * scale);
-            const scaledHeight = Math.round(currentHeight * scale);
-            console.log(`[Txt2Img] Scale mode (latent passthrough): ${currentWidth}x${currentHeight} * ${scale} = ${scaledWidth}x${scaledHeight}`);
-            updateQueueItemByLoop(nextItem.loopGroupId!, nextLoopStepIndex, (item) => ({
-              params: {
-                ...item.params,
-                width: scaledWidth,
-                height: scaledHeight,
-              } as any,
-            }));
-          }
-        } else {
-        // Update input image first
-        console.log(`[Txt2Img] Updating loop step ${nextLoopStepIndex} with input image:`, imageUrl);
-        updateQueueItemByLoop(nextItem.loopGroupId, nextLoopStepIndex, { inputImage: imageUrl, inputLatentId: undefined });
-
-        // If TIPO was used for base generation, update loop steps with TIPO-generated prompt
-        console.log(`[Txt2Img] TIPO inheritance check:`, {
-          loopStepIndex: nextItem.loopStepIndex,
-          use_tipo: nextItem.params.use_tipo,
-          hasResultPrompt: !!result.image?.prompt,
-          resultPrompt: result.image?.prompt?.substring(0, 100)
-        });
-
-        if (nextItem.loopStepIndex === -1 && nextItem.params.use_tipo && result.image?.prompt) {
-          console.log(`[Txt2Img] Base generation used TIPO, updating all loop steps with TIPO prompt`);
-          console.log(`[Txt2Img] Original prompt: ${nextItem.params.prompt?.substring(0, 100)}...`);
-          console.log(`[Txt2Img] TIPO prompt: ${result.image.prompt?.substring(0, 100)}...`);
-
-          // Update all loop steps (not just the next one) with TIPO-generated prompt
-          for (const stepItem of getLoopGroupItems(nextItem.loopGroupId)) {
-            if (!stepItem.isLoopStep || stepItem.loopStepIndex === undefined) continue;
-            updateQueueItemByLoop(nextItem.loopGroupId, stepItem.loopStepIndex, (item) => ({
-              params: {
-                ...item.params,
-                prompt: result.image.prompt,
-              } as any,
-            }));
-          }
-        }
-
-        // Find step config to check if ControlNet processing is needed
-        const stepConfig = getLoopGroupItems(nextItem.loopGroupId)
-          .find((item) => item.loopStepIndex === nextLoopStepIndex)?.loopStepConfig;
-
-        console.log(`[Txt2Img] Step config:`, {
-          hasStepConfig: !!stepConfig,
-          useMainControlNets: stepConfig?.useMainControlNets,
-          controlnetsCount: stepConfig?.controlnets?.length,
-          sizeMode: stepConfig?.sizeMode,
-          scale: stepConfig?.scale,
-        });
-
-        // Fetch the generated image for ControlNet or size calculation
-        let imageBlob: Blob | null = null;
-        let imageWidth: number | null = null;
-        let imageHeight: number | null = null;
-
-        const needsImageData = stepConfig && (
-          (!stepConfig.useMainControlNets && stepConfig.controlnets && stepConfig.controlnets.length > 0) ||
-          stepConfig.sizeMode === "scale"
-        );
-
-        if (needsImageData) {
-          const response = await fetch(imageUrl);
-          imageBlob = await response.blob();
-
-          // Load image to get dimensions for scale mode
-          if (stepConfig.sizeMode === "scale") {
-            const img = new Image();
-            const imageLoadPromise = new Promise<void>((resolve) => {
-              img.onload = () => {
-                imageWidth = img.width;
-                imageHeight = img.height;
-                resolve();
-              };
-            });
-            img.src = URL.createObjectURL(imageBlob);
-            await imageLoadPromise;
-            URL.revokeObjectURL(img.src);
-
-            // Update size based on scale
-            if (imageWidth && imageHeight && stepConfig.scale) {
-              const scaledWidth = Math.round(imageWidth * stepConfig.scale);
-              const scaledHeight = Math.round(imageHeight * stepConfig.scale);
-              console.log(`[Txt2Img] Scale mode: ${imageWidth}x${imageHeight} * ${stepConfig.scale} = ${scaledWidth}x${scaledHeight}`);
-
-              updateQueueItemByLoop(nextItem.loopGroupId!, nextLoopStepIndex, (item) => ({
-                params: {
-                  ...item.params,
-                  width: scaledWidth,
-                  height: scaledHeight,
-                } as any,
-              }));
-            }
-          }
-        }
-
-        // Update ControlNet images if needed
-        if (stepConfig && !stepConfig.useMainControlNets && stepConfig.controlnets && stepConfig.controlnets.length > 0 && imageBlob) {
-          console.log(`[Txt2Img] Processing ${stepConfig.controlnets.length} ControlNet(s) for loop step ${nextLoopStepIndex}`);
-
-          // Convert to base64
-          const reader = new FileReader();
-
-          const imageBase64 = await new Promise<string>((resolve) => {
-            reader.onloadend = () => {
-              const base64 = reader.result as string;
-              // Remove data URL prefix to get just the base64 string
-              const base64String = base64.split(',')[1];
-              resolve(base64String);
-            };
-            reader.readAsDataURL(imageBlob);
-          });
-
-          console.log(`[Txt2Img] Converted image to base64, length: ${imageBase64.length}`);
-
-          // Update ControlNets with useLoopImage enabled using callback to preserve existing params
-          updateQueueItemByLoop(nextItem.loopGroupId!, nextLoopStepIndex, (item) => {
-            const updatedControlnets = stepConfig.controlnets.map((cnConfig, idx) => {
-              console.log(`[Txt2Img] ControlNet ${idx}: useLoopImage=${cnConfig.useLoopImage}`);
-              if (cnConfig.useLoopImage) {
-                console.log(`[Txt2Img] Setting image_base64 for ControlNet ${idx}`);
-                return { ...cnConfig, image_base64: imageBase64 };
-              }
-              return cnConfig;
-            });
-
-            return {
-              params: {
-                ...item.params,
-                controlnets: updatedControlnets,
-              } as any,
-            };
-          });
-
-          console.log(`[Txt2Img] ControlNet images updated for loop step ${nextLoopStepIndex}`);
-        }
-        }
-      }
-
-      // Reset state first, then complete item
-      console.log("[Txt2Img] Generation complete, resetting state and completing item");
-      isGeneratingRef.current = false;
-      setIsGenerating(false);
-      setProgress(0);
-      setProgressMessage("");
-      completeCurrentItem();
-
-      // Wait briefly for state to propagate, then trigger next
-      setTimeout(() => {
-        console.log("[Txt2Img] Triggering next queue item");
-        if (processQueueRef.current) {
-          processQueueRef.current();
-        }
-      }, 100);
-    } catch (error: any) {
-      console.error("Generation failed:", error);
-      console.log("Error details:", {
-        message: error?.message,
-        responseData: error?.response?.data,
-        responseDetail: error?.response?.data?.detail,
-      });
-
-      // Check if cancelled
-      const errorStr = JSON.stringify(error);
-      const errorMessage = error?.message || "";
-      const errorDetail = error?.response?.data?.detail || "";
-      const isCancelled =
-        errorMessage.toLowerCase().includes("cancel") ||
-        errorDetail.toLowerCase().includes("cancel") ||
-        errorStr.toLowerCase().includes("cancel");
-
-      // alert() blocks the JS thread; decide what to show but do not call it
-      // yet -- reset state and requeue first, or the queue effect sees a
-      // stale isGenerating until the dialog closes.
-      let alertMessage: string | null = null;
-      if (isCancelled) {
-        const shouldRestore = localStorage.getItem('restore_image_on_cancel') === 'true';
-        if (shouldRestore && previousImage) {
-          setGeneratedImage(previousImage);
-          setPreviewImage(null);
-        }
-      } else if (isGenerationStalledError(error)) {
-        alertMessage = error.message;
-      } else {
-        alertMessage = "Generation failed. Please check console for details.";
-      }
-
-      // Reset state first, then fail item
-      console.log("[Txt2Img] Generation failed, resetting state and failing item");
-      isGeneratingRef.current = false;
-      setIsGenerating(false);
-      setProgress(0);
-      setProgressMessage("");
-      failCurrentItem();
-
-      // Wait briefly for state to propagate, then trigger next
-      setTimeout(() => {
-        console.log("[Txt2Img] Triggering next queue item after failure");
-        if (processQueueRef.current) {
-          processQueueRef.current();
-        }
-      }, 100);
-
-      if (alertMessage) {
-        alert(alertMessage);
-      }
-    }
-  }, [isGenerating, generatedImage, onImageGenerated, startNextInQueue, completeCurrentItem, failCurrentItem, updateQueueItem, updateQueueItemByLoop, getLoopGroupItems, cancelLoopGroup, queue, publishCompletedResult, archCapabilities, loadedArch, activeTraining]);
-
-  processQueueRef.current = processQueue;
-
-  // Auto-start queue processing when queue has pending items and not currently generating
+  // Dispatch now lives in GenerationQueueProcessor.tsx (always-mounted,
+  // outlives this panel unmounting on tab switch). This panel only re-enqueues
+  // for "generate forever" once the queue has drained.
   useEffect(() => {
     // Items held by a video-chain drift pause are not pending WORK: the queue
-    // refuses to dispatch them (startNextInQueue) until the user answers the
-    // dialog, so counting them here would just re-enter processQueue on every
-    // render for an item that cannot start.
+    // refuses to dispatch them until the user answers the dialog, so counting
+    // them here would enqueue unrelated work under the modal.
     const pausedGroupId = chainPause?.loopGroupId;
     const hasPendingItems = queue.some(item =>
       item.status === "pending" &&
@@ -3512,40 +2785,10 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
       ["txt2img", "img2img", "txt2vid", "ref2vid", "txt2aud", "chain_vid"].includes(item.type));
     const isCurrentItemNull = currentItem === null;
 
-    console.log("[Txt2Img] Queue effect:", {
-      hasPendingItems,
-      isCurrentItemNull,
-      isGenerating,
-      queueLength: queue.length,
-      queue: queue,
-      currentItem: currentItem,
-      generateForever
-    });
-
-    // If generate forever is enabled and queue is empty, add new item.
-    // Not while a chain waits on the drift dialog: the chain is unfinished,
-    // and enqueuing past it would start unrelated work under the modal.
     if (generateForever && !chainPause && !hasPendingItems && isCurrentItemNull && !isGenerating && params.prompt) {
-      console.log("[Txt2Img] Generate forever: Adding new item to queue");
       handleAddToQueue();
-      return;
     }
-
-    // A queue survives a page reload and a backend restart, so on mount there
-    // can be pending items with no model loaded yet. Dispatching then earns an
-    // immediate 400 and the item is marked failed for a reason that has nothing
-    // to do with the item. Hold instead: `modelLoaded` is a dependency, so the
-    // queue starts by itself once a model is up.
-    if (hasPendingItems && isCurrentItemNull && !isGenerating && !modelLoaded) {
-      console.log("[Txt2Img] Queue held: no model loaded yet");
-      return;
-    }
-
-    if (hasPendingItems && isCurrentItemNull && !isGenerating) {
-      console.log("[Txt2Img] Auto-starting queue processing");
-      processQueue();
-    }
-  }, [queue, currentItem, isGenerating, processQueue, generateForever, params, modelLoaded, chainPause]);
+  }, [queue, currentItem, isGenerating, generateForever, params, chainPause]);
 
   // Handle Ctrl+Enter keyboard shortcut
   useEffect(() => {
@@ -5049,8 +4292,8 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                     : ""}
                 </p>
               )}
-              {videoChainStoppedMessage && (
-                <p className="text-xs text-amber-400">{videoChainStoppedMessage}</p>
+              {chainStoppedMessage && (
+                <p className="text-xs text-amber-400">{chainStoppedMessage}</p>
               )}
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -5619,8 +4862,9 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                       if (currentItem?.loopGroupId) {
                         cancelLoopGroup(currentItem.loopGroupId);
                       }
-                      // Don't call processQueue() here - let the error handler handle it
-                      // to avoid race condition with reset_cancel_flag()
+                      // The queue is resumed by the processor's own error
+                      // path, not from here -- calling it now would race
+                      // reset_cancel_flag().
                     } catch (error) {
                       console.error("Failed to cancel generation:", error);
                     }
@@ -5680,8 +4924,8 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                               if (currentItem?.loopGroupId) {
                                 cancelLoopGroup(currentItem.loopGroupId);
                               }
-                              // Don't call processQueue() here - let the error handler handle it
-                              // to avoid race condition with reset_cancel_flag()
+                              // See the other Cancel button: the processor's
+                              // error path resumes the queue.
                             } catch (error) {
                               console.error("Failed to cancel generation:", error);
                             }

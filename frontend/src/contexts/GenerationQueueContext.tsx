@@ -247,6 +247,10 @@ interface GenerationQueueContextType {
   chainPause: ChainDriftPause | null;
   pauseChain: (pause: ChainDriftPause) => void;
   clearChainPause: () => void;
+  // Why a video chain stopped short, for the panels to display. Queue-side for
+  // the same reason as chainPause: the chain outlives any one panel's mount.
+  chainStoppedMessage: string | null;
+  setChainStoppedMessage: (message: string | null) => void;
 }
 
 const GenerationQueueContext = createContext<GenerationQueueContextType | undefined>(undefined);
@@ -260,6 +264,7 @@ export function GenerationQueueProvider({ children }: { children: ReactNode }) {
   const [resultFeed, setResultFeed] = useState<GenerationResultFeedEntry[]>([]);
   const [lastFailure, setLastFailure] = useState<GenerationFailureSnapshot | null>(null);
   const [chainPause, setChainPause] = useState<ChainDriftPause | null>(null);
+  const [chainStoppedMessage, setChainStoppedMessage] = useState<string | null>(null);
 
   // Use refs that are synchronously updated alongside state
   const queueRef = useRef<QueueItem[]>(queue);
@@ -647,6 +652,8 @@ export function GenerationQueueProvider({ children }: { children: ReactNode }) {
         chainPause,
         pauseChain,
         clearChainPause,
+        chainStoppedMessage,
+        setChainStoppedMessage,
       }}
     >
       {children}

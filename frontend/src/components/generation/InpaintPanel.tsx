@@ -1091,6 +1091,14 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         : { ...prev, inpaint_video_audio_mode: archAudioMode, inpaint_video_audio_mode_arch: loadedArchType }
     ));
   }, [generationDefaults, loadedArchType, archAudioMode]);
+  // The Block Swap checkbox is hidden (not disabled) on unsupported architectures,
+  // so a flag carried over from a previous model would keep being sent with no
+  // visible control to clear it. The sub-fields are inert unless the gate is on.
+  useEffect(() => {
+    if (!archCapabilities || !loadedArchType) return;
+    if (archSupportsFeature(archCapabilities, loadedArchType, "block_swap")) return;
+    setParams((prev) => (prev.enable_block_swap ? { ...prev, enable_block_swap: false } : prev));
+  }, [archCapabilities, loadedArchType]);
 
   const [isDragging, setIsDragging] = useState(false);
   const [showImageEditor, setShowImageEditor] = useState(false);

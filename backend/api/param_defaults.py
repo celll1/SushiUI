@@ -219,6 +219,10 @@ SENSENOVA_GENERATION_DEFAULTS: Dict[str, Any] = {
     # hundreds of MB transient, not the eviction toggle's tens of GiB) is
     # small but still unmeasured against a gate.
     "sensenova_kv_cache_streaming": False,
+    # Reference-style K/V injected into every CFG branch, not cond only; ON for
+    # SenseNova alone -- see StyleTransferConfig.inject_all_cfg_branches for why.
+    # Internal wiring only -- not a route parameter, no user-facing knob.
+    "style_inject_all_cfg_branches": True,
 }
 
 # ---------------------------------------------------------------------------

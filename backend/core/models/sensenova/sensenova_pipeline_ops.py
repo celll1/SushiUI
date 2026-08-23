@@ -845,10 +845,10 @@ def _euler_run(
     ``encode_prompt``'s docstring); ``denoise_loop*`` never needs to change.
 
     Reference-style transfer: per active step a capture forward runs on the
-    reference re-noised to this step's ``t``, then the real cond forward
-    injects the captured K/V. Injection is cond-only -- the block disarms
-    ``_style_ctx`` before ``img_cond``/``uncond`` run, so style does not ride
-    the CFG delta and scale with ``cfg_scale``.
+    reference re-noised to this step's ``t``, then the real forwards inject the
+    captured K/V. ``config.inject_all_cfg_branches`` (SenseNova's default) arms
+    every branch feeding this step's CFG combine rather than cond only; see
+    ``StyleTransferConfig.inject_all_cfg_branches``.
 
     ``style_refs`` (multi-reference ``(config, ref_x0, ref_eps)`` triples) is
     consulted only at 2+ entries; callers route a single reference through
@@ -894,6 +894,37 @@ def _euler_run(
             z, image_embeds, timestep_embeddings = _build_step_context(
                 transformer, prefix, image_prediction, t, noise_scale)
 
+            def _combine_branches(v_cond):
+                """This step's CFG branches + blend. Called INSIDE the style-armed
+                window when ``inject_all_cfg_branches`` is set (so img_cond/uncond
+                inject too), outside it otherwise."""
+                has_img_cond = prefix.img_cond_past_key_values is not None
+                has_uncond = prefix.uncond_past_key_values is not None
+                in_interval = cfg_interval[0] <= float(t) <= cfg_interval[1]
+                if prefix.has_reference_images:
+                    # encode_prompt already applied upstream's own needs_cfg gates
+                    # when it chose the branch set, so re-testing the scales here
+                    # would skip blends upstream performs (any non-unit scale pair,
+                    # including scales below 1).
+                    use_cfg = (has_img_cond or has_uncond) and in_interval
+                else:
+                    # Classic path, unchanged.
+                    use_cfg = has_uncond and cfg_scale > 1 and in_interval
+                if use_cfg:
+                    if has_img_cond:
+                        v_img_cond = _predict_v_branch(transformer, prefix, image_embeds, timestep_embeddings, z, t,
+                                                       branch="img_cond")
+                        v_uncond = (_predict_v_branch(transformer, prefix, image_embeds, timestep_embeddings, z, t,
+                                                      branch="uncond") if has_uncond else None)
+                        return _cfg_combine_refs(v_cond, v_img_cond, v_uncond, cfg_scale, img_cfg_scale, cfg_norm)
+                    # Classic 2-branch path -- IDENTICAL call to before (also
+                    # the only path a no-refs prefix can ever reach, since
+                    # has_img_cond is always False there).
+                    v_uncond = _predict_v_branch(transformer, prefix, image_embeds, timestep_embeddings, z, t,
+                                                 branch="uncond")
+                    return _cfg_combine(v_cond, v_uncond, cfg_scale, cfg_norm, j)
+                return v_cond
+
             if style_refs is not None and len(style_refs) > 1:
                 # Multi-reference (N>1): one capture forward PER reference, then a
                 # single StyleContext holding the full `refs` list for the cond
@@ -909,21 +940,28 @@ def _euler_run(
                         mode="inject", config=active_style_refs[0][1], refs=active_style_refs,
                         combine_mode=style_combine_mode, progress=overall_progress,
                     )
+                    inject_all = bool(active_style_refs[0][1].inject_all_cfg_branches)
                     Qwen3Attention._style_ctx = inject_ctx
                     try:
                         v_cond = _predict_v_branch(
                             transformer, prefix, image_embeds, timestep_embeddings, z, t, branch="cond")
+                        if inject_all:
+                            # Armed window MUST span img_cond/uncond too: the
+                            # finally below empties the capture stores, so a
+                            # branch run after it would inject nothing, silently.
+                            v_pred = _combine_branches(v_cond)
                     finally:
-                        # L2: disarm BEFORE the img_cond/uncond branches below run --
-                        # style must never ride the CFG delta. L3: class-attribute
-                        # exception safety. L4: free the captured Q/K/V now, not at
-                        # generation end -- the inject forward has already consumed them.
+                        # L3: class-attribute exception safety. L4: free the
+                        # captured Q/K/V now, not at generation end -- the inject
+                        # forwards have already consumed them.
                         Qwen3Attention._style_ctx = None
                         for store_i, _cfg_i in active_style_refs:
                             store_i.clear()
+                    if not inject_all:
+                        v_pred = _combine_branches(v_cond)
                 else:
-                    v_cond = _predict_v_branch(
-                        transformer, prefix, image_embeds, timestep_embeddings, z, t, branch="cond")
+                    v_pred = _combine_branches(_predict_v_branch(
+                        transformer, prefix, image_embeds, timestep_embeddings, z, t, branch="cond"))
             elif style_active and style_cfg.is_step_active(j, total):
                 from core.inference.reference_style import StyleContext
                 from .vendor.modeling_qwen3 import Qwen3Attention
@@ -932,45 +970,22 @@ def _euler_run(
                 capture_ctx = _style_capture(
                     transformer, prefix, style_cfg, style_ref_x0, style_eps_ref, t, noise_scale, progress)
                 inject_ctx = StyleContext(mode="inject", config=style_cfg, store=capture_ctx.store, progress=progress)
+                inject_all = bool(style_cfg.inject_all_cfg_branches)
                 Qwen3Attention._style_ctx = inject_ctx
                 try:
                     v_cond = _predict_v_branch(
                         transformer, prefix, image_embeds, timestep_embeddings, z, t, branch="cond")
+                    if inject_all:
+                        v_pred = _combine_branches(v_cond)
                 finally:
-                    # Same L2/L3/L4 handling as the multi-ref branch above.
+                    # Same L3/L4 handling as the multi-ref branch above.
                     Qwen3Attention._style_ctx = None
                     capture_ctx.store.clear()
+                if not inject_all:
+                    v_pred = _combine_branches(v_cond)
             else:
-                v_cond = _predict_v_branch(transformer, prefix, image_embeds, timestep_embeddings, z, t, branch="cond")
-
-            has_img_cond = prefix.img_cond_past_key_values is not None
-            has_uncond = prefix.uncond_past_key_values is not None
-            in_interval = cfg_interval[0] <= float(t) <= cfg_interval[1]
-            if prefix.has_reference_images:
-                # encode_prompt already applied upstream's own needs_cfg gates
-                # when it chose the branch set, so re-testing the scales here
-                # would skip blends upstream performs (any non-unit scale pair,
-                # including scales below 1).
-                use_cfg = (has_img_cond or has_uncond) and in_interval
-            else:
-                # Classic path, unchanged.
-                use_cfg = has_uncond and cfg_scale > 1 and in_interval
-            if use_cfg:
-                if has_img_cond:
-                    v_img_cond = _predict_v_branch(transformer, prefix, image_embeds, timestep_embeddings, z, t,
-                                                   branch="img_cond")
-                    v_uncond = (_predict_v_branch(transformer, prefix, image_embeds, timestep_embeddings, z, t,
-                                                  branch="uncond") if has_uncond else None)
-                    v_pred = _cfg_combine_refs(v_cond, v_img_cond, v_uncond, cfg_scale, img_cfg_scale, cfg_norm)
-                else:
-                    # Classic 2-branch path -- IDENTICAL call to before (also
-                    # the only path a no-refs prefix can ever reach, since
-                    # has_img_cond is always False there).
-                    v_uncond = _predict_v_branch(transformer, prefix, image_embeds, timestep_embeddings, z, t,
-                                                 branch="uncond")
-                    v_pred = _cfg_combine(v_cond, v_uncond, cfg_scale, cfg_norm, j)
-            else:
-                v_pred = v_cond
+                v_pred = _combine_branches(
+                    _predict_v_branch(transformer, prefix, image_embeds, timestep_embeddings, z, t, branch="cond"))
 
             pred_x0 = None
             if step_callback is not None:

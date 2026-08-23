@@ -123,6 +123,22 @@ class StyleTransferConfig:
     # - cond_noStyle) -- i.e. style strength no longer depends on cfg.
     style_guidance_scale: Optional[float] = None
 
+    # --- CFG coupling of the injection itself --- False (default, all archs but
+    # SenseNova): inject only into the cond forward, so the whole style shift
+    # sits inside the (cond - uncond) delta and is MULTIPLIED by cfg_scale.
+    # True: arm every forward feeding that step's CFG combine (cond, img_cond,
+    # uncond), making the shift common-mode. Sum-to-1 coefficients pass it
+    # through once, unscaled, for the plain cond/uncond blend and both
+    # _cfg_combine_refs forms; cfg_zero_star instead leaves a residual factor
+    # alpha + cfg*(1 - alpha), and cfg_norm 'global'/'channel' apply a further
+    # <=1 norm rescale afterwards. Defaults ON for SenseNova alone: pixel-space,
+    # terminal clamp(-1, 1), no VAE to absorb overshoot, so the cfg-scaled shift
+    # clipped 13.4% of pixels at cfg=4 vs 1.1% common-mode.
+    # Requires the arch's sampling loop to honor it (SenseNova's _euler_run
+    # only); sensenova.py's ``style_dict.get("inject_all_cfg_branches")`` read
+    # exists for non-route/in-process callers -- no HTTP client can set it.
+    inject_all_cfg_branches: bool = False
+
     # internal cache: (device, dtype, rounded progress) -> frequency scale vector
     _freq_cache: Dict[Tuple[Any, Any, float], torch.Tensor] = field(default_factory=dict, repr=False, compare=False)
 
@@ -674,4 +690,5 @@ def style_config_from_dict(d: Dict[str, Any]) -> StyleTransferConfig:
         start_step=int(d.get("start_step", 0) or 0),
         end_step=int(d.get("end_step", 1000) if d.get("end_step") is not None else 1000),
         style_guidance_scale=(float(d["style_guidance_scale"]) if d.get("style_guidance_scale") is not None else None),
+        inject_all_cfg_branches=bool(d.get("inject_all_cfg_branches", False)),
     )

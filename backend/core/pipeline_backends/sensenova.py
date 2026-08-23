@@ -167,6 +167,86 @@ class SenseNovaMixin:
         from core.models.sensenova import kv_cache_streaming
         kv_cache_streaming.uninstall(transformer, streamer)
 
+    def _sensenova_style_triple(self, style_dict: Dict[str, Any], transformer, device, prefix,
+                                seed: Optional[int], ref_index: int = 0):
+        """Build a single (StyleTransferConfig, ref_x0, eps_ref) triple from one
+        style_transfer dict, mirroring Krea2/Lens's own ``_style_triple``.
+
+        ``axes_dims`` is intentionally left ``None``: SenseNova's rotate-half
+        per-axis RoPE is incompatible with ``frequency_scale_vector``'s
+        interleave-real curve, so the hook uses an all-ones vector, as
+        Anima/MiniT2I/Ideogram4/LTX-2.3 already do.
+
+        Pixel-space, no VAE, so the reference is resized outright to the exact
+        target size (capture and inject must yield the same token count) and a
+        non-matching aspect ratio is warned about. ``ref_index`` decorrelates
+        the fixed noise across simultaneous references (``seed+991+ref_index``,
+        as Krea2/Lens)."""
+        from core.inference.reference_style import style_config_from_dict
+        from core.models.sensenova import sensenova_pipeline_ops as ops
+
+        image = style_dict["image"]
+        width, height = prefix.image_size
+        if image.width > 0 and image.height > 0:
+            target_ratio = width / height
+            ref_ratio = image.width / image.height
+            if abs(target_ratio - ref_ratio) > 0.01 * target_ratio:
+                msg = (f"[SenseNova] style reference {image.width}x{image.height} does not match this "
+                       f"generation's {width}x{height} aspect ratio; it will be resized (not cropped) to "
+                       f"fit -- the capture and inject forwards must produce the same image-token count.")
+                print(msg)
+                try:
+                    from api.generation_status import add_warning
+                    add_warning(msg, code="sensenova_style_reference_resized")
+                except Exception:
+                    pass
+
+        cfg = style_config_from_dict(style_dict)
+        cfg.resolve_default_block_range(len(transformer.language_model.model.layers))
+
+        noise_scale = ops.compute_noise_scale(transformer, prefix.grid_h, prefix.grid_w, prefix.merge_size)
+        ref_seed = None if seed is None or seed < 0 else (int(seed) + 991 + ref_index) % (2**32)
+        ref_x0, eps_ref = ops.prepare_style_reference(
+            image, height, width, device, prefix.dtype, ref_seed, noise_scale)
+        return cfg, ref_x0, eps_ref
+
+    def _sensenova_style_config(self, params: Dict[str, Any], transformer, device, prefix, seed: Optional[int]):
+        """Build a (StyleTransferConfig, ref_x0, eps_ref) triple from
+        ``params["style_transfer"]``, or ``(None, None, None)`` when no style
+        reference is attached. Single-reference path, delegates to
+        ``_sensenova_style_triple`` with ``ref_index=0``."""
+        style_dict = params.get("style_transfer")
+        if not style_dict or not style_dict.get("image"):
+            return None, None, None
+        return self._sensenova_style_triple(style_dict, transformer, device, prefix, seed, ref_index=0)
+
+    def _sensenova_style_configs(self, params: Dict[str, Any], transformer, device, prefix, seed: Optional[int]):
+        """Build the full style-transfer configuration for SenseNova generation,
+        covering both the single-reference path (legacy ``(style_cfg,
+        style_ref_x0, style_eps_ref)`` triple) and the multi-reference path
+        (``style_refs``, populated ONLY when ``params["style_transfers"]`` has
+        more than one entry), mirroring Krea2/Lens exactly.
+
+        Returns ``(style_cfg, style_ref_x0, style_eps_ref, style_refs,
+        style_combine_mode)``."""
+        style_list = params.get("style_transfers")
+        if style_list and len(style_list) > 1:
+            combine_mode = str(params.get("style_combine_mode", "stack") or "stack")
+            refs = []
+            for idx, style_dict in enumerate(style_list):
+                if not style_dict or not style_dict.get("image"):
+                    continue
+                refs.append(self._sensenova_style_triple(style_dict, transformer, device, prefix, seed, ref_index=idx))
+            if len(refs) > 1:
+                return None, None, None, refs, combine_mode
+            if len(refs) == 1:
+                cfg, x0, eps = refs[0]
+                return cfg, x0, eps, None, combine_mode
+            return None, None, None, None, combine_mode
+
+        style_cfg, style_ref_x0, style_eps_ref = self._sensenova_style_config(params, transformer, device, prefix, seed)
+        return style_cfg, style_ref_x0, style_eps_ref, None, "stack"
+
     def _sensenova_common_params(self, params: Dict[str, Any], default_w: int, default_h: int) -> Dict[str, Any]:
         from api.param_defaults import SENSENOVA_GENERATION_DEFAULTS
         from core.models.sensenova import sensenova_pipeline_ops as ops
@@ -282,6 +362,19 @@ class SenseNovaMixin:
                 ref_images=cfg["ref_images"], img_cfg_scale=cfg["img_cfg_scale"],
             )
 
+            # Training-free reference-style transfer. OFF by default
+            # (style_transfer/style_transfers absent -> (None, None, None, None,
+            # "stack"), no-op below). Mechanically independent of it2i reference
+            # images above (prefix tokens vs runtime K/V concat), so both can be
+            # active simultaneously. Built AFTER `prefix` exists -- needs
+            # prefix.grid_h/grid_w/merge_size (noise_scale) and prefix.dtype.
+            style_cfg = style_ref_x0 = style_eps_ref = None
+            style_refs = None
+            style_combine_mode = "stack"
+            if params.get("style_transfer") or params.get("style_transfers"):
+                style_cfg, style_ref_x0, style_eps_ref, style_refs, style_combine_mode = \
+                    self._sensenova_style_configs(params, transformer, device, prefix, cfg["seed"])
+
             def _step_bridge(j, total, image_prediction, _mask, _extra):
                 # sensenova_pipeline_ops's step_callback carries the tensor,
                 # unlike its progress_callback(step, total); bridge it into
@@ -301,6 +394,8 @@ class SenseNovaMixin:
                 seed=cfg["seed"], cfg_scale=cfg["cfg_scale"], timestep_shift=cfg["timestep_shift"],
                 num_inference_steps=cfg["num_inference_steps"],
                 step_callback=_step_bridge,
+                style_cfg=style_cfg, style_ref_x0=style_ref_x0, style_eps_ref=style_eps_ref,
+                style_refs=style_refs, style_combine_mode=style_combine_mode,
             )
         finally:
             # Defence in depth: _euler_run already clears both prefix KV caches
@@ -312,6 +407,17 @@ class SenseNovaMixin:
                     ops.clear_prefix_caches(prefix)
                 except Exception:
                     pass
+            # Defence in depth (L3): _style_ctx is a CLASS attribute on
+            # Qwen3Attention that outlives this generation (the module lives in
+            # sys.modules) -- _euler_run already clears it in its own finally on
+            # every exit path, but a raise before _euler_run is ever reached
+            # (e.g. during _sensenova_style_configs) could not have armed it in
+            # the first place, so this is a pure safety net, not a required path.
+            try:
+                from core.models.sensenova.vendor.modeling_qwen3 import Qwen3Attention
+                Qwen3Attention._style_ctx = None
+            except Exception:
+                pass
             if applied_lora:
                 self._unload_lora_sensenova()
             self._sensenova_move("transformer", "cpu")
@@ -364,6 +470,14 @@ class SenseNovaMixin:
                 ref_images=cfg["ref_images"], img_cfg_scale=cfg["img_cfg_scale"],
             )
 
+            # Training-free reference-style transfer -- same wiring as txt2img.
+            style_cfg = style_ref_x0 = style_eps_ref = None
+            style_refs = None
+            style_combine_mode = "stack"
+            if params.get("style_transfer") or params.get("style_transfers"):
+                style_cfg, style_ref_x0, style_eps_ref, style_refs, style_combine_mode = \
+                    self._sensenova_style_configs(params, transformer, device, prefix, cfg["seed"])
+
             def _step_bridge(j, total, image_prediction, _mask, _extra):
                 if progress_callback is None:
                     return
@@ -377,6 +491,8 @@ class SenseNovaMixin:
                 seed=cfg["seed"], cfg_scale=cfg["cfg_scale"], timestep_shift=cfg["timestep_shift"],
                 num_inference_steps=cfg["num_inference_steps"],
                 step_callback=_step_bridge,
+                style_cfg=style_cfg, style_ref_x0=style_ref_x0, style_eps_ref=style_eps_ref,
+                style_refs=style_refs, style_combine_mode=style_combine_mode,
             )
         finally:
             # Same defence-in-depth as txt2img: _euler_run already clears both
@@ -386,6 +502,11 @@ class SenseNovaMixin:
                     ops.clear_prefix_caches(prefix)
                 except Exception:
                     pass
+            try:
+                from core.models.sensenova.vendor.modeling_qwen3 import Qwen3Attention
+                Qwen3Attention._style_ctx = None
+            except Exception:
+                pass
             if applied_lora:
                 self._unload_lora_sensenova()
             self._sensenova_move("transformer", "cpu")
@@ -440,6 +561,16 @@ class SenseNovaMixin:
                 ref_images=cfg["ref_images"], img_cfg_scale=cfg["img_cfg_scale"],
             )
 
+            # Training-free reference-style transfer -- same wiring as txt2img.
+            # Mechanically independent of RePaint's mask blend (see
+            # denoise_loop_inpaint's docstring), so style + inpaint compose.
+            style_cfg = style_ref_x0 = style_eps_ref = None
+            style_refs = None
+            style_combine_mode = "stack"
+            if params.get("style_transfer") or params.get("style_transfers"):
+                style_cfg, style_ref_x0, style_eps_ref, style_refs, style_combine_mode = \
+                    self._sensenova_style_configs(params, transformer, device, prefix, cfg["seed"])
+
             def _step_bridge(j, total, image_prediction, _mask, _extra):
                 if progress_callback is None:
                     return
@@ -453,6 +584,8 @@ class SenseNovaMixin:
                 seed=cfg["seed"], cfg_scale=cfg["cfg_scale"], timestep_shift=cfg["timestep_shift"],
                 num_inference_steps=cfg["num_inference_steps"], mask_blur=mask_blur,
                 step_callback=_step_bridge,
+                style_cfg=style_cfg, style_ref_x0=style_ref_x0, style_eps_ref=style_eps_ref,
+                style_refs=style_refs, style_combine_mode=style_combine_mode,
             )
         finally:
             if prefix is not None:
@@ -460,6 +593,11 @@ class SenseNovaMixin:
                     ops.clear_prefix_caches(prefix)
                 except Exception:
                     pass
+            try:
+                from core.models.sensenova.vendor.modeling_qwen3 import Qwen3Attention
+                Qwen3Attention._style_ctx = None
+            except Exception:
+                pass
             if applied_lora:
                 self._unload_lora_sensenova()
             self._sensenova_move("transformer", "cpu")

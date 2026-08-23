@@ -512,6 +512,17 @@ class Qwen3Attention(nn.Module):
         cache_position: Optional[torch.LongTensor] = None,
         **kwargs: Unpack[FlashAttentionKwargs],
     ) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
+        # Phase-exclusivity tripwire: style injection is armed only around a
+        # denoise-phase forward_gen call, and mot_phase_eviction evicts the
+        # understanding-branch weights to CPU for that phase -- so reaching
+        # forward_und while armed means running against evicted weights.
+        if self._style_ctx is not None:
+            raise RuntimeError(
+                "SenseNova reference-style KV injection: a style context is armed "
+                "(_style_ctx is not None) but forward_und (the understanding branch) "
+                "was invoked. Style injection only runs through forward_gen during the "
+                "denoise phase -- this is a phase-exclusivity violation, not a valid state."
+            )
         assert self.config._attn_implementation == "eager"
         input_shape = hidden_states.shape[:-1]
         hidden_shape = (*input_shape, -1, self.head_dim)

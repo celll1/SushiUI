@@ -115,6 +115,19 @@ def prepare_noise(height: int, width: int, device, dtype, seed: Optional[int], n
     return noise_scale * torch.randn(batch_size, 3, height, width, generator=gen, device=device, dtype=dtype)
 
 
+def prepare_style_reference(
+    image: Image.Image, height: int, width: int, device, dtype, seed: Optional[int], noise_scale: float,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Build the ``(ref_x0, eps_ref)`` pair for reference-style transfer. Pixel
+    space, no VAE. The resize to the exact target size is required: capture and
+    inject must produce the same image-token count. ``eps_ref`` is drawn ONCE
+    per generation -- re-noising with fresh noise each step would make the
+    captured K/V flicker."""
+    ref_x0 = image_to_tensor(image, height, width, device, dtype)
+    eps_ref = prepare_noise(height, width, device, dtype, seed, noise_scale, batch_size=1)
+    return ref_x0, eps_ref
+
+
 def compute_noise_scale(transformer, grid_h: int, grid_w: int, merge_size: int) -> float:
     """Resolution-dependent init-noise scale (facts: recomputed per request,
     ALSO fed to the model via ``noise_scale_embedder`` -- see ``_build_step_context``).
@@ -723,6 +736,52 @@ def _cfg_combine_refs(v_cond: torch.Tensor, v_img_cond: torch.Tensor, v_uncond: 
     return v_pred
 
 
+def _style_capture(
+    transformer, prefix: "SenseNovaPrefix", style_cfg, style_ref_x0: torch.Tensor, style_eps_ref: torch.Tensor,
+    t: torch.Tensor, noise_scale: float, progress: float,
+):
+    """Re-noise the fixed style reference to THIS step's ``t`` (not ``t_next`` --
+    it must match the noise level ``_build_step_context`` is about to use for the
+    target) and run a capture forward through the same cond branch, so the
+    target's own prefix KV cache and token offsets are reused exactly.
+
+    Running a second cond pass this step is safe because ``_predict_v_branch``
+    calls ``streamer.begin_branch`` unconditionally, resetting the ring's slot
+    bookkeeping. ``_style_ctx`` is a class attribute that outlives the
+    generation, hence the unconditional disarm below."""
+    from core.inference.reference_style import StyleContext
+    from .vendor.modeling_qwen3 import Qwen3Attention
+
+    ref_z = style_ref_x0 * t + style_eps_ref * (1.0 - t)
+    z_ref, image_embeds_ref, timestep_embeddings_ref = _build_step_context(transformer, prefix, ref_z, t, noise_scale)
+    capture_ctx = StyleContext(mode="capture", config=style_cfg, progress=progress)
+    Qwen3Attention._style_ctx = capture_ctx
+    try:
+        _predict_v_branch(transformer, prefix, image_embeds_ref, timestep_embeddings_ref, z_ref, t, branch="cond")
+    finally:
+        Qwen3Attention._style_ctx = None
+    return capture_ctx
+
+
+def _style_capture_multi(
+    transformer, prefix: "SenseNovaPrefix", style_refs, step_idx: int, num_steps: int,
+    t: torch.Tensor, noise_scale: float,
+):
+    """Multi-reference (N>1): one capture forward PER reference (each with ITS
+    OWN ``StyleTransferConfig`` -- block_range, strengths, freq curve, step
+    gating -- all independent), skipping refs that are not step-active this
+    step. Returns ``[(store_i, config_i), ...]`` for the refs captured this
+    step, ready to hand to ``StyleContext(mode="inject", refs=..., ...)``."""
+    active_refs = []
+    for cfg_i, x0_i, eps_i in style_refs:
+        if not cfg_i.is_step_active(step_idx, num_steps):
+            continue
+        progress_i = cfg_i.step_progress(step_idx, num_steps)
+        capture_ctx_i = _style_capture(transformer, prefix, cfg_i, x0_i, eps_i, t, noise_scale, progress_i)
+        active_refs.append((capture_ctx_i.store, cfg_i))
+    return active_refs
+
+
 _NO_T_EPS = object()  # sentinel: "the config had no t_eps attribute at all", distinct from None/0.
 
 
@@ -764,6 +823,11 @@ def _euler_run(
     init_image: Optional[torch.Tensor] = None,
     fixed_noise: Optional[torch.Tensor] = None,
     clamp_output: bool = True,
+    style_cfg=None,
+    style_ref_x0: Optional[torch.Tensor] = None,
+    style_eps_ref: Optional[torch.Tensor] = None,
+    style_refs: Optional[Sequence[Tuple[Any, torch.Tensor, torch.Tensor]]] = None,
+    style_combine_mode: str = "stack",
 ) -> torch.Tensor:
     """Shared Euler loop from ``ts[start_idx]`` -> ``t=1`` (clean). ``t`` runs
     forward 0->1 (see module docstring for why this is NOT flux2's direction).
@@ -777,6 +841,16 @@ def _euler_run(
     image ``img_cond`` branch (when present) is driven by
     ``prefix.encode_img_cfg_scale`` -- NOT a new argument here (see
     ``encode_prompt``'s docstring); ``denoise_loop*`` never needs to change.
+
+    Reference-style transfer: per active step a capture forward runs on the
+    reference re-noised to this step's ``t``, then the real cond forward
+    injects the captured K/V. Injection is cond-only -- the block disarms
+    ``_style_ctx`` before ``img_cond``/``uncond`` run, so style does not ride
+    the CFG delta and scale with ``cfg_scale``.
+
+    ``style_refs`` (multi-reference ``(config, ref_x0, ref_eps)`` triples) is
+    consulted only at 2+ entries; callers route a single reference through
+    ``style_cfg``/``style_ref_x0``/``style_eps_ref``, as Krea2/Anima/Lens do.
     """
     if prefix.consumed:
         raise RuntimeError(
@@ -805,6 +879,7 @@ def _euler_run(
     n = len(ts) - 1
     total = n - start_idx
     patch = transformer.patch_size * prefix.merge_size
+    style_active = style_cfg is not None and style_ref_x0 is not None and style_eps_ref is not None
     try:
         for j, i in enumerate(range(start_idx, n)):
             raise_if_cancelled()
@@ -816,7 +891,55 @@ def _euler_run(
             # version recomputed the full ViT feature extraction twice here).
             z, image_embeds, timestep_embeddings = _build_step_context(
                 transformer, prefix, image_prediction, t, noise_scale)
-            v_cond = _predict_v_branch(transformer, prefix, image_embeds, timestep_embeddings, z, t, branch="cond")
+
+            if style_refs is not None and len(style_refs) > 1:
+                # Multi-reference (N>1): one capture forward PER reference, then a
+                # single StyleContext holding the full `refs` list for the cond
+                # forward. len(style_refs) <= 1 is NEVER routed here by the caller
+                # (see docstring) so this branch never affects single-ref behavior.
+                from core.inference.reference_style import StyleContext
+                from .vendor.modeling_qwen3 import Qwen3Attention
+
+                active_style_refs = _style_capture_multi(transformer, prefix, style_refs, j, total, t, noise_scale)
+                if active_style_refs:
+                    overall_progress = active_style_refs[0][1].step_progress(j, total)
+                    inject_ctx = StyleContext(
+                        mode="inject", config=active_style_refs[0][1], refs=active_style_refs,
+                        combine_mode=style_combine_mode, progress=overall_progress,
+                    )
+                    Qwen3Attention._style_ctx = inject_ctx
+                    try:
+                        v_cond = _predict_v_branch(
+                            transformer, prefix, image_embeds, timestep_embeddings, z, t, branch="cond")
+                    finally:
+                        # L2: disarm BEFORE the img_cond/uncond branches below run --
+                        # style must never ride the CFG delta. L3: class-attribute
+                        # exception safety. L4: free the captured Q/K/V now, not at
+                        # generation end -- the inject forward has already consumed them.
+                        Qwen3Attention._style_ctx = None
+                        for store_i, _cfg_i in active_style_refs:
+                            store_i.clear()
+                else:
+                    v_cond = _predict_v_branch(
+                        transformer, prefix, image_embeds, timestep_embeddings, z, t, branch="cond")
+            elif style_active and style_cfg.is_step_active(j, total):
+                from core.inference.reference_style import StyleContext
+                from .vendor.modeling_qwen3 import Qwen3Attention
+
+                progress = style_cfg.step_progress(j, total)
+                capture_ctx = _style_capture(
+                    transformer, prefix, style_cfg, style_ref_x0, style_eps_ref, t, noise_scale, progress)
+                inject_ctx = StyleContext(mode="inject", config=style_cfg, store=capture_ctx.store, progress=progress)
+                Qwen3Attention._style_ctx = inject_ctx
+                try:
+                    v_cond = _predict_v_branch(
+                        transformer, prefix, image_embeds, timestep_embeddings, z, t, branch="cond")
+                finally:
+                    # Same L2/L3/L4 handling as the multi-ref branch above.
+                    Qwen3Attention._style_ctx = None
+                    capture_ctx.store.clear()
+            else:
+                v_cond = _predict_v_branch(transformer, prefix, image_embeds, timestep_embeddings, z, t, branch="cond")
 
             has_img_cond = prefix.img_cond_past_key_values is not None
             has_uncond = prefix.uncond_past_key_values is not None
@@ -877,6 +1000,16 @@ def _euler_run(
                     print(f"[{LABEL}] step_callback raised: {exc}")
     finally:
         clear_prefix_caches(prefix)
+        # Belt-and-braces: the per-step arms above each disarm in their own
+        # finally, but a raise BETWEEN style-active steps still lands here, and
+        # _style_ctx is a class attribute that outlives this generation. Runs
+        # after the cache clear so a failure here cannot skip it.
+        if style_active or (style_refs is not None and len(style_refs) > 1):
+            try:
+                from .vendor.modeling_qwen3 import Qwen3Attention
+                Qwen3Attention._style_ctx = None
+            except Exception:
+                pass
 
     return image_prediction.clamp(-1, 1) if clamp_output else image_prediction
 
@@ -897,11 +1030,18 @@ def denoise_loop(
     progress_callback: Optional[Callable[[int, int], None]] = None,
     step_callback: Optional[Callable[..., None]] = None,
     clamp_output: bool = True,
+    style_cfg=None,
+    style_ref_x0: Optional[torch.Tensor] = None,
+    style_eps_ref: Optional[torch.Tensor] = None,
+    style_refs: Optional[Sequence[Tuple[Any, torch.Tensor, torch.Tensor]]] = None,
+    style_combine_mode: str = "stack",
 ) -> torch.Tensor:
     """txt2img: start from pure (resolution-scaled) noise, integrate t: 0 -> 1.
     ``cfg_scale``/``timestep_shift``/``num_inference_steps`` are required, no
     module-level default (AGENTS.md) -- the caller sources them from
-    ``api.param_defaults.SENSENOVA_GENERATION_DEFAULTS``."""
+    ``api.param_defaults.SENSENOVA_GENERATION_DEFAULTS``. ``style_*`` (training-
+    free reference-style transfer, off by default) are forwarded to
+    ``_euler_run`` unchanged -- see that function's docstring."""
     if num_inference_steps < 1:
         raise ValueError(f"{LABEL}: num_inference_steps must be >= 1, got {num_inference_steps}.")
     device, dtype = prefix.device, prefix.dtype
@@ -913,7 +1053,9 @@ def denoise_loop(
     with _t_eps_override(transformer, t_eps):
         return _euler_run(transformer, prefix, x, ts, 0, cfg_scale, cfg_interval, cfg_norm, noise_scale,
                           progress_callback=progress_callback, step_callback=step_callback,
-                          clamp_output=clamp_output)
+                          clamp_output=clamp_output,
+                          style_cfg=style_cfg, style_ref_x0=style_ref_x0, style_eps_ref=style_eps_ref,
+                          style_refs=style_refs, style_combine_mode=style_combine_mode)
 
 
 @torch.no_grad()
@@ -934,12 +1076,19 @@ def denoise_loop_img2img(
     progress_callback: Optional[Callable[[int, int], None]] = None,
     step_callback: Optional[Callable[..., None]] = None,
     clamp_output: bool = True,
+    style_cfg=None,
+    style_ref_x0: Optional[torch.Tensor] = None,
+    style_eps_ref: Optional[torch.Tensor] = None,
+    style_refs: Optional[Sequence[Tuple[Any, torch.Tensor, torch.Tensor]]] = None,
+    style_combine_mode: str = "stack",
 ) -> torch.Tensor:
     """img2img (SDEdit): ``t_start = 1 - denoising_strength``, snapped to the
     shifted timestep grid (clamped so at least one step remains); start the
     loop from the noised init at that index. ``z_t = t*x0 + (1-t)*noise_scale*eps``.
     ``cfg_scale``/``timestep_shift``/``num_inference_steps`` are required, no
-    module-level default (AGENTS.md)."""
+    module-level default (AGENTS.md). ``style_*`` (training-free
+    reference-style transfer, off by default) are forwarded to ``_euler_run``
+    unchanged -- see that function's docstring."""
     if num_inference_steps < 1:
         raise ValueError(f"{LABEL}: num_inference_steps must be >= 1, got {num_inference_steps}.")
     device, dtype = prefix.device, prefix.dtype
@@ -957,7 +1106,9 @@ def denoise_loop_img2img(
     with _t_eps_override(transformer, t_eps):
         return _euler_run(transformer, prefix, x, ts, start_idx, cfg_scale, cfg_interval, cfg_norm, noise_scale,
                           progress_callback=progress_callback, step_callback=step_callback,
-                          clamp_output=clamp_output)
+                          clamp_output=clamp_output,
+                          style_cfg=style_cfg, style_ref_x0=style_ref_x0, style_eps_ref=style_eps_ref,
+                          style_refs=style_refs, style_combine_mode=style_combine_mode)
 
 
 @torch.no_grad()
@@ -980,13 +1131,24 @@ def denoise_loop_inpaint(
     progress_callback: Optional[Callable[[int, int], None]] = None,
     step_callback: Optional[Callable[..., None]] = None,
     clamp_output: bool = True,
+    style_cfg=None,
+    style_ref_x0: Optional[torch.Tensor] = None,
+    style_eps_ref: Optional[torch.Tensor] = None,
+    style_refs: Optional[Sequence[Tuple[Any, torch.Tensor, torch.Tensor]]] = None,
+    style_combine_mode: str = "stack",
 ) -> torch.Tensor:
     """inpaint (RePaint): every step, after the Euler update, the kept region
     is re-pinned to ``t_next*x0_orig + (1-t_next)*noise_scale*eps`` against a
     FIXED noise tensor drawn once (see ``_euler_run``). ``mask_image`` is
     white=inpaint (regenerate); resized/blurred by ``prepare_mask``.
     ``cfg_scale``/``timestep_shift``/``num_inference_steps`` are required, no
-    module-level default (AGENTS.md)."""
+    module-level default (AGENTS.md). ``style_*`` (training-free
+    reference-style transfer, off by default) are forwarded to ``_euler_run``
+    unchanged -- see that function's docstring. Mechanically independent of
+    the RePaint mask blend (``mask_latent``/``init_image``/``fixed_noise``
+    apply to the WHOLE image_prediction tensor each step, after the styled
+    ``v_cond`` has already been folded into it via the Euler update), so
+    style + inpaint compose normally."""
     if num_inference_steps < 1:
         raise ValueError(f"{LABEL}: num_inference_steps must be >= 1, got {num_inference_steps}.")
     device, dtype = prefix.device, prefix.dtype
@@ -1005,4 +1167,6 @@ def denoise_loop_inpaint(
     with _t_eps_override(transformer, t_eps):
         return _euler_run(transformer, prefix, x, ts, start_idx, cfg_scale, cfg_interval, cfg_norm, noise_scale,
                           progress_callback=progress_callback, step_callback=step_callback,
-                          mask_latent=mask, init_image=x0, fixed_noise=fixed_noise, clamp_output=clamp_output)
+                          mask_latent=mask, init_image=x0, fixed_noise=fixed_noise, clamp_output=clamp_output,
+                          style_cfg=style_cfg, style_ref_x0=style_ref_x0, style_eps_ref=style_eps_ref,
+                          style_refs=style_refs, style_combine_mode=style_combine_mode)

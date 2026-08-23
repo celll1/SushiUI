@@ -10747,6 +10747,10 @@ components:
                 type: string
                 format: binary
               description: "Optional ControlNet images for direct upload (alternative to base64)"
+            cpu_text_encoding:
+              type: boolean
+              default: false
+              description: "Run text encoding on CPU instead of GPU."
 
     Txt2VidRequest:
       type: object

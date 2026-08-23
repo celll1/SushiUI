@@ -1745,16 +1745,22 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
   // overlay (backend IMAGE_GEN_ARCH_OVERLAYS -- NOT the merged `outpaint`
   // base) whenever the LOADED ARCHITECTURE changes -- mirrors this panel's
   // own `outpaint_video_audio_mode_arch` effect just above (and
-  // Txt2ImgPanel's identical image-defaults effect verbatim). Only SenseNova
-  // has an overlay entry today (steps 50, cfg_scale 4.0).
+  // Txt2ImgPanel's identical image-defaults effect verbatim), including the
+  // revert-to-base behavior when leaving an overlay-carrying arch
+  // (steps/cfg_scale apply to every architecture).
   useEffect(() => {
     if (isVideo || isAudio || !loadedArchType || !generationDefaults) return;
     setParams((prev) => {
       if (prev.image_defaults_arch === loadedArchType) return prev;
       const overlay = (generationDefaults.image_arch_overlays?.[loadedArchType] || {}) as Record<string, unknown>;
+      const prevHadOverlay = prev.image_defaults_arch
+        && generationDefaults.image_arch_overlays?.[prev.image_defaults_arch];
+      const base = generationDefaults.outpaint as Record<string, unknown> | undefined;
       const next: OutpaintPanelParams = { ...prev, image_defaults_arch: loadedArchType };
       if ("steps" in overlay) next.steps = overlay.steps as number;
+      else if (prevHadOverlay && base?.steps !== undefined) next.steps = base.steps as number;
       if ("cfg_scale" in overlay) next.cfg_scale = overlay.cfg_scale as number;
+      else if (prevHadOverlay && base?.cfg_scale !== undefined) next.cfg_scale = base.cfg_scale as number;
       return next;
     });
   }, [isVideo, isAudio, loadedArchType, generationDefaults, params.image_defaults_arch]);

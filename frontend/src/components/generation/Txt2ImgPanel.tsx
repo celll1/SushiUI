@@ -640,17 +640,25 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
   // Re-resolve `steps`/`cfg_scale` from the schema API's per-arch IMAGE
   // overlay (backend IMAGE_GEN_ARCH_OVERLAYS -- NOT the merged `txt2img`
   // base) whenever the LOADED ARCHITECTURE changes -- same shape and same
-  // reason as the audio-defaults effect above. Only SenseNova has an overlay
-  // entry today (steps 50, cfg_scale 4.0), so every other image architecture
-  // leaves `params.steps`/`params.cfg_scale` untouched.
+  // reason as the audio-defaults effect above. Unlike audio_duration etc.,
+  // `steps`/`cfg_scale` apply to every architecture, so leaving an
+  // overlay-carrying arch (e.g. SenseNova) must revert to the base default,
+  // not leave the overlaid value stuck -- but only when the PREVIOUS arch
+  // actually had an overlay entry, to preserve the same first-mount safety
+  // as the audio effect.
   useEffect(() => {
     if (isAudio || isVideo || !loadedArch || !generationDefaults) return;
     setParams((prev) => {
       if (prev.image_defaults_arch === loadedArch) return prev;
       const overlay = (generationDefaults.image_arch_overlays?.[loadedArch] || {}) as Record<string, unknown>;
+      const prevHadOverlay = prev.image_defaults_arch
+        && generationDefaults.image_arch_overlays?.[prev.image_defaults_arch];
+      const base = generationDefaults.txt2img as Partial<typeof DEFAULT_PARAMS> | undefined;
       const next: GenerationParams = { ...prev, image_defaults_arch: loadedArch };
       if ("steps" in overlay) next.steps = overlay.steps as number;
+      else if (prevHadOverlay && base?.steps !== undefined) next.steps = base.steps;
       if ("cfg_scale" in overlay) next.cfg_scale = overlay.cfg_scale as number;
+      else if (prevHadOverlay && base?.cfg_scale !== undefined) next.cfg_scale = base.cfg_scale;
       return next;
     });
   }, [isAudio, isVideo, loadedArch, generationDefaults, params.image_defaults_arch]);

@@ -247,7 +247,7 @@ def run_generation(model, tokenizer, args, width: int, height: int, num_steps: i
 
         x = ops.denoise_loop(
             model, prefix, seed=args.seed, cfg_scale=args.cfg_scale, timestep_shift=args.timestep_shift,
-            num_inference_steps=num_steps, progress_callback=_progress,
+            num_inference_steps=num_steps, cfg_norm=args.cfg_norm, progress_callback=_progress,
         )
     finally:
         if prefix is not None:
@@ -546,6 +546,7 @@ def main(argv=None) -> int:
     parser.add_argument("--steps", type=int, default=SENSENOVA_GENERATION_DEFAULTS["steps"])
     parser.add_argument("--cfg-scale", type=float, default=SENSENOVA_GENERATION_DEFAULTS["cfg_scale"])
     parser.add_argument("--timestep-shift", type=float, default=SENSENOVA_GENERATION_DEFAULTS["timestep_shift"])
+    parser.add_argument("--cfg-norm", default=SENSENOVA_GENERATION_DEFAULTS["cfg_norm"])
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--prompt", default="A photo of a red panda eating a bamboo leaf, studio lighting.")
     parser.add_argument("--negative-prompt", default=None,

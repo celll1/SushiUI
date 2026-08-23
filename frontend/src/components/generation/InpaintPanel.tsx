@@ -43,7 +43,7 @@ import {
   MASK_WHITE_LUMINANCE_THRESHOLD,
 } from "@/utils/maskConventions";
 import { migrateLoopGenerationConfig, computeLoopDecodeDirective } from "@/utils/loopGenerationInheritance";
-import { getSamplers, getScheduleTypes, generateInpaint, generateInpaintVideo, generateInpaintTrainingPreview, toBase64, InpaintParams as ApiInpaintParams, InpaintVideoParams, LoRAConfig, ControlNetConfig, MiniMaxH3References, generateTIPOPrompt, cancelGeneration, getResultFilename, getResultPlaybackFilename, getResultSeed, getResultAncestralSeed, isLatentOnlyResult, unetQuantizationOptions, normalizeUnetQuantization, transformerQuantizationLabel, archSupportsFeature, archDisplayName, inpaintVideoDefaultsForArch, fitVideoCanvas, videoCanvasRule, videoCanvasAxisBounds, videoCanvasExceedsEnvelope, largestValidVideoFrameCount, isValidVideoFrameCount, latentGroupSpans, snapRangeToLatentGroups, isGenerationStalledError, VIDEO_BLOCK_SWAP_MAX } from "@/utils/api";
+import { getSamplers, getScheduleTypes, generateInpaint, generateInpaintVideo, generateInpaintTrainingPreview, imageSourceToBase64, InpaintParams as ApiInpaintParams, InpaintVideoParams, LoRAConfig, ControlNetConfig, MiniMaxH3References, generateTIPOPrompt, cancelGeneration, getResultFilename, getResultPlaybackFilename, getResultSeed, getResultAncestralSeed, isLatentOnlyResult, unetQuantizationOptions, normalizeUnetQuantization, transformerQuantizationLabel, archSupportsFeature, archDisplayName, inpaintVideoDefaultsForArch, fitVideoCanvas, videoCanvasRule, videoCanvasAxisBounds, videoCanvasExceedsEnvelope, largestValidVideoFrameCount, isValidVideoFrameCount, latentGroupSpans, snapRangeToLatentGroups, isGenerationStalledError, VIDEO_BLOCK_SWAP_MAX } from "@/utils/api";
 import MiniMaxH3ReferenceSelector, { EMPTY_MINIMAX_H3_REFERENCES, countMiniMaxH3References } from "../common/MiniMaxH3ReferenceSelector";
 import VideoInpaintTimeline from "./VideoInpaintTimeline";
 import VideoMaskPreviewOverlay from "./VideoMaskPreviewOverlay";
@@ -4154,8 +4154,8 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
       if ((nextItem?.useTrainingModel ?? useTrainingModel) && (nextItem?.trainingRunId ?? activeTraining?.run_id)) {
         // Training-preview branch: encode init+mask, route to
         // /generate/inpaint/training-preview; result is a blob URL.
-        const initImageBase64 = await toBase64(nextItem.inputImage!);
-        const maskImageBase64 = await toBase64(nextItem.maskImage!);
+        const initImageBase64 = await imageSourceToBase64(nextItem.inputImage!);
+        const maskImageBase64 = await imageSourceToBase64(nextItem.maskImage!);
         const preview = await generateInpaintTrainingPreview({
           ...(apiParams as any),
           init_image_base64: initImageBase64,

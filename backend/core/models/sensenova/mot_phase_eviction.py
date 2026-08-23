@@ -15,10 +15,11 @@ weights, 7.55 GiB/half (see MODEL_FACTS.md's sensenova entry).
 Also outside the swapped set (never touched, always GPU-resident):
 ``language_model.model.norm_mot_gen`` and ``vision_model_mot_gen``.
 
-This module registers a callback on ``NEOChatModel._layer_offload_phase_callback``
-and performs three half-transfers per generation (~22.6 GiB of PCIe traffic):
+This module registers a callback on ``NEOChatModel._layer_offload_phase_callback``.
+Callers place only the non-generation half on GPU up front
+(``move_non_gen_to_device``), so a generation performs two half-transfers:
 
-  * "prefix"  notification -> gen half GPU -> pinned CPU.
+  * "prefix"  notification -> gen half pinned in place on CPU (already there).
   * "denoise" notification -> understanding half GPU -> pinned CPU FIRST
     (blocking), THEN gen half pinned CPU -> GPU. Order matters: reversing it
     would co-reside both halves on GPU for one window, which is exactly the
@@ -32,10 +33,7 @@ generation (see ``teardown()``) -- torch's caching host allocator pools freed
 pinned blocks rather than returning them to the OS, so an explicit "unpin"
 would only add a pageable clone on top of the still-reserved pool (measured:
 a net increase, not a release). Leaving tensors pinned lets the next
-generation's ``_pin_module_cpu_`` reuse the same pool for free. Measured
-steady state: RSS +~21.7 GiB once eviction first engages (15.11 GiB pinned --
-7.55 live + 7.55 pooled -- plus pageable staging), flat across generations,
-never returned to the OS.
+generation's ``_pin_module_cpu_`` reuse the same pool for free.
 """
 
 from __future__ import annotations
@@ -106,6 +104,7 @@ class MotPhaseEvictor:
 
     def __init__(self, transformer: nn.Module, device: Any):
         self.device = device
+        self.transformer = transformer
         layers = list(transformer.language_model.model.layers)
         self._gen_modules: List[nn.Module] = []
         self._und_modules: List[nn.Module] = []
@@ -142,11 +141,10 @@ class MotPhaseEvictor:
         und_bytes = sum(_module_nbytes(m) for m in self._und_modules)
         self.gen_bytes = gen_bytes
         self.und_bytes = und_bytes
+        # Host RAM: pinned tensors are pooled by torch's caching host allocator and
+        # reused across generations, never returned to the OS.
         print(f"[{LABEL}] MoT phase eviction ENABLED: {len(self._gen_modules)} generation-branch "
-              f"module(s) across {len(layers)} layers, {gen_bytes / 1024 ** 3:.2f} GiB. Host RAM: "
-              f"pinned tensors are pooled by torch's caching host allocator and reused across "
-              f"generations, not freed after each one (measured steady state: RSS +~21.7 GiB, "
-              f"15.11 GiB pinned + pageable staging, never returned to the OS).")
+              f"module(s) across {len(layers)} layers, {gen_bytes / 1024 ** 3:.2f} GiB.")
         self._sanity_check_selection(len(layers))
 
     def _sanity_check_selection(self, num_layers: int) -> None:
@@ -173,6 +171,28 @@ class MotPhaseEvictor:
                 add_warning(msg, code="sensenova_mot_phase_eviction_selection_suspect")
             except Exception:
                 pass
+
+    def move_non_gen_to_device(self) -> None:
+        """Initial placement for everything OUTSIDE the generation branch,
+        used INSTEAD OF a blanket ``transformer.to(device)``: a whole-model
+        move followed by eviction still marks both halves GPU-resident on
+        ``max_memory_allocated()``'s high-water mark, however brief the
+        overlap.
+
+        Own params/buffers only -- ``.to()`` on a decoder layer container
+        would recurse into its gen-branch children, which are classified as
+        leaves."""
+        gen_ids = {id(m) for m in self._gen_modules}
+        device = self.device
+        for module in self.transformer.modules():
+            if id(module) in gen_ids:
+                continue
+            for key, p in list(module._parameters.items()):
+                if p is not None:
+                    module._parameters[key].data = p.data.to(device)
+            for key, b in list(module._buffers.items()):
+                if b is not None:
+                    module._buffers[key] = b.to(device)
 
     def on_phase(self, phase: str) -> None:
         """Bound to ``transformer._layer_offload_phase_callback`` -- called

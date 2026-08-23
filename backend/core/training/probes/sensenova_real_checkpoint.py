@@ -5,8 +5,12 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
+import random
+import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,6 +30,10 @@ EXPECTED_TARGETS = 294
 EXPECTED_ATTENTION_TARGETS = 168
 EXPECTED_MLP_TARGETS = 126
 EXPECTED_LAYERS = 42
+EXIT_SMOKE_STEPS = 3
+EXIT_SMOKE_WIDTH = 64
+EXIT_SMOKE_HEIGHT = 64
+EXIT_SMOKE_RUN_NAME = "sensenova_exit_smoke"
 
 
 @dataclass(frozen=True)
@@ -434,21 +442,602 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def trainer_exit_smoke_config() -> dict[str, Any]:
+    """Return the fixed, intentionally small Phase 1 exit-smoke contract.
+
+    This is kept as data so the CPU test can pin the contract without loading a
+    checkpoint.  The real trainer arm consumes the same mapping below.
+    """
+    return {
+        "constructor": {
+            "lora_rank": 1,
+            "lora_alpha": 1,
+            "lora_dtype": "fp32",
+            "weight_dtype": "bf16",
+            "training_dtype": "bf16",
+            "output_dtype": "fp32",
+            "vae_dtype": "bf16",
+            "mixed_precision": True,
+            "attention_backend": "native",
+            "use_flash_attention": False,
+            "blocks_to_swap": 0,
+        },
+        "train_config": {
+            "gradient_checkpointing": True,
+            "attention_backend": "native",
+            "use_flash_attention": False,
+            "batch_size": 1,
+            "blocks_to_swap": 0,
+            "use_reference_images": False,
+            "text_encoding_mode": "onthefly_gpu",
+            "latent_encoding_mode": "onthefly_gpu",
+            "noise_process": "flow",
+            "prediction_target": "velocity",
+            "gradient_accumulation_steps": 1,
+            "multi_noise_timesteps": 1,
+        },
+        "train": {
+            "total_steps": EXIT_SMOKE_STEPS,
+            "batch_size": 1,
+            "save_every_n_steps": EXIT_SMOKE_STEPS,
+            "sample_every_n_steps": 0,
+            "optimizer_type": "adamw",
+            "lr_scheduler_type": "constant",
+            "enable_bucketing": False,
+            "base_resolutions": [EXIT_SMOKE_WIDTH],
+            "gradient_accumulation_steps": 1,
+            "multi_noise_timesteps": 1,
+            "text_encoding_mode": "onthefly_gpu",
+            "latent_encoding_mode": "onthefly_gpu",
+            "use_reference_images": False,
+        },
+    }
+
+
+class _ExitSmokeDataset:
+    """The smallest dataset object accepted by ``BaseTrainer.train``."""
+
+    unique_id = "sensenova-phase1-exit-smoke"
+
+    def __init__(self, image_path: Path, prompt: str):
+        self.items = [{
+            "image_path": str(image_path),
+            "caption": prompt,
+            "width": EXIT_SMOKE_WIDTH,
+            "height": EXIT_SMOKE_HEIGHT,
+            "dataset_unique_id": self.unique_id,
+        }]
+        self._reloaded = False
+
+    def reload_for_epoch(self, epoch_num: int, run_id: int | None = None):
+        del run_id
+        if epoch_num == 0 and not self._reloaded:
+            self._reloaded = True
+            return None
+        return [dict(item) for item in self.items]
+
+
+def _write_deterministic_smoke_image(path: Path) -> None:
+    from PIL import Image
+
+    pixels = bytearray()
+    for y in range(EXIT_SMOKE_HEIGHT):
+        for x in range(EXIT_SMOKE_WIDTH):
+            pixels.extend(((17 * x + 3 * y) % 256,
+                           (5 * x + 19 * y) % 256,
+                           (x + 11 * y) % 256))
+    Image.frombytes("RGB", (EXIT_SMOKE_WIDTH, EXIT_SMOKE_HEIGHT), bytes(pixels)).save(
+        path, format="PNG"
+    )
+
+
+def _hash_named_tensors(named_tensors) -> tuple[str, bool]:
+    digest = hashlib.sha256()
+    finite = True
+    for name, tensor in sorted(named_tensors, key=lambda pair: pair[0]):
+        if not torch.isfinite(tensor.detach()).all():
+            finite = False
+        payload = tensor.detach().cpu().contiguous()
+        digest.update(name.encode("utf-8"))
+        digest.update(str(payload.dtype).encode("ascii"))
+        digest.update(repr(tuple(payload.shape)).encode("ascii"))
+        # reshape first: safetensors stores scalar alpha tensors as 0-D values,
+        # for which a direct byte view is not valid on all torch versions.
+        digest.update(payload.reshape(-1).view(torch.uint8).numpy().tobytes())
+    return digest.hexdigest(), finite
+
+
+def _lora_layer_hash(lora_layers: dict[str, torch.nn.Module]) -> tuple[str, bool]:
+    named = []
+    for name, layer in lora_layers.items():
+        named.append((f"{name}.lora_down.weight", layer.lora_down.weight))
+        named.append((f"{name}.lora_up.weight", layer.lora_up.weight))
+    return _hash_named_tensors(named)
+
+
+def _inspect_saved_lora(path: Path) -> dict[str, Any]:
+    from safetensors import safe_open
+
+    with safe_open(str(path), framework="pt", device="cpu") as handle:
+        keys = sorted(handle.keys())
+        metadata = dict(handle.metadata() or {})
+        all_tensors = [(key, handle.get_tensor(key)) for key in keys]
+    if len(keys) != EXPECTED_TARGETS * 3:
+        raise AssertionError(f"expected 882 LoRA tensors, got {len(keys)}")
+    target_names = {
+        key.rsplit(".lora_down.weight", 1)[0]
+        for key in keys
+        if key.endswith(".lora_down.weight")
+    }
+    target_names.update(
+        key.rsplit(".lora_up.weight", 1)[0]
+        for key in keys
+        if key.endswith(".lora_up.weight")
+    )
+    if len(target_names) != EXPECTED_TARGETS:
+        raise AssertionError(
+            f"expected {EXPECTED_TARGETS} saved LoRA targets, got {len(target_names)}"
+        )
+    for target in target_names:
+        expected_keys = {
+            f"{target}.lora_down.weight",
+            f"{target}.lora_up.weight",
+            f"{target}.alpha",
+        }
+        if not expected_keys.issubset(keys):
+            raise AssertionError(f"saved LoRA target {target!r} is missing a tensor")
+    all_hash, all_finite = _hash_named_tensors(all_tensors)
+    parameter_hash, parameter_finite = _hash_named_tensors(
+        (key, tensor) for key, tensor in all_tensors if key.endswith(".weight")
+    )
+    required_metadata = {
+        "tensor_kind": "neo_hf_lora",
+        "model_type": "sensenova",
+        "modelspec.architecture": "sensenova",
+        "lora_targets": "generation",
+        "lora_rank": "1",
+        "lora_alpha": "1",
+        "step": str(EXIT_SMOKE_STEPS),
+        "epoch": "2",
+    }
+    for key, expected in required_metadata.items():
+        if metadata.get(key) != expected:
+            raise AssertionError(
+                f"saved LoRA metadata {key!r}={metadata.get(key)!r}, expected {expected!r}"
+            )
+    if not (all_finite and parameter_finite):
+        raise AssertionError("saved LoRA contains a non-finite tensor")
+    return {
+        "tensor_count": len(keys),
+        "target_count": len(target_names),
+        "parameter_tensor_count": sum(key.endswith(".weight") for key in keys),
+        "metadata": required_metadata,
+        "tensor_sha256": all_hash,
+        "parameter_sha256": parameter_hash,
+        "finite": True,
+    }
+
+
+def _run_trainer_exit_smoke_arm(args: argparse.Namespace) -> dict[str, Any]:
+    if not torch.cuda.is_available():
+        raise RuntimeError("SenseNova trainer exit smoke requires CUDA")
+
+    from core.training.lora_trainer import LoRATrainer
+
+    config = trainer_exit_smoke_config()
+    workdir = Path(args.smoke_workdir)
+    workdir.mkdir(parents=True, exist_ok=True)
+    image_path = workdir / "training_image.png"
+    output_dir = workdir / "trainer_output"
+    checkpoint_path = output_dir / f"{EXIT_SMOKE_RUN_NAME}_step_{EXIT_SMOKE_STEPS:06d}.safetensors"
+    _write_deterministic_smoke_image(image_path)
+
+    import numpy as np
+
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    torch.cuda.manual_seed_all(args.seed)
+    torch.backends.cuda.matmul.allow_tf32 = False
+    torch.backends.cudnn.allow_tf32 = False
+    torch.backends.cudnn.deterministic = True
+    torch.use_deterministic_algorithms(True)
+    torch.cuda.reset_peak_memory_stats()
+
+    trainer_kwargs = dict(config["constructor"])
+    trainer = LoRATrainer(
+        model_path=args.model_path,
+        output_dir=str(output_dir),
+        run_name=EXIT_SMOKE_RUN_NAME,
+        run_id=None,
+        learning_rate=1e-4,
+        device="cuda",
+        train_config=dict(config["train_config"]),
+        **trainer_kwargs,
+    )
+    losses: list[float] = []
+    training_steps: list[int] = []
+
+    def progress_callback(
+        phase: str,
+        step: int,
+        total: int,
+        epoch: int = 0,
+        loss: float | None = None,
+    ) -> None:
+        del total, epoch
+        if phase != "training":
+            return
+        if loss is None or not math.isfinite(float(loss)):
+            raise AssertionError(f"non-finite SenseNova exit-smoke loss: {loss!r}")
+        training_steps.append(int(step))
+        losses.append(float(loss))
+
+    train = dict(config["train"])
+    train.update({
+        "num_epochs": 1,
+        "sample_prompts": [],
+        "sample_guidance_scale": 1.0,
+        "sample_steps": 1,
+        "sample_width": EXIT_SMOKE_WIDTH,
+        "sample_height": EXIT_SMOKE_HEIGHT,
+        "sample_seed": args.seed,
+        "max_grad_norm": 1.0,
+        "progress_callback": progress_callback,
+        "run_id": None,
+        "max_step_saves_to_keep": 1,
+        "force_recache": False,
+    })
+    dataset = _ExitSmokeDataset(image_path, args.prompt)
+    trainer.train(datasets=[dataset], **train)
+
+    if training_steps != list(range(1, EXIT_SMOKE_STEPS + 1)):
+        raise AssertionError(
+            f"expected training callback steps [1, 2, 3], got {training_steps}"
+        )
+    if len(losses) != EXIT_SMOKE_STEPS:
+        raise AssertionError(f"expected {EXIT_SMOKE_STEPS} finite training losses, got {len(losses)}")
+    if not checkpoint_path.is_file():
+        raise AssertionError(f"trainer did not save {checkpoint_path.name}")
+    if len(trainer.lora_layers) != EXPECTED_TARGETS:
+        raise AssertionError(
+            f"trainer LoRA target count {len(trainer.lora_layers)} != {EXPECTED_TARGETS}"
+        )
+
+    lora_hash, lora_finite = _lora_layer_hash(trainer.lora_layers)
+    if not lora_finite:
+        raise AssertionError("trainer LoRA parameters contain a non-finite value")
+    saved = _inspect_saved_lora(checkpoint_path)
+    if saved["parameter_sha256"] != lora_hash:
+        raise AssertionError("saved LoRA tensor hash differs from live trainer parameters")
+
+    torch.cuda.synchronize()
+    peak = {
+        "allocated": int(torch.cuda.max_memory_allocated()),
+        "reserved": int(torch.cuda.max_memory_reserved()),
+    }
+    result = {
+        "checkpoint": {
+            "name": checkpoint_path.name,
+            **saved,
+        },
+        "dataset": {
+            "unique_id": _ExitSmokeDataset.unique_id,
+            "width": EXIT_SMOKE_WIDTH,
+            "height": EXIT_SMOKE_HEIGHT,
+            "channels": 3,
+            "format": "RGB",
+        },
+        "targets": EXPECTED_TARGETS,
+        "seed": args.seed,
+        "training_steps": training_steps,
+        "losses": losses,
+        "losses_finite": True,
+        "lora_parameters_finite": True,
+        "lora_parameter_sha256": lora_hash,
+        "peak_memory": peak,
+        "gradient_checkpointing": bool(trainer.gradient_checkpointing),
+        "attention_backend": "native",
+        "determinism": {
+            "python_random": True,
+            "numpy_random": True,
+            "torch_seed": args.seed,
+            "tf32": False,
+            "cudnn_deterministic": True,
+            "deterministic_algorithms": True,
+        },
+        "weight_dtype": str(trainer.weight_dtype),
+        "training_dtype": str(trainer.training_dtype),
+    }
+    try:
+        trainer.writer.close()
+    finally:
+        trainer._db_executor.shutdown(wait=True)
+    return result
+
+
+def _runtime_generation_args(args: argparse.Namespace, lora_path: str | None):
+    return SimpleNamespace(
+        attn_backend="native",
+        cfg_scale=args.smoke_cfg_scale,
+        timestep_shift=args.smoke_timestep_shift,
+        cfg_norm=args.smoke_cfg_norm,
+        seed=args.seed,
+        prompt=args.prompt,
+        negative_prompt=None,
+        output=None,
+        lora=lora_path,
+        lora_strength=0.0,
+        return_tensor=True,
+    )
+
+
+def _tensor_digest(tensor: torch.Tensor) -> str:
+    digest, finite = _hash_named_tensors((("denoise", tensor),))
+    if not finite:
+        raise AssertionError("runtime denoise tensor is non-finite")
+    return digest
+
+
+def _take_denoise_tensor(result: dict[str, Any]) -> torch.Tensor:
+    """Remove the optional tensor before an arm result is written as JSON."""
+    try:
+        tensor = result.pop("denoise_tensor")
+    except KeyError as exc:
+        raise AssertionError("runtime generation did not return denoise_tensor") from exc
+    if not isinstance(tensor, torch.Tensor):
+        raise AssertionError("runtime generation returned a non-tensor denoise_tensor")
+    return tensor
+
+
+def _run_runtime_verification_arm(args: argparse.Namespace) -> dict[str, Any]:
+    if not torch.cuda.is_available():
+        raise RuntimeError("SenseNova runtime verification requires CUDA")
+
+    from core.models.sensenova import sensenova_lora
+    from core.models.sensenova import smoke as runtime_smoke
+
+    torch.backends.cuda.matmul.allow_tf32 = False
+    torch.backends.cudnn.allow_tf32 = False
+    torch.backends.cudnn.deterministic = True
+    torch.use_deterministic_algorithms(True)
+    torch.manual_seed(args.seed)
+    torch.cuda.manual_seed_all(args.seed)
+
+    model, _config, tokenizer = runtime_smoke._load_converted(
+        args.model_path,
+        torch.device("cuda"),
+        torch.bfloat16,
+    )
+    model.eval()
+    model.requires_grad_(False)
+    before_ids = {
+        path: id(module)
+        for path, _parent, _attr, module in sensenova_lora.iter_sensenova_lora_targets(model)
+    }
+    base_args = _runtime_generation_args(args, None)
+    base_result = runtime_smoke.run_generation(
+        model, tokenizer, base_args, EXIT_SMOKE_WIDTH, EXIT_SMOKE_HEIGHT, 1
+    )
+    base_tensor = _take_denoise_tensor(base_result)
+
+    torch.manual_seed(args.seed)
+    torch.cuda.manual_seed_all(args.seed)
+    lora_args = _runtime_generation_args(args, args.smoke_lora_path)
+    lora_result = runtime_smoke.run_generation(
+        model, tokenizer, lora_args, EXIT_SMOKE_WIDTH, EXIT_SMOKE_HEIGHT, 1
+    )
+    lora_tensor = _take_denoise_tensor(lora_result)
+    after_ids = {
+        path: id(module)
+        for path, _parent, _attr, module in sensenova_lora.iter_sensenova_lora_targets(model)
+    }
+    equal = torch.equal(base_tensor, lora_tensor)
+    applied = int(lora_result.get("lora_applied", 0))
+    restored = int(lora_result.get("lora_restored", 0))
+    identity_restored = before_ids == after_ids
+    if not equal:
+        raise AssertionError("runtime LoRA strength=0 changed the denoise tensor")
+    if applied != EXPECTED_TARGETS or restored != EXPECTED_TARGETS:
+        raise AssertionError(f"runtime LoRA apply/restore counts are {applied}/{restored}")
+    if not identity_restored:
+        raise AssertionError("runtime LoRA restore did not recover every module identity")
+
+    result = {
+        "settings": {
+            "prompt": args.prompt,
+            "seed": args.seed,
+            "cfg_scale": args.smoke_cfg_scale,
+            "timestep_shift": args.smoke_timestep_shift,
+            "cfg_norm": args.smoke_cfg_norm,
+            "steps": 1,
+            "width": EXIT_SMOKE_WIDTH,
+            "height": EXIT_SMOKE_HEIGHT,
+            "attention_backend": "native",
+            "attention_mode": "inference",
+            "tf32": False,
+            "deterministic_algorithms": True,
+        },
+        "base_denoise_sha256": _tensor_digest(base_tensor),
+        "strength0_denoise_sha256": _tensor_digest(lora_tensor),
+        "strength0_equal": True,
+        "lora_applied": applied,
+        "lora_restored": restored,
+        "module_identity_restored": identity_restored,
+        "base_peak_vram_gb": base_result.get("peak_vram_gb"),
+        "strength0_peak_vram_gb": lora_result.get("peak_vram_gb"),
+    }
+    del model
+    import gc
+    gc.collect()
+    torch.cuda.empty_cache()
+    return result
+
+
+def _run_exit_smoke_subprocess(
+    args: argparse.Namespace,
+    arm: str,
+    workdir: Path,
+    *,
+    lora_path: Path | None = None,
+) -> dict[str, Any]:
+    result_path = workdir / f"{arm}.json"
+    cmd = [
+        str(_repo_venv_python()),
+        str(Path(__file__).resolve()),
+        "--model-path", args.model_path,
+        "--seed", str(args.seed),
+        "--prompt", args.prompt,
+        "--smoke-cfg-scale", str(args.smoke_cfg_scale),
+        "--smoke-timestep-shift", str(args.smoke_timestep_shift),
+        "--smoke-cfg-norm", args.smoke_cfg_norm,
+        "--smoke-arm", arm,
+        "--smoke-workdir", str(workdir),
+        "--smoke-arm-json", str(result_path),
+    ]
+    if lora_path is not None:
+        cmd.extend(("--smoke-lora-path", str(lora_path)))
+    env = dict(os.environ)
+    env["PYTHONUNBUFFERED"] = "1"
+    try:
+        completed = subprocess.run(
+            cmd,
+            cwd=str(REPO_ROOT),
+            env=env,
+            timeout=args.smoke_timeout_s,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"SenseNova exit-smoke {arm} arm timed out") from exc
+    if completed.returncode != 0:
+        raise RuntimeError(
+            f"SenseNova exit-smoke {arm} arm exited with code {completed.returncode}"
+        )
+    if not result_path.is_file():
+        raise RuntimeError(f"SenseNova exit-smoke {arm} arm wrote no JSON result")
+    with result_path.open(encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def run_trainer_exit_smoke(args: argparse.Namespace) -> dict[str, Any]:
+    """Run training and runtime verification in separate, short-lived arms."""
+    if not torch.cuda.is_available():
+        raise RuntimeError("SenseNova trainer exit smoke requires CUDA")
+    with tempfile.TemporaryDirectory(prefix="sensenova_phase1_exit_smoke_") as raw_workdir:
+        workdir = Path(raw_workdir)
+        trainer = _run_exit_smoke_subprocess(args, "trainer", workdir)
+        lora_path = workdir / "trainer_output" / (
+            f"{EXIT_SMOKE_RUN_NAME}_step_{EXIT_SMOKE_STEPS:06d}.safetensors"
+        )
+        if not lora_path.is_file():
+            raise RuntimeError(f"trainer arm did not produce {lora_path.name}")
+        runtime = _run_exit_smoke_subprocess(
+            args, "runtime", workdir, lora_path=lora_path
+        )
+    return {
+        "probe": "sensenova_phase1_trainer_exit_smoke",
+        "checkpoint": Path(args.model_path).name,
+        "trainer": trainer,
+        "runtime": runtime,
+        "process_isolation": "trainer_then_runtime",
+    }
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model-path", required=True)
-    parser.add_argument("--checkpointing", choices=("on", "off"), required=True)
+    parser.add_argument(
+        "--checkpointing",
+        choices=("on", "off"),
+        default=None,
+        help="Required for the original two-step checkpoint probe; not used by --trainer-exit-smoke.",
+    )
     parser.add_argument("--caption", default="a red cube on a white table")
     parser.add_argument("--seed", type=int, default=1234)
-    return parser.parse_args()
+    parser.add_argument(
+        "--trainer-exit-smoke",
+        action="store_true",
+        help="Opt-in Phase 1 real trainer + fresh runtime verification (CUDA, multi-process).",
+    )
+    parser.add_argument("--prompt", default="a red cube on a white table")
+    parser.add_argument(
+        "--smoke-cfg-scale",
+        type=float,
+        default=None,
+    )
+    parser.add_argument(
+        "--smoke-timestep-shift",
+        type=float,
+        default=None,
+    )
+    parser.add_argument(
+        "--smoke-cfg-norm",
+        default=None,
+    )
+    parser.add_argument("--smoke-timeout-s", type=float, default=3600.0)
+    parser.add_argument("--smoke-json-out", default=None)
+    parser.add_argument("--smoke-arm", choices=("trainer", "runtime"), default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--smoke-workdir", default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--smoke-arm-json", default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--smoke-lora-path", default=None, help=argparse.SUPPRESS)
+    args = parser.parse_args()
+    if not args.trainer_exit_smoke and args.smoke_arm is None and args.checkpointing is None:
+        parser.error("--checkpointing is required unless --trainer-exit-smoke is selected")
+    if args.smoke_arm is not None and (args.smoke_workdir is None or args.smoke_arm_json is None):
+        parser.error("internal smoke arm requires --smoke-workdir and --smoke-arm-json")
+    if args.smoke_arm == "runtime" and args.smoke_lora_path is None:
+        parser.error("internal runtime smoke arm requires --smoke-lora-path")
+    if (args.trainer_exit_smoke or args.smoke_arm is not None) and any(
+        value is None
+        for value in (args.smoke_cfg_scale, args.smoke_timestep_shift, args.smoke_cfg_norm)
+    ):
+        from api.param_defaults import SENSENOVA_GENERATION_DEFAULTS
+
+        if args.smoke_cfg_scale is None:
+            args.smoke_cfg_scale = SENSENOVA_GENERATION_DEFAULTS["cfg_scale"]
+        if args.smoke_timestep_shift is None:
+            args.smoke_timestep_shift = SENSENOVA_GENERATION_DEFAULTS["timestep_shift"]
+        if args.smoke_cfg_norm is None:
+            args.smoke_cfg_norm = SENSENOVA_GENERATION_DEFAULTS["cfg_norm"]
+    return args
 
 
-def main() -> None:
+def _write_smoke_arm_result(args: argparse.Namespace, result: dict[str, Any]) -> None:
+    result_path = Path(args.smoke_arm_json)
+    result_path.parent.mkdir(parents=True, exist_ok=True)
+    with result_path.open("w", encoding="utf-8") as handle:
+        json.dump(result, handle, indent=2, sort_keys=True)
+
+
+def _write_public_smoke_result(args: argparse.Namespace, result: dict[str, Any]) -> None:
+    if args.smoke_json_out:
+        result_path = Path(args.smoke_json_out)
+        result_path.parent.mkdir(parents=True, exist_ok=True)
+        with result_path.open("w", encoding="utf-8") as handle:
+            json.dump(result, handle, indent=2, sort_keys=True)
+
+
+def main() -> int:
     _require_repo_venv()
     args = _parse_args()
-    result = run_probe(args)
+    if args.smoke_arm == "trainer":
+        result = _run_trainer_exit_smoke_arm(args)
+        _write_smoke_arm_result(args, result)
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return 0
+    if args.smoke_arm == "runtime":
+        result = _run_runtime_verification_arm(args)
+        _write_smoke_arm_result(args, result)
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return 0
+    if args.trainer_exit_smoke:
+        result = run_trainer_exit_smoke(args)
+        _write_public_smoke_result(args, result)
+    else:
+        result = run_probe(args)
     print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

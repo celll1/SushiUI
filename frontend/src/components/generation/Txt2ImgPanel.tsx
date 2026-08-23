@@ -676,6 +676,14 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         : { ...prev, num_frames: normalized };
     });
   }, [archCapabilities, loadedArch]);
+  // The Block Swap checkbox is hidden (not disabled) on unsupported architectures,
+  // so a flag carried over from a previous model would keep being sent with no
+  // visible control to clear it. The sub-fields are inert unless the gate is on.
+  useEffect(() => {
+    if (!archCapabilities || !loadedArch) return;
+    if (archSupportsFeature(archCapabilities, loadedArch, "block_swap")) return;
+    setParams((prev) => (prev.enable_block_swap ? { ...prev, enable_block_swap: false } : prev));
+  }, [archCapabilities, loadedArch]);
   // Same snap for a held `chainSegmentFrames`: a non-null value carried over
   // from another architecture's grid -- including one just restored from
   // localStorage -- is moved to the nearest length THIS architecture

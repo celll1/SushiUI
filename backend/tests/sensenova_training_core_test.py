@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from core.training.arch.sensenova import SenseNovaArchHandler
 from core.training.ops.sensenova_ops import (
     SenseNovaTrainingPrefix,
-    _assert_plain_int8_training_base,
+    _assert_supported_quantized_training_base,
     encode_prompt,
     load_components,
     setup_attention_backend,
@@ -112,26 +112,76 @@ def test_load_components_keeps_training_runtime_minimal():
     setup.assert_called_once_with(trainer, "native")
 
 
-def test_plain_int8_training_base_refuses_convrot_and_incomplete_census():
-    incomplete = _attach_plain_int8(_Transformer(), count=587)
-    with pytest.raises(RuntimeError, match="plain Int8Linear=587"):
-        _assert_plain_int8_training_base(incomplete)
-
+def _convrot_linear():
     from core.models.common.convrot_int8_linear import ConvRotInt8Linear
 
-    mixed = _attach_plain_int8(_Transformer(), count=587)
-    mixed.quantized_linears.append(
-        ConvRotInt8Linear(
-            256,
-            1,
-            False,
-            torch.bfloat16,
-            convrot_groupsize=256,
-            marker_numel=1,
-        )
+    return ConvRotInt8Linear(
+        256, 1, False, torch.bfloat16, convrot_groupsize=256, marker_numel=1
     )
+
+
+def _attach_convrot_int8(transformer, count=588):
+    transformer.quantized_linears = nn.ModuleList(
+        [_convrot_linear() for _ in range(count)]
+    )
+    return transformer
+
+
+def test_quantized_training_base_accepts_either_pure_flavour():
+    _assert_supported_quantized_training_base(_attach_plain_int8(_Transformer()))
+    _assert_supported_quantized_training_base(_attach_convrot_int8(_Transformer()))
+
+
+def test_quantized_training_base_refuses_mixed_and_off_count_census():
+    incomplete = _attach_plain_int8(_Transformer(), count=587)
+    with pytest.raises(RuntimeError, match="Int8Linear=587"):
+        _assert_supported_quantized_training_base(incomplete)
+
+    short_convrot = _attach_convrot_int8(_Transformer(), count=587)
+    with pytest.raises(RuntimeError, match="ConvRotInt8Linear=587"):
+        _assert_supported_quantized_training_base(short_convrot)
+
+    mixed = _attach_plain_int8(_Transformer(), count=587)
+    mixed.quantized_linears.append(_convrot_linear())
     with pytest.raises(RuntimeError, match="ConvRotInt8Linear=1"):
-        _assert_plain_int8_training_base(mixed)
+        _assert_supported_quantized_training_base(mixed)
+
+    over = _attach_convrot_int8(_Transformer(), count=589)
+    with pytest.raises(RuntimeError, match="ConvRotInt8Linear=589"):
+        _assert_supported_quantized_training_base(over)
+
+    with pytest.raises(RuntimeError, match="bf16 base"):
+        _assert_supported_quantized_training_base(_Transformer())
+
+
+def test_quantized_training_base_refuses_unknown_quantized_subclass():
+    from core.models.common.convrot_int8_linear import ConvRotInt8Linear
+
+    class _FutureConvRot(ConvRotInt8Linear):
+        pass
+
+    transformer = _Transformer()
+    transformer.quantized_linears = nn.ModuleList(
+        [
+            _FutureConvRot(
+                256, 1, False, torch.bfloat16, convrot_groupsize=256, marker_numel=1
+            )
+            for _ in range(588)
+        ]
+    )
+    with pytest.raises(RuntimeError, match="_FutureConvRot=588"):
+        _assert_supported_quantized_training_base(transformer)
+
+
+def test_quantized_training_base_refuses_untested_pure_fp8_flavour():
+    from core.models.ideogram4.vendor.fp8_linear import Fp8Linear
+
+    transformer = _Transformer()
+    transformer.quantized_linears = nn.ModuleList(
+        [Fp8Linear(256, 1, False, torch.bfloat16) for _ in range(588)]
+    )
+    with pytest.raises(RuntimeError, match="Fp8Linear=588"):
+        _assert_supported_quantized_training_base(transformer)
 
 
 def test_attention_setup_stamps_training_mode_and_checks_layer_count():

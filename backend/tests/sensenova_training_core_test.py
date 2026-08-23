@@ -256,10 +256,10 @@ def test_flow_step_matches_vendor_noising_conditioning_and_velocity_math():
     assert prefix.cache is cache and cache.layers[0].keys is key
 
 
-def test_handler_is_deliberately_unregistered_and_declares_pixel_grid():
+def test_handler_is_registered_and_declares_pixel_grid():
     handler = SenseNovaArchHandler()
     assert handler.name == "sensenova"
     assert handler.pixel_align == 32
     from core.training.arch import ARCH_REGISTRY
 
-    assert "sensenova" not in ARCH_REGISTRY
+    assert ARCH_REGISTRY["sensenova"] is SenseNovaArchHandler

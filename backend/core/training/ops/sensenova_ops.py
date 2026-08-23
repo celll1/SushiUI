@@ -1,6 +1,6 @@
 """Training-only SenseNova decoder operations.
 
-Registration waits until the SenseNova-specific trainer integration is complete.
+The trainer supplies one immutable prompt prefix per physical B1 batch.
 """
 
 from __future__ import annotations
@@ -53,6 +53,8 @@ def setup_attention_backend(trainer: Any, backend: str) -> None:
 
 def load_components(trainer: Any) -> None:
     """Load the frozen SenseNova graph; the adapter owns trainable parameters."""
+    if getattr(trainer, "blocks_to_swap", 0) != 0:
+        raise ValueError("SenseNova training does not implement blocks_to_swap; set it to 0")
     from core.models.sensenova.loader import load_sensenova_from_path
 
     components = load_sensenova_from_path(trainer.model_path, torch_dtype=trainer.weight_dtype)

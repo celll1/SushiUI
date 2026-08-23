@@ -1,9 +1,9 @@
-"""Unregistered SenseNova training architecture handler."""
+"""SenseNova B1 LoRA training architecture handler."""
 
 from __future__ import annotations
 
-from core.models.components.wiring import SENSENOVA_WIRING
 from core.training.arch.base_arch import ArchHandler, SampleContext, TrainStepContext
+from core.training.components.wiring import SENSENOVA_WIRING
 
 
 class SenseNovaArchHandler(ArchHandler):
@@ -55,7 +55,7 @@ class SenseNovaArchHandler(ArchHandler):
         return sensenova_ops.train_step(
             trainer,
             images=ctx.latents,
-            prefix=ctx.text_embeddings,
+            prefix=ctx.sensenova_prefix,
             timesteps=ctx.timesteps,
             profile_vram=ctx.profile_vram,
         )

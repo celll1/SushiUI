@@ -10,6 +10,7 @@ import yaml
 import os
 import signal
 import time
+import re
 
 # Reduce CUDA caching-allocator fragmentation across the many aspect-ratio bucket
 # shapes (the allocator otherwise reserves a non-reusable block per distinct shape,
@@ -117,7 +118,7 @@ def _is_krea2_base_model(base_model_path: str) -> bool:
 
 
 def _is_bf16_native_base_model(base_model_path: str) -> bool:
-    """Lens / LTX-2.3 / ACE-Step / MiniMax-H3: bf16-native DiT / audio archs NOT
+    """Large bf16-native DiT / audio architectures not handled by name guards.
     caught by the per-name checks above. bf16 is their correct training dtype and
     is REQUIRED for Full fine-tune (fp16 Full-FT is rejected by the trainer --
     GradScaler.unscale_ needs fp32 master params; bf16 needs no scaler). Path-name
@@ -133,14 +134,120 @@ def _is_bf16_native_base_model(base_model_path: str) -> bool:
     place."""
     lowered = (base_model_path or "").lower()
     if any(s in lowered for s in ("lens", "ltx", "ace-step", "acestep",
-                                  "minimax", "minimax_h3", "minimax-h3")):
+                                  "minimax", "minimax_h3", "minimax-h3",
+                                  "sensenova", "sense-nova")):
         return True
     try:
         from core.model_loader import ModelLoader
         return ModelLoader.detect_model_type(base_model_path) in (
-            "lens", "ltx2", "acestep", "minimax_h3")
+            "lens", "ltx2", "acestep", "minimax_h3", "sensenova")
     except Exception:
         return False
+
+
+def _apply_sensenova_training_contract(
+    base_model_path: str,
+    network_type: str,
+    train_config: Dict[str, Any],
+    process_config: Dict[str, Any],
+) -> bool:
+    """Validate the initial SenseNova B1 LoRA-only training envelope."""
+    if network_type == "vae_decoder":
+        return False
+    try:
+        from core.model_loader import ModelLoader
+        is_sensenova = ModelLoader.detect_model_type(base_model_path) == "sensenova"
+    except Exception:
+        lowered = (base_model_path or "").lower()
+        is_sensenova = "sensenova" in lowered or "sense-nova" in lowered
+    if not is_sensenova:
+        return False
+    if network_type != "lora":
+        raise ValueError("SenseNova training currently supports network.type='lora' only")
+    batch_size = _normalize_sensenova_integer(train_config, "batch_size", 1)
+    if batch_size != 1:
+        raise ValueError(
+            "SenseNova training requires batch_size=1; use "
+            "gradient_accumulation_steps for a larger effective batch"
+        )
+    blocks_to_swap = _normalize_sensenova_integer(train_config, "blocks_to_swap", 0)
+    if blocks_to_swap != 0:
+        raise ValueError("SenseNova training does not implement blocks_to_swap; set it to 0")
+    use_reference_images = _normalize_sensenova_bool(
+        train_config, "use_reference_images", False
+    )
+    if use_reference_images:
+        raise ValueError("SenseNova reference-image training is deferred to Phase 3")
+    train_config["text_encoding_mode"] = "onthefly_gpu"
+    train_config["latent_encoding_mode"] = "onthefly_gpu"
+    sample_config = process_config.setdefault("sample", {})
+    if int(sample_config.get("sample_every", 0) or 0) > 0:
+        print("[TrainRunner] SenseNova training sampling is not integrated; disabling samples")
+    sample_config["sample_every"] = 0
+    return True
+
+
+def _normalize_sensenova_integer(
+    train_config: Dict[str, Any], key: str, default: int
+) -> int:
+    """Normalize one SenseNova integer field without accepting bools or floats."""
+    value = train_config.get(key, default)
+    if isinstance(value, bool):
+        raise ValueError(f"SenseNova {key} must be an integer, got boolean {value!r}")
+    if isinstance(value, int):
+        normalized = value
+    elif isinstance(value, str):
+        text = value.strip()
+        if not re.fullmatch(r"[+-]?[0-9]+", text):
+            raise ValueError(f"SenseNova {key} must be an integer, got {value!r}")
+        normalized = int(text, 10)
+    else:
+        raise ValueError(
+            f"SenseNova {key} must be an integer, got {value!r} "
+            f"({type(value).__name__})"
+        )
+    train_config[key] = normalized
+    return normalized
+
+
+def _normalize_sensenova_bool(
+    train_config: Dict[str, Any], key: str, default: bool
+) -> bool:
+    """Normalize one SenseNova boolean field without Python truthiness."""
+    value = train_config.get(key, default)
+    if isinstance(value, bool):
+        normalized = value
+    elif isinstance(value, int) and not isinstance(value, bool) and value in (0, 1):
+        normalized = bool(value)
+    elif isinstance(value, str):
+        text = value.strip().lower()
+        if text in ("true", "1"):
+            normalized = True
+        elif text in ("false", "0"):
+            normalized = False
+        else:
+            raise ValueError(f"SenseNova {key} must be a boolean, got {value!r}")
+    else:
+        raise ValueError(
+            f"SenseNova {key} must be a boolean, got {value!r} "
+            f"({type(value).__name__})"
+        )
+    train_config[key] = normalized
+    return normalized
+
+
+def _prepare_training_process_config(
+    config: Dict[str, Any], base_model_path: str
+):
+    """Extract and preflight the process block before dataset work begins."""
+    process_config = config['config']['process'][0]
+    train_config = process_config['train']
+    network_config = process_config.get('network', {})
+    network_type = network_config.get('type', 'lora')
+    _apply_sensenova_training_contract(
+        base_model_path, network_type, train_config, process_config
+    )
+    return process_config, train_config, network_config, network_type
 
 
 def _update_phase_progress(run_id: int, phase: str, progress: float, detail: str = None):
@@ -1375,9 +1482,17 @@ def main():
             print(f"[TrainRunner] ERROR: Training run {run_id} not found")
             sys.exit(1)
 
+        # Extract the process/train block before dataset discovery, scanning,
+        # cache access, wrapper construction, or model loading. SenseNova's
+        # contract must fail before those side effects, and the network type
+        # must come from this same process block used by dispatch below.
+        process_config, train_config, network_config, network_type = (
+            _prepare_training_process_config(config, run.base_model_path)
+        )
+
         # Get dataset configs from YAML (priority) or database (fallback)
         # This ensures YAML edits are reflected in training
-        process_config_for_datasets = config['config']['process'][0]
+        process_config_for_datasets = process_config
         yaml_datasets = process_config_for_datasets.get('datasets', [])
 
         dataset_configs = []
@@ -1422,9 +1537,6 @@ def main():
         # ============================================================
         # Detect Start Epoch for Resume Training (before dataset loading)
         # ============================================================
-        # Extract train_config early to check resume_from_checkpoint
-        process_config = config['config']['process'][0]
-        train_config = process_config['train']
         resume_from_checkpoint = train_config.get('resume_from_checkpoint')
 
         # Detect start_epoch from checkpoint to load dataset with correct epoch_num
@@ -1625,7 +1737,6 @@ def main():
         # ============================================================
         # Determine Training Method
         # ============================================================
-        network_type = network_config.get('type', 'lora')
 
         if network_type == 'lora':
             print("[TrainRunner] Training method: LoRA")
@@ -1668,7 +1779,7 @@ def main():
             # -- backend enforcement so API-created runs (not just the frontend preset)
             # get bf16, avoiding the fp16 Full-FT rejection.
             if _is_bf16_native_base_model(run.base_model_path):
-                print("[TrainRunner] Lens/LTX-2.3/ACE-Step model detected: forcing training_dtype=bf16")
+                print("[TrainRunner] bf16-native model detected: forcing training_dtype=bf16")
                 training_dtype = 'bf16'
                 weight_dtype = 'bf16'
 
@@ -2105,7 +2216,7 @@ def main():
             # -- backend enforcement so API-created runs (not just the frontend preset)
             # get bf16, avoiding the fp16 Full-FT rejection.
             if _is_bf16_native_base_model(run.base_model_path):
-                print("[TrainRunner] Lens/LTX-2.3/ACE-Step model detected: forcing training_dtype=bf16")
+                print("[TrainRunner] bf16-native model detected: forcing training_dtype=bf16")
                 training_dtype = 'bf16'
                 weight_dtype = 'bf16'
 
@@ -2510,7 +2621,7 @@ def main():
             # -- backend enforcement so API-created runs (not just the frontend preset)
             # get bf16, avoiding the fp16 Full-FT rejection.
             if _is_bf16_native_base_model(run.base_model_path):
-                print("[TrainRunner] Lens/LTX-2.3/ACE-Step model detected: forcing training_dtype=bf16")
+                print("[TrainRunner] bf16-native model detected: forcing training_dtype=bf16")
                 training_dtype = 'bf16'
                 weight_dtype = 'bf16'
 

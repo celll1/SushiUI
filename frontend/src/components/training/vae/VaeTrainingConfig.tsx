@@ -43,14 +43,14 @@ interface ModelListEntry {
  *   - anima / krea2  -> AutoencoderKLQwenImage, whose `_encode` unpacks
  *                       `(B, C, num_frames, H, W)`, i.e. 5-D;
  *   - ltx2           -> AutoencoderKLLTXVideo, also 5-D;
- *   - minit2i        -> no VAE at all (pixel space).
+ *   - minit2i / sensenova -> no VAE at all (pixel space).
  * Everything else (sd15 / sdxl / zimage -> AutoencoderKL, flux2 / lens /
  * ideogram4 -> AutoencoderKLFlux2) is 4-D and exposes the required interface.
  * Unknown/new architectures are NOT hidden: the loader is generic over any
  * diffusers `Autoencoder*` class, so only the known-incompatible ones are
  * excluded here.
  */
-const NON_TRAINABLE_VAE_ARCHS = new Set(["anima", "krea2", "ltx2", "minit2i"]);
+const NON_TRAINABLE_VAE_ARCHS = new Set(["anima", "krea2", "ltx2", "minit2i", "sensenova"]);
 
 /**
  * The keys of `core/models/common/vae_store.VAE_REGISTRY`, which is what

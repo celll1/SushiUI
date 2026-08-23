@@ -365,7 +365,26 @@ def resolve_vae_training_config(
         cfg["vae_path"] = base_model_path
 
     _validate(cfg, train_section)
+    if cfg["vae_source"] == "model":
+        _refuse_model_source_without_vae(base_model_path)
     return cfg
+
+
+def _refuse_model_source_without_vae(base_model_path: str) -> None:
+    """Reject model-owned VAE selection for architectures with no VAE."""
+    if not base_model_path:
+        return
+    try:
+        from core.model_loader import ModelLoader
+        arch = ModelLoader.detect_model_type(base_model_path)
+    except Exception:
+        return
+    if arch == "sensenova":
+        raise VaeConfigError(
+            "vae_source='model' is not available for SenseNova because it is a "
+            "pixel-space model with no VAE component. Use vae_source='path' or "
+            "vae_source='store' to fine-tune an explicit VAE."
+        )
 
 
 def _copy(cfg: Dict[str, Any], section: Dict[str, Any], src_key: str, dst_key: str):

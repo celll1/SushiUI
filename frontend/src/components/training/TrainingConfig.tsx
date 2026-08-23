@@ -2302,18 +2302,29 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
             </label>
               );
             })()}
-            <label className="flex items-center space-x-2 cursor-pointer">
+            {(() => {
+              const controlnetReason = unsupportedTrainingMethod("controlnet");
+              const controlnetBlocked = fromScratchMiniT2I || !!controlnetReason;
+              return (
+            <label
+              className={`flex items-center space-x-2 ${controlnetBlocked ? 'cursor-not-allowed' : 'cursor-pointer'}`}
+              title={controlnetReason}
+            >
               <input
                 type="radio"
                 name="training_method"
                 value="controlnet"
                 checked={trainingMethod === "controlnet"}
                 onChange={() => setTrainingMethod("controlnet")}
-                disabled={fromScratchMiniT2I}
+                disabled={controlnetBlocked}
                 className="text-blue-600 focus:ring-blue-500"
               />
-              <span className={`text-sm ${fromScratchMiniT2I ? 'text-gray-500' : ''}`}>ControlNet (SD1.5/SDXL)</span>
+              <span className={`text-sm ${controlnetBlocked ? 'text-gray-500' : ''}`}>
+                ControlNet (SD1.5/SDXL){controlnetReason ? ' (not supported for this model)' : ''}
+              </span>
             </label>
+              );
+            })()}
             {(() => {
               const reloraReason = unsupportedTrainingMethod("relora");
               const reloraBlocked = fromScratchMiniT2I || isIdeogram4Model(baseModelPath) || !!reloraReason;

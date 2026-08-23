@@ -2476,6 +2476,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         text_encoder_quantization: mainParams.text_encoder_quantization,
         enable_block_swap: mainParams.enable_block_swap,
         blocks_to_swap: mainParams.blocks_to_swap,
+        use_pinned_memory: mainParams.use_pinned_memory,
         block_swap_h2d_only: mainParams.block_swap_h2d_only,
         block_swap_ring_size: mainParams.block_swap_ring_size,
         vae_path: mainParams.vae_path, // Inherit VAE override (model-global)
@@ -4188,7 +4189,8 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
               </div>
             )}
 
-            {/* Block Swap (Z-Image only) */}
+            {archSupportsFeature(archCapabilities, loadedArch, "block_swap") && (
+            <>
             <div className="flex items-center gap-2 mt-4">
               <input
                 type="checkbox"
@@ -4198,7 +4200,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                 className="rounded"
               />
               <label htmlFor="enable_block_swap" className="text-sm text-gray-300">
-                Block Swap (Z-Image Transformer offloading)
+                Block Swap
               </label>
             </div>
             {params.enable_block_swap && (
@@ -4247,7 +4249,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                 )}
                 <div className="text-xs text-blue-200">
                   <p>
-                    <strong>Block Swap:</strong> Offloads Z-Image Transformer blocks between CPU and GPU to reduce VRAM usage.
+                    <strong>Block Swap:</strong> Offloads transformer blocks between CPU and GPU to reduce VRAM usage.
                   </p>
                   <p className="mt-1">
                     <strong>Blocks to Swap:</strong> Higher = more VRAM reduction, but slower generation.
@@ -4257,6 +4259,8 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                   </p>
                 </div>
               </div>
+            )}
+            </>
             )}
           </>
         )}

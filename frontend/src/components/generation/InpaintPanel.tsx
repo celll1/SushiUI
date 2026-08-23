@@ -4066,6 +4066,8 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         nag_negative_prompt: nextItem.params.nag_negative_prompt,
         unet_quantization: nextItem.params.unet_quantization,
         quantized_gemm_mode: nextItem.params.quantized_gemm_mode,
+        cpu_text_encoding: nextItem.params.cpu_text_encoding,
+        text_encoder_quantization: nextItem.params.text_encoder_quantization,
         original_size_w: nextItem.params.original_size_w,
         original_size_h: nextItem.params.original_size_h,
         original_size_scale: nextItem.params.original_size_scale,
@@ -5429,7 +5431,8 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
               </div>
             )}
 
-            {/* Block Swap (Z-Image only) */}
+            {archSupportsFeature(archCapabilities, loadedArchType, "block_swap") && (
+            <>
             <div className="flex items-center gap-2 mt-4">
               <input
                 type="checkbox"
@@ -5439,7 +5442,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
                 className="rounded"
               />
               <label htmlFor="enable_block_swap_inpaint" className="text-sm text-gray-300">
-                Block Swap (Z-Image Transformer offloading)
+                Block Swap
               </label>
             </div>
             {params.enable_block_swap && (
@@ -5488,7 +5491,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
                 )}
                 <div className="text-xs text-blue-200">
                   <p>
-                    <strong>Block Swap:</strong> Offloads Z-Image Transformer blocks between CPU and GPU to reduce VRAM usage.
+                    <strong>Block Swap:</strong> Offloads transformer blocks between CPU and GPU to reduce VRAM usage.
                   </p>
                   <p className="mt-1">
                     <strong>Blocks to Swap:</strong> Higher = more VRAM reduction, but slower generation.
@@ -5498,6 +5501,8 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
                   </p>
                 </div>
               </div>
+            )}
+            </>
             )}
           </>
         )}

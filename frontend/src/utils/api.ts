@@ -3475,6 +3475,10 @@ export const generateImg2Img = async (
     formData.append("quantized_gemm_mode", paramsWithImages.quantized_gemm_mode);
   }
 
+  if (paramsWithImages.text_encoder_quantization && paramsWithImages.text_encoder_quantization !== "none") {
+    formData.append("text_encoder_quantization", paramsWithImages.text_encoder_quantization);
+  }
+
   // CPU text encoding
   formData.append("cpu_text_encoding", String(paramsWithImages.cpu_text_encoding ?? false));
 
@@ -4409,6 +4413,10 @@ export const generateInpaint = async (params: InpaintParams, image: File | strin
   // backend's process-level setting (env var / Settings panel) untouched.
   if (paramsWithImages.quantized_gemm_mode) {
     formData.append("quantized_gemm_mode", paramsWithImages.quantized_gemm_mode);
+  }
+
+  if (paramsWithImages.text_encoder_quantization && paramsWithImages.text_encoder_quantization !== "none") {
+    formData.append("text_encoder_quantization", paramsWithImages.text_encoder_quantization);
   }
 
   // CPU text encoding

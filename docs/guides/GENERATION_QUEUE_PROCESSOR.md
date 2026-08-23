@@ -35,7 +35,9 @@ depends on is frozen onto the `QueueItem` when it is enqueued:
   (`cfg_schedule_type` / `cfg_rescale_snr_alpha` /
   `dynamic_threshold_percentile`) — via each panel's `freezeDispatchState`
 - `params.ref_images`
-- `useTrainingModel` / `trainingRunId` / `savePreviewToGallery`
+- `useTrainingModel` / `trainingRunId` / `savePreviewToGallery` — the first two
+  were already per-item; `savePreviewToGallery` used to be read live, so a
+  queued preview now keeps the setting it was queued with
 - `loopStepConfig` — the `sizeMode` / `scale` / `useMainControlNets` /
   `controlnets` of THAT step, read when its predecessor finishes
 - `panel` — the enqueuing panel. `img2img`, `ref2vid` and `chain_vid` have two
@@ -83,6 +85,13 @@ Two things only a panel can do are routed back to it:
   start), and `resolveChainDriftPause` — still panel-rendered, since the state
   is queue-side — clears it, at which point the effect resumes the queue by
   itself.
+- **`lastFailure` is only published for image runs.** Restore-on-cancel is an
+  image contract; a cancelled video/audio run must not resurrect a stale still
+  into the slot the user was making a clip in.
+- **A drift pause is only *visible* on the txt2img and img2img tabs**, which
+  are the two panels that render `ChainDriftPauseDialog`. The queue is held
+  correctly whatever tab is open, but a user sitting on Outpaint/Inpaint/
+  Upscale sees a stopped queue with no prompt until they switch back.
 - **"Generate forever" stays panel-side** by design. It is an *enqueue*
   concern and needs the live panel params the processor deliberately cannot
   see. Do not "fix" it into the processor.

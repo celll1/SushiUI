@@ -248,7 +248,10 @@ def train_step(
             t = t[0]
     else:
         t = timesteps
-    t = torch.as_tensor(t, device=device, dtype=dtype).reshape(-1)
+    # Keep t in fp32, the dtype the sampler produces and the dtype inference's
+    # `ts` carries (linspace, sensenova_pipeline_ops.py:1068): timestep_embedder
+    # embeds t's VALUE, and bf16 would quantize it to ~2e-3 in training only.
+    t = torch.as_tensor(t, device=device, dtype=torch.float32).reshape(-1)
     if t.numel() != 1:
         raise ValueError("SenseNova training requires one timestep for batch_size=1")
 
@@ -263,7 +266,10 @@ def train_step(
         raise ValueError("SenseNova image does not align to the merged token grid")
     token_h, token_w = grid_h // merge_size, grid_w // merge_size
     noise_scale = compute_noise_scale(transformer, grid_h, grid_w, merge_size)
-    z_image = t.view(1, 1, 1, 1) * x0 + (1 - t).view(1, 1, 1, 1) * (
+    # Inference noises in the image dtype, its fp32 t demoted by 0-dim promotion
+    # (sensenova_pipeline_ops.py:1122); cast explicitly so z_image stays
+    # training_dtype -- _build_step_context's ViT runs outside the autocast below.
+    z_image = t.to(dtype).view(1, 1, 1, 1) * x0 + (1 - t).to(dtype).view(1, 1, 1, 1) * (
         torch.randn_like(x0) * noise_scale
     )
     shape = SimpleNamespace(
@@ -305,6 +311,8 @@ def train_step(
             .view(1, token_h * token_w, patch * patch * 3)
         )
         x0_tokens = transformer.patchify(x0, patch)
+        # fp32 t here lifts v into fp32, which the MSE below wanted anyway --
+        # the .float() calls become no-ops rather than extra copies.
         denominator = (1 - t).view(1, 1, 1).clamp_min(transformer.config.t_eps)
         v_pred = (x0_pred - z) / denominator
         v_target = (x0_tokens - z) / denominator

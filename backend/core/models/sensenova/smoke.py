@@ -213,17 +213,22 @@ def run_generation(model, tokenizer, args, width: int, height: int, num_steps: i
     """One full txt2img generation. Returns a dict of measured numbers."""
     import torch
 
+    from core.attention import AttentionMode
     from core.inference.generation_timing import generation_timer
     from core.models.sensenova import sensenova_pipeline_ops as ops
 
     device = next(model.parameters()).device
     width, height = ops.normalize_resolution(width, height)
 
-    ops.set_attention_backend(model, args.attn_backend)
+    # This helper is also used by the training exit-smoke's fresh runtime arm.
+    # Generation must never inherit TRAINING mode merely because the caller is
+    # not inside a no-grad context yet.
+    ops.set_attention_backend(model, args.attn_backend, AttentionMode.INFERENCE)
 
     lora_orig: dict = {}
     lora_keys: set = set()
     lora_applied = 0
+    lora_restored = 0
     if args.lora:
         lora_applied, lora_orig, lora_keys = _apply_lora(model, args.lora, args.lora_strength)
 
@@ -256,8 +261,8 @@ def run_generation(model, tokenizer, args, width: int, height: int, num_steps: i
             except Exception:
                 pass
         if lora_applied:
-            restored = _restore_lora(model, lora_orig, lora_keys)
-            print(f"[SenseNova.smoke] LoRA restored {restored} module(s) to base.")
+            lora_restored = _restore_lora(model, lora_orig, lora_keys)
+            print(f"[SenseNova.smoke] LoRA restored {lora_restored} module(s) to base.")
 
     wall_total = time.perf_counter() - wall_start
 
@@ -271,8 +276,11 @@ def run_generation(model, tokenizer, args, width: int, height: int, num_steps: i
         "wall_s": wall_total,
         "peak_vram_gb": _peak_vram_gb(),
         "lora_applied": lora_applied,
+        "lora_restored": lora_restored,
         "image": ops.tensor_to_image(x) if args.output else None,
     }
+    if getattr(args, "return_tensor", False):
+        result["denoise_tensor"] = x.detach().cpu().clone()
     result.update(_vram_spill_readout())
     return result
 

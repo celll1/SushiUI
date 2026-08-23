@@ -13,6 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.models.sensenova.sensenova_lora import (
     apply_lora_group,
+    iter_sensenova_lora_targets,
     load_lora_safetensors,
     normalise_lora_state_dict,
     restore_originals,
@@ -189,3 +190,40 @@ def test_sensenova_adapter_checkpoint_round_trips_through_runtime_loader(tmp_pat
         resume_layers[last_name].lora_up.weight,
         layers[last_name].lora_up.weight,
     )
+
+
+def test_sensenova_runtime_strength_zero_is_exact_and_restores_identity():
+    transformer = _Transformer()
+    targets = list(iter_sensenova_lora_targets(transformer))
+    grouped = {
+        path: {
+            "down": torch.ones((1, module.in_features), dtype=torch.float32),
+            "up": torch.ones((module.out_features, 1), dtype=torch.float32),
+            "alpha": torch.tensor(1.0),
+        }
+        for path, _parent, _attr, module in targets
+    }
+    original_ids = {path: id(module) for path, _p, _a, module in targets}
+    sample = torch.tensor([[1.0, -2.0]], dtype=torch.float32)
+    path, parent, attr, original = targets[0]
+    expected = original(sample)
+    originals = {}
+    wrapped_keys = set()
+
+    assert apply_lora_group(
+        transformer,
+        grouped,
+        strength=0.0,
+        lora_original_modules=originals,
+        wrapped_keys=wrapped_keys,
+    ) == 294
+    wrapped = getattr(parent, attr)
+    assert torch.equal(wrapped(sample), expected)
+    assert restore_originals(transformer, originals, wrapped_keys) == 294
+    restored_ids = {
+        name: id(module)
+        for name, _p, _a, module in iter_sensenova_lora_targets(transformer)
+    }
+    assert restored_ids == original_ids
+    assert getattr(parent, attr) is original
+    assert path in originals

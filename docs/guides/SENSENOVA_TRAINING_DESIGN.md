@@ -1,7 +1,7 @@
 # SenseNova U1.5 学習設計案
 
-> Status: Phase 0 と Phase 1 core/trainer integration は実装済み。Phase 1 の
-> real 3-step exit smoke と half-eviction、Phase 2b、Phase 3 は未完。
+> Status: Phase 0 と Phase 1 の core/trainer integration・real 3-step
+> exit-smoke は完了。half-eviction、Phase 2b、Phase 3 は未完。
 > Date: 2026-08-23
 > Scope: SenseNova-U1.5-8B-MoT の (1) LoRA 学習 / (2) full-parameter fine-tune /
 > (3) reference 画像を含むデータセットの混在学習
@@ -90,7 +90,8 @@ facts は [`MODEL_FACTS.md`](MODEL_FACTS.md) を正とする。本文書は Sens
 | `base_trainer.py` / `train_runner.py` | B1、plain-int8、no-reference、no-block-swap の初版契約と専用 prefix payload を統合済み | DONE |
 | `detect_prediction_config` | `sensenova` を flow / velocity として登録し退行テスト済み | DONE |
 | `TRAINING_UNSUPPORTED` | full FT / ReLoRA / ControlNet をロード前に拒否 | DONE |
-| half-eviction / real exit smoke / reference / full FT | §11 の後続フェーズ | PENDING |
+| real trainer exit smoke | 3 finite steps、runtime strength 0 exact parity、294 apply / restore を実 checkpoint で検証済み | DONE |
+| half-eviction / reference / full FT | §11 の後続フェーズ | PENDING |
 
 ---
 
@@ -684,11 +685,11 @@ arch 非依存で、`blocks_to_swap` / `num_optimizer_groups` / `optimizer_type`
 - **DONE:** training-method capability による full FT / ReLoRA / ControlNet の UI と
   backend refusal。SenseNova は VAE を持たないが、明示 VAE path/store の decoder
   training は別契約として許可する。
+- **DONE:** real trainer の 3-step exit smoke と fresh runtime strength 0 parity。
 
 ### PENDING
 
 - Phase 1 half-eviction と、その OFF / ON 別 process 計測。
-- real trainer の 3-step exit smoke。
 - Phase 2b full FT 本体と Phase 3 reference 混在。
 
 ### DONE — 登録から自動的に得られたもの
@@ -769,7 +770,7 @@ model resident allocated は 17.59 GiB、prefix の live allocated 増分は 50.
 の前提を満たす。この数値は GC OFF / ON 差であり、未実装の half-eviction による
 削減量ではない（§8.3）。
 
-### Phase 1 — LoRA（core/trainer DONE、exit smoke と half-eviction PENDING）
+### Phase 1 — LoRA（half-eviction を除き DONE）
 
 - `arch/sensenova.py` + `ops/sensenova_ops.py` + `adapters/sensenova_adapter.py`。
 - 登録 5 箇所 + `base_trainer.py` の分岐（§9）。
@@ -783,8 +784,38 @@ model resident allocated は 17.59 GiB、prefix の live allocated 増分は 50.
 - **DONE:** 上記の arch/ops/adapter、294-target plain-int8 gate、checkpoint-safe
   2-pass core、trainer/runner integration、prediction/defaults、保存と runtime round-trip。
 - **PENDING:** MoT half-eviction の学習側再利用（opt-in）と §8.3 の OFF / ON 計測。
-- **PENDING exit criteria:** real trainer の 3-step smoke で有限 loss、保存した LoRA が推論側の
+- **DONE exit criteria:** real trainer の 3-step smoke で有限 loss、保存した LoRA が推論側の
   runtime LoRA としてそのままロードでき、strength 0 で base 出力と一致すること。
+
+#### Phase 1 exit-smoke（DONE、2026-08-24）
+
+通常の pytest から収集されない opt-in probe である。repo の venv から次を実行すると、
+trainer arm（実画像 64×64、B1、rank 1 / alpha 1、fp32 LoRA、bf16 base / training、
+native attention、専用 non-reentrant GC、3 step、step 3 保存、sample なし）を起動し、
+完全終了後に別 process の runtime arm が fresh model をロードする。
+
+```text
+<repo>/venv/Scripts/python.exe backend/core/training/probes/sensenova_real_checkpoint.py --model-path <plain-int8-checkpoint> --trainer-exit-smoke
+```
+
+trainer arm は 3 個の有限 loss、`neo_hf_lora` metadata、882 tensors / 294 targets、
+全 LoRA tensor の有限性・SHA-256・peak allocated/reserved を検証する。runtime arm は
+同じ prompt / seed / 64×64 / 1 step の base denoise と saved LoRA の strength 0 を
+`torch.equal` で比較し、294 apply / 294 restore と全 module identity の復元を確認する。
+各 arm は独立した subprocess として個別の timeout/watchdog 下で順に起動し、共有一時
+ディレクトリは両 arm 完了後（例外時も unwind 後）に削除する。
+
+plain-int8 checkpoint、RTX 6000 Ada 48 GB、seed 1234、native attention、64×64、
+B1、rank 1 / alpha 1、GC ON で実行した。trainer の loss は
+`0.41384110 / 0.37259370 / 0.52550042` で全て有限、training callback は
+step `1 / 2 / 3` を報告した。step 3 の保存物は `neo_hf_lora`、294 targets、
+882 tensors（588 weight tensors）で、live LoRA と保存 weight の SHA-256 が一致した。
+peak allocated は 18.09 GiB、peak reserved は 18.19 GiB だった。
+
+fresh runtime arm は保存物を 294/294 module に適用し、294/294 を復元した。
+復元後の全 module identity は元と一致した。base と strength 0 の denoise tensor は
+同じ SHA-256 を持ち、`torch.equal` でも一致した。これにより half-eviction を除く
+Phase 1 exit criteria を満たす。
 
 ### Phase 2a — full FT ガード（DONE）
 

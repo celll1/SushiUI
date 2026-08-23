@@ -24,9 +24,10 @@
    出荷する。** 配布されている checkpoint は int8 のみで、`reject_quantized_base()`
    が正しく発火する。実装本体は bf16 base の入手を前提条件として後続フェーズに送る。
    実装する場合の対象は **gen branch のみの 8.1B**（both-branch 16.2B は設計対象外）。
-3. **Phase 3（reference 混在）は per-item presence を真とし、batch は
-   `separate_by_reference` で homogeneous に保つ。** ragged prefix を持つ混在 batch は
-   作らない。it2i 挙動の学習に understanding branch の解凍は既定では不要とする。
+3. **Phase 3（reference 混在）は per-item presence を真とする。** 初版は物理
+   `batch_size=1` を強制し、gradient accumulation で effective batch を作る。
+   `separate_by_reference` は sampler 整理のため再利用するが、prefix shape の保証には
+   使わない。it2i 挙動の学習に understanding branch の解凍は既定では不要とする。
 4. **VRAM は Phase 1 が MoT half-eviction、Phase 2 が `TransformerBlockOffloader`**
    という分担にする。推論側で記録された block-swap 非対応の判断は generation 固有で
    あり、学習には転移しない（§8）。
@@ -58,6 +59,7 @@
 - 別個の text encoder は存在しない。prompt は denoiser と同じ Qwen3-8B が
   自前の tokenizer / chat template で符号化する。
 - 単一 GPU 前提。参照カードは RTX 6000 Ada 48 GB。
+- 初版の物理 batch size は 1。effective batch size は gradient accumulation で作る。
 - 推論側の最適化（MoT phase eviction / KV cache streaming / ConvRot W8A8 /
   style transfer / FBCache / Spectrum）はすべて generation 専用で、学習には
   持ち込まない（§8 の half-eviction の概念だけが例外）。
@@ -151,13 +153,17 @@ z_t    = t * x0 + (1 - t) * noise_scale * eps
 
 ### 4.4 noise_scale は解像度依存で、かつモデルに入力される
 
-`compute_noise_scale`（`sensenova_pipeline_ops.py:133-144`）は
-`sqrt(grid_h*grid_w/merge^2 / base)` を `noise_scale_max_value=16.0` で clamp する。
+`compute_noise_scale`（`sensenova_pipeline_ops.py:133-144`）は config の基礎
+`noise_scale` に解像度比を掛け、mode に応じて平方根を追加適用し、
+`noise_scale_max_value` で clamp する。現在の配布 config
+（`noise_scale=1`, `mode=resolution`, max 16）では
+`sqrt(grid_h*grid_w/merge^2 / base)` と同値になる。
 この値は forward noising に使われるだけでなく、`noise_scale_embedder` を通して
 timestep embedding に**加算されて**モデルに渡る（`:625-630`）。
 
 **bucketing との相互作用が実装上の落とし穴になる。** bucket ごとに解像度が違う以上
-`noise_scale` はサンプルごとに変わる。学習側で推論と同じ式を再現しないと、
+`noise_scale` はサンプルごとに変わる。学習側は式を再実装せず
+`compute_noise_scale()` を再利用する。推論とずれると、
 学習時と推論時で条件付けがずれる。これは「よくある定数」ではなく、per-sample に
 計算して embedder にも流す必要がある値である。
 
@@ -181,14 +187,23 @@ timestep embedding に**加算されて**モデルに渡る（`:625-630`）。
 Phase 3 のデータパイプラインはこの 2 つの正規化を取り違えてはならない。同じ
 「画像」でも入口が違えば前処理が違う。
 
-### 4.7 推論用 KV 経路は autograd と両立しない
+### 4.7 学習用 KV / gradient-checkpointing 契約
 
-最適化経路（`update_cache=False`）は事前確保した `flash_k_cache` / `flash_v_cache` に
-`.copy_()` で書き込む（`modeling_qwen3.py:756-766`）。再利用される buffer への
-in-place 書き込みであり、学習では使えない。学習は `update_cache=True` 側の
-"Rare path, keep compatibility" 分岐を使うか、step ごとに新しい cache を作る。
-understanding branch を凍結して phase 1 を `no_grad` にすれば、この選択の重要度は
-下がる（gen 側の現在 token の K/V だけが勾配を必要とする）。
+`update_cache=False` には 2 経路ある。推論が準備する `flash_k_cache` /
+`flash_v_cache` または streamer がある場合は `.copy_()` で current K/V を書くため、
+autograd と両立しない。一方、それらを**準備しなければ** fallback は
+`torch.cat([past, current])`（`modeling_qwen3.py:784-796`）になり、prefix cache を
+変更せず current K/V の勾配を保持する。**学習はこの fallback を使う。**
+
+`update_cache=True` は代替にならない。`DynamicCache.update()` が current K/V を
+破壊的に append するため、checkpoint backward の再計算で二重 append される。
+また stock `GradientCheckpointingLayer.__call__` は checkpointing 中の
+`past_key_values` を `None` に置換するため、通常の
+`gradient_checkpointing_enable()` は prefix conditioning を静かに消す。
+
+したがって学習は layer 標準 checkpointing を使わず、SenseNova 専用の per-layer
+non-reentrant checkpoint loop を持つ。immutable な prefix cache を closure で渡し、
+`update_cache=False`、推論用 flash cache/streamer 未準備を不変条件とする。
 
 ---
 
@@ -205,6 +220,10 @@ understanding branch を凍結して phase 1 を `no_grad` にすれば、この
   2. 目標画像 `x0` から `t` を引いて `z_t` を作り、`extract_feature(gen_model=True)` →
      timestep/noise_scale embedding 加算 → `forward_gen` を勾配付きで前進。
   3. `fm_head` の `x_pred` から `v_pred` を作り、target velocity との MSE。
+- 物理 `batch_size` は 1 に限定し、effective batch は既存の gradient accumulation で
+  作る。prefix-aware batching は padding mask / varlen attention が実装されるまで開かない。
+- gen pass は §4.7 の専用 non-reentrant checkpoint loop を使う。prefix cache は
+  forward/backward 前後で長さ・tensor identity が変わってはならない。
 - timestep sampler は §4.5 の値を既定にする。
 - caption embedding のキャッシュ: prefix forward は Qwen3-8B 全体を通す高コスト処理
   なので、他 arch の TE cache と同様に prefix KV を事前計算・キャッシュする余地が
@@ -219,8 +238,8 @@ understanding branch を凍結して phase 1 を `no_grad` にすれば、この
 
 1. **und を凍結することは VRAM と忘却対策の話に留まらず、正しさの問題クラスを
    丸ごと削除する。** und を凍結すれば prefix forward は `no_grad` で回せるので、
-   prefix KV を定数として扱える。gen forward は current K/V に勾配が必要なため
-   §4.7 の `update_cache=True` 経路を使う。und を学習させるなら、
+   prefix KV を定数として扱える。gen forward は §4.7 の非破壊
+   `update_cache=False` fallback で current K/V の勾配を保つ。und を学習させるなら、
    2 つの独立した forward をまたぐ微分可能な KV パイプラインを構築し、42 層分の
    prefix activation を backward まで保持し、`cat[prefix_KV, gen_KV]` の flash
    attention に勾配を通す必要がある。これはフラグではなくサブシステムであり、
@@ -268,9 +287,10 @@ weight が autograd に保存され、int8 codes の上に bf16 のモデル全�
 G4 の実測（Krea 2 由来）では checkpointing OFF で
 `11.94 GiB codes + 23.88 GiB temporaries = 35.81 GiB` 対 bf16 base 23.88 GiB という
 逆転が出ている。SenseNova では 588 個すべての decoder Linear が該当するため、
-**gradient checkpointing は事実上必須**である（`Qwen3DecoderLayer` は既に `GradientCheckpointingLayer` を継承しており、
-`supports_gradient_checkpointing = True`、`_no_split_modules = ["Qwen3DecoderLayer"]` も
-設定済みなので、機構としては揃っている）。
+**gradient checkpointing は事実上必須**である。ただし `Qwen3DecoderLayer` が継承する
+stock `GradientCheckpointingLayer` は prefix cache を除去するため使えない。
+`supports_gradient_checkpointing = True` という宣言だけでは成立せず、§4.7 の専用 loop が
+Phase 1 の前提実装になる。
 
 ### 5.4 実装上の注意
 
@@ -287,6 +307,9 @@ G4 の実測（Krea 2 由来）では checkpointing OFF で
   gen 側のみ。
 - **style transfer の tripwire。** `forward_und` は style context が armed だと raise する
   (`modeling_qwen3.py:515-525`)。学習経路では style context を必ず未設定にする。
+- **noise scale の一般形。** config の現在値だけを展開して式を再実装せず、
+  `compute_noise_scale()` を再利用する。`noise_scale` 基礎値の乗算、mode 分岐、
+  `dynamic_sqrt`、max clamp をすべて推論と一致させる。
 - **`detect_prediction_config`** は既に `sensenova` を flow-matching として扱う。
   実装変更は不要だが、学習統合でこの分類を退行させないテストを置く。
 
@@ -470,24 +493,24 @@ FLUX.2 でも既に経路の arm と homogeneous bucketing の有効化に使わ
 も同じ意味論を再利用する。**新しい dataset-level parameter、schema、per-item stamp は
 追加しない。** item 自身の `reference_images` の有無だけが各 batch の分類を決める。
 
-**判断 2: `separate_by_reference` の homogeneous bucketing を再利用する。
-ragged な混在 batch は作らない。**
+**判断 2: 初版は物理 `batch_size=1` を強制する。
+`separate_by_reference` は再利用するが、shape の正しさを委ねない。**
 
-決定的な論拠は prefix 長の不揃いであり、見た目より深刻である。単に prefix forward
-を padding する話（eager attention なので mask 可能で、可変長 caption は恐らく既に
-扱えている）に留まらず、**padding された prefix KV がそのまま denoise phase の
-`cat[prefix_KV, gen_KV]` に対する `causal=False` の flash attention へ流れ込む**。
-連結された cache を跨ぐ varlen / masked flash attention が必要になり、しかもその
-経路は未検証 masking に対して明示的に `NotImplementedError` を置く文化を持つ
-コードベースである。homogeneous batch にすればすべての batch が均一形状になる。
+決定的な論拠は prefix 長の不揃いである。`separate_by_reference` の bucket key は
+`(resolution, bool(has_reference))` だけで、caption token 長、reference 枚数、reference
+token 数を揃えない。これは ref 無し Phase 1 でも caption 長が違えば起きる。
+padding された prefix KV を denoise phase の `causal=False` flash attention に流すには、
+連結 cache を跨ぐ padding mask / varlen attention が必要だが、現行実装には無い。
 
-しかも FLUX.2 に対する**改善**になる。FLUX.2 の all-or-nothing drop
-(`base_trainer.py:10889-10894`) は分離していないことの帰結であり、分離すれば
-all-or-nothing 条件は構成的に満たされ、**何も捨てられなくなる**。
+初版は物理 batch 1 とし、既存 gradient accumulation で effective batch を作る。
+単純な per-sample forward loop は BaseTrainer が loss return 後に backward する現契約では
+全 sample の graph を保持し、VRAM 利点が無いため採らない。batch > 1 は padding-aware
+gen mask、varlen attention、または streaming per-sample backward が実装された時だけ開く。
 
-実装時に検証すべき留保: ref batch の内部でも、reference 画像は固定 token 数
-（= 固定 reference 解像度）に正規化しないと、「homogeneous」な bucket の内側に
-不揃いを再輸入してしまう。
+`separate_by_reference` は sampler の整理と将来 batching の入口として残すが、物理
+batch 1 では correctness 上は冗長であり、prefix shape の保証とは呼ばない。各 item の
+reference は推論と同じ動的 preprocessing を使え、異なる item 間で固定 token 数に
+揃える必要はない。
 
 **判断 3: it2i 挙動の学習に understanding branch の解凍は、既定では不要とする。**
 
@@ -516,7 +539,7 @@ reference 忠実度が実測で不足した場合にのみ、§5.2 で保留し�
   (`base_trainer.py:10597`)。SenseNova では reference は ViT token になるので、
   キャッシュするなら token 側でキャッシュするのが自然。初版では実装しない。
 - 推論側には `REFERENCE_IMAGE_MAX_PIXELS_CAP = 1024*1024` の encode コスト上限が
-  ある。学習側の固定 reference 解像度はこれと整合させる。
+  ある。学習側も同じ上限と動的 preprocessing を再利用する。
 
 ---
 
@@ -670,7 +693,9 @@ cache namespace と alignment は登録だけで正しくなる。
 | int8 base のみ | full FT が構造的に不可能 | Phase 2 をガード先行にする（§6.1） |
 | bf16 丸め欠陥 | 8.1B full FT でそのまま継承する（凍結率 91% 前後、`\|w\| <= 512*lr` でしか動かない） | `optimizer_stochastic_rounding` の既定を SenseNova full FT でどうするか実装時に決定（§6.3, §12）。`optimizer: adamw` は構造的にカバー不能 |
 | 短 horizon での評価 | stochastic rounding は 1k step 未満では誤差が信号と同程度 | 数百 step の full FT で品質判断をしない（§6.3） |
-| gradient checkpointing OFF | 量子化 base の上に bf16 全体が実体化し、逆に増える | 事実上必須として扱う（§5.3） |
+| gradient checkpointing OFF | 量子化 base の上に bf16 全体が実体化し、逆に増える | §4.7 の専用 non-reentrant loop を必須にする |
+| stock gradient checkpointing | `past_key_values` が `None` に置換され、prefix conditioning が消える | layer 標準 GC を使わず、cache 不変性と ON/OFF parity をテストする |
+| batch > 1 の ragged prefix | ref 有無だけでは caption/ref token 長が揃わず、gen flash attention に padding mask が無い | 初版は物理 batch 1。effective batch は gradient accumulation |
 | `noise_scale` の再現漏れ | bucket ごとに変わる値をモデルにも渡す必要がある | §4.4。学習 step の必須要素として扱う |
 | `Int8Linear` の isinstance 罠 | `nn.Linear` サブクラスでないため 294 件を黙って取りこぼす | 既存の共有述語を使う（§5.4） |
 | 正規化の取り違え | reference は ImageNet、target は 0.5/0.5 | §4.6, §7.4 |
@@ -687,13 +712,17 @@ cache namespace と alignment は登録だけで正しくなる。
 
 ### Phase 0 — 前提確認（コード変更なし、または最小）
 
-- `forward_gen` を勾配付きで通す最小 probe。`update_cache=True` 経路で
-  prefix KV を作り、image token 側に backward が通ることを確認する。
+- `forward_gen` を勾配付きで通す最小 probe。物理 batch 1、64×64、plain int8 base、
+  推論用 flash cache/streamer 未準備、`update_cache=False` fallback で image token 側に
+  backward が通ることを確認する。
 - `no_grad` の prefix forward + 勾配付き gen forward の 2 パスで
   有限の loss が出ることを確認する（収束実験は行わない）。
-- 1 step 分の VRAM 実測（gradient checkpointing ON / OFF）。
-- **exit criteria**: 有限 loss、294 module に勾配が届いていること、
-  gradient checkpointing OFF の警告条件が実際に成立することの確認。
+- stock GC ではなく §4.7 の専用 non-reentrant checkpoint loop を使い、GC ON / OFF を
+  別 process で実測する。
+- **exit criteria**: 有限 loss、1 backward 目で 294 `lora_up.grad` が finite、optimizer
+  step 後の 2 backward 目で `lora_down.grad` にも nonzero が届くこと、GC ON/OFF の
+  loss/gradient parity、prefix cache の長さと tensor identity が forward/backward 前後で
+  不変であること、peak allocated/reserved VRAM の記録。
 
 ### Phase 1 — LoRA
 
@@ -701,6 +730,8 @@ cache namespace と alignment は登録だけで正しくなる。
 - 登録 5 箇所 + `base_trainer.py` の分岐（§9）。
 - `TIMESTEP_SAMPLING_DEFAULTS_BY_ARCH` と、既存の flow-matching prediction config の退行テスト。
 - `train_step`: MiniT2I の骨格 + prefix KV conditioning + per-sample `noise_scale`。
+- 物理 `batch_size=1` の config-time guardと、prefix cache を保持する専用
+  non-reentrant checkpoint loop。
 - checkpoint 保存形式: 推論側 loader が読む `neo_hf_lora` 方言と round-trip すること
   （`LoRATrainer.load_checkpoint` は arch 非依存で
   `{lora_name}.lora_down.weight` / `.lora_up.weight` を読む）。
@@ -726,7 +757,7 @@ cache namespace と alignment は登録だけで正しくなる。
 - 既存の run-global `use_reference_images` と per-item `reference_images` を再利用する
   （新しい dataset-level parameter / API 変更は行わない）。
 - `separate_by_reference` の SenseNova への適用（bucket key に反映）。
-- prefix への reference token 差し込み（ImageNet 正規化、固定 token 数）。
+- prefix への reference token 差し込み（ImageNet 正規化、推論と同じ動的 preprocessing）。
 - ref 有り / 無し dataset を 1 run で混ぜる smoke。
 - **exit criteria**: 混在 run で両種類の batch が形状エラーなく通ること、
   ref 無し batch の挙動が Phase 1 と一致すること（何も捨てられていないこと）。
@@ -748,8 +779,8 @@ cache namespace と alignment は登録だけで正しくなる。
   upstream ソースが入手できない場合の fallback の妥当性がこれに掛かる。
 - **凍結 und での reference 忠実度が十分か。** §7.2 判断 3 の経験的前提。
   不足した場合のみ `scope: both`（LoRA 限定）を開く。
-- **固定 reference 解像度をいくつにするか。** 推論側の
-  `REFERENCE_IMAGE_MAX_PIXELS_CAP` との整合。
+- **batch > 1 をいつ開くか。** padding-aware gen mask / varlen attention または
+  streaming per-sample backward が前提。`separate_by_reference` だけでは開かない。
 - **upstream issue #207 の mixed forward を検証・修正して 1 パス化する価値があるか。**
   2 パス設計で十分機能する見込みなので優先度は低いが、und 学習を将来入れるなら
   再評価する。

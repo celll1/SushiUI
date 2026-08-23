@@ -1646,9 +1646,32 @@ a generation without style transfer.
       seed twice, style active) is also confirmed identical. The off state
       was verified inert by code inspection plus a diff audit (zero
       deletions, a single `is None` check) rather than by a pre-commit A/B.
-      Not yet run: a long (>=50 step) non-square late-step corruption
-      screen, the full CFG matrix (`cfg_scale<=1`, simultaneous
-      it2i-reference + style-reference), and a user-judged efficacy grid.
+      Setting BOTH `ref_k_strength=0` and `adain_strength=0` is bit-identical
+      to style-off (measured), exercising `inject_kv`'s no-op fast path.
+    - **Late-step and CFG coverage** (50-step runs, 1024x1024 and 1280x768,
+      against a style-off control): per-step high-frequency energy decays
+      smoothly and monotonically, with no discontinuous late spike — none of
+      this arch's known TV-static / late-noise-burst signature. At
+      `cfg_scale=1` there is no uncond branch, so the cond-only injection
+      applies un-CFG-scaled: style still affects the output (hashes differ)
+      but more mildly than at `cfg_scale=4`. An it2i reference and a style
+      reference used simultaneously (3-branch, `cfg_scale=4`/
+      `img_cfg_scale=2`) produce an output distinct from either alone, with
+      no tripwire or token-count failure.
+    - **Efficacy is real but not clean at default knobs.** Each reference
+      produces a distinct, correctly-directed effect, and `adain_strength`
+      responds smoothly; `ref_k_strength` is monotone but jumps sharply past
+      ~0.75, where the reference's CONTENT replaces the subject rather than
+      restyling it. Recurring artifact: neon-edge fringing and garbled
+      texture in high-frequency repetitive regions (tree trunks, knitwear),
+      across several reference/prompt pairs. The all-ones frequency vector is
+      the likely cause — `frequency_scale_vector` exists precisely to
+      suppress high-frequency reference-Key content (its `high_scale_end` is
+      0.0, i.e. full suppression by the last step), and SenseNova skips it,
+      so nothing damps that band. Treated as a known quality gap, not a
+      correctness bug; deriving a rotate-half-correct curve (per-axis
+      `cat([curve, curve])` instead of `repeat_interleave(2)`) is the
+      candidate fix if it is ever worth the work.
     - **Cosmetic**: a style-active request still emits the blanket
       `unsupported_param` warning "ControlNet is not supported for
       SenseNova U1.5", because style entries ride the same `controlnets[]`

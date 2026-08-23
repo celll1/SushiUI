@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import { X, Save, FolderOpen, Trash2 } from "lucide-react";
-import { createTrainingRun, updateTrainingRun, listDatasets, Dataset, TrainingRun, getModels, DatasetConfigItem, getRandomCaption, getSamplers, getScheduleTypes, listTrainingPresets, createTrainingPreset, deleteTrainingPreset, TrainingPreset, getTrainingRunParams, updateTrainingConfig, getControlNets, SamplePrompt, TrainingRunCreateRequest, listTrainingRuns, trainingMethodUnsupportedReason } from "@/utils/api";
+import { createTrainingRun, updateTrainingRun, listDatasets, Dataset, TrainingRun, getModels, DatasetConfigItem, getRandomCaption, getSamplers, getScheduleTypes, listTrainingPresets, createTrainingPreset, deleteTrainingPreset, TrainingPreset, getTrainingRunParams, updateTrainingConfig, getControlNets, SamplePrompt, TrainingRunCreateRequest, listTrainingRuns, trainingMethodUnsupportedReason, trainingFeatureUnsupportedReason, archDisplayName } from "@/utils/api";
 import { useStartup } from "@/contexts/StartupContext";
 import { saveTempImage, loadTempImage, deleteTempImageRef } from "@/utils/tempImageStorage";
 import TextareaWithTagSuggestions from "../common/TextareaWithTagSuggestions";
@@ -342,13 +342,11 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const [copySourceRuns, setCopySourceRuns] = useState<TrainingRun[]>([]);
   const [copyingFromRun, setCopyingFromRun] = useState(false);
 
-  // Model architecture filters
-  const [showSD15, setShowSD15] = useState(true);
-  const [showSDXL, setShowSDXL] = useState(true);
-  const [showZImage, setShowZImage] = useState(true);
-  // DEUS support removed: const [showDEUS, setShowDEUS] = useState(true);
-  const [showFlux2, setShowFlux2] = useState(true);
-  const [showAnima, setShowAnima] = useState(true);
+  // Model architecture filter: the architectures the user has UNCHECKED. Kept
+  // as an exclusion set (not one boolean per arch) so the offered checkboxes can
+  // be derived from the model list itself — an architecture nobody added a flag
+  // for is shown, instead of disappearing from the dropdown.
+  const [hiddenArchs, setHiddenArchs] = useState<string[]>([]);
 
   // Flag to track if dtype settings have been explicitly set (from YAML or user)
   // When true, baseModelPath changes will NOT override dtype settings
@@ -615,12 +613,9 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const [presetDescription, setPresetDescription] = useState("");
   const [showLoadPresetDialog, setShowLoadPresetDialog] = useState(false);
 
-  // Helper: Detect model architecture
-  const isZImageModel = (modelPath: string): boolean => {
-    const model = availableModels.find(m => m.path === modelPath);
-    return model?.architecture === "zimage";
-  };
-
+  // Helper: Detect model architecture. These exist for arch-SPECIFIC config
+  // blocks (an option only that architecture has). A capability gate must not
+  // be written with them — use unsupportedTrainingFeature/Method below.
   // DEUS support removed
   // const isDEUSModel = (modelPath: string): boolean => {
   //   const model = availableModels.find(m => m.path === modelPath);
@@ -659,11 +654,6 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     return model?.architecture === "krea2";
   };
 
-  const isAceStepModel = (modelPath: string): boolean => {
-    const model = availableModels.find(m => m.path === modelPath);
-    return model?.architecture === "acestep";
-  };
-
   const isSenseNovaModel = (modelPath: string): boolean => {
     const model = availableModels.find(m => m.path === modelPath);
     return model?.architecture === "sensenova";
@@ -686,6 +676,22 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       archCapabilities, getModelArchitecture(baseModelPath), method
     );
 
+  // Same contract for a training-config FEATURE (block swap, reference images,
+  // ...): the backend declares which mechanisms it does not have for this base
+  // model, and the sections below hide/disable themselves from that. Nothing in
+  // this file may re-derive it from an architecture name — that is how the
+  // architecture filter above went stale for eight architectures.
+  const unsupportedTrainingFeature = (feature: string): string | undefined =>
+    trainingFeatureUnsupportedReason(
+      archCapabilities, getModelArchitecture(baseModelPath), feature, trainingMethod
+    );
+  const blockSwapUnsupported = unsupportedTrainingFeature("block_swap");
+  const fusedGroupsUnsupported = unsupportedTrainingFeature("fused_optimizer_groups");
+  const referenceImagesUnsupported = unsupportedTrainingFeature("reference_images");
+  const textEncoderTrainingUnsupported = unsupportedTrainingFeature("text_encoder_training");
+  const trainingSamplesUnsupported = unsupportedTrainingFeature("training_samples");
+  const vaeUnsupported = unsupportedTrainingFeature("vae");
+
   // MiniMax-H3 is the only architecture that reads audio_loss_weight (the only
   // one whose packed training sequence carries audio rows), so its control is
   // shown only for it rather than as a knob that silently does nothing.
@@ -696,16 +702,20 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     return arch === "sd15" || arch === "sdxl";
   };
 
-  // Filter models by architecture
-  const filteredModels = availableModels.filter((model) => {
-    if (model.architecture === "sd15" && !showSD15) return false;
-    if (model.architecture === "sdxl" && !showSDXL) return false;
-    if (model.architecture === "zimage" && !showZImage) return false;
-    // DEUS support removed: if (model.architecture === "deus" && !showDEUS) return false;
-    if (model.architecture === "flux2" && !showFlux2) return false;
-    if (model.architecture === "anima" && !showAnima) return false;
-    return true;
-  });
+  // The architectures actually present in the model list, labelled from the
+  // backend's ARCH_DISPLAY_NAMES (GET /schema/arch-capabilities). Both the list
+  // and the labels therefore come from the backend; adding an architecture needs
+  // no edit here.
+  const archFilterOptions = Array.from(
+    new Set(availableModels.map((m) => m.architecture).filter(Boolean))
+  )
+    .map((arch) => ({ arch, label: archDisplayName(archCapabilities, arch) }))
+    .sort((a, b) => a.label.localeCompare(b.label));
+
+  // Filter models by architecture (unchecked = hidden; unknown arch = shown).
+  const filteredModels = availableModels.filter(
+    (model) => !hiddenArchs.includes(model.architecture)
+  );
 
   // ============================================================
   // Centralized state <-> params dict conversion
@@ -1355,23 +1365,44 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [baseModelPath, bundleVaeDefaultsByArch]);
 
-  // Fall back to LoRA when the selected training method is not offered for the
-  // selected base model: either because the backend's TRAINING_UNSUPPORTED table
-  // says so or by the older hardcoded Ideogram 4 rule
-  // (fp8 base; VRAM-impractical). `archCapabilities` is in the deps because it
-  // arrives asynchronously — a model chosen before it loads must still be
-  // re-checked once it does.
+  // Fall back to LoRA when the backend's TRAINING_UNSUPPORTED table says the
+  // selected method is not offered for the selected base model (the run would
+  // otherwise be rejected at submit time). `archCapabilities` is in the deps
+  // because it arrives asynchronously — a model chosen before it loads must
+  // still be re-checked once it does.
   useEffect(() => {
-    // A method the backend refuses for this architecture cannot stay selected
-    // after a model switch (the run would be rejected at submit time instead).
     if (unsupportedTrainingMethod(trainingMethod)) {
-      setTrainingMethod("lora");
-    }
-    if (isIdeogram4Model(baseModelPath) && (trainingMethod === "full_finetune" || trainingMethod === "relora")) {
       setTrainingMethod("lora");
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [baseModelPath, trainingMethod, archCapabilities, availableModels]);
+
+  // Clear the arming values of a feature this base model has no mechanism for,
+  // so a value carried over from a previous model is not submitted and refused.
+  // Skipped while restoring a run from YAML (that run's own config wins).
+  useEffect(() => {
+    if (restoringFromYAMLRef.current) return;
+    if (blockSwapUnsupported) {
+      if (params.blocks_to_swap) updateParam("blocks_to_swap", 0);
+      if (params.use_pinned_memory) updateParam("use_pinned_memory", false);
+      if (params.block_swap_h2d_only) updateParam("block_swap_h2d_only", false);
+    }
+    if (fusedGroupsUnsupported && params.num_optimizer_groups) {
+      updateParam("num_optimizer_groups", 0);
+    }
+    if (referenceImagesUnsupported && params.use_reference_images) {
+      updateParam("use_reference_images", false);
+    }
+    if (textEncoderTrainingUnsupported && params.train_text_encoder) {
+      updateParam("train_text_encoder", false);
+    }
+    if (trainingSamplesUnsupported && params.sample_every) {
+      updateParam("sample_every", 0);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [baseModelPath, trainingMethod, archCapabilities, availableModels,
+      blockSwapUnsupported, fusedGroupsUnsupported, referenceImagesUnsupported,
+      textEncoderTrainingUnsupported, trainingSamplesUnsupported]);
 
 
   // Reset optimizer hyperparameters when optimizer changes
@@ -2287,10 +2318,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
             </label>
             {(() => {
               const fullFtReason = unsupportedTrainingMethod("full_finetune");
-              const fullFtBlocked = isIdeogram4Model(baseModelPath) || !!fullFtReason;
-              const title = isIdeogram4Model(baseModelPath)
-                ? 'Ideogram 4 Full Fine-tune is not supported (fp8 base; VRAM-impractical for individuals). Use LoRA.'
-                : fullFtReason;
+              const fullFtBlocked = !!fullFtReason;
+              const title = fullFtReason;
               return (
             <label
               className={`flex items-center space-x-2 ${fullFtBlocked ? 'cursor-not-allowed' : 'cursor-pointer'}`}
@@ -2306,7 +2335,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 className="text-blue-600 focus:ring-blue-500"
               />
               <span className={`text-sm ${fullFtBlocked ? 'text-gray-500' : ''}`}>
-                Full Fine-tune{isIdeogram4Model(baseModelPath) ? ' (N/A for Ideogram 4)' : (fullFtReason ? ' (not supported for this model)' : '')}
+                Full Fine-tune{fullFtReason ? ' (not supported for this model)' : ''}
               </span>
             </label>
               );
@@ -2336,10 +2365,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
             })()}
             {(() => {
               const reloraReason = unsupportedTrainingMethod("relora");
-              const reloraBlocked = fromScratchMiniT2I || isIdeogram4Model(baseModelPath) || !!reloraReason;
-              const title = isIdeogram4Model(baseModelPath)
-                ? "ReLoRA cannot merge into Ideogram 4's quantized base. Use LoRA."
-                : reloraReason;
+              const reloraBlocked = fromScratchMiniT2I || !!reloraReason;
+              const title = reloraReason;
               return (
             <label
               className={`flex items-center space-x-2 ${reloraBlocked ? 'cursor-not-allowed' : 'cursor-pointer'}`}
@@ -2369,65 +2396,26 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
             Base Model <span className="text-red-400">*</span>
           </label>
 
-          {/* Model Architecture Filter */}
-          <div className="flex items-center gap-4 mb-2 text-xs">
+          {/* Model Architecture Filter (one checkbox per architecture present) */}
+          <div className="flex items-center flex-wrap gap-x-4 gap-y-1 mb-2 text-xs">
             <span className="text-gray-400">Filter:</span>
-            <label className="flex items-center gap-1.5 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={showSD15}
-                onChange={(e) => setShowSD15(e.target.checked)}
-                className="w-3.5 h-3.5"
-              />
-              <span className="text-gray-300">SD 1.5</span>
-            </label>
-            <label className="flex items-center gap-1.5 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={showSDXL}
-                onChange={(e) => setShowSDXL(e.target.checked)}
-                className="w-3.5 h-3.5"
-              />
-              <span className="text-gray-300">SDXL</span>
-            </label>
-            <label className="flex items-center gap-1.5 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={showZImage}
-                onChange={(e) => setShowZImage(e.target.checked)}
-                className="w-3.5 h-3.5"
-              />
-              <span className="text-gray-300">Z-Image</span>
-            </label>
-            {/* DEUS support removed
-            <label className="flex items-center gap-1.5 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={showDEUS}
-                onChange={(e) => setShowDEUS(e.target.checked)}
-                className="w-3.5 h-3.5"
-              />
-              <span className="text-gray-300">DEUS</span>
-            </label>
-            */}
-            <label className="flex items-center gap-1.5 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={showFlux2}
-                onChange={(e) => setShowFlux2(e.target.checked)}
-                className="w-3.5 h-3.5"
-              />
-              <span className="text-gray-300">FLUX.2</span>
-            </label>
-            <label className="flex items-center gap-1.5 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={showAnima}
-                onChange={(e) => setShowAnima(e.target.checked)}
-                className="w-3.5 h-3.5"
-              />
-              <span className="text-gray-300">Anima</span>
-            </label>
+            {archFilterOptions.map(({ arch, label }) => (
+              <label key={arch} className="flex items-center gap-1.5 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={!hiddenArchs.includes(arch)}
+                  onChange={(e) =>
+                    setHiddenArchs((prev) =>
+                      e.target.checked
+                        ? prev.filter((a) => a !== arch)
+                        : [...prev, arch]
+                    )
+                  }
+                  className="w-3.5 h-3.5"
+                />
+                <span className="text-gray-300">{label}</span>
+              </label>
+            ))}
           </div>
 
           <select
@@ -4043,21 +4031,18 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               </div>
 
               {/* Train Text Encoder */}
-              <div className="flex items-center space-x-2">
+              <div className="flex items-center space-x-2" title={textEncoderTrainingUnsupported}>
                 <input
                   type="checkbox"
                   id="train-text-encoder"
-                  checked={trainTextEncoder}
+                  checked={trainTextEncoder && !textEncoderTrainingUnsupported}
                   onChange={(e) => updateParam("train_text_encoder", e.target.checked)}
-                  disabled={isZImageModel(baseModelPath) || isAnimaModel(baseModelPath) || isLensModel(baseModelPath) || isIdeogram4Model(baseModelPath) || isAceStepModel(baseModelPath)}
+                  disabled={!!textEncoderTrainingUnsupported}
                   className="w-4 h-4 disabled:opacity-50 disabled:cursor-not-allowed"
                 />
-                <label htmlFor="train-text-encoder" className={`text-xs cursor-pointer ${isZImageModel(baseModelPath) || isAnimaModel(baseModelPath) || isLensModel(baseModelPath) || isIdeogram4Model(baseModelPath) || isAceStepModel(baseModelPath) ? 'text-gray-500' : 'text-gray-300'}`}>
-                  Train Text Encoder {isZImageModel(baseModelPath) && '(Not supported for Z-Image)'}
-                  {isAnimaModel(baseModelPath) && '(Not supported for Anima)'}
-                  {isLensModel(baseModelPath) && '(Not supported for Lens)'}
+                <label htmlFor="train-text-encoder" className={`text-xs cursor-pointer ${textEncoderTrainingUnsupported ? 'text-gray-500' : 'text-gray-300'}`}>
+                  Train Text Encoder {textEncoderTrainingUnsupported && '(not supported for this model)'}
                   {isMiniT2IModel(baseModelPath) && '(FLAN-T5)'}
-                  {isAceStepModel(baseModelPath) && '(Not supported for ACE-Step)'}
                 </label>
               </div>
 
@@ -4242,6 +4227,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
             </div>
 
             {/* VAE dtype */}
+            {!vaeUnsupported && (
             <div>
               <label className="block text-xs text-gray-400 mb-1">VAE dtype</label>
               <select
@@ -4256,6 +4242,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 <option value="fp8_e5m2">FP8 E5M2 (動作保証対象外)</option>
               </select>
             </div>
+            )}
           </div>
 
           <div className="space-y-2">
@@ -4274,6 +4261,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
             </div>
 
             {/* Bundle VAE (full-parameter save only) */}
+            {!vaeUnsupported && (
             <div className="flex items-center space-x-2">
               <input
                 type="checkbox"
@@ -4286,6 +4274,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 Bundle VAE weights into the checkpoint
               </label>
             </div>
+            )}
 
             {/* Attention Backend */}
             <div className="space-y-1">
@@ -4429,7 +4418,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               </label>
             </div>
             <p className="text-xs text-gray-500">
-              Keeps only the active understanding or generation weight half on GPU. Opt-in; requires batch size 1, Blocks to Swap 0, Optimizer Groups 0, and H2D-only off.
+              Keeps only the active understanding or generation weight half on GPU. Opt-in; requires batch size 1. This architecture has no block swap, so the Block Swap controls are not offered for it.
             </p>
           </div>
         )}
@@ -4438,8 +4427,15 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
         <div className="break-inside-avoid border border-gray-700 rounded p-4 space-y-3">
           <h3 className="text-sm font-medium text-gray-300 mb-3">Block Swap (Training VRAM Optimization)</h3>
 
+          {blockSwapUnsupported && (
+            <p className="text-xs text-yellow-500">
+              Block Swap is not available for this base model: {blockSwapUnsupported}
+            </p>
+          )}
+
           <div className="space-y-3">
             {/* Blocks to Swap */}
+            {!blockSwapUnsupported && (
             <div>
               <label htmlFor="blocks-to-swap" className="block text-xs text-gray-300 mb-1">
                 Blocks to Swap (0 to disable)
@@ -4462,9 +4458,10 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 </p>
               )}
             </div>
+            )}
 
             {/* Use Pinned Memory */}
-            {blocksToSwap > 0 && (
+            {!blockSwapUnsupported && blocksToSwap > 0 && (
               <div className="flex items-center space-x-2">
                 <input
                   type="checkbox"
@@ -4480,7 +4477,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
             )}
 
             {/* H2D-only block swap (FLUX.2 LoRA training) */}
-            {blocksToSwap > 0 && (
+            {!blockSwapUnsupported && blocksToSwap > 0 && (
               <div className="flex items-center space-x-2">
                 <input
                   type="checkbox"
@@ -4496,7 +4493,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
             )}
 
             {/* H2D-only ring size */}
-            {blocksToSwap > 0 && (params.block_swap_h2d_only ?? false) && (
+            {!blockSwapUnsupported && blocksToSwap > 0 && (params.block_swap_h2d_only ?? false) && (
               <div>
                 <label className="block text-xs text-gray-400 mb-1">Ring Size (GPU weight buffer slots)</label>
                 <input
@@ -5133,7 +5130,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
             )}
 
             {/* Fused Optimizer Groups */}
-            {blocksToSwap > 0 && (
+            {!fusedGroupsUnsupported && blocksToSwap > 0 && (
               <div>
                 <label htmlFor="num-optimizer-groups" className="block text-xs text-gray-300 mb-1">
                   Fused Optimizer Groups (0 to disable, recommended 4-10)
@@ -5232,7 +5229,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
           </div>
         </div>
 
-        {/* Reference Image Conditioning (FLUX.2 only) */}
+        {/* Reference Image Conditioning (hidden where the trainer has no such path) */}
+        {!referenceImagesUnsupported && (
         <div className="border border-gray-700 rounded p-4 space-y-3">
           <h3 className="text-sm font-medium text-gray-300 mb-3">Reference Image Conditioning</h3>
           <div className="flex items-center space-x-3">
@@ -5250,9 +5248,9 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
           <div className="text-xs text-gray-500 space-y-1">
             <p>Uses reference images from dataset to condition the model during training via latent concatenation.</p>
             <p>Dataset items must have reference images configured (e.g., <code className="bg-gray-800 px-1 rounded">image_ref.png</code> suffix).</p>
-            <p className="text-yellow-500/80">⚠️ Only supported for FLUX.2 models. Will be ignored for other architectures.</p>
           </div>
         </div>
+        )}
 
         {/* SigLIP2 Vision Encoder — info only; selector is near Base Model, train/LR are in Component-Specific LR */}
         <div className="border border-gray-700 rounded p-4 space-y-2">
@@ -5686,6 +5684,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
         </div>
 
         {/* Sample Generation */}
+        {!trainingSamplesUnsupported && (
         <div className="break-inside-avoid border border-gray-700 rounded p-4 space-y-3">
           <h3 className="text-sm font-medium text-gray-300 mb-3">Sample Generation (Optional)</h3>
 
@@ -6014,6 +6013,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
             </p>
           </div>
         </div>
+        )}
 
         {/* Debug Options */}
         <div className="border border-gray-700 rounded p-4 space-y-3">

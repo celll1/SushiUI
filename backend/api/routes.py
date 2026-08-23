@@ -1001,6 +1001,20 @@ async def get_arch_capabilities():
     -> why that method is refused there (not ignored -- the trainer raises), so
     the training UI filters its method dropdown from the same table.
 
+    `training_feature_unsupported` is a THIRD axis: architecture -> training
+    CONFIG FEATURE (block swap, fused optimizer groups, reference images, text
+    encoder training, in-training samples, VAE settings) -> `{reason, methods?}`,
+    where `methods` narrows the claim to those training methods. An architecture
+    absent from the map supports the feature, so a client hides a section only
+    when the backend says the mechanism is not there. `training_feature_params`
+    and `training_feature_labels` are its sibling maps, same role as
+    `feature_params`/`feature_labels` on the generation axis.
+
+    `arch_display_names` is the user-facing spelling of an architecture id
+    ("sensenova" -> "SenseNova U1.5"), served from the backend's own
+    `ARCH_DISPLAY_NAMES` so a client's architecture filter labels come from one
+    table. An id with no entry falls back to itself.
+
     `video_constraints` is the per-video-arch `TemporalSpec` (valid clip
     lengths, production bounds, fixed fps, canvas envelope) that the video
     routes validate against, so a client can build a valid clip-length list
@@ -1026,8 +1040,11 @@ async def get_arch_capabilities():
     no such sub-mode concept at all).
     """
     from api.arch_capabilities import (
-        ARCH_SUPPORTED_VALUES, ARCH_UNSUPPORTED, FEATURE_PARAMS, FEATURE_LABELS,
+        ARCH_DISPLAY_NAMES, ARCH_SUPPORTED_VALUES, ARCH_UNSUPPORTED,
+        FEATURE_PARAMS, FEATURE_LABELS,
         QUANTIZED_LINEAR_ARCHS, RUNTIME_INT8_ARCHS, TRAINING_UNSUPPORTED,
+        TRAINING_FEATURE_UNSUPPORTED, TRAINING_FEATURE_PARAMS,
+        TRAINING_FEATURE_LABELS,
         AUDIO_OUTPAINT_PLACEMENTS, AUD2AUD_MUSIC3_REPAINT_MODES,
         chain_context_payload, video_constraints_payload,
     )
@@ -1037,6 +1054,10 @@ async def get_arch_capabilities():
         "feature_params": FEATURE_PARAMS,
         "feature_labels": FEATURE_LABELS,
         "training_unsupported": TRAINING_UNSUPPORTED,
+        "training_feature_unsupported": TRAINING_FEATURE_UNSUPPORTED,
+        "training_feature_params": TRAINING_FEATURE_PARAMS,
+        "training_feature_labels": TRAINING_FEATURE_LABELS,
+        "arch_display_names": ARCH_DISPLAY_NAMES,
         "video_constraints": video_constraints_payload(),
         "chain_context": chain_context_payload(),
         "runtime_int8_archs": list(RUNTIME_INT8_ARCHS),

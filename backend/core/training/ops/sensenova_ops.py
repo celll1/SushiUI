@@ -22,19 +22,72 @@ class SenseNovaTrainingPrefix:
     text_length: int
 
 
-def _assert_plain_int8_training_base(transformer: nn.Module) -> None:
+_SENSENOVA_QUANT_LINEAR_COUNT = 588
+
+
+def _quantized_linear_flavours() -> "dict[str, type]":
+    """The EXACT quantized-Linear classes this guard knows how to census.
+
+    ``ConvRotInt8Linear`` subclasses ``Int8Linear``, so the census below keys on
+    ``type(m) is cls``, never ``isinstance``: an isinstance census would fold a
+    ConvRot base into the plain-int8 count and accept it silently.
+    """
     from core.models.common.convrot_int8_linear import ConvRotInt8Linear
+    from core.models.common.w4a8_linear import W4A8Linear
+    from core.models.ideogram4.vendor.fp8_linear import Fp8Linear
     from core.models.ideogram4.vendor.int8_linear import Int8Linear
 
-    plain_int8 = sum(type(module) is Int8Linear for module in transformer.modules())
-    convrot = sum(
-        isinstance(module, ConvRotInt8Linear) for module in transformer.modules()
-    )
-    if plain_int8 != 588 or convrot != 0:
+    return {
+        "Int8Linear": Int8Linear,
+        "ConvRotInt8Linear": ConvRotInt8Linear,
+        "Fp8Linear": Fp8Linear,
+        "W4A8Linear": W4A8Linear,
+    }
+
+
+def _assert_supported_quantized_training_base(transformer: nn.Module) -> None:
+    """Require all 588 decoder Linears to be ONE supported quantized flavour.
+
+    Accepts the plain-int8 and the ConvRot-int8 checkpoints (each quantizes all
+    588). Refuses a mixed base, an off-count base, an unrecognized subclass of a
+    known quantized Linear, and an unquantized bf16 base. Fp8/W4A8 are censused
+    for the diagnostic but not accepted: no such SenseNova base exists, so
+    accepting one would ship an untested path.
+    """
+    flavours = _quantized_linear_flavours()
+    known = tuple(flavours.values())
+    counts = {label: 0 for label in flavours}
+    unknown: "dict[str, int]" = {}
+    for module in transformer.modules():
+        if not isinstance(module, known):
+            continue
+        for label, cls in flavours.items():
+            if type(module) is cls:
+                counts[label] += 1
+                break
+        else:
+            # A quantized class added later must refuse loudly here rather than
+            # be counted as whichever known class it happens to subclass.
+            name = type(module).__name__
+            unknown[name] = unknown.get(name, 0) + 1
+
+    accepted = ("Int8Linear", "ConvRotInt8Linear")
+    present = [label for label, n in counts.items() if n]
+    if (
+        unknown
+        or len(present) != 1
+        or present[0] not in accepted
+        or counts[present[0]] != _SENSENOVA_QUANT_LINEAR_COUNT
+    ):
+        census = ", ".join(
+            f"{label}={n}" for label, n in list(counts.items()) + list(unknown.items())
+        )
         raise RuntimeError(
-            "SenseNova training currently requires the plain-int8 checkpoint "
-            f"(plain Int8Linear={plain_int8}, ConvRotInt8Linear={convrot}; "
-            "expected 588 and 0)"
+            "SenseNova training requires a base whose "
+            f"{_SENSENOVA_QUANT_LINEAR_COUNT} decoder Linears are all ONE supported "
+            f"quantized flavour (all Int8Linear, or all ConvRotInt8Linear); got {census}. "
+            "A mixed or partially quantized base is refused, and so is an unquantized "
+            "bf16 base -- no bf16 SenseNova checkpoint exists for this repo to train on yet."
         )
 
 
@@ -59,7 +112,7 @@ def load_components(trainer: Any) -> None:
 
     components = load_sensenova_from_path(trainer.model_path, torch_dtype=trainer.weight_dtype)
     trainer.transformer = components["transformer"]
-    _assert_plain_int8_training_base(trainer.transformer)
+    _assert_supported_quantized_training_base(trainer.transformer)
     trainer.transformer_original = trainer.transformer
     trainer.transformer_uncond = None
     trainer.tokenizer = components["tokenizer"]

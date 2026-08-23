@@ -66,6 +66,9 @@ export interface GenerationResultSnapshot {
   seed?: number | null;
   ancestralSeed?: number | null;
   params?: unknown;
+  // Backend warnings for this result; the panel renders them next to it, so
+  // they have to survive the panel being unmounted while the run finishes.
+  warnings?: string[];
   revision: number;
 }
 

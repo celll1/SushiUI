@@ -12,11 +12,36 @@
 import { useCallback, useEffect, useRef } from "react";
 import { QueueItem, useGenerationQueue } from "@/contexts/GenerationQueueContext";
 import { useStartup } from "@/contexts/StartupContext";
-import { generateUpscale, UpscaleParams, isGenerationStalledError } from "@/utils/api";
+import {
+  generateOutpaint,
+  generateOutpaintAudio,
+  generateOutpaintVideo,
+  generateUpscale,
+  getResultFilename,
+  getResultPlaybackFilename,
+  getResultSeed,
+  getResultAncestralSeed,
+  isGenerationStalledError,
+  OutpaintParams,
+  OutpaintAudioParams,
+  OutpaintVideoParams,
+  UpscaleParams,
+} from "@/utils/api";
 
 // Types this processor has taken over from the panels. Panels still claim the
 // rest until their migration phase lands.
-const CLAIMED_TYPES: readonly QueueItem["type"][] = ["upscale"];
+const CLAIMED_TYPES: readonly QueueItem["type"][] = [
+  "upscale",
+  "outpaint",
+  "outpaint_vid",
+  "outpaint_aud",
+];
+
+const resultWarnings = (result: any): string[] =>
+  (result?.warnings || []).map((w: any) => (typeof w === "string" ? w : w?.message)).filter(Boolean);
+
+const errorDetail = (error: any) =>
+  error?.response?.data?.detail || error?.message || "Unknown error";
 
 // Types that do not need a loaded diffusion model: an upscale can run on a
 // spandrel checkpoint alone, and UpscalePanel never held its queue on
@@ -75,6 +100,102 @@ export default function GenerationQueueProcessor() {
     }
   }, [publishCompletedResult, appendResult, completeCurrentItem, failCurrentItem, scheduleNext]);
 
+  const runOutpaintVideo = useCallback(async (item: QueueItem) => {
+    try {
+      const clip = item.inputVideo;
+      if (!clip) {
+        throw new Error("No input video available for video outpaint generation");
+      }
+      const result = await generateOutpaintVideo(
+        item.params as OutpaintVideoParams, clip, item.bridgeVideo, item.referenceImages);
+      const url = `/outputs/${getResultFilename(result)}`;
+      const playback = `/outputs/${getResultPlaybackFilename(result)}`;
+      const playbackUrl = playback !== url ? playback : undefined;
+      const info = { num_frames: result.image?.num_frames, fps: result.image?.fps, duration: result.image?.duration };
+      publishCompletedResult({
+        panel: "outpaint", kind: "video", url, playbackUrl, info,
+        seed: getResultSeed(result), params: item.params, warnings: resultWarnings(result),
+      });
+      appendResult({ url, kind: "video", playbackUrl });
+
+      busyRef.current = false;
+      completeCurrentItem();
+      scheduleNext();
+    } catch (error: any) {
+      console.error("[Queue] Video outpaint generation failed:", error);
+      busyRef.current = false;
+      failCurrentItem();
+      scheduleNext();
+      alert(isGenerationStalledError(error)
+        ? error.message
+        : `Video outpaint generation failed: ${errorDetail(error)}`);
+    }
+  }, [publishCompletedResult, appendResult, completeCurrentItem, failCurrentItem, scheduleNext]);
+
+  const runOutpaintAudio = useCallback(async (item: QueueItem) => {
+    try {
+      const referenceAudio = item.inputAudio;
+      if (!referenceAudio) {
+        throw new Error("No reference audio available for audio outpaint generation");
+      }
+      const result = await generateOutpaintAudio(item.params as OutpaintAudioParams, referenceAudio);
+      const url = `/outputs/${result.image.filename}`;
+      const info = { duration: result.image?.duration, sample_rate: result.image?.sample_rate };
+      publishCompletedResult({
+        panel: "outpaint", kind: "audio", url, info,
+        seed: getResultSeed(result), params: item.params, warnings: resultWarnings(result),
+      });
+      appendResult({ url, kind: "audio" });
+
+      busyRef.current = false;
+      completeCurrentItem();
+      scheduleNext();
+    } catch (error: any) {
+      console.error("[Queue] Audio outpaint generation failed:", error);
+      busyRef.current = false;
+      failCurrentItem();
+      scheduleNext();
+      alert(isGenerationStalledError(error)
+        ? error.message
+        : `Audio outpaint generation failed: ${errorDetail(error)}`);
+    }
+  }, [publishCompletedResult, appendResult, completeCurrentItem, failCurrentItem, scheduleNext]);
+
+  const runOutpaintImage = useCallback(async (item: QueueItem) => {
+    try {
+      const itemParams = item.params as OutpaintParams;
+      const result = await generateOutpaint(itemParams, item.inputImage!);
+      if (!result.success) {
+        throw new Error("Outpaint generation did not succeed");
+      }
+      const url = `/outputs/${getResultFilename(result)}`;
+      const seed = getResultSeed(result);
+      const ancestralSeed = getResultAncestralSeed(result);
+      publishCompletedResult({
+        panel: "outpaint",
+        kind: "image",
+        url,
+        seed,
+        ancestralSeed,
+        params: { ...itemParams, seed, ancestral_seed: ancestralSeed ?? -1 },
+        warnings: resultWarnings(result),
+      });
+      appendResult({ url, kind: "image" });
+
+      busyRef.current = false;
+      completeCurrentItem();
+      scheduleNext();
+    } catch (error: any) {
+      console.error("[Queue] Outpaint generation failed:", error);
+      busyRef.current = false;
+      failCurrentItem();
+      scheduleNext();
+      alert(isGenerationStalledError(error)
+        ? error.message
+        : `Outpaint generation failed: ${errorDetail(error)}`);
+    }
+  }, [publishCompletedResult, appendResult, completeCurrentItem, failCurrentItem, scheduleNext]);
+
   const process = useCallback(async () => {
     if (busyRef.current) return;
 
@@ -89,6 +210,15 @@ export default function GenerationQueueProcessor() {
       case "upscale":
         await runUpscale(nextItem);
         return;
+      case "outpaint":
+        await runOutpaintImage(nextItem);
+        return;
+      case "outpaint_vid":
+        await runOutpaintVideo(nextItem);
+        return;
+      case "outpaint_aud":
+        await runOutpaintAudio(nextItem);
+        return;
       default:
         // Unreachable: `claimable` is exactly the set handled above.
         busyRef.current = false;
@@ -96,7 +226,7 @@ export default function GenerationQueueProcessor() {
         failCurrentItem();
         return;
     }
-  }, [modelLoaded, startNextInQueue, failCurrentItem, runUpscale]);
+  }, [modelLoaded, startNextInQueue, failCurrentItem, runUpscale, runOutpaintImage, runOutpaintVideo, runOutpaintAudio]);
 
   processRef.current = process;
 

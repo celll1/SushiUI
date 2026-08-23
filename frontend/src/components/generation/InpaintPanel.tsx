@@ -3224,7 +3224,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
     }
   };
 
-  const { addToQueue, updateQueueItem, updateQueueItemByLoop, cancelLoopGroup, startNextInQueue, completeCurrentItem, failCurrentItem, currentItem, queue, generateForever, setGenerateForever, progressSnapshot, completedResults, publishCompletedResult } = useGenerationQueue();
+  const { addToQueue, updateQueueItem, updateQueueItemByLoop, getLoopGroupItems, cancelLoopGroup, startNextInQueue, completeCurrentItem, failCurrentItem, currentItem, queue, generateForever, setGenerateForever, progressSnapshot, completedResults, publishCompletedResult } = useGenerationQueue();
 
   useEffect(() => {
     if (!currentItem || !["inpaint", "inpaint_vid"].includes(currentItem.type)) {
@@ -3305,6 +3305,18 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
     aspectRatioPresets: true,
     fixedResolutionPresets: true,
   });
+
+  // UI state the request depends on, frozen onto the item at enqueue time: the
+  // dispatcher is GenerationQueueProcessor, which has no view of this panel.
+  const freezeDispatchState = useCallback(<T extends Record<string, any>>(p: T) => ({
+    ...p,
+    developer_mode: developerMode,
+    ...(showAdvancedCFG ? {} : {
+      cfg_schedule_type: "constant",
+      cfg_rescale_snr_alpha: 0.0,
+      dynamic_threshold_percentile: 0.0,
+    }),
+  }), [developerMode, showAdvancedCFG]);
 
   // Add generation request to queue. Two modality branches: image (inpaint,
   // mask-driven) and video (inpaint_vid, range-driven), mutually exclusive on
@@ -3597,13 +3609,14 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
 
     addToQueue({
       type: "inpaint",
-      params: {
+      params: freezeDispatchState({
         ...params,
         prompt: processedPrompt,
         negative_prompt: processedNegativePrompt,
         loop_decode: mainDecodeDirective.loop_decode,
         skip_gallery: mainDecodeDirective.skip_gallery,
-      },
+        ...(refImages.length > 0 ? { ref_images: refImages } : {}),
+      }),
       inputImage: inputImagePreview,
       maskImage: maskImage,
       prompt: processedPrompt,
@@ -3612,6 +3625,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
       isLoopStep: false,
       useTrainingModel,
       trainingRunId: activeTraining?.run_id,
+      savePreviewToGallery,
     });
 
     // If loop generation is enabled, add all loop steps immediately
@@ -3895,11 +3909,11 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
 
       addToQueue({
         type: "inpaint",
-        params: {
+        params: freezeDispatchState({
           ...stepParams,
           prompt: processedPrompt,
           negative_prompt: processedNegativePrompt,
-        },
+        }),
         inputImage: "", // Will be set when previous step completes
         maskImage: step.keepMask ? maskImageData : "", // Use same mask if keepMask is enabled
         prompt: `[Loop ${i + 1}/${enabledSteps.length}] ${processedPrompt.substring(0, 50)}...`,
@@ -3908,11 +3922,18 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         isLoopStep: true,
         useTrainingModel,
         trainingRunId: activeTraining?.run_id,
+        savePreviewToGallery,
+        loopStepConfig: {
+          sizeMode: step.sizeMode,
+          scale: step.scale,
+          useMainControlNets: step.useMainControlNets,
+          controlnets: step.controlnets || [],
+        },
       });
     }
 
     console.log(`[Inpaint] Added ${enabledSteps.length} loop steps to queue with group ID: ${loopGroupId}`);
-  }, [loopGenerationConfig, addToQueue, refImages, useTrainingModel, activeTraining]);
+  }, [loopGenerationConfig, addToQueue, refImages, useTrainingModel, activeTraining, savePreviewToGallery, freezeDispatchState]);
 
   // Process queue - automatically start next item
   const processQueueRef = useRef<() => Promise<void>>();
@@ -4060,11 +4081,12 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         resampling_method: nextItem.params.resampling_method,
         loras: nextItem.params.loras,
         controlnets: nextItem.params.controlnets,
-        developer_mode: developerMode,
-        // Reset advanced CFG params if disabled
-        cfg_schedule_type: !showAdvancedCFG ? "constant" : nextItem.params.cfg_schedule_type,
-        cfg_rescale_snr_alpha: !showAdvancedCFG ? 0.0 : nextItem.params.cfg_rescale_snr_alpha,
-        dynamic_threshold_percentile: !showAdvancedCFG ? 0.0 : nextItem.params.dynamic_threshold_percentile,
+        // developer_mode and the Advanced-CFG reset are frozen onto
+        // nextItem.params at enqueue time (freezeDispatchState) — read as-is.
+        developer_mode: nextItem.params.developer_mode,
+        cfg_schedule_type: nextItem.params.cfg_schedule_type,
+        cfg_rescale_snr_alpha: nextItem.params.cfg_rescale_snr_alpha,
+        dynamic_threshold_percentile: nextItem.params.dynamic_threshold_percentile,
         // NAG params
         nag_enable: nextItem.params.nag_enable,
         nag_scale: nextItem.params.nag_scale,
@@ -4134,11 +4156,13 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         skip_gallery: nextItem.params.skip_gallery,
       };
 
-      // Add FLUX.2 Image Edit / Vision Encoder reference images
-      if (refImages.length > 0) {
+      // Add FLUX.2 Image Edit / Vision Encoder reference images. Frozen onto
+      // nextItem.params at enqueue time (main step: freezeDispatchState; loop
+      // steps: addLoopStepsToQueueImmediate) — read as-is.
+      if (nextItem.params.ref_images && nextItem.params.ref_images.length > 0) {
         apiParams = {
           ...apiParams,
-          ref_images: refImages,
+          ref_images: nextItem.params.ref_images,
         };
       }
 
@@ -4151,7 +4175,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
       let result: any;
       let imageUrl: string;
       // Per-item flag (set at enqueue) so loop steps keep the model choice.
-      if ((nextItem?.useTrainingModel ?? useTrainingModel) && (nextItem?.trainingRunId ?? activeTraining?.run_id)) {
+      if (nextItem.useTrainingModel && (nextItem.trainingRunId ?? activeTraining?.run_id)) {
         // Training-preview branch: encode init+mask, route to
         // /generate/inpaint/training-preview; result is a blob URL.
         const initImageBase64 = await imageSourceToBase64(nextItem.inputImage!);
@@ -4161,8 +4185,8 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
           init_image_base64: initImageBase64,
           mask_image_base64: maskImageBase64,
           denoising_strength: apiParams.denoising_strength ?? 0.75,
-          run_id: nextItem?.trainingRunId ?? activeTraining!.run_id,
-          save_to_gallery: savePreviewToGallery,
+          run_id: nextItem.trainingRunId ?? activeTraining!.run_id,
+          save_to_gallery: nextItem.savePreviewToGallery ?? false,
         });
         if (preview.filename) {
           imageUrl = `/outputs/${preview.filename}`;
@@ -4265,9 +4289,9 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
             console.log(`[Inpaint] TIPO prompt: ${result.image.prompt?.substring(0, 100)}...`);
 
             // Update all loop steps (not just the next one) with TIPO-generated prompt
-            const enabledSteps = loopGenerationConfig.steps.filter(step => step.enabled);
-            for (let i = 0; i < enabledSteps.length; i++) {
-              updateQueueItemByLoop(nextItem.loopGroupId, i, (item) => ({
+            for (const stepItem of getLoopGroupItems(nextItem.loopGroupId)) {
+              if (!stepItem.isLoopStep || stepItem.loopStepIndex === undefined) continue;
+              updateQueueItemByLoop(nextItem.loopGroupId, stepItem.loopStepIndex, (item) => ({
                 params: {
                   ...item.params,
                   prompt: result.image.prompt,
@@ -4277,8 +4301,8 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
           }
 
           // Find step config to check if ControlNet processing is needed
-          const enabledSteps = loopGenerationConfig.steps.filter(step => step.enabled);
-          const stepConfig = enabledSteps[nextLoopStepIndex];
+          const stepConfig = getLoopGroupItems(nextItem.loopGroupId)
+            .find((item) => item.loopStepIndex === nextLoopStepIndex)?.loopStepConfig;
 
           console.log(`[Inpaint] Step config:`, {
             hasStepConfig: !!stepConfig,
@@ -4460,7 +4484,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         alert(alertMessage);
       }
     }
-  }, [isGenerating, generatedImage, onImageGenerated, isMounted, startNextInQueue, completeCurrentItem, failCurrentItem, updateQueueItem, queue, publishCompletedResult]);
+  }, [isGenerating, generatedImage, onImageGenerated, isMounted, startNextInQueue, completeCurrentItem, failCurrentItem, updateQueueItem, queue, publishCompletedResult, activeTraining, getLoopGroupItems]);
 
   processQueueRef.current = processQueue;
 

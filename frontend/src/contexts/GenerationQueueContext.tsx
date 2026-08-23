@@ -9,6 +9,44 @@ import { CFGMetrics, wsClient } from "@/utils/websocket";
 
 export type GenerationPanelId = "txt2img" | "img2img" | "inpaint" | "outpaint" | "upscale";
 
+/** Fallback owner for an item that did not record its origin panel. Several
+ *  types (ref2vid, chain_vid) can be enqueued from more than one panel, so
+ *  `QueueItem.panel` is authoritative and this is only the default. */
+export function typeToPanel(type: QueueItem["type"]): GenerationPanelId {
+  switch (type) {
+    case "txt2img":
+    case "txt2vid":
+    case "txt2aud":
+      return "txt2img";
+    case "img2img":
+    case "img2vid":
+    case "ref2vid":
+    case "aud2aud":
+    case "chain_vid":
+      return "img2img";
+    case "inpaint":
+    case "inpaint_vid":
+      return "inpaint";
+    case "outpaint":
+    case "outpaint_vid":
+    case "outpaint_aud":
+      return "outpaint";
+    case "upscale":
+      return "upscale";
+  }
+}
+
+/** One finished result, for the shared top-right strip (FloatingGallery). */
+export interface GenerationResultFeedEntry {
+  id: number;
+  url: string;
+  kind: "image" | "video" | "audio";
+  playbackUrl?: string;
+  timestamp: number;
+}
+
+const RESULT_FEED_LIMIT = 200;
+
 export interface GenerationProgressSnapshot {
   itemId: string;
   step: number;
@@ -31,8 +69,24 @@ export interface GenerationResultSnapshot {
   revision: number;
 }
 
+/** The subset of a `LoopGenerationStep` that is read when the PREVIOUS step
+ *  finishes, frozen onto the step's own queue item at enqueue time. Reading it
+ *  live from `loopGenerationConfig` would (a) be unavailable to a dispatcher
+ *  that is not the enqueuing panel and (b) let an edit made mid-run retarget a
+ *  loop that is already in flight. */
+export interface LoopStepFrozenConfig {
+  sizeMode: "absolute" | "scale";
+  scale?: number;
+  useMainControlNets: boolean;
+  controlnets: Array<{ useLoopImage: boolean; [key: string]: unknown }>;
+}
+
 export interface QueueItem {
   id: string;
+  // The panel that enqueued this item, and therefore the one that renders its
+  // progress and its result. Set at enqueue because the dispatcher is global
+  // and several types (ref2vid, chain_vid) have more than one possible origin.
+  panel?: GenerationPanelId;
   type: "txt2img" | "img2img" | "inpaint" | "inpaint_vid" | "outpaint" | "outpaint_vid" | "outpaint_aud" | "upscale" | "txt2vid" | "img2vid" | "ref2vid" | "txt2aud" | "aud2aud" | "chain_vid";
   params: GenerationParams | Img2ImgParams | InpaintParams | InpaintVideoParams | OutpaintParams | OutpaintVideoParams | OutpaintAudioParams | UpscaleParams | Txt2VidParams | Img2VidParams | Ref2VidParams | Txt2AudParams | Aud2AudParams;
   inputImage?: string; // For img2img, inpaint, and outpaint
@@ -129,6 +183,11 @@ export interface QueueItem {
   // "use training model" checkbox is off) keep the base generation's choice.
   useTrainingModel?: boolean;
   trainingRunId?: number;
+  // Whether a training preview is persisted to the gallery. Frozen per item for
+  // the same reason as useTrainingModel.
+  savePreviewToGallery?: boolean;
+  // This loop step's own config, read when its PREDECESSOR finishes.
+  loopStepConfig?: LoopStepFrozenConfig;
   startTime?: number; // When generation started (for timing)
   endTime?: number; // When generation completed (for timing)
 }
@@ -140,6 +199,9 @@ interface GenerationQueueContextType {
   removeFromQueue: (id: string) => void;
   updateQueueItem: (id: string, updates: Partial<QueueItem>) => void;
   updateQueueItemByLoop: (loopGroupId: string, loopStepIndex: number, updates: Partial<QueueItem> | ((item: QueueItem) => Partial<QueueItem>)) => void;
+  // Synchronous read of a loop group off the queue ref, so a dispatcher can
+  // consult the steps still ahead of it without depending on a rendered copy.
+  getLoopGroupItems: (loopGroupId: string) => QueueItem[];
   cancelLoopGroup: (loopGroupId: string) => void;
   cancelRelatedItems: (itemId: string) => void;
   startNextInQueue: (allowedTypes?: readonly QueueItem["type"][]) => QueueItem | null;
@@ -151,6 +213,10 @@ interface GenerationQueueContextType {
   progressSnapshot: GenerationProgressSnapshot | null;
   completedResults: Partial<Record<GenerationPanelId, GenerationResultSnapshot>>;
   publishCompletedResult: (result: Omit<GenerationResultSnapshot, "revision">) => void;
+  // Every finished result in order, for the page-level FloatingGallery strip.
+  // Bounded; the strip trims further to its own configured maximum.
+  resultFeed: GenerationResultFeedEntry[];
+  appendResult: (entry: Omit<GenerationResultFeedEntry, "id" | "timestamp">) => void;
   // Video-chain drift pause (videoChain.ts design §4.1). Held HERE, not in the
   // panel that observed it: `chain_vid` is claimed by both Txt2Img and Img2Img,
   // which are mounted exclusively per tab, so panel-local pause state would be
@@ -172,6 +238,7 @@ export function GenerationQueueProvider({ children }: { children: ReactNode }) {
   const [generateForever, setGenerateForever] = useState<boolean>(false);
   const [progressSnapshot, setProgressSnapshot] = useState<GenerationProgressSnapshot | null>(null);
   const [completedResults, setCompletedResults] = useState<Partial<Record<GenerationPanelId, GenerationResultSnapshot>>>({});
+  const [resultFeed, setResultFeed] = useState<GenerationResultFeedEntry[]>([]);
   const [chainPause, setChainPause] = useState<ChainDriftPause | null>(null);
 
   // Use refs that are synchronously updated alongside state
@@ -223,6 +290,16 @@ export function GenerationQueueProvider({ children }: { children: ReactNode }) {
     return () => wsClient.unsubscribe(handleProgress);
   }, []);
 
+  const appendResult = useCallback((entry: Omit<GenerationResultFeedEntry, "id" | "timestamp">) => {
+    setResultFeed((previous) => {
+      const next = [
+        ...previous,
+        { ...entry, id: (previous[previous.length - 1]?.id ?? 0) + 1, timestamp: Date.now() },
+      ];
+      return next.length > RESULT_FEED_LIMIT ? next.slice(next.length - RESULT_FEED_LIMIT) : next;
+    });
+  }, []);
+
   const publishCompletedResult = useCallback((result: Omit<GenerationResultSnapshot, "revision">) => {
     setCompletedResults((previous) => ({
       ...previous,
@@ -271,6 +348,11 @@ export function GenerationQueueProvider({ children }: { children: ReactNode }) {
       }
     });
   }, []);
+
+  const getLoopGroupItems = useCallback(
+    (loopGroupId: string) => queueRef.current.filter((item) => item.loopGroupId === loopGroupId),
+    [],
+  );
 
   const cancelLoopGroup = useCallback((loopGroupId: string) => {
     console.log(`[QueueContext] Cancelling all pending items in loop group: ${loopGroupId}`);
@@ -522,6 +604,7 @@ export function GenerationQueueProvider({ children }: { children: ReactNode }) {
         removeFromQueue,
         updateQueueItem,
         updateQueueItemByLoop,
+        getLoopGroupItems,
         cancelLoopGroup,
         cancelRelatedItems,
         startNextInQueue,
@@ -533,6 +616,8 @@ export function GenerationQueueProvider({ children }: { children: ReactNode }) {
         progressSnapshot,
         completedResults,
         publishCompletedResult,
+        resultFeed,
+        appendResult,
         chainPause,
         pauseChain,
         clearChainPause,

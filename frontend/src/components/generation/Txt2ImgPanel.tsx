@@ -57,7 +57,7 @@ import {
   ChainAdvanceResult,
 } from "@/utils/videoChain";
 import { migrateLoopGenerationConfig, computeLoopDecodeDirective } from "@/utils/loopGenerationInheritance";
-import { generateTxt2Img, generateImg2Img, generateTxt2Vid, Txt2VidParams, generateRef2Vid, Ref2VidParams, generateOutpaintVideo, OutpaintVideoParams, MiniMaxH3References, MiniMaxH3Keyframe, generateTxt2Aud, Txt2AudParams, generateTxt2ImgTrainingPreview, GenerationParams, getSamplers, getScheduleTypes, tokenizePrompt, generateTIPOPrompt, cancelGeneration, getCurrentModel, isLatentOnlyResult, getResultFilename, getResultPlaybackFilename, getResultSeed, getResultAncestralSeed, unetQuantizationOptions, normalizeUnetQuantization, transformerQuantizationLabel, archSupportsFeature, archDisplayName, normalizeVideoFrames, videoCanvasRule, videoCanvasAxisBounds, videoMinInferenceSteps, videoCanvasExceedsEnvelope, isGenerationStalledError, planVideoChain, snapUpValidVideoFrameCount, effectiveSegmentFrames, VideoChainManifest, VIDEO_BLOCK_SWAP_MAX, audioDefaultsForArch } from "@/utils/api";
+import { generateTxt2Img, generateImg2Img, generateTxt2Vid, Txt2VidParams, generateRef2Vid, Ref2VidParams, generateOutpaintVideo, OutpaintVideoParams, MiniMaxH3References, MiniMaxH3Keyframe, generateTxt2Aud, Txt2AudParams, generateTxt2ImgTrainingPreview, generateImg2ImgTrainingPreview, toBase64, GenerationParams, getSamplers, getScheduleTypes, tokenizePrompt, generateTIPOPrompt, cancelGeneration, getCurrentModel, isLatentOnlyResult, getResultFilename, getResultPlaybackFilename, getResultSeed, getResultAncestralSeed, unetQuantizationOptions, normalizeUnetQuantization, transformerQuantizationLabel, archSupportsFeature, archDisplayName, normalizeVideoFrames, videoCanvasRule, videoCanvasAxisBounds, videoMinInferenceSteps, videoCanvasExceedsEnvelope, isGenerationStalledError, planVideoChain, snapUpValidVideoFrameCount, effectiveSegmentFrames, VideoChainManifest, VIDEO_BLOCK_SWAP_MAX, audioDefaultsForArch } from "@/utils/api";
 import { useActiveTraining } from "@/hooks/useActiveTraining";
 import { useSmoothProgress } from "@/hooks/useSmoothProgress";
 import { wsClient, CFGMetrics } from "@/utils/websocket";
@@ -3055,7 +3055,16 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
     setIsGenerating(true);
     setProgress(0);
     setProgressMessage("");
-    setTotalSteps(nextItem.params.steps || 20);
+    // A loop step queued as "img2img" only runs steps*denoising_strength
+    // denoise steps (see custom_img2img_sampling_loop's init_timestep) --
+    // matches the rounding Img2Img/Inpaint/Outpaint panels already use for
+    // their own real img2img runs.
+    if (nextItem.type === "img2img") {
+      const denoisingStrength = (nextItem.params as any).denoising_strength || 0.75;
+      setTotalSteps(Math.ceil((nextItem.params.steps || 20) * denoisingStrength));
+    } else {
+      setTotalSteps(nextItem.params.steps || 20);
+    }
     setPreviewImage(null);
     setGeneratedImage(null);
     // An image run supersedes any video/audio result still on screen. The
@@ -3148,27 +3157,76 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
           };
         }
 
-        let file: File | undefined;
-        if (nextItem.inputLatentId) {
-          // Latent passthrough chaining (decodeMode "final-only"): the previous
-          // step returned a cached latent_id instead of an image; no PNG to fetch.
-          console.log(`[Txt2Img] Loop step chaining via cached latent: ${nextItem.inputLatentId}`);
-        } else {
-          // For loop steps after the first, use the previous output as input
+        // Training-preview branch: mirrors the txt2img branch above -- a
+        // loop step queued while "Use training model" was on stays on the
+        // training checkpoint even though its type flipped to img2img.
+        const itemUseTraining = (nextItem?.useTrainingModel ?? useTrainingModel);
+        const itemRunId = nextItem?.trainingRunId ?? activeTraining?.run_id;
+
+        if (itemUseTraining && itemRunId) {
+          if (nextItem.inputLatentId) {
+            // Latent passthrough has no decoded image to base64-encode; the
+            // training-preview endpoint requires init_image_base64.
+            throw new Error("Training-preview generation requires an input image (latent passthrough is not supported)");
+          }
           const inputImageToUse = nextItem.inputImage || previousImage;
           if (!inputImageToUse) {
             throw new Error("No input image available for img2img loop step");
           }
-          // Fetch the input image and convert to File
-          const response = await fetch(inputImageToUse);
-          const blob = await response.blob();
-          file = new File([blob], "input.png", { type: "image/png" });
-        }
+          // A loop step's input is an /outputs/ (or blob:) URL, never a data
+          // URL -- toBase64 would hand a string straight back, so fetch first.
+          const initImageBase64 = await toBase64(await (await fetch(inputImageToUse)).blob());
+          const preview = await generateImg2ImgTrainingPreview({
+            ...(paramsWithDevMode as any),
+            init_image_base64: initImageBase64,
+            denoising_strength: paramsWithDevMode.denoising_strength ?? 0.75,
+            run_id: itemRunId,
+            save_to_gallery: savePreviewToGallery,
+          });
+          if (preview.filename) {
+            imageUrl = `/outputs/${preview.filename}`;
+          } else {
+            if (previewBlobUrlRef.current) URL.revokeObjectURL(previewBlobUrlRef.current);
+            const objectUrl = URL.createObjectURL(preview.blob);
+            previewBlobUrlRef.current = objectUrl;
+            imageUrl = objectUrl;
+          }
+          result = {
+            image: {
+              filename: preview.filename
+                ?? `preview_${preview.requestId ?? "training"}.png`,
+              filepath: imageUrl,
+              prompt: paramsWithDevMode.prompt,
+              negative_prompt: paramsWithDevMode.negative_prompt,
+              metadata: {},
+              size_bytes: preview.blob.size,
+            },
+            actual_seed: preview.seed ? Number(preview.seed) : -1,
+            actual_ancestral_seed: -1,
+          } as any;
+        } else {
+          let file: File | undefined;
+          if (nextItem.inputLatentId) {
+            // Latent passthrough chaining (decodeMode "final-only"): the previous
+            // step returned a cached latent_id instead of an image; no PNG to fetch.
+            console.log(`[Txt2Img] Loop step chaining via cached latent: ${nextItem.inputLatentId}`);
+          } else {
+            // For loop steps after the first, use the previous output as input
+            const inputImageToUse = nextItem.inputImage || previousImage;
+            if (!inputImageToUse) {
+              throw new Error("No input image available for img2img loop step");
+            }
+            // Fetch the input image and convert to File
+            const response = await fetch(inputImageToUse);
+            const blob = await response.blob();
+            file = new File([blob], "input.png", { type: "image/png" });
+          }
 
-        result = await generateImg2Img(paramsWithDevMode, file, nextItem.inputLatentId);
-        // loop_decode="none" (this step's resize_mode is "latent" under
-        // decodeMode "final-only") returns { latent_id, actual_seed } with NO image.
-        imageUrl = isLatentOnlyResult(result) ? undefined : `/outputs/${getResultFilename(result)}`;
+          result = await generateImg2Img(paramsWithDevMode, file, nextItem.inputLatentId);
+          // loop_decode="none" (this step's resize_mode is "latent" under
+          // decodeMode "final-only") returns { latent_id, actual_seed } with NO image.
+          imageUrl = isLatentOnlyResult(result) ? undefined : `/outputs/${getResultFilename(result)}`;
+        }
       } else {
         throw new Error(`Unsupported generation type: ${nextItem.type}`);
       }

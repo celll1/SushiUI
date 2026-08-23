@@ -495,21 +495,11 @@ export default function Txt2ImgPanel({ onTabChange }: Txt2ImgPanelProps = {}) {
   // appears in the gallery (tagged as ``training-preview:...``).
   const [savePreviewToGallery, setSavePreviewToGallery] = useState(false);
   const activeTraining = useActiveTraining();
-  const previewBlobUrlRef = useRef<string | null>(null);
   // Auto-untoggle when no training is active (otherwise the next
   // generate would fail with a confusing 409).
   useEffect(() => {
     if (!activeTraining && useTrainingModel) setUseTrainingModel(false);
   }, [activeTraining, useTrainingModel]);
-  // Release previous blob URL when generating a new preview (or on unmount)
-  useEffect(() => {
-    return () => {
-      if (previewBlobUrlRef.current) {
-        URL.revokeObjectURL(previewBlobUrlRef.current);
-        previewBlobUrlRef.current = null;
-      }
-    };
-  }, []);
   const currentModelInfo = modelInfo ? { loaded: true, model_info: modelInfo } : null;
   // Drop a persisted unet_quantization the loaded architecture does not offer
   // (e.g. fp8_e4m3fn carried over onto a krea2 model): otherwise the <select>

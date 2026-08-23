@@ -1152,18 +1152,9 @@ export default function InpaintPanel({ onTabChange }: InpaintPanelProps = {}) {
   const [useTrainingModel, setUseTrainingModel] = useState(false);
   const [savePreviewToGallery, setSavePreviewToGallery] = useState(false);
   const activeTraining = useActiveTraining();
-  const previewBlobUrlRef = useRef<string | null>(null);
   useEffect(() => {
     if (!activeTraining && useTrainingModel) setUseTrainingModel(false);
   }, [activeTraining, useTrainingModel]);
-  useEffect(() => {
-    return () => {
-      if (previewBlobUrlRef.current) {
-        URL.revokeObjectURL(previewBlobUrlRef.current);
-        previewBlobUrlRef.current = null;
-      }
-    };
-  }, []);
   const [isTIPODialogOpen, setIsTIPODialogOpen] = useState(false);
   const [tipoSettings, setTipoSettings] = useState<TIPOSettings>({
     model_name: "KBlueLeaf/TIPO-500M",

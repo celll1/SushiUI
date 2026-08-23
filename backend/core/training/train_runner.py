@@ -11,6 +11,7 @@ import os
 import signal
 import time
 import re
+import json
 
 # Reduce CUDA caching-allocator fragmentation across the many aspect-ratio bucket
 # shapes (the allocator otherwise reserves a non-reusable block per distinct shape,
@@ -200,6 +201,7 @@ def _apply_sensenova_training_contract(
             )
     if use_reference_images:
         raise ValueError("SenseNova reference-image training is deferred to Phase 3")
+    _warn_on_sensenova_timestep_sampling(base_model_path, train_config)
     train_config["text_encoding_mode"] = "onthefly_gpu"
     train_config["latent_encoding_mode"] = "onthefly_gpu"
     sample_config = process_config.setdefault("sample", {})
@@ -256,6 +258,115 @@ def _normalize_sensenova_bool(
         )
     train_config[key] = normalized
     return normalized
+
+
+_SENSENOVA_TAIL_T = 0.9
+_SENSENOVA_TAIL_MASS_LIMIT = 0.01
+_SENSENOVA_WEIGHT_RATIO_LIMIT = 2.0
+_SENSENOVA_PROBE_SAMPLES = 200000
+_SENSENOVA_PROBE_SEED = 0
+
+
+def _sensenova_config_t_eps(base_model_path: str):
+    """Read t_eps from the checkpoint's config.json (no model weights loaded)."""
+    try:
+        path = Path(base_model_path or "")
+        candidates = [path / "config.json", path.parent / "config.json"]
+    except (TypeError, ValueError, OSError):
+        return None
+    for candidate in candidates:
+        try:
+            with open(candidate, "r", encoding="utf-8") as handle:
+                data = json.load(handle)
+        except (OSError, ValueError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        value = data.get("t_eps")
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue
+        value = float(value)
+        if 0.0 < value < 1.0:
+            return value
+    return None
+
+
+def _sensenova_timestep_probe(sampling_config: Dict[str, Any], t_eps):
+    """Estimate P(t > 0.9) and, when t_eps is known, E[1/(1-t)^2] for one config."""
+    from .timestep_sampler import TimestepSampler
+
+    sampler = TimestepSampler.from_config(dict(sampling_config))
+    with torch.random.fork_rng(devices=[]):
+        torch.manual_seed(_SENSENOVA_PROBE_SEED)
+        samples = sampler.sample(_SENSENOVA_PROBE_SAMPLES, torch.device("cpu"))
+    samples = samples.detach().double().clamp(0.0, 1.0)
+    tail = float((samples > _SENSENOVA_TAIL_T).double().mean())
+    if t_eps is None:
+        return tail, None
+    weights = 1.0 / (1.0 - samples).clamp_min(t_eps) ** 2
+    return tail, float(weights.mean())
+
+
+def _warn_on_sensenova_timestep_sampling(
+    base_model_path: str, train_config: Dict[str, Any]
+) -> bool:
+    """Warn once when timestep_sampling puts weight on SenseNova's t->1 side.
+
+    Advisory only: nothing is clamped and no value is rewritten.
+    """
+    configured = train_config.get("timestep_sampling")
+    if configured is None or not isinstance(configured, dict):
+        return False
+    from api.param_defaults import TIMESTEP_SAMPLING_DEFAULTS_BY_ARCH
+
+    default = TIMESTEP_SAMPLING_DEFAULTS_BY_ARCH["sensenova"]
+    if configured == default:
+        return False
+    t_eps = _sensenova_config_t_eps(base_model_path)
+    try:
+        tail, weight = _sensenova_timestep_probe(configured, t_eps)
+        default_tail, default_weight = _sensenova_timestep_probe(default, t_eps)
+    except Exception as exc:
+        print(
+            "[TrainRunner] SenseNova timestep_sampling check skipped "
+            f"({type(exc).__name__}: {exc})"
+        )
+        return False
+    triggered = tail >= _SENSENOVA_TAIL_MASS_LIMIT
+    if weight is not None and default_weight is not None and default_weight > 0:
+        if weight >= _SENSENOVA_WEIGHT_RATIO_LIMIT * default_weight:
+            triggered = True
+    if not triggered:
+        return False
+
+    if t_eps is None:
+        clamp_text = "clamped only by the model's t_eps at 1/t_eps^2"
+    else:
+        clamp_text = (
+            f"clamped only by the model's t_eps at 1/t_eps^2 = {1.0 / (t_eps ** 2):.1f} "
+            f"(t_eps={t_eps:g})"
+        )
+    print("[TrainRunner] WARNING: SenseNova timestep_sampling departs from the "
+          "architecture default toward t=1 (the clean side).")
+    print(f"[TrainRunner]   configured:   {configured}")
+    print(f"[TrainRunner]   arch default: {default}")
+    print("[TrainRunner]   SenseNova's velocity-space MSE reduces to "
+          "mse(x0_pred, x0) / (1-t)^2 (the noised sample z cancels on both sides), "
+          "and SenseNova uses t=0 = noise / t=1 = clean, so the effective per-sample "
+          f"loss weight grows without bound as t -> 1 and is {clamp_text}.")
+    print(f"[TrainRunner]   P(t > {_SENSENOVA_TAIL_T:g}): configured {tail * 100:.2f}% vs "
+          f"arch default {default_tail * 100:.4f}% "
+          f"({_SENSENOVA_PROBE_SAMPLES}-sample estimate, seed {_SENSENOVA_PROBE_SEED})")
+    if weight is not None and default_weight is not None:
+        print(f"[TrainRunner]   E[1/(1-t)^2] (t_eps-clamped): configured {weight:.1f} vs "
+              f"arch default {default_weight:.1f}")
+    print("[TrainRunner]   SenseNova's train_step returns this loss unchanged; the shared "
+          "min-SNR weighting applies only to epsilon-prediction losses and does not "
+          "offset it.")
+    print("[TrainRunner]   Recommended: the architecture default "
+          f"{default['distribution']}(mean={default['mean']}, std={default['std']}). "
+          "The configured setting is kept as-is.")
+    return True
 
 
 def _prepare_training_process_config(

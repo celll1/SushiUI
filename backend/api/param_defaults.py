@@ -2730,7 +2730,14 @@ TIMESTEP_SAMPLING_DEFAULTS_BY_ARCH: Dict[str, Any] = {
     # sampled at; a non-uniform distribution here COMPOSES with those shifts
     # instead of replacing them (train_step warns once when it sees one).
     "minimax_h3": {"distribution": "uniform", "min_timestep": 0.0, "max_timestep": 1.0},
-    # SenseNova uses t=0 noise / t=1 data; this is its released flow schedule.
+    # SenseNova uses t=0 noise / t=1 data. This APPROXIMATES, and is not identical
+    # to, the released inference schedule: that one is linspace(0,1,steps+1) put
+    # through _apply_time_schedule with timestep_shift=3.0
+    # (SENSENOVA_GENERATION_DEFAULTS), i.e. sigma = 3*(1-t)/(1+2*(1-t)), whose
+    # median is t=0.25; logit_normal(-0.8, 0.8) has median sigmoid(-0.8)=0.31.
+    # Also note the training loss: SenseNova's velocity-space MSE equals
+    # mse(x0_pred, x0)/(1-t)^2, so mass near t=1 is upweighted (train_runner
+    # warns when a config departs from this entry toward t=1).
     "sensenova": {"distribution": "logit_normal", "mean": -0.8, "std": 0.8,
                   "min_timestep": 0.0, "max_timestep": 1.0},
 }

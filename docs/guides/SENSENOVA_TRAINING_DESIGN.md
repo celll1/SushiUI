@@ -1,0 +1,790 @@
+# SenseNova U1.5 学習設計案
+
+> Status: design only（実装前。コードは一行も書かれていない）
+> Date: 2026-08-23
+> Scope: SenseNova-U1.5-8B-MoT の (1) LoRA 学習 / (2) full-parameter fine-tune /
+> (3) reference 画像を含むデータセットの混在学習
+> 本文中の `file:line` は 2026-08-23 時点の静的調査による。
+
+この文書は実装計画ではなく、実装を始める前に確定させておくべき設計判断とその
+根拠を記録するものである。SenseNova は推論側が完全に出荷済みである一方、学習側は
+`ARCH_REGISTRY` に存在せず、`backend/core/training/**` に `sensenova` の参照が
+1 件もない。ゼロからの追加であるため、既存アーキテクチャの手順書
+[`ADD_A_MODEL_ARCHITECTURE.md`](ADD_A_MODEL_ARCHITECTURE.md) をベースとし、
+本文書は **SenseNova 固有の差分だけ** を扱う。一般的な DiT 学習の説明は書かない。
+
+---
+
+## 1. Executive decision
+
+1. **Phase 1（LoRA）は generation branch のみを対象とする。** 既存の推論側 LoRA
+   (`sensenova_lora.py`) が列挙する 294 個の `_mot_gen` Linear をそのまま学習対象と
+   する。understanding branch は凍結し、prefix forward は `no_grad` で回す。
+2. **Phase 2（full FT）は、まず Ideogram 4 と同型の `NotImplementedError` ガードとして
+   出荷する。** 配布されている checkpoint は int8 のみで、`reject_quantized_base()`
+   が正しく発火する。実装本体は bf16 base の入手を前提条件として後続フェーズに送る。
+   実装する場合の対象は **gen branch のみの 8.1B**（both-branch 16.2B は設計対象外）。
+3. **Phase 3（reference 混在）は per-item presence を真とし、batch は
+   `separate_by_reference` で homogeneous に保つ。** ragged prefix を持つ混在 batch は
+   作らない。it2i 挙動の学習に understanding branch の解凍は既定では不要とする。
+4. **VRAM は Phase 1 が MoT half-eviction、Phase 2 が `TransformerBlockOffloader`**
+   という分担にする。推論側で記録された block-swap 非対応の判断は generation 固有で
+   あり、学習には転移しない（§8）。
+
+§5-§7 の設計判断は fable への設計相談を経て確定したものであり、根拠は各節に併記する。
+
+---
+
+## 2. Constraints and non-goals
+
+### Constraints
+
+- **配布 checkpoint は int8 のみ。** `M:\model\sensenova\sensenova_int8.safetensors`
+  (17.58 GiB) と ConvRot 版の 2 本。588 個の Linear が `Int8Linear` で、weight と scale は
+  `nn.Parameter` ではなく **buffer** として保持される
+  ([`loader.py:27-38`](../../backend/core/models/sensenova/loader.py))。
+- **`NEOChatModel.forward` は `raise NotImplementedError('forward')`**
+  ([`modeling_neo_chat.py:289`](../../backend/core/models/sensenova/vendor/modeling_neo_chat.py))。
+  学習 forward は存在しない。推論は `t2i_generate` 相当の helper 群を
+  `sensenova_pipeline_ops.py` から直接駆動している。
+- **mixed und/gen forward は実装されていない。** attention 階層
+  ([`modeling_qwen3.py:983-987`](../../backend/core/models/sensenova/vendor/modeling_qwen3.py))
+  と decoder-layer 階層（`:1217-1220`）の両方で `NotImplementedError` を送出する
+  （upstream issue #207、parity test なし・production caller なし）。コード自身が
+  "Split the sequence at token-type boundaries and use forward_und / forward_gen" と
+  指示している。
+- **pixel space、VAE なし。** latent cache も VAE 常駐もない代わりに、activation は
+  pixel 解像度に比例する。
+- 別個の text encoder は存在しない。prompt は denoiser と同じ Qwen3-8B が
+  自前の tokenizer / chat template で符号化する。
+- 単一 GPU 前提。参照カードは RTX 6000 Ada 48 GB。
+- 推論側の最適化（MoT phase eviction / KV cache streaming / ConvRot W8A8 /
+  style transfer / FBCache / Spectrum）はすべて generation 専用で、学習には
+  持ち込まない（§8 の half-eviction の概念だけが例外）。
+
+### Non-goals
+
+- both-branch（16.2B）の full fine-tune を設計しない（§6.2）。
+- understanding-only LoRA を提供しない（推論側で検証する手段がない）。
+- int8-resident full FT（int8 code を直接更新する学習）を提案しない。ただし本リポジトリで
+  棄却済みだからではなく、**そもそも調査されていない**からである（§6.3.1）。
+- upstream issue #207 の mixed forward を修正して 1 パス化することを前提にしない。
+  修正できれば単純化されるが、parity test がない経路に設計を依存させない。
+- ControlNet / ReLoRA / tagger は本文書の対象外。
+
+---
+
+## 3. Current-state gap
+
+| 領域 | 現状 | 追加要否 |
+|---|---|---|
+| `ModelType` 検出 | `"sensenova"` は既に `ModelType` にあり `detect_model_type` も返す（`model_loader.py:13, 643-644`） | 不要 |
+| `ComponentWiringSpec` | **`SENSENOVA_WIRING` は既に存在**（`core/models/components/wiring.py:185-189`） | training 側 shim への re-export のみ |
+| LoRA target 列挙 | **`iter_sensenova_lora_targets` が既に存在**（`sensenova_lora.py:180`）、実 checkpoint で 294 module 検証済み | adapter から再利用 |
+| `ARCH_REGISTRY` | 未登録（12 arch。sensenova と minimax_music3 が除外） | 要追加 |
+| `arch/sensenova.py` / `ops/sensenova_ops.py` / `adapters/sensenova_adapter.py` | いずれも存在しない | 新規 3 ファイル |
+| `base_trainer.py` の `is_sensenova` | 0 件 | 要追加（§9） |
+| `detect_prediction_config` | flow-matching arch 一覧に `sensenova` が**無く、`ddpm` に落ちる** | 要追加 |
+| `TRAINING_UNSUPPORTED` | sensenova のエントリ無し（拒否ではなく単に不在） | Phase 2 で追加 |
+
+つまり「推論用の部品はあるが学習用の配線が一本も無い」状態である。逆に、
+target 列挙と wiring spec という間違えやすい 2 つは既に実在し、実 checkpoint に
+対して検証済みである点は着手コストを大きく下げている。
+
+---
+
+## 4. 設計を規定する SenseNova の構造的事実
+
+以降のすべての判断はこの節の事実から導かれる。
+
+### 4.1 MoT による重み二重化
+
+42 の decoder layer それぞれが understanding 半分（素の名前）と generation 半分
+（`_mot_gen` 接尾辞）を持ち、比率はちょうど 50/50、layer あたり 386,221,056 bytes、
+合計 15.11 GiB / 半分あたり 7.55 GiB
+([`mot_phase_eviction.py:11-13`](../../backend/core/models/sensenova/mot_phase_eviction.py))。
+int8 で 1 byte/param なので **decoder Linear の総パラメータ数は約 16.2B、片側 8.1B** で
+ある。「8B」はあくまで単一 branch 側の規模であり、full FT の見積りを 8B で行うと
+2 倍外す。
+
+二重化されるのは q/k/v/o_proj、q/k norm（t 軸・hw 軸）、`mlp` 全体、
+`input_layernorm` / `post_attention_layernorm`、および `Qwen3Model.norm`。
+**共有されるのは** `self_attn` モジュールオブジェクト自体、`rotary_emb` /
+`rotary_emb_hw`、`embed_tokens`、`lm_head`。
+
+接尾辞の位置が attention と MLP で異なる（attention は Linear 自身、MLP は親モジュール）
+点は既に `sensenova_lora.py:32-49` が文書化しており、adapter はその列挙器を
+再利用することで再実装しない。
+
+### 4.2 branch 選択は per-token mask ではなく 3 分岐
+
+`image_gen_indicators`（bool `[B,S]`）は layer ループに入る前に 2 つの Python bool
+へ畳まれ（`modeling_qwen3.py:1319-1328`）、以降は「全部 und」「全部 gen」「混在」の
+3 分岐になる。混在は前述のとおり未実装。
+
+結果として production の forward は必ず **2 パス**である。
+
+1. **prefix phase** — text（および it2i の reference 画像）token。全 layer が
+   `forward_und`。eager attention 固定。per-layer KV cache を構築。
+2. **denoise phase** — image token のみ。全 layer が `forward_gen`。flash 経路、
+   image token 間は `causal=False`、`cat[prefix_KV(und), current_KV(gen)]` に attend。
+
+**この 2 パス構造が Phase 1 の設計を事実上決めている。** understanding branch を
+凍結すれば phase 1 を `no_grad` で回せ、「2 つの forward をまたいで KV cache に
+勾配を通す」という問題自体が消滅する。
+
+### 4.3 目的関数は x0 予測の flow matching
+
+head (`fm_head`、`use_pixel_head: true` なので `ConvDecoder`) が clean pixel `x_pred` を
+直接出力し、速度は代数的に導出される：
+
+```
+v_pred = (x_pred - z) / (1 - t).clamp_min(t_eps)     # modeling_neo_chat.py:655
+z_t    = t * x0 + (1 - t) * noise_scale * eps
+```
+
+`t=0` が noise、`t=1` が clean。これは flux2 の sigma 方向とは逆で、**MiniT2I と同一の
+規約**である。したがって学習 step の骨格は
+[`ops/minit2i_ops.py:281`](../../backend/core/training/ops/minit2i_ops.py) の
+`train_step`（pixel space・x0 予測・`v=(x0_pred-x_t)/(1-t)` の velocity loss）が
+そのまま構造テンプレートになる。差分は conditioning が prefix KV である点のみ。
+
+### 4.4 noise_scale は解像度依存で、かつモデルに入力される
+
+`compute_noise_scale`（`sensenova_pipeline_ops.py:133-144`）は
+`sqrt(grid_h*grid_w/merge^2 / base)` を `noise_scale_max_value=16.0` で clamp する。
+この値は forward noising に使われるだけでなく、`noise_scale_embedder` を通して
+timestep embedding に**加算されて**モデルに渡る（`:625-630`）。
+
+**bucketing との相互作用が実装上の落とし穴になる。** bucket ごとに解像度が違う以上
+`noise_scale` はサンプルごとに変わる。学習側で推論と同じ式を再現しないと、
+学習時と推論時で条件付けがずれる。これは「よくある定数」ではなく、per-sample に
+計算して embedder にも流す必要がある値である。
+
+### 4.5 学習用 timestep 分布は config に既に書かれている
+
+`config.json` の `P_mean: -0.8`, `P_std: 0.8` は推論経路のどこからも読まれていない
+不活性フィールドであり、upstream の学習時 lognormal サンプラのパラメータと考えて
+まず間違いない。そして本リポジトリの MiniT2I の既定値は
+`logit_normal(mean=-0.8, std=0.8)` で**数値が一致する**
+(`param_defaults.py:2718-2719`)。したがって
+`TIMESTEP_SAMPLING_DEFAULTS_BY_ARCH["sensenova"]` は推測ではなく config 由来の値として
+登録できる。
+
+### 4.6 vision tower は 2 つあり、正規化が異なる
+
+- `vision_model`（understanding tower、**ImageNet 正規化**）— it2i の reference 画像
+  専用。prefix に `<img><IMG_CONTEXT>*N</img>` として差し込まれる。
+- `fm_modules['vision_model_mot_gen']`（generation tower、**0.5/0.5 正規化**）—
+  毎 step、現在のノイズ画像 patch に対して走る。
+
+Phase 3 のデータパイプラインはこの 2 つの正規化を取り違えてはならない。同じ
+「画像」でも入口が違えば前処理が違う。
+
+### 4.7 推論用 KV 経路は autograd と両立しない
+
+最適化経路（`update_cache=False`）は事前確保した `flash_k_cache` / `flash_v_cache` に
+`.copy_()` で書き込む（`modeling_qwen3.py:756-766`）。再利用される buffer への
+in-place 書き込みであり、学習では使えない。学習は `update_cache=True` 側の
+"Rare path, keep compatibility" 分岐を使うか、step ごとに新しい cache を作る。
+understanding branch を凍結して phase 1 を `no_grad` にすれば、この選択の重要度は
+下がる（gen 側の現在 token の K/V だけが勾配を必要とする）。
+
+---
+
+## 5. Phase 1 — LoRA 学習
+
+### 5.1 採用する方式
+
+- 学習対象は **generation branch の 294 Linear のみ**
+  （42 層 × {q,k,v,o}_proj_mot_gen + mlp_mot_gen.{gate,up,down}_proj）。
+- understanding branch、両 vision tower、`embed_tokens` / `lm_head` は凍結。
+- 学習 step は 2 パス構造を推論と同じ順序で踏む。
+  1. caption（+ Phase 3 では reference token）を `forward_und` で `no_grad` 前進させ、
+     prefix KV を得る。
+  2. 目標画像 `x0` から `t` を引いて `z_t` を作り、`extract_feature(gen_model=True)` →
+     timestep/noise_scale embedding 加算 → `forward_gen` を勾配付きで前進。
+  3. `fm_head` の `x_pred` から `v_pred` を作り、target velocity との MSE。
+- timestep sampler は §4.5 の値を既定にする。
+- caption embedding のキャッシュ: prefix forward は Qwen3-8B 全体を通す高コスト処理
+  なので、他 arch の TE cache と同様に prefix KV を事前計算・キャッシュする余地が
+  ある。ただし KV は caption ごとに 42 層 × 全 token 分あり容量が大きい。**初版では
+  キャッシュせず毎 step 計算し、実測してから判断する**（§12 の open question）。
+
+### 5.2 確定した設計判断 — LoRA scope（fable 諮問）
+
+**判断: generation branch のみ。scope enum の内部構造だけ用意し、UI には出さない。**
+
+根拠（fable の推論をそのまま記録する）:
+
+1. **und を凍結することは VRAM と忘却対策の話に留まらず、正しさの問題クラスを
+   丸ごと削除する。** und を凍結すれば prefix forward は `no_grad` で回せるので、
+   §4.7 の autograd 非互換な KV 経路がそのまま合法になる。und を学習させるなら、
+   2 つの独立した forward をまたぐ微分可能な KV パイプラインを構築し、42 層分の
+   prefix activation を backward まで保持し、`cat[prefix_KV, gen_KV]` の flash
+   attention に勾配を通す必要がある。これはフラグではなくサブシステムであり、
+   phase 1 の LoRA に対して費用対効果が極端に釣り合わない。
+2. **und branch はこのアーキテクチャにおける text encoder そのものである。**
+   本リポジトリの他 arch はすべて既定で TE を凍結している。SenseNova はその
+   「text encoder」が同じ decoder layer の中に交互に格納されているだけで、
+   そう捉えれば gen-only は保守的な部分集合ではなく**通常の学習契約**であり、
+   und 学習の方が独自の正当化を要する例外である。
+3. **checkpoint 互換性。** 推論側 loader と唯一公開されている distillation LoRA が
+   294 module の名前空間を定義している。und を含む LoRA は前例ゼロの新方言であり、
+   推論側の配線も新規に必要になる。消費者が居ない段階で形式を増やさない。
+4. 「und は prefix KV を通じて出力品質に効く」のは事実だが、gen branch は全層・
+   全 step でその KV に attend しており、凍結された prefix 表現に**適応する**機会を
+   十分に持つ。凍結 TE に cross-attention が適応するのと同じ構図で、公開されている
+   gen-only の distillation LoRA がそれが機能することを実証している。
+
+**保留（deferred）**: `scope: generation | both` の選択肢。追加のトリガは Phase 3 で
+reference 忠実度が実測で不足した場合のみ（§7.3）。`understanding-only` は用途が無く
+推論側で検証もできないため**恒久的に提供しない**。
+
+### 5.3 int8 base 上の LoRA は追加作業なしで成立する
+
+`reject_quantized_base()` の docstring が明示するとおり、LoRA は量子化 base で
+意図的に許可されている。`LoRALinearLayer` は量子化モジュールを**包む**だけで、
+その weight を微分しない。学習されるのは adapter 自身の float パラメータのみ。
+Ideogram 4 / Krea 2 / FLUX.2 / Anima で既に成立している経路であり、SenseNova の
+`sensenova_lora.py` はその Ideogram 4 を明示的に踏襲している。
+
+この経路は本リポジトリで既に実証されている。Anima の probe では 341 個の wrapper の
+うち 230 個が量子化 Linear の上に載り、`lora_up` に実際の勾配が出ている。
+また学習側の `load_components` は他 arch で `disable_int8_mm()` / `disable_scaled_mm()`
+を呼び、`_int_mm_forward` の GATE も grad mode が有効なら W8A8 を拒否する。
+SenseNova の plain int8 checkpoint は**ロード時点で既に `disable_int8_mm` されている**
+（W8A8 は数値退行のため pin off）ため、この点は追加作業なしで整合する。
+
+**ConvRot checkpoint は別扱いになる。** `ConvRotInt8Linear.forward` は pin を読まず
+常に W8A8 kernel へ dispatch するが、**grad 下では `_dequant_forward` に落ちる**
+（`loader.py:49-55`）。したがって学習は成立するが、経路が plain int8 と異なるため
+初版では plain int8 checkpoint のみを学習対象として明示し、ConvRot は後回しにする。
+
+ただし `warn_quantized_base_without_checkpointing()` の条件に注意する。gradient
+checkpointing を **OFF** にすると、量子化 Linear ごとに backward 用の compute-dtype
+weight が autograd に保存され、int8 codes の上に bf16 のモデル全体が実体化する。
+G4 の実測（Krea 2 由来）では checkpointing OFF で
+`11.94 GiB codes + 23.88 GiB temporaries = 35.81 GiB` 対 bf16 base 23.88 GiB という
+逆転が出ている。SenseNova では 588 個すべての decoder Linear が該当するため、
+**gradient checkpointing は事実上必須**である（`Qwen3DecoderLayer` は既に `GradientCheckpointingLayer` を継承しており、
+`supports_gradient_checkpointing = True`、`_no_split_modules = ["Qwen3DecoderLayer"]` も
+設定済みなので、機構としては揃っている）。
+
+### 5.4 実装上の注意
+
+- **`_is_lora_target` と `is_lora_wrappable_linear` の整合。** `sensenova_lora.py:162` の
+  述語は `LoRALinearLayer` を含む（再適用・stacking 用）が、`base_adapter.py:45` の
+  共有述語は意図的に含まない（二重 wrap 防止）。adapter 側は後者の意味論を使う。
+  `Int8Linear` は `nn.Linear` のサブクラスではないため、素朴な
+  `isinstance(m, nn.Linear)` は 294 件すべてを黙って取りこぼす。これは既に 4 つの
+  arch で踏まれた罠として記録されている。
+- **attention backend の mode。** vendored forward は `_attn_backend` / `_attn_mode` を
+  読み、既定は `AttentionMode.INFERENCE`。学習では backward 可能な mode を
+  stamp する必要がある（`sensenova_pipeline_ops.set_attention_backend` が stamp 器）。
+  `forward_und` は eager 固定で `_flash_or_sdpa` に到達しないため、影響を受けるのは
+  gen 側のみ。
+- **style transfer の tripwire。** `forward_und` は style context が armed だと raise する
+  (`modeling_qwen3.py:515-525`)。学習経路では style context を必ず未設定にする。
+- **`detect_prediction_config`** に `sensenova` を flow-matching として追加しないと
+  `ddpm` に落ちる。これは静かに間違った学習をする類の欠落である。
+
+---
+
+## 6. Phase 2 — full-parameter fine-tune
+
+### 6.1 まず拒否ガードとして出荷する
+
+**判断: Ideogram 4 と同型の `NotImplementedError` ガードを先に出す。**
+
+配布されている base は int8 のみで、588 個すべての decoder Linear が `Int8Linear` で
+ある。`reject_quantized_base()` はここで正しく発火し、その発火は迂回すべきバグでは
+なく、まさにこのガードが防ぐために存在する故障モードである — 量子化 Linear は
+weight を buffer で持つので `requires_grad_(True)` が no-op になり、
+`named_parameters()` にも現れない。結果として full FT は
+**何も学習していないのに loss は正常に下がる**。SenseNova の場合、量子化が
+スキップした層しか動かないどころか、decoder は文字通り 1 パラメータも動かない。
+
+したがって Phase 2 の出荷単位は次の 2 つである。
+
+- `SenseNovaFullParameterAdapter` を `prepare_models_for_training` /
+  `setup_trainable_parameters` / `save_checkpoint` すべてが `NotImplementedError` を
+  投げる形で置く（`ideogram4_adapter.py:131-150` がそのままテンプレート）。
+- `arch_capabilities._add_training_unsupported("sensenova", "full_finetune", ...)` を
+  追加し、`FullParameterTrainer._refuse_unsupported_full_finetune` が
+  **モデルをロードする前に**拒否できるようにする（17.6 GiB のロードを払ってから
+  既知の拒否に到達しないため）。
+
+ガードのメッセージには「bf16 base が必要」だけでなく、**その bf16 base をどう得るか**
+2 つの経路を明記する（§6.3）。
+
+### 6.2 確定した設計判断 — 対象は gen branch のみ（fable 諮問）
+
+**判断: 実装する場合の full FT は gen branch のみの 8.1B。これを SenseNova における
+「full fine-tune」と呼ぶ。both-branch 16.2B はロードマップに載せない。**
+
+根拠:
+
+- **座りが悪いのは gen-only ではなく both-branch の方である。** 言語理解を担う branch
+  を含む 16.2B を学習するのは「text encoder も一緒に fine-tune する」ことであり、
+  本リポジトリはどの arch でもそれを既定にしていない。破滅的忘却の profile が
+  悪く、同時にメモリ的にも成立しない — fp32 master だけで 64.8 GB になる。
+  原理とメモリの両方で落ちるので、選択肢から外す。
+- **gen-only の算術は厳しいが現実的:** bf16 weight 16.2 GB + gradient 16.2 GB +
+  fp32 master 32.4 GB（CPU 常駐）+ optimizer state（offload）+ pixel space の
+  activation（checkpointing 下）。48 GB で閉じるのは gen 半分の block swap と
+  master/optimizer の CPU 常駐が揃った場合のみ。つまり **Phase 2 は §8 の
+  block-swap 機構の存在に依存する**。この依存順序自体がガード先行を正当化する。
+
+### 6.3 master weight dtype 戦略
+
+本リポジトリの既知の欠陥は「bf16 full FT は更新が bf16 の仮数に丸め込まれ、weight が
+動かなくなる」というものである。ここで重要なのは、**本リポジトリが実際に出荷した
+対策は fp32 master ではなく stochastic rounding であり、しかも永続 fp32 master は
+明示的に棄却されている**という点である。
+
+`BaseTrainer._attach_stochastic_rounding`
+([`base_trainer.py:3313-3384`](../../backend/core/training/base_trainer.py)) の
+docstring が機構をそのまま述べている:
+
+> Full fine-tuning writes optimizer updates straight into BF16 storage with no
+> FP32 master, so round-to-nearest deterministically discards every update below
+> half a ULP and those weights never move again. Only the two ring-buffer
+> optimizers implemented the repair; the shipped full-FT default is `adamw8bit`,
+> so a user who changed nothing got the defect.
+
+閉形式は `bf16_stochastic_rounding_test.py` が pin している:
+**round-to-nearest 下で weight が動くのは `|w| <= 512 * lr` のときだけ。**
+lr 1e-5 なら `|w| <= 5.12e-3` で、DiT の weight の大半が除外される。実測は 3 件あり、
+Krea 2 の実 checkpoint で **8.7% しか動かず intended drift の 4.9% しか実現しない**、
+bitsandbytes AdamW8bit の実 CUDA kernel 経由で **8.3% / 6.2%**、合成 400 step で
+**9.2% / 6.9%**。つまり凍結率は 91% 前後である（「~89%」は概ね正しい）。
+
+対策は `optimizer_stochastic_rounding`（`param_defaults.py:2208`、**既定 False**）で、
+per-parameter の更新呼び出しの間だけパラメータと勾配を fp32 image に差し替え、
+結果を確率的に bf16 へ丸め戻す。per-parameter の seam を持たない optimizer
+（`torch.optim.AdamW` = `optimizer: adamw`）は**カバーできず**、名指しで警告される。
+
+**永続 fp32 master は棄却済みである。** commit `8547f93c` の理由をそのまま引く:
+学習要素あたり 4 byte を要し（12.8B の full FT で 51.2 GB、まさに欠陥が問題になる
+場面で OOM する）、optimizer checkpoint に毎回直列化され、resume-safe でもない。
+代わりに出荷されたのは per-step の scratch buffer（`4 bytes × 最大単一パラメータの
+要素数 × slot 数`、optimizer オブジェクトごと）である。
+
+その代わりの**正直な但し書き**も記録されている: scratch 方式は算術的に等価ではなく、
+step 間の sub-ULP 蓄積を捨てて不偏性に頼るため、**およそ 1k step 未満では誤差が
+信号と同程度**になり、そこから先で round-to-nearest を上回る。
+
+SenseNova への含意:
+
+- SenseNova は 8.1B の bf16 full FT なので**この欠陥をそのまま継承する**。
+  アーキテクチャ的に免れる理由は何もない（MoT 二重化も pixel space も、
+  仮数の分解能とは無関係）。実装すれば forced-bf16 arch の仲間入りをする。
+- Phase 2 を実装する場合、**`optimizer_stochastic_rounding` を SenseNova full FT で
+  既定 ON にするか、OFF を拒否するか**を決める必要がある。既定 False のまま出すと
+  `adamw8bit` 既定と組み合わさって既知の欠陥を再生産する。§12 に残す。
+- **永続 fp32 master を SenseNova のために復活させる提案はしない。** リポジトリ全体で
+  既に棄却された選択肢であり、gen branch 8.1B でも 32.4 GB になる。再提案するなら
+  棄却理由（直列化・resume 非安全・OOM）を覆す新しい論拠が要る。
+- 短 horizon の誤差特性は SenseNova でも同じなので、**数百 step の短い full FT を
+  stochastic rounding で評価してはいけない**。これは SenseNova 固有ではないが、
+  評価計画を立てるときに踏みやすい。
+
+### 6.3.1 「int8-resident full FT は棄却済み」という前提は本リポジトリには無い
+
+調査の結果を正確に記録しておく。**本リポジトリには「int8 に常駐したまま full FT
+する」（optimizer が int8 code を直接更新する）案の調査・pre-registered gate・
+棄却記録は存在しない。** stochastic rounding のノイズ床や error-feedback の state
+サイズを論じた文書も無い。`INT8_W8A8_TRAINING_GATE.md` はそれを
+**scope 外と明記して除外している**だけである（`:109-116`、"QAT and full fine-tuning
+of a quantized base — out of scope"）。
+
+実在するのは次の 2 つで、どちらも別物である。
+
+1. **`reject_quantized_base()` による構造的拒否**（§6.1）。理由は数値的ではなく
+   構造的 — weight が buffer なので勾配が付かず、静かに部分学習になる。
+   実測: Anima で **weight 要素の 80.6% が凍結**、Krea 2 で
+   **12,821.9 M 中 1.4 M しか学習されない**。
+2. **gate G3 / G4 の失敗**。G3 は「学習用に勾配対応 INT8 W8A8 forward を作るか」で、
+   criterion 2（どのワークロードも 3% 以上退行しない）に違反して失敗
+   （256px で -4.53%、512px で -1.75%。DiT forward が compute-bound ではなく
+   launch-bound で、activation 量子化 kernel が節約した GEMM 時間を上回る）。
+   G4 は「dequant 経路が backward 用に保持する量を減らせるか」で、bitwise・勾配・
+   メモリの全基準を通過したうえで**事前登録した step-time 上限 (+12%) に落ちた**。
+
+したがって本文書は「int8-resident full FT は棄却済み」とは書かない。正しくは
+**未調査であり、やるなら新しい pre-registered gate と新しい論拠が要る**。
+本設計はそれを提案しない — §6.2 の bf16 gen branch 抽出の方が素直だからである。
+
+### 6.4 bf16 base の入手経路
+
+- **推奨: upstream の 46.8 GiB bf16 ソースから gen branch のみを抽出**して
+  ~16.2 GB の成果物を作る。
+- **代替: 配布 int8 を bf16 へ dequant する。** これは棄却済みの「int8-resident FT」
+  とは別物であり、正当な materialization である。ただし精度を前提とする学習の
+  出発点に int8 量子化誤差を焼き付けることになる。
+  **未検証の不確実性**: dequant 起点が FT の初期値として実測で劣るかどうかは
+  誰も測っていない。upstream ソースが入手できない場合の fallback としては妥当。
+
+ガードのメッセージは両方の経路を名指しする。
+
+---
+
+## 7. Phase 3 — reference 画像を含むデータセットの混在
+
+### 7.1 前例は存在する（新規設計ではない）
+
+本リポジトリには reference 画像を使う**実際に学習される** conditioning 経路が
+2 つ既にある。
+
+- **FLUX.2**: reference を target と同じ bucket 寸法で VAE encode し、pack して
+  position ID を `t_offset = 10 + 10*ref_idx` でずらし、noisy sequence に連結。
+  出力を `original_seq_len` で切り戻して loss は target のみに掛ける
+  (`ops/flux2_ops.py:470-566`)。
+- **SD1.5 / SDXL**: SigLIP2 vision encoder の 257 token を text embedding 列に連結
+  (`base_trainer.py:11157-11167`)。VE 自体も学習対象になり得る。
+
+データ基盤も既にある。`Dataset.reference_suffixes` / `target_suffixes` /
+`caption_suffixes_for_reference`（`database/models.py:499-504`）、
+`DatasetItem.related_images` JSON の `"reference"` キー（`:589`）、
+ファイル名 suffix 走査による自動投入（`utils/dataset_scanner.py:282-338`）、
+学習 item への受け渡し（`train_runner.py:965-967` が
+`processed_item["reference_images"]` を設定）。
+
+**したがって Phase 3 は新規設計ではなく既存基盤の拡張である。** ただし SenseNova の
+reference は FLUX.2 とは**まったく別の入口**から入る（noisy 画像列への連結ではなく、
+understanding tower を通した ViT token を text prefix に差し込む）ため、
+`ops/` 層の実装は流用できない。流用できるのは schema・scanner・item 受け渡し・
+bucketing の 4 層である。
+
+### 7.2 確定した設計判断 — 表現と batch 構成（fable 諮問）
+
+**判断 1: per-item presence を真とする。per-dataset は「この dataset で ref を
+走査・有効化するか」だけを表す。**
+
+DB は既に per-item で `item["reference_images"]` を stamp しており、それが正しい
+粒度である。これにより ref 有り dataset と ref 無し dataset が、run 全体の意味論を
+新しく発明することなく 1 つの run に共存できる。run-global の
+`use_reference_images` は「ref 経路が armed である」の意味に解釈し直し、
+「全 item が ref を持つ」の意味では使わない。
+per-dataset 側は `DATASET_LEVEL_PARAMS`（現在 `caption_types` と
+`ve_reconstruction_mode` のみの小さな dict）に 1 エントリ追加し、
+`train_runner.py:1498-1501` で per-item フラグとして stamp する既存パターンに従う。
+
+**判断 2: `separate_by_reference` の homogeneous bucketing を再利用する。
+ragged な混在 batch は作らない。**
+
+決定的な論拠は prefix 長の不揃いであり、見た目より深刻である。単に prefix forward
+を padding する話（eager attention なので mask 可能で、可変長 caption は恐らく既に
+扱えている）に留まらず、**padding された prefix KV がそのまま denoise phase の
+`cat[prefix_KV, gen_KV]` に対する `causal=False` の flash attention へ流れ込む**。
+連結された cache を跨ぐ varlen / masked flash attention が必要になり、しかもその
+経路は未検証 masking に対して明示的に `NotImplementedError` を置く文化を持つ
+コードベースである。homogeneous batch にすればすべての batch が均一形状になる。
+
+しかも FLUX.2 に対する**改善**になる。FLUX.2 の all-or-nothing drop
+(`base_trainer.py:10889-10894`) は分離していないことの帰結であり、分離すれば
+all-or-nothing 条件は構成的に満たされ、**何も捨てられなくなる**。
+
+実装時に検証すべき留保: ref batch の内部でも、reference 画像は固定 token 数
+（= 固定 reference 解像度）に正規化しないと、「homogeneous」な bucket の内側に
+不揃いを再輸入してしまう。
+
+**判断 3: it2i 挙動の学習に understanding branch の解凍は、既定では不要とする。**
+
+凍結された und tower と und branch は既に reference を豊かに符号化している
+（完全な VLM である）。gen branch は phase 跨ぎの attention を通じて、その固定表現を
+**利用する**ことを学習できる。これは凍結 TE + gen-only LoRA が他のすべての arch で
+機能しているのと同じ構図であり、公開されている gen-only の distillation LoRA が
+それを示唆している。したがって §5.2 の判断と矛盾しない。
+
+**この点は本文書で最も不確実性が高い箇所である。** 凍結 und での reference 忠実度が
+十分かどうかは、どちらの方向にも前例が無い経験的問題である。
+
+### 7.3 忠実度が不足した場合の和解経路
+
+reference 忠実度が実測で不足した場合にのみ、§5.2 で保留した `scope: both` を
+**LoRA に限って**追加する（full FT には決して入れない）。und への LoRA なら忘却
+リスクは有界であり、微分可能 prefix の実装コストは opt-in したユーザだけが払う。
+
+**設計としては継ぎ目だけを用意し、und 学習の機構は先に作らない。**
+
+### 7.4 データパイプライン上の注意
+
+- reference は understanding tower 用に **ImageNet 正規化**、target は generation
+  tower 用に **0.5/0.5 正規化**。同じ item の 2 枚の画像が違う前処理を要求する。
+- reference は現状どの arch でも latent cache されず毎 epoch ディスクから読み直される
+  (`base_trainer.py:10597`)。SenseNova では reference は ViT token になるので、
+  キャッシュするなら token 側でキャッシュするのが自然。初版では実装しない。
+- 推論側には `REFERENCE_IMAGE_MAX_PIXELS_CAP = 1024*1024` の encode コスト上限が
+  ある。学習側の固定 reference 解像度はこれと整合させる。
+
+---
+
+## 8. VRAM / offload 戦略
+
+### 8.1 記録済みの block-swap 非対応は学習に転移しない
+
+`MODEL_FACTS.md:1951-1964` の判断は次の理由に基づく。
+
+> rewriting the 3-branch denoise loop's layer-outer/branch-inner ordering to
+> support it would cost 2-3x more PCIe traffic than this phase-exclusive scheme,
+> while activations and KV-cache dominate the peak regardless
+
+**この機構的理由は generation 固有であり、学習 step には存在しない。** 学習 step は
+(1) `no_grad` の und 1 パス、(2) 通常の layer 順の gen forward、(3) backward であり、
+3 分岐の denoise loop も rolling schedule も無い。構造的には
+`TransformerBlockOffloader` が既に serve している他 arch と同型である
+（gradient checkpointing 下で backward が block を再計算し、offloader の仕事は
+その時点で当該 block の weight を常駐させること）。
+
+`arch_capabilities.py:521-523` に「acestep は generation では block-swap を持たず、
+`blocks_to_swap` は TRAINING 経路でのみ読まれる」という前例があり、
+generation の非対応が training の非対応を含意しないことは既にこのリポジトリの
+既成事実である。
+
+### 8.2 2 パス forward と rolling offloader の両立
+
+**両立する。理由は 2 つの phase が交錯しないからである。**
+
+- phase 1（und）は `no_grad` なので何も保持しない。
+- phase 2（gen）が保持する prefix KV は `no_grad` 下で作られた通常の saved tensor で
+  あり、autograd から見れば定数である。メモリコストのみで、text prefix なら小さく、
+  reference 有りなら大きくなる。
+
+記録しておくべき実装上の不変条件: **prefix forward は checkpointed region の外に
+置くこと。** さもないと backward の再計算が、退避したはずの und weight を再要求する。
+
+### 8.3 フェーズ別の担当
+
+| | Phase 1（LoRA） | Phase 2（gen full FT） |
+|---|---|---|
+| 主機構 | MoT half-eviction | `TransformerBlockOffloader`（gen 半分のみ） |
+| und 半分 | 凍結 → fwd+bwd 全体で CPU 退避 | 同左 |
+| 根拠 | weight は int8 で 15.1 GiB、圧迫要因は pixel space の activation で block swap では減らない。half-eviction は粗い粒度（7.55 GiB）で phase 境界あたり 2 転送、`kv_cache_streaming.py:27-35` が学習への転移を明示的に是認している | bf16 gen weight 16.2 GB + gradient がボトルネックになり、per-block の rolling window が効く |
+
+2 つの機構は**互いに素な weight 集合**を持つため、Phase 2 では素直に合成できる
+（und 半分は half-eviction で fwd+bwd 全体を通じて CPU、gen 半分は block swap で
+rolling）。
+
+`kv_cache_streaming.py:27-35` の verbatim:
+
+> this streamer does NOT apply to training -- a training step is a single-timestep
+> forward/backward with no multi-step denoise loop, so no persistent read-many KV
+> cache exists to stream; training-side offload belongs to LayerOffloadConductor.
+> What DOES transfer is the MoT half-eviction CONCEPT from mot_phase_eviction.py:
+> if fine-tuning freezes the understanding branch (likely for image-gen tunes),
+> its weight-half can be CPU-evicted during training for a similar VRAM saving.
+> Evaluate that when training is built; reuse the layer-selection logic, not this
+> module.
+
+**保留**: offloader を und の prefix pass に対しても使えるようにすること。1 回の
+`no_grad` sweep に過ぎず、phase 1 中の 7.55 GiB 常駐が律速になるのは full FT より
+前には起こらない。今は設計しない。
+
+### 8.4 half-eviction 再利用時の注意
+
+`mot_phase_eviction.py:115-136` の層選択は **Parameter の有無ではなく永続性**を
+判別子にしている。`Int8Linear` は Parameter を 1 つも持たないため、
+`parameters()` ベースの規則は RMSNorm（約 0.21 GiB）しか選ばず、**2 度にわたって
+無害に見える形で不活性なまま出荷された**。学習側で層選択ロジックを再利用する際は
+この判別子ごと持ってくる。`rotary_emb` は名前で除外される。
+
+なお `block_swap` と optimizer の互換性検証（`base_trainer.py:3546-3642`）は
+arch 非依存で、`blocks_to_swap` / `num_optimizer_groups` / `optimizer_type` だけを
+見る。SenseNova 用の追加は不要だが、CLAUDE.md の Block Swap × 8bit optimizer の
+制約はそのまま適用される。
+
+---
+
+## 9. 既存コードベースへの統合ポイント
+
+[`ADD_A_MODEL_ARCHITECTURE.md`](ADD_A_MODEL_ARCHITECTURE.md) の §4 が正規手順。
+以下は SenseNova に固有の差分と、見落とすと**静かに誤動作する**箇所の一覧。
+
+### 新規ファイル（3）
+
+- `backend/core/training/arch/sensenova.py` — `name = "sensenova"`,
+  `wiring = SENSENOVA_WIRING`, `pixel_align = 32`（patch 16 × merge 2。
+  `vae_scale_factor` ではない）, `temporal = None`。8 つの抽象メソッドを
+  `ops/sensenova_ops.py` へ委譲するだけの薄い層（`arch/krea2.py` がテンプレート）。
+  `vae_encode` は MiniT2I の pixel-space 分岐と同様、共有 VAE staging より**前に**
+  dispatch され自己完結する必要がある。`vae_decode` は raise でよい。
+- `backend/core/training/ops/sensenova_ops.py` — `load_components`,
+  `setup_block_swap`, `setup_attention_backend`, `encode_prompt`（= prefix KV 構築）,
+  `vae_encode`（= pixel passthrough）, `train_step`, `generate_sample`。
+- `backend/core/training/adapters/sensenova_adapter.py` —
+  `SenseNovaLoRAAdapter`（`iter_sensenova_lora_targets` を再利用）と
+  `SenseNovaFullParameterAdapter`（Phase 2 では全メソッド raise）。
+
+### 登録（漏れると import 時に落ちる = 安全）
+
+1. `arch/__init__.py` — import 追加、`ARCH_REGISTRY` に追加、
+   **`_EXPECTED_ARCH_KEYS` にも追加**（module レベルの assert がある）、
+   `resolve_arch_name` に `is_sensenova` の分岐を追加。
+2. `training/components/wiring.py` — `SENSENOVA_WIRING` を re-export（import 節と
+   `__all__` の両方）。
+3. `adapters/__init__.py` — import と `__all__`。
+4. `lora_trainer.py` — adapter import と `_create_adapter` の分岐、
+   block-swap hook（minimax_h3 の新しい形式 `self.arch.setup_block_swap(self)` を使う）。
+5. `full_parameter_trainer.py` — Phase 2 のガード。
+   `arch_capabilities._add_training_unsupported("sensenova", "full_finetune", ...)` も。
+
+### `base_trainer.py`（漏れると静かに間違う = 危険）
+
+- flag 代入ブロック **2 箇所**（`:1271-1283` と `:1875-1887`。後者は
+  `_load_checkpoint_as_base` 側の重複）。
+- loader dispatch（`:1293-1322`）。`self.arch` は load 後に bind されるため、
+  ここは `ops.load_components` を直接呼ぶ。
+- `encode_caption`（`:4373-4426`）— 手書きの if 連鎖のままで、`self.arch.encode_prompt`
+  へは routing されていない。`(embeds, aux)` タプル形状を返す arch 群の述語
+  （`:7595`, `:7657`, `:7733`）にも追加が要る。
+- DiT ファミリ述語 **3 箇所**（`:4592`, `:4601`, `:4654`。コメントが「3 つは
+  一致させ続けること」と明記している）。
+- `_execute_forward_backward`（`:5631-5790`）に `TrainStepContext` を組む分岐。
+- batch collation（`:10853-10881`）と MNT 経路（`:11052-11080`）。
+- timestep 既定の連鎖（`:8234-8245`）と
+  `param_defaults.TIMESTEP_SAMPLING_DEFAULTS_BY_ARCH["sensenova"]`（§4.5 の値）。
+
+### その他
+
+- `model_loader.detect_prediction_config` の flow-matching 一覧（`~:151`）に
+  `sensenova` を追加。**現状 `ddpm` に落ちる。**
+- `train_runner.py` の bf16 強制ブロック 3 箇所（`:1640-1673` / `:2100-2110` /
+  `:2505-2515`）と `_is_bf16_native_base_model`。
+- frontend の `TrainingConfig.tsx`（`FORCED_BF16_ARCHITECTURES`、dtype preset 連鎖）。
+  本設計フェーズでは触らない。
+
+### 自動的に得られるもの
+
+`_build_cache_namespace` は `self.arch.name` を読むだけになっており、
+`pixel_align` / `temporal` も handler のクラス属性を読む宣言的な機構なので、
+cache namespace と alignment は登録だけで正しくなる。
+
+---
+
+## 10. SenseNova 固有のリスク
+
+| リスク | 内容 | 緩和 |
+|---|---|---|
+| mixed forward の欠落 | issue #207。1 パスで und/gen を混ぜられない | 2 パス構造を設計の前提にする（§4.2）。修正を前提にしない |
+| int8 base のみ | full FT が構造的に不可能 | Phase 2 をガード先行にする（§6.1） |
+| bf16 丸め欠陥 | 8.1B full FT でそのまま継承する（凍結率 91% 前後、`\|w\| <= 512*lr` でしか動かない） | `optimizer_stochastic_rounding` の既定を SenseNova full FT でどうするか実装時に決定（§6.3, §12）。`optimizer: adamw` は構造的にカバー不能 |
+| 短 horizon での評価 | stochastic rounding は 1k step 未満では誤差が信号と同程度 | 数百 step の full FT で品質判断をしない（§6.3） |
+| gradient checkpointing OFF | 量子化 base の上に bf16 全体が実体化し、逆に増える | 事実上必須として扱う（§5.3） |
+| `noise_scale` の再現漏れ | bucket ごとに変わる値をモデルにも渡す必要がある | §4.4。学習 step の必須要素として扱う |
+| `Int8Linear` の isinstance 罠 | `nn.Linear` サブクラスでないため 294 件を黙って取りこぼす | 既存の共有述語を使う（§5.4） |
+| 正規化の取り違え | reference は ImageNet、target は 0.5/0.5 | §4.6, §7.4 |
+| prediction config の既定 | `ddpm` に落ちる | §9 |
+| half-eviction の層選択 | Parameter ベースの規則は 2 度不活性のまま出荷された | 判別子ごと再利用する（§8.4） |
+| prefix forward のコスト | Qwen3-8B 全体を毎 step 通す | 実測後にキャッシュ可否を判断（§12） |
+| pixel space の activation | VAE が無いぶん activation が pixel 解像度に比例 | gradient checkpointing + 解像度上限。block swap では減らない |
+
+---
+
+## 11. フェーズ分割
+
+将来の実装セッションがそのまま着手できる粒度で示す。
+
+### Phase 0 — 前提確認（コード変更なし、または最小）
+
+- `forward_gen` を勾配付きで通す最小 probe。`update_cache=True` 経路で
+  prefix KV を作り、image token 側に backward が通ることを確認する。
+- `no_grad` の prefix forward + 勾配付き gen forward の 2 パスで
+  有限の loss が出ることを確認する（収束実験は行わない）。
+- 1 step 分の VRAM 実測（gradient checkpointing ON / OFF）。
+- **exit criteria**: 有限 loss、294 module に勾配が届いていること、
+  gradient checkpointing OFF の警告条件が実際に成立することの確認。
+
+### Phase 1 — LoRA
+
+- `arch/sensenova.py` + `ops/sensenova_ops.py` + `adapters/sensenova_adapter.py`。
+- 登録 5 箇所 + `base_trainer.py` の分岐（§9）。
+- `detect_prediction_config` と `TIMESTEP_SAMPLING_DEFAULTS_BY_ARCH`。
+- `train_step`: MiniT2I の骨格 + prefix KV conditioning + per-sample `noise_scale`。
+- checkpoint 保存形式: 推論側 loader が読む `neo_hf_lora` 方言と round-trip すること
+  （`LoRATrainer.load_checkpoint` は arch 非依存で
+  `{lora_name}.lora_down.weight` / `.lora_up.weight` を読む）。
+- MoT half-eviction の学習側再利用（opt-in）。
+- **exit criteria**: 3 step 程度の smoke で有限 loss、保存した LoRA が推論側の
+  runtime LoRA としてそのままロードでき、strength 0 で base 出力と一致すること。
+
+### Phase 2a — full FT ガード
+
+- `SenseNovaFullParameterAdapter` の raise 実装。
+- `TRAINING_UNSUPPORTED` エントリ（ロード前に拒否できること）。
+- ガードメッセージに bf16 base の 2 経路を明記。
+
+### Phase 2b — full FT 本体（bf16 base 入手が前提条件）
+
+- gen branch 抽出 bf16 base の作成。
+- `TransformerBlockOffloader` の gen 半分への適用 + und 半分の常時 CPU 退避。
+- master weight 戦略の実測比較（stochastic rounding vs fp32 master）。
+- prefix forward を checkpointed region の外に置く不変条件のテスト。
+
+### Phase 3 — reference 混在
+
+- `DATASET_LEVEL_PARAMS` への 1 エントリ追加と per-item stamp。
+- `separate_by_reference` の SenseNova への適用（bucket key に反映）。
+- prefix への reference token 差し込み（ImageNet 正規化、固定 token 数）。
+- ref 有り / 無し dataset を 1 run で混ぜる smoke。
+- **exit criteria**: 混在 run で両種類の batch が形状エラーなく通ること、
+  ref 無し batch の挙動が Phase 1 と一致すること（何も捨てられていないこと）。
+
+---
+
+## 12. Open questions（実装時に決めること）
+
+- **prefix KV をキャッシュするか。** caption ごとに 42 層 × 全 token の K/V は容量が
+  大きい。毎 step 計算のコストを実測してから決める。Phase 0 の計測項目。
+- **`optimizer_stochastic_rounding` を SenseNova full FT で既定 ON にするか、
+  OFF を拒否するか。** 既定 False のまま出すと既知の欠陥を再生産する。§6.3。
+  （永続 fp32 master は選択肢に含めない。棄却済み。）
+- **`optimizer: adamw` を SenseNova full FT で拒否するか。** per-parameter seam が
+  無く stochastic rounding をかけられない唯一の optimizer である。
+- **ConvRot checkpoint を学習対象に含めるか。** grad 下では `_dequant_forward` に
+  落ちるので成立はするが、plain int8 とは経路が違う（§5.3）。
+- **dequant-from-int8 起点の full FT が実測で劣るか。** 誰も測っていない。
+  upstream ソースが入手できない場合の fallback の妥当性がこれに掛かる。
+- **凍結 und での reference 忠実度が十分か。** §7.2 判断 3 の経験的前提。
+  不足した場合のみ `scope: both`（LoRA 限定）を開く。
+- **固定 reference 解像度をいくつにするか。** 推論側の
+  `REFERENCE_IMAGE_MAX_PIXELS_CAP` との整合。
+- **`use_reference_images` の run-global フラグを SenseNova でも流用するか、
+  arch 固有の名前にするか。** 意味論を「ref 経路が armed」に読み替える以上、
+  FLUX.2 の既存意味論との衝突が無いか確認が要る。
+- **upstream issue #207 の mixed forward を検証・修正して 1 パス化する価値があるか。**
+  2 パス設計で十分機能する見込みなので優先度は低いが、und 学習を将来入れるなら
+  再評価する。
+
+---
+
+## 13. References
+
+- 内部（推論側）:
+  [`sensenova/loader.py`](../../backend/core/models/sensenova/loader.py),
+  [`sensenova_pipeline_ops.py`](../../backend/core/models/sensenova/sensenova_pipeline_ops.py),
+  [`sensenova_lora.py`](../../backend/core/models/sensenova/sensenova_lora.py),
+  [`mot_phase_eviction.py`](../../backend/core/models/sensenova/mot_phase_eviction.py),
+  [`kv_cache_streaming.py`](../../backend/core/models/sensenova/kv_cache_streaming.py),
+  [`vendor/modeling_qwen3.py`](../../backend/core/models/sensenova/vendor/modeling_qwen3.py),
+  [`vendor/modeling_neo_chat.py`](../../backend/core/models/sensenova/vendor/modeling_neo_chat.py)
+- 内部（学習側の型・前例）:
+  [`arch/base_arch.py`](../../backend/core/training/arch/base_arch.py),
+  [`arch/krea2.py`](../../backend/core/training/arch/krea2.py),
+  [`ops/minit2i_ops.py`](../../backend/core/training/ops/minit2i_ops.py)（pixel-space x0 予測の構造テンプレート）,
+  [`ops/flux2_ops.py`](../../backend/core/training/ops/flux2_ops.py)（reference conditioning の前例）,
+  [`adapters/base_adapter.py`](../../backend/core/training/adapters/base_adapter.py)（`reject_quantized_base` / `warn_quantized_base_without_checkpointing`）,
+  [`adapters/ideogram4_adapter.py`](../../backend/core/training/adapters/ideogram4_adapter.py)（full FT ガードのテンプレート）,
+  [`base_trainer.py`](../../backend/core/training/base_trainer.py)（`_attach_stochastic_rounding`, `:3313-3386`）,
+  [`optimizers/stochastic_rounding.py`](../../backend/core/training/optimizers/stochastic_rounding.py)（bf16 丸め欠陥の機構と永続 master 棄却の根拠）,
+  [`optimizers/RINGBUFFER_OPTIMIZERS.md`](../../backend/core/training/optimizers/RINGBUFFER_OPTIMIZERS.md),
+  `backend/tests/bf16_stochastic_rounding_test.py` / `bf16_stochastic_rounding_default_optimizer_test.py`（`|w| <= 512*lr` の閉形式）
+- 内部（文書）:
+  [`ADD_A_MODEL_ARCHITECTURE.md`](ADD_A_MODEL_ARCHITECTURE.md),
+  [`MODEL_FACTS.md`](MODEL_FACTS.md) の sensenova 行,
+  [`INT8_W8A8_TRAINING_GATE.md`](../../backend/core/training/INT8_W8A8_TRAINING_GATE.md)（G3/G4）,
+  [`MINIMAX_H3_CONTINUAL_TRAINING_DESIGN.md`](MINIMAX_H3_CONTINUAL_TRAINING_DESIGN.md)（本文書の書式の前例）
+- 外部:
+  [SenseNova-U1 (OpenSenseNova)](https://github.com/OpenSenseNova/SenseNova-U1),
+  upstream issue #207（mixed und/gen forward の未検証）

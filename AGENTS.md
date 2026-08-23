@@ -10,7 +10,8 @@ list is `ModelType` in `backend/core/model_loader.py`; the authoritative
 *training-capable* list is `ARCH_REGISTRY` in
 `backend/core/training/arch/__init__.py` (12 entries — every generation
 architecture except MiniMax Music 3 and SenseNova U1.5, both out of scope for
-training today; see `docs/guides/MINIMAX_MUSIC3_DESIGN.md` for the former).
+training today; see `docs/guides/MINIMAX_MUSIC3_DESIGN.md` for the former and
+`docs/guides/SENSENOVA_TRAINING_DESIGN.md` for the latter).
 Per-architecture facts are
 in `docs/guides/MODEL_FACTS.md`. Every capability is reachable through the
 versioned REST API under `/api/v1` (see `openapi.yaml`), so agents can drive

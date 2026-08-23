@@ -12,7 +12,8 @@ implemented — see `docs/guides/MINIMAX_MUSIC3_DESIGN.md`'s "Training
 forward-compatibility" section) and SenseNova U1.5's training is a deliberately
 separate future phase (its base checkpoint is converted unmerged from the
 8-step distillation LoRA specifically to keep that lineage canonical — see the
-`sensenova` row in `docs/guides/MODEL_FACTS.md`). Do not assume the two lists
+`sensenova` row in `docs/guides/MODEL_FACTS.md`, and
+`docs/guides/SENSENOVA_TRAINING_DESIGN.md` for that phase's design). Do not assume the two lists
 are always the same size — they diverge further with each generation-only
 architecture added.
 

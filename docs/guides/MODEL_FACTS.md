@@ -129,11 +129,14 @@ Reference-image style transfer (StyleAligned / Visual-Style-Prompting family):
 a style reference image is VAE-encoded and forward-noised to each active
 denoise step's sigma, run through the transformer once to CAPTURE the
 post-norm/post-RoPE image-token Key/Value (and Query, where wired) per
-attention block, then the target's conditional forward INJECTS the
+attention block, then the target's forward INJECTS the
 (frequency-scaled + AdaIN-aligned) reference K/V onto its own image-token K/V
-before attention. No weights change, no LoRA, no training; the UNCOND branch
-is untouched. Default OFF (no reference image selected) is byte-identical to
-a generation without style transfer.
+before attention. No weights change, no LoRA, no training. Which CFG branches
+are armed is `StyleTransferConfig.inject_all_cfg_branches`: cond only for 7 of
+the 8 archs (the shift then sits inside the cond-uncond delta and is multiplied
+by `cfg_scale`), every branch for SenseNova (see its row note). Default OFF (no
+reference image selected) is byte-identical to a generation without style
+transfer.
 
 - **Arch-agnostic core**: `backend/core/inference/reference_style.py` —
   `StyleTransferConfig`, `inject_kv`, `cross_batch_adain_qk`, `make_ref_value`,
@@ -1701,8 +1704,9 @@ a generation without style transfer.
     `image_to_tensor`, not a VAE encode) and resized outright to the target
     resolution, since capture and inject must yield the same image-token
     count; a non-matching aspect ratio is resized and warned
-    (`sensenova_style_reference_resized`). Injection is cond-branch only, so
-    style does not ride the CFG delta. The reference Key is frequency-scaled
+    (`sensenova_style_reference_resized`). Injection is armed on EVERY CFG
+    branch here, unlike the other seven archs — see the root-cause bullet
+    below. The reference Key is frequency-scaled
     with `axes_dims=(64, 32, 32)` (Qwen3Attention's t=`head_dim//2`,
     h=w=`head_dim//4` split) and `rope_layout="rotate_half"`, the GPT-NeoX
     pairing `frequency_scale_vector` grew a parameter for; the interleaved
@@ -1730,9 +1734,10 @@ a generation without style transfer.
       against a style-off control): per-step high-frequency energy decays
       smoothly and monotonically, with no discontinuous late spike — none of
       this arch's known TV-static / late-noise-burst signature. At
-      `cfg_scale=1` there is no uncond branch, so the cond-only injection
-      applies un-CFG-scaled: style still affects the output (hashes differ)
-      but more mildly than at `cfg_scale=4`. An it2i reference and a style
+      `cfg_scale=1` there is no uncond branch, so the injection applies
+      un-CFG-scaled: style still affects the output (hashes differ) but, under
+      the then-current cond-only injection, more mildly than at `cfg_scale=4`
+      — the dose gap the all-branch fix below removes. An it2i reference and a style
       reference used simultaneously (3-branch, `cfg_scale=4`/
       `img_cfg_scale=2`) produce an output distinct from either alone, with
       no tripwire or token-count failure.
@@ -1740,9 +1745,10 @@ a generation without style transfer.
       produces a distinct, correctly-directed effect, and `adain_strength`
       responds smoothly; `ref_k_strength` is monotone but jumps sharply past
       ~0.75, where the reference's CONTENT replaces the subject rather than
-      restyling it. Recurring artifact: neon-edge fringing and garbled
-      texture in high-frequency repetitive regions (tree trunks, knitwear),
-      across several reference/prompt pairs.
+      restyling it. Recurring artifact under the original cond-only
+      injection: neon-edge fringing and garbled texture in high-frequency
+      repetitive regions (tree trunks, knitwear), across several
+      reference/prompt pairs — root-caused and largely fixed, two bullets down.
     - **The all-ones frequency vector was NOT the cause.** The leading
       hypothesis was that SenseNova skipped `frequency_scale_vector`
       (`axes_dims=None`) so nothing damped the high-frequency reference-Key
@@ -1753,21 +1759,67 @@ a generation without style transfer.
       on the cabin and the left-hand trunks survives at comparable intensity
       and saturation. Broad-area fringing (distant forest, water, mountains)
       does look cleaner, so the curve is doing something, but the headline
-      artifact is not high-frequency reference-Key content and the real cause
-      is still unidentified. A fine-detail photo-grade reference shows no
+      artifact is not high-frequency reference-Key content — the real cause is
+      the CFG coupling in the next bullet. A fine-detail photo-grade reference shows no
       over-suppression (style influence unchanged), so the curve is not too
       aggressive either. Evidence: `outputs/sensenova_style_freq_fix/`.
       Note the shipped `high_scale_end=0.0` now really does drive the
       top frequency band to zero by the final step for SenseNova.
-    - **NOT STARTED — next hypothesis for the fringing.** The banding reads
-      as a saturation/overshoot artifact rather than transplanted fine
-      detail: it sits on flat cel-shaded faces and along object outlines,
-      not in the busiest texture. That points at the AdaIN alignment step
-      (`cross_batch_adain_qk`, which rescales by reference statistics and can
-      overshoot when the reference's per-channel variance is far from the
-      target's — an anime-cel reference against a photoreal prompt is exactly
-      that case) or at the CFG combine path, rather than at the reference-Key
-      frequency curve. Nobody has measured this yet.
+    - **FIXED — the fringing was the cond-only injection riding the CFG
+      delta.** The CFG combine is affine with coefficients summing to 1, so a
+      shift present only in the cond forward sits entirely inside
+      `(v_cond - v_uncond)` and is MULTIPLIED by `cfg_scale`. SenseNova is
+      pixel-space with a terminal `clamp(-1, 1)` and no VAE to absorb
+      overshoot, so the multiplied shift clipped pixels outright — the
+      neon-edge fringing. This file's earlier claim that cond-only injection
+      means style does NOT ride the CFG delta was backwards, and is why the
+      artifact was misattributed first to the frequency curve, then to AdaIN.
+      Fix: `StyleTransferConfig.inject_all_cfg_branches` arms every forward
+      feeding a step's CFG combine (cond + img_cond + uncond), making the
+      shift common-mode so it passes the combine once, unscaled. Implemented
+      in `_euler_run` (`sensenova_pipeline_ops.py`); default True for
+      SenseNova alone
+      (`SENSENOVA_GENERATION_DEFAULTS["style_inject_all_cfg_branches"]`),
+      False for the seven other archs sharing the config. Internal wiring, no
+      route parameter — `adain_strength` remains the only user-facing style
+      knob.
+      - **Measured** (1024x1024, 30 steps, seed 424242, `cfg_norm=global`,
+        anime-cel reference x landscape prompt; clip-% = fraction of pixels
+        with any channel at 0 or 255; style-attributable = arm minus its own
+        style-off baseline): at cfg=4, 0.222% off / 13.386% cond-only /
+        1.108% all-branch → attributable 13.16 pp → 0.89 pp; at cfg=6,
+        1.751% / 22.479% / 6.149% → 20.73 pp → 4.40 pp. Style efficacy
+        retained ~86% (mean-abs divergence from the style-off control
+        31.15 → 26.56, much of the lost divergence being the artifact).
+      - **The residual is not zero, by construction.** Cancellation is
+        approximate: AdaIN and `make_ref_value` are evaluated against each
+        branch's own statistics, so the injected shift is near-identical, not
+        bit-identical, across branches. Two named exceptions to the sum-to-1
+        algebra: `cfg_norm="cfg_zero_star"` leaves a residual factor
+        `alpha + cfg*(1 - alpha)`, and `cfg_norm` `global`/`channel` apply a
+        further <=1 norm rescale after the blend.
+      - **A strong negative prompt enlarges the residual** (measured):
+        style-attributable clipping +7.58 pp (8.066% against a 0.490%
+        style-off + negative control) versus +0.89 pp with an empty negative
+        prompt, and the clipped pixels are more spatially concentrated.
+        Common-mode cancellation is exact only where the branches are
+        otherwise similar; a strong negative makes cond and uncond diverge, so
+        part of the injection re-enters the cfg-multiplied delta. The negative
+        prompt itself still works correctly — this is a residual, not a
+        regression.
+      - **Arming all three branches (it2i + style) is algebraically required,
+        not merely preferable.** Arming cond+uncond only would leave a
+        residual `(1 + cfg_scale - img_cfg_scale)*s` in `_cfg_combine_refs`,
+        worse than doing nothing at typical settings. Confirmed at
+        `cfg_scale=4`/`img_cfg_scale=1.5`: the all-branch arm's style
+        contribution is cfg-invariant across cfg 2/4/6 (spread 0.65 pp) while
+        the cond-only arm's swings 7.9 pp non-monotonically. clip-% cannot
+        adjudicate fringing in this scenario — the 3-branch extrapolation
+        saturates it (~54% clipped with style entirely disabled) — so the
+        txt2img numbers above are the clean evidence.
+      - The flag-off path is bit-identical to the pre-change archive across 8
+        image pairs, and SenseNova generation is bit-reproducible across
+        backend restarts at a fixed seed.
     - **NOT FIXED — style freq-curve knobs are unreachable on the JSON
       routes.** `api/generation_utils.py` reads `style_high_scale_start`,
       `style_high_scale_end` and `style_low_scale_start`, none of which are

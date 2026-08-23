@@ -160,6 +160,60 @@ def process_controlnet_configs(
     return controlnet_images, style_transfer, style_transfers, style_combine_mode
 
 
+# Flow-matching DiTs: x_t is mostly noise mid-denoising, while pred_x0 shows the
+# model's current clean-image estimate from the very first step.
+_PRED_X0_PREVIEW_ARCHS = frozenset({
+    "anima", "zimage", "flux2", "lens", "ideogram4", "minit2i", "krea2", "sensenova",
+})
+
+
+def preview_arch_kwargs(
+    pipeline_manager,
+    pipeline,
+    preview_predicted_x0: bool = False,
+) -> dict:
+    """Architecture flags `create_progress_callback_factory` needs to decode a
+    live preview, for whichever model is currently loaded.
+
+    Every generation route must go through here: inlining this detection per
+    route is what let SenseNova preview on txt2img but not on img2img/inpaint/
+    outpaint.
+
+    Args:
+        pipeline: the route's own pipeline (txt2img/img2img/inpaint) -- SDXL is
+            detected from its class name, so it must be the one about to run.
+        preview_predicted_x0: explicit API override; always wins when true.
+    """
+    info = pipeline_manager.current_model_info or {}
+    model_type = info.get("type")
+    is_zimage = model_type == "zimage"
+    is_minit2i = model_type == "minit2i"
+
+    return {
+        "is_sdxl": pipeline is not None and "XL" in pipeline.__class__.__name__,
+        "is_zimage": is_zimage,
+        "is_deus": model_type == "deus",
+        # Z-Image with SDXL VAE (4ch) needs TAESD-XL instead of TAEF1.
+        "is_zimage_sdxl_vae": is_zimage and info.get("vae_type") == "sdxl",
+        "is_flux2": model_type == "flux2",
+        "is_anima": model_type == "anima",
+        # Lens and Ideogram 4 share FLUX.2's AutoencoderKLFlux2 latent; Ideogram 4
+        # packs the 128 channels in a different order, hence the separate flag.
+        "is_lens": model_type == "lens",
+        "is_ideogram4": model_type == "ideogram4",
+        # SenseNova is pixel-space (no VAE), same [-1,1] RGB [B,3,H,W] convention
+        # as MiniT2I -- reuse decode_latent's is_minit2i raw-RGB passthrough
+        # rather than adding an identical branch under a new flag.
+        "is_minit2i": is_minit2i or model_type == "sensenova",
+        "minit2i_vae_type": (
+            (pipeline_manager.minit2i_components or {}).get("vae_type", "none")
+            if is_minit2i else "none"
+        ),
+        "is_krea2": model_type == "krea2",
+        "preview_predicted_x0": preview_predicted_x0 or model_type in _PRED_X0_PREVIEW_ARCHS,
+    }
+
+
 def create_progress_callback_factory(
     taesd_manager,
     websocket_manager,

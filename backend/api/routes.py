@@ -68,6 +68,7 @@ from api.param_defaults import (
 from api.generation_utils import (
     process_controlnet_configs,
     create_progress_callback_factory,
+    preview_arch_kwargs,
     create_db_image_record,
     load_loras_for_generation,
     prepare_params_for_db,
@@ -1482,38 +1483,6 @@ async def generate_txt2img(
         params["style_transfers"] = style_transfers
         params["style_combine_mode"] = style_combine_mode
 
-        # Detect model type
-        is_sdxl = pipeline_manager.txt2img_pipeline is not None and \
-                  "XL" in pipeline_manager.txt2img_pipeline.__class__.__name__
-        is_zimage = pipeline_manager.current_model_info and \
-                    pipeline_manager.current_model_info.get("type") == "zimage"
-        is_deus = pipeline_manager.current_model_info and \
-                  pipeline_manager.current_model_info.get("type") == "deus"
-        is_flux2 = pipeline_manager.current_model_info and \
-                   pipeline_manager.current_model_info.get("type") == "flux2"
-        # Z-Image with SDXL VAE (4ch) needs TAESD-XL instead of TAEF1
-        is_zimage_sdxl_vae = is_zimage and \
-                             pipeline_manager.current_model_info.get("vae_type") == "sdxl"
-        is_anima = pipeline_manager.current_model_info and \
-                   pipeline_manager.current_model_info.get("type") == "anima"
-        # Lens shares the same AutoencoderKLFlux2 / 32ch latent format as FLUX.2
-        is_lens = pipeline_manager.current_model_info and \
-                  pipeline_manager.current_model_info.get("type") == "lens"
-        # Ideogram 4 shares AutoencoderKLFlux2's 128-ch packed latent with Lens.
-        is_ideogram4 = pipeline_manager.current_model_info and \
-                       pipeline_manager.current_model_info.get("type") == "ideogram4"
-        is_minit2i = pipeline_manager.current_model_info and \
-                     pipeline_manager.current_model_info.get("type") == "minit2i"
-        minit2i_vae_type = (pipeline_manager.minit2i_components or {}).get("vae_type", "none") if is_minit2i else "none"
-        is_krea2 = pipeline_manager.current_model_info and \
-                   pipeline_manager.current_model_info.get("type") == "krea2"
-        # SenseNova is pixel-space (no VAE), same [-1,1] RGB [B,3,H,W] convention
-        # as MiniT2I -- reuse taesd_manager.decode_latent's is_minit2i branch
-        # (raw-RGB passthrough) rather than adding an identical branch under a
-        # new flag.
-        is_sensenova = pipeline_manager.current_model_info and \
-                       pipeline_manager.current_model_info.get("type") == "sensenova"
-
         # Warn about parameters the loaded architecture silently ignores
         _current_arch = pipeline_manager.current_model_info.get("type") if pipeline_manager.current_model_info else None
         check_arch_capabilities(params, _current_arch, defaults=_img_defaults)
@@ -1522,25 +1491,13 @@ async def generate_txt2img(
         progress_callback = create_progress_callback_factory(
             taesd_manager,
             manager,
-            is_sdxl,
-            is_zimage,
-            is_deus,
-            is_zimage_sdxl_vae,
-            is_flux2,
-            is_anima,
-            is_lens=is_lens,
-            is_ideogram4=is_ideogram4,
-            is_minit2i=(is_minit2i or is_sensenova),
-            minit2i_vae_type=minit2i_vae_type,
-            is_krea2=is_krea2,
+            **preview_arch_kwargs(
+                pipeline_manager,
+                pipeline_manager.txt2img_pipeline,
+                preview_predicted_x0=preview_predicted_x0,
+            ),
             image_width=params.get("width"),
             image_height=params.get("height"),
-            # For flow-matching DiTs (Anima / Z-Image / FLUX.2 / Lens), default to
-            # the pred_x0 preview: x_t is mostly noise mid-denoising, while
-            # pred_x0 = x_t - σ·v shows the model's current clean-image
-            # estimate from the very first steps. Any explicit user override
-            # via the API still wins.
-            preview_predicted_x0=(preview_predicted_x0 or is_anima or is_zimage or is_flux2 or is_lens or is_ideogram4 or is_minit2i or is_krea2 or is_sensenova),
             preview_enabled=params.get("preview_enabled", True),
             preview_interval=params.get("preview_interval", 4),
             preview_decoder=params.get("preview_decoder", "matrix")
@@ -2519,31 +2476,6 @@ async def generate_img2img(
             "img2img"
         )
 
-        # Detect if SDXL
-        is_sdxl = pipeline_manager.img2img_pipeline is not None and \
-                  "XL" in pipeline_manager.img2img_pipeline.__class__.__name__
-        is_zimage = pipeline_manager.current_model_info and \
-                    pipeline_manager.current_model_info.get("type") == "zimage"
-        is_deus = pipeline_manager.current_model_info and \
-                  pipeline_manager.current_model_info.get("type") == "deus"
-        is_flux2 = pipeline_manager.current_model_info and \
-                   pipeline_manager.current_model_info.get("type") == "flux2"
-        # Z-Image with SDXL VAE (4ch) needs TAESD-XL instead of TAEF1
-        is_zimage_sdxl_vae = is_zimage and \
-                             pipeline_manager.current_model_info.get("vae_type") == "sdxl"
-        is_anima = pipeline_manager.current_model_info and \
-                   pipeline_manager.current_model_info.get("type") == "anima"
-        is_lens = pipeline_manager.current_model_info and \
-                  pipeline_manager.current_model_info.get("type") == "lens"
-        # Ideogram 4 shares AutoencoderKLFlux2's 128-ch packed latent with Lens.
-        is_ideogram4 = pipeline_manager.current_model_info and \
-                       pipeline_manager.current_model_info.get("type") == "ideogram4"
-        is_minit2i = pipeline_manager.current_model_info and \
-                     pipeline_manager.current_model_info.get("type") == "minit2i"
-        minit2i_vae_type = (pipeline_manager.minit2i_components or {}).get("vae_type", "none") if is_minit2i else "none"
-        is_krea2 = pipeline_manager.current_model_info and \
-                   pipeline_manager.current_model_info.get("type") == "krea2"
-
         # Warn about parameters the loaded architecture silently ignores
         _current_arch = pipeline_manager.current_model_info.get("type") if pipeline_manager.current_model_info else None
         check_arch_capabilities(params, _current_arch, defaults=_img_defaults)
@@ -2552,26 +2484,15 @@ async def generate_img2img(
         progress_callback = create_progress_callback_factory(
             taesd_manager,
             manager,
-            is_sdxl,
-            is_zimage,
-            is_deus,
-            is_zimage_sdxl_vae,
-            is_flux2,
-            is_anima,
-            is_lens=is_lens,
-            is_ideogram4=is_ideogram4,
-            is_minit2i=is_minit2i,
-            is_krea2=is_krea2,
+            **preview_arch_kwargs(
+                pipeline_manager,
+                pipeline_manager.img2img_pipeline,
+                preview_predicted_x0=preview_predicted_x0,
+            ),
             img2img_fix_steps=img2img_fix_steps,
             steps=steps,
             image_width=width,
             image_height=height,
-            # For flow-matching DiTs (Anima / Z-Image / FLUX.2 / Lens), default to
-            # the pred_x0 preview: x_t is mostly noise mid-denoising, while
-            # pred_x0 = x_t - σ·v shows the model's current clean-image
-            # estimate from the very first steps. Any explicit user override
-            # via the API still wins.
-            preview_predicted_x0=(preview_predicted_x0 or is_anima or is_zimage or is_flux2 or is_lens or is_ideogram4 or is_minit2i or is_krea2),
             preview_enabled=params.get("preview_enabled", True),
             preview_interval=params.get("preview_interval", 4),
             preview_decoder=params.get("preview_decoder", "matrix")
@@ -7915,31 +7836,6 @@ async def generate_inpaint(
             "inpaint"
         )
 
-        # Detect if SDXL
-        is_sdxl = pipeline_manager.inpaint_pipeline is not None and \
-                  "XL" in pipeline_manager.inpaint_pipeline.__class__.__name__
-        is_zimage = pipeline_manager.current_model_info and \
-                    pipeline_manager.current_model_info.get("type") == "zimage"
-        is_deus = pipeline_manager.current_model_info and \
-                  pipeline_manager.current_model_info.get("type") == "deus"
-        is_flux2 = pipeline_manager.current_model_info and \
-                   pipeline_manager.current_model_info.get("type") == "flux2"
-        # Z-Image with SDXL VAE (4ch) needs TAESD-XL instead of TAEF1
-        is_zimage_sdxl_vae = is_zimage and \
-                             pipeline_manager.current_model_info.get("vae_type") == "sdxl"
-        is_anima = pipeline_manager.current_model_info and \
-                   pipeline_manager.current_model_info.get("type") == "anima"
-        is_lens = pipeline_manager.current_model_info and \
-                  pipeline_manager.current_model_info.get("type") == "lens"
-        # Ideogram 4 shares AutoencoderKLFlux2's 128-ch packed latent with Lens.
-        is_ideogram4 = pipeline_manager.current_model_info and \
-                       pipeline_manager.current_model_info.get("type") == "ideogram4"
-        is_minit2i = pipeline_manager.current_model_info and \
-                     pipeline_manager.current_model_info.get("type") == "minit2i"
-        minit2i_vae_type = (pipeline_manager.minit2i_components or {}).get("vae_type", "none") if is_minit2i else "none"
-        is_krea2 = pipeline_manager.current_model_info and \
-                   pipeline_manager.current_model_info.get("type") == "krea2"
-
         # Warn about parameters the loaded architecture silently ignores
         _current_arch = pipeline_manager.current_model_info.get("type") if pipeline_manager.current_model_info else None
         check_arch_capabilities(params, _current_arch, defaults=_img_defaults)
@@ -7948,26 +7844,15 @@ async def generate_inpaint(
         progress_callback = create_progress_callback_factory(
             taesd_manager,
             manager,
-            is_sdxl,
-            is_zimage,
-            is_deus,
-            is_zimage_sdxl_vae,
-            is_flux2,
-            is_anima,
-            is_lens=is_lens,
-            is_ideogram4=is_ideogram4,
-            is_minit2i=is_minit2i,
-            is_krea2=is_krea2,
+            **preview_arch_kwargs(
+                pipeline_manager,
+                pipeline_manager.inpaint_pipeline,
+                preview_predicted_x0=preview_predicted_x0,
+            ),
             img2img_fix_steps=img2img_fix_steps,
             steps=steps,
             image_width=width,
             image_height=height,
-            # For flow-matching DiTs (Anima / Z-Image / FLUX.2 / Lens), default to
-            # the pred_x0 preview: x_t is mostly noise mid-denoising, while
-            # pred_x0 = x_t - σ·v shows the model's current clean-image
-            # estimate from the very first steps. Any explicit user override
-            # via the API still wins.
-            preview_predicted_x0=(preview_predicted_x0 or is_anima or is_zimage or is_flux2 or is_lens or is_ideogram4 or is_minit2i or is_krea2),
             preview_enabled=params.get("preview_enabled", True),
             preview_interval=params.get("preview_interval", 4),
             preview_decoder=params.get("preview_decoder", "matrix")
@@ -8669,31 +8554,6 @@ async def generate_outpaint(
             "outpaint"
         )
 
-        # Detect if SDXL
-        is_sdxl = pipeline_manager.inpaint_pipeline is not None and \
-                  "XL" in pipeline_manager.inpaint_pipeline.__class__.__name__
-        is_zimage = pipeline_manager.current_model_info and \
-                    pipeline_manager.current_model_info.get("type") == "zimage"
-        is_deus = pipeline_manager.current_model_info and \
-                  pipeline_manager.current_model_info.get("type") == "deus"
-        is_flux2 = pipeline_manager.current_model_info and \
-                   pipeline_manager.current_model_info.get("type") == "flux2"
-        # Z-Image with SDXL VAE (4ch) needs TAESD-XL instead of TAEF1
-        is_zimage_sdxl_vae = is_zimage and \
-                             pipeline_manager.current_model_info.get("vae_type") == "sdxl"
-        is_anima = pipeline_manager.current_model_info and \
-                   pipeline_manager.current_model_info.get("type") == "anima"
-        is_lens = pipeline_manager.current_model_info and \
-                  pipeline_manager.current_model_info.get("type") == "lens"
-        # Ideogram 4 shares AutoencoderKLFlux2's 128-ch packed latent with Lens.
-        is_ideogram4 = pipeline_manager.current_model_info and \
-                       pipeline_manager.current_model_info.get("type") == "ideogram4"
-        is_minit2i = pipeline_manager.current_model_info and \
-                     pipeline_manager.current_model_info.get("type") == "minit2i"
-        minit2i_vae_type = (pipeline_manager.minit2i_components or {}).get("vae_type", "none") if is_minit2i else "none"
-        is_krea2 = pipeline_manager.current_model_info and \
-                   pipeline_manager.current_model_info.get("type") == "krea2"
-
         # Warn about parameters the loaded architecture silently ignores
         _current_arch = pipeline_manager.current_model_info.get("type") if pipeline_manager.current_model_info else None
         check_arch_capabilities(params, _current_arch, defaults=_img_defaults)
@@ -8703,26 +8563,15 @@ async def generate_outpaint(
         progress_callback = create_progress_callback_factory(
             taesd_manager,
             manager,
-            is_sdxl,
-            is_zimage,
-            is_deus,
-            is_zimage_sdxl_vae,
-            is_flux2,
-            is_anima,
-            is_lens=is_lens,
-            is_ideogram4=is_ideogram4,
-            is_minit2i=is_minit2i,
-            is_krea2=is_krea2,
+            **preview_arch_kwargs(
+                pipeline_manager,
+                pipeline_manager.inpaint_pipeline,
+                preview_predicted_x0=preview_predicted_x0,
+            ),
             img2img_fix_steps=img2img_fix_steps,
             steps=steps,
             image_width=canvas_width,
             image_height=canvas_height,
-            # For flow-matching DiTs (Anima / Z-Image / FLUX.2 / Lens), default to
-            # the pred_x0 preview: x_t is mostly noise mid-denoising, while
-            # pred_x0 = x_t - σ·v shows the model's current clean-image
-            # estimate from the very first steps. Any explicit user override
-            # via the API still wins.
-            preview_predicted_x0=(preview_predicted_x0 or is_anima or is_zimage or is_flux2 or is_lens or is_ideogram4 or is_minit2i or is_krea2),
             preview_enabled=params.get("preview_enabled", True),
             preview_interval=params.get("preview_interval", 4),
             preview_decoder=params.get("preview_decoder", "matrix")

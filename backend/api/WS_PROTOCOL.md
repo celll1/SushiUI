@@ -120,8 +120,9 @@ Source: `backend/api/websocket.py:220`
 Image-generation step progress, optionally carrying a base64 preview image and
 CFG metrics. Sent from `ConnectionManager.send_progress_sync()`
 (`backend/api/websocket.py:39-53`), called from the per-step callback built by
-`create_progress_callback_factory()` (`backend/api/generation_utils.py:118-198`,
-dispatch at line 192), and directly from several routes for non-generation
+`create_progress_callback_factory()` (`backend/api/generation_utils.py:217-380`,
+dispatch at line 355; the per-architecture decoder flags it is given come from
+`preview_arch_kwargs()` at `:170-214`, shared by all four generation routes), and directly from several routes for non-generation
 long-running operations such as dataset tag-statistics scans and thumbnail
 regeneration (e.g. `backend/api/routes.py:806`, `:4864`, `:5182`, `:5650`,
 `:5700`, `:5771`, `:9040`, `:9065`, `:9090`, `:9114`). There is also an

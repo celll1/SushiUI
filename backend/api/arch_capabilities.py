@@ -44,6 +44,11 @@ FEATURE_PARAMS: Dict[str, List[str]] = {
     "fbcache": ["fbcache_enable"],
     "nag": ["nag_enable"],
     "controlnets": ["controlnets"],
+    # Reference style transfer: an is_style_transfer=True entry in the same
+    # controlnets[] array (see ControlNetConfig in routes.py). NOT armed by
+    # the generic per-key check above -- see check_arch_capabilities, which
+    # special-cases this feature to use _is_style_transfer_set() instead.
+    "style_transfer": ["controlnets"],
     "unet_quantization": ["unet_quantization"],
     "quantized_gemm": ["quantized_gemm_mode"],
     "text_encoder_quantization": ["text_encoder_quantization"],
@@ -135,6 +140,7 @@ FEATURE_LABELS: Dict[str, str] = {
     "fbcache": "fbcache_* (First Block Cache)",
     "nag": "nag_* (Normalized Attention Guidance)",
     "controlnets": "controlnets",
+    "style_transfer": "reference style transfer (controlnets[].is_style_transfer)",
     "unet_quantization": "unet_quantization",
     "quantized_gemm": "quantized_gemm_mode (quantized GEMM path)",
     "text_encoder_quantization": "text_encoder_quantization",
@@ -301,6 +307,7 @@ _add("acestep", "advanced_cfg",
      "CFG scheduling / dynamic thresholding / CFG-rescale run only in the U-Net sampling loop, not in the ACE-Step turbo sampler")
 _add("acestep", "nag", "Normalized Attention Guidance is not implemented for the ACE-Step audio model")
 _add("acestep", "controlnets", "ControlNet is not supported for the ACE-Step audio model")
+_add("acestep", "style_transfer", "reference style transfer is not implemented for the ACE-Step audio model, which has no image conditioning pathway at all")
 
 # ---------------------------------------------------------------------------
 # SenseNova-U1.5-8B-MoT: a Qwen3-8B LLM used directly as a flow-matching
@@ -385,6 +392,8 @@ _add("minimax_music3", "nag",
      "Normalized Attention Guidance is not implemented for MiniMax Music 3")
 _add("minimax_music3", "controlnets",
      "ControlNet is not supported for MiniMax Music 3")
+_add("minimax_music3", "style_transfer",
+     "reference style transfer is not implemented for MiniMax Music 3, which has no image conditioning pathway at all")
 _add("minimax_music3", "lora",
      "generation-time LoRA is not implemented for MiniMax Music 3's pipeline backend (core.pipeline_backends.minimax_music3.MiniMaxMusic3Mixin._generate_txt2aud_minimax_music3 never reads params['loras']); a LoRA selected for this generation has no effect")
 _add("minimax_music3", "negative_prompt",
@@ -618,6 +627,8 @@ _add("minimax_h3", "nag",
      "Normalized Attention Guidance is not implemented for the MiniMax-H3 video model")
 _add("minimax_h3", "controlnets",
      "ControlNet is not supported for the MiniMax-H3 video model")
+_add("minimax_h3", "style_transfer",
+     "reference style transfer is not implemented for the MiniMax-H3 video model")
 # Quantization. NOTE WHAT IS *NOT* DECLARED HERE: `quantized_gemm`.
 #
 # `minimax_h3` is in `QUANTIZED_LINEAR_ARCHS` (its loader really does swap 200
@@ -1099,9 +1110,31 @@ def _is_user_set(params: Dict[str, Any], key: str,
         default = GENERATION_DEFAULTS.get(key, None)
     val = params.get(key, default)
     if isinstance(val, (list, tuple)):
-        # Non-empty list (e.g. controlnets) counts as user-set.
+        if key == "controlnets":
+            # is_style_transfer entries ride the same controlnets[] array and
+            # may be dicts or pydantic models depending on the call site.
+            def _is_real_controlnet(entry: Any) -> bool:
+                if isinstance(entry, dict):
+                    return not entry.get("is_style_transfer")
+                return not getattr(entry, "is_style_transfer", False)
+            return any(_is_real_controlnet(e) for e in val)
+        # Non-empty list (e.g. loras) counts as user-set.
         return bool(val)
     return val is not None and val != default
+
+
+def _is_style_transfer_set(params: Dict[str, Any]) -> bool:
+    """True when ``params["controlnets"]`` carries at least one
+    ``is_style_transfer`` entry (the mirror image of ``_is_user_set``'s
+    ``controlnets`` case, which counts only the REAL ControlNet entries)."""
+    val = params.get("controlnets")
+    if not isinstance(val, (list, tuple)):
+        return False
+    def _is_style_entry(entry: Any) -> bool:
+        if isinstance(entry, dict):
+            return bool(entry.get("is_style_transfer"))
+        return bool(getattr(entry, "is_style_transfer", False))
+    return any(_is_style_entry(e) for e in val)
 
 
 def check_arch_capabilities(params: Dict[str, Any], arch: str,
@@ -1132,7 +1165,13 @@ def check_arch_capabilities(params: Dict[str, Any], arch: str,
     exempt = ARCH_SUPPORTED_VALUES.get(arch, {})
     for feature, reason in unsupported.items():
         trigger_keys = FEATURE_PARAMS.get(feature, [feature])
-        if not any(_is_user_set(params, k, defaults) for k in trigger_keys):
+        if feature == "style_transfer":
+            # Rides the same controlnets[] array as the "controlnets" feature
+            # but is armed by the OPPOSITE entries (is_style_transfer=True),
+            # so it cannot use the generic per-key _is_user_set check.
+            if not _is_style_transfer_set(params):
+                continue
+        elif not any(_is_user_set(params, k, defaults) for k in trigger_keys):
             continue
         # A value this arch DOES honor (e.g. unet_quantization="int8" on Krea 2)
         # is not a reason to warn, even though other values of the same

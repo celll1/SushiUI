@@ -20,7 +20,7 @@ them. No subjective performance claims.
 | krea2 | MM-DiT (single-stream) | Qwen3-VL-4B-Instruct (frozen) | velocity / flow (rectified flow) | latent, `AutoencoderKLQwenImage` 16ch (latents_mean/std) | `guidance = cfg_scale - 1` (default cfg 4.5); distilled/turbo disables CFG (guidance 0) | conduit (tq usable, GQA) (verify infer/train head_dim) | diffusers dir (`Krea2Pipeline`), transformer-only dir (auto-complement), single-file (diffusers/raw/comfy/sushiUI TE+DiT combined); TE `Qwen/Qwen3-VL-4B-Instruct`, VAE `Qwen/Qwen-Image` `vae` (env `KREA2_TE_DIR`/`KREA2_VAE_DIR` overrides) | `krea2_adapter.py`; transformer only, Qwen3-VL TE ALWAYS frozen (`train_text_encoder` rejected), VAE frozen; train_runner forces bf16 |
 | ltx2 | joint video+audio DiT (`LTX2VideoTransformer3DModel`) | Gemma-3 text encoder (frozen) | velocity / flow (`LTX2Pipeline`/`LTX2ImageToVideoPipeline`, txt2vid + img2vid) | 5D video latent (`[T,H,W]`) via LTX video VAE (tiling enabled) + separate audio VAE/vocoder | plain CFG (`guidance_scale`); img2vid pins frame 0 via `conditioning_mask` | n/a (own pipeline backend, not conduit-routed) | not in the single-file completion matrix above (own loader) | own trainer ops (`ltx2_ops.py`); see row-level notes for AP1-3 speed/lightweight features |
 | minimax_h3 | joint video+audio DiT, **single stream, no cross-attention** (vendored `MiniMaxH3Transformer3DModel`, 50 blocks, 33 B dense): one packed sequence of `[text \| conditioning \| audio \| video]` rows scattered by `index_copy`, split back by `index_select` | Qwen3-VL-32B (`Qwen3VLForConditionalGeneration`), truncated to **50 decoder layers**, unnormalised hidden state after layer 50, 5120-dim; frozen, never moved (layer-streamed off the mmap) | velocity / flow with the sign **opposite** to the usual convention, `x0 = x_t + σ·v` (vendored `MiniMaxH3Scheduler`); **two sigma schedules**, video shift 12.0 and audio shift 3.0, each stream stepped on its own grid once per loop iteration | 5-D 24-ch video latent, `AutoencoderKLMiniMaxH3` (16× spatial / 4× temporal, 36-layer ViT decoder, fp16, **pinned tiling policy**), pixels ImageNet-normalised RGB over `[0,1]` (not `[-1,1]`); **separate** 32-ch audio VAE (fp32, 32 kHz stereo) | **none** — no `guidance_scale`, no `negative_prompt`, no unconditional branch; guidance is distilled into the weights, one forward per step. Both keys are accepted and warned on a non-default value | conduit-routed, head_dim 128, equal q/kv heads, no mask → no capability guard fires, so native/flash/sage/tq all really run; sage refused in TRAINING mode by the shared mode guard | ComfyUI-style flat tree (`diffusion_models/` + `text_encoders/` + `vae/`) plus MiniMax's config-only `official/` for geometry, tokenizer and normalization vectors; DiT files are `*_pruned_fp8_scaled` or packed ConvRot `*_pruned_w4a8_mixed` (Comfy-Kitchen 0.2.28), each with `fl2va` and `ref2va` partitions — selecting the FILE selects the workflow | `minimax_h3_adapter.py`, **LoRA only** — full fine-tuning refused in three layers; TE and both VAEs frozen; block swap optional (opt-in) |
-| sensenova | Qwen3-8B LLM used directly as the flow-matching denoiser (MoT: every layer carries a `_mot_gen` twin of q/k/v/o_proj + norms + MLP, selected per token by a boolean mask; 42 layers, hidden 4096, GQA 32 q / 8 kv heads, head_dim 128, 3-axis RoPE) | none separate — the prompt goes through the LLM's own tokenizer + chat template, encoded by the same prefix forward pass that builds the KV cache the denoiser consumes | flow matching, `linspace(0,1)` with **t=0 noise, t=1 clean** (opposite of flux2/zimage's convention), Euler forward, `v = (x_pred - z)/(1-t).clamp_min(t_eps)` | pixel-space (no VAE); resolution free (not bucketed), only the structural /32 token grid (patch 16 x merge 2) enforced by snapping, off-range sizes warn and generate | ordinary CFG via two independent prefix KV caches (cond + empty-string uncond by default), or up to three (cond + img_cond + uncond) once `ref_images` is supplied, selected by `img_cfg_scale`; upstream's own `needs_cfg = cfg_scale > 1` collapses to single-branch at `cfg_scale <= 1`, which is how the 8-step distillation LoRA runs — no separate mode flag. **`negative_prompt` IS supported** (empirically verified A/B, not just upstream's own default): the uncond branch is built by the SAME `encode_prompt()` prefix pass as the cond branch, so a caller-supplied string substitutes cleanly for `""` and produces a real, `cfg_scale`-dose-dependent suppression effect (clean up to ~cfg_scale 6, classic CFG-too-high degradation from ~cfg_scale 8); default `cfg_scale` 4.0 is kept for both the plain and negative-prompt cases. Has no effect at `cfg_scale<=1` (warned, `sensenova_negative_prompt_no_cfg`) since no uncond branch is built there at all | conduit-routed (BSHD); sage auto-refused for GQA declaratively (`supports_gqa=False`), no per-arch registry entry / same conduit, training unimplemented | sushiUI single-file shard index only (`transformer.`-prefixed, `sensenova_config` metadata carries geometry); no upstream single-file distribution to complete siblings against | none — training is a deliberately separate future phase; the base is converted UNMERGED from the 8-step distillation LoRA specifically to keep the trainable lineage canonical |
+| sensenova | Qwen3-8B LLM used directly as the flow-matching denoiser (MoT: every layer carries a `_mot_gen` twin of q/k/v/o_proj + norms + MLP, selected per token by a boolean mask; 42 layers, hidden 4096, GQA 32 q / 8 kv heads, head_dim 128, 3-axis RoPE) | none separate — the prompt goes through the LLM's own tokenizer + chat template, encoded by the same prefix forward pass that builds the KV cache the denoiser consumes | flow matching, `linspace(0,1)` with **t=0 noise, t=1 clean** (opposite of flux2/zimage's convention), Euler forward, `v = (x_pred - z)/(1-t).clamp_min(t_eps)` | pixel-space (no VAE); resolution free (not bucketed), only the structural /32 token grid (patch 16 x merge 2) enforced by snapping, off-range sizes warn and generate | ordinary CFG via two independent prefix KV caches (cond + empty-string uncond by default), or up to three (cond + img_cond + uncond) once `ref_images` is supplied, selected by `img_cfg_scale`; upstream's own `needs_cfg = cfg_scale > 1` collapses to single-branch at `cfg_scale <= 1`, which is how the 8-step distillation LoRA runs — no separate mode flag. **`negative_prompt` IS supported** (empirically verified A/B, not just upstream's own default): the uncond branch is built by the SAME `encode_prompt()` prefix pass as the cond branch, so a caller-supplied string substitutes cleanly for `""` and produces a real, `cfg_scale`-dose-dependent suppression effect (clean up to ~cfg_scale 6, classic CFG-too-high degradation from ~cfg_scale 8); default `cfg_scale` 4.0 is kept for both the plain and negative-prompt cases. Has no effect at `cfg_scale<=1` (warned, `sensenova_negative_prompt_no_cfg`) since no uncond branch is built there at all | conduit-routed (BSHD); sage auto-refused for GQA declaratively (`supports_gqa=False`), no per-arch registry entry / same conduit, stamped `AttentionMode.TRAINING` over all 42 layers by `training/ops/sensenova_ops.setup_attention_backend` (sage stripped to native by the shared training-mode guard) | sushiUI single-file shard index only (`transformer.`-prefixed, `sensenova_config` metadata carries geometry); no upstream single-file distribution to complete siblings against | `sensenova_adapter.py`, **LoRA only** — the 294 generation-branch (`_mot_gen`) Linears, understanding branch and both vision towers frozen; the base must be either int8 checkpoint with all 588 decoder Linears in ONE flavour (no bf16 base exists in this repo); physical `batch_size=1`, `blocks_to_swap=0`, no reference-image datasets and no training samples, all enforced before the model loads by `train_runner._apply_sensenova_training_contract`; `full_finetune`/`relora`/`controlnet` refused via `TRAINING_UNSUPPORTED`. Full fine-tune (Phase 2b) and reference-mixed datasets (Phase 3) are not implemented. The base is converted UNMERGED from the 8-step distillation LoRA specifically to keep the trainable lineage canonical |
 | minimax_music3 | 3-stage: 8B `Qwen3ForCausalLM` autoregressive stage + 0.6B RVQ depth decoder (semantic + 7 residual codes/frame) → condition encoder → 2.4B 1D flow-matching DiT (`MiniMaxMusic3Transformer1DModel`, 36 layers, windowed 200-frame/100-hop denoise) → vocoder decode. No separate text encoder component: `prompt`/`lyrics` are tokenized (`Qwen2Tokenizer`) and consumed directly by the AR stage's own `Qwen3ForCausalLM` | AR stage: categorical, top-k 50 sampling of semantic (vocab 16,384) + 7 residual (vocab 1,024 each) codes per 25 Hz frame, cross-entropy-trained upstream. Flow stage: velocity / flow (`FlowMatchEulerDiscreteScheduler`, `invert_sigmas: true`, `sigmas = linspace(1, 1/steps, steps)`) at 86.13 Hz | 128-ch latent = **two folded 64-ch mono streams** (`vocoder.forward` reshapes `[B,128,L]`→`[2B,64,L]`); `MiniMaxMusic3Vocoder` is **decode-only** (upsamples 512× to 44.1 kHz stereo) — the matching encoder exists in `official/dav.pth` but is not part of the released diffusers component set and is not wired | **two CFGs, no negative prompt anywhere.** AR CFG fixed at 1.5 (unconditional branch = the same prompt with interior tokens replaced by `<\|audio_cfg\|>`); flow CFG exposed as `flow_guidance_scale` (default 1.7), unconditional branch conditions on **zeros** (there is no text/audio unconditional branch to negate, structurally, not by omission) | conduit-routed (attention re-pointed at `backend/core/attention/` during vendoring, replacing upstream's `dispatch_attention_fn`); same conduit for inference and (design-only, unimplemented) training | `official/` 7-component tree (default; every config, including for a flat/GGUF DiT, is sourced from here); flat ComfyUI-repack safetensors (DiT + text encoder, key-remapped — fused QKV split, `.gamma`/`.beta` norm rename, condition encoder unfolded out of the DiT; LM+depth-decoder split apart for the text encoder); GGUF containers (same remap, native reader, no `gguf` pip dependency); Q8_0 packed text encoder (`GGUFQ8_0Linear`, dequantizes once per device move); INT8 ConvRot (`ConvRotInt8Linear`, reused unchanged from MiniMax-H3) for both the flat DiT and the pruned text encoder. `text_encoder_file` on `POST /models/load` selects which of 4 text-encoder builders (non-pruned flat, pruned flat, pruned GGUF dense, pruned GGUF Q8_0) runs, generalising MiniMax-H3's `te_override` field | **none.** Training is out of scope for the phases shipped so far; not in `ARCH_REGISTRY`. Design-forward-compatible only: flow-stage (DiT) LoRA is reachable in principle (needs a from-scratch DAV-encoder reimplementation, since the encoder half is unpublished in the diffusers component set), AR-stage (LM) training is **blocked** — the RVQ tokenizer's own encoder (turns audio into the codes the LM predicts) is not published anywhere in the release |
 
 ## VRAM management: keep_models_hot (opt-in, all image archs except sensenova; ltx2 is video)
@@ -1895,10 +1895,84 @@ transfer.
     checkpoint documented above exists for a different reason (a ~2x W8A8
     step-time win, passed on its own gate) and is a separate, opt-in file,
     not a replacement for this conclusion.
-  - **Training is a deliberately separate future phase**, not in
-    `ARCH_REGISTRY`: the base checkpoint is converted UNMERGED from the
-    8-step distillation LoRA specifically to keep the trainable lineage
-    canonical.
+  - **Phase 1 LoRA training is implemented**; `"sensenova"` is one of
+    `ARCH_REGISTRY`'s 13 entries (`training/arch/__init__.py`). The base
+    checkpoint is converted UNMERGED from the 8-step distillation LoRA
+    specifically to keep the trainable lineage canonical, which is what makes
+    that lineage trainable here. Shape of the implemented envelope:
+    - **Targets**: exactly the 294 generation-branch Linears
+      (42 layers x {q,k,v,o}`_proj_mot_gen` + `mlp_mot_gen.{gate,up,down}_proj`),
+      enumerated by the SAME `iter_sensenova_lora_targets` the inference LoRA
+      uses; the adapter refuses any other count. The understanding branch,
+      both vision towers, `embed_tokens` and `lm_head` stay frozen, and
+      `encode_prompt(requires_grad=True)` raises — there is no separate text
+      encoder to train.
+    - **Two-pass step**: the prompt prefix is built by a `no_grad`
+      `forward_und` pass and consumed as an immutable KV cache by the
+      gradient-carrying `forward_gen` pass, which reads it through the
+      `update_cache=False` concat path. `ops/sensenova_ops.py` asserts that
+      immutability (layer count, non-empty detached K/V, no inference flash
+      buffers, no KV streamer) before and inside every step. Gradient
+      checkpointing runs through a SenseNova-specific per-layer
+      non-reentrant loop, not the stock `GradientCheckpointingLayer`, which
+      would replace `past_key_values` with `None` and silently drop the
+      prefix conditioning.
+    - **Accepted base** (`_assert_supported_quantized_training_base`,
+      `0c9ea86b`): all 588 decoder Linears must be ONE quantized flavour, and
+      that flavour must be `Int8Linear` or `ConvRotInt8Linear` — i.e. either
+      shipped int8 checkpoint, plain or ConvRot. The census keys on
+      `type(m) is cls`, never `isinstance`, because `ConvRotInt8Linear`
+      subclasses `Int8Linear` and an isinstance census would fold a ConvRot
+      base into the plain-int8 count and accept a MIXED base silently.
+      `Fp8Linear`/`W4A8Linear` are censused for the diagnostic message but
+      NOT accepted (no such SenseNova base exists, so accepting one would
+      ship an untested path), an unknown subclass of a known quantized class
+      refuses by name, and a mixed, off-count or unquantized bf16 base
+      refuses too.
+      - **ConvRot carries a train/inference activation-quantization skew;
+        the plain-int8 checkpoint does not.**
+        `ConvRotInt8Linear.forward` branches on
+        `self._force_dequant or (torch.is_grad_enabled() and x.requires_grad)`,
+        so once a LoRA contribution enters the activations essentially every
+        Linear takes the differentiable dequant arm (W-int8 / A-bf16) during
+        training, while INFERENCE always runs the fused W8A8 kernel —
+        `disable_int8_mm` is inert on this class, whose `forward` never reads
+        the flag. A ConvRot LoRA is therefore fitted against a base that
+        differs from the deployed one by the activation-quantization error.
+        **This skew is unmeasured**: nobody has A/B'd a ConvRot-trained LoRA
+        under the fused inference kernel, so it is recorded as a known
+        constraint, claimed neither harmful nor harmless. Autograd itself is
+        consistent — the fused arm only runs where no gradient is required,
+        and the non-reentrant checkpoint recompute evaluates the same
+        predicate as the first pass. The plain-int8 checkpoint has no such
+        skew: `disable_int8_mm` does bite on a true `Int8Linear`, and its
+        W8A8 path is pinned off anyway (see the W8A8 bullet above), so
+        training and inference both run dequant.
+    - **Loss**: pixel-space flow matching in the arch's own `t=0` noise /
+      `t=1` clean direction, `v = (x - z)/(1-t).clamp_min(t_eps)` MSE, with
+      `noise_scale` taken from the inference `compute_noise_scale` rather
+      than reimplemented.
+    - **Refused before the model loads**: `full_finetune`, `relora` and
+      `controlnet` (`arch_capabilities._add_training_unsupported`), so a
+      client filters its method dropdown from the same source. Full
+      fine-tuning has no bf16 base to run on — every one of the 588 decoder
+      Linears holds its weight as an `Int8Linear` BUFFER, so
+      `requires_grad_(True)` is a no-op on it (the Anima/Ideogram 4 guard
+      class).
+    - **Preflight contract** (`train_runner._apply_sensenova_training_contract`):
+      `network.type` must be `lora`; `batch_size` must be 1 (effective batch
+      via gradient accumulation — the prefix lengths of two items do not
+      match and there is no padding mask / varlen attention on the gen
+      flash path); `blocks_to_swap` must be 0 (`setup_block_swap` raises);
+      `use_reference_images` is refused as deferred to Phase 3; text and
+      pixel encoding are forced to `onthefly_gpu`; `sample_every` is forced
+      to 0 because training-time sampling is not integrated
+      (`arch/sensenova.py::sample` raises). `training_dtype`/`weight_dtype`
+      are forced to bf16 by `_is_bf16_native_base_model`.
+    - **Not implemented**: full fine-tune (Phase 2b, blocked on obtaining a
+      bf16 generation-branch base) and reference-conditioned datasets
+      (Phase 3). Design, rationale and the DONE/PENDING boundary:
+      `docs/guides/SENSENOVA_TRAINING_DESIGN.md`.
   - **`sensenova_mot_phase_eviction`** (API boolean, default **off**,
     `SENSENOVA_GENERATION_DEFAULTS`): MoT phase-exclusive half-weight
     eviction. Each of the 42 layers carries two halves — "understanding"
@@ -1961,7 +2035,27 @@ transfer.
       minimax_music3's generation path; see `arch_capabilities.py`).
       **Reopening condition**: a concrete workload whose measured peak
       exceeds ~44 GB after this feature is active, or an explicit
-      requirement to run on a <48 GB card.
+      requirement to run on a <48 GB card. This refusal is GENERATION-side;
+      training refuses `blocks_to_swap` separately and for its own reason
+      (see the Phase 1 LoRA bullet above), and `SENSENOVA_TRAINING_DESIGN.md`
+      §8.1 records why the mechanical argument here does not transfer to a
+      training step.
+    - **A separate TRAINING implementation of the same concept exists**
+      (`training/sensenova_phase_eviction.py`, `TRAINING_DEFAULTS`
+      boolean of the same name, opt-in, default off). It reuses this
+      feature's layer-selection logic (persistence, not `nn.Parameter`
+      ownership) but not its inference callbacks: a
+      `full`/`prefix`/`denoise` state machine CPU-stages the generation
+      half for the `no_grad` prefix pass and the understanding half for the
+      LoRA forward/backward, always evicting before loading at a transition
+      so the two halves never co-reside, and holding the generation half
+      GPU-resident across forward/backward/optimizer/save. A partial
+      transfer failure poisons the evictor rather than being retried. The
+      training preflight refuses it together with
+      `num_optimizer_groups > 0` or `block_swap_h2d_only`. Its measured
+      OFF/ON numbers, and what that measurement does and does not settle,
+      are in `SENSENOVA_TRAINING_DESIGN.md` §8.3 rather than duplicated
+      here.
   - **`sensenova_kv_cache_streaming`** (API boolean, default **off**,
     `SENSENOVA_GENERATION_DEFAULTS`): collapses the persistent per-layer
     flash-KV prefix cache into a **2-slot GPU ring shared across every layer
@@ -2062,14 +2156,15 @@ transfer.
       hook points, cadences, and CUDA streams, with no shared coordinator.
       `enable_block_swap` remains unsupported/warned for this arch, same as
       above.
-    - **No applicability to future SenseNova training**: a training step is
-      a single-timestep forward/backward with no multi-step denoise loop, so
+    - **No applicability to SenseNova training**: a training step is a
+      single-timestep forward/backward with no multi-step denoise loop, so
       there is no persistent read-many KV cache to stream; training-side
-      offload belongs to `LayerOffloadConductor`. What DOES transfer is the
-      MoT half-eviction CONCEPT: a gen-branch-only fine-tune with the
-      understanding branch frozen could CPU-evict that half during training.
-      Flag it as a thing to evaluate when training is built, not as planned
-      work.
+      offload belongs to `LayerOffloadConductor`. What DID transfer is the
+      MoT half-eviction CONCEPT, and it has since been built: Phase 1 LoRA
+      training freezes the understanding branch and CPU-evicts the idle half
+      per phase through its own state machine
+      (`training/sensenova_phase_eviction.py`), reusing this module's
+      layer-selection logic and not its streaming machinery.
   - **2026-08-22 production incident: rare non-deterministic output
     corruption ("TV static"), MoT eviction and KV streaming both OFF.** A
     live report of an off-bucket (768x1152) generation producing garbage,

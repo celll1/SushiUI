@@ -86,7 +86,7 @@ facts は [`MODEL_FACTS.md`](MODEL_FACTS.md) を正とする。本文書は Sens
 | LoRA target / adapter | 実 checkpoint で 294 target を検証し、推論・学習 adapter と保存 round-trip を実装済み | DONE |
 | `ARCH_REGISTRY` | SenseNova を含む 13 arch | DONE |
 | `arch/sensenova.py` / `ops/sensenova_ops.py` / `adapters/sensenova_adapter.py` | Phase 1 の loader、prefix、pixel-space step、LoRA adapter を実装済み | DONE |
-| `base_trainer.py` / `train_runner.py` | B1、plain-int8、no-reference、no-block-swap の初版契約と専用 prefix payload を統合済み | DONE |
+| `base_trainer.py` / `train_runner.py` | B1、単一 flavour の int8 base、no-reference、no-block-swap の初版契約と専用 prefix payload を統合済み | DONE |
 | `detect_prediction_config` | `sensenova` を flow / velocity として登録し退行テスト済み | DONE |
 | `TRAINING_UNSUPPORTED` | full FT / ReLoRA / ControlNet をロード前に拒否 | DONE |
 | real trainer exit smoke | 3 finite steps、runtime strength 0 exact parity、294 apply / restore を実 checkpoint で検証済み | DONE |
@@ -276,10 +276,33 @@ Ideogram 4 / Krea 2 / FLUX.2 / Anima で既に成立している経路であり�
 SenseNova の plain int8 checkpoint は**ロード時点で既に `disable_int8_mm` されている**
 （W8A8 は数値退行のため pin off）ため、この点は追加作業なしで整合する。
 
-**ConvRot checkpoint は別扱いになる。** `ConvRotInt8Linear.forward` は pin を読まず
-常に W8A8 kernel へ dispatch するが、**grad 下では `_dequant_forward` に落ちる**
-（`loader.py:49-55`）。したがって学習は成立するが、経路が plain int8 と異なるため
-初版では plain int8 checkpoint のみを学習対象として明示し、ConvRot は後回しにする。
+**ConvRot checkpoint も受理する（`0c9ea86b`）。** 受理条件は「588 個の decoder Linear が
+**すべて単一の量子化 flavour**であり、それが `Int8Linear` か `ConvRotInt8Linear` の
+いずれかであること」（`ops/sensenova_ops.py` の
+`_assert_supported_quantized_training_base`）。census は `isinstance` ではなく
+`type(m) is cls` で数える — `ConvRotInt8Linear` は `Int8Linear` の subclass なので、
+`isinstance` census は ConvRot を plain-int8 の数に畳み込み、**mixed base を黙って
+受理してしまう**。`Fp8Linear` / `W4A8Linear` は診断メッセージ用に census されるが
+**受理しない**（該当する SenseNova base が存在せず、受理すれば未検証の経路を出荷する
+ことになる）。既知量子化クラスの未知 subclass は名指しで拒否し、mixed・端数・
+未量子化 bf16 base も拒否する。
+
+**ただし ConvRot には train / inference の activation 量子化 skew がある（未測定）。**
+`ConvRotInt8Linear.forward` は
+`self._force_dequant or (torch.is_grad_enabled() and x.requires_grad)` で分岐する
+（`convrot_int8_linear.py:72-74`）。学習では LoRA 寄与が activation に入った時点以降、
+ほぼ全 Linear が微分可能な dequant 経路（W-int8 / A-bf16）を通る。一方**推論では常に
+fused W8A8 kernel が走る** — `disable_int8_mm` はこのクラスに対して inert で、
+`forward` はそのフラグを読まない（`loader.py` の QUANTIZATION 節）。したがって
+**ConvRot LoRA は、デプロイされるベースとは activation 量子化誤差の分だけ異なる
+ベースに対して fit される**。
+
+この skew は**誰も測っていない**（ConvRot で学習した LoRA を fused 推論カーネル下で
+A/B した例は無い）。既知の制約として記録するに留め、実害があるとも無いとも断定しない。
+**autograd 自体は整合している**: fused 経路は勾配が不要な箇所でしか走らず、§4.7 の
+non-reentrant checkpoint の再計算は初回と同じ述語を評価する。plain int8 checkpoint に
+この skew は無い — `disable_int8_mm` は真の `Int8Linear` に効き、W8A8 は数値退行のため
+既定で pin off なので、学習・推論とも dequant を通る。
 
 ただし `warn_quantized_base_without_checkpointing()` の条件に注意する。gradient
 checkpointing を **OFF** にすると、量子化 Linear ごとに backward 用の compute-dtype
@@ -550,7 +573,8 @@ reference 忠実度が実測で不足した場合にのみ、§5.2 で保留し�
 
 ### 8.1 記録済みの block-swap 非対応は学習に転移しない
 
-`MODEL_FACTS.md:1951-1964` の判断は次の理由に基づく。
+`MODEL_FACTS.md:2005-2018`（sensenova 行の "Generic rolling block-swap was
+deliberately not built for this arch"）の判断は次の理由に基づく。
 
 > rewriting the 3-branch denoise loop's layer-outer/branch-inner ordering to
 > support it would cost 2-3x more PCIe traffic than this phase-exclusive scheme,
@@ -612,8 +636,9 @@ rolling）。
 **DONE（driver）**: 推論用 callback は再利用せず、学習専用の `full / prefix /
 denoise` state machine を実装した。2 周目の `denoise -> prefix` は gen D2H 完了後に
 und H2D、`prefix -> denoise` は und D2H 完了後に gen H2D とし、同一 phase は no-op。
-転送は correctness 優先の blocking copy とする。§8.3 の実測では既定 ON にできる
-trade-off ではなかったため、H2D 非同期化は将来の opt-in 最適化として残す。
+転送は correctness 優先の blocking copy とする。H2D 非同期化は未実装で、将来の
+opt-in 最適化として残す（下の実測は既定 ON を正当化しなかったが、その測定自体が
+機構の有効性を判定していない — §8.3 の gate を参照）。
 prefix 失敗時は `prefix` に留まるため retry で余分な転送を起こさず、LoRA の
 forward / backward / optimizer / save 中は gen half を GPU に維持する。selector は
 LoRA injection 後の live tree から Parameter と永続 buffer を選び、non-persistent
@@ -631,12 +656,33 @@ GC ON、3 step を OFF / ON の別 process で測定した。
 | train loop wall | 3.278 s | 18.400 s |
 | model load込み wall | 22.759 s | 37.330 s |
 
-ON は peak allocated を 0.50 GiB（2.76%）、reserved を 0.18 GiB（1.01%）下げたが、
-train loop は 5.61 倍遅くなった。両 arm の 3 loss、live / saved LoRA SHA-256、
-882-tensor checkpoint は一致し、fresh runtime の strength 0 parity と 294 apply / restore
-も両方で成立した。64×64 では初期の both-half model load が high-water を支配するため、
-7.55 GiB の退避候補量は end-to-end peak 削減へ直結しない。この測定はより高い解像度の
-効果を示さないため、既定 OFF を維持し、VRAM 制約時だけ opt-in とする。
+**この条件で観測された事実**: ON は peak allocated を 0.50 GiB（2.76%）、reserved を
+0.18 GiB（1.01%）下げ、train loop は 5.61 倍遅くなった。両 arm の 3 loss、
+live / saved LoRA SHA-256、882-tensor checkpoint は一致し、fresh runtime の strength 0
+parity と 294 apply / restore も両方で成立した（correctness は OFF / ON で同一）。
+64×64 ではモデルロード時に両 half が同時に載る初期 high-water が peak を支配するため、
+この shape では 7.55 GiB の退避候補量が end-to-end peak の削減へ直結しない。
+
+**運用判断（現行）**: 既定 OFF を維持し、VRAM 制約時のみ opt-in とする。根拠は
+非対称性ひとつである — ON のコスト（測定した shape での 5.61 倍）は観測されているのに
+対し、ON の便益はまだどの shape でも観測されていない。既定 OFF なら、未測定の解像度帯
+でユーザが観測済みのコストだけを踏むことはない。これは「機構が無効だ」という判断では
+ない（下の gate を参照）。
+
+**未解決の gate**: この測定は機構そのものの有効性を判定していない。64×64 は退避候補量
+7.55 GiB に対して活性化・活動集合が小さすぎ、初期 high-water が支配する shape であって、
+half-eviction が効くと想定した領域（activation が支配的になる高解像度・長 prefix）を
+一切踏んでいない。したがって「half-eviction は VRAM をほとんど下げない」も
+「5.61 倍の減速は本質的コストである」も、この測定からは結論できない。exit を主張する
+なら、activation が支配する解像度で同一 checkpoint / seed / GC 条件の OFF / ON を
+別 process で取り直す必要がある。
+
+**減速の数値は再測定が必要**: 上の ON arm は `sensenova_phase_eviction.py` の
+staging 実装、すなわち host 側で `.to("cpu")`（pageable）→ `pin_memory()` の
+二重コピーを毎 transfer 行っていた版に対する測定である。この staging 実装は並行作業で
+変更されつつあるため、5.61 倍という比は現行実装の値ではない。二重コピーが減速の
+支配要因だったかどうかは**未測定であり、断定しない** — blocking copy であること、
+転送量が phase 境界あたり 7.55 GiB であること自体も候補として残る。
 
 ### 8.4 half-eviction 再利用時の注意
 
@@ -707,7 +753,7 @@ arch 非依存で、`blocks_to_swap` / `num_optimizer_groups` / `optimizer_type`
 ### その他
 
 - **DONE:** `model_loader.detect_prediction_config` の flow / velocity 分類と退行テスト。
-- **DONE:** `train_runner.py` の bf16 強制、B1・plain-int8・no-reference・no-block-swap
+- **DONE:** `train_runner.py` の bf16 強制、B1・単一 flavour int8 base・no-reference・no-block-swap
   preflight、on-the-fly prefix/pixel 経路。
 - **DONE:** training-method capability による full FT / ReLoRA / ControlNet の UI と
   backend refusal。SenseNova は VAE を持たないが、明示 VAE path/store の decoder
@@ -740,6 +786,8 @@ cache namespace と alignment は登録だけで有効になった。
 | batch > 1 の ragged prefix | ref 有無だけでは caption/ref token 長が揃わず、gen flash attention に padding mask が無い | 初版は物理 batch 1。effective batch は gradient accumulation |
 | `noise_scale` の再現漏れ | bucket ごとに変わる値をモデルにも渡す必要がある | §4.4。学習 step の必須要素として扱う |
 | `Int8Linear` の isinstance 罠 | `nn.Linear` サブクラスでないため 294 件を黙って取りこぼす | 既存の共有述語を使う（§5.4） |
+| base census の isinstance 罠（別方向） | `ConvRotInt8Linear` は `Int8Linear` の subclass なので、`isinstance` census は ConvRot を plain の数に畳み込み mixed base を黙って受理する | `type(m) is cls` で数える（§5.3、`0c9ea86b`） |
+| ConvRot base の train / inference skew | 学習は dequant 経路（W-int8 / A-bf16）に fit するが、推論は常に fused W8A8。fit 先とデプロイ先が activation 量子化誤差の分だけ異なる。**実害は未測定** | 既知制約として §5.3 に記録。skew を避けるなら plain int8 base を選ぶ |
 | 正規化の取り違え | reference は ImageNet、target は 0.5/0.5 | §4.6, §7.4 |
 | prediction config の退行 | 既存の flow-matching 登録を学習統合時に外すと静かに誤る | §9 の退行テストで固定 |
 | half-eviction の層選択 | Parameter ベースの規則は 2 度不活性のまま出荷された | 判別子ごと再利用する（§8.4） |
@@ -808,11 +856,14 @@ model resident allocated は 17.59 GiB、prefix の live allocated 増分は 50.
 - checkpoint 保存形式: 推論側 loader が読む `neo_hf_lora` 方言との round-trip を実装済み
   （`LoRATrainer.load_checkpoint` は arch 非依存で
   `{lora_name}.lora_down.weight` / `.lora_up.weight` を読む）。
-- **DONE:** 上記の arch/ops/adapter、294-target plain-int8 gate、checkpoint-safe
+- **DONE:** 上記の arch/ops/adapter、294-target と単一 flavour int8 base の gate
+  （plain / ConvRot、`0c9ea86b`）、checkpoint-safe
   2-pass core、trainer/runner integration、prediction/defaults、保存と runtime round-trip。
 - **DONE:** MoT half-eviction の学習側再利用（opt-in）。
-- **DONE:** §8.3 の OFF / ON 別 process 計測。64×64 では 0.50 GiB 削減に対して
-  train loop が 5.61 倍遅くなるため、既定 OFF を維持する。
+- **DONE:** §8.3 の OFF / ON 別 process 計測（64×64、0.50 GiB 削減 / train loop 5.61 倍）。
+  既定 OFF を維持する運用判断もそこに記す。この shape は機構の有効性そのものを
+  判定していない未解決の gate であり、減速比は変更中の staging 実装に対する値である
+  （§8.3）。
 - **DONE exit criteria:** real trainer の 3-step smoke で有限 loss、保存した LoRA が推論側の
   runtime LoRA としてそのままロードでき、strength 0 で base 出力と一致すること。
 
@@ -895,8 +946,12 @@ trainer arm の JSON には `phase_eviction`、`wall_time_s`（`train()` のみ�
   （永続 fp32 master は選択肢に含めない。棄却済み。）
 - **`optimizer: adamw` を SenseNova full FT で拒否するか。** per-parameter seam が
   無く stochastic rounding をかけられない唯一の optimizer である。
-- **ConvRot checkpoint を学習対象に含めるか。** grad 下では `_dequant_forward` に
-  落ちるので成立はするが、plain int8 とは経路が違う（§5.3）。
+- ~~**ConvRot checkpoint を学習対象に含めるか。**~~ **解決済み（`0c9ea86b`）: 含める。**
+  受理条件は 588 Linear が単一 flavour で `Int8Linear` か `ConvRotInt8Linear`（§5.3）。
+  代わりに**新しい未測定事項**が残る: **ConvRot での学習は dequant 経路
+  （W-int8 / A-bf16）に fit するが、推論は常に fused W8A8 を走らせる**という
+  train / inference skew の実害。ConvRot 学習 LoRA を fused 推論カーネル下で A/B した
+  例が無い。plain int8 にこの skew は無い（§5.3）。
 - **dequant-from-int8 起点の full FT が実測で劣るか。** 誰も測っていない。
   upstream ソースが入手できない場合の fallback の妥当性がこれに掛かる。
 - **凍結 und での reference 忠実度が十分か。** §7.2 判断 3 の経験的前提。

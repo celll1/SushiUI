@@ -104,11 +104,6 @@ export default function UpscalePanel({ onTabChange, onImageGenerated }: UpscaleP
 
   const [sendImage, setSendImage] = useState(true);
 
-  const isGeneratingRef = useRef(isGenerating);
-  useEffect(() => {
-    isGeneratingRef.current = isGenerating;
-  }, [isGenerating]);
-
   // Progress arrives via the queue context's own global WebSocket subscription
   // (progressSnapshot), which keeps running while this panel is unmounted.
 
@@ -389,11 +384,9 @@ export default function UpscalePanel({ onTabChange, onImageGenerated }: UpscaleP
 
   useEffect(() => {
     if (!currentItem || currentItem.type !== "upscale") {
-      isGeneratingRef.current = false;
       setIsGenerating(false);
       return;
     }
-    isGeneratingRef.current = true;
     setIsGenerating(true);
     if (clearedForItemRef.current !== currentItem.id) {
       clearedForItemRef.current = currentItem.id;

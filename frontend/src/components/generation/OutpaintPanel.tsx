@@ -42,14 +42,7 @@ import {
   getSamplers,
   getScheduleTypes,
   getControlNets,
-  generateOutpaint,
-  generateOutpaintVideo,
-  generateOutpaintAudio,
   cancelGeneration,
-  getResultFilename,
-  getResultPlaybackFilename,
-  getResultSeed,
-  getResultAncestralSeed,
   OutpaintParams as ApiOutpaintParams,
   OutpaintVideoParams,
   OutpaintAudioParams,
@@ -66,7 +59,6 @@ import {
   videoCanvasAxisBounds,
   videoMinInferenceSteps,
   videoCanvasExceedsEnvelope,
-  isGenerationStalledError,
   archSupportsFeature,
   snapUpValidVideoFrameCount,
   VIDEO_BLOCK_SWAP_MAX,
@@ -74,7 +66,6 @@ import {
 import { createH3ReferenceInventory, maybeTransformH3PromptForGeneration } from "@/utils/h3PromptAssist";
 import { resolveBound } from "@/utils/paramBounds";
 import { readGlobalAttentionType } from "@/utils/attentionSettings";
-import { wsClient, CFGMetrics } from "@/utils/websocket";
 import { saveTempImage, loadTempImage, deleteTempImageRef } from "@/utils/tempImageStorage";
 import {
   deleteMediaInput,
@@ -87,7 +78,7 @@ import { previewStorageKeys, loadVideoPreview, saveVideoPreview, playbackUrlOf, 
 import { sendToPanel, sendImageToImg2Img, sendImageToInpaint, sendImageToUpscale, fetchUrlToFile, sendVideoToOutpaint, sendVideoToInpaint, sendVideoToReference, sendAudioToOutpaint, sendAudioToImg2Img } from "@/utils/sendHelpers";
 import { fixFloatingPointParams } from "@/utils/numberUtils";
 import { useStartup } from "@/contexts/StartupContext";
-import { useGenerationQueue } from "@/contexts/GenerationQueueContext";
+import { QueueItem, useGenerationQueue } from "@/contexts/GenerationQueueContext";
 import SendToStudioButton from "../studio/SendToStudioButton";
 
 // Extends the image OutpaintParams with the video (outpaint_vid, LTX-2.3)
@@ -510,6 +501,16 @@ const PREVIEW_STORAGE_KEY = "outpaint_preview";
 const PREVIEW_KEYS = previewStorageKeys(PREVIEW_STORAGE_KEY);
 const INPUT_IMAGE_STORAGE_KEY = "outpaint_input_image";
 
+// Progress-bar denominator to show until the first WebSocket tick arrives.
+// MiniMax Music 3 carries per-chunk `num_inference_steps` where ACE-Step
+// carries per-song `inference_steps`; only one is ever set on an item.
+function dispatchTotalSteps(item: QueueItem): number {
+  const p = item.params as any;
+  if (item.type === "outpaint_vid") return p.num_inference_steps || 8;
+  if (item.type === "outpaint_aud") return p.num_inference_steps || p.inference_steps || 8;
+  return Math.ceil((p.steps || 20) * (p.denoising_strength ?? 1.0));
+}
+
 interface OutpaintPanelProps {
   // opts.kind/playbackUrl let the shared top-right strip (FloatingGallery)
   // render video/audio results correctly instead of guessing from the URL
@@ -519,7 +520,7 @@ interface OutpaintPanelProps {
 }
 
 export default function OutpaintPanel({ onTabChange, onImageGenerated }: OutpaintPanelProps = {}) {
-  const { isBackendReady, modelLoaded, modelInfo, generationDefaults, isVideo, isAudio, archCapabilities, resolveModality, refreshModelInfo, sliderBounds } = useStartup();
+  const { isBackendReady, modelInfo, generationDefaults, isVideo, isAudio, archCapabilities, resolveModality, refreshModelInfo, sliderBounds } = useStartup();
   const [params, setParams] = useState<OutpaintPanelParams>(DEFAULT_PARAMS);
   const [generatedImageParams, setGeneratedImageParams] = useState<OutpaintPanelParams | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
@@ -671,11 +672,6 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
   const placementInitPendingRef = useRef(false);
   const preserveVideoSettingsRef = useRef(false);
 
-  const isGeneratingRef = useRef(isGenerating);
-  useEffect(() => {
-    isGeneratingRef.current = isGenerating;
-  }, [isGenerating]);
-
   // Revoke the uploaded clip's object URL on unmount / replacement to avoid
   // leaking blob URLs (createObjectURL persists until explicitly revoked).
   useEffect(() => {
@@ -696,25 +692,8 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [audioPreviewUrl]);
 
-  const handleProgress = useCallback((step: number, total: number, message: string, preview?: string, _metrics?: CFGMetrics, subProgress?: number) => {
-    if (isGeneratingRef.current) {
-      setProgress(step);
-      setTotalSteps(total);
-      setProgressMessage(message || "");
-      reportSubProgress(step, subProgress);
-      if (preview) {
-        setPreviewImage(preview);
-      }
-    }
-  }, [reportSubProgress]);
-
-  useEffect(() => {
-    wsClient.connect();
-    wsClient.subscribe(handleProgress);
-    return () => {
-      wsClient.unsubscribe(handleProgress);
-    };
-  }, [handleProgress]);
+  // Progress arrives via the queue context's own global WebSocket subscription
+  // (progressSnapshot), which keeps running while this panel is unmounted.
 
   // Initial load from localStorage
   useEffect(() => {
@@ -1933,16 +1912,36 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
     if (onTabChange) onTabChange("img2img");
   };
 
-  const { addToQueue, startNextInQueue, completeCurrentItem, failCurrentItem, currentItem, queue, progressSnapshot, completedResults, publishCompletedResult } = useGenerationQueue();
+  const { addToQueue, currentItem, progressSnapshot, completedResults } = useGenerationQueue();
+
+  const clearedForItemRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (!currentItem || !["outpaint", "outpaint_vid", "outpaint_aud"].includes(currentItem.type)) {
-      isGeneratingRef.current = false;
       setIsGenerating(false);
       return;
     }
-    isGeneratingRef.current = true;
     setIsGenerating(true);
+    // A run supersedes whatever is on screen; do it once per item rather than
+    // on every progress tick.
+    if (clearedForItemRef.current !== currentItem.id) {
+      clearedForItemRef.current = currentItem.id;
+      setProgress(0);
+      setProgressMessage("");
+      setPreviewImage(null);
+      setTotalSteps(dispatchTotalSteps(currentItem));
+      setGeneratedImage(null);
+      setGeneratedImageWarnings([]);
+      setGeneratedVideo(null);
+      setGeneratedVideoPlaybackUrl(null);
+      setGeneratedVideoInfo(null);
+      setGeneratedVideoSeed(null);
+      setGeneratedVideoWarnings([]);
+      setGeneratedAudio(null);
+      setGeneratedAudioInfo(null);
+      setGeneratedAudioSeed(null);
+      setGeneratedAudioWarnings([]);
+    }
     if (progressSnapshot?.itemId !== currentItem.id) return;
     setProgress(progressSnapshot.step);
     setTotalSteps(progressSnapshot.totalSteps);
@@ -1960,6 +1959,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
       setGeneratedImageSeed(result.seed ?? null);
       setGeneratedImageAncestralSeed(result.ancestralSeed ?? null);
       setGeneratedImageParams(result.params as OutpaintPanelParams);
+      setGeneratedImageWarnings(result.warnings ?? []);
       setGeneratedVideo(null);
       setGeneratedAudio(null);
     } else if (result.kind === "video") {
@@ -1968,6 +1968,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
       setGeneratedVideoInfo(result.info as typeof generatedVideoInfo);
       setGeneratedVideoSeed(result.seed ?? null);
       setGeneratedVideoParams(result.params as OutpaintPanelParams);
+      setGeneratedVideoWarnings(result.warnings ?? []);
       setGeneratedImage(null);
       setGeneratedAudio(null);
     } else {
@@ -1975,6 +1976,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
       setGeneratedAudioInfo(result.info as typeof generatedAudioInfo);
       setGeneratedAudioSeed(result.seed ?? null);
       setGeneratedAudioParams(result.params as OutpaintPanelParams);
+      setGeneratedAudioWarnings(result.warnings ?? []);
       setGeneratedImage(null);
       setGeneratedVideo(null);
     }
@@ -2102,6 +2104,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
       };
       addToQueue({
         type: "outpaint_vid",
+        panel: "outpaint",
         params: videoParams as any,
         inputVideo: videoFile,
         // Bridge placement only; undefined otherwise, and the backend refuses
@@ -2169,6 +2172,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
       };
       addToQueue({
         type: "outpaint_aud",
+        panel: "outpaint",
         params: audioParams as any,
         inputAudio: audioFile,
         prompt: processedPrompt,
@@ -2186,6 +2190,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
     // merged txt2img/img2img panels. No stepParams / loop group wiring here.
     addToQueue({
       type: "outpaint",
+      panel: "outpaint",
       params: {
         ...params,
         prompt: processedPrompt,
@@ -2202,253 +2207,6 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
       prompt: processedPrompt,
     });
   };
-
-  const processQueueRef = useRef<() => Promise<void>>();
-
-  const processQueue = useCallback(async () => {
-    if (isGeneratingRef.current) return;
-
-    const nextItem = startNextInQueue(["outpaint", "outpaint_vid", "outpaint_aud"]);
-    if (!nextItem || (nextItem.type !== "outpaint" && nextItem.type !== "outpaint_vid" && nextItem.type !== "outpaint_aud")) return;
-
-    // Video branch: outpaint_vid item (LTX-2.3). The queued input clip is a
-    // File (see inputVideo on QueueItem). Produces an .mp4 and renders a
-    // <video> instead of an <img>. No loop-generation handling.
-    if (nextItem.type === "outpaint_vid") {
-      isGeneratingRef.current = true;
-      setIsGenerating(true);
-      setProgress(0);
-      setProgressMessage("");
-      setTotalSteps((nextItem.params as OutpaintVideoParams).num_inference_steps || 8);
-      setPreviewImage(null);
-      setGeneratedImage(null);
-      setGeneratedVideo(null);
-      setGeneratedVideoPlaybackUrl(null);
-      setGeneratedVideoInfo(null);
-      setGeneratedVideoSeed(null);
-      setGeneratedVideoWarnings([]);
-      setGeneratedAudio(null);
-      setGeneratedAudioInfo(null);
-      setGeneratedAudioSeed(null);
-      try {
-        const clip = nextItem.inputVideo;
-        if (!clip) {
-          throw new Error("No input video available for video outpaint generation");
-        }
-        const result = await generateOutpaintVideo(
-          nextItem.params as OutpaintVideoParams, clip, nextItem.bridgeVideo, nextItem.referenceImages);
-        const videoUrl = `/outputs/${getResultFilename(result)}`;
-        const videoPlaybackUrl = `/outputs/${getResultPlaybackFilename(result)}`;
-        const playbackUrl = videoPlaybackUrl !== videoUrl ? videoPlaybackUrl : undefined;
-        const videoSeed = getResultSeed(result);
-        const videoInfo = { num_frames: result.image?.num_frames, fps: result.image?.fps, duration: result.image?.duration };
-        const videoWarnings = (result.warnings || [])
-          .map((w: any) => (typeof w === "string" ? w : w?.message))
-          .filter(Boolean);
-        setGeneratedVideo(videoUrl);
-        setGeneratedVideoPlaybackUrl(playbackUrl || null);
-        setGeneratedVideoSeed(videoSeed);
-        setGeneratedVideoParams(nextItem.params as OutpaintPanelParams);
-        setGeneratedVideoInfo(videoInfo);
-        setGeneratedVideoWarnings(videoWarnings);
-        publishCompletedResult({ panel: "outpaint", kind: "video", url: videoUrl, playbackUrl, info: videoInfo, seed: videoSeed, params: nextItem.params });
-        if (onImageGenerated) onImageGenerated(videoUrl, { kind: "video", playbackUrl });
-        isGeneratingRef.current = false;
-        setIsGenerating(false);
-        setProgress(0);
-        setProgressMessage("");
-        completeCurrentItem();
-        setTimeout(() => {
-          if (processQueueRef.current) processQueueRef.current();
-        }, 100);
-      } catch (error: any) {
-        console.error("[Outpaint] Video generation failed:", error);
-        // alert() blocks the JS thread; reset state and requeue before showing
-        // it, otherwise the queue effect sees a stale isGenerating until the
-        // dialog closes.
-        isGeneratingRef.current = false;
-        setIsGenerating(false);
-        setProgress(0);
-        setProgressMessage("");
-        failCurrentItem();
-        setTimeout(() => {
-          if (processQueueRef.current) processQueueRef.current();
-        }, 100);
-        alert(isGenerationStalledError(error)
-          ? error.message
-          : `Video outpaint generation failed: ${error?.response?.data?.detail || error?.message || "Unknown error"}`);
-      }
-      return;
-    }
-
-    // Audio branch: outpaint_aud item (ACE-Step 1.5 extend). The queued
-    // input clip is a File (see inputAudio on QueueItem). Produces a .flac
-    // and renders an <audio> instead of an <img>. No loop-generation handling.
-    if (nextItem.type === "outpaint_aud") {
-      isGeneratingRef.current = true;
-      setIsGenerating(true);
-      setProgress(0);
-      setProgressMessage("");
-      // MiniMax Music 3 items carry `num_inference_steps` (per-chunk flow
-      // steps, distinct from ACE-Step's per-song `inference_steps`); either
-      // field name works here since only one is ever set per item, mirroring
-      // Txt2ImgPanel's identical txt2aud dispatch.
-      setTotalSteps((nextItem.params as OutpaintAudioParams).num_inference_steps
-        || (nextItem.params as OutpaintAudioParams).inference_steps || 8);
-      setPreviewImage(null);
-      setGeneratedImage(null);
-      // An audio run supersedes any image/video result still on screen; the
-      // stored preview is only replaced once this run actually succeeds.
-      setGeneratedAudio(null);
-      setGeneratedAudioInfo(null);
-      setGeneratedAudioSeed(null);
-      setGeneratedAudioWarnings([]);
-      setGeneratedVideo(null);
-      setGeneratedVideoPlaybackUrl(null);
-      setGeneratedVideoInfo(null);
-      setGeneratedVideoSeed(null);
-      try {
-        const referenceAudio = nextItem.inputAudio;
-        if (!referenceAudio) {
-          throw new Error("No reference audio available for audio outpaint generation");
-        }
-        const result = await generateOutpaintAudio(nextItem.params as OutpaintAudioParams, referenceAudio);
-        const audioUrl = `/outputs/${result.image.filename}`;
-        const audioSeed = getResultSeed(result);
-        const audioInfo = { duration: result.image?.duration, sample_rate: result.image?.sample_rate };
-        const audioWarnings = (result.warnings || [])
-          .map((w: any) => (typeof w === "string" ? w : w?.message))
-          .filter(Boolean);
-        setGeneratedAudio(audioUrl);
-        setGeneratedAudioSeed(audioSeed);
-        setGeneratedAudioParams(nextItem.params as OutpaintPanelParams);
-        setGeneratedAudioInfo(audioInfo);
-        setGeneratedAudioWarnings(audioWarnings);
-        publishCompletedResult({ panel: "outpaint", kind: "audio", url: audioUrl, info: audioInfo, seed: audioSeed, params: nextItem.params });
-        if (onImageGenerated) onImageGenerated(audioUrl, { kind: "audio" });
-        isGeneratingRef.current = false;
-        setIsGenerating(false);
-        setProgress(0);
-        setProgressMessage("");
-        completeCurrentItem();
-        setTimeout(() => {
-          if (processQueueRef.current) processQueueRef.current();
-        }, 100);
-      } catch (error: any) {
-        console.error("[Outpaint] Audio generation failed:", error);
-        isGeneratingRef.current = false;
-        setIsGenerating(false);
-        setProgress(0);
-        setProgressMessage("");
-        failCurrentItem();
-        setTimeout(() => {
-          if (processQueueRef.current) processQueueRef.current();
-        }, 100);
-        alert(isGenerationStalledError(error)
-          ? error.message
-          : `Audio outpaint generation failed: ${error?.response?.data?.detail || error?.message || "Unknown error"}`);
-      }
-      return;
-    }
-
-    isGeneratingRef.current = true;
-    setIsGenerating(true);
-    setProgress(0);
-    setProgressMessage("");
-    const denoisingStrength = (nextItem.params as ApiOutpaintParams).denoising_strength ?? 1.0;
-    const actualSteps = Math.ceil(((nextItem.params as ApiOutpaintParams).steps || 20) * denoisingStrength);
-    setTotalSteps(actualSteps);
-    setPreviewImage(null);
-    setGeneratedImage(null);
-    // An image run supersedes any video/audio result still on screen. The
-    // stored previews are left alone until the image actually succeeds (see the
-    // save effects), so a failed run does not throw away the last good result.
-    setGeneratedVideo(null);
-    setGeneratedVideoPlaybackUrl(null);
-    setGeneratedVideoInfo(null);
-    setGeneratedVideoSeed(null);
-    setGeneratedAudio(null);
-    setGeneratedAudioInfo(null);
-    setGeneratedAudioSeed(null);
-    setGeneratedImageWarnings([]);
-
-    try {
-      const itemParams = nextItem.params as ApiOutpaintParams;
-      const result = await generateOutpaint(itemParams, nextItem.inputImage!);
-      const imageUrl = result.success ? `/outputs/${getResultFilename(result)}` : "";
-
-      if (result.success) {
-        const resultSeed = getResultSeed(result);
-        const resultAncestralSeed = getResultAncestralSeed(result);
-        setGeneratedImage(imageUrl);
-        setGeneratedImageSeed(resultSeed);
-        setGeneratedImageAncestralSeed(resultAncestralSeed);
-        setGeneratedImageWarnings(
-          (result.warnings || []).map((w: any) => (typeof w === "string" ? w : w?.message)).filter(Boolean));
-        setPreviewImage(null);
-        const completedParams: OutpaintPanelParams = {
-          ...itemParams,
-          seed: resultSeed,
-          ancestral_seed: resultAncestralSeed ?? -1,
-        };
-        setGeneratedImageParams(completedParams);
-        publishCompletedResult({
-          panel: "outpaint",
-          kind: "image",
-          url: imageUrl,
-          seed: resultSeed,
-          ancestralSeed: resultAncestralSeed,
-          params: completedParams,
-        });
-
-        if (onImageGenerated) {
-          onImageGenerated(imageUrl, { kind: "image" });
-        }
-        if (isMounted) {
-          saveImagePreview(PREVIEW_KEYS, imageUrl);
-        }
-
-        isGeneratingRef.current = false;
-        setIsGenerating(false);
-        setProgress(0);
-        completeCurrentItem();
-      } else {
-        throw new Error("Outpaint generation did not succeed");
-      }
-
-      setTimeout(() => {
-        if (processQueueRef.current) processQueueRef.current();
-      }, 100);
-    } catch (error: any) {
-      console.error("[Outpaint] Generation failed:", error);
-      isGeneratingRef.current = false;
-      setIsGenerating(false);
-      setProgress(0);
-      failCurrentItem();
-
-      setTimeout(() => {
-        if (processQueueRef.current) processQueueRef.current();
-      }, 100);
-      alert(isGenerationStalledError(error)
-        ? error.message
-        : `Outpaint generation failed: ${error?.response?.data?.detail || error?.message || "Unknown error"}`);
-    }
-  }, [isGenerating, startNextInQueue, completeCurrentItem, failCurrentItem, isMounted, onImageGenerated, publishCompletedResult]);
-
-  processQueueRef.current = processQueue;
-
-  useEffect(() => {
-    const hasPendingItems = queue.some(item => item.status === "pending" && (item.type === "outpaint" || item.type === "outpaint_vid" || item.type === "outpaint_aud"));
-    const isCurrentItemNull = currentItem === null;
-    // A queue survives a page reload and a backend restart, so on mount there
-    // can be pending items with no model loaded yet. Dispatching then earns an
-    // immediate 400 and the item is marked failed for a reason that has nothing
-    // to do with the item. Hold instead: `modelLoaded` is a dependency, so the
-    // queue starts by itself once a model is up.
-    if (hasPendingItems && isCurrentItemNull && !isGenerating && modelLoaded) {
-      processQueue();
-    }
-  }, [queue, currentItem, isGenerating, processQueue, modelLoaded]);
 
   const placementParams: OutpaintPlacementParams = {
     canvas_width: params.canvas_width ?? 1536,

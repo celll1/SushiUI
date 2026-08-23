@@ -556,14 +556,10 @@ function dispatchTotalSteps(item: QueueItem): number {
 }
 
 interface Img2ImgPanelProps {
-  // opts.kind/playbackUrl let the shared top-right strip (FloatingGallery)
-  // render video/audio results correctly instead of guessing from the URL
-  // extension and falling back to a non-playable master URL.
-  onImageGenerated?: (imageUrl: string, opts?: { kind?: "image" | "video" | "audio"; playbackUrl?: string }) => void;
   onTabChange?: (tab: "txt2img" | "img2img" | "inpaint" | "outpaint" | "upscale") => void;
 }
 
-export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgPanelProps = {}) {
+export default function Img2ImgPanel({ onTabChange }: Img2ImgPanelProps = {}) {
   const { modelInfo, isBackendReady, generationDefaults, isVideo, isAudio, archCapabilities, resolveModality, videoFrameSliderMax, sliderBounds } = useStartup();
   const [params, setParams] = useState<Img2ImgParams>(DEFAULT_PARAMS);
   const [isGenerating, setIsGenerating] = useState(false);

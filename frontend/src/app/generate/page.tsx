@@ -59,9 +59,8 @@ function GeneratePageContent() {
     setGenerateForever(false);
   }, [activeTab, setGenerateForever]);
 
-  // Results produced by the global queue processor. Panels that still dispatch
-  // their own types keep using the onImageGenerated prop below until they are
-  // migrated; the two sources never carry the same result.
+  // Every generation result, from the global queue processor -- the panels no
+  // longer dispatch, so this is the only source.
   useEffect(() => {
     const fresh = resultFeed.filter((entry) => entry.id > lastFeedIdRef.current);
     if (fresh.length === 0) return;
@@ -76,16 +75,6 @@ function GeneratePageContent() {
       })),
     ]);
   }, [resultFeed]);
-
-  const handleImageGenerated = (
-    imageUrl: string,
-    opts?: { kind?: "image" | "video" | "audio"; playbackUrl?: string }
-  ) => {
-    setGalleryImages(prev => [
-      ...prev,
-      { url: imageUrl, timestamp: Date.now(), kind: opts?.kind, playbackUrl: opts?.playbackUrl },
-    ]);
-  };
 
   return (
     <div className="app-shell">
@@ -154,11 +143,11 @@ function GeneratePageContent() {
 
         {/* Tab Content */}
         <div className="app-content flex-1 overflow-auto">
-          {activeTab === "txt2img" && <Txt2ImgPanel onTabChange={setActiveTab} onImageGenerated={handleImageGenerated} />}
-          {activeTab === "img2img" && <Img2ImgPanel onTabChange={setActiveTab} onImageGenerated={handleImageGenerated} />}
-          {activeTab === "inpaint" && <InpaintPanel onTabChange={setActiveTab} onImageGenerated={handleImageGenerated} />}
-          {activeTab === "outpaint" && <OutpaintPanel onTabChange={setActiveTab} onImageGenerated={handleImageGenerated} />}
-          {activeTab === "upscale" && <UpscalePanel onTabChange={setActiveTab} onImageGenerated={handleImageGenerated} />}
+          {activeTab === "txt2img" && <Txt2ImgPanel onTabChange={setActiveTab} />}
+          {activeTab === "img2img" && <Img2ImgPanel onTabChange={setActiveTab} />}
+          {activeTab === "inpaint" && <InpaintPanel onTabChange={setActiveTab} />}
+          {activeTab === "outpaint" && <OutpaintPanel onTabChange={setActiveTab} />}
+          {activeTab === "upscale" && <UpscalePanel onTabChange={setActiveTab} />}
         </div>
       </main>
 

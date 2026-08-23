@@ -9,8 +9,8 @@
 // this feature bypassed the queue (awaiting each segment directly inside the
 // panel), which meant the queue's own serialization gate
 // (`startNextInQueue`'s `currentItemValue?.status === "generating"` check)
-// never saw the chain running: switching tabs mid-chain let the OTHER panel's
-// processQueue dispatch a second, fully concurrent generation, with nothing
+// never saw the chain running: switching tabs mid-chain let the other panel's
+// dispatch loop start a second, fully concurrent generation, with nothing
 // on the backend to stop it (gpu_coordinator's generation_slot is refcounted,
 // not exclusive; pipeline_manager has no generation lock). Putting the chain
 // on the queue closes that gap for free -- it is the same lock every other
@@ -19,13 +19,11 @@
 // correct group cancellation (cancelLoopGroup), none of which the bypassed
 // version had.
 //
-// `chain_vid` is claimed by Txt2ImgPanel and Img2ImgPanel only -- the two
-// panels that can ever enqueue it (mirrors how `img2img`/`ref2vid` are
-// claimed by exactly the panels that can produce THOSE types, not every
-// panel). A chain survives switching between Txt2Img and Img2Img while it
-// runs, the same as any other loop group; it does not survive switching to
-// Outpaint/Inpaint/Upscale, which have no video-chain entry point and would
-// gain a third dispatch branch for a type they can never enqueue.
+// `chain_vid` is enqueued by Txt2ImgPanel and Img2ImgPanel, and dispatched --
+// like every other type -- by the always-mounted GenerationQueueProcessor, so
+// a chain runs to completion whatever tab the user is on, or none. The
+// enqueuing panel is recorded on the item (`QueueItem.panel`), because that,
+// not the type, is what decides whose display the segments feed.
 //
 // All N segments are enqueued UP FRONT as a loop group (main item at
 // `loopStepIndex: -1`, continuations at `0..N-2`), rather than one at a time

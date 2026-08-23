@@ -69,15 +69,10 @@ const PREVIEW_STORAGE_KEY = "upscale_preview";
 const PREVIEW_KEYS = previewStorageKeys(PREVIEW_STORAGE_KEY);
 
 interface UpscalePanelProps {
-  // opts.kind/playbackUrl let the shared top-right strip (FloatingGallery)
-  // render video/audio results correctly instead of guessing from the URL
-  // extension and falling back to a non-playable master URL. Upscale results
-  // are always images, but the signature matches every other panel's.
-  onImageGenerated?: (imageUrl: string, opts?: { kind?: "image" | "video" | "audio"; playbackUrl?: string }) => void;
   onTabChange?: (tab: "txt2img" | "img2img" | "inpaint" | "outpaint" | "upscale") => void;
 }
 
-export default function UpscalePanel({ onTabChange, onImageGenerated }: UpscalePanelProps = {}) {
+export default function UpscalePanel({ onTabChange }: UpscalePanelProps = {}) {
   const { isBackendReady, generationDefaults, modelInfo, archCapabilities, sliderBounds } = useStartup();
   const [params, setParams] = useState<UpscaleParams>(DEFAULT_PARAMS);
   const [isMounted, setIsMounted] = useState(false);

@@ -237,13 +237,11 @@ interface GenerationQueueContextType {
   lastFailure: GenerationFailureSnapshot | null;
   publishFailure: (failure: Omit<GenerationFailureSnapshot, "revision">) => void;
   // Video-chain drift pause (videoChain.ts design §4.1). Held HERE, not in the
-  // panel that observed it: `chain_vid` is claimed by both Txt2Img and Img2Img,
-  // which are mounted exclusively per tab, so panel-local pause state would be
-  // destroyed (dialog and already-fetched clip with it) by a tab switch while
-  // the queue kept the unpatched item pending. Living on the queue also lets
-  // `startNextInQueue` refuse to dispatch the paused group, which is the only
-  // place that refusal actually holds -- suppressing one panel's explicit
-  // `processQueue()` call does not, because the auto-start effect re-enters it.
+  // panel that raised it: panels are mounted exclusively per tab, so a
+  // panel-local pause would be destroyed (dialog and already-fetched clip with
+  // it) by a tab switch while the queue kept the unpatched item pending.
+  // `startNextInQueue` refusing to dispatch the paused group is what actually
+  // holds the chain; the processor's auto-start effect only mirrors it.
   chainPause: ChainDriftPause | null;
   pauseChain: (pause: ChainDriftPause) => void;
   clearChainPause: () => void;

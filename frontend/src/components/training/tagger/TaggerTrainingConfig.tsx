@@ -641,7 +641,7 @@ export default function TaggerTrainingConfig({
                 <div>
                   <label className="block text-xs text-gray-400 mb-1">|LR| threshold</label>
                   <NumberInput
-                    step={0.1}
+                    step="any"
                     min={0}
                     parse="float"
                     value={config.lr_threshold ?? 1.0}
@@ -743,7 +743,7 @@ export default function TaggerTrainingConfig({
             <div>
               <label className="block text-xs text-gray-400 mb-1">Learning Rate</label>
               <NumberInput
-                step={1e-5}
+                step="any"
                 min={0}
                 max={1}
                 parse="float"
@@ -756,7 +756,7 @@ export default function TaggerTrainingConfig({
             <div>
               <label className="block text-xs text-gray-400 mb-1">Head LR Multiplier</label>
               <NumberInput
-                step={0.5}
+                step="any"
                 min={0}
                 max={100}
                 parse="float"
@@ -997,7 +997,7 @@ export default function TaggerTrainingConfig({
               <NumberInput
                 min={0}
                 max={1}
-                step={0.01}
+                step="any"
                 parse="float"
                 value={config.train_f1_initial_threshold ?? 0.35}
                 defaultValue={0.35}
@@ -1076,7 +1076,7 @@ export default function TaggerTrainingConfig({
               <div>
                 <label className="block text-xs text-gray-400 mb-1">gamma_neg</label>
                 <NumberInput
-                  step={0.5}
+                  step="any"
                   min={0}
                   max={10}
                   parse="float"
@@ -1089,7 +1089,7 @@ export default function TaggerTrainingConfig({
               <div>
                 <label className="block text-xs text-gray-400 mb-1">gamma_pos</label>
                 <NumberInput
-                  step={0.5}
+                  step="any"
                   min={0}
                   max={10}
                   parse="float"
@@ -1102,7 +1102,7 @@ export default function TaggerTrainingConfig({
               <div>
                 <label className="block text-xs text-gray-400 mb-1">clip</label>
                 <NumberInput
-                  step={0.01}
+                  step="any"
                   min={0}
                   max={0.5}
                   parse="float"
@@ -1126,7 +1126,7 @@ export default function TaggerTrainingConfig({
               <div>
                 <label className="block text-xs text-gray-400 mb-1">gamma0</label>
                 <NumberInput
-                  step={0.5}
+                  step="any"
                   min={0}
                   max={10}
                   parse="float"
@@ -1139,7 +1139,7 @@ export default function TaggerTrainingConfig({
               <div>
                 <label className="block text-xs text-gray-400 mb-1">m0</label>
                 <NumberInput
-                  step={0.05}
+                  step="any"
                   min={0}
                   max={1}
                   parse="float"
@@ -1152,7 +1152,7 @@ export default function TaggerTrainingConfig({
               <div>
                 <label className="block text-xs text-gray-400 mb-1">beta</label>
                 <NumberInput
-                  step={0.5}
+                  step="any"
                   min={0}
                   max={10}
                   parse="float"
@@ -1166,7 +1166,7 @@ export default function TaggerTrainingConfig({
                 <div>
                   <label className="block text-xs text-gray-400 mb-1">rho</label>
                   <NumberInput
-                    step={0.05}
+                    step="any"
                     min={0}
                     max={1}
                     parse="float"
@@ -1180,7 +1180,7 @@ export default function TaggerTrainingConfig({
               <div>
                 <label className="block text-xs text-gray-400 mb-1">clip</label>
                 <NumberInput
-                  step={0.01}
+                  step="any"
                   min={0}
                   max={0.5}
                   parse="float"
@@ -1287,7 +1287,7 @@ export default function TaggerTrainingConfig({
                 <NumberInput
                   min={0.1}
                   max={1.0}
-                  step={0.05}
+                  step="any"
                   parse="float"
                   value={config.danbooru_injection_batch_size_ratio ?? 1.0}
                   defaultValue={1.0}
@@ -1712,7 +1712,7 @@ export default function TaggerTrainingConfig({
                             <div className="flex items-center gap-3">
                               <label className="text-xs text-gray-400 w-48">Active weight</label>
                               <NumberInput
-                                min={0} step={0.05}
+                                min={0} step="any"
                                 parse="float"
                                 value={config.danbooru_query_weight_cooc ?? 0.1}
                                 defaultValue={0.1}
@@ -1773,7 +1773,7 @@ export default function TaggerTrainingConfig({
                     <div className="flex items-center gap-3">
                       <label className="text-xs text-gray-400 w-48">F1 threshold</label>
                       <NumberInput
-                        min={0} max={1} step={0.01}
+                        min={0} max={1} step="any"
                         parse="float"
                         value={config.danbooru_low_f1_threshold ?? 0.5}
                         defaultValue={0.5}
@@ -1785,7 +1785,7 @@ export default function TaggerTrainingConfig({
                     <div className="flex items-center gap-3">
                       <label className="text-xs text-gray-400 w-48">Top-K tags</label>
                       <NumberInput
-                        min={1} step={50}
+                        min={1} step={1}
                         value={config.danbooru_low_f1_top_k ?? 500}
                         defaultValue={500}
                         onCommit={(v) => setField("danbooru_low_f1_top_k", v)}
@@ -1796,7 +1796,7 @@ export default function TaggerTrainingConfig({
                     <div className="flex items-center gap-3">
                       <label className="text-xs text-gray-400 w-48">Min Danbooru posts</label>
                       <NumberInput
-                        min={1} max={200} step={10}
+                        min={1} max={200} step={1}
                         value={config.danbooru_low_f1_min_posts ?? 50}
                         defaultValue={50}
                         onCommit={(v) => setField("danbooru_low_f1_min_posts", v)}
@@ -1848,7 +1848,7 @@ export default function TaggerTrainingConfig({
                     <div className="flex items-center gap-3">
                       <label className="text-xs text-gray-400 w-48">Min deficit ratio</label>
                       <NumberInput
-                        min={0} max={1} step={0.05}
+                        min={0} max={1} step="any"
                         parse="float"
                         value={config.danbooru_train_count_min_deficit_ratio ?? 0.3}
                         defaultValue={0.3}
@@ -1882,7 +1882,7 @@ export default function TaggerTrainingConfig({
                     <div className="flex items-center gap-3">
                       <label className="text-xs text-gray-400 w-48">Min Danbooru posts</label>
                       <NumberInput
-                        min={1} max={200} step={10}
+                        min={1} max={200} step={1}
                         value={config.danbooru_train_count_min_posts ?? 50}
                         defaultValue={50}
                         onCommit={(v) => setField("danbooru_train_count_min_posts", v)}
@@ -1958,7 +1958,7 @@ export default function TaggerTrainingConfig({
                 <div className="flex items-center gap-3">
                   <label className="text-xs text-gray-400 w-48">Query weight</label>
                   <NumberInput
-                    min={0} step={0.1}
+                    min={0} step="any"
                     parse="float"
                     disabled={!config.danbooru_query_enable}
                     value={config.danbooru_query_enable ? (config.danbooru_query_weight_static ?? 1.0) : 0}
@@ -1971,7 +1971,7 @@ export default function TaggerTrainingConfig({
                 <div className="flex items-center gap-3">
                   <label className="text-xs text-gray-400 w-48">New-tag weight</label>
                   <NumberInput
-                    min={0} step={0.1}
+                    min={0} step="any"
                     parse="float"
                     disabled={!config.danbooru_vocab_expand}
                     value={config.danbooru_vocab_expand ? (config.danbooru_query_weight_new_tag ?? 1.0) : 0}
@@ -1984,7 +1984,7 @@ export default function TaggerTrainingConfig({
                 <div className="flex items-center gap-3">
                   <label className="text-xs text-gray-400 w-48">Low-F1 weight</label>
                   <NumberInput
-                    min={0} step={0.1}
+                    min={0} step="any"
                     parse="float"
                     disabled={!config.danbooru_low_f1_enable}
                     value={config.danbooru_low_f1_enable ? (config.danbooru_query_weight_low_f1 ?? 1.0) : 0}
@@ -1997,7 +1997,7 @@ export default function TaggerTrainingConfig({
                 <div className="flex items-center gap-3">
                   <label className="text-xs text-gray-400 w-48">Train-count weight</label>
                   <NumberInput
-                    min={0} step={0.1}
+                    min={0} step="any"
                     parse="float"
                     disabled={!config.danbooru_train_count_enable}
                     value={config.danbooru_train_count_enable ? (config.danbooru_query_weight_train_count ?? 1.0) : 0}

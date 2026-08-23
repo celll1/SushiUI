@@ -831,7 +831,7 @@ export default function VaeTrainingConfig({
                 <div className="flex items-center gap-3">
                   <label className="text-xs text-gray-400 w-40">KL weight</label>
                   <NumberInput
-                    min={0} step={1e-6} parse="float"
+                    min={0} step="any" parse="float"
                     value={cfg.kl_weight}
                     defaultValue={DEFAULT_VAE_CONFIG.kl_weight}
                     onCommit={(v) => setField("kl_weight", v)}
@@ -857,7 +857,7 @@ export default function VaeTrainingConfig({
           <div className="flex items-center gap-3">
             <label className="text-xs text-gray-400 w-40">MSE weight</label>
             <NumberInput
-              min={0} step={0.1} parse="float"
+              min={0} step="any" parse="float"
               value={cfg.mse_weight}
               defaultValue={DEFAULT_VAE_CONFIG.mse_weight}
               onCommit={(v) => setField("mse_weight", v)}
@@ -869,7 +869,7 @@ export default function VaeTrainingConfig({
           <div className="flex items-center gap-3">
             <label className="text-xs text-gray-400 w-40">L1 weight</label>
             <NumberInput
-              min={0} step={0.1} parse="float"
+              min={0} step="any" parse="float"
               value={cfg.l1_weight}
               defaultValue={DEFAULT_VAE_CONFIG.l1_weight}
               onCommit={(v) => setField("l1_weight", v)}
@@ -881,7 +881,7 @@ export default function VaeTrainingConfig({
           <div className="flex items-center gap-3">
             <label className="text-xs text-gray-400 w-40">LPIPS weight</label>
             <NumberInput
-              min={0} step={0.05} parse="float"
+              min={0} step="any" parse="float"
               value={cfg.lpips_weight}
               defaultValue={DEFAULT_VAE_CONFIG.lpips_weight}
               onCommit={(v) => setField("lpips_weight", v)}
@@ -908,7 +908,7 @@ export default function VaeTrainingConfig({
           <div className="flex items-center gap-3">
             <label className="text-xs text-gray-400 w-40">YCbCr DC weight</label>
             <NumberInput
-              min={0} step={0.05} parse="float"
+              min={0} step="any" parse="float"
               value={cfg.ycbcr_dc_weight}
               defaultValue={DEFAULT_VAE_CONFIG.ycbcr_dc_weight}
               onCommit={(v) => setField("ycbcr_dc_weight", v)}
@@ -927,7 +927,7 @@ export default function VaeTrainingConfig({
               <div className="flex items-center gap-3">
                 <label className="text-xs text-gray-400 w-40">Luma (Y) weight</label>
                 <NumberInput
-                  min={0} step={0.05} parse="float"
+                  min={0} step="any" parse="float"
                   value={cfg.ycbcr_dc_y_weight}
                   defaultValue={DEFAULT_VAE_CONFIG.ycbcr_dc_y_weight}
                   onCommit={(v) => setField("ycbcr_dc_y_weight", v)}
@@ -937,7 +937,7 @@ export default function VaeTrainingConfig({
               <div className="flex items-center gap-3">
                 <label className="text-xs text-gray-400 w-40">Chroma weight</label>
                 <NumberInput
-                  min={0} step={0.05} parse="float"
+                  min={0} step="any" parse="float"
                   value={cfg.ycbcr_dc_chroma_weight}
                   defaultValue={DEFAULT_VAE_CONFIG.ycbcr_dc_chroma_weight}
                   onCommit={(v) => setField("ycbcr_dc_chroma_weight", v)}
@@ -962,7 +962,7 @@ export default function VaeTrainingConfig({
                   // Positive minimum: at 0 the Charbonnier term degenerates to |d|,
                   // whose gradient at an exactly-zero residual is NaN, and a negative
                   // value offsets the reported loss. The backend refuses <= 0.
-                  min={1e-8} step={0.001} parse="float"
+                  min={1e-8} step="any" parse="float"
                   value={cfg.ycbcr_dc_eps}
                   defaultValue={DEFAULT_VAE_CONFIG.ycbcr_dc_eps}
                   onCommit={(v) => setField("ycbcr_dc_eps", v)}
@@ -975,7 +975,7 @@ export default function VaeTrainingConfig({
           <div className="flex items-center gap-3">
             <label className="text-xs text-gray-400 w-40">Pattern weight</label>
             <NumberInput
-              min={0} step={0.01} parse="float"
+              min={0} step="any" parse="float"
               value={cfg.pattern_weight}
               defaultValue={DEFAULT_VAE_CONFIG.pattern_weight}
               onCommit={(v) => setField("pattern_weight", v)}
@@ -1003,7 +1003,7 @@ export default function VaeTrainingConfig({
           <div className="flex items-center gap-3">
             <label className="text-xs text-gray-400 w-40">Invented HF weight</label>
             <NumberInput
-              min={0} max={10} step={0.1} parse="float"
+              min={0} max={10} step="any" parse="float"
               value={cfg.l_invented_weight}
               defaultValue={DEFAULT_VAE_CONFIG.l_invented_weight}
               onCommit={(v) => setField("l_invented_weight", v)}
@@ -1032,7 +1032,7 @@ export default function VaeTrainingConfig({
               <div className="flex items-center gap-3">
                 <label className="text-xs text-gray-400 w-40">Luma (Y) weight</label>
                 <NumberInput
-                  min={0} max={4} step={0.05} parse="float"
+                  min={0} max={4} step="any" parse="float"
                   value={cfg.l_invented_y_weight}
                   defaultValue={DEFAULT_VAE_CONFIG.l_invented_y_weight}
                   onCommit={(v) => setField("l_invented_y_weight", v)}
@@ -1042,7 +1042,7 @@ export default function VaeTrainingConfig({
               <div className="flex items-center gap-3">
                 <label className="text-xs text-gray-400 w-40">Chroma weight</label>
                 <NumberInput
-                  min={0} max={4} step={0.05} parse="float"
+                  min={0} max={4} step="any" parse="float"
                   value={cfg.l_invented_chroma_weight}
                   defaultValue={DEFAULT_VAE_CONFIG.l_invented_chroma_weight}
                   onCommit={(v) => setField("l_invented_chroma_weight", v)}
@@ -1067,7 +1067,7 @@ export default function VaeTrainingConfig({
               <div className="flex items-center gap-3">
                 <label className="text-xs text-gray-400 w-40">Flat threshold Y</label>
                 <NumberInput
-                  min={0.25} max={8} step={0.25} parse="float"
+                  min={0.25} max={8} step="any" parse="float"
                   value={cfg.l_invented_flat_t_y}
                   defaultValue={DEFAULT_VAE_CONFIG.l_invented_flat_t_y}
                   onCommit={(v) => setField("l_invented_flat_t_y", v)}
@@ -1077,7 +1077,7 @@ export default function VaeTrainingConfig({
               <div className="flex items-center gap-3">
                 <label className="text-xs text-gray-400 w-40">Flat threshold chroma</label>
                 <NumberInput
-                  min={0.25} max={8} step={0.25} parse="float"
+                  min={0.25} max={8} step="any" parse="float"
                   value={cfg.l_invented_flat_t_c}
                   defaultValue={DEFAULT_VAE_CONFIG.l_invented_flat_t_c}
                   onCommit={(v) => setField("l_invented_flat_t_c", v)}
@@ -1108,7 +1108,7 @@ export default function VaeTrainingConfig({
           <div className="flex items-center gap-3">
             <label className="text-xs text-gray-400 w-40">Total steps</label>
             <NumberInput
-              min={1} step={100} parse="int"
+              min={1} step={1} parse="int"
               value={cfg.total_steps}
               defaultValue={DEFAULT_VAE_CONFIG.total_steps}
               onCommit={(v) => setField("total_steps", v)}
@@ -1139,7 +1139,7 @@ export default function VaeTrainingConfig({
           <div className="flex items-center gap-3">
             <label className="text-xs text-gray-400 w-40">Resolution</label>
             <NumberInput
-              min={64} step={64} snap={8} parse="int"
+              min={64} step={8} snap={8} parse="int"
               value={cfg.resolution}
               defaultValue={DEFAULT_VAE_CONFIG.resolution}
               onCommit={(v) => setField("resolution", v)}
@@ -1174,7 +1174,7 @@ export default function VaeTrainingConfig({
               <>
                 <label className="text-xs text-gray-400">Max downscale</label>
                 <NumberInput
-                  min={0} step={0.5} parse="float"
+                  min={0} step="any" parse="float"
                   value={cfg.crop_scale_max_downscale}
                   defaultValue={DEFAULT_VAE_CONFIG.crop_scale_max_downscale}
                   onCommit={(v) => setField("crop_scale_max_downscale", v)}
@@ -1216,7 +1216,7 @@ export default function VaeTrainingConfig({
             <NumberInput
               // Positive minimum: the backend does not refuse lr=0, and a 0-LR
               // run trains nothing while reporting success.
-              min={1e-9} step={1e-6} parse="float"
+              min={1e-9} step="any" parse="float"
               value={cfg.learning_rate}
               defaultValue={DEFAULT_VAE_CONFIG.learning_rate}
               onCommit={(v) => setField("learning_rate", v)}
@@ -1224,7 +1224,7 @@ export default function VaeTrainingConfig({
             />
             <label className="text-xs text-gray-400">Weight decay</label>
             <NumberInput
-              min={0} step={0.001} parse="float"
+              min={0} step="any" parse="float"
               value={cfg.optimizer_weight_decay}
               defaultValue={DEFAULT_VAE_CONFIG.optimizer_weight_decay}
               onCommit={(v) => setField("optimizer_weight_decay", v)}
@@ -1253,7 +1253,7 @@ export default function VaeTrainingConfig({
             </select>
             <label className="text-xs text-gray-400">Gradient clip</label>
             <NumberInput
-              min={0} step={0.05} parse="float"
+              min={0} step="any" parse="float"
               value={cfg.max_grad_norm}
               defaultValue={DEFAULT_VAE_CONFIG.max_grad_norm}
               onCommit={(v) => setField("max_grad_norm", v)}
@@ -1331,7 +1331,7 @@ export default function VaeTrainingConfig({
           <div className="flex items-center gap-3">
             <label className="text-xs text-gray-400 w-40">EMA decay</label>
             <NumberInput
-              min={0.000001} max={0.999999} step={0.001} parse="float"
+              min={0.000001} max={0.999999} step="any" parse="float"
               value={cfg.ema_decay}
               defaultValue={DEFAULT_VAE_CONFIG.ema_decay}
               onCommit={(v) => setField("ema_decay", v)}
@@ -1433,7 +1433,7 @@ export default function VaeTrainingConfig({
             />
             <label className="text-xs text-gray-400">Validation resolution</label>
             <NumberInput
-              min={64} step={64} snap={8} parse="int"
+              min={64} step={8} snap={8} parse="int"
               value={cfg.validation_resolution}
               defaultValue={DEFAULT_VAE_CONFIG.validation_resolution}
               onCommit={(v) => setField("validation_resolution", v)}

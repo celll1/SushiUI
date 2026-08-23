@@ -2597,7 +2597,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                       <label className="block text-xs text-gray-400 mb-1">Weight (λ)</label>
                       <input
                         type="number"
-                        step="0.05"
+                        step="any"
                         value={params.repa_weight ?? 0.5}
                         onChange={(e) => updateParam("repa_weight", e.target.value === '' ? (undefined as any) : parseFloat(e.target.value))}
                         onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) updateParam("repa_weight", 0.5); }}
@@ -2608,7 +2608,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                       <label className="block text-xs text-gray-400 mb-1">Projector LR factor</label>
                       <input
                         type="number"
-                        step="0.1"
+                        step="any"
                         value={params.repa_proj_lr_factor ?? 1.0}
                         onChange={(e) => updateParam("repa_proj_lr_factor", e.target.value === '' ? (undefined as any) : parseFloat(e.target.value))}
                         onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) updateParam("repa_proj_lr_factor", 1.0); }}
@@ -2835,7 +2835,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                       onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) updateParam("outpaint_crop_min_area", 0.15); }}
                       min="0.0"
                       max="1.0"
-                      step="0.01"
+                      step="any"
                       className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
                     />
                   </div>
@@ -2848,7 +2848,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                       onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) updateParam("outpaint_crop_max_area", 0.8); }}
                       min="0.0"
                       max="1.0"
-                      step="0.01"
+                      step="any"
                       className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
                     />
                   </div>
@@ -2861,7 +2861,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                       onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) updateParam("outpaint_edge_anchor_prob", 0.34); }}
                       min="0.0"
                       max="1.0"
-                      step="0.01"
+                      step="any"
                       className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
                     />
                   </div>
@@ -2874,7 +2874,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                       onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) updateParam("outpaint_corner_anchor_prob", 0.33); }}
                       min="0.0"
                       max="1.0"
-                      step="0.01"
+                      step="any"
                       className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
                     />
                   </div>
@@ -2887,7 +2887,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                       onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) updateParam("outpaint_known_loss_weight", 0.3); }}
                       min="0.0"
                       max="0.499"
-                      step="0.01"
+                      step="any"
                       className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
                     />
                     <p className="text-xs text-gray-500 mt-1">Must stay below 0.5 (backend clamps to [0, 0.5)).</p>
@@ -2901,7 +2901,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                       onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) updateParam("outpaint_seam_loss_boost", 0.0); }}
                       min="0.0"
                       max="1.0"
-                      step="0.05"
+                      step="any"
                       className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
                     />
                   </div>
@@ -2926,7 +2926,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                       onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) updateParam("outpaint_seam_grad_lambda", 0.0); }}
                       min="0.0"
                       max="1.0"
-                      step="0.05"
+                      step="any"
                       className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
                     />
                     <p className="text-xs text-gray-500 mt-1">Weight of the cross-seam prediction-error continuity term. 0 (default) disables it.</p>
@@ -3142,7 +3142,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               <label className="block text-xs text-gray-400 mb-1">Max Grad Norm</label>
               <input
                 type="number"
-                step="0.1"
+                step="any"
                 value={params.max_grad_norm ?? 1.0}
                 onChange={(e) => updateParam("max_grad_norm", e.target.value === '' ? (undefined as any) : parseFloat(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) updateParam("max_grad_norm", 1.0); }}
                 min="0"
@@ -3200,7 +3200,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                   onChange={(e) => updateParam("trajectory_blend_alpha", e.target.value === '' ? (undefined as any) : parseFloat(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) updateParam("trajectory_blend_alpha", 0.7); }}
                   min="0.0"
                   max="1.0"
-                  step="0.1"
+                  step="any"
                   className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
                 />
                 <p className="text-xs text-gray-500 mt-1">
@@ -3239,7 +3239,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                       onChange={(e) => setTimestepMin(e.target.value === ''  ? '' as any : parseFloat(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) setTimestepMin(0.0); }}
                       min="0.0"
                       max="1.0"
-                      step="0.05"
+                      step="any"
                       className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
                     />
                   </div>
@@ -3251,7 +3251,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                       onChange={(e) => setTimestepMax(e.target.value === ''  ? '' as any : parseFloat(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) setTimestepMax(1.0); }}
                       min="0.0"
                       max="1.0"
-                      step="0.05"
+                      step="any"
                       className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
                     />
                   </div>
@@ -3272,7 +3272,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                         value={timestepMean}
                         onChange={(e) => setTimestepMean(e.target.value === '' ? '' as any : parseFloat(e.target.value))}
                         onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) setTimestepMean(timestepDistribution === "normal" ? 0.5 : 0.0); }}
-                        step="0.1"
+                        step="any"
                         className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
                       />
                     </div>
@@ -3284,7 +3284,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                         onChange={(e) => setTimestepStd(e.target.value === '' ? '' as any : parseFloat(e.target.value))}
                         onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) setTimestepStd(1.0); }}
                         min="0.01"
-                        step="0.1"
+                        step="any"
                         className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
                       />
                     </div>
@@ -3309,7 +3309,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                         onChange={(e) => setTimestepAlpha(e.target.value === '' ? '' as any : parseFloat(e.target.value))}
                         onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) setTimestepAlpha(2.0); }}
                         min="0.1"
-                        step="0.5"
+                        step="any"
                         className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
                       />
                     </div>
@@ -3321,7 +3321,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                         onChange={(e) => setTimestepBeta(e.target.value === '' ? '' as any : parseFloat(e.target.value))}
                         onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) setTimestepBeta(2.0); }}
                         min="0.1"
-                        step="0.5"
+                        step="any"
                         className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
                       />
                     </div>
@@ -3396,7 +3396,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                       onChange={(e) => updateParam("snr_regularization_weight", e.target.value === '' ? (undefined as any) : parseFloat(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) updateParam("snr_regularization_weight", 0.0); }}
                       min="0.0"
                       max="1.0"
-                      step="0.01"
+                      step="any"
                       className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
                     />
                     <p className="text-xs text-gray-500 mt-1">Recommended: 0.1</p>
@@ -3467,7 +3467,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                       onChange={(e) => updateParam("energy_regularization_weight", e.target.value === '' ? (undefined as any) : parseFloat(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) updateParam("energy_regularization_weight", 0.0); }}
                       min="0.0"
                       max="1.0"
-                      step="0.01"
+                      step="any"
                       className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
                     />
                     <p className="text-xs text-gray-500 mt-1">Recommended: 0.1</p>
@@ -3705,7 +3705,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                     defaultValue={0.85}
                     min={0}
                     max={1}
-                    step={0.01}
+                    step="any"
                     parse="float"
                     className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
                   />
@@ -3719,7 +3719,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                     defaultValue={0.25}
                     min={0}
                     max={1}
-                    step={0.01}
+                    step="any"
                     parse="float"
                     className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
                   />
@@ -3756,7 +3756,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                       defaultValue={0.9999}
                       min={0}
                       max={1}
-                      step={0.0001}
+                      step="any"
                       parse="float"
                       className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
                     />
@@ -4348,7 +4348,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 value={minSnrGamma}
                 onChange={(e) => updateParam("min_snr_gamma", e.target.value === '' ? (undefined as any) : parseFloat(e.target.value))}
                 onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) updateParam("min_snr_gamma", 5.0); }}
-                step={0.5}
+                step="any"
                 min={0}
                 max={20}
                 className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs"
@@ -4369,7 +4369,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 value={reconstructionLossWeight}
                 onChange={(e) => updateParam("reconstruction_loss_weight", e.target.value === '' ? (undefined as any) : parseFloat(e.target.value))}
                 onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) updateParam("reconstruction_loss_weight", 0.0); }}
-                step={0.05}
+                step="any"
                 min={0}
                 max={1.0}
                 className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs"
@@ -4394,7 +4394,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                     const v = parseFloat(e.target.value);
                     if (e.target.value === '' || isNaN(v) || v < 0) updateParam("audio_loss_weight", 1.0);
                   }}
-                  step={0.1}
+                  step="any"
                   min={0}
                   className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs"
                 />
@@ -4542,7 +4542,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                     onChange={(e) => updateParam("activation_dispatch_margin_gb", e.target.value === '' ? (undefined as any) : parseFloat(e.target.value))}
                     onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) updateParam("activation_dispatch_margin_gb", 1.0); }}
                     min={0}
-                    step={0.5}
+                    step="any"
                     className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs"
                   />
                   <p className="text-xs text-gray-500 mt-1">
@@ -4681,7 +4681,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                         onChange={(e) => updateParam("anima_attn_mlp_lr_factor", e.target.value === '' ? (undefined as any) : parseFloat(e.target.value))}
                         onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) updateParam("anima_attn_mlp_lr_factor", 1.0); }}
                         min={0}
-                        step={0.1}
+                        step="any"
                         className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm"
                       />
                     </div>
@@ -4696,7 +4696,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                         onChange={(e) => updateParam("anima_mod_lr_factor", e.target.value === '' ? (undefined as any) : parseFloat(e.target.value))}
                         onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) updateParam("anima_mod_lr_factor", 1.0); }}
                         min={0}
-                        step={0.1}
+                        step="any"
                         className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm"
                       />
                     </div>
@@ -4711,7 +4711,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                         onChange={(e) => updateParam("anima_llm_adapter_lr_factor", e.target.value === '' ? (undefined as any) : parseFloat(e.target.value))}
                         onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) updateParam("anima_llm_adapter_lr_factor", 1.0); }}
                         min={0}
-                        step={0.1}
+                        step="any"
                         className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm"
                       />
                     </div>
@@ -4825,7 +4825,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                         onChange={(e) => updateParam("lens_img_lr_factor", e.target.value === '' ? (undefined as any) : parseFloat(e.target.value))}
                         onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) updateParam("lens_img_lr_factor", 1.0); }}
                         min={0}
-                        step={0.1}
+                        step="any"
                         className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm"
                       />
                     </div>
@@ -4840,7 +4840,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                         onChange={(e) => updateParam("lens_txt_lr_factor", e.target.value === '' ? (undefined as any) : parseFloat(e.target.value))}
                         onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) updateParam("lens_txt_lr_factor", 1.0); }}
                         min={0}
-                        step={0.1}
+                        step="any"
                         className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm"
                       />
                     </div>
@@ -4915,7 +4915,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                       onChange={(e) => updateParam("ideogram4_uncond_loss_weight", e.target.value === '' ? (undefined as any) : parseFloat(e.target.value))}
                       onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) updateParam("ideogram4_uncond_loss_weight", 1.0); }}
                       min={0}
-                      step={0.1}
+                      step="any"
                       className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm"
                     />
                   </div>
@@ -4932,7 +4932,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                     onChange={(e) => updateParam("ideogram4_lr_factor", e.target.value === '' ? (undefined as any) : parseFloat(e.target.value))}
                     onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) updateParam("ideogram4_lr_factor", 1.0); }}
                     min={0}
-                    step={0.1}
+                    step="any"
                     className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm"
                   />
                 </div>
@@ -4992,7 +4992,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                     onChange={(e) => updateParam("krea2_lr_factor", e.target.value === '' ? (undefined as any) : parseFloat(e.target.value))}
                     onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) updateParam("krea2_lr_factor", 1.0); }}
                     min={0}
-                    step={0.1}
+                    step="any"
                     className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm"
                   />
                 </div>
@@ -5008,7 +5008,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                     onChange={(e) => updateParam("krea2_discrete_flow_shift", e.target.value === '' ? (undefined as any) : parseFloat(e.target.value))}
                     onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) updateParam("krea2_discrete_flow_shift", 2.5); }}
                     min={1}
-                    step={0.1}
+                    step="any"
                     className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm"
                   />
                   <p className="text-xs text-gray-500 mt-1">
@@ -5071,7 +5071,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                     onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) updateParam("minit2i_label_drop_rate", 0.1); }}
                     min={0}
                     max={1}
-                    step={0.05}
+                    step="any"
                     className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm"
                   />
                 </div>
@@ -5087,7 +5087,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                     onChange={(e) => updateParam("minit2i_lr_factor", e.target.value === '' ? (undefined as any) : parseFloat(e.target.value))}
                     onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) updateParam("minit2i_lr_factor", 1.0); }}
                     min={0}
-                    step={0.1}
+                    step="any"
                     className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm"
                   />
                 </div>
@@ -5963,7 +5963,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 type="number"
                 min="1"
                 max="30"
-                step="0.5"
+                step="any"
                 value={sampleCfgScale}
                 onChange={(e) => updateParam("sample_cfg_scale", e.target.value === '' ? (undefined as any) : parseFloat(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) updateParam("sample_cfg_scale", 7.0); }}
                 className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
@@ -6267,7 +6267,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                       <div>
                         <label className="block text-sm text-gray-400 mb-1">Min area ratio</label>
                         <NumberInput
-                          min={0.01} max={1} step={0.01} parse="float"
+                          min={0.01} max={1} step="any" parse="float"
                           value={params.crop_min_area_ratio ?? 0.25}
                           defaultValue={0.25}
                           placeholder="0.25"
@@ -6345,7 +6345,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                       <div>
                         <label className="block text-sm text-gray-400 mb-1">Smaller scale min</label>
                         <NumberInput
-                          min={0.1} max={1} step={0.05} parse="float"
+                          min={0.1} max={1} step="any" parse="float"
                           value={(params.crop_smaller_scale_range ?? [0.5, 0.9])[0]}
                           defaultValue={0.5}
                           placeholder="0.5"
@@ -6356,7 +6356,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                       <div>
                         <label className="block text-sm text-gray-400 mb-1">Smaller scale max (≤ 1.0)</label>
                         <NumberInput
-                          min={0.1} max={1} step={0.05} parse="float"
+                          min={0.1} max={1} step="any" parse="float"
                           value={(params.crop_smaller_scale_range ?? [0.5, 0.9])[1]}
                           defaultValue={0.9}
                           placeholder="0.9"
@@ -6559,7 +6559,11 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   );
 }
 
-/** Compact labelled numeric input. Integer vs float is inferred from `step`. */
+/**
+ * Compact labelled numeric input. Integer vs float is inferred from `step`.
+ * Float fields render `step="any"`: a numeric step would restrict the field to
+ * the `min + n*step` grid and let the spinner/wheel rewrite typed values.
+ */
 function NumField({
   label,
   value,
@@ -6576,7 +6580,7 @@ function NumField({
       <label className="block text-xs text-gray-400 mb-1">{label}</label>
       <input
         type="number"
-        step={step}
+        step={step % 1 === 0 ? step : "any"}
         value={value ?? ""}
         onChange={(e) => {
           const raw = e.target.value;

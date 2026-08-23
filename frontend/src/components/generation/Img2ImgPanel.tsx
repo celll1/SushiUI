@@ -2291,7 +2291,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
     }
   };
 
-  const { addToQueue, updateQueueItem, updateQueueItemByLoop, cancelLoopGroup, startNextInQueue, completeCurrentItem, failCurrentItem, currentItem, queue, generateForever, setGenerateForever, progressSnapshot, completedResults, publishCompletedResult, chainPause, pauseChain, clearChainPause } = useGenerationQueue();
+  const { addToQueue, updateQueueItem, updateQueueItemByLoop, getLoopGroupItems, cancelLoopGroup, startNextInQueue, completeCurrentItem, failCurrentItem, currentItem, queue, generateForever, setGenerateForever, progressSnapshot, completedResults, publishCompletedResult, chainPause, pauseChain, clearChainPause } = useGenerationQueue();
 
   useEffect(() => {
     if (!currentItem || !["img2img", "img2vid", "ref2vid", "aud2aud", "chain_vid"].includes(currentItem.type)) {
@@ -2381,6 +2381,18 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
   });
 
   // Add generation request to queue
+  // UI state the request depends on, frozen onto the item at enqueue time: the
+  // dispatcher is GenerationQueueProcessor, which has no view of this panel.
+  const freezeDispatchState = useCallback(<T extends Record<string, any>>(p: T) => ({
+    ...p,
+    developer_mode: developerMode,
+    ...(showAdvancedCFG ? {} : {
+      cfg_schedule_type: "constant",
+      cfg_rescale_snr_alpha: 0.0,
+      dynamic_threshold_percentile: 0.0,
+    }),
+  }), [developerMode, showAdvancedCFG]);
+
   const handleAddToQueue = async () => {
     if (!params.prompt) {
       alert("Please enter a prompt");
@@ -2797,13 +2809,14 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
 
     addToQueue({
       type: "img2img",
-      params: {
+      params: freezeDispatchState({
         ...params,
         prompt: processedPrompt,
         negative_prompt: processedNegativePrompt,
         loop_decode: mainDecodeDirective.loop_decode,
         skip_gallery: mainDecodeDirective.skip_gallery,
-      },
+        ...(refImages.length > 0 ? { ref_images: refImages } : {}),
+      }),
       inputImage: imageBase64,
       prompt: processedPrompt,
       loopGroupId,
@@ -2811,6 +2824,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
       isLoopStep: false,
       useTrainingModel,
       trainingRunId: activeTraining?.run_id,
+      savePreviewToGallery,
     });
 
     // If loop generation is enabled, add all loop steps immediately
@@ -3243,11 +3257,11 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
 
       addToQueue({
         type: "img2img",
-        params: {
+        params: freezeDispatchState({
           ...stepParams,
           prompt: processedPrompt,
           negative_prompt: processedNegativePrompt,
-        },
+        }),
         inputImage: "", // Will be set when previous step completes
         prompt: `[Loop ${i + 1}/${enabledSteps.length}] ${processedPrompt.substring(0, 50)}...`,
         loopGroupId,
@@ -3255,11 +3269,18 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         isLoopStep: true,
         useTrainingModel,
         trainingRunId: activeTraining?.run_id,
+        savePreviewToGallery,
+        loopStepConfig: {
+          sizeMode: step.sizeMode,
+          scale: step.scale,
+          useMainControlNets: step.useMainControlNets,
+          controlnets: step.controlnets || [],
+        },
       });
     }
 
     console.log(`[Img2Img] Added ${enabledSteps.length} loop steps to queue with group ID: ${loopGroupId}`);
-  }, [loopGenerationConfig, addToQueue, refImages, useTrainingModel, activeTraining]);
+  }, [loopGenerationConfig, addToQueue, refImages, useTrainingModel, activeTraining, savePreviewToGallery, freezeDispatchState]);
 
   // Process queue - automatically start next item
   const processQueueRef = useRef<() => Promise<void>>();
@@ -3714,24 +3735,9 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         throw new Error("No input image available for img2img generation");
       }
 
-      // Add developer_mode flag and reset advanced CFG params if disabled
-      let paramsWithDevMode = { ...nextItem.params, developer_mode: developerMode };
-      if (!showAdvancedCFG) {
-        paramsWithDevMode = {
-          ...paramsWithDevMode,
-          cfg_schedule_type: "constant",
-          cfg_rescale_snr_alpha: 0.0,
-          dynamic_threshold_percentile: 0.0,
-        };
-      }
-
-      // Add FLUX.2 Image Edit reference images
-      if (refImages.length > 0) {
-        paramsWithDevMode = {
-          ...paramsWithDevMode,
-          ref_images: refImages,
-        };
-      }
+      // developer_mode, the collapsed-Advanced-CFG resets and ref_images were
+      // all frozen into params at enqueue time.
+      const paramsWithDevMode = { ...nextItem.params };
 
       // Debug log for quantization
       console.log('[Img2Img] Generating with params.unet_quantization:', paramsWithDevMode.unet_quantization);
@@ -3740,8 +3746,8 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
       let result: any;
       // Use the per-item flag (set at enqueue time) so loop steps queued under the
       // training model keep using it even though this panel's own checkbox may be off.
-      const itemUseTraining = (nextItem?.useTrainingModel ?? useTrainingModel);
-      const itemRunId = nextItem?.trainingRunId ?? activeTraining?.run_id;
+      const itemUseTraining = nextItem.useTrainingModel;
+      const itemRunId = nextItem.trainingRunId ?? activeTraining?.run_id;
       if (itemUseTraining && itemRunId) {
         // Training-preview branch: encode init image as base64 and route
         // to /generate/img2img/training-preview.  Result is a blob;
@@ -3757,7 +3763,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
           init_image_base64: initImageBase64,
           denoising_strength: paramsWithDevMode.denoising_strength ?? 0.75,
           run_id: itemRunId,
-          save_to_gallery: savePreviewToGallery,
+          save_to_gallery: nextItem.savePreviewToGallery ?? false,
         });
         if (preview.filename) {
           imageUrl = `/outputs/${preview.filename}`;
@@ -3853,8 +3859,8 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
           // constant mainParams size baked in at enqueue time (addLoopStepsToQueueImmediate
           // computes every step's initial width/height from mainParams, so
           // without this recompute a chain of scale steps would never compound).
-          const enabledStepsForScale = loopGenerationConfig.steps.filter(step => step.enabled);
-          const nextStepConfig = enabledStepsForScale[nextLoopStepIndex];
+          const nextStepConfig = getLoopGroupItems(nextItem.loopGroupId)
+            .find((item) => item.loopStepIndex === nextLoopStepIndex)?.loopStepConfig;
           const currentWidth = nextItem.params.width;
           const currentHeight = nextItem.params.height;
           if (nextStepConfig && nextStepConfig.sizeMode === "scale" && currentWidth && currentHeight) {
@@ -3882,9 +3888,9 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
           console.log(`[Img2Img] TIPO prompt: ${result.image.prompt?.substring(0, 100)}...`);
 
           // Update all loop steps (not just the next one) with TIPO-generated prompt
-          const enabledSteps = loopGenerationConfig.steps.filter(step => step.enabled);
-          for (let i = 0; i < enabledSteps.length; i++) {
-            updateQueueItemByLoop(nextItem.loopGroupId, i, (item) => ({
+          for (const stepItem of getLoopGroupItems(nextItem.loopGroupId)) {
+            if (!stepItem.isLoopStep || stepItem.loopStepIndex === undefined) continue;
+            updateQueueItemByLoop(nextItem.loopGroupId, stepItem.loopStepIndex, (item) => ({
               params: {
                 ...item.params,
                 prompt: result.image.prompt,
@@ -3894,8 +3900,8 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         }
 
         // Find step config to check if ControlNet processing is needed
-        const enabledSteps = loopGenerationConfig.steps.filter(step => step.enabled);
-        const stepConfig = enabledSteps[nextLoopStepIndex];
+        const stepConfig = getLoopGroupItems(nextItem.loopGroupId)
+          .find((item) => item.loopStepIndex === nextLoopStepIndex)?.loopStepConfig;
 
         console.log(`[Img2Img] Step config:`, {
           hasStepConfig: !!stepConfig,
@@ -4061,7 +4067,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         alert(alertMessage);
       }
     }
-  }, [isGenerating, generatedImage, onImageGenerated, startNextInQueue, completeCurrentItem, failCurrentItem, updateQueueItem, updateQueueItemByLoop, cancelLoopGroup, queue, publishCompletedResult, archCapabilities, loadedArch]);
+  }, [isGenerating, generatedImage, onImageGenerated, startNextInQueue, completeCurrentItem, failCurrentItem, updateQueueItem, updateQueueItemByLoop, getLoopGroupItems, cancelLoopGroup, queue, publishCompletedResult, archCapabilities, loadedArch, activeTraining]);
 
   processQueueRef.current = processQueue;
 

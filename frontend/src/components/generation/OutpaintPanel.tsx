@@ -45,7 +45,6 @@ import {
   generateOutpaint,
   generateOutpaintVideo,
   generateOutpaintAudio,
-  getCurrentModel,
   cancelGeneration,
   getResultFilename,
   getResultPlaybackFilename,
@@ -520,7 +519,7 @@ interface OutpaintPanelProps {
 }
 
 export default function OutpaintPanel({ onTabChange, onImageGenerated }: OutpaintPanelProps = {}) {
-  const { isBackendReady, modelLoaded, generationDefaults, isVideo, isAudio, archCapabilities, resolveModality, modelInfoVersion, sliderBounds } = useStartup();
+  const { isBackendReady, modelLoaded, modelInfo, generationDefaults, isVideo, isAudio, archCapabilities, resolveModality, refreshModelInfo, sliderBounds } = useStartup();
   const [params, setParams] = useState<OutpaintPanelParams>(DEFAULT_PARAMS);
   const [generatedImageParams, setGeneratedImageParams] = useState<OutpaintPanelParams | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
@@ -626,18 +625,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
   const [outpaintControlNetModels, setOutpaintControlNetModels] = useState<Array<{ path: string; name: string }>>([]);
   const [isMounted, setIsMounted] = useState(false);
   const [isInitialLoad, setIsInitialLoad] = useState(true);
-  const [currentModelInfo, setCurrentModelInfo] = useState<any>(null);
-  // Keep this panel's copy of GET /models/current in step with the shared one.
-  // modelInfoVersion changes only when the loaded checkpoint or one of its
-  // components actually changes, not on every background poll, so this costs
-  // one request per such change -- including changes this page did not make
-  // (a component switch, the API, a backend restart, another tab).
-  useEffect(() => {
-    if (modelInfoVersion === 0) return; // initial fetch happens on mount below
-    getCurrentModel()
-      .then(setCurrentModelInfo)
-      .catch((error) => console.warn("[Outpaint] Failed to refresh model info", error));
-  }, [modelInfoVersion]);
+  const currentModelInfo = modelInfo ? { loaded: true, model_info: modelInfo } : null;
   // Drop a persisted unet_quantization the loaded architecture does not offer
   // (e.g. fp8_e4m3fn carried over onto a krea2 model): otherwise the <select>
   // holds a value absent from its options and renders blank, while the panel
@@ -733,13 +721,6 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
     setIsMounted(true);
 
     const loadInitialData = async () => {
-      try {
-        const modelInfo = await getCurrentModel();
-        setCurrentModelInfo(modelInfo);
-      } catch (error) {
-        console.error("[Outpaint] Failed to load model info:", error);
-      }
-
       const saved = localStorage.getItem(STORAGE_KEY);
       if (saved) {
         try {
@@ -2209,6 +2190,13 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
         ...params,
         prompt: processedPrompt,
         negative_prompt: processedNegativePrompt,
+        // Frozen at enqueue: the dispatcher has no view of this panel's UI state.
+        developer_mode: developerMode,
+        ...(showAdvancedCFG ? {} : {
+          cfg_schedule_type: "constant",
+          cfg_rescale_snr_alpha: 0.0,
+          dynamic_threshold_percentile: 0.0,
+        }),
       },
       inputImage: inputImagePreview,
       prompt: processedPrompt,
@@ -2386,17 +2374,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
 
     try {
       const itemParams = nextItem.params as ApiOutpaintParams;
-      const apiParams: ApiOutpaintParams = {
-        ...itemParams,
-        developer_mode: developerMode,
-        // Reset advanced CFG params if the section is collapsed (mirrors
-        // InpaintPanel/Img2ImgPanel behavior).
-        cfg_schedule_type: !showAdvancedCFG ? "constant" : itemParams.cfg_schedule_type,
-        cfg_rescale_snr_alpha: !showAdvancedCFG ? 0.0 : itemParams.cfg_rescale_snr_alpha,
-        dynamic_threshold_percentile: !showAdvancedCFG ? 0.0 : itemParams.dynamic_threshold_percentile,
-      };
-
-      const result = await generateOutpaint(apiParams, nextItem.inputImage!);
+      const result = await generateOutpaint(itemParams, nextItem.inputImage!);
       const imageUrl = result.success ? `/outputs/${getResultFilename(result)}` : "";
 
       if (result.success) {
@@ -2455,7 +2433,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
         ? error.message
         : `Outpaint generation failed: ${error?.response?.data?.detail || error?.message || "Unknown error"}`);
     }
-  }, [isGenerating, startNextInQueue, completeCurrentItem, failCurrentItem, developerMode, showAdvancedCFG, isMounted, onImageGenerated, publishCompletedResult]);
+  }, [isGenerating, startNextInQueue, completeCurrentItem, failCurrentItem, isMounted, onImageGenerated, publishCompletedResult]);
 
   processQueueRef.current = processQueue;
 
@@ -3440,9 +3418,8 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
       <div className="generation-settings space-y-2">
         <ModelLoadSection
           onModelLoad={async () => {
-            const modelInfo = await getCurrentModel();
-            setCurrentModelInfo(modelInfo);
-            const modelType = modelInfo?.model_info?.type;
+            const loaded = await refreshModelInfo();
+            const modelType = loaded?.type;
             if (modelType === "zimage" || modelType === "flux2" || modelType === "anima") {
               setParams(prev => ({ ...prev, sampler: "euler", schedule_type: "flow" }));
             }

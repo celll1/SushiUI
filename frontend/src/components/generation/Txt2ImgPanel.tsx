@@ -57,7 +57,7 @@ import {
   ChainAdvanceResult,
 } from "@/utils/videoChain";
 import { migrateLoopGenerationConfig, computeLoopDecodeDirective } from "@/utils/loopGenerationInheritance";
-import { generateTxt2Img, generateImg2Img, generateTxt2Vid, Txt2VidParams, generateRef2Vid, Ref2VidParams, generateOutpaintVideo, OutpaintVideoParams, MiniMaxH3References, MiniMaxH3Keyframe, generateTxt2Aud, Txt2AudParams, generateTxt2ImgTrainingPreview, generateImg2ImgTrainingPreview, imageSourceToBase64, GenerationParams, getSamplers, getScheduleTypes, tokenizePrompt, generateTIPOPrompt, cancelGeneration, getCurrentModel, isLatentOnlyResult, getResultFilename, getResultPlaybackFilename, getResultSeed, getResultAncestralSeed, unetQuantizationOptions, normalizeUnetQuantization, transformerQuantizationLabel, archSupportsFeature, archDisplayName, normalizeVideoFrames, videoCanvasRule, videoCanvasAxisBounds, videoMinInferenceSteps, videoCanvasExceedsEnvelope, isGenerationStalledError, planVideoChain, snapUpValidVideoFrameCount, effectiveSegmentFrames, VideoChainManifest, VIDEO_BLOCK_SWAP_MAX, audioDefaultsForArch } from "@/utils/api";
+import { generateTxt2Img, generateImg2Img, generateTxt2Vid, Txt2VidParams, generateRef2Vid, Ref2VidParams, generateOutpaintVideo, OutpaintVideoParams, MiniMaxH3References, MiniMaxH3Keyframe, generateTxt2Aud, Txt2AudParams, generateTxt2ImgTrainingPreview, generateImg2ImgTrainingPreview, imageSourceToBase64, GenerationParams, getSamplers, getScheduleTypes, tokenizePrompt, generateTIPOPrompt, cancelGeneration, isLatentOnlyResult, getResultFilename, getResultPlaybackFilename, getResultSeed, getResultAncestralSeed, unetQuantizationOptions, normalizeUnetQuantization, transformerQuantizationLabel, archSupportsFeature, archDisplayName, normalizeVideoFrames, videoCanvasRule, videoCanvasAxisBounds, videoMinInferenceSteps, videoCanvasExceedsEnvelope, isGenerationStalledError, planVideoChain, snapUpValidVideoFrameCount, effectiveSegmentFrames, VideoChainManifest, VIDEO_BLOCK_SWAP_MAX, audioDefaultsForArch } from "@/utils/api";
 import { useActiveTraining } from "@/hooks/useActiveTraining";
 import { useSmoothProgress } from "@/hooks/useSmoothProgress";
 import { wsClient, CFGMetrics } from "@/utils/websocket";
@@ -369,7 +369,7 @@ interface Txt2ImgPanelProps {
 }
 
 export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgPanelProps = {}) {
-  const { modelLoaded, isBackendReady, generationDefaults, isVideo, isAudio, archCapabilities, resolveModality, modelInfoVersion, videoFrameSliderMax, sliderBounds } = useStartup();
+  const { modelLoaded, modelInfo, isBackendReady, generationDefaults, isVideo, isAudio, archCapabilities, resolveModality, refreshModelInfo, videoFrameSliderMax, sliderBounds } = useStartup();
   const pathname = usePathname();
   const [params, setParams] = useState<GenerationParams>(DEFAULT_PARAMS);
   const [isGenerating, setIsGenerating] = useState(false);
@@ -506,18 +506,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
       }
     };
   }, []);
-  const [currentModelInfo, setCurrentModelInfo] = useState<any>(null);
-  // Keep this panel's copy of GET /models/current in step with the shared one.
-  // modelInfoVersion changes only when the loaded checkpoint or one of its
-  // components actually changes, not on every background poll, so this costs
-  // one request per such change -- including changes this page did not make
-  // (a component switch, the API, a backend restart, another tab).
-  useEffect(() => {
-    if (modelInfoVersion === 0) return; // initial fetch happens on mount below
-    getCurrentModel()
-      .then(setCurrentModelInfo)
-      .catch((error) => console.warn("[Txt2Img] Failed to refresh model info", error));
-  }, [modelInfoVersion]);
+  const currentModelInfo = modelInfo ? { loaded: true, model_info: modelInfo } : null;
   // Drop a persisted unet_quantization the loaded architecture does not offer
   // (e.g. fp8_e4m3fn carried over onto a krea2 model): otherwise the <select>
   // holds a value absent from its options and renders blank, while the panel
@@ -819,14 +808,6 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
     // console.clear(); // Temporarily disabled for debugging
     console.log("=== Txt2ImgPanel mounted ===");
     setIsMounted(true);
-
-    // Load current model info
-    getCurrentModel().then((modelInfo) => {
-      setCurrentModelInfo(modelInfo);
-      console.log("[Txt2Img] Current model info:", modelInfo);
-    }).catch((error) => {
-      console.error("Failed to load model info:", error);
-    });
 
     // Load params
     const saved = localStorage.getItem(STORAGE_KEY);
@@ -1716,7 +1697,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
     }
   };
 
-  const { addToQueue, updateQueueItem, updateQueueItemByLoop, cancelLoopGroup, startNextInQueue, completeCurrentItem, failCurrentItem, currentItem, queue, generateForever, setGenerateForever, progressSnapshot, completedResults, publishCompletedResult, chainPause, pauseChain, clearChainPause } = useGenerationQueue();
+  const { addToQueue, updateQueueItem, updateQueueItemByLoop, getLoopGroupItems, cancelLoopGroup, startNextInQueue, completeCurrentItem, failCurrentItem, currentItem, queue, generateForever, setGenerateForever, progressSnapshot, completedResults, publishCompletedResult, chainPause, pauseChain, clearChainPause } = useGenerationQueue();
 
   // Use refs for WebSocket callback to prevent recreations
   const isGeneratingRef = useRef(isGenerating);
@@ -1888,6 +1869,18 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
     clearLongPressTimer();
   };
 
+  // UI state the request depends on, frozen onto the item at enqueue time: the
+  // dispatcher is GenerationQueueProcessor, which has no view of this panel.
+  const freezeDispatchState = useCallback(<T extends Record<string, any>>(p: T) => ({
+    ...p,
+    developer_mode: developerMode,
+    ...(showAdvancedCFG ? {} : {
+      cfg_schedule_type: "constant",
+      cfg_rescale_snr_alpha: 0.0,
+      dynamic_threshold_percentile: 0.0,
+    }),
+  }), [developerMode, showAdvancedCFG]);
+
   // Add generation request to queue
   const handleAddToQueue = async () => {
     if (!params.prompt) {
@@ -1991,10 +1984,9 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
       // Resolve the ARCHITECTURE from `modality` -- the fresh read this
       // function already took above via `resolveModality()` -- rather than
       // the render-time `isMusic3`/`loadedArch`. Those come from
-      // `currentModelInfo`, which only catches up to an out-of-band model
-      // switch (another tab, the API, a backend restart) after its own
-      // modelInfoVersion -> getCurrentModel -> effect chain finishes; hitting
-      // Generate inside that window must not dispatch a Music 3 request
+      // the shared `modelInfo`, which only catches up to an out-of-band model
+      // switch (another tab, the API, a backend restart) on its next sync;
+      // hitting Generate inside that window must not dispatch a Music 3 request
       // still carrying `params` resolved for the PREVIOUS architecture.
       const freshAudioArch = modality.modelInfo?.type as string | undefined;
       const freshIsMusic3 = freshAudioArch === "minimax_music3";
@@ -2221,20 +2213,22 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
 
     addToQueue({
       type: "txt2img",
-      params: {
+      params: freezeDispatchState({
         ...params,
         prompt: processedPrompt,
         negative_prompt: processedNegativePrompt,
         tipo_config: tipo_config,  // TIPO config will be sent to backend
         loop_decode: mainDecodeDirective.loop_decode,
         skip_gallery: mainDecodeDirective.skip_gallery,
-      },
+        ...(refImages.length > 0 ? { ref_images: refImages } : {}),
+      }),
       prompt: processedPrompt,
       loopGroupId,
       loopStepIndex: loopGroupId ? -1 : undefined, // -1 indicates main generation
       isLoopStep: false,
       useTrainingModel,
       trainingRunId: activeTraining?.run_id,
+      savePreviewToGallery,
     });
 
     // If loop generation is enabled, add all loop steps immediately
@@ -2607,11 +2601,11 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
 
       addToQueue({
         type: "img2img",
-        params: {
+        params: freezeDispatchState({
           ...stepParams,
           prompt: processedPrompt,
           negative_prompt: processedNegativePrompt,
-        },
+        }),
         inputImage: "", // Will be set when main generation completes
         prompt: `[Loop ${i + 1}/${enabledSteps.length}] ${processedPrompt.substring(0, 50)}...`,
         loopGroupId,
@@ -2619,11 +2613,18 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         isLoopStep: true,
         useTrainingModel,
         trainingRunId: activeTraining?.run_id,
+        savePreviewToGallery,
+        loopStepConfig: {
+          sizeMode: step.sizeMode,
+          scale: step.scale,
+          useMainControlNets: step.useMainControlNets,
+          controlnets: step.controlnets || [],
+        },
       });
     }
 
     console.log(`[Txt2Img] Added ${enabledSteps.length} loop steps to queue with group ID: ${loopGroupId}`);
-  }, [loopGenerationConfig, addToQueue, refImages, useTrainingModel, activeTraining]);
+  }, [loopGenerationConfig, addToQueue, refImages, useTrainingModel, activeTraining, savePreviewToGallery, freezeDispatchState]);
 
   // Add loop generation steps to queue after main generation completes (legacy - not used anymore)
   const addLoopStepsToQueue = useCallback(async (baseImageUrl: string, mainParams: GenerationParams, loopGroupId: string) => {
@@ -3083,34 +3084,20 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
 
       // Generate based on type
       if (nextItem.type === "txt2img") {
-        // Add developer_mode flag and reset advanced CFG params if disabled
-        let paramsWithDevMode = { ...nextItem.params, developer_mode: developerMode };
-        if (!showAdvancedCFG) {
-          paramsWithDevMode = {
-            ...paramsWithDevMode,
-            cfg_schedule_type: "constant",
-            cfg_rescale_snr_alpha: 0.0,
-            dynamic_threshold_percentile: 0.0,
-          };
-        }
-        // Add FLUX.2 Image Edit reference images
-        if (refImages.length > 0) {
-          paramsWithDevMode = {
-            ...paramsWithDevMode,
-            ref_images: refImages,
-          };
-        }
+        // developer_mode, the collapsed-Advanced-CFG resets and ref_images were
+        // all frozen into params at enqueue time.
+        const paramsWithDevMode = { ...nextItem.params };
         // Training-preview branch: route to in-training model when the
         // toggle is on and a LoRA/Full-FT run is active.  Returns a blob;
         // we wrap it in an object-URL and reuse the same display path.
         // Skips gallery save (preview only).
         // Per-item flag (set at enqueue) so queued items keep the model choice
         // regardless of the live checkbox state.
-        if ((nextItem?.useTrainingModel ?? useTrainingModel) && (nextItem?.trainingRunId ?? activeTraining?.run_id)) {
+        if (nextItem.useTrainingModel && (nextItem.trainingRunId ?? activeTraining?.run_id)) {
           const preview = await generateTxt2ImgTrainingPreview({
             ...(paramsWithDevMode as GenerationParams),
-            run_id: nextItem?.trainingRunId ?? activeTraining!.run_id,
-            save_to_gallery: savePreviewToGallery,
+            run_id: nextItem.trainingRunId ?? activeTraining!.run_id,
+            save_to_gallery: nextItem.savePreviewToGallery ?? false,
           });
           // Prefer the stable /outputs/<filename> URL when the backend
           // persisted it; fall back to a transient blob URL otherwise.
@@ -3146,22 +3133,13 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
       } else if (nextItem.type === "img2img") {
         console.log(`[Txt2Img] Starting img2img generation with prompt:`, nextItem.params.prompt?.substring(0, 100));
 
-        // Add developer_mode flag and reset advanced CFG params if disabled
-        let paramsWithDevMode = { ...nextItem.params, developer_mode: developerMode };
-        if (!showAdvancedCFG) {
-          paramsWithDevMode = {
-            ...paramsWithDevMode,
-            cfg_schedule_type: "constant",
-            cfg_rescale_snr_alpha: 0.0,
-            dynamic_threshold_percentile: 0.0,
-          };
-        }
+        const paramsWithDevMode = { ...nextItem.params };
 
         // Training-preview branch: mirrors the txt2img branch above -- a
         // loop step queued while "Use training model" was on stays on the
         // training checkpoint even though its type flipped to img2img.
-        const itemUseTraining = (nextItem?.useTrainingModel ?? useTrainingModel);
-        const itemRunId = nextItem?.trainingRunId ?? activeTraining?.run_id;
+        const itemUseTraining = nextItem.useTrainingModel;
+        const itemRunId = nextItem.trainingRunId ?? activeTraining?.run_id;
 
         if (itemUseTraining && itemRunId) {
           if (nextItem.inputLatentId) {
@@ -3179,7 +3157,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
             init_image_base64: initImageBase64,
             denoising_strength: paramsWithDevMode.denoising_strength ?? 0.75,
             run_id: itemRunId,
-            save_to_gallery: savePreviewToGallery,
+            save_to_gallery: nextItem.savePreviewToGallery ?? false,
           });
           if (preview.filename) {
             imageUrl = `/outputs/${preview.filename}`;
@@ -3302,8 +3280,8 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
           // constant mainParams size baked in at enqueue time (addLoopStepsToQueueImmediate
           // computes every step's initial width/height from mainParams, so
           // without this recompute a chain of scale steps would never compound).
-          const enabledStepsForScale = loopGenerationConfig.steps.filter(step => step.enabled);
-          const nextStepConfig = enabledStepsForScale[nextLoopStepIndex];
+          const nextStepConfig = getLoopGroupItems(nextItem.loopGroupId)
+            .find((item) => item.loopStepIndex === nextLoopStepIndex)?.loopStepConfig;
           const currentWidth = nextItem.params.width;
           const currentHeight = nextItem.params.height;
           if (nextStepConfig && nextStepConfig.sizeMode === "scale" && currentWidth && currentHeight) {
@@ -3338,9 +3316,9 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
           console.log(`[Txt2Img] TIPO prompt: ${result.image.prompt?.substring(0, 100)}...`);
 
           // Update all loop steps (not just the next one) with TIPO-generated prompt
-          const enabledSteps = loopGenerationConfig.steps.filter(step => step.enabled);
-          for (let i = 0; i < enabledSteps.length; i++) {
-            updateQueueItemByLoop(nextItem.loopGroupId, i, (item) => ({
+          for (const stepItem of getLoopGroupItems(nextItem.loopGroupId)) {
+            if (!stepItem.isLoopStep || stepItem.loopStepIndex === undefined) continue;
+            updateQueueItemByLoop(nextItem.loopGroupId, stepItem.loopStepIndex, (item) => ({
               params: {
                 ...item.params,
                 prompt: result.image.prompt,
@@ -3350,8 +3328,8 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         }
 
         // Find step config to check if ControlNet processing is needed
-        const enabledSteps = loopGenerationConfig.steps.filter(step => step.enabled);
-        const stepConfig = enabledSteps[nextLoopStepIndex];
+        const stepConfig = getLoopGroupItems(nextItem.loopGroupId)
+          .find((item) => item.loopStepIndex === nextLoopStepIndex)?.loopStepConfig;
 
         console.log(`[Txt2Img] Step config:`, {
           hasStepConfig: !!stepConfig,
@@ -3517,7 +3495,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         alert(alertMessage);
       }
     }
-  }, [isGenerating, generatedImage, onImageGenerated, startNextInQueue, completeCurrentItem, failCurrentItem, updateQueueItem, updateQueueItemByLoop, cancelLoopGroup, queue, publishCompletedResult, archCapabilities, loadedArch]);
+  }, [isGenerating, generatedImage, onImageGenerated, startNextInQueue, completeCurrentItem, failCurrentItem, updateQueueItem, updateQueueItemByLoop, getLoopGroupItems, cancelLoopGroup, queue, publishCompletedResult, archCapabilities, loadedArch, activeTraining]);
 
   processQueueRef.current = processQueue;
 
@@ -4551,12 +4529,10 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         <ModelLoadSection
           onModelLoad={async () => {
             // Reload model info when model changes
-            const modelInfo = await getCurrentModel();
-            setCurrentModelInfo(modelInfo);
-            console.log("[Txt2Img] Model changed, updated currentModelInfo:", modelInfo);
+            const loaded = await refreshModelInfo();
 
             // Auto-adjust sampler/schedule for Flow Matching models (Z-Image, FLUX.2)
-            const modelType = modelInfo?.model_info?.type;
+            const modelType = loaded?.type;
             if (modelType === "zimage" || modelType === "flux2" || modelType === "anima") {
               // Flow Matching models: use Euler with flow schedule
               setParams(prev => ({

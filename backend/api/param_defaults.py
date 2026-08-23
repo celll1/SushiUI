@@ -164,15 +164,11 @@ H3_HYBRID_LOAD_DEFAULTS: Dict[str, Any] = {
 # ---------------------------------------------------------------------------
 # SenseNova-U1.5-8B-MoT generation defaults
 # ---------------------------------------------------------------------------
-# Image generation (GENERATION_DEFAULTS below) is a FLAT dict shared by every
-# image architecture -- unlike video/audio there is no per-arch overlay
-# mechanism (VIDEO_GEN_ARCH_OVERLAYS / AUDIO_GEN_ARCH_OVERLAYS): the single
-# /generate/txt2img route's Form() signature serves all 9 image archs, so
-# `steps`/`cfg_scale` keep resolving to the shared GENERATION_DEFAULTS (20 /
-# 7.0) for a loaded SenseNova model too, exactly as they already do for every
-# other DiT architecture. Building an image-side overlay mechanism to give
-# ONE architecture its own steps/cfg_scale default is out of scope for this
-# unit. `SENSENOVA_GENERATION_DEFAULTS` below is instead consulted as
+# `steps`/`cfg_scale` here are SenseNova's actual served defaults: the four
+# image routes resolve an omitted `steps`/`cfg_scale` through
+# `IMAGE_GEN_ARCH_OVERLAYS`/`image_defaults_for_arch` (below GENERATION_DEFAULTS),
+# which overlays this dict's values on top of the shared 20/7.0 for a loaded
+# SenseNova model. `SENSENOVA_GENERATION_DEFAULTS` is also consulted directly as
 # `core.pipeline_backends.sensenova`'s internal fallback for a caller that
 # builds a params dict without going through the route (mirrors MiniT2I's
 # existing `params.get("cfg_scale", 6.0)` pattern in
@@ -538,6 +534,48 @@ GENERATION_DEFAULTS: Dict[str, Any] = {
     # there either way).
     "skip_gallery": False,
 }
+
+# ---------------------------------------------------------------------------
+# Per-architecture image defaults overlay (SSOT)
+# ---------------------------------------------------------------------------
+# `GENERATION_DEFAULTS` above is shared by every image architecture. The
+# overlay/resolver pair below is the image-side twin of
+# `VIDEO_GEN_ARCH_OVERLAYS`/`video_defaults_for_arch`: an architecture with no
+# entry resolves to `GENERATION_DEFAULTS` unchanged (today's behaviour, bit-
+# identical), and the four image routes (txt2img/img2img/inpaint/outpaint) fill
+# only the fields a request OMITS from it, via `Form(None)` sentinels -- same
+# contract as the video routes' `model_fields_set`/`Form(None)` split. Declared
+# Form() defaults stay the base values; the schema documents one stable shape.
+#
+# Scoped to `steps`/`cfg_scale` only: SenseNova's upstream reference operating
+# point (`SENSENOVA_GENERATION_DEFAULTS` above) is otherwise unused by any
+# route, so every real SenseNova request was served the shared 20/7.0 instead
+# of the documented 50/4.0 -- worse there than on a latent-space arch because
+# SenseNova decodes no VAE to absorb CFG overshoot.
+IMAGE_GEN_ARCH_OVERLAYS: Dict[str, Dict[str, Any]] = {
+    "sensenova": {
+        "steps": SENSENOVA_GENERATION_DEFAULTS["steps"],
+        "cfg_scale": SENSENOVA_GENERATION_DEFAULTS["cfg_scale"],
+    },
+}
+
+
+def image_defaults_for_arch(arch: Optional[str],
+                            base: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """`base` (default `GENERATION_DEFAULTS`) with ``arch``'s overlay applied.
+
+    The single resolver behind every image route's omitted-field handling and
+    behind the `image_arch_overlays` block of `/schema/generation-defaults`, so
+    the frontend and the backend resolve a per-arch image default the same way.
+
+    An unknown or missing arch returns `base` unchanged (a copy), which is both
+    every non-SenseNova architecture's behaviour and the safe answer for a
+    model whose type has not been resolved yet.
+    """
+    resolved = dict(base if base is not None else GENERATION_DEFAULTS)
+    resolved.update(IMAGE_GEN_ARCH_OVERLAYS.get(arch or "", {}))
+    return resolved
+
 
 # Keys present only in img2img/inpaint (not txt2img)
 _IMG2IMG_ONLY = frozenset({

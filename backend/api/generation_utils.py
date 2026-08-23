@@ -1315,6 +1315,45 @@ def resolve_video_defaults(params: Dict[str, Any], provided_keys, arch: Optional
 
 
 # ---------------------------------------------------------------------------
+# Per-architecture image request resolution
+# ---------------------------------------------------------------------------
+
+def resolve_image_defaults(params: Dict[str, Any], provided_keys, arch: Optional[str],
+                           base: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Fill every OMITTED image field from the loaded arch's image defaults.
+
+    The image counterpart of `resolve_video_defaults` above -- same contract,
+    same reason (`GENERATION_DEFAULTS` serves every image architecture, so
+    SenseNova needs its own `steps`/`cfg_scale`,
+    `param_defaults.IMAGE_GEN_ARCH_OVERLAYS`). Every image route is a
+    multipart `Form()` endpoint, so `provided_keys` is always the `Form(None)`-
+    sentinel-derived set (there is no Pydantic `model_fields_set` here).
+
+    Args:
+        params: the request dict, MUTATED in place.
+        provided_keys: the keys the client actually sent -- the set of
+            `Form(None)` sentinels that came back non-None on the multipart
+            request.
+        arch: the loaded architecture (``pipeline_manager.current_model_info``'s
+            ``type``). Unknown/None resolves to the base defaults, i.e. today's
+            behaviour.
+        base: the base default map, default ``GENERATION_DEFAULTS``.
+
+    Returns:
+        The RESOLVED default map -- passed on to `check_arch_capabilities`
+        the same way `resolve_video_defaults`'s return value is.
+    """
+    from api.param_defaults import image_defaults_for_arch
+
+    resolved = image_defaults_for_arch(arch, base)
+    provided = set(provided_keys or ())
+    for key, value in resolved.items():
+        if key in params and key not in provided:
+            params[key] = value
+    return resolved
+
+
+# ---------------------------------------------------------------------------
 # Per-architecture audio request resolution
 # ---------------------------------------------------------------------------
 

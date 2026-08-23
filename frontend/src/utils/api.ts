@@ -576,6 +576,11 @@ export interface GenerationParams {
   // backend -- purely a UI bookkeeping field, same pattern as
   // OutpaintParams.outpaint_video_audio_mode_arch.
   audio_defaults_arch?: string;
+  // Tracks which loaded architecture `steps`/`cfg_scale` were last resolved
+  // for via `image_arch_overlays` (currently only SenseNova's 50/4.0). Same
+  // bookkeeping pattern as `audio_defaults_arch` just above -- not sent to
+  // the backend.
+  image_defaults_arch?: string;
   // Keep model components GPU-resident between back-to-back generations
   // (queue sets this automatically based on whether a next item is queued)
   keep_models_hot?: boolean;
@@ -1519,6 +1524,13 @@ export interface GenerationDefaultsResponse {
   // the keys still type-checks.
   aud2aud_arch_overlays?: Record<string, Record<string, unknown>>;
   outpaint_audio_arch_overlays?: Record<string, Record<string, unknown>>;
+  // Per-architecture image overrides (backend IMAGE_GEN_ARCH_OVERLAYS /
+  // param_defaults.image_defaults_for_arch), the image equivalent of
+  // `video_arch_overlays`. A `txt2img`/`img2img`/`inpaint`/`outpaint` default
+  // resolves as `base | image_arch_overlays[arch]` -- currently only
+  // SenseNova U1.5 has an entry (steps 50, cfg_scale 4.0, vs. the shared
+  // 20/7.0). Optional so an older backend without the key still type-checks.
+  image_arch_overlays?: Record<string, Record<string, unknown>>;
   // User-overridable slider/number-input UPPER BOUNDS registry (backend
   // PARAM_BOUNDS). Optional so an older backend without the key still
   // type-checks. See frontend/src/utils/paramBounds.ts's resolveBound().

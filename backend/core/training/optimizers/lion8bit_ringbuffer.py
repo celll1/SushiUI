@@ -11,9 +11,20 @@ Lion Algorithm (Evolved Sign Momentum):
 - Momentum: m_t = β2*m_{t-1} + (1-β2)*g_t
 
 Modified for SushiUI Ring Buffer integration:
-- Momentum state (exp_avg) allocated on CPU via Ring Buffer
-- Automatic GPU transfer during backward pass
-- VRAM savings: ~87.5% for optimizer states (1 state instead of 2)
+- Momentum state (exp_avg) CAN be allocated on CPU, with automatic transfer during
+  the update -- but ONLY when a ``get_state_buffer`` allocator is passed in.
+
+NOTE: no caller passes one (see AdamW8bit_RingBuffer's docstring for the full
+account; the same gap applies here, and dfa7fbbf introduced this class the same
+way). ``get_state_buffer`` resolves to None and ``_init_param_state`` takes its
+GPU-allocation branch, so what this class delivers by default is a fused 8-bit Lion
+with GPU-resident state. The implementation is complete -- the wiring is missing.
+See RINGBUFFER_OPTIMIZERS.md and docs/guides/SENSENOVA_TRAINING_DESIGN.md 6.5.
+
+- VRAM savings vs an FP32 two-state optimizer: ~87.5% (1 byte/param instead of 8).
+  This one does NOT depend on CPU residency -- it is quantization plus Lion's
+  single state, so the default GPU-allocation path gets it. It is arithmetic, not
+  a measurement.
 
 Implementation:
 - Uses bitsandbytes quantization algorithm (dynamic map, CUB reduce)

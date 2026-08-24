@@ -21,23 +21,52 @@
 
 ### Ring Buffer Optimizersとは
 
-Ring Buffer Optimizersは、**optimizer stateをCPUメモリに配置**し、**必要な時だけGPUに転送**することで、**GPU VRAMを大幅に削減**する最適化手法です。
+Ring Buffer Optimizersは、**optimizer stateをCPUメモリに配置**し、**必要な時だけGPUに転送**することで、**GPU VRAMを削減**する設計の最適化手法です。
+
+> ### ⚠️ 現状: CPU state モードはどの呼び出し側からも有効化されていない
+>
+> **実装は存在し、`get_state_buffer` を渡せば動きます。壊れているのは配線です。**
+>
+> CPU 常駐は、コンストラクタ引数 `get_state_buffer`（`RingBufferAllocator` ベースの
+> allocator）を渡したときにだけ有効になります。ところが**この引数を供給している
+> 呼び出し側が存在しません**。参照は optimizer 実装の内部と
+> `optimizer_factory.py:130`, `:174` の `kwargs.get("get_state_buffer", None)` だけで、
+> `BaseTrainer._ringbuffer_optimizer_kwargs()` にも VAE trainer にも含まれていません
+> （`git log -S "get_state_buffer=" -- base_trainer.py` は空。導入コミット
+> `190c876e` 以来一度も配線されたことがありません）。
+>
+> したがって既定では常に `None` に解決され、**8-bit state は GPU に確保されます**
+> （`adamw8bit_ringbuffer.py` の "Ring Buffer disabled: GPU allocation
+> (bitsandbytes-compatible)" 分岐。`lion8bit_ringbuffer.py` も同様）。
+>
+> **現状これらの optimizer が提供しているのは「GPU state を持つ fused 8-bit
+> AdamW / Lion」です。** 8-bit 量子化ぶんの削減は実際に効いていますが、本ドキュメントが
+> 「Ring Buffer」として説明する CPU 常駐と DMA 転送は既定では走りません。
+> 以下の記述は、**allocator を渡した場合に設計上どう動くか**として読んでください。
+>
+> 配線に必要な作業と、それを前提にした設計上の帰結は
+> [`docs/guides/SENSENOVA_TRAINING_DESIGN.md`](../../../../docs/guides/SENSENOVA_TRAINING_DESIGN.md)
+> §6.5 に整理してあります（SenseNova の full FT 予算がこの差で 30 GB 変わるため）。
 
 ### 特徴
 
-- ✅ **99.6% VRAM削減**（optimizer statesについて）
-- ✅ **8-bit量子化対応**（AdamW/Lion）
+- ✅ **8-bit量子化対応**（AdamW/Lion）— **既定で有効**
+- ⚙️ **optimizer state の CPU 常駐**（allocator を渡した場合のみ。上記参照）
+  — 構造上の削減率は[パフォーマンス](#メモリ使用量)の worked example を参照
 - ✅ **Schedule-Free対応**（LRスケジュール不要）
 - ✅ **Cautious Optimizer対応**（符号一致マスキング）
-- ✅ **Pinned Memory最適化**（DMA転送2倍高速化）
+- ⚙️ **Pinned Memory最適化**（CPU state を使う場合のみ関係する）
 - ✅ **Block Swap互換**（U-Net CPUオフロード）
 
 ### 対応Optimizer
 
 | Optimizer | 8-bit | Schedule-Free | Cautious | Stochastic Rounding | Ring Buffer |
 |-----------|-------|---------------|----------|---------------------|-------------|
-| AdamW8bit_RingBuffer | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Lion8bit_RingBuffer | ✅ | ❌ **拒否** | ✅ | ✅ | ✅ |
+| AdamW8bit_RingBuffer | ✅ | ✅ | ✅ | ✅ | ⚙️ 実装済・未配線 |
+| Lion8bit_RingBuffer | ✅ | ❌ **拒否** | ✅ | ✅ | ⚙️ 実装済・未配線 |
+
+「⚙️ 実装済・未配線」= optimizer 側は `get_state_buffer` を受け取れば CPU state で
+動作するが、それを渡す呼び出し側が無いため既定では GPU 割当になる（冒頭の注記）。
 
 `Lion8bit_RingBuffer` の Schedule-Free は拒否される。`lion8bit_schedulefree_kernel.cu`
 は Schedule-Free の位置系列であるべき `z` を Lion の momentum EMA として使い、
@@ -1356,7 +1385,15 @@ class LoRATrainer(BaseTrainer):
 
 ### メモリ使用量
 
-**例**: 350M parameters (LoRA rank=128)
+> **この節の数値の出所（2026-08-24 調査）**: 下の削減率 75% / 99.6% は**実測ではなく、
+> 直下の worked example の byte 数から計算した算術値**である。
+> `1 - 711/2800 = 74.6% ≈ 75%`、`1 - 11/2800 = 99.6%` で、いずれも「350M parameters
+> という仮定の例」に対する構造上の見積もりであって、ベンチマークの記録ではない。
+> **さらに 99.6% の行は allocator を渡した場合の値**であり（冒頭の注記）、
+> 既定の配線で得られるのは "8-bit GPU allocation" の行の方である。
+
+**例**: 350M parameters (LoRA rank=128)。**以下は仮定の worked example であり、
+実測値ではない。**
 
 | Configuration | Optimizer States (GPU) | Optimizer States (CPU) | Total GPU Memory |
 |---------------|------------------------|------------------------|------------------|
@@ -1364,11 +1401,23 @@ class LoRATrainer(BaseTrainer):
 | **8-bit GPU allocation** | 711 MB (z: 350 MB, exp_avg_sq: 350 MB, absmax: 11 MB) | 0 MB | ~1400 MB |
 | **8-bit Ring Buffer** | 11 MB (absmax only) | 1400 MB (z: 350 MB, exp_avg: 700 MB, exp_avg_sq: 350 MB, pinned) | ~700 MB |
 
-**削減率**:
-- 8-bit GPU allocation: 75% VRAM削減（vs FP32）
-- 8-bit Ring Buffer: 99.6% VRAM削減（optimizer statesについて）
+**削減率**（上表からの算術。実測ではない）:
+- 8-bit GPU allocation: 約 75% VRAM削減（vs FP32）— **これが既定で得られる経路**
+- 8-bit Ring Buffer: 約 99.6% VRAM削減（optimizer statesについて）—
+  **allocator を渡した場合のみ。既定では到達しない**
+
+なお上表 "8-bit Ring Buffer" 行の CPU 内訳（z 350 + exp_avg 700 + exp_avg_sq 350）は
+Schedule-Free の `z` と標準 AdamW の `exp_avg` を同時に数えており、実際には同時に
+確保されない組み合わせである。表は概算の説明用と理解すること。
 
 ### 速度（Transfer Overhead）
+
+> **この節の数値の出所は特定できなかった（2026-08-24 調査）。** 測定条件（GPU、
+> PCIe 世代、バッチ、run）が記録されておらず、リポジトリ内に対応するベンチマーク
+> 成果物も無い。しかも**これらはすべて CPU state 経路の値**であり、その経路は
+> 導入時（`190c876e`）から一度も配線されたことがない（冒頭の注記）。
+> したがって以下は**帯域からの見積もりとして読むべきで、測定値として引用しないこと**。
+> 実測が必要なら測定条件つきで取り直すこと。
 
 **Ring Buffer Transfer Time**（350M params）:
 
@@ -1397,10 +1446,16 @@ class LoRATrainer(BaseTrainer):
 - 量子化誤差: 相対誤差 < 0.4%（256レベル量子化）
 - FP32 Schedule-Freeとほぼ同等の訓練品質
 
-**実測** (350M LoRA, SDXL, 1000 steps):
+**出所不明** (350M LoRA, SDXL, 1000 steps と記載):
 - Loss convergence: FP32とほぼ同等（差 < 1%）
 - Final validation loss: 差 < 0.5%
 - Training time: Ring Buffer有効で約10-15%遅延（DMA overhead）
+
+> ⚠️ この 4 行はもともと「**実測**」と書かれていたが、**2026-08-24 の調査では裏付けを
+> 特定できなかった**: run の記録もベンチマーク成果物もリポジトリに無く、しかも
+> "Ring Buffer 有効" の条件は配線が存在しないため到達できない。
+> 見出しを「実測」から「出所不明」に変更した。**数値そのものは消していない**
+> （後から出所が判明する可能性があるため）が、**測定値として引用しないこと。**
 
 ---
 

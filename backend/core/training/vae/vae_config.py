@@ -41,8 +41,10 @@ VALID_CROP_SCALE_POLICIES = ("downscale", "native", "mixed")
 # selected, which is why the set is checked at config-resolution time instead.
 #
 # The two ``*_ringbuffer`` entries are included deliberately. They are named for
-# a ring-buffer allocator (``get_state_buffer``) that only BaseTrainer builds,
-# and this trainer passes none — but that is not a failure: the allocator
+# a ring-buffer allocator (``get_state_buffer``) that NO caller builds — not this
+# trainer and not BaseTrainer either, which an earlier version of this comment
+# claimed (checked 2026-08-24: nothing has ever passed it, see
+# RINGBUFFER_OPTIMIZERS.md). That does not change the conclusion here: the allocator
 # argument defaults to None and both implementations fall back to a GPU
 # allocation for their 8-bit state (adamw8bit_ringbuffer.py "Ring Buffer
 # disabled: GPU allocation (bitsandbytes-compatible)", lion8bit_ringbuffer.py

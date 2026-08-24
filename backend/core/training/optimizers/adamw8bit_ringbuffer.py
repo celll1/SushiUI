@@ -5,9 +5,24 @@ Based on bitsandbytes 8-bit optimizer (MIT License)
 https://github.com/TimDettmers/bitsandbytes
 
 Modified for SushiUI Ring Buffer integration:
-- Optimizer states (exp_avg, exp_avg_sq) allocated on CPU via Ring Buffer
-- Automatic GPU transfer during backward pass
-- VRAM savings: ~75% for optimizer states (largest VRAM consumer)
+- Optimizer states (exp_avg, exp_avg_sq) CAN be allocated on CPU, with automatic
+  transfer during the update -- but ONLY when a ``get_state_buffer`` allocator is
+  passed to the constructor.
+
+NOTE: no caller passes one. ``optimizer_factory`` forwards
+``kwargs.get("get_state_buffer", None)`` and nothing supplies it (never has, since
+190c876e), so ``get_state_buffer`` resolves to None and ``_init_param_state`` takes
+its "Ring Buffer disabled: GPU allocation (bitsandbytes-compatible)" branch. What
+this class delivers by default is therefore a fused 8-bit AdamW with GPU-resident
+state: the 8-bit quantization saving is real, the CPU residency this file is named
+for is not wired up. The implementation is complete -- the wiring is what is
+missing. See RINGBUFFER_OPTIMIZERS.md and, for the work needed to enable it,
+docs/guides/SENSENOVA_TRAINING_DESIGN.md section 6.5.
+
+The "~75% VRAM savings for optimizer states" this docstring used to claim is
+arithmetic from RINGBUFFER_OPTIMIZERS.md's hypothetical 350M-parameter table, not a
+measurement, and in that table 75% is the 8-bit-vs-FP32 figure (the branch that
+actually runs); the CPU-state figure there is 99.6%.
 
 Implementation:
 - Uses bitsandbytes quantization algorithm (dynamic map, CUB reduce, bias correction)

@@ -510,8 +510,16 @@ class Qwen3Attention(nn.Module):
         attention_mask: Optional[torch.Tensor],
         past_key_values: Optional[Cache] = None,
         cache_position: Optional[torch.LongTensor] = None,
+        *,
+        return_kv: bool = False,
         **kwargs: Unpack[FlashAttentionKwargs],
     ) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
+        # SushiUI addition: ``return_kv`` additionally returns this call's post-RoPE
+        # K/V. Opt-in and default-off, so every existing caller keeps the 2-tuple.
+        # A differentiable prefix pass cannot let the K/V reach the next pass through
+        # ``past_key_values.update()``: that write is a side effect of the checkpoint
+        # segment, so a non-reentrant recompute would append a second time, and a
+        # side-effected tensor is not an output autograd can route a gradient through.
         # Phase-exclusivity tripwire: style injection is armed only around a
         # denoise-phase forward_gen call, and mot_phase_eviction evicts the
         # understanding-branch weights to CPU for that phase -- so reaching
@@ -588,6 +596,8 @@ class Qwen3Attention(nn.Module):
 
         attn_output = attn_output.reshape(*input_shape, -1).contiguous()
         attn_output = self.o_proj(attn_output)
+        if return_kv:
+            return attn_output, attn_weights, key_states, value_states
         return attn_output, attn_weights
 
     # def forward_gen(
@@ -969,10 +979,20 @@ class Qwen3Attention(nn.Module):
         attention_mask: Optional[torch.Tensor],
         past_key_values: Optional[Cache] = None,
         cache_position: Optional[torch.LongTensor] = None,
+        *,
+        return_kv: bool = False,
         **kwargs: Unpack[FlashAttentionKwargs],
     ) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
         if exist_non_image_gen_tokens and not exist_image_gen_tokens:
-            return self.forward_und(hidden_states, indexes, attention_mask, past_key_values, cache_position, **kwargs)
+            return self.forward_und(
+                hidden_states, indexes, attention_mask, past_key_values, cache_position,
+                return_kv=return_kv, **kwargs,
+            )
+        if return_kv:
+            raise NotImplementedError(
+                "return_kv is implemented for the understanding branch only; the "
+                "generation branch reads an existing prefix instead of producing one."
+            )
         if not exist_non_image_gen_tokens and exist_image_gen_tokens:
             return self.forward_gen(hidden_states, indexes, attention_mask, past_key_values, cache_position, **kwargs)
 
@@ -1127,12 +1147,15 @@ class Qwen3DecoderLayer(GradientCheckpointingLayer):
         past_key_values: Optional[Cache] = None,
         use_cache: Optional[bool] = False,
         cache_position: Optional[torch.LongTensor] = None,
+        *,
+        return_kv: bool = False,
         **kwargs: Unpack[TransformersKwargs],
     ) -> torch.Tensor:
+        # SushiUI addition: see ``Qwen3Attention.forward_und``. Default-off.
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
         # Self Attention
-        hidden_states, _ = self.self_attn(
+        attn = self.self_attn(
             hidden_states=hidden_states,
             image_gen_indicators=image_gen_indicators,
             exist_non_image_gen_tokens=exist_non_image_gen_tokens,
@@ -1143,8 +1166,13 @@ class Qwen3DecoderLayer(GradientCheckpointingLayer):
             past_key_values=past_key_values,
             use_cache=use_cache,
             cache_position=cache_position,
+            return_kv=return_kv,
             **kwargs,
         )
+        if return_kv:
+            hidden_states, _, key_states, value_states = attn
+        else:
+            hidden_states, _ = attn
         hidden_states = residual + hidden_states
 
         # Fully Connected
@@ -1152,6 +1180,8 @@ class Qwen3DecoderLayer(GradientCheckpointingLayer):
         hidden_states = self.post_attention_layernorm(hidden_states)
         hidden_states = self.mlp(hidden_states)
         hidden_states = residual + hidden_states
+        if return_kv:
+            return hidden_states, key_states, value_states
         return hidden_states
 
     def forward_gen(
@@ -1206,10 +1236,16 @@ class Qwen3DecoderLayer(GradientCheckpointingLayer):
         past_key_values: Optional[Cache] = None,
         use_cache: Optional[bool] = False,
         cache_position: Optional[torch.LongTensor] = None,
+        *,
+        return_kv: bool = False,
         **kwargs: Unpack[TransformersKwargs],
     ) -> torch.Tensor:
         if exist_non_image_gen_tokens and not exist_image_gen_tokens:
-            return self.forward_und(hidden_states, image_gen_indicators, exist_non_image_gen_tokens, exist_image_gen_tokens, indexes, attention_mask, position_ids, past_key_values, use_cache, cache_position, **kwargs)
+            return self.forward_und(hidden_states, image_gen_indicators, exist_non_image_gen_tokens, exist_image_gen_tokens, indexes, attention_mask, position_ids, past_key_values, use_cache, cache_position, return_kv=return_kv, **kwargs)
+        if return_kv:
+            raise NotImplementedError(
+                "return_kv is implemented for the understanding branch only."
+            )
         if not exist_non_image_gen_tokens and exist_image_gen_tokens:
             return self.forward_gen(hidden_states, image_gen_indicators, exist_non_image_gen_tokens, exist_image_gen_tokens, indexes, attention_mask, position_ids, past_key_values, use_cache, cache_position, **kwargs)
 

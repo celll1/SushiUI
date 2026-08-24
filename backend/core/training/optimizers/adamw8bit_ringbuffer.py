@@ -377,6 +377,22 @@ class AdamW8bit_RingBuffer(Optimizer):
             print(f"[AdamW8bit_RingBuffer] Allocated unquantized {p.dtype} states for {p.shape} "
                   f"({state_mem_mb:.2f} MB on GPU)")
 
+    def _advance_param_step(self, state: dict) -> int:
+        """Advance and return this parameter's own step, for bias correction.
+
+        The fused-backward hook fires once per PARAMETER, so a global counter
+        incremented there would advance P times per optimizer step. Same idiom as
+        ``adamw8bit_fused`` / ``adafactor_fused``, which keep ``state['step']``.
+
+        The fallback is the global counter, not 0, so state restored from a
+        checkpoint written before this key existed -- or converted from another
+        8-bit implementation, where BaseTrainer carries ``step_count`` -- resumes
+        at the right step instead of restarting bias correction.
+        """
+        step = int(state.get('step', self.step_count)) + 1
+        state['step'] = step
+        return step
+
     def _load_state_dict_uint8(self, state_dict):
         """
         Load optimizer state while preserving UINT8 dtypes.
@@ -720,6 +736,12 @@ class AdamW8bit_RingBuffer(Optimizer):
 
                 state = self.state[p]
                 grad = p.grad
+
+                # step() drives bias correction from the global counter (below);
+                # record it so a run that later takes the fused-hook path -- e.g.
+                # resumed with Block Swap toggled on -- continues from here
+                # instead of restarting at step 1.
+                state['step'] = max(int(state.get('step', 0)), self.step_count)
 
                 # Gradient norm scaling (for gradient clipping, if applied)
                 gnorm_scale = 1.0
@@ -1109,6 +1131,8 @@ def patch_adamw8bit_ringbuffer(model: nn.Module, optimizer: AdamW8bit_RingBuffer
             if not state.get('is_8bit', False):
                 return  # Skip FP32 params (updated in optimizer.step())
 
+            step = optimizer._advance_param_step(state)
+
             # Perform 8-bit update
             beta1, beta2 = group['betas']
             lr = group['lr']
@@ -1133,7 +1157,7 @@ def patch_adamw8bit_ringbuffer(model: nn.Module, optimizer: AdamW8bit_RingBuffer
                 state['absmax1'],
                 state['absmax2'],
                 beta1, beta2, eps, lr, weight_decay, gnorm_scale,
-                optimizer.step_count + 1,  # +1 because hook runs before step()
+                step,                       # per-parameter, see _advance_param_step
                 optimizer.cautious          # cautious masking (matches step())
             )
 

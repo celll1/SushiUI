@@ -3721,10 +3721,14 @@ class BaseTrainer(ABC):
         Arch-dependent: U-Net archs (SD/SDXL) keep the trainable model on
         ``self.unet`` and set ``self.transformer = None``; transformer/DiT archs
         (LTX-2.3, Anima, FLUX.2, Z-Image, ...) set ``self.unet = None`` and keep the
-        DiT on ``self.transformer``. The hook registration filters to requires_grad
-        params, so for LoRA runs only the adapter params get hooks regardless of
-        which module is passed. (Previously hardcoded ``self.unet``, which is None
-        for DiT archs -> AttributeError under block-swap + ring-buffer.)
+        DiT on ``self.transformer``. (Previously hardcoded ``self.unet``, which is
+        None for DiT archs -> AttributeError under block-swap + ring-buffer.)
+
+        The hooks themselves are registered from ``optimizer.param_groups``, which
+        also covers the text-encoder / vision-encoder groups ``setup_optimizer``
+        appends and this module does not contain; the module is passed for
+        parameter names and for the check that none of ITS trainable parameters is
+        missing from the optimizer.
         """
         module = getattr(self, "transformer", None)
         if module is None:
@@ -3797,9 +3801,9 @@ class BaseTrainer(ABC):
             # Note: patch_adamw8bit_ringbuffer registers hooks itself, so we don't need the loop below.
             # The main trainable module is arch-dependent: U-Net archs (SD/SDXL) use
             # self.unet; transformer archs (LTX-2.3, Anima, FLUX.2, Z-Image, ...) set
-            # self.unet=None and keep the DiT on self.transformer. Register the hooks
-            # on whichever exists — the patch filters to requires_grad params, so LoRA
-            # runs only hook the adapter params regardless of which module is passed.
+            # self.unet=None and keep the DiT on self.transformer. It is passed for
+            # names and for the orphan check; the hooks come from param_groups, so
+            # text-encoder / vision-encoder groups are covered too.
             patch_adamw8bit_ringbuffer(self._fused_backward_target_module(), self.optimizer)
             self.use_fused_backward = True
             print(f"{self.log_prefix} AdamW8bit_RingBuffer hooks registered via patch_adamw8bit_ringbuffer")

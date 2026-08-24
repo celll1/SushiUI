@@ -5440,6 +5440,9 @@ class BaseTrainer(ABC):
             pred_acc += p * w
             recon_acc += r * w
         if graph_inputs:
+            # Its own backward, so its own counter window (the chunk backwards
+            # above each took one); this one reaches the encoder parameters.
+            self._reset_fused_group_counters()
             torch.autograd.backward(tensors=list(graph_inputs.values()),
                                     grad_tensors=[grad_acc[n] for n in graph_inputs])
         return loss_acc / batch_size, pred_acc / batch_size, recon_acc / batch_size
@@ -5841,6 +5844,20 @@ class BaseTrainer(ABC):
         info[7] = new_threshold
         return cm
 
+    def _reset_fused_group_counters(self):
+        """Arm the fused optimizer groups for ONE backward pass.
+
+        Their hooks count gradients, which arrive per backward -- so this belongs
+        immediately before every ``backward()``, not once per batch. A batch runs
+        several backwards whenever MNT > 1, or it is micro-split, or an OOM retry
+        splits it; counting those together pushes the count past the group size
+        and the ``== group size`` step condition never holds again, silently
+        dropping every step after the first (and leaving its gradient live).
+        """
+        groups = getattr(self, "fused_optimizer_groups", None)
+        if groups is not None:
+            groups.reset_counters()
+
     def _execute_forward_backward(
         self,
         mnt_latents: torch.Tensor,
@@ -6116,6 +6133,7 @@ class BaseTrainer(ABC):
         loss_for_backward = loss * loss_scale if loss_scale != 1.0 else loss
         if accum > 1:
             loss_for_backward = loss_for_backward / accum
+        self._reset_fused_group_counters()
         if self.use_grad_scaler:
             self.grad_scaler.scale(loss_for_backward).backward()
         else:
@@ -10217,9 +10235,10 @@ class BaseTrainer(ABC):
                             pass
 
                 for batch_idx, batch in enumerate(tqdm(batches, desc=f"Epoch {epoch+1}/{num_epochs} ({epoch_steps} steps)")):
-                    # Reset fused optimizer groups counters (start of each step)
-                    if self.fused_optimizer_groups is not None:
-                        self.fused_optimizer_groups.reset_counters()
+                    # Drop any partial count a batch that never finished its
+                    # backward left behind. The counters that matter are armed
+                    # per backward, in _reset_fused_group_counters.
+                    self._reset_fused_group_counters()
 
                     # Vision Encoder VRAM management (mixed epochs): offload the trained VE
                     # after a sustained run of reference-free batches; the encode block

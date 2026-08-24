@@ -112,9 +112,21 @@ class FusedOptimizerGroups:
 
     def reset_counters(self):
         """
-        Reset counters for next training step.
+        Reset counters. MUST be called before EVERY backward pass, not per batch.
 
-        Must be called at the start of each training step.
+        The counters count gradients, and gradients arrive one per parameter per
+        BACKWARD. A batch runs more than one backward whenever MNT > 1, or the
+        batch is micro-split, or an OOM retry splits it: resetting once per batch
+        leaves the count above the group size from the second backward on, so
+        ``== num_parameters_per_group`` never holds again and every step after
+        the first is dropped, its gradient never freed, and the leftover summed
+        into the next batch's first step.
+
+        Resetting per backward (rather than inside the hook when a group steps)
+        also keeps the group's condition meaning "all of MY parameters got a
+        gradient in THIS backward" -- an incomplete group stays put instead of
+        drifting into a step on a mixture of this backward's and an older one's
+        gradients.
         """
         self.optimizer_hooked_count = {i: 0 for i in range(len(self.optimizers))}
 

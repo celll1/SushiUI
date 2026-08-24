@@ -3335,6 +3335,14 @@ class BaseTrainer(ABC):
         accepted by the API, written into the YAML and then dropped: the
         optimizers resolved ``kwargs.get("stochastic_rounding", False)`` and
         rounded BF16 updates to nearest regardless of the user's choice.
+
+        ``get_state_buffer`` is in that same state today, and is NOT a user option
+        (it is an allocator, not a config flag) -- but the effect is the shape
+        above: both optimizers resolve ``kwargs.get("get_state_buffer", None)``,
+        nothing here or anywhere else supplies one, so their CPU-resident state
+        never activates and they allocate 8-bit state on the GPU instead. Wiring
+        it up is a design task, not a one-line addition here; see
+        RINGBUFFER_OPTIMIZERS.md and docs/guides/SENSENOVA_TRAINING_DESIGN.md 6.5.
         """
         return {
             "cautious": self.optimizer_cautious,

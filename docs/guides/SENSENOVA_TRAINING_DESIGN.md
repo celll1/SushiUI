@@ -632,13 +632,18 @@ Phase 2b 本体を実装して受付を開く際は、loader と利用者向け�
 
 **これは SenseNova 固有の事実ではなくリポジトリ全体の事実である。** 恒久的な置き場所は
 `optimizers/RINGBUFFER_OPTIMIZERS.md` と当該 optimizer の docstring であり、ここに
-書くのは **§6.2 の予算表がどの列で成立するかを決めてしまう**からである。修正は
-本文書ではなく発生源で行うこと。
+書くのは **§6.2 の予算表がどの列で成立するかを決めてしまう**からである。
+**発生源は `b81ac5f1` 以降に訂正済み**（`RINGBUFFER_OPTIMIZERS.md` 冒頭の注記、
+`adamw8bit_ringbuffer.py` / `lion8bit_ringbuffer.py` の module docstring、
+`vae/vae_config.py` の帰属、`base_trainer._ringbuffer_optimizer_kwargs` の docstring）
+で、そちらから本節への参照も張ってある。以降の齟齬は発生源側を正とすること。
 
 `AdamW8bit_RingBuffer` の module docstring は
 "Optimizer states (exp_avg, exp_avg_sq) allocated on CPU via Ring Buffer" /
 "VRAM savings: ~75%" を主張し、`RINGBUFFER_OPTIMIZERS.md` は
-「**99.6% VRAM 削減**（optimizer states について）」と書いている。しかし
+「**99.6% VRAM 削減**（optimizer states について）」と書いていた（**この 2 つの数値は
+実測ではなく、同文書の 350M パラメータの仮定例の byte 数から計算した算術値である**:
+`1 - 711/2800 = 74.6%`、`1 - 11/2800 = 99.6%`）。しかし
 **`get_state_buffer` を optimizer に渡している呼び出し側が存在しない**。参照は
 optimizer 実装の内部と `optimizer_factory.py:130`, `:174` の
 `kwargs.get("get_state_buffer", None)` だけで、**誰も供給していない** — `BaseTrainer`

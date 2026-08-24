@@ -186,21 +186,28 @@ def _vram_spill_readout() -> dict:
 
 
 def _apply_lora(model, lora_path: str, strength: float) -> int:
-    """Wrap the gen-branch Linears with the distillation LoRA (runtime-only,
-    never merged -- see sensenova_lora.py's module docstring). Returns the
-    number of modules actually wrapped, and the caller must restore via
+    """Wrap the MoT Linears with a LoRA (runtime-only, never merged -- see
+    sensenova_lora.py's module docstring). Both branches are enumerated, so a
+    generation-only distillation file reports 294/294 and a gen+und one
+    reports 588/588 instead of silently applying its generation half. Returns
+    the number of modules actually wrapped, and the caller must restore via
     ``_restore_lora`` even on a failed/cancelled run."""
     from core.models.sensenova.sensenova_lora import (
-        load_lora_safetensors, normalise_lora_state_dict, apply_lora_group,
+        check_lora_application, load_lora_safetensors,
+        normalise_lora_state_dict, apply_lora_group,
     )
 
-    raw, fmt = load_lora_safetensors(lora_path)
+    raw, fmt, metadata = load_lora_safetensors(lora_path)
     grouped = normalise_lora_state_dict(raw)
     orig: dict = {}
     keys: set = set()
     applied = apply_lora_group(model, grouped, strength, orig, keys)
-    print(f"[SenseNova.smoke] LoRA {lora_path}: format={fmt} modules_in_file={len(grouped)} "
-          f"applied={applied}/294")
+    scope = metadata.get("lora_targets", "generation")
+    print(f"[SenseNova.smoke] LoRA {lora_path}: format={fmt} lora_targets={scope} "
+          f"modules_in_file={len(grouped)} applied={applied}")
+    shortfall = check_lora_application(grouped, applied, metadata)
+    if shortfall is not None:
+        print(f"[SenseNova.smoke] {shortfall}")
     return applied, orig, keys
 
 

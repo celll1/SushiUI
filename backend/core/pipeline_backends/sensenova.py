@@ -26,14 +26,19 @@ class SenseNovaMixin:
     """
 
     def _load_lora_sensenova(self, lora_configs: List[Dict]) -> int:
-        """Wrap the SenseNova gen-branch Linears with runtime LoRA adapters.
+        """Wrap the SenseNova MoT Linears with runtime LoRA adapters.
 
         Never merges into the base (see sensenova_lora.py's module docstring)
         -- restore_originals must always be called in a finally, mirroring
         Ideogram4Mixin._load_lora_ideogram4/_unload_lora_ideogram4.
+
+        Both MoT branches are enumerated: application is lookup-driven, so a
+        generation-only distillation file behaves exactly as before while an
+        understanding-bearing one stops being silently truncated.
         """
         from core.models.sensenova.sensenova_lora import (
-            load_lora_safetensors, normalise_lora_state_dict, apply_lora_group,
+            check_lora_application, load_lora_safetensors,
+            normalise_lora_state_dict, apply_lora_group,
         )
         from core.extensions.lora_manager import lora_manager
 
@@ -54,7 +59,7 @@ class SenseNovaMixin:
                 print(f"[SenseNova LoRA] WARNING: file not found: {lora_path}")
                 continue
             try:
-                raw, fmt = load_lora_safetensors(str(resolved))
+                raw, fmt, metadata = load_lora_safetensors(str(resolved))
                 grouped = normalise_lora_state_dict(raw)
                 applied = apply_lora_group(
                     transformer, grouped, strength,
@@ -62,6 +67,15 @@ class SenseNovaMixin:
                 )
                 print(f"[SenseNova LoRA] {i+1}/{len(lora_configs)}: {lora_path} "
                       f"format={fmt} modules={len(grouped)} wrapped={applied} strength={strength}")
+                shortfall = check_lora_application(grouped, applied, metadata)
+                if shortfall is not None:
+                    message = f"{shortfall} ({lora_path})"
+                    print(message)
+                    try:
+                        from api.generation_status import add_warning
+                        add_warning(message, code="sensenova_lora_partially_applied")
+                    except Exception:
+                        pass
                 total += applied
             except Exception as e:
                 print(f"[SenseNova LoRA] ERROR loading {lora_path}: {e}")

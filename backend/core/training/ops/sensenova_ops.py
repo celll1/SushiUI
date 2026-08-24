@@ -1,6 +1,11 @@
 """Training-only SenseNova decoder operations.
 
-The trainer supplies one immutable prompt prefix per physical B1 batch.
+The trainer supplies one prompt prefix per physical B1 batch. It is immutable
+either way, but not always detached: with ``train_text_encoder`` the prefix is
+built by a differentiable understanding-branch pass so the gradient reaches the
+understanding LoRA (Phase U). Both modes share one structural contract and
+differ only in which grad-mode assertion applies -- see
+``_assert_immutable_prefix_cache``.
 """
 
 from __future__ import annotations
@@ -202,6 +207,145 @@ def _load_reference_images(reference_image_paths: Optional[List[str]]) -> list:
     return [Image.open(path) for path in paths]
 
 
+def assert_understanding_training_supported(transformer: nn.Module) -> None:
+    """Refuse configurations the differentiable prefix pass cannot serve.
+
+    Fail-closed on a non-zero ``attention_dropout``: the vendor attention keeps
+    ``dropout=0.0 if not self.training else self.attention_dropout``, and the
+    training path stamps ``transformer.train()``, so a future non-zero config
+    would make the checkpointed prefix RECOMPUTE stochastic -- the recomputed
+    K/V would silently differ from the ones the forward produced. Upstream's
+    default is 0.0, so this refuses nothing that exists today.
+    """
+    language_model = getattr(transformer, "language_model", None)
+    llm = getattr(language_model, "model", None) if language_model is not None else None
+    if llm is None or getattr(llm, "layers", None) is None:
+        raise RuntimeError(
+            "SenseNova understanding-branch training requires the vendor "
+            "language_model.model decoder stack; this tree does not expose it"
+        )
+    config = getattr(llm, "config", None)
+    dropout = float(getattr(config, "attention_dropout", 0.0) or 0.0)
+    if dropout != 0.0:
+        raise RuntimeError(
+            "SenseNova understanding-branch training requires attention_dropout=0.0, "
+            f"got {dropout}. The vendor attention applies dropout whenever the module "
+            "is in train() mode, which the training path stamps, so a checkpointed "
+            "prefix recompute would not reproduce the K/V of its own forward."
+        )
+
+
+class _TrainingPrefixLayer:
+    """One prefix cache layer built from checkpoint OUTPUTS, not cache writes."""
+
+    flash_k_cache = None
+    flash_v_cache = None
+    flash_prefix_len = None
+
+    def __init__(self, keys: torch.Tensor, values: torch.Tensor):
+        self.keys = keys
+        self.values = values
+
+
+class _TrainingPrefixCache:
+    """The ``past_key_values`` surface the generation forward actually reads."""
+
+    _kv_cache_streamer = None
+    _kv_cache_streamer_branch = None
+
+    def __init__(self, layers: "list[_TrainingPrefixLayer]"):
+        self.layers = layers
+
+    def get_seq_length(self, layer_idx: int = 0) -> int:
+        return int(self.layers[layer_idx].keys.shape[-2])
+
+
+def forward_und_prefix_layers(
+    model: Any,
+    input_ids: torch.Tensor,
+    indexes: torch.Tensor,
+    attention_mask: Any,
+    *,
+    checkpoint_layers: bool = True,
+) -> _TrainingPrefixCache:
+    """Run the understanding decoder stack and return a differentiable prefix.
+
+    K/V leave each layer as explicit checkpoint OUTPUTS (the vendor ``return_kv``
+    seam) rather than through ``past_key_values.update()``: that write is a
+    checkpoint-segment side effect, so a non-reentrant recompute would append a
+    second time, and a side-effected tensor is not an output autograd can route
+    a gradient through. Bitwise parity with vendor ``_t2i_prefix_forward`` was
+    verified on the real checkpoint, checkpointed and not (Phase U-0).
+    """
+    layers = getattr(model, "layers", None)
+    if layers is None:
+        raise ValueError("SenseNova understanding prefix model has no decoder layers")
+    config = getattr(model, "config", None)
+    depth = int(getattr(config, "num_hidden_layers", len(layers)) or len(layers))
+    layers = list(layers)[:depth]
+    for layer in layers:
+        if getattr(layer, "attention_type", None) not in attention_mask:
+            raise ValueError(
+                f"SenseNova prefix has no mask for attention type "
+                f"{getattr(layer, 'attention_type', None)!r}"
+            )
+    # Vendor Qwen3Model.forward sets this on the pre-built-mask path.
+    model.current_index = indexes[0].max()
+
+    hidden_states = model.embed_tokens(input_ids)
+    cache_layers: "list[_TrainingPrefixLayer]" = []
+    for layer in layers:
+        mask = attention_mask[layer.attention_type]
+
+        def layer_forward(states: torch.Tensor, _layer=layer, _mask=mask):
+            # Skip only Transformers' cache-dropping wrapper; keep Module hooks.
+            return nn.Module.__call__(
+                _layer,
+                states,
+                image_gen_indicators=None,
+                exist_non_image_gen_tokens=True,
+                exist_image_gen_tokens=False,
+                indexes=indexes,
+                attention_mask=_mask,
+                position_ids=None,
+                past_key_values=None,
+                use_cache=False,
+                return_kv=True,
+            )
+
+        if checkpoint_layers:
+            hidden_states, keys, values = checkpoint(
+                layer_forward, hidden_states, use_reentrant=False
+            )
+        else:
+            hidden_states, keys, values = layer_forward(hidden_states)
+        cache_layers.append(_TrainingPrefixLayer(keys, values))
+    return _TrainingPrefixCache(cache_layers)
+
+
+def _build_trainable_prefix(trainer: Any, transformer: Any, inputs) -> Any:
+    """Run ``forward_und_prefix_layers`` under the autocast the adapters need.
+
+    ``LoRALinearLayer`` keeps fp32 adapter weights and relies on an AMBIENT
+    autocast to meet the bf16 base activation -- ``train_step`` provides one for
+    the generation pass, and without the same wrap here the very first und-LoRA
+    prefix pass raises a dtype mismatch at layer 0 (found by running it, U-0;
+    re-running the K/V parity gate with autocast on costs nothing numerically).
+    """
+    input_ids, indexes, attention_mask = inputs
+    dtype = getattr(trainer, "training_dtype", torch.float32)
+    device_type = torch.device(getattr(trainer, "device", "cpu")).type
+    autocast_enabled = device_type == "cuda" and dtype in (torch.float16, torch.bfloat16)
+    with torch.autocast(device_type=device_type, dtype=dtype, enabled=autocast_enabled):
+        return forward_und_prefix_layers(
+            transformer.language_model.model,
+            input_ids,
+            indexes,
+            attention_mask,
+            checkpoint_layers=bool(getattr(trainer, "gradient_checkpointing", True)),
+        )
+
+
 def encode_prompt(
     trainer: Any,
     prompt: str,
@@ -209,14 +353,17 @@ def encode_prompt(
     requires_grad: bool = False,
     reference_image_paths: Optional[List[str]] = None,
 ) -> SenseNovaTrainingPrefix:
-    """Build a detached prefix without inference streamers or flash buffers.
+    """Build a prefix without inference streamers or flash buffers.
+
+    ``requires_grad=False`` (the default, and the whole of Phase 1) builds it
+    under ``no_grad`` through the vendor prefix forward; ``True`` builds it
+    through the differentiable understanding loop above so understanding LoRA
+    receives gradient.
 
     With ``reference_image_paths`` this runs inference's cond branch verbatim
     (understanding-tower ViT embeds spliced into the text prefix); img_cond and
     uncond are CFG-only and carry no loss.
     """
-    if requires_grad:
-        raise ValueError("SenseNova text-encoder training is not supported")
     if not isinstance(prompt, str):
         raise TypeError("SenseNova training encodes one prompt at a time")
 
@@ -225,6 +372,38 @@ def encode_prompt(
     transformer = trainer.transformer
     ref_images = _load_reference_images(reference_image_paths)
     phase_evictor = getattr(trainer, "sensenova_phase_evictor", None)
+    if requires_grad:
+        assert_understanding_training_supported(transformer)
+        if ref_images:
+            raise NotImplementedError(
+                "SenseNova understanding-branch training is text-only in this "
+                "implementation; reference-conditioned items need the reference "
+                "tower's differentiable path, which is not wired yet"
+            )
+        if phase_evictor is not None:
+            raise RuntimeError(
+                "SenseNova understanding-branch training cannot run with MoT phase "
+                "eviction: the understanding half must stay resident until backward, "
+                "but the evictor moves it to CPU for the denoise phase"
+            )
+        query = transformer._build_t2i_query(
+            prompt,
+            system_message=SYSTEM_MESSAGE_FOR_GEN,
+            append_text="<think>\n\n</think>\n\n<img>",
+        )
+        with torch.no_grad():
+            inputs = transformer._build_t2i_text_inputs(trainer.tokenizer, query)
+        cache = _build_trainable_prefix(trainer, transformer, inputs)
+        indexes = inputs[1]
+        _assert_immutable_prefix_cache(
+            cache,
+            len(transformer.language_model.model.layers),
+            trainable=True,
+        )
+        return SenseNovaTrainingPrefix(
+            cache=cache, text_length=int(indexes[0].max()) + 1
+        )
+
     if phase_evictor is not None:
         phase_evictor.enter_prefix()
     with torch.no_grad():
@@ -370,6 +549,7 @@ def train_step(
 
     transformer = trainer.transformer
     _assert_pixel_head_fm_decoder(transformer)
+    trainable_prefix = bool(getattr(trainer, "train_text_encoder", False))
     device = trainer.device
     dtype = trainer.training_dtype
     x0 = images.to(device=device, dtype=dtype)
@@ -418,7 +598,9 @@ def train_step(
         token_h, token_w, prefix.text_length, device=device
     )
     _assert_immutable_prefix_cache(
-        prefix.cache, len(transformer.language_model.model.layers)
+        prefix.cache,
+        len(transformer.language_model.model.layers),
+        trainable=trainable_prefix,
     )
 
     device_type = torch.device(device).type
@@ -430,6 +612,7 @@ def train_step(
             indexes=indexes,
             prefix_cache=prefix.cache,
             checkpoint_layers=bool(trainer.gradient_checkpointing),
+            trainable_prefix=trainable_prefix,
         )
         decoded = transformer.fm_modules["fm_head"](
             hidden.view(1, token_h, token_w, -1).permute(0, 3, 1, 2).contiguous()
@@ -613,7 +796,12 @@ def generate_sample(
             torch.cuda.empty_cache()
 
 
-def _assert_immutable_prefix_cache(prefix_cache: Any, expected_layers: int) -> None:
+def _assert_prefix_cache_structure(prefix_cache: Any, expected_layers: int) -> None:
+    """Structural half: layer count, non-empty K/V, no inference-only buffers.
+
+    UNCONDITIONAL -- it holds identically for a detached Phase 1 prefix and a
+    differentiable understanding-training one.
+    """
     if prefix_cache is None:
         raise ValueError("SenseNova generation training requires a prefix KV cache")
     layers = getattr(prefix_cache, "layers", None)
@@ -634,13 +822,52 @@ def _assert_immutable_prefix_cache(prefix_cache: Any, expected_layers: int) -> N
             tensor = getattr(layer, name, None)
             if not isinstance(tensor, torch.Tensor) or tensor.numel() == 0:
                 raise ValueError(f"SenseNova prefix KV cache layer is missing non-empty {name}")
-            if tensor.requires_grad:
-                raise ValueError(f"SenseNova prefix KV cache {name} tensors must be detached")
         if any(
             getattr(layer, name, None) is not None
             for name in ("flash_k_cache", "flash_v_cache")
         ):
             raise ValueError("SenseNova training cannot use prepared inference flash KV buffers")
+
+
+def _assert_prefix_cache_detached(prefix_cache: Any) -> None:
+    """Grad-mode half for a frozen understanding branch."""
+    for layer in prefix_cache.layers:
+        for name in ("keys", "values"):
+            if getattr(layer, name).requires_grad:
+                raise ValueError(f"SenseNova prefix KV cache {name} tensors must be detached")
+
+
+def _assert_prefix_cache_differentiable(prefix_cache: Any) -> None:
+    """Grad-mode half for a trainable understanding branch, stated POSITIVELY.
+
+    Dropping the detachment refusal without asserting its opposite reproduces
+    the silent failure this whole path exists to avoid: a prefix accidentally
+    built under ``no_grad`` still yields a perfectly healthy, falling loss while
+    the understanding LoRA never moves a millimetre. Every layer's K/V must
+    carry a ``grad_fn``.
+    """
+    missing = [
+        index
+        for index, layer in enumerate(prefix_cache.layers)
+        if layer.keys.grad_fn is None or layer.values.grad_fn is None
+    ]
+    if missing:
+        raise ValueError(
+            "SenseNova understanding-branch training requires a differentiable prefix, "
+            f"but {len(missing)} of {len(prefix_cache.layers)} KV cache layer(s) carry no "
+            f"grad_fn (first: {missing[:3]}). The prefix was built under no_grad; the loss "
+            "would fall normally and the understanding LoRA would never be trained."
+        )
+
+
+def _assert_immutable_prefix_cache(
+    prefix_cache: Any, expected_layers: int, *, trainable: bool = False
+) -> None:
+    _assert_prefix_cache_structure(prefix_cache, expected_layers)
+    if trainable:
+        _assert_prefix_cache_differentiable(prefix_cache)
+    else:
+        _assert_prefix_cache_detached(prefix_cache)
 
 
 def forward_gen_decoder_layers(
@@ -651,6 +878,7 @@ def forward_gen_decoder_layers(
     prefix_cache: Any,
     attention_mask: Optional[torch.Tensor] = None,
     checkpoint_layers: bool = False,
+    trainable_prefix: bool = False,
 ) -> torch.Tensor:
     """Run the all-generation-token Qwen3 decoder against immutable prefix K/V.
 
@@ -662,7 +890,7 @@ def forward_gen_decoder_layers(
     layers = getattr(model, "layers", None)
     if layers is None:
         raise ValueError("SenseNova generation training model has no decoder layers")
-    _assert_immutable_prefix_cache(prefix_cache, len(layers))
+    _assert_immutable_prefix_cache(prefix_cache, len(layers), trainable=trainable_prefix)
     image_gen_indicators = torch.ones(
         hidden_states.shape[:2], dtype=torch.bool, device=hidden_states.device
     )

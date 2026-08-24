@@ -125,10 +125,11 @@ def test_sensenova_adapter_checkpoint_round_trips_through_runtime_loader(tmp_pat
     checkpoint = tmp_path / "sensenova_lora.safetensors"
     assert len(adapter.setup_trainable_parameters(repopulated)[0]["params"]) == 588
     adapter.save_checkpoint(repopulated, step=7, epoch=2, output_path=checkpoint)
-    raw, file_format = load_lora_safetensors(str(checkpoint))
+    raw, file_format, file_metadata = load_lora_safetensors(str(checkpoint))
     grouped = normalise_lora_state_dict(raw)
 
     assert file_format == "neo_hf_lora"
+    assert file_metadata["lora_targets"] == "generation"
     assert len(raw) == 882
     assert len(grouped) == 294
     with safe_open(checkpoint, framework="pt", device="cpu") as handle:

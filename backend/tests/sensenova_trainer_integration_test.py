@@ -517,8 +517,10 @@ def test_real_loop_helpers_keep_one_poison_prefix_identity_across_two_mnt_steps(
     with pytest.raises(ValueError, match="exactly one"):
         BaseTrainer._collate_sensenova_b1_prefix([prefix, object()])
 
-    first = BaseTrainer._sensenova_mnt_conditioning(collected)
-    second = BaseTrainer._sensenova_mnt_conditioning(collected)
+    owner = SimpleNamespace(train_text_encoder=False)
+    conditioning = MethodType(BaseTrainer._sensenova_mnt_conditioning, owner)
+    first = conditioning(collected, captions=["a caption"], mnt_index=0)
+    second = conditioning(collected, captions=["a caption"], mnt_index=1)
     assert first[:3] == (None, None, None)
     assert second[:3] == (None, None, None)
     assert first[3] is prefix

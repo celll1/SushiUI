@@ -48,6 +48,12 @@ target the same way, so the module path returned by ``_parse_key`` is used
 UNCHANGED as the live-tree navigation path below rather than re-derived --
 one source of truth for both directions.
 
+The asymmetry is the GENERATION side's alone: the understanding branch is
+``self_attn.{q,k,v,o}_proj`` and ``mlp.{gate,up,down}_proj``, plain names
+throughout. ``iter_sensenova_lora_targets(transformer, branch=...)`` is the
+one enumerator for both, used by training injection AND inference
+application -- a second enumerator is how the two drift.
+
 QUANTIZED BASE
 --------------
 Every one of these 294 target Linears is loaded as ``Int8Linear``
@@ -109,10 +115,10 @@ def normalise_lora_state_dict(
     """Group raw LoRA tensors -> {module_path: {down, up, alpha?}}.
 
     Entries missing a down/up pair are dropped (mirrors
-    ``ideogram4_lora.normalise_lora_state_dict``). There is only one branch
-    here (unlike Ideogram 4's cond/uncond split) -- the distillation LoRA
-    targets the generation path exclusively, so every key that parses is
-    kept.
+    ``ideogram4_lora.normalise_lora_state_dict``). There is no cond/uncond
+    split here (unlike Ideogram 4's), so every key that parses is kept --
+    including understanding-branch ones, which ``apply_lora_group`` reaches
+    because it enumerates both MoT halves.
     """
     grouped: Dict[str, Dict[str, torch.Tensor]] = {}
     for key, tensor in raw.items():
@@ -124,35 +130,107 @@ def normalise_lora_state_dict(
     return {m: v for m, v in grouped.items() if "down" in v and "up" in v}
 
 
-def load_lora_safetensors(path: str) -> Tuple[Dict[str, torch.Tensor], str]:
-    """Load a LoRA safetensors file -> (raw_state_dict, format_label).
+def _looks_like_sensenova_key(key: str) -> bool:
+    """Key-shape sniff covering BOTH branches.
+
+    ``"mot_gen" in key`` alone recognises a generation-only or mixed file but
+    drops a metadata-less understanding-bearing one into ``"unknown"``, so the
+    understanding attribute names are matched too.
+    """
+    if not key.startswith(LAYER_PREFIX):
+        return False
+    if "mot_gen" in key:
+        return True
+    parsed = _parse_key(key)
+    if parsed is None:
+        return False
+    module_path = parsed[0]
+    return any(
+        module_path.endswith(f".self_attn.{attr}") for attr in _UND_ATTN_LINEAR_ATTRS
+    ) or any(
+        module_path.endswith(f".{_UND_MLP_PARENT_ATTR}.{attr}")
+        for attr in _MLP_LINEAR_ATTRS
+    )
+
+
+def load_lora_safetensors(path: str) -> Tuple[Dict[str, torch.Tensor], str, Dict[str, str]]:
+    """Load a LoRA safetensors file -> (raw_state_dict, format_label, metadata).
 
     ``format_label`` is ``"neo_hf_lora"`` when the file carries that
-    ``tensor_kind`` metadata (the real checkpoint does) or its keys look like
-    the MoT-doubled layer path even without the metadata (a re-saved copy
-    might drop ``__metadata__``); otherwise ``"unknown"`` -- callers decide
-    how loudly to reject an unrecognised file, this function never guesses.
+    ``tensor_kind`` metadata (the real checkpoint does), when it declares a
+    known ``lora_targets`` scope, or when its keys look like either branch's
+    layer path even without the metadata (a re-saved copy might drop
+    ``__metadata__``); otherwise ``"unknown"`` -- callers decide how loudly to
+    reject an unrecognised file, this function never guesses.
+
+    The metadata is returned rather than discarded so the caller can turn
+    ``lora_targets`` into an EXPECTED applied count: an understanding-bearing
+    file loaded by a build that only enumerates the generation branch applies
+    fewer modules without raising (see ``check_lora_application``).
     """
     raw: Dict[str, torch.Tensor] = {}
     with safe_open(path, framework="pt", device="cpu") as f:
-        metadata = f.metadata() or {}
+        metadata = dict(f.metadata() or {})
         for k in f.keys():
             raw[k] = f.get_tensor(k)
-    looks_like_keys = any(k.startswith(LAYER_PREFIX) and "mot_gen" in k for k in raw)
-    fmt = "neo_hf_lora" if (metadata.get("tensor_kind") == "neo_hf_lora" or looks_like_keys) else "unknown"
-    return raw, fmt
+    recognised = (
+        metadata.get("tensor_kind") == "neo_hf_lora"
+        or metadata.get("lora_targets") in EXPECTED_MODULE_COUNTS
+        or any(_looks_like_sensenova_key(k) for k in raw)
+    )
+    return raw, ("neo_hf_lora" if recognised else "unknown"), metadata
 
 
 # ---------------------------------------------------------------------------
 # Target enumeration
 # ---------------------------------------------------------------------------
 
-# Per decoder layer: (parent_attr, linear_attr) pairs. The self_attn four are
-# suffix-on-the-linear; the mlp three are suffix-on-the-parent (see module
-# docstring's TARGET ASYMMETRY section) -- both are pre-resolved here so
-# `iter_sensenova_lora_targets` need not special-case either shape.
+# Per decoder layer: (parent_attr, linear_attr) pairs. The generation
+# self_attn four are suffix-on-the-linear; its mlp three are
+# suffix-on-the-parent (see module docstring's TARGET ASYMMETRY section) --
+# both are pre-resolved here so `iter_sensenova_lora_targets` need not
+# special-case either shape. The understanding branch carries no suffix at all.
 _ATTN_LINEAR_ATTRS = ("q_proj_mot_gen", "k_proj_mot_gen", "v_proj_mot_gen", "o_proj_mot_gen")
 _MLP_LINEAR_ATTRS = ("gate_proj", "up_proj", "down_proj")
+_UND_ATTN_LINEAR_ATTRS = ("q_proj", "k_proj", "v_proj", "o_proj")
+_GEN_MLP_PARENT_ATTR = "mlp_mot_gen"
+_UND_MLP_PARENT_ATTR = "mlp"
+
+# branch -> (attention Linear attrs, mlp parent attr, mlp Linear attrs)
+_BRANCH_LAYOUT = {
+    "gen": (_ATTN_LINEAR_ATTRS, _GEN_MLP_PARENT_ATTR, _MLP_LINEAR_ATTRS),
+    "und": (_UND_ATTN_LINEAR_ATTRS, _UND_MLP_PARENT_ATTR, _MLP_LINEAR_ATTRS),
+}
+LORA_BRANCHES = ("gen", "und", "both")
+
+# `lora_targets` checkpoint metadata -> the module count that scope implies.
+# An understanding-only file is never produced (the training adapter refuses to
+# save one) and is therefore not a scope this map recognises.
+LORA_TARGET_LABELS = {"gen": "generation", "both": "generation+understanding"}
+EXPECTED_MODULE_COUNTS = {"generation": 294, "generation+understanding": 588}
+
+
+def und_gradient_unreachable_paths(num_layers: int = 42) -> Set[str]:
+    """The understanding targets a t2i image loss structurally cannot reach.
+
+    A prefix forward keeps ``past_key_values`` and discards
+    ``last_hidden_state``, so the LAST layer's post-attention half feeds
+    nothing: its ``q_proj``/``o_proj`` and all three MLP projections receive no
+    gradient, while its ``k_proj``/``v_proj`` do (generation layer N-1 consumes
+    their K/V). Inference discards the same tensor, so this is the model's
+    shape, not a defect -- measured on the real checkpoint in Phase U-0.
+
+    Enumeration keeps all 294 anyway, so the five stay at their zero
+    ``lora_up`` init and contribute nothing at inference. This exists so a
+    census can predict them BY NAME instead of asserting that every trained
+    tensor moved, which fails on exactly these five.
+    """
+    last = f"language_model.model.layers.{num_layers - 1}"
+    return {
+        f"{last}.self_attn.q_proj",
+        f"{last}.self_attn.o_proj",
+        *(f"{last}.{_UND_MLP_PARENT_ATTR}.{attr}" for attr in _MLP_LINEAR_ATTRS),
+    }
 
 
 def _set_module(parent: Any, attr: str, module: nn.Module) -> None:
@@ -179,6 +257,8 @@ def _is_lora_target(m: Any) -> bool:
 
 def iter_sensenova_lora_targets(
     transformer: nn.Module,
+    *,
+    branch: str = "gen",
 ) -> Generator[Tuple[str, Any, str, nn.Module], None, None]:
     """Yield (module_path, parent, attr, current_module) per LoRA target.
 
@@ -188,7 +268,16 @@ def iter_sensenova_lora_targets(
     is not this arch's, in which case this yields nothing rather than
     raising, matching ``iter_ideogram4_lora_targets``'s "return silently on
     an unexpected tree shape" convention.
+
+    ``branch`` selects the MoT half: ``"gen"`` (default, the distillation
+    LoRA's scope), ``"und"``, or ``"both"`` (every generation target, then
+    every understanding one). This is the ONLY target enumerator -- training
+    injection and inference application both drive it.
     """
+    if branch not in LORA_BRANCHES:
+        raise ValueError(
+            f"Unknown SenseNova LoRA branch {branch!r} (expected one of {list(LORA_BRANCHES)})"
+        )
     is_target = _is_lora_target
 
     language_model = getattr(transformer, "language_model", None)
@@ -197,22 +286,25 @@ def iter_sensenova_lora_targets(
     if layers is None:
         return
 
-    for layer_idx, block in enumerate(layers):
-        prefix = f"language_model.model.layers.{layer_idx}"
+    selected = ("gen", "und") if branch == "both" else (branch,)
+    for branch_name in selected:
+        attn_attrs, mlp_parent_attr, mlp_attrs = _BRANCH_LAYOUT[branch_name]
+        for layer_idx, block in enumerate(layers):
+            prefix = f"language_model.model.layers.{layer_idx}"
 
-        attn = getattr(block, "self_attn", None)
-        if attn is not None:
-            for attr_name in _ATTN_LINEAR_ATTRS:
-                m = getattr(attn, attr_name, None)
-                if is_target(m):
-                    yield f"{prefix}.self_attn.{attr_name}", attn, attr_name, m
+            attn = getattr(block, "self_attn", None)
+            if attn is not None:
+                for attr_name in attn_attrs:
+                    m = getattr(attn, attr_name, None)
+                    if is_target(m):
+                        yield f"{prefix}.self_attn.{attr_name}", attn, attr_name, m
 
-        mlp = getattr(block, "mlp_mot_gen", None)
-        if mlp is not None:
-            for attr_name in _MLP_LINEAR_ATTRS:
-                m = getattr(mlp, attr_name, None)
-                if is_target(m):
-                    yield f"{prefix}.mlp_mot_gen.{attr_name}", mlp, attr_name, m
+            mlp = getattr(block, mlp_parent_attr, None)
+            if mlp is not None:
+                for attr_name in mlp_attrs:
+                    m = getattr(mlp, attr_name, None)
+                    if is_target(m):
+                        yield f"{prefix}.{mlp_parent_attr}.{attr_name}", mlp, attr_name, m
 
 
 # ---------------------------------------------------------------------------
@@ -225,6 +317,8 @@ def apply_lora_group(
     strength: float,
     lora_original_modules: Dict[str, nn.Module],
     wrapped_keys: Set[str],
+    *,
+    branch: str = "both",
 ) -> int:
     """Wrap matching modules with ``LoRALinearLayer`` (stackable, reversible).
 
@@ -233,12 +327,19 @@ def apply_lora_group(
     ``ideogram4_lora.apply_lora_group`` shape, so the quantized base tensors
     are never touched and ``restore_originals`` can always recover the
     pre-LoRA module by reference.
+
+    ``branch`` defaults to ``"both"`` because application is LOOKUP-driven: a
+    generation-only file simply misses on every understanding slot, so the
+    existing distillation checkpoint keeps applying exactly 294 modules while
+    a gen+und file stops being silently truncated to its generation half.
     """
     from core.training.adapters.sd15_adapter import LoRALinearLayer
 
     applied = 0
 
-    for module_path, parent, attr, linear in iter_sensenova_lora_targets(transformer):
+    for module_path, parent, attr, linear in iter_sensenova_lora_targets(
+        transformer, branch=branch
+    ):
         weights = grouped.get(module_path)
         if weights is None:
             continue
@@ -286,12 +387,58 @@ def restore_originals(
     transformer: nn.Module,
     lora_original_modules: Dict[str, nn.Module],
     wrapped_keys: Set[str],
+    *,
+    branch: str = "both",
 ) -> int:
-    """Revert every wrapped module to its pre-LoRA original."""
+    """Revert every wrapped module to its pre-LoRA original.
+
+    Defaults to ``"both"`` for the same reason ``apply_lora_group`` does:
+    restoration must cover every branch application could have touched, or an
+    understanding wrapper survives the generation that installed it.
+    """
     restored = 0
-    for module_path, parent, attr, _linear in iter_sensenova_lora_targets(transformer):
+    for module_path, parent, attr, _linear in iter_sensenova_lora_targets(
+        transformer, branch=branch
+    ):
         if module_path in lora_original_modules:
             _set_module(parent, attr, lora_original_modules[module_path])
             restored += 1
     wrapped_keys.clear()
     return restored
+
+
+def check_lora_application(
+    grouped: Dict[str, Dict[str, torch.Tensor]],
+    applied: int,
+    metadata: Optional[Dict[str, str]] = None,
+) -> Optional[str]:
+    """Return a message when a LoRA did not fully apply, else ``None``.
+
+    Two independent checks, because a partial application raises nothing on
+    its own -- it just returns a smaller count that looks like a narrower
+    training scope:
+
+    * every module the FILE carries must have reached a live module;
+    * when the file declares a ``lora_targets`` scope, its module count must
+      match what that scope implies (this is what catches a gen+und
+      checkpoint read by a build that only knows the generation branch).
+    """
+    problems = []
+    if applied != len(grouped):
+        problems.append(
+            f"{len(grouped) - applied} of {len(grouped)} module(s) in the file "
+            f"matched no target in the loaded transformer"
+        )
+    declared = (metadata or {}).get("lora_targets")
+    expected = EXPECTED_MODULE_COUNTS.get(declared) if declared else None
+    if expected is not None and len(grouped) != expected:
+        problems.append(
+            f"metadata declares lora_targets={declared!r} ({expected} modules) "
+            f"but the file carries {len(grouped)}"
+        )
+    if not problems:
+        return None
+    return (
+        f"[SenseNova LoRA] applied {applied} module(s): " + "; ".join(problems) +
+        ". The LoRA is only partially in effect."
+    )

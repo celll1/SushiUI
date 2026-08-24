@@ -490,12 +490,18 @@ def generate_sample(
     reference_image_path: Optional[str] = None,
     condition_image_path: Optional[str] = None,
 ):
-    """Run one inference txt2img generation from inside the training loop.
+    """Run one inference txt2img/it2i generation from inside the training loop.
 
     Drives the SAME ``sensenova_pipeline_ops`` prefix + Euler loop generation
     uses; nothing about the denoise is reimplemented here. The LoRA under
     training is applied automatically because its ``LoRALinearLayer`` wrappers
     ARE the live modules the generation forward calls.
+
+    ``reference_image_path`` runs inference's own reference path: the image goes
+    to ``ops.encode_prompt(..., ref_images=...)`` exactly as the generation
+    backend passes it, so the sample is built by the SAME cond/img_cond/uncond
+    branch logic a real it2i request gets. This is a different function from the
+    training-side ``encode_prompt`` above, which builds the cond branch only.
 
     Returns a PIL image, or ``None`` if the generation failed -- the training
     loop's sample block has no exception guard of its own, so a failed sample
@@ -506,10 +512,13 @@ def generate_sample(
     from core.models.sensenova import sensenova_pipeline_ops as ops
 
     transformer = trainer.transformer
-    if reference_image_path or condition_image_path:
+    if condition_image_path:
+        # ControlNet-style conditioning, which SenseNova has no entry for
+        # (refused in arch_capabilities); unrelated to reference images, which
+        # enter as understanding-tower tokens in the prompt prefix.
         print(
-            f"{trainer.log_prefix} SenseNova sampling ignores reference/condition "
-            f"images (reference-conditioned training is deferred to Phase 3)"
+            f"{trainer.log_prefix} SenseNova sampling ignores the condition image "
+            f"(ControlNet is not supported for SenseNova U1.5)"
         )
 
     snapped_width, snapped_height = ops.normalize_resolution(width, height)
@@ -525,6 +534,15 @@ def generate_sample(
     evictor = getattr(trainer, "sensenova_phase_evictor", None)
     prefix = None
     try:
+        ref_images = _load_reference_images(
+            [reference_image_path] if reference_image_path else None
+        )
+        img_cfg_scale = SENSENOVA_GENERATION_DEFAULTS["img_cfg_scale"]
+        if ref_images:
+            print(
+                f"{trainer.log_prefix} SenseNova sample is reference-conditioned "
+                f"(img_cfg_scale={img_cfg_scale}): {reference_image_path}"
+            )
         # No-op while the phase evictor owns weight placement.
         trainer.move_main_model_to_gpu()
         transformer.eval()
@@ -547,6 +565,8 @@ def generate_sample(
                 snapped_width,
                 guidance_scale,
                 negative_prompt=negative_prompt,
+                ref_images=ref_images,
+                img_cfg_scale=img_cfg_scale,
             )
             if evictor is not None:
                 evictor.enter_denoise()

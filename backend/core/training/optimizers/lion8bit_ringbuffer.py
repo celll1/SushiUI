@@ -46,6 +46,9 @@ from .quantization_map import create_quantization_map
 # Fused-backward hook registration (driven by optimizer.param_groups)
 from .fused_backward_registration import register_fused_backward_hooks
 
+# Gradient-norm recording (the hooks clear param.grad before it can be measured)
+from .fused_grad_norm import record_fused_grad_norm
+
 # Stochastic rounding helpers (shared with AdamW8bit_RingBuffer)
 from .stochastic_rounding import (
     Fp32ScratchPool,
@@ -684,6 +687,10 @@ def register_lion8bit_fused_backward(optimizer, model):
             # Skip if no gradient
             if param.grad is None:
                 return
+
+            # Before the update: the hook clears param.grad below, and the
+            # trainer's grad-norm reporting runs after the whole backward.
+            record_fused_grad_norm(optimizer, param)
 
             # Initialize state if needed
             if len(optimizer.state[param]) == 0:

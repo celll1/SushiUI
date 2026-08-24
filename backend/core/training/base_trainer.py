@@ -43,6 +43,32 @@ from core.attention import (
 from core.training.lr_utils import reassert_config_lr
 
 
+def setup_fused_grad_norm(trainer, optimizers):
+    """Give every fused-backward hook a place to record gradient norms.
+
+    The hooks clear ``param.grad`` as soon as they have applied the update, so
+    ``_calculate_grad_norms`` finds nothing and reports 0.0 for every component
+    unless they record it first.
+    """
+    from core.training.optimizers.fused_grad_norm import (
+        FusedGradNormAccumulator,
+        attach_grad_norm_accumulator,
+    )
+    accumulator = getattr(trainer, "_fused_grad_norm", None)
+    if accumulator is None:
+        accumulator = FusedGradNormAccumulator()
+        trainer._fused_grad_norm = accumulator
+    for optimizer in optimizers:
+        attach_grad_norm_accumulator(optimizer, accumulator)
+    return accumulator
+
+
+def fused_backward_active(trainer) -> bool:
+    """True when the per-parameter hooks, not optimizer.step(), apply the updates."""
+    return bool(getattr(trainer, "use_fused_backward", False)) or \
+        getattr(trainer, "fused_optimizer_groups", None) is not None
+
+
 class FatalCudaError(RuntimeError):
     """Raised when a CUDA error is classified as "fatal" (context presumed
     dead: e.g. cudaErrorLaunchFailure / illegal memory access). Subclasses
@@ -936,6 +962,9 @@ class BaseTrainer(ABC):
         self.num_optimizer_groups = num_optimizer_groups
         self.use_fused_backward = False  # Adafactor per-parameter updates
         self.fused_optimizer_groups = None  # FusedOptimizerGroups instance (for any optimizer)
+        # setup_fused_grad_norm(): where the fused hooks record squared gradient
+        # norms before clearing param.grad. None when no fused path is configured.
+        self._fused_grad_norm = None
 
         # Optimizer options and hyperparameters (defaults will be used if None)
         self.optimizer_cautious = optimizer_cautious
@@ -3740,6 +3769,33 @@ class BaseTrainer(ABC):
             )
         return module
 
+    def _warn_grad_clipping_ignored_under_fused(self, max_grad_norm: float) -> None:
+        """Say once that ``max_grad_norm`` does nothing under fused backward.
+
+        Global-norm clipping needs the whole gradient vector before it can pick a
+        scale, and the fused backward pass updates each parameter the moment its
+        own gradient exists -- by the time the last one arrives the first is
+        already applied. The two cannot coexist; the setting is ignored, and
+        substituting a per-parameter clip under the same name would be a
+        different algorithm.
+        """
+        if max_grad_norm is None or max_grad_norm <= 0:
+            return
+        if not fused_backward_active(self):
+            return
+        if getattr(self, "_fused_clipping_warned", False):
+            return
+        self._fused_clipping_warned = True
+        mode = ("fused optimizer groups" if self.fused_optimizer_groups is not None
+                else "the fused backward pass")
+        print(f"{self.log_prefix} WARNING: max_grad_norm={max_grad_norm} is IGNORED under "
+              f"{mode}. Gradient clipping by global norm has to see every gradient "
+              f"before it can scale them, and this mode applies each parameter's update "
+              f"as soon as that parameter's gradient exists, so no global norm is ever "
+              f"available. No clipping of any kind is applied. To clip, disable the fused "
+              f"path (blocks_to_swap=0 and num_optimizer_groups=0); to silence this, set "
+              f"max_grad_norm=0.")
+
     def _setup_fused_backward_pass(self, optimizer_type: str):
         """
         Setup fused backward pass for Block Swap compatibility.
@@ -3784,6 +3840,8 @@ class BaseTrainer(ABC):
                 f"Schedule-Free path inside optimizer.step()."
             )
 
+        setup_fused_grad_norm(self, [self.optimizer])
+
         # Patch optimizer with step_param method
         if optimizer_type.lower() == "adafactor":
             from .optimizers.adafactor_fused import patch_adafactor_fused
@@ -3820,6 +3878,8 @@ class BaseTrainer(ABC):
             return  # Skip the hook registration loop below
 
         # Register hooks for all trainable parameters
+        from .optimizers.fused_grad_norm import record_fused_grad_norm
+
         hooks_registered = 0
         for param_group in self.optimizer.param_groups:
             for parameter in param_group["params"]:
@@ -3827,9 +3887,12 @@ class BaseTrainer(ABC):
 
                     def __grad_hook(tensor: torch.Tensor, pg=param_group):
                         """Hook called when gradient is ready for this parameter"""
-                        # Gradient clipping (if enabled)
-                        # Note: We don't use max_grad_norm here because it's set to 0 by default
-                        # and clipping is already handled elsewhere
+                        # No clipping here: a global-norm clip cannot be applied
+                        # per parameter (see _warn_grad_clipping_ignored_under_fused).
+
+                        # Before the update, which is free to scale the gradient
+                        # in place, and before the clear below.
+                        record_fused_grad_norm(self.optimizer, tensor)
 
                         # Update THIS parameter immediately (while on GPU)
                         self.optimizer.step_param(tensor, pg)
@@ -3929,6 +3992,8 @@ class BaseTrainer(ABC):
 
         # Store all schedulers for stepping
         self.lr_schedulers = lr_schedulers
+
+        setup_fused_grad_norm(self, optimizers)
 
         # Create FusedOptimizerGroups instance
         self.fused_optimizer_groups = FusedOptimizerGroups(
@@ -11388,6 +11453,15 @@ class BaseTrainer(ABC):
                         # Wrap in try-except as final safety net - if all recovery fails, skip batch
                         cuda_error_skip = False  # Flag to skip optimizer step when CUDA is in bad state
 
+                        # The fused hooks clear param.grad; arm them to record its
+                        # squared norm first, but only on the steps whose norms are
+                        # reported (the same condition should_step_optimizer uses
+                        # below, for the step this backward is about to become).
+                        if self._fused_grad_norm is not None:
+                            self._fused_grad_norm.begin_step(
+                                (global_step + 1) % gradient_accumulation_steps == 0
+                            )
+
                         # Lens: pass latent spatial dims so train_step_lens can build img_shapes
                         # correctly for non-square resolutions.  width/height from batch loop.
                         batch_lens_latent_shape = None
@@ -11693,7 +11767,11 @@ class BaseTrainer(ABC):
                                     self.optimizer.zero_grad()
                                     self._update_ema()
                             else:
-                                # Fused backward/groups flow - calculate grad norm (step/zero_grad by hooks)
+                                # Fused backward/groups flow: the hooks have already
+                                # stepped and cleared the grads, so the norms come
+                                # from what they recorded first. No clipping is
+                                # possible here - see the warning.
+                                self._warn_grad_clipping_ignored_under_fused(max_grad_norm)
                                 grad_norm_total, grad_norm_te, grad_norm_te1, grad_norm_te2, grad_norm_unet, grad_norm_ve = self._calculate_grad_norms()
 
                             # LR scheduler step
@@ -12159,13 +12237,25 @@ class BaseTrainer(ABC):
             distinguishable (SDXL LoRA + Full FT, SD1.5 which reports its single
             CLIP as TE1); other architectures' TE LoRA lands in the combined
             text_encoder bucket.
+
+        Under fused backward the squared norms come from the accumulator the
+        hooks filled before clearing each gradient; otherwise they are measured
+        from the live gradients. Either way this method decides the components,
+        and the squares are read in one device->host sync rather than one per
+        parameter.
         """
-        total_grad_norm = 0.0
-        text_encoder_grad_norm = 0.0
-        text_encoder_1_grad_norm = 0.0
-        text_encoder_2_grad_norm = 0.0
-        unet_grad_norm = 0.0
-        vision_encoder_grad_norm = 0.0
+        # id(param) -> ||grad||^2, or None when it has to be measured below.
+        recorded = None
+        if fused_backward_active(self):
+            accumulator = getattr(self, "_fused_grad_norm", None)
+            recorded = accumulator.squared_norms() if accumulator is not None else {}
+
+        def _has_grad(param):
+            if recorded is not None:
+                return id(param) in recorded
+            return param.grad is not None
+
+        entries: List[Tuple[Any, str]] = []  # (param, 'unet'|'te'|'te1'|'te2'|'ve')
 
         # For LoRA training, iterate through lora_layers dict
         if hasattr(self, 'lora_layers'):
@@ -12192,23 +12282,19 @@ class BaseTrainer(ABC):
                     unclassified.append(lora_name)
                     component = LORA_COMPONENT_UNET  # main trainable model
                 for param in lora_layer.parameters():
-                    if param.grad is not None:
-                        param_norm = param.grad.data.norm(2).item()
-                        total_grad_norm += param_norm ** 2
+                    if _has_grad(param):
                         grad_count += 1
 
                         if component == LORA_COMPONENT_TEXT_ENCODER_1:
-                            text_encoder_grad_norm += param_norm ** 2
-                            text_encoder_1_grad_norm += param_norm ** 2
+                            entries.append((param, 'te1'))
                         elif component == LORA_COMPONENT_TEXT_ENCODER_2:
-                            text_encoder_grad_norm += param_norm ** 2
-                            text_encoder_2_grad_norm += param_norm ** 2
+                            entries.append((param, 'te2'))
                         elif component == LORA_COMPONENT_TEXT_ENCODER:
-                            text_encoder_grad_norm += param_norm ** 2
+                            entries.append((param, 'te'))
                         elif component == LORA_COMPONENT_VISION_ENCODER:
-                            vision_encoder_grad_norm += param_norm ** 2
+                            entries.append((param, 've'))
                         else:
-                            unet_grad_norm += param_norm ** 2
+                            entries.append((param, 'unet'))
 
             if unclassified and not hasattr(self, '_grad_norm_unclassified_warned'):
                 print(f"{self.log_prefix} [GradNorm] WARNING: {len(unclassified)} LoRA layer(s) "
@@ -12230,44 +12316,32 @@ class BaseTrainer(ABC):
             # SD1.5/SDXL: Direct text_encoder access — treat as TE1
             if hasattr(self, 'text_encoder') and self.text_encoder is not None:
                 for name, param in self.text_encoder.named_parameters():
-                    if param.grad is not None:
-                        param_norm = param.grad.data.norm(2).item()
-                        total_grad_norm += param_norm ** 2
-                        text_encoder_grad_norm += param_norm ** 2
-                        text_encoder_1_grad_norm += param_norm ** 2
+                    if _has_grad(param):
+                        entries.append((param, 'te1'))
 
             # Iterate through text encoder 2 parameters (if trainable, SDXL) — TE2
             if hasattr(self, 'text_encoder_2') and self.text_encoder_2 is not None:
                 for name, param in self.text_encoder_2.named_parameters():
-                    if param.grad is not None:
-                        param_norm = param.grad.data.norm(2).item()
-                        total_grad_norm += param_norm ** 2
-                        text_encoder_grad_norm += param_norm ** 2
-                        text_encoder_2_grad_norm += param_norm ** 2
+                    if _has_grad(param):
+                        entries.append((param, 'te2'))
 
             # Iterate through U-Net parameters (if trainable, SD1.5/SDXL)
             if hasattr(self, 'unet') and self.unet is not None:
                 for name, param in self.unet.named_parameters():
-                    if param.grad is not None:
-                        param_norm = param.grad.data.norm(2).item()
-                        total_grad_norm += param_norm ** 2
-                        unet_grad_norm += param_norm ** 2
+                    if _has_grad(param):
+                        entries.append((param, 'unet'))
 
             # Iterate through Transformer parameters (if trainable, Z-Image)
             if hasattr(self, 'transformer_original') and self.transformer_original is not None:
                 for name, param in self.transformer_original.named_parameters():
-                    if param.grad is not None:
-                        param_norm = param.grad.data.norm(2).item()
-                        total_grad_norm += param_norm ** 2
-                        unet_grad_norm += param_norm ** 2
+                    if _has_grad(param):
+                        entries.append((param, 'unet'))
 
             # Iterate through Vision Encoder parameters (if training VE, SD1.5/SDXL only)
             if getattr(self, '_train_vision_encoder', False) and getattr(self, 'vision_encoder', None) is not None:
                 for param in self.vision_encoder.parameters():
-                    if param.grad is not None:
-                        param_norm = param.grad.data.norm(2).item()
-                        total_grad_norm += param_norm ** 2
-                        vision_encoder_grad_norm += param_norm ** 2
+                    if _has_grad(param):
+                        entries.append((param, 've'))
 
             # Iterate through ControlNet parameters (ControlNet training freezes
             # UNet/TE/VAE and trains self.controlnet, so none of the branches above
@@ -12276,10 +12350,34 @@ class BaseTrainer(ABC):
             # model) slot so the convergence signal is usable.
             if getattr(self, 'controlnet', None) is not None:
                 for param in self.controlnet.parameters():
-                    if param.grad is not None:
-                        param_norm = param.grad.data.norm(2).item()
-                        total_grad_norm += param_norm ** 2
-                        unet_grad_norm += param_norm ** 2
+                    if _has_grad(param):
+                        entries.append((param, 'unet'))
+
+        if recorded is None:
+            from .optimizers.fused_grad_norm import squared_norms_from_grads
+            recorded = squared_norms_from_grads(param for param, _ in entries)
+
+        total_grad_norm = 0.0
+        text_encoder_grad_norm = 0.0
+        text_encoder_1_grad_norm = 0.0
+        text_encoder_2_grad_norm = 0.0
+        unet_grad_norm = 0.0
+        vision_encoder_grad_norm = 0.0
+        for param, bucket in entries:
+            square = recorded.get(id(param), 0.0)
+            total_grad_norm += square
+            if bucket == 'te1':
+                text_encoder_grad_norm += square
+                text_encoder_1_grad_norm += square
+            elif bucket == 'te2':
+                text_encoder_grad_norm += square
+                text_encoder_2_grad_norm += square
+            elif bucket == 'te':
+                text_encoder_grad_norm += square
+            elif bucket == 've':
+                vision_encoder_grad_norm += square
+            else:
+                unet_grad_norm += square
 
         # Take square root to get L2 norm
         total_grad_norm = total_grad_norm ** 0.5

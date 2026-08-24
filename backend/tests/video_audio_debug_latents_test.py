@@ -30,6 +30,18 @@ ENDPOINT_KEYS = ("latents", "noisy_latents", "predicted_velocity",
                  "actual_velocity", "predicted_latent")
 
 
+def _boom(*a, **k):
+    """``torch.save`` stand-in: a full disk mid-dump."""
+    raise OSError("No space left on device")
+
+
+def _assert_warned(capsys):
+    """The dump failed, the step survived, and the user was told why."""
+    out = capsys.readouterr().out
+    assert "[debug_latents] save failed" in out
+    assert "No space left on device" in out
+
+
 # ----------------------------------------------------------------------
 # window sizing
 # ----------------------------------------------------------------------
@@ -185,6 +197,12 @@ def test_ltx2_predicted_latent_matches_noising_definition(tmp_path):
     assert data["recon_loss"] == pytest.approx(0.0, abs=1e-8)
 
 
+def test_ltx2_dump_failure_does_not_break_train_step(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(torch, "save", _boom)
+    _run_ltx2(_Ltx2ConstantTransformer(), tmp_path / "step_000010")
+    _assert_warned(capsys)
+
+
 def test_ltx2_sign_is_xt_minus_sigma_v(tmp_path):
     out = tmp_path / "step_000001"
     sigma = 0.7
@@ -336,6 +354,12 @@ def test_h3_still_has_no_audio_rows_and_dumps_video_only(tmp_path):
                    and k != "audio_present" for k in data)
 
 
+def test_h3_dump_failure_does_not_break_train_step(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(torch, "save", _boom)
+    _run_h3(lambda *a: _H3ConstantTransformer(), tmp_path / "step_000010")
+    _assert_warned(capsys)
+
+
 def test_h3_sign_is_xt_plus_sigma_v(tmp_path):
     out = tmp_path / "step_000001"
     _l, _a, sigma_v, sigma_a = _run_h3(lambda *a: _H3ConstantTransformer(0.25), out, u=0.4)
@@ -469,6 +493,13 @@ def test_acestep_predicted_latent_matches_noising_definition(tmp_path, stub_aces
     data = torch.load(next(out.glob("latents_t*.pt")), map_location="cpu")
     assert torch.allclose(data["predicted_latent"], dbg.audio_strip(latents), atol=1e-4)
     assert data["recon_loss"] == pytest.approx(0.0, abs=1e-8)
+
+
+def test_acestep_dump_failure_does_not_break_train_step(
+        tmp_path, monkeypatch, capsys, stub_acestep_mixin):
+    monkeypatch.setattr(torch, "save", _boom)
+    _run_ace(lambda xt, t: torch.full_like(xt, 0.25), tmp_path / "step_000010")
+    _assert_warned(capsys)
 
 
 def test_acestep_sign_is_xt_minus_sigma_v(tmp_path, stub_acestep_mixin):

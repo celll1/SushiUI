@@ -663,54 +663,57 @@ def train_step(
 
     # Debug save if requested
     if debug_save_path is not None:
-        debug_save_path.mkdir(parents=True, exist_ok=True)
-        timestep_value = timesteps[0].item()
+        try:
+            debug_save_path.mkdir(parents=True, exist_ok=True)
+            timestep_value = timesteps[0].item()
 
-        with torch.no_grad():
-            # FLUX.2 uses standard Flow Matching: x_0 = x_t - t * v
-            t = timesteps.float()
-            while t.dim() < noisy_latents.dim():
-                t = t.unsqueeze(-1)
-            predicted_latent = noisy_latents - t * model_pred
+            with torch.no_grad():
+                # FLUX.2 uses standard Flow Matching: x_0 = x_t - t * v
+                t = timesteps.float()
+                while t.dim() < noisy_latents.dim():
+                    t = t.unsqueeze(-1)
+                predicted_latent = noisy_latents - t * model_pred
 
-            # Convert packed latents (B, seq_len, C) to (B, C, H, W) for visualization
-            # This makes debug output consistent with other models (SD/SDXL/Z-Image)
-            latents_4d = trainer._flux2_unpack_latents_with_ids(latents[0:1], img_ids[0:1])
-            noisy_latents_4d = trainer._flux2_unpack_latents_with_ids(noisy_latents[0:1], img_ids[0:1])
-            predicted_velocity_4d = trainer._flux2_unpack_latents_with_ids(model_pred[0:1], img_ids[0:1])
-            actual_velocity_4d = trainer._flux2_unpack_latents_with_ids(target[0:1], img_ids[0:1])
-            predicted_latent_4d = trainer._flux2_unpack_latents_with_ids(predicted_latent[0:1], img_ids[0:1])
+                # Convert packed latents (B, seq_len, C) to (B, C, H, W) for visualization
+                # This makes debug output consistent with other models (SD/SDXL/Z-Image)
+                latents_4d = trainer._flux2_unpack_latents_with_ids(latents[0:1], img_ids[0:1])
+                noisy_latents_4d = trainer._flux2_unpack_latents_with_ids(noisy_latents[0:1], img_ids[0:1])
+                predicted_velocity_4d = trainer._flux2_unpack_latents_with_ids(model_pred[0:1], img_ids[0:1])
+                actual_velocity_4d = trainer._flux2_unpack_latents_with_ids(target[0:1], img_ids[0:1])
+                predicted_latent_4d = trainer._flux2_unpack_latents_with_ids(predicted_latent[0:1], img_ids[0:1])
 
-        debug_data = {
-            'latents': latents_4d.detach().cpu(),
-            'noisy_latents': noisy_latents_4d.detach().cpu(),
-            'predicted_velocity': predicted_velocity_4d.detach().cpu(),
-            'actual_velocity': actual_velocity_4d.detach().cpu(),
-            'predicted_latent': predicted_latent_4d.detach().cpu(),
-            'timestep': timestep_value,
-            'loss': loss_per_sample[0].item(),
-            'loss_batch_mean': loss.item(),
-            'recon_loss': recon_loss_per_sample[0].item(),
-            'recon_loss_batch_mean': recon_loss.item(),
-            'batch_size': batch_size,
-            'scheduler_type': 'FlowMatching',
-            'model_type': 'flux2',
-            'img_ids_shape': list(img_ids.shape),
-            'txt_ids_shape': list(txt_ids.shape),
-            'latent_shape_4d': list(latents_4d.shape),  # Store 4D shape for reference
-        }
+            debug_data = {
+                'latents': latents_4d.detach().cpu(),
+                'noisy_latents': noisy_latents_4d.detach().cpu(),
+                'predicted_velocity': predicted_velocity_4d.detach().cpu(),
+                'actual_velocity': actual_velocity_4d.detach().cpu(),
+                'predicted_latent': predicted_latent_4d.detach().cpu(),
+                'timestep': timestep_value,
+                'loss': loss_per_sample[0].item(),
+                'loss_batch_mean': loss.item(),
+                'recon_loss': recon_loss_per_sample[0].item(),
+                'recon_loss_batch_mean': recon_loss.item(),
+                'batch_size': batch_size,
+                'scheduler_type': 'FlowMatching',
+                'model_type': 'flux2',
+                'img_ids_shape': list(img_ids.shape),
+                'txt_ids_shape': list(txt_ids.shape),
+                'latent_shape_4d': list(latents_4d.shape),  # Store 4D shape for reference
+            }
 
-        if debug_captions is not None and len(debug_captions) > 0:
-            debug_data['caption'] = debug_captions[0]
-            debug_data['all_captions'] = debug_captions
+            if debug_captions is not None and len(debug_captions) > 0:
+                debug_data['caption'] = debug_captions[0]
+                debug_data['all_captions'] = debug_captions
 
-        if debug_reference_image_paths is not None and len(debug_reference_image_paths) > 0:
-            first_ref = next((p for p in debug_reference_image_paths if p is not None), None)
-            if first_ref:
-                debug_data['reference_image_path'] = first_ref
+            if debug_reference_image_paths is not None and len(debug_reference_image_paths) > 0:
+                first_ref = next((p for p in debug_reference_image_paths if p is not None), None)
+                if first_ref:
+                    debug_data['reference_image_path'] = first_ref
 
-        torch.save(debug_data, debug_save_path / f"latents_t{timestep_value:.4f}.pt")
-        del predicted_latent, latents_4d, noisy_latents_4d, predicted_velocity_4d, actual_velocity_4d, predicted_latent_4d
+            torch.save(debug_data, debug_save_path / f"latents_t{timestep_value:.4f}.pt")
+            del predicted_latent, latents_4d, noisy_latents_4d, predicted_velocity_4d, actual_velocity_4d, predicted_latent_4d
+        except Exception as _dbg_e:
+            print(f"{trainer.log_prefix} [debug_latents] save failed: {_dbg_e}")
 
     # Return loss tensor and loss values
     pred_loss_value = mse_loss.item()

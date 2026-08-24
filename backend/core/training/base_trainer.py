@@ -2653,6 +2653,38 @@ class BaseTrainer(ABC):
 
         return False
 
+    def _resolve_start_epoch(
+        self,
+        resume_training_state: Optional[dict],
+        global_step: int,
+        steps_per_epoch: int,
+        multi_noise_timesteps: int = 1,
+    ) -> int:
+        """Epoch index the loop resumes at.
+
+        Prefers the epoch recorded in the training state. Without one, derives it
+        from ``global_step`` -- via the crop planner when crop augmentation makes
+        the per-epoch step count variable, else by division.
+        """
+        if resume_training_state is not None and resume_training_state.get('epoch') is not None:
+            return int(resume_training_state['epoch'])
+        crop_planner = getattr(self, 'crop_planner', None)
+        if getattr(self, '_crop_step_offsets', None) is not None and crop_planner is not None:
+            return int(crop_planner.epoch_for_step(global_step, multi_noise_timesteps))
+        return int(global_step) // max(1, int(steps_per_epoch))
+
+    def _epoch_batch_position(self, batch_idx: int) -> int:
+        """Epoch-absolute index of the NEXT batch, for the training state.
+
+        ``batch_idx`` enumerates the batch list as sliced for this session, so on
+        a mid-epoch resume the skipped prefix must be added back. Saving the raw
+        index made every resume record a position relative to its own resume
+        point, so the epoch's data cursor rewound on each restart; an epoch
+        longer than one session then never completed and ``epoch`` never advanced
+        (run 112 stayed at epoch 0 for ~70k steps with 954,880 batches/epoch).
+        """
+        return int(batch_idx) + 1 + int(getattr(self, '_epoch_batch_offset', 0) or 0)
+
     def save_training_state(self, step: int, epoch: int, batch_idx: int, multi_noise_timesteps: int = 1):
         """
         Save training state (epoch progress, batch index, random state) to JSON file.
@@ -8766,6 +8798,9 @@ class BaseTrainer(ABC):
         global_step = 0
         start_epoch = 0
         resume_batch_idx = 0  # Batch index to resume from within epoch
+        # Batches of the current epoch already completed before this session's
+        # batch list starts (see _epoch_batch_position).
+        self._epoch_batch_offset = 0
         # Bind batch_idx up-front so the emergency-save handler (which references
         # batch_idx) never raises UnboundLocalError when a crash occurs BEFORE the
         # first batch iteration (dataloader / bucket assembly / model setup), which
@@ -8816,7 +8851,8 @@ class BaseTrainer(ABC):
                     # Try to load training state for mid-epoch resume
                     resume_training_state = self.load_training_state(checkpoint_step)
                     if resume_training_state:
-                        start_epoch = resume_training_state['epoch']
+                        start_epoch = self._resolve_start_epoch(
+                            resume_training_state, global_step, steps_per_epoch, multi_noise_timesteps)
                         resume_batch_idx = resume_training_state['batch_idx']
 
                         # Use global_step from state.json (most accurate, saved at same time as batch_idx)
@@ -8835,11 +8871,8 @@ class BaseTrainer(ABC):
                             self._restore_relora_state(resume_training_state)
                     else:
                         # No training state file, fall back to epoch-level resume.
-                        # Crop augmentation has variable per-epoch step counts -> map via offsets.
-                        if self._crop_step_offsets is not None and self.crop_planner is not None:
-                            start_epoch = self.crop_planner.epoch_for_step(global_step, multi_noise_timesteps)
-                        else:
-                            start_epoch = global_step // steps_per_epoch
+                        start_epoch = self._resolve_start_epoch(
+                            None, global_step, steps_per_epoch, multi_noise_timesteps)
                         print(f"{self.log_prefix} Resuming from step {global_step}, epoch {start_epoch + 1}")
 
                     # Fast-forward lr_scheduler to match the checkpoint
@@ -8886,7 +8919,8 @@ class BaseTrainer(ABC):
                     # Try to load training state for mid-epoch resume
                     resume_training_state = self.load_training_state(checkpoint_step)
                     if resume_training_state:
-                        start_epoch = resume_training_state['epoch']
+                        start_epoch = self._resolve_start_epoch(
+                            resume_training_state, global_step, steps_per_epoch, multi_noise_timesteps)
                         resume_batch_idx = resume_training_state['batch_idx']
 
                         # Use global_step from state.json (most accurate, saved at same time as batch_idx)
@@ -8905,11 +8939,8 @@ class BaseTrainer(ABC):
                             self._restore_relora_state(resume_training_state)
                     else:
                         # No training state file, fall back to epoch-level resume.
-                        # Crop augmentation has variable per-epoch step counts -> map via offsets.
-                        if self._crop_step_offsets is not None and self.crop_planner is not None:
-                            start_epoch = self.crop_planner.epoch_for_step(global_step, multi_noise_timesteps)
-                        else:
-                            start_epoch = global_step // steps_per_epoch
+                        start_epoch = self._resolve_start_epoch(
+                            None, global_step, steps_per_epoch, multi_noise_timesteps)
                         print(f"{self.log_prefix} Resuming from step {global_step}, epoch {start_epoch + 1}")
 
                     # Fast-forward lr_scheduler to match the checkpoint
@@ -9266,6 +9297,7 @@ class BaseTrainer(ABC):
             for epoch in range(start_epoch, num_epochs):
                 # Recorded with each metric (for epoch-boundary markers in the UI).
                 self._current_epoch = epoch
+                self._epoch_batch_offset = 0  # only the resumed epoch is truncated
                 print(f"\n{self.log_prefix} Epoch {epoch + 1}/{num_epochs}")
 
                 # Reload datasets for per-epoch shuffle/dropout
@@ -9590,6 +9622,7 @@ class BaseTrainer(ABC):
                 if epoch == start_epoch and resume_training_state is not None:
                     print(f"{self.log_prefix} Skipping {resume_batch_idx} completed batches...")
                     batches = batches[resume_batch_idx:]
+                    self._epoch_batch_offset = resume_batch_idx
 
                     # Clear resume state so we don't skip batches in subsequent epochs
                     resume_training_state = None
@@ -11689,7 +11722,7 @@ class BaseTrainer(ABC):
                                 self._log_metrics_to_db(step=global_step, force_flush=True)
                             self.save_checkpoint(step=global_step, epoch=epoch)
                             # Save training state (epoch progress) for mid-epoch resume
-                            self.save_training_state(step=global_step, epoch=epoch, batch_idx=batch_idx + 1, multi_noise_timesteps=multi_noise_timesteps)
+                            self.save_training_state(step=global_step, epoch=epoch, batch_idx=self._epoch_batch_position(batch_idx), multi_noise_timesteps=multi_noise_timesteps)
                             # Save optimizer state (momentum, variance, etc.)
                             self.save_optimizer_state(step=global_step)
                             # Save EMA shadow state + weight snapshot (no-op unless use_ema)
@@ -11856,7 +11889,7 @@ class BaseTrainer(ABC):
             # This is acceptable as MNT iterations are gradient accumulation (can skip partial progress)
             state_saved = False
             try:
-                self.save_training_state(step=global_step, epoch=epoch, batch_idx=batch_idx + 1, multi_noise_timesteps=multi_noise_timesteps)
+                self.save_training_state(step=global_step, epoch=epoch, batch_idx=self._epoch_batch_position(batch_idx), multi_noise_timesteps=multi_noise_timesteps)
                 state_saved = True
                 print(f"{self.log_prefix} Training state saved successfully")
             except Exception as e:
@@ -11982,7 +12015,7 @@ class BaseTrainer(ABC):
                 # Try to save training state
                 state_saved = False
                 try:
-                    self.save_training_state(step=global_step, epoch=epoch, batch_idx=batch_idx + 1, multi_noise_timesteps=multi_noise_timesteps)
+                    self.save_training_state(step=global_step, epoch=epoch, batch_idx=self._epoch_batch_position(batch_idx), multi_noise_timesteps=multi_noise_timesteps)
                     state_saved = True
                     print(f"{self.log_prefix} [EMERGENCY] Training state saved successfully")
                 except Exception as state_error:

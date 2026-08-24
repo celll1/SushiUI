@@ -30,8 +30,9 @@ on an FP32 copy of the same weights:
 WHAT EACH GROUP PINS
 --------------------
 * ``FusedAdamW8bitDefectTest``  -- ``adamw8bit_fused.step_param``, the update a
-  block-swapped ``adamw8bit`` full fine-tune runs (plain Python, not the 8-bit
-  kernel). BF16 params, BF16 grads.
+  block-swapped ``adamw8bit`` full fine-tune runs. It delegates to bitsandbytes'
+  per-parameter seam, so this is the 8-bit kernel too; the state format and the
+  patch contract are pinned in ``adamw8bit_fused_bnb_state_test.py``.
 * ``FusedAdafactorDefectTest``  -- ``adafactor_fused.step_param``, covered by
   the generic interposer rather than by an edit to the optimizer.
 * ``BitsandbytesKernelDefectTest`` -- the shipped default itself: real
@@ -107,88 +108,65 @@ class _Bf16UpdateAssertions:
         self.assertGreater(moved, 0.5, f"{label}: too few weights ever moved")
 
 
+@unittest.skipUnless(torch.cuda.is_available(), "the 8-bit kernels require CUDA")
 class FusedAdamW8bitDefectTest(unittest.TestCase, _Bf16UpdateAssertions):
-    """``adamw8bit`` + Block Swap: the plain-Python step_param this repo ships.
+    """``adamw8bit`` + Block Swap: ``step_param``, the seam the hooks drive.
 
-    Despite the name this is NOT the 8-bit kernel -- ``patch_adamw8bit_fused``
-    replaces the update with a Python AdamW so that Block Swap can drive it one
-    parameter at a time. It wrote ``p.addcdiv_(...)`` straight into BF16 storage.
+    It used to be a hand-written Python AdamW writing ``p.addcdiv_(...)`` into
+    BF16 storage with dense state. It now delegates to bitsandbytes' own
+    per-parameter update, so this drives the real 8-bit kernel; the state format
+    is pinned in ``adamw8bit_fused_bnb_state_test.py``.
     """
 
     def _run(self, w0, stochastic_rounding):
+        import bitsandbytes as bnb
         from core.training.optimizers.adamw8bit_fused import patch_adamw8bit_fused
 
-        p = torch.nn.Parameter(w0.clone())
-        optimizer = torch.optim.SGD([p], lr=LR)  # a carrier for state/param_groups
+        p = torch.nn.Parameter(w0.clone().cuda())
+        optimizer = bnb.optim.AdamW8bit([p], lr=LR, weight_decay=0.0)
         patch_adamw8bit_fused(optimizer, stochastic_rounding)
-        group = {"lr": LR, "betas": (0.9, 0.999), "eps": 1e-8, "weight_decay": 0.0}
+        group = optimizer.param_groups[0]
 
         for _ in range(STEPS):
             # BF16 gradient: what autograd produces for a BF16 parameter.
-            p.grad = torch.full((N,), -1.0, dtype=torch.bfloat16)
+            p.grad = torch.full_like(p, -1.0)
             optimizer.step_param(p, group)
-        return p.detach()
+            p.grad = None
+        return p.detach().cpu()
 
     def test_stochastic_rounding_reaches_the_fused_adamw8bit_update(self):
         self._assert_defect_then_fix(self._run, "adamw8bit_fused.step_param")
 
-    def test_the_optimizer_state_stays_in_the_parameter_dtype(self):
-        """SR must not silently double optimizer-state memory.
+    def test_the_optimizer_state_stays_8_bit(self):
+        """SR must not silently multiply optimizer-state memory.
 
-        This path allocates state with ``zeros_like(p)``. Interposing an FP32
-        view of the parameter around the whole call -- the generic mechanism
-        used for every other optimizer -- would make exp_avg/exp_avg_sq FP32,
-        i.e. 8 bytes per element instead of 4, in exactly the block-swap
-        configuration chosen to save memory. Hence the native handling here.
+        The FP32 image of the parameter lives for one call; ``init_state``
+        allocates the moments with an explicit uint8 dtype, not from the
+        parameter, so the block-swap configuration chosen to save memory keeps
+        its 2.03 B/param.
         """
+        import bitsandbytes as bnb
         from core.training.optimizers.adamw8bit_fused import patch_adamw8bit_fused
 
-        p = torch.nn.Parameter(_weights())
-        optimizer = torch.optim.SGD([p], lr=LR)
+        p = torch.nn.Parameter(_weights().cuda())
+        optimizer = bnb.optim.AdamW8bit([p], lr=LR, weight_decay=0.0)
         patch_adamw8bit_fused(optimizer, True)
-        p.grad = torch.full((N,), -1.0, dtype=torch.bfloat16)
-        optimizer.step_param(p, {"lr": LR, "betas": (0.9, 0.999), "eps": 1e-8,
-                                 "weight_decay": 0.0})
+        p.grad = torch.full_like(p, -1.0)
+        optimizer.step_param(p, optimizer.param_groups[0])
 
         state = optimizer.state[p]
-        self.assertEqual(state["exp_avg"].dtype, torch.bfloat16)
-        self.assertEqual(state["exp_avg_sq"].dtype, torch.bfloat16)
-
-    def test_the_fallback_step_dispatches_through_the_instance_attribute(self):
-        """``adamw8bit_step`` is not installed today, so nothing else pins it.
-
-        It is the same shape as the Adafactor defect an audit found: a batch
-        ``step()`` that calls the MODULE-LEVEL ``..._step_param(self, p, group)``
-        bypasses every interposition, which rebinds the instance attribute. This
-        one is currently unreachable (``patch_adamw8bit_fused`` deliberately
-        keeps bitsandbytes' own ``step``), so this test exists to stop it
-        becoming reachable and wrong at the same time.
-        """
-        from core.training.optimizers.adamw8bit_fused import (
-            adamw8bit_step, patch_adamw8bit_fused,
-        )
-
-        p = torch.nn.Parameter(_weights())
-        p.grad = torch.full((N,), -1.0, dtype=torch.bfloat16)
-        optimizer = torch.optim.SGD([p], lr=LR)
-        patch_adamw8bit_fused(optimizer, True)
-        optimizer.param_groups[0].update(betas=(0.9, 0.999), eps=1e-8, weight_decay=0.0)
-
-        seen = []
-        inner = optimizer.step_param
-        optimizer.step_param = lambda param, group: (seen.append(param), inner(param, group))[1]
-        adamw8bit_step(optimizer)
-        self.assertEqual(seen, [p], "step() did not dispatch through self.step_param")
+        self.assertEqual(state["state1"].dtype, torch.uint8)
+        self.assertEqual(state["state2"].dtype, torch.uint8)
 
     def test_the_generic_interposer_leaves_this_step_param_alone(self):
-        """Wrapping it as well would round twice and change the state dtype."""
+        """Wrapping it as well would round twice."""
+        import bitsandbytes as bnb
         from core.training.optimizers.adamw8bit_fused import patch_adamw8bit_fused
 
-        p = torch.nn.Parameter(_weights())
-        optimizer = torch.optim.SGD([p], lr=LR)
+        p = torch.nn.Parameter(_weights().cuda())
+        optimizer = bnb.optim.AdamW8bit([p], lr=LR, weight_decay=0.0)
         patch_adamw8bit_fused(optimizer, True)
-        # Reported as covered-by-the-optimizer, and NOT wrapped: wrapping would
-        # round twice and make the state FP32.
+        # Reported as covered-by-the-optimizer, and NOT wrapped.
         self.assertEqual(attach_stochastic_rounding(optimizer), (NATIVE_STEP_PARAM,))
         self.assertFalse(getattr(optimizer.step_param, WRAPPED_ATTR, False))
 
@@ -555,8 +533,12 @@ class ReachableConfigurationMatrixTest(unittest.TestCase, _Bf16UpdateAssertions)
 
     @staticmethod
     def _needs_cuda(optimizer_type, blocks_to_swap) -> bool:
-        """The bitsandbytes kernels only run on CUDA; its fused patch is Python."""
-        return optimizer_type in ("adamw8bit", "lion8bit") and blocks_to_swap == 0
+        """The bitsandbytes kernels only run on CUDA, in both paths.
+
+        The Block Swap path used to be exempt because its ``step_param`` was
+        plain Python; it now delegates to the same kernel.
+        """
+        return optimizer_type in ("adamw8bit", "lion8bit")
 
     def _drive(self, optimizer_type, blocks_to_swap, groups, stochastic_rounding, w0):
         trainer = _StubTrainer(

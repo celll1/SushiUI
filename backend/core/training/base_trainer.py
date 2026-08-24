@@ -3786,10 +3786,10 @@ class BaseTrainer(ABC):
             patch_adafactor_fused(self.optimizer)
         elif optimizer_type.lower() == "adamw8bit":
             from .optimizers.adamw8bit_fused import patch_adamw8bit_fused
-            # This step_param is a plain-Python AdamW (it is NOT the bitsandbytes
-            # 8-bit kernel), so it applies stochastic rounding itself rather than
-            # being wrapped -- that keeps its optimizer state in the parameter's
-            # dtype instead of following an FP32 view of the parameter.
+            # step_param delegates to bitsandbytes' own per-parameter seam, so the
+            # state stays 8-bit and stays the same format step() writes. It applies
+            # stochastic rounding itself rather than being wrapped, to hand the
+            # kernel an FP32 view without turning the state FP32 too.
             patch_adamw8bit_fused(self.optimizer, self.optimizer_stochastic_rounding)
         elif optimizer_type.lower() == "adamw8bit_ringbuffer":
             # AdamW8bit_RingBuffer has built-in hook support via patch_adamw8bit_ringbuffer

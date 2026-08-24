@@ -95,6 +95,7 @@ facts は [`MODEL_FACTS.md`](MODEL_FACTS.md) を正とする。本文書は Sens
 | half-eviction | training 専用 driver、opt-in API/UI、実 checkpoint OFF / ON 測定を完了 | DONE |
 | 学習中 sample / `debug_latents` | 推論の prefix + Euler loop をそのまま駆動する `generate_sample` と、pixel space の debug dump を実装済み（`dc91bef1`）。`sample_every` の強制 0 は解除 | DONE |
 | reference / full FT | §11 の後続フェーズ。full FT の律速は bf16 base の入手ではなく gate/loader の method-aware 化（§6.4）、reference は flux2 ハードゲート 6 箇所の解除から（§7.5） | PENDING |
+| understanding branch の学習 | ユーザー選択式（既定 OFF）で LoRA / Full-FT の対象にする機能要求。Phase 1 のみに依存する独立フェーズとして §13 に分離 | PENDING |
 
 ---
 
@@ -243,10 +244,17 @@ non-reentrant checkpoint loop を持つ。immutable な prefix cache を closure
    丸ごと削除する。** und を凍結すれば prefix forward は `no_grad` で回せるので、
    prefix KV を定数として扱える。gen forward は §4.7 の非破壊
    `update_cache=False` fallback で current K/V の勾配を保つ。und を学習させるなら、
-   2 つの独立した forward をまたぐ微分可能な KV パイプラインを構築し、42 層分の
+   2 つの独立した forward をまたぐ微分可能な KV パイプラインを通し、42 層分の
    prefix activation を backward まで保持し、`cat[prefix_KV, gen_KV]` の flash
-   attention に勾配を通す必要がある。これはフラグではなくサブシステムであり、
-   phase 1 の LoRA に対して費用対効果が極端に釣り合わない。
+   attention に勾配を通す必要がある。これは phase 1 の LoRA に対して費用対効果が
+   釣り合わない。
+   - **【2026-08-24 改訂】この根拠のうち「微分可能な KV パイプラインを*構築*する
+     必要がある」は過大評価だった（§13.1）。** 経路は既に微分可能で、必要なのは
+     *解錠*である。他方「42 層分の prefix activation を backward まで保持する」
+     コストの指摘は正しく、しかも当時の想定より重い — 量子化 base では
+     **und 側 294 個の `Int8Linear` が backward 用の dequant 済み bf16 weight を
+     autograd に保存する**からである（§13.2）。「フラグではなくサブシステム」という
+     評価は、und LoRA 全体ではなく **3 つの具体的な部品**にのみ当てはまる。
 2. **und branch はこのアーキテクチャにおける text encoder そのものである。**
    本リポジトリの他 arch はすべて既定で TE を凍結している。SenseNova はその
    「text encoder」が同じ decoder layer の中に交互に格納されているだけで、
@@ -260,9 +268,14 @@ non-reentrant checkpoint loop を持つ。immutable な prefix cache を closure
    十分に持つ。凍結 TE に cross-attention が適応するのと同じ構図で、公開されている
    gen-only の distillation LoRA がそれが機能することを実証している。
 
-**保留（deferred）**: `scope: generation | both` の選択肢。追加のトリガは Phase 3 で
-reference 忠実度が実測で不足した場合のみ（§7.3）。`understanding-only` は用途が無く
-推論側で検証もできないため**恒久的に提供しない**。
+**保留（deferred）→ 【2026-08-24】Phase U として提供する（既定 OFF）。**
+`scope: generation | both` は「Phase 3 で reference 忠実度が不足した場合のみ開ける」
+保留項目だったが、**「新規コンセプトの追加には understanding 層の学習が重要」という
+明示的な機能要求**を受け、ユーザー選択式のオプションとして立てる（§13）。
+**この改訂は上の判断と矛盾しない** — 既定は OFF のままで、gen-only が通常の学習契約で
+あるという位置づけ（根拠 2）も、既定経路の checkpoint 互換（根拠 3）も変わらない。
+変わるのは「選択肢を提供するか」だけである。`understanding-only` は用途が無く
+推論側で検証もできないため**恒久的に提供しない**（保存側で gen 0 件を拒否する）。
 
 ### 5.3 int8 base 上の LoRA は追加作業なしで成立する
 
@@ -377,27 +390,80 @@ weight を buffer で持つので `requires_grad_(True)` が no-op になり、
 
 ### 6.2 確定した設計判断 — 対象は gen branch のみ（fable 諮問）
 
-**判断: 実装する場合の full FT は gen branch のみの 8.1B。これを SenseNova における
-「full fine-tune」と呼ぶ。both-branch 16.2B はロードマップに載せない。**
+**判断: 実装する場合の full FT の既定は gen branch のみの 8.1B。これを SenseNova に
+おける「full fine-tune」と呼ぶ。**（**【2026-08-24 改訂】** 旧文は
+「both-branch 16.2B はロードマップに載せない」だったが、その根拠だったメモリ算術が
+誤りだったので撤回した。下記「改訂」節と §13.4 を参照。）
 
 根拠:
 
 - **座りが悪いのは gen-only ではなく both-branch の方である。** 言語理解を担う branch
   を含む 16.2B を学習するのは「text encoder も一緒に fine-tune する」ことであり、
-  本リポジトリはどの arch でもそれを既定にしていない。破滅的忘却の profile が
-  悪く、同時に bf16 weight 32.4 GB + gradient 32.4 GB だけで 48 GB を超え、
-  activation と一時領域を置けない。原理とメモリの両方で落ちるので選択肢から外す。
+  本リポジトリはどの arch でもそれを既定にしていない。破滅的忘却の profile が悪い。
+  **既定を gen-only にする根拠としてはこれで足りる。**
 - **gen-only の算術は厳しいが現実的:** bf16 weight 16.2 GB + gradient 16.2 GB +
   optimizer state（CPU offload）+ stochastic-rounding の per-step scratch + pixel space の
   activation（checkpointing 下）。48 GB で閉じるには gen 半分の offload と
   optimizer state の CPU 常駐が必要になる。つまり **Phase 2 は §8 の
   offload 機構の存在に依存する**。この依存順序自体がガード先行を正当化する。
 
-**Phase 1 の実装がこの判断を強化した。** `encode_prompt` は `requires_grad=True` を
-即 raise し（`arch/sensenova.py:27-32` → `ops/sensenova_ops.py`）、prefix の
-immutability は forward のたびに `_assert_immutable_prefix_cache` で検証される。
-und を学習可能にするには**この不変条件群と 2 パス構造そのものを解体する**必要があり、
-§5.2 の「フラグではなくサブシステム」という評価が実装として具体化された形である。
+#### 【2026-08-24 改訂】「メモリで即死」という根拠は撤回する
+
+この節は以前 both-branch を **「bf16 weight 32.4 GB + gradient 32.4 GB だけで 48 GB を
+超えるので原理とメモリの両方で落ちる」** として設計対象外にしていた。**この算術は
+本リポジトリが既に持つ機構を一つも勘定に入れていない誤りだったので撤回する。**
+
+- `_setup_fused_backward_pass` は per-parameter の
+  `register_post_accumulate_grad_hook` で `optimizer.step_param()` を呼び、直後に
+  **`tensor.grad = None` する**（[`base_trainer.py:3802-3812`](../../backend/core/training/base_trainer.py)）。
+  勾配は 1 パラメータ分ずつ生まれて即消えるので、**32.4 GB の gradient は同時に存在
+  しない**。
+- Adafactor は 2nd moment を factored に持ち、`patch_adafactor_fused`（`:3763-3764`）
+  で fused backward 経路に乗る。
+
+改訂後の予算を下表に置く。**これは構造上の見積もりであって実測ではない**
+（48 GB、B1、GC ON、§6.4 経路 (a) を 588 Linear に拡張した場合）。実測値は
+prefix KV の 50.5 MiB だけで、これは Phase 0 の計測（§11）からの引用である。
+
+| 項 | 素朴値 | 効く機構 | 適用後（構造上の見積もり） |
+|---|---:|---|---:|
+| weights bf16 両 half | 32.4 GB | なし | 32.4 GB |
+| gradients | 32.4 GB | fused backward（`grad = None`） | ~0.1-0.2 GB |
+| optimizer state | AdamW fp32 129.6 GB / adamw8bit 32.4 GB | **Adafactor（factored 2nd moment）** | ~0.1 GB オーダー |
+| stochastic rounding scratch | — | 出荷済みの per-step scratch 方式（§6.3） | ~0.2-0.4 GB |
+| prefix KV | — | — | **50.5 MiB（Phase 0 実測値の引用）** |
+| activations | — | GC ON | ~0.34 GB @1024² + pixel 系一時領域 |
+
+**合計 ~36-38 GB（見積もり）で 48 GB に載る。** ただし成立条件が 6 つあり、
+そのうち 1 は現状のブロッカーである。
+
+1. **fused backward の gate 解錠（最大のブロッカー）。**
+   `_setup_fused_backward_pass` の呼び出しは **`if self.blocks_to_swap > 0:` の内側**に
+   ある（`base_trainer.py:3597` → `:3657`）。SenseNova は `blocks_to_swap != 0` を
+   拒否するため、**現状の契約では fused backward に到達できない**。
+2. **勾配蓄積の意味論が変わる。** hook は backward ごとに step するので、
+   **fused backward 下では effective batch = 物理 batch = 1** になる。
+   B1 + gradient accumulation で effective batch を作る現行 SenseNova 契約
+   （§11 Phase 1）と衝突する。accumulation-aware hook は未実装。
+3. **optimizer は Adafactor 一択。** adamw8bit でも state 32.4 GB で超過し、
+   `torch.optim.AdamW` は fp32 state 129.6 GB かつ per-parameter seam が無いので
+   stochastic rounding もかけられない（§6.3）。
+4. **`use_ema` は fused backward と併用拒否**（実装済みの raise、`:3642-3652`）。
+5. **経路 (a) の 588 版は per-Linear に「dequant → int8 解放」の順**で行う。一括だと
+   ロード時に int8 15.1 GiB と bf16 32.4 GB が同時実体化する。
+6. **解像度上限は実測 gate で引く。** pixel-space の activation が唯一の解像度比例項
+   である。
+
+したがって **both-branch full FT は「メモリで不可能」ではなく「未実装の前提が
+6 つある」**。ロードマップ上の既定は依然 gen-only（忘却 profile が根拠）だが、
+**both-branch を構造的に不可能として閉じることはしない**。実装経路は §13.4（Phase U-2）。
+
+**Phase 1 の実装が既定を裏付けている。** `encode_prompt` は `requires_grad=True` を
+即 raise し（`ops/sensenova_ops.py:179-180`）、prefix の immutability は forward の
+たびに `_assert_immutable_prefix_cache` で検証される（`:531-558`）。**ただしこれは
+「解体しなければ und は学習できない」という意味ではない** — この assert は構造検証と
+`requires_grad` 拒否が 1 つの関数に同居しているだけで、**分離すれば済む**（§13.3）。
+§5.2 根拠 1 の改訂と合わせて読むこと。
 
 #### 未決定のサブ論点 — decoder 外の gen 側モジュール
 
@@ -862,6 +928,42 @@ gen bf16 16.2 GB + gradient 16.2 GB で、weights と gradients だけで 48 GB 
 したがって **gate の消化（activation が支配する解像度での OFF / ON 再測定）を
 Phase 2b の最初の作業項目に置く**（§11 Phase 2b-0）。
 
+### 8.3.2 und 学習と half-eviction（原理的には両立する）
+
+und branch を学習対象にする場合（§13）の eviction 契約をここに置く。
+
+> **und 学習と half-eviction は、単一 `loss.backward()` 実装では両立しない**
+> （backward の途中に weight swap を挟む座標が無い）。**原理的には両立する**:
+> und / gen の境界は prefix KV cache（**Phase 0 実測 50.5 MiB @258 token**）で、
+> 境界勾配も同形なので、**合計 ~100 MiB でグラフを切断し 2 回の backward に
+> 分割できる**。したがって contract 側の拒否は「この実装形のスコープ制限」であって
+> **不可能宣言ではない**。
+
+分割する場合は既存 evictor の 3 状態（`full` / `prefix` / `denoise`）を 4 相に拡張する。
+
+| 相 | 内容 | 常駐 half |
+|---|---|---|
+| `prefix` | und forward（勾配付き、境界 KV を葉として保持） | und |
+| `denoise` | gen forward + **gen backward**（境界 KV の `.grad` まで） | gen |
+| `und_backward` | und forward を**再計算**し `torch.autograd.backward(recomputed_kv, grad_tensors=kv_grad)` | und |
+| `full` | 既存 | 両方 |
+
+- 相 3 の「16.2 GB の勾配」問題は fused backward（§6.2 改訂）で消える。
+- **weight 同時常駐は 16.2 GB + 境界 + 活性 ≈ ~19-21 GB** となり、**24 GB 級カードでの
+  both-branch Full-FT が視野に入る**。**これは構造上の見積もりであって断定ではない** —
+  half-eviction の有効性 gate は §8.3 のとおり未解決で、現行 staging 実装の転送コストも
+  未知だからである（§8.3 の「減速の数値は再測定が必要」）。
+- `und_backward → prefix` は **no-op** にできる（und 常駐のまま次 step へ）ので、
+  転送は 1 往復節約できる。
+- **MNT > 1 では境界勾配を累積してから相 3 を 1 回だけ回す。** KV 葉の `.grad` は
+  backward 間で自然に加算され、und は iteration 間で不変なので数学的に正確である。
+  **副作用として「gen は MNT 回 / und は batch あたり 1 回」という更新頻度の非対称**が
+  生まれる。これは欠陥ではなく設計事実として記録する。
+- **und forward 2 回のコストと weight 往復コストは未測定。**
+  `probes/text_encode_vs_step.py`（`a67640ed`）には既に sensenova アームがあり、
+  prefix forward と DiT step の壁時計を測れるので、**「prefix / step 比の実測」を
+  この設計の exit gate に指定する**（§13.4 U-2-4）。
+
 ### 8.4 half-eviction 再利用時の注意
 
 `mot_phase_eviction.py:115-136` の層選択は **Parameter の有無ではなく永続性**を
@@ -984,6 +1086,8 @@ cache namespace と alignment は登録だけで有効になった。
 | ConvRot base の train / inference skew | 学習は dequant 経路（W-int8 / A-bf16）に fit するが、推論は常に fused W8A8。fit 先とデプロイ先が activation 量子化誤差の分だけ異なる。**実害は未測定** | 既知制約として §5.3 に記録。skew を避けるなら plain int8 base を選ぶ |
 | 正規化の取り違え | reference は ImageNet、target は 0.5/0.5。**顕在化形態**: FLUX.2 の前例（ref を target と同じ bucket 寸法で VAE encode）をテンプレートにすると、形状が patchify 段で偶然合いエラーなしに誤正規化が学習される | §4.6, §7.4。防御は規律ではなく構造で — ref の前処理を `sensenova_ops` に閉じる（§7.5 差分 4） |
 | offload 2 機構の合成 | `LayerOffloadConductor` はモジュール丸ごと staging するが、SenseNova の decoder layer は両 half を同一モジュールに持つ | 未解決。conductor のサブモジュール粒度対応が未調査（§8.3.1、§12） |
+| und LoRA の推論側サイレント欠落 | `apply_lora_group` は gen のみ列挙して lookup するため、und キーは applied 件数が減るだけで**エラーが出ない** | 列挙器に `branch` を追加し applied カウントを検証する（§13.3） |
+| und 学習のサイレント無効化 | `_assert_immutable_prefix_cache` の `requires_grad` 拒否を単に外すと、prefix が `no_grad` のままでも loss は正常に下がり und は学習されない | 拒否を外すのではなく**逆向きの positive assertion**（全 42 層の K/V が `grad_fn` を持つ）に差し替える（§13.3） |
 | prediction config の退行 | 既存の flow-matching 登録を学習統合時に外すと静かに誤る | §9 の退行テストで固定 |
 | half-eviction の層選択 | Parameter ベースの規則は 2 度不活性のまま出荷された | 判別子ごと再利用する（§8.4） |
 | prefix forward のコスト | Qwen3-8B 全体を毎 step 通す | 実測後にキャッシュ可否を判断（§12） |
@@ -994,6 +1098,10 @@ cache namespace と alignment は登録だけで有効になった。
 ## 11. フェーズ分割
 
 初期計画を残し、現在の DONE / PENDING 境界を明示する。
+
+**Phase U（understanding branch の学習）はこの系列に含めない。** 依存は Phase 1 のみで、
+PENDING の Phase 2b / 3 に混ぜると偽の依存が生まれるため、独立フェーズとして §13 に
+分離した。
 
 ### Phase 0 — 前提確認（DONE）
 
@@ -1231,6 +1339,23 @@ trainer arm の JSON には `phase_eviction`、`wall_time_s`（`train()` のみ�
 3. **dequant 起点 full FT の学習品質影響。** 上記のとおり**測定不能な構造**である
    （比較 arm が存在しうる状況と、経路が必要になる状況が排他）。
 
+Phase U（§13）関連。**いずれも構造からの推論であって実測ではない**:
+
+4. **非 reentrant checkpoint の closure 捕捉 cache テンソルへの勾配伝播が、この vendor
+   経路で実際に und grad を届けるか。** 構造上は成立するが本 repo での実測はゼロ。
+   **U-0 の中心項目**（§13.1）。
+5. **prefix 非 checkpoint 時の und dequant 実体化 ~15.1 GiB。** 構造上の見積もりで
+   未実測（§13.2）。U-0 の GC OFF arm で観測する。
+6. **推論側 `mot_phase_eviction` × und LoRA wrapper の weight 移動整合。** 未検証。
+   検証するか拒否するかを U-1 で決める（§13.3）。
+7. **und LoRA が reference 忠実度・プロンプト追従を実際に改善するか。** 未測定。
+   **提供するのは選択肢であって効果の主張ではない**（§13）。
+8. **旧ビルドが新形式（gen+und）LoRA を無警告で部分適用するバージョン skew。**
+   新ビルド側は metadata で検知できるが逆方向は防げない（§13.3）。
+9. **und forward 2 回のコストと weight 往復コスト**（4 相分割）。未測定。
+   `probes/text_encode_vs_step.py` の sensenova アームで prefix / step 比を測る
+   （§8.3.2、U-2-4）。
+
 既存（不変）: half-eviction の有効性（§8.3 の gate）、凍結 und での reference 忠実度
 （§7.2）、ConvRot base の train / inference skew（§5.3）。
 
@@ -1241,7 +1366,187 @@ trainer arm の JSON には `phase_eviction`、`wall_time_s`（`train()` のみ�
 
 ---
 
-## 13. References
+## 13. Phase U — understanding branch の学習（新規、PENDING）
+
+**要求**: understanding branch も微調整の対象にするかどうかを、SDXL の TE / U-Net や
+他 arch の TE / DiT と同様に**ユーザーが選択できるようにする**（LoRA / Full-FT の
+両方）。位置づけは nice-to-have ではなく機能要求である — 「新規のコンセプトを画像生成
+モデルに追加する上で understanding 層の学習は重要」という理由が示されている。
+§7.2 判断 3 の「凍結 und で reference 忠実度は足りるか」という未解決の経験的
+不確実性とも接続する。
+
+**既定は OFF。** 既定 OFF である限り §5.2 / §7.2 の既存判断とは矛盾しない（§5.2 の
+改訂注記を参照）。**提供するのは選択肢であって効果の主張ではない** — und 学習が
+実際に忠実度やプロンプト追従を改善するかは未測定である（§12）。
+
+**Phase 2b / Phase 3 には折り込まない。** U-1 の依存は Phase 1 のみで、PENDING の
+2b / 3 に混ぜると偽の依存が生まれる。
+
+### 13.1 微分可能経路は「新規構築」ではなく「解錠」である
+
+§5.2 根拠 1 は und 学習を「微分可能な KV パイプラインの構築」と評価したが、
+**und LoRA についてはこれが過大評価だった。** Phase 1 が自分のために作った機構が、
+偶然 und 勾配互換の構造を備えている。**以下はコードから読める構造的事実であり、
+勾配が実際に届くことの実証（probe）はまだ無い**（§12、U-0 の中心項目）。
+
+- **prefix forward の cache 書き込みは非破壊。** `DynamicLayer.update` は
+  `self.keys = torch.cat([self.keys, key_states], dim=-2)` と**再束縛**する
+  （`venv/.../transformers/cache_utils.py:120-121`。docstring は "in-place" と書くが
+  実装は cat である）。したがって `no_grad` を外せば K/V は grad_fn を持つ。
+- **gen pass の `update_cache=False` fallback も `torch.cat`。**
+  `key_states = torch.cat([past_k, key_states], dim=2)`
+  （`vendor/modeling_qwen3.py:792-793` 付近の training 経路）。prefix 側に grad_fn が
+  あれば勾配はそこへ流れる。
+- **gen の checkpoint loop は `use_reentrant=False`**（`ops/sensenova_ops.py:602`）。
+  非 reentrant checkpoint は closure 捕捉テンソルへの勾配伝播を公式にサポートする。
+
+真にサブシステム級なのは次の 3 つだけである: **(a) prefix pass 専用の checkpoint
+loop**（§13.2）、**(b) 推論側の und target 列挙と適用**（§13.3）、
+**(c) MNT 再計算・assert 分割・eviction 配線**（§13.3）。
+
+### 13.2 (a) prefix 専用 checkpoint loop が前提実装である理由
+
+**prefix を非 checkpoint で勾配付きに回すと VRAM が破綻する。** und 側 294 個の
+`Int8Linear` がそれぞれ backward 用に dequant 済み bf16 weight を autograd に保存し、
+layer 1 以降は hidden が `requires_grad` なので **294 個すべてが該当して約 15.1 GiB が
+同時実体化する**。text prefix の活性そのものより支配的である。
+**これは構造上の見積もりであって実測ではない**（§12）。機構は §5.3 の
+`warn_quantized_base_without_checkpointing` および `INT8_W8A8_TRAINING_GATE.md` の
+G4 実測と同一である。
+
+**gen 側の流儀をそのまま流用できない**理由が 2 つある。
+
+1. **checkpoint の再計算が `DynamicCache.update()` を二重 append する。**
+   §4.7 が gen 側で回避した問題そのものが、prefix 側では cache 書き込みという形で
+   再来する。
+2. **cache への書き込みは checkpoint segment の副作用チャネルである。** 勾配を下流に
+   繋ぐには K/V を **checkpoint 関数の明示的な出力**として返す必要があるが、
+   `forward_und` は attn_output しか返さない（attention 版は
+   `return attn_output, attn_weights`、decoder-layer 版は `hidden_states` のみ。
+   `vendor/modeling_qwen3.py:591`, `:1155` 付近）。vendor に **opt-in の `return_kv`
+   seam** を足す設計になる（vendor 編集の前例は style tripwire に既存）。
+
+**parity gate（必須）**: no-grad モードで、学習 prefix loop と vendor
+`_t2i_prefix_forward` の cache K/V が **bitwise 一致**すること。
+
+### 13.3 (b)(c) 推論側と学習側の配線
+
+#### 推論側は und キーを無警告で捨てる（実害あり）
+
+`normalise_lora_state_dict` は und キーも**グルーピングする** — `_parse_key` は
+「将来 target が広がったときに黙って落とさないため」意図的に任意の module path を
+受ける（`sensenova_lora.py:88-92, 96-103`）。ところが `apply_lora_group` は
+**gen のみを列挙する `iter_sensenova_lora_targets` を回して `grouped.get(module_path)`
+で lookup する**（`:242-243`）ため、und エントリは一度も参照されない。
+**applied カウントが減るだけでエラーは出ない。** 対応せずに und LoRA を出荷すると
+「学習はできるが黙って部分適用される LoRA」を生産する。
+
+必要な対応:
+
+- `iter_sensenova_lora_targets` に `branch: "gen" | "und" | "both"` を追加する。
+  **学習と推論が同じ列挙器を使うこと**（新しい列挙器を作らない。これは §5.4 で
+  記録済みの「リゾルバを増やさない」規律と同型）。
+- **applied カウントの検証**（grouped の件数と applied の件数の突き合わせ）。
+- **format sniff の硬化**: `load_lora_safetensors` の `looks_like_keys` は
+  `"mot_gen" in k` を見る（`:141`）ので、gen+und ファイルは通るが und のみのファイルは
+  `unknown` に落ちる。
+- `smoke.py` に und ケースを追加。
+- **推論側 `mot_phase_eviction` × und LoRA wrapper の weight 移動整合を検証するか、
+  拒否する。** 未検証のまま出荷すると eviction ON の生成で device mismatch になる
+  （§12）。
+
+#### `_assert_immutable_prefix_cache` は分離する（外すのではない）
+
+現状この関数は**構造検証**（layer 数 / 非空 K/V / streamer 不在 / flash buffer 不在）と
+**`requires_grad` 拒否**が同居している（`ops/sensenova_ops.py:531-558`。拒否は
+`:552-553`）。
+
+- 構造検証は**無条件で維持**する。
+- `requires_grad` 拒否だけをフラグで分岐する。
+- **単に外すのではなく、und 学習時は逆向きの positive assertion**（全 42 層の K/V が
+  `grad_fn` を持つこと）を入れる。**これが無いと「und LoRA を選んだのに prefix が
+  `no_grad` で作られ、loss は正常に下がるが und は 1mm も学習されない」という
+  §6.1 と同型のサイレント故障**を再生産する。
+
+#### その他の配線
+
+- **MNT > 1 では `retain_graph` を使わない。** MNT ループは iteration ごとに
+  `optimizer.step()` を打つので、graph 再利用は version counter 衝突か旧パラメータ
+  勾配になる。**per-iteration で prefix を再計算する。** 前例は
+  `need_recompute_text_embeddings`（TE trainable かつ MNT>1 なら re-encode。
+  `base_trainer.py:11086-11090`）。
+- **dropout guard**: `attention_dropout` の既定は 0.0（upstream `Qwen3Config`）だが、
+  `dropout=0.0 if not self.training else self.attention_dropout`
+  （`vendor/modeling_qwen3.py:583`）の分岐は `transformer.train()` が stamp される
+  学習経路で**生きている**。**und 学習経路の有効化時に `attention_dropout != 0` を
+  fail-closed で拒否する**（将来の非ゼロ config で再計算が確率的になるのを黙って
+  通さないため）。
+
+#### und 側 target の命名
+
+und attn は `self_attn.{q,k,v,o}_proj`（サフィックス無し）、und MLP は
+`mlp.{gate,up,down}_proj`。**42 層 × 7 = 294** で、gen 側の 294 と合わせて 588。
+なお **gen 側の命名は非対称**（attn は Linear 名 `q_proj_mot_gen` を `self_attn` の
+下に、MLP は親名 `mlp_mot_gen` を使う。`sensenova_lora.py:154-155`, `:203-215`）だが、
+**und 側は attn / MLP ともに素の名前**であり、非対称なのは gen 側だけである。
+
+#### パラメータ・LR・checkpoint
+
+- **パラメータは `train_text_encoder` を流用する**（新設しない）。LR は
+  `text_encoder_1_lr`、fallback は `text_encoder_lr` → `unet_lr` の連鎖で、
+  SDXL LoRA と同じ（`sdxl_adapter.py:387`）。und が vision も兼ねる件は param ではなく
+  **capability reason と UI 説明文**で扱う。
+- **checkpoint は gen + und を 1 ファイル。** `neo_hf_lora` の verbatim path 形式は
+  und パスをそのまま収容できる。metadata は
+  `lora_targets: "generation+understanding"`、tensor 数は **1764**
+  （588 target × down/up/alpha。Phase 1 の 882 / 294 と同じ比）。
+  **既存の gen-only 蒸留 LoRA の互換は無変更で保たれる** — 適用は lookup 駆動なので
+  und スロットが空振りするだけである。
+- **バージョン skew を記録する**: 新形式を旧ビルドでロードすると und キーが無警告で
+  落ちる。新ビルドは metadata と突き合わせて検知できるが、**逆方向は防げない**（§12）。
+- `understanding-only` LoRA は**恒久的に提供しない**（保存側で gen 0 件を拒否する）。
+
+#### capability 宣言
+
+`TRAINING_FEATURE_UNSUPPORTED["sensenova"]["text_encoder_training"]` は**削除ではなく
+スコープ化**する: `methods=["full_finetune"]`。これは zimage の逆向きの同型である
+（zimage は `methods=["lora", "relora"]` で「LoRA では TE を学習しないが full FT は
+する」を宣言している。`arch_capabilities.py:897-901`）。U-2 が着地したらこの entry
+自体を落とす。
+
+### 13.4 フェーズ分割と exit criteria
+
+- **U-0 — 前提 probe。** exit: (1) 学習 prefix loop と vendor `_t2i_prefix_forward` の
+  K/V が **bitwise 一致**（no-grad モード）、(2) 588 LoRA の grad が finite かつ
+  **und 294 が nonzero**（= §13.1 の closure 勾配伝播の実証。ここが本フェーズの中心）、
+  (3) prefix GC ON / OFF の loss・grad parity、(4) **GC OFF arm で ~15.1 GiB の
+  dequant 実体化を数値として観測**（§13.2 の見積もりの検証）。
+- **U-1 — und LoRA 本体（text-only）。** exit: 3-step smoke で有限 loss、
+  1764 tensors、**fresh runtime で 588 適用・588 復元、strength 0 が base と
+  `torch.equal`、strength 1 が base と異なること**（後者が無いと §13.3 のサイレント
+  部分適用を検出できない）、`train_text_encoder=false` の loss・grad SHA-256 が現行
+  実装と一致すること（**回帰していないことの証明**）、MNT>1 smoke、
+  既存の蒸留 LoRA の推論ロード回帰。
+- **U-2 — und Full-FT。** U-2-1: §6.4 経路 (a) の 588 版。U-2-2: fused backward の
+  gate 解錠 + Adafactor 限定・EMA 拒否・**effective batch = 1** の contract
+  （§6.2 改訂の条件 1-4）。U-2-3: stochastic rounding 既定 True（§6.3）+ dropout
+  guard。U-2-4: §8.3.2 の 4 相分割（exit gate に **prefix / step 比の実測**を含む）。
+  U-2-5: exit smoke — **588 Linear の update-nonzero census** で bf16 丸め欠陥の
+  「動かないのに loss は下がる」故障モード（§6.3）を捕まえる。**品質は主張しない。**
+- **U-3 — und × reference。** 依存は U-1 + Phase 3。**`vision_model`（und tower の
+  ViT）自体は学習対象に含めない** — 294 target の外で推論側に検証手段が無く、
+  §5.2 根拠 3 の「消費者の居ない形式を作らない」原則が当たる。したがって
+  **und 学習 = 「und decoder 層の学習」と定義する**。
+
+**Phase 3 との関係は直交である。** und trainable と reference あり item を組み合わせた
+場合、reference の `<IMG_CONTEXT>` token は**同じ prefix pass の und 層を通る**ので、
+**追加機構ゼロで reference 条件付け経路も学習される**。これは §7.3 が保留していた
+和解経路の実体化にあたる（§7.3 と矛盾しない — 既定 OFF である限り §7.2 判断 3 も
+生きている）。
+
+---
+
+## 14. References
 
 - 内部（推論側）:
   [`sensenova/loader.py`](../../backend/core/models/sensenova/loader.py),

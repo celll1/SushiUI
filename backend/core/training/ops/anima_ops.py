@@ -498,46 +498,49 @@ def train_step(
 
     # Debug save if requested
     if debug_save_path is not None:
-        debug_save_path.mkdir(parents=True, exist_ok=True)
-        timestep_value = timesteps[0].item()
+        try:
+            debug_save_path.mkdir(parents=True, exist_ok=True)
+            timestep_value = timesteps[0].item()
 
-        with torch.no_grad():
-            # Anima noising is x_t = (1 - sigma) * x_0 + sigma * noise with the
-            # target v = noise - x_0 (see above), so x_0 = x_t - sigma * v.
-            # NOTE the sign: this is standard flow matching, the OPPOSITE of
-            # Z-Image's x_0 = x_t + t * v (which uses v = x_0 - noise).
-            predicted_latent = noisy_latents - sigma_view * model_pred
-            debug_recon_per_element = F.mse_loss(
-                predicted_latent.float(), latents.float(), reduction="none")
-            debug_recon_per_sample = debug_recon_per_element.mean([1, 2, 3])
+            with torch.no_grad():
+                # Anima noising is x_t = (1 - sigma) * x_0 + sigma * noise with the
+                # target v = noise - x_0 (see above), so x_0 = x_t - sigma * v.
+                # NOTE the sign: this is standard flow matching, the OPPOSITE of
+                # Z-Image's x_0 = x_t + t * v (which uses v = x_0 - noise).
+                predicted_latent = noisy_latents - sigma_view * model_pred
+                debug_recon_per_element = F.mse_loss(
+                    predicted_latent.float(), latents.float(), reduction="none")
+                debug_recon_per_sample = debug_recon_per_element.mean([1, 2, 3])
 
-        debug_data = {
-            'latents': latents[0:1].detach().cpu(),
-            'noisy_latents': noisy_latents[0:1].detach().cpu(),
-            'predicted_velocity': model_pred[0:1].detach().cpu(),
-            'actual_velocity': target[0:1].detach().cpu(),
-            'predicted_latent': predicted_latent[0:1].detach().cpu(),
-            'timestep': timestep_value,
-            'loss': loss_per_sample[0].item(),
-            'loss_batch_mean': loss.item(),
-            'recon_loss': debug_recon_per_sample[0].item(),
-            'recon_loss_batch_mean': debug_recon_per_sample.mean().item(),
-            'batch_size': batch_size,
-            'scheduler_type': 'FlowMatching',
-            'model_type': 'anima',
-        }
+            debug_data = {
+                'latents': latents[0:1].detach().cpu(),
+                'noisy_latents': noisy_latents[0:1].detach().cpu(),
+                'predicted_velocity': model_pred[0:1].detach().cpu(),
+                'actual_velocity': target[0:1].detach().cpu(),
+                'predicted_latent': predicted_latent[0:1].detach().cpu(),
+                'timestep': timestep_value,
+                'loss': loss_per_sample[0].item(),
+                'loss_batch_mean': loss.item(),
+                'recon_loss': debug_recon_per_sample[0].item(),
+                'recon_loss_batch_mean': debug_recon_per_sample.mean().item(),
+                'batch_size': batch_size,
+                'scheduler_type': 'FlowMatching',
+                'model_type': 'anima',
+            }
 
-        if debug_captions is not None and len(debug_captions) > 0:
-            debug_data['caption'] = debug_captions[0]
-            debug_data['all_captions'] = debug_captions
+            if debug_captions is not None and len(debug_captions) > 0:
+                debug_data['caption'] = debug_captions[0]
+                debug_data['all_captions'] = debug_captions
 
-        if debug_reference_image_paths is not None and len(debug_reference_image_paths) > 0:
-            first_ref = next((p for p in debug_reference_image_paths if p is not None), None)
-            if first_ref:
-                debug_data['reference_image_path'] = first_ref
+            if debug_reference_image_paths is not None and len(debug_reference_image_paths) > 0:
+                first_ref = next((p for p in debug_reference_image_paths if p is not None), None)
+                if first_ref:
+                    debug_data['reference_image_path'] = first_ref
 
-        torch.save(debug_data, debug_save_path / f"latents_t{timestep_value:.4f}.pt")
-        del predicted_latent, debug_recon_per_element, debug_recon_per_sample
+            torch.save(debug_data, debug_save_path / f"latents_t{timestep_value:.4f}.pt")
+            del predicted_latent, debug_recon_per_element, debug_recon_per_sample
+        except Exception as _dbg_e:
+            print(f"{trainer.log_prefix} [debug_latents] save failed: {_dbg_e}")
 
     del noise, noisy_latents, noisy_latents_5d, model_pred, target
     del loss_per_element, loss_per_sample

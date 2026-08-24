@@ -934,70 +934,73 @@ def train_step(
 
     # Debug save if requested
     if debug_save_path is not None:
-        debug_save_path.mkdir(parents=True, exist_ok=True)
-        timestep_value = timesteps[0].item()
-
-        # Reuse predicted_latent from reconstruction loss calculation if available
-        # This avoids redundant computation (predict_original_latent_unified is expensive)
-        if predicted_latent_for_recon is not None:
-            predicted_latent_for_debug = predicted_latent_for_recon.detach()
-        elif predicted_latent_for_reg is not None:
-            predicted_latent_for_debug = predicted_latent_for_reg.detach()
-        else:
-            # Fallback: compute predicted_latent if not available
-            with torch.no_grad():
-                predicted_latent_for_debug = predict_original_latent_unified(
-                    noise_process=noise_process,
-                    prediction_target=prediction_target,
-                    noise_scheduler=trainer.noise_scheduler,
-                    noisy_latents=noisy_latents,
-                    model_pred=model_pred,
-                    timesteps=timesteps,
-                )
-
-        debug_data = {
-            'latents': latents[0:1].detach().cpu(),
-            'noisy_latents': noisy_latents[0:1].detach().cpu(),
-            'predicted_noise': model_pred[0:1].detach().cpu(),
-            'actual_noise': noise[0:1].detach().cpu(),
-            'predicted_latent': predicted_latent_for_debug[0:1].detach().cpu(),
-            'timestep': timestep_value,
-            'loss': loss_per_sample_weighted[0].item(),
-            'loss_batch_mean': loss.item(),
-            'loss_unweighted': loss_per_sample[0].item(),
-            'recon_loss': recon_loss_per_sample[0].item(),
-            'recon_loss_batch_mean': recon_loss.item(),
-            'batch_size': batch_size,
-            'min_snr_gamma': trainer.min_snr_gamma,
-        }
-
-        if debug_captions is not None and len(debug_captions) > 0:
-            debug_data['caption'] = debug_captions[0]
-            debug_data['all_captions'] = debug_captions
-
-        if debug_reference_image_paths is not None and len(debug_reference_image_paths) > 0:
-            first_ref = next((p for p in debug_reference_image_paths if p is not None), None)
-            if first_ref:
-                debug_data['reference_image_path'] = first_ref
-
-        # SDXL micro-conditioning for this debug sample (item 0): lets the user verify
-        # crop augmentation. time_ids order = [orig_h, orig_w, crop_top, crop_left,
-        # target_h, target_w]. crop_top_left != (0,0) or original_size != target_size
-        # indicates a random crop / scale. Per-item array included for the whole batch.
         try:
-            if trainer.is_sdxl and add_time_ids is not None:
-                _ti_all = add_time_ids.detach().cpu().to(torch.int64).tolist()  # [B, 6]
-                _t0 = _ti_all[0]
-                debug_data['sdxl_time_ids'] = _t0
-                debug_data['original_size'] = [int(_t0[1]), int(_t0[0])]   # (w, h)
-                debug_data['crop_top_left'] = [int(_t0[3]), int(_t0[2])]   # (left, top) = crop point
-                debug_data['target_size'] = [int(_t0[5]), int(_t0[4])]     # (w, h) = bucket
-                debug_data['sdxl_time_ids_all'] = _ti_all
-        except Exception:
-            pass
+            debug_save_path.mkdir(parents=True, exist_ok=True)
+            timestep_value = timesteps[0].item()
 
-        torch.save(debug_data, debug_save_path / f"latents_t{timestep_value:04d}.pt")
-        del predicted_latent_for_debug
+            # Reuse predicted_latent from reconstruction loss calculation if available
+            # This avoids redundant computation (predict_original_latent_unified is expensive)
+            if predicted_latent_for_recon is not None:
+                predicted_latent_for_debug = predicted_latent_for_recon.detach()
+            elif predicted_latent_for_reg is not None:
+                predicted_latent_for_debug = predicted_latent_for_reg.detach()
+            else:
+                # Fallback: compute predicted_latent if not available
+                with torch.no_grad():
+                    predicted_latent_for_debug = predict_original_latent_unified(
+                        noise_process=noise_process,
+                        prediction_target=prediction_target,
+                        noise_scheduler=trainer.noise_scheduler,
+                        noisy_latents=noisy_latents,
+                        model_pred=model_pred,
+                        timesteps=timesteps,
+                    )
+
+            debug_data = {
+                'latents': latents[0:1].detach().cpu(),
+                'noisy_latents': noisy_latents[0:1].detach().cpu(),
+                'predicted_noise': model_pred[0:1].detach().cpu(),
+                'actual_noise': noise[0:1].detach().cpu(),
+                'predicted_latent': predicted_latent_for_debug[0:1].detach().cpu(),
+                'timestep': timestep_value,
+                'loss': loss_per_sample_weighted[0].item(),
+                'loss_batch_mean': loss.item(),
+                'loss_unweighted': loss_per_sample[0].item(),
+                'recon_loss': recon_loss_per_sample[0].item(),
+                'recon_loss_batch_mean': recon_loss.item(),
+                'batch_size': batch_size,
+                'min_snr_gamma': trainer.min_snr_gamma,
+            }
+
+            if debug_captions is not None and len(debug_captions) > 0:
+                debug_data['caption'] = debug_captions[0]
+                debug_data['all_captions'] = debug_captions
+
+            if debug_reference_image_paths is not None and len(debug_reference_image_paths) > 0:
+                first_ref = next((p for p in debug_reference_image_paths if p is not None), None)
+                if first_ref:
+                    debug_data['reference_image_path'] = first_ref
+
+            # SDXL micro-conditioning for this debug sample (item 0): lets the user verify
+            # crop augmentation. time_ids order = [orig_h, orig_w, crop_top, crop_left,
+            # target_h, target_w]. crop_top_left != (0,0) or original_size != target_size
+            # indicates a random crop / scale. Per-item array included for the whole batch.
+            try:
+                if trainer.is_sdxl and add_time_ids is not None:
+                    _ti_all = add_time_ids.detach().cpu().to(torch.int64).tolist()  # [B, 6]
+                    _t0 = _ti_all[0]
+                    debug_data['sdxl_time_ids'] = _t0
+                    debug_data['original_size'] = [int(_t0[1]), int(_t0[0])]   # (w, h)
+                    debug_data['crop_top_left'] = [int(_t0[3]), int(_t0[2])]   # (left, top) = crop point
+                    debug_data['target_size'] = [int(_t0[5]), int(_t0[4])]     # (w, h) = bucket
+                    debug_data['sdxl_time_ids_all'] = _ti_all
+            except Exception:
+                pass
+
+            torch.save(debug_data, debug_save_path / f"latents_t{timestep_value:04d}.pt")
+            del predicted_latent_for_debug
+        except Exception as _dbg_e:
+            print(f"{trainer.log_prefix} [debug_latents] save failed: {_dbg_e}")
 
     # Return loss tensor (with gradient), pred_loss value, and recon_loss value
     # IMPORTANT: Do NOT call .item() on loss here - it breaks the computation graph!

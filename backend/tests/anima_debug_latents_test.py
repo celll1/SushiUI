@@ -60,6 +60,7 @@ class ConstantVelocityDiT(nn.Module):
 
 def _make_trainer(transformer):
     return SimpleNamespace(
+        log_prefix="[test]",
         device=torch.device("cpu"),
         training_dtype=torch.float32,
         timestep_sampler=None,
@@ -158,6 +159,22 @@ def test_predicted_latent_matches_noising_definition(tmp_path):
     assert torch.allclose(
         data["noisy_latents"], latents[0:1] + sigma * data["actual_velocity"], atol=1e-4
     )
+
+
+def test_dump_failure_does_not_break_train_step(tmp_path, monkeypatch, capsys):
+    """A diagnostic that only runs every N steps must not kill a long run."""
+    def _boom(*a, **k):
+        raise OSError("No space left on device")
+
+    monkeypatch.setattr(torch, "save", _boom)
+    _latents, result = _run(ConstantVelocityDiT(), tmp_path / "step_000010")
+    loss, pred_loss_value, _recon = result
+
+    assert torch.isfinite(loss)
+    assert isinstance(pred_loss_value, float)
+    out = capsys.readouterr().out
+    assert "[debug_latents] save failed" in out
+    assert "No space left on device" in out
 
 
 def test_predicted_latent_is_xt_minus_sigma_v(tmp_path):

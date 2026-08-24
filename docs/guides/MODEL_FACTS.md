@@ -175,29 +175,72 @@ transfer.
 
 ## Training diagnostics coverage: `debug_latents` and training-time samples
 
-Both options are accepted by the API for every training-capable arch, and on
-most of them **nothing happens and nothing says so**. Paths below are relative
-to `backend/core/training/`.
+Both options are accepted by the API for every training-capable arch; on three
+of them `debug_latents` still produces an empty directory and says nothing.
+Paths below are relative to `backend/core/training/`.
 
-- **`debug_latents` writes a dump on 5 archs only**: sd15/sdxl
+- **`debug_latents` writes a dump on 10 of the 13 archs**: sd15/sdxl
   (`ops/sd_sdxl_ops.py:936`), zimage (`ops/zimage_ops.py:467`), flux2
   (`ops/flux2_ops.py:665`), minit2i (`ops/minit2i_ops.py:361`), sensenova
-  (`ops/sensenova_ops.py:391`). These are exactly the five `train_step` bodies
-  containing an `if debug_save_path is not None:` branch.
-- **Accept-and-ignore**: anima (`ops/anima_ops.py:342`), ltx2
-  (`ops/ltx2_ops.py:510`), minimax_h3 (`ops/minimax_h3_ops.py:655`), acestep
-  (`ops/acestep_ops.py:471`) declare `debug_save_path`/`debug_captions`/
-  `debug_reference_image_paths` in the `train_step` signature and never read
-  them. The call site looks correct; the dump is simply not implemented.
+  (`ops/sensenova_ops.py:391`), anima (`ops/anima_ops.py:500`, `418525bc`),
+  ltx2 (`ops/ltx2_ops.py:735`), minimax_h3 (`ops/minimax_h3_ops.py:878`),
+  acestep (`ops/acestep_ops.py:637`) — the last three from `dd3e71e3`. These
+  are exactly the nine `train_step` bodies containing an
+  `if debug_save_path is not None:` branch.
+  - **The declaring set and the writing set are now identical**, which is the
+    invariant to preserve: anima/ltx2/minimax_h3/acestep previously declared
+    `debug_save_path`/`debug_captions`/`debug_reference_image_paths` and read
+    none of them, so the call site looked correctly wired while nothing was
+    written. Adding the parameters without the body reintroduces exactly that.
 - **No parameter at all**: lens (`ops/lens_ops.py:215`), ideogram4
   (`ops/ideogram4_ops.py:229`), krea2 (`ops/krea2_ops.py:201`), and the
-  ControlNet path (`base_trainer.py:5973`, `train_step_controlnet`) — adding a
+  ControlNet path (`base_trainer.py:6005`, `train_step_controlnet`) — adding a
   dump there means changing the signature first.
+- **The video archs dump the clip's LEADING window only, not sampled frames.**
+  A video VAE is causal in time and compresses it 4-8x with the first latent
+  frame special-cased, so **no single latent frame decodes on its own** —
+  representative-frame extraction is not available and the dump has to be a
+  contiguous window. The window is sized from the arch's own `TemporalSpec`
+  (`leading_window_frames` in `latent_debug_dump.py` walks
+  `latent_chunk_pattern` until it covers `min_decodable_frames`): **7 latent
+  frames for minimax_h3** (`min_decodable_frames=22` over pattern
+  `(1,4,4,4,4)`, `models/components/wiring.py:455,492`) and **1 for ltx2**
+  (`min_decodable_frames=1`, no pattern declared, `wiring.py:426`). Cost is
+  therefore independent of clip length. **What this gives up**: a failure that
+  only appears late in the clip does not show up in the dump at all.
+  - The window is tiled to `[1, C, H, n*W]` (`video_filmstrip`), the shape
+    `visualize_debug_latent` already false-colours, so the endpoint needed
+    only additive changes and `openapi.yaml` was untouched.
+- **The x0 reconstruction sign is per-arch, and minimax_h3's is inverted.**
+  ltx2, acestep and anima target `v = noise - x0`, giving `x0 = x_t - σ·v`;
+  minimax_h3 targets `v = x0 - eps` (`ops/minimax_h3_ops.py:784`), giving
+  **`x0 = x_t + σ·v`** — the same inverted convention its facts-table row
+  already records for generation. Getting this wrong is silent: the loss still
+  falls normally and only the dumped `predicted_latent` image lies. Each sign
+  is pinned by a test whose stub returns the analytically exact velocity
+  (`backend/tests/video_audio_debug_latents_test.py`,
+  `backend/tests/anima_debug_latents_test.py`).
+- **minimax_h3 writes video and audio into ONE file** rather than one per
+  modality: at `u ∈ {0,1}` the video and audio shifts collapse to the same σ,
+  so two σ-named files would silently overwrite each other. Audio rides under
+  `audio_*` keys and is **not vocoder-decoded** — it is false-coloured as a
+  latent channel-vs-time map (`audio_strip`), the same treatment acestep's
+  audio-only dump gets.
+- **Per-channel mean/std of every stream is saved** (`channel_stats`, surfaced
+  by the endpoint): a prediction collapsing toward the channel mean is visible
+  there before any image is looked at.
 - **Training-time sampling is implemented for every arch except ideogram4**,
   whose `sample()` prints a warning and returns `None`
   (`arch/ideogram4.py:69`); both `base_trainer.py` sample sites skip on `None`
-  (`:9082`, `:11763`). Its dual-transformer + fp8 + resolution-aware
+  (`:9113`, `:11796`). Its dual-transformer + fp8 + resolution-aware
   dual-branch conditioning is not ported to the trainer.
+- **Not verified for the video/audio dumps** (`dd3e71e3` shipped with
+  shape-level tests only): the false-coloured previews have never been eyeballed
+  against a real clip; acestep's `dit.decoder(...)` output is assumed to match
+  the `[B, T, 64]` latent layout its input is checked against
+  (`ops/acestep_ops.py:521`), inferred from how the loss consumes it rather
+  than confirmed on a real forward; and dump size at production geometry is
+  unmeasured.
 
 ## Row-level notes
 
@@ -2014,7 +2057,7 @@ to `backend/core/training/`.
         `finally`.
       - **A failed sample prints its traceback and returns `None`** instead of
         propagating: neither `base_trainer` sample block guards the call
-        (`:9070`, `:11749`), so an exception would take the run down.
+        (`:9101`, `:11782`), so an exception would take the run down.
       - **With `sensenova_mot_phase_eviction` on**, sampling drives the evictor
         through the same `enter_prefix`/`enter_denoise` transition pair a
         training step uses, so the two halves still never co-reside. The

@@ -7713,6 +7713,21 @@ export interface DebugLatentVisualization {
   noisy_latents_image?: string;  // base64
   predicted_noise_image?: string;  // base64
   predicted_latent_image?: string;  // base64
+  // Video archs (LTX-2.3, MiniMax-H3): the images above tile the clip's leading
+  // decodable window along width, window_latent_frames frames wide.
+  window_latent_frames?: number;
+  clip_latent_frames?: number;
+  // ACE-Step / MiniMax-H3 audio: latent channels vs time, no vocoder.
+  latent_frames?: number;
+  audio_sigma?: number;
+  audio_present?: number;
+  audio_latents_image?: string;  // base64
+  audio_noisy_latents_image?: string;  // base64
+  audio_predicted_velocity_image?: string;  // base64
+  audio_actual_velocity_image?: string;  // base64
+  audio_predicted_latent_image?: string;  // base64
+  // Per-channel mean/std of every saved stream, keyed by tensor name.
+  channel_stats?: Record<string, { mean: number[]; std: number[] }>;
 }
 
 export const getDebugLatents = async (runId: number): Promise<DebugLatentsResponse> => {

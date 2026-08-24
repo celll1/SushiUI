@@ -501,6 +501,17 @@ def _pack_latents(latents_5d):
     return x  # [B, F*H*W, C]
 
 
+def _unpack_leading_frames(seq, num_frames, lat_h, lat_w):
+    """Inverse of :func:`_pack_latents` over the FIRST ``num_frames`` frames.
+
+    The packed order is frame-major, so the leading window is a prefix slice —
+    no gather over the full sequence.
+    """
+    b, _n, c = seq.shape
+    head = seq[:, :num_frames * lat_h * lat_w, :]
+    return head.reshape(b, num_frames, lat_h, lat_w, c).permute(0, 4, 1, 2, 3)
+
+
 def train_step(
     trainer,
     latents: torch.Tensor,
@@ -720,6 +731,53 @@ def train_step(
         loss = loss + trainer.reconstruction_loss_weight * recon_loss
 
     pred_loss_value = mse_loss.item()
+
+    if debug_save_path is not None:
+        from core.training import latent_debug_dump as dbg
+
+        spec = getattr(getattr(trainer, "arch", None), "temporal", None)
+        n_win = dbg.leading_window_frames(spec, t_lat)
+        sigma_0 = float(sigma.reshape(-1)[0].item())
+
+        with torch.no_grad():
+            x0_win = latents[0:1, :, :n_win]
+            xt_win = x_t[0:1, :, :n_win]
+            noise_win = noise[0:1, :, :n_win]
+            v_win = _unpack_leading_frames(
+                v_pred_video[0:1].float(), n_win, lat_h, lat_w)
+            # x_t = (1 - sigma) x_0 + sigma * noise with target v = noise - x_0,
+            # so x_0 = x_t - sigma * v (standard flow-matching sign; MiniMax-H3
+            # defines v the other way round and adds instead).
+            pred_x0_win = xt_win.float() - sigma_0 * v_win
+
+            recon = F.mse_loss(pred_x0_win.float(), x0_win.float()).item()
+
+            dbg.save_dump(
+                debug_save_path,
+                timestep=sigma_0,
+                model_type="ltx2",
+                video={
+                    "latents": dbg.video_filmstrip(x0_win),
+                    "noisy_latents": dbg.video_filmstrip(xt_win),
+                    "predicted_velocity": dbg.video_filmstrip(v_win),
+                    "actual_velocity": dbg.video_filmstrip(noise_win - x0_win),
+                    "predicted_latent": dbg.video_filmstrip(pred_x0_win),
+                },
+                scalars={
+                    "loss": pred_loss_value,
+                    "loss_batch_mean": float(loss.detach()),
+                    "recon_loss": recon,
+                    "batch_size": batch_size,
+                    "scheduler_type": "FlowMatching",
+                },
+                captions=debug_captions,
+                reference_image_paths=debug_reference_image_paths,
+                extra={
+                    "window_latent_frames": n_win,
+                    "clip_latent_frames": int(t_lat),
+                },
+            )
+            del x0_win, xt_win, noise_win, v_win, pred_x0_win
 
     # Discard audio prediction (video-only training).
     del noise, x_t, seq_xt, v_pred_video, _v_pred_audio, target, dummy_audio

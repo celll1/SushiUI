@@ -683,7 +683,7 @@ def train_step(
     """
     from core.models.minimax_h3.h3_pipeline_ops import (
         AUDIO_CHANNELS, SHIFT_AUDIO, SHIFT_VIDEO, build_row_timesteps,
-        patchify_video_latents,
+        patchify_video_latents, unpatchify_video_rows,
     )
     from core.training.base_trainer import print_vram_usage
 
@@ -874,6 +874,77 @@ def train_step(
                                            float(audio_loss.detach()),
                                            sigma_v, sigma_a)
     pred_loss_value = float(loss.detach())
+
+    if debug_save_path is not None:
+        from core.training import latent_debug_dump as dbg
+
+        spec = getattr(getattr(trainer, "arch", None), "temporal", None)
+        n_win = dbg.leading_window_frames(spec, t_lat)
+
+        with torch.no_grad():
+            rows_per_frame = (lat_h // 2) * (lat_w // 2)
+            v_win = unpatchify_video_rows(
+                video_velocity[0:1, :n_win * rows_per_frame].float(),
+                num_latent_frames=n_win, latent_height=lat_h, latent_width=lat_w,
+                latent_channels=int(_c),
+            )
+            x0_win = latents[0:1, :, :n_win]
+            xt_win = x_t_v[0:1, :, :n_win]
+            eps_win = eps_v[0:1, :, :n_win]
+            # MiniMax-H3 targets v = x_0 - eps, the OPPOSITE sign to the usual
+            # flow-matching convention, so x_0 = x_t + sigma * v (not minus).
+            pred_x0_win = xt_win.float() + sigma_v * v_win
+
+            video_streams = {
+                "latents": dbg.video_filmstrip(x0_win),
+                "noisy_latents": dbg.video_filmstrip(xt_win),
+                "predicted_velocity": dbg.video_filmstrip(v_win),
+                "actual_velocity": dbg.video_filmstrip(x0_win - eps_win),
+                "predicted_latent": dbg.video_filmstrip(pred_x0_win),
+            }
+
+            audio_streams = None
+            if x0_a.shape[1] > 0:
+                # Joint arch: dumping only the video stream would hide an
+                # audio-side collapse (e.g. audio_loss_weight mis-set).
+                a_v = audio_velocity[0:1].float()
+                a_pred_x0 = x_t_a[0:1].float() + sigma_a * a_v
+                p = dbg.AUDIO_KEY_PREFIX
+                audio_streams = {
+                    f"{p}latents": dbg.audio_strip(x0_a),
+                    f"{p}noisy_latents": dbg.audio_strip(x_t_a),
+                    f"{p}predicted_velocity": dbg.audio_strip(a_v),
+                    f"{p}actual_velocity": dbg.audio_strip(x0_a - eps_a),
+                    f"{p}predicted_latent": dbg.audio_strip(a_pred_x0),
+                }
+                del a_v, a_pred_x0
+
+            dbg.save_dump(
+                debug_save_path,
+                timestep=float(sigma_v),
+                model_type="minimax_h3",
+                video=video_streams,
+                audio=audio_streams,
+                scalars={
+                    "loss": pred_loss_value,
+                    "loss_batch_mean": pred_loss_value,
+                    "recon_loss": float(
+                        F.mse_loss(pred_x0_win.float(), x0_win.float())),
+                    "batch_size": batch_size,
+                    "scheduler_type": "FlowMatching",
+                },
+                captions=debug_captions,
+                reference_image_paths=debug_reference_image_paths,
+                extra={
+                    "window_latent_frames": n_win,
+                    "clip_latent_frames": int(t_lat),
+                    "audio_sigma": float(sigma_a),
+                    "audio_present": float(audio_mask.mean()),
+                    "h3_video_loss": float(video_loss.detach()),
+                    "h3_audio_loss": float(audio_loss.detach()),
+                },
+            )
+            del v_win, x0_win, xt_win, eps_win, pred_x0_win
 
     del eps_v, eps_a, x_t_v, x_t_a, video_rows, target_v, target_a
     return loss, pred_loss_value, recon_loss_value

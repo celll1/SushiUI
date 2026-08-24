@@ -1290,8 +1290,12 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       updateParam("training_dtype", "bf16");
       updateParam("output_dtype", "bf16");
       updateParam("vae_dtype", "fp32");
-      // Z-Image/FLUX.2: Cannot train text encoder (frozen)
-      updateParam("train_text_encoder", false);
+      // Z-Image LoRA injects no TE layers, so default it off there. FLUX.2 and
+      // Z-Image Full FT both implement TE training; the capability table gates
+      // the control, this only picks a starting value.
+      if (arch === "zimage") {
+        updateParam("train_text_encoder", false);
+      }
       // Z-Image/FLUX.2: VE not supported — clear selection
       updateParam("vision_encoder_path", "");
       updateParam("train_vision_encoder", false);

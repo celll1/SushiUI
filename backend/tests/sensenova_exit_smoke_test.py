@@ -95,20 +95,15 @@ def test_sensenova_exit_smoke_subprocess_propagates_phase_eviction_flag(monkeypa
 
     monkeypatch.setattr(probe.subprocess, "run", fake_run)
     monkeypatch.setattr(probe, "_repo_venv_python", lambda: Path("venv-python"))
-    args = type(
-        "Args",
-        (),
-        {
-            "model_path": "checkpoint",
-            "seed": 1234,
-            "prompt": "prompt",
-            "smoke_cfg_scale": 1.0,
-            "smoke_timestep_shift": 1.0,
-            "smoke_cfg_norm": "none",
-            "smoke_phase_eviction": "on",
-            "smoke_timeout_s": 1.0,
-        },
-    )()
+    # Parse a real namespace rather than listing attributes by hand: the
+    # subprocess builder reads whatever the parser defines, so a hand-rolled
+    # stub goes stale the moment an argument is added (it did, on --mixed-*).
+    monkeypatch.setattr(
+        probe.sys, "argv",
+        ["probe", "--model-path", "checkpoint", "--trainer-exit-smoke",
+         "--smoke-phase-eviction", "on"],
+    )
+    args = probe._parse_args()
 
     _run_exit_smoke_subprocess(args, "trainer", tmp_path)
 
